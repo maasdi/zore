@@ -1,7 +1,7 @@
 # Contributing
 
 Read the language specification and `AGENTS.md` first. The repository is at the
-M2 lexer stage, with the M3–M4 parser next; choose work from
+M3–M4 parser stage, with resolution and type checking next; choose work from
 `docs/roadmap.md`.
 
 For each change:

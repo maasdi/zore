@@ -1,13 +1,14 @@
 # Bootstrap architecture
 
-Status: M0–M2 are implemented. `src/main.rs` and `src/cli.rs` handle CLI
+Status: M0–M4 are implemented. `src/main.rs` and `src/cli.rs` handle CLI
 arguments and exit status. `src/lib.rs` exposes the source, diagnostic, token,
-and lexer APIs; `src/source.rs` stores UTF-8 text under stable file IDs and
-validated byte spans, and `src/diagnostic.rs` renders primary and related
-locations. `src/token.rs` defines token kinds and `src/lexer.rs` turns one
-source file into tokens plus lexical diagnostics. `tests/cli.rs`,
-`tests/source_diagnostics.rs`, and `tests/lexer.rs` exercise these contracts.
-Parsing and later compiler stages remain planned. Rust is the bootstrap implementation language; use one crate until
+lexer, AST, and parser APIs; `src/source.rs` stores UTF-8 text under stable
+file IDs and validated byte spans, and `src/diagnostic.rs` renders primary and
+related locations. `src/token.rs` defines token kinds and `src/lexer.rs` turns
+one source file into tokens plus lexical diagnostics. `src/ast.rs` defines the
+syntax tree and `src/parser.rs` builds it. `tests/cli.rs`,
+`tests/source_diagnostics.rs`, `tests/lexer.rs`, and `tests/parser.rs` exercise
+these contracts. Resolution and later compiler stages remain planned. Rust is the bootstrap implementation language; use one crate until
 stable boundaries justify extraction.
 
 | Area | Responsibility | Spec |
@@ -26,23 +27,40 @@ stable boundaries justify extraction.
 
 M1 stores `Span` with its source manager in `source`; a separate `span` module
 would have no independent work. The library target exposes these APIs to
-integration tests and future stages. Introduce `ast` and `parser` together with
-M3/M4. Do not stub future modules.
+integration tests and future stages. Do not stub future modules.
 
 The lexer (M2) always consumes the whole file and ends with one `Eof` token.
 It inserts semicolons itself (§3.7), marking each as explicit, newline, or EOF,
 with inserted ones given an empty span at the start of the line terminator (the
 first one inside a multiline block comment) or at EOF. Malformed input yields a
-diagnostic plus a recovery token: `MalformedLiteral` (which still ends a
-statement) for bad literals, `Unknown` for stray characters and `++`/`--`, and
-a single `Ident` for a name containing non-ASCII letters. A file is lexically
+diagnostic plus a recovery token: `MalformedLiteral` for bad literals, `Unknown`
+for stray characters and `++`/`--` (both end a statement, so recovery stays
+line-based), and a single `Ident` for a name containing non-ASCII letters. A file is lexically
 valid only when no diagnostics are reported; later stages must not treat
 recovery tokens as accepted source. String and rune literals are validated and
 decoded in the lexer, because the one-scalar rune rule requires decoding.
 Numeric tokens carry only their kind and base: values are decoded later from
 the span, since exact untyped-constant values and range checks belong to typing.
 The parser must split `>>` when closing nested type arguments such as
-`Array<Task<int>>`; the lexer always takes the longest operator.
+`Array<Task<int>>` once that syntax is parsed; the lexer always takes the
+longest operator.
+
+The parser (M3–M4) is hand-written recursive descent. `parser::parse` lexes
+and parses one file, returning a `File` AST and all lexical and syntax
+diagnostics. The AST keeps written structure (parentheses, `_` targets,
+unresolved names, and numeric spellings via spans); meaning belongs to HIR.
+Expressions use precedence climbing over the §7.6 levels, with comparisons
+non-associative and `await x?` built as `(await x)?`. A flag disables struct
+literals in `if`/`for` headers (§8.4); a counting-loop initializer is re-parsed
+with literals enabled when it turns out to be an assignment. Newline-dependent
+errors (missing trailing comma, body brace or `else` on the next line) get
+dedicated messages. On an error the parser records a diagnostic and skips to
+the end of the statement or declaration, tracking bracket depth; between
+declarations it also stops before a line-initial `func`/`async`/`type`/`import`.
+Recovery always consumes input (debug assertions check this). Syntax owned by
+later milestones is reported as unsupported, naming the planned milestone,
+rather than parsed speculatively. As with lexing, a file is syntactically valid
+only when no diagnostics are reported.
 
 AST preserves written structure; HIR records resolved meaning; MIR describes
 execution. Source identity and spans survive transformations. Use typed IDs for

@@ -28,7 +28,8 @@ pub enum TokenKind {
     /// A literal whose spelling was diagnosed. It still ends statements so that
     /// recovery keeps the surrounding structure.
     MalformedLiteral,
-    /// A character or sequence with no token meaning; always diagnosed.
+    /// A character or sequence with no token meaning; always diagnosed. Like
+    /// `MalformedLiteral`, it ends a statement to aid recovery.
     Unknown,
     Punct(Punct),
     Semicolon(Separator),
@@ -45,13 +46,15 @@ impl TokenKind {
             | Self::Float
             | Self::String(_)
             | Self::Rune(_)
-            | Self::MalformedLiteral => true,
+            | Self::MalformedLiteral
+            // Already diagnosed; ending the statement keeps recovery line-based.
+            | Self::Unknown => true,
             Self::Keyword(keyword) => keyword.ends_statement(),
             Self::Punct(punct) => matches!(
                 punct,
                 Punct::RParen | Punct::RBracket | Punct::RBrace | Punct::Question
             ),
-            Self::Reserved(_) | Self::Unknown | Self::Semicolon(_) | Self::Eof => false,
+            Self::Reserved(_) | Self::Semicolon(_) | Self::Eof => false,
         }
     }
 }

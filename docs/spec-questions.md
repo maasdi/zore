@@ -8,10 +8,10 @@ Unrelated infrastructure work can proceed.
 ## Implementation priority
 
 The user's current direction is to defer decisions until needed by the active
-compiler milestone. M0–M2 are implemented; Q01 is resolved, and Q13 records
-the conservative lexer choices made where the spec is silent. Do not work
-through all of Q02/Q05 before starting the parser stages. See `roadmap.md` for
-stage gates.
+compiler milestone. M0–M4 are implemented; Q01 is resolved, and Q13/Q14
+record the conservative lexer and parser choices made where the spec is
+silent. The next semantic stages need only the Q05 subset below. See
+`roadmap.md` for stage gates.
 
 Before the first semantically checked/runnable target, resolve only the relevant
 Q05 subset (package/entry-point behavior, used builtin signatures, and exercised
@@ -36,6 +36,7 @@ A newly discovered semantic gap blocks its affected feature, not unrelated work.
 | Q11 | Resolved: typed shifts discard high bits without overflow panic; counts remain checked. Untyped constants preserve exact values. See Q11 below. | §6.6 | Numeric checking/lowering |
 | Q12 | Resolved: compiler instructions now select custom clone before structural cloning, with no fallback from an invalid custom method. See Q12 below. | §10.7 | Clone resolution |
 | Q13 | Lexical gaps found while implementing M2: (a) §3.7 says horizontal whitespace is insignificant but never lists the characters; the lexer accepts only space, tab, and CR and rejects form feed, vertical tab, NBSP, other Unicode spaces, and a leading BOM as unexpected characters. (b) §7.6 excludes `++`/`--` and requires lexing to distinguish them from adjacent signs; the lexer rejects every adjacent `++`/`--`, so `a--b` and `x - -y` written as `x--y` are errors, and a space or parentheses is required. (c) Following §3.7's definition of newline as LF, a lone CR inside a double-quoted string or rune literal is accepted as content, not rejected as a physical newline. All three are conservative or follow the spec text literally; confirm or revise through §53. | §3.7–3.10, §7.6 | Lexer changes only; not blocking M3 |
+| Q14 | Parser choices made in M3–M4 where the grammar is silent; each rejects rather than guesses and can be relaxed later. (a) `value?.field` and `value?()` are rejected, following the §7.6 table literally (postfix `?` is below calls/fields); write `(value?).field`. (b) Result lists: `(T)` with one type, `()`, and a trailing comma are rejected; §7.8 allows trailing commas only in parameter and argument lists. (c) Expression statements must be calls, optionally wrapped in `await`/`?`; `await task` alone is rejected (use `_ = await task`), since §7.8 names "call-based forms". (d) Struct literals need parentheses in a counting loop's update clause as well as its condition, because the update also precedes the body brace; §8.4 names only the condition. (e) Imports must precede other declarations; grouped `import (...)` and raw-string paths are rejected. (f) Parenthesized assignment targets such as `(a) = 1` and empty statements (`;;`) are rejected. (g) `let _ T = value` is accepted as the single-target typed form. Package-level `let`/`var` are parsed; their meaning remains Q05. | §5.4–5.6, §7.6, §7.8, §8.4, §3.3 | Parser changes only; not blocking resolution |
 
 ## Resolved decisions
 

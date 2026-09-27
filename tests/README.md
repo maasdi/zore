@@ -6,8 +6,10 @@ version, usage errors, unsupported commands, native paths, and option delimiters
 line/column lookup, EOF, and multi-file diagnostic rendering. `tests/lexer.rs`
 tests M2 token kinds, spans, literal validation and decoding, semicolon
 insertion, diagnostics, and recovery progress; its cases come from the lexical
-rows of the conformance documents below. No parser, conformance runner, or
-semantic tests exist yet. Add tests
+rows of the conformance documents below. `tests/parser.rs` tests M3–M4 AST
+shape (via an S-expression rendering), spans, syntax rejection, unsupported
+later-milestone syntax, recovery, and termination on generated input. No
+conformance runner or semantic tests exist yet. Add tests
 alongside each stage; do not create ignored tests to imply that pending features
 have coverage.
 
@@ -44,8 +46,10 @@ contextual mutable slices, and partial-construction cleanup (§12.6).
 and removal, mutation, and entry cleanup (§13.3).
 These documents do not count as passing tests. Lexical rows in `identifiers`,
 `comments`, `statement-boundaries`, `strings`, `runes`, `integers`, `floats`,
-and `keywords` now have executable counterparts in `tests/lexer.rs`; their parser,
-resolution, and semantic rows remain pending.
+and `keywords` now have executable counterparts in `tests/lexer.rs`. Syntax rows
+in `statement-boundaries`, `expressions`, `bindings-assignments`,
+`functions-structs`, `control-flow`, and `discards` have parser counterparts in
+`tests/parser.rs`. Resolution, typing, ownership, and runtime rows remain pending.
 
 Use Rust unit tests for small source/IR utilities and pass algorithms. Use Cargo
 integration tests in top-level `tests/*.rs` for public compiler APIs and CLI

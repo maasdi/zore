@@ -1,13 +1,14 @@
 # Implementation roadmap
 
-M0–M2 are complete: the driver has subprocess tests, and the reusable source
-manager, diagnostic renderer, and lexer have integration tests. The `check`
-command remains an honest unsupported error and does not yet run the lexer. No
-parser, semantic checker, or code generator exists yet. M3 onward remain pending. Linux/macOS CI is configured but has not run remotely.
+M0–M4 are complete: the driver has subprocess tests, and the reusable source
+manager, diagnostic renderer, lexer, and parser have integration tests. The
+`check` command remains an honest unsupported error and does not yet run the
+lexer or parser. No resolver, type checker, or code generator exists yet. M5
+onward remain pending. Linux/macOS CI is configured but has not run remotely.
 The user has ended broad specification preparation: resolve further language
 questions only when they block the active implementation milestone. No currently
-recorded language question blocks M0–M2; Q13 (whitespace set) is handled
-conservatively by rejecting unlisted whitespace. Numbers refer to spec §43; the sequence
+recorded language question blocked M0–M4; Q13 and Q14 record the conservative
+lexer and parser choices made where the spec is silent. Numbers refer to spec §43; the sequence
 is guidance, not a language contract.
 
 | Milestone | Deliverable and acceptance criteria |
@@ -15,7 +16,7 @@ is guidance, not a language contract.
 | M0 — complete | CLI/driver: help, version, argument validation, honest unsupported-command errors; subprocess tests for exit status and output. Prioritize `check <file.ore>`. |
 | M1 — complete | Source manager, file IDs, byte spans, diagnostic rendering; test empty input, UTF-8 boundaries, line endings, EOF, and multiple files. |
 | M2 — complete | Tokens and lexer for agreed lexical rules; test spans, valid tokens, invalid input, EOF, and progress after errors. Q01 lexical choices are resolved; use the locked rules. |
-| M3–M4 | AST and parser together for package/functions/structs/bindings/calls; test shape, spans, recovery, and rejection. Resolve relevant grammar questions first. |
+| M3–M4 — complete | AST and parser together for package/functions/structs/bindings/calls; test shape, spans, recovery, and rejection. Resolve relevant grammar questions first. |
 | M5–M8 | Hello program, variables, functions, structs. Establish the minimal native backend and builtin output support needed to run examples. Use resolution/type work below as prerequisites where needed. |
 | M9–M12 | Name resolution, types, HIR, MIR/CFG; semantic IDs, typed calls/fields, explicit control flow, frontend-only checking. |
 | M13–M17 | Copy/Move, shared/mutable borrowing, regions; paired acceptance/rejection tests including branches and projected places. Complete the §42 semantic target. |
@@ -33,13 +34,14 @@ supported. Never bypass ownership rules just to make a demonstration execute.
 
 ## Next implementation session
 
-Implement the M3–M4 AST and parser for package clauses, functions, structs,
-bindings, and calls, consuming the M2 token stream. Resolve only the grammar
-questions those forms need first (see the deferred-decision table). Test AST
-shape, spans, syntax rejection, and recovery, including the parser-side
-statement-boundary cases in `tests/conformance/statement-boundaries.md`
-(missing trailing commas, `func main()` followed by a newline and `{`). Keep
-`check` unsuccessful until the semantic pipeline supports the submitted program.
+Work toward the semantic checkpoint (`examples/semantic-target`). First resolve
+the minimal Q05 subset it needs: the single-file package/entry-point contract
+and the `println` signature. Then add name resolution with semantic IDs and the
+type checking needed for that program (M9–M10 prerequisites for M5–M8), and wire
+`check` to run lex → parse → resolve → type-check. `check` may report success
+only for programs every implemented stage fully supports; everything else must
+still fail with honest diagnostics. The parser covers only the M3–M4 subset;
+collections, closures, `go`, and generic type syntax report "not supported yet".
 
 Routine driver, diagnostic presentation, and internal representation decisions
 can be made during implementation and documented with tests. They do not require
@@ -50,7 +52,7 @@ isolate the affected feature and continue unrelated supported work.
 
 | Decision | Resolve when needed |
 | --- | --- |
-| Remaining primary/postfix grammar | Before implementing the affected parser form; M3–M4 can start with locked package/function/struct/binding/call forms |
+| Remaining primary/postfix grammar | Before implementing the affected parser form; the M3–M4 subset is parsed and later forms are diagnosed as unsupported |
 | Type identity/layout gaps, numeric typing corner cases | Before the corresponding resolver/type-checker accepts those programs; not before lexing |
 | Minimal package/entry-point contract and `println` signature | Before accepting/executing the first hello/§42 target; resolve only its required Q05 subset |
 | Import discovery, project mapping, package initialization | Before supporting imports, project checking, or package variables; an explicitly limited single-file milestone need not resolve the whole package system |
