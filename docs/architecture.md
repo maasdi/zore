@@ -1,14 +1,15 @@
 # Bootstrap architecture
 
-Status: M0–M4 are implemented. `src/main.rs` and `src/cli.rs` handle CLI
-arguments and exit status. `src/lib.rs` exposes the source, diagnostic, token,
-lexer, AST, and parser APIs; `src/source.rs` stores UTF-8 text under stable
-file IDs and validated byte spans, and `src/diagnostic.rs` renders primary and
-related locations. `src/token.rs` defines token kinds and `src/lexer.rs` turns
-one source file into tokens plus lexical diagnostics. `src/ast.rs` defines the
-syntax tree and `src/parser.rs` builds it. `tests/cli.rs`,
-`tests/source_diagnostics.rs`, `tests/lexer.rs`, and `tests/parser.rs` exercise
-these contracts. Resolution and later compiler stages remain planned. Rust is the bootstrap implementation language; use one crate until
+Status: M0–M4 are implemented, and M9–M10 cover an initial checker subset.
+`src/main.rs` and `src/cli.rs` handle CLI arguments and exit status; `check`
+runs the frontend pipeline in `src/check.rs`. `src/source.rs` stores UTF-8 text
+under stable file IDs and validated byte spans, and `src/diagnostic.rs` renders
+primary and related locations. `src/token.rs` and `src/lexer.rs` produce tokens;
+`src/ast.rs` and `src/parser.rs` produce the syntax tree. `src/resolve.rs` binds
+names to IDs, `src/types.rs` interns types, and `src/typeck.rs` produces the
+typed HIR in `src/hir.rs`. `tests/cli.rs`, `tests/source_diagnostics.rs`,
+`tests/lexer.rs`, `tests/parser.rs`, and `tests/check.rs` exercise these
+contracts. MIR, ownership analysis, and code generation remain planned. Rust is the bootstrap implementation language; use one crate until
 stable boundaries justify extraction.
 
 | Area | Responsibility | Spec |
@@ -61,6 +62,31 @@ Recovery always consumes input (debug assertions check this). Syntax owned by
 later milestones is reported as unsupported, naming the planned milestone,
 rather than parsed speculatively. As with lexing, a file is syntactically valid
 only when no diagnostics are reported.
+
+Semantic checking (M9–M10) runs only on a syntactically valid file, so parser
+recovery artifacts cannot cause cascades. `resolve` first collects package
+declarations (so functions, types, and constants may be referenced before they
+are declared), assigns `StructId`/`FunctionId`/`ConstId`/`LocalId`, and records
+what every name and type name refers to in side tables keyed by the name's
+span. It enforces duplicate, scope-entry, and predeclared-shadowing rules and
+rejects structs that contain themselves by value. `typeck` then checks types
+without re-resolving strings and builds HIR: every expression has a type,
+constant expressions are folded, assignment targets are places (a local plus
+field projections), and locals carry their declaration kind. Untyped integer
+constants stay exact in `i128`, a documented implementation limit, until
+context types them; typed constant overflow, division by zero, and invalid
+constant shift counts are compile-time errors. Return completeness is checked
+conservatively on the AST. HIR is produced only when there are no diagnostics,
+and diagnostics are reported in source order.
+
+The checker accepts a deliberately small subset: one file per package; `bool`,
+integer types, `rune`, `string`, and structs of those; functions with default or
+`own` parameters; `println`; integer conversions. Floats, `error`/`nil`/`?`,
+methods, `async`/`await`, `mut` parameters, imports, package variables, function
+values, and the untyped-constant operators in Q15 are reported as unsupported.
+Because every accepted type is Copy and `mut` is excluded, no ownership rule can
+be violated yet; `typeck` refuses to produce HIR containing a non-Copy type, so
+this cannot silently change when new types are added before ownership analysis.
 
 AST preserves written structure; HIR records resolved meaning; MIR describes
 execution. Source identity and spans survive transformations. Use typed IDs for

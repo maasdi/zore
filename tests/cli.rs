@@ -28,7 +28,8 @@ fn help_is_successful_and_honest_about_support() {
         let stdout = String::from_utf8(output.stdout).unwrap();
         assert!(stdout.contains("Usage: zore"));
         assert!(stdout.contains("check <file.ore>"));
-        assert!(stdout.contains("not implemented yet"));
+        assert!(stdout.contains("Not implemented yet"));
+        assert!(stdout.contains("No Zore program can be built or run yet"));
     }
 }
 
@@ -89,26 +90,87 @@ fn commands_validate_target_count_and_offer_help() {
             assert!(output.stderr.is_empty());
             let stdout = String::from_utf8(output.stdout).unwrap();
             assert!(stdout.contains(&format!("Usage: zore {action}")));
-            assert!(stdout.contains("not implemented yet"));
+            if action == "check" {
+                assert!(stdout.contains("Only part of the"));
+            } else {
+                assert!(stdout.contains("not implemented yet"));
+            }
         }
     }
 }
 
 #[test]
-fn accepted_command_shapes_never_claim_compiler_success() {
-    for action in ["check", "build", "run", "fmt", "test"] {
+fn unimplemented_commands_never_claim_success() {
+    for action in ["build", "run", "fmt", "test"] {
         for target in [".", "missing.ore", "a path with spaces.ore"] {
             failure(&invoke(&[action, target]), 1, "not implemented yet");
         }
     }
-    let example = concat!(env!("CARGO_MANIFEST_DIR"), "/examples/hello/main.ore");
-    failure(&invoke(&["check", example]), 1, "was not processed");
+}
+
+#[test]
+fn check_reports_unreadable_targets() {
+    failure(&invoke(&["check", "missing.ore"]), 1, "zore: missing.ore:");
+    failure(
+        &invoke(&["check", "a path with spaces.ore"]),
+        1,
+        "a path with spaces.ore",
+    );
+    failure(&invoke(&["check", "."]), 1, "zore: .:");
+}
+
+#[test]
+fn check_accepts_supported_examples_silently() {
+    for example in ["hello", "semantic-target"] {
+        let path = format!("{}/examples/{example}/main.ore", env!("CARGO_MANIFEST_DIR"));
+        let output = invoke(&["check", &path]);
+        assert!(output.status.success(), "{output:?}");
+        assert!(
+            output.stdout.is_empty() && output.stderr.is_empty(),
+            "{output:?}"
+        );
+    }
+}
+
+#[test]
+fn check_renders_diagnostics_and_fails() {
+    let dir = std::env::temp_dir().join(format!("zore-cli-check-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("bad.ore");
+    std::fs::write(
+        &path,
+        "package main\n\nfunc main() {\n    let x uint8 = 300\n    println(y)\n}\n",
+    )
+    .unwrap();
+    let output = invoke(&[OsStr::new("check"), path.as_os_str()]);
+    std::fs::remove_dir_all(&dir).unwrap();
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    assert!(output.stdout.is_empty());
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(
+        stderr.contains("error: integer constant `300` does not fit in `uint8`"),
+        "{stderr}"
+    );
+    assert!(stderr.contains("bad.ore:4:19"), "{stderr}");
+    assert!(
+        stderr.contains("error: cannot find `y` in this scope"),
+        "{stderr}"
+    );
+    assert!(
+        stderr.ends_with("zore: check failed with 2 errors\n"),
+        "{stderr}"
+    );
 }
 
 #[test]
 fn delimiter_allows_option_shaped_targets() {
     for target in ["-source.ore", "--help", "--version", "--"] {
-        failure(&invoke(&["check", "--", target]), 1, "was not processed");
+        failure(
+            &invoke(&["check", "--", target]),
+            1,
+            &format!("zore: {target}:"),
+        );
+        failure(&invoke(&["build", "--", target]), 1, "was not processed");
     }
     failure(&invoke(&["check", "-source.ore"]), 2, "unknown option");
     failure(
@@ -127,6 +189,11 @@ fn non_utf8_arguments_do_not_panic() {
     let path = OsString::from_vec(b"source-\xff.ore".to_vec());
     failure(
         &invoke(&[OsString::from("check"), path.clone()]),
+        1,
+        "zore: source-",
+    );
+    failure(
+        &invoke(&[OsString::from("build"), path.clone()]),
         1,
         "was not processed",
     );

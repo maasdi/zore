@@ -40,7 +40,7 @@ format, lint, build, and test checks on Linux and macOS.
 
 `examples/hello` reproduces the basic program from spec §3.2.
 `examples/semantic-target` reproduces the first semantic target from §42.
-These are future conformance inputs, not currently passing compiler tests.
+Both pass `zore check`; neither can be built or run yet.
 
 ## Current CLI
 
@@ -51,21 +51,22 @@ cargo run -- check --help
 cargo run -- check examples/hello/main.ore
 ```
 
-The last command exits unsuccessfully because semantic checking is not yet
-implemented. `build`, `run`, `fmt`, and `test` likewise report unsupported
-operations; targets are not read or modified. Each command currently requires
+`check` lexes, parses, resolves, and type-checks one file as a whole package.
+It prints nothing and exits 0 for a valid file, or prints diagnostics to stderr
+and exits 1. Only a subset of the language is supported so far (see
+`docs/architecture.md`); unsupported features are reported as errors, never
+accepted. `build`, `run`, `fmt`, and `test` report unsupported operations;
+their targets are not read or modified. Each command currently requires
 exactly one target. Use `--` before a target starting with `-`.
 
 Help (`-h`/`--help`) and version (`-V`/`--version`) write to stdout and exit 0.
 Unsupported operations write to stderr and exit 1; invalid CLI arguments write
 to stderr and exit 2. These are bootstrap driver conventions, not Zore program
 exit semantics. Paths are retained as native OS paths, including non-UTF-8 paths
-on Unix. Source loading now exists as a library API; the CLI will use it when
-compiler stages can process the loaded source.
+on Unix.
 
-M1 source/spans/diagnostics, the M2 lexer, and the M3–M4 parser are available
-as library APIs and covered by integration tests. `check` still exits
-unsuccessfully because there is no resolver or type checker, and the CLI does
-not run the lexer or parser yet. The next work is resolution and type checking
-for the §42 semantic target. LLVM, runtime, and library work belong to later
-stages.
+The frontend (source manager, diagnostics, lexer, parser, resolver, type
+checker, and HIR) is available as library APIs and covered by integration
+tests. There is no MIR, ownership analysis, backend, or runtime yet. The next
+work is the minimal native path for the §42 semantic target; see
+`docs/roadmap.md`.

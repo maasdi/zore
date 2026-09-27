@@ -14,7 +14,7 @@ pub struct FileId {
     index: u32,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct Span {
     file: FileId,
     start: u32,

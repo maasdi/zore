@@ -9,7 +9,9 @@ insertion, diagnostics, and recovery progress; its cases come from the lexical
 rows of the conformance documents below. `tests/parser.rs` tests M3–M4 AST
 shape (via an S-expression rendering), spans, syntax rejection, unsupported
 later-milestone syntax, recovery, and termination on generated input. No
-conformance runner or semantic tests exist yet. Add tests
+conformance runner or semantic runner exists yet. `tests/check.rs` tests resolution, type checking,
+constant folding, HIR shape, the entry-point and `println` contracts, and that
+unsupported features are rejected rather than accepted. Add tests
 alongside each stage; do not create ignored tests to imply that pending features
 have coverage.
 
@@ -51,7 +53,11 @@ These documents do not count as passing tests. Lexical rows in `identifiers`,
 and `keywords` now have executable counterparts in `tests/lexer.rs`. Syntax rows
 in `statement-boundaries`, `expressions`, `bindings-assignments`,
 `functions-structs`, `control-flow`, and `discards` have parser counterparts in
-`tests/parser.rs`. Resolution, typing, ownership, and runtime rows remain pending.
+`tests/parser.rs`. Resolution and typing rows for the checker subset in
+`entry-point`, `println`, `numerics`, `constant-expressions`,
+`bindings-assignments`, `functions-structs`, `control-flow`, and `keywords` have
+counterparts in `tests/check.rs`. Ownership, runtime, and native rows remain
+pending.
 
 Use Rust unit tests for small source/IR utilities and pass algorithms. Use Cargo
 integration tests in top-level `tests/*.rs` for public compiler APIs and CLI

@@ -1,14 +1,16 @@
 # Implementation roadmap
 
-M0–M4 are complete: the driver has subprocess tests, and the reusable source
-manager, diagnostic renderer, lexer, and parser have integration tests. The
-`check` command remains an honest unsupported error and does not yet run the
-lexer or parser. No resolver, type checker, or code generator exists yet. M5
-onward remain pending. Linux/macOS CI is configured but has not run remotely.
+M0–M4 are complete, and M9–M10 (resolution and type checking) are implemented
+for an initial subset: `zore check <file.ore>` runs lex → parse → resolve →
+type-check and accepts the §42 semantic target and the hello example. The
+subset is synchronous, single-file, and all-Copy (bool, integers, rune, string,
+structs of those); everything else is reported as unsupported. No MIR, ownership
+analysis, or code generator exists yet, so nothing can be built or run. Linux/macOS CI is configured but has not run remotely.
 The user has ended broad specification preparation: resolve further language
 questions only when they block the active implementation milestone. No currently
 recorded language question blocked M0–M4; Q13 and Q14 record the conservative
-lexer and parser choices made where the spec is silent. Numbers refer to spec §43; the sequence
+lexer and parser choices made where the spec is silent, and Q15 records numeric
+ambiguities that keep floats and some untyped-constant operators unsupported. Numbers refer to spec §43; the sequence
 is guidance, not a language contract.
 
 | Milestone | Deliverable and acceptance criteria |
@@ -18,7 +20,7 @@ is guidance, not a language contract.
 | M2 — complete | Tokens and lexer for agreed lexical rules; test spans, valid tokens, invalid input, EOF, and progress after errors. Q01 lexical choices are resolved; use the locked rules. |
 | M3–M4 — complete | AST and parser together for package/functions/structs/bindings/calls; test shape, spans, recovery, and rejection. Resolve relevant grammar questions first. |
 | M5–M8 | Hello program, variables, functions, structs. Establish the minimal native backend and builtin output support needed to run examples. Use resolution/type work below as prerequisites where needed. |
-| M9–M12 | Name resolution, types, HIR, MIR/CFG; semantic IDs, typed calls/fields, explicit control flow, frontend-only checking. |
+| M9–M12 — M9–M10 initial subset done | Name resolution, types, HIR, MIR/CFG; semantic IDs, typed calls/fields, explicit control flow, frontend-only checking. |
 | M13–M17 | Copy/Move, shared/mutable borrowing, regions; paired acceptance/rejection tests including branches and projected places. Complete the §42 semantic target. |
 | M18–M19 | Drop insertion and explicit errors/`?`; verify exactly-once cleanup on normal, branch, and early-return paths. |
 | M20–M23 | Fixed arrays, borrowed slices, owned arrays, maps, packages/imports; validate ownership and package visibility. |
@@ -34,16 +36,23 @@ supported. Never bypass ownership rules just to make a demonstration execute.
 
 ## Next implementation session
 
-Work toward the semantic checkpoint (`examples/semantic-target`). The entry
-point (§3.19) and `println` (§37.1) are now locked. Add name resolution with
-semantic IDs and the type checking needed for that program (M9–M10
-prerequisites for M5–M8), and wire `check` to run lex → parse → resolve →
-type-check. As a temporary implementation limit, `check <file.ore>` treats the
-one file as the whole package and diagnoses `import` as unsupported until
-package discovery (Q05, M23); this is not a language rule. `check` may report success
-only for programs every implemented stage fully supports; everything else must
-still fail with honest diagnostics. The parser covers only the M3–M4 subset;
-collections, closures, `go`, and generic type syntax report "not supported yet".
+The semantic checkpoint now passes `check`; its remaining requirement is native
+execution printing `Maas`. Next, start the minimal native path (M5–M8 with
+M11–M12): first record the backend decision (LLVM version, binding strategy,
+host targets, runtime ABI, and setup/test instructions) under
+`docs/decisions/` as `docs/architecture.md` requires, then lower HIR to MIR/CFG
+with explicit Copy operations and control flow, and emit a native executable
+with a minimal runtime `println`. Keep `check` independent of the backend.
+
+Alternatively, widen the checker (methods, `error`/`?`, floats once Q15 is
+answered), keeping every widening paired with rejection tests. Ownership
+analysis (M13–M17) must land before any Move type or `mut` parameter is
+accepted: the checker's all-Copy restriction is what currently makes ownership
+checks vacuous, and `typeck` enforces it.
+
+Temporary limits that are not language rules: `check <file.ore>` treats the one
+file as the whole package and diagnoses `import` until package discovery (Q05,
+M23); package-level `let`/`var` await Q05.
 
 Routine driver, diagnostic presentation, and internal representation decisions
 can be made during implementation and documented with tests. They do not require
@@ -73,6 +82,8 @@ honest diagnostics, and full MVP completion still requires their implementation.
 `examples/semantic-target/main.ore` is copied from §42. Acceptance requires a
 successful semantic check and eventual native execution printing `Maas`, with
 spans and diagnostics retained throughout. A parser-only pass is insufficient.
+The semantic check now passes (`tests/check.rs`, `tests/cli.rs`); native
+execution is pending.
 Because its `User` contains only a Copy string, add a separate Move-resource test
 when available to prove that ordinary calls borrow rather than consume values.
 

@@ -3,7 +3,7 @@
 use std::ffi::OsString;
 use std::path::PathBuf;
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Eq, PartialEq)]
 pub(crate) enum Action {
     Check,
     Build,
@@ -87,12 +87,16 @@ pub(crate) fn parse(args: Vec<OsString>) -> Result<Command, String> {
 
 pub(crate) fn help(action: Option<Action>) -> String {
     if let Some(action) = action {
-        let target = match action {
-            Action::Check => "<file.ore>",
-            _ => "<target>",
-        };
+        if action == Action::Check {
+            return "Usage: zore check [--] <file.ore>\n\n\
+                    Check one source file as a complete package. Only part of the\n\
+                    language is supported so far; unsupported features are reported\n\
+                    as errors. Prints nothing and exits 0 when the file is valid.\n\
+                    Use -- before a target whose name starts with '-'.\n"
+                .into();
+        }
         return format!(
-            "Usage: zore {} [--] {target}\n\n\
+            "Usage: zore {} [--] <target>\n\n\
              This command is not implemented yet. No target is read or modified.\n\
              Use -- before a target whose name starts with '-'.\n",
             action.name()
@@ -102,8 +106,9 @@ pub(crate) fn help(action: Option<Action>) -> String {
      Usage: zore <command> [--] <target>\n\
             zore --help\n\
             zore --version\n\n\
-     Commands (not implemented yet):\n\
-       check <file.ore>  Check a source file (first compiler target)\n\
+     Commands:\n\
+       check <file.ore>  Check a source file (a subset of the language)\n\n\
+     Not implemented yet:\n\
        build <target>    Build a program\n\
        run <target>      Run a program\n\
        fmt <target>      Format source\n\
@@ -111,6 +116,6 @@ pub(crate) fn help(action: Option<Action>) -> String {
      Options:\n\
        -h, --help        Show help; also accepted after a command\n\
        -V, --version     Show compiler version\n\n\
-     No Zore program can be checked, built, or run yet.\n"
+     No Zore program can be built or run yet.\n"
         .into()
 }
