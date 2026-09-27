@@ -1,5 +1,4 @@
-//! M3–M4 parser tests: AST shape, spans, rejection, and recovery. Cases come
-//! from `tests/conformance/*.md` and the grammar in spec §3.7, §5, §7–9.
+//! Parser tests for AST shape, spans, rejection, and recovery (spec §3.7, §5, §7–9).
 
 use zore::ast::*;
 use zore::parser::{Parsed, parse};

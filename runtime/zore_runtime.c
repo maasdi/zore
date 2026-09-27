@@ -2,7 +2,7 @@
  * Copyright 2026 The Zore Authors
  * SPDX-License-Identifier: Apache-2.0
  *
- * Minimal Zore runtime (decision record docs/decisions/0001-native-backend.md).
+ * Minimal Zore runtime for the native backend.
  *
  * Provides the process entry, `println` output (spec §37.1), string ordering
  * (§6.6), and panic reporting (§3.19, §18.10). The ABI is internal to the
