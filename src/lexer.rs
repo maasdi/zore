@@ -333,8 +333,12 @@ impl Lexer<'_> {
                     "supported escapes are \\n \\r \\t \\\\ \\\" \\uXXXX \\UXXXXXXXX"
                 };
                 self.report(
-                    self.error(format!("unknown escape sequence `\\{c}`"), backslash, self.pos)
-                        .note(note),
+                    self.error(
+                        format!("unknown escape sequence `\\{c}`"),
+                        backslash,
+                        self.pos,
+                    )
+                    .note(note),
                 );
                 return None;
             }

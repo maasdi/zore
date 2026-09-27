@@ -10,7 +10,7 @@ func greet(user User) {
 
 func main() {
     let user = User{
-        Name: "Maas",
+        Name: "John",
     }
 
     greet(user)

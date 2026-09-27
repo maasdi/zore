@@ -34,7 +34,7 @@ once it does.
 - MIR lowering and an LLVM IR backend compiled by clang, with runtime checks
   for overflow, division by zero, shift counts, and conversions; a minimal C
   runtime (decision record 0001).
-- The first semantic target (spec §42) builds and prints `Maas`.
+- The first semantic target (spec §42) builds and prints `John`.
 
 ### Not yet supported
 

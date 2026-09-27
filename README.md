@@ -24,7 +24,7 @@ func greet(user User) {
 
 func main() {
     let user = User{
-        Name: "Maas",
+        Name: "John",
     }
 
     greet(user)
@@ -33,7 +33,7 @@ func main() {
 
 ```console
 $ zore run examples/semantic-target/main.ore
-Maas
+John
 ```
 
 > [!NOTE]

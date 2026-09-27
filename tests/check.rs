@@ -119,7 +119,7 @@ fn semantic_target_checks_and_produces_hir() {
     let ExprKind::StructLit { fields, .. } = &value.kind else {
         panic!()
     };
-    assert!(matches!(&fields[0].1.kind, ExprKind::Const(Const::String(s)) if s == "Maas"));
+    assert!(matches!(&fields[0].1.kind, ExprKind::Const(Const::String(s)) if s == "John"));
     let StmtKind::Expr(expr) = &call.kind else {
         panic!()
     };

@@ -4,7 +4,7 @@ M0–M8 are complete for an initial language subset, with M9–M12 (resolution,
 types, HIR, MIR) implemented for that subset. `zore check` runs lex → parse →
 resolve → type-check; `zore build` and `zore run` lower to MIR, emit LLVM IR,
 and compile it with clang and a small C runtime (decision record 0001). The
-§42 semantic target runs natively and prints `Maas`. The subset is
+§42 semantic target runs natively and prints `John`. The subset is
 synchronous, single-file, and all-Copy (bool, integers, floats, rune, string,
 structs of those), with Go-style untyped constants (§6.7); everything else is
 reported as unsupported. There is no ownership analysis or drop insertion yet. Linux/macOS CI is configured but has not run remotely.
@@ -84,7 +84,7 @@ honest diagnostics, and full MVP completion still requires their implementation.
 ## Semantic checkpoint
 
 `examples/semantic-target/main.ore` is copied from §42. Acceptance requires a
-successful semantic check and eventual native execution printing `Maas`, with
+successful semantic check and eventual native execution printing `John`, with
 spans and diagnostics retained throughout. A parser-only pass is insufficient.
 The semantic check now passes (`tests/check.rs`, `tests/cli.rs`); native
 execution is pending.

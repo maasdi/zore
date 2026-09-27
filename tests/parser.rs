@@ -294,7 +294,7 @@ fn semantic_target_parses_to_expected_shape() {
     let case = Case { sources, parsed };
     assert_eq!(
         case.shape(),
-        ["(let user (lit User Name:\"Maas\"))", "(call greet user)"]
+        ["(let user (lit User Name:\"John\"))", "(call greet user)"]
     );
 }
 
@@ -657,7 +657,7 @@ fn invalid_struct_syntax_is_rejected() {
         rejects_file(&format!("package main\n{text}\n"), message);
     }
     for (body, message) in [
-        ("let u = User{\"Maas\"}", "must be named"),
+        ("let u = User{\"John\"}", "must be named"),
         (
             "let u = User{Name: \"x\"\n}",
             "missing trailing comma after the last field",

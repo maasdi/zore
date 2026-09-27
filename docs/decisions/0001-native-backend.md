@@ -6,7 +6,7 @@ Status: accepted (implementation choice; not a language rule).
 
 Spec §2.2 requires LLVM as the initial backend, and §45 requires `check` to work
 without it. The semantic checkpoint (`examples/semantic-target`) must now run
-natively and print `Maas`. The development host has Apple clang 17 but no
+natively and print `John`. The development host has Apple clang 17 but no
 `llvm-config` or LLVM development libraries. CI runs on `ubuntu-latest` and
 `macos-latest`.
 

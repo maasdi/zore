@@ -343,7 +343,10 @@ impl Builder {
             ExprKind::Println(arg) => (Callee::Println, std::slice::from_ref(&**arg)),
             _ => unreachable!("only calls produce multiple or no results"),
         };
-        let args = args.iter().map(|a| self.evaluate_to_temporary(package, a)).collect();
+        let args = args
+            .iter()
+            .map(|a| self.evaluate_to_temporary(package, a))
+            .collect();
         let target = self.new_block();
         self.terminate(Terminator::Call {
             callee,
@@ -388,7 +391,9 @@ impl Builder {
                 // Evaluate in written order, then assemble in declaration order.
                 let mut values: Vec<(usize, Operand)> = fields
                     .iter()
-                    .map(|(field, value)| (field.0 as usize, self.evaluate_to_temporary(package, value)))
+                    .map(|(field, value)| {
+                        (field.0 as usize, self.evaluate_to_temporary(package, value))
+                    })
                     .collect();
                 values.sort_by_key(|(index, _)| *index);
                 let operands = values.into_iter().map(|(_, operand)| operand).collect();
