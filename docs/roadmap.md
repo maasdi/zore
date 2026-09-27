@@ -1,9 +1,9 @@
 # Implementation roadmap
 
-M0 is complete: the driver provides help/version, argument validation, and honest
-unsupported-command errors, covered by subprocess tests. No source loading,
-lexing, parsing, semantic checking, or code generation exists yet. M1 onward
-remain pending. Linux/macOS CI is configured but has not run remotely.
+M0 and M1 are complete: the driver has subprocess tests, and the reusable
+source manager and diagnostic renderer have integration tests. The `check`
+command remains an honest unsupported error. No lexer, parser, semantic checker,
+or code generator exists yet. M2 onward remain pending. Linux/macOS CI is configured but has not run remotely.
 The user has ended broad specification preparation: resolve further language
 questions only when they block the active implementation milestone. No currently
 recorded language question blocks M0–M2. Numbers refer to spec §43; the sequence
@@ -12,7 +12,7 @@ is guidance, not a language contract.
 | Milestone | Deliverable and acceptance criteria |
 | --- | --- |
 | M0 — complete | CLI/driver: help, version, argument validation, honest unsupported-command errors; subprocess tests for exit status and output. Prioritize `check <file.ore>`. |
-| M1 | Source manager, file IDs, byte spans, diagnostic rendering; test empty input, UTF-8 boundaries, line endings, EOF, and multiple files. |
+| M1 — complete | Source manager, file IDs, byte spans, diagnostic rendering; test empty input, UTF-8 boundaries, line endings, EOF, and multiple files. |
 | M2 | Tokens and lexer for agreed lexical rules; test spans, valid tokens, invalid input, EOF, and progress after errors. Q01 lexical choices are resolved; use the locked rules. |
 | M3–M4 | AST and parser together for package/functions/structs/bindings/calls; test shape, spans, recovery, and rejection. Resolve relevant grammar questions first. |
 | M5–M8 | Hello program, variables, functions, structs. Establish the minimal native backend and builtin output support needed to run examples. Use resolution/type work below as prerequisites where needed. |
@@ -32,19 +32,11 @@ supported. Never bypass ownership rules just to make a demonstration execute.
 
 ## Next implementation session
 
-Implement source/span/diagnostic infrastructure (M1), then the lexer (M2).
-M0's process contract is covered by `tests/cli.rs`; preserve its separation of
-informational output, usage errors, and unsupported operations. Keep the frontend free of LLVM. Q01 is resolved; do not wait for string
-operations, closures, packages, or runtime API design before doing this work.
-
-- M0: help/version, argument validation, and honest unsupported-command errors.
-  Prioritize the `check <file.ore>` driver shape. Do not return successful checking
-  for a source file until the required semantic pipeline actually exists.
-- M1: file identity, UTF-8 source handling, byte spans, line lookup, and diagnostic
-  rendering. Test invalid boundaries, EOF, line endings, and multiple files.
-- M2: tokenize the locked lexical forms and semicolon insertion, with diagnostics
-  and progress on malformed input. Token recognition does not imply a construct
-  is parsed, type-checked, or executable.
+Implement M2 tokens and lexer using the M1 source and diagnostic APIs. Q01 lexical
+choices are resolved. Test spans, valid/invalid input, semicolon insertion, EOF,
+and recovery progress. Token recognition does not imply a construct is parsed,
+type-checked, or executable. Keep the frontend free of LLVM and keep `check`
+unsuccessful until the semantic pipeline supports the submitted program.
 
 Routine driver, diagnostic presentation, and internal representation decisions
 can be made during implementation and documented with tests. They do not require

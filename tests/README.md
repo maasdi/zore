@@ -2,7 +2,9 @@
 
 `tests/cli.rs` contains executable subprocess tests for the M0 driver: help,
 version, usage errors, unsupported commands, native paths, and option delimiters.
-No language conformance runner or compiler semantic tests exist yet. Add tests
+`tests/source_diagnostics.rs` tests M1 UTF-8 loading, file IDs, byte spans,
+line/column lookup, EOF, and multi-file diagnostic rendering. No language
+conformance runner or compiler semantic tests exist yet. Add tests
 alongside each stage; do not create ignored tests to imply that pending features
 have coverage.
 

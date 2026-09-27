@@ -1,9 +1,11 @@
 # Bootstrap architecture
 
-Status: M0 is implemented in `src/main.rs` (process dispatch and exit status)
-and `src/cli.rs` (native-OS argument parsing and help). `tests/cli.rs` exercises
-the binary's process contract. All compiler pipeline boundaries below remain
-planned. Rust is the bootstrap implementation language; use one crate until
+Status: M0 and M1 are implemented. `src/main.rs` and `src/cli.rs` handle CLI
+arguments and exit status. `src/lib.rs` exposes the source and diagnostic APIs;
+`src/source.rs` stores UTF-8 text under stable file IDs and validated byte spans,
+and `src/diagnostic.rs` renders primary and related locations. `tests/cli.rs`
+and `tests/source_diagnostics.rs` exercise these contracts. Lexing and later
+compiler stages remain planned. Rust is the bootstrap implementation language; use one crate until
 stable boundaries justify extraction.
 
 | Area | Responsibility | Spec |
@@ -20,9 +22,10 @@ stable boundaries justify extraction.
 | Code generation | LLVM lowering, object generation, native linking | §2.2, §39.5 |
 | Runtime/library | Allocation, I/O, tasks, scheduler, channels, panic | §36–37 |
 
-Introduce `source`, `span`, and `diagnostic` modules with M1; `token` and `lexer`
-with M2; `ast` and `parser` together with M3/M4. Do not stub every future module.
-Add a library target when the first reusable compiler APIs need integration tests.
+M1 stores `Span` with its source manager in `source`; a separate `span` module
+would have no independent work. The library target exposes these APIs to
+integration tests and future stages. Introduce `token` and `lexer` with M2;
+`ast` and `parser` together with M3/M4. Do not stub future modules.
 
 AST preserves written structure; HIR records resolved meaning; MIR describes
 execution. Source identity and spans survive transformations. Use typed IDs for
@@ -49,3 +52,14 @@ No scheduler, allocator, string layout, or LLVM binding has been chosen. These
 are internal choices, constrained by the observable language guarantees. Record
 substantial decisions with context, alternatives, consequences, and validation
 under `docs/decisions/` when they are made.
+
+Source files are UTF-8 and retain their original OS path. Source IDs include a
+manager identity, so spans cannot accidentally resolve against another source
+manager. Spans use half-open `u32` byte ranges and require UTF-8 boundaries;
+files above 4 GiB are rejected. Lines split at LF, with CRLF terminators hidden
+when rendering; a lone CR remains on its line. Locations are one-based Unicode
+scalar columns. Diagnostic snippets expand tabs and escape control characters.
+The renderer shows the first line of a multi-line span and reports its extent.
+Terminal-cell width for wide Unicode glyphs is not yet measured; source offsets
+and reported scalar columns remain exact. This display choice may improve later
+without changing language semantics. No LLVM or runtime dependency is involved.

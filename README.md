@@ -60,9 +60,11 @@ Help (`-h`/`--help`) and version (`-V`/`--version`) write to stdout and exit 0.
 Unsupported operations write to stderr and exit 1; invalid CLI arguments write
 to stderr and exit 2. These are bootstrap driver conventions, not Zore program
 exit semantics. Paths are retained as native OS paths, including non-UTF-8 paths
-on Unix. Source loading and path validation belong to M1.
+on Unix. Source loading now exists as a library API; the CLI will use it when
+compiler stages can process the loaded source.
 
-The next implementation work is M1 source/spans/diagnostics, then M2 lexing.
-No currently recorded language-design question blocks these stages; remaining
-decisions are deferred to the milestones that need them. LLVM, runtime, and
+M1 source/spans/diagnostics are available as library APIs and covered by
+integration tests. `check` still exits unsuccessfully because there is no lexer,
+parser, or semantic checker. The next work is M2 lexing; no recorded language
+decision blocks it. LLVM, runtime, and
 library work belong to later stages.
