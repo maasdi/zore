@@ -832,6 +832,66 @@ the declaration span and protected predeclared name, and distinguish unqualified
 binding lookup from member lookup. Do not implement the rule as a lexical ban.
 Pending conformance cases are in `tests/conformance/keywords.md`.
 
+## 3.19 Program entry point — LOCKED
+
+An executable program's entry package is named `main`. It must declare exactly
+one package-level function named `main` with no receiver, no parameters, no
+results, and no `async` modifier:
+
+```ore
+package main
+
+func main() {
+    println("Hello, Zore!")
+}
+```
+
+The program runs by calling `main` in the program's initial task (§18.10).
+When `main` returns normally, its scope cleanup runs as for any function and
+the process then exits with status 0. Tasks still running are abandoned as
+specified in §18.11.
+
+If the initial task panics, it unwinds (§15.4), the runtime reports the panic
+on standard error (§18.10), and the process exits with a nonzero status. The
+specific nonzero value is implementation-defined. An abort (§15.4) also ends
+the process with a nonzero status and without further unwinding.
+
+A `main` package without such a function has no entry point and is rejected
+when checked or built as a program. These declarations are invalid:
+
+```ore
+func main(args Array<string>) {}   // invalid: parameters
+func main() int { return 0 }       // invalid: results
+func main() error { return nil }   // invalid: results
+async func main() {}               // invalid: async entry point
+```
+
+A method named `main` does not satisfy or conflict with this requirement;
+methods use member lookup (§3.18). In a package not named `main`, a function
+named `main` has no special meaning. Apart from being called at program start,
+the entry-point `main` is an ordinary package-private function.
+
+There is no command-line argument parameter, returned exit code, error-returning
+`main`, or package initialization hook in the MVP entry point. Later additions
+require a specification change; a program-arguments or exit-code API belongs to
+the standard library (§37).
+
+Ownership, error, and async implications: `main` owns and cleans up its locals
+under ordinary rules; values whose lifetime ends inside `main` are dropped
+before the process exits normally. `main` cannot return an `error`, so every
+error result it receives must be handled or explicitly discarded (§15.6); `?`
+inside `main` is invalid because `main` has no error result (§15.2). Because
+`main` is not `async`, it cannot use `await` directly (§17.8); it may create
+tasks with `go` and retrieve them with `.wait()` (§18.9).
+
+Compiler impact: when checking or building a `main` package as a program,
+require exactly one conforming package-level `main` and diagnose a missing or
+non-conforming declaration at its name, or at the package clause when absent.
+Duplicate functions are already invalid (§7.8). Code generation emits a
+process entry that runs `main` in the initial task, then exits with status 0,
+and makes initial-task panics exit nonzero. Pending conformance cases are in
+`tests/conformance/entry-point.md`.
+
 ---
 
 # 4. Visibility
@@ -3500,8 +3560,7 @@ task's drops (§15.4). What happens next depends on the task:
 
 The runtime reports every panic, with its message and originating task, on
 standard error when it occurs. The report format is implementation-defined;
-how panics affect the process exit status belongs to the entry-point contract
-(Q05).
+the process exit status after an initial-task panic is specified in §3.19.
 
 This does not make panics catchable (§15.4): no operation turns a panic into a
 value, and no code resumes after the panicking point. A task boundary only
@@ -3546,7 +3605,7 @@ Ownership, error, and async implications: deterministic cleanup (§1.1) applies
 to values whose lifetime ends while the process runs; abandonment at exit is
 a stated exception, alongside the abort cases in §15.4 and channel-handle
 cycles in §19.13. The entry-point
-signature and exit-status rules remain part of Q05.
+signature and exit-status rules are specified in §3.19.
 
 Compiler impact: none; this is a runtime contract. Pending conformance cases:
 `tests/conformance/concurrency.md`.
@@ -4402,7 +4461,8 @@ The runtime must eventually provide the facilities required by locked language s
 The exact scheduler algorithm, allocator, channel queue implementation, wake mechanism, and OS integration are implementation details unless later standardized.
 
 These choices must still meet the runtime contracts locked elsewhere: the
-progress guarantee for blocking waits (§18.9), per-task panic containment and
+progress guarantee for blocking waits (§18.9) and blocking `println` writes
+(§37.1), per-task panic containment and
 reporting (§18.10), immediate termination at exit (§18.11), wake-on-close and
 buffered-value cleanup for channels (§19.11–19.13), and mutex poisoning
 (§20.2).
@@ -4427,6 +4487,66 @@ At minimum, the architecture must leave room for:
 - async I/O
 
 The exact module/package organization is TBD.
+
+## 37.1 `println` — LOCKED
+
+`println` is a predeclared, compiler-known function (§3.17). It takes exactly
+one argument and returns no results. It writes the argument's text followed by
+a line feed (U+000A) to standard output.
+
+The argument must have one of these types: `bool`; `int`, `int8`, `int16`,
+`int32`, `int64`, `uint`, `uint8`, `uint16`, `uint32`, `uint64` (including the
+aliases of §6.5); `float32`, `float64`; `rune`; or `string`. An untyped numeric
+constant argument takes its default type (§6.5), so `println(42)` prints an
+`int`. Other argument types, zero arguments, and more than one argument are
+compile-time errors. There is no formatting directive, separator argument,
+or implicit conversion.
+
+| Argument type | Text written before the line feed |
+| --- | --- |
+| `string` | Its UTF-8 contents, unchanged and unquoted |
+| `bool` | `true` or `false` |
+| Integer types | Decimal digits of the value, with a leading `-` for negative values and no separators, prefixes, or leading zeros |
+| `rune` | The UTF-8 encoding of the scalar value, unquoted |
+| `float32`, `float64` | TBD: must be locked before float printing is implemented natively |
+
+```ore
+println("Hello, Zore!")   // Hello, Zore!
+println(42)               // 42
+println(int8(-5))         // -5
+println(true)             // true
+println('é')              // é
+println(user.Name)        // the string field's contents
+```
+
+```ore
+println()                 // invalid: needs exactly one argument
+println("a", "b")         // invalid: more than one argument
+println(user)             // invalid: struct types are not printable
+let p = println           // invalid: println can only be called
+_ = println("x")          // invalid: println has no result
+```
+
+`println` can be used only as the callee of a direct call. It is not a value:
+it cannot be bound, passed, returned, or stored. It may be used as a call
+statement (§7.8).
+
+Ownership, error, and async implications: the argument is a shared borrow
+(§7.3) and is not moved or modified; all printable types are Copy. `println`
+has no `error` result. If writing to standard output fails, the calling task
+panics (§15.4). `println` does not suspend: it may be called in synchronous and
+`async` functions, and each call completes its write before returning. Each
+call writes its complete line as one unit, so lines from concurrently running
+tasks are not interleaved within a line; their relative order is unspecified. A
+`println` blocked on a slow or unavailable standard output is subject to the
+same progress guarantee as a blocking `task.wait()` (§18.9): other tasks must
+continue to make progress while it blocks.
+
+Compiler impact: resolve `println` as a predeclared callable, not an ordinary
+function value; check exactly one argument of a printable type, applying
+default types to untyped constants; reject non-call uses; give the call no
+results. The runtime provides the text conversions above, serializes each
+line's write, and keeps other tasks running while a write blocks. Pending conformance cases are in `tests/conformance/println.md`.
 
 ---
 

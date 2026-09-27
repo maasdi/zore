@@ -22,6 +22,8 @@ particular, `conformance/identifiers.md` covers the locked ASCII identifier rule
 `conformance/integers.md` covers integer bases and prefix validation.
 `conformance/floats.md` covers decimal fractions and scientific notation.
 `conformance/keywords.md` covers MVP keywords and future-reserved words.
+`conformance/entry-point.md` covers the `main` entry point and exit status (§3.19).
+`conformance/println.md` covers `println` arguments, output text, and misuse (§37.1).
 `conformance/discards.md` covers `_` targets and their ownership implications.
 `conformance/errors.md` covers explicit error discards and ignored-result diagnostics.
 `conformance/evaluation-order.md` covers left-to-right operand and call evaluation.

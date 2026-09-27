@@ -10,12 +10,12 @@ Unrelated infrastructure work can proceed.
 The user's current direction is to defer decisions until needed by the active
 compiler milestone. M0–M4 are implemented; Q01 is resolved, and Q13/Q14
 record the conservative lexer and parser choices made where the spec is
-silent. The next semantic stages need only the Q05 subset below. See
-`roadmap.md` for stage gates.
+silent. Q05a resolves the entry-point and `println` subset needed by the
+semantic target. See `roadmap.md` for stage gates.
 
-Before the first semantically checked/runnable target, resolve only the relevant
-Q05 subset (package/entry-point behavior, used builtin signatures, and exercised
-type rules). Remaining string operations, closures, imports, iteration, borrowed
+The entry-point and `println` subset of Q05 needed by the first semantically
+checked/runnable target is resolved (Q05a); resolve further Q05 items only when
+a stage needs them. Remaining string operations, closures, imports, iteration, borrowed
 map-entry APIs, and concurrency APIs stay open until their consuming stage.
 Internal implementation choices need rationale and tests, not language approval.
 A newly discovered semantic gap blocks its affected feature, not unrelated work.
@@ -27,11 +27,11 @@ A newly discovered semantic gap blocks its affected feature, not unrelated work.
 | Q02 | Remaining grammar for strings, closures, iteration, and full `go` expressions. Map borrowed entry APIs remain Q05. Arrays/indexing/slicing are resolved in Q02e and map construction/lookup/assignment/removal in Q02f; assignment, operators, calls, and struct construction are also locked. | §5.6, §7.5–7.8, §8.4, §41.1 | Expression parser/lowering |
 | Q03 | Core bindings, blocks, conditionals, loops, scope-entry points, returns, result forwarding, and expression-statement policy are resolved. Detailed `?` typing is resolved (Q06b); task retrieval forms are resolved (Q09a); collection forms remain in Q02. | §5.4–5.10, §7.7–7.8, §41.2–3 | Statement parser/typing |
 | Q04 | Zero/resource interaction resolved in Q04e; see Q04a–d for earlier decisions. Shift contradiction resolved in Q11. This does not imply a complete collection/task expression grammar (Q02) or predeclared conversion API (Q05). | §5.3–5.4, §6.5–6.6, §7.6, §10.2, §19.8, §41.4–5 | Type checking and runtime semantics |
-| Q05 | Local package discovery/import mapping, entry-point contract, complete predeclared API inventory, compiler-known `println` and initial standard-library signatures, package variable initialization order, and remaining type-layout validity rules. Functions/types support forward references and method conflicts are defined (§7.8). Registry/solver remain out of MVP. | §3, §5.7, §7.8, §37, §42, §45 | Resolution/package checking and first native example |
+| Q05 | Local package discovery/import mapping, complete predeclared API inventory, initial standard-library signatures beyond `println`, float text formatting for `println`, package variable initialization order, and remaining type-layout validity rules. The entry-point contract and `println` are resolved in Q05a. Functions/types support forward references and method conflicts are defined (§7.8). Registry/solver remain out of MVP. | §3, §5.7, §7.8, §37, §42, §45 | Resolution/package checking and first native example |
 | Q06 | Resolved; see Q06a–b below. Error wrapping/cause chains, sentinel error declarations, structured error payloads, and the full predeclared API remain open under Q05. | §5.5, §7.2, §15, §22.2 | Error checking/lowering |
 | Q07 | Refined by Q07b: destructor-safe partial moves and recursive borrow contracts; see Q07a for earlier decisions. Array/slice syntax is locked in Q02e; map operations are locked in Q02f; string access and borrowed map-entry APIs remain Q02/Q05. | §5.6, §11.6–11.7, §12.5, §31.2 | Affected ownership analysis |
 | Q08 | Drop/zero and partial-move interactions refined by Q04e/Q07b; clone precedence corrected in Q12. See Q08a for earlier decisions. Panics inside spawned tasks are resolved in Q09a. | §8.3, §10.7, §14.3–14.4, §15.4 | Destruction and runtime |
-| Q09 | Lifetime proof refined by Q09b; see Q09a for runtime decisions. The full `go` expression grammar remains in Q02; the entry-point signature and exit status remain in Q05. | §6.3, §17.8, §18.8–18.11, §19.11–19.13, §20.2, §36.2, §41.4 | Tasks/channels/runtime |
+| Q09 | Lifetime proof refined by Q09b; see Q09a for runtime decisions. The full `go` expression grammar remains in Q02; the entry-point signature and exit status are resolved in Q05a (§3.19). | §6.3, §17.8, §18.8–18.11, §19.11–19.13, §20.2, §36.2, §41.4 | Tasks/channels/runtime |
 | Q10 | Scoped (structured) tasks: whether tasks should be required to finish before the scope that spawned them ends, so they can safely borrow the spawner's locals and are never abandoned at exit. Adopting this would revise §18.5–18.6 (dropping a handle would wait instead of detach; detaching would become explicit) and §18.11. Detach semantics stay locked until this is decided. Q09b closes the current safety gap by rejecting task-local spawned borrows; Q10 is not required for current MVP safety. | §18.4–18.6, §18.11 | Task borrowing and exit-cleanup guarantees |
 | Q11 | Resolved: typed shifts discard high bits without overflow panic; counts remain checked. Untyped constants preserve exact values. See Q11 below. | §6.6 | Numeric checking/lowering |
 | Q12 | Resolved: compiler instructions now select custom clone before structural cloning, with no fallback from an invalid custom method. See Q12 below. | §10.7 | Clone resolution |
@@ -39,6 +39,17 @@ A newly discovered semantic gap blocks its affected feature, not unrelated work.
 | Q14 | Parser choices made in M3–M4 where the grammar is silent; each rejects rather than guesses and can be relaxed later. (a) `value?.field` and `value?()` are rejected, following the §7.6 table literally (postfix `?` is below calls/fields); write `(value?).field`. (b) Result lists: `(T)` with one type, `()`, and a trailing comma are rejected; §7.8 allows trailing commas only in parameter and argument lists. (c) Expression statements must be calls, optionally wrapped in `await`/`?`; `await task` alone is rejected (use `_ = await task`), since §7.8 names "call-based forms". (d) Struct literals need parentheses in a counting loop's update clause as well as its condition, because the update also precedes the body brace; §8.4 names only the condition. (e) Imports must precede other declarations; grouped `import (...)` and raw-string paths are rejected. (f) Parenthesized assignment targets such as `(a) = 1` and empty statements (`;;`) are rejected. (g) `let _ T = value` is accepted as the single-target typed form. Package-level `let`/`var` are parsed; their meaning remains Q05. | §5.4–5.6, §7.6, §7.8, §8.4, §3.3 | Parser changes only; not blocking resolution |
 
 ## Resolved decisions
+
+- **Q05a — Entry point and `println`:** locked in §3.19 and §37.1 at the
+  user's direction. `package main` requires exactly one `func main()` with no
+  receiver, parameters, results, or `async`; normal return exits 0 and an
+  initial-task panic or abort exits nonzero (value implementation-defined).
+  `println` is a compiler-known call taking exactly one argument of type bool,
+  integer, float, rune, or string, writing its text and a line feed to stdout;
+  it has no results, is not a value, panics on write failure, and does not
+  suspend. Each line is written as one unit, and a blocked write keeps the
+  §18.9 progress guarantee. Float text format remains open under Q05. Pending cases:
+  `tests/conformance/entry-point.md` and `tests/conformance/println.md`.
 
 - **Q02f — Map construction, lookup, assignment, removal:** accepted and
   locked in §13.3. Explicit typed literals; bool/integer/rune/string keys;

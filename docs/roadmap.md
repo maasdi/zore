@@ -34,11 +34,13 @@ supported. Never bypass ownership rules just to make a demonstration execute.
 
 ## Next implementation session
 
-Work toward the semantic checkpoint (`examples/semantic-target`). First resolve
-the minimal Q05 subset it needs: the single-file package/entry-point contract
-and the `println` signature. Then add name resolution with semantic IDs and the
-type checking needed for that program (M9–M10 prerequisites for M5–M8), and wire
-`check` to run lex → parse → resolve → type-check. `check` may report success
+Work toward the semantic checkpoint (`examples/semantic-target`). The entry
+point (§3.19) and `println` (§37.1) are now locked. Add name resolution with
+semantic IDs and the type checking needed for that program (M9–M10
+prerequisites for M5–M8), and wire `check` to run lex → parse → resolve →
+type-check. As a temporary implementation limit, `check <file.ore>` treats the
+one file as the whole package and diagnoses `import` as unsupported until
+package discovery (Q05, M23); this is not a language rule. `check` may report success
 only for programs every implemented stage fully supports; everything else must
 still fail with honest diagnostics. The parser covers only the M3–M4 subset;
 collections, closures, `go`, and generic type syntax report "not supported yet".
@@ -54,7 +56,7 @@ isolate the affected feature and continue unrelated supported work.
 | --- | --- |
 | Remaining primary/postfix grammar | Before implementing the affected parser form; the M3–M4 subset is parsed and later forms are diagnosed as unsupported |
 | Type identity/layout gaps, numeric typing corner cases | Before the corresponding resolver/type-checker accepts those programs; not before lexing |
-| Minimal package/entry-point contract and `println` signature | Before accepting/executing the first hello/§42 target; resolve only its required Q05 subset |
+| Minimal package/entry-point contract and `println` signature | Resolved in §3.19 and §37.1 (Q05a); `println` float text format stays open until native float printing |
 | Import discovery, project mapping, package initialization | Before supporting imports, project checking, or package variables; an explicitly limited single-file milestone need not resolve the whole package system |
 | String indexing/slicing/length | Before implementing those operations; literal decoding and immutable string values are already specified |
 | Collection iteration, borrowed map-entry access, remaining collection APIs | Before implementing those operations at M20–M24; accepted array/map forms remain usable as their stages arrive |
