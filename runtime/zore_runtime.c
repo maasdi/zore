@@ -1,4 +1,7 @@
 /*
+ * Copyright 2026 The Zore Authors
+ * SPDX-License-Identifier: Apache-2.0
+ *
  * Minimal Zore runtime (decision record docs/decisions/0001-native-backend.md).
  *
  * Provides the process entry, `println` output (spec §37.1), string ordering

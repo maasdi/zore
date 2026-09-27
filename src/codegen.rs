@@ -1,10 +1,10 @@
-//! MIR to textual LLVM IR (decision record 0001).
+//! MIR to textual LLVM IR.
 //!
 //! Every MIR local gets a stack slot; LLVM's optimizer promotes them to
-//! registers. Runtime checks required by §6.6 (integer overflow, division by
-//! zero, shift counts, conversion ranges) branch to `zore_panic` with the
-//! source location. Features the backend cannot compile yet are reported as
-//! diagnostics instead of being miscompiled.
+//! registers. Runtime checks (integer overflow, division by zero, shift
+//! counts, conversion ranges) branch to `zore_panic` with the source location.
+//! Features the backend cannot compile yet are reported as diagnostics instead
+//! of being miscompiled.
 
 use std::collections::{BTreeSet, HashMap};
 use std::fmt::Write;
@@ -16,7 +16,6 @@ use crate::mir::{self, Callee, Local, Operand, Place, Rvalue, Terminator};
 use crate::source::{SourceFile, Span};
 use crate::types::{IntType, TypeId, TypeKind};
 
-/// Emit an LLVM module for a checked, lowered package.
 pub fn emit(
     package: &hir::Package,
     program: &mir::Program,
@@ -85,9 +84,7 @@ declare double @llvm.fabs.f64(double)
 struct Module<'a> {
     package: &'a hir::Package,
     file: &'a SourceFile,
-    /// Interned byte strings: contents to global name.
     strings: HashMap<Vec<u8>, String>,
-    /// Declarations of the overflow intrinsics in use.
     intrinsics: BTreeSet<String>,
     globals: String,
     diagnostics: Vec<Diagnostic>,
@@ -123,7 +120,6 @@ impl Module<'_> {
         }
     }
 
-    /// A global holding `bytes`, shared between identical strings.
     fn string_global(&mut self, bytes: &[u8]) -> String {
         if let Some(name) = self.strings.get(bytes) {
             return name.clone();
@@ -152,7 +148,6 @@ impl Module<'_> {
         format!("{}:{}:{}", self.file.path().display(), at.line, at.column)
     }
 
-    /// Name of `llvm.<op>.with.overflow` for `ty`, declaring it once.
     fn overflow_intrinsic(&mut self, op: &str, ty: &str) -> String {
         let name = format!("@llvm.{op}.with.overflow.{ty}");
         self.intrinsics
@@ -268,7 +263,6 @@ impl FunctionBuilder<'_, '_> {
         self.out.push_str("}\n\n");
     }
 
-    /// Address of a place: the local's slot, projected through fields.
     fn address(&mut self, place: &Place) -> String {
         let base = format!("%l{}", place.local.0);
         if place.fields.is_empty() {
@@ -292,7 +286,6 @@ impl FunctionBuilder<'_, '_> {
             Const::Bool(b) => b.to_string(),
             Const::Int(v) => v.to_string(),
             Const::Rune(r) => u32::from(*r).to_string(),
-            // LLVM spells exact float constants as the bits of a double.
             Const::Float(x) => format!("0x{:016X}", x.to_bits()),
             Const::String(s) => {
                 let global = self.module.string_global(s.as_bytes());
@@ -301,7 +294,6 @@ impl FunctionBuilder<'_, '_> {
         }
     }
 
-    /// The value of an operand, loading places.
     fn value(&mut self, operand: &Operand) -> String {
         match operand {
             Operand::Const(c, _) => self.constant(c),
@@ -321,8 +313,7 @@ impl FunctionBuilder<'_, '_> {
         self.line(format!("store {ty} {value}, ptr {address}"));
     }
 
-    /// Branch to a panic with `message` when `condition` is true.
-    fn check(&mut self, condition: &str, message: &str, span: Span) {
+    fn panic_if(&mut self, condition: &str, message: &str, span: Span) {
         let text = format!("{message} at {}", self.module.location(span));
         let global = self.module.string_global(text.as_bytes());
         let (fail, ok) = (self.label(), self.label());
@@ -390,7 +381,6 @@ impl FunctionBuilder<'_, '_> {
                     BinaryOp::Mul => "fmul",
                     BinaryOp::Div => "fdiv",
                     BinaryOp::Eq => "fcmp oeq",
-                    // IEEE: NaN != NaN is true.
                     BinaryOp::NotEq => "fcmp une",
                     BinaryOp::Lt => "fcmp olt",
                     BinaryOp::LtEq => "fcmp ole",
@@ -456,19 +446,19 @@ impl FunctionBuilder<'_, '_> {
                 self.line(format!(
                     "{overflow} = extractvalue {{ {ty}, i1 }} {pair}, 1"
                 ));
-                self.check(&overflow, "integer overflow", span);
+                self.panic_if(&overflow, "integer overflow", span);
                 self.line(format!("{name} = extractvalue {{ {ty}, i1 }} {pair}, 0"));
             }
             BinaryOp::Div | BinaryOp::Rem => {
                 let zero = self.fresh();
                 self.line(format!("{zero} = icmp eq {ty} {b}, 0"));
-                self.check(&zero, "division by zero", span);
+                self.panic_if(&zero, "division by zero", span);
                 if int.signed {
                     let (is_min, is_neg_one, both) = (self.fresh(), self.fresh(), self.fresh());
                     self.line(format!("{is_min} = icmp eq {ty} {a}, {}", int.min()));
                     self.line(format!("{is_neg_one} = icmp eq {ty} {b}, -1"));
                     self.line(format!("{both} = and i1 {is_min}, {is_neg_one}"));
-                    self.check(&both, "integer overflow", span);
+                    self.panic_if(&both, "integer overflow", span);
                 }
                 let instruction = if op == BinaryOp::Div { "div" } else { "rem" };
                 self.line(format!("{name} = {sign}{instruction} {ty} {a}, {b}"));
@@ -484,8 +474,6 @@ impl FunctionBuilder<'_, '_> {
         name
     }
 
-    /// Shifts keep the low bits of the left operand's width; counts must be
-    /// in range (§6.6, Q11).
     fn shift(
         &mut self,
         op: BinaryOp,
@@ -505,10 +493,10 @@ impl FunctionBuilder<'_, '_> {
             .expect("integer count");
         let cty = format!("i{}", count_int.bits);
         let count = self.value(rhs);
-        // Unsigned comparison also rejects negative signed counts.
+        // An unsigned comparison also rejects a negative signed count.
         let invalid = self.fresh();
         self.line(format!("{invalid} = icmp uge {cty} {count}, {}", int.bits));
-        self.check(&invalid, "shift count out of range", span);
+        self.panic_if(&invalid, "shift count out of range", span);
         let count = match count_int.bits.cmp(&int.bits) {
             std::cmp::Ordering::Equal => count,
             std::cmp::Ordering::Greater => {
@@ -553,7 +541,7 @@ impl FunctionBuilder<'_, '_> {
                 self.line(format!(
                     "{overflow} = extractvalue {{ {ty}, i1 }} {pair}, 1"
                 ));
-                self.check(&overflow, "integer overflow", span);
+                self.panic_if(&overflow, "integer overflow", span);
                 self.line(format!("{name} = extractvalue {{ {ty}, i1 }} {pair}, 0"));
             }
             _ => unreachable!("checked unary operator"),
@@ -561,7 +549,6 @@ impl FunctionBuilder<'_, '_> {
         name
     }
 
-    /// Checked numeric conversion (§6.6).
     fn convert(&mut self, operand: &Operand, to: TypeId, span: Span) -> String {
         let from = self.operand_ty(operand);
         let value = self.value(operand);
@@ -574,7 +561,6 @@ impl FunctionBuilder<'_, '_> {
         let name = self.fresh();
         match (from_kind, to_kind) {
             (TypeKind::Int(src), TypeKind::Int(dst)) => {
-                // Range-check in 128 bits, then resize.
                 let wide = self.fresh();
                 let extend = if src.signed { "sext" } else { "zext" };
                 self.line(format!("{wide} = {extend} {fty} {value} to i128"));
@@ -582,7 +568,7 @@ impl FunctionBuilder<'_, '_> {
                 self.line(format!("{low} = icmp slt i128 {wide}, {}", dst.min()));
                 self.line(format!("{high} = icmp sgt i128 {wide}, {}", dst.max()));
                 self.line(format!("{outside} = or i1 {low}, {high}"));
-                self.check(&outside, "integer conversion out of range", span);
+                self.panic_if(&outside, "integer conversion out of range", span);
                 match src.bits.cmp(&dst.bits) {
                     std::cmp::Ordering::Equal => return value,
                     std::cmp::Ordering::Greater => {
@@ -598,8 +584,6 @@ impl FunctionBuilder<'_, '_> {
                 self.line(format!("{name} = {instruction} {fty} {value} to {tty}"));
             }
             (TypeKind::Float(src), TypeKind::Int(dst)) => {
-                // Truncate toward zero, then require the range; NaN and
-                // infinities fail the ordered comparisons (§6.6).
                 let wide = if src.bits == 32 {
                     let w = self.fresh();
                     self.line(format!("{w} = fpext float {value} to double"));
@@ -619,7 +603,7 @@ impl FunctionBuilder<'_, '_> {
                 self.line(format!("{below} = fcmp olt double {truncated}, {limit}"));
                 self.line(format!("{inside} = and i1 {at_least}, {below}"));
                 self.line(format!("{outside} = xor i1 {inside}, true"));
-                self.check(&outside, "float to integer conversion out of range", span);
+                self.panic_if(&outside, "float to integer conversion out of range", span);
                 let instruction = if dst.signed { "fptosi" } else { "fptoui" };
                 self.line(format!(
                     "{name} = {instruction} double {truncated} to {tty}"
@@ -629,7 +613,6 @@ impl FunctionBuilder<'_, '_> {
                 self.line(format!("{name} = fpext {fty} {value} to {tty}"));
             }
             (TypeKind::Float(_), TypeKind::Float(_)) => {
-                // Narrowing: a finite value that rounds to infinity panics.
                 self.line(format!("{name} = fptrunc {fty} {value} to {tty}"));
                 let (source, result) = (self.fresh(), self.fresh());
                 self.line(format!(
@@ -648,7 +631,7 @@ impl FunctionBuilder<'_, '_> {
                     "{infinite} = fcmp oeq double {result}, 0x7FF0000000000000"
                 ));
                 self.line(format!("{overflow} = and i1 {finite}, {infinite}"));
-                self.check(&overflow, "float conversion out of range", span);
+                self.panic_if(&overflow, "float conversion out of range", span);
             }
             _ => unreachable!("checked numeric conversion"),
         }
@@ -791,7 +774,6 @@ impl FunctionBuilder<'_, '_> {
     }
 }
 
-/// `icmp` predicate for a comparison; `signed` selects signed ordering.
 fn compare_predicate(op: BinaryOp, signed: bool) -> &'static str {
     match (op, signed) {
         (BinaryOp::Eq, _) => "eq",

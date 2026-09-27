@@ -1,4 +1,4 @@
-//! UTF-8 source files, stable file IDs, and byte-based spans.
+//! UTF-8 source files, file IDs, and byte spans.
 
 use std::error::Error;
 use std::fmt;
@@ -43,7 +43,7 @@ impl Span {
 pub struct LineColumn {
     /// One-based line number.
     pub line: usize,
-    /// One-based Unicode scalar column, not a byte or terminal-cell offset.
+    /// One-based Unicode scalar column.
     pub column: usize,
 }
 
@@ -118,7 +118,7 @@ impl SourceFile {
         self.line_starts.len()
     }
 
-    /// Returns the displayed line without its LF or CRLF terminator.
+    /// Returns the line without its line terminator.
     pub fn line(&self, zero_based: usize) -> Option<&str> {
         let start = *self.line_starts.get(zero_based)? as usize;
         let end = self
@@ -147,7 +147,7 @@ impl SourceFile {
         })
     }
 
-    /// Returns a span in this file if both ends are UTF-8 boundaries in order.
+    /// Returns a span if both ends are ordered UTF-8 boundaries in this file.
     pub fn span(&self, start: u32, end: u32) -> Option<Span> {
         let span = Span {
             file: self.id,

@@ -1,4 +1,4 @@
-//! Interned semantic types (spec §6, §28).
+//! Interned semantic types.
 
 use std::fmt;
 
@@ -35,7 +35,7 @@ impl IntType {
         (self.min()..=self.max()).contains(&value)
     }
 
-    /// Reinterpret the low `bits` of `value` in this type (§6.6 shifts).
+    /// Reinterprets the low `bits` of `value` in this type.
     pub fn wrap(self, value: i128) -> i128 {
         let mask = (1i128 << self.bits) - 1;
         let low = value & mask;
@@ -47,7 +47,7 @@ impl IntType {
     }
 }
 
-/// IEEE 754 binary32 or binary64 (§6.5).
+/// IEEE 754 binary32 or binary64.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct FloatType {
     pub bits: u8,
@@ -73,8 +73,7 @@ pub enum TypeKind {
     Struct(StructId),
 }
 
-/// Type identities. Aliases share identity: `int` is `int64`, `uint` is
-/// `uint64`, and `byte` is `uint8` (§6.5).
+/// Type identities; aliases such as `int` and `int64` share one identity.
 #[derive(Debug)]
 pub struct TypeStore {
     kinds: Vec<TypeKind>,
@@ -102,7 +101,7 @@ impl TypeStore {
     pub const UINT64: TypeId = TypeId(10);
     pub const FLOAT32: TypeId = TypeId(11);
     pub const FLOAT64: TypeId = TypeId(12);
-    /// Default type of untyped integer constants (§6.5).
+    /// Default type of untyped integer constants.
     pub const INT: TypeId = Self::INT64;
 
     pub fn new() -> Self {
@@ -121,7 +120,6 @@ impl TypeStore {
         }
     }
 
-    /// Register a new struct identity with its declared name.
     pub fn add_struct(&mut self, name: &str) -> (StructId, TypeId) {
         let id = StructId(self.struct_names.len() as u32);
         self.struct_names.push(name.to_owned());
@@ -153,7 +151,6 @@ impl TypeStore {
         }
     }
 
-    /// Integer or floating-point.
     pub fn is_numeric(&self, ty: TypeId) -> bool {
         matches!(self.kind(ty), TypeKind::Int(_) | TypeKind::Float(_))
     }
@@ -169,7 +166,7 @@ impl TypeStore {
         TypeName { store: self, ty }
     }
 
-    /// Primitive type names supported by the checker so far.
+    /// Looks up a primitive type name.
     pub fn primitive(name: &str) -> Option<TypeId> {
         Some(match name {
             "bool" => Self::BOOL,

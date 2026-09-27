@@ -7,8 +7,8 @@ Unrelated infrastructure work can proceed.
 
 ## Implementation priority
 
-The user's current direction is to defer decisions until needed by the active
-compiler milestone. M0–M4 are implemented; Q01 is resolved, and Q13/Q14
+The project's current direction is to defer decisions until needed by the
+active compiler milestone. M0–M4 are implemented; Q01 is resolved, and Q13/Q14
 record the conservative lexer and parser choices made where the spec is
 silent. Q05a resolves the entry-point and `println` subset needed by the
 semantic target. See `roadmap.md` for stage gates.
@@ -42,7 +42,7 @@ A newly discovered semantic gap blocks its affected feature, not unrelated work.
 ## Resolved decisions
 
 - **Q15 — Untyped constants:** locked in §6.7 and amended §6.5–6.6 at the
-  user's direction, following the Go specification (checked against go1.27).
+  maintainer's direction, following the Go specification (checked against go1.27).
   Untyped integer and float kinds; mixed operands give float. Integer `/`
   truncates; `%` is integer-only; constant division by zero is an error.
   Untyped bitwise operators use infinite-precision two's complement (`^x` is
@@ -56,7 +56,7 @@ A newly discovered semantic gap blocks its affected feature, not unrelated work.
   `src/constant.rs` and `src/bignum.rs`; covered by `tests/check.rs`.
 
 - **Q05a — Entry point and `println`:** locked in §3.19 and §37.1 at the
-  user's direction. `package main` requires exactly one `func main()` with no
+  maintainer's direction. `package main` requires exactly one `func main()` with no
   receiver, parameters, results, or `async`; normal return exits 0 and an
   initial-task panic or abort exits nonzero (value implementation-defined).
   `println` is a compiler-known call taking exactly one argument of type bool,

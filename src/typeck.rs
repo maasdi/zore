@@ -1,11 +1,4 @@
-//! Type checking of resolved syntax into typed HIR (spec §5–8, §6.5–6.6,
-//! §7, §3.19, §37.1).
-//!
-//! Untyped constants keep exact values of integer or float kind until context
-//! gives them a type (§6.7, evaluated by `constant`). Constant expressions are
-//! folded; typed constant overflow, division by zero, and invalid constant
-//! shift counts are compile-time errors. Features outside the checker's current
-//! subset are diagnosed as unsupported rather than guessed.
+//! Type checking of resolved syntax into typed HIR.
 
 use std::collections::HashMap;
 
@@ -20,8 +13,7 @@ use crate::resolve::{ConstId, Res, Resolution};
 use crate::source::Span;
 use crate::types::{IntType, TypeId, TypeKind, TypeStore};
 
-/// Check a resolved file. HIR is returned only when the resolver and the
-/// checker reported no diagnostics.
+/// Type-checks a resolved file; HIR is returned only when there are no diagnostics.
 pub fn check(
     file: &ast::File,
     mut resolution: Resolution<'_>,
@@ -54,7 +46,7 @@ pub fn check(
     for index in 0..checker.res.consts.len() {
         checker.eval_const(ConstId(index as u32));
     }
-    let entry = checker.entry_point(file);
+    let entry = checker.check_entry_point(file);
     if !checker.diagnostics.is_empty() {
         return (None, checker.diagnostics);
     }
@@ -83,9 +75,7 @@ pub fn check(
         functions: functions.into_iter().map(|f| f.expect("checked")).collect(),
         entry,
     };
-    // Ownership analysis is not implemented yet. It is vacuous only while
-    // every accepted type is Copy and `mut` parameters are unsupported, so
-    // refuse anything else instead of reporting unchecked success.
+    // Without ownership analysis, only all-Copy programs can be accepted.
     let mut diagnostics = checker.diagnostics;
     for function in &package.functions {
         for local in &function.locals {
@@ -117,7 +107,6 @@ enum ConstState {
     Done(Option<ConstValue>),
 }
 
-/// A checked expression before context has fixed an untyped constant's type.
 enum Value {
     Untyped(Untyped, Span),
     Typed(hir::Expr),
@@ -141,12 +130,10 @@ struct Checker<'a> {
     res: Resolution<'a>,
     text: &'a str,
     types: TypeStore,
-    /// Field names and types of each struct; `None` if the type failed.
     fields: Vec<Vec<(String, Option<TypeId>, Span)>>,
     signatures: Vec<Option<Signature>>,
     consts: Vec<ConstState>,
     diagnostics: Vec<Diagnostic>,
-    // Per-function state.
     current: usize,
     locals: Vec<Option<TypeId>>,
     results: Vec<TypeId>,
@@ -192,8 +179,6 @@ fn op_str(op: BinaryOp) -> &'static str {
 }
 
 impl<'a> Checker<'a> {
-    // ----- diagnostics -----
-
     fn error(&mut self, message: impl Into<String>, span: Span) {
         self.diagnostics
             .push(Diagnostic::new(Severity::Error, message, span));
@@ -222,8 +207,6 @@ impl<'a> Checker<'a> {
         );
         self.error(message, span);
     }
-
-    // ----- declarations -----
 
     fn resolve_type(&self, ty: &ast::Type) -> Option<TypeId> {
         match self.res.uses.get(&ty.name.span)? {
@@ -280,7 +263,7 @@ impl<'a> Checker<'a> {
         self.results = results.clone();
         self.loop_depth = 0;
         let body = self.block(&func.body);
-        if !results.is_empty() && !block_terminates(&func.body) {
+        if !results.is_empty() && !block_always_exits(&func.body) {
             self.diagnostics.push(
                 Diagnostic::new(
                     Severity::Error,
@@ -319,8 +302,7 @@ impl<'a> Checker<'a> {
         })
     }
 
-    /// Enforce the §3.19 entry-point contract for a `main` package.
-    fn entry_point(&mut self, file: &ast::File) -> Option<FunctionId> {
+    fn check_entry_point(&mut self, file: &ast::File) -> Option<FunctionId> {
         let package = file.package.as_ref()?;
         if package.text != "main" {
             return None;
@@ -364,8 +346,6 @@ impl<'a> Checker<'a> {
             .position(|f| std::ptr::eq(*f, main))
             .map(|index| FunctionId(index as u32))
     }
-
-    // ----- constants -----
 
     fn eval_const(&mut self, id: ConstId) -> Option<ConstValue> {
         match &self.consts[id.0 as usize] {
@@ -413,7 +393,7 @@ impl<'a> Checker<'a> {
                 }
             }
         };
-        // A cycle may already have recorded failure for this constant.
+        // A cycle may already have recorded this constant's failure.
         if matches!(self.consts[id.0 as usize], ConstState::InProgress) {
             self.consts[id.0 as usize] = ConstState::Done(result.clone());
             result
@@ -422,15 +402,11 @@ impl<'a> Checker<'a> {
         }
     }
 
-    // ----- values and coercion -----
-
-    /// Give a value the type `target`; untyped constants must be
-    /// representable in it (§6.7).
     fn coerce(&mut self, value: Value, target: TypeId) -> Option<hir::Expr> {
         let (value, span) = match value {
             Value::Untyped(value, span) => (value, span),
             Value::Typed(expr) => {
-                let expr = self.single(expr)?;
+                let expr = self.single_value(expr)?;
                 if expr.ty() == target {
                     return Some(expr);
                 }
@@ -479,17 +455,14 @@ impl<'a> Checker<'a> {
         }
     }
 
-    /// The value with default typing: untyped integers become `int` and
-    /// untyped floats `float64` (§6.5).
-    fn default(&mut self, value: Value) -> Option<hir::Expr> {
+    fn with_default_type(&mut self, value: Value) -> Option<hir::Expr> {
         match value {
             Value::Untyped(Untyped::Int(_), _) => self.coerce(value, TypeStore::INT),
             Value::Untyped(Untyped::Float(_), _) => self.coerce(value, TypeStore::FLOAT64),
-            Value::Typed(expr) => self.single(expr),
+            Value::Typed(expr) => self.single_value(expr),
         }
     }
 
-    /// Report a constant-evaluation failure.
     fn const_error(&mut self, error: ConstError, op: &str, ty: Option<TypeId>, span: Span) {
         let diagnostic = match error {
             ConstError::DivisionByZero => Diagnostic::new(
@@ -537,8 +510,7 @@ impl<'a> Checker<'a> {
         self.diagnostics.push(diagnostic);
     }
 
-    /// Require exactly one value from an expression (§7.8).
-    fn single(&mut self, expr: hir::Expr) -> Option<hir::Expr> {
+    fn single_value(&mut self, expr: hir::Expr) -> Option<hir::Expr> {
         match expr.types.len() {
             1 => Some(expr),
             0 => {
@@ -554,8 +526,6 @@ impl<'a> Checker<'a> {
             }
         }
     }
-
-    // ----- expressions -----
 
     fn expr(&mut self, expr: &ast::Expr, expected: Option<TypeId>) -> Option<Value> {
         let span = expr.span;
@@ -665,7 +635,6 @@ impl<'a> Checker<'a> {
         )))
     }
 
-    /// Whether a binary operator applies to operands of type `ty` (§6.6, §7.6).
     fn operator_applies(&self, op: BinaryOp, ty: TypeId) -> bool {
         let kind = self.types.kind(ty);
         let int = matches!(kind, TypeKind::Int(_));
@@ -720,7 +689,7 @@ impl<'a> Checker<'a> {
                     }
                 };
             }
-            Value::Typed(expr) => self.single(expr)?,
+            Value::Typed(expr) => self.single_value(expr)?,
         };
         let ty = expr.ty();
         let valid = match op {
@@ -749,7 +718,7 @@ impl<'a> Checker<'a> {
                 let int = self.types.int(ty).expect("integer type");
                 Some(Ok(Const::Int(int.wrap(!v))))
             }
-            // Constants never hold negative zero (§6.7).
+            // Constants never hold negative zero.
             (Some(&Const::Float(x)), UnaryOp::Neg) => {
                 Some(Ok(Const::Float(if x == 0.0 { 0.0 } else { -x })))
             }
@@ -808,15 +777,15 @@ impl<'a> Checker<'a> {
             };
         }
 
-        // At least one side is typed; the other takes its type.
+        // The untyped side takes the typed side's type.
         let (left, right) = match (left, right) {
             (Value::Typed(l), r) => {
-                let l = self.single(l)?;
+                let l = self.single_value(l)?;
                 let r = self.coerce(r, l.ty())?;
                 (l, r)
             }
             (l @ Value::Untyped(..), Value::Typed(r)) => {
-                let r = self.single(r)?;
+                let r = self.single_value(r)?;
                 let l = self.coerce(l, r.ty())?;
                 (l, r)
             }
@@ -851,15 +820,14 @@ impl<'a> Checker<'a> {
         )))
     }
 
-    /// Fold a binary operation on two typed constants of type `ty`.
     fn fold(&mut self, op: BinaryOp, a: Const, b: Const, ty: TypeId, span: Span) -> Option<Value> {
         if op.is_comparison() {
             let ordering = match (&a, &b) {
                 (Const::Int(x), Const::Int(y)) => x.cmp(y),
-                // Constants are finite, so floats are totally ordered here.
+                // Constants are finite, so floats are totally ordered.
                 (Const::Float(x), Const::Float(y)) => x.partial_cmp(y).expect("finite"),
                 (Const::Rune(x), Const::Rune(y)) => x.cmp(y),
-                // Byte-wise UTF-8 order (§6.6).
+                // Byte-wise UTF-8 order.
                 (Const::String(x), Const::String(y)) => x.as_bytes().cmp(y.as_bytes()),
                 (Const::Bool(x), Const::Bool(y)) => x.cmp(y),
                 _ => unreachable!("operands share a type"),
@@ -898,8 +866,6 @@ impl<'a> Checker<'a> {
         }
     }
 
-    /// Shifts: the left operand fixes the type; the count is any integer or
-    /// an untyped constant representable as one (§6.6–6.7, Q11).
     fn shift(
         &mut self,
         op: BinaryOp,
@@ -924,7 +890,7 @@ impl<'a> Checker<'a> {
                 }
             },
             Value::Typed(expr) => {
-                let expr = self.single(expr)?;
+                let expr = self.single_value(expr)?;
                 if self.types.int(expr.ty()).is_none() {
                     let message = format!(
                         "shift count must be an integer, found `{}`",
@@ -956,7 +922,6 @@ impl<'a> Checker<'a> {
                     return None;
                 };
                 if let Some(n) = &count {
-                    // Exact untyped shift (§6.6).
                     return match constant::untyped_shift(op, &integer, n) {
                         Ok(value) => Some(Value::Untyped(value, span)),
                         Err(error) => {
@@ -971,7 +936,7 @@ impl<'a> Checker<'a> {
                     .unwrap_or(TypeStore::INT);
                 self.coerce(Value::Untyped(Untyped::Int(integer), left_span), ty)?
             }
-            Value::Typed(expr) => self.single(expr)?,
+            Value::Typed(expr) => self.single_value(expr)?,
         };
         let ty = left.ty();
         let Some(int) = self.types.int(ty) else {
@@ -1031,14 +996,14 @@ impl<'a> Checker<'a> {
                     callee.span,
                     "planned for roadmap milestone M5–M8",
                 );
-                self.check_args(args);
+                self.report_arg_errors(args);
                 return None;
             }
             _ => {
                 if self.expr(callee, None).is_some() {
                     self.error("this expression cannot be called", callee.span);
                 }
-                self.check_args(args);
+                self.report_arg_errors(args);
                 return None;
             }
         };
@@ -1055,23 +1020,22 @@ impl<'a> Checker<'a> {
                     format!("struct `{name}` is constructed with `{name}{{...}}`, not called"),
                     callee.span,
                 );
-                self.check_args(args);
+                self.report_arg_errors(args);
                 None
             }
             Some(Res::Local(_) | Res::Const(_)) => {
                 self.error(format!("`{name}` is not a function"), callee.span);
-                self.check_args(args);
+                self.report_arg_errors(args);
                 None
             }
             Some(Res::Unsupported) | None => {
-                self.check_args(args);
+                self.report_arg_errors(args);
                 None
             }
         }
     }
 
-    /// Check arguments of a call that cannot be typed, for their own errors.
-    fn check_args(&mut self, args: &[ast::Expr]) {
+    fn report_arg_errors(&mut self, args: &[ast::Expr]) {
         for arg in args {
             self.expr(arg, None);
         }
@@ -1085,7 +1049,7 @@ impl<'a> Checker<'a> {
         span: Span,
     ) -> Option<Value> {
         let Some(signature) = &self.signatures[id.0 as usize] else {
-            self.check_args(args);
+            self.report_arg_errors(args);
             return None;
         };
         let (params, results) = (signature.params.clone(), signature.results.clone());
@@ -1098,7 +1062,7 @@ impl<'a> Checker<'a> {
                 if args.len() == 1 { "was" } else { "were" },
             );
             self.error(message, span);
-            self.check_args(args);
+            self.report_arg_errors(args);
             return None;
         }
         let mut checked = Vec::new();
@@ -1125,7 +1089,6 @@ impl<'a> Checker<'a> {
         }))
     }
 
-    /// `println` (§37.1): one printable argument, no results.
     fn println(&mut self, args: &[ast::Expr], span: Span) -> Option<Value> {
         let [arg] = args else {
             let message = format!(
@@ -1133,11 +1096,11 @@ impl<'a> Checker<'a> {
                 args.len()
             );
             self.error(message, span);
-            self.check_args(args);
+            self.report_arg_errors(args);
             return None;
         };
         let value = self.expr(arg, None)?;
-        let expr = self.default(value)?;
+        let expr = self.with_default_type(value)?;
         if !matches!(
             self.types.kind(expr.ty()),
             TypeKind::Bool
@@ -1163,16 +1126,14 @@ impl<'a> Checker<'a> {
         }))
     }
 
-    /// Numeric conversion `T(value)` (§6.6). Constants must be representable
-    /// in the target (§6.7); runtime values are converted with checks.
     fn conversion(&mut self, target: TypeId, args: &[ast::Expr], span: Span) -> Option<Value> {
         let [arg] = args else {
             self.error("a conversion takes exactly one argument", span);
-            self.check_args(args);
+            self.report_arg_errors(args);
             return None;
         };
         if !self.types.is_numeric(target) {
-            self.check_args(args);
+            self.report_arg_errors(args);
             if target == TypeStore::RUNE {
                 self.unsupported(
                     "rune conversions are",
@@ -1194,7 +1155,7 @@ impl<'a> Checker<'a> {
                 expr.span = span;
                 return Some(Value::Typed(expr));
             }
-            Value::Typed(expr) => self.single(expr)?,
+            Value::Typed(expr) => self.single_value(expr)?,
         };
         let source = value.ty();
         if !self.types.is_numeric(source) {
@@ -1275,7 +1236,7 @@ impl<'a> Checker<'a> {
                 self.error("an integer constant has no fields", span);
                 return None;
             }
-            Value::Typed(expr) => self.single(expr)?,
+            Value::Typed(expr) => self.single_value(expr)?,
         };
         let (field, ty) = self.field_of(base.ty(), name)?;
         Some(Value::Typed(typed(
@@ -1288,7 +1249,6 @@ impl<'a> Checker<'a> {
         )))
     }
 
-    /// `T{field: value}` with every field named exactly once (§8.4).
     fn struct_lit(
         &mut self,
         ty: &ast::Name,
@@ -1364,8 +1324,6 @@ impl<'a> Checker<'a> {
         })
     }
 
-    // ----- statements -----
-
     fn block(&mut self, block: &ast::Block) -> hir::Block {
         hir::Block {
             stmts: block.stmts.iter().filter_map(|s| self.stmt(s)).collect(),
@@ -1424,7 +1382,7 @@ impl<'a> Checker<'a> {
                 self.loop_depth += 1;
                 let body = self.block(&for_stmt.body);
                 self.loop_depth -= 1;
-                // An inner `None` is a part that failed to check.
+                // An inner `None` marks a part that failed to check.
                 hir::StmtKind::Loop {
                     init: match init {
                         Some(init) => Some(init?),
@@ -1514,7 +1472,7 @@ impl<'a> Checker<'a> {
         if let [target] = &binding.targets[..] {
             let expr = match declared.flatten() {
                 Some(ty) => self.coerce(value, ty)?,
-                None => self.default(value)?,
+                None => self.with_default_type(value)?,
             };
             if let BindingTarget::Name(name) = target {
                 self.set_local(name, expr.ty());
@@ -1550,8 +1508,7 @@ impl<'a> Checker<'a> {
         })
     }
 
-    /// An assignable place: a `var` local or a field projection of one.
-    fn place(&mut self, expr: &ast::Expr) -> Option<hir::Place> {
+    fn assignable_place(&mut self, expr: &ast::Expr) -> Option<hir::Place> {
         match &expr.kind {
             ast::ExprKind::Name(name) => {
                 let res = *self.res.uses.get(&expr.span)?;
@@ -1620,7 +1577,7 @@ impl<'a> Checker<'a> {
                     self.error("cannot assign to a field of a temporary value", expr.span);
                     return None;
                 }
-                let mut place = self.place(base)?;
+                let mut place = self.assignable_place(base)?;
                 let (field, ty) = self.field_of(place.ty, name)?;
                 place.fields.push(field);
                 place.ty = ty;
@@ -1642,7 +1599,7 @@ impl<'a> Checker<'a> {
         let places: Vec<Option<Option<hir::Place>>> = targets
             .iter()
             .map(|t| match t {
-                AssignTarget::Place(expr) => Some(self.place(expr)),
+                AssignTarget::Place(expr) => Some(self.assignable_place(expr)),
                 AssignTarget::Discard(_) => None,
             })
             .collect();
@@ -1700,7 +1657,7 @@ impl<'a> Checker<'a> {
                 let value = self.expr(value, expected);
                 let expr = match (value, target) {
                     (Some(value), Some(Some(ty))) => self.coerce(value, *ty),
-                    (Some(value), None) => self.default(value),
+                    (Some(value), None) => self.with_default_type(value),
                     _ => None,
                 };
                 match expr {
@@ -1709,7 +1666,7 @@ impl<'a> Checker<'a> {
                 }
             }
         }
-        // Targets must be provably disjoint (§5.6).
+        // Targets must be provably disjoint.
         let concrete: Vec<&hir::Place> =
             places.iter().filter_map(|p| p.as_ref()?.as_ref()).collect();
         for (i, a) in concrete.iter().enumerate() {
@@ -1768,7 +1725,7 @@ impl<'a> Checker<'a> {
                         }
                     }
                 }
-                Value::Typed(expr) => self.single(expr)?,
+                Value::Typed(expr) => self.single_value(expr)?,
             };
             if self.types.int(count.ty()).is_none() {
                 let message = format!(
@@ -1791,8 +1748,7 @@ impl<'a> Checker<'a> {
                 value: count,
             });
         }
-        // A constant zero divisor with a runtime dividend panics at runtime;
-        // it is not a constant expression (§6.6).
+        // A zero divisor here panics at runtime; the dividend is not constant.
         let value = self.coerce(value, ty)?;
         Some(hir::StmtKind::CompoundAssign { place, op, value })
     }
@@ -1811,11 +1767,11 @@ impl<'a> Checker<'a> {
         }
         if results.is_empty() {
             self.error("this function does not return a value", values[0].span);
-            self.check_args(values);
+            self.report_arg_errors(values);
             return None;
         }
         if values.len() == 1 && results.len() > 1 {
-            // Whole-result forwarding (§7.8).
+            // Forward all results of one call.
             return match self.expr(&values[0], None)? {
                 Value::Typed(expr) if expr.types == results => {
                     Some(hir::StmtKind::Return(vec![expr]))
@@ -1835,7 +1791,7 @@ impl<'a> Checker<'a> {
                 values.len()
             );
             self.error(message, span);
-            self.check_args(values);
+            self.report_arg_errors(values);
             return None;
         }
         let mut checked = Vec::new();
@@ -1849,7 +1805,6 @@ impl<'a> Checker<'a> {
     }
 }
 
-/// Fold a typed shift; the count is already validated (§6.6, Q11).
 fn shift_value(int: IntType, value: i128, count: u32, op: BinaryOp) -> i128 {
     if op == BinaryOp::Shl {
         int.wrap(((value as u128) << count) as i128)
@@ -1858,47 +1813,45 @@ fn shift_value(int: IntType, value: i128, count: u32, op: BinaryOp) -> i128 {
     }
 }
 
-/// Whether a block cannot complete normally (§7.7), conservatively.
-fn block_terminates(block: &ast::Block) -> bool {
-    block.stmts.iter().any(stmt_terminates)
+fn block_always_exits(block: &ast::Block) -> bool {
+    block.stmts.iter().any(stmt_always_exits)
 }
 
-fn stmt_terminates(stmt: &ast::Stmt) -> bool {
+fn stmt_always_exits(stmt: &ast::Stmt) -> bool {
     match &stmt.kind {
         ast::StmtKind::Return(_) => true,
-        ast::StmtKind::Block(block) => block_terminates(block),
-        ast::StmtKind::If(if_stmt) => if_terminates(if_stmt),
+        ast::StmtKind::Block(block) => block_always_exits(block),
+        ast::StmtKind::If(if_stmt) => if_always_exits(if_stmt),
         ast::StmtKind::For(for_stmt) => {
-            matches!(for_stmt.header, ForHeader::Infinite) && !breaks(&for_stmt.body)
+            matches!(for_stmt.header, ForHeader::Infinite) && !contains_break(&for_stmt.body)
         }
         _ => false,
     }
 }
 
-fn if_terminates(if_stmt: &ast::If) -> bool {
-    block_terminates(&if_stmt.then_block)
+fn if_always_exits(if_stmt: &ast::If) -> bool {
+    block_always_exits(&if_stmt.then_block)
         && match &if_stmt.else_branch {
             None => false,
-            Some(ast::Else::Block(block)) => block_terminates(block),
-            Some(ast::Else::If(inner)) => if_terminates(inner),
+            Some(ast::Else::Block(block)) => block_always_exits(block),
+            Some(ast::Else::If(inner)) => if_always_exits(inner),
         }
 }
 
-/// Whether a loop body contains a `break` for that loop.
-fn breaks(block: &ast::Block) -> bool {
+fn contains_break(block: &ast::Block) -> bool {
     block.stmts.iter().any(|stmt| match &stmt.kind {
         ast::StmtKind::Break => true,
-        ast::StmtKind::Block(block) => breaks(block),
-        ast::StmtKind::If(if_stmt) => if_breaks(if_stmt),
+        ast::StmtKind::Block(block) => contains_break(block),
+        ast::StmtKind::If(if_stmt) => if_contains_break(if_stmt),
         _ => false,
     })
 }
 
-fn if_breaks(if_stmt: &ast::If) -> bool {
-    breaks(&if_stmt.then_block)
+fn if_contains_break(if_stmt: &ast::If) -> bool {
+    contains_break(&if_stmt.then_block)
         || match &if_stmt.else_branch {
             None => false,
-            Some(ast::Else::Block(block)) => breaks(block),
-            Some(ast::Else::If(inner)) => if_breaks(inner),
+            Some(ast::Else::Block(block)) => contains_break(block),
+            Some(ast::Else::If(inner)) => if_contains_break(inner),
         }
 }

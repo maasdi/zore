@@ -1,10 +1,4 @@
-//! Control-flow-graph MIR: how the program executes (spec §25.2, §33).
-//!
-//! Each function body has locals, basic blocks of statements, and one
-//! terminator per block. Operands distinguish `Copy`, `Move`, and constants
-//! (§33.2); control flow such as short-circuit logic, loops, and calls is
-//! explicit. Every type accepted so far is Copy, so lowering emits only `Copy`
-//! and constant operands until ownership analysis exists.
+//! Control-flow-graph MIR: how the program executes.
 
 use crate::ast::{BinaryOp, UnaryOp};
 use crate::hir::{Const, FieldId, FunctionId};
@@ -20,7 +14,7 @@ pub struct BlockId(pub u32);
 #[derive(Debug)]
 pub struct Program {
     pub bodies: Vec<Body>,
-    /// Index into `bodies` of the §3.19 entry point.
+    /// The entry point.
     pub entry: Option<FunctionId>,
 }
 
@@ -67,7 +61,6 @@ impl Place {
 #[derive(Clone, Debug, PartialEq)]
 pub enum Operand {
     Copy(Place),
-    /// Not produced yet: every accepted type is Copy.
     Move(Place),
     Const(Const, TypeId),
 }
@@ -75,14 +68,12 @@ pub enum Operand {
 #[derive(Debug)]
 pub enum Rvalue {
     Use(Operand),
-    /// Checked where §6.6 requires (integer overflow, division by zero,
-    /// shift counts); `&&`/`||` never appear here.
+    /// Checked arithmetic; `&&` and `||` are lowered to branches.
     Binary(BinaryOp, Operand, Operand),
     Unary(UnaryOp, Operand),
     /// Checked numeric conversion to the given type.
     Convert(Operand, TypeId),
-    /// Fields in declaration order; evaluation order was fixed by earlier
-    /// statements (§8.4).
+    /// Fields in declaration order.
     Aggregate(StructId, Vec<Operand>),
 }
 
@@ -90,7 +81,7 @@ pub enum Rvalue {
 pub struct Statement {
     pub place: Place,
     pub rvalue: Rvalue,
-    /// Source location, reported by runtime checks.
+    /// Location reported by runtime checks.
     pub span: Span,
 }
 

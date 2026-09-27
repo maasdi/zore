@@ -8,8 +8,8 @@ and compile it with clang and a small C runtime (decision record 0001). The
 synchronous, single-file, and all-Copy (bool, integers, floats, rune, string,
 structs of those), with Go-style untyped constants (§6.7); everything else is
 reported as unsupported. There is no ownership analysis or drop insertion yet. Linux/macOS CI is configured but has not run remotely.
-The user has ended broad specification preparation: resolve further language
-questions only when they block the active implementation milestone. No currently
+Broad specification preparation has ended: resolve further language questions
+only when they block the active implementation milestone. No currently
 recorded language question blocked M0–M4; Q13 and Q14 record the conservative
 lexer and parser choices made where the spec is silent. Q15 is resolved by
 §6.7 (Go's untyped-constant model), which the checker implements. Numbers refer to spec §43; the sequence

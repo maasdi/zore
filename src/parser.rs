@@ -1,13 +1,5 @@
-//! Tokens to syntax tree for the M3–M4 subset (spec §3.2–3.3, §5, §7–9).
-//!
-//! Supported: package clause, imports, functions and methods, struct types,
-//! `let`/`var`/`const`, assignments, calls, `return`, `if`, `for`,
-//! `break`/`continue`, blocks, and the §7.6 operators. Syntax owned by later
-//! milestones (collections, closures, `go`, generic type arguments) is
-//! diagnosed as unsupported rather than guessed.
-//!
-//! Errors are recovered at statement and declaration boundaries. A file is
-//! syntactically valid only when no diagnostics are reported.
+//! Tokens to syntax tree, recovering from errors at statement and
+//! declaration boundaries.
 
 use crate::ast::*;
 use crate::diagnostic::{Diagnostic, Severity};
@@ -18,7 +10,7 @@ use crate::token::{Keyword, Punct, Separator, Token, TokenKind};
 #[derive(Debug)]
 pub struct Parsed {
     pub file: File,
-    /// Lexical diagnostics followed by syntax diagnostics.
+    /// Lexical then syntax diagnostics; empty exactly when the file is valid.
     pub diagnostics: Vec<Diagnostic>,
 }
 
@@ -28,9 +20,9 @@ pub fn parse(file: &SourceFile) -> Parsed {
         file,
         tokens: lexed.tokens,
         pos: 0,
-        last_end: 0,
-        open: 0,
-        struct_literals: true,
+        last_token_end: 0,
+        open_delimiters: 0,
+        struct_literals_allowed: true,
         diagnostics: lexed.diagnostics,
     };
     let ast = parser.file_ast();
@@ -40,13 +32,11 @@ pub fn parse(file: &SourceFile) -> Parsed {
     }
 }
 
-/// Marker for an error already reported; the caller resynchronizes.
-struct Recover;
+struct Reported;
 
-type PResult<T> = Result<T, Recover>;
+type PResult<T> = Result<T, Reported>;
 
-/// A simple statement before the caller decides how a bare expression is used.
-enum Simple {
+enum StatementOrExpr {
     Stmt(Stmt),
     Expr(Expr),
 }
@@ -55,18 +45,14 @@ struct Parser<'a> {
     file: &'a SourceFile,
     tokens: Vec<Token>,
     pos: usize,
-    /// End offset of the last consumed source token (not inserted separators).
-    last_end: u32,
-    /// Currently open `(`, `[`, and `{` tokens, used to resynchronize.
-    open: usize,
-    /// False in `if`/`for` headers, where `Name {` starts the body (§8.4).
-    struct_literals: bool,
+    last_token_end: u32,
+    open_delimiters: usize,
+    // Off in `if`/`for` headers, where `Name {` starts the body.
+    struct_literals_allowed: bool,
     diagnostics: Vec<Diagnostic>,
 }
 
 impl Parser<'_> {
-    // ----- token access -----
-
     fn peek(&self) -> &TokenKind {
         &self.tokens[self.pos].kind
     }
@@ -84,14 +70,14 @@ impl Parser<'_> {
         let token = self.tokens[self.pos].clone();
         match token.kind {
             TokenKind::Eof => return token,
-            TokenKind::Punct(Punct::LParen | Punct::LBracket | Punct::LBrace) => self.open += 1,
+            TokenKind::Punct(Punct::LParen | Punct::LBracket | Punct::LBrace) => self.open_delimiters += 1,
             TokenKind::Punct(Punct::RParen | Punct::RBracket | Punct::RBrace) => {
-                self.open = self.open.saturating_sub(1);
+                self.open_delimiters = self.open_delimiters.saturating_sub(1);
             }
             _ => {}
         }
         if !token.span.is_empty() {
-            self.last_end = token.span.end();
+            self.last_token_end = token.span.end();
         }
         self.pos += 1;
         token
@@ -122,30 +108,28 @@ impl Parser<'_> {
     }
 
     fn span_from(&self, start: Span) -> Span {
-        let end = self.last_end.max(start.end());
+        let end = self.last_token_end.max(start.end());
         self.file
             .span(start.start(), end)
             .expect("parser spans cover consumed tokens")
     }
 
-    // ----- diagnostics -----
-
-    fn report(&mut self, diagnostic: Diagnostic) -> Recover {
+    fn report(&mut self, diagnostic: Diagnostic) -> Reported {
         self.diagnostics.push(diagnostic);
-        Recover
+        Reported
     }
 
-    fn error(&mut self, message: impl Into<String>, span: Span) -> Recover {
+    fn error(&mut self, message: impl Into<String>, span: Span) -> Reported {
         self.report(Diagnostic::new(Severity::Error, message, span))
     }
 
-    /// Report an unexpected current token unless the lexer already did.
-    fn unexpected(&mut self, expected: &str) -> Recover {
+    fn unexpected(&mut self, expected: &str) -> Reported {
+        // The lexer has already reported these tokens.
         if matches!(
             self.peek(),
             TokenKind::Unknown | TokenKind::MalformedLiteral
         ) {
-            return Recover;
+            return Reported;
         }
         let found = self.describe_current();
         let span = self.current_span();
@@ -173,7 +157,7 @@ impl Parser<'_> {
         }
     }
 
-    fn unsupported(&mut self, what: &str, milestone: &str) -> Recover {
+    fn unsupported(&mut self, what: &str, milestone: &str) -> Reported {
         let span = self.current_span();
         self.report(
             Diagnostic::new(
@@ -192,7 +176,6 @@ impl Parser<'_> {
         Err(self.unexpected(&format!("`{}`", punct.as_str())))
     }
 
-    /// A name in a declaration position (§3.5, §3.15–3.17, §5.5).
     fn name(&mut self, what: &str) -> PResult<Name> {
         let span = self.current_span();
         let message = match self.peek().clone() {
@@ -214,20 +197,15 @@ impl Parser<'_> {
         Err(self.error(message, span))
     }
 
-    /// Skip to the end of the construct that started at nesting `depth`:
-    /// past a separator at that depth, or before a `}` that closes it. Between
-    /// declarations (`stop_at_brace` unset), also stop before a declaration
-    /// keyword that starts a line, so an unclosed delimiter in one declaration
-    /// does not hide the rest of the file. At least one token is consumed
-    /// before stopping at such a keyword, so recovery always makes progress.
     fn synchronize(&mut self, depth: usize, stop_at_brace: bool) {
-        let mut local = self.open.saturating_sub(depth);
+        let mut local = self.open_delimiters.saturating_sub(depth);
         let start = self.pos;
         loop {
             let line_start = self.pos > start
                 && matches!(self.tokens[self.pos - 1].kind, TokenKind::Semicolon(_));
             match self.peek() {
                 TokenKind::Eof => break,
+                // An unclosed delimiter must not hide later declarations.
                 TokenKind::Keyword(
                     Keyword::Func | Keyword::Async | Keyword::Type | Keyword::Import,
                 ) if !stop_at_brace && line_start => break,
@@ -247,10 +225,8 @@ impl Parser<'_> {
             }
             self.bump();
         }
-        self.open = depth;
+        self.open_delimiters = depth;
     }
-
-    // ----- declarations -----
 
     fn file_ast(&mut self) -> File {
         let package = self.package_clause();
@@ -421,7 +397,6 @@ impl Parser<'_> {
         })
     }
 
-    /// Result list: none, one bare type, or two or more parenthesized types.
     fn results(&mut self) -> PResult<Vec<Type>> {
         if self.at(Punct::LParen) {
             let open = self.bump().span;
@@ -488,14 +463,14 @@ impl Parser<'_> {
             if *self.peek() == TokenKind::Eof {
                 return Err(self.unclosed(open));
             }
-            let depth = self.open;
+            let depth = self.open_delimiters;
             let field = self.field_decl();
             let ok = match field {
                 Ok(field) => {
                     fields.push(field);
                     self.statement_end("field")
                 }
-                Err(Recover) => false,
+                Err(Reported) => false,
             };
             if !ok {
                 self.synchronize(depth, true);
@@ -592,9 +567,6 @@ impl Parser<'_> {
         self.name("a binding name").map(BindingTarget::Name)
     }
 
-    // ----- statements -----
-
-    /// `{` of a body that must stay on the line of the preceding header (§3.7).
     fn body_open(&mut self, header: &str) -> PResult<Span> {
         if self.at_newline_before(&TokenKind::Punct(Punct::LBrace)) {
             let span = self.current_span();
@@ -626,7 +598,7 @@ impl Parser<'_> {
         Ok(self.block_rest(open))
     }
 
-    fn unclosed(&mut self, open: Span) -> Recover {
+    fn unclosed(&mut self, open: Span) -> Reported {
         let span = self.current_span();
         self.report(
             Diagnostic::new(Severity::Error, "unclosed `{`", span)
@@ -635,7 +607,6 @@ impl Parser<'_> {
         )
     }
 
-    /// Statements after an opening brace, through the matching `}`.
     fn block_rest(&mut self, open: Span) -> Block {
         let mut stmts = Vec::new();
         loop {
@@ -650,13 +621,13 @@ impl Parser<'_> {
                 }
                 _ => {}
             }
-            let (depth, before) = (self.open, self.pos);
+            let (depth, before) = (self.open_delimiters, self.pos);
             let ok = match self.stmt() {
                 Ok(stmt) => {
                     stmts.push(stmt);
                     self.statement_end("statement")
                 }
-                Err(Recover) => false,
+                Err(Reported) => false,
             };
             if !ok {
                 self.synchronize(depth, true);
@@ -669,7 +640,6 @@ impl Parser<'_> {
         }
     }
 
-    /// A statement ends at a separator or may omit it before `}` (§3.7).
     fn statement_end(&mut self, what: &str) -> bool {
         match self.peek() {
             TokenKind::Semicolon(_) => {
@@ -712,7 +682,7 @@ impl Parser<'_> {
             TokenKind::Semicolon(Separator::Explicit) => {
                 return Err(self.error("empty statement", start));
             }
-            _ => return self.simple().and_then(|simple| self.statement(simple)),
+            _ => return self.simple_statement().and_then(|simple| self.statement(simple)),
         };
         Ok(Stmt {
             kind,
@@ -720,15 +690,14 @@ impl Parser<'_> {
         })
     }
 
-    /// Accept a bare expression as a statement only when it is call-based.
-    fn statement(&mut self, simple: Simple) -> PResult<Stmt> {
+    fn statement(&mut self, simple: StatementOrExpr) -> PResult<Stmt> {
         match simple {
-            Simple::Stmt(stmt) => Ok(stmt),
-            Simple::Expr(expr) if is_call_based(&expr) => Ok(Stmt {
+            StatementOrExpr::Stmt(stmt) => Ok(stmt),
+            StatementOrExpr::Expr(expr) if is_call_based(&expr) => Ok(Stmt {
                 span: expr.span,
                 kind: StmtKind::Expr(expr),
             }),
-            Simple::Expr(expr) => Err(self.report(
+            StatementOrExpr::Expr(expr) => Err(self.report(
                 Diagnostic::new(Severity::Error, "expression is not a statement", expr.span).note(
                     "only calls can be statements; discard a value explicitly with `_ = value`",
                 ),
@@ -736,8 +705,7 @@ impl Parser<'_> {
         }
     }
 
-    /// Assignment or bare expression (§5.6, §7.8).
-    fn simple(&mut self) -> PResult<Simple> {
+    fn simple_statement(&mut self) -> PResult<StatementOrExpr> {
         let start = self.current_span();
         let mut targets = vec![self.assign_target()?];
         while self.eat(Punct::Comma) {
@@ -745,7 +713,7 @@ impl Parser<'_> {
         }
         let Some(op) = assign_op(self.peek()) else {
             return match targets.pop() {
-                Some(AssignTarget::Place(expr)) if targets.is_empty() => Ok(Simple::Expr(expr)),
+                Some(AssignTarget::Place(expr)) if targets.is_empty() => Ok(StatementOrExpr::Expr(expr)),
                 _ => Err(self.unexpected("`=` after assignment targets")),
             };
         };
@@ -772,7 +740,7 @@ impl Parser<'_> {
                 values[1].span,
             ));
         }
-        Ok(Simple::Stmt(Stmt {
+        Ok(StatementOrExpr::Stmt(Stmt {
             kind: StmtKind::Assign {
                 targets,
                 op,
@@ -850,7 +818,7 @@ impl Parser<'_> {
                 let span = self.current_span();
                 return Err(self.error("the counting loop update cannot be a declaration", span));
             }
-            let update = self.with_struct_literals(false, |p| p.simple())?;
+            let update = self.with_struct_literals(false, |p| p.simple_statement())?;
             let update = Box::new(self.statement(update)?);
             ForHeader::Counting {
                 init,
@@ -859,33 +827,31 @@ impl Parser<'_> {
             }
         } else {
             match first {
-                Simple::Expr(condition) => ForHeader::Condition(condition),
-                Simple::Stmt(_) => return Err(self.unexpected("`;` after the loop initializer")),
+                StatementOrExpr::Expr(condition) => ForHeader::Condition(condition),
+                StatementOrExpr::Stmt(_) => return Err(self.unexpected("`;` after the loop initializer")),
             }
         };
         let body = self.body_block("`for` header", "expected `{` after `for` header")?;
         Ok(For { header, body })
     }
 
-    /// The initializer of a counting loop or the condition of a conditional
-    /// loop. Struct literals are allowed in an initializer, so an assignment
-    /// parsed without them is re-parsed when it is followed by `{`.
-    fn for_first_clause(&mut self) -> PResult<Simple> {
+    fn for_first_clause(&mut self) -> PResult<StatementOrExpr> {
         if matches!(self.peek(), TokenKind::Keyword(Keyword::Let | Keyword::Var)) {
             let start = self.current_span();
             let binding = self.binding()?;
-            return Ok(Simple::Stmt(Stmt {
+            return Ok(StatementOrExpr::Stmt(Stmt {
                 kind: StmtKind::Binding(binding),
                 span: self.span_from(start),
             }));
         }
-        let (pos, open, last_end, reported) =
-            (self.pos, self.open, self.last_end, self.diagnostics.len());
-        let first = self.with_struct_literals(false, |p| p.simple());
-        if matches!(first, Ok(Simple::Stmt(_))) && self.at(Punct::LBrace) {
-            (self.pos, self.open, self.last_end) = (pos, open, last_end);
+        let (pos, open_delimiters, last_token_end, reported) =
+            (self.pos, self.open_delimiters, self.last_token_end, self.diagnostics.len());
+        // An initializer may contain struct literals; retry with them allowed.
+        let first = self.with_struct_literals(false, |p| p.simple_statement());
+        if matches!(first, Ok(StatementOrExpr::Stmt(_))) && self.at(Punct::LBrace) {
+            (self.pos, self.open_delimiters, self.last_token_end) = (pos, open_delimiters, last_token_end);
             self.diagnostics.truncate(reported);
-            return self.simple();
+            return self.simple_statement();
         }
         first
     }
@@ -909,13 +875,11 @@ impl Parser<'_> {
     }
 
     fn with_struct_literals<T>(&mut self, allowed: bool, f: impl FnOnce(&mut Self) -> T) -> T {
-        let saved = std::mem::replace(&mut self.struct_literals, allowed);
+        let saved = std::mem::replace(&mut self.struct_literals_allowed, allowed);
         let result = f(self);
-        self.struct_literals = saved;
+        self.struct_literals_allowed = saved;
         result
     }
-
-    // ----- expressions -----
 
     fn expr_list(&mut self) -> PResult<Vec<Expr>> {
         let mut exprs = vec![self.expr()?];
@@ -929,7 +893,6 @@ impl Parser<'_> {
         self.binary(1)
     }
 
-    /// Precedence climbing over §7.6 levels 4–8; comparisons do not chain.
     fn binary(&mut self, min: u8) -> PResult<Expr> {
         let mut lhs = self.unary()?;
         let mut compared = false;
@@ -979,8 +942,8 @@ impl Parser<'_> {
         })
     }
 
-    /// `await operand?` groups as `(await operand)?` (§7.6).
     fn await_expr(&mut self) -> PResult<Expr> {
+        // `await x?` groups as `(await x)?`.
         let start = self.bump().span;
         let operand = if is_prefix(self.peek()) {
             self.unary()?
@@ -1021,7 +984,6 @@ impl Parser<'_> {
         Ok(expr)
     }
 
-    /// Primary expression followed by calls and field access (§7.6 level 1).
     fn access(&mut self) -> PResult<Expr> {
         let mut expr = self.primary()?;
         loop {
@@ -1060,7 +1022,7 @@ impl Parser<'_> {
         let kind = match self.peek().clone() {
             TokenKind::Ident => {
                 let name = self.name("an expression")?;
-                if self.struct_literals && self.at(Punct::LBrace) {
+                if self.struct_literals_allowed && self.at(Punct::LBrace) {
                     return self.struct_literal(name);
                 }
                 return Ok(Expr {
@@ -1113,7 +1075,6 @@ impl Parser<'_> {
         Ok(Expr { kind, span })
     }
 
-    /// `Name{field: value, ...}` with every field named (§8.2, §8.4).
     fn struct_literal(&mut self, ty: Name) -> PResult<Expr> {
         self.bump();
         let fields = self.with_struct_literals(true, |p| {
@@ -1147,9 +1108,6 @@ impl Parser<'_> {
         })
     }
 
-    /// Comma-separated items through `close`. A trailing comma is optional
-    /// where `trailing` is set and required before a newline that precedes
-    /// `close`, because the newline would otherwise insert a semicolon (§3.7).
     fn comma_list<T>(
         &mut self,
         close: Punct,
@@ -1170,6 +1128,7 @@ impl Parser<'_> {
                     return Err(self.error(message, comma));
                 }
             } else if self.at_newline_before(&TokenKind::Punct(close)) {
+                // The newline ended the list, so the trailing comma is required.
                 let span = self.current_span();
                 return Err(self.report(
                     Diagnostic::new(

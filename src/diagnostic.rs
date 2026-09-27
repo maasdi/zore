@@ -113,8 +113,7 @@ fn render_label(
     arrow: &str,
 ) -> Result<(), RenderError> {
     let file = sources.file(label.span.file()).ok_or(RenderError)?;
-    // SourceMap validates spans when constructed. Check again because a span
-    // created by another manager must not silently identify a different file.
+    // A span from another source map must not resolve against this one.
     if sources.slice(label.span).is_none() {
         return Err(RenderError);
     }
@@ -160,8 +159,6 @@ fn render_label(
     Ok(())
 }
 
-/// Escape terminal control characters and expand tabs while retaining a
-/// scalar-to-display-offset map for caret placement.
 fn display_line(line: &str) -> (String, Vec<usize>) {
     let mut display = String::new();
     let mut boundaries = vec![0];

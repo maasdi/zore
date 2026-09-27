@@ -8,8 +8,8 @@ tests M2 token kinds, spans, literal validation and decoding, semicolon
 insertion, diagnostics, and recovery progress; its cases come from the lexical
 rows of the conformance documents below. `tests/parser.rs` tests M3–M4 AST
 shape (via an S-expression rendering), spans, syntax rejection, unsupported
-later-milestone syntax, recovery, and termination on generated input. No
-conformance runner or semantic runner exists yet. `tests/check.rs` tests resolution, type checking,
+later-milestone syntax, recovery, and termination on generated input.
+`tests/check.rs` tests resolution, type checking,
 §6.7 constant evaluation, float typing and conversions, HIR shape, the
 entry-point and `println` contracts, and that unsupported features are rejected
 rather than accepted. Unit tests in `src/bignum.rs` and `src/constant.rs` check

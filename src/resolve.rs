@@ -1,9 +1,4 @@
-//! Name resolution: assign stable IDs and bind every name use (spec §3.18,
-//! §5.7–5.8, §7.8, §27).
-//!
-//! The result is side tables keyed by the source span of each name, so the
-//! type checker never resolves strings again. Member names (fields) need
-//! types and are looked up by the type checker.
+//! Name resolution: assigns stable IDs and records what each name refers to.
 
 use std::collections::HashMap;
 
@@ -26,8 +21,7 @@ pub enum Res {
     Struct(StructId),
     Primitive(TypeId),
     Println,
-    /// A predeclared name whose feature the checker does not support yet;
-    /// every use has been diagnosed.
+    /// A predeclared name whose feature is not supported yet; uses are diagnosed.
     Unsupported,
 }
 
@@ -58,7 +52,6 @@ pub struct Resolution<'a> {
     pub diagnostics: Vec<Diagnostic>,
 }
 
-/// Predeclared names (§3.17–3.18). All are protected from shadowing.
 fn predeclared(name: &str) -> Option<Res> {
     if let Some(ty) = TypeStore::primitive(name) {
         return Some(Res::Primitive(ty));
@@ -139,8 +132,7 @@ impl<'a> Resolver<'a> {
                 .note("`zore check` currently treats one file as the whole package (M23)"),
             );
         }
-        // Collect package declarations first so bodies may refer to later
-        // declarations (§5.3, §7.8).
+        // Collect declarations first so bodies can use later ones.
         for item in &file.items {
             match item {
                 Item::Struct(decl) => {
@@ -189,7 +181,7 @@ impl<'a> Resolver<'a> {
                 self.ty(&field.ty);
             }
         }
-        self.check_struct_cycles();
+        self.reject_self_containing_structs();
         for index in 0..self.out.consts.len() {
             let value = self.out.consts[index].value;
             let ty = self.out.consts[index].ty;
@@ -292,7 +284,6 @@ impl<'a> Resolver<'a> {
             .or_else(|| predeclared(name))
     }
 
-    /// Resolve a name use and record it.
     fn use_name(&mut self, name: &str, span: Span) -> Option<Res> {
         let Some(res) = self.lookup(name) else {
             self.error(format!("cannot find `{name}` in this scope"), span);
@@ -315,9 +306,7 @@ impl<'a> Resolver<'a> {
         }
     }
 
-    /// Reject structs that contain themselves by value; they have no finite
-    /// layout (§7.8).
-    fn check_struct_cycles(&mut self) {
+    fn reject_self_containing_structs(&mut self) {
         let count = self.out.structs.len();
         let edges: Vec<Vec<usize>> = self
             .out
@@ -333,22 +322,24 @@ impl<'a> Resolver<'a> {
                     .collect()
             })
             .collect();
-        // 0 = unvisited, 1 = on the current path, 2 = finished.
-        let mut state = vec![0u8; count];
+        const UNVISITED: u8 = 0;
+        const ON_PATH: u8 = 1;
+        const FINISHED: u8 = 2;
+        let mut state = vec![UNVISITED; count];
         let mut reported = vec![false; count];
         for start in 0..count {
             let mut stack = vec![(start, 0usize)];
             while let Some(&mut (node, ref mut next)) = stack.last_mut() {
-                if *next == 0 && state[node] == 0 {
-                    state[node] = 1;
+                if *next == 0 && state[node] == UNVISITED {
+                    state[node] = ON_PATH;
                 }
-                if state[node] == 2 {
+                if state[node] == FINISHED {
                     stack.pop();
                     continue;
                 }
                 if let Some(&target) = edges[node].get(*next) {
                     *next += 1;
-                    if state[target] == 1 && !reported[target] {
+                    if state[target] == ON_PATH && !reported[target] {
                         reported[target] = true;
                         let decl = self.out.structs[target];
                         self.error(
@@ -358,11 +349,11 @@ impl<'a> Resolver<'a> {
                             ),
                             decl.name.span,
                         );
-                    } else if state[target] == 0 {
+                    } else if state[target] == UNVISITED {
                         stack.push((target, 0));
                     }
                 } else {
-                    state[node] = 2;
+                    state[node] = FINISHED;
                     stack.pop();
                 }
             }
@@ -372,7 +363,7 @@ impl<'a> Resolver<'a> {
     fn function(&mut self, id: FunctionId, func: &'a ast::FuncDecl) {
         self.function = Some(id);
         self.out.locals.push(Vec::new());
-        // Parameters and the outermost body block share one scope (§5.8).
+        // Parameters share the outermost body scope.
         self.scopes.push(HashMap::new());
         for param in &func.params {
             self.ty(&param.ty);
@@ -423,7 +414,7 @@ impl<'a> Resolver<'a> {
             StmtKind::Break | StmtKind::Continue => {}
             StmtKind::If(if_stmt) => self.if_stmt(if_stmt),
             StmtKind::For(for_stmt) => {
-                // The counting initializer's scope encloses the header and body.
+                // The loop initializer's scope covers the header and body.
                 self.scopes.push(HashMap::new());
                 match &for_stmt.header {
                     ForHeader::Infinite => {}
@@ -459,7 +450,7 @@ impl<'a> Resolver<'a> {
         if let Some(ty) = &binding.ty {
             self.ty(ty);
         }
-        // Names enter scope after the initializer (§5.8).
+        // Names enter scope after their initializer.
         self.expr(&binding.value);
         if binding.kind == BindingKind::Const {
             if let Some(res) = self.const_decl(binding)

@@ -1,7 +1,4 @@
-//! Syntax tree: what the programmer wrote, with source spans (spec §25.2).
-//!
-//! Nodes keep written structure such as parentheses and discard targets.
-//! Names are unresolved text; meaning is assigned by later stages.
+//! Syntax tree: what the programmer wrote, with unresolved names.
 
 use crate::source::Span;
 use crate::token::IntBase;
@@ -14,7 +11,7 @@ pub struct Name {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct File {
-    /// `None` only when the package clause is missing, which is diagnosed.
+    /// `None` when the package clause is missing.
     pub package: Option<Name>,
     pub imports: Vec<Import>,
     pub items: Vec<Item>,
@@ -22,7 +19,7 @@ pub struct File {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Import {
-    /// Decoded path string.
+    /// Decoded import path.
     pub path: String,
     pub path_span: Span,
     pub span: Span,
@@ -48,7 +45,7 @@ pub struct FuncDecl {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ParamMode {
-    /// No modifier: shared borrow (§7.3).
+    /// No modifier: a shared borrow.
     Borrow,
     Mut,
     Own,
@@ -76,8 +73,7 @@ pub struct FieldDecl {
     pub span: Span,
 }
 
-/// Only named types are parsed so far; collection, channel, and task type
-/// syntax is diagnosed as unsupported until its milestone.
+/// A named type; other type syntax is not parsed yet.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Type {
     pub name: Name,
@@ -90,7 +86,7 @@ pub enum BindingKind {
     Const,
 }
 
-/// `let`/`var`/`const` declaration with one initializer (§5.4).
+/// A `let`, `var`, or `const` declaration.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Binding {
     pub kind: BindingKind,
@@ -104,7 +100,7 @@ pub struct Binding {
 #[derive(Clone, Debug, PartialEq)]
 pub enum BindingTarget {
     Name(Name),
-    /// `_` (§5.5): introduces no name.
+    /// `_`, which introduces no name.
     Discard(Span),
 }
 
@@ -128,7 +124,7 @@ pub enum StmtKind {
         op: AssignOp,
         values: Vec<Expr>,
     },
-    /// A call-based expression statement (§7.8).
+    /// A call-based expression statement.
     Expr(Expr),
     Return(Vec<Expr>),
     Break,
@@ -147,7 +143,7 @@ pub enum AssignTarget {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum AssignOp {
     Assign,
-    /// `op=` for the compound operators of §5.6.
+    /// A compound assignment such as `+=`.
     Compound(BinaryOp),
 }
 
@@ -191,9 +187,9 @@ pub struct Expr {
 #[derive(Clone, Debug, PartialEq)]
 pub enum ExprKind {
     Name(String),
-    /// Integer spelling; the value is decoded from the span during typing.
+    /// Integer literal; its value is decoded from the span during typing.
     Int(IntBase),
-    /// Decimal float spelling, decoded during typing.
+    /// Decimal float literal; its value is decoded from the span during typing.
     Float,
     String(String),
     Rune(char),
@@ -210,7 +206,7 @@ pub enum ExprKind {
         rhs: Box<Expr>,
     },
     Await(Box<Expr>),
-    /// Postfix `?` (§15.2).
+    /// Postfix `?`.
     Try(Box<Expr>),
     Call {
         callee: Box<Expr>,
@@ -224,7 +220,7 @@ pub enum ExprKind {
         ty: Name,
         fields: Vec<FieldInit>,
     },
-    /// A literal the lexer already diagnosed; kept so parsing can continue.
+    /// A literal the lexer already diagnosed.
     Malformed,
 }
 
@@ -267,7 +263,7 @@ pub enum BinaryOp {
 }
 
 impl BinaryOp {
-    /// Binding power from §7.6: larger binds tighter.
+    /// Binding power: larger binds tighter.
     pub fn precedence(self) -> u8 {
         match self {
             Self::Mul | Self::Div | Self::Rem | Self::Shl | Self::Shr | Self::BitAnd => 5,
@@ -278,7 +274,6 @@ impl BinaryOp {
         }
     }
 
-    /// Comparisons are non-associative (§7.6).
     pub fn is_comparison(self) -> bool {
         self.precedence() == 3
     }

@@ -1,0 +1,7 @@
+# The crate has no dependencies; keep the CI actions current.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly

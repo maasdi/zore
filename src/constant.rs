@@ -1,12 +1,10 @@
-//! Constant evaluation (spec §6.6–6.7): untyped integer and float kinds with
-//! exact arithmetic, representability, and typed constant folding.
+//! Untyped constant evaluation: exact integer and float arithmetic,
+//! representability, and typed constant folding.
 //!
-//! Implementation limits, all at or above the §6.7 minimums:
-//! untyped integers up to [`MAX_INT_BITS`] bits (larger values are errors);
-//! untyped floats are exact rationals, rounded to [`ROUND_PRECISION`]
-//! significant bits if their size exceeds [`MAX_RATIONAL_BITS`], with a
-//! binary exponent range of ±[`MAX_FLOAT_LOG2`] (overflow is an error and
-//! smaller magnitudes round to zero).
+//! Untyped integers are exact up to [`MAX_INT_BITS`] bits. Untyped floats are
+//! exact rationals, rounded to [`ROUND_PRECISION`] significant bits once they
+//! exceed [`MAX_RATIONAL_BITS`], with a binary exponent range of
+//! ±[`MAX_FLOAT_LOG2`].
 
 use std::cmp::Ordering;
 
@@ -17,10 +15,9 @@ use crate::types::{FloatType, IntType};
 pub const MAX_INT_BITS: u64 = 4096;
 pub const MAX_RATIONAL_BITS: u64 = 40_000;
 pub const ROUND_PRECISION: u32 = 512;
-/// A 16-bit signed binary exponent, as §6.7 requires at minimum.
 pub const MAX_FLOAT_LOG2: i64 = 32_767;
 
-/// An untyped numeric constant (§6.7).
+/// An untyped numeric constant: integer or float kind.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Untyped {
     Int(BigInt),
@@ -36,15 +33,12 @@ pub enum Folded {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ConstError {
     DivisionByZero,
-    /// The operator needs integer operands (`%`, bitwise, shifts).
+    /// The operator needs integer operands.
     NeedsInteger,
-    /// `!`, `&&`, or `||` applied to a number.
+    /// A boolean operator applied to a number.
     NeedsBool,
-    /// An untyped integer beyond [`MAX_INT_BITS`].
     IntLimit,
-    /// An untyped float beyond the exponent range.
     FloatOverflow,
-    /// A typed result not representable in its type.
     Overflow,
 }
 
@@ -63,7 +57,6 @@ impl Untyped {
         }
     }
 
-    /// The integer value of an integer, or of an integral float.
     pub fn to_integer(&self) -> Option<BigInt> {
         match self {
             Self::Int(v) => Some(v.clone()),
@@ -71,7 +64,6 @@ impl Untyped {
         }
     }
 
-    /// Short text for diagnostics.
     pub fn describe(&self) -> String {
         match self {
             Self::Int(v) => {
@@ -98,7 +90,7 @@ fn int(value: BigInt) -> Result<Untyped, ConstError> {
     }
 }
 
-/// Keep an untyped float within the implementation's range and size.
+/// Constrains an untyped float to the implementation's range and size.
 pub fn float(value: Rational) -> Result<Untyped, ConstError> {
     if value.is_zero() {
         return Ok(Untyped::Float(value));
@@ -128,7 +120,6 @@ fn compare(op: BinaryOp, ordering: Ordering) -> bool {
     }
 }
 
-/// A binary operation other than a shift on two untyped constants.
 pub fn untyped_binary(op: BinaryOp, a: &Untyped, b: &Untyped) -> Result<Folded, ConstError> {
     if op.is_comparison() {
         let ordering = match (a, b) {
@@ -177,9 +168,8 @@ pub fn untyped_unary(op: UnaryOp, a: &Untyped) -> Result<Untyped, ConstError> {
     }
 }
 
-/// Shift an untyped constant (already known to be integral) by a count.
-/// Left shifts multiply exactly; right shifts round toward negative
-/// infinity (§6.6).
+/// Shifts an integral untyped constant. Right shifts round toward negative
+/// infinity.
 pub fn untyped_shift(op: BinaryOp, value: &BigInt, count: &BigInt) -> Result<Untyped, ConstError> {
     let count = count.to_u64().ok_or(ConstError::IntLimit)?;
     if op == BinaryOp::Shl {
@@ -194,7 +184,6 @@ pub fn untyped_shift(op: BinaryOp, value: &BigInt, count: &BigInt) -> Result<Unt
     Ok(Untyped::Int(value.shr_floor(count.min(MAX_INT_BITS + 1))))
 }
 
-/// Representability in an integer type (§6.7).
 pub fn to_int(value: &Untyped, ty: IntType) -> Result<i128, Unrepresentable> {
     let integer = value.to_integer().ok_or(Unrepresentable::NotInteger)?;
     integer
@@ -203,13 +192,11 @@ pub fn to_int(value: &Untyped, ty: IntType) -> Result<i128, Unrepresentable> {
         .ok_or(Unrepresentable::OutOfRange)
 }
 
-/// Representability in a float type: round to nearest, ties to even, without
-/// overflow (§6.7). Returns the exact value of the rounded result.
+/// Rounds to a float type, nearest with ties to even, without overflow.
 pub fn to_float(value: &Untyped, ty: FloatType) -> Option<f64> {
     value.to_rational().to_float(ty.format())
 }
 
-/// Fold a typed integer operation; the result must fit the type (§6.6).
 pub fn typed_int(op: BinaryOp, x: i128, y: i128, ty: IntType) -> Result<i128, ConstError> {
     if matches!(op, BinaryOp::Div | BinaryOp::Rem) && y == 0 {
         return Err(ConstError::DivisionByZero);
@@ -230,9 +217,8 @@ pub fn typed_int(op: BinaryOp, x: i128, y: i128, ty: IntType) -> Result<i128, Co
         .ok_or(ConstError::Overflow)
 }
 
-/// Fold a typed float operation: the exact result rounded to the type, which
-/// is the correctly rounded IEEE result (§6.6). Overflow and division by zero
-/// are compile-time errors for constants.
+/// Folds a typed float operation: exact arithmetic then one rounding, the
+/// correctly rounded IEEE result. Overflow and division by zero are errors.
 pub fn typed_float(op: BinaryOp, x: f64, y: f64, ty: FloatType) -> Result<f64, ConstError> {
     let (a, b) = (Rational::from_f64(x), Rational::from_f64(y));
     let exact = match op {
@@ -245,23 +231,20 @@ pub fn typed_float(op: BinaryOp, x: f64, y: f64, ty: FloatType) -> Result<f64, C
     exact.to_float(ty.format()).ok_or(ConstError::Overflow)
 }
 
-/// Round a typed float constant to another float type (§6.6 narrowing).
 pub fn float_to_float(x: f64, ty: FloatType) -> Option<f64> {
     Rational::from_f64(x).to_float(ty.format())
 }
 
-/// Convert a typed float constant to an integer type: it must be integral
-/// and in range (§6.6–6.7).
+/// Converts a typed float constant to an integer type; it must be integral
+/// and in range.
 pub fn float_to_int(x: f64, ty: IntType) -> Result<i128, Unrepresentable> {
     to_int(&Untyped::Float(Rational::from_f64(x)), ty)
 }
 
-/// Convert a typed integer constant to a float type.
 pub fn int_to_float(x: i128, ty: FloatType) -> Option<f64> {
     Rational::from_int(BigInt::from_i128(x)).to_float(ty.format())
 }
 
-/// Parse an integer literal spelling (§3.11–3.12).
 pub fn parse_int(text: &str, radix: u32) -> Result<Untyped, ConstError> {
     let digits: String = text
         .get(if radix == 10 { 0 } else { 2 }..)
@@ -272,7 +255,6 @@ pub fn parse_int(text: &str, radix: u32) -> Result<Untyped, ConstError> {
     int(BigInt::parse(&digits, radix).expect("the lexer validated the digits"))
 }
 
-/// Parse a decimal float spelling (§3.13).
 pub fn parse_float(text: &str) -> Result<Untyped, ConstError> {
     let value =
         crate::bignum::parse_decimal(text, MAX_FLOAT_LOG2).ok_or(ConstError::FloatOverflow)?;
@@ -325,7 +307,6 @@ mod tests {
             untyped_unary(UnaryOp::Complement, &f("1.0")),
             Err(ConstError::NeedsInteger)
         );
-        // Exact decimal arithmetic: 0.1 * 3 == 0.3.
         assert_eq!(bin(Mul, &f("0.1"), &i(3)), Ok(Folded::Untyped(f("0.3"))));
     }
 

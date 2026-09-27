@@ -1,8 +1,4 @@
-//! Typed, resolved program meaning (spec §25.2, §27–30).
-//!
-//! Names are replaced by stable IDs, every expression carries a type, constant
-//! expressions are folded to values, and assignment targets are places with
-//! field projections. Explicit Copy/Move operations belong to MIR (§29.2).
+//! Typed, resolved HIR: what the program means.
 
 use crate::ast::{BinaryOp, ParamMode, UnaryOp};
 use crate::source::Span;
@@ -25,7 +21,7 @@ pub struct Package {
     pub types: TypeStore,
     pub structs: Vec<Struct>,
     pub functions: Vec<Function>,
-    /// The §3.19 entry point, when this is a valid `main` package.
+    /// The entry point, when this is an executable `main` package.
     pub entry: Option<FunctionId>,
 }
 
@@ -38,8 +34,7 @@ impl Package {
         &self.structs[id.0 as usize]
     }
 
-    /// Copy/Move classification derived from fields (§8.3, §10.2). Every type
-    /// the checker currently accepts is Copy.
+    /// Whether values of `ty` are Copy.
     pub fn is_copy(&self, ty: TypeId) -> bool {
         match self.types.kind(ty) {
             TypeKind::Bool
@@ -105,17 +100,17 @@ pub struct Stmt {
 
 #[derive(Debug)]
 pub enum StmtKind {
-    /// One initializer producing one value per target; `None` discards.
+    /// One initializer; `None` targets discard their value.
     Let {
         targets: Vec<Option<LocalId>>,
         value: Expr,
     },
-    /// Targets are evaluated, then values, then stored left to right (§5.6).
+    /// Evaluates targets, then values, then stores left to right.
     Assign {
         targets: Vec<Option<Place>>,
         values: Vec<Expr>,
     },
-    /// `place op= value`: the place is evaluated once (§5.6).
+    /// `place op= value`, evaluating the place once.
     CompoundAssign {
         place: Place,
         op: BinaryOp,
@@ -130,7 +125,7 @@ pub enum StmtKind {
         then_block: Block,
         else_block: Option<Block>,
     },
-    /// All three loop forms; absent parts are `None` (§5.10).
+    /// Any loop form; absent parts are `None`.
     Loop {
         init: Option<Box<Stmt>>,
         condition: Option<Expr>,
@@ -140,7 +135,7 @@ pub enum StmtKind {
     Block(Block),
 }
 
-/// A local with field projections (§30).
+/// A local with field projections.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Place {
     pub root: LocalId,
@@ -152,14 +147,13 @@ pub struct Place {
 #[derive(Debug)]
 pub struct Expr {
     pub kind: ExprKind,
-    /// Result types: one for ordinary values, several for a multiple-result
-    /// call, none for a call without results.
+    /// One type per result; empty for calls without results.
     pub types: Vec<TypeId>,
     pub span: Span,
 }
 
 impl Expr {
-    /// The single result type; valid only for single-value expressions.
+    /// The type of a single-value expression.
     pub fn ty(&self) -> TypeId {
         debug_assert_eq!(self.types.len(), 1);
         self.types[0]
@@ -170,8 +164,7 @@ impl Expr {
 pub enum Const {
     Bool(bool),
     Int(i128),
-    /// A finite value exactly representable in the expression's float type;
-    /// never negative zero (§6.7).
+    /// Exactly representable in the expression's type; never negative zero.
     Float(f64),
     Rune(char),
     String(String),
@@ -190,9 +183,9 @@ pub enum ExprKind {
         args: Vec<Expr>,
     },
     Println(Box<Expr>),
-    /// Checked numeric conversion (§6.6).
+    /// Checked numeric conversion.
     Convert(Box<Expr>),
-    /// Fields in written order, which is also evaluation order (§8.4).
+    /// Fields in written order, which is evaluation order.
     StructLit {
         strukt: StructId,
         fields: Vec<(FieldId, Expr)>,

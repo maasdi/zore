@@ -1,4 +1,4 @@
-//! Frontend pipeline for `zore check`: lex, parse, resolve, and type check.
+//! The frontend pipeline: lex, parse, resolve, and type check.
 
 use crate::diagnostic::Diagnostic;
 use crate::hir;
@@ -14,8 +14,7 @@ pub struct Checked {
     pub diagnostics: Vec<Diagnostic>,
 }
 
-/// Check one file as a complete package. Semantic stages run only on a
-/// syntactically valid file, so recovery artifacts cannot cause cascades.
+/// Checks one file as a complete package.
 pub fn check_file(file: &SourceFile) -> Checked {
     let parsed = parse(file);
     if !parsed.diagnostics.is_empty() {
@@ -26,7 +25,6 @@ pub fn check_file(file: &SourceFile) -> Checked {
     }
     let resolution = resolve(&parsed.file);
     let (package, mut diagnostics) = typeck::check(&parsed.file, resolution, file.text());
-    // Report in source order rather than stage order.
     diagnostics.sort_by_key(|d| (d.span().start(), d.span().end()));
     Checked {
         package,

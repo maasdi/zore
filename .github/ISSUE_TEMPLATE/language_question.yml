@@ -1,0 +1,27 @@
+name: Language question or proposal
+description: The specification is ambiguous, contradictory, or missing something, or you want to propose a change.
+labels: ["spec"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        The [language specification](https://github.com/maasdi/zore/blob/main/spec/language-spec.md) is authoritative. Language changes follow its change policy (§53): the specification is updated and the decision locked, with examples, ownership/error/async implications, compiler impact, and conformance cases, before implementation. Known open questions are tracked in [docs/spec-questions.md](https://github.com/maasdi/zore/blob/main/docs/spec-questions.md).
+  - type: input
+    id: sections
+    attributes:
+      label: Spec sections
+      placeholder: "§6.7, §37.1"
+    validations:
+      required: true
+  - type: textarea
+    id: question
+    attributes:
+      label: Question or problem
+      description: Quote the relevant text and explain what is unclear or wrong.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed resolution
+      description: Optional. Include examples and ownership, error, and async implications where relevant.

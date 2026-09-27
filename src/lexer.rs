@@ -1,8 +1,4 @@
-//! Source text to tokens with automatic semicolon insertion (spec §3.5–3.17).
-//!
-//! The lexer always consumes the whole file. Malformed input produces a
-//! diagnostic plus a recovery token; a file is lexically valid only when no
-//! diagnostics are reported.
+//! Source text to tokens, with automatic semicolon insertion.
 
 use crate::diagnostic::{Diagnostic, Severity};
 use crate::source::{SourceFile, Span};
@@ -12,6 +8,7 @@ use crate::token::{IntBase, Keyword, Punct, ReservedWord, Separator, Token, Toke
 pub struct Lexed {
     /// Ends with exactly one `Eof` token.
     pub tokens: Vec<Token>,
+    /// Empty exactly when the file is lexically valid.
     pub diagnostics: Vec<Diagnostic>,
 }
 
@@ -22,7 +19,7 @@ pub fn lex(file: &SourceFile) -> Lexed {
         pos: 0,
         tokens: Vec::new(),
         diagnostics: Vec::new(),
-        can_insert: false,
+        last_token_ends_statement: false,
     };
     lexer.run();
     Lexed {
@@ -37,8 +34,7 @@ struct Lexer<'a> {
     pos: usize,
     tokens: Vec<Token>,
     diagnostics: Vec<Diagnostic>,
-    /// The last significant token permits semicolon insertion (§3.7).
-    can_insert: bool,
+    last_token_ends_statement: bool,
 }
 
 impl Lexer<'_> {
@@ -48,13 +44,13 @@ impl Lexer<'_> {
             match ch {
                 ' ' | '\t' | '\r' => self.pos += 1,
                 '\n' => {
-                    self.newline(start);
+                    self.insert_at_line_end(start);
                     self.pos += 1;
                 }
                 '/' if self.peek_at(1) == Some('/') => self.line_comment(),
                 '/' if self.peek_at(1) == Some('*') => self.block_comment(),
-                '"' => self.quoted('"'),
-                '\'' => self.quoted('\''),
+                '"' => self.string_or_rune('"'),
+                '\'' => self.string_or_rune('\''),
                 '`' => self.raw_string(),
                 ';' => {
                     self.pos += 1;
@@ -66,7 +62,7 @@ impl Lexer<'_> {
             }
         }
         let end = self.text.len();
-        if self.can_insert {
+        if self.last_token_ends_statement {
             self.push_at(TokenKind::Semicolon(Separator::Eof), end, end);
         }
         self.push_at(TokenKind::Eof, end, end);
@@ -99,15 +95,13 @@ impl Lexer<'_> {
     }
 
     fn push_at(&mut self, kind: TokenKind, start: usize, end: usize) {
-        self.can_insert = kind.ends_statement();
+        self.last_token_ends_statement = kind.ends_statement();
         let span = self.span(start, end);
         self.tokens.push(Token { kind, span });
     }
 
-    /// Handle a line ending whose LF is at `lf`. The inserted separator is an
-    /// empty span at the start of the terminator, before a CR of a CRLF.
-    fn newline(&mut self, lf: usize) {
-        if self.can_insert {
+    fn insert_at_line_end(&mut self, lf: usize) {
+        if self.last_token_ends_statement {
             let at = if lf > 0 && self.text.as_bytes()[lf - 1] == b'\r' {
                 lf - 1
             } else {
@@ -118,7 +112,7 @@ impl Lexer<'_> {
     }
 
     fn line_comment(&mut self) {
-        // The terminating LF stays in the input so it is seen as a newline.
+        // Leave the LF for newline handling.
         self.pos = self.text[self.pos..]
             .find('\n')
             .map_or(self.text.len(), |offset| self.pos + offset);
@@ -131,10 +125,9 @@ impl Lexer<'_> {
             Some(offset) => (body + offset + 2, true),
             None => (self.text.len(), false),
         };
-        // A comment containing a newline acts as one newline; otherwise it acts
-        // as a space (§3.7).
+        // A multiline block comment acts as one newline.
         if let Some(offset) = self.text[body..end].find('\n') {
-            self.newline(body + offset);
+            self.insert_at_line_end(body + offset);
         }
         if !closed {
             self.report(
@@ -160,7 +153,7 @@ impl Lexer<'_> {
         }
         let text = &self.text[start..self.pos];
         if let Some((at, ch)) = non_ascii {
-            // Keep one identifier token so recovery does not split the name.
+            // One token keeps recovery from splitting the name.
             self.report(
                 self.error(
                     format!("identifier `{text}` contains non-ASCII character {ch:?}"),
@@ -194,8 +187,7 @@ impl Lexer<'_> {
             );
         let mut seen_point = false;
         let mut seen_exponent = false;
-        // Take the maximal numeric-looking run so that malformed spellings and
-        // suffixes are diagnosed as one literal rather than silently split.
+        // Scan the whole run so suffixes are diagnosed rather than split off.
         while let Some(ch) = self.peek() {
             if ch == '_' || ch.is_alphanumeric() {
                 self.pos += ch.len_utf8();
@@ -213,7 +205,6 @@ impl Lexer<'_> {
                 && !seen_exponent
                 && self.peek_at(1).is_some_and(|c| c.is_ascii_digit())
             {
-                // A dot belongs to a float only when a digit follows (§3.13).
                 seen_point = true;
                 self.pos += 1;
             } else {
@@ -232,8 +223,7 @@ impl Lexer<'_> {
         }
     }
 
-    /// Scan a double-quoted string or a rune literal.
-    fn quoted(&mut self, quote: char) {
+    fn string_or_rune(&mut self, quote: char) {
         let start = self.pos;
         let rune = quote == '\'';
         let what = if rune { "rune" } else { "string" };
@@ -256,7 +246,7 @@ impl Lexer<'_> {
                 self.pos += ch.len_utf8();
                 continue;
             }
-            let escape = self.pos;
+            let backslash = self.pos;
             self.pos += 1;
             match self.peek() {
                 None => break,
@@ -268,7 +258,7 @@ impl Lexer<'_> {
                     continuation = true;
                     break;
                 }
-                Some(c) => match self.escape(c, rune, escape) {
+                Some(c) => match self.escape_sequence(c, rune, backslash) {
                     Some(decoded) => value.push(decoded),
                     None => valid = false,
                 },
@@ -317,8 +307,7 @@ impl Lexer<'_> {
         }
     }
 
-    /// Decode the escape whose backslash is at `escape`; `pos` is at `c`.
-    fn escape(&mut self, c: char, rune: bool, escape: usize) -> Option<char> {
+    fn escape_sequence(&mut self, c: char, rune: bool, backslash: usize) -> Option<char> {
         self.pos += c.len_utf8();
         let simple = match c {
             'n' => Some('\n'),
@@ -344,7 +333,7 @@ impl Lexer<'_> {
                     "supported escapes are \\n \\r \\t \\\\ \\\" \\uXXXX \\UXXXXXXXX"
                 };
                 self.report(
-                    self.error(format!("unknown escape sequence `\\{c}`"), escape, self.pos)
+                    self.error(format!("unknown escape sequence `\\{c}`"), backslash, self.pos)
                         .note(note),
                 );
                 return None;
@@ -356,7 +345,6 @@ impl Lexer<'_> {
             let Some(digit) = self.peek().and_then(|ch| ch.to_digit(16)) else {
                 break;
             };
-            // `to_digit` accepts only ASCII hexadecimal digits.
             value = value * 16 + digit;
             count += 1;
             self.pos += 1;
@@ -366,7 +354,7 @@ impl Lexer<'_> {
             self.report(
                 self.error(
                     format!("`\\{c}` escape requires exactly {digits} hexadecimal digits"),
-                    escape,
+                    backslash,
                     end,
                 )
                 .note("braces and digit separators are not allowed in Unicode escapes"),
@@ -379,9 +367,9 @@ impl Lexer<'_> {
                 self.error(
                     format!(
                         "`{}` is not a Unicode scalar value",
-                        &self.text[escape..end]
+                        &self.text[backslash..end]
                     ),
-                    escape,
+                    backslash,
                     end,
                 )
                 .note("scalar values are U+0000–U+10FFFF, excluding surrogates U+D800–U+DFFF"),
@@ -443,8 +431,7 @@ impl Lexer<'_> {
     }
 }
 
-/// Characters that can start or continue a name-like run. Non-ASCII letters
-/// are included only so they are diagnosed as part of one identifier.
+// Non-ASCII letters are accepted only to diagnose them within one identifier.
 fn is_ident_char(ch: char) -> bool {
     ch == '_' || ch.is_ascii_alphabetic() || (!ch.is_ascii() && ch.is_alphanumeric())
 }
@@ -491,7 +478,6 @@ impl NumberError {
 
 const SEPARATOR_NOTE: &str = "a single `_` may appear only between two digits";
 
-/// Validate a numeric run against §3.11–3.14. Offsets are relative to `text`.
 fn validate_number(text: &str) -> Result<TokenKind, NumberError> {
     let bytes = text.as_bytes();
     let base = match bytes.get(..2) {
@@ -529,7 +515,6 @@ fn validate_number(text: &str) -> Result<TokenKind, NumberError> {
     }
 }
 
-/// `digit { [ "_" ] digit }` (§3.12), stopping at the first other character.
 fn digit_sequence(text: &str, i: &mut usize, base: IntBase, what: &str) -> Result<(), NumberError> {
     let bytes = text.as_bytes();
     match bytes.get(*i) {
@@ -544,7 +529,7 @@ fn digit_sequence(text: &str, i: &mut usize, base: IntBase, what: &str) -> Resul
             return Err(NumberError::new(*i, next_char(text, *i), message, note));
         }
         None => {
-            // Point at the final character, since EOF of the run has no width.
+            // Point at the last character; the end of the run has no width.
             let last = text.len() - 1;
             let message = format!("expected {what}");
             return Err(NumberError::new(

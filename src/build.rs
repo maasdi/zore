@@ -1,5 +1,4 @@
-//! Native builds: check, lower to MIR, emit LLVM IR, and compile it with clang
-//! together with the C runtime (decision record 0001).
+//! Native builds: LLVM IR compiled and linked by clang with the C runtime.
 
 use std::fmt;
 use std::fs;
@@ -17,11 +16,11 @@ const RUNTIME_SOURCE: &str = include_str!("../runtime/zore_runtime.c");
 
 #[derive(Debug)]
 pub enum BuildError {
-    /// The program was rejected; render these against the source map.
+    /// The program has diagnostics.
     Diagnostics(Vec<Diagnostic>),
-    /// The package has no §3.19 entry point to build.
+    /// The package has no entry point.
     NotExecutable(String),
-    /// The external toolchain was missing or failed.
+    /// The external C compiler is missing or failed.
     Toolchain(String),
     Io(String),
 }
@@ -37,7 +36,7 @@ impl fmt::Display for BuildError {
     }
 }
 
-/// Check and lower a file, returning its LLVM IR.
+/// Checks and lowers a file to LLVM IR.
 pub fn emit_llvm(file: &SourceFile) -> Result<String, BuildError> {
     let checked = check_file(file);
     if !checked.diagnostics.is_empty() {
@@ -58,7 +57,7 @@ pub fn emit_llvm(file: &SourceFile) -> Result<String, BuildError> {
 
 static NEXT_DIR: AtomicU64 = AtomicU64::new(0);
 
-/// A private temporary directory removed when dropped.
+/// A temporary directory removed on drop.
 pub struct TempDir(PathBuf);
 
 impl TempDir {
@@ -89,7 +88,7 @@ pub fn compiler() -> String {
     std::env::var("ZORE_CC").unwrap_or_else(|_| "clang".into())
 }
 
-/// Build an executable at `output`.
+/// Builds an executable at `output`.
 pub fn build(file: &SourceFile, output: &Path) -> Result<(), BuildError> {
     let ir = emit_llvm(file)?;
     let dir = TempDir::new()?;

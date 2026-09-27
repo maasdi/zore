@@ -1,4 +1,4 @@
-//! Token kinds produced by the lexer (spec §3.5–3.17, §5.6, §7.6).
+//! Tokens produced by the lexer.
 
 use crate::source::Span;
 
@@ -11,25 +11,22 @@ pub struct Token {
 #[derive(Clone, Debug, PartialEq)]
 pub enum TokenKind {
     Ident,
-    /// Standalone `_`: identifier-shaped but reserved for discards (§3.5, §5.5).
+    /// Standalone `_`, reserved for discards.
     Underscore,
     Keyword(Keyword),
-    /// Future-reserved word (§3.16); never enables its associated feature.
+    /// A future-reserved word.
     Reserved(ReservedWord),
-    /// Integer spelling; the value is decoded by later stages from the span
-    /// because literal typing and range rules belong to the type model.
+    /// Integer literal; its value is decoded from the span during typing.
     Int(IntBase),
-    /// Decimal float spelling; decoding is deferred for the same reason.
+    /// Decimal float literal; its value is decoded from the span during typing.
     Float,
-    /// Decoded value of a double-quoted or raw string literal.
+    /// Decoded string literal.
     String(String),
-    /// Decoded scalar of a rune literal.
+    /// Decoded rune literal.
     Rune(char),
-    /// A literal whose spelling was diagnosed. It still ends statements so that
-    /// recovery keeps the surrounding structure.
+    /// A literal whose spelling was diagnosed.
     MalformedLiteral,
-    /// A character or sequence with no token meaning; always diagnosed. Like
-    /// `MalformedLiteral`, it ends a statement to aid recovery.
+    /// An unrecognized character or sequence; always diagnosed.
     Unknown,
     Punct(Punct),
     Semicolon(Separator),
@@ -37,7 +34,7 @@ pub enum TokenKind {
 }
 
 impl TokenKind {
-    /// Whether a following newline or EOF inserts a semicolon (§3.7).
+    /// Whether a following newline or end of file inserts a semicolon.
     pub fn ends_statement(&self) -> bool {
         match self {
             Self::Ident
@@ -47,7 +44,7 @@ impl TokenKind {
             | Self::String(_)
             | Self::Rune(_)
             | Self::MalformedLiteral
-            // Already diagnosed; ending the statement keeps recovery line-based.
+            // Diagnosed tokens end statements so recovery stays line-based.
             | Self::Unknown => true,
             Self::Keyword(keyword) => keyword.ends_statement(),
             Self::Punct(punct) => matches!(
@@ -82,7 +79,7 @@ impl IntBase {
 pub enum Separator {
     /// A `;` written in the source.
     Explicit,
-    /// Inserted at a newline, including the first newline of a block comment.
+    /// Inserted at a newline.
     Newline,
     /// Inserted at end of input.
     Eof,
@@ -104,7 +101,7 @@ macro_rules! words {
                 }
             }
 
-            /// Exact, case-sensitive whole-word lookup.
+            /// Exact, case-sensitive lookup.
             pub fn lookup(text: &str) -> Option<Self> {
                 match text {
                     $($text => Some(Self::$variant),)*
@@ -162,9 +159,7 @@ words!(ReservedWord {
     Defer = "defer",
 });
 
-// `ALL` is ordered longest spelling first so the lexer can take the maximal
-// munch by trying each spelling in turn. `++`, `--`, `:=`, and `&^` are
-// deliberately absent (§7.6, §5.4).
+// Longest spellings first: the first matching prefix is the maximal munch.
 words!(Punct {
     ShlEq = "<<=",
     ShrEq = ">>=",

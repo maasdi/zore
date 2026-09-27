@@ -1,14 +1,13 @@
-//! Arbitrary-precision integers and exact rationals for constant evaluation
-//! (spec §6.7).
+//! Arbitrary-precision integers and exact rationals.
 //!
 //! Hand-written to keep the compiler free of numeric dependencies and easy to
-//! port. Performance targets compile-time constants, not general computation:
-//! multiplication is schoolbook and multi-limb division is bitwise.
+//! port. Targets compile-time constants, not general computation: multiplication
+//! is schoolbook and multi-limb division is bitwise.
 
 use std::cmp::Ordering;
 use std::fmt;
 
-// ----- magnitude helpers: little-endian u32 limbs without trailing zeros -----
+// Magnitude helpers: little-endian u32 limbs without trailing zeros.
 
 fn trim(mut v: Vec<u32>) -> Vec<u32> {
     while v.last() == Some(&0) {
@@ -38,7 +37,6 @@ fn mag_add(a: &[u32], b: &[u32]) -> Vec<u32> {
     out
 }
 
-/// `a - b` for `a >= b`.
 fn mag_sub(a: &[u32], b: &[u32]) -> Vec<u32> {
     let mut out = Vec::with_capacity(a.len());
     let mut borrow = 0i64;
@@ -120,7 +118,6 @@ fn mag_shr(a: &[u32], n: u64) -> Vec<u32> {
     trim(out)
 }
 
-/// Whether any of the low `n` bits are set.
 fn mag_low_bits_nonzero(a: &[u32], n: u64) -> bool {
     let limbs = (n / 32) as usize;
     let bits = (n % 32) as u32;
@@ -139,7 +136,6 @@ fn mag_divrem_small(a: &[u32], d: u32) -> (Vec<u32>, u32) {
     (trim(out), rem as u32)
 }
 
-/// Truncated division of magnitudes; `b` must be nonzero.
 fn mag_divrem(a: &[u32], b: &[u32]) -> (Vec<u32>, Vec<u32>) {
     assert!(!b.is_empty(), "division by zero");
     if mag_cmp(a, b) == Ordering::Less {
@@ -149,7 +145,6 @@ fn mag_divrem(a: &[u32], b: &[u32]) -> (Vec<u32>, Vec<u32>) {
         let (q, r) = mag_divrem_small(a, b[0]);
         return (q, trim(vec![r]));
     }
-    // Restoring binary long division.
     let bits = mag_bits(a);
     let mut quotient = vec![0u32; a.len()];
     let mut rem: Vec<u32> = Vec::with_capacity(b.len() + 1);
@@ -182,7 +177,6 @@ fn trailing_zeros(a: &[u32]) -> u64 {
     count
 }
 
-/// Binary GCD of magnitudes.
 fn mag_gcd(a: &[u32], b: &[u32]) -> Vec<u32> {
     if a.is_empty() {
         return b.to_vec();
@@ -203,9 +197,6 @@ fn mag_gcd(a: &[u32], b: &[u32]) -> Vec<u32> {
     mag_shl(&a, shift)
 }
 
-// ----- signed integers -----
-
-/// An arbitrary-precision signed integer.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct BigInt {
     negative: bool,
@@ -239,7 +230,6 @@ impl BigInt {
         Self::from_mag(false, vec![value])
     }
 
-    /// Parse digits valid for `radix` (2..=16), without sign or separators.
     pub fn parse(digits: &str, radix: u32) -> Option<Self> {
         let mut mag: Vec<u32> = Vec::new();
         for ch in digits.chars() {
@@ -265,7 +255,6 @@ impl BigInt {
         self.negative
     }
 
-    /// Bit length of the magnitude.
     pub fn bits(&self) -> u64 {
         mag_bits(&self.mag)
     }
@@ -331,7 +320,6 @@ impl BigInt {
         )
     }
 
-    /// Quotient truncated toward zero and remainder with the dividend's sign;
     /// `None` for a zero divisor.
     pub fn div_rem(&self, other: &Self) -> Option<(Self, Self)> {
         if other.is_zero() {
@@ -348,7 +336,6 @@ impl BigInt {
         Self::from_mag(self.negative, mag_shl(&self.mag, n))
     }
 
-    /// Right shift rounding toward negative infinity.
     pub fn shr_floor(&self, n: u64) -> Self {
         let q = mag_shr(&self.mag, n);
         if self.negative && mag_low_bits_nonzero(&self.mag, n) {
@@ -358,7 +345,6 @@ impl BigInt {
         }
     }
 
-    /// Two's-complement limbs of width `limbs`, which must exceed the magnitude.
     fn twos(&self, limbs: usize) -> Vec<u32> {
         let mut out = self.mag.clone();
         out.resize(limbs, 0);
@@ -388,7 +374,6 @@ impl BigInt {
         Self::from_mag(false, limbs)
     }
 
-    /// Bitwise operation with infinite-precision two's complement (§6.7).
     fn bitwise(&self, other: &Self, op: impl Fn(u32, u32) -> u32) -> Self {
         let limbs = self.mag.len().max(other.mag.len()) + 1;
         let (a, b) = (self.twos(limbs), other.twos(limbs));
@@ -407,7 +392,6 @@ impl BigInt {
         self.bitwise(other, |x, y| x ^ y)
     }
 
-    /// Unary `^`: `-x - 1` (§6.7).
     pub fn not(&self) -> Self {
         self.neg().sub(&Self::from_u32(1))
     }
@@ -473,16 +457,14 @@ impl fmt::Display for BigInt {
     }
 }
 
-// ----- rationals -----
-
-/// An exact rational `num / den` in lowest terms with `den > 0`.
+/// An exact rational in lowest terms with a positive denominator.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Rational {
     num: BigInt,
     den: BigInt,
 }
 
-/// IEEE 754 binary formats: precision in bits and normal exponent range.
+/// An IEEE 754 binary format: precision in bits and normal exponent range.
 #[derive(Clone, Copy, Debug)]
 pub struct FloatFormat {
     pub precision: u32,
@@ -502,7 +484,6 @@ pub const BINARY64: FloatFormat = FloatFormat {
     max_exp: 1023,
 };
 
-/// `2^exp` as an f64, for exponents in f64's finite range.
 fn pow2(exp: i64) -> f64 {
     if exp >= -1022 {
         f64::from_bits(((exp + 1023) as u64) << 52)
@@ -519,7 +500,6 @@ impl Rational {
         }
     }
 
-    /// `num / den`; `None` if `den` is zero.
     pub fn new(num: BigInt, den: BigInt) -> Option<Self> {
         if den.is_zero() {
             return None;
@@ -543,7 +523,6 @@ impl Rational {
         Some(Self { num, den })
     }
 
-    /// The exact value of a finite f64.
     pub fn from_f64(value: f64) -> Self {
         assert!(value.is_finite(), "constants are finite");
         let bits = value.to_bits();
@@ -572,12 +551,11 @@ impl Rational {
         self.num.is_negative()
     }
 
-    /// The integer value, if the rational has no fractional part.
     pub fn to_integer(&self) -> Option<BigInt> {
         (self.den == BigInt::from_u32(1)).then(|| self.num.clone())
     }
 
-    /// Bit sizes of the numerator and denominator, for precision limits.
+    /// Bit sizes of the numerator and denominator.
     pub fn size_bits(&self) -> u64 {
         self.num.bits().max(self.den.bits())
     }
@@ -602,12 +580,11 @@ impl Rational {
         Self::new(self.num.mul(&other.num), self.den.mul(&other.den)).expect("nonzero denominator")
     }
 
-    /// `None` for division by zero.
     pub fn div(&self, other: &Self) -> Option<Self> {
         Self::new(self.num.mul(&other.den), self.den.mul(&other.num))
     }
 
-    /// `E` with `2^E <= |self| < 2^(E+1)`; `self` must be nonzero.
+    /// `E` with `2^E <= |self| < 2^(E+1)`; requires a nonzero value.
     pub fn floor_log2(&self) -> i64 {
         let (p, q) = (self.num.abs(), &self.den);
         let mut e = p.bits() as i64 - q.bits() as i64;
@@ -622,7 +599,6 @@ impl Rational {
         e
     }
 
-    /// Round `|self| * 2^shift` to the nearest integer, ties to even.
     fn round_scaled(&self, shift: i64) -> BigInt {
         let p = self.num.abs();
         let (dividend, divisor) = if shift >= 0 {
@@ -641,9 +617,9 @@ impl Rational {
         }
     }
 
-    /// Round to an IEEE 754 format with round-to-nearest, ties-to-even,
-    /// including subnormals. Returns `None` on overflow. Negative zero is
-    /// returned as positive zero (§6.7).
+    /// Rounds to an IEEE 754 format, nearest with ties to even, including
+    /// subnormals; `None` on overflow. Negative zero is returned as positive
+    /// zero.
     pub fn to_float(&self, format: FloatFormat) -> Option<f64> {
         if self.is_zero() {
             return Some(0.0);
@@ -652,8 +628,6 @@ impl Rational {
         if e > format.max_exp {
             return None;
         }
-        // Exponent of the least significant retained bit; below the normal
-        // range it stays at the subnormal minimum.
         let lsb = e.max(format.min_exp) - (i64::from(format.precision) - 1);
         let m = self.round_scaled(-lsb);
         let m = m.to_u64().expect("rounded mantissa fits");
@@ -672,8 +646,7 @@ impl Rational {
         })
     }
 
-    /// Round to `precision` significant bits, for keeping constant sizes
-    /// bounded (§6.7 permits rounding at the implementation's precision).
+    /// Rounds to `precision` significant bits.
     pub fn round_to_precision(&self, precision: u32) -> Self {
         if self.is_zero() {
             return self.clone();
@@ -701,7 +674,7 @@ impl PartialOrd for Rational {
     }
 }
 
-/// Parse a validated decimal float spelling (§3.13) into an exact rational.
+/// Parses a validated decimal float spelling into an exact rational.
 /// Returns `None` if the magnitude reaches `2^max_log2`; values far below
 /// `2^-max_log2` round to zero.
 pub fn parse_decimal(text: &str, max_log2: i64) -> Option<Rational> {
@@ -725,7 +698,7 @@ pub fn parse_decimal(text: &str, max_log2: i64) -> Option<Rational> {
         return Some(Rational::from_int(mantissa));
     }
     let scale = exponent.saturating_sub(fraction.len() as i64);
-    // log2(10) < 3.33; bound the work before computing powers of ten.
+    // log2(10) < 3.33; this bounds the work before computing a power of ten.
     let significant = digits.trim_start_matches('0').len() as i64;
     let approx_log2 = (significant.saturating_add(scale)).saturating_mul(10) / 3;
     if approx_log2 > max_log2 + 64 {
@@ -751,7 +724,6 @@ mod tests {
         BigInt::from_i128(v)
     }
 
-    /// Deterministic pseudo-random i128 values spanning many magnitudes.
     fn samples() -> Vec<i128> {
         let mut out = vec![
             0,

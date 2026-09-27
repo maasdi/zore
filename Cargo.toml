@@ -2,8 +2,16 @@
 name = "zore"
 version = "0.1.0"
 edition = "2024"
-publish = false
+rust-version = "1.98"
 description = "The Zore bootstrap compiler"
+license = "Apache-2.0"
+repository = "https://github.com/maasdi/zore"
+homepage = "https://github.com/maasdi/zore"
+readme = "README.md"
+keywords = ["compiler", "programming-language", "ownership", "llvm"]
+categories = ["compilers", "command-line-utilities"]
+# Not published to crates.io while the language is pre-release.
+publish = false
 
 # Keep one compiler crate until subsystem boundaries justify extraction.
 [workspace]

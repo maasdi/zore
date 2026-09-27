@@ -1,10 +1,4 @@
-//! Lowering from typed HIR to MIR (spec §33).
-//!
-//! Evaluation order follows the language rules: operands and arguments left to
-//! right (§7.5), assignment targets, then values, then stores (§5.6),
-//! struct fields in written order (§8.4), compound assignment reading the
-//! target before evaluating the right-hand side (§5.6), and short-circuit
-//! `&&`/`||` as explicit branches (§7.6).
+//! Lowering from typed HIR to MIR, making evaluation order explicit.
 
 use crate::ast::BinaryOp;
 use crate::hir::{self, Const, ExprKind, FunctionId, StmtKind};
@@ -33,13 +27,18 @@ struct PendingBlock {
     terminator: Option<Terminator>,
 }
 
+#[derive(Clone, Copy)]
+struct LoopTargets {
+    continue_to: BlockId,
+    break_to: BlockId,
+}
+
 struct Builder {
     locals: Vec<LocalDecl>,
     blocks: Vec<PendingBlock>,
     current: BlockId,
     returns: Vec<Local>,
-    /// (continue target, break target) of enclosing loops.
-    loops: Vec<(BlockId, BlockId)>,
+    loops: Vec<LoopTargets>,
 }
 
 fn lower_function(package: &hir::Package, id: FunctionId, function: &hir::Function) -> Body {
@@ -68,7 +67,7 @@ fn lower_function(package: &hir::Package, id: FunctionId, function: &hir::Functi
     let fallthrough = if function.results.is_empty() {
         Terminator::Return
     } else {
-        // The checker proved that result-returning bodies cannot fall through.
+        // The checker rejects bodies that fall through without returning.
         Terminator::Unreachable
     };
     builder.terminate(fallthrough);
@@ -114,8 +113,6 @@ impl Builder {
         }
     }
 
-    /// End the current block unless a `return`, `break`, or `continue`
-    /// already ended it.
     fn terminate(&mut self, terminator: Terminator) {
         let block = &mut self.blocks[self.current.0 as usize];
         if block.terminator.is_none() {
@@ -123,8 +120,6 @@ impl Builder {
         }
     }
 
-    /// Terminate the current block and continue in a fresh, unreachable one,
-    /// so code after `return`, `break`, or `continue` still lowers.
     fn diverge(&mut self, terminator: Terminator) {
         self.terminate(terminator);
         self.current = self.new_block();
@@ -140,8 +135,6 @@ impl Builder {
         self.push(Place::local(temp), rvalue, span);
         Operand::Copy(Place::local(temp))
     }
-
-    // ----- statements -----
 
     fn block(&mut self, package: &hir::Package, block: &hir::Block) {
         for stmt in &block.stmts {
@@ -167,10 +160,10 @@ impl Builder {
                     self.store_results(package, &places, value, stmt.span);
                     return;
                 }
-                // Retain every value before the first store (§5.6).
+                // Every value is evaluated before the first store.
                 let operands: Vec<(Operand, Span)> = values
                     .iter()
-                    .map(|v| (self.retained(package, v), v.span))
+                    .map(|v| (self.evaluate_to_temporary(package, v), v.span))
                     .collect();
                 for (target, (operand, span)) in places.into_iter().zip(operands) {
                     if let Some(target) = target {
@@ -185,7 +178,7 @@ impl Builder {
             } => {
                 let target = place(target);
                 let ty = self.place_type(package, &target);
-                // Read the current value before evaluating the RHS (§5.6).
+                // The target is read before the right-hand side is evaluated.
                 let current =
                     self.assign_temp(ty, Rvalue::Use(Operand::Copy(target.clone())), stmt.span);
                 let rhs = self.operand(package, value);
@@ -224,12 +217,12 @@ impl Builder {
                 self.diverge(Terminator::Return);
             }
             StmtKind::Break => {
-                let (_, exit) = *self.loops.last().expect("checked: inside a loop");
-                self.diverge(Terminator::Goto(exit));
+                let targets = *self.loops.last().expect("checked: inside a loop");
+                self.diverge(Terminator::Goto(targets.break_to));
             }
             StmtKind::Continue => {
-                let (next, _) = *self.loops.last().expect("checked: inside a loop");
-                self.diverge(Terminator::Goto(next));
+                let targets = *self.loops.last().expect("checked: inside a loop");
+                self.diverge(Terminator::Goto(targets.continue_to));
             }
             StmtKind::If {
                 condition,
@@ -289,7 +282,10 @@ impl Builder {
                     None => self.terminate(Terminator::Goto(body_id)),
                 }
                 self.current = body_id;
-                self.loops.push((next, exit));
+                self.loops.push(LoopTargets {
+                    continue_to: next,
+                    break_to: exit,
+                });
                 self.block(package, body);
                 self.loops.pop();
                 self.terminate(Terminator::Goto(next));
@@ -304,7 +300,6 @@ impl Builder {
         }
     }
 
-    /// Store a value, or each result of a multiple-result call, into places.
     fn store_results(
         &mut self,
         package: &hir::Package,
@@ -334,11 +329,7 @@ impl Builder {
         ty
     }
 
-    // ----- expressions -----
-
-    /// An operand whose value cannot change before it is used: constants stay
-    /// constants; everything else is copied into a fresh temporary.
-    fn retained(&mut self, package: &hir::Package, expr: &hir::Expr) -> Operand {
+    fn evaluate_to_temporary(&mut self, package: &hir::Package, expr: &hir::Expr) -> Operand {
         let operand = self.operand(package, expr);
         match operand {
             Operand::Const(..) => operand,
@@ -346,14 +337,13 @@ impl Builder {
         }
     }
 
-    /// Emit a call terminator; results go to `destinations`.
     fn call(&mut self, package: &hir::Package, expr: &hir::Expr, destinations: Vec<Option<Place>>) {
         let (callee, args) = match &expr.kind {
             ExprKind::Call { function, args } => (Callee::Function(*function), &args[..]),
             ExprKind::Println(arg) => (Callee::Println, std::slice::from_ref(&**arg)),
             _ => unreachable!("only calls produce multiple or no results"),
         };
-        let args = args.iter().map(|a| self.retained(package, a)).collect();
+        let args = args.iter().map(|a| self.evaluate_to_temporary(package, a)).collect();
         let target = self.new_block();
         self.terminate(Terminator::Call {
             callee,
@@ -395,10 +385,10 @@ impl Builder {
                 self.assign_temp(expr.ty(), Rvalue::Convert(inner, expr.ty()), span)
             }
             ExprKind::StructLit { strukt, fields } => {
-                // Evaluate in written order, then build in declaration order.
+                // Evaluate in written order, then assemble in declaration order.
                 let mut values: Vec<(usize, Operand)> = fields
                     .iter()
-                    .map(|(field, value)| (field.0 as usize, self.retained(package, value)))
+                    .map(|(field, value)| (field.0 as usize, self.evaluate_to_temporary(package, value)))
                     .collect();
                 values.sort_by_key(|(index, _)| *index);
                 let operands = values.into_iter().map(|(_, operand)| operand).collect();
@@ -412,15 +402,14 @@ impl Builder {
                 self.short_circuit(package, *op, lhs, rhs, span)
             }
             ExprKind::Binary { op, lhs, rhs } => {
-                // The left operand is fixed before the right is evaluated (§7.5).
-                let lhs = self.retained(package, lhs);
+                // The left operand is fixed before the right is evaluated.
+                let lhs = self.evaluate_to_temporary(package, lhs);
                 let rhs = self.operand(package, rhs);
                 self.assign_temp(expr.ty(), Rvalue::Binary(*op, lhs, rhs), span)
             }
         }
     }
 
-    /// `a && b` and `a || b` evaluate `b` only when needed (§7.6).
     fn short_circuit(
         &mut self,
         package: &hir::Package,

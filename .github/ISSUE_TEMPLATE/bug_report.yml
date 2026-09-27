@@ -1,0 +1,47 @@
+name: Compiler bug
+description: The compiler crashed, accepted an invalid program, rejected a valid one, or produced a wrong result.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting. Suspected security issues belong in a private report instead; see SECURITY.md.
+        Programs using features the compiler reports as "not supported yet" are known gaps, not bugs.
+  - type: textarea
+    id: program
+    attributes:
+      label: Program
+      description: The smallest Zore program that shows the problem.
+      render: ore
+    validations:
+      required: true
+  - type: input
+    id: command
+    attributes:
+      label: Command
+      placeholder: zore run main.ore
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: What should happen, with the relevant spec section if you know it.
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: Diagnostics, output, and exit status.
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Output of `zore --version`, the Zore commit (`git rev-parse HEAD`), your OS, and `clang --version` for build/run problems.
+      render: text
+    validations:
+      required: true

@@ -1,78 +1,122 @@
 # Zore
 
+[![CI](https://github.com/maasdi/zore/actions/workflows/ci.yml/badge.svg)](https://github.com/maasdi/zore/actions/workflows/ci.yml)
+[![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+
 **Simple code. Strong guarantees.**
 
-Zore is a native language with borrowing by default, deterministic cleanup, and
-one ownership model for synchronous code, async computations, tasks, and channels.
+Zore is a natively compiled programming language with ownership-based memory
+safety and no garbage collector. Parameters are borrowed by default, resources
+are cleaned up deterministically, errors are explicit values, and one ownership
+model covers synchronous code, `async`/`await`, lightweight tasks, and
+channels.
 
-The [language specification](spec/language-spec.md) defines the locked MVP.
-The M0 command-line driver is implemented: help, version, argument validation,
-and explicit unsupported-command errors. No Zore programs can be checked or
-compiled yet; compiler commands report this and exit unsuccessfully. Async and concurrency remain part of the full MVP.
+```ore
+package main
 
-## Development setup
+type User struct {
+    Name string
+}
 
-Install Rust through [rustup](https://rustup.rs/). The repository toolchain file
-pins Rust 1.98.1 with rustfmt and Clippy. No LLVM installation or third-party
-Rust dependencies are required for the workspace or initial frontend work.
+func greet(user User) {
+    println(user.Name)
+}
 
-If Cargo is not on your shell's PATH after installation, run
-`source "$HOME/.cargo/env"` in your terminal.
+func main() {
+    let user = User{
+        Name: "Maas",
+    }
 
-```sh
-cargo build --locked
-cargo fmt --all -- --check
-cargo clippy --locked --all-targets -- -D warnings
-cargo test --locked --all-targets
+    greet(user)
+}
 ```
 
-Commit `Cargo.lock`; update it deliberately when adding dependencies. CI runs the same
-format, lint, build, and test checks on Linux and macOS.
-
-## Start here
-
-- [AGENTS.md](AGENTS.md): implementation constraints for coding agents.
-- [CONTRIBUTING.md](CONTRIBUTING.md): workflow and validation expectations.
-- [Architecture](docs/architecture.md): compiler boundaries and design direction.
-- [Roadmap](docs/roadmap.md): milestones, dependencies, and acceptance criteria.
-- [Spec questions](docs/spec-questions.md): unresolved decisions and affected work.
-- [Testing](tests/README.md): planned test layers and fixture conventions.
-
-`examples/hello` reproduces the basic program from spec §3.2.
-`examples/semantic-target` reproduces the first semantic target from §42.
-Both pass `zore check` and run natively with `zore run`.
-
-## Current CLI
-
-```sh
-cargo run -- --help
-cargo run -- --version
-cargo run -- check --help
-cargo run -- check examples/hello/main.ore
-cargo run -- run examples/semantic-target/main.ore   # prints Maas
-cargo run -- build examples/hello/main.ore           # writes ./main
+```console
+$ zore run examples/semantic-target/main.ore
+Maas
 ```
 
-`check` lexes, parses, resolves, and type-checks one file as a whole package.
-It prints nothing and exits 0 for a valid file, or prints diagnostics to stderr
-and exits 1. Only a subset of the language is supported so far (see
-`docs/architecture.md`); unsupported features are reported as errors, never
-accepted. `build` compiles the file to a native executable named after it in
-the current directory; `run` builds into a temporary directory, runs the
-program, and returns its exit status (a panic exits with status 2). Both need
-clang with LLVM 15 or newer on `PATH`, or `ZORE_CC` naming one; see
-`docs/decisions/0001-native-backend.md`. `fmt` and `test` report unsupported
-operations; their targets are not read or modified. Each command currently
-requires exactly one target. Use `--` before a target starting with `-`.
+> [!NOTE]
+> Zore is in early development. The [language specification](spec/language-spec.md)
+> is written; the bootstrap compiler implements a growing subset of it. Nothing
+> is stable yet.
 
-Help (`-h`/`--help`) and version (`-V`/`--version`) write to stdout and exit 0.
-Unsupported operations write to stderr and exit 1; invalid CLI arguments write
-to stderr and exit 2. These are bootstrap driver conventions, not Zore program
-exit semantics. Paths are retained as native OS paths, including non-UTF-8 paths
-on Unix.
+## Project status
 
-The frontend (source manager, diagnostics, lexer, parser, resolver, type
-checker, and HIR) is available as library APIs and covered by integration
-tests, together with MIR lowering, an LLVM IR backend, and a minimal C runtime.
-There is no ownership analysis or drop insertion yet. See `docs/roadmap.md` for
-what comes next.
+| Area | Status |
+| --- | --- |
+| Language specification | MVP decisions locked in [`spec/language-spec.md`](spec/language-spec.md) |
+| Lexer, parser, diagnostics | Implemented, with error recovery |
+| Name resolution and type checking | Implemented for a subset: one file per package; `bool`, integer and float types, `rune`, `string`, and structs of those; functions, control flow, and Go-style untyped constants |
+| Native code generation | Implemented for that subset: MIR lowering, LLVM IR, and runtime checks for overflow, division by zero, shifts, and conversions |
+| Ownership and borrow checking, drop insertion | Planned (next major milestone) |
+| Methods, errors and `?`, collections, closures | Planned |
+| `async`/`await`, tasks, channels | Planned (part of the MVP) |
+| Self-hosting | Long-term goal |
+
+Features outside the implemented subset are reported as errors, never silently
+accepted. The [roadmap](docs/roadmap.md) has the details.
+
+## Getting started
+
+You need:
+
+- **Rust**, installed through [rustup](https://rustup.rs/). The repository pins
+  the toolchain in `rust-toolchain.toml`, so rustup selects it automatically.
+- **clang with LLVM 15 or newer**, for `zore build` and `zore run` only. macOS
+  ships it with the Xcode Command Line Tools; on Linux, install your
+  distribution's `clang` package. Set `ZORE_CC` to use a specific compiler.
+
+```sh
+git clone https://github.com/maasdi/zore.git
+cd zore
+cargo build --release
+./target/release/zore run examples/hello/main.ore
+```
+
+## Usage
+
+```sh
+zore check main.ore   # check a file; prints nothing when it is valid
+zore build main.ore   # compile to ./main
+zore run main.ore     # build into a temporary directory and run
+zore --help
+```
+
+Each command takes one source file, which is treated as a whole package.
+Diagnostics are printed to standard error with source locations, and the
+command exits with status 1. A program that panics reports the panic on
+standard error and exits with status 2; `zore run` passes the program's exit
+status through. Invalid command-line arguments also exit with status 2. `fmt`
+and `test` are not implemented yet.
+
+## Repository layout
+
+| Path | Contents |
+| --- | --- |
+| [`spec/`](spec/language-spec.md) | The language specification (authoritative) |
+| [`src/`](src) | The bootstrap compiler, written in Rust |
+| [`runtime/`](runtime) | The minimal C runtime linked into programs |
+| [`examples/`](examples) | Example programs |
+| [`tests/`](tests) | Integration tests and conformance cases |
+| [`docs/`](docs/README.md) | Architecture, roadmap, decision records, open questions |
+
+## Documentation
+
+- [Language specification](spec/language-spec.md)
+- [Documentation index](docs/README.md): architecture, roadmap, decision
+  records, and open specification questions
+- [Testing guide](tests/README.md)
+- [Changelog](CHANGELOG.md)
+
+## Contributing
+
+Contributions are welcome. Please read [CONTRIBUTING.md](CONTRIBUTING.md) and
+follow the [Code of Conduct](CODE_OF_CONDUCT.md). Report security issues
+privately as described in [SECURITY.md](SECURITY.md).
+
+## License
+
+Zore is licensed under the [Apache License, Version 2.0](LICENSE). Unless you
+state otherwise, any contribution you submit is licensed under the same terms,
+as described in section 5 of the license.

@@ -1,4 +1,4 @@
-//! The Zore bootstrap compiler: frontend, MIR, and LLVM IR backend.
+//! The Zore bootstrap compiler.
 
 pub mod ast;
 pub mod bignum;

@@ -1,6 +1,14 @@
 /target/
+
+# Editors and operating systems
 .DS_Store
+.idea/
+.vscode/
 *.swp
 *.swo
+
+# Generated LLVM IR. `zore build` also writes executables named after their
+# source file into the current directory; delete them or build elsewhere.
+*.ll
 
 # Cargo.lock is intentionally tracked for the compiler executable.

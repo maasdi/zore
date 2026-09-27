@@ -1,5 +1,4 @@
-//! Zore driver: `check`, `build`, and `run` invoke the compiler; `fmt` and
-//! `test` are not implemented yet.
+//! The `zore` command-line driver.
 
 mod cli;
 
@@ -67,8 +66,6 @@ fn report(sources: &SourceMap, diagnostics: &[Diagnostic], verb: &str) -> ExitCo
     ExitCode::FAILURE
 }
 
-/// Check one file as a complete package. Success is silent; diagnostics go
-/// to stderr and make the exit status 1.
 fn check(target: &Path) -> ExitCode {
     let (sources, id) = match load(target) {
         Ok(loaded) => loaded,
@@ -93,21 +90,18 @@ fn build_to(target: &Path, output: &Path, verb: &str) -> Result<(), ExitCode> {
     }
 }
 
-/// Build `dir/name.ore` into `./name` in the current directory.
 fn build_command(target: &Path) -> ExitCode {
     let Some(stem) = target.file_stem() else {
         eprintln!("zore: {target:?} has no file name");
         return ExitCode::FAILURE;
     };
-    let output = PathBuf::from(stem);
-    match build_to(target, &output, "build") {
+    let executable_in_current_dir = PathBuf::from(stem);
+    match build_to(target, &executable_in_current_dir, "build") {
         Ok(()) => ExitCode::SUCCESS,
         Err(code) => code,
     }
 }
 
-/// Build into a temporary directory and run the program, forwarding its
-/// exit status.
 fn run_command(target: &Path) -> ExitCode {
     let dir = match TempDir::new() {
         Ok(dir) => dir,

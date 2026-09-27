@@ -1,5 +1,3 @@
-//! Argument handling only; no source loading or compiler semantics live here.
-
 use std::ffi::OsString;
 use std::path::PathBuf;
 
