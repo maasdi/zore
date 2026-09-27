@@ -65,16 +65,13 @@ fn predeclared(name: &str) -> Option<Res> {
     }
     match name {
         "println" => Some(Res::Println),
-        "float32" | "float64" | "error" | "Array" | "Task" | "clone" | "drop" => {
-            Some(Res::Unsupported)
-        }
+        "error" | "Array" | "Task" | "clone" | "drop" => Some(Res::Unsupported),
         _ => None,
     }
 }
 
 fn unsupported_predeclared(name: &str) -> &'static str {
     match name {
-        "float32" | "float64" => "floating-point types are",
         "error" => "the `error` type is",
         "Array" => "`Array` is",
         "Task" => "`Task` is",

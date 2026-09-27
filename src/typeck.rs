@@ -1,10 +1,10 @@
 //! Type checking of resolved syntax into typed HIR (spec §5–8, §6.5–6.6,
 //! §7, §3.19, §37.1).
 //!
-//! Untyped integer constants keep exact values (up to a 128-bit
-//! implementation limit) until context gives them a type. Constant
-//! expressions are folded; typed constant overflow and invalid constant shift
-//! counts are compile-time errors. Features outside the checker's current
+//! Untyped constants keep exact values of integer or float kind until context
+//! gives them a type (§6.7, evaluated by `constant`). Constant expressions are
+//! folded; typed constant overflow, division by zero, and invalid constant
+//! shift counts are compile-time errors. Features outside the checker's current
 //! subset are diagnosed as unsupported rather than guessed.
 
 use std::collections::HashMap;
@@ -12,6 +12,8 @@ use std::collections::HashMap;
 use crate::ast::{
     self, AssignOp, AssignTarget, BinaryOp, BindingKind, BindingTarget, ForHeader, UnaryOp,
 };
+use crate::bignum::BigInt;
+use crate::constant::{self, ConstError, Folded, Unrepresentable, Untyped};
 use crate::diagnostic::{Diagnostic, Severity};
 use crate::hir::{self, Const, ExprKind, FieldId, FunctionId, LocalId, LocalKind};
 use crate::resolve::{ConstId, Res, Resolution};
@@ -105,7 +107,7 @@ pub fn check(
 
 #[derive(Clone)]
 enum ConstValue {
-    Untyped(i128),
+    Untyped(Untyped),
     Typed(TypeId, Const),
 }
 
@@ -117,7 +119,7 @@ enum ConstState {
 
 /// A checked expression before context has fixed an untyped constant's type.
 enum Value {
-    Untyped(i128, Span),
+    Untyped(Untyped, Span),
     Typed(hir::Expr),
 }
 
@@ -150,8 +152,6 @@ struct Checker<'a> {
     results: Vec<TypeId>,
     loop_depth: usize,
 }
-
-const LIMIT_NOTE: &str = "untyped integer constants are currently limited to 128 bits";
 
 fn typed(kind: ExprKind, ty: TypeId, span: Span) -> hir::Expr {
     hir::Expr {
@@ -424,48 +424,117 @@ impl<'a> Checker<'a> {
 
     // ----- values and coercion -----
 
-    /// Give a value the type `target`, range-checking untyped constants.
+    /// Give a value the type `target`; untyped constants must be
+    /// representable in it (§6.7).
     fn coerce(&mut self, value: Value, target: TypeId) -> Option<hir::Expr> {
-        match value {
-            Value::Untyped(v, span) => match self.types.int(target) {
-                Some(int) if int.contains(v) => {
-                    Some(typed(ExprKind::Const(Const::Int(v)), target, span))
-                }
-                Some(_) => {
-                    let message = format!(
-                        "integer constant `{v}` does not fit in `{}`",
-                        self.name(target)
-                    );
-                    self.error(message, span);
-                    None
-                }
-                None => {
-                    let message = format!(
-                        "mismatched types: expected `{}`, found an integer constant",
-                        self.name(target)
-                    );
-                    self.error(message, span);
-                    None
-                }
-            },
+        let (value, span) = match value {
+            Value::Untyped(value, span) => (value, span),
             Value::Typed(expr) => {
                 let expr = self.single(expr)?;
                 if expr.ty() == target {
-                    Some(expr)
-                } else {
-                    self.mismatch(target, expr.ty(), expr.span);
-                    None
+                    return Some(expr);
                 }
+                self.mismatch(target, expr.ty(), expr.span);
+                return None;
+            }
+        };
+        let (article, kind_name) = match value {
+            Untyped::Int(_) => ("an", "integer constant"),
+            Untyped::Float(_) => ("a", "floating-point constant"),
+        };
+        let result = match self.types.kind(target) {
+            TypeKind::Int(int) => match constant::to_int(&value, int) {
+                Ok(v) => Ok(Const::Int(v)),
+                Err(Unrepresentable::NotInteger) => Err(format!(
+                    "constant `{}` is not an integer, so it cannot have type `{}`",
+                    value.describe(),
+                    self.name(target)
+                )),
+                Err(Unrepresentable::OutOfRange) => Err(format!(
+                    "{kind_name} `{}` does not fit in `{}`",
+                    value.describe(),
+                    self.name(target)
+                )),
+            },
+            TypeKind::Float(float) => constant::to_float(&value, float)
+                .map(Const::Float)
+                .ok_or_else(|| {
+                    format!(
+                        "{kind_name} `{}` overflows `{}`",
+                        value.describe(),
+                        self.name(target)
+                    )
+                }),
+            _ => Err(format!(
+                "mismatched types: expected `{}`, found {article} {kind_name}",
+                self.name(target)
+            )),
+        };
+        match result {
+            Ok(c) => Some(typed(ExprKind::Const(c), target, span)),
+            Err(message) => {
+                self.error(message, span);
+                None
             }
         }
     }
 
-    /// The value with default typing: untyped integers become `int`.
+    /// The value with default typing: untyped integers become `int` and
+    /// untyped floats `float64` (§6.5).
     fn default(&mut self, value: Value) -> Option<hir::Expr> {
         match value {
-            Value::Untyped(..) => self.coerce(value, TypeStore::INT),
+            Value::Untyped(Untyped::Int(_), _) => self.coerce(value, TypeStore::INT),
+            Value::Untyped(Untyped::Float(_), _) => self.coerce(value, TypeStore::FLOAT64),
             Value::Typed(expr) => self.single(expr),
         }
+    }
+
+    /// Report a constant-evaluation failure.
+    fn const_error(&mut self, error: ConstError, op: &str, ty: Option<TypeId>, span: Span) {
+        let diagnostic = match error {
+            ConstError::DivisionByZero => Diagnostic::new(
+                Severity::Error,
+                "division by zero in a constant expression",
+                span,
+            ),
+            ConstError::NeedsInteger => Diagnostic::new(
+                Severity::Error,
+                format!("`{op}` requires integer operands"),
+                span,
+            ),
+            ConstError::NeedsBool => Diagnostic::new(
+                Severity::Error,
+                format!("`{op}` requires `bool` operands"),
+                span,
+            ),
+            ConstError::IntLimit => Diagnostic::new(
+                Severity::Error,
+                format!(
+                    "constant exceeds this compiler's {}-bit integer limit",
+                    constant::MAX_INT_BITS
+                ),
+                span,
+            )
+            .note("§6.7 requires at least 256 bits; the larger limit is an implementation limit"),
+            ConstError::FloatOverflow => Diagnostic::new(
+                Severity::Error,
+                "floating-point constant is too large",
+                span,
+            )
+            .note(format!(
+                "constants must stay below 2^{} (§6.7 implementation limit)",
+                constant::MAX_FLOAT_LOG2
+            )),
+            ConstError::Overflow => {
+                let ty = ty.map_or_else(String::new, |t| format!(" `{}`", self.name(t)));
+                Diagnostic::new(
+                    Severity::Error,
+                    format!("constant expression overflows{ty}"),
+                    span,
+                )
+            }
+        };
+        self.diagnostics.push(diagnostic);
     }
 
     /// Require exactly one value from an expression (§7.8).
@@ -499,14 +568,13 @@ impl<'a> Checker<'a> {
         };
         match &expr.kind {
             ast::ExprKind::Name(name) => self.name_expr(name, span),
-            ast::ExprKind::Int(base) => self.int_literal(*base, span),
+            ast::ExprKind::Int(base) => {
+                let text = &self.text[span.start() as usize..span.end() as usize];
+                self.literal(constant::parse_int(text, base.radix()), span)
+            }
             ast::ExprKind::Float => {
-                self.unsupported(
-                    "floating-point values are",
-                    span,
-                    "§6.7 float constants are not implemented yet",
-                );
-                None
+                let text = &self.text[span.start() as usize..span.end() as usize];
+                self.literal(constant::parse_float(text), span)
             }
             ast::ExprKind::String(value) => Some(Value::Typed(typed(
                 ExprKind::Const(Const::String(value.clone())),
@@ -579,59 +647,45 @@ impl<'a> Checker<'a> {
         }
     }
 
-    fn int_literal(&mut self, base: crate::token::IntBase, span: Span) -> Option<Value> {
-        let text = &self.text[span.start() as usize..span.end() as usize];
-        let digits: String = text
-            .get(
-                if base == crate::token::IntBase::Decimal {
-                    0
-                } else {
-                    2
-                }..,
-            )
-            .unwrap_or("")
-            .chars()
-            .filter(|&c| c != '_')
-            .collect();
-        match i128::from_str_radix(&digits, base.radix()) {
+    fn literal(&mut self, value: Result<Untyped, ConstError>, span: Span) -> Option<Value> {
+        match value {
             Ok(value) => Some(Value::Untyped(value, span)),
-            Err(_) => {
-                self.diagnostics.push(
-                    Diagnostic::new(Severity::Error, "integer literal is too large", span)
-                        .note(LIMIT_NOTE),
-                );
+            Err(error) => {
+                self.const_error(error, "", None, span);
                 None
             }
         }
     }
 
-    fn untyped_result(&mut self, value: Option<i128>, span: Span) -> Option<Value> {
-        match value {
-            Some(value) => Some(Value::Untyped(value, span)),
-            None => {
-                self.diagnostics.push(
-                    Diagnostic::new(Severity::Error, "constant value is too large", span)
-                        .note(LIMIT_NOTE),
-                );
-                None
-            }
-        }
+    fn bool_value(value: bool, span: Span) -> Option<Value> {
+        Some(Value::Typed(typed(
+            ExprKind::Const(Const::Bool(value)),
+            TypeStore::BOOL,
+            span,
+        )))
     }
 
-    /// Range-check a folded typed integer constant (§6.6 checked arithmetic).
-    fn int_const(&mut self, value: Option<i128>, ty: TypeId, span: Span) -> Option<Value> {
-        let int = self.types.int(ty).expect("integer type");
-        match value {
-            Some(v) if int.contains(v) => Some(Value::Typed(typed(
-                ExprKind::Const(Const::Int(v)),
-                ty,
-                span,
-            ))),
-            _ => {
-                let message = format!("constant expression overflows `{}`", self.name(ty));
-                self.error(message, span);
-                None
+    /// Whether a binary operator applies to operands of type `ty` (§6.6, §7.6).
+    fn operator_applies(&self, op: BinaryOp, ty: TypeId) -> bool {
+        let kind = self.types.kind(ty);
+        let int = matches!(kind, TypeKind::Int(_));
+        let numeric = self.types.is_numeric(ty);
+        match op {
+            BinaryOp::Add => numeric || kind == TypeKind::String,
+            BinaryOp::Sub | BinaryOp::Mul | BinaryOp::Div => numeric,
+            BinaryOp::Rem
+            | BinaryOp::BitAnd
+            | BinaryOp::BitOr
+            | BinaryOp::BitXor
+            | BinaryOp::Shl
+            | BinaryOp::Shr => int,
+            BinaryOp::Eq | BinaryOp::NotEq => {
+                numeric || matches!(kind, TypeKind::Bool | TypeKind::Rune | TypeKind::String)
             }
+            BinaryOp::Lt | BinaryOp::LtEq | BinaryOp::Gt | BinaryOp::GtEq => {
+                numeric || matches!(kind, TypeKind::Rune | TypeKind::String)
+            }
+            BinaryOp::And | BinaryOp::Or => kind == TypeKind::Bool,
         }
     }
 
@@ -643,24 +697,25 @@ impl<'a> Checker<'a> {
         expected: Option<TypeId>,
     ) -> Option<Value> {
         let value = self.expr(operand, if op == UnaryOp::Not { None } else { expected })?;
+        let symbol = match op {
+            UnaryOp::Plus => "+",
+            UnaryOp::Neg => "-",
+            UnaryOp::Not => "!",
+            UnaryOp::Complement => "^",
+        };
         let expr = match value {
-            Value::Untyped(v, _) => {
-                return match op {
-                    UnaryOp::Plus => Some(Value::Untyped(v, span)),
-                    UnaryOp::Neg => self.untyped_result(v.checked_neg(), span),
-                    UnaryOp::Complement => {
-                        self.unsupported(
-                            "unary `^` on an untyped constant is",
-                            span,
-                            "§6.7 untyped bitwise operators are not implemented yet; convert first, e.g. `^uint8(x)`",
-                        );
-                        None
-                    }
-                    UnaryOp::Not => {
-                        self.error(
-                            "`!` requires a `bool` operand, found an integer constant",
-                            span,
-                        );
+            Value::Untyped(value, _) => {
+                if op == UnaryOp::Not {
+                    self.error(
+                        "`!` requires a `bool` operand, found a numeric constant",
+                        span,
+                    );
+                    return None;
+                }
+                return match constant::untyped_unary(op, &value) {
+                    Ok(value) => Some(Value::Untyped(value, span)),
+                    Err(error) => {
+                        self.const_error(error, symbol, None, span);
                         None
                     }
                 };
@@ -668,34 +723,46 @@ impl<'a> Checker<'a> {
             Value::Typed(expr) => self.single(expr)?,
         };
         let ty = expr.ty();
-        let int = self.types.int(ty);
         let valid = match op {
             UnaryOp::Not => ty == TypeStore::BOOL,
-            _ => int.is_some(),
+            UnaryOp::Plus | UnaryOp::Neg => self.types.is_numeric(ty),
+            UnaryOp::Complement => self.types.int(ty).is_some(),
         };
         if !valid {
-            let symbol = match op {
-                UnaryOp::Plus => "+",
-                UnaryOp::Neg => "-",
-                UnaryOp::Not => "!",
-                UnaryOp::Complement => "^",
-            };
             let message = format!("unary `{symbol}` cannot be applied to `{}`", self.name(ty));
             self.error(message, span);
             return None;
         }
-        match (constant(&expr), int) {
-            (Some(Const::Bool(b)), _) => Some(Value::Typed(typed(
-                ExprKind::Const(Const::Bool(!b)),
-                ty,
-                span,
-            ))),
-            (Some(&Const::Int(v)), Some(int)) => match op {
-                UnaryOp::Plus => self.int_const(Some(v), ty, span),
-                UnaryOp::Neg => self.int_const(v.checked_neg(), ty, span),
-                _ => self.int_const(Some(int.wrap(!v)), ty, span),
-            },
-            _ => Some(Value::Typed(typed(
+        let folded = match (constant(&expr), op) {
+            (Some(&Const::Bool(b)), _) => Some(Ok(Const::Bool(!b))),
+            (Some(&Const::Int(v)), UnaryOp::Plus) => Some(Ok(Const::Int(v))),
+            (Some(&Const::Int(v)), UnaryOp::Neg) => {
+                let int = self.types.int(ty).expect("integer type");
+                Some(
+                    v.checked_neg()
+                        .filter(|&n| int.contains(n))
+                        .map(Const::Int)
+                        .ok_or(()),
+                )
+            }
+            (Some(&Const::Int(v)), _) => {
+                let int = self.types.int(ty).expect("integer type");
+                Some(Ok(Const::Int(int.wrap(!v))))
+            }
+            // Constants never hold negative zero (§6.7).
+            (Some(&Const::Float(x)), UnaryOp::Neg) => {
+                Some(Ok(Const::Float(if x == 0.0 { 0.0 } else { -x })))
+            }
+            (Some(&Const::Float(x)), _) => Some(Ok(Const::Float(x))),
+            _ => None,
+        };
+        match folded {
+            Some(Ok(c)) => Some(Value::Typed(typed(ExprKind::Const(c), ty, span))),
+            Some(Err(())) => {
+                self.const_error(ConstError::Overflow, symbol, Some(ty), span);
+                None
+            }
+            None => Some(Value::Typed(typed(
                 ExprKind::Unary {
                     op,
                     operand: Box::new(expr),
@@ -731,35 +798,11 @@ impl<'a> Checker<'a> {
         let (left, right) = (left?, right?);
 
         if let (Value::Untyped(a, _), Value::Untyped(b, _)) = (&left, &right) {
-            let (a, b) = (*a, *b);
-            let bool_value = |value| {
-                Some(Value::Typed(typed(
-                    ExprKind::Const(Const::Bool(value)),
-                    TypeStore::BOOL,
-                    span,
-                )))
-            };
-            return match op {
-                BinaryOp::Add => self.untyped_result(a.checked_add(b), span),
-                BinaryOp::Sub => self.untyped_result(a.checked_sub(b), span),
-                BinaryOp::Mul => self.untyped_result(a.checked_mul(b), span),
-                BinaryOp::Eq => bool_value(a == b),
-                BinaryOp::NotEq => bool_value(a != b),
-                BinaryOp::Lt => bool_value(a < b),
-                BinaryOp::LtEq => bool_value(a <= b),
-                BinaryOp::Gt => bool_value(a > b),
-                BinaryOp::GtEq => bool_value(a >= b),
-                BinaryOp::And | BinaryOp::Or => {
-                    let message = format!("`{}` requires `bool` operands", op_str(op));
-                    self.error(message, span);
-                    None
-                }
-                _ => {
-                    self.unsupported(
-                        &format!("`{}` between two untyped constants is", op_str(op)),
-                        span,
-                        "this §6.7 operation is not implemented yet; give one operand a type, e.g. `int(7) / 2`",
-                    );
+            return match constant::untyped_binary(op, a, b) {
+                Ok(Folded::Untyped(value)) => Some(Value::Untyped(value, span)),
+                Ok(Folded::Bool(value)) => Self::bool_value(value, span),
+                Err(error) => {
+                    self.const_error(error, op_str(op), None, span);
                     None
                 }
             };
@@ -780,30 +823,7 @@ impl<'a> Checker<'a> {
             (Value::Untyped(..), Value::Untyped(..)) => unreachable!("handled above"),
         };
         let ty = left.ty();
-        let kind = self.types.kind(ty);
-        let is_int = matches!(kind, TypeKind::Int(_));
-        let valid = match op {
-            BinaryOp::Add => is_int || kind == TypeKind::String,
-            BinaryOp::Sub
-            | BinaryOp::Mul
-            | BinaryOp::Div
-            | BinaryOp::Rem
-            | BinaryOp::BitAnd
-            | BinaryOp::BitOr
-            | BinaryOp::BitXor => is_int,
-            BinaryOp::Eq | BinaryOp::NotEq => {
-                matches!(
-                    kind,
-                    TypeKind::Bool | TypeKind::Int(_) | TypeKind::Rune | TypeKind::String
-                )
-            }
-            BinaryOp::Lt | BinaryOp::LtEq | BinaryOp::Gt | BinaryOp::GtEq => {
-                matches!(kind, TypeKind::Int(_) | TypeKind::Rune | TypeKind::String)
-            }
-            BinaryOp::And | BinaryOp::Or => kind == TypeKind::Bool,
-            BinaryOp::Shl | BinaryOp::Shr => unreachable!("shifts are checked separately"),
-        };
-        if !valid {
+        if !self.operator_applies(op, ty) {
             let message = format!(
                 "operator `{}` cannot be applied to `{}`",
                 op_str(op),
@@ -833,64 +853,53 @@ impl<'a> Checker<'a> {
 
     /// Fold a binary operation on two typed constants of type `ty`.
     fn fold(&mut self, op: BinaryOp, a: Const, b: Const, ty: TypeId, span: Span) -> Option<Value> {
-        let bool_value = |value| {
-            Some(Value::Typed(typed(
-                ExprKind::Const(Const::Bool(value)),
-                TypeStore::BOOL,
-                span,
-            )))
-        };
-        let ordering = match (&a, &b) {
-            (Const::Int(x), Const::Int(y)) => x.cmp(y),
-            (Const::Rune(x), Const::Rune(y)) => x.cmp(y),
-            // Byte-wise UTF-8 order (§6.6).
-            (Const::String(x), Const::String(y)) => x.as_bytes().cmp(y.as_bytes()),
-            (Const::Bool(x), Const::Bool(y)) => x.cmp(y),
-            _ => unreachable!("operands share a type"),
-        };
-        match op {
-            BinaryOp::Eq => return bool_value(ordering.is_eq()),
-            BinaryOp::NotEq => return bool_value(ordering.is_ne()),
-            BinaryOp::Lt => return bool_value(ordering.is_lt()),
-            BinaryOp::LtEq => return bool_value(ordering.is_le()),
-            BinaryOp::Gt => return bool_value(ordering.is_gt()),
-            BinaryOp::GtEq => return bool_value(ordering.is_ge()),
-            _ => {}
+        if op.is_comparison() {
+            let ordering = match (&a, &b) {
+                (Const::Int(x), Const::Int(y)) => x.cmp(y),
+                // Constants are finite, so floats are totally ordered here.
+                (Const::Float(x), Const::Float(y)) => x.partial_cmp(y).expect("finite"),
+                (Const::Rune(x), Const::Rune(y)) => x.cmp(y),
+                // Byte-wise UTF-8 order (§6.6).
+                (Const::String(x), Const::String(y)) => x.as_bytes().cmp(y.as_bytes()),
+                (Const::Bool(x), Const::Bool(y)) => x.cmp(y),
+                _ => unreachable!("operands share a type"),
+            };
+            let result = match op {
+                BinaryOp::Eq => ordering.is_eq(),
+                BinaryOp::NotEq => ordering.is_ne(),
+                BinaryOp::Lt => ordering.is_lt(),
+                BinaryOp::LtEq => ordering.is_le(),
+                BinaryOp::Gt => ordering.is_gt(),
+                _ => ordering.is_ge(),
+            };
+            return Self::bool_value(result, span);
         }
-        match (a, b) {
+        let result = match (a, b) {
             (Const::Bool(x), Const::Bool(y)) => {
-                bool_value(if op == BinaryOp::And { x && y } else { x || y })
+                return Self::bool_value(if op == BinaryOp::And { x && y } else { x || y }, span);
             }
-            (Const::String(x), Const::String(y)) => Some(Value::Typed(typed(
-                ExprKind::Const(Const::String(x + &y)),
-                ty,
-                span,
-            ))),
+            (Const::String(x), Const::String(y)) => Ok(Const::String(x + &y)),
             (Const::Int(x), Const::Int(y)) => {
                 let int = self.types.int(ty).expect("integer operands");
-                if matches!(op, BinaryOp::Div | BinaryOp::Rem) && y == 0 {
-                    self.error("division by zero in a constant expression", span);
-                    return None;
-                }
-                let value = match op {
-                    BinaryOp::Add => x.checked_add(y),
-                    BinaryOp::Sub => x.checked_sub(y),
-                    BinaryOp::Mul => x.checked_mul(y),
-                    BinaryOp::Div => x.checked_div(y),
-                    BinaryOp::Rem => x.checked_rem(y),
-                    BinaryOp::BitAnd => Some(int.wrap(x & y)),
-                    BinaryOp::BitOr => Some(int.wrap(x | y)),
-                    BinaryOp::BitXor => Some(int.wrap(x ^ y)),
-                    _ => unreachable!("remaining integer operators"),
-                };
-                self.int_const(value, ty, span)
+                constant::typed_int(op, x, y, int).map(Const::Int)
+            }
+            (Const::Float(x), Const::Float(y)) => {
+                let float = self.types.float(ty).expect("float operands");
+                constant::typed_float(op, x, y, float).map(Const::Float)
             }
             _ => unreachable!("operator validity was checked"),
+        };
+        match result {
+            Ok(c) => Some(Value::Typed(typed(ExprKind::Const(c), ty, span))),
+            Err(error) => {
+                self.const_error(error, op_str(op), Some(ty), span);
+                None
+            }
         }
     }
 
-    /// Shifts: the left operand fixes the type; the count is any integer
-    /// (§6.6, Q11).
+    /// Shifts: the left operand fixes the type; the count is any integer or
+    /// an untyped constant representable as one (§6.6–6.7, Q11).
     fn shift(
         &mut self,
         op: BinaryOp,
@@ -902,11 +911,18 @@ impl<'a> Checker<'a> {
         let left = self.expr(lhs, expected);
         let right = self.expr(rhs, None);
         let (left, right) = (left?, right?);
-        let (count, count_expr) = match right {
-            Value::Untyped(n, count_span) => (
-                Some(n),
-                typed(ExprKind::Const(Const::Int(n)), TypeStore::INT, count_span),
-            ),
+        let (count, count_expr, count_span) = match right {
+            Value::Untyped(value, count_span) => match value.to_integer() {
+                Some(n) => (Some(n), None, count_span),
+                None => {
+                    let message = format!(
+                        "shift count must be an integer, found `{}`",
+                        value.describe()
+                    );
+                    self.error(message, count_span);
+                    return None;
+                }
+            },
             Value::Typed(expr) => {
                 let expr = self.single(expr)?;
                 if self.types.int(expr.ty()).is_none() {
@@ -918,44 +934,43 @@ impl<'a> Checker<'a> {
                     return None;
                 }
                 let count = match constant(&expr) {
-                    Some(&Const::Int(n)) => Some(n),
+                    Some(&Const::Int(n)) => Some(BigInt::from_i128(n)),
                     _ => None,
                 };
-                (count, expr)
+                let count_span = expr.span;
+                (count, Some(expr), count_span)
             }
         };
-        if let Some(n) = count
-            && n < 0
+        if let Some(n) = &count
+            && n.is_negative()
         {
-            self.error(format!("shift count `{n}` is negative"), count_expr.span);
+            self.error(format!("shift count `{n}` is negative"), count_span);
             return None;
         }
         let left = match left {
-            Value::Untyped(v, _) => match count {
-                // Exact untyped shifts; right shift rounds toward negative infinity.
-                Some(n) if op == BinaryOp::Shl => {
-                    let shifted = u32::try_from(n).ok().and_then(|n| {
-                        let value = v.checked_mul(1i128.checked_shl(n)?)?;
-                        (n < 127).then_some(value)
-                    });
-                    return self.untyped_result(shifted, span);
-                }
-                Some(n) => {
-                    let shifted = if n >= 127 {
-                        if v < 0 { -1 } else { 0 }
-                    } else {
-                        v >> n
+            Value::Untyped(value, left_span) => {
+                let Some(integer) = value.to_integer() else {
+                    let message =
+                        format!("shifted constant `{}` must be an integer", value.describe());
+                    self.error(message, left_span);
+                    return None;
+                };
+                if let Some(n) = &count {
+                    // Exact untyped shift (§6.6).
+                    return match constant::untyped_shift(op, &integer, n) {
+                        Ok(value) => Some(Value::Untyped(value, span)),
+                        Err(error) => {
+                            self.const_error(error, op_str(op), None, span);
+                            None
+                        }
                     };
-                    return Some(Value::Untyped(shifted, span));
                 }
                 // A runtime count gives the constant its contextual type.
-                None => {
-                    let ty = expected
-                        .filter(|&t| self.types.int(t).is_some())
-                        .unwrap_or(TypeStore::INT);
-                    self.coerce(left, ty)?
-                }
-            },
+                let ty = expected
+                    .filter(|&t| self.types.int(t).is_some())
+                    .unwrap_or(TypeStore::INT);
+                self.coerce(Value::Untyped(Untyped::Int(integer), left_span), ty)?
+            }
             Value::Typed(expr) => self.single(expr)?,
         };
         let ty = left.ty();
@@ -968,19 +983,23 @@ impl<'a> Checker<'a> {
             self.error(message, span);
             return None;
         };
-        if let Some(n) = count
-            && n >= i128::from(int.bits)
-        {
-            let message = format!("shift count `{n}` is too large for `{}`", self.name(ty));
-            self.diagnostics.push(
-                Diagnostic::new(Severity::Error, message, count_expr.span).note(format!(
-                    "counts must be less than the width, {} bits",
-                    int.bits
-                )),
-            );
-            return None;
-        }
-        if let (Some(&Const::Int(v)), Some(n)) = (constant(&left), count) {
+        let count_value = match &count {
+            Some(n) => match n.to_u64().filter(|&n| n < u64::from(int.bits)) {
+                Some(n) => Some(n),
+                None => {
+                    let message = format!("shift count `{n}` is too large for `{}`", self.name(ty));
+                    self.diagnostics.push(
+                        Diagnostic::new(Severity::Error, message, count_span).note(format!(
+                            "counts must be less than the width, {} bits",
+                            int.bits
+                        )),
+                    );
+                    return None;
+                }
+            },
+            None => None,
+        };
+        if let (Some(&Const::Int(v)), Some(n)) = (constant(&left), count_value) {
             let value = shift_value(int, v, n as u32, op);
             return Some(Value::Typed(typed(
                 ExprKind::Const(Const::Int(value)),
@@ -988,6 +1007,10 @@ impl<'a> Checker<'a> {
                 span,
             )));
         }
+        let count_expr = count_expr.unwrap_or_else(|| {
+            let n = count_value.expect("a constant count without an expression") as i128;
+            typed(ExprKind::Const(Const::Int(n)), TypeStore::INT, count_span)
+        });
         Some(Value::Typed(typed(
             ExprKind::Binary {
                 op,
@@ -1117,7 +1140,11 @@ impl<'a> Checker<'a> {
         let expr = self.default(value)?;
         if !matches!(
             self.types.kind(expr.ty()),
-            TypeKind::Bool | TypeKind::Int(_) | TypeKind::Rune | TypeKind::String
+            TypeKind::Bool
+                | TypeKind::Int(_)
+                | TypeKind::Float(_)
+                | TypeKind::Rune
+                | TypeKind::String
         ) {
             let message = format!(
                 "`println` cannot print values of type `{}`",
@@ -1136,14 +1163,15 @@ impl<'a> Checker<'a> {
         }))
     }
 
-    /// Numeric conversion `T(value)` (§6.6); only integer targets so far.
+    /// Numeric conversion `T(value)` (§6.6). Constants must be representable
+    /// in the target (§6.7); runtime values are converted with checks.
     fn conversion(&mut self, target: TypeId, args: &[ast::Expr], span: Span) -> Option<Value> {
         let [arg] = args else {
             self.error("a conversion takes exactly one argument", span);
             self.check_args(args);
             return None;
         };
-        let Some(int) = self.types.int(target) else {
+        if !self.types.is_numeric(target) {
             self.check_args(args);
             if target == TypeStore::RUNE {
                 self.unsupported(
@@ -1159,51 +1187,69 @@ impl<'a> Checker<'a> {
                 self.error(message, span);
             }
             return None;
-        };
+        }
         let value = match self.expr(arg, None)? {
-            Value::Untyped(v, value_span) => {
-                if !int.contains(v) {
-                    let message = format!(
-                        "integer constant `{v}` does not fit in `{}`",
-                        self.name(target)
-                    );
-                    self.error(message, value_span);
-                    return None;
-                }
-                return Some(Value::Typed(typed(
-                    ExprKind::Const(Const::Int(v)),
-                    target,
-                    span,
-                )));
+            untyped @ Value::Untyped(..) => {
+                let mut expr = self.coerce(untyped, target)?;
+                expr.span = span;
+                return Some(Value::Typed(expr));
             }
             Value::Typed(expr) => self.single(expr)?,
         };
-        if self.types.int(value.ty()).is_none() {
+        let source = value.ty();
+        if !self.types.is_numeric(source) {
             let message = format!(
                 "cannot convert `{}` to `{}`",
-                self.name(value.ty()),
+                self.name(source),
                 self.name(target)
             );
             self.error(message, span);
             return None;
         }
-        if let Some(&Const::Int(v)) = constant(&value) {
-            if !int.contains(v) {
-                let message = format!("constant `{v}` does not fit in `{}`", self.name(target));
-                self.error(message, span);
-                return None;
-            }
+        let Some(c) = constant(&value) else {
             return Some(Value::Typed(typed(
-                ExprKind::Const(Const::Int(v)),
+                ExprKind::Convert(Box::new(value)),
                 target,
                 span,
             )));
+        };
+        let converted = match (c, self.types.kind(target)) {
+            (&Const::Int(v), TypeKind::Int(int)) => {
+                if int.contains(v) {
+                    Ok(Const::Int(v))
+                } else {
+                    Err(format!(
+                        "constant `{v}` does not fit in `{}`",
+                        self.name(target)
+                    ))
+                }
+            }
+            (&Const::Int(v), TypeKind::Float(float)) => constant::int_to_float(v, float)
+                .map(Const::Float)
+                .ok_or_else(|| format!("constant `{v}` overflows `{}`", self.name(target))),
+            (&Const::Float(x), TypeKind::Int(int)) => match constant::float_to_int(x, int) {
+                Ok(v) => Ok(Const::Int(v)),
+                Err(Unrepresentable::NotInteger) => Err(format!(
+                    "constant `{x:?}` is not an integer, so it cannot be converted to `{}`",
+                    self.name(target)
+                )),
+                Err(Unrepresentable::OutOfRange) => Err(format!(
+                    "constant `{x:?}` does not fit in `{}`",
+                    self.name(target)
+                )),
+            },
+            (&Const::Float(x), TypeKind::Float(float)) => constant::float_to_float(x, float)
+                .map(Const::Float)
+                .ok_or_else(|| format!("constant `{x:?}` overflows `{}`", self.name(target))),
+            _ => unreachable!("numeric constants and targets"),
+        };
+        match converted {
+            Ok(c) => Some(Value::Typed(typed(ExprKind::Const(c), target, span))),
+            Err(message) => {
+                self.error(message, span);
+                None
+            }
         }
-        Some(Value::Typed(typed(
-            ExprKind::Convert(Box::new(value)),
-            target,
-            span,
-        )))
     }
 
     fn field_of(&mut self, ty: TypeId, name: &ast::Name) -> Option<(FieldId, TypeId)> {
@@ -1692,20 +1738,35 @@ impl<'a> Checker<'a> {
         span: Span,
     ) -> Option<hir::StmtKind> {
         let ty = place.ty;
-        let kind = self.types.kind(ty);
-        if matches!(op, BinaryOp::Shl | BinaryOp::Shr) {
-            let Some(int) = self.types.int(ty) else {
-                let message = format!(
-                    "operator `{}=` cannot be applied to `{}`",
-                    op_str(op),
-                    self.name(ty)
-                );
-                self.error(message, span);
-                return None;
-            };
+        if !self.operator_applies(op, ty) {
+            let message = format!(
+                "operator `{}=` cannot be applied to `{}`",
+                op_str(op),
+                self.name(ty)
+            );
+            self.error(message, span);
+            return None;
+        }
+        if let Some(int) = self.types.int(ty)
+            && matches!(op, BinaryOp::Shl | BinaryOp::Shr)
+        {
             let count = match value {
-                Value::Untyped(n, count_span) => {
-                    typed(ExprKind::Const(Const::Int(n)), TypeStore::INT, count_span)
+                Value::Untyped(value, count_span) => {
+                    let n = value.to_integer().and_then(|n| n.to_i128());
+                    match n.filter(|n| (0..i128::from(int.bits)).contains(n)) {
+                        Some(n) => {
+                            typed(ExprKind::Const(Const::Int(n)), TypeStore::INT, count_span)
+                        }
+                        None => {
+                            let message = format!(
+                                "shift count `{}` is out of range for `{}`",
+                                value.describe(),
+                                self.name(ty)
+                            );
+                            self.error(message, count_span);
+                            return None;
+                        }
+                    }
                 }
                 Value::Typed(expr) => self.single(expr)?,
             };
@@ -1729,19 +1790,6 @@ impl<'a> Checker<'a> {
                 op,
                 value: count,
             });
-        }
-        let valid = match op {
-            BinaryOp::Add => matches!(kind, TypeKind::Int(_) | TypeKind::String),
-            _ => matches!(kind, TypeKind::Int(_)),
-        };
-        if !valid {
-            let message = format!(
-                "operator `{}=` cannot be applied to `{}`",
-                op_str(op),
-                self.name(ty)
-            );
-            self.error(message, span);
-            return None;
         }
         // A constant zero divisor with a runtime dividend panics at runtime;
         // it is not a constant expression (§6.6).

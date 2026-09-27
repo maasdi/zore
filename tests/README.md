@@ -10,8 +10,11 @@ rows of the conformance documents below. `tests/parser.rs` tests M3–M4 AST
 shape (via an S-expression rendering), spans, syntax rejection, unsupported
 later-milestone syntax, recovery, and termination on generated input. No
 conformance runner or semantic runner exists yet. `tests/check.rs` tests resolution, type checking,
-constant folding, HIR shape, the entry-point and `println` contracts, and that
-unsupported features are rejected rather than accepted. Add tests
+§6.7 constant evaluation, float typing and conversions, HIR shape, the
+entry-point and `println` contracts, and that unsupported features are rejected
+rather than accepted. Unit tests in `src/bignum.rs` and `src/constant.rs` check
+big-number arithmetic and float rounding against Rust's `i128` and correctly
+rounded `str::parse` as oracles. Add tests
 alongside each stage; do not create ignored tests to imply that pending features
 have coverage.
 

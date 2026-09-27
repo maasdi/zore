@@ -42,7 +42,11 @@ impl Package {
     /// the checker currently accepts is Copy.
     pub fn is_copy(&self, ty: TypeId) -> bool {
         match self.types.kind(ty) {
-            TypeKind::Bool | TypeKind::Int(_) | TypeKind::Rune | TypeKind::String => true,
+            TypeKind::Bool
+            | TypeKind::Int(_)
+            | TypeKind::Float(_)
+            | TypeKind::Rune
+            | TypeKind::String => true,
             TypeKind::Struct(id) => self.strukt(id).fields.iter().all(|f| self.is_copy(f.ty)),
         }
     }
@@ -166,6 +170,9 @@ impl Expr {
 pub enum Const {
     Bool(bool),
     Int(i128),
+    /// A finite value exactly representable in the expression's float type;
+    /// never negative zero (§6.7).
+    Float(f64),
     Rune(char),
     String(String),
 }
@@ -183,7 +190,7 @@ pub enum ExprKind {
         args: Vec<Expr>,
     },
     Println(Box<Expr>),
-    /// Checked integer conversion (§6.6).
+    /// Checked numeric conversion (§6.6).
     Convert(Box<Expr>),
     /// Fields in written order, which is also evaluation order (§8.4).
     StructLit {

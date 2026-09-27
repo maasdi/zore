@@ -52,8 +52,8 @@ A newly discovered semantic gap blocks its affected feature, not unrelated work.
   `int64(2.5)` is invalid (runtime conversion still truncates). Integral
   untyped float constants may be shift operands. Implementations must support
   at least 256-bit integer constants and 256-bit-mantissa float constants.
-  Zore keeps typed rune/bool/string literals, unlike Go. Pending cases:
-  `tests/conformance/constant-expressions.md` and `numerics.md`.
+  Zore keeps typed rune/bool/string literals, unlike Go. Implemented by
+  `src/constant.rs` and `src/bignum.rs`; covered by `tests/check.rs`.
 
 - **Q05a — Entry point and `println`:** locked in §3.19 and §37.1 at the
   user's direction. `package main` requires exactly one `func main()` with no

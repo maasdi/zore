@@ -47,10 +47,27 @@ impl IntType {
     }
 }
 
+/// IEEE 754 binary32 or binary64 (§6.5).
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct FloatType {
+    pub bits: u8,
+}
+
+impl FloatType {
+    pub fn format(self) -> crate::bignum::FloatFormat {
+        if self.bits == 32 {
+            crate::bignum::BINARY32
+        } else {
+            crate::bignum::BINARY64
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum TypeKind {
     Bool,
     Int(IntType),
+    Float(FloatType),
     Rune,
     String,
     Struct(StructId),
@@ -83,6 +100,8 @@ impl TypeStore {
     pub const UINT16: TypeId = TypeId(8);
     pub const UINT32: TypeId = TypeId(9);
     pub const UINT64: TypeId = TypeId(10);
+    pub const FLOAT32: TypeId = TypeId(11);
+    pub const FLOAT64: TypeId = TypeId(12);
     /// Default type of untyped integer constants (§6.5).
     pub const INT: TypeId = Self::INT64;
 
@@ -93,6 +112,8 @@ impl TypeStore {
                 kinds.push(TypeKind::Int(IntType { bits, signed }));
             }
         }
+        kinds.push(TypeKind::Float(FloatType { bits: 32 }));
+        kinds.push(TypeKind::Float(FloatType { bits: 64 }));
         Self {
             kinds,
             struct_names: Vec::new(),
@@ -125,6 +146,18 @@ impl TypeStore {
         }
     }
 
+    pub fn float(&self, ty: TypeId) -> Option<FloatType> {
+        match self.kind(ty) {
+            TypeKind::Float(float) => Some(float),
+            _ => None,
+        }
+    }
+
+    /// Integer or floating-point.
+    pub fn is_numeric(&self, ty: TypeId) -> bool {
+        matches!(self.kind(ty), TypeKind::Int(_) | TypeKind::Float(_))
+    }
+
     pub fn struct_id(&self, ty: TypeId) -> Option<StructId> {
         match self.kind(ty) {
             TypeKind::Struct(id) => Some(id),
@@ -150,6 +183,8 @@ impl TypeStore {
             "uint16" => Self::UINT16,
             "uint32" => Self::UINT32,
             "uint64" | "uint" => Self::UINT64,
+            "float32" => Self::FLOAT32,
+            "float64" => Self::FLOAT64,
             _ => return None,
         })
     }
@@ -169,6 +204,7 @@ impl fmt::Display for TypeName<'_> {
             TypeKind::Int(IntType { bits, signed }) => {
                 write!(f, "{}int{bits}", if signed { "" } else { "u" })
             }
+            TypeKind::Float(FloatType { bits }) => write!(f, "float{bits}"),
             TypeKind::Struct(id) => f.write_str(&self.store.struct_names[id.0 as usize]),
         }
     }

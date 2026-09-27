@@ -1,7 +1,9 @@
 //! Reusable compiler frontend infrastructure.
 
 pub mod ast;
+pub mod bignum;
 pub mod check;
+pub mod constant;
 pub mod diagnostic;
 pub mod hir;
 pub mod lexer;

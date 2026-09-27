@@ -300,7 +300,7 @@ fn bindings_types_and_defaults() {
     );
     rejects(
         &body("let x = 340282366920938463463374607431768211456"),
-        "too large",
+        "does not fit in `int64`",
     );
 }
 
@@ -828,14 +828,6 @@ fn control_flow_and_return_completeness() {
 fn unsupported_features_are_never_accepted() {
     for (text, message) in [
         (
-            body("let f = 1.5"),
-            "floating-point values are not supported",
-        ),
-        (
-            program("func f(x float64) {}"),
-            "floating-point types are not supported",
-        ),
-        (
             program("func f() error { return nil }"),
             "the `error` type is not supported",
         ),
@@ -872,22 +864,6 @@ fn unsupported_features_are_never_accepted() {
             program("let top = 1"),
             "package-level `let` and `var` are not supported",
         ),
-        (
-            body("let x = 7 / 2"),
-            "`/` between two untyped constants is not supported",
-        ),
-        (
-            body("let x = 7 % 2"),
-            "`%` between two untyped constants is not supported",
-        ),
-        (
-            body("let x = 6 & 3"),
-            "`&` between two untyped constants is not supported",
-        ),
-        (
-            body("let x = ^5"),
-            "unary `^` on an untyped constant is not supported",
-        ),
         (program("func f(xs Array) {}"), "`Array` is not supported"),
         (
             body("let x = clone(1)"),
@@ -900,7 +876,6 @@ fn unsupported_features_are_never_accepted() {
     ] {
         rejects(&text, message);
     }
-    // A typed operand makes division well defined.
     assert_eq!(
         folded("let x = int(7) / 2"),
         (Const::Int(3), "int64".into())
@@ -921,4 +896,209 @@ fn diagnostics_are_reported_in_source_order() {
     ));
     let spans: Vec<&str> = case.errors().into_iter().map(|(_, span)| span).collect();
     assert_eq!(spans, ["300", "missing", "1"]);
+}
+
+/// Untyped constants follow Go's model (§6.7).
+#[test]
+fn untyped_constant_kinds_follow_section_6_7() {
+    let int = |v: i128| (Const::Int(v), "int64".to_string());
+    let float = |v: f64| (Const::Float(v), "float64".to_string());
+    assert_eq!(folded("let x = 2 + 3.0"), float(5.0));
+    assert_eq!(folded("let x = 15 / 4"), int(3));
+    assert_eq!(folded("let x = 15 / 4.0"), float(3.75));
+    assert_eq!(folded("let x = -7 / 2"), int(-3));
+    assert_eq!(folded("let x = -7 % 3"), int(-1));
+    assert_eq!(folded("let x = ^1"), int(-2));
+    assert_eq!(folded("let x = ^-1"), int(0));
+    assert_eq!(folded("let x = 6 & 3"), int(2));
+    assert_eq!(folded("let x = 6 | 3"), int(7));
+    assert_eq!(folded("let x = 6 ^ 3"), int(5));
+    assert_eq!(folded("let x = -4 | 1"), int(-3));
+    assert_eq!(folded("let x = -4 & 7"), int(4));
+    assert_eq!(folded("let x = 1 << 3.0"), int(8));
+    assert_eq!(folded("let x = 1.0 << 3"), int(8));
+    assert_eq!(
+        folded("let x = uint8(1) << 1.0"),
+        (Const::Int(2), "uint8".into())
+    );
+    assert_eq!(
+        folded("const huge = 1 << 100\nlet x int8 = huge >> 98"),
+        (Const::Int(4), "int8".into())
+    );
+    assert_eq!(folded("const x = 1 << 254\nlet y = x >> 253"), int(2));
+    assert_eq!(
+        folded("const half float64 = 3 / 2\nlet x = half"),
+        float(1.0)
+    );
+    assert_eq!(
+        folded("const exact float64 = 3 / 2.0\nlet x = exact"),
+        float(1.5)
+    );
+    assert_eq!(
+        folded("let x = 0.1 * 3 == 0.3"),
+        (Const::Bool(true), "bool".into())
+    );
+    assert_eq!(
+        folded("let x = 1 < 1.5"),
+        (Const::Bool(true), "bool".into())
+    );
+    assert_eq!(
+        folded("let x uint8 = 42.0"),
+        (Const::Int(42), "uint8".into())
+    );
+    assert_eq!(
+        folded("let x uint64 = 1e10"),
+        (Const::Int(10_000_000_000), "uint64".into())
+    );
+    assert_eq!(
+        folded("let x float32 = 0.1"),
+        (Const::Float(f64::from(0.1f32)), "float32".into())
+    );
+    assert_eq!(
+        folded("let x float32 = 2.718281828459045"),
+        (
+            Const::Float(f64::from("2.718281828459045".parse::<f32>().unwrap())),
+            "float32".into()
+        )
+    );
+    assert_eq!(folded("let x float64 = -1e-1000"), float(0.0));
+    assert_eq!(folded("let x = 1e308 * 10 / 10"), float(1e308));
+    assert_eq!(folded("let x = 1.5"), float(1.5));
+    assert_eq!(folded("let x float64 = 1"), float(1.0));
+    // Exact evaluation beyond 128 bits before typing.
+    assert_eq!(
+        folded("let x = 340282366920938463463374607431768211456 >> 120"),
+        int(256)
+    );
+}
+
+#[test]
+fn untyped_constant_errors_follow_section_6_7() {
+    rejects(&body("let x = 1 / 0"), "division by zero");
+    rejects(&body("let x = 1.0 / 0.0"), "division by zero");
+    rejects(&body("let x = 5 % 0"), "division by zero");
+    rejects(&body("let x = 7.5 % 2"), "`%` requires integer operands");
+    rejects(&body("let x = 7 % 2.0"), "`%` requires integer operands");
+    rejects(&body("let x = 1.5 & 1"), "`&` requires integer operands");
+    rejects(&body("let x = ^1.0"), "`^` requires integer operands");
+    rejects(&body("let x = uint8(^1)"), "`-2` does not fit in `uint8`");
+    rejects(&body("let x = 1 << 3.5"), "shift count must be an integer");
+    rejects(
+        &body("let x = 1.5 << 1"),
+        "shifted constant `1.5` must be an integer",
+    );
+    rejects(&body("let x int = 1.1"), "is not an integer");
+    rejects(&body("let x uint8 = 1024"), "does not fit in `uint8`");
+    rejects(&body("let x float64 = 1e1000"), "overflows `float64`");
+    rejects(&body("let x float32 = 1e39"), "overflows `float32`");
+    rejects(&body("let x = 1e1000"), "overflows `float64`");
+    rejects(
+        &body("let r rune = 65"),
+        "expected `rune`, found an integer constant",
+    );
+    rejects(
+        &body("let s string = 1.5"),
+        "expected `string`, found a floating-point constant",
+    );
+    rejects(&body("let x = 1 << 5000"), "4096-bit integer limit");
+    rejects(
+        &body("let x = 1e99999"),
+        "floating-point constant is too large",
+    );
+    rejects(&body("let x = 1 && true"), "mismatched types");
+    rejects(&body("let x = 1 || 2"), "`||` requires `bool` operands");
+}
+
+#[test]
+fn float_types_and_conversions() {
+    accepts(&program(
+        "func area(w float64, h float64) float64 { return w * h / 2 }
+        func use() {
+            var x float32 = 1.5
+            x += 2
+            x *= x
+            let y = float64(x) - 0.25
+            let n = int64(y)
+            let back = float32(n)
+            let cmp = y < 3.0 && y != 0
+            println(y)
+            println(area(2, 3.5))
+        }",
+    ));
+    assert_eq!(
+        folded("let x = int64(2.0)"),
+        (Const::Int(2), "int64".into())
+    );
+    assert_eq!(
+        folded("let x = float32(0.1)"),
+        (Const::Float(f64::from(0.1f32)), "float32".into())
+    );
+    assert_eq!(
+        folded("let x = float64(float32(0.1))"),
+        (Const::Float(f64::from(0.1f32)), "float64".into())
+    );
+    assert_eq!(
+        folded("let x = float32(16777217)"),
+        (Const::Float(16_777_216.0), "float32".into())
+    );
+    assert_eq!(
+        folded("const c float64 = 2.5\nlet x = int8(c * 2)"),
+        (Const::Int(5), "int8".into())
+    );
+    assert_eq!(
+        folded("let x = -float64(0)"),
+        (Const::Float(0.0), "float64".into())
+    );
+    assert_eq!(
+        folded("const x float32 = 0.1\nlet y = x"),
+        (Const::Float(f64::from(0.1f32)), "float32".into())
+    );
+    rejects(&body("let x = int64(2.5)"), "is not an integer");
+    rejects(
+        &body("const c float64 = 2.5\nlet x = int64(c)"),
+        "is not an integer",
+    );
+    rejects(
+        &body("const c float64 = 1e300\nlet x = float32(c)"),
+        "overflows `float32`",
+    );
+    rejects(
+        &body("const big float64 = 1e20\nlet x = int64(big)"),
+        "does not fit in `int64`",
+    );
+    rejects(&body("let x = float64(1) / 0"), "division by zero");
+    rejects(
+        &body("let x = 1.7976931348623157e308 * float64(2)"),
+        "overflows `float64`",
+    );
+    rejects(
+        &body("var f = 1.5\nlet x = f % 2"),
+        "`%` cannot be applied to `float64`",
+    );
+    rejects(
+        &body("var f = 1.5\nlet x = ^f"),
+        "unary `^` cannot be applied to `float64`",
+    );
+    rejects(
+        &body("var f = 1.5\nlet x = f << 1"),
+        "cannot be applied to `float64`",
+    );
+    rejects(
+        &body("var f = 1.5\nlet x = 1 << f"),
+        "shift count must be an integer, found `float64`",
+    );
+    rejects(
+        &body("var f float32 = 1\nlet x float64 = f"),
+        "expected `float64`, found `float32`",
+    );
+    rejects(
+        &body("var f = 1.5\nf %= 2"),
+        "`%=` cannot be applied to `float64`",
+    );
+    rejects(
+        &body("let x = float64(\"1\")"),
+        "cannot convert `string` to `float64`",
+    );
+    // Runtime conversions are checked at runtime, not rejected (§6.6).
+    accepts(&body("var f = 2.5\nlet n = int64(f)"));
 }

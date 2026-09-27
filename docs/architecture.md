@@ -72,18 +72,33 @@ span. It enforces duplicate, scope-entry, and predeclared-shadowing rules and
 rejects structs that contain themselves by value. `typeck` then checks types
 without re-resolving strings and builds HIR: every expression has a type,
 constant expressions are folded, assignment targets are places (a local plus
-field projections), and locals carry their declaration kind. Untyped integer
-constants stay exact in `i128`, a documented implementation limit, until
-context types them; typed constant overflow, division by zero, and invalid
-constant shift counts are compile-time errors. Return completeness is checked
+field projections), and locals carry their declaration kind. Typed constant
+overflow, division by zero, and invalid constant shift counts are compile-time
+errors. Return completeness is checked
 conservatively on the AST. HIR is produced only when there are no diagnostics,
 and diagnostics are reported in source order.
 
+Constant evaluation (§6.6–6.7) lives in `src/constant.rs`, separate from type
+checking. Untyped constants have an integer or float kind and are exact:
+integers are arbitrary-precision, and floats are exact rationals. Both use the
+hand-written `src/bignum.rs` (no numeric dependency, and easy to port to Zore);
+its unit tests use Rust's `i128` arithmetic and correctly rounded
+`str::parse::<f32/f64>` as oracles. Implementation limits, all above the §6.7
+minimums: untyped integers up to 4096 bits (larger is an error); floats keep
+exact rationals until numerator or denominator exceeds 40,000 bits, then round
+to 512 significant bits; float magnitudes must stay below 2^32767 (overflow is
+an error; far smaller magnitudes round to zero). Typing a constant applies
+§6.7 representability: integers need an integral value in range, and floats
+round to nearest, ties to even, without overflow. Typed float constants hold
+the exact value of their `float32`/`float64` and fold by exact arithmetic
+followed by one rounding, which equals the correctly rounded IEEE result.
+
 The checker accepts a deliberately small subset: one file per package; `bool`,
-integer types, `rune`, `string`, and structs of those; functions with default or
-`own` parameters; `println`; integer conversions. Floats, `error`/`nil`/`?`,
-methods, `async`/`await`, `mut` parameters, imports, package variables, function
-values, and the untyped-constant operators in Q15 are reported as unsupported.
+integer and float types, `rune`, `string`, and structs of those; functions with
+default or `own` parameters; `println`; numeric conversions. `error`/`nil`/`?`,
+methods, `async`/`await`, `mut` parameters, imports, package variables, rune
+conversions, and function values are reported as unsupported. `println` of a
+float type-checks, but its text format is still TBD (§37.1).
 Because every accepted type is Copy and `mut` is excluded, no ownership rule can
 be violated yet; `typeck` refuses to produce HIR containing a non-Copy type, so
 this cannot silently change when new types are added before ownership analysis.
