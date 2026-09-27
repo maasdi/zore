@@ -29,7 +29,8 @@ fn help_is_successful_and_honest_about_support() {
         assert!(stdout.contains("Usage: zore"));
         assert!(stdout.contains("check <file.ore>"));
         assert!(stdout.contains("Not implemented yet"));
-        assert!(stdout.contains("No Zore program can be built or run yet"));
+        assert!(stdout.contains("build <file.ore>"));
+        assert!(stdout.contains("run <file.ore>"));
     }
 }
 
@@ -90,10 +91,10 @@ fn commands_validate_target_count_and_offer_help() {
             assert!(output.stderr.is_empty());
             let stdout = String::from_utf8(output.stdout).unwrap();
             assert!(stdout.contains(&format!("Usage: zore {action}")));
-            if action == "check" {
-                assert!(stdout.contains("Only part of the"));
-            } else {
-                assert!(stdout.contains("not implemented yet"));
+            match action {
+                "check" => assert!(stdout.contains("Only part of the")),
+                "build" | "run" => assert!(stdout.contains("Requires clang")),
+                _ => assert!(stdout.contains("not implemented yet")),
             }
         }
     }
@@ -101,10 +102,13 @@ fn commands_validate_target_count_and_offer_help() {
 
 #[test]
 fn unimplemented_commands_never_claim_success() {
-    for action in ["build", "run", "fmt", "test"] {
+    for action in ["fmt", "test"] {
         for target in [".", "missing.ore", "a path with spaces.ore"] {
             failure(&invoke(&[action, target]), 1, "not implemented yet");
         }
+    }
+    for action in ["build", "run"] {
+        failure(&invoke(&[action, "missing.ore"]), 1, "zore: missing.ore:");
     }
 }
 
@@ -170,7 +174,7 @@ fn delimiter_allows_option_shaped_targets() {
             1,
             &format!("zore: {target}:"),
         );
-        failure(&invoke(&["build", "--", target]), 1, "was not processed");
+        failure(&invoke(&["fmt", "--", target]), 1, "was not processed");
     }
     failure(&invoke(&["check", "-source.ore"]), 2, "unknown option");
     failure(
@@ -193,7 +197,7 @@ fn non_utf8_arguments_do_not_panic() {
         "zore: source-",
     );
     failure(
-        &invoke(&[OsString::from("build"), path.clone()]),
+        &invoke(&[OsString::from("fmt"), path.clone()]),
         1,
         "was not processed",
     );

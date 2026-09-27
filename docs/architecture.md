@@ -9,7 +9,10 @@ primary and related locations. `src/token.rs` and `src/lexer.rs` produce tokens;
 names to IDs, `src/types.rs` interns types, and `src/typeck.rs` produces the
 typed HIR in `src/hir.rs`. `tests/cli.rs`, `tests/source_diagnostics.rs`,
 `tests/lexer.rs`, `tests/parser.rs`, and `tests/check.rs` exercise these
-contracts. MIR, ownership analysis, and code generation remain planned. Rust is the bootstrap implementation language; use one crate until
+contracts. `src/lower.rs` lowers HIR to the MIR in `src/mir.rs`,
+`src/codegen.rs` emits LLVM IR, and `src/build.rs` compiles it with clang and
+`runtime/zore_runtime.c` (decision record 0001); `tests/native.rs` builds and
+runs programs. Ownership analysis and drop insertion remain planned. Rust is the bootstrap implementation language; use one crate until
 stable boundaries justify extraction.
 
 | Area | Responsibility | Spec |
@@ -139,3 +142,29 @@ The renderer shows the first line of a multi-line span and reports its extent.
 Terminal-cell width for wide Unicode glyphs is not yet measured; source offsets
 and reported scalar columns remain exact. This display choice may improve later
 without changing language semantics. No LLVM or runtime dependency is involved.
+
+## MIR and native code generation
+
+MIR (§33) is a control-flow graph per function: locals (HIR locals keep their
+indexes, temporaries follow), basic blocks of `place = rvalue` statements, and
+one terminator per block (`Goto`, `Branch`, `Call`, `Return`, `Unreachable`).
+Operands distinguish `Copy`, `Move`, and constants; lowering emits only `Copy`
+and constants because every accepted type is Copy. Lowering fixes evaluation
+order explicitly: operands and arguments left to right, assignment values
+retained before stores, struct fields in written order then assembled in
+declaration order, compound assignment reading its target before the
+right-hand side, and `&&`/`||` as branches. Calls are terminators, so results
+land in temporaries or discarded destinations.
+
+Code generation (`src/codegen.rs`) gives every MIR local a stack slot and
+relies on LLVM's optimizer to promote them. §6.6 runtime checks are emitted
+there: overflow intrinsics for `+ - *` and negation, zero and `MIN / -1`
+checks for `/` and `%`, unsigned range checks for shift counts, and range
+checks for numeric conversions; each failure calls `zore_panic` with the
+operation and source location. Since no accepted type has a destructor, a
+panic needs no unwinding. When drop insertion lands (M18), these checks become
+explicit MIR assert terminators with cleanup paths. Runtime string
+concatenation and float printing are reported as unsupported by the backend.
+The generated IR contains no target triple, so clang supplies the host's; it
+requires LLVM 15 or newer for opaque pointers.
+

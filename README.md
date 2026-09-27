@@ -40,7 +40,7 @@ format, lint, build, and test checks on Linux and macOS.
 
 `examples/hello` reproduces the basic program from spec §3.2.
 `examples/semantic-target` reproduces the first semantic target from §42.
-Both pass `zore check`; neither can be built or run yet.
+Both pass `zore check` and run natively with `zore run`.
 
 ## Current CLI
 
@@ -49,15 +49,21 @@ cargo run -- --help
 cargo run -- --version
 cargo run -- check --help
 cargo run -- check examples/hello/main.ore
+cargo run -- run examples/semantic-target/main.ore   # prints Maas
+cargo run -- build examples/hello/main.ore           # writes ./main
 ```
 
 `check` lexes, parses, resolves, and type-checks one file as a whole package.
 It prints nothing and exits 0 for a valid file, or prints diagnostics to stderr
 and exits 1. Only a subset of the language is supported so far (see
 `docs/architecture.md`); unsupported features are reported as errors, never
-accepted. `build`, `run`, `fmt`, and `test` report unsupported operations;
-their targets are not read or modified. Each command currently requires
-exactly one target. Use `--` before a target starting with `-`.
+accepted. `build` compiles the file to a native executable named after it in
+the current directory; `run` builds into a temporary directory, runs the
+program, and returns its exit status (a panic exits with status 2). Both need
+clang with LLVM 15 or newer on `PATH`, or `ZORE_CC` naming one; see
+`docs/decisions/0001-native-backend.md`. `fmt` and `test` report unsupported
+operations; their targets are not read or modified. Each command currently
+requires exactly one target. Use `--` before a target starting with `-`.
 
 Help (`-h`/`--help`) and version (`-V`/`--version`) write to stdout and exit 0.
 Unsupported operations write to stderr and exit 1; invalid CLI arguments write
@@ -67,6 +73,6 @@ on Unix.
 
 The frontend (source manager, diagnostics, lexer, parser, resolver, type
 checker, and HIR) is available as library APIs and covered by integration
-tests. There is no MIR, ownership analysis, backend, or runtime yet. The next
-work is the minimal native path for the §42 semantic target; see
-`docs/roadmap.md`.
+tests, together with MIR lowering, an LLVM IR backend, and a minimal C runtime.
+There is no ownership analysis or drop insertion yet. See `docs/roadmap.md` for
+what comes next.

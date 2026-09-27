@@ -87,35 +87,49 @@ pub(crate) fn parse(args: Vec<OsString>) -> Result<Command, String> {
 
 pub(crate) fn help(action: Option<Action>) -> String {
     if let Some(action) = action {
-        if action == Action::Check {
-            return "Usage: zore check [--] <file.ore>\n\n\
-                    Check one source file as a complete package. Only part of the\n\
-                    language is supported so far; unsupported features are reported\n\
-                    as errors. Prints nothing and exits 0 when the file is valid.\n\
-                    Use -- before a target whose name starts with '-'.\n"
-                .into();
-        }
-        return format!(
-            "Usage: zore {} [--] <target>\n\n\
-             This command is not implemented yet. No target is read or modified.\n\
-             Use -- before a target whose name starts with '-'.\n",
-            action.name()
-        );
+        let text = match action {
+            Action::Check => {
+                "Usage: zore check [--] <file.ore>\n\n\
+                Check one source file as a complete package. Only part of the\n\
+                language is supported so far; unsupported features are reported\n\
+                as errors. Prints nothing and exits 0 when the file is valid.\n"
+            }
+            Action::Build => {
+                "Usage: zore build [--] <file.ore>\n\n\
+                Check one source file and compile it to a native executable named\n\
+                after the file (main.ore builds ./main) in the current directory.\n\
+                Requires clang with LLVM 15 or newer; set ZORE_CC to choose it.\n"
+            }
+            Action::Run => {
+                "Usage: zore run [--] <file.ore>\n\n\
+                Build one source file into a temporary directory and run it. The\n\
+                program's exit status is returned. Requires clang, as for build.\n"
+            }
+            _ => {
+                return format!(
+                    "Usage: zore {} [--] <target>\n\n\
+                     This command is not implemented yet. No target is read or modified.\n\
+                     Use -- before a target whose name starts with '-'.\n",
+                    action.name()
+                );
+            }
+        };
+        return format!("{text}Use -- before a target whose name starts with '-'.\n");
     }
     "Zore bootstrap compiler\n\n\
      Usage: zore <command> [--] <target>\n\
             zore --help\n\
             zore --version\n\n\
-     Commands:\n\
-       check <file.ore>  Check a source file (a subset of the language)\n\n\
+     Commands (a subset of the language is supported):\n\
+       check <file.ore>  Check a source file\n\
+       build <file.ore>  Build a native executable (requires clang)\n\
+       run <file.ore>    Build and run a program (requires clang)\n\n\
      Not implemented yet:\n\
-       build <target>    Build a program\n\
-       run <target>      Run a program\n\
        fmt <target>      Format source\n\
        test <target>     Run Zore tests\n\n\
      Options:\n\
        -h, --help        Show help; also accepted after a command\n\
        -V, --version     Show compiler version\n\n\
-     No Zore program can be built or run yet.\n"
+     Programs are compiled one file at a time.\n"
         .into()
 }

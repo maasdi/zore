@@ -1,12 +1,13 @@
 # Implementation roadmap
 
-M0–M4 are complete, and M9–M10 (resolution and type checking) are implemented
-for an initial subset: `zore check <file.ore>` runs lex → parse → resolve →
-type-check and accepts the §42 semantic target and the hello example. The
-subset is synchronous, single-file, and all-Copy (bool, integers, floats, rune,
-string, structs of those), with Go-style untyped constants (§6.7); everything
-else is reported as unsupported. No MIR, ownership
-analysis, or code generator exists yet, so nothing can be built or run. Linux/macOS CI is configured but has not run remotely.
+M0–M8 are complete for an initial language subset, with M9–M12 (resolution,
+types, HIR, MIR) implemented for that subset. `zore check` runs lex → parse →
+resolve → type-check; `zore build` and `zore run` lower to MIR, emit LLVM IR,
+and compile it with clang and a small C runtime (decision record 0001). The
+§42 semantic target runs natively and prints `Maas`. The subset is
+synchronous, single-file, and all-Copy (bool, integers, floats, rune, string,
+structs of those), with Go-style untyped constants (§6.7); everything else is
+reported as unsupported. There is no ownership analysis or drop insertion yet. Linux/macOS CI is configured but has not run remotely.
 The user has ended broad specification preparation: resolve further language
 questions only when they block the active implementation milestone. No currently
 recorded language question blocked M0–M4; Q13 and Q14 record the conservative
@@ -20,8 +21,8 @@ is guidance, not a language contract.
 | M1 — complete | Source manager, file IDs, byte spans, diagnostic rendering; test empty input, UTF-8 boundaries, line endings, EOF, and multiple files. |
 | M2 — complete | Tokens and lexer for agreed lexical rules; test spans, valid tokens, invalid input, EOF, and progress after errors. Q01 lexical choices are resolved; use the locked rules. |
 | M3–M4 — complete | AST and parser together for package/functions/structs/bindings/calls; test shape, spans, recovery, and rejection. Resolve relevant grammar questions first. |
-| M5–M8 | Hello program, variables, functions, structs. Establish the minimal native backend and builtin output support needed to run examples. Use resolution/type work below as prerequisites where needed. |
-| M9–M12 — M9–M10 initial subset done | Name resolution, types, HIR, MIR/CFG; semantic IDs, typed calls/fields, explicit control flow, frontend-only checking. |
+| M5–M8 — complete for the subset | Hello program, variables, functions, structs. Establish the minimal native backend and builtin output support needed to run examples. Use resolution/type work below as prerequisites where needed. |
+| M9–M12 — initial subset done | Name resolution, types, HIR, MIR/CFG; semantic IDs, typed calls/fields, explicit control flow, frontend-only checking. |
 | M13–M17 | Copy/Move, shared/mutable borrowing, regions; paired acceptance/rejection tests including branches and projected places. Complete the §42 semantic target. |
 | M18–M19 | Drop insertion and explicit errors/`?`; verify exactly-once cleanup on normal, branch, and early-return paths. |
 | M20–M23 | Fixed arrays, borrowed slices, owned arrays, maps, packages/imports; validate ownership and package visibility. |
@@ -37,20 +38,21 @@ supported. Never bypass ownership rules just to make a demonstration execute.
 
 ## Next implementation session
 
-The semantic checkpoint now passes `check`; its remaining requirement is native
-execution printing `Maas`. Next, start the minimal native path (M5–M8 with
-M11–M12): first record the backend decision (LLVM version, binding strategy,
-host targets, runtime ABI, and setup/test instructions) under
-`docs/decisions/` as `docs/architecture.md` requires, then lower HIR to MIR/CFG
-with explicit Copy operations and control flow, and emit a native executable
-with a minimal runtime `println`. Keep `check` independent of the backend.
+The semantic checkpoint's check and native execution both pass. The next
+language-level step is ownership (M13–M17): Copy/Move classification in MIR,
+use-after-move, shared/mutable borrow checking, and `mut` parameters. It needs
+a first Move type to be meaningful; the smallest candidates are a struct with a
+user-defined `drop` method (§8.3, §14.3), which also requires methods (§9), or
+owned arrays (M22). Methods alone (§9.1) are a smaller self-contained step and
+a prerequisite for `drop`. Ownership analysis must land before any Move type or
+`mut` parameter is accepted: the all-Copy restriction is what currently makes
+ownership checks vacuous, and `typeck` enforces it.
 
-Alternatively, widen the checker (methods, `error`/`?`, rune conversions),
-keeping every widening paired with rejection tests. Native float printing
-needs the `println` float text format (§37.1, still TBD) decided first. Ownership
-analysis (M13–M17) must land before any Move type or `mut` parameter is
-accepted: the checker's all-Copy restriction is what currently makes ownership
-checks vacuous, and `typeck` enforces it.
+Other open items: `error`/`?` (M18–M19), rune conversions, the `println` float
+text format (§37.1, TBD), and runtime string concatenation, which needs a
+string-buffer ownership decision (§41.5). Runtime checks panic from code
+generation today; they move to explicit MIR assert terminators with cleanup
+paths when drop insertion (M18) arrives.
 
 Temporary limits that are not language rules: `check <file.ore>` treats the one
 file as the whole package and diagnoses `import` until package discovery (Q05,

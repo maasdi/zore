@@ -14,7 +14,12 @@ conformance runner or semantic runner exists yet. `tests/check.rs` tests resolut
 entry-point and `println` contracts, and that unsupported features are rejected
 rather than accepted. Unit tests in `src/bignum.rs` and `src/constant.rs` check
 big-number arithmetic and float rounding against Rust's `i128` and correctly
-rounded `str::parse` as oracles. Add tests
+rounded `str::parse` as oracles. `tests/native.rs` builds programs with clang,
+runs them, and compares stdout, stderr, and exit status, including every §6.6
+runtime panic, evaluation order, a closed standard output, and the CLI
+`build`/`run` commands. It requires clang with LLVM 15 or newer (or
+`ZORE_CC`); without it those tests fail with a clear message rather than being
+skipped. Add tests
 alongside each stage; do not create ignored tests to imply that pending features
 have coverage.
 

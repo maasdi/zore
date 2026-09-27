@@ -1,7 +1,8 @@
 # Contributing
 
 Read the language specification and `AGENTS.md` first. The repository is at the
-initial M9–M10 checker stage, with the minimal native path next; choose work from
+stage where an initial subset checks and runs natively, with ownership analysis
+next; choose work from
 `docs/roadmap.md`.
 
 For each change:
