@@ -64,9 +64,9 @@ fn panics(source: &str, message: &str, stdout_before: &str) {
 }
 
 #[test]
-fn semantic_target_prints_maas() {
+fn semantic_target_prints_john() {
     let source = std::fs::read_to_string("examples/semantic-target/main.ore").unwrap();
-    prints(&source, "Maas\n");
+    prints(&source, "John\n");
 }
 
 #[test]
@@ -495,5 +495,5 @@ fn emitted_ir_is_deterministic_and_names_the_entry() {
     );
     assert!(ir.contains("define void @\"main.greet\""), "{ir}");
     assert!(ir.contains("define void @zore_entry()"), "{ir}");
-    assert!(ir.contains("c\"Maas\""), "{ir}");
+    assert!(ir.contains("c\"John\""), "{ir}");
 }

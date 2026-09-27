@@ -2102,7 +2102,7 @@ type User struct {
 
 ```ore
 let user = User{
-    Name: "Maas",
+    Name: "John",
 }
 ```
 
@@ -3331,7 +3331,7 @@ or unused binding and suggest handling, propagation where valid, or explicit
 Minimal closure syntax:
 
 ```ore
-let name = "Maas"
+let name = "John"
 
 let greet = func() {
     println(name)
@@ -5135,7 +5135,7 @@ func greet(user User) {
 
 func main() {
     let user = User{
-        Name: "Maas",
+        Name: "John",
     }
 
     greet(user)
