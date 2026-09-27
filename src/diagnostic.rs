@@ -77,6 +77,22 @@ impl Diagnostic {
         self
     }
 
+    pub fn severity(&self) -> Severity {
+        self.severity
+    }
+
+    pub fn message(&self) -> &str {
+        &self.message
+    }
+
+    pub fn span(&self) -> Span {
+        self.primary.span
+    }
+
+    pub fn notes(&self) -> &[String] {
+        &self.notes
+    }
+
     pub fn render(&self, sources: &SourceMap) -> Result<String, RenderError> {
         let mut output = format!("{}: {}\n", self.severity.name(), self.message);
         render_label(&mut output, sources, &self.primary, "-->")?;

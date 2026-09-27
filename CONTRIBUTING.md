@@ -1,7 +1,7 @@
 # Contributing
 
 Read the language specification and `AGENTS.md` first. The repository is at the
-M0 CLI stage, with M1 source/spans/diagnostics next; choose work from
+M2 lexer stage, with the M3–M4 parser next; choose work from
 `docs/roadmap.md`.
 
 For each change:

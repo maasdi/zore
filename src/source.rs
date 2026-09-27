@@ -147,6 +147,16 @@ impl SourceFile {
         })
     }
 
+    /// Returns a span in this file if both ends are UTF-8 boundaries in order.
+    pub fn span(&self, start: u32, end: u32) -> Option<Span> {
+        let span = Span {
+            file: self.id,
+            start,
+            end,
+        };
+        self.contains(span).then_some(span)
+    }
+
     fn contains(&self, span: Span) -> bool {
         span.file == self.id
             && span.start <= span.end
@@ -230,8 +240,7 @@ impl SourceMap {
     }
 
     pub fn span(&self, file: FileId, start: u32, end: u32) -> Option<Span> {
-        let span = Span { file, start, end };
-        self.file(file)?.contains(span).then_some(span)
+        self.file(file)?.span(start, end)
     }
 
     pub fn slice(&self, span: Span) -> Option<&str> {

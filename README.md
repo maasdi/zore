@@ -63,8 +63,8 @@ exit semantics. Paths are retained as native OS paths, including non-UTF-8 paths
 on Unix. Source loading now exists as a library API; the CLI will use it when
 compiler stages can process the loaded source.
 
-M1 source/spans/diagnostics are available as library APIs and covered by
-integration tests. `check` still exits unsuccessfully because there is no lexer,
-parser, or semantic checker. The next work is M2 lexing; no recorded language
-decision blocks it. LLVM, runtime, and
-library work belong to later stages.
+M1 source/spans/diagnostics and the M2 lexer are available as library APIs and
+covered by integration tests. `check` still exits unsuccessfully because there is
+no parser or semantic checker, and the CLI does not run the lexer yet. The next
+work is the M3–M4 AST and parser. LLVM, runtime, and library work belong to
+later stages.

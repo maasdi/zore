@@ -1,11 +1,13 @@
 # Bootstrap architecture
 
-Status: M0 and M1 are implemented. `src/main.rs` and `src/cli.rs` handle CLI
-arguments and exit status. `src/lib.rs` exposes the source and diagnostic APIs;
-`src/source.rs` stores UTF-8 text under stable file IDs and validated byte spans,
-and `src/diagnostic.rs` renders primary and related locations. `tests/cli.rs`
-and `tests/source_diagnostics.rs` exercise these contracts. Lexing and later
-compiler stages remain planned. Rust is the bootstrap implementation language; use one crate until
+Status: M0–M2 are implemented. `src/main.rs` and `src/cli.rs` handle CLI
+arguments and exit status. `src/lib.rs` exposes the source, diagnostic, token,
+and lexer APIs; `src/source.rs` stores UTF-8 text under stable file IDs and
+validated byte spans, and `src/diagnostic.rs` renders primary and related
+locations. `src/token.rs` defines token kinds and `src/lexer.rs` turns one
+source file into tokens plus lexical diagnostics. `tests/cli.rs`,
+`tests/source_diagnostics.rs`, and `tests/lexer.rs` exercise these contracts.
+Parsing and later compiler stages remain planned. Rust is the bootstrap implementation language; use one crate until
 stable boundaries justify extraction.
 
 | Area | Responsibility | Spec |
@@ -24,8 +26,23 @@ stable boundaries justify extraction.
 
 M1 stores `Span` with its source manager in `source`; a separate `span` module
 would have no independent work. The library target exposes these APIs to
-integration tests and future stages. Introduce `token` and `lexer` with M2;
-`ast` and `parser` together with M3/M4. Do not stub future modules.
+integration tests and future stages. Introduce `ast` and `parser` together with
+M3/M4. Do not stub future modules.
+
+The lexer (M2) always consumes the whole file and ends with one `Eof` token.
+It inserts semicolons itself (§3.7), marking each as explicit, newline, or EOF,
+with inserted ones given an empty span at the start of the line terminator (the
+first one inside a multiline block comment) or at EOF. Malformed input yields a
+diagnostic plus a recovery token: `MalformedLiteral` (which still ends a
+statement) for bad literals, `Unknown` for stray characters and `++`/`--`, and
+a single `Ident` for a name containing non-ASCII letters. A file is lexically
+valid only when no diagnostics are reported; later stages must not treat
+recovery tokens as accepted source. String and rune literals are validated and
+decoded in the lexer, because the one-scalar rune rule requires decoding.
+Numeric tokens carry only their kind and base: values are decoded later from
+the span, since exact untyped-constant values and range checks belong to typing.
+The parser must split `>>` when closing nested type arguments such as
+`Array<Task<int>>`; the lexer always takes the longest operator.
 
 AST preserves written structure; HIR records resolved meaning; MIR describes
 execution. Source identity and spans survive transformations. Use typed IDs for

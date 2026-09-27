@@ -8,9 +8,10 @@ Unrelated infrastructure work can proceed.
 ## Implementation priority
 
 The user's current direction is to defer decisions until needed by the active
-compiler milestone. No currently recorded language question blocks M0 CLI,
-M1 source/spans/diagnostics, or M2 lexing; Q01 is resolved. Do not work through
-all of Q02/Q05 before starting those stages. See `roadmap.md` for stage gates.
+compiler milestone. M0–M2 are implemented; Q01 is resolved, and Q13 records
+the conservative lexer choices made where the spec is silent. Do not work
+through all of Q02/Q05 before starting the parser stages. See `roadmap.md` for
+stage gates.
 
 Before the first semantically checked/runnable target, resolve only the relevant
 Q05 subset (package/entry-point behavior, used builtin signatures, and exercised
@@ -34,6 +35,7 @@ A newly discovered semantic gap blocks its affected feature, not unrelated work.
 | Q10 | Scoped (structured) tasks: whether tasks should be required to finish before the scope that spawned them ends, so they can safely borrow the spawner's locals and are never abandoned at exit. Adopting this would revise §18.5–18.6 (dropping a handle would wait instead of detach; detaching would become explicit) and §18.11. Detach semantics stay locked until this is decided. Q09b closes the current safety gap by rejecting task-local spawned borrows; Q10 is not required for current MVP safety. | §18.4–18.6, §18.11 | Task borrowing and exit-cleanup guarantees |
 | Q11 | Resolved: typed shifts discard high bits without overflow panic; counts remain checked. Untyped constants preserve exact values. See Q11 below. | §6.6 | Numeric checking/lowering |
 | Q12 | Resolved: compiler instructions now select custom clone before structural cloning, with no fallback from an invalid custom method. See Q12 below. | §10.7 | Clone resolution |
+| Q13 | Lexical gaps found while implementing M2: (a) §3.7 says horizontal whitespace is insignificant but never lists the characters; the lexer accepts only space, tab, and CR and rejects form feed, vertical tab, NBSP, other Unicode spaces, and a leading BOM as unexpected characters. (b) §7.6 excludes `++`/`--` and requires lexing to distinguish them from adjacent signs; the lexer rejects every adjacent `++`/`--`, so `a--b` and `x - -y` written as `x--y` are errors, and a space or parentheses is required. (c) Following §3.7's definition of newline as LF, a lone CR inside a double-quoted string or rune literal is accepted as content, not rejected as a physical newline. All three are conservative or follow the spec text literally; confirm or revise through §53. | §3.7–3.10, §7.6 | Lexer changes only; not blocking M3 |
 
 ## Resolved decisions
 
