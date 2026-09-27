@@ -70,7 +70,9 @@ impl Parser<'_> {
         let token = self.tokens[self.pos].clone();
         match token.kind {
             TokenKind::Eof => return token,
-            TokenKind::Punct(Punct::LParen | Punct::LBracket | Punct::LBrace) => self.open_delimiters += 1,
+            TokenKind::Punct(Punct::LParen | Punct::LBracket | Punct::LBrace) => {
+                self.open_delimiters += 1
+            }
             TokenKind::Punct(Punct::RParen | Punct::RBracket | Punct::RBrace) => {
                 self.open_delimiters = self.open_delimiters.saturating_sub(1);
             }
@@ -682,7 +684,11 @@ impl Parser<'_> {
             TokenKind::Semicolon(Separator::Explicit) => {
                 return Err(self.error("empty statement", start));
             }
-            _ => return self.simple_statement().and_then(|simple| self.statement(simple)),
+            _ => {
+                return self
+                    .simple_statement()
+                    .and_then(|simple| self.statement(simple));
+            }
         };
         Ok(Stmt {
             kind,
@@ -713,7 +719,9 @@ impl Parser<'_> {
         }
         let Some(op) = assign_op(self.peek()) else {
             return match targets.pop() {
-                Some(AssignTarget::Place(expr)) if targets.is_empty() => Ok(StatementOrExpr::Expr(expr)),
+                Some(AssignTarget::Place(expr)) if targets.is_empty() => {
+                    Ok(StatementOrExpr::Expr(expr))
+                }
                 _ => Err(self.unexpected("`=` after assignment targets")),
             };
         };
@@ -828,7 +836,9 @@ impl Parser<'_> {
         } else {
             match first {
                 StatementOrExpr::Expr(condition) => ForHeader::Condition(condition),
-                StatementOrExpr::Stmt(_) => return Err(self.unexpected("`;` after the loop initializer")),
+                StatementOrExpr::Stmt(_) => {
+                    return Err(self.unexpected("`;` after the loop initializer"));
+                }
             }
         };
         let body = self.body_block("`for` header", "expected `{` after `for` header")?;
@@ -844,12 +854,17 @@ impl Parser<'_> {
                 span: self.span_from(start),
             }));
         }
-        let (pos, open_delimiters, last_token_end, reported) =
-            (self.pos, self.open_delimiters, self.last_token_end, self.diagnostics.len());
+        let (pos, open_delimiters, last_token_end, reported) = (
+            self.pos,
+            self.open_delimiters,
+            self.last_token_end,
+            self.diagnostics.len(),
+        );
         // An initializer may contain struct literals; retry with them allowed.
         let first = self.with_struct_literals(false, |p| p.simple_statement());
         if matches!(first, Ok(StatementOrExpr::Stmt(_))) && self.at(Punct::LBrace) {
-            (self.pos, self.open_delimiters, self.last_token_end) = (pos, open_delimiters, last_token_end);
+            (self.pos, self.open_delimiters, self.last_token_end) =
+                (pos, open_delimiters, last_token_end);
             self.diagnostics.truncate(reported);
             return self.simple_statement();
         }
