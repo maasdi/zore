@@ -1,4 +1,4 @@
-//! M2 lexer tests derived from `tests/conformance/*.md` (spec §3.5–3.17).
+//! Lexer tests for the rules in spec §3.5–3.17.
 
 use zore::lexer::{Lexed, lex};
 use zore::source::SourceMap;
@@ -818,7 +818,6 @@ fn unexpected_characters_recover_and_continue() {
     assert_eq!(spans, ["@", "#", "\u{00A0}", "\\"]);
 }
 
-/// Pins the conservative choices recorded as Q13 in `docs/spec-questions.md`.
 #[test]
 fn unspecified_whitespace_is_rejected_and_lone_cr_is_string_content() {
     for (text, bad) in [
