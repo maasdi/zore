@@ -1,0 +1,17 @@
+package main
+
+type User struct {
+    Name string
+}
+
+func greet(user User) {
+    println(user.Name)
+}
+
+func main() {
+    let user = User{
+        Name: "Maas",
+    }
+
+    greet(user)
+}

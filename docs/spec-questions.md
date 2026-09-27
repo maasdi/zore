@@ -1,0 +1,372 @@
+# Open specification questions
+
+This register does not amend the language specification. Open entries are unresolved;
+they distinguish source-language questions from internal implementation choices.
+Resolve affected language rules through spec §53 before treating them as locked.
+Unrelated infrastructure work can proceed.
+
+## Implementation priority
+
+The user's current direction is to defer decisions until needed by the active
+compiler milestone. No currently recorded language question blocks M0 CLI,
+M1 source/spans/diagnostics, or M2 lexing; Q01 is resolved. Do not work through
+all of Q02/Q05 before starting those stages. See `roadmap.md` for stage gates.
+
+Before the first semantically checked/runnable target, resolve only the relevant
+Q05 subset (package/entry-point behavior, used builtin signatures, and exercised
+type rules). Remaining string operations, closures, imports, iteration, borrowed
+map-entry APIs, and concurrency APIs stay open until their consuming stage.
+Internal implementation choices need rationale and tests, not language approval.
+A newly discovered semantic gap blocks its affected feature, not unrelated work.
+
+
+| ID | Question / missing detail | Reference | Needed before |
+| --- | --- | --- | --- |
+| Q01 | Listed lexical choices and `_` target forms are resolved; see Q01a–o below. Explicit error discards are permitted by §15.6. This does not imply a complete formal grammar. | §3.5–3.18, §5.5, §15.6, §4.1, §41.1 | Affected lexer/parser/resolution behavior |
+| Q02 | Remaining grammar for strings, closures, iteration, and full `go` expressions. Map borrowed entry APIs remain Q05. Arrays/indexing/slicing are resolved in Q02e and map construction/lookup/assignment/removal in Q02f; assignment, operators, calls, and struct construction are also locked. | §5.6, §7.5–7.8, §8.4, §41.1 | Expression parser/lowering |
+| Q03 | Core bindings, blocks, conditionals, loops, scope-entry points, returns, result forwarding, and expression-statement policy are resolved. Detailed `?` typing is resolved (Q06b); task retrieval forms are resolved (Q09a); collection forms remain in Q02. | §5.4–5.10, §7.7–7.8, §41.2–3 | Statement parser/typing |
+| Q04 | Zero/resource interaction resolved in Q04e; see Q04a–d for earlier decisions. Shift contradiction resolved in Q11. This does not imply a complete collection/task expression grammar (Q02) or predeclared conversion API (Q05). | §5.3–5.4, §6.5–6.6, §7.6, §10.2, §19.8, §41.4–5 | Type checking and runtime semantics |
+| Q05 | Local package discovery/import mapping, entry-point contract, complete predeclared API inventory, compiler-known `println` and initial standard-library signatures, package variable initialization order, and remaining type-layout validity rules. Functions/types support forward references and method conflicts are defined (§7.8). Registry/solver remain out of MVP. | §3, §5.7, §7.8, §37, §42, §45 | Resolution/package checking and first native example |
+| Q06 | Resolved; see Q06a–b below. Error wrapping/cause chains, sentinel error declarations, structured error payloads, and the full predeclared API remain open under Q05. | §5.5, §7.2, §15, §22.2 | Error checking/lowering |
+| Q07 | Refined by Q07b: destructor-safe partial moves and recursive borrow contracts; see Q07a for earlier decisions. Array/slice syntax is locked in Q02e; map operations are locked in Q02f; string access and borrowed map-entry APIs remain Q02/Q05. | §5.6, §11.6–11.7, §12.5, §31.2 | Affected ownership analysis |
+| Q08 | Drop/zero and partial-move interactions refined by Q04e/Q07b; clone precedence corrected in Q12. See Q08a for earlier decisions. Panics inside spawned tasks are resolved in Q09a. | §8.3, §10.7, §14.3–14.4, §15.4 | Destruction and runtime |
+| Q09 | Lifetime proof refined by Q09b; see Q09a for runtime decisions. The full `go` expression grammar remains in Q02; the entry-point signature and exit status remain in Q05. | §6.3, §17.8, §18.8–18.11, §19.11–19.13, §20.2, §36.2, §41.4 | Tasks/channels/runtime |
+| Q10 | Scoped (structured) tasks: whether tasks should be required to finish before the scope that spawned them ends, so they can safely borrow the spawner's locals and are never abandoned at exit. Adopting this would revise §18.5–18.6 (dropping a handle would wait instead of detach; detaching would become explicit) and §18.11. Detach semantics stay locked until this is decided. Q09b closes the current safety gap by rejecting task-local spawned borrows; Q10 is not required for current MVP safety. | §18.4–18.6, §18.11 | Task borrowing and exit-cleanup guarantees |
+| Q11 | Resolved: typed shifts discard high bits without overflow panic; counts remain checked. Untyped constants preserve exact values. See Q11 below. | §6.6 | Numeric checking/lowering |
+| Q12 | Resolved: compiler instructions now select custom clone before structural cloning, with no fallback from an invalid custom method. See Q12 below. | §10.7 | Clone resolution |
+
+## Resolved decisions
+
+- **Q02f — Map construction, lookup, assignment, removal:** accepted and
+  locked in §13.3. Explicit typed literals; bool/integer/rune/string keys;
+  duplicate constant keys rejected, dynamic duplicates panic after key/value
+  evaluation. Lookup copies eligible values through shared access and always
+  returns `(bool, V)`; Move or exclusive-view copies are rejected. Assignment
+  inserts/replaces through a mutable map; no compound map assignment or general
+  entry places. `remove(key)` mutably detaches and transfers a value, including
+  Move values. Both operations return false plus V's zero on absence. Error V
+  stays last; map subscript `?` remains invalid. Per-entry state preserves
+  cleanup on duplicate failure, replacement panic, and removal. Pending cases:
+  `tests/conformance/maps.md`. Borrowed in-place access, iteration, and remaining
+  library operations are still Q02/Q05 dependencies.
+
+- **Q02e — Arrays, indexing, and slicing:** accepted and locked in §12.6.
+  Explicit `[T; N]{...}` and `Array<T>{...}` literals; exact fixed counts;
+  left-to-right construction and partial-initialization cleanup. Integer bounds
+  checked before narrowing, with static errors or runtime panic. Runtime indices
+  may be writable without granting partial moves or disjointness. Half-open
+  slicing supports omitted bounds; views are shared by default, exclusive in
+  `mut []T` context from a mutable source. `edit(data[:])` is explicitly allowed
+  by §11.6; no implicit array-to-slice conversion. Pending cases:
+  `tests/conformance/arrays-slices.md`. Maps, strings, iteration, collection APIs,
+  closures, and full `go` grammar remain separate decisions.
+
+- **Q11 — Fixed-width shifts:** locked in §6.6. Typed left shifts keep the
+  low bits at the left operand's width, including for signed two's-complement
+  operands and typed constants. Discarded bits do not cause overflow; invalid
+  counts still fail at compile time or panic at runtime. Untyped constants
+  preserve exact values until typing; named constants are not retroactively
+  truncated. Checked arithmetic is unchanged. Pending cases: numerics.
+
+- **Q12 — Custom clone precedence:** §10.7's compiler instructions now agree
+  with the normative custom-first rule. A declared custom clone is validated
+  and selected before structural cloning; invalid declarations or borrow/type
+  failures are errors, never grounds for silent fallback. Copy/Move, borrow,
+  error, and async behavior remain unchanged. Pending cases: destruction.
+
+- **Q01a — ASCII identifiers:** locked in spec §3.5 and §4.1. Start with
+  `A–Z`, `a–z`, or `_`; continue with those or `0–9`. Names are case-sensitive.
+  Initial `A–Z` exports package declarations/fields; lowercase and underscore
+  prefixes are private. Standalone `_` is reserved, with discard contexts defined
+  in §5.5. Strings/comments may contain Unicode. Pending executable
+  conformance cases: `tests/conformance/identifiers.md`.
+
+- **Q01b — Comments:** locked in spec §3.6. `//` extends to line end or EOF;
+  `/* ... */` blocks do not nest and end at the first `*/`. Unterminated blocks
+  are lexical errors. Comments separate tokens and allow Unicode text. Their
+  newline effects on statement boundaries are defined in §3.7. Pending executable
+  conformance cases: `tests/conformance/comments.md`.
+
+- **Q01c — Statement boundaries:** locked in spec §3.7. Automatic semicolon
+  insertion after identifiers, literals, `break`, `continue`, `return`, `true`,
+  `false`, `nil`, `)`, `]`, `}`, and postfix
+  `?` at newline/EOF. Explicit separators are allowed; final separators may be
+  omitted before `)`/`}`. Delimiters do not suppress insertion. Comment newlines
+  participate, LF/CRLF terminate lines, and CR alone is whitespace. New keyword
+  decisions must specify insertion eligibility. Pending executable conformance
+  cases: `tests/conformance/statement-boundaries.md`.
+
+- **Q01d — String forms:** locked in spec §3.8. Double-quoted strings interpret
+  escapes and cannot contain physical newlines; the escape set is defined in §3.9.
+  Backtick strings allow literal multiline text, preserving whitespace and line
+  endings without escapes. Both allow Unicode; neither supports interpolation.
+  Pending executable conformance cases: `tests/conformance/strings.md`.
+
+- **Q01e — String escapes:** locked in spec §3.9. Accept `\n`, `\r`, `\t`,
+  `\\`, `\"`, four-digit `\uXXXX`, and eight-digit `\UXXXXXXXX`. Unicode
+  escapes require scalar values; reject surrogates, out-of-range values, malformed
+  digits, and unknown escapes. No byte/octal escapes or recursive decoding.
+  Raw strings remain literal. Pending executable cases: `tests/conformance/strings.md`.
+
+- **Q01f — Rune literals:** locked in spec §3.10. Single quotes contain exactly
+  one Unicode scalar after decoding. Support string escapes plus `\'`. Reject
+  empty/multiple-scalar contents, physical newlines, malformed escapes, surrogates,
+  and out-of-range values. No normalization or raw rune form. Representation and
+  conversions remain type-model questions. Pending cases: `tests/conformance/runes.md`.
+
+- **Q01g — Integer bases:** locked in spec §3.11. Decimal plus explicit `0b`,
+  `0o`, and `0x` prefixes, with uppercase prefix variants. Digits are ASCII;
+  hexadecimal letter digits accept either case. Leading zeros remain decimal.
+  Prefixes require digits valid for their base. Separators are defined in §3.12;
+  suffixes are excluded by §3.14 and typing remains open. Pending cases: `tests/conformance/integers.md`.
+
+- **Q01h — Digit separators:** locked in spec §3.12. One underscore between
+  valid digits only; no leading, trailing, consecutive, or post-prefix separators.
+  Group sizes are unrestricted and values unchanged. Floating-point digit
+  sequences follow the same rule. Pending cases: `tests/conformance/integers.md`.
+
+- **Q01i — Float forms:** locked in spec §3.13. Decimal fractions require digits
+  on both sides of the point; scientific notation uses `e`/`E`, an optional sign,
+  and required exponent digits. Separators only between digits. No `.5`, `1.`,
+  or non-decimal float forms. Type/rounding/range rules remain open. Pending cases:
+  `tests/conformance/floats.md`.
+
+- **Q01j — No numeric suffixes:** locked in spec §3.14. Reject integer/float
+  suffixes and attached identifier continuations; preserve valid hexadecimal
+  digits and exponent notation. Literal defaults, context, annotations, and
+  conversions remain separate typing decisions. Pending cases:
+  `tests/conformance/integers.md` and `tests/conformance/floats.md`.
+
+- **Q01k — Keyword reservation policy:** locked in spec §3.15. Reserve adopted
+  MVP keywords and an explicitly selected set of future-feature words. Reservation
+  does not enable or promise the associated features. MVP keywords are locked in
+  §3.17 and future-reserved words in §3.16. Pending conformance requirements:
+  `tests/conformance/keywords.md`.
+
+- **Q01l — Future-reserved list:** locked in spec §3.16: `interface`, `trait`,
+  `impl`, `enum`, `match`, `unsafe`, `macro`, `defer`. Exact lowercase matches
+  only; no identifier escape mechanism. These words do not trigger semicolon
+  insertion or enable features. Pending cases: `tests/conformance/keywords.md`.
+
+- **Q01m — MVP keywords:** locked in spec §3.17. Adopt the structure, binding,
+  ownership, control-flow, concurrency, type-syntax, and literal keyword table.
+  `break`, `continue`, `return`, `true`, `false`, and `nil` trigger insertion;
+  other keywords do not. Built-in primitive names, `Array`, `Task`, `error`,
+  `println`, `clone`, and `drop` are predeclared identifiers, protected by §3.18.
+  Unspecified control-flow/type rules remain open. Pending cases:
+  `tests/conformance/keywords.md` and `tests/conformance/statement-boundaries.md`.
+
+- **Q01n — Predeclared-name protection:** locked in spec §3.18. Reject user
+  declarations that shadow predeclared names in unqualified lookup at any scope.
+  Member names are not rejected solely for matching a predeclared spelling;
+  user-defined `drop` methods retain their cleanup contract. Built-in inventory
+  additions remain separate decisions; ordinary shadowing follows §5.7. Pending
+  cases: `tests/conformance/keywords.md`.
+
+- **Q01o — Discard targets:** locked in spec §5.5. `_` may discard result
+  positions in `let`/`var` bindings and ordinary assignments; it creates no name
+  and cannot be read. Evaluate normally, enforce result counts and ownership,
+  and destroy discarded owned values without destroying borrowed backing storage.
+  Discarded Task handles detach. Explicit error discards are allowed by §15.6.
+  Pending cases: `tests/conformance/discards.md`.
+
+- **Q06a — Explicit error discards:** locked in spec §15.6. Allow `_` for error
+  results; reject silently ignored error-bearing results and never-used named
+  error bindings. This includes awaited results and retrieved task results without
+  changing detachment semantics. More detailed flow-sensitive requirements remain
+  open. Pending cases: `tests/conformance/errors.md`.
+
+- **Q02a — Evaluation order:** locked in spec §7.5. Evaluate operands and call
+  arguments left to right, callee/receiver before arguments. Early propagation
+  skips later evaluation; explicit await completes before evaluating the next
+  operand. Preserve short-circuit exceptions, ownership, and cleanup. This does
+  not introduce implicit task waits or settle assignment/initializer sequencing.
+  Pending cases: `tests/conformance/evaluation-order.md`.
+
+- **Q02b — Operators and expressions bundle:** locked in spec §7.6. Arithmetic,
+  comparison, bool logic, integer bitwise/shift operators, unary signs/complement,
+  and string concatenation with the agreed precedence table. No comparison chains,
+  implicit truthiness, numeric-to-string conversion, assignment expressions,
+  increment/decrement, ternary, exponentiation, or pointer operators. Boolean logic
+  short-circuits; `await operation()?` propagates after awaiting. `go` requires a
+  call; its full grammar remains open. Pending cases: `tests/conformance/expressions.md`.
+
+- **Q02c/Q03a — Bindings and assignments bundle:** locked in §5.4, §5.6–5.7.
+  Require initializers; optional `name Type` annotations on single bindings and
+  constants. Multiple bindings use one matching multiple-result expression, without
+  per-name annotations. Support compound updates with one target evaluation and
+  multiple assignments with target/RHS/store phases; reject overlapping targets.
+  Preserve ownership and replacement cleanup. Reject same-scope duplicates;
+  permit nested shadowing of user-defined names only. Pending cases:
+  `tests/conformance/bindings-assignments.md`.
+
+- **Q03b — Control-flow bundle:** locked in §5.8–5.10 and §7.7. Statement
+  blocks, bool conditions with required braces, if/else-if/else without initializers,
+  infinite/conditional/counting loops, nearest-loop unlabelled exits, counting-loop
+  continue through the update, and required exit cleanup. No range/foreach or
+  labelled jumps. Explicit matching returns, no named result parameters, and no
+  reachable result-function fallthrough. Locals enter scope after initialization;
+  parameters and outermost body declarations share a scope. Pending cases:
+  `tests/conformance/control-flow.md`.
+
+- **Q02d/Q03c/Q05a — Functions, calls, and structs bundle:** locked in §7.8
+  and §8.4. Individually typed positional parameters, exact argument counts,
+  optional trailing commas, required user function bodies, package function/type
+  forward references, no overloading, local-package receivers, and unique members.
+  Named complete struct initialization evaluates fields in written order and
+  respects visibility; parenthesize condition literals. Permit exact whole-result
+  return forwarding, not argument expansion; restrict expression statements to
+  calls/task creation (including explicit await/propagation call forms). Pending
+  cases: `tests/conformance/functions-structs.md`.
+
+- **Q04a — Numeric types and arithmetic:** locked in spec §6.5–6.6. `int` is
+  `int64`, `uint` is `uint64`, `byte` is `uint8`, all architecture-independent;
+  rune is a distinct Unicode-scalar Copy type. Unsuffixed literals default to
+  `int`/`float64` and may take representable expected types. Typed conversions are
+  explicit and checked. Integer overflow/division-by-zero and invalid shifts are
+  checked consistently; float formats and rounding follow IEEE 754 binary32/64.
+  Numeric comparisons require matching types; string ordering is UTF-8
+  lexicographic. Pending cases: `tests/conformance/numerics.md`.
+
+- **Q04b — Zero values and `nil`:** locked in spec §41.4. Every type has a
+  defined zero value, produced only by specific built-in operations (closed-channel
+  drain and map lookup/removal misses (§13.3)), never as a way to skip explicit
+  initialization (§5.4, §8.4 are unaffected). `nil` is restricted to `error`,
+  `Task`, and `channel<T>`; no other type admits a `nil` state or `nil`
+  equality comparison. Structs and fixed arrays zero recursively per field/
+  element; slices, `Array<T>`, and `map[K]V` zero to an empty-but-valid value
+  with no separate nil state. This does not resolve `error`'s full
+  representation (Q06) or map operations (subsequently resolved in Q02f). Pending cases:
+  `tests/conformance/zero-values.md`. **Revised by Q09a:** channels no longer
+  admit `nil`; the zero value of `channel<T>` is an always-closed, empty channel
+  (§19.12), so `nil` now applies only to `error` and `Task<...>`.
+
+- **Q04c — Constant-expression subset:** locked in spec §5.3. Constant
+  expressions are restricted to scalar-typed values (`bool`, integer, float,
+  `rune`, `string`); literals, named-constant references, the §7.6 operator
+  set with constant operands, and constant-operand explicit numeric
+  conversions are constant expressions, while calls, indexing, member access,
+  `clone`/`drop`/`await`/`?`/`go`, and composite literals are not. Constants
+  may forward-reference later constants; cycles are a compile-time error.
+  Untyped-constant preservation (§6.5) and typed-conversion rules (§6.6)
+  continue to apply, including where a constant expression is required outside
+  `const`, such as a fixed array's size `N`. Pending cases:
+  `tests/conformance/constant-expressions.md`.
+
+- **Q04d — String value and encoding:** locked in spec §41.5. A `string`
+  value is always well-formed UTF-8, for every string that exists at runtime,
+  not only literals; no currently locked operation (literal decoding,
+  concatenation, zero value) can produce an invalid one. `string` values are
+  immutable. This constrains any future bytes-to-string conversion API (Q05)
+  to validate and reject invalid input rather than repair it, without
+  introducing that API here. Indexing/slicing/iteration (Q02) and internal
+  buffer representation/concatenation allocation strategy (implementation
+  detail) remain separate. Pending cases: `tests/conformance/strings.md`.
+
+- **Q06b — Error representation and propagation:** locked in spec §7.2, §15.1–15.2,
+  §15.6, §6.6. `error` is one concrete predeclared Copy type, not a general
+  user-satisfiable interface (§22.2 is unaffected); constructed only via the
+  predeclared `error(message string) error`, following the type-name-as-call
+  convention from §6.6. `==`/`!=` between two `error` values is content
+  equality; zero value remains `nil` (§41.4). A result list may hold at most
+  one `error` result, which must be last. `?` requires the enclosing function
+  to declare a trailing `error` result, fills non-error results with their
+  zero value on an early return, and otherwise yields the non-error result(s)
+  with the error consumed. The never-used-binding rule (§15.6) is now
+  path-sensitive: every reachable path must use a named `error` binding's
+  current value before reassignment or scope exit, but this tracking does not
+  follow an error value stored into a composite. Wrapping, sentinel values,
+  and structured payloads are explicitly not decided here. Pending cases:
+  `tests/conformance/errors.md`.
+
+- **Q04e — Harmless resource zero states:** locked in §41.4 and §14.3.
+  Every resource type's recursive zero state owns no acquired resource and must
+  be harmless to destroy. Normal custom/field cleanup still runs. Resource
+  authors must distinguish acquisition from numeric handle values; this is an
+  API contract, not a compiler proof of arbitrary destructor behavior. Applies
+  equally to channel drain, `?` result filling, and map lookup/removal misses. Zero
+  slices have no backing-storage loan. Pending cases: zero-values/destruction.
+
+- **Q07b — Ownership safety review refinements:** locked in §11.7, §12.3,
+  §12.5, §14.3, and §31.2; supersedes narrower wording in Q07a below.
+  Partial moves may not cross a containing custom-destructor value, even with
+  planned reinitialization. Moving that value whole remains valid. If old-field
+  destruction during replacement panics after invalidating a field required by
+  a containing destructor, abort rather than invoke an incomplete receiver.
+  Borrow provenance propagates recursively through composites and captures,
+  independently of Copy/Move. Return contracts include nested views; no view of
+  local/owned-parameter storage may escape. Mutable descriptor copies create
+  exclusive reborrows that suspend overlapping source access. Shared container
+  borrowing does not confer mutable access. Pending cases: ownership/destruction.
+
+- **Q09b — Task/channel escape safety:** locked in §18.4, §18.10, §19.4.
+  Spawned borrows of another task's local/temporary or borrowed-parameter storage
+  are rejected even with immediate retrieval. Copy arguments are materialized
+  in task storage; Move inputs need ownership transfer, not an implicit move
+  into a shared parameter. Contained borrows must remain independently valid;
+  returning views into task argument/local storage is rejected. Channel messages
+  cannot borrow sender-local storage, even for unbuffered sends. Check all exit
+  paths including `?` and panic. Detachment is unchanged; Q10 stays open as an
+  extension. Pending cases: concurrency/ownership.
+
+- **Q07a — Return-borrow contracts, caller mutability, partial moves, slice
+  aliasing:** locked in spec §11.6–11.7, §12.5, §31.2. A `mut` parameter,
+  receiver, or slice position requires the caller's argument to be a mutable
+  place (a `var` binding or reached entirely through mutable places), never a
+  `let` binding or a shared borrow. A returned borrowed view, including one nested in a composite, must retain
+  provable external backing provenance, never function-local owned storage
+  (Q07b; zero views have no loan); the returned slice's region is then bound to
+  the call site's corresponding argument, checked under ordinary exclusivity
+  (§11.3). Partial moves leave a struct's still-available fields individually
+  usable while the whole value is unusable until every field is reinitialized;
+  this tracking covers only fixed field-access paths, not computed indices.
+  Slice-borrow exclusivity is checked against the originating place, not the
+  runtime index range — two disjoint-range mutable sub-slices of the same
+  source still conflict; this is a stated MVP limitation, not an oversight.
+  Pending cases: `tests/conformance/ownership.md`.
+
+- **Q08a — Drop receiver, Copy/clone interaction, panic unwinding:** locked in
+  spec §8.3, §10.7, §14.3–14.4, §15.4. `drop` must use a `mut` receiver, never
+  shared or `own`, so it can mutate but never move a field out; it forces the
+  type to be Move regardless of field composition; automatic per-field cleanup
+  still runs after a custom `drop` body; calling a `drop` method directly via
+  `.drop()` is rejected, leaving `drop(value)` and end-of-lifetime cleanup as
+  the only triggers. `clone(value)` is available via a structural field/element-
+  wise default (barred for any `drop`-bearing type), an explicit
+  `func (c Type) clone() Type` method (which takes precedence and is the only
+  option for a `drop`-bearing type), or a built-in element/entry-wise clone for
+  `Array<T>`/`map[K]V`, which cannot receive user methods. `panic()` unwinds
+  and runs pending drops; it is not catchable/recoverable, and a panic during
+  unwinding aborts the process immediately. Pending cases:
+  `tests/conformance/destruction.md`. **Refined by Q09a:** a panic unwinds only
+  its own task; it terminates the process only when it occurs in the initial
+  task, and otherwise is raised again at retrieval of the panicked task.
+
+- **Q09a — Task, async, and channel runtime contracts:** locked in spec §6.3,
+  §7.6, §15.2, §15.4, §17.8, §18.8–18.11, §19.11–19.13, §20.2, §36.2, §41.4.
+  `go f()` has type `Task<R1, ..., Rn>` mirroring `f`'s result list (plain
+  `Task` for no results); tasks are Move. An async call must be awaited or
+  spawned; `await` is valid only in async bodies. Results are retrieved once:
+  `task.wait()` blocks and is valid only outside async bodies; `await task`
+  suspends and is valid only inside them; both consume the handle. The runtime
+  must keep other tasks running while a `.wait()` blocks. A panic unwinds its
+  own task; in the initial task it ends the process, in a spawned task it is
+  re-raised at retrieval and otherwise only reported on stderr; a mutex held by
+  a panicking task is poisoned. The process terminates immediately when the
+  initial task completes, abandoning running tasks. Double close panics;
+  closing wakes blocked senders (which panic) and receivers. Channels have no
+  `nil`: their zero value is an always-closed, empty channel (revising Q04b).
+  Buffered values are dropped exactly once when the last handle is gone, except
+  in handle cycles, which are a stated memory-safe leak. Scoped tasks remain
+  open as Q10. Pending cases: `tests/conformance/concurrency.md`.
+
+## Interpretation notes
+
+Examples such as §24's Move `User`, §48's undeclared resource types, and §20's
+conceptual dereference syntax must be read under §0's normative-rule precedence.
+They do not override derived Copy classification or introduce raw pointer syntax.
+
+Internal decisions do not need new language syntax: LLVM version/bindings, host
+target and ABI, pass ordering, string representation, allocator, scheduler, and
+test-harness implementation. Record those with rationale as implementation needs
+arise. No permanent internal choice has been made by listing it here.

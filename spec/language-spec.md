@@ -1,0 +1,5462 @@
+# Zore Language Specification
+
+**Document status:** Locked MVP language specification\
+**Audience:** Compiler implementers, coding agents, tooling authors\
+**Language:** Zore\
+**Source extension:** `.ore`\
+**Compiler / CLI:** `zore`\
+**Project configuration:** `zore.toml`\
+**Tagline:** **Simple code. Strong guarantees.**
+
+---
+
+## 0. How to Use This Specification
+
+This document is the authoritative implementation guide for the currently locked Zore MVP decisions.
+
+A coding agent or compiler implementer MUST follow these rules:
+
+1. **Do not invent syntax or semantics that are not explicitly specified here.**
+2. A rule marked **LOCKED** is part of the Zore MVP language contract.
+3. A rule marked **TBD** is intentionally unresolved. Implementations should preserve room for it rather than silently choosing a permanent design.
+4. A feature listed under **OUT OF MVP** must not be added to the MVP unless the language specification is explicitly revised.
+5. Compiler-internal implementation details may evolve as long as observable language semantics remain compatible with this specification.
+6. When examples conflict with a normative rule, the normative rule wins.
+7. Zore should not be described as “Rust but easier” or “Go but safer.” Go and Rust may be used as explanatory comparisons only.
+
+The project should favor the smallest coherent implementation that satisfies the locked semantics.
+
+---
+
+# 1. Language Goals
+
+## 1.1 Core goals — LOCKED
+
+Zore is a native programming language designed around:
+
+- simple, readable syntax
+- native compilation
+- predictable performance
+- no garbage collector
+- ownership-based memory safety
+- borrowing by default
+- deterministic resource cleanup
+- explicit errors
+- first-class `async` / `await`
+- lightweight tasks
+- channel-based message passing
+- compiler-inferred lifetimes
+- safe concurrency using the same ownership model as synchronous code
+- eventual compiler self-hosting
+
+The source language should remain relatively simple even when the compiler performs sophisticated ownership, lifetime, async, drop, and data-flow analysis.
+
+## 1.2 Fundamental language principle — LOCKED
+
+> **Async, concurrency, and resource management use the same ownership model.**
+
+Zore must not introduce a separate memory-safety model for asynchronous or concurrent code.
+
+The following concepts retain the same meaning everywhere:
+
+- `let`
+- `var`
+- `mut`
+- `own`
+- Copy
+- Move
+- Borrow
+- Lifetime
+- Drop
+
+## 1.3 Language personality — LOCKED
+
+Zore should be:
+
+- minimal
+- precise
+- modern
+- fast
+- calm
+- explicit where safety or ownership matters
+- concise where the compiler can safely infer details
+
+The language should avoid source-level complexity that exists only to expose compiler machinery.
+
+---
+
+# 2. Language Identity
+
+## 2.1 Naming — LOCKED
+
+| Item | Value |
+|---|---|
+| Language name | `Zore` |
+| Source extension | `.ore` |
+| Compiler executable | `zore` |
+| Project configuration | `zore.toml` |
+| Tagline | `Simple code. Strong guarantees.` |
+
+The official spelling is `Zore`.
+
+Do not use:
+
+- `Soré`
+- `Sore`
+- `.zor`
+
+## 2.2 Compilation model — LOCKED
+
+Zore is intended to compile to native machine code.
+
+The initial compiler implementation is expected to use LLVM as its backend.
+
+The initial compiler may be written in Rust.
+
+Long term, Zore should be capable of compiling a compiler written in Zore itself.
+
+Self-hosting is a project goal, but it is not required for the first MVP compiler.
+
+---
+
+# 3. Program Structure
+
+## 3.1 Source files — LOCKED
+
+Zore source files use the `.ore` extension.
+
+Example:
+
+```text
+hello/
+├── zore.toml
+├── main.ore
+└── user.ore
+```
+
+## 3.2 Packages — LOCKED
+
+A source file declares its package using:
+
+```ore
+package main
+```
+
+Files in the same package share declarations according to package visibility rules.
+
+Example:
+
+```ore
+package main
+
+func main() {
+    println("Hello, Zore!")
+}
+```
+
+## 3.3 Imports — LOCKED
+
+Import syntax is Go-like:
+
+```ore
+import "zore/fmt"
+```
+
+The full package-resolution, registry, version-selection, and dependency-solver model is outside the MVP.
+
+## 3.4 Project file — LOCKED
+
+The minimal project configuration uses `zore.toml`.
+
+Example:
+
+```toml
+name = "hello"
+version = "0.1.0"
+```
+
+Additional fields may be added later, but the MVP must not require a package registry or sophisticated dependency solver.
+
+## 3.5 Identifiers — LOCKED
+
+MVP identifiers use ASCII characters only:
+
+```text
+identifier_start    = "A" … "Z" | "a" … "z" | "_" .
+identifier_continue = identifier_start | "0" … "9" .
+identifier          = identifier_start { identifier_continue } .
+```
+
+Identifiers are case-sensitive: `user` and `User` are distinct names.
+Keywords cannot be used as identifiers; the reservation policy is defined in
+§3.15 and the reserved word lists are defined in §3.16–3.17.
+The standalone `_` is reserved and cannot name a declaration or be read as a
+value. It may appear as a discard target in the contexts specified in §5.5;
+such a target does not declare a name.
+
+Valid names include `user`, `user2`, `user_name`, `User`, and `_internal`.
+`2user`, `café`, and `用户` are not valid identifiers.
+
+This restriction applies to identifiers, not to string or comment contents.
+Unicode text is permitted in strings and comments; their delimiters and escape
+rules are specified separately and remain TBD where not otherwise locked.
+
+Ownership, error, and async implications: identifier spelling does not change
+ownership contracts, Copy/Move classification, cleanup, error propagation, or
+task/async behavior.
+
+Compiler impact: recognize identifier characters using the ASCII ranges above,
+retain source byte spans, and diagnose non-ASCII characters used in names.
+No Unicode normalization or Unicode character tables are needed for identifier
+recognition. Resolution must distinguish case and use semantic IDs as in §27.
+Conformance cases are recorded in `tests/conformance/identifiers.md`; execution
+is pending the lexer, parser, and resolver milestones.
+
+## 3.6 Comments — LOCKED
+
+Zore supports two comment forms:
+
+- A line comment starts with `//` and continues to the end of the line or EOF.
+- A block comment starts with `/*` and ends at the first following `*/`.
+  Block comments may span multiple lines and do not nest. EOF before the closing
+  delimiter is a compile-time error.
+
+```ore
+// A line comment
+
+/* A block comment
+   spanning two lines */
+
+let count = 1 /* an inline comment */
+```
+
+Comment delimiters inside string literals are literal contents, not comments.
+Inside a comment, quote characters and other opening comment delimiters do not
+start a string or nested comment. For example, `/* outer /* inner */` is one
+complete block comment, ending at its first `*/`.
+
+Comments separate tokens: `user/* note */Name` must not become the identifier
+`userName`. Unicode text is allowed in comment contents. Newlines in or after
+comments participate in statement termination as specified in §3.7;
+implementations must retain that information.
+
+Ownership, error, and async implications: comments introduce no executable
+operations and do not change ownership, cleanup, error propagation, or async
+behavior. Unterminated block comments are lexical errors, not runtime errors.
+
+Compiler impact: the lexer must recognize both forms without nesting, track
+source positions and newlines while skipping comments, and produce a source-aware
+diagnostic for an unterminated block comment identifying its opening delimiter.
+Conformance cases are recorded in `tests/conformance/comments.md`; execution is
+pending the lexer milestone.
+
+## 3.7 Statement boundaries and semicolons — LOCKED
+
+Zore uses automatic semicolon insertion. Explicit `;` may separate statements
+on the same line. Most source code should omit semicolons at line endings.
+
+At a newline or EOF, insert a semicolon if the last significant token is:
+
+- an identifier,
+- a literal of a supported literal form,
+- the keywords `break`, `continue`, `return`, `true`, `false`, or `nil`,
+- one of `)`, `]`, `}`, or the postfix error-propagation operator `?`.
+
+Comments and horizontal whitespace are not significant tokens. An explicit or
+inserted semicolon is not eligible for another insertion, so blank lines,
+consecutive comments, and EOF after a terminating newline do not produce extra
+semicolons. No semicolon is inserted into an empty or comment-only file.
+
+For these rules, newline means LF (U+000A). CRLF behaves as one newline; CR
+(U+000D) is whitespace and does not independently terminate a statement.
+Newlines contained within a literal token do not trigger insertion.
+
+Keyword eligibility is defined in §3.17; it does not settle the remaining grammar
+or typing of those constructs. Future keyword additions must explicitly specify
+insertion behavior. Do not inherit Go's `fallthrough`, `++`, or `--` from this rule.
+
+A block comment without a newline acts as a space. A block comment containing
+one or more newlines acts as a newline for insertion. A line comment leaves its
+terminating newline (or EOF) effective. Consequently, a newline inside a block
+comment can terminate the preceding statement even if code follows its closing
+delimiter on the same physical line.
+
+Insertion is lexical: parentheses, brackets, and braces do not suppress it.
+Break a continued expression after an operator or comma, not after an eligible
+ending token. There is no backslash line-continuation syntax.
+
+```ore
+let user = loadUser()
+greet(user)
+
+let total = first +
+    second
+
+let content = read(file)? // the statement ends after ?
+
+let a = 1; let b = 2
+```
+
+By contrast, `let total = first` followed by a newline then `+ second` does not
+form one continued initializer: insertion terminates the first line.
+
+A semicolon required at the end of a statement or declaration may be omitted
+immediately before `)` or `}`. This does not allow semicolons to replace commas
+in argument lists or composite literals, nor does it remove an already inserted
+semicolon. Multiline comma-separated lists must have a trailing comma when the
+last element ends a line with an eligible token; the parser must support that
+form for argument lists and struct initializers.
+
+```ore
+greet(
+    user,
+)
+
+func main() { greet(user) }
+```
+
+An opening function-body brace must stay on the signature's final line when the
+signature ends in an eligible token: `func main()` followed by a newline then
+`{` has an intervening semicolon and is invalid. The same insertion rule applies
+to other constructs as their grammars are finalized.
+
+Ownership, error, and async implications: insertion defines statement boundaries
+only. It does not change ownership or cleanup rules. Postfix `?` terminates a
+line without changing its error-propagation semantics; `await` and `go` do not
+themselves trigger insertion. Operands and statement legality remain subject to
+the expression and statement grammar.
+
+Compiler impact: retain the last significant token and comment newline
+information in the lexer. Give synthetic semicolons a source location at the
+triggering newline (the first newline in a multiline comment) or EOF. The parser
+must honor inserted and explicit separators and diagnose invalid line breaks.
+Conformance cases are in `tests/conformance/statement-boundaries.md`; executable
+coverage is pending the lexer and parser milestones.
+
+## 3.8 String literal forms — LOCKED
+
+Zore has two string literal forms. Both produce values of the built-in `string`
+type and permit Unicode text despite identifiers being ASCII-only.
+
+### Double-quoted strings
+
+A double-quoted string starts and ends with `"`. Backslash introduces an escape
+sequence. An escaped quote does not close the literal. Physical newlines are
+not allowed in this form; use a newline escape or a raw string instead.
+Backslash followed by a physical newline is not line continuation.
+
+```ore
+let greeting = "Hello\nZore"
+let empty = ""
+```
+
+The accepted escape sequences and decoding rules are defined in §3.9.
+
+### Backtick raw strings
+
+A raw string starts with a backtick (U+0060) and ends at the next backtick.
+Its contents are literal: backslashes do not introduce escapes, and physical
+newlines are allowed. Whitespace and indentation are preserved, with no automatic
+trimming or dedenting. CR and LF characters within raw contents are preserved;
+the whitespace rules outside literals in §3.7 do not strip their contents.
+A backtick cannot appear within this form, and a backslash cannot escape its
+closing delimiter. Use a double-quoted string to include a backtick.
+
+~~~ore
+let path = `C:\projects\zore`
+let message = `first line
+second line`
+let emptyRaw = ``
+let backtick = "`"
+~~~
+
+### Common rules
+
+Neither form supports string interpolation in the MVP. Text such as `${name}`
+or `{name}` remains literal content. Triple-quoted strings are not an additional
+literal form. Comment delimiters within either string form are ordinary contents.
+EOF before a closing delimiter is a compile-time lexical error.
+
+A complete string literal is one token. Newlines inside raw strings do not
+trigger semicolon insertion; a newline or EOF after the closing delimiter does,
+as specified in §3.7.
+
+Ownership, error, and async implications: both forms have the ordinary Copy
+semantics of `string` (§10.2), with no new ownership, cleanup, error-propagation,
+or async behavior. Malformed literals are compile-time errors. The internal
+string representation remains an implementation detail (§41.5); the complete
+string value/encoding model is not settled by delimiter choice.
+
+Compiler impact: distinguish escaped and raw literal scanning, preserve source
+byte spans across Unicode and multiline contents, and identify the opening
+delimiter in unterminated-literal diagnostics. Preserve raw contents without
+normalizing line endings. Do not implement speculative escape forms.
+Conformance cases are in `tests/conformance/strings.md`; executable coverage is
+pending the lexer and literal-decoding milestones.
+
+## 3.9 String escape sequences — LOCKED
+
+Double-quoted strings accept exactly the following escapes:
+
+| Source spelling | Decoded character |
+| --- | --- |
+| `\n` | Line feed, U+000A |
+| `\r` | Carriage return, U+000D |
+| `\t` | Horizontal tab, U+0009 |
+| `\\` | Backslash, U+005C |
+| `\"` | Double quote, U+0022 |
+| `\uXXXX` | Unicode scalar value specified by exactly four hexadecimal digits |
+| `\UXXXXXXXX` | Unicode scalar value specified by exactly eight hexadecimal digits |
+
+Hexadecimal digits may be `0`–`9`, `a`–`f`, or `A`–`F`. Digit separators and
+braces are not allowed in Unicode escapes. Each escape consumes exactly its
+specified number of digits; subsequent characters are ordinary string contents.
+For example, `"\u0041B"` has the value `"AB"`.
+
+A Unicode escape must denote a scalar value in U+0000–U+10FFFF excluding the
+surrogate range U+D800–U+DFFF. Surrogate pairs are not accepted as a substitute
+for a scalar escape. U+0000 is permitted via `\u0000`; it is a character in the
+value, not a string terminator. Escapes decode once: a decoded backslash does
+not start another escape. Escaped and directly written versions of the same
+character have the same string value.
+
+```ore
+let line = "Hello\nZore"
+let quote = "She said \"hello\""
+let letter = "\u0041"
+let emoji = "\U0001F600"
+```
+
+Unknown escapes, missing or non-hexadecimal digits, surrogate values, and values
+above U+10FFFF are compile-time errors. In particular, `\a`, `\b`, `\f`, `\v`,
+`\xNN`, octal escapes, `\0`, and `\'` are not supported. A single quote can be
+written directly inside a double-quoted string. Physical newline continuation
+remains prohibited (§3.8). Rune-literal escapes are defined in §3.10.
+
+Raw backtick strings do not decode any escapes: `\n` in a raw string is a
+backslash followed by `n`. A decoded newline inside a quoted string does not
+trigger semicolon insertion, since it is part of the value, not a source newline.
+
+Ownership, error, and async implications: escape spelling does not change
+ordinary string Copy semantics, cleanup, error propagation, or async behavior.
+Malformed escapes produce compile-time diagnostics, not runtime errors.
+
+Compiler impact: validate exact digit counts and scalar ranges, decode escapes
+once, and retain original source spans for diagnostics at malformed escapes.
+Do not interpret Unicode escapes as arbitrary byte escapes or use host-language
+escape acceptance as the definition of Zore. Runtime string layout remains open.
+Conformance cases are recorded in `tests/conformance/strings.md`; executable
+coverage is pending lexer and literal-decoding implementation.
+
+## 3.10 Rune literals — LOCKED
+
+A rune literal is enclosed in single quotes and contains exactly one Unicode
+scalar value after escape decoding. It denotes a rune value, not a one-character
+string. A scalar is in U+0000–U+10FFFF, excluding U+D800–U+DFFF.
+
+The scalar may be written directly or using any escape supported by
+double-quoted strings (§3.9), plus `\'` for a single quote. Thus the complete
+rune escape set is `\n`, `\r`, `\t`, `\\`, `\"`, `\'`, `\uXXXX`, and
+`\UXXXXXXXX`. Unicode escapes use the same exact digit counts, scalar validation,
+and single-pass decoding as string escapes. A double quote may also be written
+directly. A single quote or backslash in the value must be escaped.
+
+```ore
+let letter = 'A'
+let accented = 'é'
+let emoji = '😀'
+let newline = '\n'
+let escapedLetter = '\u0041'
+let quote = '\''
+```
+
+Empty literals, multiple decoded scalars, physical newlines, unknown or malformed
+escapes, surrogate values, and out-of-range values are compile-time errors.
+EOF before the closing quote is an unterminated-literal error. Backslash followed
+by a physical newline is not continuation. There is no raw rune literal form.
+
+The count is Unicode scalars, not bytes or displayed characters. For example,
+`'é'` is valid, but `'e\u0301'` contains two scalars and is invalid. Do not
+normalize multiple scalars into one to accept a literal. Surrogate-pair escapes
+are invalid even if they would encode a single character in UTF-16.
+
+A rune literal is one token and triggers semicolon insertion at a following
+newline or EOF (§3.7). An escaped newline is part of its value, not a source
+statement boundary. Comment markers and quote characters are interpreted within
+the literal rather than starting comments or other literal forms.
+
+Ownership, error, and async implications: rune values are primitive Copy values
+(§10.2). This syntax introduces no new ownership, cleanup, error-propagation,
+or async rules. Literal errors are compile-time errors. Numeric representation,
+conversions, and contextual literal typing remain part of the type-model
+decisions; this section does not declare `rune` an alias of an integer type.
+
+Compiler impact: scan single-quoted literals, reuse the specified escape decoder
+with the rune-specific allowance for `\'`, validate exactly one decoded scalar,
+and preserve source byte spans. Diagnose invalid contents and identify the opening
+quote for unterminated literals. Conformance cases are in
+`tests/conformance/runes.md`; executable coverage awaits lexer and literal decoding.
+
+## 3.11 Integer literal bases — LOCKED
+
+Integer literals support four bases:
+
+| Base | Prefix | Digits |
+| --- | --- | --- |
+| Decimal (10) | None | `0`–`9` |
+| Binary (2) | `0b` or `0B` | `0`–`1` |
+| Octal (8) | `0o` or `0O` | `0`–`7` |
+| Hexadecimal (16) | `0x` or `0X` | `0`–`9`, `a`–`f`, `A`–`F` |
+
+Digits are ASCII. At least one digit is required, including after a base prefix.
+Unprefixed literals are always decimal: leading zeros do not select octal.
+Thus `0755` is decimal 755, `08` is decimal 8, and `0o755` is decimal 493.
+Hexadecimal digits and the allowed prefix letter variants are case-insensitive.
+
+```ore
+let decimal = 42
+let binary = 0b101010
+let octal = 0o755
+let hexadecimal = 0xFF
+let leadingZeros = 0755
+```
+
+A prefix with no digits or a digit invalid for the selected base is a
+compile-time error. For example, `0x`, `0b102`, `0o8`, and `0xG` are invalid
+integer literals; they must not be silently accepted as a shorter valid number.
+
+Digit separators are defined in §3.12 and floating-point forms in §3.13. Numeric
+suffixes are excluded by §3.14; sign/operator grammar remains a separate decision.
+Base notation denotes the
+numeric value; it does not select an
+integer width, signedness, or overflow behavior. Those remain type-model questions.
+
+Ownership, error, and async implications: integer values retain primitive Copy
+semantics (§10.2). Base spelling does not change ownership, cleanup, error
+propagation, or async behavior. Malformed literal spellings are compile-time
+errors, not runtime errors.
+
+Compiler impact: recognize explicit base prefixes, validate the corresponding
+ASCII digit set, preserve source byte spans, and decode using the selected base.
+Do not use host parser conventions that interpret leading zeros as octal. Keep
+literal spelling/value handling separate from target-width and range checking.
+Conformance cases are in `tests/conformance/integers.md`; executable coverage
+awaits lexer and literal-decoding implementation.
+
+## 3.12 Numeric digit separators — LOCKED
+
+A single underscore may separate two digits within a numeric digit sequence.
+Both adjacent characters must be digits valid for that sequence's base. Group
+sizes are unrestricted; separators have no effect on the numeric value.
+
+For each integer base in §3.11, its digit sequence has this form, where `digit`
+is an ASCII digit valid for the selected base:
+
+```text
+digit_sequence = digit { [ "_" ] digit } .
+```
+
+Separators are not allowed at the start or end of a digit sequence, immediately
+after a base prefix, or next to another underscore. Removing underscores before
+validating their positions must not make an invalid spelling valid.
+
+```ore
+let count = 1_000
+let mask = 0xFF_FF
+let bits = 0b1010_0101
+let permissions = 0o7_55
+```
+
+`1000_`, `1__000`, `0x_FF`, `0b_10`, and `0o_755` are invalid numeric spellings.
+`_1000` is an identifier under §3.5, not a numeric literal with a leading
+separator. `0_755` remains decimal 755; underscores do not introduce implicit
+octal notation. Hexadecimal letter digits count as digits for this rule.
+
+For floating-point forms (§3.13), the same between-digits rule applies
+separately to each digit sequence. Separators cannot touch a decimal point,
+exponent marker, or exponent sign. This rule does not itself introduce float
+forms or numeric suffixes. Unicode escapes retain their no-separator rule (§3.9).
+
+Ownership, error, and async implications: separators affect readability only;
+they do not change value, type, Copy semantics, cleanup, error propagation, or
+async behavior. Invalid separator placement is a compile-time error.
+
+Compiler impact: validate separator positions and base-specific digits before
+decoding, ignore valid separators when computing the value, and retain the
+original spelling's byte spans for diagnostics. Conformance cases are in
+`tests/conformance/integers.md`; executable coverage awaits the lexer and decoder.
+
+## 3.13 Floating-point literal forms — LOCKED
+
+Floating-point literals use decimal notation, with a fractional part, a decimal
+exponent, or both. A decimal point requires digits on both sides. An exponent
+starts with `e` or `E`, may have one `+` or `-` sign, and requires decimal digits.
+
+```text
+decimal_digit    = "0" … "9" .
+decimal_digits   = decimal_digit { [ "_" ] decimal_digit } .
+decimal_exponent = ( "e" | "E" ) [ "+" | "-" ] decimal_digits .
+float_literal   = decimal_digits "." decimal_digits [ decimal_exponent ]
+                | decimal_digits decimal_exponent .
+```
+
+```ore
+let fraction = 0.5
+let whole = 1.0
+let million = 1e6
+let small = 1.5e-3
+let large = 2E+8
+let grouped = 1_000.25
+```
+
+All digits are ASCII. Leading zeros remain decimal. A plain digit sequence such
+as `1` is an integer literal, while `1.0` and `1e0` are floating-point literals.
+The exponent scales the decimal significand by ten raised to the exponent value.
+The sign within an exponent is part of the literal token; leading unary signs
+belong to the separate expression-grammar decision, not this production.
+
+Underscores may separate digits within each integer, fractional, or exponent
+digit sequence (§3.12), as in `1_000.2_5e1_0`. They may not touch the decimal
+point, exponent marker, or exponent sign, or occur consecutively or at the end.
+
+`.5`, `1.`, and `1.e2` are not floating-point literals. Write `0.5`, `1.0`, and
+`1.0e2` instead. Exponents with missing digits, such as `1e`, `1e+`, or `1.0e-`,
+are malformed literals and must be diagnosed. Hexadecimal, binary, and octal
+floating-point forms are not supported in the MVP. Numeric suffixes are not
+supported (§3.14).
+
+Float token recognition must not swallow a field-access dot: a dot is part of
+a decimal float only when immediately followed by a decimal digit. For example,
+`1.field` starts with an integer token and a separate dot, not a `1.` float.
+Whether field access on such a value is legal is a semantic question. Standalone
+`.5` or `1.` used as a numeric initializer must be rejected, not reinterpreted
+as a supported float. Token splitting for recovery is an implementation detail.
+
+Ownership, error, and async implications: float values retain primitive Copy
+semantics (§10.2); literal spelling does not change cleanup, error propagation,
+or async behavior. Malformed forms are compile-time errors. Default float type,
+precision, rounding, representable range, overflow, and underflow remain type-model
+decisions; this syntax does not silently select host floating-point behavior.
+
+Compiler impact: recognize the grammar and validate separators before decoding,
+retain source byte spans and the decimal spelling/value information needed by
+later typing, and diagnose missing exponent digits. A completed float triggers
+semicolon insertion at a following newline or EOF (§3.7). Conformance cases are
+in `tests/conformance/floats.md`; executable coverage awaits lexer and decoder work.
+
+## 3.14 Numeric suffixes — LOCKED OUT OF MVP
+
+Integer and floating-point literals do not accept type suffixes or other numeric
+suffixes. Write `42` and `1.5`, not `42u8`, `42int64`, `1.5f32`, or `1.5float32`.
+This applies to every integer base and to floats with or without an exponent.
+
+```ore
+let count = 42
+let ratio = 1.5
+```
+
+An identifier-like continuation immediately attached to a numeric spelling,
+such as `42u8`, `0xFFu8`, `1e3f64`, or `42_name`, is invalid. The compiler must
+diagnose it rather than silently accepting the numeric prefix and treating the
+rest as an implicitly separated declaration or expression. Token splitting for
+error recovery is an implementation detail.
+
+Characters that are part of the locked numeric grammar are not suffixes:
+`0xFF` and `0xF32` are hexadecimal integers, `1e3` is a decimal float, and
+`1_000` uses digit separators. This rule must not reject such valid spellings.
+
+Literal types will be determined by the type model, including context, defaults,
+and explicit typing/conversion rules when locked. This decision does not define
+those rules or introduce annotation or conversion syntax.
+
+Ownership, error, and async implications: excluding suffixes does not change
+numeric Copy semantics, cleanup, error propagation, or async behavior. Unsupported
+suffixes are compile-time errors, not runtime errors.
+
+Compiler impact: validate numeric-token boundaries and produce source-aware
+diagnostics for unsupported suffixes, preserving spans through recovery. Do not
+inherit suffix syntax from the implementation language. Pending conformance cases
+are in `tests/conformance/integers.md` and `tests/conformance/floats.md`.
+
+---
+
+## 3.15 Keyword reservation policy — LOCKED
+
+Zore will reserve both keywords used by adopted MVP syntax and an explicit set
+of words intended for possible future syntax. Future-reserved words cannot be
+used as identifiers, even while their corresponding features are unavailable.
+
+Reservation does not implement or promise a feature and does not move anything
+from OUT OF MVP into the MVP. A future feature still requires a specification
+change under §53 before implementation.
+
+The MVP keyword list is locked in §3.17 and the future-reserved list in §3.16.
+Implementers must not reserve
+additional words based on their presence in another language or speculation.
+
+For an illustrative future-reserved word `word`, a declaration such as
+`let word = 1` must be rejected once `word` is explicitly on that list. This
+example defines the effect of reservation; it does not reserve the name `word`.
+Ordinary identifiers remain case-sensitive (§3.5); keyword matching uses exact
+spelling, without case folding.
+
+Ownership, error, and async implications: reservation changes which names can be
+declared, not ownership, cleanup, error propagation, or async semantics. Uses of
+reserved words as names produce compile-time errors. In particular, reserving
+`unsafe` does not permit unsafe Zore code or alter the MVP safety guarantees.
+
+Compiler impact: maintain explicit keyword sets and distinguish unavailable
+future syntax from supported syntax in diagnostics. Changes to the lists must
+also record semicolon-insertion behavior where relevant (§3.7). Use only the
+explicitly locked future-reserved list. Pending conformance
+requirements are in `tests/conformance/keywords.md`.
+
+## 3.16 Future-reserved words — LOCKED
+
+The following eight words are reserved for possible future features:
+
+```text
+interface trait impl enum match unsafe macro defer
+```
+
+These exact lowercase spellings cannot be identifiers in any name position,
+including package, type, function, receiver/parameter, local, or field names.
+There is no escaped-identifier syntax to bypass reservation in the MVP.
+Reservation is case-sensitive and matches whole words: `Interface`, `matchValue`,
+and `_unsafe` are ordinary identifier spellings, not future-reserved words.
+
+For example, `let match = 1` is invalid, while `let matchValue = 1` is valid
+with respect to name reservation. Reserved spellings inside string literals or
+comments remain ordinary contents.
+
+None of these words enables its associated syntax in the MVP. In particular,
+reserving `defer` does not add deferred execution or make cleanup depend on it;
+reserving `unsafe` does not weaken memory-safety guarantees. They are not
+identifiers or statement-ending tokens for semicolon insertion (§3.7).
+
+Ownership, error, and async implications: the words introduce no executable
+operations or new ownership, cleanup, error, or async behavior. Attempts to use
+them as names or unavailable syntax produce compile-time diagnostics.
+
+Compiler impact: recognize these eight exact spellings as future-reserved,
+diagnose unsupported use with source spans, and keep their token classification
+distinct from ordinary identifiers and supported grammar roles. Do not implement
+the associated features. Pending conformance cases are in
+`tests/conformance/keywords.md`.
+
+## 3.17 MVP keywords and predeclared names — LOCKED
+
+The MVP keyword list is:
+
+| Purpose | Keywords |
+| --- | --- |
+| Structure | `package import func type struct` |
+| Bindings | `let var const` |
+| Ownership | `mut own` |
+| Control flow | `if else for break continue return` |
+| Concurrency | `async await go` |
+| Built-in type syntax | `map channel` |
+| Literal values | `true false nil` |
+
+Match these exact lowercase spellings as whole words. They cannot be used as
+identifiers in any name position. For example, `let func = 1` and a field named
+`own` are invalid; `let functionName = 1` is valid with respect to reservation.
+Case variants such as `Func` and `True` are ordinary identifier spellings.
+There is no escaped-identifier syntax in the MVP.
+
+At a following newline or EOF, `break`, `continue`, `return`, `true`, `false`,
+and `nil` trigger semicolon insertion. The other MVP keywords do not (§3.7).
+Keywords within strings or comments do not participate in token classification.
+
+This locks lexical classification, not unspecified grammar. In particular,
+`break` and `continue` follow §5.10, and conditionals follow §5.9.
+The type/zero-value rules for `nil` are locked in §41.4. Do not infer
+Go's complete statement or type grammar from this keyword list.
+
+Built-in primitive type names (§6.1), `Array`, `Task`, `error`, `println`, `clone`,
+and `drop` are predeclared names, not keywords. They are lexed as identifiers
+and resolved semantically; their built-in meaning may still require special
+compiler handling. Declarations may not shadow them (§3.18). This distinction
+does not imply user-defined generics, interfaces, or additional built-in APIs.
+
+Ownership, error, and async implications: keyword classification preserves the
+locked meanings of `mut`, `own`, `async`, `await`, and `go`; it does not change
+ownership or cleanup. Classifying `drop` and `clone` as predeclared names does
+not remove their semantic requirements. Invalid keyword use is a compile-time
+error. Cleanup on future loop exits must obey ordinary ownership rules when
+their control-flow semantics are finalized.
+
+Compiler impact: recognize the exact keyword set, preserve byte spans, and
+separate lexical keywords from semantic built-in identities. Enforce the shadowing
+rule in §3.18. Pending conformance cases are in `tests/conformance/keywords.md`
+and `tests/conformance/statement-boundaries.md`.
+
+## 3.18 Predeclared-name shadowing — LOCKED
+
+User declarations must not shadow predeclared names in unqualified lookup.
+This applies at package scope and in all nested scopes, including function and
+closure bodies, parameter names, receiver binding names, local bindings,
+constants, and user-defined type or function names. If an import introduces a
+name into unqualified lookup, that name must obey the same restriction.
+
+The protected names currently established in §3.17 are all primitive type names
+from §6.1, plus `Array`, `Task`, `error`, `println`, `clone`, and `drop`.
+Any additional predeclared names must be explicitly specified; implementations
+must not protect speculative library names. The full built-in API inventory
+and signatures remain separate decisions.
+
+```ore
+let println = 42 // invalid: shadows a predeclared name
+let string = 1   // invalid: shadows a predeclared type name
+```
+
+The rule matches exact case-sensitive spelling. `Println` does not shadow
+`println`. This is a semantic name-resolution restriction, not keyword
+classification: predeclared names continue to be lexed as identifiers.
+
+Fields and method names use member lookup and are not rejected merely for
+matching a predeclared name. For example, a field named `string` accessed through
+`record.string` does not shadow the unqualified type name. The receiver binding
+itself remains subject to the no-shadowing rule. This preserves user-defined
+`drop` methods (§14.3), whose special cleanup contract still applies. Keywords
+remain forbidden as member names (§3.16–3.17). Method/member conflicts follow
+§7.8; ordinary user-defined-name shadowing follows §5.7.
+
+Ownership, error, and async implications: declarations cannot redirect
+unqualified built-in operations such as `drop` or `clone` to another binding.
+Their existing ownership and cleanup semantics remain unchanged. Violations
+produce compile-time diagnostics; this adds no runtime error or async behavior.
+
+Compiler impact: reject conflicting declarations during resolution, identify
+the declaration span and protected predeclared name, and distinguish unqualified
+binding lookup from member lookup. Do not implement the rule as a lexical ban.
+Pending conformance cases are in `tests/conformance/keywords.md`.
+
+---
+
+# 4. Visibility
+
+## 4.1 Export rule — LOCKED
+
+Visibility follows a Go-like naming convention:
+
+- package declarations and fields whose identifiers begin with ASCII `A`–`Z` are exported from the package
+- those beginning with ASCII `a`–`z` or `_` are package-private
+
+Local bindings do not become package exports because of capitalization.
+For example, `_User` is package-private despite its second character being uppercase.
+
+Example:
+
+```ore
+type User struct {
+    Name string
+    age int
+}
+```
+
+`User` and `Name` are exported.
+
+`age` is package-private.
+
+No additional `public`, `private`, `pub`, or visibility modifier syntax is part of the MVP.
+
+---
+
+# 5. Variables and Constants
+
+## 5.1 Immutable bindings — LOCKED
+
+`let` declares an immutable binding.
+
+```ore
+let user = loadUser()
+```
+
+The binding cannot later be reassigned.
+
+The value itself may still participate in ownership operations according to its type and context.
+
+## 5.2 Mutable bindings — LOCKED
+
+`var` declares a mutable binding.
+
+```ore
+var count = 0
+count = count + 1
+```
+
+## 5.3 Compile-time constants — LOCKED
+
+`const` declares a compile-time constant.
+
+`const` is unrelated to ownership.
+
+Do not interpret `const` as:
+
+- immutable borrow
+- readonly reference
+- permanent object
+- ownership modifier
+
+### Constant-expression subset
+
+A constant expression's value must be one of the scalar types: `bool`, an
+integer type, a float type, `rune`, or `string`. Struct types, `[T; N]`, `[]T`,
+`Array<T>`, `map[K]V`, `error`, `Task<...>`, and `channel<T>` have no constant
+form in the MVP. `nil` is never a constant expression, since the only types it
+targets (`error` and `Task<...>`, per §41.4) are runtime values.
+
+A constant expression is exactly one of:
+
+- a `bool`, integer, float, rune, or string literal;
+- a reference to another `const` name;
+- a unary or binary operator from §7.6 applied to constant-expression operands:
+  arithmetic `+ - * / %`, bitwise `& | ^` and unary `^`, shifts `<< >>` (the
+  shift-count operand must also be a constant expression), unary `+ -` and `!`,
+  comparisons `== != < <= > >=`, boolean `&& ||`, and string `+` concatenation;
+- an explicit numeric conversion (§6.6) applied to a constant-expression
+  operand; or
+- any of the above enclosed in parentheses.
+
+Every operand of a constant expression must itself be a constant expression;
+function/method calls, indexing, field/member access, `clone`, `drop`,
+`await`, `?`, `go`, and struct/collection literals are never constant
+expressions, matching the general rule already stated in §6.5 that calls,
+mutation, I/O, and other runtime effects are not constant operations.
+
+A named constant may reference another `const` declared later in the same
+package; constants have no evaluation side effects, so declaration order does
+not affect their values. A cycle between constant definitions (directly or
+through intermediate constants) is a compile-time error.
+
+The untyped-constant preservation rule in §6.5 continues to apply: an untyped
+constant expression keeps its exact mathematical result until it is assigned a
+type, and is rejected if that result is not representable in the required
+type. Once a constant has an explicit type (`const name Type = expression`) or
+takes a default type from use, combining it with another value follows the
+ordinary typed rules in §6.6 — there is no implicit conversion between two
+differently typed constants.
+
+Anywhere a constant expression is required outside a `const` declaration — for
+example, the size `N` in a fixed array type `[T; N]` — the same subset and
+typing rules apply, and the value must be a non-negative integer. Array literal
+construction is specified in §12.6 and map construction in §13.3;
+collection literals are not constant expressions.
+
+```ore
+const pageSize = 4096
+const bufferSize = pageSize * 4   // 16384, untyped int until it takes a type
+const maxRetries uint8 = 5
+const label = "buf-" + "v2"       // constant string concatenation
+const half = maxRetries / 2       // typed uint8 arithmetic, no implicit conversion
+```
+
+Ownership, error, and async implications: constant expressions never own,
+borrow, or clean up a resource; they are pure compile-time values. This does
+not change `?` propagation, task/channel semantics, or the zero-value rules in
+§41.4.
+
+Compiler impact: evaluate constant expressions exactly (§6.5's exact-result
+requirement) before any range check, reject cycles between constant
+definitions during resolution rather than during evaluation, and reuse the
+typed-conversion checks from §6.6 for explicit conversions inside constant
+expressions. Pending conformance cases are in
+`tests/conformance/constant-expressions.md`.
+
+## 5.4 Initialization syntax — LOCKED
+
+The confirmed initialization form is:
+
+```ore
+let x = value
+var x = value
+let x Type = value
+var x Type = value
+```
+
+Some earlier design examples used `:=` for illustration. `:=` has **not** been locked as Zore syntax.
+
+**MVP implementations MUST NOT add `:=` unless the specification is explicitly revised.**
+
+Every `let` and `var` declaration requires an initializer. An explicit type follows
+the name without a colon. Thus `var count int64 = 0` is supported, while
+`var count int64` is not. An explicit type constrains the initializer; it does
+not authorize implicit conversions that the type model has not defined.
+
+Constants use `const name = expression` or `const name Type = expression`.
+The initializer must be compile-time evaluable; the constant-expression subset
+is locked in §5.3, and numeric defaults/conversion rules are locked in
+§6.5–6.6. `const` does not become a runtime immutable-binding alternative.
+
+```ore
+let count int64 = 0
+var ratio float32 = 0.5
+const limit = 100
+const capacity int64 = 100
+```
+
+Multiple-result bindings use `let name, name = expression` or the corresponding
+`var` form. There is one initializer expression, evaluated once, producing exactly
+as many results as targets. `_` may occupy any target position (§5.5). Mixed
+per-name type annotations and typed multiple bindings are not supported in the
+MVP; use separate declarations when explicit per-name types are needed. This
+does not add tuple destructuring or comma-separated initializer expressions to
+binding declarations.
+
+## 5.5 Discard target `_` — LOCKED
+
+Standalone `_` may be used as a discard target in `let` and `var` bindings and
+ordinary assignments, including individual positions in a multiple-value result.
+It creates no binding, occupies no name in scope, and cannot be read as a value.
+Multiple discard positions may occur in the same binding or assignment.
+
+```ore
+let value, _ = pair()
+let _ = calculate()
+var _ = calculate()
+_ = calculate()
+let _, _ = pair()
+```
+
+These examples may also discard error results explicitly. Error-result use and
+discard requirements are specified in §15.6.
+
+The right-hand expression is evaluated normally, exactly once; discarding its
+result does not suppress side effects or bypass type checking. Each `_` consumes
+one result position, so ordinary result-count checks still apply. This does not
+introduce arbitrary destructuring or pattern matching. Multiple-assignment
+evaluation and storage ordering are specified in §5.6.
+
+Ownership follows ordinary assignment semantics (§10.1). Discarding a Copy value
+discards a copy and leaves its source usable. Discarding a Move value transfers
+ownership from its source, making that source unavailable; the discarded owned
+value undergoes normal deterministic destruction. `_ = resource` must not be
+treated as a no-op that preserves a Move resource. The compiler must reject
+moving a borrowed place into `_`, just as with any other ownership transfer.
+
+A discarded borrowed view does not acquire ownership of its backing storage and
+must not destroy the backing owner. All ordinary borrow/lifetime checks remain
+in force. Discarding an owned temporary or result must not leak it or cause a
+double-drop. Destruction follows the ordinary lifetime and cleanup rules (§14);
+this section introduces no alternative cleanup ordering.
+
+`_` cannot be used as an expression, argument, type name, function name, field
+name, or parameter/receiver binding name. Named identifiers such as `_unused`
+remain ordinary bindings. This decision does not introduce `_` in `const`
+declarations, imports, patterns, or other contexts.
+
+Ownership, error, and async implications: discard uses the existing Copy/Move,
+borrow, and drop rules. Evaluation still performs any explicitly requested `?`,
+`await`, or task creation. Discarding a Task handle detaches it without cancelling
+the task (§18.6). Error-value discards follow §15.6. No implicit
+error propagation, awaiting, or cancellation is introduced by `_`.
+
+Compiler impact: represent discard targets without allocating a user binding,
+retain source spans, type-check their result positions, and lower ownership
+transfers and required cleanup explicitly. Reject reads of `_` and invalid
+ownership transfers. Pending cases are in `tests/conformance/discards.md`.
+
+## 5.6 Assignments and compound updates — LOCKED
+
+Assignment is a statement of the form `target = expression`, never an expression
+with a result. A target must be an existing mutable local, a writable field or
+index place, or `_`. Reject assignment to immutable bindings, constants, and
+non-writable places. Field/index access remains subject to type, mutability,
+and borrowing rules; assignment does not grant write access through a shared
+borrow or imply that all collection elements are writable.
+
+The compound assignment operators are:
+
+```text
++= -= *= /= %= &= |= ^= <<= >>=
+```
+
+A compound assignment has one writable place target and one RHS value. It
+performs the corresponding binary operation followed by assignment, using that
+operator's type rules (§7.6). Evaluate the target once, obtain its current value,
+evaluate the RHS, compute the result, and store it. `_` is not a compound target
+because it has no stored value. Preserve exclusive update access and reject
+conflicting accesses under the ordinary borrow rules; do not duplicate target
+side effects by naively rewriting `target += value` as two evaluations of target.
+
+Multiple assignment allows a comma-separated target list and either a matching
+list of single-result RHS expressions or one expression returning the matching
+number of results. Do not implicitly splice a multiple-result call into an RHS
+list with other expressions. The target and result counts must agree.
+
+```ore
+var left = 1
+var right = 2
+left, right = right, left
+
+var count int64 = 0
+count += 1
+```
+
+Evaluation and storage occur in three phases:
+
+1. Evaluate target places from left to right, including receiver/base/index
+   expressions, exactly once. `_` has no place to evaluate.
+2. Evaluate RHS expressions from left to right and retain their resulting values
+   before performing any assignment stores. One multiple-result expression is
+   evaluated once.
+3. Assign the retained results to targets from left to right; process discards
+   using §5.5. Each writable target must still be valid when it is assigned.
+
+This ordering supports swaps without rereading a value after a preceding store.
+All non-discard targets in a multiple assignment must be provably non-overlapping.
+Reject known overlaps and possible overlaps that cannot be proven disjoint.
+For example, `a, a = 1, 2` is invalid; repeated `_` targets are allowed. For
+indexed places, distinct source expressions alone do not prove distinct storage.
+Map assignment targets follow the special §13.3 rule: retain map identity and
+key rather than a borrowable element place. Compound map assignment is rejected;
+map subscripts used as expressions produce two results, not writable values.
+
+Ownership operations occur during evaluation according to normal Copy/Move
+rules. Before replacing a still-owned value in a target, perform its required
+cleanup. If its prior value has already been moved out, do not drop it again.
+Move-value swaps must preserve exactly one owner per value. Retaining RHS values
+must not duplicate Move values, move borrowed storage, or invalidate target places.
+
+If target or RHS evaluation propagates an error, later evaluations and the
+not-yet-started stores do not run, and required cleanup of owned temporaries
+occurs. Earlier expression side effects and ownership transfers are not rolled
+back. This is sequencing, not a transactional assignment guarantee. The precise
+panic cleanup contract remains separate.
+
+Ownership, error, and async implications: replacements, compound updates, and
+swaps obey the same ownership model as other expressions. Any target or borrow
+retained across an explicit `await` must remain valid and exclusive where needed;
+reject the program when this cannot be proven. Error results still require use
+or explicit discard (§15.6). No implicit propagation or concurrency is introduced.
+
+Compiler impact: represent target places separately from RHS temporaries, lower
+the evaluation/store phases explicitly, check result counts and target overlap,
+track moved-out versus still-owned target values, and insert required drops.
+Retain source spans for invalid target, overlap, and ownership diagnostics.
+
+## 5.7 Declaration scope and shadowing — LOCKED
+
+Reject duplicate declarations in the same scope. A nested scope may shadow an
+ordinary user-defined name from an enclosing scope. It must not shadow a
+predeclared name at any scope (§3.18), and keyword restrictions still apply.
+Repeated `_` targets are not duplicate declarations because they introduce no
+names. Multiple named targets in one binding must be distinct.
+
+```ore
+var count = 0
+let count = 1 // invalid: duplicate declaration in the same scope
+```
+
+When a nested scope ends, name lookup again finds the enclosing declaration;
+shadowing does not transfer or merge ownership between the two bindings. Give
+each declaration its own semantic identity. Their lifetimes, borrows, and cleanup
+remain independently subject to ordinary rules, including across error exits
+and async suspension. Duplicate declarations are compile-time errors.
+
+Local declarations enter scope after their initializer (§5.8). Package function
+and type declaration ordering and method/member conflicts follow §7.8;
+package variable initialization order remains a separate decision.
+Nested shadowing does not introduce a value-producing block expression.
+
+Compiler impact: maintain lexical scopes and stable binding IDs, diagnose
+duplicates with both declaration locations, and keep the predeclared-name rule
+distinct from ordinary shadowing. Pending conformance cases for §5.4, §5.6, and
+§5.7 are in `tests/conformance/bindings-assignments.md`.
+
+## 5.8 Blocks and local scope — LOCKED
+
+A block is a brace-delimited sequence of statements and creates a lexical scope.
+Blocks may be empty or used as standalone statements. They do not produce values
+and cannot be used as expressions. Statement boundaries follow §3.7.
+
+A local declaration's names enter scope after its initializer has been evaluated.
+The initializer resolves names in the previously existing environment, so a new
+binding cannot refer to itself through its own name. All names in a multiple
+binding enter scope together after the initializer. A nested declaration may
+refer to an enclosing binding with the same name in its initializer.
+
+```ore
+let count = 1
+{
+    let count = count + 1 // initializer reads the outer count
+    println(count)
+}
+println(count) // refers to the outer count again
+```
+
+Parameters, receiver bindings, and declarations in the outermost function-body
+block share one scope for duplicate-name checking. A function-body declaration
+cannot redeclare a parameter; a further nested block may shadow an ordinary
+parameter name. Closure parameters and their outermost body follow the same rule.
+
+Scopes constrain visibility and lifetimes but do not replace the last-use/drop
+rules (§14). Exiting a scope on normal completion or control transfer must perform
+its required cleanup. Returning a value does not permit a borrowed local to
+escape its valid lifetime. Preserve these rules across error exits and suspension.
+
+Compiler impact: distinguish statement blocks from expressions, maintain lexical
+scopes and declaration-entry points, and preserve separate IDs for shadowed names.
+
+## 5.9 Conditional statements — LOCKED
+
+The conditional forms are:
+
+```text
+if condition { statements }
+if condition { statements } else { statements }
+if condition { statements } else if condition { statements } else { statements }
+```
+
+Conditions must have type `bool`. Parentheses around a condition are optional;
+body braces are required. Evaluate conditions in order, selecting the first true
+branch or the final `else` if present. Execute only the selected body. Each body
+has its own block scope; branch-local declarations do not escape it.
+
+There is no initializer clause before an `if` condition. `else` must occur on
+the same line as the preceding closing brace so that semicolon insertion does
+not separate it from the `if`. Chained `else if` and a final `else` are optional.
+An `if` is a statement, not a value-producing expression.
+
+Ownership analysis must merge branch states safely; a move on one possible path
+does not permit an unconditional later use. Required cleanup follows each actual
+control-flow path, including propagated errors. Conditions and bodies may use
+explicit `await` where otherwise valid; conditional syntax grants no extra borrow
+or lifetime permissions.
+
+Compiler impact: require bool conditions, reject missing braces and initializer
+clauses, and lower branches to explicit control flow with source spans.
+
+## 5.10 Loop statements and loop exits — LOCKED
+
+The MVP supports these three loop forms:
+
+```ore
+for {
+    work()
+}
+
+for ready() {
+    work()
+}
+
+for var i = 0; i < limit; i += 1 {
+    work()
+}
+```
+
+The infinite form repeats its body until control exits. The conditional form
+evaluates a bool condition before every iteration and exits when false. The
+counting form executes its initializer once, tests a bool condition before each
+iteration, executes the body when true, then executes its update before testing
+again. Braces are required; condition parentheses are optional.
+
+Counting headers have three explicit, nonempty clauses separated by semicolons.
+The initializer may be a `let`/`var` binding, assignment, or call statement. The
+update may be an assignment (including compound assignment) or call statement,
+not a declaration. Any error results still require use or explicit discard.
+Omitted counting clauses and other loop forms are not introduced by this grammar;
+use the infinite or conditional form where appropriate.
+
+The counting loop creates a scope for its initializer bindings, visible in the
+condition, update, and body, but not after the loop. The body is a nested block
+scope; body-local declarations are not visible in the update or condition.
+
+Unlabelled `break` exits the nearest enclosing loop. Unlabelled `continue` ends
+the current iteration of that loop. For a counting loop, `continue` proceeds to
+the update, then the condition; for a conditional loop, it proceeds to the
+condition; for an infinite loop, to the next body execution. `break` skips any
+counting-loop update. Neither statement takes an operand or label. Using either
+outside a loop is a compile-time error. They cannot target a loop outside the
+current function or closure.
+
+The MVP has no `range`/foreach loops, labelled jumps, or `goto`. This syntax does
+not import additional Go loop forms or permit `:=`, `++`, or `--`.
+
+Before a control transfer, perform required cleanup for scopes exited by that
+transfer. A `continue` cleans up iteration-local resources as required but does
+not exit the counting initializer's scope; `break` exits that scope as well.
+Loop-carried ownership state must be valid on every iteration. Explicit errors,
+`await`, and task creation retain their ordinary semantics.
+
+Compiler impact: lower initialization, condition, body, update, and exit to
+distinct control-flow regions; resolve exits to the nearest loop in the current
+function; analyze loop backedges and required drops. Pending cases for §5.8–5.10
+are in `tests/conformance/control-flow.md`.
+
+---
+
+# 6. Built-in Types
+
+## 6.1 Primitive types — LOCKED
+
+The MVP includes:
+
+```text
+bool
+
+int
+int8
+int16
+int32
+int64
+
+uint
+uint8
+uint16
+uint32
+uint64
+
+float32
+float64
+
+byte
+rune
+string
+```
+
+## 6.2 Collection types — LOCKED
+
+The MVP includes:
+
+```text
+[T; N]      fixed-size array
+[]T         borrowed slice
+Array<T>    owned dynamic array
+map[K]V     owned map
+```
+
+## 6.3 Additional core semantic types — LOCKED
+
+The language model also includes:
+
+```text
+error
+channel<T>
+Task<R1, ..., Rn>   (written plain `Task` when the spawned call has no results)
+```
+
+The exact generic surface syntax for every runtime/library type does not imply general user-defined generics. General-purpose generics are outside the MVP.
+`Task`'s type arguments mirror the spawned call's result list (§18.8).
+
+## 6.4 No source-level `void` requirement — LOCKED
+
+Functions that do not return a value do not require a source-level `void` type.
+
+Example:
+
+```ore
+func greet(name string) {
+    println(name)
+}
+```
+
+## 6.5 Numeric type widths and defaults — LOCKED
+
+The fixed-width primitive types have their named widths. `int8`, `int16`,
+`int32`, `int64`, `uint8`, `uint16`, `uint32`, and `uint64` have exactly 8, 16,
+32, or 64 bits as their names indicate. `float32` and `float64` use IEEE 754
+binary32 and binary64 formats respectively.
+
+`int` is an alias of `int64`; `uint` is an alias of `uint64`; and `byte` is an
+alias of `uint8`. Their widths do not depend on the host architecture. `rune`
+is a distinct type representing exactly one Unicode scalar value, not an alias
+of an integer type. Its valid values are U+0000–U+10FFFF excluding U+D800–U+DFFF.
+Conversions to or from integer types must follow §6.6.
+
+Integer literals have no suffixes (§3.14). When a literal has no expected type,
+integer literals default to `int` and floating-point literals default to
+`float64`. A numeric literal may take an expected integer or float type when
+its exact mathematical value is representable in that type. Otherwise the
+program is rejected; the compiler must not silently truncate, wrap, or round
+an integer literal to make it fit. A rune literal has type `rune`, not the
+default integer type. Contextual typing does not make differently typed
+variables implicitly compatible.
+
+For untyped constant arithmetic, preserve the exact mathematical result until
+the expression is assigned a type. Reject a constant expression if its result
+is not representable in the required type. Detailed constant-expression syntax
+remains restricted to operations whose operands and results are themselves
+valid constants; calls, mutation, I/O, and other runtime effects are not constant
+operations.
+
+```ore
+let count = 42             // int, which is int64
+let small uint8 = 42       // contextual type is representable
+let ratio = 1.5            // float64
+let precise float32 = 0.5  // exact value is representable
+let letter rune = 'A'
+```
+
+Ownership, error, and async implications: all numeric primitives and `rune` are
+Copy. Width/default rules do not change cleanup, error propagation, or async
+ownership. Invalid contextual literal values produce compile-time diagnostics.
+
+Compiler impact: keep literal magnitudes/decimal values independent of host types,
+apply expected types deliberately, and make `int`, `uint`, and `byte` aliases of
+their specified widths in type identity/layout. Preserve a distinct rune type
+and validate scalar range. Pending cases are in `tests/conformance/numerics.md`.
+
+## 6.6 Numeric conversions and arithmetic — LOCKED
+
+Implicit conversion between already typed numeric values is not allowed. Numeric
+conversion uses a type name as a conversion form, such as `int64(value)` or
+`float32(value)`. Conversions never silently change ownership; all numeric values
+remain Copy.
+
+Integer-to-integer and float-to-integer conversions are checked. If the source
+value is not representable in the destination type, a constant conversion is a
+compile-time error and a runtime conversion panics. Float-to-integer conversion
+truncates toward zero before checking the destination range; NaN and infinities
+are invalid for integer conversion. Integer-to-float and float narrowing use
+round-to-nearest, ties-to-even. A finite source value outside the destination
+float's finite range is an error at compile time for constants and a runtime
+panic otherwise. Rounding a representable finite value to the nearest destination
+value is permitted, including rounding to a subnormal or signed zero.
+
+An explicitly converted integer value and a float value may be combined only
+when their types match; there is no automatic common numeric type. Comparisons
+require matching types after aliases are resolved. `==` and `!=` are permitted
+for bool, numeric primitives, rune, string, and `error` (§15.1 defines `error`
+equality). Ordered comparisons `<`, `<=`, `>`, and `>=` are permitted for
+numeric primitives, rune, and string. Strings are ordered lexicographically by
+their UTF-8 encoding bytes. Booleans support equality only. `Task<...>`
+supports only equality against `nil` (§41.4), not general equality.
+`channel<T>` is not comparable at all, including against `nil`, since channels
+have no `nil` state (§19.12). Other types are not comparable unless a later
+specification explicitly adds that capability.
+
+Integer `+`, `-`, `*`, `/`, and `%` use checked arithmetic. A result
+outside the destination type's range is a compile-time error for a constant
+expression and a runtime panic for a runtime expression, in every build mode.
+Integer division truncates toward zero; `%` satisfies `a == (a / b) * b + (a % b)`
+for valid operands, so a nonzero remainder has the dividend's sign. Division
+or remainder by zero panics at runtime and is a compile-time error in a constant
+expression. The minimum signed integer divided by `-1` is an overflow under this
+rule.
+
+Bitwise `&`, `|`, `^`, and unary `^` operate on the fixed-width integer bit
+representation. **Fixed-width shifts — LOCKED:** for a typed left operand of
+width W, left shift keeps the low W bits and fills vacated low bits with zeros.
+Discarded high bits do not cause an overflow error or panic. Signed operands
+use two's-complement bit patterns; interpret the resulting W bits in the left
+operand's signed or unsigned type. Right shift of unsigned types fills with
+zero bits; right shift of signed types replicates the sign bit. These rules
+apply identically to typed constant expressions and runtime expressions.
+
+Shift counts must be nonnegative and less than the left operand's bit width;
+invalid constant counts are compile-time errors, and invalid runtime counts
+panic. Counts are never masked or reduced modulo the width. The shift-count
+operand must have an integer type (or be an untyped integer constant). The
+left operand determines the result type; the right operand is not implicitly
+converted to it. A zero count preserves the operand. Compound shifts use these
+same rules and the assignment evaluation order (§5.6).
+
+Untyped constant shifts preserve exact mathematical values under §6.5: left
+shift multiplies by 2 to the count's power; right shift divides by that power,
+rounding toward negative infinity. They do not discard high bits before a type
+has been assigned. Counts must be nonnegative; when the expression receives an
+expected or default integer type, its counts must also be less than that type's
+width and its exact result must fit. An explicit conversion of the left operand
+before shifting makes the shift typed and therefore uses the fixed-width rule.
+Contextual typing of a literal operand similarly supplies its width before a
+typed shift. Context must not retroactively truncate a previously evaluated
+untyped named constant.
+
+```ore
+let wrapped = uint8(128) << 1   // uint8 zero; discarded high bit is not overflow
+let signed = int8(64) << 1     // int8 -128, from its two's-complement bit pattern
+let negative = int8(-2) >> 1   // int8 -1, sign-preserving right shift
+let invalid = uint8(1) << 8    // compile-time error: count equals width
+const wide = 128 << 1          // exact untyped constant 256
+let tooSmall uint8 = wide      // compile-time error: exact value does not fit
+```
+
+Floating-point arithmetic uses IEEE 754 binary32 or binary64 operations with
+round-to-nearest, ties-to-even, without fast-math reassociation. Runtime
+operations may produce positive/negative infinity, signed zero, or NaN according
+to IEEE 754; these results are not panics by themselves. Constant floating-point
+evaluation that overflows the finite range of its required float type is a
+compile-time error. Underflow and inexact rounding follow IEEE 754, including
+subnormals and signed zero. Floating-point division by zero follows IEEE 754 and
+may produce infinity or NaN; it does not panic. `%` is integer-only.
+
+String `+` concatenates strings, with the ordinary Copy semantics of `string`.
+No implicit number-to-string conversion or operator overloading is introduced.
+
+Ownership, error, and async implications: arithmetic and conversions on numeric
+values preserve Copy semantics. Runtime panics use the language's panic behavior;
+they are not ordinary error results and do not add hidden exception propagation.
+Async execution follows the same numeric rules and ownership model.
+
+Compiler impact: preserve exact untyped constant evaluation before range
+checking; evaluate typed shifts with their specified width and signedness,
+including at compile time. Emit checked arithmetic and conversions consistently
+across build modes; validate shift counts before emitting shifts, without
+arithmetic-overflow checks for discarded bits or backend assumptions that signed
+left shift cannot overflow. Use explicit IEEE operations without unsafe
+fast-math; and implement
+the specified comparison eligibility. Diagnostics identify source spans for
+constant failures; runtime panics identify invalid operations when available.
+Pending cases are in `tests/conformance/numerics.md`.
+
+---
+
+# 7. Functions
+
+## 7.1 Basic function syntax — LOCKED
+
+```ore
+func greet(name string) {
+    println(name)
+}
+```
+
+A return type follows the parameter list when present.
+
+Example:
+
+```ore
+func add(a int, b int) int {
+    return a + b
+}
+```
+
+## 7.2 Multiple return values — LOCKED
+
+Multiple return values are part of the MVP because they are required by the explicit error model.
+
+Example:
+
+```ore
+func readFile(path string) (string, error)
+```
+
+A function, method, or closure's result list may contain at most one
+`error`-typed result, and if present it must be the last result. This
+generalizes the pattern already used throughout this specification —
+`(string, error)`, `task.wait() -> (T, error)` (§18.7) — into a general rule:
+error-bearing results are always trailing and singular. A result list with
+`error` in a non-final position, or with more than one `error`-typed result,
+is invalid. This rule enables the `?` typing and zero-value-fill behavior in
+§15.2.
+
+## 7.3 Parameter ownership syntax — LOCKED
+
+Zore uses the following parameter forms:
+
+```ore
+func read(user User)
+func update(user mut User)
+func save(user own User)
+```
+
+Their meanings are:
+
+| Form | Meaning |
+|---|---|
+| `user User` | shared / immutable borrow by default |
+| `user mut User` | mutable borrow |
+| `user own User` | ownership transfer |
+
+This syntax is a core locked Zore decision.
+
+## 7.4 Call-site syntax — LOCKED
+
+Call sites remain clean:
+
+```ore
+read(user)
+update(user)
+save(user)
+```
+
+There is no `mov`, `move`, `borrow`, or equivalent ownership keyword required at the call site.
+
+Ownership behavior is determined from:
+
+- the callee parameter contract
+- the argument type
+- compiler ownership analysis
+
+---
+
+## 7.5 Expression evaluation order — LOCKED
+
+Expression operands and call arguments are evaluated from left to right in
+source order, subject to explicitly specified conditional evaluation such as
+short-circuiting. Each evaluated subexpression completes its evaluation before
+the next begins. This rule does not change operator precedence or associativity;
+those determine the expression tree as specified in §7.6.
+
+For a call, evaluate the callee expression (including a method receiver) first,
+then each argument from left to right, then invoke the callee. Evaluation does
+not itself imply a copy, move, or borrow independent of the callee's contract.
+
+```ore
+combine(first(), second())
+```
+
+In this example, evaluate `first()` before `second()` and invoke `combine` only
+after both arguments have been evaluated. This applies even when only one
+operand has an obvious side effect: optimizations must preserve the observable
+behavior defined by this ordering.
+
+If evaluating an earlier subexpression exits the current computation, later
+subexpressions are not evaluated. For example, in
+`combine(first()?, second())`, an error propagated by `first()?` prevents
+`second()` and `combine` from running. Merely returning an error value without
+propagating it does not itself skip later evaluation.
+
+Explicit suspension in an earlier subexpression preserves this order. In
+`combine(await first(), second())`, `second()` is not evaluated until the await
+has completed successfully and control reaches it. Other tasks may run while
+the current computation is suspended. Evaluating a task creation or an async
+value does not introduce an implicit wait: completion of expression evaluation
+does not necessarily mean completion of work represented by its result.
+
+Conditional evaluation rules take precedence over evaluating all operands.
+The short-circuit operators in §7.6 evaluate their right operand only when
+required. Left-to-right evaluation does not
+introduce parallel argument evaluation or eager evaluation of skipped operands.
+
+Ownership, error, and async implications: ownership analysis must respect the
+specified evaluation sequence, reject later uses invalidated by earlier moves,
+and preserve valid borrows across any explicit suspension. Ordering alone does
+not grant overlapping borrows or settle exact borrow activation/duration rules.
+If earlier argument evaluation creates owned temporaries and a later argument
+propagates an error, required temporary cleanup must occur before returning.
+Panic behavior remains subject to its separately specified cleanup contract.
+
+Compiler impact: lower evaluations in the specified sequence, retaining source
+spans and explicit control flow for early exits and suspension. Preserve ordinary
+ownership and drop analysis rather than relying on host-language evaluation
+order. Assignment target/RHS/store ordering and multiple assignment follow §5.6;
+struct initializer sequencing follows §8.4; array initializer sequencing follows
+§12.6 and map initializer sequencing follows §13.3. Pending cases are
+in `tests/conformance/evaluation-order.md`.
+
+## 7.6 Operators and expression grouping — LOCKED
+
+The MVP supports these operators:
+
+| Category | Operators and constraints |
+| --- | --- |
+| Arithmetic | Binary `+`, `-`, `*`, `/`, `%`; `%` is integer-only |
+| Comparison | `==`, `!=`, `<`, `<=`, `>`, `>=`; comparisons cannot chain |
+| Boolean logic | Unary `!`, binary `&&`, `||`; operands must be `bool` |
+| Bitwise | Binary `&`, `\|`, `^`, `<<`, `>>`, unary `^` for complement; integers only |
+| Unary signs | `+x`, `-x`; signs are operators, not numeric literal token contents |
+| Strings | Binary `+` concatenates strings; no implicit number-to-string conversion |
+| Error propagation | Postfix `?`, subject to §15 and the await rule below |
+| Suspension | Prefix `await`, subject to §17 |
+
+Comparison operations yield `bool`. Detailed comparable/ordered type rules,
+mixed numeric type compatibility, integer division/remainder behavior, overflow,
+and shift-count limits remain type-model decisions. This operator inventory does
+not add user-defined operator overloading or implicit numeric conversions.
+
+### Precedence and associativity
+
+The following table is ordered from highest to lowest precedence:
+
+| Level | Forms |
+| --- | --- |
+| 1 | Calls, field access, indexing, slicing |
+| 2 | Postfix `?` |
+| 3 | Prefix `+`, `-`, `!`, `^`, `await` |
+| 4 | `*`, `/`, `%`, `<<`, `>>`, `&` |
+| 5 | `+`, `-`, `\|`, `^` |
+| 6 | `==`, `!=`, `<`, `<=`, `>`, `>=` |
+| 7 | `&&` |
+| 8 | `\|\|` |
+
+Binary operators at the same level associate left to right, except that
+comparison operators are non-associative. Parentheses override grouping.
+Consecutive prefix operators apply from the operand outward. Calls, fields, and
+indexing/slicing form left-to-right access/call chains (§12.6). These grouping
+rules do not
+change left-to-right evaluation of the resulting operands (§7.5).
+
+For example:
+
+```text
+a + b * c       groups as a + (b * c)
+a - b - c       groups as (a - b) - c
+a + b << c      groups as a + (b << c)
+a | b ^ c       groups as (a | b) ^ c
+a == b || c     groups as (a == b) || c
+```
+
+An unparenthesized comparison chain such as `a < b < c`, `a == b == c`, or
+`a < b == c` is rejected. Explicitly grouped comparisons remain subject to
+ordinary type checking; parentheses do not make incompatible operands legal.
+Write `a < b && b < c` to express two ordered comparisons when appropriate.
+
+### Boolean evaluation
+
+`!` negates a boolean. `left && right` evaluates `left` first and evaluates
+`right` only if `left` is true. `left || right` evaluates `right` only if `left`
+is false. There is no implicit truthiness conversion from integers, strings,
+collections, or other types. A skipped operand performs no side effects, moves,
+borrows, error propagation, or suspension at runtime. Both operands must still
+be well-typed, and ownership analysis must account for the conditional path.
+
+### Await and propagation grouping
+
+There is an explicit exception to the generic postfix/prefix precedence table:
+an unparenthesized trailing `?` on an awaited operation propagates the result
+after awaiting. In particular:
+
+```text
+await operation()?       means (await operation())?
+await object.method()?   means (await object.method())?
+```
+
+The same grouping applies to awaiting a task handle (§18.9): `await task?`
+means `(await task)?`.
+
+The parser must construct propagation around the await expression in these
+forms, not await a prematurely propagated result. Explicit parentheses control
+grouping: `await (operation()?)` instead places propagation inside the awaited
+operand and is accepted only if the resulting types support that operation.
+This is not permission to invent an async-result type or relax `?` typing.
+
+### Assignment, task creation, and exclusions
+
+Assignment is a statement and does not produce an expression value. Chained
+assignment such as `a = b = value` is not supported. Assignment targets, compound
+assignment, and sequencing are specified in §5.6; this table does not add
+assignment expressions.
+
+`go` takes a call expression, consistent with §18. It does not act as an ordinary
+arithmetic unary operator. Its complete grammar and interaction with surrounding
+expressions remain for the task rules; do not infer them from precedence.
+
+The MVP excludes increment/decrement (`++`, `--`), ternary `?:`, exponentiation,
+and source-level address-of or pointer-dereference operators. Binary `&` is
+bitwise AND, and binary `*` is multiplication; neither introduces pointers.
+Do not inherit other operators such as `&^` from another language. Lexical token
+handling must distinguish adjacent prefix signs from unsupported increment or
+decrement syntax; it must not silently reinterpret `++x` or `--x` as supported
+increment/decrement operations.
+
+Ownership, error, and async implications: preserve normal Copy/Move and borrow
+rules for operands. Short-circuiting creates control-flow paths whose live
+values and required drops must be analyzed separately. `await operation()?`
+preserves suspension safety and performs required cleanup if the awaited error
+propagates. No hidden exceptions, implicit waits, or source pointers are added.
+
+Compiler impact: encode precedence and non-associative comparisons explicitly,
+retain source spans, implement the await/propagation grouping rule in the parser,
+and lower short-circuit logic to conditional control flow. Keep type checking
+and ownership analysis separate from parsing. Pending cases are recorded in
+`tests/conformance/expressions.md`.
+
+---
+
+## 7.7 Return statements and completion — LOCKED
+
+A no-result function may use bare `return` or complete normally at the end of
+its body. A result-returning function uses `return expression` for one result
+or `return expression, expression` for multiple results, matching the declared
+result count and types. Evaluate return operands left to right (§7.5), transferring
+returned values according to ordinary ownership rules.
+
+```ore
+func add(a int, b int) int {
+    return a + b
+}
+
+func pair() (int, int) {
+    return 1, 2
+}
+```
+
+Named return parameters and implicit bare returns of named results are not
+supported. A bare `return` in a result-returning function is invalid. Returning
+values from a no-result function is invalid. Multiple-result forwarding follows
+§7.8. Error-propagation typing is locked in §15.2, including result-list shape
+(§7.2) and zero-value fill on an early `?` return.
+
+Every reachable path in a result-returning function must return the required
+results or never complete. A provably non-completing path, such as an infinite
+loop without a reachable exit, does not require an artificial return. A loop
+that can exit does not by itself prove completeness. Reject possible fallthrough
+without required results. Do not assume that a call named `panic` is non-returning
+until its resolved built-in contract establishes that property.
+
+A return exits the current function or closure, not an enclosing function. It
+performs required cleanup of still-owned values whose lifetimes end on that
+path, without destroying values transferred to the caller. If evaluating a return
+operand propagates an error, later operands are skipped and required temporary
+cleanup occurs. In an async function, return completes that async computation;
+it does not weaken ownership or suspension safety.
+
+Compiler impact: type-check return counts/contracts, analyze reachable completion
+paths, retain source spans, and lower returned values separately from cleanup.
+Pending cases are in `tests/conformance/control-flow.md`.
+
+## 7.8 Function declarations, calls, and result forwarding — LOCKED
+
+Each parameter declares its own name and type, with the ownership modifier in
+the position defined in §7.3. For example, `a int, b int` is valid; grouped
+`a, b int` is not. Arguments are positional and their count must match the
+declared parameters. The MVP has no default parameters, named arguments, or
+user-defined variadic parameter syntax. Type compatibility and ownership checks
+apply after matching arguments to parameters.
+
+A trailing comma is allowed in parameter and argument lists. On multiline lists,
+commas are required where necessary to avoid semicolon insertion (§3.7). This
+does not permit missing parameters or arguments between commas.
+
+```ore
+func add(a int, b int,) int {
+    return a + b
+}
+
+let total = add(
+    first(),
+    second(),
+)
+```
+
+User-defined functions and methods require bodies. Signature-only examples
+elsewhere in this specification illustrate contracts; they do not authorize
+bodyless user declarations, FFI declarations, or forward-declaration syntax.
+Package functions and types may reference later declarations in the same package,
+including across its files. Collect declaration identities before resolving
+bodies. This does not settle package variable initialization order or permit
+recursive by-value layouts without a valid type/layout model.
+
+There is no overloading by parameter count, parameter types, return types, or
+ownership modifiers. Duplicate function names in one package are invalid.
+Methods may be declared only on types defined in the declaring package. Within
+one receiver type, method names must be unique and must not collide with field
+names. Different receiver types may have methods with the same name.
+
+### Result forwarding
+
+`return pair()` may forward all results from a single expression when their
+count and types match the enclosing function's return contract. Evaluate that
+expression once, then return its results with ordinary ownership transfer and
+cleanup. Forwarding an error as a declared result is an explicit use, not a
+silently ignored error (§15.6).
+
+A return may alternatively list separate single-result expressions. Do not
+splice a multiple-result expression into a list with other expressions. Call
+arguments never implicitly expand multiple results: bind them first, then pass
+the named values. An ordinary single-result call as an argument remains valid.
+
+```ore
+func pair() (int, int) {
+    return 1, 2
+}
+
+func forward() (int, int) {
+    return pair()
+}
+
+func main() {
+    let left, right = pair()
+    let total = add(left, right)
+}
+```
+
+### Expression statements
+
+Calls and task creation may be used as statements, including call-based forms
+with explicit `await` or `?` where their contracts permit. Unused arithmetic,
+comparisons, bare identifiers/literals, and other bare value expressions are
+not expression statements. Use an explicit discard assignment when a value is
+intentionally discarded. Ignored non-error call results still require ordinary
+cleanup; any unused error result requires explicit discard or use (§15.6).
+Call-statement permission does not implicitly await an async operation.
+
+Ownership, error, and async implications: declaration order and forwarding do
+not weaken parameter contracts or return-lifetime checks. Argument evaluation
+remains left to right (§7.5); returned Move values are transferred, not duplicated
+or destroyed locally. Invalid signatures, call counts, member conflicts, and
+unsupported statement forms produce compile-time diagnostics. Async functions
+and methods obey the same rules; runtime/task contracts remain separately defined.
+
+Compiler impact: validate individual parameter syntax and list separators,
+register package-level function/type identities before resolving bodies, enforce
+receiver ownership and member uniqueness, and distinguish result forwarding from
+argument expansion. Built-in callable signatures remain part of the explicit
+predeclared API inventory; do not invent them from user-function syntax.
+Pending cases are in `tests/conformance/functions-structs.md`.
+
+---
+
+# 8. Structs
+
+## 8.1 Struct declaration — LOCKED
+
+```ore
+type User struct {
+    Name string
+}
+```
+
+## 8.2 Struct initialization — LOCKED
+
+```ore
+let user = User{
+    Name: "Maas",
+}
+```
+
+## 8.3 Struct ownership classification — LOCKED
+
+A struct's Copy/Move behavior is derived from its fields.
+
+Rule:
+
+> If all fields are Copy, the struct is Copy.\
+> If any field is Move, the struct is Move.
+
+Example:
+
+```ore
+type Point struct {
+    X int
+    Y int
+}
+```
+
+`Point` is Copy.
+
+Example:
+
+```ore
+type Session struct {
+    socket Socket
+}
+```
+
+If `Socket` is Move, then `Session` is Move.
+
+The programmer does not manually annotate the struct as Copy or Move in the MVP.
+
+A struct that defines a custom `drop` method (§14.3) is **always Move**,
+overriding the field-derived rule above even when every field is Copy.
+Silently duplicating a value with meaningful cleanup logic would run that
+cleanup once per duplicate against what is really one underlying resource,
+which is unsound; requiring Move for any `drop`-bearing type closes that gap.
+This is a consequence of defining `drop`, not a manual annotation.
+
+---
+
+## 8.4 Struct construction requirements — LOCKED
+
+Struct initializers use named fields only, with every field supplied exactly
+once. Reject positional construction, omitted fields, unknown fields, and
+duplicate field names. No omitted-field zero initialization or field defaults
+are introduced by this syntax. An empty struct may use an empty initializer.
+Fields may be written in any order, and a trailing comma is allowed (§3.7).
+
+```ore
+type User struct {
+    Name string
+    age int
+}
+
+let user = User{
+    Name: loadName(),
+    age: loadAge(),
+}
+```
+
+Evaluate field expressions from left to right in their written order, not field
+declaration order. Evaluate each expression once and require its type to match
+the named field under the type model. Normal Copy/Move rules determine field
+initialization ownership. If a later field expression exits via propagated error,
+clean up previously acquired owned field values as required; never destroy a
+field whose value was not initialized. Preserve §14's applicable cleanup order.
+
+A caller may not name another package's private fields. Because all fields are
+required, constructing such a type outside its package requires a constructor
+function in the defining package (or another API returning a valid instance).
+There is no implicit constructor bypass of visibility.
+
+For parsing clarity, a struct literal used directly within an `if` or `for`
+condition must be enclosed in parentheses so its opening brace cannot be confused
+with the body. This applies to literals appearing as operands within the condition;
+parenthesizing the whole containing condition also encloses the literal. For
+example, `if (Point{X: 1}).X == 1 { ... }` has an explicit literal boundary.
+The same requirement applies to the condition clause of a counting loop.
+
+Ownership, error, and async implications: construction does not change automatic
+struct Copy/Move classification (§8.3). Previously acquired field values must
+remain valid across a later explicit await, with ordinary borrow and drop rules.
+Partial construction on an error path must not leak or double-drop resources.
+No implicit error propagation or additional concurrency is introduced.
+
+Compiler impact: resolve named fields to stable IDs, enforce exactly-once complete
+initialization and visibility, preserve source evaluation order independently of
+layout order, and represent initialization progress for ownership/drop lowering.
+Reject ambiguous unparenthesized condition literals. Pending cases are in
+`tests/conformance/functions-structs.md`.
+
+---
+
+# 9. Methods
+
+## 9.1 Method syntax — LOCKED
+
+Methods use receiver syntax:
+
+```ore
+type User struct {
+    Name string
+}
+
+func (user User) greet() {
+    println(user.Name)
+}
+
+func (user mut User) rename(name string) {
+    user.Name = name
+}
+
+func (user own User) save() {
+    // consumes user
+}
+```
+
+Receiver semantics follow the same ownership model as function parameters:
+
+- `receiver Type` -> shared borrow
+- `receiver mut Type` -> mutable borrow
+- `receiver own Type` -> ownership transfer
+
+There is no separate method ownership model.
+
+---
+
+# 10. Copy and Move Semantics
+
+## 10.1 Assignment rule — LOCKED
+
+Given:
+
+```ore
+let b = a
+```
+
+the result depends on the type of `a`.
+
+- if the type is Copy, `a` is copied
+- if the type is Move, ownership transfers from `a` to `b`
+
+## 10.2 Copy types — LOCKED
+
+Primitive value types are Copy.
+
+This includes:
+
+- `bool`
+- signed integer types
+- unsigned integer types
+- floating-point types
+- `byte`
+- `rune`
+
+`string` behaves as Copy from the programmer's perspective.
+
+The runtime representation of `string` is an implementation detail as long as observable Copy semantics remain correct and safe.
+
+## 10.3 Move types — LOCKED
+
+Resource-owning values are Move.
+
+Examples include:
+
+- `File`
+- `Socket`
+- `Connection`
+- `Mutex`
+- `Array<T>`
+- `map[K]V`
+- other resource-owning values
+
+## 10.4 Fixed arrays — LOCKED
+
+A fixed array follows the ownership semantics of its element type.
+
+Conceptually:
+
+- `[T; N]` is Copy if its contents are Copy and the compiler supports copying that array value
+- `[T; N]` is Move if ownership of contained values requires Move semantics
+
+Exact implementation thresholds for large values are not part of source-language semantics.
+
+## 10.5 Dynamic arrays — LOCKED
+
+`Array<T>` owns its storage.
+
+Therefore `Array<T>` is a Move type.
+
+## 10.6 Maps — LOCKED
+
+`map[K]V` owns its map storage.
+
+Maps are Move values.
+
+## 10.7 Explicit cloning — LOCKED
+
+Independent duplication of a value that would otherwise be Move uses:
+
+```ore
+clone(value)
+```
+
+`clone` is explicit. It takes a shared borrow of its argument and never
+consumes it: `a` remains valid after `clone(a)`. Clone availability does not
+waive borrow rules: cloned shared views retain backing provenance, and a
+structural clone cannot create a mutable reborrow from its shared argument
+(§11.7, §12.3). Copy fields remain subject to these restrictions.
+
+A generic `copy(value)` operation was discussed but was **not** locked. Do not introduce it as an MVP language feature without a specification change.
+
+### Clone availability
+
+A struct or `[T; N]` supports `clone(value)` through the applicable rule below;
+when both custom and structural cloning would be eligible, select custom clone:
+
+1. **Structural default:** a compiler-synthesized field-wise (or
+   element-wise) clone, available when every field/element is Copy or itself
+   clonable by this same rule, recursively — **and the type defines no custom
+   `drop` method.**
+2. **Custom clone:** an explicit `func (c Type) clone() Type` method (a
+   shared receiver; it takes no parameters and returns exactly the receiver's
+   own type). A custom `clone` takes precedence over the structural default
+   when both would otherwise apply, and is the only option available to a
+   type that defines a custom `drop` (§14.3) — a `drop`-bearing type is not
+   structurally clonable, for the same reason it is not Copy (§8.3):
+   duplicating a resource handle field-by-field does not duplicate the
+   resource it refers to.
+
+A type meeting neither condition — most commonly a `drop`-bearing type with
+no custom `clone` — makes `clone(value)` a compile-time error naming the
+non-clonable type.
+
+`Array<T>` and `map[K]V` cannot receive user-defined methods, since methods
+may only be declared on types defined in the declaring package (§7.8). They
+instead have a **built-in, compiler-provided element-wise/entry-wise clone**,
+available under the same Copy-or-clonable eligibility rule applied to their
+element type (`Array<T>`) or key and value types (`map[K]V`).
+
+Unlike `drop` (§14.3), calling `value.clone()` directly via method-call
+syntax is permitted — producing extra independent copies has no soundness
+hazard, unlike calling a destructor more than once.
+
+Ownership, error, and async implications: `clone` never transfers or
+consumes ownership of its argument; the produced value is an independent
+owner requiring its own eventual cleanup. This does not change Copy/Move
+classification beyond what §8.3 and this section already state.
+
+Compiler impact: for a type with a declared custom `clone`, validate and
+select that method before considering structural cloning. Otherwise use the
+built-in clone for `Array<T>`/`map[K]V`, or the eligible structural default for
+a struct/fixed array. Diagnose an invalid custom declaration or a selected
+method that fails ordinary type/borrow checking; never silently fall back to
+structural cloning. Reject with a diagnostic naming the type when no valid
+clone applies. This order implements the custom-precedence rule above.
+
+```ore
+type Point struct {
+    X int
+}
+
+func (p Point) clone() Point {
+    println("custom clone")
+    return Point{X: p.X}
+}
+
+func demonstrate() {
+    let original = Point{X: 7}
+    let duplicate = clone(original)  // prints once; does not silently copy Point
+    println(original.X)             // original remains available
+    println(duplicate.X)
+}
+```
+
+The selection rule does not change Copy/Move classification or borrow
+provenance. A custom clone's ordinary side effects and panic behavior are
+preserved, including required unwind cleanup; dispatch does not add implicit
+error propagation or async suspension. Pending conformance cases:
+`tests/conformance/destruction.md`.
+
+---
+
+# 11. Borrowing
+
+## 11.1 Borrow by default — LOCKED
+
+Passing a value to a normal parameter borrows it.
+
+```ore
+func printUser(user User) {
+    println(user.Name)
+}
+
+let user = loadUser()
+printUser(user)
+println(user.Name)
+```
+
+The call to `printUser` does not consume `user`.
+
+## 11.2 Mutable borrowing — LOCKED
+
+Mutable access must be explicit in the callee contract:
+
+```ore
+func rename(user mut User, name string) {
+    user.Name = name
+}
+```
+
+The caller still writes:
+
+```ore
+rename(user, "Alice")
+```
+
+## 11.3 Exclusive mutable access — LOCKED
+
+A mutable borrow requires exclusive access to the borrowed place for the duration of the borrow.
+
+The compiler must reject conflicting aliases such as:
+
+- shared borrow while an overlapping mutable borrow is active
+- another mutable borrow while a mutable borrow is active
+- moving a value while it is borrowed
+
+## 11.4 Lifetime inference — LOCKED
+
+Zore does not expose explicit lifetime parameters or lifetime syntax in ordinary source code.
+
+The compiler infers lifetimes / regions.
+
+Do not add Rust-style syntax such as:
+
+```text
+'a
+&'a T
+```
+
+to the MVP.
+
+## 11.5 Lifetime implementation — LOCKED SEMANTICS, FLEXIBLE IMPLEMENTATION
+
+The implementation should prefer:
+
+- local data-flow analysis
+- control-flow-aware lifetime analysis
+- inferred regions
+- last-use information
+- compact ownership contracts between functions
+
+The language design intentionally avoids requiring global source-level lifetime annotations.
+
+## 11.6 Mutable place requirements for callers — LOCKED
+
+A place is **mutable** if and only if it is:
+
+- a `var`-declared local binding (never `let` or `const`);
+- a field or element projection reached entirely through mutable places (a
+  field of a mutable place, or an element of a mutable fixed/dynamic array,
+  including runtime indexing under §12.6); or
+- reached through a `mut`-borrowed parameter, `mut` method receiver, or a
+  `mut []T` slice element — such a parameter/receiver/element is itself a
+  mutable place for the scope in which it is held.
+
+An argument passed to a `mut Type` or `mut []T` parameter, and the receiver of
+a `mut`-receiver method call, must be a mutable place by this definition.
+A contextual mutable slice expression such as `edit(data[:])` is also allowed
+for a `mut []T` parameter when its source supplies mutable access (§12.6); the
+fresh descriptor carries that source's exclusive borrow for the call. This
+does not permit arbitrary non-place expressions for other `mut` parameters.
+Passing a `let` binding, or a place reached only through a shared borrow or a
+shared `[]T` element, to a `mut` parameter, receiver, or slice position is a
+compile-time error. This generalizes the writable-place requirement §5.6
+already applies to assignment targets to argument-passing and method calls;
+it does not change assignment's own rule.
+
+```ore
+let fixedUser = loadUser()
+var mutableUser = loadUser()
+
+rename(mutableUser, "Alice")   // valid: mutableUser is a var binding
+rename(fixedUser, "Alice")     // invalid: fixedUser is a let binding
+```
+
+Ownership, error, and async implications: this rule only gates which places
+may be passed as `mut`; it does not change borrow exclusivity (§11.3), Copy/Move
+classification, or cleanup. No new runtime behavior is introduced.
+
+Compiler impact: classify each argument/receiver expression's place as mutable
+or not before matching it against a `mut` parameter, receiver, or slice
+position, using the same place representation as assignment-target checking
+(§5.6, §30.1). Reject with a diagnostic naming the non-mutable place and its
+declaring binding. Pending conformance cases: `tests/conformance/ownership.md`.
+
+## 11.7 Return-borrow contracts — LOCKED
+
+Borrow provenance is separate from Copy/Move classification. A slice is a
+borrowed view; copying its descriptor does not make its backing storage owned.
+A value containing a borrowed view carries that view's provenance recursively,
+including through struct fields, fixed-array elements, owned collections, and
+closure captures. Moving a container transfers its storage and its existing
+borrow obligations; it does not extend the backing storage's lifetime.
+
+For every returned borrowed view, whether direct or nested in a result, the
+compiler must infer which borrowed input storage it references. All possible
+origins across reachable returns participate in the contract. At each call,
+substitute the actual arguments' provenance into that contract. Preserve
+field-level relationships where provable; otherwise conservatively retain all
+possible origins. Recursive calls require mutually consistent contracts;
+unresolved provenance is rejected, never treated as ownership.
+
+A returned view must not refer to storage owned by a local, temporary, or
+`own` parameter of the returning function. Returning that owner alongside a
+view does not authorize a self-referential aggregate. A borrowed view already
+contained in an input container may be forwarded only when its external
+backing provenance is preserved; owning the container is not owning that
+backing storage. The built-in empty zero slice has no backing-storage loan and
+may be returned without a parameter origin (§41.4). This exception does not
+apply to an arbitrary empty subslice, which retains its source provenance.
+
+```ore
+type View struct {
+    Items []int
+}
+
+func wrap(items []int) View {
+    return View{Items: items}  // valid: result retains items' backing provenance
+}
+
+func forward(view View) View {
+    return view               // copying the struct preserves that provenance
+}
+
+func firstHalf(s mut []int) mut []int {
+    return s                  // returns an exclusive reborrow, per §12.3
+}
+```
+
+A `View` built from a local owned array cannot escape that array's lifetime,
+including by return, assignment into longer-lived storage, or capture in an
+escaping closure. Array/slice syntax is specified in §12.6 and map syntax in
+§13.3. Closure type grammar remains under Q02; these provenance rules do not
+introduce further syntax.
+
+The backing owner must remain valid through every use and any destructor that
+can observe a contained view. Shared views prevent conflicting mutation; mutable
+views require exclusive access. A shared borrow of a container does not grant
+mutable access through a contained mutable view. Copies, explicit clones, and
+parameter passing must obey the same rule (§12.3). No source lifetime syntax is
+introduced. Borrow-containing values crossing task or channel boundaries must
+also meet the independent-storage requirements in §18.4 and §19.4.
+
+Ownership, error, and async implications: provenance survives both Copy and
+Move operations and all nesting. Normal return, `?`, panic cleanup, and async
+suspension must retain backing storage for as long as a live view needs it.
+A zero slice returned by `?` has no loan; a successfully returned slice retains
+its ordinary contract. No self-referential storage or lifetime extension is
+implied by copying, moving, or placing a value in async state.
+
+Compiler impact: track reachable borrowed views independently of type
+classification, infer input-to-result provenance contracts, and propagate them
+through aggregate construction, copies, moves, calls, and captures. Check escape
+and destructor uses on every exit path. Reject when the required relationship
+cannot be proven. Pending conformance cases: `tests/conformance/ownership.md`.
+
+---
+
+# 12. Slices
+
+## 12.1 Slice meaning — LOCKED
+
+A slice is a borrowed view into existing storage.
+
+Syntax:
+
+```ore
+[]T
+```
+
+Example:
+
+```ore
+func sum(numbers []int) int
+```
+
+## 12.2 Mutable slices — LOCKED
+
+A mutable borrowed slice uses:
+
+```ore
+mut []T
+```
+
+Example:
+
+```ore
+func sort(numbers mut []int)
+```
+
+## 12.3 Slice copying — LOCKED
+
+Both shared and mutable slice descriptors remain Copy; neither owns or
+implicitly duplicates the elements. Copy does not bypass borrow validation.
+
+Copying a shared slice preserves its backing provenance. Multiple shared views
+may coexist while the owner remains valid and no conflicting mutable access
+occurs.
+
+Copying a mutable slice creates an **exclusive reborrow**, not a second
+independently usable mutable capability. While the derived view is live, access
+to the overlapping storage through its source view is suspended. After the
+reborrow's last use, access through the source may resume. The same restriction
+applies recursively to copies of composites containing mutable views, argument
+passing, and any clone that preserves a view. A shared borrow of a descriptor
+or its container cannot be used to create a mutable reborrow. A custom clone
+may instead create independent owned storage, subject to §11.7's return rules.
+
+For example, inside `func edit(s mut []int)`, `var next = s` creates a reborrow.
+Calling a mutating operation on `next` is allowed; accessing the same backing
+storage through `s` before `next`'s final use is rejected. Once `next` is no
+longer live, `s` may be used again. Binding mutability still follows §11.6.
+
+Ownership, error, and async implications: derived views retain the original
+loan and do not extend its lifetime; no cleanup of backing elements occurs when
+a descriptor dies. Reborrow suspension applies across `await` and all control
+flow. It cannot be bypassed by copying into a struct or closure.
+
+Compiler impact: track parent/derived loan relationships, suspend overlapping
+source access while a derived exclusive view is live, and preserve these
+relationships through composite copies. Reject conflicts conservatively.
+Pending conformance cases: `tests/conformance/ownership.md`.
+
+## 12.4 Slice ownership — LOCKED
+
+Slices do not own the backing allocation.
+
+The primary owned dynamic collection is:
+
+```ore
+Array<T>
+```
+
+An `own []T` model is not part of the locked MVP design.
+
+## 12.5 Slice aliasing — LOCKED
+
+A slice borrow's exclusivity (§11.3) is checked against its **originating
+place** — the whole `Array<T>`, `[T; N]`, or existing slice it was taken
+from — not against its runtime index range. Two independently usable `mut []T`
+values derived from
+the same originating place conflict even when their ranges provably do not
+overlap. A parent descriptor retained but suspended during an exclusive
+reborrow (§12.3) is not independently usable. The compiler does not attempt
+runtime-range-dependent aliasing proofs, consistent with the conservative, local data-flow model in §11.5.
+
+This is a real MVP limitation, not an oversight: safe split-mutable-borrow
+patterns (for example, obtaining two non-overlapping mutable sub-slices for
+independent processing) are not expressible in the MVP language. There is no
+`unsafe` escape hatch (§21.3) to hand-roll one; a dedicated future builtin
+would be required to add this capability.
+
+Ownership, error, and async implications: this rule is an application of the
+existing exclusive mutable access model (§11.3), not a new ownership
+category. It does not change Copy/Move classification or cleanup.
+
+Compiler impact: track slice borrow conflicts at the granularity of the
+originating place identified by the place abstraction (§30.1), not at the
+granularity of an index expression's runtime value. Pending conformance
+cases: `tests/conformance/ownership.md`.
+
+---
+
+## 12.6 Array literals, indexing, and slicing — LOCKED
+
+### Array literals
+
+```ore
+var fixed = [int; 3]{10, 20, 30}
+var dynamic = Array<int>{10, 20, 30}
+let empty = Array<int>{}
+let item = dynamic[1]
+dynamic[1] = 25
+
+let shared = dynamic[0:2]           // shared []int
+var editable mut []int = fixed[:]  // exclusive mutable view
+```
+
+Array literals always state their type. Fixed-array literals must supply exactly
+N elements; N follows the existing nonnegative constant-size rule. Dynamic-array
+literals have as many elements as written, including zero. Reject omitted fixed
+array elements, inferred element types, repeat/spread forms, and slice literals
+in the MVP. Borrowed slices must view existing storage, except for zero views
+already produced by built-in operations under §41.4.
+
+Elements use comma separators, permit a trailing comma, and evaluate left to
+right. Multiline literals require a trailing comma before a physical newline
+following their final element, consistently with semicolon insertion. Every
+element must produce one value compatible with the declared element type;
+multiple-result calls cannot be spliced into an initializer. Copy elements are
+copied and Move elements transferred under ordinary rules.
+
+As with struct literals, parenthesize a collection literal used directly in an
+if/for condition where its braces would otherwise conflict with the body.
+
+### Indexing
+
+`base[index]` is a postfix place expression for fixed arrays, dynamic arrays,
+and shared/mutable slices. Evaluate base, then index, once each. Accept integer
+indices, including contextually representable untyped integer constants; reject
+float, rune, and bool indices. Check the mathematical integer value before any
+machine-index narrowing: negative or index >= length is invalid.
+
+Reject invalid bounds when both index and length are statically known;
+otherwise panic on an invalid runtime bound, in every build mode. Large unsigned
+indices must fail the bounds check rather than wrap into valid indices.
+
+Copy element reads produce copied values. Move elements may be borrowed by an
+ordinary parameter without being extracted. Moving out is permitted only for
+constant-indexed fixed-array places allowed by §31.2; moving out of a dynamic
+array, slice, or runtime-indexed fixed array remains rejected. Extraction APIs
+are a separate Q05 decision.
+
+Runtime indexing through mutable arrays and mutable slices produces a writable
+place. Mutability of runtime-indexed places (§11.6) does not extend partial-move
+tracking (§31.2). Runtime-index aliasing
+remains conservative: two differently written indices are not proof that two
+mutable borrows are disjoint. Shared slices never grant element mutation.
+
+### Slicing
+
+`base[low:high]` denotes a half-open range, excluding high. Permit omitted low
+(default zero), omitted high (default current length), and `base[:]`. Bounds
+use the same integer rules as indexing. Require 0 <= low <= high <= length;
+equal bounds, including length:length, are valid. Reject statically known
+invalid ranges; otherwise panic at runtime. Do not add step/stride or a third
+capacity bound.
+
+Evaluate base, low if present, then high if present, once each. Slicing borrows
+existing backing storage; it neither clones nor transfers the elements.
+Owned-array bases must be places whose lifetime covers the resulting borrow;
+a view cannot escape a temporary owner. Slicing an existing view preserves its
+original provenance. The whole originating place remains the alias-checking
+unit (§12.5), even for disjoint runtime ranges or zero-length subslices.
+
+Without a mutable-slice expected type, slicing yields shared `[]T`, even from a
+var binding. An explicit `mut []T` binding/result annotation or a parameter of
+that type requests an exclusive view. The source must supply mutable access
+under §11.6; a let-owned array or shared slice cannot do so. A mutable view's
+subslice is an exclusive reborrow when mutable access is requested; overlapping
+access through the source remains suspended until that reborrow ends.
+
+```ore
+func inspect(items []int) { /* reads only */ }
+func edit(items mut []int) { /* may mutate */ }
+
+func demo() {
+    var data = Array<int>{1, 2, 3}
+    inspect(data[:])               // shared borrow during call
+    edit(data[:])                  // contextual exclusive borrow during call
+    var part mut []int = data[1:]  // exclusive view, named mutable binding
+    edit(part)
+    // data can be used again after part's final use
+}
+```
+
+There is no implicit whole-array-to-slice conversion: use `data[:]`. An already
+bound shared slice is not upgraded by a later mutable use. A let-bound mutable
+slice descriptor still obeys existing §11.6 caller-place requirements; use var
+for a named view that will be passed onward as mut.
+
+### Ownership, errors, and async
+
+Literal construction retains exactly one owner per Move element. On `?` or
+panic during a later initializer, clean up already initialized elements and
+owned temporaries exactly once; do not clean up nonexistent elements. No
+source value is restored after ownership was already transferred.
+
+Index assignment uses §5.6's target/RHS/store ordering and cleanup rules. Bounds
+failures panic rather than return error values. Access through a view retains
+its backing loan, including through composites and across suspension; §11.7,
+§12.3, §17.6, and task/channel escape restrictions continue to apply. Resizing,
+replacing, moving, or dropping a backing owner cannot invalidate a live view.
+
+### Compiler impact
+
+Add distinct AST forms for fixed/dynamic array literals, indexing, and slicing;
+keep source spans for the base, bounds, and elements. Resolve collection types,
+contextual slice mutability, element count/type checks, and place mutability
+before ownership checking. Lower bounds checks without narrowing first; retain
+partial-initialization state for cleanup. Do not treat runtime-index writable
+places as permission for partial moves or proven disjointness.
+
+Pending conformance cases: `tests/conformance/arrays-slices.md`. Map operations
+are specified separately in §13.3. String indexing/slicing/length, iteration,
+array append/remove/capacity APIs, closures/function types, and full `go` grammar
+remain separate Q02/Q05 decisions. Array/slice rules
+do not supply semantics for those forms.
+
+---
+
+# 13. Maps
+
+## 13.1 Map syntax — LOCKED
+
+```ore
+map[string]User
+```
+
+Examples:
+
+```ore
+func lookup(users map[string]User)
+func addUser(users mut map[string]User)
+func consume(users own map[string]User)
+```
+
+## 13.2 Map ownership — LOCKED
+
+Maps are Move/resource-owning values.
+
+Passing a map:
+
+- normally borrows it
+- with `mut` mutably borrows it
+- with `own` transfers ownership
+
+---
+
+## 13.3 Map construction, lookup, assignment, and removal — LOCKED
+
+### Construction and result shape
+
+```ore
+var scores = map[string]int{"Ada": 10, "Lin": 20}
+let found, score = scores["Ada"]
+scores["Ada"] = 30
+let removed, oldScore = scores.remove("Ada")
+let empty = map[string]int{}
+```
+
+Both lookup and removal always produce two results, `(bool, V)`: presence first,
+value second. A missing key produces false and V's zero value. A present key
+produces true even when its stored value equals zero. Explicit `_` discards are
+allowed. There is no context-dependent one-result lookup form.
+
+Presence first is deliberate: methods returning an error-typed V still obey
+§7.2's trailing-error rule. For `map[string]error`, removal returns `(bool,
+error)` and follows ordinary error-use/propagation rules. Subscript lookup is
+not a call, so §15.2 does not permit appending `?` to it; bind/use/discard its
+error result explicitly. This adds no exception to result forwarding
+or error-result ordering.
+
+### Key and value types
+
+MVP keys are bool, integer types (including aliases), rune, and string. Key
+matching uses their existing equality semantics; string keys compare content,
+not buffer identity. Equal keys must have equal hashes. Hash algorithm, storage
+layout, and collision strategy are implementation details.
+
+Reject float keys for the MVP to avoid NaN/equality corner cases. Also reject
+error, Task, channel, array, slice, map, struct, and closure keys in the MVP;
+being Copy or supporting equality alone does not imply map-key eligibility.
+General user-defined hashing/equality remains excluded. Key arguments must match
+K under ordinary contextual-literal and exact typed-value compatibility rules.
+
+Values may be Copy or Move, subject to existing recursive provenance and type
+validity rules. Maps remain Move; storing borrowed views does not extend their
+backing lifetime. No map equality, ordering, or hashing is added.
+
+### Literals and evaluation
+
+`map[K]V{key: value, ...}` explicitly states both types. Empty maps and trailing
+commas are supported. Follow existing semicolon insertion: multiline final
+entries need a comma before the newline. Parenthesize literals where a condition's
+body brace would otherwise be ambiguous, as for struct/array construction.
+
+Evaluate each key, then its value, and complete that entry before the next
+entry, left to right. Each expression yields one value of its declared type;
+multiple-result splicing, spreads, and type-elided literals are rejected.
+Keys are copied; Move values are transferred, with no implicit clone.
+
+Duplicate literal keys are rejected when equal constant keys can be established
+statically; otherwise a duplicate encountered at runtime panics. For runtime
+entries, evaluate the key and value before testing/inserting the complete entry.
+On duplicate failure, destroy the uninserted owned value and previously
+constructed entries exactly once. Do not silently overwrite an earlier literal
+entry. This differs deliberately from assignment to an existing map.
+
+### Lookup and borrowed access
+
+Evaluate `m[key]` as map expression then key, once each. Lookup shared-borrows
+the map, does not remove its entry, and returns `(found, copiedValue)` only when
+V can be copied through shared access. If V is Move, reject lookup: no implicit
+clone, ownership transfer, or reference-shaped result is invented.
+
+A Copy type containing mutable views is also rejected when copying would grant
+an exclusive capability through this shared access (§11.7, §12.3). Copy shared
+views retain their external provenance; their backing must remain live after
+lookup. Ordinary independent Copy values such as numbers and strings are valid.
+
+Map subscripts are not general addressable element places. Reject borrowing an
+entry by passing `m[key]` to a parameter expecting V, field updates such as
+`m[key].Field = value`, and chained access treating the result pair as V. Bind
+the two results first for Copy values; remove Move values to obtain ownership.
+
+Borrowed in-place access for Move values is a follow-up Q05 API decision,
+coordinated with closure/callback rules in Q02. No raw references or source
+lifetimes are added here. This is a stated limitation; it does not imply that
+all map operations needed by the MVP are resolved.
+
+### Assignment and replacement
+
+`m[key] = value` inserts or replaces one entry. It is a special map-assignment
+target, not a borrowable pointer to an entry. The map must be a mutable place;
+let-owned maps and maps reached through shared borrows cannot be modified.
+
+Follow §5.6: evaluate the map/key target, then RHS, once each, retaining the
+key and map identity rather than a pointer that rehashing could invalidate.
+Validate ordinary aliasing/exclusivity constraints across these phases. Only
+then modify the map. Copy values are copied; Move values transfer to the map.
+
+For replacement, destroy the previous owned value before storing the new one.
+Remove the old entry from the map's initialized-entry set before its destruction
+begins; if that destruction panics, unwind without dropping it again. Clean up
+the new RHS temporary and the remaining map entries under ordinary rules. A
+containing custom destructor still sees a valid map whose replaced key is absent,
+never uninitialized map storage. The key/value result is not rolled back.
+
+Compound map assignment such as `m[key] += value` is rejected
+because map lookup is a two-result expression and missing-entry behavior would
+need another rule. Multiple assignment follows §5.6's non-overlap requirement;
+do not assume two key expressions denote distinct or independently mutable slots
+in the same map. Use separate assignments when independence cannot be proven.
+
+### Ownership-transferring removal
+
+The compiler-provided `m.remove(key)` uses a mut receiver, borrows the key for
+lookup, and returns `(bool, V)`. It is available for both Copy and Move V.
+On success, detach the entry and return its value without destroying that value;
+the caller now owns it. On absence, return false and V's harmless zero state.
+No source-level generic method declaration syntax is introduced.
+
+```ore
+// Resource is a Move type with harmless zero-state cleanup (§41.4).
+func take(resources mut map[string]Resource) {
+    let found, resource = resources.remove("primary")
+    if found {
+        use(resource)  // ordinary shared borrow; resource remains locally owned
+    }
+    // cleanup: acquired resource once, or harmless empty-state cleanup
+}
+```
+
+The map stays valid and contains no moved-out hole. Removal is not the forbidden
+partial move from a computed index (§31.2); it is an explicit builtin operation
+that updates the collection's initialization state. A removed value retains any
+external borrow provenance. No view into map-owned storage may survive mutation.
+
+### Ownership, errors, async, and cleanup
+
+Missing lookup/removal is represented by false, not a panic or an ordinary
+error. Literal duplicate failure panics with ordinary cleanup. No operation
+implicitly awaits or spawns work. Explicit await or `?` in key/value expressions
+follows left-to-right evaluation and keeps retained values/borrows valid through
+suspension and early exit. Future iteration and callback APIs must respect the
+same map mutation exclusion.
+
+Destroying a map destroys every remaining initialized entry exactly once;
+ordering between distinct entries is unspecified. Resource zeros from a miss
+honor §41.4; initialization/destruction is not skipped because presence is false.
+Partially constructed literals and failed replacements need per-entry cleanup
+state. Completed moves are never undone on error or panic.
+
+### Compiler impact
+
+Add map-literal AST entries, type-restricted two-result map lookup, a distinct
+map-assignment target, and compiler-provided remove resolution. Preserve spans
+for map/key/value expressions. Reject invalid key types and illicit shared
+copies, track external view provenance, and lower mutable operations without
+retaining raw bucket addresses across arbitrary RHS evaluation. Maintain entry
+ownership states for duplicate failure, replacement panic, removal, and drop.
+
+Pending conformance cases: `tests/conformance/maps.md`. Iteration,
+length/capacity APIs, and borrowed in-place entry access remain Q02/Q05 work.
+
+---
+
+# 14. Deterministic Destruction and Drop
+
+## 14.1 Automatic destruction — LOCKED
+
+Owned resources are destroyed automatically when their lifetime ends.
+
+Zore does not depend on garbage collection for deterministic resource cleanup.
+
+## 14.2 Last-use cleanup — LOCKED DIRECTION
+
+Where safe, the compiler should be able to release an owned value after its last safe use instead of retaining it unnecessarily until lexical function exit.
+
+The observable guarantee is correct deterministic destruction.
+
+The exact optimization strategy may evolve.
+
+## 14.3 User-defined `drop` method — LOCKED
+
+A resource-owning type may define cleanup behavior:
+
+```ore
+type Connection struct {
+    socket Socket
+}
+
+func (c mut Connection) drop() {
+    c.socket.close()
+}
+```
+
+The receiver must be `mut` — never a plain shared receiver or `own`. `mut`
+grants mutable access for cleanup (setting a field, calling a mutating
+cleanup method on a field) without ownership, so a `drop` method can never
+move a field out of the value it is destroying; a method called on a field
+from within `drop()` must itself take a shared or `mut` receiver, not `own`.
+`drop` takes no parameters and returns no result. Defining a custom `drop`
+forces the type to be Move (§8.3). Moving out of any part of such a value is
+forbidden by §31.2, including from outside the destructor; whole-value moves
+remain allowed. A destructor must also honor the harmless resource zero-state
+contract in §41.4. In the illustrative `Connection` above, `Socket.close()` must
+be harmless on an empty Socket and compatible with its later automatic field
+cleanup; no such library signature is introduced by the example.
+
+The compiler invokes destruction automatically when ownership ends. After a
+custom `drop` body completes, the compiler still automatically recursively
+drops every field (§14.5), exactly as it would for a type with no custom
+`drop` — a custom `drop` supplements automatic field cleanup, it never
+replaces it.
+
+Calling the user-defined method directly via method-call syntax
+(`connection.drop()`) is a compile-time error. The only ways to trigger
+destruction are automatic cleanup at end of lifetime and the explicit
+`drop(value)` builtin (§14.4); allowing direct method calls would let a
+program invoke cleanup twice as ordinary calls, which is exactly the
+double-drop hazard §14.4 exists to prevent.
+
+## 14.4 Explicit `drop(value)` — LOCKED
+
+Explicit destruction is allowed:
+
+```ore
+drop(connection)
+```
+
+After explicit drop, the value is consumed and may not be used again.
+
+The compiler must prevent double-drop.
+
+This builtin, and automatic cleanup at end of lifetime, are the only two ways
+a value's destruction is triggered (§14.3); a value's own `drop` method may
+never be called directly.
+
+## 14.5 Struct cleanup order — LOCKED
+
+Owned fields are cleaned up automatically.
+
+Cleanup should occur in reverse acquisition/declaration order where applicable.
+
+## 14.6 Ownership transfer and destruction — LOCKED
+
+After ownership transfers, the previous owner must not destroy the value.
+
+Only the current owner is responsible for eventual cleanup.
+
+## 14.7 Resource resurrection — LOCKED
+
+A value being destroyed must not be resurrected through `drop`.
+
+## 14.8 `defer` — TBD / NOT REQUIRED FOR RESOURCE SAFETY
+
+A general-purpose `defer` mechanism may exist later.
+
+It is not the primary ownership or resource-management mechanism.
+
+The MVP must not depend on `defer` for deterministic cleanup.
+
+---
+
+# 15. Error Handling
+
+## 15.1 Explicit error values — LOCKED
+
+Zore uses explicit error values.
+
+Example:
+
+```ore
+func readFile(path string) (string, error)
+```
+
+`error` is a normal built-in value type, not a hidden exception mechanism, and
+not a general user-satisfiable interface: general interfaces/traits are out of
+the MVP (§22.2), so `error` is exactly **one concrete predeclared type**, not
+an extensible contract. There is no user-defined custom error type, no
+downcasting, and no type-assertion mechanism in the MVP.
+
+`error` is Copy (§10.2), consistent with `string`. It holds an immutable
+message. The only way to produce a non-nil `error` value from source is the
+predeclared constructor:
+
+```ore
+error(message string) error
+```
+
+reusing the type-name-as-callable-form convention already locked for numeric
+conversions (§6.6), rather than introducing new construction syntax. The zero
+value of `error` is `nil` (§41.4), meaning "no error." Wrapping/cause chains,
+sentinel error declarations, and structured error payloads are not decided by
+this section and remain open for a future standard-library decision (Q05);
+nothing here should be read as authorizing them yet.
+
+`==` and `!=` are defined between two `error` values (§6.6): both `nil` are
+equal; one `nil` and one non-nil are unequal; two non-nil values are equal iff
+their messages are equal (content equality, not identity — consistent with
+`error` being Copy). This is a wider comparability than `Task<...>`, which is
+comparable only against `nil` (§41.4), and `channel<T>`, which is not
+comparable at all (§6.6); those are runtime handles without meaningful content
+equality.
+
+```ore
+let notFound = error("not found")
+let e = mayFail()
+if e == notFound {
+    // content-equal error value, not identity
+}
+```
+
+## 15.2 Error propagation operator — LOCKED
+
+`?` propagates an error to the caller.
+
+Example:
+
+```ore
+let file = open(path)?
+let content = read(file)?
+return parse(content)?
+```
+
+A function, method, or closure's result list may contain at most one
+`error`-typed result, which must be the last result if present (§7.2). `?` may
+follow a call expression, an `await call()` expression, or an `await task`
+expression (§18.9) under the grouping rule in §7.6, whose resolved last result
+type is `error`. Using `?` is a compile-time error unless the enclosing
+function/closure itself declares a trailing `error` result to propagate into —
+there must be somewhere for the error to go.
+
+Evaluate the call or awaited task (and its `await`, if present) exactly once. If the resulting
+error is non-nil, immediately return from the enclosing function: every
+non-error result position of the enclosing function's return takes that
+type's zero value (§41.4), the error position carries the propagated error,
+and required cleanup runs first (§15.3). If the resulting error is `nil`, the
+`?` expression's value is the call's remaining non-error result(s) — a single
+value, or a multiple-result expression usable anywhere one is already
+permitted (matching bindings, whole-result forwarding per §7.8), never spliced
+into an argument list. The error component is consumed by `?` and is not
+separately observable from that evaluation. Forwarding an error result this
+way is an explicit use, not a silently ignored one (§15.6).
+
+## 15.3 Cleanup during error propagation — LOCKED
+
+When `?` causes an early return, all still-owned resources whose lifetime ends on that path must be cleaned up before control leaves the function.
+
+Conceptually:
+
+```text
+owned values
+    ↓
+operation returns error
+    ↓
+required Drop operations
+    ↓
+return error
+```
+
+## 15.4 Panic — LOCKED
+
+`panic()` may be used for:
+
+- invariant violations
+- programmer errors
+- unrecoverable runtime/system failures
+
+Panic is not a replacement for ordinary error handling.
+
+### Unwinding and cleanup
+
+On `panic()`, the runtime unwinds the current task's call stack, running
+`drop` (§14.1–14.3) for every still-owned value it passes on the way out.
+Deterministic resource cleanup (§1.1) is a core goal that holds on the panic
+path, not only on the success path.
+
+Panic is not catchable or recoverable in the MVP: there is no `try`/`catch`/
+`recover` builtin, and no operation converts a panic into a value the program
+can inspect. This keeps panic a distinct, simple "unwind, clean up, then end"
+mechanism rather than a second exception system layered on top of `error`
+(§15.5). What ends is defined in §18.10: a panic in the program's initial
+task terminates the process; a panic in a spawned task ends that task and is
+raised again in any task that waits on it.
+
+If a `drop` invoked while already unwinding from a panic itself panics, the
+runtime aborts the whole process immediately rather than attempting a nested
+unwind — running two unwinds at once has no well-defined semantics.
+The runtime also aborts if destruction of an old field during replacement
+panics after invalidating a field needed by a containing custom destructor
+(§31.2). It must not invoke that destructor on an incomplete receiver.
+
+Ownership, error, and async implications: unwind-driven cleanup uses the same
+Copy/Move and drop rules as ordinary scope exit; it introduces no new resource
+model. It does not change `error`/`?` propagation (§15.1–15.2), which remains
+the ordinary, catchable way to signal expected failure.
+
+Compiler impact: lower panic to a stack unwind of the current task that runs
+pending drops in reverse acquisition order per frame (§14.5), then hands the
+ended task to the runtime (§18.10); treat a panic raised by a `drop` running
+during unwinding as a process abort. Pending conformance cases:
+`tests/conformance/destruction.md` and `tests/conformance/concurrency.md`.
+
+## 15.5 Hidden exceptions — LOCKED OUT
+
+Zore does not use hidden exception control flow as the normal error model.
+
+The compiler must not silently turn ordinary `error` returns into exception semantics.
+
+---
+
+## 15.6 Error-result use and explicit discard — LOCKED
+
+Error results must not be silently ignored. An expression statement that leaves
+a result of type `error` unused is a compile-time error, including a call returning
+multiple values with an error result. Explicitly discarding that result with `_`
+is allowed. The rule depends on the resolved result type, not the function name
+or whether a particular call happens to succeed at runtime.
+
+For these examples, assume `save()` returns `error` and `load()` returns
+`(Value, error)`:
+
+```ore
+save()                 // invalid: silently ignored error result
+_ = save()             // valid: explicitly discarded error
+let value, _ = load()   // valid: explicitly discard the error result
+let value = load()?     // propagate error, subject to the caller's return contract
+```
+
+`let _ = save()` and `var _ = save()` are also explicit discards under §5.5.
+The expression still executes exactly once. Discarding its error does not undo
+side effects, retry the operation, panic, or implicitly propagate the error.
+
+A named local binding of type `error` that is never used is a compile-time
+error, even if its name begins with an underscore. For example, binding
+`let value, err = load()` and never using `err` does not acknowledge the error.
+The programmer may inspect or pass the error, return/propagate it where permitted,
+or explicitly discard it with `_ = err`. Merely creating a named binding or
+running its automatic cleanup is not a use for this rule.
+
+This is an explicit-use requirement, not proof that a program recovers correctly
+from every failure.
+
+### Flow-sensitive extensions
+
+The never-used check is path-sensitive: the compiler must be able to prove a
+use (read, comparison, `?` propagation, or explicit `_` discard) on **every**
+reachable path before a named `error` binding's scope ends or it is
+reassigned. If the compiler cannot prove this, the program is rejected. This
+reuses the same class of flow analysis already required for ownership checking
+(§23.2); it is not a new category of analysis.
+
+Reassigning a `var` binding of type `error` is a compile-time error unless its
+current value was used, by the same definition, on every path reaching that
+reassignment:
+
+```ore
+var err = attempt1()
+err = attempt2()   // invalid: attempt1()'s error was never used before being overwritten
+```
+
+```ore
+var err = attempt1()
+if err != nil {
+    return err
+}
+err = attempt2()   // valid: the prior value was read and handled on every path first
+return err
+```
+
+Once an `error` value is stored into a struct field, array/slice element, or
+map value, this tracking stops: only directly named local bindings and
+parameters of static type `error` are checked, never storage reached through a
+composite. This keeps the analysis bounded to simple places, matching how it
+is already scoped to bindings rather than arbitrary storage.
+
+Ownership, error, and async implications: explicit discards preserve the ordinary
+ownership and deterministic cleanup requirements of §5.5; `error`'s
+representation and Copy classification are locked in §15.1. `?` continues to
+propagate with required cleanup (§15.3). The same error-result rule applies to completed
+`await` expressions and results retrieved through `task.wait()`. It does not
+implicitly await a task or cancel detached work; task-handle detachment rules
+remain unchanged. No hidden exception mechanism is introduced.
+
+Compiler impact: use resolved result types to diagnose ignored error results,
+distinguish explicit discard targets from absent result handling, and track
+path-sensitive uses of error-typed local bindings across reads, comparisons,
+`?`, reassignment, and scope exit. Point diagnostics to the ignored expression
+or unused binding and suggest handling, propagation where valid, or explicit
+`_`. Pending conformance cases are in `tests/conformance/errors.md`.
+
+---
+
+# 16. Closures
+
+## 16.1 Closure syntax — LOCKED
+
+Minimal closure syntax:
+
+```ore
+let name = "Maas"
+
+let greet = func() {
+    println(name)
+}
+
+greet()
+```
+
+## 16.2 Capture rules — LOCKED DIRECTION
+
+Closure captures use the same ownership model as normal code.
+
+- Copy values may be copied into the closure.
+- Move-only values may be moved into a closure when required.
+- Borrowed captures must remain valid for the closure lifetime.
+- A closure passed to a task must satisfy task lifetime and ownership rules.
+
+The compiler may initially use conservative capture analysis.
+
+---
+
+# 17. Async / Await
+
+## 17.1 Async is core — LOCKED
+
+`async` / `await` is part of the Zore MVP and core language design.
+
+This supersedes any earlier idea that async might be deferred beyond MVP.
+
+## 17.2 Async function syntax — LOCKED
+
+```ore
+async func fetchUser(id int) (User, error) {
+    let response = await http.get("/users/" + id)?
+    return parseUser(response)?
+}
+```
+
+## 17.3 `await` semantics — LOCKED
+
+`await` suspends the current async computation until the awaited operation can make progress / completes according to the async runtime contract.
+
+Suspension must not violate ownership safety.
+
+## 17.4 Unified ownership — LOCKED
+
+Async functions use exactly the same:
+
+- Copy
+- Move
+- Borrow
+- `mut`
+- `own`
+- Drop
+
+rules as synchronous functions.
+
+## 17.5 Values across suspension — LOCKED
+
+If a value is still needed after an `await`, the compiler/runtime representation must preserve it across suspension.
+
+Conceptually:
+
+```text
+value
+  ↓
+async state
+  ↓
+suspend
+  ↓
+resume
+  ↓
+use
+  ↓
+drop when lifetime ends
+```
+
+## 17.6 Borrowing across `await` — LOCKED CONSERVATIVE RULE
+
+A borrowed value may cross an `await` only when the compiler can prove that the borrow remains valid across suspension.
+
+The MVP compiler is allowed to be conservative.
+
+If safety cannot be proven, compilation must fail rather than guessing.
+
+This applies especially to:
+
+- mutable borrows
+- borrowed stack data
+- values whose owner may cease to exist while the async task is suspended
+
+## 17.7 Async lowering — IMPLEMENTATION DETAIL
+
+Async functions are expected to lower to compiler-generated state machines.
+
+The exact ordering between:
+
+- HIR
+- ownership checking
+- async lowering
+- MIR
+- drop insertion
+
+is **not** a locked language-semantic decision.
+
+Compiler implementers must preserve the locked observable behavior while being free to refine the internal pipeline.
+
+## 17.8 Async call contract — LOCKED
+
+A call to an `async func` must be the operand of `await` or of `go`. Any other
+use — a bare call statement, binding the call's result, or passing it as an
+argument — is a compile-time error. There is no user-visible future or promise
+type; an async call's result can only be obtained by awaiting it or by
+spawning it and later retrieving it from the task (§18.9).
+
+`await` is valid only inside the body of an `async func`. Its operand is
+either a call to an `async func` or a `Task<...>` value (§18.9). Using `await`
+anywhere else — including in a synchronous function or a non-async closure —
+is a compile-time error. A synchronous function reaches async work only by
+spawning it with `go`.
+
+```ore
+async func loadProfile(id int) (Profile, error) {
+    let user = await fetchUser(id)?        // valid: awaited async call
+    let task = go fetchAvatar(id)          // valid: spawned async call
+    let avatar = await task?               // valid: awaited task
+    return Profile{User: user, Avatar: avatar}, nil
+}
+
+func refresh(id int) {
+    fetchUser(id)                          // invalid: async call neither awaited nor spawned
+    let user = await fetchUser(id)         // invalid: await outside an async func
+}
+```
+
+Ownership, error, and async implications: awaiting or spawning an async call
+applies the ordinary ownership rules to its arguments (§17.4, §18.4). Error
+results obtained through `await` follow §15.2 and §15.6.
+
+Compiler impact: classify each call by the callee's `async` property and reject
+async calls outside `await`/`go` operand position; reject `await` outside async
+function bodies with a diagnostic naming the enclosing function. Pending
+conformance cases: `tests/conformance/concurrency.md`.
+
+---
+
+# 18. Tasks and `go`
+
+## 18.1 Explicit concurrent work — LOCKED
+
+`go` creates concurrent work.
+
+Example:
+
+```ore
+go process(user)
+```
+
+## 18.2 Task handles — LOCKED
+
+A spawned computation may produce a task handle:
+
+```ore
+let task = go calculate()
+let result = task.wait()
+```
+
+## 18.3 Async work and tasks — LOCKED
+
+Async operations may be spawned:
+
+```ore
+let task = go fetchUser(123)
+let user = task.wait()?
+```
+
+## 18.4 Task ownership rules — LOCKED
+
+When values enter a spawned task:
+
+1. Copy values are copied into the task as needed.
+2. Values passed with ownership transfer are moved into the task.
+3. Borrowed values are allowed only if the compiler can prove the borrow remains valid for the task lifetime.
+4. Mutable borrows require exclusive access until the borrow ends / task completes.
+5. Closure captures follow the same rules.
+
+**Lifetime proof across all exits.** A planned `.wait()` or `await task` is not
+proof that a spawned borrow is valid: normal early return, `?`, panic, handle
+transfer, and handle drop can all leave the work running. The MVP rejects
+spawned borrows of another task's local or temporary storage, including its
+borrowed parameters, even when retrieval immediately follows spawning. There
+is no implicit join on an error or unwind path. Scoped tasks remain a separate
+unresolved extension (Q10), not an exception to this rule.
+
+Inputs must instead be independently valid for the spawned computation:
+Copy inputs are materialized in task-owned argument storage before the work
+can outlive the caller; `own` inputs are transferred. Shared parameters of the
+spawned callee may borrow those task-owned Copy argument values for the call.
+A Move input to an ordinary shared parameter is not silently moved or cloned;
+use an `own` parameter to transfer it. A `mut` parameter cannot be satisfied by
+copying its argument, since that would change the caller-visible mutation
+contract. Copying a slice or a wrapper containing a slice is not independent
+storage for its backing elements (§11.7).
+
+Borrowed input is allowed only if its backing storage and access rights are
+proven valid independently of the spawner, for the full task lifetime. No
+package storage is assumed immortal while package lifetime rules remain open
+under Q05. Unknown provenance is rejected. These requirements apply recursively
+to captures and composite inputs. Task results must likewise survive releasing
+the task's argument/local storage: a view into that storage cannot escape via
+retrieval. Copy/Move classification alone is never a lifetime proof.
+
+```ore
+func inspect(values Array<int>) { /* shared borrow */ }
+func consume(values own Array<int>) { /* transferred ownership */ }
+
+func start(values own Array<int>) {
+    let task = go inspect(values)  // rejected: borrows start's owned local storage
+    task.wait()                   // does not make the spawn safe
+}
+
+func startOwned(values own Array<int>) {
+    let task = go consume(values)  // valid: task owns the array
+    task.wait()
+}
+```
+
+Ownership, error, and async implications: the task's independent inputs remain
+valid if the parent returns through `?` or unwinds. Detachment and process-exit
+behavior are unchanged. Awaiting an async call directly is not spawning; its
+borrows follow §17.6 and must remain valid through that call's cleanup.
+
+Compiler impact: validate recursive input and output provenance at spawn,
+materialize Copy arguments in task storage, and reject dependencies on another
+task's stack/owned locals even when a normal-path retrieval is visible. Include
+unwind and early-return paths in lifetime checking. Pending conformance cases:
+`tests/conformance/concurrency.md`.
+
+## 18.5 Detached tasks — LOCKED
+
+Detached `go ...` work may continue independently.
+
+There is no implicit cancellation merely because the spawning scope exits.
+
+## 18.6 Dropping a Task handle — LOCKED
+
+Dropping a `Task` handle detaches the handle from the running work.
+
+It does not implicitly cancel the task.
+
+## 18.7 Task errors — LOCKED
+
+A task may return an error-bearing result.
+
+Example:
+
+```ore
+let task = go load()
+let user, err = task.wait()
+```
+
+## 18.8 Task typing and classification — LOCKED
+
+`go f(args)` has type `Task<R1, ..., Rn>`, where `(R1, ..., Rn)` is the
+declared result list of `f`. For an `async func`, that is its declared result
+list, not a future type. A spawned call with no results has type plain `Task`.
+Two task types are identical iff they have the same number of type arguments
+and each argument is the identical type. A written `Task<...>` type must mirror
+a valid result list, including the `error`-position rule in §7.2: `Task<User,
+error>` is valid, `Task<error, User>` is not. This is a built-in type form like
+`Array<T>` and `channel<T>`; it does not introduce user-defined generics
+(§22.1).
+
+`Task<...>` is **Move**. A task is one computation with a one-shot result;
+unlike a channel handle (§19.3), a task handle is never shared by copying. Its
+ownership may be transferred — passed to an `own` parameter, stored in a
+struct field or `Array<Task<...>>`, or sent over a channel — under ordinary Move
+rules. Its zero value is `nil` (§41.4).
+
+```ore
+func collect(tasks own Array<Task<int>>) int {
+    // each element's result type is known: int
+    ...
+}
+
+let task Task<User, error> = go load()   // annotation mirrors load()'s results
+```
+
+Ownership, error, and async implications: dropping a task handle detaches it
+(§18.6); being Move, this happens exactly once per task.
+
+Compiler impact: derive the task type from the spawned callee's result list;
+check `Task<...>` annotations against the §7.2 shape rule; classify `Task<...>`
+as Move. Pending conformance cases: `tests/conformance/concurrency.md`.
+
+## 18.9 Retrieving task results — LOCKED
+
+A task's results are retrieved in one of two forms, each with exactly one
+meaning:
+
+- **`task.wait()`** blocks the calling task until the task completes, then
+  returns its results `(R1, ..., Rn)`. It is valid only outside an `async func`
+  body. The examples in §18.2–18.7 are synchronous uses.
+- **`await task`** suspends the calling async computation until the task
+  completes, then evaluates to its results. Like every `await`, it is valid only
+  inside an `async func` body (§17.8).
+
+Writing `task.wait()` directly inside an `async func` body is a compile-time
+error; use `await task`. Both forms compose with `?` when the last result is
+`error` (§15.2, with `await task?` grouping as `(await task)?` per §7.6).
+
+Both forms **consume** the task handle: `wait` has an `own` receiver, and
+`await task` moves its operand. A task's results can therefore be retrieved at
+most once; a second retrieval through the same binding is an ordinary
+use-after-move error (§23.2). Retrieving results from a `nil` task panics.
+
+```ore
+func main() {
+    let task = go compute()
+    let total = task.wait()        // valid: synchronous context, blocks
+    let again = task.wait()        // invalid: task was moved by the first wait
+}
+
+async func combine() (int, error) {
+    let a = go partA()
+    let b = go partB()
+    let x = await a?               // valid: async context
+    let y = b.wait()               // invalid: .wait() inside an async func
+    return x, nil
+}
+```
+
+**Runtime progress guarantee.** A blocking `task.wait()` must never prevent
+other tasks from making progress. When `.wait()` blocks a scheduler worker —
+including when a synchronous helper is called from async code and waits inside
+it — the runtime must continue running other ready tasks, for example by
+handing the blocked worker's work to another worker. Blocking may cost an
+extra OS thread; it must not cause scheduler starvation. The compile-time rule
+above rejects the direct case; this guarantee covers the indirect case the
+compiler cannot see. It does not prevent logical deadlocks the program itself
+creates, such as a task waiting on its own handle.
+
+Ownership, error, and async implications: results are transferred to the
+retriever under ordinary ownership rules. A task's error result is subject to
+§15.6 when retrieved. A detached task's results, including any `error`, are
+discarded when it completes; discarding the handle is the explicit
+acknowledgment (§5.5).
+
+Compiler impact: type `wait` and `await task` from the task's type arguments;
+reject `.wait()` inside async bodies; treat both as moves of the handle.
+Pending conformance cases: `tests/conformance/concurrency.md`.
+
+## 18.10 Panics in tasks — LOCKED
+
+A panic unwinds only the stack of the task in which it occurs, running that
+task's drops (§15.4). What happens next depends on the task:
+
+- **The program's initial task** (the one running the entry point): the
+  process terminates after unwinding. Other tasks are abandoned as in §18.11.
+- **A spawned task:** the task ends. When its handle is retrieved with
+  `.wait()` or `await`, the panic is raised again in the retrieving task at the
+  retrieval point, which then unwinds in turn. If the handle is never retrieved
+  — detached, or dropped — the process continues running.
+
+The runtime reports every panic, with its message and originating task, on
+standard error when it occurs. The report format is implementation-defined;
+how panics affect the process exit status belongs to the entry-point contract
+(Q05).
+
+This does not make panics catchable (§15.4): no operation turns a panic into a
+value, and no code resumes after the panicking point. A task boundary only
+contains the unwinding. Containment is sound under the ownership model because
+spawned work cannot borrow another task's locals merely on the strength of a
+later retrieval (§18.4). Its input storage remains valid independently of
+whether its spawner returns, unwinds, or detaches it. State shared through a mutex remains the
+other channel of observation; a mutex held by a task that panics must be
+marked poisoned (§20.2).
+
+```ore
+func main() {
+    go handleRequest(badInput)   // detached: its panic is reported, main continues
+
+    let task = go compute()
+    let value = task.wait()       // if compute panicked, main panics here
+}
+```
+
+Ownership, error, and async implications: each task's unwinding follows
+§15.4. Panic is unrelated to `error` results; a panicked task never produces an
+`error` value for its waiter.
+
+Compiler impact: none beyond §15.4; the runtime tracks per-task panic state
+and re-raises at retrieval. Pending conformance cases:
+`tests/conformance/concurrency.md`.
+
+## 18.11 Process exit with running tasks — LOCKED
+
+When the program's initial task completes — normally or by panic — the process
+terminates immediately. Tasks still running are abandoned where they are: their
+pending drops do not run, and values in channel buffers are not dropped. This
+follows from detached work continuing independently only while the process
+runs (§18.5); it does not promise that detached work finishes. An implicit
+join-all at exit is rejected, since a single infinite background loop would
+then prevent the program from ever exiting.
+
+A program that needs a task to finish — including its cleanup — keeps the
+task's handle and retrieves it before the entry point returns.
+
+Ownership, error, and async implications: deterministic cleanup (§1.1) applies
+to values whose lifetime ends while the process runs; abandonment at exit is
+a stated exception, alongside the abort cases in §15.4 and channel-handle
+cycles in §19.13. The entry-point
+signature and exit-status rules remain part of Q05.
+
+Compiler impact: none; this is a runtime contract. Pending conformance cases:
+`tests/conformance/concurrency.md`.
+
+---
+
+# 19. Channels
+
+## 19.1 Channel role — LOCKED
+
+Channels are the primary built-in mechanism for safe message passing between concurrent tasks.
+
+## 19.2 Channel creation — LOCKED
+
+Unbuffered:
+
+```ore
+let ch = channel<User>()
+```
+
+Buffered:
+
+```ore
+let ch = channel<User>(10)
+```
+
+## 19.3 Channel handles — LOCKED
+
+Channel handles are Copyable.
+
+Copying a channel value copies a handle to the same synchronized underlying channel.
+
+It does not copy:
+
+- queued messages
+- channel state
+- the underlying communication object
+
+This behavior intentionally allows multiple workers to share a channel handle.
+
+Example:
+
+```ore
+go worker(ch)
+go worker(ch)
+go worker(ch)
+```
+
+## 19.4 Send — LOCKED
+
+```ore
+ch.send(value)
+```
+
+For Move values, sending transfers ownership into the channel.
+
+Example:
+
+```ore
+ch.send(user)
+// user is moved and cannot be used here
+```
+
+For Copy values, the value is copied according to normal Copy semantics.
+
+Copying or moving a message never erases contained borrow provenance (§11.7).
+A channel can retain messages after the sending scope or task ends. A sent
+value must therefore be independently valid for retention and later receipt:
+reject any contained view borrowing a sender's local, temporary, or borrowed
+parameter storage. Neither an unbuffered send nor a later receive proves that
+the receiver has finished using the message. Unknown backing provenance is
+rejected; recursively owned values and independent Copy values such as strings
+and channel handles remain valid message contents. An external borrowed view
+requires proof of backing lifetime and access rights independent of the sender
+and all channel retention; no package-lifetime assumption is supplied by Q05.
+
+Ownership, error, and async implications: message backing remains valid across
+sender return, `?`, panic, and suspension. Ordinary transfer and closed-send
+cleanup are unchanged. Sending a wrapper around a local slice is rejected;
+sending an owned array of independent elements transfers it normally.
+
+Compiler impact: check recursive message provenance at send, including through
+Copy structs and owned containers. Pending conformance cases:
+`tests/conformance/concurrency.md`.
+
+## 19.5 Receive — LOCKED
+
+```ore
+let value, ok = ch.receive()
+```
+
+`ok` indicates whether a value was successfully received.
+
+## 19.6 Unbuffered semantics — LOCKED
+
+An unbuffered send waits until a matching receive can accept the value.
+
+## 19.7 Buffered semantics — LOCKED
+
+A buffered send waits when the channel is full.
+
+A receive waits when the channel is empty and still open.
+
+## 19.8 Channel close — LOCKED
+
+```ore
+ch.close()
+```
+
+Closing a channel means no more values may be sent.
+
+Buffered values already present remain receivable.
+
+After the buffer is drained, receive returns the zero value plus `false`:
+
+```ore
+let value, ok = ch.receive()
+```
+
+where `ok == false`.
+
+The zero-value model for all types is locked in §41.4. Do not invent additional receive-result syntax.
+
+## 19.9 Send on closed channel — LOCKED
+
+Sending on a closed channel causes a runtime panic.
+
+## 19.10 Worker example — LOCKED INTENT
+
+```ore
+func worker(ch channel<User>) {
+    for {
+        let user, ok = ch.receive()
+        if !ok {
+            return
+        }
+
+        process(user)
+    }
+}
+```
+
+This demonstrates the intended channel-sharing and close behavior.
+
+Supported `for` forms are specified in §5.10; this example does not introduce
+additional loop syntax.
+
+## 19.11 Close repetition and blocked operations — LOCKED
+
+Closing an already-closed channel panics, consistent with send on a closed
+channel (§19.9). Channel handles are Copy and shared across tasks (§19.3), so
+this cannot be checked at compile time in general.
+
+Closing a channel wakes every task blocked on it:
+
+- A **sender** blocked waiting — on an unbuffered channel for a receiver, or on
+  a full buffered channel for space — panics at its send, as if it had sent on
+  the closed channel. It does not block forever.
+- A **receiver** blocked on an empty channel returns the zero value plus
+  `false` (§19.8).
+
+```ore
+let ch = channel<Job>(4)
+ch.close()
+ch.close()         // runtime panic: channel already closed
+```
+
+Ownership, error, and async implications: the Move value held by a sender that
+panics this way is still owned by the sender and is dropped during its unwind
+(§15.4); it was never transferred into the channel.
+
+Compiler impact: none; runtime behavior. Pending conformance cases:
+`tests/conformance/concurrency.md`.
+
+## 19.12 Channel zero value — LOCKED
+
+Channels have no `nil` state. The zero value of `channel<T>` (§41.4) is an
+**always-closed, empty channel**. Every operation on it is already defined by
+the closed-channel rules:
+
+- `receive()` returns the zero value of `T` plus `false` immediately (§19.8);
+- `send(value)` panics (§19.9);
+- `close()` panics (§19.11).
+
+Whether the runtime shares one such channel per element type or creates one
+per zero value is an implementation detail; the behavior is identical. A
+channel value is therefore always a real channel, and channel values are not
+comparable (§6.6). Channels would be disabled in a future `select` construct
+by an explicit case guard, not by a `nil` channel.
+
+Ownership, error, and async implications: the zero-value channel holds no
+buffered values and needs no cleanup.
+
+Compiler impact: reject `nil` as a channel value and in channel comparisons;
+lower zero-value channels to an always-closed channel. Pending conformance
+cases: `tests/conformance/concurrency.md` and
+`tests/conformance/zero-values.md`.
+
+## 19.13 Channel lifetime and buffered values — LOCKED
+
+An underlying channel stays alive while any handle to it exists anywhere —
+in a binding, a struct field, a task's captured values, or another channel's
+buffer. When the last handle is gone, each value still in its buffer is
+dropped exactly once; the order among them is unspecified, since the channel
+queue implementation is runtime freedom (§36.2). The mechanism that detects
+the last handle — for example internal reference counting, which §47.2 already
+permits for channel handles — is an implementation detail. Handles stay Copy from the programmer's perspective,
+following the same precedent as `string` (§41.5); the rule that a user-defined
+`drop` forces Move (§8.3) applies to user-defined types, not to this runtime
+bookkeeping.
+
+**Stated limitation — handle cycles.** If channel handles form a cycle through
+buffers — a channel's buffer holding a handle to that same channel, directly or
+through other channels — the channels in the cycle are never freed while the
+process runs, and their buffered values are never dropped. This is a
+memory-safe leak, not undefined behavior. Detecting such cycles would require a
+tracing collector, which §23.1 excludes; banning channel handles inside channel
+messages would break the common pattern of sending a reply channel with a
+request. Values in any channel buffer at process exit are also not dropped
+(§18.11).
+
+Ownership, error, and async implications: dropping buffered values uses
+ordinary drop rules (§14). Deterministic cleanup (§1.1) covers the buffered
+values of every channel that is not part of a handle cycle.
+
+Compiler impact: none; runtime behavior. Pending conformance cases:
+`tests/conformance/concurrency.md`.
+
+---
+
+# 20. Shared Mutable State
+
+## 20.1 Direct unsynchronized shared mutation — LOCKED OUT
+
+Zore should not permit ordinary data to become freely shared mutable state across tasks without an explicit synchronization mechanism.
+
+## 20.2 Mutex — LOCKED AS STANDARD-LIBRARY CONCEPT
+
+Mutex support belongs in the standard library/runtime rather than as special core syntax.
+
+Conceptual usage:
+
+```ore
+let counter = mutex(0)
+
+counter.withLock(func(value mut int) {
+    *value += 1
+})
+```
+
+The exact final pointer/dereference syntax shown in conceptual mutex examples is **not independently locked** by this specification because raw user-facing pointers are not part of the MVP.
+
+Implementers must preserve the concept—explicit synchronized mutable access—without introducing raw-pointer semantics.
+
+If a task panics while holding a mutex's lock, the unwind releases the lock and
+marks the mutex **poisoned**, so later users learn that the protected value may
+have been left half-updated (§18.10). How a poisoned mutex is reported to later
+lockers belongs to the mutex API, which remains part of the standard-library
+inventory (Q05); silently handing out a poisoned value as if nothing happened is
+not permitted.
+
+---
+
+# 21. Raw Pointers and Unsafe Code
+
+## 21.1 Raw pointers — OUT OF MVP
+
+The MVP does not expose user-facing raw pointers.
+
+## 21.2 Pointer arithmetic — OUT OF MVP
+
+Pointer arithmetic is not part of the MVP.
+
+## 21.3 `unsafe` — OUT OF MVP
+
+An `unsafe` facility may be introduced later for:
+
+- raw pointers
+- FFI
+- manual memory operations
+- architecture-specific operations
+
+It is not part of the MVP.
+
+Compiler/runtime internals may of course use low-level operations internally.
+
+---
+
+# 22. Generics and Interfaces
+
+## 22.1 General-purpose generics — OUT OF MVP
+
+User-defined generic functions/types are not part of the MVP.
+
+The presence of built-in/library forms such as:
+
+```text
+Array<T>
+channel<T>
+Task<T>
+```
+
+does not imply that general user-defined generics are already available.
+
+These may initially be compiler-known/core-library parameterized types.
+
+## 22.2 Interfaces / traits — OUT OF MVP
+
+General interfaces/traits are not part of the MVP.
+
+A possible future direction is Go-like structural interfaces:
+
+```ore
+interface Reader {
+    read() ([]byte, error)
+}
+```
+
+This is non-normative and must not be implemented as a locked MVP feature.
+`error` (§15.1) is a single concrete predeclared type, not an interface, and is
+not an exception to this section.
+
+---
+
+# 23. Memory and Resource Safety
+
+## 23.1 No garbage collector — LOCKED
+
+Zore's core runtime model does not depend on tracing garbage collection.
+
+## 23.2 Ownership guarantees — LOCKED
+
+The compiler must prevent, within safe Zore code:
+
+- use after move
+- use after explicit drop
+- double drop
+- overlapping mutable borrows
+- mutation while incompatible shared access exists
+- move while borrowed
+- invalid borrowed access across task/async lifetimes
+
+## 23.3 No separate concurrency ownership model — LOCKED
+
+Tasks and channels must reuse ordinary ownership rules.
+
+The compiler must not introduce a second set of move/borrow concepts that apply only to concurrency.
+
+---
+
+# 24. Compiler Diagnostics
+
+## 24.1 Diagnostics are first-class — LOCKED
+
+The compiler should produce high-quality, source-aware diagnostics.
+
+Example:
+
+```text
+error[E0012]: use of moved value `user`
+
+  --> main.ore:12:13
+   |
+10 | let user = loadUser()
+   |     ---- value created here
+11 |
+12 | save(user)
+   |      ---- value moved here
+13 |
+14 | println(user.Name)
+   |         ^^^^ value used after move
+   |
+   = note: `User` is a move type
+```
+
+## 24.2 Ownership diagnostics — LOCKED EXPECTATION
+
+Ownership-related diagnostics should identify, when available:
+
+- where a value was created
+- where it was moved
+- where a borrow began
+- where a conflicting use occurred
+- why the type is Copy or Move
+- what lifetime/task/await relationship caused the failure
+
+Diagnostic wording may evolve; the quality requirement remains.
+
+---
+
+# 25. Compiler Semantic Model
+
+This section describes the locked compiler architecture direction. These are implementation contracts, not necessarily visible language syntax.
+
+## 25.1 Compiler stages — LOCKED DIRECTION
+
+The compiler should conceptually contain:
+
+```text
+Source
+  ↓
+Lexer
+  ↓
+Parser
+  ↓
+AST
+  ↓
+Name Resolution
+  ↓
+Type Checking
+  ↓
+HIR
+  ↓
+Ownership / Borrow Analysis
+  ↓
+Async / Task Lowering
+  ↓
+MIR
+  ↓
+Drop Insertion
+  ↓
+LLVM
+  ↓
+Native Binary
+```
+
+The exact placement/order of async lowering relative to ownership checking and MIR is intentionally not frozen.
+
+## 25.2 Separation of representations — LOCKED
+
+The compiler should maintain the conceptual separation:
+
+> **AST describes what the programmer wrote.**\
+> **HIR describes what the program means.**\
+> **MIR describes how the program executes.**
+
+Do not put all compiler semantics directly into the AST.
+
+---
+
+# 26. Source Spans
+
+## 26.1 Span model — LOCKED DIRECTION
+
+Compiler nodes should retain source-location information sufficient for diagnostics.
+
+Recommended internal representation:
+
+```rust
+struct Span {
+    start: u32,
+    end: u32,
+}
+```
+
+Offsets should be byte offsets into a source file.
+
+Line and column information may be computed by a source manager.
+
+The exact Rust representation is not language semantics, but coding agents should preserve this architecture unless there is a strong implementation reason not to.
+
+---
+
+# 27. Symbol Identity
+
+## 27.1 Strong IDs — LOCKED COMPILER DESIGN
+
+After name resolution, semantic compiler passes should work with IDs rather than repeatedly resolving strings.
+
+Examples:
+
+```text
+FunctionId
+TypeId
+StructId
+FieldId
+LocalId
+PackageId
+```
+
+Conceptually:
+
+```text
+user       → LocalId(3)
+loadUser   → FunctionId(8)
+User.Name  → FieldId(2)
+```
+
+Strings remain useful for source display and diagnostics, but should not be the primary semantic identity after resolution.
+
+---
+
+# 28. Type Representation
+
+## 28.1 Type IDs — LOCKED COMPILER DESIGN
+
+Complex types should be represented through interned/stable compiler identities such as `TypeId`.
+
+A type store may map:
+
+```text
+TypeId(0) → bool
+TypeId(1) → int
+TypeId(2) → string
+TypeId(3) → User
+TypeId(4) → File
+```
+
+This supports:
+
+- equality
+- Copy/Move classification
+- layout
+- code generation
+- diagnostics
+
+---
+
+# 29. HIR
+
+## 29.1 HIR purpose — LOCKED
+
+HIR is a semantic representation produced after syntax/name resolution and used to express compiler-understood program structure.
+
+HIR should contain resolved identities and type information.
+
+It should not unnecessarily preserve source-level ambiguity.
+
+## 29.2 Move/Copy in HIR — LOCKED DIRECTION
+
+HIR may know ownership contracts, but explicit `Copy(place)` vs `Move(place)` operations are better represented in MIR.
+
+Do not prematurely encode every ownership operation into the AST.
+
+---
+
+# 30. Place Model
+
+## 30.1 Place abstraction — LOCKED COMPILER DESIGN
+
+A `Place` identifies a storage location that may be:
+
+- read
+- copied
+- moved
+- borrowed
+- mutably borrowed
+- assigned
+- dropped
+
+Conceptually:
+
+```text
+user
+user.Name
+users[index]
+```
+
+may be represented as a base local plus projections.
+
+Example:
+
+```text
+Place {
+    local: user,
+    projections: [
+        Field(Name)
+    ]
+}
+```
+
+This abstraction is central to ownership and borrow analysis.
+
+---
+
+# 31. Ownership Analysis
+
+## 31.1 Type classification vs value state — LOCKED
+
+Do not confuse:
+
+```text
+this type is Move
+```
+
+with:
+
+```text
+this particular value has already been moved
+```
+
+These are different compiler concepts.
+
+A type may have a classification such as:
+
+```text
+Copy
+Move
+```
+
+while a value/place may have data-flow state such as:
+
+```text
+Available
+Moved
+PartiallyMoved
+Borrowed
+MutBorrowed
+```
+
+## 31.2 Partial moves and reinitialization — LOCKED
+
+The internal ownership model must be capable of representing partial moves of
+composite values even if the earliest implementation supports only
+conservative cases. The compiler must not paint itself into an architecture
+where only whole-variable ownership can ever be represented.
+
+Source-level restriction: a move out of a proper subplace is rejected if any
+containing value along its projection path defines a custom `drop`. This
+includes nested fields and fixed-array elements inside that value. A destructor
+must always receive its complete value; promising to reinitialize the field
+later is insufficient because `?` or panic may run cleanup first.
+
+Moving the entire destructor-bearing value is allowed. In particular, a field
+whose own type defines `drop` may be moved whole out of an outer struct that
+has no custom destructor, provided no other containing value along the path
+defines one. Reading Copy fields and borrowing fields remain allowed under
+ordinary mutability/exclusivity rules. Ordinary field replacement is allowed
+only with a fully evaluated replacement: the old field remains initialized
+while evaluating the RHS, and cleanup must never invoke the containing custom
+destructor on a field that has already been destroyed if replacement cleanup
+panics. A field becomes unavailable when its destruction begins; any panic
+from that destruction therefore triggers this rule. That case aborts the
+process, as does a panic during unwinding (§15.4).
+This rule adds no field-extraction or replacement builtin.
+
+For example, for `Guard` with a custom `drop` and a Move field `Resource`,
+`let r = guard.Resource` is rejected, even if followed by reinitialization;
+`let moved = guard` is allowed. For a destructor-free `Box` containing a
+`Guard`, `let moved = box.Guard` is allowed, but
+`let r = box.Guard.Resource` is rejected.
+
+Source-level semantics for permitted partial moves: moving a single field out
+of a struct (for example,
+`let inner = outer.field` where `field` is Move-typed) leaves `outer` in the
+`PartiallyMoved` value state (§31.1). While partially moved:
+
+- still-available fields remain individually usable (read, borrowed, or
+  moved) under ordinary rules;
+- using the moved-out field again is an ordinary use-after-move error
+  (§23.2);
+- using `outer` as a whole value — passing it by borrow or by ownership
+  transfer — is rejected until it is fully available again.
+
+Assigning a new value to a moved-out field (`outer.field = newValue`)
+reinitializes that field: the assignment does not attempt to drop the
+previous value, since it was already moved out and no longer exists in that
+slot, consistent with the existing rule that an already-moved value is never
+dropped again (§5.6, §14.6). Once every field of `outer` is available —
+whether never moved or reinitialized — `outer` is available as a whole again.
+At scope exit, automatic cleanup (§14.1, §14.5) runs only for fields still
+available; a moved-out field that was never reinitialized is skipped, per
+§14.6's rule that only the current owner cleans up a value.
+
+This tracking applies only to fixed field-access paths (struct fields, and a
+constant-indexed element of a fixed array), matching the place abstraction in
+§30.1. It does not extend to a computed/runtime index into a slice,
+`Array<T>`, or map: those remain conservatively all-or-nothing for move
+purposes, consistent with §5.6's existing refusal to prove indexed places
+disjoint from each other. The builtin map `remove` (§13.3) is instead an
+explicit operation that detaches an entry and transfers its value, leaving a
+valid map rather than a partially moved entry; it does not relax indexed-move
+restrictions.
+
+Ownership, error, and async implications: partial-move tracking does not
+change Copy/Move classification, cleanup order beyond field-level skipping, or
+borrow exclusivity (§11.3). A partially moved value crossing an `await` is
+subject to the same conservative borrowing-across-suspension rule as any other
+borrowed or owned value (§17.6).
+
+Compiler impact: represent field-level move state per place (§30.1), track
+reinitialization as restoring per-field availability, and reject whole-value
+uses while any reachable field is unavailable. Before accepting a projected
+move, inspect every containing type on its path for custom `drop`; diagnose the
+move and the destructor that requires an intact value. Preserve initialized
+state during field replacement and enforce the abort rule above if destruction
+fails after invalidating a field needed by a containing destructor. These rules
+apply equally on normal, `?`, panic, and async paths. Pending conformance cases:
+`tests/conformance/ownership.md`.
+
+---
+
+# 32. Borrow Representation
+
+## 32.1 Borrow objects — LOCKED COMPILER DIRECTION
+
+Internally, a borrow should be representable with information equivalent to:
+
+```text
+borrow id
+borrowed place
+borrow kind
+region/lifetime
+```
+
+Borrow kinds:
+
+```text
+Shared
+Mutable
+```
+
+Regions/lifetimes remain compiler-internal.
+
+---
+
+# 33. MIR
+
+## 33.1 MIR form — LOCKED
+
+MIR should be control-flow-graph based.
+
+A function consists of:
+
+- locals
+- basic blocks
+- statements
+- terminators
+
+## 33.2 MIR operands — LOCKED
+
+MIR should be able to explicitly distinguish:
+
+```text
+Copy(place)
+Move(place)
+Constant(...)
+```
+
+This is critical for ownership checking and code generation.
+
+## 33.3 MIR references — LOCKED
+
+MIR should be able to represent explicit shared/mutable references/borrows internally even though Zore source does not use raw reference syntax.
+
+## 33.4 MIR control flow — LOCKED
+
+MIR should support terminators equivalent to:
+
+- goto
+- branch
+- call
+- return
+- await/suspend
+- spawn/task creation
+- unreachable
+
+The exact enum/API names are implementation details.
+
+---
+
+# 34. Drop Insertion
+
+## 34.1 Separation from ownership checking — LOCKED DIRECTION
+
+Ownership analysis answers:
+
+> Is this value still alive and legally usable?
+
+Drop analysis answers:
+
+> Where must destruction occur?
+
+These should be conceptually separate compiler responsibilities.
+
+## 34.2 Explicit MIR drop — LOCKED DIRECTION
+
+Final MIR should be capable of containing explicit drop operations.
+
+This simplifies:
+
+- deterministic cleanup
+- early returns
+- error propagation
+- branch cleanup
+- async state cleanup
+- code generation
+
+---
+
+# 35. Async Lowering
+
+## 35.1 State-machine model — LOCKED DIRECTION
+
+Async functions lower to compiler-generated state machines.
+
+A local needed after suspension becomes part of persistent async state.
+
+Example:
+
+```ore
+async func process(file own File) error {
+    let data = await read(file)?
+    await upload(data)?
+    return nil
+}
+```
+
+Conceptually:
+
+```text
+State 0:
+    file
+    await read(file)
+
+State 1:
+    file
+    data
+    await upload(data)
+
+State 2:
+    cleanup
+    return
+```
+
+This example is conceptual. The exact generated states are implementation details.
+
+## 35.2 Ownership of async state — LOCKED
+
+The async state machine must correctly own or borrow every live value according to ordinary Zore ownership rules.
+
+Suspension must not make otherwise-invalid borrowing legal.
+
+---
+
+# 36. Runtime Responsibilities
+
+## 36.1 MVP runtime — LOCKED DIRECTION
+
+The runtime must eventually provide the facilities required by locked language semantics, including:
+
+- memory allocation for owned dynamic values
+- destruction support
+- tasks
+- async scheduler
+- channel synchronization
+- async I/O integration
+- panic behavior
+- standard runtime primitives used by the standard library
+
+## 36.2 Runtime implementation freedom
+
+The exact scheduler algorithm, allocator, channel queue implementation, wake mechanism, and OS integration are implementation details unless later standardized.
+
+These choices must still meet the runtime contracts locked elsewhere: the
+progress guarantee for blocking waits (§18.9), per-task panic containment and
+reporting (§18.10), immediate termination at exit (§18.11), wake-on-close and
+buffered-value cleanup for channels (§19.11–19.13), and mutex poisoning
+(§20.2).
+
+---
+
+# 37. Standard Library Requirements
+
+The MVP language needs enough standard-library/runtime support to exercise its core semantics.
+
+At minimum, the architecture must leave room for:
+
+- strings
+- dynamic arrays
+- maps
+- files
+- sockets
+- basic I/O
+- tasks
+- channels
+- mutex/synchronization
+- async I/O
+
+The exact module/package organization is TBD.
+
+---
+
+# 38. Self-Hosting Constraint
+
+## 38.1 Long-term goal — LOCKED
+
+The Zore compiler should eventually be writable in Zore.
+
+Initial implementation:
+
+```text
+Zore source
+    ↓
+Rust bootstrap compiler
+    ↓
+LLVM
+    ↓
+native executable
+```
+
+Later:
+
+```text
+Zore compiler source (.ore)
+    ↓
+bootstrap compiler
+    ↓
+native Zore compiler
+```
+
+Eventually:
+
+```text
+Zore compiler
+written in Zore
+    ↓
+compiles itself
+```
+
+## 38.2 Design constraint — LOCKED DIRECTION
+
+Compiler subsystems should be designed around language-neutral concepts that can later be implemented in Zore itself.
+
+Examples:
+
+- SourceManager
+- Token
+- AST
+- Symbol
+- Type
+- HIR
+- Place
+- Borrow
+- Region
+- MIR
+- BasicBlock
+- Diagnostic
+
+Avoid unnecessarily coupling the conceptual compiler architecture to Rust-only mechanisms.
+
+## 38.3 Required ecosystem capabilities for self-hosting — LOCKED DIRECTION
+
+The Zore standard library/runtime must eventually be sufficient to implement compiler workloads, including:
+
+- filesystem access
+- strings
+- dynamic arrays
+- maps
+- memory allocation
+- process execution where needed
+- error handling
+- compiler data structures
+- file I/O
+
+Self-hosting does not need to be achieved in the first compiler milestone.
+
+---
+
+# 39. MVP Feature Set
+
+The following features are part of the locked MVP.
+
+## 39.1 Language
+
+- `.ore` files
+- packages
+- imports
+- uppercase export / lowercase package-private visibility
+- `let`
+- `var`
+- `const`
+- functions
+- multiple return values
+- structs
+- methods
+- primitive types
+- fixed arrays
+- borrowed slices
+- `Array<T>`
+- maps
+- strings
+- closures
+
+## 39.2 Ownership
+
+- Copy semantics
+- Move semantics
+- automatic Copy/Move classification
+- borrow by default
+- `mut` mutable borrowing
+- `own` ownership transfer
+- borrow checking
+- inferred lifetimes
+- deterministic destruction
+- automatic drop insertion
+- explicit `drop`
+- explicit `clone`
+
+## 39.3 Errors
+
+- `error`
+- multiple-return error style
+- `?`
+- `panic`
+- no hidden ordinary exceptions
+
+## 39.4 Concurrency / async
+
+- `async`
+- `await`
+- `go`
+- `Task`
+- `task.wait()`
+- async state-machine lowering
+- runtime scheduler
+- channels
+- buffered channels
+- channel close
+- Copyable channel handles
+- ownership transfer through channels
+- Copy semantics through channels
+- closure capture rules
+- borrow checking across tasks
+- borrow checking across `await`
+- async I/O support
+
+## 39.5 Compiler
+
+- lexer
+- parser
+- AST
+- name resolution
+- type checker
+- HIR
+- ownership checker
+- borrow checker
+- inferred regions/lifetimes
+- MIR
+- control-flow graph
+- async lowering
+- drop insertion
+- LLVM backend
+- native executable
+- high-quality diagnostics
+
+---
+
+# 40. Explicitly Out of MVP
+
+The following features must not be treated as part of the MVP unless this specification is changed:
+
+- general-purpose generics
+- interfaces / traits
+- macros
+- reflection
+- raw pointers
+- pointer arithmetic
+- `unsafe`
+- FFI
+- pattern matching
+- advanced type inference
+- const generics
+- decorators / annotations
+- external package registry
+- advanced dependency solver
+- JIT
+- garbage collector
+- advanced optimizer
+- cross-compilation
+- IDE language server
+- explicit source-level lifetime syntax
+
+Some of these may be introduced later.
+
+---
+
+# 41. Syntax Not Yet Fully Locked
+
+The following areas remain intentionally incomplete.
+
+Coding agents must not silently choose permanent semantics for them.
+
+## 41.1 Full expression grammar — PARTIALLY LOCKED / TBD DETAILS
+
+Operator inventory, precedence, associativity, short-circuit logic, and the
+`await operation()?` grouping rule are locked in §7.6. Operand/call evaluation
+is left to right (§7.5). Remaining work includes the complete primary/postfix
+grammar for strings and closures, iteration, and full task expression grammar.
+Array literals, array/slice indexing, and slicing are locked in §12.6. Map
+construction, two-result lookup, assignment, and removal are locked in §13.3;
+borrowed entry access and iteration remain separate Q02/Q05 API decisions.
+Struct construction is specified in §8.4, assignments in §5.6, and calls/result
+forwarding in §7.8. Numeric and comparison type rules are locked in §6.5–6.6.
+
+## 41.2 Loop grammar — LOCKED
+
+Infinite, conditional, and counting loops and unlabelled `break`/`continue` are
+specified in §5.10. Do not infer additional forms from another language.
+
+## 41.3 Conditional grammar — LOCKED
+
+`if`, `else if`, and `else` statement forms are specified in §5.9. Block scopes
+are defined in §5.8; return syntax and completion requirements in §7.7.
+
+## 41.4 Zero values and `nil` — LOCKED
+
+Zero values are not a way to skip explicit initialization. Every `let`/`var`
+binding requires an initializer (§5.4) and every struct literal names every
+field exactly once (§8.4); there is no field-omission or uninitialized-binding
+syntax. A zero value is instead the value produced by specific built-in runtime
+operations that must yield a result for a type without the programmer supplying
+one: draining a closed channel (§19.8), filling non-error result positions
+on propagation through `?` (§15.2), and missing map lookup/removal (§13.3). This section defines what that produced value is
+for every type, and which types additionally admit `nil` as a distinct "absent"
+value.
+
+The zero value per type:
+
+| Type | Zero value |
+| --- | --- |
+| `bool` | `false` |
+| `int`, `int8/16/32/64`, `uint`, `uint8/16/32/64`, `byte` | `0` |
+| `float32`, `float64` | positive zero (`+0.0`) |
+| `rune` | `U+0000` |
+| `string` | `""` (valid, length zero) |
+| struct | each field set to that field's own zero value, recursively |
+| `[T; N]` | `N` elements, each the zero value of `T` |
+| `[]T`, `mut []T` (slice) | an empty, valid view of length zero, with no backing-storage loan |
+| `Array<T>` | an empty, valid, owned array with zero elements |
+| `map[K]V` | an empty, valid, owned map with zero entries |
+| `error` | `nil` |
+| `Task<...>` | `nil` |
+| `channel<T>` | an always-closed, empty channel (§19.12) |
+
+`nil` is a literal denoting the absent state of exactly two built-in types:
+`error` (no error) and `Task<...>` (no associated work). No other type —
+including `bool`, numeric types, `rune`, `string`, struct types, `[T; N]`,
+`[]T`, `Array<T>`, `map[K]V`, and `channel<T>` — admits `nil` as a value or
+literal target. Those types are always valid to use once produced; there is no
+separate "nil" state distinct from "empty" for slices, `Array<T>`, or `map[K]V`,
+and a channel value is always a real channel whose zero value is already
+closed. `==`/`!=` against `nil` is permitted only for `error` and `Task<...>`
+values; comparing `nil` against any other type is a compile-time error. `error`
+additionally supports `==`/`!=` against another non-nil `error` value (§15.1,
+§6.6); `Task<...>` is comparable only against `nil`.
+
+`Task<...>` keeps `nil` rather than a "completed" zero value: a zero task that
+yielded zero-valued results would look like success, including a `nil` error,
+so retrieving from a `nil` task panics instead (§18.9). A zero-value channel
+needs no such distinction, because its receive already reports `ok == false`.
+
+**Resource zero-state contract — LOCKED.** Every resource-owning type,
+including one with custom `drop`, must treat its recursive zero value as a
+valid empty state that owns no acquired resource. Destruction of that state
+must complete harmlessly: it must not release an unacquired resource, panic,
+block waiting for work, or perform acquisition-dependent side effects. The
+compiler still invokes custom `drop` and automatic field cleanup normally;
+it does not suppress the destructor based on how a value was constructed.
+Nested resource fields must satisfy the same contract.
+
+Resource authors must represent acquisition explicitly when a raw handle's
+numeric zero is not an unused sentinel. For example, the following illustrates
+the contract; `releaseReservation` stands for a resource API whose declaration
+belongs to its defining library, not a new predeclared function:
+
+```ore
+type Reservation struct {
+    acquired bool
+    id int
+}
+
+func (r mut Reservation) drop() {
+    if r.acquired {
+        releaseReservation(r.id)
+        r.acquired = false
+    }
+}
+```
+
+The all-zero `Reservation` has `acquired == false` and releases nothing.
+A successfully acquired resource may have `id == 0`, with `acquired == true`;
+that value is distinct from the empty state. Failed acquisition must not mark
+an unacquired resource as owned. Do not add a second manual cleanup path for a
+field whose own destructor already releases it.
+
+A valid empty state need not support every resource operation successfully:
+operations requiring acquisition must report an explicit error or panic under
+their documented contract. Empty-state destruction itself remains harmless.
+The same rule applies to zero resources produced by closed-channel receive,
+`?`, and missing-key lookup/removal; ignoring their accompanying status does
+not fabricate an acquired resource. Field privacy does not prevent these
+built-in operations from constructing the zero state.
+
+This is a resource API obligation, not a claim that the compiler can prove
+arbitrary destructor bodies harmless. Violating it does not waive memory
+safety or authorize undefined behavior: ordinary checked operations and panic
+rules still apply. Standard-library resource types must validate the contract
+with runtime tests; user-defined resource types need equivalent tests.
+Compiler ownership checking alone does not prove correct external-resource
+bookkeeping, just as it does not prove that a custom clone acquires a resource.
+
+This locks the absent/zero-value shape for `error`, `Task<...>`, and
+`channel<T>`. `error`'s full representation, construction, and comparison
+semantics are locked in §15.1.
+
+```ore
+let ch = channel<User>()
+ch.close()
+let user, ok = ch.receive()
+// user is User{} field-wise (Name == ""), ok == false
+
+var task Task = nil     // no work associated yet
+task = go process(user)
+
+var err error = nil     // no error
+```
+
+Ownership, error, and async implications: a zero-valued struct or array is
+constructed field-by-field/element-by-element using each element's own zero
+value, without invoking user-defined construction logic; Copy/Move
+classification (§8.3, §10) is unaffected. A `nil` `Task<...>` and a zero-value
+channel hold no buffered values or running work and require no cleanup; a
+`nil` `error` represents no error condition. This does not change `?` propagation (§15.2) or the
+error-result-use rule (§15.6): a `nil` error is still a value that must be
+explicitly discarded or otherwise used, not a special case that is exempt from
+that rule.
+
+Compiler impact: implement zero-value construction recursively over field/element
+types for the operations that need it (channel drain, `?` result filling, and
+map lookup/removal misses under §13.3). Keep normal drop obligations
+for zero-produced resource values and represent zero slices without a loan;
+do not infer resource acquisition from zero-valued fields. Restrict `nil` as a
+literal and as an equality operand to `error` and `Task<...>` at the type-checking stage; reject it
+elsewhere, including for channels, with a clear diagnostic naming the offending
+type. Pending conformance cases: `tests/conformance/zero-values.md`.
+
+## 41.5 String value and encoding — LOCKED
+
+A `string` value is, at all times, a sequence of bytes that forms well-formed
+UTF-8: it decodes to a sequence of Unicode scalar values in U+0000–U+10FFFF
+excluding surrogates (U+D800–U+DFFF). This holds for every `string` value that
+exists while a program runs, not only for literals. No currently locked
+operation can produce an invalid string: double-quoted and raw string literals
+decode from UTF-8 source text with scalar-validated escapes (§3.8–3.9);
+string `+` concatenation (§7.6) joins two already-valid UTF-8 byte sequences,
+which is itself always valid UTF-8; and the zero value `""` (§41.4) is
+trivially valid. `.ore` source files are UTF-8 text (§3.1), which is what
+literal decoding already assumed.
+
+This guarantee constrains future API design rather than introducing new syntax
+here: any later operation that constructs a `string` from arbitrary bytes
+(for example, a future `[]byte`-to-`string` conversion in the predeclared API,
+Q05) must validate its input and reject invalid UTF-8 — a compile-time error
+for a constant, a runtime error or panic otherwise — rather than silently
+accepting or repairing invalid bytes, consistent with how numeric conversions
+are checked rather than lossy (§6.6). No such conversion API is introduced by
+this section.
+
+`string` values are immutable. No operation modifies a string's bytes in
+place; an operation that appears to change a string's contents produces a new
+string value. Immutability is why the UTF-8 guarantee only needs checking at
+construction time, never re-verified afterward, and why an implementation may
+safely share an underlying byte buffer across logical copies without a copy
+ever observing another copy's mutation.
+
+Indexing, slicing, byte-vs-scalar length, and range/iteration over a string's
+contents remain open under Q02 and are not decided here. Any future
+`string`/`[]byte`/`rune` conversion API remains a Q05 decision, constrained by
+this section's validity guarantee but not designed by it.
+
+Ownership, error, and async implications: `string` remains Copy from the
+programmer's perspective (§10.2); the encoding guarantee does not change
+Copy/Move classification, cleanup, error propagation, or async ownership.
+Comparison ordering by UTF-8 encoding bytes (§6.6) is consistent with this
+guarantee: because every string is valid UTF-8, byte-order comparison agrees
+with Unicode scalar-value order.
+
+Compiler impact: validate UTF-8 wherever a `string` value is constructed from
+raw bytes once such an API exists; no validation is needed for literal decoding
+or concatenation, since both are constructive from already-valid inputs.
+`string`'s internal buffer representation (unique heap allocation, reference-
+counted sharing, small-string optimization, etc.) and concatenation's
+allocation strategy remain unstandardized implementation details — they may
+change without a language-level specification revision, as long as the value
+guarantees above hold. Pending conformance cases are in
+`tests/conformance/strings.md`.
+
+## 41.6 Async lowering order — IMPLEMENTATION DETAIL
+
+The exact compiler-pass sequence for:
+
+- ownership analysis
+- MIR construction
+- async transformation
+- drop insertion
+
+remains open.
+
+## 41.7 Runtime scheduler algorithm — IMPLEMENTATION DETAIL
+
+No specific scheduler algorithm is locked.
+
+## 41.8 `defer` — TBD / NOT MVP-REQUIRED
+
+Do not depend on it.
+
+## 41.9 General generic syntax — OUT OF MVP
+
+Do not infer a user-facing generic language from `Array<T>` or `channel<T>`.
+
+---
+
+# 42. First Semantic Compiler Target
+
+The first meaningful Zore program should compile:
+
+```ore
+package main
+
+type User struct {
+    Name string
+}
+
+func greet(user User) {
+    println(user.Name)
+}
+
+func main() {
+    let user = User{
+        Name: "Maas",
+    }
+
+    greet(user)
+}
+```
+
+This program proves:
+
+- package parsing
+- functions
+- structs
+- field access
+- string literal
+- local binding
+- function call
+- default borrow semantics
+
+---
+
+# 43. Recommended Implementation Sequence
+
+This sequence is a project plan, not a source-language semantic requirement.
+
+```text
+M0   Compiler executable / CLI skeleton
+M1   Source manager + spans
+M2   Lexer
+M3   Parser
+M4   AST
+M5   Hello World
+M6   Variables
+M7   Functions
+M8   Structs
+M9   Name resolution
+M10  Type checking
+M11  HIR
+M12  Basic MIR / CFG
+M13  Copy semantics
+M14  Move semantics
+M15  Shared borrowing
+M16  Mutable borrowing
+M17  Lifetime / region analysis
+M18  Drop insertion
+M19  Error handling + ?
+M20  Arrays / slices
+M21  Array<T>
+M22  Maps
+M23  Packages / imports
+M24  Closures
+M25  Task model
+M26  go / spawn
+M27  async state-machine model
+M28  await
+M29  Scheduler/runtime
+M30  Channels
+M31  Async I/O
+M32  LLVM backend hardening
+M33  Native executable/toolchain hardening
+M34  Standard library growth
+M35+ Self-hosting compiler work
+```
+
+The exact milestone numbering may evolve.
+
+Important implementation rule:
+
+> Build synchronous ownership correctly before adding full concurrency, but design MIR and ownership data structures from the beginning so async/state-machine storage can be represented later.
+
+---
+
+# 44. Initial Compiler Repository Direction
+
+A simple starting repository may be:
+
+```text
+zore/
+├── Cargo.toml
+├── src/
+│   ├── main.rs
+│   ├── source.rs
+│   ├── span.rs
+│   ├── token.rs
+│   ├── lexer.rs
+│   ├── ast.rs
+│   ├── parser.rs
+│   └── diagnostic.rs
+├── tests/
+│   ├── lexer/
+│   └── parser/
+└── examples/
+    └── hello/
+        ├── zore.toml
+        └── main.ore
+```
+
+Do not prematurely split the bootstrap compiler into many Rust crates.
+
+Begin with a coherent single compiler crate and extract crates/modules when boundaries become stable.
+
+A future larger structure may separate:
+
+```text
+zore-cli
+zore-lexer
+zore-parser
+zore-ast
+zore-resolve
+zore-typeck
+zore-hir
+zore-ownership
+zore-mir
+zore-async
+zore-codegen
+zore-runtime
+```
+
+This is organizational guidance, not language semantics.
+
+---
+
+# 45. CLI Direction
+
+The intended CLI eventually includes:
+
+```bash
+zore check .
+zore build .
+zore run .
+zore fmt .
+zore test .
+```
+
+The first implementation should prioritize:
+
+```bash
+zore check main.ore
+```
+
+before implementing full code generation.
+
+Semantic analysis and diagnostics should work independently of LLVM code generation.
+
+---
+
+# 46. Testing Requirements
+
+Compiler development should include several layers.
+
+## 46.1 Lexer tests
+
+```text
+source → expected token stream
+```
+
+## 46.2 Parser tests
+
+```text
+source → expected AST
+```
+
+## 46.3 Semantic tests
+
+```text
+source → expected diagnostics
+```
+
+Example:
+
+```ore
+let user = loadUser()
+save(user)
+println(user.Name)
+```
+
+Expected:
+
+```text
+use of moved value `user`
+```
+
+## 46.4 Ownership tests
+
+Test:
+
+- Copy after assignment
+- move after assignment
+- use-after-move
+- shared borrow
+- mutable borrow
+- conflicting borrow
+- move while borrowed
+- explicit drop
+- double drop
+- field/partial move behavior
+- borrow across branches
+- borrow across async suspension
+- values moved into tasks
+
+## 46.5 Code-generation tests
+
+```text
+source → executable → expected output
+```
+
+Example:
+
+```ore
+func main() {
+    println("Hello, Zore!")
+}
+```
+
+Expected output:
+
+```text
+Hello, Zore!
+```
+
+## 46.6 Async/concurrency tests
+
+Test:
+
+- async suspension/resume
+- local values surviving `await`
+- resources dropped after async completion
+- task result handling
+- task error handling
+- detached task semantics
+- channel ownership transfer
+- shared channel handles
+- buffered channel blocking
+- closed channel receive
+- send on closed channel panic
+- double close panic and wake-on-close for blocked senders/receivers
+- zero-value (always-closed) channel behavior
+- single retrieval of task results and `.wait()`/`await task` placement
+- blocking waits not starving other tasks
+- per-task panic containment, re-raise at retrieval, and reporting
+- process exit abandoning running tasks
+- buffered-value cleanup when the last channel handle is gone
+
+---
+
+# 47. Coding Agent Rules
+
+This section is especially important when this specification is supplied to an AI coding agent.
+
+## 47.1 Do not redesign locked decisions
+
+Do not replace:
+
+```ore
+func read(user User)
+func update(user mut User)
+func save(user own User)
+```
+
+with Rust-like:
+
+```text
+&T
+&mut T
+```
+
+or any other syntax.
+
+Do not add move markers at call sites.
+
+## 47.2 Do not add garbage collection
+
+Resource management must remain ownership-based and deterministic.
+
+Reference counting may be used internally for specific safe implementation strategies such as string/channel handles if appropriate, but this must not turn the language into a general tracing-GC model or change source-level ownership semantics.
+
+## 47.3 Do not expose compiler lifetimes
+
+Compiler regions/lifetimes are internal.
+
+Do not add source syntax for them.
+
+## 47.4 Do not invent missing language features
+
+When implementation requires a decision not present here:
+
+1. isolate the dependency,
+2. add a TODO/spec question,
+3. choose the most conservative temporary internal behavior if necessary,
+4. do not silently create permanent language syntax.
+
+## 47.5 Prefer compiler errors over unsafe inference
+
+When ownership/lifetime validity cannot be proven, reject the program with a useful diagnostic.
+
+Do not make unsafe code compile merely for convenience.
+
+## 47.6 Keep passes separated
+
+Avoid implementing:
+
+- parsing
+- name resolution
+- type checking
+- ownership analysis
+- code generation
+
+inside one monolithic traversal.
+
+Preserve clear compiler stages.
+
+## 47.7 Preserve source spans
+
+Do not discard source location data during lowering.
+
+Diagnostics are a first-class feature.
+
+## 47.8 Use stable semantic IDs
+
+After resolution, use IDs for compiler entities instead of performing repeated string matching.
+
+## 47.9 Design for self-hosting
+
+Prefer compiler architecture that could later be ported from Rust to Zore.
+
+Do not make Zore's semantic model depend on Rust-specific ownership semantics.
+
+Rust is the bootstrap implementation language, not the definition of Zore.
+
+---
+
+# 48. Canonical Ownership Examples
+
+## 48.1 Shared borrow
+
+```ore
+func read(user User) {
+    println(user.Name)
+}
+
+func main() {
+    let user = loadUser()
+
+    read(user)
+
+    // valid: read() borrowed user
+    println(user.Name)
+}
+```
+
+## 48.2 Mutable borrow
+
+```ore
+func rename(user mut User, name string) {
+    user.Name = name
+}
+
+func main() {
+    var user = loadUser()
+
+    rename(user, "Alice")
+
+    println(user.Name)
+}
+```
+
+## 48.3 Ownership transfer
+
+```ore
+func save(user own User) {
+    persist(user)
+}
+
+func main() {
+    let user = loadUser()
+
+    save(user)
+
+    // compile error:
+    // user was moved into save()
+    println(user.Name)
+}
+```
+
+## 48.4 Move assignment
+
+```ore
+let connection = openConnection()
+let other = connection
+
+// compile error if Connection is Move
+use(connection)
+
+use(other)
+```
+
+## 48.5 Copy assignment
+
+```ore
+let a = 10
+let b = a
+
+println(a)
+println(b)
+```
+
+Both values remain valid because `int` is Copy.
+
+## 48.6 Explicit clone
+
+```ore
+let a = loadResource()
+let b = clone(a)
+
+use(a)
+use(b)
+```
+
+Whether a type supports meaningful cloning is type/library specific; `clone` represents explicit independent duplication rather than ownership transfer.
+
+---
+
+# 49. Canonical Error Example
+
+```ore
+func loadConfig(path string) (Config, error) {
+    let file = open(path)?
+    let content = read(file)?
+    return parseConfig(content)?
+}
+```
+
+Required semantics:
+
+1. `file` is owned locally.
+2. If `read(file)` fails and `?` returns early, `file` must be cleaned up.
+3. If parsing fails after `file` is no longer required, the compiler must still maintain correct deterministic cleanup.
+4. No hidden exception machinery is required by the source model.
+
+---
+
+# 50. Canonical Async Example
+
+```ore
+async func upload(path string) error {
+    let file = open(path)?
+    let content = await readAsync(file)?
+    await storage.upload(content)?
+    return nil
+}
+```
+
+Required semantics:
+
+- `file` is subject to ordinary ownership/drop rules.
+- values needed after an `await` must survive suspension safely.
+- borrowed values may cross `await` only if validity is proven.
+- any required cleanup occurs on both success and error paths.
+- async does not disable or weaken ownership checking.
+
+---
+
+# 51. Canonical Channel Example
+
+```ore
+func worker(ch channel<User>) {
+    for {
+        let user, ok = ch.receive()
+
+        if !ok {
+            return
+        }
+
+        process(user)
+    }
+}
+
+func main() {
+    let ch = channel<User>(10)
+
+    let w1 = go worker(ch)
+    let w2 = go worker(ch)
+    let w3 = go worker(ch)
+
+    ch.send(User{
+        Name: "A",
+    })
+
+    ch.send(User{
+        Name: "B",
+    })
+
+    ch.close()
+
+    w1.wait()
+    w2.wait()
+    w3.wait()
+}
+```
+
+Required semantics:
+
+- each worker receives a Copyable handle to the same channel
+- channel state is shared safely by the runtime
+- Move messages transfer ownership
+- channel close prevents future sends
+- buffered values remain receivable
+- receive eventually returns `ok == false` after close and drain
+- `main` waits for the workers; without the waits, the process could exit and
+  abandon them before they process the buffered values (§18.11)
+
+---
+
+# 52. Final MVP Invariants
+
+A conforming Zore MVP implementation must preserve these invariants:
+
+1. **Borrow by default.**
+2. **Mutation is explicit with `mut`.**
+3. **Ownership transfer is explicit in the callee contract with `own`.**
+4. **Call sites do not require move syntax.**
+5. **Copy vs Move is type-driven.**
+6. **Struct Copy/Move behavior is derived automatically.**
+7. **Resource cleanup is deterministic.**
+8. **Use-after-move and double-drop are compile-time errors in safe code.**
+9. **Lifetimes are inferred and hidden from ordinary source code.**
+10. **Errors are explicit values.**
+11. **`?` propagates errors while preserving cleanup guarantees.**
+12. **Async uses the same ownership model as synchronous code.**
+13. **Tasks use the same ownership model as ordinary calls.**
+14. **Channels safely transfer or copy messages according to ordinary ownership semantics.**
+15. **Channel handles themselves are Copyable shared capabilities.**
+16. **No tracing GC is required by the language model.**
+17. **No user-facing raw pointers or `unsafe` are part of the MVP.**
+18. **The compiler must prioritize safe rejection over unsafe guessing.**
+19. **AST, HIR, and MIR remain conceptually distinct compiler layers.**
+20. **The architecture should support eventual self-hosting.**
+
+---
+
+# 53. Specification Change Policy
+
+When adding or changing a language feature:
+
+1. update this specification first,
+2. explicitly mark the decision as locked,
+3. add syntax and semantic examples,
+4. define ownership implications,
+5. define error/async implications where relevant,
+6. define compiler impact,
+7. add conformance tests,
+8. only then treat the decision as implementation-ready.
+
+A coding agent must not treat experimental implementation behavior as language specification.
+
+---
+
+# 54. Summary
+
+Zore's central programming model is:
+
+```text
+simple syntax
+    +
+borrow by default
+    +
+explicit mutation
+    +
+explicit ownership transfer
+    +
+automatic Copy/Move classification
+    +
+inferred lifetimes
+    +
+deterministic cleanup
+    +
+explicit errors
+    +
+async/tasks/channels using the same ownership model
+    =
+Simple code. Strong guarantees.
+```
+
+This document defines the currently locked Zore MVP. Anything not defined here should be treated as unspecified rather than inferred from Go, Rust, Java, C++, or any other language.

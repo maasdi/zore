@@ -1,0 +1,12 @@
+[package]
+name = "zore"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "The Zore bootstrap compiler"
+
+# Keep one compiler crate until subsystem boundaries justify extraction.
+[workspace]
+resolver = "3"
+
+[dependencies]

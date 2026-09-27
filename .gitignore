@@ -1,0 +1,6 @@
+/target/
+.DS_Store
+*.swp
+*.swo
+
+# Cargo.lock is intentionally tracked for the compiler executable.
