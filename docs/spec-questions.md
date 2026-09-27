@@ -37,9 +37,23 @@ A newly discovered semantic gap blocks its affected feature, not unrelated work.
 | Q12 | Resolved: compiler instructions now select custom clone before structural cloning, with no fallback from an invalid custom method. See Q12 below. | §10.7 | Clone resolution |
 | Q13 | Lexical gaps found while implementing M2: (a) §3.7 says horizontal whitespace is insignificant but never lists the characters; the lexer accepts only space, tab, and CR and rejects form feed, vertical tab, NBSP, other Unicode spaces, and a leading BOM as unexpected characters. (b) §7.6 excludes `++`/`--` and requires lexing to distinguish them from adjacent signs; the lexer rejects every adjacent `++`/`--`, so `a--b` and `x - -y` written as `x--y` are errors, and a space or parentheses is required. (c) Following §3.7's definition of newline as LF, a lone CR inside a double-quoted string or rune literal is accepted as content, not rejected as a physical newline. All three are conservative or follow the spec text literally; confirm or revise through §53. | §3.7–3.10, §7.6 | Lexer changes only; not blocking M3 |
 | Q14 | Parser choices made in M3–M4 where the grammar is silent; each rejects rather than guesses and can be relaxed later. (a) `value?.field` and `value?()` are rejected, following the §7.6 table literally (postfix `?` is below calls/fields); write `(value?).field`. (b) Result lists: `(T)` with one type, `()`, and a trailing comma are rejected; §7.8 allows trailing commas only in parameter and argument lists. (c) Expression statements must be calls, optionally wrapped in `await`/`?`; `await task` alone is rejected (use `_ = await task`), since §7.8 names "call-based forms". (d) Struct literals need parentheses in a counting loop's update clause as well as its condition, because the update also precedes the body brace; §8.4 names only the condition. (e) Imports must precede other declarations; grouped `import (...)` and raw-string paths are rejected. (f) Parenthesized assignment targets such as `(a) = 1` and empty statements (`;;`) are rejected. (g) `let _ T = value` is accepted as the single-target typed form. Package-level `let`/`var` are parsed; their meaning remains Q05. | §5.4–5.6, §7.6, §7.8, §8.4, §3.3 | Parser changes only; not blocking resolution |
-| Q15 | Numeric gaps found while implementing the checker. (a) §6.5 says a numeric literal may take a float type "when its exact mathematical value is representable in that type", but most decimal fractions (e.g. `0.1`) have no exact binary value, while §6.6 permits rounding a representable finite value; the intended rule is probably "within the finite range, rounded to nearest", but it is not stated. (b) §6.5 keeps untyped constants exact, but does not say what `/` and `%` mean between two untyped integer constants (is `7 / 2` integer division, or the exact value 3.5 that then fails integer typing?). (c) Bitwise `&`, `\|`, `^`, and unary `^` are defined on fixed-width bit patterns (§6.6), so their meaning on untyped constants, which have no width, is unstated. Until resolved the checker reports all floating-point values, and these untyped-constant operations, as unsupported; typed operands such as `int(7) / 2` work. | §6.5–6.6, §5.3 | Accepting float values; untyped constant `/`, `%`, bitwise operators |
+| Q15 | Resolved: untyped constants follow Go's model (§6.7). See Q15 below. | §6.5–6.7, §5.3 | Checker and constant-evaluation changes |
 
 ## Resolved decisions
+
+- **Q15 — Untyped constants:** locked in §6.7 and amended §6.5–6.6 at the
+  user's direction, following the Go specification (checked against go1.27).
+  Untyped integer and float kinds; mixed operands give float. Integer `/`
+  truncates; `%` is integer-only; constant division by zero is an error.
+  Untyped bitwise operators use infinite-precision two's complement (`^x` is
+  `-x - 1`). Floats are representable if they round to the type without
+  overflow (ties to even, negative zero to positive zero); integer types need
+  an integral value in range. Constant conversions need representability, so
+  `int64(2.5)` is invalid (runtime conversion still truncates). Integral
+  untyped float constants may be shift operands. Implementations must support
+  at least 256-bit integer constants and 256-bit-mantissa float constants.
+  Zore keeps typed rune/bool/string literals, unlike Go. Pending cases:
+  `tests/conformance/constant-expressions.md` and `numerics.md`.
 
 - **Q05a — Entry point and `println`:** locked in §3.19 and §37.1 at the
   user's direction. `package main` requires exactly one `func main()` with no

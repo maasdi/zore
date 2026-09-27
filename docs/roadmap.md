@@ -9,8 +9,8 @@ analysis, or code generator exists yet, so nothing can be built or run. Linux/ma
 The user has ended broad specification preparation: resolve further language
 questions only when they block the active implementation milestone. No currently
 recorded language question blocked M0–M4; Q13 and Q14 record the conservative
-lexer and parser choices made where the spec is silent, and Q15 records numeric
-ambiguities that keep floats and some untyped-constant operators unsupported. Numbers refer to spec §43; the sequence
+lexer and parser choices made where the spec is silent. Q15 is resolved by
+§6.7 (Go's untyped-constant model), which the checker does not implement yet. Numbers refer to spec §43; the sequence
 is guidance, not a language contract.
 
 | Milestone | Deliverable and acceptance criteria |
@@ -44,8 +44,17 @@ host targets, runtime ABI, and setup/test instructions) under
 with explicit Copy operations and control flow, and emit a native executable
 with a minimal runtime `println`. Keep `check` independent of the backend.
 
-Alternatively, widen the checker (methods, `error`/`?`, floats once Q15 is
-answered), keeping every widening paired with rejection tests. Ownership
+The checker now lags the spec in one known way: §6.7 (Q15) locks Go's
+untyped-constant model, but the checker still limits untyped integers to 128
+bits (below the required 256), has no untyped float kind, and reports untyped
+`/`, `%`, bitwise operators, and floats as unsupported. It never accepts an
+invalid program because of this, but implementing §6.7 (arbitrary-precision
+constants, untyped float kind, representability rounding) is required before
+floats are accepted. It needs a big-number decision: hand-written or a crate
+such as `num-bigint`, justified per AGENTS.md.
+
+Alternatively, widen the checker (methods, `error`/`?`, §6.7 constants and
+floats), keeping every widening paired with rejection tests. Ownership
 analysis (M13–M17) must land before any Move type or `mut` parameter is
 accepted: the checker's all-Copy restriction is what currently makes ownership
 checks vacuous, and `typeck` enforces it.

@@ -504,7 +504,7 @@ impl<'a> Checker<'a> {
                 self.unsupported(
                     "floating-point values are",
                     span,
-                    "float literal typing awaits clarification (Q15)",
+                    "§6.7 float constants are not implemented yet",
                 );
                 None
             }
@@ -652,7 +652,7 @@ impl<'a> Checker<'a> {
                         self.unsupported(
                             "unary `^` on an untyped constant is",
                             span,
-                            "bitwise operations need a fixed width; convert first, e.g. `^uint8(x)` (Q15)",
+                            "§6.7 untyped bitwise operators are not implemented yet; convert first, e.g. `^uint8(x)`",
                         );
                         None
                     }
@@ -758,7 +758,7 @@ impl<'a> Checker<'a> {
                     self.unsupported(
                         &format!("`{}` between two untyped constants is", op_str(op)),
                         span,
-                        "give one operand a type first, e.g. `int(7) / 2` (Q15)",
+                        "this §6.7 operation is not implemented yet; give one operand a type, e.g. `int(7) / 2`",
                     );
                     None
                 }

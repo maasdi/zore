@@ -1428,15 +1428,16 @@ Conversions to or from integer types must follow §6.6.
 Integer literals have no suffixes (§3.14). When a literal has no expected type,
 integer literals default to `int` and floating-point literals default to
 `float64`. A numeric literal may take an expected integer or float type when
-its exact mathematical value is representable in that type. Otherwise the
-program is rejected; the compiler must not silently truncate, wrap, or round
-an integer literal to make it fit. A rune literal has type `rune`, not the
+its value is representable in that type as defined in §6.7. Otherwise the
+program is rejected; the compiler must not silently truncate or wrap a
+constant to make it fit, and rounds a float constant only as §6.7 allows. A rune literal has type `rune`, not the
 default integer type. Contextual typing does not make differently typed
 variables implicitly compatible.
 
 For untyped constant arithmetic, preserve the exact mathematical result until
 the expression is assigned a type. Reject a constant expression if its result
-is not representable in the required type. Detailed constant-expression syntax
+is not representable in the required type. Untyped constant kinds, operators,
+representability, and required precision are specified in §6.7. Detailed constant-expression syntax
 remains restricted to operations whose operands and results are themselves
 valid constants; calls, mutation, I/O, and other runtime effects are not constant
 operations.
@@ -1445,7 +1446,7 @@ operations.
 let count = 42             // int, which is int64
 let small uint8 = 42       // contextual type is representable
 let ratio = 1.5            // float64
-let precise float32 = 0.5  // exact value is representable
+let precise float32 = 0.5  // representable (§6.7)
 let letter rune = 'A'
 ```
 
@@ -1465,11 +1466,14 @@ conversion uses a type name as a conversion form, such as `int64(value)` or
 `float32(value)`. Conversions never silently change ownership; all numeric values
 remain Copy.
 
-Integer-to-integer and float-to-integer conversions are checked. If the source
-value is not representable in the destination type, a constant conversion is a
-compile-time error and a runtime conversion panics. Float-to-integer conversion
-truncates toward zero before checking the destination range; NaN and infinities
-are invalid for integer conversion. Integer-to-float and float narrowing use
+Integer-to-integer and float-to-integer conversions are checked. A constant
+conversion requires the constant to be representable in the destination type
+(§6.7); otherwise it is a compile-time error. In particular, a constant with a
+fractional part cannot be converted to an integer type: `int64(2.5)` is
+invalid, while `int64(2.0)` is the integer 2. A runtime float-to-integer
+conversion truncates toward zero and then checks the destination range; a
+runtime value outside the range panics. NaN and infinities are invalid for
+integer conversion. Integer-to-float and float narrowing use
 round-to-nearest, ties-to-even. A finite source value outside the destination
 float's finite range is an error at compile time for constants and a runtime
 panic otherwise. Rounding a representable finite value to the nearest destination
@@ -1508,12 +1512,15 @@ apply identically to typed constant expressions and runtime expressions.
 Shift counts must be nonnegative and less than the left operand's bit width;
 invalid constant counts are compile-time errors, and invalid runtime counts
 panic. Counts are never masked or reduced modulo the width. The shift-count
-operand must have an integer type (or be an untyped integer constant). The
+operand must have an integer type or be an untyped constant representable as an
+integer (§6.7), so `1 << 3.0` is valid and `1 << 3.5` is not. The
 left operand determines the result type; the right operand is not implicitly
 converted to it. A zero count preserves the operand. Compound shifts use these
 same rules and the assignment evaluation order (§5.6).
 
-Untyped constant shifts preserve exact mathematical values under §6.5: left
+An untyped constant left operand must be representable as an integer (so
+`1.0 << 3` is the untyped integer 8); shifting it yields an untyped integer
+constant. Untyped constant shifts preserve exact mathematical values under §6.5: left
 shift multiplies by 2 to the count's power; right shift divides by that power,
 rounding toward negative infinity. They do not discard high bits before a type
 has been assigned. Counts must be nonnegative; when the expression receives an
@@ -1560,6 +1567,137 @@ fast-math; and implement
 the specified comparison eligibility. Diagnostics identify source spans for
 constant failures; runtime panics identify invalid operations when available.
 Pending cases are in `tests/conformance/numerics.md`.
+
+## 6.7 Untyped constants — LOCKED
+
+Untyped numeric constants follow the Go programming language's constant model
+(Go specification, "Constants", "Representability", and "Constant
+expressions", checked against language version go1.27). Zore differs only
+where stated below.
+
+### Kinds
+
+An untyped numeric constant has one of two kinds:
+
+- **untyped integer**: integer literals (§3.11) and constant expressions whose
+  untyped operands are all untyped integers;
+- **untyped float**: floating-point literals (§3.13) and constant expressions
+  with at least one untyped float operand.
+
+If the untyped operands of a binary operation other than a shift have
+different kinds, the result is an untyped float. Unlike Go, Zore has no untyped
+rune, boolean, string, or complex constants: rune literals have type `rune`
+(§6.5), and string and boolean literals have types `string` and `bool`. An
+untyped constant cannot take the type `rune`, because `rune` is not an integer
+type (§6.5).
+
+Untyped constants have default types `int` (untyped integer) and `float64`
+(untyped float), used when no expected type applies (§6.5).
+
+### Exact evaluation and required precision
+
+Untyped numeric constants denote exact values of arbitrary precision and do
+not overflow. No constant denotes negative zero, infinity, or NaN. Constant
+expressions are evaluated exactly; intermediate results may need far more
+precision than any predeclared type.
+
+An implementation may use limited internal precision, but it must:
+
+- represent integer constants with at least 256 bits;
+- represent float constants with a mantissa of at least 256 bits and a signed
+  binary exponent of at least 16 bits;
+- report a compile-time error if it cannot represent an integer constant
+  exactly;
+- report a compile-time error if it cannot represent a float constant because
+  of overflow;
+- round to the nearest representable constant if it cannot represent a float
+  constant because of limited precision.
+
+These requirements apply to literals and to the results of constant
+expressions. Such rounding may make a float constant expression non-integral
+in an integer context, or integral when it would not be at infinite precision.
+
+### Operators on untyped constants
+
+An operation whose operands are all untyped constants yields an untyped
+constant. The operators of §7.6 apply as follows:
+
+| Operator | Untyped integer | Untyped float |
+| --- | --- | --- |
+| `+`, `-`, `*`, unary `+`, `-` | Exact result | Exact result |
+| `/` | Quotient truncated toward zero | Exact quotient |
+| `%` | Remainder with the dividend's sign, so `x == (x / y) * y + x % y` | Invalid |
+| `&`, `\|`, `^`, unary `^` | Infinite-precision two's complement; unary `^x` equals `-1 ^ x`, that is `-x - 1` | Invalid |
+| `<<`, `>>` | See §6.6; operands must be representable as integers | Left operand must be integral; the result is an untyped integer |
+| `==`, `!=`, `<`, `<=`, `>`, `>=` | `bool` result | `bool` result |
+
+A zero divisor in a constant `/` or `%` is a compile-time error. Operations
+on typed constants use the typed rules of §6.6: a result that is not
+representable in the type is a compile-time error, and `^` uses the type's
+width.
+
+```ore
+const a = 2 + 3.0          // untyped float 5.0
+const b = 15 / 4           // untyped integer 3 (truncated division)
+const c = 15 / 4.0         // untyped float 3.75
+const d = -7 % 3           // untyped integer -1
+const e = ^1               // untyped integer -2
+const f = -4 | 1           // untyped integer -3
+const g = 1 << 3.0         // untyped integer 8
+const h = 1.0 << 3         // untyped integer 8
+const huge = 1 << 100      // exact untyped integer
+const four int8 = huge >> 98   // 4, of type int8
+const half float64 = 3 / 2     // 1.0: 3 / 2 is integer division
+const exact float64 = 3 / 2.0  // 1.5
+```
+
+```ore
+const bad1 = 1 / 0         // invalid: division by zero
+const bad2 = 7.5 % 2       // invalid: % needs integers
+const bad3 = 1.5 & 1       // invalid: bitwise operators need integers
+const bad4 = 1 << 3.5      // invalid: count is not an integer
+```
+
+### Representability
+
+A constant `x` is representable in type `T` when:
+
+- `T` is an integer type and `x` is an integer value within `T`'s range. An
+  untyped float with no fractional part qualifies: `let n uint8 = 42.0` is
+  valid, while `let n int = 1.1` is not.
+- `T` is a float type and `x` can be rounded to `T`'s precision without
+  overflow. Rounding uses IEEE 754 round-to-nearest, ties-to-even, and a
+  rounded negative zero becomes positive zero. `let f float32 = 0.1` is valid
+  (the nearest `float32`); `let f float64 = 1e1000` is invalid because it
+  overflows.
+
+Wherever an untyped constant receives a type (an explicit or expected type,
+a default type, a typed operand, a conversion, an argument, a field, or a
+return value), it must be representable in that type. Otherwise the program
+is rejected at compile time. A constant conversion follows the same rule
+(§6.6): `uint8(-1)`, `int64(3.14)`, and `int64(huge)` are invalid.
+
+```ore
+let precise float32 = 2.718281828459045   // rounds to the nearest float32
+let tiny float64 = -1e-1000               // rounds to 0.0 (positive zero)
+let whole uint8 = 42.0                    // integer 42
+let big uint64 = 1e10                     // integer 10000000000
+let bad int = 1.1                         // invalid: not an integer value
+let small uint8 = 1024                    // invalid: out of range
+```
+
+Ownership, error, and async implications: constants are pure compile-time
+values with Copy semantics; this section adds no runtime operation, error
+result, or async behavior. Every failure described here is a compile-time
+error.
+
+Compiler impact: evaluate untyped constants with arbitrary-precision integer
+and float arithmetic meeting the minimums above, track each constant's kind,
+apply representability whenever a constant is typed, and report
+kind-specific operator errors and division by zero with source spans. Keep
+constant evaluation separate from runtime arithmetic, which still follows
+§6.6. Pending cases are in `tests/conformance/constant-expressions.md` and
+`tests/conformance/numerics.md`.
 
 ---
 

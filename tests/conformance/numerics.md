@@ -68,7 +68,8 @@ and unlisted constant-expression operators separate from this suite.
 | `uint8(1) << 8`, `uint8(1) >> 8`, or count -1 | Compile-time error; both directions validate counts |
 | Runtime negative count or count equal to/greater than width | Panic; never mask the count |
 | `uint8(1) << uint64(7)` | uint8 128; count need not have left operand's type |
-| `uint8(1) << 1.0` | Reject; count must be an integer |
+| `uint8(1) << 1.0` | Valid (§6.7): integral untyped float count; uint8 2 |
+| `uint8(1) << 1.5` | Reject; count is not representable as an integer |
 | `var bits uint8 = 128; bits <<= 1` | bits becomes zero; target evaluated once |
 | `const wide = 128 << 1; let small uint8 = wide` | Reject; exact untyped 256 does not fit uint8 |
 | `const bits = uint8(128) << 1` | Typed uint8 constant zero |
