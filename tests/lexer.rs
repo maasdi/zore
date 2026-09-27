@@ -1,4 +1,4 @@
-//! Lexer tests for the rules in spec §3.5–3.17.
+//! Lexer tests for tokenization, literals, comments, and recovery.
 
 use zore::lexer::{Lexed, lex};
 use zore::source::SourceMap;
@@ -161,7 +161,7 @@ fn ascii_identifiers_keywords_and_reserved_words() {
     ] {
         assert_eq!(single(name), ident(), "{name}");
     }
-    // Predeclared names are identifiers, not keywords (§3.17).
+    // Predeclared names are identifiers, not keywords.
     for name in [
         "int", "string", "bool", "rune", "Array", "Task", "error", "println", "clone", "drop",
     ] {
@@ -700,7 +700,7 @@ fn decimal_floats_and_exponents() {
     }
     assert_eq!(single("1"), TokenKind::Int(IntBase::Decimal));
 
-    // A dot joins a float only when a digit follows (§3.13).
+    // A dot joins a float only when a digit follows.
     let case = Case::new("1.field");
     case.assert_clean();
     assert_eq!(

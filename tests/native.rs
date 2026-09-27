@@ -45,7 +45,7 @@ fn prints(source: &str, expected: &str) {
     assert!(output.stderr.is_empty(), "{}", stderr(&output));
 }
 
-/// Expect a panic in the initial task (§3.19, §18.10).
+/// Expect a panic in the initial task.
 fn panics(source: &str, message: &str, stdout_before: &str) {
     let output = run(source);
     assert_eq!(

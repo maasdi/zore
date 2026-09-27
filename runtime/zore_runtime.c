@@ -4,9 +4,8 @@
  *
  * Minimal Zore runtime for the native backend.
  *
- * Provides the process entry, `println` output (spec §37.1), string ordering
- * (§6.6), and panic reporting (§3.19, §18.10). The ABI is internal to the
- * bootstrap compiler and may change.
+ * Provides process entry, `println` output, string ordering, and panic
+ * reporting. The ABI is internal to the bootstrap compiler and may change.
  */
 
 #include <errno.h>
@@ -18,8 +17,7 @@
 
 void zore_entry(void);
 
-/* Exit status after a panic in the initial task (implementation-defined by
-   §3.19; matches Go). */
+/* Exit status after a panic in the initial task. */
 enum { ZORE_PANIC_STATUS = 2 };
 
 /* Write all bytes; returns 0 on success and -1 on failure. */
@@ -47,8 +45,6 @@ _Noreturn void zore_panic(const char *message, int64_t len) {
     _exit(ZORE_PANIC_STATUS);
 }
 
-/* Write one complete line with a single write sequence, so each call emits
-   its line as a unit (§37.1). A failed write panics. */
 static void write_line(const char *text, size_t len) {
     char small[256];
     char *line = small;
@@ -111,7 +107,7 @@ void zore_println_bool(_Bool value) {
     }
 }
 
-/* Runes are Unicode scalar values (§6.5); print their UTF-8 encoding. */
+/* Runes are Unicode scalar values; print their UTF-8 encoding. */
 void zore_println_rune(uint32_t c) {
     char buffer[4];
     size_t n;
@@ -137,7 +133,7 @@ void zore_println_rune(uint32_t c) {
     write_line(buffer, n);
 }
 
-/* Byte-wise UTF-8 ordering: negative, zero, or positive (§6.6). */
+/* Compare strings lexicographically by UTF-8 bytes. */
 int32_t zore_string_compare(const char *a, int64_t a_len, const char *b, int64_t b_len) {
     size_t shorter = (size_t)(a_len < b_len ? a_len : b_len);
     int order = shorter == 0 ? 0 : memcmp(a, b, shorter);

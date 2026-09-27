@@ -112,7 +112,7 @@ impl Lexer<'_> {
     }
 
     fn line_comment(&mut self) {
-        // Leave the LF for newline handling.
+        // Keep the newline visible so it can trigger semicolon insertion.
         self.pos = self.text[self.pos..]
             .find('\n')
             .map_or(self.text.len(), |offset| self.pos + offset);

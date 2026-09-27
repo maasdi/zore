@@ -1,4 +1,4 @@
-//! Parser tests for AST shape, spans, rejection, and recovery (spec §3.7, §5, §7–9).
+//! Parser tests for AST shape, spans, rejection, and recovery.
 
 use zore::ast::*;
 use zore::parser::{Parsed, parse};
@@ -585,7 +585,7 @@ fn invalid_function_syntax_is_rejected() {
 
 #[test]
 fn struct_keyword_does_not_end_a_line() {
-    // `struct` is not eligible for semicolon insertion (§3.17).
+    // `struct` is not eligible for semicolon insertion.
     Case::new("package main\ntype User struct\n{}\n").assert_clean();
 }
 

@@ -1,6 +1,6 @@
-//! Resolution and type-checking tests (spec §3.18–3.19, §5, §6.5–6.6, §7–8,
-//! §37.1). Accepted programs are paired with rejections; features outside the
-//! checker's subset must be reported as unsupported, never accepted.
+//! Resolution and type-checking tests. Accepted programs are paired with
+//! rejections; features outside the checker's subset must be reported as
+//! unsupported, never accepted.
 
 use zore::check::{Checked, check_file};
 use zore::hir::{self, Const, ExprKind, StmtKind};
@@ -416,7 +416,7 @@ fn constant_errors_are_compile_time() {
         &body("const big uint64 = 18446744073709551615\nlet x = int64(big)"),
         "does not fit in `int64`",
     );
-    // A runtime value converts with a runtime check instead (§6.6).
+    // A runtime value converts with a runtime check instead.
     accepts(&body(
         "let big uint64 = 18446744073709551615\nlet x = int64(big)",
     ));
@@ -898,9 +898,9 @@ fn diagnostics_are_reported_in_source_order() {
     assert_eq!(spans, ["300", "missing", "1"]);
 }
 
-/// Untyped constants follow Go's model (§6.7).
+/// Untyped constants follow Go's model.
 #[test]
-fn untyped_constant_kinds_follow_section_6_7() {
+fn untyped_constant_arithmetic_and_conversion() {
     let int = |v: i128| (Const::Int(v), "int64".to_string());
     let float = |v: f64| (Const::Float(v), "float64".to_string());
     assert_eq!(folded("let x = 2 + 3.0"), float(5.0));
@@ -973,7 +973,7 @@ fn untyped_constant_kinds_follow_section_6_7() {
 }
 
 #[test]
-fn untyped_constant_errors_follow_section_6_7() {
+fn untyped_constant_arithmetic_errors() {
     rejects(&body("let x = 1 / 0"), "division by zero");
     rejects(&body("let x = 1.0 / 0.0"), "division by zero");
     rejects(&body("let x = 5 % 0"), "division by zero");
@@ -1099,6 +1099,6 @@ fn float_types_and_conversions() {
         &body("let x = float64(\"1\")"),
         "cannot convert `string` to `float64`",
     );
-    // Runtime conversions are checked at runtime, not rejected (§6.6).
+    // Runtime conversions are checked at runtime, not rejected.
     accepts(&body("var f = 2.5\nlet n = int64(f)"));
 }
