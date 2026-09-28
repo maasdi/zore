@@ -1,8 +1,10 @@
 //! Source text to tokens, with automatic semicolon insertion.
 
+pub mod token;
+
 use crate::diagnostic::{Diagnostic, Severity};
 use crate::source::{SourceFile, Span};
-use crate::token::{IntBase, Keyword, Punct, ReservedWord, Separator, Token, TokenKind};
+use crate::lexer::token::{IntBase, Keyword, Punct, ReservedWord, Separator, Token, TokenKind};
 
 #[derive(Debug)]
 pub struct Lexed {

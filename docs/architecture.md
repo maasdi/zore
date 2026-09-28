@@ -1,19 +1,54 @@
 # Bootstrap architecture
 
-Status: M0–M4 are implemented, and M9–M10 cover an initial checker subset.
-`src/main.rs` and `src/cli.rs` handle CLI arguments and exit status; `check`
-runs the frontend pipeline in `src/check.rs`. `src/source.rs` stores UTF-8 text
-under stable file IDs and validated byte spans, and `src/diagnostic.rs` renders
-primary and related locations. `src/token.rs` and `src/lexer.rs` produce tokens;
-`src/ast.rs` and `src/parser.rs` produce the syntax tree. `src/resolve.rs` binds
-names to IDs, `src/types.rs` interns types, and `src/typeck.rs` produces the
-typed HIR in `src/hir.rs`. `tests/cli.rs`, `tests/source_diagnostics.rs`,
-`tests/lexer.rs`, `tests/parser.rs`, and `tests/check.rs` exercise these
-contracts. `src/lower.rs` lowers HIR to the MIR in `src/mir.rs`,
-`src/codegen.rs` emits LLVM IR, and `src/build.rs` compiles it with clang and
-`runtime/zore_runtime.c` (decision record 0001); `tests/native.rs` builds and
+Status: M0–M12 cover the implemented synchronous, all-Copy subset.
+`compiler/src/main.rs` delegates to `driver`; `driver/command.rs` and
+`driver/session.rs` handle CLI arguments and exit status; `check`
+runs the frontend pipeline in `compiler/src/driver/check.rs`. `compiler/src/source/mod.rs` stores UTF-8 text
+under stable file IDs and validated byte spans, and `compiler/src/diagnostic/mod.rs` renders
+primary and related locations. `compiler/src/lexer/token.rs` and `compiler/src/lexer/mod.rs` produce tokens;
+`compiler/src/ast/mod.rs` and `compiler/src/parser/mod.rs` produce the syntax tree. `compiler/src/resolve/mod.rs` binds
+names to IDs, `compiler/src/types/mod.rs` interns types, and `compiler/src/types/checker.rs` produces the
+typed HIR in `compiler/src/hir/mod.rs`. `tests/driver/cli.rs`, `tests/diagnostics/source_diagnostics.rs`,
+`tests/lexer/lexer.rs`, `tests/parser/parser.rs`, and `tests/typecheck/check.rs` exercise these
+contracts. `compiler/src/mir/lower.rs` lowers HIR to the MIR in `compiler/src/mir/mod.rs`,
+`compiler/src/codegen/llvm.rs` emits LLVM IR, and `compiler/src/driver/build.rs` compiles it with clang and
+the Rust sources in `runtime/src/` using rustc (decision record 0001);
+`tests/codegen/native.rs` builds and
 runs programs. Ownership analysis and drop insertion remain planned. Rust is the bootstrap implementation language; use one crate until
 stable boundaries justify extraction.
+
+## Repository organization
+
+The root Cargo manifest contains the `compiler/` and `runtime/` members.
+Root-level checks build and test both; `cargo run` selects the compiler's sole
+binary. The compiler has no dependency on the runtime crate, and `Cargo.lock` stays
+at the repository root. The layout follows
+[`compiler-structure.md`](../compiler-structure.md), with only implemented stages:
+
+- `compiler/src/driver/`: commands, sessions, frontend and native orchestration.
+- `source/`, `diagnostic/`, `lexer/`, `parser/`, `ast/`: source and syntax.
+- `resolve/`, `types/`, `hir/`: resolution, types, and typed representation.
+  Type checking, constant evaluation, and big-number arithmetic have separate
+  files under `types/`.
+- `mir/`: control-flow representation and HIR lowering.
+- `codegen/`: LLVM emission.
+
+Paths after the first bullet are relative to `compiler/src/`. Existing library
+paths such as `zore::check`, `zore::token`, and `zore::typeck` remain available
+through re-exports. Cohesive stage implementations use `mod.rs`; further file
+splits can follow when their responsibilities need them.
+
+Integration tests live in repository-level subsystem folders, explicitly
+registered in `compiler/Cargo.toml` with their existing target names. Example
+paths are anchored to the compiler manifest directory, so tests work from
+either the workspace root or the compiler directory.
+
+The authoritative specification stays at `spec/language-spec.md`. The Rust
+runtime in `runtime/src/` separates I/O, panic reporting, and string comparison.
+Its `main.rs` is a native entry shim compiled only when linking a Zore program;
+the Cargo library target enables runtime unit tests without a generated entry.
+Future ownership, drop, async, shared-context, and standard-library modules
+remain uncreated.
 
 | Area | Responsibility | Spec |
 | --- | --- | --- |
@@ -81,10 +116,10 @@ errors. Return completeness is checked
 conservatively on the AST. HIR is produced only when there are no diagnostics,
 and diagnostics are reported in source order.
 
-Constant evaluation (§6.6–6.7) lives in `src/constant.rs`, separate from type
+Constant evaluation (§6.6–6.7) lives in `compiler/src/types/constant.rs`, separate from type
 checking. Untyped constants have an integer or float kind and are exact:
 integers are arbitrary-precision, and floats are exact rationals. Both use the
-hand-written `src/bignum.rs` (no numeric dependency, and easy to port to Zore);
+hand-written `compiler/src/types/bignum.rs` (no numeric dependency, and easy to port to Zore);
 its unit tests use Rust's `i128` arithmetic and correctly rounded
 `str::parse::<f32/f64>` as oracles. Implementation limits, all above the §6.7
 minimums: untyped integers up to 4096 bits (larger is an error); floats keep
@@ -156,7 +191,7 @@ declaration order, compound assignment reading its target before the
 right-hand side, and `&&`/`||` as branches. Calls are terminators, so results
 land in temporaries or discarded destinations.
 
-Code generation (`src/codegen.rs`) gives every MIR local a stack slot and
+Code generation (`compiler/src/codegen/llvm.rs`) gives every MIR local a stack slot and
 relies on LLVM's optimizer to promote them. §6.6 runtime checks are emitted
 there: overflow intrinsics for `+ - *` and negation, zero and `MIN / -1`
 checks for `/` and `%`, unsigned range checks for shift counts, and range
@@ -167,4 +202,14 @@ explicit MIR assert terminators with cleanup paths. Runtime string
 concatenation and float printing are reported as unsupported by the backend.
 The generated IR contains no target triple, so clang supplies the host's; it
 requires LLVM 15 or newer for opaque pointers.
+
+The driver embeds the Rust runtime sources, compiles the LLVM IR to a native
+object with clang, then invokes rustc 1.98+ to compile the runtime entry shim
+and link that object. Rustc manages its standard-library and system-library
+dependencies. Runtime sources do not need to be installed alongside `zore`.
+Native builds require both tools for the same host; `ZORE_CC` and `ZORE_RUSTC`
+select their executables. There is no runtime artifact cache yet. Rust startup
+provides SIGPIPE handling; output is locked and explicitly flushed before
+returning, so write failures become Zore panics. The unsafe Rust boundary is
+limited to the internal ABI and does not introduce source-level unsafe syntax.
 

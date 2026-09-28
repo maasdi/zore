@@ -5,7 +5,7 @@ use crate::ast::*;
 use crate::diagnostic::{Diagnostic, Severity};
 use crate::lexer::lex;
 use crate::source::{SourceFile, Span};
-use crate::token::{Keyword, Punct, Separator, Token, TokenKind};
+use crate::lexer::token::{Keyword, Punct, Separator, Token, TokenKind};
 
 #[derive(Debug)]
 pub struct Parsed {

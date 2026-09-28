@@ -1,5 +1,9 @@
 //! Interned semantic types.
 
+pub mod bignum;
+pub mod checker;
+pub mod constant;
+
 use std::fmt;
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -54,11 +58,11 @@ pub struct FloatType {
 }
 
 impl FloatType {
-    pub fn format(self) -> crate::bignum::FloatFormat {
+    pub fn format(self) -> crate::types::bignum::FloatFormat {
         if self.bits == 32 {
-            crate::bignum::BINARY32
+            crate::types::bignum::BINARY32
         } else {
-            crate::bignum::BINARY64
+            crate::types::bignum::BINARY64
         }
     }
 }

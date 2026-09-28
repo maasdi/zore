@@ -3,7 +3,8 @@
 M0–M8 are complete for an initial language subset, with M9–M12 (resolution,
 types, HIR, MIR) implemented for that subset. `zore check` runs lex → parse →
 resolve → type-check; `zore build` and `zore run` lower to MIR, emit LLVM IR,
-and compile it with clang and a small C runtime (decision record 0001). The
+and compile it with clang and a small Rust runtime linked by rustc (decision
+record 0001). The
 §42 semantic target runs natively and prints `John`. The subset is
 synchronous, single-file, and all-Copy (bool, integers, floats, rune, string,
 structs of those), with Go-style untyped constants (§6.7); everything else is
@@ -35,6 +36,13 @@ is guidance, not a language contract.
 The early native milestones and semantic milestones overlap: integrate the
 resolution, type checks, and lowering required by a program before calling it
 supported. Never bypass ownership rules just to make a demonstration execute.
+
+The compiler lives in `compiler/`, alongside the `runtime/` Rust workspace
+member, with stage
+folders and explicitly registered subsystem tests (see `architecture.md`).
+The layout refactor does not advance language milestones.
+The Rust runtime migration preserves the existing subset; native validation of
+the migration is pending on a host with Rust and clang installed.
 
 ## Next implementation session
 
@@ -86,7 +94,7 @@ honest diagnostics, and full MVP completion still requires their implementation.
 `examples/semantic-target/main.ore` is copied from §42. Acceptance requires a
 successful semantic check and eventual native execution printing `John`, with
 spans and diagnostics retained throughout. A parser-only pass is insufficient.
-The semantic check now passes (`tests/check.rs`, `tests/cli.rs`); native
+The semantic check now passes (`tests/typecheck/check.rs`, `tests/driver/cli.rs`); native
 execution is pending.
 Because its `User` contains only a Copy string, add a separate Move-resource test
 when available to prove that ordinary calls borrow rather than consume values.

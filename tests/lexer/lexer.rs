@@ -887,8 +887,8 @@ fn lexing_always_progresses_and_covers_the_input_in_order() {
 #[test]
 fn examples_lex_without_diagnostics() {
     for path in [
-        "examples/hello/main.ore",
-        "examples/semantic-target/main.ore",
+        concat!(env!("CARGO_MANIFEST_DIR"), "/../examples/hello/main.ore"),
+        concat!(env!("CARGO_MANIFEST_DIR"), "/../examples/semantic-target/main.ore"),
     ] {
         let mut sources = SourceMap::new();
         let id = sources.load(path).unwrap();

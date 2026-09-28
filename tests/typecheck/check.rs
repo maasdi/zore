@@ -93,7 +93,12 @@ fn folded(stmts: &str) -> (Const, String) {
 #[test]
 fn semantic_target_checks_and_produces_hir() {
     let mut sources = SourceMap::new();
-    let id = sources.load("examples/semantic-target/main.ore").unwrap();
+    let id = sources
+        .load(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../examples/semantic-target/main.ore"
+        ))
+        .unwrap();
     let checked = check_file(sources.file(id).unwrap());
     assert!(checked.diagnostics.is_empty(), "{:?}", checked.diagnostics);
     let package = checked.package.unwrap();
@@ -147,7 +152,12 @@ fn semantic_target_checks_and_produces_hir() {
 #[test]
 fn hello_example_checks() {
     let mut sources = SourceMap::new();
-    let id = sources.load("examples/hello/main.ore").unwrap();
+    let id = sources
+        .load(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../examples/hello/main.ore"
+        ))
+        .unwrap();
     let checked = check_file(sources.file(id).unwrap());
     assert!(checked.diagnostics.is_empty(), "{:?}", checked.diagnostics);
 }

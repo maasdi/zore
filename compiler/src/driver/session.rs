@@ -1,16 +1,16 @@
 //! The `zore` command-line driver.
 
-mod cli;
+use super::command as cli;
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use zore::build::{BuildError, TempDir, build};
-use zore::check::check_file;
-use zore::diagnostic::Diagnostic;
-use zore::source::{FileId, SourceMap};
+use crate::diagnostic::Diagnostic;
+use crate::driver::build::{BuildError, TempDir, build};
+use crate::driver::check::check_file;
+use crate::source::{FileId, SourceMap};
 
-fn main() -> ExitCode {
+pub fn run() -> ExitCode {
     match cli::parse(std::env::args_os().skip(1).collect()) {
         Ok(cli::Command::Help(action)) => {
             print!("{}", cli::help(action));

@@ -9,7 +9,7 @@
 use std::cmp::Ordering;
 
 use crate::ast::{BinaryOp, UnaryOp};
-use crate::bignum::{BigInt, Rational};
+use crate::types::bignum::{BigInt, Rational};
 use crate::types::{FloatType, IntType};
 
 pub const MAX_INT_BITS: u64 = 4096;
@@ -74,7 +74,7 @@ impl Untyped {
                     text
                 }
             }
-            Self::Float(r) => match r.to_float(crate::bignum::BINARY64) {
+            Self::Float(r) => match r.to_float(crate::types::bignum::BINARY64) {
                 Some(f) => format!("{f:?}"),
                 None => "a very large value".into(),
             },
@@ -257,7 +257,7 @@ pub fn parse_int(text: &str, radix: u32) -> Result<Untyped, ConstError> {
 
 pub fn parse_float(text: &str) -> Result<Untyped, ConstError> {
     let value =
-        crate::bignum::parse_decimal(text, MAX_FLOAT_LOG2).ok_or(ConstError::FloatOverflow)?;
+        crate::types::bignum::parse_decimal(text, MAX_FLOAT_LOG2).ok_or(ConstError::FloatOverflow)?;
     float(value)
 }
 

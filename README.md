@@ -63,6 +63,8 @@ You need:
 
 - **Rust**, installed through [rustup](https://rustup.rs/). The repository pins
   the toolchain in `rust-toolchain.toml`, so rustup selects it automatically.
+  Native builds also invoke `rustc` (1.98 or newer) to compile and link the Rust
+  runtime; set `ZORE_RUSTC` to choose its executable.
 - **clang with LLVM 15 or newer**, for `zore build` and `zore run` only. macOS
   ships it with the Xcode Command Line Tools; on Linux, install your
   distribution's `clang` package. Set `ZORE_CC` to use a specific compiler.
@@ -95,8 +97,8 @@ and `test` are not implemented yet.
 | Path | Contents |
 | --- | --- |
 | [`spec/`](spec/language-spec.md) | The language specification (authoritative) |
-| [`src/`](src) | The bootstrap compiler, written in Rust |
-| [`runtime/`](runtime) | The minimal C runtime linked into programs |
+| [`compiler/`](compiler) | The single Rust compiler crate, organized by stage |
+| [`runtime/`](runtime) | The Rust runtime linked into native programs |
 | [`examples/`](examples) | Example programs |
 | [`tests/`](tests) | Integration tests and conformance cases |
 | [`docs/`](docs/README.md) | Architecture, roadmap, decision records, open questions |

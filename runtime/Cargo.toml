@@ -1,0 +1,12 @@
+[package]
+name = "zore-runtime"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.98"
+license = "Apache-2.0"
+description = "Native runtime for the Zore bootstrap compiler"
+publish = false
+# main.rs is linked with a generated Zore object by the compiler driver.
+autobins = false
+
+[dependencies]

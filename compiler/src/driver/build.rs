@@ -1,4 +1,4 @@
-//! Native builds: LLVM IR compiled and linked by clang with the C runtime.
+//! Native builds: clang compiles LLVM IR; rustc links it with the Rust runtime.
 
 use std::fmt;
 use std::fs;
@@ -6,13 +6,19 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use crate::check::check_file;
 use crate::codegen;
 use crate::diagnostic::Diagnostic;
-use crate::lower::lower;
+use crate::driver::check::check_file;
+use crate::mir::lower::lower;
 use crate::source::SourceFile;
 
-const RUNTIME_SOURCE: &str = include_str!("../runtime/zore_runtime.c");
+const RUNTIME_SOURCES: &[(&str, &str)] = &[
+    ("main.rs", include_str!("../../../runtime/src/main.rs")),
+    ("lib.rs", include_str!("../../../runtime/src/lib.rs")),
+    ("io.rs", include_str!("../../../runtime/src/io.rs")),
+    ("panic.rs", include_str!("../../../runtime/src/panic.rs")),
+    ("string.rs", include_str!("../../../runtime/src/string.rs")),
+];
 
 #[derive(Debug)]
 pub enum BuildError {
@@ -20,7 +26,7 @@ pub enum BuildError {
     Diagnostics(Vec<Diagnostic>),
     /// The package has no entry point.
     NotExecutable(String),
-    /// The external C compiler is missing or failed.
+    /// An external native toolchain component is missing or failed.
     Toolchain(String),
     Io(String),
 }
@@ -83,7 +89,7 @@ impl Drop for TempDir {
     }
 }
 
-/// The C compiler: `ZORE_CC` if set, otherwise `clang` on `PATH`.
+/// The LLVM compiler and linker driver: `ZORE_CC`, otherwise `clang` on `PATH`.
 pub fn compiler() -> String {
     std::env::var("ZORE_CC").unwrap_or_else(|_| "clang".into())
 }
@@ -93,19 +99,23 @@ pub fn build(file: &SourceFile, output: &Path) -> Result<(), BuildError> {
     let ir = emit_llvm(file)?;
     let dir = TempDir::new()?;
     let ir_path = dir.path().join("program.ll");
-    let runtime_path = dir.path().join("zore_runtime.c");
-    for (path, contents) in [(&ir_path, ir.as_str()), (&runtime_path, RUNTIME_SOURCE)] {
-        fs::write(path, contents)
+    let object_path = dir.path().join("program.o");
+    fs::write(&ir_path, &ir)
+        .map_err(|e| BuildError::Io(format!("{}: {e}", ir_path.display())))?;
+    for &(name, contents) in RUNTIME_SOURCES {
+        let path = dir.path().join(name);
+        fs::write(&path, contents)
             .map_err(|e| BuildError::Io(format!("{}: {e}", path.display())))?;
     }
     let cc = compiler();
     let result = Command::new(&cc)
         .arg("-O2")
         .arg("-Wno-override-module")
+        .arg("-fPIC")
+        .arg("-c")
         .arg(&ir_path)
-        .arg(&runtime_path)
         .arg("-o")
-        .arg(output)
+        .arg(&object_path)
         .output();
     let result = match result {
         Ok(result) => result,
@@ -119,6 +129,37 @@ pub fn build(file: &SourceFile, output: &Path) -> Result<(), BuildError> {
     if !result.status.success() {
         return Err(BuildError::Toolchain(format!(
             "`{cc}` failed to compile the generated program; this is a compiler bug:\n{}",
+            String::from_utf8_lossy(&result.stderr)
+        )));
+    }
+    let rustc = std::env::var_os("ZORE_RUSTC").unwrap_or_else(|| "rustc".into());
+    let mut link_arg = std::ffi::OsString::from("link-arg=");
+    link_arg.push(&object_path);
+    let result = Command::new(&rustc)
+        .arg("--edition=2024")
+        .arg("--crate-name=zore_program")
+        .arg("-Copt-level=2")
+        .arg("-Cpanic=abort")
+        .arg("-C")
+        .arg(format!("linker={cc}"))
+        .arg("-C")
+        .arg(link_arg)
+        .arg(dir.path().join("main.rs"))
+        .arg("-o")
+        .arg(output)
+        .output()
+        .map_err(|error| {
+            BuildError::Toolchain(format!(
+                "could not run `{}` ({error}); `zore build` requires rustc 1.98 or newer \
+                 to compile the Rust runtime (set ZORE_RUSTC to choose a compiler)",
+                rustc.to_string_lossy()
+            ))
+        })?;
+    if !result.status.success() {
+        return Err(BuildError::Toolchain(format!(
+            "`{}` failed to compile or link the Rust runtime; ensure rustc 1.98 or newer \
+             and clang target the same host:\n{}",
+            rustc.to_string_lossy(),
             String::from_utf8_lossy(&result.stderr)
         )));
     }

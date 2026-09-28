@@ -1,0 +1,42 @@
+[package]
+name = "zore"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.98"
+description = "The Zore bootstrap compiler"
+license = "Apache-2.0"
+repository = "https://github.com/maasdi/zore"
+homepage = "https://github.com/maasdi/zore"
+readme = "../README.md"
+keywords = ["compiler", "programming-language", "ownership", "llvm"]
+categories = ["compilers", "command-line-utilities"]
+# Not published to crates.io while the language is pre-release.
+publish = false
+
+autotests = false
+
+[dependencies]
+
+[[test]]
+name = "cli"
+path = "../tests/driver/cli.rs"
+
+[[test]]
+name = "source_diagnostics"
+path = "../tests/diagnostics/source_diagnostics.rs"
+
+[[test]]
+name = "lexer"
+path = "../tests/lexer/lexer.rs"
+
+[[test]]
+name = "parser"
+path = "../tests/parser/parser.rs"
+
+[[test]]
+name = "check"
+path = "../tests/typecheck/check.rs"
+
+[[test]]
+name = "native"
+path = "../tests/codegen/native.rs"

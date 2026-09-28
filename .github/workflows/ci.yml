@@ -34,7 +34,9 @@ jobs:
         run: cargo doc --no-deps --locked
         env:
           RUSTDOCFLAGS: -D warnings
-      - name: Show native toolchain (tests/native.rs needs clang, LLVM 15+)
-        run: clang --version
+      - name: Show native toolchain (clang LLVM 15+ and rustc 1.98+)
+        run: |
+          clang --version
+          rustc --version
       - name: Test
         run: cargo test --locked --all-targets

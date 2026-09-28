@@ -1,5 +1,6 @@
 //! Native build-and-run tests (decision record 0001). They require clang with
-//! LLVM 15 or newer (or `ZORE_CC`); a missing toolchain fails loudly rather
+//! LLVM 15 or newer (or `ZORE_CC`) and rustc 1.98+ (or `ZORE_RUSTC`).
+//! A missing toolchain fails loudly rather
 //! than skipping, so absent coverage is visible.
 
 use std::io::Write;
@@ -65,14 +66,46 @@ fn panics(source: &str, message: &str, stdout_before: &str) {
 
 #[test]
 fn semantic_target_prints_john() {
-    let source = std::fs::read_to_string("examples/semantic-target/main.ore").unwrap();
+    let source = std::fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../examples/semantic-target/main.ore"
+    ))
+    .unwrap();
     prints(&source, "John\n");
 }
 
 #[test]
 fn hello_prints() {
-    let source = std::fs::read_to_string("examples/hello/main.ore").unwrap();
+    let source = std::fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../examples/hello/main.ore"
+    ))
+    .unwrap();
     prints(&source, "Hello, Zore!\n");
+}
+
+#[test]
+fn rust_runtime_preserves_empty_nul_and_long_strings() {
+    let long = "x".repeat(8192);
+    prints(
+        &main_body(&format!(
+            "var empty string\nprintln(empty)\nprintln(empty == \"\")\n\
+             println(\"a\\u0000b\")\nprintln(\"{long}\")"
+        )),
+        &format!("\ntrue\na\0b\n{long}\n"),
+    );
+}
+
+#[test]
+fn rust_runtime_links_to_an_output_path_with_spaces() {
+    let dir = TempDir::new().unwrap();
+    let folder = dir.path().join("output with spaces");
+    std::fs::create_dir(&folder).unwrap();
+    let executable = folder.join("hello world");
+    build_file(&main_body("println(42)"), &executable).unwrap();
+    let output = Command::new(executable).output().unwrap();
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    assert_eq!(stdout(&output), "42\n");
 }
 
 #[test]
@@ -480,8 +513,43 @@ fn missing_toolchain_is_reported() {
 }
 
 #[test]
+fn missing_rust_toolchain_is_reported_but_check_stays_independent() {
+    let dir = TempDir::new().unwrap();
+    let source = dir.path().join("main.ore");
+    std::fs::write(&source, main_body("println(1)")).unwrap();
+    let output = zore()
+        .arg("build")
+        .arg(&source)
+        .current_dir(dir.path())
+        .env("ZORE_RUSTC", dir.path().join("missing-rustc"))
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    assert!(
+        stderr(&output).contains("requires rustc 1.98 or newer"),
+        "{}",
+        stderr(&output)
+    );
+    assert!(!dir.path().join("main").exists());
+
+    let output = zore()
+        .arg("check")
+        .arg(&source)
+        .env("ZORE_RUSTC", dir.path().join("missing-rustc"))
+        .env("ZORE_CC", dir.path().join("missing-clang"))
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    assert!(output.stdout.is_empty() && output.stderr.is_empty());
+}
+
+#[test]
 fn emitted_ir_is_deterministic_and_names_the_entry() {
-    let source = std::fs::read_to_string("examples/semantic-target/main.ore").unwrap();
+    let source = std::fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../examples/semantic-target/main.ore"
+    ))
+    .unwrap();
     let emit = || {
         let mut sources = SourceMap::new();
         let id = sources.add("main.ore", source.clone()).unwrap();

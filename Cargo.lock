@@ -5,3 +5,7 @@ version = 4
 [[package]]
 name = "zore"
 version = "0.1.0"
+
+[[package]]
+name = "zore-runtime"
+version = "0.1.0"

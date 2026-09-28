@@ -12,11 +12,15 @@ Report security issues privately as described in [SECURITY.md](SECURITY.md).
 - Install Rust through [rustup](https://rustup.rs/). `rust-toolchain.toml` pins
   the toolchain (with rustfmt and Clippy), and rustup selects it
   automatically. If Cargo is not on your `PATH`, run `source "$HOME/.cargo/env"`.
+  Native builds invoke rustc 1.98 or newer too; `ZORE_RUSTC` selects its executable.
 - Install clang with LLVM 15 or newer. It is needed by `zore build`/`zore run`
-  and by `tests/native.rs`, which fails with a clear message when clang is
+  and by `tests/codegen/native.rs`, which fails with a clear message when clang is
   missing. Set `ZORE_CC` to choose a specific compiler.
 
-The compiler has no Rust dependencies and does not link against LLVM; see
+The compiler and runtime have no third-party Rust dependencies. Checking does
+not invoke native tools; native builds require host-compatible rustc and clang
+on Linux or macOS (cross-compilation and Windows native linking are unverified).
+The compiler does not link against LLVM; see
 [decision record 0001](docs/decisions/0001-native-backend.md).
 
 ## Before you open a pull request

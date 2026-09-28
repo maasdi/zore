@@ -1,5 +1,7 @@
 //! Control-flow-graph MIR: how the program executes.
 
+pub mod lower;
+
 use crate::ast::{BinaryOp, UnaryOp};
 use crate::hir::{Const, FieldId, FunctionId};
 use crate::source::Span;

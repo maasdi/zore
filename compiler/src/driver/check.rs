@@ -5,7 +5,7 @@ use crate::hir;
 use crate::parser::parse;
 use crate::resolve::resolve;
 use crate::source::SourceFile;
-use crate::typeck;
+use crate::types::checker;
 
 #[derive(Debug)]
 pub struct Checked {
@@ -24,7 +24,7 @@ pub fn check_file(file: &SourceFile) -> Checked {
         };
     }
     let resolution = resolve(&parsed.file);
-    let (package, mut diagnostics) = typeck::check(&parsed.file, resolution, file.text());
+    let (package, mut diagnostics) = checker::check(&parsed.file, resolution, file.text());
     diagnostics.sort_by_key(|d| (d.span().start(), d.span().end()));
     Checked {
         package,

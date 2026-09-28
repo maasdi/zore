@@ -1,79 +1,105 @@
-# 0001 — Native backend: textual LLVM IR compiled by clang
+# 0001 — Native backend: LLVM objects linked with a Rust runtime
 
-Status: accepted (implementation choice; not a language rule).
+Status: accepted (implementation choice; not a language rule). Updated to
+replace the original C runtime with Rust, following `compiler-structure.md`.
+Validation of this migration is pending on a host with Rust and clang.
 
 ## Context
 
 Spec §2.2 requires LLVM as the initial backend, and §45 requires `check` to work
-without it. The semantic checkpoint (`examples/semantic-target`) must now run
-natively and print `John`. The development host has Apple clang 17 but no
-`llvm-config` or LLVM development libraries. CI runs on `ubuntu-latest` and
-`macos-latest`.
+without it. The original backend used textual LLVM IR and a small C runtime
+compiled together by clang. The runtime is now Rust, as directed by the
+structure guide. This changes implementation and build prerequisites, not
+source-language semantics.
 
 ## Decision
 
-- The compiler lowers HIR to MIR (§33) and emits **textual LLVM IR** (`.ll`).
-- `zore build` and `zore run` invoke an external **clang** to optimize, compile,
-  and link that IR together with a small **C runtime** embedded in the compiler
-  (`runtime/zore_runtime.c`). No LLVM library is linked into `zore`.
-- clang is found through the `ZORE_CC` environment variable, falling back to
-  `clang` on `PATH`. Invocation: `clang -O2 -Wno-override-module program.ll
-  zore_runtime.c -o <output>`.
-- The IR uses opaque pointers (`ptr`) and names no target triple or data
-  layout, so clang supplies the host's.
+- The compiler lowers HIR to MIR (§33) and emits textual LLVM IR (`.ll`).
+- `zore build` and `zore run` invoke clang to compile that IR to a native
+  object, then rustc to compile and link the embedded Rust runtime sources
+  together with the object.
+- clang is selected by `ZORE_CC`, falling back to `clang` on `PATH`.
+  Invocation: `clang -O2 -Wno-override-module -fPIC -c program.ll -o program.o`.
+- rustc is selected by `ZORE_RUSTC`, falling back to `rustc` on `PATH`.
+  It compiles the runtime's `main.rs` with edition 2024, optimization level 2,
+  and `panic=abort`, using clang as the linker driver and passing the object
+  with `-C link-arg=<program.o>`. Rustc manages its standard-library and native
+  library dependencies; see the
+  [Rust linkage reference](https://doc.rust-lang.org/reference/linkage.html).
+- The IR uses opaque pointers (`ptr`) and no target triple or data layout;
+  clang supplies the host's. Both compilers must target the same host.
+- The compiler embeds all files from `runtime/src/` needed by the entry shim.
+  Installed compiler binaries do not need the repository beside them.
+- The workspace's `zore-runtime` library target supports independent tests and
+  linting. Its `main.rs` is not a Cargo binary: it requires a generated
+  `zore_entry` symbol and is compiled only by the native build driver.
+  The compiler has no dependency on the runtime crate or LLVM libraries.
 
 ## Alternatives considered
 
-- **LLVM C API through `inkwell`/`llvm-sys`.** In-process and faster, but it
-  pins one LLVM version through Cargo features, needs LLVM development libraries
-  on every build machine (including CI), and makes building `zore` itself depend
-  on LLVM. Reconsider when compile speed or in-memory JIT matters (M32).
-- **Another code generator (e.g. Cranelift).** Contradicts §2.2.
-- **Runtime in Rust or in LLVM IR.** A Rust runtime needs a staticlib build and
-  target handling; hand-written IR is hard to maintain. C is compiled by the
-  same clang with no extra tooling, and can later be replaced by Zore code.
+- **LLVM C API through inkwell/llvm-sys.** Requires LLVM development libraries
+  and pins a backend version. Reconsider when in-process compilation is needed.
+- **Another code generator.** Contradicts §2.2.
+- **C runtime (previous implementation).** Used the same clang invocation for
+  IR and C, avoiding a second compiler at native-build time. Replaced with Rust
+  to follow the architecture guide.
+- **Rust staticlib linked directly by clang.** Requires maintaining the runtime's
+  native library dependencies per host. Rustc now manages the final link.
+- **Runtime in LLVM IR.** Harder to maintain than Rust.
 
 ## Runtime ABI (internal, unstable)
 
 | Symbol | Purpose |
 | --- | --- |
-| `zore_entry()` | Emitted by the compiler; calls the §3.19 `main` |
-| `main` | In the runtime: ignores `SIGPIPE`, calls `zore_entry`, returns 0 |
-| `zore_println_str(ptr, i64)`, `zore_println_i64`, `zore_println_u64`, `zore_println_bool(i1)`, `zore_println_rune(i32)` | §37.1 output: one `write` per line; a failed write panics |
-| `zore_string_compare(ptr, i64, ptr, i64) -> i32` | Byte-wise UTF-8 ordering (§6.6) |
-| `zore_panic(ptr, i64)` | Reports `panic in the main task: <message>` on stderr and exits with status 2 |
+| `zore_entry()` | Emitted by the compiler; calls the §3.19 main function |
+| Process entry | Rust startup initializes the process; runtime main calls zore_entry |
+| `zore_println_str(ptr, i64)`, `zore_println_i64(i64)`, `zore_println_u64(i64)`, `zore_println_bool(i1 zeroext)`, `zore_println_rune(i32)` | §37.1 output; complete-line locking, explicit flush, failure becomes panic |
+| `zore_string_compare(ptr, i64, ptr, i64) -> i32` | Byte-wise UTF-8 ordering (§6.6), including embedded NUL bytes |
+| `zore_panic(ptr, i64)` | Reports panic in the main task on stderr and exits with status 2 |
 
-Values use these LLVM types: `bool` is `i1`; integers are `iN`; `float32`/`float64`
-are `float`/`double`; `rune` is `i32`; `string` is `{ ptr, i64 }` pointing at
-immutable UTF-8 bytes; structs are named LLVM struct types in declaration
-order; multiple results are returned as an anonymous struct. All accepted types
-are Copy, so parameters (default or `own`) are passed by value; passing shared
-borrows by address is deferred until Move types exist.
+Values use these LLVM types: bool is `i1`; integers are `iN`;
+float32/float64 are `float`/`double`; rune is `i32`; string is
+`{ ptr, i64 }` pointing at immutable UTF-8 bytes; structs are named LLVM struct
+types in declaration order. Multiple results use an anonymous struct.
+All accepted types are Copy, so parameters are currently passed by value;
+borrows by address await Move types.
 
-Checked operations (§6.6) are implemented in code generation: integer
-overflow, division by zero, invalid shift counts, and out-of-range conversions
-branch to `zore_panic` with a message naming the source location. Because no
-accepted type has a destructor, a panic has nothing to unwind and exits
-directly; explicit MIR assert and cleanup paths arrive with drop insertion
-(M18). The exit status 2 for a panic is the implementation-defined nonzero
-status allowed by §3.19 (it matches Go).
+Only the runtime ABI boundary uses unsafe Rust. Generated code must supply
+live immutable buffers of the declared length and valid scalar values. Empty
+strings may have null pointers; they are handled without constructing a Rust
+slice from null. This introduces no Zore pointers or unsafe syntax.
 
-## Consequences
+Rust startup ignores SIGPIPE on the supported Unix hosts, allowing failed
+writes to reach Zore's panic handling; see
+[Rust's SIGPIPE default](https://doc.rust-lang.org/beta/nightly-rustc/src/rustc_session/config/sigpipe.rs.html).
+The runtime locks stdout across each complete line and flushes before returning.
+Allocation for output uses fallible reservation. Panic reporting is best effort
+if stderr also fails.
 
-- `zore build`/`run` require clang with LLVM 15 or newer (opaque pointers).
-  Verified with Apple clang 17 (arm64 macOS); CI uses the clang preinstalled on
-  its images.
-- `zore check` and all frontend tests still need no backend.
-- Native tests (`tests/native.rs`) fail with an explicit message when clang is
-  missing rather than being skipped, so missing coverage is visible.
-- Runtime string concatenation needs an allocation and ownership strategy for
-  string buffers (§41.5); until one is chosen, `build` reports it as
-  unsupported. Constant concatenation is folded at compile time.
-- Float output needs the `println` text format (§37.1, TBD); until then `build`
-  reports printing a float as unsupported. Float arithmetic compiles normally.
+Checked arithmetic and conversion failures still call `zore_panic` with source
+locations. Because accepted values have no destructors, it exits directly.
+Zore drop unwinding and task-local panic handling must arrive before Move values
+and tasks are accepted. Rust's `panic=abort` handles internal Rust failures;
+it is not the implementation of Zore's future unwind semantics.
 
-## Validation
+## Consequences and validation
 
-`cargo test --locked --all-targets` runs `tests/native.rs`, which builds and
-executes programs and compares stdout, stderr, and exit status, including
-panics and a closed standard output.
+Native builds now require clang with LLVM 15+ and rustc 1.98+ on compatible
+Linux/macOS hosts. Cross-compilation and Windows native linking are unverified.
+Runtime sources are compiled per build; artifact caching is deferred.
+Already-built Zore programs do not invoke rustc or clang.
+
+`zore check` and frontend tests invoke neither tool. Root-level Cargo commands
+include the compiler and runtime library, with no third-party dependencies.
+`cargo test --locked --all-targets` exercises runtime unit tests and native
+tests in `tests/codegen/native.rs`: output formats, numeric boundaries,
+empty/long/NUL-containing strings, string ordering, arithmetic panics, closed
+stdout, paths with spaces, CLI builds, and missing-tool diagnostics.
+
+The migration's formatting, Clippy, build, and executable tests remain
+unverified locally because this host has no Cargo/Rust toolchain. Linux/macOS
+CI must pass before the migration is considered validated.
+
+Runtime string concatenation still awaits allocation/ownership design (§41.5).
+Float printing still awaits its text-format decision (§37.1). Async, channels,
+drop insertion, and task scheduling are not added by this migration.

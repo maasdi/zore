@@ -1,0 +1,33 @@
+// Copyright 2026 The Zore Authors
+// SPDX-License-Identifier: Apache-2.0
+
+//! Runtime for the synchronous, all-Copy bootstrap subset.
+//! The exported C ABI is internal to the compiler, not a source-language API.
+
+#[path = "io.rs"]
+mod io;
+#[path = "panic.rs"]
+mod panic;
+#[path = "string.rs"]
+mod string;
+
+/// Borrows compiler-produced string storage for one runtime call.
+///
+/// # Safety
+/// For a nonempty value, `data` must point to `len` initialized, immutable bytes
+/// in one live allocation. The storage must outlive the returned borrow.
+unsafe fn bytes<'a>(data: *const u8, len: i64) -> &'a [u8] {
+    let len = usize::try_from(len)
+        .ok()
+        .filter(|&len| len <= isize::MAX as usize)
+        .unwrap_or_else(|| panic::fail(b"invalid runtime string length"));
+    // Empty Zore strings may use a null pointer; Rust empty slices may not.
+    if len == 0 {
+        return &[];
+    }
+    if data.is_null() {
+        panic::fail(b"invalid runtime string pointer");
+    }
+    // SAFETY: the caller supplies live string storage for this borrow.
+    unsafe { std::slice::from_raw_parts(data, len) }
+}

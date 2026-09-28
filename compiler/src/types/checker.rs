@@ -5,12 +5,12 @@ use std::collections::HashMap;
 use crate::ast::{
     self, AssignOp, AssignTarget, BinaryOp, BindingKind, BindingTarget, ForHeader, UnaryOp,
 };
-use crate::bignum::BigInt;
-use crate::constant::{self, ConstError, Folded, Unrepresentable, Untyped};
 use crate::diagnostic::{Diagnostic, Severity};
 use crate::hir::{self, Const, ExprKind, FieldId, FunctionId, LocalId, LocalKind};
 use crate::resolve::{ConstId, Res, Resolution};
 use crate::source::Span;
+use crate::types::bignum::BigInt;
+use crate::types::constant::{self, ConstError, Folded, Unrepresentable, Untyped};
 use crate::types::{IntType, TypeId, TypeKind, TypeStore};
 
 /// Type-checks a resolved file; HIR is returned only when there are no diagnostics.

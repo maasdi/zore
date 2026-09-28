@@ -262,7 +262,12 @@ fn rejects_file(text: &str, message: &str) {
 #[test]
 fn semantic_target_parses_to_expected_shape() {
     let mut sources = SourceMap::new();
-    let id = sources.load("examples/semantic-target/main.ore").unwrap();
+    let id = sources
+        .load(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../examples/semantic-target/main.ore"
+        ))
+        .unwrap();
     let parsed = parse(sources.file(id).unwrap());
     assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
     let file = &parsed.file;
@@ -300,7 +305,12 @@ fn semantic_target_parses_to_expected_shape() {
 #[test]
 fn hello_example_parses() {
     let mut sources = SourceMap::new();
-    let id = sources.load("examples/hello/main.ore").unwrap();
+    let id = sources
+        .load(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../examples/hello/main.ore"
+        ))
+        .unwrap();
     let parsed = parse(sources.file(id).unwrap());
     assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
 }

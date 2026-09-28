@@ -1,27 +1,32 @@
 # Compiler testing
 
-`tests/cli.rs` contains executable subprocess tests for the M0 driver: help,
+`tests/driver/cli.rs` contains executable subprocess tests for the M0 driver: help,
 version, usage errors, unsupported commands, native paths, and option delimiters.
-`tests/source_diagnostics.rs` tests M1 UTF-8 loading, file IDs, byte spans,
-line/column lookup, EOF, and multi-file diagnostic rendering. `tests/lexer.rs`
+`tests/diagnostics/source_diagnostics.rs` tests M1 UTF-8 loading, file IDs, byte spans,
+line/column lookup, EOF, and multi-file diagnostic rendering. `tests/lexer/lexer.rs`
 tests M2 token kinds, spans, literal validation and decoding, semicolon
 insertion, diagnostics, and recovery progress; its cases come from the lexical
-rows of the conformance documents below. `tests/parser.rs` tests M3–M4 AST
+rows of the conformance documents below. `tests/parser/parser.rs` tests M3–M4 AST
 shape (via an S-expression rendering), spans, syntax rejection, unsupported
 later-milestone syntax, recovery, and termination on generated input.
-`tests/check.rs` tests resolution, type checking,
+`tests/typecheck/check.rs` tests resolution, type checking,
 §6.7 constant evaluation, float typing and conversions, HIR shape, the
 entry-point and `println` contracts, and that unsupported features are rejected
-rather than accepted. Unit tests in `src/bignum.rs` and `src/constant.rs` check
+rather than accepted. Unit tests in `compiler/src/types/bignum.rs` and `compiler/src/types/constant.rs` check
 big-number arithmetic and float rounding against Rust's `i128` and correctly
-rounded `str::parse` as oracles. `tests/native.rs` builds programs with clang,
+rounded `str::parse` as oracles. `tests/codegen/native.rs` builds programs with clang,
 runs them, and compares stdout, stderr, and exit status, including every §6.6
 runtime panic, evaluation order, a closed standard output, and the CLI
 `build`/`run` commands. It requires clang with LLVM 15 or newer (or
-`ZORE_CC`); without it those tests fail with a clear message rather than being
+`ZORE_CC`) and rustc 1.98+ (or `ZORE_RUSTC`); without them tests fail rather than being
 skipped. Add tests
 alongside each stage; do not create ignored tests to imply that pending features
 have coverage.
+
+The `zore-runtime` library has unit tests for integer formatting and string ABI
+boundaries. Root-level Cargo checks include this crate. The native suite also
+covers empty and long strings, embedded NUL bytes, output paths with spaces,
+missing rustc diagnostics, and checking without either native tool.
 
 `conformance/` records spec-level cases awaiting executable coverage. In
 particular, `conformance/identifiers.md` covers the locked ASCII identifier rules,
@@ -58,18 +63,22 @@ contextual mutable slices, and partial-construction cleanup (§12.6).
 and removal, mutation, and entry cleanup (§13.3).
 These documents do not count as passing tests. Lexical rows in `identifiers`,
 `comments`, `statement-boundaries`, `strings`, `runes`, `integers`, `floats`,
-and `keywords` now have executable counterparts in `tests/lexer.rs`. Syntax rows
+and `keywords` now have executable counterparts in `tests/lexer/lexer.rs`. Syntax rows
 in `statement-boundaries`, `expressions`, `bindings-assignments`,
 `functions-structs`, `control-flow`, and `discards` have parser counterparts in
-`tests/parser.rs`. Resolution and typing rows for the checker subset in
+`tests/parser/parser.rs`. Resolution and typing rows for the checker subset in
 `entry-point`, `println`, `numerics`, `constant-expressions`,
 `bindings-assignments`, `functions-structs`, `control-flow`, and `keywords` have
-counterparts in `tests/check.rs`. Ownership, runtime, and native rows remain
+counterparts in `tests/typecheck/check.rs`. Ownership, runtime, and native rows remain
 pending.
 
 Use Rust unit tests for small source/IR utilities and pass algorithms. Use Cargo
-integration tests in top-level `tests/*.rs` for public compiler APIs and CLI
-subprocess behavior. A directory of fixtures alone is not an executable test.
+integration tests in subsystem folders under `tests/` for public compiler APIs
+and CLI subprocess behavior. Each target is registered in `compiler/Cargo.toml`
+with its original name (`cli`, `source_diagnostics`, `lexer`, `parser`, `check`,
+and `native`), so commands such as `cargo test --test lexer` still work.
+Resolve examples from `env!("CARGO_MANIFEST_DIR")` plus `../examples/`, not the
+process working directory. A directory of fixtures alone is not an executable test.
 
 Introduce fixture suites as the corresponding stage is implemented:
 
@@ -82,7 +91,7 @@ Introduce fixture suites as the corresponding stage is implemented:
 | Native | Compile, execute, compare stdout/stderr/exit status; cleanup on each control-flow path |
 | Async/runtime | Suspension/resume, live values, destruction, results/errors, detachment, buffering, close/drain, message transfer |
 
-When a fixture runner is added, place inputs under `tests/fixtures/<suite>/` and
+When a fixture runner is added, place inputs under `tests/<suite>/fixtures/` and
 declare each case's expected outcome explicitly in the runner or case metadata.
 Cover both accepted and rejected cases. References to spec sections should explain
 why each semantic result is expected. Choose the metadata format with the runner,

@@ -53,7 +53,7 @@ A newly discovered semantic gap blocks its affected feature, not unrelated work.
   untyped float constants may be shift operands. Implementations must support
   at least 256-bit integer constants and 256-bit-mantissa float constants.
   Zore keeps typed rune/bool/string literals, unlike Go. Implemented by
-  `src/constant.rs` and `src/bignum.rs`; covered by `tests/check.rs`.
+  `compiler/src/types/constant.rs` and `compiler/src/types/bignum.rs`; covered by `tests/typecheck/check.rs`.
 
 - **Q05a — Entry point and `println`:** locked in §3.19 and §37.1 at the
   maintainer's direction. `package main` requires exactly one `func main()` with no
