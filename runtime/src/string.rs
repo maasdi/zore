@@ -33,7 +33,10 @@ mod tests {
                 zore_string_compare(std::ptr::null(), 0, std::ptr::null(), 0),
                 0
             );
-            assert_eq!(zore_string_compare(std::ptr::null(), 0, b"a".as_ptr(), 1), -1);
+            assert_eq!(
+                zore_string_compare(std::ptr::null(), 0, b"a".as_ptr(), 1),
+                -1
+            );
             assert_eq!(
                 zore_string_compare(b"a\0b".as_ptr(), 3, b"a\0c".as_ptr(), 3),
                 -1

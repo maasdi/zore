@@ -256,8 +256,8 @@ pub fn parse_int(text: &str, radix: u32) -> Result<Untyped, ConstError> {
 }
 
 pub fn parse_float(text: &str) -> Result<Untyped, ConstError> {
-    let value =
-        crate::types::bignum::parse_decimal(text, MAX_FLOAT_LOG2).ok_or(ConstError::FloatOverflow)?;
+    let value = crate::types::bignum::parse_decimal(text, MAX_FLOAT_LOG2)
+        .ok_or(ConstError::FloatOverflow)?;
     float(value)
 }
 

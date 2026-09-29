@@ -60,7 +60,11 @@ pub extern "C" fn zore_println_u64(value: u64) {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn zore_println_i64(value: i64) {
-    write_line(format_integer(&mut [0; 21], value.unsigned_abs(), value < 0));
+    write_line(format_integer(
+        &mut [0; 21],
+        value.unsigned_abs(),
+        value < 0,
+    ));
 }
 
 #[unsafe(no_mangle)]

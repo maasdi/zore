@@ -1,7 +1,7 @@
 //! Syntax tree: what the programmer wrote, with unresolved names.
 
-use crate::source::Span;
 use crate::lexer::token::IntBase;
+use crate::source::Span;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Name {

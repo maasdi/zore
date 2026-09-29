@@ -100,8 +100,7 @@ pub fn build(file: &SourceFile, output: &Path) -> Result<(), BuildError> {
     let dir = TempDir::new()?;
     let ir_path = dir.path().join("program.ll");
     let object_path = dir.path().join("program.o");
-    fs::write(&ir_path, &ir)
-        .map_err(|e| BuildError::Io(format!("{}: {e}", ir_path.display())))?;
+    fs::write(&ir_path, &ir).map_err(|e| BuildError::Io(format!("{}: {e}", ir_path.display())))?;
     for &(name, contents) in RUNTIME_SOURCES {
         let path = dir.path().join(name);
         fs::write(&path, contents)

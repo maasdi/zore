@@ -3,8 +3,8 @@
 pub mod token;
 
 use crate::diagnostic::{Diagnostic, Severity};
-use crate::source::{SourceFile, Span};
 use crate::lexer::token::{IntBase, Keyword, Punct, ReservedWord, Separator, Token, TokenKind};
+use crate::source::{SourceFile, Span};
 
 #[derive(Debug)]
 pub struct Lexed {

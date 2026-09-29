@@ -126,7 +126,10 @@ fn check_reports_unreadable_targets() {
 #[test]
 fn check_accepts_supported_examples_silently() {
     for example in ["hello", "semantic-target"] {
-        let path = format!("{}/../examples/{example}/main.ore", env!("CARGO_MANIFEST_DIR"));
+        let path = format!(
+            "{}/../examples/{example}/main.ore",
+            env!("CARGO_MANIFEST_DIR")
+        );
         let output = invoke(&["check", &path]);
         assert!(output.status.success(), "{output:?}");
         assert!(
