@@ -2,7 +2,7 @@
 //! rejections; features outside the checker's subset must be reported as
 //! unsupported, never accepted.
 
-use zore::check::{Checked, check_file};
+use zore::check::{Checked, check_file, check_file_allowing_move_types};
 use zore::hir::{self, Const, ExprKind, StmtKind};
 use zore::source::SourceMap;
 use zore::types::TypeStore;
@@ -17,6 +17,13 @@ impl Case {
         let mut sources = SourceMap::new();
         let id = sources.add("test.ore", text.into()).unwrap();
         let checked = check_file(sources.file(id).unwrap());
+        Self { sources, checked }
+    }
+
+    fn allowing_move_types(text: &str) -> Self {
+        let mut sources = SourceMap::new();
+        let id = sources.add("test.ore", text.into()).unwrap();
+        let checked = check_file_allowing_move_types(sources.file(id).unwrap());
         Self { sources, checked }
     }
 
@@ -704,6 +711,65 @@ fn mut_parameters_and_receivers_require_mutable_places() {
         &program("type U struct { A int }\nfunc f(u U) { u.A = 1 }"),
         "cannot assign to parameter `u`",
     );
+}
+
+#[test]
+fn drop_methods_make_structs_move() {
+    let case = Case::allowing_move_types(&program(
+        "type Handle struct { id int }
+        type Wrapper struct { handle Handle }
+        type Point struct { X int }
+        func (h mut Handle) drop() { h.id = 0 }
+        func wrapped(w Wrapper) {}
+        func point(p Point) {}",
+    ));
+    let package = case.package();
+    let param_type = |name: &str| case.function(name).locals[0].ty;
+    assert!(!package.is_copy(param_type("Handle.drop")));
+    assert!(!package.is_copy(param_type("wrapped")));
+    assert!(package.is_copy(param_type("point")));
+    assert!(package.structs[0].drop.is_some());
+    assert!(package.structs[1].drop.is_none());
+    assert!(package.structs[2].drop.is_none());
+    rejects(
+        &program("type Handle struct { id int }\nfunc (h mut Handle) drop() {}"),
+        "Move types require ownership analysis",
+    );
+    rejects(
+        &program("type H struct { id int }\nfunc (h H) drop() {}"),
+        "`drop` must have a `mut` receiver",
+    );
+    rejects(
+        &program("type H struct { id int }\nfunc (h own H) drop() {}"),
+        "`drop` must have a `mut` receiver",
+    );
+    rejects(
+        &program("type H struct { id int }\nfunc (h mut H) drop(reason int) {}"),
+        "`drop` takes no parameters",
+    );
+    rejects(
+        &program("type H struct { id int }\nfunc (h mut H) drop() int { return 0 }"),
+        "`drop` returns no result",
+    );
+    rejects(
+        &program(
+            "type H struct { id int }\nfunc (h mut H) drop() {}\nfunc f(h mut H) { h.drop() }",
+        ),
+        "the `drop` method cannot be called directly",
+    );
+    rejects(
+        &program("type H struct { drop int }\nfunc (h mut H) drop() {}"),
+        "duplicate member `drop`",
+    );
+    rejects(
+        &program("func (x int) drop() {}"),
+        "methods can be declared only on struct types",
+    );
+    accepts(&program(
+        "type P struct { X int }
+        func (p P) show() { println(p.X) }
+        func use(p P) { let q = p\np.show()\nq.show() }",
+    ));
 }
 
 #[test]

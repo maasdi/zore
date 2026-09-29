@@ -11,13 +11,14 @@ use crate::resolve::{ConstId, Res, Resolution};
 use crate::source::Span;
 use crate::types::bignum::BigInt;
 use crate::types::constant::{self, ConstError, Folded, Unrepresentable, Untyped};
-use crate::types::{IntType, TypeId, TypeKind, TypeStore};
+use crate::types::{IntType, StructId, TypeId, TypeKind, TypeStore};
 
 /// Type-checks a resolved file; HIR is returned only when there are no diagnostics.
 pub fn check(
     file: &ast::File,
     mut resolution: Resolution<'_>,
     text: &str,
+    allow_move_types: bool,
 ) -> (Option<hir::Package>, Vec<Diagnostic>) {
     let diagnostics = std::mem::take(&mut resolution.diagnostics);
     let types = std::mem::take(&mut resolution.types);
@@ -55,9 +56,15 @@ pub fn check(
         .structs
         .iter()
         .zip(&checker.fields)
-        .map(|(decl, fields)| hir::Struct {
+        .enumerate()
+        .map(|(index, (decl, fields))| hir::Struct {
             name: decl.name.text.clone(),
             span: decl.name.span,
+            drop: checker
+                .res
+                .methods
+                .get(&(StructId(index as u32), "drop".to_string()))
+                .copied(),
             fields: fields
                 .iter()
                 .map(|(name, ty, span)| hir::Field {
@@ -79,7 +86,7 @@ pub fn check(
     let mut diagnostics = checker.diagnostics;
     for function in &package.functions {
         for local in &function.locals {
-            if !package.is_copy(local.ty) {
+            if !allow_move_types && !package.is_copy(local.ty) {
                 diagnostics.push(Diagnostic::new(
                     Severity::Error,
                     "Move types require ownership analysis, which is not implemented yet",
@@ -1077,6 +1084,20 @@ impl<'a> Checker<'a> {
             self.report_arg_errors(args);
             return None;
         };
+        if name.text == "drop" {
+            self.diagnostics.push(
+                Diagnostic::new(
+                    Severity::Error,
+                    "the `drop` method cannot be called directly",
+                    name.span,
+                )
+                .note(
+                    "destruction runs when ownership ends or through `drop(value)` (§14.3, §14.4)",
+                ),
+            );
+            self.report_arg_errors(args);
+            return None;
+        }
         self.function_call(id, &name.text, Some(receiver), args, span)
     }
 

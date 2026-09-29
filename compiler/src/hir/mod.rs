@@ -42,7 +42,10 @@ impl Package {
             | TypeKind::Float(_)
             | TypeKind::Rune
             | TypeKind::String => true,
-            TypeKind::Struct(id) => self.strukt(id).fields.iter().all(|f| self.is_copy(f.ty)),
+            TypeKind::Struct(id) => {
+                let strukt = self.strukt(id);
+                strukt.drop.is_none() && strukt.fields.iter().all(|f| self.is_copy(f.ty))
+            }
         }
     }
 }
@@ -52,6 +55,8 @@ pub struct Struct {
     pub name: String,
     pub span: Span,
     pub fields: Vec<Field>,
+    /// The user-defined `drop` method, which makes the struct Move.
+    pub drop: Option<FunctionId>,
 }
 
 #[derive(Debug)]
