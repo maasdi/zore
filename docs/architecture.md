@@ -133,12 +133,12 @@ followed by one rounding, which equals the correctly rounded IEEE result.
 
 The checker accepts a deliberately small subset: one file per package; `bool`,
 integer and float types, `rune`, `string`, and structs of those; functions and
-methods with default or `own` parameters and receivers; `println`; numeric conversions. `error`/`nil`/`?`,
-`async`/`await`, `mut` parameters and receivers, imports, package variables, rune
+methods with default, `mut` or `own` parameters and receivers; `println`; numeric conversions. `error`/`nil`/`?`,
+`async`/`await`, imports, package variables, rune
 conversions, and function values are reported as unsupported. `println` of a
 float type-checks, but its text format is still TBD (§37.1).
-Because every accepted type is Copy and `mut` is excluded, no ownership rule can
-be violated yet; `typeck` refuses to produce HIR containing a non-Copy type, so
+Because every accepted type is Copy, no move rule can be violated yet, and `mut`
+arguments are checked only for mutable places and exclusivity within one call; `typeck` refuses to produce HIR containing a non-Copy type, so
 this cannot silently change when new types are added before ownership analysis.
 
 AST preserves written structure; HIR records resolved meaning; MIR describes

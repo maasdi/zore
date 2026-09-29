@@ -625,6 +625,80 @@ fn methods_declare_and_call() {
 }
 
 #[test]
+fn mut_parameters_and_receivers_require_mutable_places() {
+    accepts(&program(
+        "type Inner struct { N int }
+        type Outer struct { Inner Inner; Label string }
+        func bump(i mut Inner, by int) { i.N += by }
+        func set(n mut int, value int) { n = value }
+        func relabel(o mut Outer) { o.Label = \"x\"; bump(o.Inner, 1) }
+        func (i mut Inner) reset() { i.N = 0 }
+        func (o mut Outer) clear() { o.Inner.reset(); relabel(o) }
+        func use() {
+            var o = Outer{Inner: Inner{N: 1}, Label: \"a\"}
+            var n = 0
+            bump(o.Inner, 2)
+            set(n, 3)
+            o.Inner.reset()
+            o.clear()
+            relabel(o)
+            println(o.Inner.N + n)
+        }",
+    ));
+    rejects(
+        &program("type U struct { A int }\nfunc f(u mut U) {}\nfunc g() { let u = U{A: 1}\nf(u) }"),
+        "cannot pass immutable binding `u` as a `mut` argument",
+    );
+    rejects(
+        &program("type U struct { A int }\nfunc f(u mut U) {}\nfunc g(u U) { f(u) }"),
+        "cannot pass shared parameter `u` as a `mut` argument",
+    );
+    rejects(
+        &program("type U struct { A int }\nfunc f(u mut U) {}\nfunc g(u own U) { f(u) }"),
+        "cannot pass `own` parameter `u` as a `mut` argument",
+    );
+    rejects(
+        &program(
+            "type P struct { X int }\ntype O struct { P P }\nfunc f(p mut P) {}\nfunc g() { let o = O{P: P{X: 1}}\nf(o.P) }",
+        ),
+        "cannot pass immutable binding `o` as a `mut` argument",
+    );
+    rejects(
+        &program("func f(n mut int) {}\nfunc g() { f(1) }"),
+        "a `mut` argument must be a mutable place",
+    );
+    rejects(
+        &program("func f(n mut int) {}\nfunc h() int { return 1 }\nfunc g() { f(h()) }"),
+        "a `mut` argument must be a mutable place",
+    );
+    rejects(
+        &program("type U struct { A int }\nfunc (u mut U) m() {}\nfunc g() { let u = U{A: 1}\nu.m() }"),
+        "cannot pass immutable binding `u` as a `mut` argument",
+    );
+    rejects(
+        &program("type U struct { A int }\nfunc f(a mut U, b mut U) {}\nfunc g() { var u = U{A: 1}\nf(u, u) }"),
+        "`u` is also borrowed by another argument of this call",
+    );
+    rejects(
+        &program("type U struct { A int }\nfunc f(a mut U, b U) {}\nfunc g() { var u = U{A: 1}\nf(u, u) }"),
+        "`u` is also borrowed by another argument of this call",
+    );
+    rejects(
+        &program("type U struct { A int }\nfunc f(a int, b mut U) {}\nfunc g() { var u = U{A: 1}\nf(u.A, u) }"),
+        "`u` is also borrowed by another argument of this call",
+    );
+    accepts(&program(
+        "type U struct { A int; B int }
+        func f(a mut int, b mut int) {}
+        func g() { var u = U{A: 1, B: 2}\nf(u.A, u.B) }",
+    ));
+    rejects(
+        &program("type U struct { A int }\nfunc f(u U) { u.A = 1 }"),
+        "cannot assign to parameter `u`",
+    );
+}
+
+#[test]
 fn calls_arguments_and_results() {
     accepts(&program(
         "func add(a int, b int) int { return a + b }
@@ -776,7 +850,7 @@ fn assignment_requires_writable_places() {
     );
     rejects(
         &program("func f(a own int) { a = 1 }"),
-        "assigning to `own` or `mut` parameters is not supported",
+        "assigning to `own` parameters is not supported",
     );
     rejects(
         &body("var s = \"a\"\ns -= \"b\""),
@@ -900,16 +974,8 @@ fn unsupported_features_are_never_accepted() {
         ),
         (body("let x = nil"), "`nil` is not supported"),
         (
-            program("type U struct {}\nfunc (u mut U) m() {}"),
-            "`mut` receivers are not supported",
-        ),
-        (
             program("async func f() {}"),
             "`async` functions are not supported",
-        ),
-        (
-            program("type U struct {}\nfunc f(u mut U) {}"),
-            "`mut` parameters are not supported",
         ),
         (
             program("func g() int { return 1 }\nfunc f() { let x = g()? }"),

@@ -210,6 +210,15 @@ impl FunctionBuilder<'_, '_> {
         self.body.locals[local.0 as usize].ty
     }
 
+    /// The LLVM type stored in a local's stack slot.
+    fn slot_ty(&self, local: Local) -> String {
+        if self.body.locals[local.0 as usize].by_reference {
+            "ptr".into()
+        } else {
+            self.ty(self.local_ty(local))
+        }
+    }
+
     fn place_ty(&self, place: &Place) -> TypeId {
         let package = self.module.package;
         let mut ty = self.local_ty(place.local);
@@ -222,7 +231,9 @@ impl FunctionBuilder<'_, '_> {
 
     fn operand_ty(&self, operand: &Operand) -> TypeId {
         match operand {
-            Operand::Copy(place) | Operand::Move(place) => self.place_ty(place),
+            Operand::Copy(place) | Operand::Move(place) | Operand::Ref(place) => {
+                self.place_ty(place)
+            }
             Operand::Const(_, ty) => *ty,
         }
     }
@@ -234,7 +245,7 @@ impl FunctionBuilder<'_, '_> {
             .body
             .params
             .iter()
-            .map(|&p| format!("{} %p{}", self.ty(self.local_ty(p)), p.0))
+            .map(|&p| format!("{} %p{}", self.slot_ty(p), p.0))
             .collect();
         let header = format!(
             "define {} @\"{}.{}\"({}) {{\nentry:\n",
@@ -244,12 +255,12 @@ impl FunctionBuilder<'_, '_> {
             params.join(", ")
         );
         self.out.push_str(&header);
-        for (index, local) in self.body.locals.iter().enumerate() {
-            let ty = self.ty(local.ty);
+        for index in 0..self.body.locals.len() {
+            let ty = self.slot_ty(Local(index as u32));
             self.line(format!("%l{index} = alloca {ty}"));
         }
         for &param in &self.body.params {
-            let ty = self.ty(self.local_ty(param));
+            let ty = self.slot_ty(param);
             self.line(format!("store {ty} %p{}, ptr %l{}", param.0, param.0));
         }
         self.line("br label %bb0");
@@ -264,7 +275,12 @@ impl FunctionBuilder<'_, '_> {
     }
 
     fn address(&mut self, place: &Place) -> String {
-        let base = format!("%l{}", place.local.0);
+        let mut base = format!("%l{}", place.local.0);
+        if self.body.locals[place.local.0 as usize].by_reference {
+            let referent = self.fresh();
+            self.line(format!("{referent} = load ptr, ptr {base}"));
+            base = referent;
+        }
         if place.fields.is_empty() {
             return base;
         }
@@ -297,6 +313,7 @@ impl FunctionBuilder<'_, '_> {
     fn value(&mut self, operand: &Operand) -> String {
         match operand {
             Operand::Const(c, _) => self.constant(c),
+            Operand::Ref(_) => unreachable!("references are only call arguments"),
             Operand::Copy(place) | Operand::Move(place) => {
                 let ty = self.ty(self.place_ty(place));
                 let address = self.address(place);
@@ -700,6 +717,11 @@ impl FunctionBuilder<'_, '_> {
         let callee = package.function(id);
         let mut rendered = Vec::new();
         for arg in args {
+            if let Operand::Ref(place) = arg {
+                let address = self.address(place);
+                rendered.push(format!("ptr {address}"));
+                continue;
+            }
             let ty = self.ty(self.operand_ty(arg));
             let value = self.value(arg);
             rendered.push(format!("{ty} {value}"));

@@ -123,6 +123,71 @@ func main() {
 }
 
 #[test]
+fn mut_parameters_and_receivers_mutate_the_callers_place() {
+    let source = "package main
+
+type Counter struct {
+    Label string
+    N int
+}
+
+type Pair struct {
+    Left Counter
+    Right Counter
+}
+
+func bump(c mut Counter, by int) {
+    c.N += by
+}
+
+func set(n mut int, value int) {
+    n = value
+}
+
+func twice(c mut Counter) {
+    bump(c, 1)
+    bump(c, 1)
+}
+
+func (c mut Counter) reset() {
+    c.N = 0
+}
+
+func (p mut Pair) swapLabels() {
+    p.Left.Label = \"right\"
+    p.Right.Label = \"left\"
+}
+
+func total(p Pair) int {
+    return p.Left.N + p.Right.N
+}
+
+func main() {
+    var c = Counter{Label: \"c\", N: 1}
+    bump(c, 4)
+    println(c.N)
+    twice(c)
+    println(c.N)
+    c.reset()
+    println(c.N)
+    var n = 7
+    set(n, 42)
+    println(n)
+    var pair = Pair{Left: Counter{Label: \"l\", N: 1}, Right: Counter{Label: \"r\", N: 2}}
+    bump(pair.Right, 10)
+    twice(pair.Left)
+    pair.swapLabels()
+    pair.Left.reset()
+    println(pair.Left.Label)
+    println(pair.Right.Label)
+    println(total(pair))
+    println(pair.Left.N)
+}
+";
+    prints(source, "5\n7\n0\n42\nright\nleft\n12\n0\n");
+}
+
+#[test]
 fn rust_runtime_links_to_an_output_path_with_spaces() {
     let dir = TempDir::new().unwrap();
     let folder = dir.path().join("output with spaces");
