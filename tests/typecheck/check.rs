@@ -616,18 +616,12 @@ fn methods_declare_and_call() {
         &program("func (x int) m() {}"),
         "methods can be declared only on struct types",
     );
-    rejects(
-        &program("func (x Missing) m() {}"),
-        "cannot find `Missing`",
-    );
+    rejects(&program("func (x Missing) m() {}"), "cannot find `Missing`");
     rejects(
         &program("type U struct { A int }\nfunc (u U) m() { u.A = 1 }"),
         "cannot assign to parameter `u`",
     );
-    rejects(
-        &body("let x = 1\nx.m()"),
-        "type `int64` has no method `m`",
-    );
+    rejects(&body("let x = 1\nx.m()"), "type `int64` has no method `m`");
 }
 
 #[test]
