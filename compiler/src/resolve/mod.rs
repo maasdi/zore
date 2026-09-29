@@ -2,9 +2,7 @@
 
 use std::collections::HashMap;
 
-use crate::ast::{
-    self, BindingKind, BindingTarget, ExprKind, ForHeader, Item, StmtKind,
-};
+use crate::ast::{self, BindingKind, BindingTarget, ExprKind, ForHeader, Item, StmtKind};
 use crate::diagnostic::{Diagnostic, Severity};
 use crate::hir::{FunctionId, LocalId, LocalKind};
 use crate::source::Span;
