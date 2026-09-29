@@ -3,7 +3,7 @@
 **Status:** Authoritative implementation guide for coding agents  
 **Applies to:** Bootstrap Zore compiler  
 **Primary implementation language:** Rust  
-**Related specification:** `language-spec.md`
+**Related specification:** `spec/language-spec.md`
 
 ---
 
@@ -35,7 +35,7 @@ Use the following repository structure as the target architecture:
 zore/
 ├── Cargo.toml
 ├── README.md
-├── language-spec.md
+├── spec/language-spec.md
 ├── compiler-structure.md
 ├── zore.toml
 │
@@ -575,7 +575,7 @@ Avoid circular semantic dependencies.
 9. **Diagnostics must be structured and span-aware.**
 10. **Preserve source spans through lowering.**
 11. **Do not create every future module as empty scaffolding.**
-12. **Do not redesign locked language semantics from `language-spec.md`.**
+12. **Do not redesign locked language semantics from `spec/language-spec.md`.**
 
 ---
 
@@ -646,7 +646,7 @@ The initial repository should be intentionally smaller:
 zore/
 ├── Cargo.toml
 ├── README.md
-├── language-spec.md
+├── spec/language-spec.md
 ├── compiler-structure.md
 │
 ├── compiler/
