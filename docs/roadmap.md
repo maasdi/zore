@@ -7,11 +7,11 @@ constants (§6.7). `zore check` runs lex → parse → resolve → type-check;
 rustc to link the Rust runtime (decision record 0001). Unsupported features
 receive diagnostics; ownership analysis and drop insertion do not exist yet.
 
-Current baseline: commit `39dde45`. The folder refactor and Rust runtime
-migration have not been compiled or executed on this host because Cargo is
-unavailable. Tests exist for the semantic target printing `John`, but current
-passing results are not established. Linux/macOS CI is configured; no passing
-CI result for this baseline has been verified in this review.
+Current baseline: commit `95110b1`. GitHub Actions passed on ubuntu-latest and
+macos-latest for that commit: rustfmt, clippy with warnings denied, build, docs,
+and `cargo test --locked --all-targets`, including the native tests. The
+folder refactor and Rust runtime migration are validated by that run. Local
+Windows builds are not covered.
 
 Canonical M IDs follow specification §43. Detailed phases and their mapping
 to those IDs are below, followed by the active validation work package.
@@ -53,10 +53,10 @@ the migration is pending on a host with Rust and clang installed.
 
 ## Next implementation session
 
-First validate the committed refactor/runtime migration using the commands and
-native acceptance cases in the active work package below. Record the tested commit,
-actual results, and any failures; do not advance language scope until this
-baseline is validated.
+The refactor/runtime migration baseline is validated (see above). Its first CI
+run failed on rustfmt drift and on a native test that declared `var` without
+the initializer that the specification requires; both were fixed. The
+language-level work below may proceed.
 
 The next language-level step after validation is ownership (M13–M17):
 Copy/Move classification in MIR,
@@ -181,11 +181,10 @@ Do not mark a milestone complete based only on “code exists.”
 
 ### Current implementation baseline — 2026-09-28
 
-Inspected commit: `39dde45` (folder refactor and Rust runtime migration).
-These are source-inspection findings, not a passing test report. No milestone
-is newly certified complete: Cargo is unavailable on the current host, and the
-committed changes still need formatting, lint, build, and executable validation.
-A test's presence does not establish that it passes.
+Inspected commit: `39dde45` (folder refactor and Rust runtime migration);
+CI-validated at `95110b1`. The table below is a source-inspection summary of
+scope. CI passing establishes that existing tests pass, not that any milestone
+is complete beyond the subset it covers.
 
 | Canonical milestone | Current code and remaining scope |
 | --- | --- |
