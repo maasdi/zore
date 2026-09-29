@@ -38,7 +38,7 @@ once it does.
 
 ### Not yet supported
 
-Ownership and borrow checking, drop insertion, `mut` receivers, `error` and `?`,
+Ownership and borrow checking, drop insertion, `error` and `?`,
 collections, closures, async/await, tasks, channels, imports, runtime string
 concatenation, and printing floats. See [the roadmap](docs/roadmap.md).
 

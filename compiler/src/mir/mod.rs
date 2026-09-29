@@ -37,6 +37,9 @@ pub struct LocalDecl {
     pub ty: TypeId,
     /// Source name for user bindings; `None` for temporaries.
     pub name: Option<String>,
+    /// The local holds a mutable reference to a value of `ty`, which is what
+    /// its places designate.
+    pub by_reference: bool,
 }
 
 #[derive(Debug)]
@@ -64,6 +67,8 @@ impl Place {
 pub enum Operand {
     Copy(Place),
     Move(Place),
+    /// A mutable reference to the place; only call arguments use it.
+    Ref(Place),
     Const(Const, TypeId),
 }
 

@@ -1,7 +1,7 @@
 //! Lowering from typed HIR to MIR, making evaluation order explicit.
 
-use crate::ast::BinaryOp;
-use crate::hir::{self, Const, ExprKind, FunctionId, StmtKind};
+use crate::ast::{BinaryOp, ParamMode};
+use crate::hir::{self, Const, ExprKind, FunctionId, LocalKind, StmtKind};
 use crate::mir::{
     BasicBlock, BlockId, Body, Callee, Local, LocalDecl, Operand, Place, Program, Rvalue,
     Statement, Terminator,
@@ -50,6 +50,7 @@ fn lower_function(package: &hir::Package, id: FunctionId, function: &hir::Functi
             .map(|local| LocalDecl {
                 ty: local.ty,
                 name: Some(local.name.clone()),
+                by_reference: local.kind == LocalKind::Param(ParamMode::Mut),
             })
             .collect(),
         blocks: Vec::new(),
@@ -90,7 +91,11 @@ fn lower_function(package: &hir::Package, id: FunctionId, function: &hir::Functi
 
 impl Builder {
     fn temp(&mut self, ty: TypeId) -> Local {
-        self.locals.push(LocalDecl { ty, name: None });
+        self.locals.push(LocalDecl {
+            ty,
+            name: None,
+            by_reference: false,
+        });
         Local(self.locals.len() as u32 - 1)
     }
 
@@ -343,10 +348,23 @@ impl Builder {
             ExprKind::Println(arg) => (Callee::Println, std::slice::from_ref(&**arg)),
             _ => unreachable!("only calls produce multiple or no results"),
         };
-        let args = args
-            .iter()
-            .map(|a| self.evaluate_to_temporary(package, a))
-            .collect();
+        let mut operands = Vec::new();
+        for (index, arg) in args.iter().enumerate() {
+            let by_reference = match &callee {
+                Callee::Function(id) => {
+                    let function = package.function(*id);
+                    function.locals[function.params[index].0 as usize].kind
+                        == LocalKind::Param(ParamMode::Mut)
+                }
+                Callee::Println => false,
+            };
+            operands.push(if by_reference {
+                Operand::Ref(argument_place(arg))
+            } else {
+                self.evaluate_to_temporary(package, arg)
+            });
+        }
+        let args = operands;
         let target = self.new_block();
         self.terminate(Terminator::Call {
             callee,
@@ -451,6 +469,19 @@ impl Builder {
         self.push(Place::local(result), Rvalue::Use(value), span);
         self.goto_new(join);
         Operand::Copy(Place::local(result))
+    }
+}
+
+/// The place a `mut` argument designates; the checker only accepts places.
+fn argument_place(expr: &hir::Expr) -> Place {
+    match &expr.kind {
+        ExprKind::Local(id) => Place::local(Local(id.0)),
+        ExprKind::Field { base, field } => {
+            let mut place = argument_place(base);
+            place.fields.push(*field);
+            place
+        }
+        _ => unreachable!("checked: mut arguments are places"),
     }
 }
 

@@ -1118,7 +1118,7 @@ impl<'a> Checker<'a> {
                 None => ok = false,
             }
         }
-        if !ok {
+        if !ok || !self.check_mut_arguments(id, &checked) {
             return None;
         }
         Some(Value::Typed(hir::Expr {
@@ -1129,6 +1129,91 @@ impl<'a> Checker<'a> {
             types: results,
             span,
         }))
+    }
+
+    fn check_mut_arguments(&mut self, id: FunctionId, args: &[hir::Expr]) -> bool {
+        let by_mut: Vec<bool> = self.res.locals[id.0 as usize]
+            .iter()
+            .take(args.len())
+            .map(|local| local.kind == LocalKind::Param(ast::ParamMode::Mut))
+            .collect();
+        let mut ok = true;
+        for (arg, &is_mut) in args.iter().zip(&by_mut) {
+            if is_mut {
+                ok &= self.mutable_place(arg);
+            }
+        }
+        if !ok {
+            return false;
+        }
+        let places: Vec<_> = args.iter().map(argument_place).collect();
+        for later in 1..args.len() {
+            for earlier in 0..later {
+                if !by_mut[earlier] && !by_mut[later] {
+                    continue;
+                }
+                let (Some(a), Some(b)) = (&places[earlier], &places[later]) else {
+                    continue;
+                };
+                if !places_overlap(a, b) {
+                    continue;
+                }
+                let name = self.res.locals[self.current][a.0.0 as usize].name.clone();
+                self.diagnostics.push(
+                    Diagnostic::new(
+                        Severity::Error,
+                        format!("`{name}` is also borrowed by another argument of this call"),
+                        args[later].span,
+                    )
+                    .related(args[earlier].span, "the overlapping argument")
+                    .note("a mutable borrow requires exclusive access (§11.3)"),
+                );
+                ok = false;
+            }
+        }
+        ok
+    }
+
+    fn mutable_place(&mut self, expr: &hir::Expr) -> bool {
+        match &expr.kind {
+            ExprKind::Local(id) => {
+                let decl = &self.res.locals[self.current][id.0 as usize];
+                let (name, kind, decl_span) = (decl.name.clone(), decl.kind, decl.span);
+                let (what, note) = match kind {
+                    LocalKind::Var | LocalKind::Param(ast::ParamMode::Mut) => return true,
+                    LocalKind::Let => (
+                        "immutable binding",
+                        "declare it with `var` to pass it as `mut`",
+                    ),
+                    LocalKind::Param(ast::ParamMode::Borrow) => (
+                        "shared parameter",
+                        "a parameter is a shared borrow unless declared `mut` (§7.3)",
+                    ),
+                    LocalKind::Param(ast::ParamMode::Own) => (
+                        "`own` parameter",
+                        "only `var` bindings and `mut` parameters are mutable places (§11.6)",
+                    ),
+                };
+                self.diagnostics.push(
+                    Diagnostic::new(
+                        Severity::Error,
+                        format!("cannot pass {what} `{name}` as a `mut` argument"),
+                        expr.span,
+                    )
+                    .related(decl_span, "declared here")
+                    .note(note),
+                );
+                false
+            }
+            ExprKind::Field { base, .. } => self.mutable_place(base),
+            _ => {
+                self.error(
+                    "a `mut` argument must be a mutable place, not a temporary value",
+                    expr.span,
+                );
+                false
+            }
+        }
     }
 
     fn println(&mut self, args: &[ast::Expr], span: Span) -> Option<Value> {
@@ -1593,9 +1678,10 @@ impl<'a> Checker<'a> {
                         );
                         return None;
                     }
-                    LocalKind::Param(_) => {
+                    LocalKind::Param(ast::ParamMode::Mut) => {}
+                    LocalKind::Param(ast::ParamMode::Own) => {
                         self.unsupported(
-                            "assigning to `own` or `mut` parameters is",
+                            "assigning to `own` parameters is",
                             expr.span,
                             "planned for roadmap milestone M13–M17",
                         );
@@ -1845,6 +1931,25 @@ impl<'a> Checker<'a> {
             .collect::<Option<Vec<_>>>()
             .map(hir::StmtKind::Return)
     }
+}
+
+type ArgumentPlace = (LocalId, Vec<FieldId>);
+
+/// The local and field path an argument names, if it is a plain place.
+fn argument_place(expr: &hir::Expr) -> Option<ArgumentPlace> {
+    match &expr.kind {
+        ExprKind::Local(id) => Some((*id, Vec::new())),
+        ExprKind::Field { base, field } => {
+            let (root, mut fields) = argument_place(base)?;
+            fields.push(*field);
+            Some((root, fields))
+        }
+        _ => None,
+    }
+}
+
+fn places_overlap(a: &ArgumentPlace, b: &ArgumentPlace) -> bool {
+    a.0 == b.0 && a.1.iter().zip(&b.1).all(|(x, y)| x == y)
 }
 
 fn shift_value(int: IntType, value: i128, count: u32, op: BinaryOp) -> i128 {

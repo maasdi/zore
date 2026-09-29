@@ -2,9 +2,7 @@
 
 use std::collections::HashMap;
 
-use crate::ast::{
-    self, BindingKind, BindingTarget, ExprKind, ForHeader, Item, ParamMode, StmtKind,
-};
+use crate::ast::{self, BindingKind, BindingTarget, ExprKind, ForHeader, Item, StmtKind};
 use crate::diagnostic::{Diagnostic, Severity};
 use crate::hir::{FunctionId, LocalId, LocalKind};
 use crate::source::Span;
@@ -405,13 +403,8 @@ impl<'a> Resolver<'a> {
         self.out.locals.push(Vec::new());
         // Parameters share the outermost body scope.
         self.scopes.push(HashMap::new());
-        let receiver = func.receiver.iter().map(|p| (p, "`mut` receivers are"));
-        let params = func.params.iter().map(|p| (p, "`mut` parameters are"));
-        for (param, mut_message) in receiver.chain(params) {
+        for param in func.receiver.iter().chain(&func.params) {
             self.ty(&param.ty);
-            if param.mode == ParamMode::Mut {
-                self.unsupported(mut_message, param.span, "M13–M17");
-            }
             self.new_local(&param.name, LocalKind::Param(param.mode));
         }
         for result in &func.results {
