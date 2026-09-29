@@ -62,9 +62,8 @@ The next language-level step after validation is ownership (M13–M17):
 Copy/Move classification in MIR,
 use-after-move, shared/mutable borrow checking, and `mut` parameters. It needs
 a first Move type to be meaningful; the smallest candidates are a struct with a
-user-defined `drop` method (§8.3, §14.3), which also requires methods (§9), or
-owned arrays (M21). Methods alone (§9.1) are a smaller self-contained step and
-a prerequisite for `drop`. Ownership analysis and the required deterministic
+user-defined `drop` method (§8.3, §14.3), which needs the methods now
+implemented (§9.1), or owned arrays (M21). Ownership analysis and the required deterministic
 cleanup must land before any Move type is accepted; exclusivity checks must
 precede `mut` parameters. The all-Copy restriction is what currently makes
 ownership checks vacuous, and `typeck` enforces it.
@@ -189,8 +188,8 @@ is complete beyond the subset it covers.
 | Canonical milestone | Current code and remaining scope |
 | --- | --- |
 | M0–M1 | Workspace, CLI, source manager, spans, labels, notes, and rendering exist. File-load errors are plain CLI messages; diagnostic codes are absent. |
-| M2–M4 | Lexer and AST/parser implement the current subset. Methods and async declarations have syntax representation but are rejected semantically; collections, indexing, and closures remain unsupported. |
-| M5–M8 | Hello, variables, functions, structs, control flow, and multiple returns have implementations and native tests for the synchronous all-Copy subset. Methods are not implemented semantically. |
+| M2–M4 | Lexer and AST/parser implement the current subset. Async declarations have syntax representation but are rejected semantically; collections, indexing, and closures remain unsupported. |
+| M5–M8 | Hello, variables, functions, structs, control flow, and multiple returns have implementations and native tests for the synchronous all-Copy subset. Methods with shared or `own` receivers resolve, type-check, and run natively; `mut` receivers are rejected like `mut` parameters until exclusivity checks exist. |
 | M9–M10 | Single-file resolution, stable IDs, primitive/struct types, type checking, and exact constant evaluation exist. Function types/values, error, imports, and package variables remain unsupported. |
 | M11–M12 | Typed HIR, CFG MIR, and local/field places exist. MIR distinguishes Copy/Move operands structurally; Move validation and indexed places are absent. |
 | M13–M17 | Recursive Copy classification exists for supported types in HIR. No accepted Move types, move-state analysis, borrow checker, mutable parameters, or region analysis. |

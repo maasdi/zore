@@ -132,9 +132,9 @@ the exact value of their `float32`/`float64` and fold by exact arithmetic
 followed by one rounding, which equals the correctly rounded IEEE result.
 
 The checker accepts a deliberately small subset: one file per package; `bool`,
-integer and float types, `rune`, `string`, and structs of those; functions with
-default or `own` parameters; `println`; numeric conversions. `error`/`nil`/`?`,
-methods, `async`/`await`, `mut` parameters, imports, package variables, rune
+integer and float types, `rune`, `string`, and structs of those; functions and
+methods with default or `own` parameters and receivers; `println`; numeric conversions. `error`/`nil`/`?`,
+`async`/`await`, `mut` parameters and receivers, imports, package variables, rune
 conversions, and function values are reported as unsupported. `println` of a
 float type-checks, but its text format is still TBD (§37.1).
 Because every accepted type is Copy and `mut` is excluded, no ownership rule can
