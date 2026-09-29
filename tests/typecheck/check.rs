@@ -752,7 +752,9 @@ fn drop_methods_make_structs_move() {
         "`drop` returns no result",
     );
     rejects(
-        &program("type H struct { id int }\nfunc (h mut H) drop() {}\nfunc f(h mut H) { h.drop() }"),
+        &program(
+            "type H struct { id int }\nfunc (h mut H) drop() {}\nfunc f(h mut H) { h.drop() }",
+        ),
         "the `drop` method cannot be called directly",
     );
     rejects(

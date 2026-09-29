@@ -1091,7 +1091,9 @@ impl<'a> Checker<'a> {
                     "the `drop` method cannot be called directly",
                     name.span,
                 )
-                .note("destruction runs when ownership ends or through `drop(value)` (§14.3, §14.4)"),
+                .note(
+                    "destruction runs when ownership ends or through `drop(value)` (§14.3, §14.4)",
+                ),
             );
             self.report_arg_errors(args);
             return None;

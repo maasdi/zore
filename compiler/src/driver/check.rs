@@ -35,7 +35,8 @@ fn check_with(file: &SourceFile, allow_move_types: bool) -> Checked {
         };
     }
     let resolution = resolve(&parsed.file);
-    let (package, mut diagnostics) = checker::check(&parsed.file, resolution, file.text(), allow_move_types);
+    let (package, mut diagnostics) =
+        checker::check(&parsed.file, resolution, file.text(), allow_move_types);
     diagnostics.sort_by_key(|d| (d.span().start(), d.span().end()));
     Checked {
         package,
