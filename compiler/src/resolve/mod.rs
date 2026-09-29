@@ -218,6 +218,12 @@ impl<'a> Resolver<'a> {
             }
             _ => return,
         };
+        if func.name.text == "drop" {
+            self.check_drop_signature(func, receiver);
+        }
+        if func.name.text == "drop" {
+            self.check_drop_signature(func, receiver);
+        }
         let key = (strukt, func.name.text.clone());
         if let Some(&first) = self.out.methods.get(&key) {
             let first = self.out.functions[first.0 as usize].name.span;
@@ -231,6 +237,44 @@ impl<'a> Resolver<'a> {
             return;
         }
         self.out.methods.insert(key, id);
+    }
+
+    fn check_drop_signature(&mut self, func: &ast::FuncDecl, receiver: &ast::Param) {
+        if receiver.mode != ast::ParamMode::Mut {
+            self.out.diagnostics.push(
+                Diagnostic::new(
+                    Severity::Error,
+                    "`drop` must have a `mut` receiver",
+                    receiver.span,
+                )
+                .note("a destructor gets mutable access without ownership, never a shared or `own` receiver (§14.3)"),
+            );
+        }
+        if let Some(param) = func.params.first() {
+            self.error("`drop` takes no parameters", param.span);
+        }
+        if let Some(result) = func.results.first() {
+            self.error("`drop` returns no result", result.name.span);
+        }
+    }
+
+    fn check_drop_signature(&mut self, func: &ast::FuncDecl, receiver: &ast::Param) {
+        if receiver.mode != ast::ParamMode::Mut {
+            self.out.diagnostics.push(
+                Diagnostic::new(
+                    Severity::Error,
+                    "`drop` must have a `mut` receiver",
+                    receiver.span,
+                )
+                .note("a destructor gets mutable access without ownership, never a shared or `own` receiver (§14.3)"),
+            );
+        }
+        if let Some(param) = func.params.first() {
+            self.error("`drop` takes no parameters", param.span);
+        }
+        if let Some(result) = func.results.first() {
+            self.error("`drop` returns no result", result.name.span);
+        }
     }
 
     fn const_decl(&mut self, binding: &'a ast::Binding) -> Option<Res> {
