@@ -672,19 +672,27 @@ fn mut_parameters_and_receivers_require_mutable_places() {
         "a `mut` argument must be a mutable place",
     );
     rejects(
-        &program("type U struct { A int }\nfunc (u mut U) m() {}\nfunc g() { let u = U{A: 1}\nu.m() }"),
+        &program(
+            "type U struct { A int }\nfunc (u mut U) m() {}\nfunc g() { let u = U{A: 1}\nu.m() }",
+        ),
         "cannot pass immutable binding `u` as a `mut` argument",
     );
     rejects(
-        &program("type U struct { A int }\nfunc f(a mut U, b mut U) {}\nfunc g() { var u = U{A: 1}\nf(u, u) }"),
+        &program(
+            "type U struct { A int }\nfunc f(a mut U, b mut U) {}\nfunc g() { var u = U{A: 1}\nf(u, u) }",
+        ),
         "`u` is also borrowed by another argument of this call",
     );
     rejects(
-        &program("type U struct { A int }\nfunc f(a mut U, b U) {}\nfunc g() { var u = U{A: 1}\nf(u, u) }"),
+        &program(
+            "type U struct { A int }\nfunc f(a mut U, b U) {}\nfunc g() { var u = U{A: 1}\nf(u, u) }",
+        ),
         "`u` is also borrowed by another argument of this call",
     );
     rejects(
-        &program("type U struct { A int }\nfunc f(a int, b mut U) {}\nfunc g() { var u = U{A: 1}\nf(u.A, u) }"),
+        &program(
+            "type U struct { A int }\nfunc f(a int, b mut U) {}\nfunc g() { var u = U{A: 1}\nf(u.A, u) }",
+        ),
         "`u` is also borrowed by another argument of this call",
     );
     accepts(&program(
