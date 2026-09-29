@@ -51,7 +51,10 @@ Move type is accepted by `zore check` or `zore build`.
 - A struct with `drop` is always Move; record this in HIR classification
   instead of deriving from fields alone.
 - Reject direct `value.drop()` calls.
-- Add the builtin `drop(value)`; it consumes its argument.
+- Add the test-only `check_file_allowing_move_types` entry point so Move types
+  can be tested while `zore check` and `zore build` keep rejecting them. The
+  builtin `drop(value)` moves to slice C, since consuming a value needs move
+  tracking.
 - Tests from the drop receiver form and Copy/Move interaction tables in
   `tests/conformance/destruction.md`.
 
@@ -69,9 +72,11 @@ Move type is accepted by `zore check` or `zore build`.
   arguments move Move types; ordinary calls borrow.
 - Add the Move-resource test the roadmap requires, proving ordinary calls
   borrow instead of consume.
-- Gate: keep rejecting Move types in `zore check` and `zore build`. A test-only
-  entry point allows them so slices B and C can be tested. It is not exposed
-  through the CLI and is removed by slice D.
+- Add the builtin `drop(value)`: it consumes its argument, and a second use or
+  a second `drop` is a use-after-move error (§14.4).
+- Gate: `zore check` and `zore build` keep rejecting Move types. The test-only
+  entry point from slice B is not exposed through the CLI and is removed by
+  slice D.
 
 ## Slice D — drop insertion and cleanup (§14, §15.3, §15.4, §34)
 
