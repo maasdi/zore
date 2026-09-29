@@ -89,7 +89,7 @@ fn rust_runtime_preserves_empty_nul_and_long_strings() {
     let long = "x".repeat(8192);
     prints(
         &main_body(&format!(
-            "var empty string\nprintln(empty)\nprintln(empty == \"\")\n\
+            "var empty string = \"\"\nprintln(empty)\nprintln(empty == \"\")\n\
              println(\"a\\u0000b\")\nprintln(\"{long}\")"
         )),
         &format!("\ntrue\na\0b\n{long}\n"),
