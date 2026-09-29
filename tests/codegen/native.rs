@@ -97,6 +97,32 @@ fn rust_runtime_preserves_empty_nul_and_long_strings() {
 }
 
 #[test]
+fn methods_call_with_receiver_first() {
+    let source = "package main
+
+type Counter struct {
+    Label string
+    Step int
+}
+
+func (c Counter) next(from int) int {
+    return from + c.Step
+}
+
+func (c own Counter) describe() string {
+    return c.Label
+}
+
+func main() {
+    let counter = Counter{Label: \"steps\", Step: 5}
+    println(counter.describe())
+    println(counter.next(counter.next(1)))
+}
+";
+    prints(source, "steps\n11\n");
+}
+
+#[test]
 fn rust_runtime_links_to_an_output_path_with_spaces() {
     let dir = TempDir::new().unwrap();
     let folder = dir.path().join("output with spaces");

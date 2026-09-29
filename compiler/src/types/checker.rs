@@ -234,8 +234,9 @@ impl<'a> Checker<'a> {
             .iter()
             .map(|func| {
                 let params: Option<Vec<_>> = func
-                    .params
+                    .receiver
                     .iter()
+                    .chain(&func.params)
                     .map(|p| self.resolve_type(&p.ty))
                     .collect();
                 let results: Option<Vec<_>> =
@@ -292,8 +293,12 @@ impl<'a> Checker<'a> {
         if !has_signature {
             return None;
         }
+        let name = match &func.receiver {
+            Some(receiver) => format!("{}.{}", receiver.ty.name.text, func.name.text),
+            None => func.name.text.clone(),
+        };
         Some(hir::Function {
-            name: func.name.text.clone(),
+            name,
             span: func.name.span,
             params: (0..params.len()).map(|i| LocalId(i as u32)).collect(),
             results,
@@ -990,14 +995,8 @@ impl<'a> Checker<'a> {
     fn call(&mut self, callee: &ast::Expr, args: &[ast::Expr], span: Span) -> Option<Value> {
         let res = match &callee.kind {
             ast::ExprKind::Name(_) => self.res.uses.get(&callee.span).copied(),
-            ast::ExprKind::Field { .. } => {
-                self.unsupported(
-                    "method calls are",
-                    callee.span,
-                    "planned for roadmap milestone M5–M8",
-                );
-                self.report_arg_errors(args);
-                return None;
+            ast::ExprKind::Field { base, name } => {
+                return self.method_call(base, name, args, span);
             }
             _ => {
                 if self.expr(callee, None).is_some() {
@@ -1012,7 +1011,7 @@ impl<'a> Checker<'a> {
             _ => unreachable!(),
         };
         match res {
-            Some(Res::Function(id)) => self.function_call(id, name, args, span),
+            Some(Res::Function(id)) => self.function_call(id, name, None, args, span),
             Some(Res::Println) => self.println(args, span),
             Some(Res::Primitive(ty)) => self.conversion(ty, args, span),
             Some(Res::Struct(_)) => {
@@ -1041,10 +1040,51 @@ impl<'a> Checker<'a> {
         }
     }
 
+    fn method_call(
+        &mut self,
+        base: &ast::Expr,
+        name: &ast::Name,
+        args: &[ast::Expr],
+        span: Span,
+    ) -> Option<Value> {
+        let receiver = match self.expr(base, None) {
+            Some(Value::Typed(expr)) => self.single_value(expr),
+            Some(Value::Untyped(_, span)) => {
+                self.error("an integer constant has no methods", span);
+                None
+            }
+            None => None,
+        };
+        let Some(receiver) = receiver else {
+            self.report_arg_errors(args);
+            return None;
+        };
+        let ty = receiver.ty();
+        let strukt = self.types.struct_id(ty);
+        let method = strukt.and_then(|s| self.res.methods.get(&(s, name.text.clone())).copied());
+        let Some(id) = method else {
+            let is_field = strukt.is_some_and(|s| {
+                self.fields[s.0 as usize]
+                    .iter()
+                    .any(|(field, _, _)| *field == name.text)
+            });
+            let message = if is_field {
+                format!("`{}` is a field, not a method", name.text)
+            } else {
+                format!("type `{}` has no method `{}`", self.name(ty), name.text)
+            };
+            self.error(message, name.span);
+            self.report_arg_errors(args);
+            return None;
+        };
+        self.function_call(id, &name.text, Some(receiver), args, span)
+    }
+
     fn function_call(
         &mut self,
         id: FunctionId,
         name: &str,
+        receiver: Option<hir::Expr>,
         args: &[ast::Expr],
         span: Span,
     ) -> Option<Value> {
@@ -1052,7 +1092,9 @@ impl<'a> Checker<'a> {
             self.report_arg_errors(args);
             return None;
         };
-        let (params, results) = (signature.params.clone(), signature.results.clone());
+        let skipped = usize::from(receiver.is_some());
+        let params = signature.params[skipped..].to_vec();
+        let results = signature.results.clone();
         if args.len() != params.len() {
             let message = format!(
                 "`{name}` takes {} argument{} but {} {} given",
@@ -1065,7 +1107,7 @@ impl<'a> Checker<'a> {
             self.report_arg_errors(args);
             return None;
         }
-        let mut checked = Vec::new();
+        let mut checked: Vec<_> = receiver.into_iter().collect();
         let mut ok = true;
         for (arg, &param) in args.iter().zip(&params) {
             match self

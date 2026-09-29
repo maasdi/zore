@@ -41,7 +41,9 @@ pub struct Resolution<'a> {
     pub package: String,
     pub types: TypeStore,
     pub structs: Vec<&'a ast::StructDecl>,
+    /// Functions and methods; a method's receiver is its first parameter.
     pub functions: Vec<&'a ast::FuncDecl>,
+    pub methods: HashMap<(StructId, String), FunctionId>,
     pub consts: Vec<ConstDecl<'a>>,
     /// Name and type-name uses, by the span of the name.
     pub uses: HashMap<Span, Res>,
@@ -82,6 +84,7 @@ pub fn resolve(file: &ast::File) -> Resolution<'_> {
             types: TypeStore::new(),
             structs: Vec::new(),
             functions: Vec::new(),
+            methods: HashMap::new(),
             consts: Vec::new(),
             uses: HashMap::new(),
             locals: Vec::new(),
@@ -133,6 +136,7 @@ impl<'a> Resolver<'a> {
             );
         }
         // Collect declarations first so bodies can use later ones.
+        let mut methods = Vec::new();
         for item in &file.items {
             match item {
                 Item::Struct(decl) => {
@@ -140,16 +144,17 @@ impl<'a> Resolver<'a> {
                     self.out.structs.push(decl);
                     self.declare_package(&decl.name, Res::Struct(id));
                 }
-                Item::Func(func) if func.receiver.is_some() => {
-                    self.unsupported("methods are", func.name.span, "M5–M8");
-                }
                 Item::Func(func) if func.is_async => {
                     self.unsupported("`async` functions are", func.name.span, "M25–M29");
                 }
                 Item::Func(func) => {
                     let id = FunctionId(self.out.functions.len() as u32);
                     self.out.functions.push(func);
-                    self.declare_package(&func.name, Res::Function(id));
+                    if func.receiver.is_some() {
+                        methods.push(id);
+                    } else {
+                        self.declare_package(&func.name, Res::Function(id));
+                    }
                 }
                 Item::Binding(binding) if binding.kind == BindingKind::Const => {
                     if let Some(res) = self.const_decl(binding)
@@ -181,6 +186,9 @@ impl<'a> Resolver<'a> {
                 self.ty(&field.ty);
             }
         }
+        for id in methods {
+            self.declare_method(id);
+        }
         self.reject_self_containing_structs();
         for index in 0..self.out.consts.len() {
             let value = self.out.consts[index].value;
@@ -193,6 +201,38 @@ impl<'a> Resolver<'a> {
         for (index, func) in self.out.functions.clone().into_iter().enumerate() {
             self.function(FunctionId(index as u32), func);
         }
+    }
+
+    fn declare_method(&mut self, id: FunctionId) {
+        let func = self.out.functions[id.0 as usize];
+        let receiver = func
+            .receiver
+            .as_ref()
+            .expect("only methods are declared as methods");
+        let strukt = match self.lookup(&receiver.ty.name.text) {
+            Some(Res::Struct(strukt)) => strukt,
+            Some(Res::Primitive(_)) => {
+                self.error(
+                    "methods can be declared only on struct types defined in this package",
+                    receiver.ty.name.span,
+                );
+                return;
+            }
+            _ => return,
+        };
+        let key = (strukt, func.name.text.clone());
+        if let Some(&first) = self.out.methods.get(&key) {
+            let first = self.out.functions[first.0 as usize].name.span;
+            self.duplicate(&func.name, first, "method");
+            return;
+        }
+        let decl = self.out.structs[strukt.0 as usize];
+        if let Some(field) = decl.fields.iter().find(|f| f.name.text == func.name.text) {
+            let first = field.name.span;
+            self.duplicate(&func.name, first, "member");
+            return;
+        }
+        self.out.methods.insert(key, id);
     }
 
     fn const_decl(&mut self, binding: &'a ast::Binding) -> Option<Res> {
@@ -365,10 +405,12 @@ impl<'a> Resolver<'a> {
         self.out.locals.push(Vec::new());
         // Parameters share the outermost body scope.
         self.scopes.push(HashMap::new());
-        for param in &func.params {
+        let receiver = func.receiver.iter().map(|p| (p, "`mut` receivers are"));
+        let params = func.params.iter().map(|p| (p, "`mut` parameters are"));
+        for (param, mut_message) in receiver.chain(params) {
             self.ty(&param.ty);
             if param.mode == ParamMode::Mut {
-                self.unsupported("`mut` parameters are", param.span, "M13–M17");
+                self.unsupported(mut_message, param.span, "M13–M17");
             }
             self.new_local(&param.name, LocalKind::Param(param.mode));
         }

@@ -568,6 +568,69 @@ fn structs_fields_and_literals() {
 }
 
 #[test]
+fn methods_declare_and_call() {
+    let case = accepts(&program(
+        "type User struct { Name string; age int }
+        type Other struct { Name string }
+        func (u User) greet() { println(u.Name) }
+        func (u own User) years(extra int) int { return u.age + extra }
+        func (o Other) greet() { println(o.Name) }
+        func make() User { return User{Name: \"x\", age: 1} }
+        func use() {
+            let u = make()
+            u.greet()
+            println(u.years(2))
+            println(make().years(3))
+            Other{Name: \"y\"}.greet()
+        }",
+    ));
+    let greet = case.function("User.greet");
+    assert_eq!(greet.params.len(), 1);
+    assert_eq!(case.function("User.years").params.len(), 2);
+    assert_eq!(case.function("Other.greet").params.len(), 1);
+    rejects(
+        &program("type U struct { A int }\nfunc f(u U) { u.m() }"),
+        "type `U` has no method `m`",
+    );
+    rejects(
+        &program("type U struct { A int }\nfunc f(u U) { u.A() }"),
+        "`A` is a field, not a method",
+    );
+    rejects(
+        &program("type U struct {}\nfunc (u U) m() {}\nfunc f(u U) { u.m(1) }"),
+        "`m` takes 0 arguments but 1 was given",
+    );
+    rejects(
+        &program("type U struct {}\nfunc (u U) m(a int) {}\nfunc f(u U) { u.m(\"x\") }"),
+        "expected `int64`, found `string`",
+    );
+    rejects(
+        &program("type U struct {}\nfunc (u U) m() {}\nfunc (u U) m() {}"),
+        "duplicate method `m`",
+    );
+    rejects(
+        &program("type U struct { m int }\nfunc (u U) m() {}"),
+        "duplicate member `m`",
+    );
+    rejects(
+        &program("func (x int) m() {}"),
+        "methods can be declared only on struct types",
+    );
+    rejects(
+        &program("func (x Missing) m() {}"),
+        "cannot find `Missing`",
+    );
+    rejects(
+        &program("type U struct { A int }\nfunc (u U) m() { u.A = 1 }"),
+        "cannot assign to parameter `u`",
+    );
+    rejects(
+        &body("let x = 1\nx.m()"),
+        "type `int64` has no method `m`",
+    );
+}
+
+#[test]
 fn calls_arguments_and_results() {
     accepts(&program(
         "func add(a int, b int) int { return a + b }
@@ -843,12 +906,8 @@ fn unsupported_features_are_never_accepted() {
         ),
         (body("let x = nil"), "`nil` is not supported"),
         (
-            program("type U struct {}\nfunc (u U) m() {}"),
-            "methods are not supported",
-        ),
-        (
-            program("type U struct { A int }\nfunc f(u U) { u.m() }"),
-            "method calls are not supported",
+            program("type U struct {}\nfunc (u mut U) m() {}"),
+            "`mut` receivers are not supported",
         ),
         (
             program("async func f() {}"),
