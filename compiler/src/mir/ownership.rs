@@ -162,12 +162,7 @@ fn transfer(
 }
 
 fn places_overlap(left: &Place, right: &Place) -> bool {
-    left.local == right.local
-        && left
-            .fields
-            .iter()
-            .zip(&right.fields)
-            .all(|(a, b)| a == b)
+    left.local == right.local && left.fields.iter().zip(&right.fields).all(|(a, b)| a == b)
 }
 
 fn check_operand(

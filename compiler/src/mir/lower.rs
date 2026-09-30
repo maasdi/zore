@@ -425,10 +425,14 @@ impl Builder {
                 other => {
                     let temp = self.temp(base.ty());
                     self.push(Place::local(temp), Rvalue::Use(other), span);
-                    value_operand(package, Place {
-                        local: temp,
-                        fields: vec![*field],
-                    }, expr.ty())
+                    value_operand(
+                        package,
+                        Place {
+                            local: temp,
+                            fields: vec![*field],
+                        },
+                        expr.ty(),
+                    )
                 }
             },
             ExprKind::Call { .. } => {
@@ -452,7 +456,12 @@ impl Builder {
                     .collect();
                 values.sort_by_key(|(index, _)| *index);
                 let operands = values.into_iter().map(|(_, operand)| operand).collect();
-                self.assign_temp(package, expr.ty(), Rvalue::Aggregate(*strukt, operands), span)
+                self.assign_temp(
+                    package,
+                    expr.ty(),
+                    Rvalue::Aggregate(*strukt, operands),
+                    span,
+                )
             }
             ExprKind::Unary { op, operand } => {
                 let operand = self.operand(package, operand);

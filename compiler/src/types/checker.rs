@@ -129,53 +129,49 @@ fn reject_move_statement(
     diagnostics: &mut Vec<Diagnostic>,
 ) {
     match &stmt.kind {
-            hir::StmtKind::Let { value, .. } => reject_move_expr(package, value, diagnostics),
-            hir::StmtKind::Assign { values, .. } | hir::StmtKind::Return(values) => {
-                for value in values {
-                    reject_move_expr(package, value, diagnostics);
-                }
-            }
-            hir::StmtKind::CompoundAssign { value, .. } | hir::StmtKind::Expr(value) => {
+        hir::StmtKind::Let { value, .. } => reject_move_expr(package, value, diagnostics),
+        hir::StmtKind::Assign { values, .. } | hir::StmtKind::Return(values) => {
+            for value in values {
                 reject_move_expr(package, value, diagnostics);
             }
-            hir::StmtKind::If {
-                condition,
-                then_block,
-                else_block,
-            } => {
+        }
+        hir::StmtKind::CompoundAssign { value, .. } | hir::StmtKind::Expr(value) => {
+            reject_move_expr(package, value, diagnostics);
+        }
+        hir::StmtKind::If {
+            condition,
+            then_block,
+            else_block,
+        } => {
+            reject_move_expr(package, condition, diagnostics);
+            reject_move_expressions(package, then_block, diagnostics);
+            if let Some(else_block) = else_block {
+                reject_move_expressions(package, else_block, diagnostics);
+            }
+        }
+        hir::StmtKind::Loop {
+            init,
+            condition,
+            update,
+            body,
+        } => {
+            if let Some(init) = init {
+                reject_move_statement(package, init, diagnostics);
+            }
+            if let Some(condition) = condition {
                 reject_move_expr(package, condition, diagnostics);
-                reject_move_expressions(package, then_block, diagnostics);
-                if let Some(else_block) = else_block {
-                    reject_move_expressions(package, else_block, diagnostics);
-                }
             }
-            hir::StmtKind::Loop {
-                init,
-                condition,
-                update,
-                body,
-            } => {
-                if let Some(init) = init {
-                    reject_move_statement(package, init, diagnostics);
-                }
-                if let Some(condition) = condition {
-                    reject_move_expr(package, condition, diagnostics);
-                }
-                if let Some(update) = update {
-                    reject_move_statement(package, update, diagnostics);
-                }
-                reject_move_expressions(package, body, diagnostics);
+            if let Some(update) = update {
+                reject_move_statement(package, update, diagnostics);
             }
-            hir::StmtKind::Block(block) => reject_move_expressions(package, block, diagnostics),
-            hir::StmtKind::Break | hir::StmtKind::Continue => {}
+            reject_move_expressions(package, body, diagnostics);
+        }
+        hir::StmtKind::Block(block) => reject_move_expressions(package, block, diagnostics),
+        hir::StmtKind::Break | hir::StmtKind::Continue => {}
     }
 }
 
-fn reject_move_expr(
-    package: &hir::Package,
-    expr: &hir::Expr,
-    diagnostics: &mut Vec<Diagnostic>,
-) {
+fn reject_move_expr(package: &hir::Package, expr: &hir::Expr, diagnostics: &mut Vec<Diagnostic>) {
     if expr.types.iter().any(|&ty| !package.is_copy(ty)) {
         diagnostics.push(Diagnostic::new(
             Severity::Error,

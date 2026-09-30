@@ -38,7 +38,9 @@ fn check_with(file: &SourceFile, allow_move_types: bool) -> Checked {
     let resolution = resolve(&parsed.file);
     let (mut package, mut diagnostics) =
         checker::check(&parsed.file, resolution, file.text(), allow_move_types);
-    if let Some(checked) = &package && allow_move_types {
+    if let Some(checked) = &package
+        && allow_move_types
+    {
         let program = lower::lower(checked);
         diagnostics.extend(ownership::check(&program));
     }
