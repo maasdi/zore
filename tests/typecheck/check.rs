@@ -1173,10 +1173,7 @@ fn unsupported_features_are_never_accepted() {
             "package-level `let` and `var` are not supported",
         ),
         (program("func f(xs Array) {}"), "`Array` is not supported"),
-        (
-            body("let x = clone(1)"),
-            "`clone` is not supported",
-        ),
+        (body("let x = clone(1)"), "`clone` is not supported"),
         (
             body("let r = rune(65)"),
             "rune conversions are not supported",
