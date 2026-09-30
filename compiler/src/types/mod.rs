@@ -74,6 +74,7 @@ pub enum TypeKind {
     Float(FloatType),
     Rune,
     String,
+    Error,
     Struct(StructId),
 }
 
@@ -105,6 +106,7 @@ impl TypeStore {
     pub const UINT64: TypeId = TypeId(10);
     pub const FLOAT32: TypeId = TypeId(11);
     pub const FLOAT64: TypeId = TypeId(12);
+    pub const ERROR: TypeId = TypeId(13);
     /// Default type of untyped integer constants.
     pub const INT: TypeId = Self::INT64;
 
@@ -117,6 +119,7 @@ impl TypeStore {
         }
         kinds.push(TypeKind::Float(FloatType { bits: 32 }));
         kinds.push(TypeKind::Float(FloatType { bits: 64 }));
+        kinds.push(TypeKind::Error);
         Self {
             kinds,
             struct_names: Vec::new(),
@@ -176,6 +179,7 @@ impl TypeStore {
             "bool" => Self::BOOL,
             "rune" => Self::RUNE,
             "string" => Self::STRING,
+            "error" => Self::ERROR,
             "int8" => Self::INT8,
             "int16" => Self::INT16,
             "int32" => Self::INT32,
@@ -202,6 +206,7 @@ impl fmt::Display for TypeName<'_> {
             TypeKind::Bool => f.write_str("bool"),
             TypeKind::Rune => f.write_str("rune"),
             TypeKind::String => f.write_str("string"),
+            TypeKind::Error => f.write_str("error"),
             TypeKind::Int(IntType { bits, signed }) => {
                 write!(f, "{}int{bits}", if signed { "" } else { "u" })
             }

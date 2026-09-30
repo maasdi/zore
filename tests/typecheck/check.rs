@@ -1159,13 +1159,55 @@ fn error_results_require_one_trailing_position() {
 }
 
 #[test]
+fn error_values_and_explicit_discards() {
+    accepts(&program(
+        "func ok() error { return nil }
+func fail(message string) error { return error(message) }
+func pair() (int, error) { return 7, error(\"failed\") }",
+    ));
+    accepts(&body(
+        "_ = error(\"ignored\")\nlet _ = error(\"ignored\")\nprintln(error(\"x\") == error(\"x\"))\nprintln(error(\"\") != nil)",
+    ));
+    accepts(&program(
+        "func pair() (int, error) { return 7, nil }
+func use() { let value, _ = pair(); println(value) }",
+    ));
+    rejects(&body("error(\"ignored\")"), "error result must be used");
+    rejects(
+        &program("func fail() error { return nil }\nfunc use() { fail() }"),
+        "error result must be used",
+    );
+    rejects(
+        &program("func pair() (int, error) { return 7, nil }\nfunc use() { pair() }"),
+        "error result must be used",
+    );
+    rejects(
+        &body("let err = error(\"x\")"),
+        "named `error` bindings are not supported",
+    );
+    rejects(
+        &program("func use(err error) { _ = err }"),
+        "named `error` parameters are not supported",
+    );
+    rejects(&body("let value = nil"), "`nil` needs an `error` context");
+    rejects(
+        &body("println(error(\"x\") < error(\"y\"))"),
+        "operator `<` cannot be applied to `error`",
+    );
+    rejects(&body("_ = error(1)"), "expected `string`");
+    rejects(
+        &body("const err error = nil"),
+        "`nil` is not a constant expression",
+    );
+    rejects(
+        &body("const err error = error(\"x\")"),
+        "constant initializer is not a constant expression",
+    );
+}
+
+#[test]
 fn unsupported_features_are_never_accepted() {
     for (text, message) in [
-        (
-            program("func f() error { return nil }"),
-            "the `error` type is not supported",
-        ),
-        (body("let x = nil"), "`nil` is not supported"),
         (
             program("async func f() {}"),
             "`async` functions are not supported",

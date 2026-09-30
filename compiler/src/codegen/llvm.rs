@@ -128,6 +128,7 @@ impl Module<'_> {
             TypeKind::Float(_) => "double".into(),
             TypeKind::Rune => "i32".into(),
             TypeKind::String => "{ ptr, i64 }".into(),
+            TypeKind::Error => "{ i1, ptr, i64 }".into(),
             TypeKind::Struct(id) => {
                 format!(
                     "%\"{}.{}\"",
@@ -432,6 +433,7 @@ impl FunctionBuilder<'_, '_> {
                 let global = self.module.string_global(s.as_bytes());
                 format!("{{ ptr {global}, i64 {} }}", s.len())
             }
+            Const::Nil => "{ i1 false, ptr null, i64 0 }".into(),
         }
     }
 
@@ -502,6 +504,7 @@ impl FunctionBuilder<'_, '_> {
             Rvalue::Binary(op, lhs, rhs) => self.binary(*op, lhs, rhs, span),
             Rvalue::Unary(op, operand) => self.unary(*op, operand, span),
             Rvalue::Convert(operand, to) => self.convert(operand, *to, span),
+            Rvalue::Error(operand) => self.error_value(operand),
             Rvalue::Aggregate(_, operands) => {
                 let ty = self.ty(result_ty);
                 let mut current = "undef".to_string();
@@ -597,6 +600,36 @@ impl FunctionBuilder<'_, '_> {
         (ptr, len)
     }
 
+    fn error_parts(&mut self, value: &str) -> (String, String, String) {
+        let (present, ptr, len) = (self.fresh(), self.fresh(), self.fresh());
+        self.line(format!(
+            "{present} = extractvalue {{ i1, ptr, i64 }} {value}, 0"
+        ));
+        self.line(format!(
+            "{ptr} = extractvalue {{ i1, ptr, i64 }} {value}, 1"
+        ));
+        self.line(format!(
+            "{len} = extractvalue {{ i1, ptr, i64 }} {value}, 2"
+        ));
+        (present, ptr, len)
+    }
+
+    fn error_value(&mut self, operand: &Operand) -> String {
+        let value = self.value(operand);
+        let (ptr, len) = self.string_parts(&value);
+        let (first, second, third) = (self.fresh(), self.fresh(), self.fresh());
+        self.line(format!(
+            "{first} = insertvalue {{ i1, ptr, i64 }} undef, i1 true, 0"
+        ));
+        self.line(format!(
+            "{second} = insertvalue {{ i1, ptr, i64 }} {first}, ptr {ptr}, 1"
+        ));
+        self.line(format!(
+            "{third} = insertvalue {{ i1, ptr, i64 }} {second}, i64 {len}, 2"
+        ));
+        third
+    }
+
     fn binary(&mut self, op: BinaryOp, lhs: &Operand, rhs: &Operand, span: Span) -> String {
         let operand_ty = self.operand_ty(lhs);
         let kind = self.module.package.types.kind(operand_ty);
@@ -651,6 +684,28 @@ impl FunctionBuilder<'_, '_> {
                 let predicate = compare_predicate(op, true);
                 self.line(format!("{name} = icmp {predicate} i32 {ordering}, 0"));
                 name
+            }
+            TypeKind::Error => {
+                let (apresent, aptr, alen) = self.error_parts(&a);
+                let (bpresent, bptr, blen) = self.error_parts(&b);
+                let same_presence = self.fresh();
+                self.line(format!(
+                    "{same_presence} = icmp eq i1 {apresent}, {bpresent}"
+                ));
+                let ordering = self.fresh();
+                self.line(format!(
+                    "{ordering} = call i32 @zore_string_compare(ptr {aptr}, i64 {alen}, ptr {bptr}, i64 {blen})"
+                ));
+                let same_message = self.fresh();
+                self.line(format!("{same_message} = icmp eq i32 {ordering}, 0"));
+                let equal = self.fresh();
+                self.line(format!("{equal} = and i1 {same_presence}, {same_message}"));
+                if op == BinaryOp::Eq {
+                    equal
+                } else {
+                    self.line(format!("{name} = xor i1 {equal}, true"));
+                    name
+                }
             }
             TypeKind::Struct(_) => unreachable!("structs have no operators"),
         }
@@ -1056,7 +1111,9 @@ impl FunctionBuilder<'_, '_> {
                 };
                 self.line(format!("call void @{function}(i64 {wide})"));
             }
-            TypeKind::Float(_) | TypeKind::Struct(_) => unreachable!("checked printable type"),
+            TypeKind::Float(_) | TypeKind::Error | TypeKind::Struct(_) => {
+                unreachable!("checked printable type")
+            }
         }
     }
 }

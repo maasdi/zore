@@ -41,7 +41,8 @@ impl Package {
             | TypeKind::Int(_)
             | TypeKind::Float(_)
             | TypeKind::Rune
-            | TypeKind::String => true,
+            | TypeKind::String
+            | TypeKind::Error => true,
             TypeKind::Struct(id) => {
                 let strukt = self.strukt(id);
                 strukt.drop.is_none() && strukt.fields.iter().all(|f| self.is_copy(f.ty))
@@ -173,6 +174,7 @@ pub enum Const {
     Float(f64),
     Rune(char),
     String(String),
+    Nil,
 }
 
 #[derive(Debug)]
@@ -191,6 +193,7 @@ pub enum ExprKind {
     Drop(Box<Expr>),
     /// Checked numeric conversion.
     Convert(Box<Expr>),
+    Error(Box<Expr>),
     /// Fields in written order, which is evaluation order.
     StructLit {
         strukt: StructId,

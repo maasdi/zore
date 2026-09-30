@@ -12,7 +12,10 @@ later-milestone syntax, recovery, and termination on generated input.
 `tests/typecheck/check.rs` tests resolution, type checking,
 §6.7 constant evaluation, float typing and conversions, HIR shape, the
 entry-point and `println` contracts, and that unsupported features are rejected
-rather than accepted. Unit tests in `compiler/src/types/bignum.rs` and `compiler/src/types/constant.rs` check
+rather than accepted. Error-value tests cover `nil`, construction, equality,
+explicit discard, and ignored-result diagnostics; named error bindings,
+parameters, and `?` remain pending. Unit tests in `compiler/src/types/bignum.rs`
+and `compiler/src/types/constant.rs` check
 big-number arithmetic and float rounding against Rust's `i128` and correctly
 rounded `str::parse` as oracles. `tests/codegen/native.rs` builds programs with clang,
 runs them, and compares stdout, stderr, and exit status, including every §6.6

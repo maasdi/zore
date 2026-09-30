@@ -562,6 +562,10 @@ impl Builder {
                 let inner = self.operand(package, inner);
                 self.assign_temp(package, expr.ty(), Rvalue::Convert(inner, expr.ty()), span)
             }
+            ExprKind::Error(inner) => {
+                let inner = self.operand(package, inner);
+                self.assign_temp(package, expr.ty(), Rvalue::Error(inner), span)
+            }
             ExprKind::StructLit { strukt, fields } => {
                 // Evaluate in written order, then assemble in declaration order.
                 let mut values: Vec<(usize, Operand)> = fields
