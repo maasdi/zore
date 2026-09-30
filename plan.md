@@ -99,11 +99,10 @@ Move type is accepted by `zore check` or `zore build`.
 
 ## Open decisions
 
-1. Panic unwinding: the status-flag mechanism above is the recommended default.
-   The alternative is LLVM `invoke` with a landing pad, which needs a
-   personality function and an unwinder in the runtime. Confirm before slice D.
-2. The test-only Move-type gate is the chosen slice C behavior. CLI checking
-   and builds retain the gate until slice D cleanup is implemented.
+1. Panic unwinding: the status-flag mechanism above was approved for slice D
+   and is implemented for synchronous frames.
+2. The test-only Move-type gate was the slice C behavior. Slice D removes it
+   after drop insertion and panic cleanup.
 
 ## Not in scope
 

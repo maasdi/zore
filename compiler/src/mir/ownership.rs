@@ -83,8 +83,8 @@ fn successors(terminator: &Terminator) -> Vec<BlockId> {
             else_block,
             ..
         } => vec![*then_block, *else_block],
-        Terminator::Call { target, .. } => vec![*target],
-        Terminator::Return | Terminator::Unreachable => Vec::new(),
+        Terminator::Call { target, .. } | Terminator::Assert { target, .. } => vec![*target],
+        Terminator::Return | Terminator::PanicReturn | Terminator::Unreachable => Vec::new(),
     }
 }
 
@@ -95,23 +95,26 @@ fn transfer(
     diagnostics: &mut Vec<Diagnostic>,
 ) {
     for statement in &block.statements {
-        match &statement.rvalue {
-            Rvalue::Use(operand) | Rvalue::Unary(_, operand) | Rvalue::Convert(operand, _) => {
-                check_operand(body, operand, statement.span, state, diagnostics);
-            }
-            Rvalue::Binary(_, left, right) => {
-                check_operand(body, left, statement.span, state, diagnostics);
-                check_operand(body, right, statement.span, state, diagnostics);
-            }
-            Rvalue::Aggregate(_, fields) => {
-                for field in fields {
-                    check_operand(body, field, statement.span, state, diagnostics);
-                }
-            }
+        if let crate::mir::Statement::Assign {
+            place,
+            rvalue,
+            span,
+        } = statement
+        {
+            check_rvalue(body, rvalue, *span, state, diagnostics);
+            assign(body, place, *span, state, diagnostics);
         }
-        assign(body, &statement.place, statement.span, state, diagnostics);
     }
     match &block.terminator {
+        Terminator::Assert {
+            place,
+            rvalue,
+            span,
+            ..
+        } => {
+            check_rvalue(body, rvalue, *span, state, diagnostics);
+            assign(body, place, *span, state, diagnostics);
+        }
         Terminator::Branch {
             condition, span, ..
         } => {
@@ -157,7 +160,33 @@ fn transfer(
                 }
             }
         }
-        Terminator::Goto(_) | Terminator::Return | Terminator::Unreachable => {}
+        Terminator::Goto(_)
+        | Terminator::Return
+        | Terminator::PanicReturn
+        | Terminator::Unreachable => {}
+    }
+}
+
+fn check_rvalue(
+    body: &Body,
+    rvalue: &Rvalue,
+    span: Span,
+    state: &mut [ValueState],
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    match rvalue {
+        Rvalue::Use(operand) | Rvalue::Unary(_, operand) | Rvalue::Convert(operand, _) => {
+            check_operand(body, operand, span, state, diagnostics);
+        }
+        Rvalue::Binary(_, left, right) => {
+            check_operand(body, left, span, state, diagnostics);
+            check_operand(body, right, span, state, diagnostics);
+        }
+        Rvalue::Aggregate(_, fields) => {
+            for field in fields {
+                check_operand(body, field, span, state, diagnostics);
+            }
+        }
     }
 }
 

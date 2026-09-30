@@ -65,6 +65,106 @@ fn panics(source: &str, message: &str, stdout_before: &str) {
 }
 
 #[test]
+fn move_values_drop_on_scope_return_and_transfer() {
+    let source = "package main
+type Guard struct { id int }
+func (g mut Guard) drop() { println(g.id) }
+func consume(g own Guard) { println(100) }
+func early() {
+    let first = Guard{id: 1}
+    {
+        let second = Guard{id: 2}
+        let third = Guard{id: 3}
+    }
+    return
+}
+func main() {
+    early()
+    let transferred = Guard{id: 4}
+    consume(transferred)
+    drop(Guard{id: 5})
+}";
+    prints(source, "3\n2\n1\n100\n4\n5\n");
+}
+
+#[test]
+fn move_values_drop_on_branches_and_loop_exits() {
+    let source = "package main
+type Guard struct { id int }
+func (g mut Guard) drop() { println(g.id) }
+func main() {
+    if true { let a = Guard{id: 1} } else { let b = Guard{id: 2} }
+    var count = 0
+    for {
+        let guard = Guard{id: 3}
+        count += 1
+        if count == 1 { continue }
+        break
+    }
+}";
+    prints(source, "1\n3\n3\n");
+}
+
+#[test]
+fn panic_unwinds_custom_drops_in_reverse_order() {
+    let source = "package main
+type Guard struct { id int }
+func (g mut Guard) drop() { println(g.id) }
+func inner() {
+    let first = Guard{id: 1}
+    let second = Guard{id: 2}
+    var zero = 0
+    println(5 / zero)
+}
+func main() {
+    let outer = Guard{id: 3}
+    inner()
+}";
+    panics(source, "division by zero", "2\n1\n3\n");
+}
+
+#[test]
+fn panic_during_unwind_aborts_before_other_drops() {
+    let source = "package main
+type Guard struct { id int }
+func (g mut Guard) drop() {
+    if g.id == 2 {
+        var zero = 0
+        println(1 / zero)
+    } else {
+        println(g.id)
+    }
+}
+func main() {
+    let first = Guard{id: 1}
+    let second = Guard{id: 2}
+    var zero = 0
+    println(1 / zero)
+}";
+    let output = run(source);
+    assert!(!output.status.success());
+    assert_ne!(output.status.code(), Some(2));
+    assert_eq!(stdout(&output), "");
+}
+
+#[test]
+fn custom_drop_precedes_fields_and_replacement_drops_old_value() {
+    let source = "package main
+type Inner struct { id int }
+func (i mut Inner) drop() { println(i.id) }
+type Outer struct {
+    first Inner
+    second Inner
+}
+func (o mut Outer) drop() { println(100) }
+func main() {
+    var outer = Outer{first: Inner{id: 1}, second: Inner{id: 2}}
+    outer.second = Inner{id: 3}
+}";
+    prints(source, "2\n100\n3\n1\n");
+}
+
+#[test]
 fn semantic_target_prints_john() {
     let source = std::fs::read_to_string(concat!(
         env!("CARGO_MANIFEST_DIR"),

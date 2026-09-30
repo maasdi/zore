@@ -31,6 +31,7 @@ struct PendingBlock {
 struct LoopTargets {
     continue_to: BlockId,
     break_to: BlockId,
+    scope_depth: usize,
 }
 
 struct Builder {
@@ -39,6 +40,8 @@ struct Builder {
     current: BlockId,
     returns: Vec<Local>,
     loops: Vec<LoopTargets>,
+    scopes: Vec<Vec<Local>>,
+    temp_scopes: Vec<Vec<Local>>,
 }
 
 fn lower_function(package: &hir::Package, id: FunctionId, function: &hir::Function) -> Body {
@@ -59,6 +62,8 @@ fn lower_function(package: &hir::Package, id: FunctionId, function: &hir::Functi
         current: BlockId(0),
         returns: Vec::new(),
         loops: Vec::new(),
+        scopes: Vec::new(),
+        temp_scopes: Vec::new(),
     };
     builder.returns = function
         .results
@@ -88,6 +93,7 @@ fn lower_function(package: &hir::Package, id: FunctionId, function: &hir::Functi
                 terminator: block.terminator.unwrap_or(Terminator::Unreachable),
             })
             .collect(),
+        unwind: None,
     }
 }
 
@@ -98,7 +104,11 @@ impl Builder {
             name: None,
             by_reference: false,
         });
-        Local(self.locals.len() as u32 - 1)
+        let local = Local(self.locals.len() as u32 - 1);
+        if let Some(temps) = self.temp_scopes.last_mut() {
+            temps.push(local);
+        }
+        local
     }
 
     fn new_block(&mut self) -> BlockId {
@@ -110,13 +120,45 @@ impl Builder {
     }
 
     fn push(&mut self, place: Place, rvalue: Rvalue, span: Span) {
-        let block = &mut self.blocks[self.current.0 as usize];
-        if block.terminator.is_none() {
-            block.statements.push(Statement {
+        if self.blocks[self.current.0 as usize].terminator.is_some() {
+            return;
+        }
+        if matches!(
+            rvalue,
+            Rvalue::Binary(..) | Rvalue::Unary(..) | Rvalue::Convert(..)
+        ) {
+            let target = self.new_block();
+            self.terminate(Terminator::Assert {
                 place,
                 rvalue,
+                target,
+                unwind: None,
                 span,
             });
+            self.current = target;
+        } else {
+            self.blocks[self.current.0 as usize]
+                .statements
+                .push(Statement::Assign {
+                    place,
+                    rvalue,
+                    span,
+                });
+        }
+    }
+
+    fn end_scope(&mut self, locals: Vec<Local>) {
+        if !locals.is_empty() && self.blocks[self.current.0 as usize].terminator.is_none() {
+            self.blocks[self.current.0 as usize]
+                .statements
+                .push(Statement::EndScope(locals));
+        }
+    }
+
+    fn end_exited_scopes(&mut self, depth: usize) {
+        let scopes: Vec<Vec<Local>> = self.scopes[depth..].iter().rev().cloned().collect();
+        for scope in scopes {
+            self.end_scope(scope);
         }
     }
 
@@ -150,14 +192,33 @@ impl Builder {
     }
 
     fn block(&mut self, package: &hir::Package, block: &hir::Block) {
+        self.scopes.push(Vec::new());
         for stmt in &block.stmts {
             self.stmt(package, stmt);
         }
+        let locals = self.scopes.pop().expect("block scope");
+        self.end_scope(locals);
     }
 
     fn stmt(&mut self, package: &hir::Package, stmt: &hir::Stmt) {
+        let has_temp_scope = matches!(
+            &stmt.kind,
+            StmtKind::Let { .. }
+                | StmtKind::Assign { .. }
+                | StmtKind::CompoundAssign { .. }
+                | StmtKind::Expr(_)
+        );
+        if has_temp_scope {
+            self.temp_scopes.push(Vec::new());
+        }
         match &stmt.kind {
             StmtKind::Let { targets, value } => {
+                for target in targets.iter().flatten() {
+                    self.scopes
+                        .last_mut()
+                        .expect("binding scope")
+                        .push(Local(target.0));
+                }
                 let places: Vec<Option<Place>> = targets
                     .iter()
                     .map(|t| t.map(|id| Place::local(Local(id.0))))
@@ -171,6 +232,8 @@ impl Builder {
                     && places.len() > 1
                 {
                     self.store_results(package, &places, value, stmt.span);
+                    let temps = self.temp_scopes.pop().expect("statement temps");
+                    self.end_scope(temps);
                     return;
                 }
                 // Every value is evaluated before the first store.
@@ -238,10 +301,12 @@ impl Builder {
             }
             StmtKind::Break => {
                 let targets = *self.loops.last().expect("checked: inside a loop");
+                self.end_exited_scopes(targets.scope_depth);
                 self.diverge(Terminator::Goto(targets.break_to));
             }
             StmtKind::Continue => {
                 let targets = *self.loops.last().expect("checked: inside a loop");
+                self.end_exited_scopes(targets.scope_depth);
                 self.diverge(Terminator::Goto(targets.continue_to));
             }
             StmtKind::If {
@@ -249,7 +314,9 @@ impl Builder {
                 then_block,
                 else_block,
             } => {
+                self.temp_scopes.push(Vec::new());
                 let condition = self.operand(package, condition);
+                let condition_temps = self.temp_scopes.pop().expect("condition temps");
                 let then_id = self.new_block();
                 let join = self.new_block();
                 let else_id = if else_block.is_some() {
@@ -264,12 +331,17 @@ impl Builder {
                     span: stmt.span,
                 });
                 self.current = then_id;
+                self.end_scope(condition_temps.clone());
                 self.block(package, then_block);
                 self.terminate(Terminator::Goto(join));
                 if let Some(else_block) = else_block {
                     self.current = else_id;
+                    self.end_scope(condition_temps);
                     self.block(package, else_block);
                     self.terminate(Terminator::Goto(join));
+                } else {
+                    self.current = join;
+                    self.end_scope(condition_temps);
                 }
                 self.current = join;
             }
@@ -279,6 +351,7 @@ impl Builder {
                 update,
                 body,
             } => {
+                self.scopes.push(Vec::new());
                 if let Some(init) = init {
                     self.stmt(package, init);
                 }
@@ -293,13 +366,20 @@ impl Builder {
                 self.goto_new(header);
                 match condition {
                     Some(condition) => {
+                        self.temp_scopes.push(Vec::new());
                         let condition = self.operand(package, condition);
+                        let condition_temps = self.temp_scopes.pop().expect("condition temps");
                         self.terminate(Terminator::Branch {
                             condition,
                             then_block: body_id,
                             else_block: exit,
                             span: stmt.span,
                         });
+                        self.current = body_id;
+                        self.end_scope(condition_temps.clone());
+                        self.current = exit;
+                        self.end_scope(condition_temps);
+                        self.current = header;
                     }
                     None => self.terminate(Terminator::Goto(body_id)),
                 }
@@ -307,6 +387,7 @@ impl Builder {
                 self.loops.push(LoopTargets {
                     continue_to: next,
                     break_to: exit,
+                    scope_depth: self.scopes.len(),
                 });
                 self.block(package, body);
                 self.loops.pop();
@@ -317,8 +398,14 @@ impl Builder {
                     self.terminate(Terminator::Goto(header));
                 }
                 self.current = exit;
+                let locals = self.scopes.pop().expect("loop scope");
+                self.end_scope(locals);
             }
             StmtKind::Block(block) => self.block(package, block),
+        }
+        if has_temp_scope {
+            let temps = self.temp_scopes.pop().expect("statement temps");
+            self.end_scope(temps);
         }
     }
 
@@ -330,7 +417,25 @@ impl Builder {
         span: Span,
     ) {
         if places.len() > 1 {
-            self.call(package, value, places.to_vec());
+            let results: Vec<Local> = value.types.iter().map(|&ty| self.temp(ty)).collect();
+            self.call(
+                package,
+                value,
+                results
+                    .iter()
+                    .map(|&local| Some(Place::local(local)))
+                    .collect(),
+            );
+            for (target, &result) in places.iter().zip(&results) {
+                if let Some(target) = target {
+                    let ty = self.locals[result.0 as usize].ty;
+                    self.push(
+                        target.clone(),
+                        Rvalue::Use(value_operand(package, Place::local(result), ty)),
+                        span,
+                    );
+                }
+            }
             return;
         }
         let operand = self.operand(package, value);
@@ -361,7 +466,12 @@ impl Builder {
         }
     }
 
-    fn call(&mut self, package: &hir::Package, expr: &hir::Expr, destinations: Vec<Option<Place>>) {
+    fn call(
+        &mut self,
+        package: &hir::Package,
+        expr: &hir::Expr,
+        mut destinations: Vec<Option<Place>>,
+    ) {
         let (callee, args) = match &expr.kind {
             ExprKind::Call { function, args } => (Callee::Function(*function), &args[..]),
             ExprKind::Println(arg) => (Callee::Println, std::slice::from_ref(&**arg)),
@@ -401,12 +511,18 @@ impl Builder {
             });
         }
         let args = operands;
+        for (index, destination) in destinations.iter_mut().enumerate() {
+            if destination.is_none() && !package.is_copy(expr.types[index]) {
+                *destination = Some(Place::local(self.temp(expr.types[index])));
+            }
+        }
         let target = self.new_block();
         self.terminate(Terminator::Call {
             callee,
             args,
             destinations,
             target,
+            unwind: None,
             span: expr.span,
         });
         self.current = target;

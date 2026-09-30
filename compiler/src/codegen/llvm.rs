@@ -2,7 +2,7 @@
 //!
 //! Every MIR local gets a stack slot; LLVM's optimizer promotes them to
 //! registers. Runtime checks (integer overflow, division by zero, shift
-//! counts, conversion ranges) branch to `zore_panic` with the source location.
+//! counts, conversion ranges) branch to MIR cleanup with the source location.
 //! Features the backend cannot compile yet are reported as diagnostics instead
 //! of being miscompiled.
 
@@ -47,6 +47,18 @@ pub fn emit(
             fields.join(", ")
         )
         .unwrap();
+        let flag_fields: Vec<String> = strukt.fields.iter().map(|f| module.flag_ty(f.ty)).collect();
+        let fields = std::iter::once("i1".to_string())
+            .chain(flag_fields)
+            .collect::<Vec<_>>();
+        writeln!(
+            out,
+            "%\"{}.DropFlags.{}\" = type {{ {} }}",
+            package.name,
+            strukt.name,
+            fields.join(", ")
+        )
+        .unwrap();
     }
     out.push('\n');
     out.push_str(&module.globals);
@@ -76,7 +88,11 @@ declare void @zore_println_u64(i64)
 declare void @zore_println_bool(i1 zeroext)
 declare void @zore_println_rune(i32)
 declare i32 @zore_string_compare(ptr, i64, ptr, i64)
-declare void @zore_panic(ptr, i64) noreturn
+declare void @zore_raise_panic(ptr, i64)
+declare zeroext i1 @zore_panic_pending()
+declare void @zore_enter_drop()
+declare void @zore_leave_drop()
+declare void @zore_abort() noreturn
 declare double @llvm.trunc.f64(double)
 declare double @llvm.fabs.f64(double)
 ";
@@ -91,6 +107,19 @@ struct Module<'a> {
 }
 
 impl Module<'_> {
+    fn flag_ty(&self, ty: TypeId) -> String {
+        match self.package.types.kind(ty) {
+            TypeKind::Struct(id) => {
+                format!(
+                    "%\"{}.DropFlags.{}\"",
+                    self.package.name,
+                    self.package.strukt(id).name
+                )
+            }
+            _ => "i1".into(),
+        }
+    }
+
     fn ty(&self, ty: TypeId) -> String {
         match self.package.types.kind(ty) {
             TypeKind::Bool => "i1".into(),
@@ -172,6 +201,8 @@ impl Module<'_> {
             body,
             out: String::new(),
             next: 0,
+            active_unwind: None,
+            emitting_unwind: false,
         };
         f.emit();
         f.out
@@ -183,6 +214,8 @@ struct FunctionBuilder<'m, 'a> {
     body: &'m mir::Body,
     out: String,
     next: u32,
+    active_unwind: Option<mir::BlockId>,
+    emitting_unwind: bool,
 }
 
 impl FunctionBuilder<'_, '_> {
@@ -241,12 +274,15 @@ impl FunctionBuilder<'_, '_> {
     fn emit(&mut self) {
         let package = self.module.package;
         let function = package.function(self.body.function);
-        let params: Vec<String> = self
-            .body
-            .params
-            .iter()
-            .map(|&p| format!("{} %p{}", self.slot_ty(p), p.0))
-            .collect();
+        let mut params = Vec::new();
+        for &param in &self.body.params {
+            params.push(format!("{} %p{}", self.slot_ty(param), param.0));
+            if self.body.locals[param.0 as usize].by_reference
+                && !package.is_copy(self.local_ty(param))
+            {
+                params.push(format!("ptr %pf{}", param.0));
+            }
+        }
         let header = format!(
             "define {} @\"{}.{}\"({}) {{\nentry:\n",
             self.module.results_ty(&function.results),
@@ -258,13 +294,36 @@ impl FunctionBuilder<'_, '_> {
         for index in 0..self.body.locals.len() {
             let ty = self.slot_ty(Local(index as u32));
             self.line(format!("%l{index} = alloca {ty}"));
+            let local = Local(index as u32);
+            if !package.is_copy(self.local_ty(local)) {
+                let flags = if self.body.locals[index].by_reference {
+                    "ptr".to_string()
+                } else {
+                    self.module.flag_ty(self.local_ty(local))
+                };
+                self.line(format!("%lf{index} = alloca {flags}"));
+            }
+        }
+        for index in 0..self.body.locals.len() {
+            let local = Local(index as u32);
+            if !self.body.locals[index].by_reference && !package.is_copy(self.local_ty(local)) {
+                self.set_flags(&Place::local(local), false);
+            }
         }
         for &param in &self.body.params {
             let ty = self.slot_ty(param);
             self.line(format!("store {ty} %p{}, ptr %l{}", param.0, param.0));
+            if !package.is_copy(self.local_ty(param)) {
+                if self.body.locals[param.0 as usize].by_reference {
+                    self.line(format!("store ptr %pf{}, ptr %lf{}", param.0, param.0));
+                } else {
+                    self.set_flags(&Place::local(param), true);
+                }
+            }
         }
         self.line("br label %bb0");
         for (index, block) in self.body.blocks.iter().enumerate() {
+            self.emitting_unwind = self.body.unwind == Some(mir::BlockId(index as u32));
             self.out.push_str(&format!("bb{index}:\n"));
             for statement in &block.statements {
                 self.statement(statement);
@@ -297,6 +356,72 @@ impl FunctionBuilder<'_, '_> {
         name
     }
 
+    fn flag_address(&mut self, place: &Place) -> String {
+        let mut current_ty = self.local_ty(place.local);
+        let mut address = format!("%lf{}", place.local.0);
+        if self.body.locals[place.local.0 as usize].by_reference {
+            let loaded = self.fresh();
+            self.line(format!("{loaded} = load ptr, ptr {address}"));
+            address = loaded;
+        }
+        for field in &place.fields {
+            let id = self
+                .module
+                .package
+                .types
+                .struct_id(current_ty)
+                .expect("struct flag projection");
+            let projected = self.fresh();
+            self.line(format!(
+                "{projected} = getelementptr inbounds {}, ptr {address}, i32 0, i32 {}",
+                self.module.flag_ty(current_ty),
+                field.0 + 1
+            ));
+            address = projected;
+            current_ty = self.module.package.strukt(id).fields[field.0 as usize].ty;
+        }
+        address
+    }
+
+    fn root_flag_address(&mut self, place: &Place) -> String {
+        let address = self.flag_address(place);
+        let ty = self.place_ty(place);
+        if matches!(self.module.package.types.kind(ty), TypeKind::Struct(_)) {
+            let root = self.fresh();
+            self.line(format!(
+                "{root} = getelementptr inbounds {}, ptr {address}, i32 0, i32 0",
+                self.module.flag_ty(ty)
+            ));
+            root
+        } else {
+            address
+        }
+    }
+
+    fn set_root_flag(&mut self, place: &Place, value: bool) {
+        if self.module.package.is_copy(self.place_ty(place)) {
+            return;
+        }
+        let address = self.root_flag_address(place);
+        self.line(format!("store i1 {value}, ptr {address}"));
+    }
+
+    fn set_flags(&mut self, place: &Place, value: bool) {
+        let ty = self.place_ty(place);
+        if self.module.package.is_copy(ty) {
+            return;
+        }
+        self.set_root_flag(place, value);
+        if let TypeKind::Struct(id) = self.module.package.types.kind(ty) {
+            let count = self.module.package.strukt(id).fields.len();
+            for index in 0..count {
+                let mut child = place.clone();
+                child.fields.push(hir::FieldId(index as u32));
+                self.set_flags(&child, value);
+            }
+        }
+    }
+
     fn constant(&mut self, c: &Const) -> String {
         match c {
             Const::Bool(b) => b.to_string(),
@@ -319,6 +444,9 @@ impl FunctionBuilder<'_, '_> {
                 let address = self.address(place);
                 let name = self.fresh();
                 self.line(format!("{name} = load {ty}, ptr {address}"));
+                if matches!(operand, Operand::Move(_)) {
+                    self.set_flags(place, false);
+                }
                 name
             }
         }
@@ -328,6 +456,7 @@ impl FunctionBuilder<'_, '_> {
         let ty = self.ty(self.place_ty(place));
         let address = self.address(place);
         self.line(format!("store {ty} {value}, ptr {address}"));
+        self.set_flags(place, true);
     }
 
     fn panic_if(&mut self, condition: &str, message: &str, span: Span) {
@@ -337,17 +466,38 @@ impl FunctionBuilder<'_, '_> {
         self.line(format!("br i1 {condition}, label %{fail}, label %{ok}"));
         self.out.push_str(&format!("{fail}:\n"));
         self.line(format!(
-            "call void @zore_panic(ptr {global}, i64 {})",
+            "call void @zore_raise_panic(ptr {global}, i64 {})",
             text.len()
         ));
-        self.line("unreachable");
+        let unwind = self
+            .active_unwind
+            .expect("checked operation has cleanup edge");
+        self.line(format!("br label %bb{}", unwind.0));
         self.out.push_str(&format!("{ok}:\n"));
     }
 
     fn statement(&mut self, statement: &mir::Statement) {
-        let span = statement.span;
-        let result_ty = self.place_ty(&statement.place);
-        let value = match &statement.rvalue {
+        match statement {
+            mir::Statement::Assign {
+                place,
+                rvalue,
+                span,
+            } => {
+                self.assign_rvalue(place, rvalue, *span);
+            }
+            mir::Statement::Drop { place, replacement } => {
+                self.drop_place(place);
+                if !self.emitting_unwind {
+                    self.check_after_drop(*replacement && self.has_custom_ancestor(place));
+                }
+            }
+            mir::Statement::EndScope(_) => unreachable!("drop insertion replaces scope markers"),
+        }
+    }
+
+    fn assign_rvalue(&mut self, place: &Place, rvalue: &Rvalue, span: Span) {
+        let result_ty = self.place_ty(place);
+        let value = match rvalue {
             Rvalue::Use(operand) => self.value(operand),
             Rvalue::Binary(op, lhs, rhs) => self.binary(*op, lhs, rhs, span),
             Rvalue::Unary(op, operand) => self.unary(*op, operand, span),
@@ -367,7 +517,77 @@ impl FunctionBuilder<'_, '_> {
                 current
             }
         };
-        self.store(&statement.place, &value);
+        self.store(place, &value);
+    }
+
+    fn drop_place(&mut self, place: &Place) {
+        let ty = self.place_ty(place);
+        if self.module.package.is_copy(ty) {
+            return;
+        }
+        let flag = self.root_flag_address(place);
+        let live = self.fresh();
+        self.line(format!("{live} = load i1, ptr {flag}"));
+        let (run, done) = (self.label(), self.label());
+        self.line(format!("br i1 {live}, label %{run}, label %{done}"));
+        self.out.push_str(&format!("{run}:\n"));
+        self.line(format!("store i1 false, ptr {flag}"));
+        if let TypeKind::Struct(id) = self.module.package.types.kind(ty) {
+            let strukt = self.module.package.strukt(id);
+            let drop = strukt.drop;
+            let fields = strukt.fields.len();
+            if let Some(drop) = drop {
+                let name = self.module.package.function(drop).name.clone();
+                let value_address = self.address(place);
+                let flag_address = self.flag_address(place);
+                self.line("call void @zore_enter_drop()");
+                self.line(format!(
+                    "call void @\"{}.{}\"(ptr {value_address}, ptr {flag_address})",
+                    self.module.package.name, name
+                ));
+                self.line("call void @zore_leave_drop()");
+            }
+            for index in (0..fields).rev() {
+                let mut child = place.clone();
+                child.fields.push(hir::FieldId(index as u32));
+                self.drop_place(&child);
+            }
+        }
+        self.line(format!("br label %{done}"));
+        self.out.push_str(&format!("{done}:\n"));
+    }
+
+    fn has_custom_ancestor(&self, place: &Place) -> bool {
+        let mut ty = self.local_ty(place.local);
+        for field in &place.fields {
+            let id = self
+                .module
+                .package
+                .types
+                .struct_id(ty)
+                .expect("field projection");
+            if self.module.package.strukt(id).drop.is_some() {
+                return true;
+            }
+            ty = self.module.package.strukt(id).fields[field.0 as usize].ty;
+        }
+        false
+    }
+
+    fn check_after_drop(&mut self, abort_on_panic: bool) {
+        let pending = self.fresh();
+        self.line(format!("{pending} = call zeroext i1 @zore_panic_pending()"));
+        let (failed, ok) = (self.label(), self.label());
+        self.line(format!("br i1 {pending}, label %{failed}, label %{ok}"));
+        self.out.push_str(&format!("{failed}:\n"));
+        if abort_on_panic {
+            self.line("call void @zore_abort()");
+            self.line("unreachable");
+        } else {
+            let unwind = self.body.unwind.expect("drop cleanup block");
+            self.line(format!("br label %bb{}", unwind.0));
+        }
+        self.out.push_str(&format!("{ok}:\n"));
     }
 
     fn string_parts(&mut self, value: &str) -> (String, String) {
@@ -675,19 +895,55 @@ impl FunctionBuilder<'_, '_> {
                 args,
                 destinations,
                 target,
+                unwind,
                 span,
             } => {
-                match callee {
-                    Callee::Function(id) => self.call(*id, args, destinations),
-                    Callee::Println => self.println(&args[0], *span),
-                    Callee::Drop => {
-                        self.module.unsupported(
-                            "`drop(value)` is",
-                            *span,
-                            "drop insertion is not implemented yet",
-                        );
+                let result = match callee {
+                    Callee::Function(id) => self.call(*id, args),
+                    Callee::Println => {
+                        self.println(&args[0], *span);
+                        None
+                    }
+                    Callee::Drop => unreachable!("explicit drop is a MIR statement"),
+                };
+                let pending = self.fresh();
+                self.line(format!("{pending} = call zeroext i1 @zore_panic_pending()"));
+                let success = self.label();
+                let unwind = unwind.expect("call cleanup edge");
+                self.line(format!(
+                    "br i1 {pending}, label %bb{}, label %{success}",
+                    unwind.0
+                ));
+                self.out.push_str(&format!("{success}:\n"));
+                if let Some((ret, value)) = result {
+                    if let [destination] = &destinations[..] {
+                        if let Some(place) = destination {
+                            self.store(place, &value);
+                        }
+                    } else {
+                        for (index, destination) in destinations.iter().enumerate() {
+                            if let Some(place) = destination {
+                                let extracted = self.fresh();
+                                self.line(format!(
+                                    "{extracted} = extractvalue {ret} {value}, {index}"
+                                ));
+                                self.store(place, &extracted);
+                            }
+                        }
                     }
                 }
+                self.line(format!("br label %bb{}", target.0));
+            }
+            Terminator::Assert {
+                place,
+                rvalue,
+                target,
+                unwind,
+                span,
+            } => {
+                self.active_unwind = *unwind;
+                self.assign_rvalue(place, rvalue, *span);
+                self.active_unwind = None;
                 self.line(format!("br label %bb{}", target.0));
             }
             Terminator::Return => {
@@ -716,11 +972,20 @@ impl FunctionBuilder<'_, '_> {
                     }
                 }
             }
+            Terminator::PanicReturn => {
+                let results = &self.module.package.function(self.body.function).results;
+                if results.is_empty() {
+                    self.line("ret void");
+                } else {
+                    let ty = self.module.results_ty(results);
+                    self.line(format!("ret {ty} undef"));
+                }
+            }
             Terminator::Unreachable => self.line("unreachable"),
         }
     }
 
-    fn call(&mut self, id: hir::FunctionId, args: &[Operand], destinations: &[Option<Place>]) {
+    fn call(&mut self, id: hir::FunctionId, args: &[Operand]) -> Option<(String, String)> {
         let package = self.module.package;
         let callee = package.function(id);
         let mut rendered = Vec::new();
@@ -728,6 +993,10 @@ impl FunctionBuilder<'_, '_> {
             if let Operand::Ref(place) = arg {
                 let address = self.address(place);
                 rendered.push(format!("ptr {address}"));
+                if !package.is_copy(self.place_ty(place)) {
+                    let flags = self.flag_address(place);
+                    rendered.push(format!("ptr {flags}"));
+                }
                 continue;
             }
             let ty = self.ty(self.operand_ty(arg));
@@ -743,23 +1012,11 @@ impl FunctionBuilder<'_, '_> {
         );
         if callee.results.is_empty() {
             self.line(format!("call void {target}"));
-            return;
+            return None;
         }
         let result = self.fresh();
         self.line(format!("{result} = call {ret} {target}"));
-        if let [destination] = destinations {
-            if let Some(place) = destination {
-                self.store(place, &result);
-            }
-            return;
-        }
-        for (index, destination) in destinations.iter().enumerate() {
-            if let Some(place) = destination {
-                let value = self.fresh();
-                self.line(format!("{value} = extractvalue {ret} {result}, {index}"));
-                self.store(place, &value);
-            }
-        }
+        Some((ret, result))
     }
 
     fn println(&mut self, arg: &Operand, span: Span) {
