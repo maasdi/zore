@@ -83,6 +83,27 @@ fn rejects(text: &str, message: &str) -> Case {
     case
 }
 
+fn accepts_move(text: &str) -> Case {
+    let case = Case::allowing_move_types(text);
+    assert!(
+        case.checked.diagnostics.is_empty() && case.checked.package.is_some(),
+        "{text}\n{:#?}",
+        case.errors()
+    );
+    case
+}
+
+fn rejects_move(text: &str, message: &str) -> Case {
+    let case = Case::allowing_move_types(text);
+    assert!(case.checked.package.is_none(), "{text} produced HIR");
+    let errors = case.errors();
+    assert!(
+        errors.iter().any(|(m, _)| m.contains(message)),
+        "{text}\nexpected {message:?}, got {errors:#?}"
+    );
+    case
+}
+
 /// The single `let` initializer in `main`, folded to a constant.
 fn folded(stmts: &str) -> (Const, String) {
     let case = accepts(&body(stmts));
@@ -733,7 +754,7 @@ fn drop_methods_make_structs_move() {
     assert!(package.structs[2].drop.is_none());
     rejects(
         &program("type Handle struct { id int }\nfunc (h mut Handle) drop() {}"),
-        "Move types require ownership analysis",
+        "Move types require drop insertion",
     );
     rejects(
         &program("type H struct { id int }\nfunc (h H) drop() {}"),
@@ -770,6 +791,90 @@ fn drop_methods_make_structs_move() {
         func (p P) show() { println(p.X) }
         func use(p P) { let q = p\np.show()\nq.show() }",
     ));
+}
+
+#[test]
+fn move_values_transfer_and_ordinary_calls_borrow() {
+    let declarations = "type Resource struct { id int }
+        func (r mut Resource) drop() { println(r.id) }
+        func inspect(r Resource) { println(r.id) }
+        func consume(r own Resource) { println(r.id) }
+        func inspect_then_consume(left Resource, right own Resource) {}";
+    accepts_move(&program(&format!(
+        "{declarations}\nfunc use() {{ let a = Resource{{id: 1}}\ninspect(a)\ninspect(a)\nconsume(a) }}"
+    )));
+    let moved = rejects_move(
+        &program(&format!(
+            "{declarations}\nfunc use() {{ let a = Resource{{id: 1}}\nconsume(a)\ninspect(a) }}"
+        )),
+        "use of moved value `a`",
+    );
+    let rendered = moved
+        .checked
+        .diagnostics
+        .iter()
+        .find(|diagnostic| diagnostic.message().contains("use of moved value `a`"))
+        .unwrap()
+        .render(&moved.sources)
+        .unwrap();
+    assert!(rendered.contains("value moved here"), "{rendered}");
+    rejects_move(
+        &program(&format!(
+            "{declarations}\nfunc use() {{ let a = Resource{{id: 1}}\ndrop(a)\ndrop(a) }}"
+        )),
+        "use of moved value `a`",
+    );
+    rejects_move(
+        &program(&format!(
+            "{declarations}\nfunc invalid(r Resource) {{ consume(r) }}"
+        )),
+        "cannot move borrowed value `r`",
+    );
+    rejects_move(
+        &program(&format!(
+            "{declarations}\nfunc use() {{ let a = Resource{{id: 1}}\ninspect_then_consume(a, a) }}"
+        )),
+        "cannot move `a` while it is borrowed by this call",
+    );
+    accepts_move(&body("drop(5)"));
+    rejects(&body("drop(5)"), "`drop(value)` requires drop insertion");
+    rejects(&body("drop()"), "`drop` takes exactly 1 argument");
+    rejects(
+        &program(&format!(
+            "{declarations}\nfunc use() {{ drop(Resource{{id: 1}}) }}"
+        )),
+        "Move types require drop insertion",
+    );
+}
+
+#[test]
+fn move_state_flows_through_branches_loops_and_reinitialization() {
+    let resource = "type Resource struct { id int }
+        func (r mut Resource) drop() {}";
+    accepts_move(&program(&format!(
+        "{resource}\nfunc use() {{ var a = Resource{{id: 1}}\nlet b = a\na = Resource{{id: 2}}\ndrop(a)\ndrop(b) }}"
+    )));
+    accepts_move(&program(&format!(
+        "{resource}\nfunc use(flag bool) {{ let a = Resource{{id: 1}}\nif flag {{ drop(a) }} else {{ drop(a) }} }}"
+    )));
+    rejects_move(
+        &program(&format!(
+            "{resource}\nfunc use(flag bool) {{ let a = Resource{{id: 1}}\nif flag {{ drop(a) }}\ndrop(a) }}"
+        )),
+        "use of moved value `a`",
+    );
+    rejects_move(
+        &program(&format!(
+            "{resource}\nfunc use() {{ let a = Resource{{id: 1}}\nfor {{ drop(a) }} }}"
+        )),
+        "use of moved value `a`",
+    );
+    rejects_move(
+        &program(&format!(
+            "{resource}\ntype Wrapper struct {{ resource Resource }}\nfunc use(w own Wrapper) {{ let r = w.resource }}"
+        )),
+        "partial move of `w` is not supported yet",
+    );
 }
 
 #[test]

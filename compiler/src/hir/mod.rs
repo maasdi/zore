@@ -188,6 +188,7 @@ pub enum ExprKind {
         args: Vec<Expr>,
     },
     Println(Box<Expr>),
+    Drop(Box<Expr>),
     /// Checked numeric conversion.
     Convert(Box<Expr>),
     /// Fields in written order, which is evaluation order.

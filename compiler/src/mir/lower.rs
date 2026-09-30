@@ -50,7 +50,9 @@ fn lower_function(package: &hir::Package, id: FunctionId, function: &hir::Functi
             .map(|local| LocalDecl {
                 ty: local.ty,
                 name: Some(local.name.clone()),
-                by_reference: local.kind == LocalKind::Param(ParamMode::Mut),
+                by_reference: matches!(local.kind, LocalKind::Param(ParamMode::Mut))
+                    || matches!(local.kind, LocalKind::Param(ParamMode::Borrow))
+                        && !package.is_copy(local.ty),
             })
             .collect(),
         blocks: Vec::new(),
@@ -135,10 +137,16 @@ impl Builder {
         self.current = target;
     }
 
-    fn assign_temp(&mut self, ty: TypeId, rvalue: Rvalue, span: Span) -> Operand {
+    fn assign_temp(
+        &mut self,
+        package: &hir::Package,
+        ty: TypeId,
+        rvalue: Rvalue,
+        span: Span,
+    ) -> Operand {
         let temp = self.temp(ty);
         self.push(Place::local(temp), rvalue, span);
-        Operand::Copy(Place::local(temp))
+        value_operand(package, Place::local(temp), ty)
     }
 
     fn block(&mut self, package: &hir::Package, block: &hir::Block) {
@@ -184,18 +192,25 @@ impl Builder {
                 let target = place(target);
                 let ty = self.place_type(package, &target);
                 // The target is read before the right-hand side is evaluated.
-                let current =
-                    self.assign_temp(ty, Rvalue::Use(Operand::Copy(target.clone())), stmt.span);
+                let current = self.assign_temp(
+                    package,
+                    ty,
+                    Rvalue::Use(Operand::Copy(target.clone())),
+                    stmt.span,
+                );
                 let rhs = self.operand(package, value);
                 self.push(target, Rvalue::Binary(*op, current, rhs), stmt.span);
             }
             StmtKind::Expr(expr) => match &expr.kind {
-                ExprKind::Call { .. } | ExprKind::Println(_) => {
+                ExprKind::Call { .. } | ExprKind::Println(_) | ExprKind::Drop(_) => {
                     let discard = vec![None; expr.types.len()];
                     self.call(package, expr, discard);
                 }
                 _ => {
-                    self.operand(package, expr);
+                    let operand = self.operand(package, expr);
+                    if let Operand::Move(_) = operand {
+                        self.assign_temp(package, expr.ty(), Rvalue::Use(operand), expr.span);
+                    }
                 }
             },
             StmtKind::Return(values) => {
@@ -246,6 +261,7 @@ impl Builder {
                     condition,
                     then_block: then_id,
                     else_block: else_id,
+                    span: stmt.span,
                 });
                 self.current = then_id;
                 self.block(package, then_block);
@@ -282,6 +298,7 @@ impl Builder {
                             condition,
                             then_block: body_id,
                             else_block: exit,
+                            span: stmt.span,
                         });
                     }
                     None => self.terminate(Terminator::Goto(body_id)),
@@ -319,6 +336,8 @@ impl Builder {
         let operand = self.operand(package, value);
         if let Some(Some(target)) = places.first() {
             self.push(target.clone(), Rvalue::Use(operand), span);
+        } else if let Operand::Move(_) = operand {
+            self.assign_temp(package, value.ty(), Rvalue::Use(operand), span);
         }
     }
 
@@ -338,7 +357,7 @@ impl Builder {
         let operand = self.operand(package, expr);
         match operand {
             Operand::Const(..) => operand,
-            _ => self.assign_temp(expr.ty(), Rvalue::Use(operand), expr.span),
+            _ => self.assign_temp(package, expr.ty(), Rvalue::Use(operand), expr.span),
         }
     }
 
@@ -346,20 +365,37 @@ impl Builder {
         let (callee, args) = match &expr.kind {
             ExprKind::Call { function, args } => (Callee::Function(*function), &args[..]),
             ExprKind::Println(arg) => (Callee::Println, std::slice::from_ref(&**arg)),
+            ExprKind::Drop(arg) => (Callee::Drop, std::slice::from_ref(&**arg)),
             _ => unreachable!("only calls produce multiple or no results"),
         };
         let mut operands = Vec::new();
         for (index, arg) in args.iter().enumerate() {
-            let by_reference = match &callee {
+            let (by_reference, by_ownership) = match &callee {
                 Callee::Function(id) => {
                     let function = package.function(*id);
-                    function.locals[function.params[index].0 as usize].kind
-                        == LocalKind::Param(ParamMode::Mut)
+                    let mode = function.locals[function.params[index].0 as usize].kind;
+                    (
+                        mode == LocalKind::Param(ParamMode::Mut)
+                            || mode == LocalKind::Param(ParamMode::Borrow)
+                                && !package.is_copy(arg.ty()),
+                        mode == LocalKind::Param(ParamMode::Own),
+                    )
                 }
-                Callee::Println => false,
+                Callee::Println => (false, false),
+                Callee::Drop => (false, true),
             };
             operands.push(if by_reference {
-                Operand::Ref(argument_place(arg))
+                match argument_place_opt(arg) {
+                    Some(place) => Operand::Ref(place),
+                    None => {
+                        let operand = self.operand(package, arg);
+                        let temp = self.temp(arg.ty());
+                        self.push(Place::local(temp), Rvalue::Use(operand), arg.span);
+                        Operand::Ref(Place::local(temp))
+                    }
+                }
+            } else if by_ownership {
+                self.operand(package, arg)
             } else {
                 self.evaluate_to_temporary(package, arg)
             });
@@ -380,30 +416,31 @@ impl Builder {
         let span = expr.span;
         match &expr.kind {
             ExprKind::Const(c) => Operand::Const(c.clone(), expr.ty()),
-            ExprKind::Local(id) => Operand::Copy(Place::local(Local(id.0))),
+            ExprKind::Local(id) => value_operand(package, Place::local(Local(id.0)), expr.ty()),
             ExprKind::Field { base, field } => match self.operand(package, base) {
-                Operand::Copy(mut base) => {
+                Operand::Copy(mut base) | Operand::Move(mut base) => {
                     base.fields.push(*field);
-                    Operand::Copy(base)
+                    value_operand(package, base, expr.ty())
                 }
                 other => {
                     let temp = self.temp(base.ty());
                     self.push(Place::local(temp), Rvalue::Use(other), span);
-                    Operand::Copy(Place {
+                    value_operand(package, Place {
                         local: temp,
                         fields: vec![*field],
-                    })
+                    }, expr.ty())
                 }
             },
             ExprKind::Call { .. } => {
                 let temp = self.temp(expr.ty());
                 self.call(package, expr, vec![Some(Place::local(temp))]);
-                Operand::Copy(Place::local(temp))
+                value_operand(package, Place::local(temp), expr.ty())
             }
             ExprKind::Println(_) => unreachable!("println has no value"),
+            ExprKind::Drop(_) => unreachable!("drop has no value"),
             ExprKind::Convert(inner) => {
                 let inner = self.operand(package, inner);
-                self.assign_temp(expr.ty(), Rvalue::Convert(inner, expr.ty()), span)
+                self.assign_temp(package, expr.ty(), Rvalue::Convert(inner, expr.ty()), span)
             }
             ExprKind::StructLit { strukt, fields } => {
                 // Evaluate in written order, then assemble in declaration order.
@@ -415,11 +452,11 @@ impl Builder {
                     .collect();
                 values.sort_by_key(|(index, _)| *index);
                 let operands = values.into_iter().map(|(_, operand)| operand).collect();
-                self.assign_temp(expr.ty(), Rvalue::Aggregate(*strukt, operands), span)
+                self.assign_temp(package, expr.ty(), Rvalue::Aggregate(*strukt, operands), span)
             }
             ExprKind::Unary { op, operand } => {
                 let operand = self.operand(package, operand);
-                self.assign_temp(expr.ty(), Rvalue::Unary(*op, operand), span)
+                self.assign_temp(package, expr.ty(), Rvalue::Unary(*op, operand), span)
             }
             ExprKind::Binary { op, lhs, rhs } if matches!(op, BinaryOp::And | BinaryOp::Or) => {
                 self.short_circuit(package, *op, lhs, rhs, span)
@@ -428,7 +465,7 @@ impl Builder {
                 // The left operand is fixed before the right is evaluated.
                 let lhs = self.evaluate_to_temporary(package, lhs);
                 let rhs = self.operand(package, rhs);
-                self.assign_temp(expr.ty(), Rvalue::Binary(*op, lhs, rhs), span)
+                self.assign_temp(package, expr.ty(), Rvalue::Binary(*op, lhs, rhs), span)
             }
         }
     }
@@ -455,6 +492,7 @@ impl Builder {
             condition,
             then_block,
             else_block,
+            span,
         });
         self.current = skip;
         let short = Const::Bool(op == BinaryOp::Or);
@@ -482,6 +520,26 @@ fn argument_place(expr: &hir::Expr) -> Place {
             place
         }
         _ => unreachable!("checked: mut arguments are places"),
+    }
+}
+
+fn argument_place_opt(expr: &hir::Expr) -> Option<Place> {
+    match &expr.kind {
+        ExprKind::Local(id) => Some(Place::local(Local(id.0))),
+        ExprKind::Field { base, field } => {
+            let mut place = argument_place_opt(base)?;
+            place.fields.push(*field);
+            Some(place)
+        }
+        _ => None,
+    }
+}
+
+fn value_operand(package: &hir::Package, place: Place, ty: TypeId) -> Operand {
+    if package.is_copy(ty) {
+        Operand::Copy(place)
+    } else {
+        Operand::Move(place)
     }
 }
 
