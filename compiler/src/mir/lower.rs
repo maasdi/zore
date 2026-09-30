@@ -519,19 +519,6 @@ impl Builder {
     }
 }
 
-/// The place a `mut` argument designates; the checker only accepts places.
-fn argument_place(expr: &hir::Expr) -> Place {
-    match &expr.kind {
-        ExprKind::Local(id) => Place::local(Local(id.0)),
-        ExprKind::Field { base, field } => {
-            let mut place = argument_place(base);
-            place.fields.push(*field);
-            place
-        }
-        _ => unreachable!("checked: mut arguments are places"),
-    }
-}
-
 fn argument_place_opt(expr: &hir::Expr) -> Option<Place> {
     match &expr.kind {
         ExprKind::Local(id) => Some(Place::local(Local(id.0))),
