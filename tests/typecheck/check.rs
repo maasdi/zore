@@ -1175,7 +1175,7 @@ fn unsupported_features_are_never_accepted() {
         (program("func f(xs Array) {}"), "`Array` is not supported"),
         (
             body("let x = clone(1)"),
-            "`clone` and `drop` are not supported",
+            "`clone` is not supported",
         ),
         (
             body("let r = rune(65)"),
