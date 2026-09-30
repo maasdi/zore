@@ -124,6 +124,30 @@ func main() {
 }
 
 #[test]
+fn panic_during_unwind_aborts_before_other_drops() {
+    let source = "package main
+type Guard struct { id int }
+func (g mut Guard) drop() {
+    if g.id == 2 {
+        var zero = 0
+        println(1 / zero)
+    } else {
+        println(g.id)
+    }
+}
+func main() {
+    let first = Guard{id: 1}
+    let second = Guard{id: 2}
+    var zero = 0
+    println(1 / zero)
+}";
+    let output = run(source);
+    assert!(!output.status.success());
+    assert_ne!(output.status.code(), Some(2));
+    assert_eq!(stdout(&output), "");
+}
+
+#[test]
 fn custom_drop_precedes_fields_and_replacement_drops_old_value() {
     let source = "package main
 type Inner struct { id int }

@@ -1,19 +1,20 @@
 # Implementation roadmap
 
-The implementation covers an initial synchronous, single-file, all-Copy subset:
-bool, integers, floats, rune, string, and structs of those, with exact untyped
-constants (§6.7). `zore check` runs lex → parse → resolve → type-check;
+The implementation covers an initial synchronous, single-file subset:
+bool, integers, floats, rune, string, and structs, including Move structs with
+custom `drop` methods and exact untyped constants (§6.7). `zore check` runs lex → parse → resolve → type-check and MIR ownership analysis;
 `zore build` and `zore run` lower to MIR, emit LLVM IR, and invoke clang and
 rustc to link the Rust runtime (decision record 0001). Unsupported features
-receive diagnostics. A test-only path runs MIR ownership analysis for Move
-types; drop insertion does not exist yet, so CLI checking and builds still
-reject Move values.
+receive diagnostics. A separate MIR pass inserts deterministic drops and
+cleanup edges for checked operations and calls. The runtime propagates panic
+status through synchronous frames and reports an initial-task panic after
+cleanup.
 
-Current baseline: commit `95110b1`. GitHub Actions passed on ubuntu-latest and
-macos-latest for that commit: rustfmt, clippy with warnings denied, build, docs,
-and `cargo test --locked --all-targets`, including the native tests. The
-folder refactor and Rust runtime migration are validated by that run. Local
-Windows builds are not covered.
+The slice D implementation on PR #7 passed GitHub Actions on ubuntu-latest and
+macos-latest: rustfmt, clippy with warnings denied, build, docs, and
+`cargo test --locked --all-targets`, including native cleanup tests. Local
+Windows compilation passes clippy; linking requires MSVC Build Tools, which
+are not installed on this host.
 
 Canonical M IDs follow specification §43. Detailed phases and their mapping
 to those IDs are below, followed by the active validation work package.
@@ -33,8 +34,8 @@ is guidance, not a language contract.
 | M3–M4 — subset implemented; validation pending | AST and parser together for package/functions/structs/bindings/calls; test shape, spans, recovery, and rejection. Resolve relevant grammar questions first. |
 | M5–M8 — subset implemented; validation pending | Hello program, variables, functions, structs. Establish the minimal native backend and builtin output support needed to run examples. Use resolution/type work below as prerequisites where needed. |
 | M9–M12 — subset implemented; validation pending | Name resolution, types, HIR, MIR/CFG; semantic IDs, typed calls/fields, explicit control flow, frontend-only checking. |
-| M13–M17 — partial | Copy/Move classification, mutable borrowing, and test-only whole-place move analysis exist. Partial moves, stored borrows, and regions remain. Complete the §42 semantic target with paired acceptance/rejection tests. |
-| M18–M19 | Drop insertion and explicit errors/`?`; verify exactly-once cleanup on normal, branch, and early-return paths. |
+| M13–M17 — partial | Copy/Move classification, mutable borrowing, and whole-place move analysis exist in CLI checking and builds. Partial moves, stored borrows, and regions remain. Complete the §42 semantic target with paired acceptance/rejection tests. |
+| M18 — drop cleanup implemented; errors pending | Drop insertion and panic cleanup cover the synchronous subset, with native tests for normal, branch, loop, return, and panic paths. Explicit errors and `?` remain pending under M18–M19. |
 | M20–M23 | Fixed arrays, borrowed slices, owned arrays, maps, packages/imports; validate ownership and package visibility. |
 | M24 | Closures with capture analysis; reject captures that cannot remain valid. |
 | M25–M29 | Task model, `go`, async states, `await`, scheduler; test lifetime proof, suspension, completion, error results, and detach behavior. |
@@ -60,18 +61,17 @@ run failed on rustfmt drift and on a native test that declared `var` without
 the initializer that the specification requires; both were fixed. The
 language-level work below may proceed.
 
-The next language-level step is drop insertion (M18). The first Move type is a
-struct with a user-defined `drop` method (§8.3, §14.3). A separate MIR pass
-checks whole-place moves, borrowed parameters, branch joins, and loop backedges
-through a test-only entry point. It rejects partial moves conservatively.
-Deterministic cleanup must land before the CLI accepts Move values. The
-all-Copy CLI restriction remains in force.
+The first Move type is a struct with a user-defined `drop` method (§8.3,
+§14.3). MIR ownership analysis checks whole-place moves, borrowed parameters,
+branch joins, and loop backedges. It rejects partial moves conservatively.
+Drop insertion handles scope exits, replacements, owned parameters, and
+synchronous panic cleanup. The next language-level work is explicit errors and
+`?` under M18–M19, followed by the remaining M13–M17 ownership cases.
 
 Other open items: `error`/`?` (M18–M19), rune conversions, the `println` float
 text format (§37.1, TBD), and runtime string concatenation, which needs a
-string-buffer ownership decision (§41.5). Runtime checks panic from code
-generation today; they move to explicit MIR assert terminators with cleanup
-paths when drop insertion (M18) arrives.
+string-buffer ownership decision (§41.5). Runtime checks use MIR assert
+terminators with cleanup paths.
 
 Temporary limits that are not language rules: `check <file.ore>` treats the one
 file as the whole package and diagnoses `import` until package discovery (Q05,
