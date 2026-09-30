@@ -662,6 +662,7 @@ impl FunctionBuilder<'_, '_> {
                 condition,
                 then_block,
                 else_block,
+                ..
             } => {
                 let condition = self.value(condition);
                 self.line(format!(
@@ -679,6 +680,13 @@ impl FunctionBuilder<'_, '_> {
                 match callee {
                     Callee::Function(id) => self.call(*id, args, destinations),
                     Callee::Println => self.println(&args[0], *span),
+                    Callee::Drop => {
+                        self.module.unsupported(
+                            "`drop(value)` is",
+                            *span,
+                            "drop insertion is not implemented yet",
+                        );
+                    }
                 }
                 self.line(format!("br label %bb{}", target.0));
             }

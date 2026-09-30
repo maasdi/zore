@@ -1,6 +1,7 @@
 //! Control-flow-graph MIR: how the program executes.
 
 pub mod lower;
+pub mod ownership;
 
 use crate::ast::{BinaryOp, UnaryOp};
 use crate::hir::{Const, FieldId, FunctionId};
@@ -37,8 +38,7 @@ pub struct LocalDecl {
     pub ty: TypeId,
     /// Source name for user bindings; `None` for temporaries.
     pub name: Option<String>,
-    /// The local holds a mutable reference to a value of `ty`, which is what
-    /// its places designate.
+    /// The local holds a reference to a value of `ty`, which is what its places designate.
     pub by_reference: bool,
 }
 
@@ -67,7 +67,7 @@ impl Place {
 pub enum Operand {
     Copy(Place),
     Move(Place),
-    /// A mutable reference to the place; only call arguments use it.
+    /// A reference to the place; only call arguments use it.
     Ref(Place),
     Const(Const, TypeId),
 }
@@ -96,6 +96,7 @@ pub struct Statement {
 pub enum Callee {
     Function(FunctionId),
     Println,
+    Drop,
 }
 
 #[derive(Debug)]
@@ -105,6 +106,7 @@ pub enum Terminator {
         condition: Operand,
         then_block: BlockId,
         else_block: BlockId,
+        span: Span,
     },
     Call {
         callee: Callee,

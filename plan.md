@@ -1,9 +1,8 @@
 # Ownership and drop plan (M13–M19)
 
-Status: proposed. Baseline: methods with shared and `own` receivers are
-implemented and CI-validated (`3d0673f`). This plan covers the first Move type
-and deterministic cleanup. `docs/roadmap.md` stays the source of milestone
-status; update it as each slice lands.
+Status: slices A and B merged; slice C CI-validated on its feature branch,
+pending review and merge. This plan covers the first Move type and deterministic
+cleanup. `docs/roadmap.md` stays the source of milestone status.
 
 ## Why this order
 
@@ -103,8 +102,8 @@ Move type is accepted by `zore check` or `zore build`.
 1. Panic unwinding: the status-flag mechanism above is the recommended default.
    The alternative is LLVM `invoke` with a landing pad, which needs a
    personality function and an unwinder in the runtime. Confirm before slice D.
-2. The test-only Move-type gate in slice C is the recommended default. Confirm
-   before slice C.
+2. The test-only Move-type gate is the chosen slice C behavior. CLI checking
+   and builds retain the gate until slice D cleanup is implemented.
 
 ## Not in scope
 

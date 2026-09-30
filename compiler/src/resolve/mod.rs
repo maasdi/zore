@@ -19,6 +19,7 @@ pub enum Res {
     Struct(StructId),
     Primitive(TypeId),
     Println,
+    Drop,
     /// A predeclared name whose feature is not supported yet; uses are diagnosed.
     Unsupported,
 }
@@ -58,7 +59,8 @@ fn predeclared(name: &str) -> Option<Res> {
     }
     match name {
         "println" => Some(Res::Println),
-        "error" | "Array" | "Task" | "clone" | "drop" => Some(Res::Unsupported),
+        "drop" => Some(Res::Drop),
+        "error" | "Array" | "Task" | "clone" => Some(Res::Unsupported),
         _ => None,
     }
 }
@@ -68,7 +70,7 @@ fn unsupported_predeclared(name: &str) -> &'static str {
         "error" => "the `error` type is",
         "Array" => "`Array` is",
         "Task" => "`Task` is",
-        _ => "`clone` and `drop` are",
+        _ => "`clone` is",
     }
 }
 

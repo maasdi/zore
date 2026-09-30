@@ -1,8 +1,9 @@
 # Drop, clone, and panic-unwinding conformance cases
 
-Authority: spec §8.3, §10.7, §14.1–14.5, §15.4. These are pending
-type-checking, ownership, and runtime-lowering cases; they are not executable
-tests or passing coverage.
+Authority: spec §8.3, §10.7, §14.1–14.5, §15.4. Drop signatures, Move
+classification, explicit-drop consumption, and double-drop rejection have
+executable type-checking coverage in `tests/typecheck/check.rs`. Automatic
+cleanup, clone, and panic unwinding remain pending runtime coverage.
 
 ## Drop receiver form (§14.3)
 
