@@ -144,6 +144,14 @@ fn constant(expr: &hir::Expr) -> Option<&Const> {
     }
 }
 
+fn is_nil(expr: &ast::Expr) -> bool {
+    match &expr.kind {
+        ast::ExprKind::Nil => true,
+        ast::ExprKind::Paren(inner) => is_nil(inner),
+        _ => false,
+    }
+}
+
 fn op_str(op: BinaryOp) -> &'static str {
     match op {
         BinaryOp::Mul => "*",
@@ -249,6 +257,15 @@ impl<'a> Checker<'a> {
         });
         for (index, ty) in params.iter().enumerate() {
             self.locals[index] = Some(*ty);
+        }
+        for param in func.receiver.iter().chain(&func.params) {
+            if self.resolve_type(&param.ty) == Some(TypeStore::ERROR) {
+                self.unsupported(
+                    "named `error` parameters are",
+                    param.name.span,
+                    "path-sensitive error-use checking is still pending (§15.6)",
+                );
+            }
         }
         self.results = results.clone();
         self.loop_depth = 0;
@@ -356,6 +373,11 @@ impl<'a> Checker<'a> {
         self.consts[id.0 as usize] = ConstState::InProgress;
         let decl = &self.res.consts[id.0 as usize];
         let (value_ast, ty_ast, span) = (decl.value, decl.ty, decl.name.span);
+        if is_nil(value_ast) {
+            self.error("`nil` is not a constant expression", value_ast.span);
+            self.consts[id.0 as usize] = ConstState::Done(None);
+            return None;
+        }
         let declared = ty_ast.and_then(|ty| self.resolve_type(ty));
         let value = self.expr(value_ast, declared);
         let result = match (value, ty_ast) {
@@ -552,12 +574,16 @@ impl<'a> Checker<'a> {
             ))),
             ast::ExprKind::Bool(value) => bool_const(*value),
             ast::ExprKind::Nil => {
-                self.unsupported(
-                    "`nil` is",
-                    span,
-                    "`nil` applies only to `error` and `Task` (M18–M29)",
-                );
-                None
+                if expected == Some(TypeStore::ERROR) {
+                    Some(Value::Typed(typed(
+                        ExprKind::Const(Const::Nil),
+                        TypeStore::ERROR,
+                        span,
+                    )))
+                } else {
+                    self.error("`nil` needs an `error` context", span);
+                    None
+                }
             }
             ast::ExprKind::Malformed => None,
             ast::ExprKind::Paren(inner) => self.expr(inner, expected),
@@ -647,7 +673,11 @@ impl<'a> Checker<'a> {
             | BinaryOp::Shl
             | BinaryOp::Shr => int,
             BinaryOp::Eq | BinaryOp::NotEq => {
-                numeric || matches!(kind, TypeKind::Bool | TypeKind::Rune | TypeKind::String)
+                numeric
+                    || matches!(
+                        kind,
+                        TypeKind::Bool | TypeKind::Rune | TypeKind::String | TypeKind::Error
+                    )
             }
             BinaryOp::Lt | BinaryOp::LtEq | BinaryOp::Gt | BinaryOp::GtEq => {
                 numeric || matches!(kind, TypeKind::Rune | TypeKind::String)
@@ -756,12 +786,23 @@ impl<'a> Checker<'a> {
         } else {
             expected
         };
-        let left = self.expr(lhs, operand_expected);
-        let right_expected = match &left {
-            Some(Value::Typed(expr)) if expr.types.len() == 1 => Some(expr.ty()),
-            _ => operand_expected,
-        };
-        let right = self.expr(rhs, right_expected);
+        let (left, right) =
+            if matches!(op, BinaryOp::Eq | BinaryOp::NotEq) && is_nil(lhs) && !is_nil(rhs) {
+                let right = self.expr(rhs, None);
+                let left_expected = match &right {
+                    Some(Value::Typed(expr)) if expr.types.len() == 1 => Some(expr.ty()),
+                    _ => None,
+                };
+                (self.expr(lhs, left_expected), right)
+            } else {
+                let left = self.expr(lhs, operand_expected);
+                let right_expected = match &left {
+                    Some(Value::Typed(expr)) if expr.types.len() == 1 => Some(expr.ty()),
+                    _ => operand_expected,
+                };
+                let right = self.expr(rhs, right_expected);
+                (left, right)
+            };
         let (left, right) = (left?, right?);
 
         if let (Value::Untyped(a, _), Value::Untyped(b, _)) = (&left, &right) {
@@ -827,6 +868,7 @@ impl<'a> Checker<'a> {
                 (Const::Rune(x), Const::Rune(y)) => x.cmp(y),
                 // Byte-wise UTF-8 order.
                 (Const::String(x), Const::String(y)) => x.as_bytes().cmp(y.as_bytes()),
+                (Const::Nil, Const::Nil) => std::cmp::Ordering::Equal,
                 (Const::Bool(x), Const::Bool(y)) => x.cmp(y),
                 _ => unreachable!("operands share a type"),
             };
@@ -1007,6 +1049,9 @@ impl<'a> Checker<'a> {
             Some(Res::Function(id)) => self.function_call(id, name, None, args, span),
             Some(Res::Println) => self.println(args, span),
             Some(Res::Drop) => self.drop_call(args, span),
+            Some(Res::Primitive(ty)) if ty == TypeStore::ERROR => {
+                self.error_constructor(args, span)
+            }
             Some(Res::Primitive(ty)) => self.conversion(ty, args, span),
             Some(Res::Struct(_)) => {
                 self.error(
@@ -1276,6 +1321,21 @@ impl<'a> Checker<'a> {
         }))
     }
 
+    fn error_constructor(&mut self, args: &[ast::Expr], span: Span) -> Option<Value> {
+        let [arg] = args else {
+            self.error("`error` takes exactly 1 string argument", span);
+            self.report_arg_errors(args);
+            return None;
+        };
+        let value = self.expr(arg, Some(TypeStore::STRING))?;
+        let value = self.coerce(value, TypeStore::STRING)?;
+        Some(Value::Typed(typed(
+            ExprKind::Error(Box::new(value)),
+            TypeStore::ERROR,
+            span,
+        )))
+    }
+
     fn conversion(&mut self, target: TypeId, args: &[ast::Expr], span: Span) -> Option<Value> {
         let [arg] = args else {
             self.error("a conversion takes exactly one argument", span);
@@ -1491,6 +1551,13 @@ impl<'a> Checker<'a> {
                 values,
             } => self.assign(targets, *op, values, span)?,
             ast::StmtKind::Expr(expr) => match self.expr(expr, None)? {
+                Value::Typed(expr) if expr.types.contains(&TypeStore::ERROR) => {
+                    self.error(
+                        "error result must be used or explicitly discarded",
+                        expr.span,
+                    );
+                    return None;
+                }
                 Value::Typed(expr) => hir::StmtKind::Expr(expr),
                 Value::Untyped(..) => unreachable!("the parser accepts only call statements"),
             },
@@ -1626,6 +1693,14 @@ impl<'a> Checker<'a> {
             };
             if let BindingTarget::Name(name) = target {
                 self.set_local(name, expr.ty());
+                if expr.ty() == TypeStore::ERROR {
+                    self.unsupported(
+                        "named `error` bindings are",
+                        name.span,
+                        "path-sensitive error-use checking is still pending (§15.6)",
+                    );
+                    return None;
+                }
             }
             return Some(hir::StmtKind::Let {
                 targets,
@@ -1650,6 +1725,14 @@ impl<'a> Checker<'a> {
         for (target, &ty) in binding.targets.iter().zip(&expr.types) {
             if let BindingTarget::Name(name) = target {
                 self.set_local(name, ty);
+                if ty == TypeStore::ERROR {
+                    self.unsupported(
+                        "named `error` bindings are",
+                        name.span,
+                        "path-sensitive error-use checking is still pending (§15.6)",
+                    );
+                    return None;
+                }
             }
         }
         Some(hir::StmtKind::Let {

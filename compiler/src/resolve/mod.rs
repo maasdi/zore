@@ -60,14 +60,13 @@ fn predeclared(name: &str) -> Option<Res> {
     match name {
         "println" => Some(Res::Println),
         "drop" => Some(Res::Drop),
-        "error" | "Array" | "Task" | "clone" => Some(Res::Unsupported),
+        "Array" | "Task" | "clone" => Some(Res::Unsupported),
         _ => None,
     }
 }
 
 fn unsupported_predeclared(name: &str) -> &'static str {
     match name {
-        "error" => "the `error` type is",
         "Array" => "`Array` is",
         "Task" => "`Task` is",
         _ => "`clone` is",

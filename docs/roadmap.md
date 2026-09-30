@@ -1,7 +1,7 @@
 # Implementation roadmap
 
 The implementation covers an initial synchronous, single-file subset:
-bool, integers, floats, rune, string, and structs, including Move structs with
+bool, integers, floats, rune, string, `error`, and structs, including Move structs with
 custom `drop` methods and exact untyped constants (§6.7). `zore check` runs lex → parse → resolve → type-check and MIR ownership analysis;
 `zore build` and `zore run` lower to MIR, emit LLVM IR, and invoke clang and
 rustc to link the Rust runtime (decision record 0001). Unsupported features
@@ -35,7 +35,7 @@ is guidance, not a language contract.
 | M5–M8 — subset implemented; validation pending | Hello program, variables, functions, structs. Establish the minimal native backend and builtin output support needed to run examples. Use resolution/type work below as prerequisites where needed. |
 | M9–M12 — subset implemented; validation pending | Name resolution, types, HIR, MIR/CFG; semantic IDs, typed calls/fields, explicit control flow, frontend-only checking. |
 | M13–M17 — partial | Copy/Move classification, mutable borrowing, and whole-place move analysis exist in CLI checking and builds. Partial moves, stored borrows, and regions remain. Complete the §42 semantic target with paired acceptance/rejection tests. |
-| M18 — drop cleanup implemented; errors pending | Drop insertion and panic cleanup cover the synchronous subset, with native tests for normal, branch, loop, return, and panic paths. Explicit errors and `?` remain pending under M18–M19. Resolution now diagnoses an `error` result in a non-final position; this is only an early contract check, not support for error values. |
+| M18–M19 — partial | Drop insertion and panic cleanup cover the synchronous subset. The concrete Copy `error` type, `nil` in an error context, `error(message)`, content equality, explicit discards, and rejection of silently ignored error results are implemented. Named error bindings and parameters await path-sensitive use analysis; `?` and its cleanup paths remain unsupported. |
 | M20–M23 | Fixed arrays, borrowed slices, owned arrays, maps, packages/imports; validate ownership and package visibility. |
 | M24 | Closures with capture analysis; reject captures that cannot remain valid. |
 | M25–M29 | Task model, `go`, async states, `await`, scheduler; test lifetime proof, suspension, completion, error results, and detach behavior. |
@@ -65,15 +65,17 @@ The first Move type is a struct with a user-defined `drop` method (§8.3,
 §14.3). MIR ownership analysis checks whole-place moves, borrowed parameters,
 branch joins, and loop backedges. It rejects partial moves conservatively.
 Drop insertion handles scope exits, replacements, owned parameters, and
-synchronous panic cleanup. The next language-level work is explicit errors and
-`?` under M18–M19, followed by the remaining M13–M17 ownership cases.
+synchronous panic cleanup. The next language-level work is path-sensitive error
+use analysis and `?` under M18–M19, followed by the remaining M13–M17 ownership
+cases.
 
-The first M18–M19 contract check rejects non-final and repeated `error` results
-at their source spans. The `error` type, `nil`, error construction, result-use
-analysis, and `?` remain unsupported. A trailing `error` declaration is still
-diagnosed as unsupported until those pieces and their cleanup paths are ready.
+The first M18–M19 slices reject non-final and repeated `error` results, then
+support explicit error values, returns, comparisons, and discards. Named local
+`error` bindings and parameters are conservatively rejected until path-sensitive
+use analysis can enforce §15.6 on every reachable path. Error propagation with `?` remains
+unsupported until its early-return cleanup paths are implemented.
 
-Other open items: `error`/`?` (M18–M19), rune conversions, the `println` float
+Other open items: error-use analysis and `?` (M18–M19), rune conversions, the `println` float
 text format (§37.1, TBD), and runtime string concatenation, which needs a
 string-buffer ownership decision (§41.5). Runtime checks use MIR assert
 terminators with cleanup paths.

@@ -1,8 +1,9 @@
 # Error-result use and discard conformance cases
 
-Authority: spec §6.6, §7.2, §15.1–15.2, §15.6, and §5.5. These cases await
-typing, use analysis, ownership, and async implementation; they are not
-executable or passing coverage.
+Authority: spec §6.6, §7.2, §15.1–15.2, §15.6, and §5.5. Executable checker and
+native cases cover construction, contextual `nil`, comparison, explicit discard,
+and ignored expression results. Named error bindings, path-sensitive use analysis,
+`?`, and async cases remain pending; the tables below are not themselves tests.
 
 Assume `save()` returns `error`, `load()` returns `(Value, error)`, and each
 fixture defines all required names.

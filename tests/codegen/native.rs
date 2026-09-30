@@ -46,6 +46,25 @@ fn prints(source: &str, expected: &str) {
     assert!(output.stderr.is_empty(), "{}", stderr(&output));
 }
 
+#[test]
+fn error_values_preserve_nil_and_message_equality() {
+    let source = "package main
+func make(message string) error { return error(message) }
+func ok() error { return nil }
+func pair() (int, error) { return 7, error(\"failed\") }
+func main() {
+    println(error(\"x\") == error(\"x\"))
+    println(error(\"\") != nil)
+    println(nil == ok())
+    println(make(\"x\") == error(\"x\"))
+    println(make(\"y\") != error(\"x\"))
+    let value, _ = pair()
+    println(value)
+    _ = ok()
+}";
+    prints(source, "true\ntrue\ntrue\ntrue\ntrue\n7\n");
+}
+
 /// Expect a panic in the initial task.
 fn panics(source: &str, message: &str, stdout_before: &str) {
     let output = run(source);

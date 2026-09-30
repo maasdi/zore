@@ -82,6 +82,7 @@ pub enum Rvalue {
     Unary(UnaryOp, Operand),
     /// Checked numeric conversion to the given type.
     Convert(Operand, TypeId),
+    Error(Operand),
     /// Fields in declaration order.
     Aggregate(StructId, Vec<Operand>),
 }

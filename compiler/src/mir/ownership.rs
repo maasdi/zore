@@ -175,7 +175,10 @@ fn check_rvalue(
     diagnostics: &mut Vec<Diagnostic>,
 ) {
     match rvalue {
-        Rvalue::Use(operand) | Rvalue::Unary(_, operand) | Rvalue::Convert(operand, _) => {
+        Rvalue::Use(operand)
+        | Rvalue::Unary(_, operand)
+        | Rvalue::Convert(operand, _)
+        | Rvalue::Error(operand) => {
             check_operand(body, operand, span, state, diagnostics);
         }
         Rvalue::Binary(_, left, right) => {
