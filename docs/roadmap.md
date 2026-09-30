@@ -33,7 +33,7 @@ is guidance, not a language contract.
 | M3–M4 — subset implemented; validation pending | AST and parser together for package/functions/structs/bindings/calls; test shape, spans, recovery, and rejection. Resolve relevant grammar questions first. |
 | M5–M8 — subset implemented; validation pending | Hello program, variables, functions, structs. Establish the minimal native backend and builtin output support needed to run examples. Use resolution/type work below as prerequisites where needed. |
 | M9–M12 — subset implemented; validation pending | Name resolution, types, HIR, MIR/CFG; semantic IDs, typed calls/fields, explicit control flow, frontend-only checking. |
-| M13–M17 — partial, validation pending | Copy/Move classification, mutable borrowing, and test-only whole-place move analysis exist. Partial moves, stored borrows, and regions remain. Complete the §42 semantic target with paired acceptance/rejection tests. |
+| M13–M17 — partial | Copy/Move classification, mutable borrowing, and test-only whole-place move analysis exist. Partial moves, stored borrows, and regions remain. Complete the §42 semantic target with paired acceptance/rejection tests. |
 | M18–M19 | Drop insertion and explicit errors/`?`; verify exactly-once cleanup on normal, branch, and early-return paths. |
 | M20–M23 | Fixed arrays, borrowed slices, owned arrays, maps, packages/imports; validate ownership and package visibility. |
 | M24 | Closures with capture analysis; reject captures that cannot remain valid. |
@@ -191,7 +191,7 @@ is complete beyond the subset it covers.
 | M5–M8 | Hello, variables, functions, structs, control flow, and multiple returns have implementations and native tests for the synchronous all-Copy subset. Methods with shared or `own` receivers resolve, type-check, and run natively; `mut` parameters and receivers require mutable places (§11.6) and are passed by reference. |
 | M9–M10 | Single-file resolution, stable IDs, primitive/struct types, type checking, and exact constant evaluation exist. Function types/values, error, imports, and package variables remain unsupported. |
 | M11–M12 | Typed HIR, CFG MIR, and local/field places exist. MIR distinguishes Copy/Move operands; indexed places are absent. |
-| M13–M17 | Recursive Copy classification, mutable-place checks, call-local exclusivity, and validated user-defined `drop` methods exist. The test-only entry point runs whole-place MIR move analysis and supports builtin `drop(value)`; field moves are rejected conservatively. Move values remain rejected by `zore check` and `zore build` until cleanup lands. Stored borrows and region analysis remain absent. This slice awaits CI validation. |
+| M13–M17 | Recursive Copy classification, mutable-place checks, call-local exclusivity, and validated user-defined `drop` methods exist. The test-only entry point runs whole-place MIR move analysis and supports builtin `drop(value)`; field moves are rejected conservatively. Move values remain rejected by `zore check` and `zore build` until cleanup lands. Stored borrows and region analysis remain absent. Slice C passed Ubuntu and macOS CI on PR #6. |
 | M18–M19 | No destruction/drop insertion or explicit error/propagation implementation. Multiple returns alone do not complete error handling. |
 | M20–M24 | Collections, multi-file packages/imports, and closures remain unsupported. |
 | M25–M31 | No task model, spawning, async lowering, scheduler, channels, or async I/O. |

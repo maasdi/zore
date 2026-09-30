@@ -1,7 +1,7 @@
 # Ownership and drop plan (M13–M19)
 
-Status: slices A and B merged; slice C implemented on its feature branch,
-pending CI validation. This plan covers the first Move type and deterministic
+Status: slices A and B merged; slice C CI-validated on its feature branch,
+pending review and merge. This plan covers the first Move type and deterministic
 cleanup. `docs/roadmap.md` stays the source of milestone status.
 
 ## Why this order

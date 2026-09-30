@@ -1,8 +1,10 @@
 # Return-borrow, caller-mutability, partial-move, and slice-aliasing conformance cases
 
-Authority: spec §5.6, §11.3, §11.6–11.7, §12.5, §14.6, §30.1, §31.2. These are
-pending ownership/borrow-checker cases; they are not executable tests or
-passing coverage.
+Authority: spec §5.6, §11.3, §11.6–11.7, §12.5, §14.6, §30.1, §31.2.
+`tests/typecheck/check.rs` covers mutable places, call-local exclusivity,
+whole-place moves, branch and loop move state, reinitialization, and
+conservative partial-move rejection. Remaining cases, including accepted
+partial moves and stored borrows, are pending.
 
 ## Mutable place requirements for callers (§11.6)
 
