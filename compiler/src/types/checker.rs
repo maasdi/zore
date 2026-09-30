@@ -18,7 +18,6 @@ pub fn check(
     file: &ast::File,
     mut resolution: Resolution<'_>,
     text: &str,
-    allow_move_types: bool,
 ) -> (Option<hir::Package>, Vec<Diagnostic>) {
     let diagnostics = std::mem::take(&mut resolution.diagnostics);
     let types = std::mem::take(&mut resolution.types);
@@ -82,132 +81,7 @@ pub fn check(
         functions: functions.into_iter().map(|f| f.expect("checked")).collect(),
         entry,
     };
-    let mut diagnostics = checker.diagnostics;
-    for function in &package.functions {
-        for local in &function.locals {
-            if !allow_move_types && !package.is_copy(local.ty) {
-                diagnostics.push(Diagnostic::new(
-                    Severity::Error,
-                    "Move types require drop insertion, which is not implemented yet",
-                    local.span,
-                ));
-            }
-        }
-        if !allow_move_types {
-            for &result in &function.results {
-                if !package.is_copy(result) {
-                    diagnostics.push(Diagnostic::new(
-                        Severity::Error,
-                        "Move types require drop insertion, which is not implemented yet",
-                        function.span,
-                    ));
-                }
-            }
-            reject_move_expressions(&package, &function.body, &mut diagnostics);
-        }
-    }
-    if diagnostics.is_empty() {
-        (Some(package), diagnostics)
-    } else {
-        (None, diagnostics)
-    }
-}
-
-fn reject_move_expressions(
-    package: &hir::Package,
-    block: &hir::Block,
-    diagnostics: &mut Vec<Diagnostic>,
-) {
-    for stmt in &block.stmts {
-        reject_move_statement(package, stmt, diagnostics);
-    }
-}
-
-fn reject_move_statement(
-    package: &hir::Package,
-    stmt: &hir::Stmt,
-    diagnostics: &mut Vec<Diagnostic>,
-) {
-    match &stmt.kind {
-        hir::StmtKind::Let { value, .. } => reject_move_expr(package, value, diagnostics),
-        hir::StmtKind::Assign { values, .. } | hir::StmtKind::Return(values) => {
-            for value in values {
-                reject_move_expr(package, value, diagnostics);
-            }
-        }
-        hir::StmtKind::CompoundAssign { value, .. } | hir::StmtKind::Expr(value) => {
-            reject_move_expr(package, value, diagnostics);
-        }
-        hir::StmtKind::If {
-            condition,
-            then_block,
-            else_block,
-        } => {
-            reject_move_expr(package, condition, diagnostics);
-            reject_move_expressions(package, then_block, diagnostics);
-            if let Some(else_block) = else_block {
-                reject_move_expressions(package, else_block, diagnostics);
-            }
-        }
-        hir::StmtKind::Loop {
-            init,
-            condition,
-            update,
-            body,
-        } => {
-            if let Some(init) = init {
-                reject_move_statement(package, init, diagnostics);
-            }
-            if let Some(condition) = condition {
-                reject_move_expr(package, condition, diagnostics);
-            }
-            if let Some(update) = update {
-                reject_move_statement(package, update, diagnostics);
-            }
-            reject_move_expressions(package, body, diagnostics);
-        }
-        hir::StmtKind::Block(block) => reject_move_expressions(package, block, diagnostics),
-        hir::StmtKind::Break | hir::StmtKind::Continue => {}
-    }
-}
-
-fn reject_move_expr(package: &hir::Package, expr: &hir::Expr, diagnostics: &mut Vec<Diagnostic>) {
-    if expr.types.iter().any(|&ty| !package.is_copy(ty)) {
-        diagnostics.push(Diagnostic::new(
-            Severity::Error,
-            "Move types require drop insertion, which is not implemented yet",
-            expr.span,
-        ));
-    }
-    match &expr.kind {
-        ExprKind::Field { base, .. }
-        | ExprKind::Println(base)
-        | ExprKind::Convert(base)
-        | ExprKind::Unary { operand: base, .. } => reject_move_expr(package, base, diagnostics),
-        ExprKind::Drop(base) => {
-            diagnostics.push(Diagnostic::new(
-                Severity::Error,
-                "`drop(value)` requires drop insertion, which is not implemented yet",
-                expr.span,
-            ));
-            reject_move_expr(package, base, diagnostics);
-        }
-        ExprKind::Binary { lhs, rhs, .. } => {
-            reject_move_expr(package, lhs, diagnostics);
-            reject_move_expr(package, rhs, diagnostics);
-        }
-        ExprKind::Call { args, .. } => {
-            for arg in args {
-                reject_move_expr(package, arg, diagnostics);
-            }
-        }
-        ExprKind::StructLit { fields, .. } => {
-            for (_, value) in fields {
-                reject_move_expr(package, value, diagnostics);
-            }
-        }
-        ExprKind::Const(_) | ExprKind::Local(_) => {}
-    }
+    (Some(package), checker.diagnostics)
 }
 
 #[derive(Clone)]

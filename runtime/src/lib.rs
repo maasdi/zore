@@ -1,7 +1,7 @@
 // Copyright 2026 The Zore Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Runtime for the synchronous, all-Copy bootstrap subset.
+//! Runtime for the synchronous bootstrap subset.
 //! The exported C ABI is internal to the compiler, not a source-language API.
 
 #[path = "io.rs"]
@@ -10,6 +10,10 @@ mod io;
 mod panic;
 #[path = "string.rs"]
 mod string;
+
+pub(crate) fn finish() {
+    panic::finish();
+}
 
 /// Borrows compiler-produced string storage for one runtime call.
 ///

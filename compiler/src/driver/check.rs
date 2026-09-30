@@ -17,17 +17,6 @@ pub struct Checked {
 
 /// Checks one file as a complete package.
 pub fn check_file(file: &SourceFile) -> Checked {
-    check_with(file, false)
-}
-
-/// Like `check_file`, but accepts Move types, which are otherwise rejected until
-/// drop insertion exists. Groundwork tests use it; no
-/// command does.
-pub fn check_file_allowing_move_types(file: &SourceFile) -> Checked {
-    check_with(file, true)
-}
-
-fn check_with(file: &SourceFile, allow_move_types: bool) -> Checked {
     let parsed = parse(file);
     if !parsed.diagnostics.is_empty() {
         return Checked {
@@ -36,11 +25,8 @@ fn check_with(file: &SourceFile, allow_move_types: bool) -> Checked {
         };
     }
     let resolution = resolve(&parsed.file);
-    let (mut package, mut diagnostics) =
-        checker::check(&parsed.file, resolution, file.text(), allow_move_types);
-    if let Some(checked) = &package
-        && allow_move_types
-    {
+    let (mut package, mut diagnostics) = checker::check(&parsed.file, resolution, file.text());
+    if let Some(checked) = &package {
         let program = lower::lower(checked);
         diagnostics.extend(ownership::check(&program));
     }

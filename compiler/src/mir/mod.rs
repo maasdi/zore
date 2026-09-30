@@ -2,6 +2,7 @@
 
 pub mod lower;
 pub mod ownership;
+pub mod drop;
 
 use crate::ast::{BinaryOp, UnaryOp};
 use crate::hir::{Const, FieldId, FunctionId};
@@ -31,6 +32,7 @@ pub struct Body {
     /// Result locals, in order; `Return` returns their values.
     pub returns: Vec<Local>,
     pub blocks: Vec<BasicBlock>,
+    pub unwind: Option<BlockId>,
 }
 
 #[derive(Debug)]
@@ -85,11 +87,10 @@ pub enum Rvalue {
 }
 
 #[derive(Debug)]
-pub struct Statement {
-    pub place: Place,
-    pub rvalue: Rvalue,
-    /// Location reported by runtime checks.
-    pub span: Span,
+pub enum Statement {
+    Assign { place: Place, rvalue: Rvalue, span: Span },
+    EndScope(Vec<Local>),
+    Drop { place: Place, replacement: bool },
 }
 
 #[derive(Debug)]
@@ -114,8 +115,17 @@ pub enum Terminator {
         /// One destination per result; `None` discards it.
         destinations: Vec<Option<Place>>,
         target: BlockId,
+        unwind: Option<BlockId>,
+        span: Span,
+    },
+    Assert {
+        place: Place,
+        rvalue: Rvalue,
+        target: BlockId,
+        unwind: Option<BlockId>,
         span: Span,
     },
     Return,
+    PanicReturn,
     Unreachable,
 }

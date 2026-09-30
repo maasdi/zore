@@ -2,7 +2,7 @@
 //! rejections; features outside the checker's subset must be reported as
 //! unsupported, never accepted.
 
-use zore::check::{Checked, check_file, check_file_allowing_move_types};
+use zore::check::{Checked, check_file};
 use zore::hir::{self, Const, ExprKind, StmtKind};
 use zore::source::SourceMap;
 use zore::types::TypeStore;
@@ -17,13 +17,6 @@ impl Case {
         let mut sources = SourceMap::new();
         let id = sources.add("test.ore", text.into()).unwrap();
         let checked = check_file(sources.file(id).unwrap());
-        Self { sources, checked }
-    }
-
-    fn allowing_move_types(text: &str) -> Self {
-        let mut sources = SourceMap::new();
-        let id = sources.add("test.ore", text.into()).unwrap();
-        let checked = check_file_allowing_move_types(sources.file(id).unwrap());
         Self { sources, checked }
     }
 
@@ -84,7 +77,7 @@ fn rejects(text: &str, message: &str) -> Case {
 }
 
 fn accepts_move(text: &str) -> Case {
-    let case = Case::allowing_move_types(text);
+    let case = Case::new(text);
     assert!(
         case.checked.diagnostics.is_empty() && case.checked.package.is_some(),
         "{text}\n{:#?}",
@@ -94,7 +87,7 @@ fn accepts_move(text: &str) -> Case {
 }
 
 fn rejects_move(text: &str, message: &str) -> Case {
-    let case = Case::allowing_move_types(text);
+    let case = Case::new(text);
     assert!(case.checked.package.is_none(), "{text} produced HIR");
     let errors = case.errors();
     assert!(
@@ -736,7 +729,7 @@ fn mut_parameters_and_receivers_require_mutable_places() {
 
 #[test]
 fn drop_methods_make_structs_move() {
-    let case = Case::allowing_move_types(&program(
+    let case = Case::new(&program(
         "type Handle struct { id int }
         type Wrapper struct { handle Handle }
         type Point struct { X int }
@@ -752,10 +745,7 @@ fn drop_methods_make_structs_move() {
     assert!(package.structs[0].drop.is_some());
     assert!(package.structs[1].drop.is_none());
     assert!(package.structs[2].drop.is_none());
-    rejects(
-        &program("type Handle struct { id int }\nfunc (h mut Handle) drop() {}"),
-        "Move types require drop insertion",
-    );
+    accepts(&program("type Handle struct { id int }\nfunc (h mut Handle) drop() {}"));
     rejects(
         &program("type H struct { id int }\nfunc (h H) drop() {}"),
         "`drop` must have a `mut` receiver",
@@ -837,13 +827,12 @@ fn move_values_transfer_and_ordinary_calls_borrow() {
         "cannot move `a` while it is borrowed by this call",
     );
     accepts_move(&body("drop(5)"));
-    rejects(&body("drop(5)"), "`drop(value)` requires drop insertion");
+    accepts(&body("drop(5)"));
     rejects(&body("drop()"), "`drop` takes exactly 1 argument");
-    rejects(
+    accepts(
         &program(&format!(
             "{declarations}\nfunc use() {{ drop(Resource{{id: 1}}) }}"
         )),
-        "Move types require drop insertion",
     );
 }
 

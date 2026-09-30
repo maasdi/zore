@@ -2,16 +2,18 @@
 
 use std::io::Write;
 
-use super::panic::fail;
+use super::panic::{fail, raise};
 
 fn write_line(text: &[u8]) {
     let mut line = Vec::new();
-    let capacity = text
-        .len()
-        .checked_add(1)
-        .unwrap_or_else(|| fail(b"out of memory while printing"));
-    line.try_reserve_exact(capacity)
-        .unwrap_or_else(|_| fail(b"out of memory while printing"));
+    let Some(capacity) = text.len().checked_add(1) else {
+        raise(b"out of memory while printing");
+        return;
+    };
+    if line.try_reserve_exact(capacity).is_err() {
+        raise(b"out of memory while printing");
+        return;
+    }
     line.extend_from_slice(text);
     line.push(b'\n');
     // Hold the lock over the whole line, including any short-write retries.
@@ -22,7 +24,7 @@ fn write_line(text: &[u8]) {
         .and_then(|()| stdout.flush())
         .is_err()
     {
-        fail(b"failed to write to standard output");
+        raise(b"failed to write to standard output");
     }
 }
 

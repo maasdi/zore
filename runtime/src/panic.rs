@@ -1,25 +1,77 @@
-//! Panic reporting for the initial task of the all-Copy subset.
-
+use std::cell::RefCell;
 use std::io::Write;
 
+#[derive(Default)]
+struct PanicState {
+    current: Option<Vec<u8>>,
+    suspended: Vec<Option<Vec<u8>>>,
+}
+
+thread_local! {
+    static STATE: RefCell<PanicState> = RefCell::new(PanicState::default());
+}
+
 pub(super) fn fail(message: &[u8]) -> ! {
-    // Reporting is best effort: a failed stderr cannot itself be reported.
     let mut stderr = std::io::stderr().lock();
     let _ = stderr.write_all(b"panic in the main task: ");
     let _ = stderr.write_all(message);
     let _ = stderr.write_all(b"\n");
     let _ = stderr.flush();
-    // No supported Zore value needs destruction yet. This must gain task
-    // unwinding before the compiler accepts values requiring drop.
     std::process::exit(2);
 }
 
-/// Reports a Zore panic and terminates the initial task's process.
-///
-/// # Safety
-/// `message` must address `len` live, initialized bytes, or be empty.
+pub(super) fn raise(message: &[u8]) {
+    STATE.with(|state| {
+        let mut state = state.borrow_mut();
+        if state.current.is_some() {
+            std::process::abort();
+        }
+        state.current = Some(message.to_vec());
+    });
+}
+
+pub(super) fn finish() {
+    STATE.with(|state| {
+        if let Some(message) = &state.borrow().current {
+            fail(message);
+        }
+    });
+}
+
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn zore_panic(message: *const u8, len: i64) -> ! {
-    // SAFETY: guaranteed by the generated call's string ABI.
-    fail(unsafe { super::bytes(message, len) });
+pub unsafe extern "C" fn zore_raise_panic(message: *const u8, len: i64) {
+    raise(unsafe { super::bytes(message, len) });
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn zore_panic_pending() -> bool {
+    STATE.with(|state| state.borrow().current.is_some())
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn zore_enter_drop() {
+    STATE.with(|state| {
+        let mut state = state.borrow_mut();
+        let current = state.current.take();
+        state.suspended.push(current);
+    });
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn zore_leave_drop() {
+    STATE.with(|state| {
+        let mut state = state.borrow_mut();
+        let previous = state.suspended.pop().expect("unbalanced drop status");
+        if previous.is_some() && state.current.is_some() {
+            std::process::abort();
+        }
+        if previous.is_some() {
+            state.current = previous;
+        }
+    });
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn zore_abort() -> ! {
+    std::process::abort();
 }

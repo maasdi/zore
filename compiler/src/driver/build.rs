@@ -9,7 +9,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use crate::codegen;
 use crate::diagnostic::Diagnostic;
 use crate::driver::check::check_file;
-use crate::mir::lower::lower;
+use crate::mir::{drop, lower::lower};
 use crate::source::SourceFile;
 
 const RUNTIME_SOURCES: &[(&str, &str)] = &[
@@ -57,7 +57,8 @@ pub fn emit_llvm(file: &SourceFile) -> Result<String, BuildError> {
             package.name
         )));
     }
-    let program = lower(&package);
+    let mut program = lower(&package);
+    drop::insert(&package, &mut program);
     codegen::emit(&package, &program, file).map_err(BuildError::Diagnostics)
 }
 
