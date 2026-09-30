@@ -433,7 +433,13 @@ impl<'a> Resolver<'a> {
             self.ty(&param.ty);
             self.new_local(&param.name, LocalKind::Param(param.mode));
         }
-        for result in &func.results {
+        for (index, result) in func.results.iter().enumerate() {
+            if result.name.text == "error" && index + 1 != func.results.len() {
+                self.error(
+                    "an `error` result must be the last result and appear only once",
+                    result.name.span,
+                );
+            }
             self.ty(result);
         }
         for stmt in &func.body.stmts {

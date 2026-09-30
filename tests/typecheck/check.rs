@@ -1134,6 +1134,31 @@ fn control_flow_and_return_completeness() {
 }
 
 #[test]
+fn error_results_require_one_trailing_position() {
+    for declaration in [
+        "func f() (error, int) { return nil, 0 }",
+        "func f() (error, error) { return nil, nil }",
+        "type Item struct {}\nfunc (item Item) f() (error, int) { return nil, 0 }",
+    ] {
+        let case = rejects(
+            &program(declaration),
+            "an `error` result must be the last result and appear only once",
+        );
+        assert!(case.errors().iter().any(|(_, span)| *span == "error"));
+    }
+
+    let case = rejects(
+        &program("func f() (int, error) { return 0, nil }"),
+        "the `error` type is not supported",
+    );
+    assert!(
+        case.errors()
+            .iter()
+            .all(|(message, _)| { !message.contains("an `error` result must be the last result") })
+    );
+}
+
+#[test]
 fn unsupported_features_are_never_accepted() {
     for (text, message) in [
         (

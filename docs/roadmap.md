@@ -35,7 +35,7 @@ is guidance, not a language contract.
 | M5–M8 — subset implemented; validation pending | Hello program, variables, functions, structs. Establish the minimal native backend and builtin output support needed to run examples. Use resolution/type work below as prerequisites where needed. |
 | M9–M12 — subset implemented; validation pending | Name resolution, types, HIR, MIR/CFG; semantic IDs, typed calls/fields, explicit control flow, frontend-only checking. |
 | M13–M17 — partial | Copy/Move classification, mutable borrowing, and whole-place move analysis exist in CLI checking and builds. Partial moves, stored borrows, and regions remain. Complete the §42 semantic target with paired acceptance/rejection tests. |
-| M18 — drop cleanup implemented; errors pending | Drop insertion and panic cleanup cover the synchronous subset, with native tests for normal, branch, loop, return, and panic paths. Explicit errors and `?` remain pending under M18–M19. |
+| M18 — drop cleanup implemented; errors pending | Drop insertion and panic cleanup cover the synchronous subset, with native tests for normal, branch, loop, return, and panic paths. Explicit errors and `?` remain pending under M18–M19. Resolution now diagnoses an `error` result in a non-final position; this is only an early contract check, not support for error values. |
 | M20–M23 | Fixed arrays, borrowed slices, owned arrays, maps, packages/imports; validate ownership and package visibility. |
 | M24 | Closures with capture analysis; reject captures that cannot remain valid. |
 | M25–M29 | Task model, `go`, async states, `await`, scheduler; test lifetime proof, suspension, completion, error results, and detach behavior. |
@@ -67,6 +67,11 @@ branch joins, and loop backedges. It rejects partial moves conservatively.
 Drop insertion handles scope exits, replacements, owned parameters, and
 synchronous panic cleanup. The next language-level work is explicit errors and
 `?` under M18–M19, followed by the remaining M13–M17 ownership cases.
+
+The first M18–M19 contract check rejects non-final and repeated `error` results
+at their source spans. The `error` type, `nil`, error construction, result-use
+analysis, and `?` remain unsupported. A trailing `error` declaration is still
+diagnosed as unsupported until those pieces and their cleanup paths are ready.
 
 Other open items: `error`/`?` (M18–M19), rune conversions, the `println` float
 text format (§37.1, TBD), and runtime string concatenation, which needs a
