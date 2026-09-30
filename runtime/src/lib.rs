@@ -11,7 +11,7 @@ mod panic;
 #[path = "string.rs"]
 mod string;
 
-pub(crate) fn finish() {
+pub fn finish() {
     panic::finish();
 }
 

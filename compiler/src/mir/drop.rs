@@ -22,14 +22,22 @@ fn insert_body(package: &hir::Package, body: &mut Body) {
         let mut statements = Vec::new();
         for statement in old {
             match statement {
-                Statement::Assign { place, rvalue, span } => {
+                Statement::Assign {
+                    place,
+                    rvalue,
+                    span,
+                } => {
                     if !package.is_copy(place_type(package, body, &place)) {
                         statements.push(Statement::Drop {
                             replacement: !place.fields.is_empty(),
                             place: place.clone(),
                         });
                     }
-                    statements.push(Statement::Assign { place, rvalue, span });
+                    statements.push(Statement::Assign {
+                        place,
+                        rvalue,
+                        span,
+                    });
                 }
                 Statement::EndScope(locals) => {
                     for local in locals.into_iter().rev() {
@@ -44,7 +52,8 @@ fn insert_body(package: &hir::Package, body: &mut Body) {
                 drop @ Statement::Drop { .. } => statements.push(drop),
             }
         }
-        let old_terminator = std::mem::replace(&mut body.blocks[index].terminator, Terminator::Unreachable);
+        let old_terminator =
+            std::mem::replace(&mut body.blocks[index].terminator, Terminator::Unreachable);
         body.blocks[index].terminator = match old_terminator {
             Terminator::Call {
                 callee: Callee::Drop,
@@ -52,7 +61,7 @@ fn insert_body(package: &hir::Package, body: &mut Body) {
                 target,
                 ..
             } => {
-                if let [crate::mir::Operand::Move(place)] = &args {
+                if let [crate::mir::Operand::Move(place)] = &args[..] {
                     statements.push(Statement::Drop {
                         place: place.clone(),
                         replacement: false,
@@ -60,17 +69,28 @@ fn insert_body(package: &hir::Package, body: &mut Body) {
                 }
                 Terminator::Goto(target)
             }
-            Terminator::Call { callee, args, destinations, target, span, .. } => {
-                Terminator::Call {
-                    callee,
-                    args,
-                    destinations,
-                    target,
-                    unwind: Some(unwind),
-                    span,
-                }
-            }
-            Terminator::Assert { place, rvalue, target, span, .. } => Terminator::Assert {
+            Terminator::Call {
+                callee,
+                args,
+                destinations,
+                target,
+                span,
+                ..
+            } => Terminator::Call {
+                callee,
+                args,
+                destinations,
+                target,
+                unwind: Some(unwind),
+                span,
+            },
+            Terminator::Assert {
+                place,
+                rvalue,
+                target,
+                span,
+                ..
+            } => Terminator::Assert {
                 place,
                 rvalue,
                 target,

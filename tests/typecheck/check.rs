@@ -745,7 +745,9 @@ fn drop_methods_make_structs_move() {
     assert!(package.structs[0].drop.is_some());
     assert!(package.structs[1].drop.is_none());
     assert!(package.structs[2].drop.is_none());
-    accepts(&program("type Handle struct { id int }\nfunc (h mut Handle) drop() {}"));
+    accepts(&program(
+        "type Handle struct { id int }\nfunc (h mut Handle) drop() {}",
+    ));
     rejects(
         &program("type H struct { id int }\nfunc (h H) drop() {}"),
         "`drop` must have a `mut` receiver",
@@ -829,11 +831,9 @@ fn move_values_transfer_and_ordinary_calls_borrow() {
     accepts_move(&body("drop(5)"));
     accepts(&body("drop(5)"));
     rejects(&body("drop()"), "`drop` takes exactly 1 argument");
-    accepts(
-        &program(&format!(
-            "{declarations}\nfunc use() {{ drop(Resource{{id: 1}}) }}"
-        )),
-    );
+    accepts(&program(&format!(
+        "{declarations}\nfunc use() {{ drop(Resource{{id: 1}}) }}"
+    )));
 }
 
 #[test]

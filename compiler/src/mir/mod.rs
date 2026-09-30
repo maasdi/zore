@@ -1,8 +1,8 @@
 //! Control-flow-graph MIR: how the program executes.
 
+pub mod drop;
 pub mod lower;
 pub mod ownership;
-pub mod drop;
 
 use crate::ast::{BinaryOp, UnaryOp};
 use crate::hir::{Const, FieldId, FunctionId};
@@ -88,9 +88,16 @@ pub enum Rvalue {
 
 #[derive(Debug)]
 pub enum Statement {
-    Assign { place: Place, rvalue: Rvalue, span: Span },
+    Assign {
+        place: Place,
+        rvalue: Rvalue,
+        span: Span,
+    },
     EndScope(Vec<Local>),
-    Drop { place: Place, replacement: bool },
+    Drop {
+        place: Place,
+        replacement: bool,
+    },
 }
 
 #[derive(Debug)]

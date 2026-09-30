@@ -95,13 +95,23 @@ fn transfer(
     diagnostics: &mut Vec<Diagnostic>,
 ) {
     for statement in &block.statements {
-        if let crate::mir::Statement::Assign { place, rvalue, span } = statement {
+        if let crate::mir::Statement::Assign {
+            place,
+            rvalue,
+            span,
+        } = statement
+        {
             check_rvalue(body, rvalue, *span, state, diagnostics);
             assign(body, place, *span, state, diagnostics);
         }
     }
     match &block.terminator {
-        Terminator::Assert { place, rvalue, span, .. } => {
+        Terminator::Assert {
+            place,
+            rvalue,
+            span,
+            ..
+        } => {
             check_rvalue(body, rvalue, *span, state, diagnostics);
             assign(body, place, *span, state, diagnostics);
         }
@@ -150,7 +160,10 @@ fn transfer(
                 }
             }
         }
-        Terminator::Goto(_) | Terminator::Return | Terminator::PanicReturn | Terminator::Unreachable => {}
+        Terminator::Goto(_)
+        | Terminator::Return
+        | Terminator::PanicReturn
+        | Terminator::Unreachable => {}
     }
 }
 

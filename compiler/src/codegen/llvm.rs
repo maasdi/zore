@@ -110,7 +110,11 @@ impl Module<'_> {
     fn flag_ty(&self, ty: TypeId) -> String {
         match self.package.types.kind(ty) {
             TypeKind::Struct(id) => {
-                format!("%\"{}.DropFlags.{}\"", self.package.name, self.package.strukt(id).name)
+                format!(
+                    "%\"{}.DropFlags.{}\"",
+                    self.package.name,
+                    self.package.strukt(id).name
+                )
             }
             _ => "i1".into(),
         }
@@ -361,7 +365,12 @@ impl FunctionBuilder<'_, '_> {
             address = loaded;
         }
         for field in &place.fields {
-            let id = self.module.package.types.struct_id(current_ty).expect("struct flag projection");
+            let id = self
+                .module
+                .package
+                .types
+                .struct_id(current_ty)
+                .expect("struct flag projection");
             let projected = self.fresh();
             self.line(format!(
                 "{projected} = getelementptr inbounds {}, ptr {address}, i32 0, i32 {}",
@@ -456,15 +465,24 @@ impl FunctionBuilder<'_, '_> {
         let (fail, ok) = (self.label(), self.label());
         self.line(format!("br i1 {condition}, label %{fail}, label %{ok}"));
         self.out.push_str(&format!("{fail}:\n"));
-        self.line(format!("call void @zore_raise_panic(ptr {global}, i64 {})", text.len()));
-        let unwind = self.active_unwind.expect("checked operation has cleanup edge");
+        self.line(format!(
+            "call void @zore_raise_panic(ptr {global}, i64 {})",
+            text.len()
+        ));
+        let unwind = self
+            .active_unwind
+            .expect("checked operation has cleanup edge");
         self.line(format!("br label %bb{}", unwind.0));
         self.out.push_str(&format!("{ok}:\n"));
     }
 
     fn statement(&mut self, statement: &mir::Statement) {
         match statement {
-            mir::Statement::Assign { place, rvalue, span } => {
+            mir::Statement::Assign {
+                place,
+                rvalue,
+                span,
+            } => {
                 self.assign_rvalue(place, rvalue, *span);
             }
             mir::Statement::Drop { place, replacement } => {
@@ -525,8 +543,7 @@ impl FunctionBuilder<'_, '_> {
                 self.line("call void @zore_enter_drop()");
                 self.line(format!(
                     "call void @\"{}.{}\"(ptr {value_address}, ptr {flag_address})",
-                    self.module.package.name,
-                    name
+                    self.module.package.name, name
                 ));
                 self.line("call void @zore_leave_drop()");
             }
@@ -543,7 +560,12 @@ impl FunctionBuilder<'_, '_> {
     fn has_custom_ancestor(&self, place: &Place) -> bool {
         let mut ty = self.local_ty(place.local);
         for field in &place.fields {
-            let id = self.module.package.types.struct_id(ty).expect("field projection");
+            let id = self
+                .module
+                .package
+                .types
+                .struct_id(ty)
+                .expect("field projection");
             if self.module.package.strukt(id).drop.is_some() {
                 return true;
             }

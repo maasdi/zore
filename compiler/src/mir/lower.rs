@@ -123,7 +123,10 @@ impl Builder {
         if self.blocks[self.current.0 as usize].terminator.is_some() {
             return;
         }
-        if matches!(rvalue, Rvalue::Binary(..) | Rvalue::Unary(..) | Rvalue::Convert(..)) {
+        if matches!(
+            rvalue,
+            Rvalue::Binary(..) | Rvalue::Unary(..) | Rvalue::Convert(..)
+        ) {
             let target = self.new_block();
             self.terminate(Terminator::Assert {
                 place,
@@ -136,7 +139,11 @@ impl Builder {
         } else {
             self.blocks[self.current.0 as usize]
                 .statements
-                .push(Statement::Assign { place, rvalue, span });
+                .push(Statement::Assign {
+                    place,
+                    rvalue,
+                    span,
+                });
         }
     }
 
@@ -414,7 +421,10 @@ impl Builder {
             self.call(
                 package,
                 value,
-                results.iter().map(|&local| Some(Place::local(local))).collect(),
+                results
+                    .iter()
+                    .map(|&local| Some(Place::local(local)))
+                    .collect(),
             );
             for (target, &result) in places.iter().zip(&results) {
                 if let Some(target) = target {
@@ -456,7 +466,12 @@ impl Builder {
         }
     }
 
-    fn call(&mut self, package: &hir::Package, expr: &hir::Expr, mut destinations: Vec<Option<Place>>) {
+    fn call(
+        &mut self,
+        package: &hir::Package,
+        expr: &hir::Expr,
+        mut destinations: Vec<Option<Place>>,
+    ) {
         let (callee, args) = match &expr.kind {
             ExprKind::Call { function, args } => (Callee::Function(*function), &args[..]),
             ExprKind::Println(arg) => (Callee::Println, std::slice::from_ref(&**arg)),
