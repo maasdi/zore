@@ -1147,15 +1147,7 @@ fn error_results_require_one_trailing_position() {
         assert!(case.errors().iter().any(|(_, span)| *span == "error"));
     }
 
-    let case = rejects(
-        &program("func f() (int, error) { return 0, nil }"),
-        "the `error` type is not supported",
-    );
-    assert!(
-        case.errors()
-            .iter()
-            .all(|(message, _)| { !message.contains("an `error` result must be the last result") })
-    );
+    accepts(&program("func f() (int, error) { return 0, nil }"));
 }
 
 #[test]
