@@ -1284,6 +1284,54 @@ fn named_errors_require_use_on_every_path() {
 }
 
 #[test]
+fn propagation_checks_call_shape_and_return_contract() {
+    accepts(&program(
+        "func source(flag bool) (int, error) {
+            if flag { return 0, error(\"failed\") }
+            return 7, nil
+         }
+         func forward(flag bool) (int, error) { return source(flag)? }
+         func parenthesized(flag bool) (int, error) { return (source(flag)?) }
+         func add(flag bool) (int, error) {
+            let value = source(flag)?
+            return value + 1, nil
+         }
+         func check(flag bool) error {
+            source(flag)?
+            return nil
+         }",
+    ));
+    accepts(&program(
+        "func source() (int, string, error) { return 1, \"ok\", nil }
+         func forward() (int, string, error) { return source()? }
+         func bind() error { let value, text = source()?; println(value); println(text); return nil }",
+    ));
+    accepts(&program(
+        "func fail() error { return error(\"failed\") }
+         func forward() error { return fail()? }
+         func constructed() error { return error(\"failed\")? }",
+    ));
+    rejects(
+        &program("func source() error { return nil }\nfunc use() { source()? }"),
+        "requires a trailing `error` result in this function",
+    );
+    rejects(
+        &program("func source() int { return 1 }\nfunc use() error { source()?; return nil }"),
+        "requires a call with a trailing `error` result",
+    );
+    rejects(
+        &program("func use(err error) error { _ = err?; return nil }"),
+        "requires a call or awaited operation",
+    );
+    rejects(
+        &program(
+            "func source() (int, error) { return 1, nil }\nfunc use() (string, error) { return source()? }",
+        ),
+        "does not match this function's non-error results",
+    );
+}
+
+#[test]
 fn unsupported_features_are_never_accepted() {
     for (text, message) in [
         (
@@ -1292,7 +1340,7 @@ fn unsupported_features_are_never_accepted() {
         ),
         (
             program("func g() int { return 1 }\nfunc f() { let x = g()? }"),
-            "the `?` operator is not supported",
+            "requires a trailing `error` result in this function",
         ),
         (
             program("func g() int { return 1 }\nfunc f() { let x = await g() }"),

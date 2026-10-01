@@ -77,6 +77,99 @@ func main() {
     prints(source, "handled first\n");
 }
 
+#[test]
+fn propagation_forwards_results_and_zero_fills_on_error() {
+    let source = "package main
+func source(fail bool) (int, string, error) {
+    if fail { return 9, \"discarded\", error(\"failed\") }
+    return 7, \"ok\", nil
+}
+func forward(fail bool) (int, string, error) { return source(fail)? }
+func main() {
+    let good, text, goodErr = forward(false)
+    println(good)
+    println(text)
+    println(goodErr == nil)
+    let bad, empty, badErr = forward(true)
+    println(bad)
+    println(empty == \"\")
+    println(badErr == error(\"failed\"))
+}";
+    prints(source, "7\nok\ntrue\n0\ntrue\ntrue\n");
+}
+
+#[test]
+fn propagation_skips_later_arguments_and_drops_owned_values() {
+    let source = "package main
+type Guard struct { id int }
+func (g mut Guard) drop() { println(g.id) }
+func source(fail bool) (int, error) {
+    if fail { return 0, error(\"failed\") }
+    return 7, nil
+}
+func later() int { println(99); return 2 }
+func sum(a int, b int) int { return a + b }
+func work(fail bool) (int, error) {
+    let first = Guard{id: 1}
+    let second = Guard{id: 2}
+    let value = sum(source(fail)?, later())
+    println(value)
+    return value, nil
+}
+func main() {
+    let failed, failure = work(true)
+    println(failed)
+    println(failure == error(\"failed\"))
+    let good, success = work(false)
+    println(good)
+    println(success == nil)
+}";
+    prints(source, "2\n1\n0\ntrue\n99\n9\n2\n1\n9\ntrue\n");
+}
+
+#[test]
+fn propagation_cleans_failed_move_results_and_returns_zero_move_value() {
+    let source = "package main
+type Guard struct { id int }
+func (g mut Guard) drop() { println(g.id) }
+func source(fail bool) (Guard, error) {
+    if fail { return Guard{id: 3}, error(\"failed\") }
+    return Guard{id: 4}, nil
+}
+func forward(fail bool) (Guard, error) {
+    let outer = Guard{id: 1}
+    return (source(fail)?)
+}
+func main() {
+    let failed, failure = forward(true)
+    println(failed.id)
+    println(failure == error(\"failed\"))
+    drop(failed)
+    let good, success = forward(false)
+    println(good.id)
+    println(success == nil)
+    drop(good)
+}";
+    prints(source, "3\n1\n0\ntrue\n0\n1\n4\ntrue\n4\n");
+}
+
+#[test]
+fn propagation_of_error_only_call_returns_nil_on_success() {
+    let source = "package main
+func source(fail bool) error {
+    if fail { return error(\"failed\") }
+    return nil
+}
+func forward(fail bool) error { return source(fail)? }
+func constructed() error { return error(\"constructed\")? }
+func main() {
+    println(forward(false) == nil)
+    println(forward(true) == error(\"failed\"))
+    println(constructed() == error(\"constructed\"))
+}";
+    prints(source, "true\ntrue\ntrue\n");
+}
+
 /// Expect a panic in the initial task.
 fn panics(source: &str, message: &str, stdout_before: &str) {
     let output = run(source);

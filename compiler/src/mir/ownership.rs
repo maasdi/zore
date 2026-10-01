@@ -175,6 +175,7 @@ fn check_rvalue(
     diagnostics: &mut Vec<Diagnostic>,
 ) {
     match rvalue {
+        Rvalue::Zero => {}
         Rvalue::Use(operand)
         | Rvalue::Unary(_, operand)
         | Rvalue::Convert(operand, _)

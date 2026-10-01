@@ -269,6 +269,9 @@ impl Builder {
                     let discard = vec![None; expr.types.len()];
                     self.call(package, expr, discard);
                 }
+                ExprKind::Try(_) => {
+                    self.try_values(package, expr);
+                }
                 _ => {
                     let operand = self.operand(package, expr);
                     if let Operand::Move(_) = operand {
@@ -283,6 +286,20 @@ impl Builder {
                     .map(|&l| Some(Place::local(l)))
                     .collect();
                 if let [value] = &values[..]
+                    && matches!(value.kind, ExprKind::Try(_))
+                    && value.types.len() + 1 == returns.len()
+                {
+                    self.store_results(package, &returns[..returns.len() - 1], value, stmt.span);
+                    self.push(
+                        returns
+                            .last()
+                            .cloned()
+                            .flatten()
+                            .expect("error return place"),
+                        Rvalue::Use(Operand::Const(Const::Nil, TypeStore::ERROR)),
+                        stmt.span,
+                    );
+                } else if let [value] = &values[..]
                     && returns.len() > 1
                 {
                     self.store_results(package, &returns, value, stmt.span);
@@ -416,6 +433,15 @@ impl Builder {
         value: &hir::Expr,
         span: Span,
     ) {
+        if matches!(value.kind, ExprKind::Try(_)) {
+            let operands = self.try_values(package, value);
+            for (target, operand) in places.iter().zip(operands) {
+                if let Some(target) = target {
+                    self.push(target.clone(), Rvalue::Use(operand), span);
+                }
+            }
+            return;
+        }
         if places.len() > 1 {
             let results: Vec<Local> = value.types.iter().map(|&ty| self.temp(ty)).collect();
             self.call(
@@ -444,6 +470,69 @@ impl Builder {
         } else if matches!(operand, Operand::Copy(_) | Operand::Move(_)) {
             self.assign_temp(package, value.ty(), Rvalue::Use(operand), span);
         }
+    }
+
+    fn try_values(&mut self, package: &hir::Package, expr: &hir::Expr) -> Vec<Operand> {
+        let ExprKind::Try(inner) = &expr.kind else {
+            unreachable!("checked propagation expression")
+        };
+        let result_locals: Vec<Local> = inner.types.iter().map(|&ty| self.temp(ty)).collect();
+        if matches!(inner.kind, ExprKind::Call { .. }) {
+            self.call(
+                package,
+                inner,
+                result_locals
+                    .iter()
+                    .map(|&local| Some(Place::local(local)))
+                    .collect(),
+            );
+        } else {
+            let operand = self.operand(package, inner);
+            self.push(
+                Place::local(result_locals[0]),
+                Rvalue::Use(operand),
+                inner.span,
+            );
+        }
+        let error_local = *result_locals.last().expect("trailing error result");
+        let condition = self.assign_temp(
+            package,
+            TypeStore::BOOL,
+            Rvalue::Binary(
+                BinaryOp::NotEq,
+                Operand::Copy(Place::local(error_local)),
+                Operand::Const(Const::Nil, TypeStore::ERROR),
+            ),
+            expr.span,
+        );
+        let failure = self.new_block();
+        let success = self.new_block();
+        self.terminate(Terminator::Branch {
+            condition,
+            then_block: failure,
+            else_block: success,
+            span: expr.span,
+        });
+        self.current = failure;
+        let non_error_count = self.returns.len() - 1;
+        let zero_returns = self.returns[..non_error_count].to_vec();
+        for result in zero_returns {
+            self.push(Place::local(result), Rvalue::Zero, expr.span);
+        }
+        self.push(
+            Place::local(self.returns[non_error_count]),
+            Rvalue::Use(Operand::Copy(Place::local(error_local))),
+            expr.span,
+        );
+        self.terminate(Terminator::Return);
+        self.current = success;
+        result_locals[..result_locals.len() - 1]
+            .iter()
+            .map(|&local| {
+                let ty = self.locals[local.0 as usize].ty;
+                value_operand(package, Place::local(local), ty)
+            })
+            .collect()
     }
 
     fn place_type(&self, package: &hir::Package, place: &Place) -> TypeId {
@@ -555,6 +644,11 @@ impl Builder {
                 let temp = self.temp(expr.ty());
                 self.call(package, expr, vec![Some(Place::local(temp))]);
                 value_operand(package, Place::local(temp), expr.ty())
+            }
+            ExprKind::Try(_) => {
+                let values = self.try_values(package, expr);
+                debug_assert_eq!(values.len(), 1);
+                values.into_iter().next().expect("single propagated result")
             }
             ExprKind::Println(_) => unreachable!("println has no value"),
             ExprKind::Drop(_) => unreachable!("drop has no value"),
