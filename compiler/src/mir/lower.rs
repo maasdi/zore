@@ -441,7 +441,7 @@ impl Builder {
         let operand = self.operand(package, value);
         if let Some(Some(target)) = places.first() {
             self.push(target.clone(), Rvalue::Use(operand), span);
-        } else if let Operand::Move(_) = operand {
+        } else if matches!(operand, Operand::Copy(_) | Operand::Move(_)) {
             self.assign_temp(package, value.ty(), Rvalue::Use(operand), span);
         }
     }

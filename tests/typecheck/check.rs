@@ -1175,11 +1175,11 @@ func use() { let value, _ = pair(); println(value) }",
     );
     rejects(
         &body("let err = error(\"x\")"),
-        "named `error` bindings are not supported",
+        "error value in `err` may be unused",
     );
     rejects(
-        &program("func use(err error) { _ = err }"),
-        "named `error` parameters are not supported",
+        &program("func use(err error) {}"),
+        "error value in `err` may be unused",
     );
     rejects(&body("let value = nil"), "`nil` needs an `error` context");
     rejects(
@@ -1194,6 +1194,92 @@ func use() { let value, _ = pair(); println(value) }",
     rejects(
         &body("const err error = error(\"x\")"),
         "constant initializer is not a constant expression",
+    );
+}
+
+#[test]
+fn named_errors_require_use_on_every_path() {
+    accepts(&body("let err = error(\"x\")\n_ = err"));
+    accepts(&body("let err = error(\"x\")\nlet _ = err"));
+    accepts(&body("let err = error(\"x\")\nvar _ = err"));
+    accepts(&body("let _err = error(\"x\")\n_ = _err"));
+    accepts(&program("func use(err error) { _ = err }"));
+    accepts(&program(
+        "func use(flag bool, err error) {
+            if flag { _ = err } else { _ = err }
+        }",
+    ));
+    accepts(&program("func use(err error) error { return err }"));
+    accepts(&program(
+        "func pair() (int, error) { return 1, nil }
+         func use() { let value, err = pair(); _ = err; println(value) }",
+    ));
+    accepts(&program(
+        "func read(err error) { _ = err }
+         func use(err error) { read(err) }",
+    ));
+    accepts(&body(
+        "var err = error(\"first\")
+         if err != nil { println(\"found\") }
+         err = error(\"second\")
+         _ = err",
+    ));
+    accepts(&body(
+        "var err = error(\"first\")
+         for var i = 0; i < 2; i += 1 {
+             _ = err
+             err = error(\"again\")
+         }
+         _ = err",
+    ));
+    accepts(&program(
+        "type Item struct { failure error }
+         func use() { let item = Item{ failure: error(\"x\") }; _ = item.failure }",
+    ));
+
+    rejects(
+        &body("let _err = error(\"x\")"),
+        "error value in `_err` may be unused",
+    );
+    rejects(
+        &program(
+            "func pair() (int, error) { return 1, nil }
+             func use() { let value, err = pair(); println(value) }",
+        ),
+        "error value in `err` may be unused",
+    );
+    let case = rejects(
+        &program("func use(flag bool, err error) { if flag { _ = err } }"),
+        "error value in `err` may be unused",
+    );
+    assert!(case.errors().iter().any(|(_, span)| *span == "err"));
+    rejects(
+        &body("var err = error(\"first\")\nerr = error(\"second\")\n_ = err"),
+        "error value in `err` may be overwritten before use",
+    );
+    rejects(
+        &body(
+            "var err = error(\"first\")
+             var flag = false
+             if flag { _ = err }
+             err = error(\"second\")
+             _ = err",
+        ),
+        "error value in `err` may be overwritten before use",
+    );
+    rejects(
+        &body(
+            "var err = error(\"first\")
+             for var i = 0; i < 2; i += 1 {
+                 err = error(\"again\")
+             }
+             _ = err",
+        ),
+        "error value in `err` may be overwritten before use",
+    );
+    rejects(
+        &body("{ let err = error(\"x\") }"),
+        "error value in `err` may be unused",
     );
 }
 

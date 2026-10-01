@@ -258,15 +258,6 @@ impl<'a> Checker<'a> {
         for (index, ty) in params.iter().enumerate() {
             self.locals[index] = Some(*ty);
         }
-        for param in func.receiver.iter().chain(&func.params) {
-            if self.resolve_type(&param.ty) == Some(TypeStore::ERROR) {
-                self.unsupported(
-                    "named `error` parameters are",
-                    param.name.span,
-                    "path-sensitive error-use checking is still pending (§15.6)",
-                );
-            }
-        }
         self.results = results.clone();
         self.loop_depth = 0;
         let body = self.block(&func.body);
@@ -1693,14 +1684,6 @@ impl<'a> Checker<'a> {
             };
             if let BindingTarget::Name(name) = target {
                 self.set_local(name, expr.ty());
-                if expr.ty() == TypeStore::ERROR {
-                    self.unsupported(
-                        "named `error` bindings are",
-                        name.span,
-                        "path-sensitive error-use checking is still pending (§15.6)",
-                    );
-                    return None;
-                }
             }
             return Some(hir::StmtKind::Let {
                 targets,
@@ -1725,14 +1708,6 @@ impl<'a> Checker<'a> {
         for (target, &ty) in binding.targets.iter().zip(&expr.types) {
             if let BindingTarget::Name(name) = target {
                 self.set_local(name, ty);
-                if ty == TypeStore::ERROR {
-                    self.unsupported(
-                        "named `error` bindings are",
-                        name.span,
-                        "path-sensitive error-use checking is still pending (§15.6)",
-                    );
-                    return None;
-                }
             }
         }
         Some(hir::StmtKind::Let {
