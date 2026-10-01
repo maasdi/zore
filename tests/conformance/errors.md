@@ -2,8 +2,8 @@
 
 Authority: spec §6.6, §7.2, §15.1–15.2, §15.6, and §5.5. Executable checker and
 native cases cover construction, contextual `nil`, comparison, explicit discard,
-and ignored expression results. Named error bindings, path-sensitive use analysis,
-`?`, and async cases remain pending; the tables below are not themselves tests.
+ignored expression results, and named error use across branches, loops, and
+reassignment. `?` and async cases remain pending; the tables below are not themselves tests.
 
 Assume `save()` returns `error`, `load()` returns `(Value, error)`, and each
 fixture defines all required names.

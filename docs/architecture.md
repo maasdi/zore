@@ -1,6 +1,7 @@
 # Bootstrap architecture
 
-Status: M0–M12 cover the implemented synchronous, all-Copy subset.
+Status: The compiler supports a synchronous subset through parts of M18–M19,
+including Move structs, deterministic drops, and concrete error values.
 `compiler/src/main.rs` delegates to `driver`; `driver/command.rs` and
 `driver/session.rs` handle CLI arguments and exit status; `check`
 runs the frontend pipeline in `compiler/src/driver/check.rs`. `compiler/src/source/mod.rs` stores UTF-8 text
@@ -10,11 +11,13 @@ primary and related locations. `compiler/src/lexer/token.rs` and `compiler/src/l
 names to IDs, `compiler/src/types/mod.rs` interns types, and `compiler/src/types/checker.rs` produces the
 typed HIR in `compiler/src/hir/mod.rs`. `tests/driver/cli.rs`, `tests/diagnostics/source_diagnostics.rs`,
 `tests/lexer/lexer.rs`, `tests/parser/parser.rs`, and `tests/typecheck/check.rs` exercise these
-contracts. `compiler/src/mir/lower.rs` lowers HIR to the MIR in `compiler/src/mir/mod.rs`,
+contracts. `compiler/src/mir/lower.rs` lowers HIR to the MIR in `compiler/src/mir/mod.rs`;
+MIR ownership and error-use passes validate the supported subset, and a separate
+pass inserts deterministic drops before native code generation.
 `compiler/src/codegen/llvm.rs` emits LLVM IR, and `compiler/src/driver/build.rs` compiles it with clang and
 the Rust sources in `runtime/src/` using rustc (decision record 0001);
 `tests/codegen/native.rs` builds and
-runs programs. Ownership analysis and drop insertion remain planned. Rust is the bootstrap implementation language; use one crate until
+runs programs. Rust is the bootstrap implementation language; use one crate until
 stable boundaries justify extraction.
 
 ## Repository organization
@@ -131,15 +134,13 @@ round to nearest, ties to even, without overflow. Typed float constants hold
 the exact value of their `float32`/`float64` and fold by exact arithmetic
 followed by one rounding, which equals the correctly rounded IEEE result.
 
-The checker accepts a deliberately small subset: one file per package; `bool`,
-integer and float types, `rune`, `string`, and structs of those; functions and
-methods with default, `mut` or `own` parameters and receivers; `println`; numeric conversions. `error`/`nil`/`?`,
-`async`/`await`, imports, package variables, rune
-conversions, and function values are reported as unsupported. `println` of a
-float type-checks, but its text format is still TBD (§37.1).
-Because every accepted type is Copy, no move rule can be violated yet, and `mut`
-arguments are checked only for mutable places and exclusivity within one call; `typeck` refuses to produce HIR containing a non-Copy type, so
-this cannot silently change when new types are added before ownership analysis.
+The checker accepts a deliberately small, single-file subset: primitive values,
+`error`, structs including Move structs with custom `drop` methods, functions,
+methods, and `println`. MIR ownership analysis checks whole-place moves and
+borrows; error-use analysis checks named `error` bindings and parameters on
+normal control-flow paths. `?`, `async`/`await`, imports, package variables,
+rune conversions, and function values remain unsupported. `println` of a float
+type-checks, but its text format is still TBD (§37.1).
 
 AST preserves written structure; HIR records resolved meaning; MIR describes
 execution. Source identity and spans survive transformations. Use typed IDs for
@@ -149,21 +150,22 @@ recursive borrow provenance independently of Copy/Move classification, including
 exclusive reborrow relationships and input-to-result contracts (§11.7, §12.3).
 Projected moves must respect custom-destructor boundaries (§31.2). Task/channel
 escape checks need independent backing lifetime proofs across error and unwind
-paths (§18.4, §19.4). These are planned requirements, not implemented passes.
+paths (§18.4, §19.4). Partial moves, persistent borrows, and async lifetime
+proofs remain future work.
 
-The pass order in §25 is conceptual. MIR construction, ownership analysis, async
-lowering, and drop insertion may need multiple steps. Document concrete ordering
-when these stages exist; preserve safety before and after transformation. Keep
-ownership validation and destruction placement separate responsibilities.
+The pass order in §25 is conceptual. The frontend lowers checked HIR to MIR,
+runs ownership and error-use analysis, then returns diagnostics or a package.
+Native builds lower the accepted package again and insert drops before code
+generation. Async lowering remains future work. Ownership validation and
+destruction placement are separate responsibilities.
 
 `check` must work without a backend, linker, runtime, or LLVM installation.
-Before adding LLVM, record its version, binding strategy, host target, runtime ABI,
-and setup/test instructions in an architecture decision document. Initial native
-output must integrate a backend early enough to support the native milestones;
-M32 is backend hardening, not the first backend implementation.
+The LLVM backend decision, supported toolchain, host target, and runtime ABI
+are recorded in decision record 0001. M32 is backend hardening, not the first
+backend implementation.
 
-No scheduler, allocator, string layout, or LLVM binding has been chosen. These
-are internal choices, constrained by the observable language guarantees. Record
+No scheduler has been chosen. Further internal choices are constrained by the
+observable language guarantees. Record
 substantial decisions with context, alternatives, consequences, and validation
 under `docs/decisions/` when they are made.
 
@@ -183,8 +185,7 @@ without changing language semantics. No LLVM or runtime dependency is involved.
 MIR (§33) is a control-flow graph per function: locals (HIR locals keep their
 indexes, temporaries follow), basic blocks of `place = rvalue` statements, and
 one terminator per block (`Goto`, `Branch`, `Call`, `Return`, `Unreachable`).
-Operands distinguish `Copy`, `Move`, and constants; lowering emits only `Copy`
-and constants because every accepted type is Copy. Lowering fixes evaluation
+Operands distinguish `Copy`, `Move`, references, and constants. Lowering fixes evaluation
 order explicitly: operands and arguments left to right, assignment values
 retained before stores, struct fields in written order then assembled in
 declaration order, compound assignment reading its target before the
@@ -196,9 +197,8 @@ relies on LLVM's optimizer to promote them. §6.6 runtime checks are emitted
 there: overflow intrinsics for `+ - *` and negation, zero and `MIN / -1`
 checks for `/` and `%`, unsigned range checks for shift counts, and range
 checks for numeric conversions; each failure calls `zore_panic` with the
-operation and source location. Since no accepted type has a destructor, a
-panic needs no unwinding. When drop insertion lands (M18), these checks become
-explicit MIR assert terminators with cleanup paths. Runtime string
+operation and source location. MIR assert terminators carry cleanup paths so a
+panic runs pending drops before the runtime reports it. Runtime string
 concatenation and float printing are reported as unsupported by the backend.
 The generated IR contains no target triple, so clang supplies the host's; it
 requires LLVM 15 or newer for opaque pointers.
@@ -212,4 +212,3 @@ select their executables. There is no runtime artifact cache yet. Rust startup
 provides SIGPIPE handling; output is locked and explicitly flushed before
 returning, so write failures become Zore panics. The unsafe Rust boundary is
 limited to the internal ABI and does not introduce source-level unsafe syntax.
-

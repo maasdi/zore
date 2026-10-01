@@ -65,6 +65,18 @@ func main() {
     prints(source, "true\ntrue\ntrue\ntrue\ntrue\n7\n");
 }
 
+#[test]
+fn named_error_can_be_checked_and_replaced_after_use() {
+    let source = "package main
+func main() {
+    var err = error(\"first\")
+    if err != nil { println(\"handled first\") }
+    err = error(\"second\")
+    _ = err
+}";
+    prints(source, "handled first\n");
+}
+
 /// Expect a panic in the initial task.
 fn panics(source: &str, message: &str, stdout_before: &str) {
     let output = run(source);

@@ -1,6 +1,7 @@
 //! Control-flow-graph MIR: how the program executes.
 
 pub mod drop;
+pub mod error_use;
 pub mod lower;
 pub mod ownership;
 

@@ -2,7 +2,7 @@
 
 use crate::diagnostic::Diagnostic;
 use crate::hir;
-use crate::mir::{lower, ownership};
+use crate::mir::{error_use, lower, ownership};
 use crate::parser::parse;
 use crate::resolve::resolve;
 use crate::source::SourceFile;
@@ -29,6 +29,7 @@ pub fn check_file(file: &SourceFile) -> Checked {
     if let Some(checked) = &package {
         let program = lower::lower(checked);
         diagnostics.extend(ownership::check(&program));
+        diagnostics.extend(error_use::check(checked, &program));
     }
     diagnostics.sort_by_key(|d| (d.span().start(), d.span().end()));
     if !diagnostics.is_empty() {
