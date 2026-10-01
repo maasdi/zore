@@ -138,7 +138,7 @@ The checker accepts a deliberately small, single-file subset: primitive values,
 `error`, structs including Move structs with custom `drop` methods, functions,
 methods, and `println`. MIR ownership analysis checks whole-place moves and
 borrows; error-use analysis checks named `error` bindings and parameters on
-normal control-flow paths. `?`, `async`/`await`, imports, package variables,
+normal control-flow paths. Awaited `?`, `async`/`await`, imports, package variables,
 rune conversions, and function values remain unsupported. `println` of a float
 type-checks, but its text format is still TBD (§37.1).
 

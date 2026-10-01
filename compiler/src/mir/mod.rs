@@ -78,6 +78,7 @@ pub enum Operand {
 #[derive(Debug)]
 pub enum Rvalue {
     Use(Operand),
+    Zero,
     /// Checked arithmetic; `&&` and `||` are lowered to branches.
     Binary(BinaryOp, Operand, Operand),
     Unary(UnaryOp, Operand),

@@ -35,7 +35,7 @@ is guidance, not a language contract.
 | M5–M8 — subset implemented; validation pending | Hello program, variables, functions, structs. Establish the minimal native backend and builtin output support needed to run examples. Use resolution/type work below as prerequisites where needed. |
 | M9–M12 — subset implemented; validation pending | Name resolution, types, HIR, MIR/CFG; semantic IDs, typed calls/fields, explicit control flow, frontend-only checking. |
 | M13–M17 — partial | Copy/Move classification, mutable borrowing, and whole-place move analysis exist in CLI checking and builds. Partial moves, stored borrows, and regions remain. Complete the §42 semantic target with paired acceptance/rejection tests. |
-| M18–M19 — partial | Drop insertion and panic cleanup cover the synchronous subset. The concrete Copy `error` type, `nil` in an error context, `error(message)`, content equality, explicit discards, and rejection of silently ignored error results are implemented. Named error bindings and parameters have path-sensitive use checks across branches, loops, reassignment, and normal scope exits. `?` and its cleanup paths remain unsupported. |
+| M18–M19 — synchronous subset implemented; validation pending | Drop insertion and panic cleanup cover the synchronous subset. The concrete Copy `error` type, `nil` in an error context, `error(message)`, content equality, explicit discards, rejection of silently ignored error results, and path-sensitive checks for named errors are implemented. Synchronous `?` propagates call errors, zero-fills other return values, and runs cleanup. Awaited propagation remains for M25–M29. |
 | M20–M23 | Fixed arrays, borrowed slices, owned arrays, maps, packages/imports; validate ownership and package visibility. |
 | M24 | Closures with capture analysis; reject captures that cannot remain valid. |
 | M25–M29 | Task model, `go`, async states, `await`, scheduler; test lifetime proof, suspension, completion, error results, and detach behavior. |
@@ -65,16 +65,17 @@ The first Move type is a struct with a user-defined `drop` method (§8.3,
 §14.3). MIR ownership analysis checks whole-place moves, borrowed parameters,
 branch joins, and loop backedges. It rejects partial moves conservatively.
 Drop insertion handles scope exits, replacements, owned parameters, and
-synchronous panic cleanup. The next language-level work is `?` under M18–M19,
-followed by the remaining M13–M17 ownership cases.
+synchronous panic cleanup. Synchronous `?` under M18–M19 now uses the return
+cleanup path. The remaining M13–M17 ownership cases follow.
 
 The first M18–M19 slices reject non-final and repeated `error` results, then
 support explicit error values, returns, comparisons, and discards. Named local
 `error` bindings and parameters are checked for use on every reachable path
-before overwrite or normal scope exit. Error propagation with `?` remains
-unsupported until its early-return cleanup paths are implemented.
+before overwrite or normal scope exit. Synchronous `?` propagates from calls
+and fills non-error return positions with zero values on failure. Awaited `?`
+depends on the M25–M29 task model.
 
-Other open items: `?` (M18–M19), rune conversions, the `println` float
+Other open items: rune conversions, the `println` float
 text format (§37.1, TBD), and runtime string concatenation, which needs a
 string-buffer ownership decision (§41.5). Runtime checks use MIR assert
 terminators with cleanup paths.

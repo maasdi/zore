@@ -501,6 +501,7 @@ impl FunctionBuilder<'_, '_> {
         let result_ty = self.place_ty(place);
         let value = match rvalue {
             Rvalue::Use(operand) => self.value(operand),
+            Rvalue::Zero => "zeroinitializer".into(),
             Rvalue::Binary(op, lhs, rhs) => self.binary(*op, lhs, rhs, span),
             Rvalue::Unary(op, operand) => self.unary(*op, operand, span),
             Rvalue::Convert(operand, to) => self.convert(operand, *to, span),

@@ -152,6 +152,14 @@ fn is_nil(expr: &ast::Expr) -> bool {
     }
 }
 
+fn is_try(expr: &ast::Expr) -> bool {
+    match &expr.kind {
+        ast::ExprKind::Try(_) => true,
+        ast::ExprKind::Paren(inner) => is_try(inner),
+        _ => false,
+    }
+}
+
 fn op_str(op: BinaryOp) -> &'static str {
     match op {
         BinaryOp::Mul => "*",
@@ -584,18 +592,47 @@ impl<'a> Checker<'a> {
                 self.unsupported("`await` is", span, "planned for roadmap milestone M25–M29");
                 None
             }
-            ast::ExprKind::Try(_) => {
-                self.unsupported(
-                    "the `?` operator is",
-                    span,
-                    "planned for roadmap milestone M18–M19",
-                );
-                None
-            }
+            ast::ExprKind::Try(inner) => self.try_expr(inner, span),
             ast::ExprKind::Call { callee, args } => self.call(callee, args, span),
             ast::ExprKind::Field { base, name } => self.field(base, name, span),
             ast::ExprKind::StructLit { ty, fields } => self.struct_lit(ty, fields, span),
         }
+    }
+
+    fn try_expr(&mut self, inner: &ast::Expr, span: Span) -> Option<Value> {
+        fn call_or_await(expr: &ast::Expr) -> bool {
+            match &expr.kind {
+                ast::ExprKind::Call { .. } | ast::ExprKind::Await(_) => true,
+                ast::ExprKind::Paren(inner) => call_or_await(inner),
+                _ => false,
+            }
+        }
+
+        if !call_or_await(inner) {
+            self.error("`?` requires a call or awaited operation", span);
+            return None;
+        }
+        if self.results.last() != Some(&TypeStore::ERROR) {
+            self.error(
+                "`?` requires a trailing `error` result in this function",
+                span,
+            );
+            return None;
+        }
+        let Value::Typed(value) = self.expr(inner, None)? else {
+            self.error("`?` requires a typed call", span);
+            return None;
+        };
+        if value.types.last() != Some(&TypeStore::ERROR) {
+            self.error("`?` requires a call with a trailing `error` result", span);
+            return None;
+        }
+        let types = value.types[..value.types.len() - 1].to_vec();
+        Some(Value::Typed(hir::Expr {
+            kind: ExprKind::Try(Box::new(value)),
+            types,
+            span,
+        }))
     }
 
     fn name_expr(&mut self, name: &str, span: Span) -> Option<Value> {
@@ -1978,6 +2015,23 @@ impl<'a> Checker<'a> {
             self.error("this function does not return a value", values[0].span);
             self.report_arg_errors(values);
             return None;
+        }
+        if let [value] = values
+            && is_try(value)
+            && results.last() == Some(&TypeStore::ERROR)
+        {
+            return match self.expr(value, None)? {
+                Value::Typed(expr) if expr.types == results[..results.len() - 1] => {
+                    Some(hir::StmtKind::Return(vec![expr]))
+                }
+                other => {
+                    self.error(
+                        "`?` result does not match this function's non-error results",
+                        other.span(),
+                    );
+                    None
+                }
+            };
         }
         if values.len() == 1 && results.len() > 1 {
             // Forward all results of one call.

@@ -162,6 +162,7 @@ fn transfer(
 
 fn read_rvalue(rvalue: &Rvalue, state: &mut [UseState]) {
     match rvalue {
+        Rvalue::Zero => {}
         Rvalue::Use(value)
         | Rvalue::Unary(_, value)
         | Rvalue::Convert(value, _)

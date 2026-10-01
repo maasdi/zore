@@ -194,6 +194,7 @@ pub enum ExprKind {
     /// Checked numeric conversion.
     Convert(Box<Expr>),
     Error(Box<Expr>),
+    Try(Box<Expr>),
     /// Fields in written order, which is evaluation order.
     StructLit {
         strukt: StructId,
