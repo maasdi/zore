@@ -1685,6 +1685,22 @@ fn fixed_arrays_literals_and_indexing() {
         &body("let xs = [int; -1]{}"),
         "array size must be a nonnegative constant",
     );
+    rejects(
+        &body("let xs = [int; 3]{1, 2, 3}\nlet y = xs[3]"),
+        "array index `3` is out of range for `[int64; 3]`",
+    );
+    rejects(
+        &body("let xs = [int; 3]{1, 2, 3}\nlet y = xs[-1]"),
+        "array index `-1` is out of range for `[int64; 3]`",
+    );
+    rejects(
+        &body("var xs = [int; 3]{1, 2, 3}\nxs[3] = 9"),
+        "array index `3` is out of range for `[int64; 3]`",
+    );
+    // A non-constant index stays a pure runtime check, never a compile error.
+    accepts(&body(
+        "let xs = [int; 3]{1, 2, 3}\nlet i = 5\nlet y = xs[i]",
+    ));
 }
 
 #[test]

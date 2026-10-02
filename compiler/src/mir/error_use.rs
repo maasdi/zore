@@ -166,7 +166,8 @@ fn read_rvalue(rvalue: &Rvalue, state: &mut [UseState]) {
         Rvalue::Use(value)
         | Rvalue::Unary(_, value)
         | Rvalue::Convert(value, _)
-        | Rvalue::Error(value) => read_operand(value, state),
+        | Rvalue::Error(value)
+        | Rvalue::BoundsCheck(value, _) => read_operand(value, state),
         Rvalue::Binary(_, left, right) => {
             read_operand(left, state);
             read_operand(right, state);

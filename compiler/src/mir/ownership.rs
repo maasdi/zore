@@ -282,7 +282,8 @@ fn check_rvalue(
         Rvalue::Use(operand)
         | Rvalue::Unary(_, operand)
         | Rvalue::Convert(operand, _)
-        | Rvalue::Error(operand) => {
+        | Rvalue::Error(operand)
+        | Rvalue::BoundsCheck(operand, _) => {
             check_operand(package, body, operand, span, state, diagnostics);
         }
         Rvalue::Binary(_, left, right) => {

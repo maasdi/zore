@@ -1525,7 +1525,7 @@ impl<'a> Checker<'a> {
             }
             Value::Typed(expr) => self.single_value(expr)?,
         };
-        let TypeKind::Array { element, .. } = self.types.kind(base.ty()) else {
+        let TypeKind::Array { element, size } = self.types.kind(base.ty()) else {
             let message = format!("type `{}` cannot be indexed", self.name(base.ty()));
             self.error(message, base.span);
             self.expr(index, None);
@@ -1537,6 +1537,16 @@ impl<'a> Checker<'a> {
             let message = format!(
                 "array index must be an integer, found `{}`",
                 self.name(index_expr.ty())
+            );
+            self.error(message, index_expr.span);
+            return None;
+        }
+        if let Some(&Const::Int(n)) = constant(&index_expr)
+            && !(0..i128::from(size)).contains(&n)
+        {
+            let message = format!(
+                "array index `{n}` is out of range for `{}`",
+                self.name(base.ty())
             );
             self.error(message, index_expr.span);
             return None;
@@ -1950,8 +1960,9 @@ impl<'a> Checker<'a> {
                     return None;
                 }
                 let mut place = self.assignable_place(base)?;
-                let TypeKind::Array { element, .. } = self.types.kind(place.ty) else {
-                    let message = format!("type `{}` cannot be indexed", self.name(place.ty));
+                let array_name = self.name(place.ty);
+                let TypeKind::Array { element, size } = self.types.kind(place.ty) else {
+                    let message = format!("type `{array_name}` cannot be indexed");
                     self.error(message, base.span);
                     self.expr(index, None);
                     return None;
@@ -1963,6 +1974,13 @@ impl<'a> Checker<'a> {
                         "array index must be an integer, found `{}`",
                         self.name(index_expr.ty())
                     );
+                    self.error(message, index_expr.span);
+                    return None;
+                }
+                if let Some(&Const::Int(n)) = constant(&index_expr)
+                    && !(0..i128::from(size)).contains(&n)
+                {
+                    let message = format!("array index `{n}` is out of range for `{array_name}`");
                     self.error(message, index_expr.span);
                     return None;
                 }

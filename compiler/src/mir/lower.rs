@@ -125,7 +125,7 @@ impl Builder {
         }
         if matches!(
             rvalue,
-            Rvalue::Binary(..) | Rvalue::Unary(..) | Rvalue::Convert(..)
+            Rvalue::Binary(..) | Rvalue::Unary(..) | Rvalue::Convert(..) | Rvalue::BoundsCheck(..)
         ) {
             let target = self.new_block();
             self.terminate(Terminator::Assert {
@@ -653,7 +653,7 @@ impl Builder {
             ExprKind::Index { base, index } => {
                 // §12.6: evaluate the base, then the index, once each.
                 let base_operand = self.operand(package, base);
-                let index_operand = self.operand(package, index);
+                let index_operand = self.checked_index_operand(package, base.ty(), index);
                 match base_operand {
                     Operand::Copy(mut place) | Operand::Move(mut place) => {
                         place.projections.push(Projection::Index(index_operand));
@@ -789,7 +789,7 @@ impl Builder {
             }
             ExprKind::Index { base, index } => {
                 let mut place = self.argument_place_opt(package, base)?;
-                let index_operand = self.operand(package, index);
+                let index_operand = self.checked_index_operand(package, base.ty(), index);
                 place.projections.push(Projection::Index(index_operand));
                 Some(place)
             }
@@ -797,13 +797,49 @@ impl Builder {
         }
     }
 
+    /// Evaluates `index`, bounds-checks it against `array_ty`'s length, and
+    /// returns the (now `int64`-typed) checked value, ready to use in an
+    /// `Index` projection.
+    fn checked_index_operand(
+        &mut self,
+        package: &hir::Package,
+        array_ty: TypeId,
+        index: &hir::Expr,
+    ) -> Operand {
+        let TypeKind::Array { size, .. } = package.types.kind(array_ty) else {
+            unreachable!("index projection on a non-array")
+        };
+        let operand = self.operand(package, index);
+        self.assign_temp(
+            package,
+            TypeStore::INT64,
+            Rvalue::BoundsCheck(operand, size),
+            index.span,
+        )
+    }
+
     fn place(&mut self, package: &hir::Package, place: &hir::Place) -> Place {
+        let mut ty = self.locals[place.root.0 as usize].ty;
         let mut projections = Vec::with_capacity(place.projections.len());
         for projection in &place.projections {
-            projections.push(match projection {
-                hir::Projection::Field(id) => Projection::Field(*id),
-                hir::Projection::Index(index) => Projection::Index(self.operand(package, index)),
-            });
+            match projection {
+                hir::Projection::Field(id) => {
+                    let strukt = package
+                        .types
+                        .struct_id(ty)
+                        .expect("field projection on a struct");
+                    ty = package.strukt(strukt).fields[id.0 as usize].ty;
+                    projections.push(Projection::Field(*id));
+                }
+                hir::Projection::Index(index) => {
+                    let operand = self.checked_index_operand(package, ty, index);
+                    let TypeKind::Array { element, .. } = package.types.kind(ty) else {
+                        unreachable!("index projection on a non-array")
+                    };
+                    ty = element;
+                    projections.push(Projection::Index(operand));
+                }
+            }
         }
         Place {
             local: Local(place.root.0),

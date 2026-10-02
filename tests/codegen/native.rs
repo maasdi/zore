@@ -332,6 +332,102 @@ func main() {
 }
 
 #[test]
+fn arrays_construct_index_and_print() {
+    let source = main_body(
+        "var xs = [int; 3]{1, 2, 3}
+        println(xs[0])
+        println(xs[1])
+        println(xs[2])
+        xs[1] = 9
+        println(xs[1])",
+    );
+    prints(&source, "1\n2\n3\n9\n");
+}
+
+#[test]
+fn array_index_out_of_range_panics() {
+    panics(
+        &main_body("let xs = [int; 3]{1, 2, 3}\nvar i = -1\nprintln(xs[i])"),
+        "index out of range",
+        "",
+    );
+    panics(
+        &main_body("let xs = [int; 3]{1, 2, 3}\nvar i = 3\nprintln(xs[i])"),
+        "index out of range",
+        "",
+    );
+    // A huge unsigned index must not wrap around to a valid one when
+    // widened to int64 and compared (§12.6).
+    panics(
+        &main_body(
+            "let xs = [int; 3]{1, 2, 3}\nvar i uint64 = 18446744073709551615\nprintln(xs[i])",
+        ),
+        "index out of range",
+        "",
+    );
+}
+
+#[test]
+fn array_of_custom_drop_elements_drops_in_reverse_order_at_scope_exit() {
+    let source = "package main
+type Guard struct { id int }
+func (g mut Guard) drop() { println(g.id) }
+func main() {
+    var xs = [Guard; 3]{Guard{id: 1}, Guard{id: 2}, Guard{id: 3}}
+}";
+    prints(source, "3\n2\n1\n");
+}
+
+#[test]
+fn array_index_assignment_drops_the_old_element_first() {
+    let source = "package main
+type Guard struct { id int }
+func (g mut Guard) drop() { println(g.id) }
+func main() {
+    var xs = [Guard; 2]{Guard{id: 1}, Guard{id: 2}}
+    xs[0] = Guard{id: 3}
+}";
+    prints(source, "1\n2\n3\n");
+}
+
+#[test]
+fn struct_containing_array_field_drops_elements_then_struct() {
+    let source = "package main
+type Guard struct { id int }
+func (g mut Guard) drop() { println(g.id) }
+type Wrapper struct { items [Guard; 2] }
+func (w mut Wrapper) drop() { println(100) }
+func main() {
+    var w = Wrapper{items: [Guard; 2]{Guard{id: 1}, Guard{id: 2}}}
+}";
+    prints(source, "100\n2\n1\n");
+}
+
+#[test]
+fn replacing_an_array_element_through_a_custom_drop_ancestor_aborts_on_panic() {
+    let source = "package main
+type Guard struct { id int }
+func (g mut Guard) drop() {
+    if g.id == 99 {
+        var zero = 0
+        println(1 / zero)
+    } else {
+        println(g.id)
+    }
+}
+type Container struct { items [Guard; 1] }
+func (c mut Container) drop() { println(100) }
+func main() {
+    var c = Container{items: [Guard; 1]{Guard{id: 99}}}
+    c.items[0] = Guard{id: 1}
+}";
+    let output = run(source);
+    assert!(!output.status.success());
+    assert_ne!(output.status.code(), Some(2));
+    assert_eq!(stdout(&output), "");
+}
+
+#[test]
 fn semantic_target_prints_john() {
     let source = std::fs::read_to_string(concat!(
         env!("CARGO_MANIFEST_DIR"),
@@ -762,10 +858,6 @@ fn unsupported_backend_features_are_diagnosed() {
         (
             "println(1.5)",
             "printing floating-point values is not supported",
-        ),
-        (
-            "let xs = [int; 3]{1, 2, 3}\nprintln(xs[0])",
-            "fixed-size arrays not supported by the native backend yet",
         ),
     ] {
         let mut sources = SourceMap::new();

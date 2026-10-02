@@ -36,7 +36,7 @@ is guidance, not a language contract.
 | M9–M12 — subset implemented; validation pending | Name resolution, types, HIR, MIR/CFG; semantic IDs, typed calls/fields, explicit control flow, frontend-only checking. |
 | M13–M17 — partial | Copy/Move classification, mutable borrowing, whole-place move analysis, and field-level partial moves (with reinitialization and the custom-`drop`-ancestor restriction) exist in CLI checking and builds. Stored borrows and regions remain. Complete the §42 semantic target with paired acceptance/rejection tests. |
 | M18–M19 — synchronous subset implemented; validation pending | Drop insertion and panic cleanup cover the synchronous subset. The concrete Copy `error` type, `nil` in an error context, `error(message)`, content equality, explicit discards, rejection of silently ignored error results, and path-sensitive checks for named errors are implemented. Synchronous `?` propagates call errors, zero-fills other return values, and runs cleanup. Awaited propagation remains for M25–M29. |
-| M20–M23 — partial | Fixed-array types, typed literals, and indexing (read, mutable-place write/replacement, conservative-aliasing, and rejection of moving an element out through an index) are implemented in `zore check`; `zore build`/`zore run` honestly diagnose fixed-array programs as unsupported pending LLVM codegen. Borrowed slices, dynamic `Array<T>`, owned arrays' full M21 scope, maps, and packages/imports remain; validate ownership and package visibility. |
+| M20–M23 — partial | Fixed-array types, typed literals, and indexing (read, mutable-place write/replacement, conservative-aliasing, and rejection of moving an element out through an index) are implemented end to end: `zore check`, and now `zore build`/`zore run` — LLVM `[N x T]` type emission, GEP-based indexed addressing, runtime bounds-check panics, and element cleanup without per-element drop flags (sound because element extraction stays rejected). Borrowed slices, dynamic `Array<T>`, owned arrays' full M21 scope, maps, and packages/imports remain; validate ownership and package visibility. |
 | M24 | Closures with capture analysis; reject captures that cannot remain valid. |
 | M25–M29 | Task model, `go`, async states, `await`, scheduler; test lifetime proof, suspension, completion, error results, and detach behavior. |
 | M30–M31 | Channels and async I/O; test copying handles, message ownership, buffering, close/drain, and panic on closed send. |
@@ -80,8 +80,8 @@ before overwrite or normal scope exit. Synchronous `?` propagates from calls
 and fills non-error return positions with zero values on failure. Awaited `?`
 depends on the M25–M29 task model.
 
-Fixed-array types `[T; N]`, typed literals, and indexing are implemented in
-the frontend (§12.6): the `Place`/`FieldId` projection model generalized to a
+Fixed-array types `[T; N]`, typed literals, and indexing are implemented end
+to end (§12.6): the `Place`/`FieldId` projection model generalized to a
 `Projection` enum (`Field`/`Index`) across HIR and MIR, reusing the
 partial-move `MovedSet` unchanged by truncating queries to their leading
 field-only prefix, since array contents are not partial-move-tracked past the
@@ -89,10 +89,22 @@ array field itself. Moving a single element out through an index is
 unconditionally rejected for now (diagnosed, not guessed); only the
 constant-index carve-out and borrowed slices extend this later. Conservative
 aliasing treats any two runtime indices as potentially overlapping, per spec.
-Codegen defers all array code generation behind one upfront
-whole-package scan that diagnoses fixed-array programs as unsupported before
-emitting any IR, rather than patching every individual exhaustive match —
-`zore check` fully supports arrays; `zore build`/`zore run` do not yet.
+A statically out-of-range constant index is rejected at check time; a
+non-constant index gets a runtime bounds check (a new `Rvalue::BoundsCheck`,
+reusing the existing `Terminator::Assert`/`panic_if` mechanism) that widens
+the index per its own signedness before comparing — unsigned sources must
+compare unsigned (`icmp uge`), never signed, or a huge unsigned index wraps
+to a negative `int64` bit pattern and silently passes an `sge` check.
+Codegen emits LLVM's native `[N x T]` array type and mixes literal `i32`
+struct-field indices with a runtime `i64` array index in one `getelementptr`
+instruction. Per-value `DropFlags` cleanup extends to arrays *without*
+per-element flags — sound only because element extraction stays rejected, so
+an array's contents are always either fully present or (the whole array
+moved) irrelevant; a custom-`drop` call made on an element during cleanup
+gets a fresh transient scratch flags block (`drop_value`/`drop_contents`/
+`drop_unconditional`/`scratch_flags`) rather than nonexistent persistent
+per-slot storage, which a naive copy-paste extension of the existing
+struct-field GEP pattern would have corrupted.
 
 Other open items: rune conversions, the `println` float
 text format (§37.1, TBD), and runtime string concatenation, which needs a
@@ -1994,20 +2006,21 @@ above, including the error-propagation work merged through PR #11
 Custom-destructor Move types (M18), mutable-parameter exclusivity, and
 whole-place plus field-level partial-move checking (M13–M17) are now
 implemented with paired acceptance/rejection cases, as is synchronous `?`
-propagation (M19). Fixed-array types, literals, and indexing (M20, frontend
-only) are implemented next; stored borrows and region analysis (§15, §17) —
-the remaining M13–M17 gap — are gated on borrowed slices, which are the only
-locked construct that introduces a storable borrow, and were deferred rather
-than built speculatively ahead of need.
+propagation (M19). Fixed-array types, literals, and indexing (M20) are now
+implemented end to end, including LLVM codegen (array type emission,
+GEP-based indexed addressing, runtime bounds-check panics, and element
+cleanup without per-element drop flags — see above). Stored borrows and
+region analysis (§15, §17) — the remaining M13–M17 gap — are gated on
+borrowed slices, which are the only locked construct that introduces a
+storable borrow, and were deferred rather than built speculatively ahead of
+need.
 
-The next concrete options are: (a) LLVM codegen for fixed arrays (array type
-emission, GEP-style indexed addressing reusing the existing checked-arithmetic
-`Terminator::Assert`/`panic_if` pattern for bounds checks, and the `DropFlags`
-extension), finishing what the frontend already accepts; (b) borrowed slices
-(`[]T`/`mut []T`) and the region/liveness analysis they require, closing the
-M13–M17 gap; or (c) closures (M24). Do not accept a feature whose move/borrow
-checks and required cleanup are not yet implemented. Any newly discovered
-semantic gap follows specification §53 and `docs/spec-questions.md`.
+The next concrete options are: (a) borrowed slices (`[]T`/`mut []T`) and the
+region/liveness analysis they require, closing the M13–M17 gap; (b) dynamic
+`Array<T>` (the rest of M20–M21); or (c) closures (M24). Do not accept a
+feature whose move/borrow checks and required cleanup are not yet
+implemented. Any newly discovered semantic gap follows specification §53 and
+`docs/spec-questions.md`.
 
 ---
 

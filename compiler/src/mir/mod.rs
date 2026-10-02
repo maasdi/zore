@@ -100,6 +100,9 @@ pub enum Rvalue {
     /// Checked numeric conversion to the given type.
     Convert(Operand, TypeId),
     Error(Operand),
+    /// Checks `0 <= index < length` per the operand's own signedness, panics
+    /// otherwise, and evaluates to the index widened to `int64`.
+    BoundsCheck(Operand, u32),
     /// Fields or elements in declaration/evaluation order.
     Aggregate(AggregateKind, Vec<Operand>),
 }
