@@ -74,8 +74,10 @@ in `statement-boundaries`, `expressions`, `bindings-assignments`,
 `tests/parser/parser.rs`. Resolution and typing rows for the checker subset in
 `entry-point`, `println`, `numerics`, `constant-expressions`,
 `bindings-assignments`, `functions-structs`, `control-flow`, and `keywords` have
-counterparts in `tests/typecheck/check.rs`. Ownership, runtime, and native rows remain
-pending.
+counterparts in `tests/typecheck/check.rs`. Field-level partial moves,
+reinitialization, and the custom-`drop`-ancestor restriction in `ownership`
+have counterparts in both `tests/typecheck/check.rs` and `tests/codegen/native.rs`.
+Remaining ownership, runtime, and native rows stay pending.
 
 Use Rust unit tests for small source/IR utilities and pass algorithms. Use Cargo
 integration tests in subsystem folders under `tests/` for public compiler APIs

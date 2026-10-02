@@ -289,6 +289,49 @@ func main() {
 }
 
 #[test]
+fn partial_move_through_a_call_drops_only_the_remaining_field() {
+    let source = "package main
+type Guard struct { id int }
+func (g mut Guard) drop() { println(g.id) }
+type Wrapper struct { a Guard; b Guard }
+func consume(g own Guard) { println(100) }
+func main() {
+    var w = Wrapper{a: Guard{id: 1}, b: Guard{id: 2}}
+    consume(w.a)
+    drop(w.b)
+}";
+    prints(source, "100\n1\n2\n");
+}
+
+#[test]
+fn partial_move_then_reinitialize_drops_each_value_once() {
+    let source = "package main
+type Guard struct { id int }
+func (g mut Guard) drop() { println(g.id) }
+type Wrapper struct { a Guard }
+func main() {
+    var w = Wrapper{a: Guard{id: 1}}
+    let taken = w.a
+    drop(taken)
+    w.a = Guard{id: 2}
+}";
+    prints(source, "1\n2\n");
+}
+
+#[test]
+fn partial_move_without_reinitialization_skips_cleanup_for_that_field() {
+    let source = "package main
+type Guard struct { id int }
+func (g mut Guard) drop() { println(g.id) }
+type Wrapper struct { a Guard; b Guard }
+func main() {
+    var w = Wrapper{a: Guard{id: 1}, b: Guard{id: 2}}
+    drop(w.a)
+}";
+    prints(source, "1\n2\n");
+}
+
+#[test]
 fn semantic_target_prints_john() {
     let source = std::fs::read_to_string(concat!(
         env!("CARGO_MANIFEST_DIR"),

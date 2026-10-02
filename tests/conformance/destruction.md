@@ -3,7 +3,11 @@
 Authority: spec §8.3, §10.7, §14.1–14.5, §15.4. Drop signatures, Move
 classification, explicit-drop consumption, and double-drop rejection have
 executable type-checking coverage in `tests/typecheck/check.rs`. Automatic
-cleanup, clone, and panic unwinding remain pending runtime coverage.
+cleanup, clone, and panic unwinding remain pending runtime coverage. Field-level
+partial-move cleanup — dropping only still-available fields, skipping a
+moved-out field that was never reinitialized, and rejecting a move that would
+leave a custom-`drop`-bearing value incomplete — has coverage in
+`tests/typecheck/check.rs` and `tests/codegen/native.rs`.
 
 ## Drop receiver form (§14.3)
 

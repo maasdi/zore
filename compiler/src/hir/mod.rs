@@ -8,7 +8,7 @@ use crate::types::{StructId, TypeId, TypeKind, TypeStore};
 pub struct FunctionId(pub u32);
 
 /// Index of a field within its struct's declaration order.
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct FieldId(pub u32);
 
 /// Index into the owning function's `locals`.

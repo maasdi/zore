@@ -858,11 +858,67 @@ fn move_state_flows_through_branches_loops_and_reinitialization() {
         )),
         "use of moved value `a`",
     );
+    accepts_move(&program(&format!(
+        "{resource}\ntype Wrapper struct {{ resource Resource }}\nfunc use(w own Wrapper) {{ let r = w.resource\ndrop(r) }}"
+    )));
+}
+
+#[test]
+fn partial_moves_track_fields_and_reinitialization() {
+    let resource = "type Resource struct { id int }
+        func (r mut Resource) drop() {}";
+    let guard = format!(
+        "{resource}\ntype Guard struct {{ resource Resource }}\nfunc (g mut Guard) drop() {{}}"
+    );
+
+    accepts_move(&program(&format!(
+        "{resource}\ntype Wrapper struct {{ a Resource; b Resource }}\nfunc use(w own Wrapper) {{ let taken = w.a\ndrop(w.b)\ndrop(taken) }}"
+    )));
+    accepts_move(&program(&format!(
+        "{resource}\ntype Wrapper struct {{ a Resource }}\nfunc consume(w own Wrapper) {{}}\nfunc use() {{ var w = Wrapper{{a: Resource{{id: 1}}}}\nlet taken = w.a\nw.a = Resource{{id: 2}}\ndrop(taken)\nconsume(w) }}"
+    )));
+    accepts_move(&program(&format!(
+        "{resource}\ntype Wrapper struct {{ a Resource }}\nfunc take(r own Resource) {{}}\nfunc use() {{ var w = Wrapper{{a: Resource{{id: 1}}}}\nlet first = w.a\nw.a = Resource{{id: 2}}\ntake(first)\ntake(w.a) }}"
+    )));
+    accepts_move(&program(&format!(
+        "{guard}\ntype Box struct {{ guard Guard }}\nfunc take_guard(g own Guard) {{}}\nfunc use(b own Box) {{ take_guard(b.guard) }}"
+    )));
+
     rejects_move(
         &program(&format!(
-            "{resource}\ntype Wrapper struct {{ resource Resource }}\nfunc use(w own Wrapper) {{ let r = w.resource }}"
+            "{resource}\ntype Wrapper struct {{ a Resource; b Resource }}\nfunc inspect(w Wrapper) {{}}\nfunc use(w own Wrapper) {{ let taken = w.a\ninspect(w)\ndrop(taken)\ndrop(w.b) }}"
         )),
-        "partial move of `w` is not supported yet",
+        "cannot use `w` as a whole value while a field is moved out",
+    );
+    rejects_move(
+        &program(&format!(
+            "{resource}\ntype Wrapper struct {{ a Resource; b Resource }}\nfunc consume(w own Wrapper) {{}}\nfunc use(w own Wrapper) {{ let taken = w.a\nconsume(w)\ndrop(taken) }}"
+        )),
+        "cannot use `w` as a whole value while a field is moved out",
+    );
+    rejects_move(
+        &program(&format!(
+            "{resource}\ntype Wrapper struct {{ a Resource }}\nfunc use(w own Wrapper) {{ let first = w.a\nlet second = w.a\ndrop(first)\ndrop(second) }}"
+        )),
+        "use of moved value `w.a`",
+    );
+    rejects_move(
+        &program(&format!(
+            "{guard}\nfunc use(g own Guard) {{ let r = g.resource\ndrop(r) }}"
+        )),
+        "cannot move `g.resource` out of a value with a custom `drop` method",
+    );
+    rejects_move(
+        &program(&format!(
+            "{guard}\ntype Box struct {{ guard Guard }}\nfunc use(b own Box) {{ let r = b.guard.resource\ndrop(r) }}"
+        )),
+        "cannot move `b.guard.resource` out of a value with a custom `drop` method",
+    );
+    rejects_move(
+        &program(&format!(
+            "{resource}\ntype Wrapper struct {{ a Resource }}\nfunc use(w Wrapper) {{ let taken = w.a\ndrop(taken) }}"
+        )),
+        "cannot move borrowed value `w.a`",
     );
 }
 

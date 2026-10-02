@@ -34,7 +34,7 @@ is guidance, not a language contract.
 | M3–M4 — subset implemented; validation pending | AST and parser together for package/functions/structs/bindings/calls; test shape, spans, recovery, and rejection. Resolve relevant grammar questions first. |
 | M5–M8 — subset implemented; validation pending | Hello program, variables, functions, structs. Establish the minimal native backend and builtin output support needed to run examples. Use resolution/type work below as prerequisites where needed. |
 | M9–M12 — subset implemented; validation pending | Name resolution, types, HIR, MIR/CFG; semantic IDs, typed calls/fields, explicit control flow, frontend-only checking. |
-| M13–M17 — partial | Copy/Move classification, mutable borrowing, and whole-place move analysis exist in CLI checking and builds. Partial moves, stored borrows, and regions remain. Complete the §42 semantic target with paired acceptance/rejection tests. |
+| M13–M17 — partial | Copy/Move classification, mutable borrowing, whole-place move analysis, and field-level partial moves (with reinitialization and the custom-`drop`-ancestor restriction) exist in CLI checking and builds. Stored borrows and regions remain. Complete the §42 semantic target with paired acceptance/rejection tests. |
 | M18–M19 — synchronous subset implemented; validation pending | Drop insertion and panic cleanup cover the synchronous subset. The concrete Copy `error` type, `nil` in an error context, `error(message)`, content equality, explicit discards, rejection of silently ignored error results, and path-sensitive checks for named errors are implemented. Synchronous `?` propagates call errors, zero-fills other return values, and runs cleanup. Awaited propagation remains for M25–M29. |
 | M20–M23 | Fixed arrays, borrowed slices, owned arrays, maps, packages/imports; validate ownership and package visibility. |
 | M24 | Closures with capture analysis; reject captures that cannot remain valid. |
@@ -63,10 +63,15 @@ language-level work below may proceed.
 
 The first Move type is a struct with a user-defined `drop` method (§8.3,
 §14.3). MIR ownership analysis checks whole-place moves, borrowed parameters,
-branch joins, and loop backedges. It rejects partial moves conservatively.
-Drop insertion handles scope exits, replacements, owned parameters, and
-synchronous panic cleanup. Synchronous `?` under M18–M19 now uses the return
-cleanup path. The remaining M13–M17 ownership cases follow.
+branch joins, and loop backedges, and tracks field-level partial moves: a
+moved field's siblings stay individually usable, the whole value is unusable
+until every moved field is reinitialized, and a move that would reach through
+a custom-`drop`-bearing container is rejected (§31.2, Q07a/Q07b). Drop
+insertion handles scope exits, replacements, owned parameters, and
+synchronous panic cleanup; codegen's existing per-field drop-flag tracking
+already drops only still-live fields with no further changes needed.
+Synchronous `?` under M18–M19 now uses the return cleanup path. Stored
+borrows and region analysis remain the open M13–M17 gap.
 
 The first M18–M19 slices reject non-final and repeated `error` results, then
 support explicit error values, returns, comparisons, and discards. Named local
@@ -1957,21 +1962,32 @@ executed tests.
 
 #### Current result
 
-Blocked locally: Cargo and rustc are unavailable on this host. No passing
-formatting, Clippy, build, test, or documentation result is claimed for the
-refactor/runtime migration. Static file/ABI-symbol inspections are not a
-substitute. Record actual command results and the validated commit when a
-suitable host or CI run is available.
+Validated locally at `bd6ece4` (2026-10-02) with the repository-pinned
+toolchain (`rustc`/`cargo` 1.98.1, Apple clang 17 as `ZORE_CC`):
+`cargo fmt --all -- --check`, `cargo clippy --locked --all-targets -- -D
+warnings`, `cargo build --locked`, `cargo test --locked --all-targets`
+(all ten suites, zero failures, including native codegen and runtime
+unit tests), and `RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --locked`
+all pass with no warnings. `cargo test --test parser --test lexer --test
+check` from `compiler/` also passes. This validates the baseline described
+above, including the error-propagation work merged through PR #11
+(`feat/error-propagation`). The host previously lacked `cargo`/`rustc` on
+`PATH`; they are installed under `~/.cargo/bin` and must be added to
+`PATH` explicitly in a fresh shell.
 
 #### Next language work after validation
 
-Proceed toward M13–M17 ownership with paired acceptance/rejection cases.
-Choose a first Move-bearing feature explicitly: owned arrays (M21), or a
-struct with a custom destructor, requiring methods and drop support (M18).
-Basic methods on existing Copy types can be a preparatory slice. Do not accept
-a Move type until its move/borrow checks and required cleanup are implemented;
-do not accept mutable parameters before exclusivity is enforced. Any newly
-discovered semantic gap follows specification §53 and `docs/spec-questions.md`.
+Custom-destructor Move types (M18), mutable-parameter exclusivity, and
+whole-place plus field-level partial-move checking (M13–M17) are now
+implemented with paired acceptance/rejection cases, as is synchronous `?`
+propagation (M19). The remaining M13–M17 gap is stored borrows and region
+analysis (§15, §17): proving a borrow's validity across control flow without
+source-level lifetimes, rather than today's call-local exclusivity checks.
+Owned dynamic arrays (M21) or closures (M24) are the other open MVP-subset
+options once stored borrows are addressed or explicitly deferred. Do not
+accept a feature whose move/borrow checks and required cleanup are not yet
+implemented. Any newly discovered semantic gap follows specification §53 and
+`docs/spec-questions.md`.
 
 ---
 

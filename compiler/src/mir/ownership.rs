@@ -1,46 +1,121 @@
 use crate::diagnostic::{Diagnostic, Severity};
+use crate::hir;
 use crate::mir::{BasicBlock, BlockId, Body, Callee, Operand, Place, Program, Rvalue, Terminator};
 use crate::source::Span;
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum ValueState {
-    Available,
-    Moved(Span),
-    PartiallyMoved(Span),
+/// The set of field paths moved out of a local and not yet reinitialized.
+///
+/// An empty path (`vec![]`) represents the whole local having been moved; by
+/// construction it never coexists with any other entry (see `join`).
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+struct MovedSet {
+    entries: Vec<(Vec<hir::FieldId>, Span)>,
 }
 
-impl ValueState {
-    fn join(self, other: Self) -> Self {
-        match (self, other) {
-            (Self::Available, Self::Available) => Self::Available,
-            (Self::PartiallyMoved(span), _) | (_, Self::PartiallyMoved(span)) => {
-                Self::PartiallyMoved(span)
+impl MovedSet {
+    /// A moved path that is `fields` itself or a container of it.
+    fn moved_or_ancestor_moved(&self, fields: &[hir::FieldId]) -> Option<Span> {
+        self.entries
+            .iter()
+            .find(|(path, _)| {
+                path.len() <= fields.len() && path.as_slice() == &fields[..path.len()]
+            })
+            .map(|&(_, span)| span)
+    }
+
+    /// A moved path strictly nested inside `fields`.
+    fn moved_descendant(&self, fields: &[hir::FieldId]) -> Option<Span> {
+        self.entries
+            .iter()
+            .find(|(path, _)| path.len() > fields.len() && &path[..fields.len()] == fields)
+            .map(|&(_, span)| span)
+    }
+
+    /// A moved path that is a proper container of `fields`, excluding `fields` itself.
+    fn moved_strict_ancestor(&self, fields: &[hir::FieldId]) -> Option<Span> {
+        self.entries
+            .iter()
+            .find(|(path, _)| path.len() < fields.len() && path.as_slice() == &fields[..path.len()])
+            .map(|&(_, span)| span)
+    }
+
+    fn record_move(&mut self, fields: Vec<hir::FieldId>, span: Span) {
+        self.entries.push((fields, span));
+    }
+
+    /// Restores `fields` and everything moved out from beneath it.
+    fn reinitialize(&mut self, fields: &[hir::FieldId]) {
+        self.entries
+            .retain(|(path, _)| !(path.len() >= fields.len() && &path[..fields.len()] == fields));
+    }
+
+    fn clear(&mut self) {
+        self.entries.clear();
+    }
+
+    /// Conservative union: a path moved on either side counts as moved after the join.
+    fn join(&self, other: &Self) -> Self {
+        let mut entries: Vec<(Vec<hir::FieldId>, Span)> =
+            self.entries.iter().chain(&other.entries).cloned().collect();
+        entries.sort_by_key(|(path, span)| (path.len(), path.clone(), span.start(), span.end()));
+        let mut reduced: Vec<(Vec<hir::FieldId>, Span)> = Vec::new();
+        for (path, span) in entries {
+            let covered = reduced.iter().any(|(kept, _)| {
+                kept.len() <= path.len() && kept.as_slice() == &path[..kept.len()]
+            });
+            if !covered {
+                reduced.push((path, span));
             }
-            (Self::Moved(span), _) | (_, Self::Moved(span)) => Self::Moved(span),
         }
-    }
-
-    fn move_site(self) -> Option<Span> {
-        match self {
-            Self::Available => None,
-            Self::Moved(span) | Self::PartiallyMoved(span) => Some(span),
-        }
+        Self { entries: reduced }
     }
 }
 
-pub fn check(program: &Program) -> Vec<Diagnostic> {
+/// Whether any struct containing `place`'s path (never the designated field's own type)
+/// defines a custom `drop`, which forbids moving that field out on its own.
+fn has_custom_ancestor(package: &hir::Package, body: &Body, place: &Place) -> bool {
+    let mut ty = body.locals[place.local.0 as usize].ty;
+    for field in &place.fields {
+        let id = package.types.struct_id(ty).expect("field projection");
+        if package.strukt(id).drop.is_some() {
+            return true;
+        }
+        ty = package.strukt(id).fields[field.0 as usize].ty;
+    }
+    false
+}
+
+/// Renders `place` as a dotted source-like name for diagnostics.
+fn describe_place(package: &hir::Package, body: &Body, place: &Place) -> String {
+    let mut ty = body.locals[place.local.0 as usize].ty;
+    let mut name = body.locals[place.local.0 as usize]
+        .name
+        .as_deref()
+        .unwrap_or("temporary value")
+        .to_string();
+    for field in &place.fields {
+        let id = package.types.struct_id(ty).expect("field projection");
+        let f = &package.strukt(id).fields[field.0 as usize];
+        name.push('.');
+        name.push_str(&f.name);
+        ty = f.ty;
+    }
+    name
+}
+
+pub fn check(package: &hir::Package, program: &Program) -> Vec<Diagnostic> {
     let mut diagnostics = Vec::new();
     for body in &program.bodies {
-        check_body(body, &mut diagnostics);
+        check_body(package, body, &mut diagnostics);
     }
     diagnostics
 }
 
-fn check_body(body: &Body, diagnostics: &mut Vec<Diagnostic>) {
+fn check_body(package: &hir::Package, body: &Body, diagnostics: &mut Vec<Diagnostic>) {
     if body.blocks.is_empty() {
         return;
     }
-    let initial = vec![ValueState::Available; body.locals.len()];
+    let initial = vec![MovedSet::default(); body.locals.len()];
     let mut incoming = vec![None; body.blocks.len()];
     incoming[0] = Some(initial);
     let mut changed = true;
@@ -50,14 +125,14 @@ fn check_body(body: &Body, diagnostics: &mut Vec<Diagnostic>) {
             let Some(mut state) = incoming[index].clone() else {
                 continue;
             };
-            transfer(body, block, &mut state, &mut Vec::new());
+            transfer(package, body, block, &mut state, &mut Vec::new());
             for successor in successors(&block.terminator) {
                 let slot = &mut incoming[successor.0 as usize];
                 let joined = match slot {
                     Some(previous) => previous
                         .iter()
                         .zip(&state)
-                        .map(|(&a, &b)| a.join(b))
+                        .map(|(a, b)| a.join(b))
                         .collect(),
                     None => state.clone(),
                 };
@@ -70,7 +145,7 @@ fn check_body(body: &Body, diagnostics: &mut Vec<Diagnostic>) {
     }
     for (block, state) in body.blocks.iter().zip(incoming) {
         if let Some(mut state) = state {
-            transfer(body, block, &mut state, diagnostics);
+            transfer(package, body, block, &mut state, diagnostics);
         }
     }
 }
@@ -89,9 +164,10 @@ fn successors(terminator: &Terminator) -> Vec<BlockId> {
 }
 
 fn transfer(
+    package: &hir::Package,
     body: &Body,
     block: &BasicBlock,
-    state: &mut [ValueState],
+    state: &mut [MovedSet],
     diagnostics: &mut Vec<Diagnostic>,
 ) {
     for statement in &block.statements {
@@ -101,8 +177,8 @@ fn transfer(
             span,
         } = statement
         {
-            check_rvalue(body, rvalue, *span, state, diagnostics);
-            assign(body, place, *span, state, diagnostics);
+            check_rvalue(package, body, rvalue, *span, state, diagnostics);
+            assign(package, body, place, *span, state, diagnostics);
         }
     }
     match &block.terminator {
@@ -112,13 +188,13 @@ fn transfer(
             span,
             ..
         } => {
-            check_rvalue(body, rvalue, *span, state, diagnostics);
-            assign(body, place, *span, state, diagnostics);
+            check_rvalue(package, body, rvalue, *span, state, diagnostics);
+            assign(package, body, place, *span, state, diagnostics);
         }
         Terminator::Branch {
             condition, span, ..
         } => {
-            check_operand(body, condition, *span, state, diagnostics);
+            check_operand(package, body, condition, *span, state, diagnostics);
         }
         Terminator::Call {
             callee,
@@ -139,10 +215,7 @@ fn transfer(
                         continue;
                     };
                     if places_overlap(moved, borrowed) {
-                        let name = body.locals[moved.local.0 as usize]
-                            .name
-                            .as_deref()
-                            .unwrap_or("temporary value");
+                        let name = describe_place(package, body, moved);
                         diagnostics.push(Diagnostic::new(
                             Severity::Error,
                             format!("cannot move `{name}` while it is borrowed by this call"),
@@ -152,11 +225,11 @@ fn transfer(
                 }
             }
             for arg in args {
-                check_operand(body, arg, *span, state, diagnostics);
+                check_operand(package, body, arg, *span, state, diagnostics);
             }
             if !matches!(callee, Callee::Drop) {
                 for place in destinations.iter().flatten() {
-                    assign(body, place, *span, state, diagnostics);
+                    assign(package, body, place, *span, state, diagnostics);
                 }
             }
         }
@@ -168,10 +241,11 @@ fn transfer(
 }
 
 fn check_rvalue(
+    package: &hir::Package,
     body: &Body,
     rvalue: &Rvalue,
     span: Span,
-    state: &mut [ValueState],
+    state: &mut [MovedSet],
     diagnostics: &mut Vec<Diagnostic>,
 ) {
     match rvalue {
@@ -180,15 +254,15 @@ fn check_rvalue(
         | Rvalue::Unary(_, operand)
         | Rvalue::Convert(operand, _)
         | Rvalue::Error(operand) => {
-            check_operand(body, operand, span, state, diagnostics);
+            check_operand(package, body, operand, span, state, diagnostics);
         }
         Rvalue::Binary(_, left, right) => {
-            check_operand(body, left, span, state, diagnostics);
-            check_operand(body, right, span, state, diagnostics);
+            check_operand(package, body, left, span, state, diagnostics);
+            check_operand(package, body, right, span, state, diagnostics);
         }
         Rvalue::Aggregate(_, fields) => {
             for field in fields {
-                check_operand(body, field, span, state, diagnostics);
+                check_operand(package, body, field, span, state, diagnostics);
             }
         }
     }
@@ -199,10 +273,11 @@ fn places_overlap(left: &Place, right: &Place) -> bool {
 }
 
 fn check_operand(
+    package: &hir::Package,
     body: &Body,
     operand: &Operand,
     span: Span,
-    state: &mut [ValueState],
+    state: &mut [MovedSet],
     diagnostics: &mut Vec<Diagnostic>,
 ) {
     let (place, moving) = match operand {
@@ -211,11 +286,8 @@ fn check_operand(
         Operand::Const(..) => return,
     };
     let index = place.local.0 as usize;
-    let name = body.locals[index]
-        .name
-        .as_deref()
-        .unwrap_or("temporary value");
-    if let Some(origin) = state[index].move_site() {
+    if let Some(origin) = state[index].moved_or_ancestor_moved(&place.fields) {
+        let name = describe_place(package, body, place);
         diagnostics.push(
             Diagnostic::new(
                 Severity::Error,
@@ -226,7 +298,23 @@ fn check_operand(
         );
         return;
     }
-    if moving && body.locals[index].by_reference {
+    if let Some(origin) = state[index].moved_descendant(&place.fields) {
+        let name = describe_place(package, body, place);
+        diagnostics.push(
+            Diagnostic::new(
+                Severity::Error,
+                format!("cannot use `{name}` as a whole value while a field is moved out"),
+                span,
+            )
+            .related(origin, "field moved here"),
+        );
+        return;
+    }
+    if !moving {
+        return;
+    }
+    if body.locals[index].by_reference {
+        let name = describe_place(package, body, place);
         diagnostics.push(
             Diagnostic::new(
                 Severity::Error,
@@ -237,47 +325,77 @@ fn check_operand(
         );
         return;
     }
-    if moving && !place.fields.is_empty() {
+    if !place.fields.is_empty() && has_custom_ancestor(package, body, place) {
+        let name = describe_place(package, body, place);
         diagnostics.push(
             Diagnostic::new(
                 Severity::Error,
-                format!("partial move of `{name}` is not supported yet"),
+                format!("cannot move `{name}` out of a value with a custom `drop` method"),
                 span,
             )
-            .note("moving a whole value is supported; field moves need drop tracking"),
+            .note("a destructor always requires a complete, unmoved receiver (§31.2)"),
         );
-        state[index] = ValueState::PartiallyMoved(span);
         return;
     }
-    if moving {
-        state[index] = ValueState::Moved(span);
-    }
+    state[index].record_move(place.fields.clone(), span);
 }
 
 fn assign(
+    package: &hir::Package,
     body: &Body,
     place: &Place,
     span: Span,
-    state: &mut [ValueState],
+    state: &mut [MovedSet],
     diagnostics: &mut Vec<Diagnostic>,
 ) {
     let index = place.local.0 as usize;
-    if !place.fields.is_empty() {
-        if let Some(origin) = state[index].move_site() {
-            let name = body.locals[index]
-                .name
-                .as_deref()
-                .unwrap_or("temporary value");
-            diagnostics.push(
-                Diagnostic::new(
-                    Severity::Error,
-                    format!("cannot assign through moved value `{name}`"),
-                    span,
-                )
-                .related(origin, "value moved here"),
-            );
-        }
+    if place.fields.is_empty() {
+        state[index].clear();
         return;
     }
-    state[index] = ValueState::Available;
+    if let Some(origin) = state[index].moved_strict_ancestor(&place.fields) {
+        let name = describe_place(package, body, place);
+        diagnostics.push(
+            Diagnostic::new(
+                Severity::Error,
+                format!("cannot assign through moved value `{name}`"),
+                span,
+            )
+            .related(origin, "value moved here"),
+        );
+        return;
+    }
+    state[index].reinitialize(&place.fields);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::MovedSet;
+    use crate::hir::FieldId;
+    use crate::source::{SourceMap, Span};
+
+    fn two_spans() -> (Span, Span) {
+        let mut sources = SourceMap::new();
+        let file = sources.add("test.ore", "0123456789".to_string()).unwrap();
+        (
+            sources.span(file, 0, 1).unwrap(),
+            sources.span(file, 2, 3).unwrap(),
+        )
+    }
+
+    #[test]
+    fn whole_local_move_absorbs_any_other_entry_on_join() {
+        let (whole_span, field_span) = two_spans();
+        let mut whole = MovedSet::default();
+        whole.record_move(Vec::new(), whole_span);
+
+        let mut field = MovedSet::default();
+        field.record_move(vec![FieldId(0)], field_span);
+
+        let joined = whole.join(&field);
+        assert_eq!(joined.entries, vec![(Vec::new(), whole_span)]);
+
+        let joined = field.join(&whole);
+        assert_eq!(joined.entries, vec![(Vec::new(), whole_span)]);
+    }
 }

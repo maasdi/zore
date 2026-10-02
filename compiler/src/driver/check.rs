@@ -28,7 +28,7 @@ pub fn check_file(file: &SourceFile) -> Checked {
     let (mut package, mut diagnostics) = checker::check(&parsed.file, resolution, file.text());
     if let Some(checked) = &package {
         let program = lower::lower(checked);
-        diagnostics.extend(ownership::check(&program));
+        diagnostics.extend(ownership::check(checked, &program));
         diagnostics.extend(error_use::check(checked, &program));
     }
     diagnostics.sort_by_key(|d| (d.span().start(), d.span().end()));
