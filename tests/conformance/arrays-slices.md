@@ -1,8 +1,16 @@
 # Arrays, indexing, and slicing conformance cases
 
 Authority: spec §12.6, with §3.7, §5.6, §7.5–7.6, §11.6–11.7, §12.3–12.5,
-§17.6, and §31.2. These are pending parser, typing, ownership, lowering, and
-runtime cases. They are not executable tests or passing coverage.
+§17.6, and §31.2. Fixed-array typed literals, indexing/bounds-shape checks,
+mutable-place and conservative-aliasing rules for indexed places, and
+rejection of moving an element out through an index have executable parser
+and type-checking coverage in `tests/parser/parser.rs` and
+`tests/typecheck/check.rs`; `zore build`/`zore run` honestly diagnose
+fixed-array programs as unsupported (LLVM array codegen, dynamic `Array<T>`,
+borrowed slices, slicing, and the constant-index move-extraction carve-out of
+§31.2 remain pending). Remaining rows below — slicing, dynamic arrays, mutable
+slice contextual typing, and region/liveness behavior — are still pending
+parser, typing, ownership, lowering, and runtime cases, not executable tests.
 
 ## Typed literals
 

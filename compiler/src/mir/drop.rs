@@ -1,6 +1,8 @@
 use crate::hir;
-use crate::mir::{BasicBlock, BlockId, Body, Callee, Local, Place, Program, Statement, Terminator};
-use crate::types::TypeId;
+use crate::mir::{
+    BasicBlock, BlockId, Body, Callee, Local, Place, Program, Projection, Statement, Terminator,
+};
+use crate::types::{TypeId, TypeKind};
 
 pub fn insert(package: &hir::Package, program: &mut Program) {
     for body in &mut program.bodies {
@@ -29,7 +31,7 @@ fn insert_body(package: &hir::Package, body: &mut Body) {
                 } => {
                     if !package.is_copy(place_type(package, body, &place)) {
                         statements.push(Statement::Drop {
-                            replacement: !place.fields.is_empty(),
+                            replacement: !place.projections.is_empty(),
                             place: place.clone(),
                         });
                     }
@@ -128,9 +130,17 @@ fn insert_body(package: &hir::Package, body: &mut Body) {
 
 fn place_type(package: &hir::Package, body: &Body, place: &Place) -> TypeId {
     let mut ty = body.locals[place.local.0 as usize].ty;
-    for field in &place.fields {
-        let id = package.types.struct_id(ty).expect("field projection");
-        ty = package.strukt(id).fields[field.0 as usize].ty;
+    for projection in &place.projections {
+        ty = match projection {
+            Projection::Field(field) => {
+                let id = package.types.struct_id(ty).expect("field projection");
+                package.strukt(id).fields[field.0 as usize].ty
+            }
+            Projection::Index(_) => match package.types.kind(ty) {
+                TypeKind::Array { element, .. } => element,
+                _ => unreachable!("index projection on a non-array"),
+            },
+        };
     }
     ty
 }

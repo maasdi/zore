@@ -60,6 +60,23 @@ impl Case {
     }
 }
 
+/// The name of a `Type::Named`; tests that use this assume the type isn't an array.
+fn type_name(t: &Type) -> &str {
+    match t {
+        Type::Named(name) => &name.text,
+        Type::Array { .. } => panic!("expected a named type, found an array type"),
+    }
+}
+
+fn ty(case: &Case, t: &Type) -> String {
+    match t {
+        Type::Named(name) => name.text.clone(),
+        Type::Array { element, size, .. } => {
+            format!("[{} ; {}]", ty(case, element), expr(case, size))
+        }
+    }
+}
+
 fn expr(case: &Case, e: &Expr) -> String {
     match &e.kind {
         ExprKind::Name(name) => name.clone(),
@@ -93,14 +110,31 @@ fn expr(case: &Case, e: &Expr) -> String {
             out + ")"
         }
         ExprKind::Field { base, name } => format!("(. {} {})", expr(case, base), name.text),
-        ExprKind::StructLit { ty, fields } => {
-            let mut out = format!("(lit {}", ty.text);
+        ExprKind::Index { base, index } => {
+            format!("(index {} {})", expr(case, base), expr(case, index))
+        }
+        ExprKind::StructLit {
+            ty: struct_ty,
+            fields,
+        } => {
+            let mut out = format!("(lit {}", struct_ty.text);
             for field in fields {
                 out.push_str(&format!(
                     " {}:{}",
                     field.name.text,
                     expr(case, &field.value)
                 ));
+            }
+            out + ")"
+        }
+        ExprKind::ArrayLit {
+            ty: array_ty,
+            elements,
+        } => {
+            let mut out = format!("(lit {}", ty(case, array_ty));
+            for element in elements {
+                out.push(' ');
+                out.push_str(&expr(case, element));
             }
             out + ")"
         }
@@ -149,12 +183,12 @@ fn binding(case: &Case, b: &Binding) -> String {
             BindingTarget::Discard(_) => "_",
         })
         .collect();
-    let ty =
+    let ty_text =
         b.ty.as_ref()
-            .map(|t| format!(" {}", t.name.text))
+            .map(|t| format!(" {}", ty(case, t)))
             .unwrap_or_default();
     format!(
-        "({kind} {}{ty} {})",
+        "({kind} {}{ty_text} {})",
         targets.join(","),
         expr(case, &b.value)
     )
@@ -277,9 +311,9 @@ fn semantic_target_parses_to_expected_shape() {
     };
     assert_eq!(user.name.text, "User");
     assert_eq!(user.fields[0].name.text, "Name");
-    assert_eq!(user.fields[0].ty.name.text, "string");
+    assert_eq!(type_name(&user.fields[0].ty), "string");
     assert_eq!(greet.params[0].mode, ParamMode::Borrow);
-    assert_eq!(greet.params[0].ty.name.text, "User");
+    assert_eq!(type_name(&greet.params[0].ty), "User");
     assert!(greet.results.is_empty() && main.params.is_empty());
     assert_eq!(
         sources.slice(greet.span).unwrap().lines().next(),
@@ -534,12 +568,8 @@ fn functions_methods_and_parameters() {
         ]
     );
     assert_eq!(funcs[0].params.len(), 2);
-    assert_eq!(funcs[0].results[0].name.text, "int");
-    let results: Vec<&str> = funcs[1]
-        .results
-        .iter()
-        .map(|t| t.name.text.as_str())
-        .collect();
+    assert_eq!(type_name(&funcs[0].results[0]), "int");
+    let results: Vec<&str> = funcs[1].results.iter().map(type_name).collect();
     assert_eq!(results, ["int", "error"]);
     let modes: Vec<Option<ParamMode>> = funcs[3..6]
         .iter()
@@ -630,7 +660,7 @@ fn structs_and_struct_literals() {
     let fields: Vec<(&str, &str)> = user
         .fields
         .iter()
-        .map(|f| (f.name.text.as_str(), f.ty.name.text.as_str()))
+        .map(|f| (f.name.text.as_str(), type_name(&f.ty)))
         .collect();
     assert_eq!(fields, [("Name", "string"), ("age", "int")]);
     let Item::Struct(point) = &case.parsed.file.items[2] else {
@@ -673,6 +703,50 @@ fn invalid_struct_syntax_is_rejected() {
         ),
         ("let u = User{Name \"x\"}", "must be named"),
         ("if Point{X: 1}.X == 1 { work() }", "expected"),
+    ] {
+        rejects(body, message);
+    }
+}
+
+#[test]
+fn arrays_and_indexing() {
+    let case = Case::body(
+        "let xs [int; 3] = [int; 3]{1, 2, 3}
+        let first = xs[0]
+        xs[0] = 4
+        xs[0] += 1
+        _ = xs[0] + xs[1]
+        let grid = [int; 2]{
+            1,
+            2,
+        }
+        if ([int; 1]{1})[0] == 1 { work() }",
+    );
+    case.assert_clean();
+    assert_eq!(
+        case.shape(),
+        [
+            "(let xs [int ; 3] (lit [int ; 3] 1 2 3))",
+            "(let first (index xs 0))",
+            "(= (index xs 0) 4)",
+            "(+= (index xs 0) 1)",
+            "(= _ (+ (index xs 0) (index xs 1)))",
+            "(let grid (lit [int ; 2] 1 2))",
+            "(if (== (index (paren (lit [int ; 1] 1)) 0) 1) {(call work)})",
+        ]
+    );
+}
+
+#[test]
+fn invalid_array_syntax_is_rejected() {
+    for (body, message) in [
+        ("let xs [int 3] = xs", "`;`"),
+        ("let xs []int = xs", "slice types"),
+        ("_ = xs[1:2]", "slicing expressions"),
+        (
+            "let xs = [int; 3]{1,\n2,\n3\n}\n_ = xs",
+            "missing trailing comma",
+        ),
     ] {
         rejects(body, message);
     }
@@ -800,9 +874,7 @@ fn package_level_bindings_are_parsed() {
 #[test]
 fn later_milestone_syntax_is_reported_as_unsupported() {
     for body in [
-        "_ = items[0]",
         "_ = items[1:2]",
-        "let xs = [3]int{1, 2, 3}",
         "let m = map[string]int{}",
         "let t = go work()",
         "go work()",

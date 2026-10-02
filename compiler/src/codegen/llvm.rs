@@ -16,11 +16,45 @@ use crate::mir::{self, Callee, Local, Operand, Place, Rvalue, Terminator};
 use crate::source::{SourceFile, Span};
 use crate::types::{IntType, TypeId, TypeKind};
 
+/// The span of the first fixed-array type reached through a struct field or a
+/// function local (including params/results), if any. Checked once, up
+/// front: array codegen (LLVM type emission, indexed addressing, bounds
+/// checks, element drop flags) is a later milestone, and letting any
+/// individual exhaustive match fall through to this case risks either a
+/// panic or silently wrong IR instead of an honest diagnostic.
+fn find_array_type(package: &hir::Package) -> Option<Span> {
+    for strukt in &package.structs {
+        for field in &strukt.fields {
+            if matches!(package.types.kind(field.ty), TypeKind::Array { .. }) {
+                return Some(field.span);
+            }
+        }
+    }
+    for function in &package.functions {
+        for local in &function.locals {
+            if matches!(package.types.kind(local.ty), TypeKind::Array { .. }) {
+                return Some(local.span);
+            }
+        }
+    }
+    None
+}
+
 pub fn emit(
     package: &hir::Package,
     program: &mir::Program,
     file: &SourceFile,
 ) -> Result<String, Vec<Diagnostic>> {
+    if let Some(span) = find_array_type(package) {
+        return Err(vec![
+            Diagnostic::new(
+                Severity::Error,
+                "fixed-size arrays not supported by the native backend yet",
+                span,
+            )
+            .note("LLVM array codegen is planned for a later milestone"),
+        ]);
+    }
     let mut module = Module {
         package,
         file,
@@ -135,6 +169,9 @@ impl Module<'_> {
                     self.package.name,
                     self.package.strukt(id).name
                 )
+            }
+            TypeKind::Array { .. } => {
+                unreachable!("array codegen is rejected by the upfront array-support guard")
             }
         }
     }
@@ -256,7 +293,10 @@ impl FunctionBuilder<'_, '_> {
     fn place_ty(&self, place: &Place) -> TypeId {
         let package = self.module.package;
         let mut ty = self.local_ty(place.local);
-        for field in &place.fields {
+        for projection in &place.projections {
+            let mir::Projection::Field(field) = projection else {
+                unreachable!("array codegen is rejected by the upfront array-support guard")
+            };
             let id = package.types.struct_id(ty).expect("struct projection");
             ty = package.strukt(id).fields[field.0 as usize].ty;
         }
@@ -341,14 +381,19 @@ impl FunctionBuilder<'_, '_> {
             self.line(format!("{referent} = load ptr, ptr {base}"));
             base = referent;
         }
-        if place.fields.is_empty() {
+        if place.projections.is_empty() {
             return base;
         }
         let ty = self.ty(self.local_ty(place.local));
         let indices: String = place
-            .fields
+            .projections
             .iter()
-            .map(|f| format!(", i32 {}", f.0))
+            .map(|p| match p {
+                mir::Projection::Field(f) => format!(", i32 {}", f.0),
+                mir::Projection::Index(_) => {
+                    unreachable!("array codegen is rejected by the upfront array-support guard")
+                }
+            })
             .collect();
         let name = self.fresh();
         self.line(format!(
@@ -365,7 +410,10 @@ impl FunctionBuilder<'_, '_> {
             self.line(format!("{loaded} = load ptr, ptr {address}"));
             address = loaded;
         }
-        for field in &place.fields {
+        for projection in &place.projections {
+            let mir::Projection::Field(field) = projection else {
+                unreachable!("array codegen is rejected by the upfront array-support guard")
+            };
             let id = self
                 .module
                 .package
@@ -417,7 +465,9 @@ impl FunctionBuilder<'_, '_> {
             let count = self.module.package.strukt(id).fields.len();
             for index in 0..count {
                 let mut child = place.clone();
-                child.fields.push(hir::FieldId(index as u32));
+                child
+                    .projections
+                    .push(mir::Projection::Field(hir::FieldId(index as u32)));
                 self.set_flags(&child, value);
             }
         }
@@ -553,7 +603,9 @@ impl FunctionBuilder<'_, '_> {
             }
             for index in (0..fields).rev() {
                 let mut child = place.clone();
-                child.fields.push(hir::FieldId(index as u32));
+                child
+                    .projections
+                    .push(mir::Projection::Field(hir::FieldId(index as u32)));
                 self.drop_place(&child);
             }
         }
@@ -563,7 +615,10 @@ impl FunctionBuilder<'_, '_> {
 
     fn has_custom_ancestor(&self, place: &Place) -> bool {
         let mut ty = self.local_ty(place.local);
-        for field in &place.fields {
+        for projection in &place.projections {
+            let mir::Projection::Field(field) = projection else {
+                unreachable!("array codegen is rejected by the upfront array-support guard")
+            };
             let id = self
                 .module
                 .package
@@ -709,6 +764,7 @@ impl FunctionBuilder<'_, '_> {
                 }
             }
             TypeKind::Struct(_) => unreachable!("structs have no operators"),
+            TypeKind::Array { .. } => unreachable!("arrays have no operators"),
         }
     }
 
@@ -1112,7 +1168,7 @@ impl FunctionBuilder<'_, '_> {
                 };
                 self.line(format!("call void @{function}(i64 {wide})"));
             }
-            TypeKind::Float(_) | TypeKind::Error | TypeKind::Struct(_) => {
+            TypeKind::Float(_) | TypeKind::Error | TypeKind::Struct(_) | TypeKind::Array { .. } => {
                 unreachable!("checked printable type")
             }
         }

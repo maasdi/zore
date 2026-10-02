@@ -763,6 +763,10 @@ fn unsupported_backend_features_are_diagnosed() {
             "println(1.5)",
             "printing floating-point values is not supported",
         ),
+        (
+            "let xs = [int; 3]{1, 2, 3}\nprintln(xs[0])",
+            "fixed-size arrays not supported by the native backend yet",
+        ),
     ] {
         let mut sources = SourceMap::new();
         let id = sources.add("test.ore", main_body(stmts)).unwrap();

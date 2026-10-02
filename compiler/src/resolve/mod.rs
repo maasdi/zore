@@ -53,6 +53,14 @@ pub struct Resolution<'a> {
     pub diagnostics: Vec<Diagnostic>,
 }
 
+/// The eventual named type at the bottom of any array layers.
+fn named_type(ty: &ast::Type) -> &ast::Name {
+    match ty {
+        ast::Type::Named(name) => name,
+        ast::Type::Array { element, .. } => named_type(element),
+    }
+}
+
 fn predeclared(name: &str) -> Option<Res> {
     if let Some(ty) = TypeStore::primitive(name) {
         return Some(Res::Primitive(ty));
@@ -208,12 +216,19 @@ impl<'a> Resolver<'a> {
             .receiver
             .as_ref()
             .expect("only methods are declared as methods");
-        let strukt = match self.lookup(&receiver.ty.name.text) {
+        let ast::Type::Named(type_name) = &receiver.ty else {
+            self.error(
+                "methods can be declared only on struct types defined in this package",
+                receiver.ty.span(),
+            );
+            return;
+        };
+        let strukt = match self.lookup(&type_name.text) {
             Some(Res::Struct(strukt)) => strukt,
             Some(Res::Primitive(_)) => {
                 self.error(
                     "methods can be declared only on struct types defined in this package",
-                    receiver.ty.name.span,
+                    type_name.span,
                 );
                 return;
             }
@@ -254,7 +269,7 @@ impl<'a> Resolver<'a> {
             self.error("`drop` takes no parameters", param.span);
         }
         if let Some(result) = func.results.first() {
-            self.error("`drop` returns no result", result.name.span);
+            self.error("`drop` returns no result", result.span());
         }
     }
 
@@ -359,12 +374,18 @@ impl<'a> Resolver<'a> {
         Some(res)
     }
 
-    fn ty(&mut self, ty: &ast::Type) {
-        match self.use_name(&ty.name.text, ty.name.span) {
-            Some(Res::Primitive(_) | Res::Struct(_) | Res::Unsupported) | None => {}
-            Some(_) => {
-                self.out.uses.remove(&ty.name.span);
-                self.error(format!("`{}` is not a type", ty.name.text), ty.name.span);
+    fn ty(&mut self, ty: &'a ast::Type) {
+        match ty {
+            ast::Type::Named(name) => match self.use_name(&name.text, name.span) {
+                Some(Res::Primitive(_) | Res::Struct(_) | Res::Unsupported) | None => {}
+                Some(_) => {
+                    self.out.uses.remove(&name.span);
+                    self.error(format!("`{}` is not a type", name.text), name.span);
+                }
+            },
+            ast::Type::Array { element, size, .. } => {
+                self.ty(element);
+                self.expr(size);
             }
         }
     }
@@ -378,7 +399,7 @@ impl<'a> Resolver<'a> {
             .map(|decl| {
                 decl.fields
                     .iter()
-                    .filter_map(|f| match self.out.uses.get(&f.ty.name.span) {
+                    .filter_map(|f| match self.out.uses.get(&named_type(&f.ty).span) {
                         Some(Res::Struct(id)) => Some(id.0 as usize),
                         _ => None,
                     })
@@ -433,10 +454,13 @@ impl<'a> Resolver<'a> {
             self.new_local(&param.name, LocalKind::Param(param.mode));
         }
         for (index, result) in func.results.iter().enumerate() {
-            if result.name.text == "error" && index + 1 != func.results.len() {
+            if let ast::Type::Named(name) = result
+                && name.text == "error"
+                && index + 1 != func.results.len()
+            {
                 self.error(
                     "an `error` result must be the last result and appear only once",
-                    result.name.span,
+                    name.span,
                 );
             }
             self.ty(result);
@@ -571,6 +595,16 @@ impl<'a> Resolver<'a> {
                 }
             }
             ExprKind::Field { base, .. } => self.expr(base),
+            ExprKind::Index { base, index } => {
+                self.expr(base);
+                self.expr(index);
+            }
+            ExprKind::ArrayLit { ty, elements } => {
+                self.ty(ty);
+                for element in elements {
+                    self.expr(element);
+                }
+            }
             ExprKind::StructLit { ty, fields } => {
                 match self.use_name(&ty.text, ty.span) {
                     Some(Res::Struct(_) | Res::Unsupported) | None => {}

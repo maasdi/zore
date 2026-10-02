@@ -47,6 +47,7 @@ impl Package {
                 let strukt = self.strukt(id);
                 strukt.drop.is_none() && strukt.fields.iter().all(|f| self.is_copy(f.ty))
             }
+            TypeKind::Array { element, .. } => self.is_copy(element),
         }
     }
 }
@@ -141,16 +142,24 @@ pub enum StmtKind {
     Block(Block),
 }
 
-/// A local with field projections.
+/// A step from a place into one of its parts.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Projection {
+    Field(FieldId),
+    /// A fixed-array element; the index is evaluated, not yet bounds-checked.
+    Index(Box<Expr>),
+}
+
+/// A local with field and index projections.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Place {
     pub root: LocalId,
-    pub fields: Vec<FieldId>,
+    pub projections: Vec<Projection>,
     pub ty: TypeId,
     pub span: Span,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Expr {
     pub kind: ExprKind,
     /// One type per result; empty for calls without results.
@@ -177,13 +186,17 @@ pub enum Const {
     Nil,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum ExprKind {
     Const(Const),
     Local(LocalId),
     Field {
         base: Box<Expr>,
         field: FieldId,
+    },
+    Index {
+        base: Box<Expr>,
+        index: Box<Expr>,
     },
     Call {
         function: FunctionId,
@@ -199,6 +212,11 @@ pub enum ExprKind {
     StructLit {
         strukt: StructId,
         fields: Vec<(FieldId, Expr)>,
+    },
+    /// Elements in evaluation order.
+    ArrayLit {
+        element: TypeId,
+        elements: Vec<Expr>,
     },
     Unary {
         op: UnaryOp,

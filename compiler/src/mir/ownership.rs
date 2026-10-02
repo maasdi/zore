@@ -1,7 +1,23 @@
 use crate::diagnostic::{Diagnostic, Severity};
 use crate::hir;
-use crate::mir::{BasicBlock, BlockId, Body, Callee, Operand, Place, Program, Rvalue, Terminator};
+use crate::mir::{
+    BasicBlock, BlockId, Body, Callee, Operand, Place, Program, Projection, Rvalue, Terminator,
+};
 use crate::source::Span;
+use crate::types::{TypeId, TypeKind};
+
+/// The leading run of `Field` projections, stopping at the first `Index` (or the end).
+/// Array contents aren't partial-move-tracked past the array field itself (§31.2).
+fn leading_field_path(projections: &[Projection]) -> Vec<hir::FieldId> {
+    projections
+        .iter()
+        .take_while(|p| matches!(p, Projection::Field(_)))
+        .map(|p| match p {
+            Projection::Field(id) => *id,
+            Projection::Index(_) => unreachable!("take_while already excluded this"),
+        })
+        .collect()
+}
 
 /// The set of field paths moved out of a local and not yet reinitialized.
 ///
@@ -71,11 +87,13 @@ impl MovedSet {
     }
 }
 
-/// Whether any struct containing `place`'s path (never the designated field's own type)
+/// Whether any struct containing `local`'s path (never the designated field's own type)
 /// defines a custom `drop`, which forbids moving that field out on its own.
-fn has_custom_ancestor(package: &hir::Package, body: &Body, place: &Place) -> bool {
-    let mut ty = body.locals[place.local.0 as usize].ty;
-    for field in &place.fields {
+/// Only ever called with a pure-field path: `check_operand` rejects any move
+/// through an `Index` before reaching this check.
+fn has_custom_ancestor(package: &hir::Package, local_ty: TypeId, fields: &[hir::FieldId]) -> bool {
+    let mut ty = local_ty;
+    for field in fields {
         let id = package.types.struct_id(ty).expect("field projection");
         if package.strukt(id).drop.is_some() {
             return true;
@@ -93,12 +111,23 @@ fn describe_place(package: &hir::Package, body: &Body, place: &Place) -> String 
         .as_deref()
         .unwrap_or("temporary value")
         .to_string();
-    for field in &place.fields {
-        let id = package.types.struct_id(ty).expect("field projection");
-        let f = &package.strukt(id).fields[field.0 as usize];
-        name.push('.');
-        name.push_str(&f.name);
-        ty = f.ty;
+    for projection in &place.projections {
+        match projection {
+            Projection::Field(field) => {
+                let id = package.types.struct_id(ty).expect("field projection");
+                let f = &package.strukt(id).fields[field.0 as usize];
+                name.push('.');
+                name.push_str(&f.name);
+                ty = f.ty;
+            }
+            Projection::Index(_) => {
+                name.push_str("[_]");
+                ty = match package.types.kind(ty) {
+                    TypeKind::Array { element, .. } => element,
+                    _ => unreachable!("index projection on a non-array"),
+                };
+            }
+        }
     }
     name
 }
@@ -268,8 +297,22 @@ fn check_rvalue(
     }
 }
 
+/// Conservative: two indices are never proof of disjointness (§12.6).
+fn projections_conservatively_equal(a: &Projection, b: &Projection) -> bool {
+    match (a, b) {
+        (Projection::Field(x), Projection::Field(y)) => x == y,
+        (Projection::Index(_), Projection::Index(_)) => true,
+        _ => false,
+    }
+}
+
 fn places_overlap(left: &Place, right: &Place) -> bool {
-    left.local == right.local && left.fields.iter().zip(&right.fields).all(|(a, b)| a == b)
+    left.local == right.local
+        && left
+            .projections
+            .iter()
+            .zip(&right.projections)
+            .all(|(a, b)| projections_conservatively_equal(a, b))
 }
 
 fn check_operand(
@@ -286,7 +329,8 @@ fn check_operand(
         Operand::Const(..) => return,
     };
     let index = place.local.0 as usize;
-    if let Some(origin) = state[index].moved_or_ancestor_moved(&place.fields) {
+    let field_path = leading_field_path(&place.projections);
+    if let Some(origin) = state[index].moved_or_ancestor_moved(&field_path) {
         let name = describe_place(package, body, place);
         diagnostics.push(
             Diagnostic::new(
@@ -298,7 +342,7 @@ fn check_operand(
         );
         return;
     }
-    if let Some(origin) = state[index].moved_descendant(&place.fields) {
+    if let Some(origin) = state[index].moved_descendant(&field_path) {
         let name = describe_place(package, body, place);
         diagnostics.push(
             Diagnostic::new(
@@ -325,7 +369,23 @@ fn check_operand(
         );
         return;
     }
-    if !place.fields.is_empty() && has_custom_ancestor(package, body, place) {
+    if place
+        .projections
+        .iter()
+        .any(|p| matches!(p, Projection::Index(_)))
+    {
+        let name = describe_place(package, body, place);
+        diagnostics.push(
+            Diagnostic::new(
+                Severity::Error,
+                format!("moving `{name}` out through an array index is not supported yet"),
+                span,
+            )
+            .note("fixed-array element extraction is planned for a later milestone (§31.2)"),
+        );
+        return;
+    }
+    if !field_path.is_empty() && has_custom_ancestor(package, body.locals[index].ty, &field_path) {
         let name = describe_place(package, body, place);
         diagnostics.push(
             Diagnostic::new(
@@ -337,7 +397,7 @@ fn check_operand(
         );
         return;
     }
-    state[index].record_move(place.fields.clone(), span);
+    state[index].record_move(field_path, span);
 }
 
 fn assign(
@@ -349,11 +409,22 @@ fn assign(
     diagnostics: &mut Vec<Diagnostic>,
 ) {
     let index = place.local.0 as usize;
-    if place.fields.is_empty() {
+    if place.projections.is_empty() {
         state[index].clear();
         return;
     }
-    if let Some(origin) = state[index].moved_strict_ancestor(&place.fields) {
+    let field_path = leading_field_path(&place.projections);
+    // An index in the path means this place is strictly *inside* the array
+    // field at `field_path`, never equal to it, so an exact match there is
+    // itself an ancestor (the whole array field was moved away) — unlike the
+    // no-index case, where an exact match is a legitimate reinitialization.
+    let truncated = place.projections.len() > field_path.len();
+    let ancestor = if truncated {
+        state[index].moved_or_ancestor_moved(&field_path)
+    } else {
+        state[index].moved_strict_ancestor(&field_path)
+    };
+    if let Some(origin) = ancestor {
         let name = describe_place(package, body, place);
         diagnostics.push(
             Diagnostic::new(
@@ -365,13 +436,16 @@ fn assign(
         );
         return;
     }
-    state[index].reinitialize(&place.fields);
+    if !truncated {
+        state[index].reinitialize(&field_path);
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::MovedSet;
+    use super::{MovedSet, leading_field_path};
     use crate::hir::FieldId;
+    use crate::mir::{Operand, Place, Projection};
     use crate::source::{SourceMap, Span};
 
     fn two_spans() -> (Span, Span) {
@@ -397,5 +471,72 @@ mod tests {
 
         let joined = field.join(&whole);
         assert_eq!(joined.entries, vec![(Vec::new(), whole_span)]);
+    }
+
+    #[test]
+    fn leading_field_path_stops_at_the_first_index() {
+        let zero = Operand::Const(crate::hir::Const::Int(0), crate::types::TypeStore::INT);
+        assert_eq!(leading_field_path(&[]), Vec::new());
+        assert_eq!(
+            leading_field_path(&[Projection::Field(FieldId(0)), Projection::Field(FieldId(1))]),
+            vec![FieldId(0), FieldId(1)]
+        );
+        assert_eq!(
+            leading_field_path(&[
+                Projection::Field(FieldId(0)),
+                Projection::Index(zero.clone()),
+                Projection::Field(FieldId(1)),
+            ]),
+            vec![FieldId(0)]
+        );
+        assert_eq!(leading_field_path(&[Projection::Index(zero)]), Vec::new());
+    }
+
+    #[test]
+    fn whole_array_field_move_blocks_assignment_through_an_index() {
+        // `let other = outer.arr` then `outer.arr[0] = v` must be rejected,
+        // the same as it is for a plain field (finding 1: the naive fix using
+        // `moved_or_ancestor_moved`/`moved_strict_ancestor` based only on the
+        // truncated key's length, without checking whether truncation
+        // happened, silently allowed this).
+        let mut sources = SourceMap::new();
+        let file = sources.add("test.ore", "0123456789".to_string()).unwrap();
+        let span = sources.span(file, 0, 1).unwrap();
+
+        let mut state = MovedSet::default();
+        state.record_move(vec![FieldId(0)], span); // outer.arr moved whole
+
+        let index_path = [Projection::Field(FieldId(0)), Projection::Index(zero())];
+        let field_path = leading_field_path(&index_path);
+        assert_eq!(field_path, vec![FieldId(0)]);
+        let truncated = index_path.len() > field_path.len();
+        assert!(truncated);
+        // The fixed `assign` logic: truncated => ancestor check includes an
+        // exact match, so this must find the whole-field move.
+        assert!(state.moved_or_ancestor_moved(&field_path).is_some());
+        // The unfixed logic would have used `moved_strict_ancestor`, which
+        // excludes an exact match and would have missed it.
+        assert!(state.moved_strict_ancestor(&field_path).is_none());
+    }
+
+    fn zero() -> Operand {
+        Operand::Const(crate::hir::Const::Int(0), crate::types::TypeStore::INT)
+    }
+
+    #[test]
+    fn places_overlap_treats_any_two_indices_as_overlapping() {
+        let local = crate::mir::Local(0);
+        let a = Place {
+            local,
+            projections: vec![Projection::Index(zero())],
+        };
+        let b = Place {
+            local,
+            projections: vec![Projection::Index(Operand::Const(
+                crate::hir::Const::Int(1),
+                crate::types::TypeStore::INT,
+            ))],
+        };
+        assert!(super::places_overlap(&a, &b));
     }
 }

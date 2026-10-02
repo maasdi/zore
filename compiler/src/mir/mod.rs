@@ -51,17 +51,25 @@ pub struct BasicBlock {
     pub terminator: Terminator,
 }
 
+/// A step from a place into one of its parts.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Projection {
+    Field(FieldId),
+    /// A fixed-array element; the index is already bounds-checked.
+    Index(Operand),
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct Place {
     pub local: Local,
-    pub fields: Vec<FieldId>,
+    pub projections: Vec<Projection>,
 }
 
 impl Place {
     pub fn local(local: Local) -> Self {
         Self {
             local,
-            fields: Vec::new(),
+            projections: Vec::new(),
         }
     }
 }
@@ -75,6 +83,13 @@ pub enum Operand {
     Const(Const, TypeId),
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum AggregateKind {
+    Struct(StructId),
+    /// Element type; the count is the operand list's length.
+    Array(TypeId),
+}
+
 #[derive(Debug)]
 pub enum Rvalue {
     Use(Operand),
@@ -85,8 +100,8 @@ pub enum Rvalue {
     /// Checked numeric conversion to the given type.
     Convert(Operand, TypeId),
     Error(Operand),
-    /// Fields in declaration order.
-    Aggregate(StructId, Vec<Operand>),
+    /// Fields or elements in declaration/evaluation order.
+    Aggregate(AggregateKind, Vec<Operand>),
 }
 
 #[derive(Debug)]

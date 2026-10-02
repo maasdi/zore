@@ -1645,3 +1645,116 @@ fn float_types_and_conversions() {
     // Runtime conversions are checked at runtime, not rejected.
     accepts(&body("var f = 2.5\nlet n = int64(f)"));
 }
+
+#[test]
+fn fixed_arrays_literals_and_indexing() {
+    accepts(&body(
+        "let xs = [int; 3]{1, 2, 3}
+        let first = xs[0]
+        println(first)",
+    ));
+    accepts(&body(
+        "var xs = [int; 3]{1, 2, 3}
+        xs[1] = 9
+        println(xs[1])",
+    ));
+    accepts(&body("let empty = [int; 0]{}"));
+    accepts(&program(
+        "type Point struct { xs [int; 2] }
+        func use() { var p = Point{xs: [int; 2]{1, 2}}\np.xs[0] = 9\nprintln(p.xs[0]) }",
+    ));
+    rejects(
+        &body("let xs = [int; 3]{1, 2}"),
+        "array literal has 2 elements, expected 3",
+    );
+    rejects(
+        &body("let xs = [int; 2]{1, 2, 3}"),
+        "array literal has 3 elements, expected 2",
+    );
+    rejects(&body("let xs = [int; 2]{1, \"two\"}"), "mismatched types");
+    rejects(
+        &body("let xs = [int; 3]{1, 2, 3}\nlet y = xs[\"a\"]"),
+        "array index must be an integer",
+    );
+    rejects(&body("let xs = 5\nlet y = xs[0]"), "cannot be indexed");
+    rejects(
+        &body("let n = 3\nlet xs = [int; n]{1, 2, 3}"),
+        "array size must be a constant expression",
+    );
+    rejects(
+        &body("let xs = [int; -1]{}"),
+        "array size must be a nonnegative constant",
+    );
+}
+
+#[test]
+fn self_containing_array_structs_are_rejected() {
+    rejects(
+        &program("type S struct { a [S; 2] }"),
+        "contains itself by value",
+    );
+}
+
+#[test]
+fn array_mutable_places_and_aliasing() {
+    accepts(&program(
+        "func edit(n mut int) {}
+        func use() { var xs = [int; 2]{1, 2}\nedit(xs[0]) }",
+    ));
+    rejects(
+        &program(
+            "func edit(n mut int) {}
+            func use() { let xs = [int; 2]{1, 2}\nedit(xs[0]) }",
+        ),
+        "cannot pass",
+    );
+    rejects(
+        &program(
+            "func edit(n mut int) {}
+            func use(xs [int; 2]) { edit(xs[0]) }",
+        ),
+        "cannot pass",
+    );
+    rejects(
+        &program(
+            "func edit2(a mut int, b mut int) {}
+            func use() { var xs = [int; 2]{1, 2}\nvar i = 0\nvar j = 1\nedit2(xs[i], xs[j]) }",
+        ),
+        "is also borrowed by another argument of this call",
+    );
+}
+
+#[test]
+fn moving_an_array_element_out_through_an_index_is_rejected() {
+    let resource = "type Resource struct { id int }
+        func (r mut Resource) drop() {}
+        func inspect(r Resource) {}
+        func consume(r own Resource) {}";
+    accepts_move(&program(&format!(
+        "{resource}\nfunc use() {{ let xs = [Resource; 1]{{Resource{{id: 1}}}}\ninspect(xs[0]) }}"
+    )));
+    rejects_move(
+        &program(&format!(
+            "{resource}\nfunc use() {{ var xs = [Resource; 1]{{Resource{{id: 1}}}}\nconsume(xs[0]) }}"
+        )),
+        "moving `xs[_]` out through an array index is not supported yet",
+    );
+    rejects_move(
+        &program(&format!(
+            "{resource}\nfunc use() {{ var xs = [Resource; 1]{{Resource{{id: 1}}}}\nlet taken = xs[0] }}"
+        )),
+        "moving `xs[_]` out through an array index is not supported yet",
+    );
+}
+
+#[test]
+fn assigning_through_an_index_of_a_moved_array_is_rejected() {
+    let resource = "type Resource struct { id int }
+        func (r mut Resource) drop() {}";
+    rejects_move(
+        &program(&format!(
+            "{resource}\ntype Wrapper struct {{ arr [Resource; 1] }}\nfunc use() {{ var w = Wrapper{{arr: [Resource; 1]{{Resource{{id: 1}}}}}}\nlet taken = w.arr\nw.arr[0] = Resource{{id: 2}} }}"
+        )),
+        "cannot assign through moved value `w.arr[_]`",
+    );
+}

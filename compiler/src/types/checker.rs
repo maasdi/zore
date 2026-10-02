@@ -213,39 +213,61 @@ impl<'a> Checker<'a> {
         self.error(message, span);
     }
 
-    fn resolve_type(&self, ty: &ast::Type) -> Option<TypeId> {
-        match self.res.uses.get(&ty.name.span)? {
-            Res::Primitive(ty) => Some(*ty),
-            Res::Struct(id) => Some(self.types.struct_type(*id)),
-            _ => None,
+    fn resolve_type(&mut self, ty: &ast::Type) -> Option<TypeId> {
+        match ty {
+            ast::Type::Named(name) => match self.res.uses.get(&name.span)? {
+                Res::Primitive(ty) => Some(*ty),
+                Res::Struct(id) => Some(self.types.struct_type(*id)),
+                _ => None,
+            },
+            ast::Type::Array { element, size, .. } => {
+                let element_ty = self.resolve_type(element)?;
+                let value = self.expr(size, Some(TypeStore::INT))?;
+                let sized = self.coerce(value, TypeStore::INT)?;
+                let ExprKind::Const(Const::Int(n)) = sized.kind else {
+                    self.error("array size must be a constant expression (§5.3)", size.span);
+                    return None;
+                };
+                let Ok(count) = u32::try_from(n) else {
+                    self.error(
+                        "array size must be a nonnegative constant that fits in 32 bits (§5.3)",
+                        size.span,
+                    );
+                    return None;
+                };
+                Some(self.types.array_type(element_ty, count))
+            }
         }
     }
 
     fn signatures_and_fields(&mut self) {
-        self.fields = self
-            .res
-            .structs
+        // Cloned up front: `resolve_type` needs `&mut self` (to intern array
+        // types and fold array-size constants), which can't overlap a live
+        // borrow of `self.res` held by iterating it directly.
+        let structs: Vec<&'a ast::StructDecl> = self.res.structs.clone();
+        self.fields = structs
             .iter()
             .map(|decl| {
-                decl.fields
+                let fields = decl.fields.clone();
+                fields
                     .iter()
                     .map(|f| (f.name.text.clone(), self.resolve_type(&f.ty), f.name.span))
                     .collect()
             })
             .collect();
-        self.signatures = self
-            .res
-            .functions
+        let functions: Vec<&'a ast::FuncDecl> = self.res.functions.clone();
+        self.signatures = functions
             .iter()
             .map(|func| {
-                let params: Option<Vec<_>> = func
-                    .receiver
+                let receiver_and_params: Vec<ast::Param> =
+                    func.receiver.iter().chain(&func.params).cloned().collect();
+                let params: Option<Vec<_>> = receiver_and_params
                     .iter()
-                    .chain(&func.params)
                     .map(|p| self.resolve_type(&p.ty))
                     .collect();
+                let results = func.results.clone();
                 let results: Option<Vec<_>> =
-                    func.results.iter().map(|t| self.resolve_type(t)).collect();
+                    results.iter().map(|t| self.resolve_type(t)).collect();
                 Some(Signature {
                     params: params?,
                     results: results?,
@@ -299,7 +321,13 @@ impl<'a> Checker<'a> {
             return None;
         }
         let name = match &func.receiver {
-            Some(receiver) => format!("{}.{}", receiver.ty.name.text, func.name.text),
+            // Resolution already rejects any receiver that isn't a named struct type.
+            Some(receiver) => match &receiver.ty {
+                ast::Type::Named(type_name) => {
+                    format!("{}.{}", type_name.text, func.name.text)
+                }
+                ast::Type::Array { .. } => func.name.text.clone(),
+            },
             None => func.name.text.clone(),
         };
         Some(hir::Function {
@@ -595,7 +623,9 @@ impl<'a> Checker<'a> {
             ast::ExprKind::Try(inner) => self.try_expr(inner, span),
             ast::ExprKind::Call { callee, args } => self.call(callee, args, span),
             ast::ExprKind::Field { base, name } => self.field(base, name, span),
+            ast::ExprKind::Index { base, index } => self.index(base, index, span),
             ast::ExprKind::StructLit { ty, fields } => self.struct_lit(ty, fields, span),
+            ast::ExprKind::ArrayLit { ty, elements } => self.array_lit(ty, elements, span),
         }
     }
 
@@ -1286,7 +1316,7 @@ impl<'a> Checker<'a> {
                 );
                 false
             }
-            ExprKind::Field { base, .. } => self.mutable_place(base),
+            ExprKind::Field { base, .. } | ExprKind::Index { base, .. } => self.mutable_place(base),
             _ => {
                 self.error(
                     "a `mut` argument must be a mutable place, not a temporary value",
@@ -1485,6 +1515,81 @@ impl<'a> Checker<'a> {
             ty,
             span,
         )))
+    }
+
+    fn index(&mut self, base: &ast::Expr, index: &ast::Expr, span: Span) -> Option<Value> {
+        let base = match self.expr(base, None)? {
+            Value::Untyped(_, span) => {
+                self.error("an integer constant cannot be indexed", span);
+                return None;
+            }
+            Value::Typed(expr) => self.single_value(expr)?,
+        };
+        let TypeKind::Array { element, .. } = self.types.kind(base.ty()) else {
+            let message = format!("type `{}` cannot be indexed", self.name(base.ty()));
+            self.error(message, base.span);
+            self.expr(index, None);
+            return None;
+        };
+        let index_value = self.expr(index, None)?;
+        let index_expr = self.with_default_type(index_value)?;
+        if self.types.int(index_expr.ty()).is_none() {
+            let message = format!(
+                "array index must be an integer, found `{}`",
+                self.name(index_expr.ty())
+            );
+            self.error(message, index_expr.span);
+            return None;
+        }
+        Some(Value::Typed(typed(
+            ExprKind::Index {
+                base: Box::new(base),
+                index: Box::new(index_expr),
+            },
+            element,
+            span,
+        )))
+    }
+
+    fn array_lit(&mut self, ty: &ast::Type, elements: &[ast::Expr], span: Span) -> Option<Value> {
+        let array_ty = self.resolve_type(ty)?;
+        let TypeKind::Array { element, size } = self.types.kind(array_ty) else {
+            unreachable!("an array literal's own type always resolves to TypeKind::Array")
+        };
+        let count = size as usize;
+        if elements.len() != count {
+            let message = format!(
+                "array literal has {} element{}, expected {count} (§12.6)",
+                elements.len(),
+                if elements.len() == 1 { "" } else { "s" }
+            );
+            self.error(message, span);
+            for element_expr in elements {
+                self.expr(element_expr, Some(element));
+            }
+            return None;
+        }
+        let mut checked = Vec::with_capacity(elements.len());
+        let mut ok = true;
+        for element_expr in elements {
+            match self.expr(element_expr, Some(element)) {
+                Some(value) => match self.coerce(value, element) {
+                    Some(expr) => checked.push(expr),
+                    None => ok = false,
+                },
+                None => ok = false,
+            }
+        }
+        ok.then(|| {
+            Value::Typed(typed(
+                ExprKind::ArrayLit {
+                    element,
+                    elements: checked,
+                },
+                array_ty,
+                span,
+            ))
+        })
     }
 
     fn struct_lit(
@@ -1809,7 +1914,7 @@ impl<'a> Checker<'a> {
                 let ty = self.locals[id.0 as usize]?;
                 Some(hir::Place {
                     root: id,
-                    fields: Vec::new(),
+                    projections: Vec::new(),
                     ty,
                     span: expr.span,
                 })
@@ -1817,7 +1922,9 @@ impl<'a> Checker<'a> {
             ast::ExprKind::Field { base, name } => {
                 if !matches!(
                     base.kind,
-                    ast::ExprKind::Name(_) | ast::ExprKind::Field { .. }
+                    ast::ExprKind::Name(_)
+                        | ast::ExprKind::Field { .. }
+                        | ast::ExprKind::Index { .. }
                 ) {
                     self.expr(base, None);
                     self.error("cannot assign to a field of a temporary value", expr.span);
@@ -1825,12 +1932,48 @@ impl<'a> Checker<'a> {
                 }
                 let mut place = self.assignable_place(base)?;
                 let (field, ty) = self.field_of(place.ty, name)?;
-                place.fields.push(field);
+                place.projections.push(hir::Projection::Field(field));
                 place.ty = ty;
                 place.span = expr.span;
                 Some(place)
             }
-            _ => unreachable!("the parser accepts only name and field targets"),
+            ast::ExprKind::Index { base, index } => {
+                if !matches!(
+                    base.kind,
+                    ast::ExprKind::Name(_)
+                        | ast::ExprKind::Field { .. }
+                        | ast::ExprKind::Index { .. }
+                ) {
+                    self.expr(base, None);
+                    self.expr(index, None);
+                    self.error("cannot assign to an index of a temporary value", expr.span);
+                    return None;
+                }
+                let mut place = self.assignable_place(base)?;
+                let TypeKind::Array { element, .. } = self.types.kind(place.ty) else {
+                    let message = format!("type `{}` cannot be indexed", self.name(place.ty));
+                    self.error(message, base.span);
+                    self.expr(index, None);
+                    return None;
+                };
+                let index_value = self.expr(index, None)?;
+                let index_expr = self.with_default_type(index_value)?;
+                if self.types.int(index_expr.ty()).is_none() {
+                    let message = format!(
+                        "array index must be an integer, found `{}`",
+                        self.name(index_expr.ty())
+                    );
+                    self.error(message, index_expr.span);
+                    return None;
+                }
+                place
+                    .projections
+                    .push(hir::Projection::Index(Box::new(index_expr)));
+                place.ty = element;
+                place.span = expr.span;
+                Some(place)
+            }
+            _ => unreachable!("the parser accepts only name, field, and index targets"),
         }
     }
 
@@ -1917,8 +2060,12 @@ impl<'a> Checker<'a> {
             places.iter().filter_map(|p| p.as_ref()?.as_ref()).collect();
         for (i, a) in concrete.iter().enumerate() {
             for b in &concrete[i + 1..] {
-                let shared = a.fields.len().min(b.fields.len());
-                if a.root == b.root && a.fields[..shared] == b.fields[..shared] {
+                let shared = a.projections.len().min(b.projections.len());
+                let prefix_matches = a.projections[..shared]
+                    .iter()
+                    .zip(&b.projections[..shared])
+                    .all(|(x, y)| projections_conservatively_equal(x, y));
+                if a.root == b.root && prefix_matches {
                     self.diagnostics.push(
                         Diagnostic::new(Severity::Error, "assignment targets overlap", b.span)
                             .related(a.span, "overlaps this target"),
@@ -2068,23 +2215,51 @@ impl<'a> Checker<'a> {
     }
 }
 
-type ArgumentPlace = (LocalId, Vec<FieldId>);
+/// A projection step for argument-aliasing purposes; an index's value
+/// doesn't matter here, only that indexing happened (§12.6: two differently
+/// written indices are not proof of disjointness).
+#[derive(PartialEq)]
+enum ArgumentProjection {
+    Field(FieldId),
+    Index,
+}
 
-/// The local and field path an argument names, if it is a plain place.
+type ArgumentPlace = (LocalId, Vec<ArgumentProjection>);
+
+/// The local and projection path an argument names, if it is a plain place.
 fn argument_place(expr: &hir::Expr) -> Option<ArgumentPlace> {
     match &expr.kind {
         ExprKind::Local(id) => Some((*id, Vec::new())),
         ExprKind::Field { base, field } => {
-            let (root, mut fields) = argument_place(base)?;
-            fields.push(*field);
-            Some((root, fields))
+            let (root, mut path) = argument_place(base)?;
+            path.push(ArgumentProjection::Field(*field));
+            Some((root, path))
+        }
+        ExprKind::Index { base, .. } => {
+            let (root, mut path) = argument_place(base)?;
+            path.push(ArgumentProjection::Index);
+            Some((root, path))
         }
         _ => None,
     }
 }
 
+/// Conservative: two indices are never proof of disjointness (§12.6).
+fn projections_conservatively_equal(a: &hir::Projection, b: &hir::Projection) -> bool {
+    match (a, b) {
+        (hir::Projection::Field(x), hir::Projection::Field(y)) => x == y,
+        (hir::Projection::Index(_), hir::Projection::Index(_)) => true,
+        _ => false,
+    }
+}
+
 fn places_overlap(a: &ArgumentPlace, b: &ArgumentPlace) -> bool {
-    a.0 == b.0 && a.1.iter().zip(&b.1).all(|(x, y)| x == y)
+    a.0 == b.0
+        && a.1.iter().zip(&b.1).all(|(x, y)| match (x, y) {
+            (ArgumentProjection::Field(x), ArgumentProjection::Field(y)) => x == y,
+            (ArgumentProjection::Index, ArgumentProjection::Index) => true,
+            _ => false,
+        })
 }
 
 fn shift_value(int: IntType, value: i128, count: u32, op: BinaryOp) -> i128 {

@@ -77,7 +77,13 @@ in `statement-boundaries`, `expressions`, `bindings-assignments`,
 counterparts in `tests/typecheck/check.rs`. Field-level partial moves,
 reinitialization, and the custom-`drop`-ancestor restriction in `ownership`
 have counterparts in both `tests/typecheck/check.rs` and `tests/codegen/native.rs`.
-Remaining ownership, runtime, and native rows stay pending.
+Fixed-array literal/arity typing, indexing, mutable-place and
+conservative-aliasing rules, and index-move rejection in `arrays-slices` have
+parser counterparts in `tests/parser/parser.rs` and checker counterparts in
+`tests/typecheck/check.rs`; `tests/codegen/native.rs` covers the honest
+unsupported-backend diagnostic. Slicing, dynamic `Array<T>`, and mutable-slice
+rows in `arrays-slices` remain pending, as do the remaining ownership,
+runtime, and native rows elsewhere.
 
 Use Rust unit tests for small source/IR utilities and pass algorithms. Use Cargo
 integration tests in subsystem folders under `tests/` for public compiler APIs

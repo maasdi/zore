@@ -185,7 +185,7 @@ fn read_operand(operand: &Operand, state: &mut [UseState]) {
         Operand::Const(..) => return,
     };
     let index = place.local.0 as usize;
-    if place.fields.is_empty() && state.get(index) == Some(&UseState::Unused) {
+    if place.projections.is_empty() && state.get(index) == Some(&UseState::Unused) {
         state[index] = UseState::Used;
     }
 }
@@ -199,7 +199,7 @@ fn write(
     reported: &mut HashSet<(Span, usize, bool)>,
 ) {
     let index = place.local.0 as usize;
-    if !place.fields.is_empty()
+    if !place.projections.is_empty()
         || index >= state.len()
         || function.locals[index].ty != TypeStore::ERROR
     {
