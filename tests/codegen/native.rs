@@ -859,6 +859,10 @@ fn unsupported_backend_features_are_diagnosed() {
             "println(1.5)",
             "printing floating-point values is not supported",
         ),
+        (
+            "let data = [int; 2]{1, 2}\nlet view = data[:]\nprintln(view[0])",
+            "borrowed slices are not supported by the native backend yet",
+        ),
     ] {
         let mut sources = SourceMap::new();
         let id = sources.add("test.ore", main_body(stmts)).unwrap();
@@ -874,6 +878,31 @@ fn unsupported_backend_features_are_diagnosed() {
     }
     // Constant concatenation is folded by the checker and works.
     prints(&main_body("println(\"con\" + \"cat\")"), "concat\n");
+}
+
+#[test]
+fn shared_array_parameters_read_the_callers_storage() {
+    prints(
+        "package main
+type Grid struct { cells [int; 3]\n label string }
+func (g Grid) total() int { return g.cells[0] + g.cells[1] + g.cells[2] }
+func sum(xs [int; 3]) int { return xs[0] + xs[1] + xs[2] }
+func label(g Grid) string { return g.label }
+func bump(xs mut [int; 3]) { xs[1] += 10 }
+func main() {
+    var xs = [int; 3]{1, 2, 3}
+    println(sum(xs))
+    bump(xs)
+    println(sum(xs))
+    println(sum([int; 3]{4, 5, 6}))
+    let g = Grid{cells: xs, label: \"grid\"}
+    println(g.total())
+    println(label(g))
+    println(xs[1])
+}
+",
+        "6\n16\n15\n16\ngrid\n12\n",
+    );
 }
 
 #[test]

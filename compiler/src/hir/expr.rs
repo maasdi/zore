@@ -7,7 +7,7 @@ use crate::types::{StructId, TypeId};
 #[derive(Clone, Debug, PartialEq)]
 pub enum Projection {
     Field(FieldId),
-    /// A fixed-array element; the index is evaluated, not yet bounds-checked.
+    /// An array or slice element; the index is evaluated, not yet bounds-checked.
     Index(Box<Expr>),
 }
 
@@ -58,6 +58,13 @@ pub enum ExprKind {
     Index {
         base: Box<Expr>,
         index: Box<Expr>,
+    },
+    /// `base[low:high]`, borrowing an exclusive view when `mutable`.
+    Slice {
+        base: Box<Expr>,
+        low: Option<Box<Expr>>,
+        high: Option<Box<Expr>>,
+        mutable: bool,
     },
     Call {
         function: FunctionId,

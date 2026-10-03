@@ -1,4 +1,4 @@
-use super::operand::Operand;
+use super::operand::{Operand, Place};
 use crate::ast::{BinaryOp, UnaryOp};
 use crate::types::{StructId, TypeId};
 
@@ -19,9 +19,19 @@ pub enum Rvalue {
     /// Checked numeric conversion to the given type.
     Convert(Operand, TypeId),
     Error(Operand),
-    /// Checks `0 <= index < length` per the operand's own signedness, panics
-    /// otherwise, and evaluates to the index widened to `int64`.
-    BoundsCheck(Operand, u32),
+    /// Checks `0 <= index < length` (an `int64` length) per the index's own
+    /// signedness, panics otherwise, and evaluates to the index widened to `int64`.
+    BoundsCheck(Operand, Operand),
+    /// The length of the slice at the place, as an `int64`.
+    Length(Place),
+    /// A view of `place` (an array or slice) from `low` (default zero) up to
+    /// `high` (default its length); panics unless `0 <= low <= high <= length`.
+    Slice {
+        place: Place,
+        low: Option<Operand>,
+        high: Option<Operand>,
+        mutable: bool,
+    },
     /// Fields or elements in declaration/evaluation order.
     Aggregate(AggregateKind, Vec<Operand>),
 }

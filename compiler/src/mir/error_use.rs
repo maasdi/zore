@@ -2,9 +2,7 @@ use std::collections::HashSet;
 
 use crate::diagnostic::{Diagnostic, Severity};
 use crate::hir;
-use crate::mir::{
-    BasicBlock, BlockId, Body, Operand, Place, Program, Rvalue, Statement, Terminator,
-};
+use crate::mir::{BasicBlock, Body, Operand, Place, Program, Rvalue, Statement, Terminator};
 use crate::source::Span;
 use crate::types::TypeStore;
 
@@ -60,7 +58,7 @@ fn check_body(function: &hir::Function, body: &Body, diagnostics: &mut Vec<Diagn
                 &mut Vec::new(),
                 &mut HashSet::new(),
             );
-            for successor in successors(&block.terminator) {
+            for successor in block.terminator.successors() {
                 let slot = &mut incoming[successor.0 as usize];
                 let joined = match slot {
                     Some(previous) => previous
@@ -82,19 +80,6 @@ fn check_body(function: &hir::Function, body: &Body, diagnostics: &mut Vec<Diagn
         if let Some(mut state) = state {
             transfer(function, block, &mut state, diagnostics, &mut reported);
         }
-    }
-}
-
-fn successors(terminator: &Terminator) -> Vec<BlockId> {
-    match terminator {
-        Terminator::Goto(target) => vec![*target],
-        Terminator::Branch {
-            then_block,
-            else_block,
-            ..
-        } => vec![*then_block, *else_block],
-        Terminator::Call { target, .. } | Terminator::Assert { target, .. } => vec![*target],
-        Terminator::Return | Terminator::PanicReturn | Terminator::Unreachable => Vec::new(),
     }
 }
 
@@ -166,15 +151,20 @@ fn read_rvalue(rvalue: &Rvalue, state: &mut [UseState]) {
         Rvalue::Use(value)
         | Rvalue::Unary(_, value)
         | Rvalue::Convert(value, _)
-        | Rvalue::Error(value)
-        | Rvalue::BoundsCheck(value, _) => read_operand(value, state),
-        Rvalue::Binary(_, left, right) => {
+        | Rvalue::Error(value) => read_operand(value, state),
+        Rvalue::Binary(_, left, right) | Rvalue::BoundsCheck(left, right) => {
             read_operand(left, state);
             read_operand(right, state);
         }
         Rvalue::Aggregate(_, values) => {
             for value in values {
                 read_operand(value, state);
+            }
+        }
+        Rvalue::Length(_) => {}
+        Rvalue::Slice { low, high, .. } => {
+            for bound in [low, high].into_iter().flatten() {
+                read_operand(bound, state);
             }
         }
     }

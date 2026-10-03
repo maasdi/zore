@@ -113,6 +113,19 @@ impl Module<'_> {
     }
 
     pub(super) fn function(&mut self, body: &mir::Body) -> String {
+        if body
+            .locals
+            .iter()
+            .any(|local| self.package.contains_view(local.ty))
+        {
+            let span = self.package.function(body.function).span;
+            self.unsupported(
+                "borrowed slices are",
+                span,
+                "native slice code generation lands in the next M20–M21 stage",
+            );
+            return String::new();
+        }
         let mut f = FunctionBuilder {
             module: self,
             body,
@@ -170,21 +183,7 @@ impl FunctionBuilder<'_, '_> {
     }
 
     pub(super) fn place_ty(&self, place: &Place) -> TypeId {
-        let package = self.module.package;
-        let mut ty = self.local_ty(place.local);
-        for projection in &place.projections {
-            ty = match projection {
-                mir::Projection::Field(field) => {
-                    let id = package.types.struct_id(ty).expect("struct projection");
-                    package.strukt(id).fields[field.0 as usize].ty
-                }
-                mir::Projection::Index(_) => match package.types.kind(ty) {
-                    TypeKind::Array { element, .. } => element,
-                    _ => unreachable!("index projection on a non-array"),
-                },
-            };
-        }
-        ty
+        mir::place_type(self.module.package, &self.body.locals, place)
     }
 
     pub(super) fn operand_ty(&self, operand: &Operand) -> TypeId {
@@ -431,35 +430,32 @@ impl FunctionBuilder<'_, '_> {
 
     /// Widens `operand` to `int64` per its own signedness, panics if it
     /// falls outside `[0, length)`, and evaluates to the widened value.
-    pub(super) fn bounds_check(&mut self, operand: &Operand, length: u32, span: Span) -> String {
+    /// Widens an integer operand to `int64` per its own signedness, so a
+    /// negative signed value becomes a huge unsigned one and fails any
+    /// unsigned comparison against a length.
+    pub(super) fn widen_to_i64(&mut self, operand: &Operand) -> String {
         let int = self
             .module
             .package
             .types
             .int(self.operand_ty(operand))
-            .expect("array index is an integer");
+            .expect("index operands are integers");
         let value = self.value(operand);
-        let wide = if int.bits == 64 {
-            value
-        } else {
-            let name = self.fresh();
-            let extend = if int.signed { "sext" } else { "zext" };
-            self.line(format!("{name} = {extend} i{} {value} to i64", int.bits));
-            name
-        };
-        let high = self.fresh();
-        let predicate = if int.signed { "sge" } else { "uge" };
-        self.line(format!("{high} = icmp {predicate} i64 {wide}, {length}"));
-        let condition = if int.signed {
-            let low = self.fresh();
-            self.line(format!("{low} = icmp slt i64 {wide}, 0"));
-            let both = self.fresh();
-            self.line(format!("{both} = or i1 {low}, {high}"));
-            both
-        } else {
-            high
-        };
-        self.panic_if(&condition, "index out of range", span);
+        if int.bits == 64 {
+            return value;
+        }
+        let name = self.fresh();
+        let extend = if int.signed { "sext" } else { "zext" };
+        self.line(format!("{name} = {extend} i{} {value} to i64", int.bits));
+        name
+    }
+
+    pub(super) fn bounds_check(&mut self, index: &Operand, length: &Operand, span: Span) -> String {
+        let wide = self.widen_to_i64(index);
+        let length = self.value(length);
+        let out_of_range = self.fresh();
+        self.line(format!("{out_of_range} = icmp uge i64 {wide}, {length}"));
+        self.panic_if(&out_of_range, "index out of range", span);
         wide
     }
 
@@ -491,7 +487,10 @@ impl FunctionBuilder<'_, '_> {
             Rvalue::Unary(op, operand) => self.unary(*op, operand, span),
             Rvalue::Convert(operand, to) => self.convert(operand, *to, span),
             Rvalue::Error(operand) => self.error_value(operand),
-            Rvalue::BoundsCheck(operand, length) => self.bounds_check(operand, *length, span),
+            Rvalue::BoundsCheck(index, length) => self.bounds_check(index, length, span),
+            Rvalue::Length(_) | Rvalue::Slice { .. } => {
+                unreachable!("functions using slices are rejected before code generation")
+            }
             Rvalue::Aggregate(_, operands) => {
                 let ty = self.ty(result_ty);
                 let mut current = "undef".to_string();
@@ -662,10 +661,9 @@ impl FunctionBuilder<'_, '_> {
                     }
                     ty = self.module.package.strukt(id).fields[field.0 as usize].ty;
                 }
-                mir::Projection::Index(_) => match self.module.package.types.kind(ty) {
-                    TypeKind::Array { element, .. } => ty = element,
-                    _ => unreachable!("index projection on a non-array"),
-                },
+                index @ mir::Projection::Index(_) => {
+                    ty = mir::projection_type(self.module.package, ty, index);
+                }
             }
         }
         false
@@ -809,6 +807,7 @@ impl FunctionBuilder<'_, '_> {
             }
             TypeKind::Struct(_) => unreachable!("structs have no operators"),
             TypeKind::Array { .. } => unreachable!("arrays have no operators"),
+            TypeKind::Slice { .. } => unreachable!("slices have no operators"),
         }
     }
 

@@ -6,15 +6,23 @@ Authority: spec §12.6, with §3.7, §5.6, §7.5–7.6, §11.6–11.7, §12.3–
 and mutable-place and conservative-aliasing rules for indexed places have
 executable parser and type-checking coverage in `tests/parser/parser.rs` and
 `tests/typecheck/check.rs`; rejection of moving an element out through an
-index is covered in `tests/ownership/ownership.rs`. LLVM codegen is implemented and covered by
-`tests/codegen/native.rs`: array construction, index read/write, runtime
-bounds-check panics (including the unsigned-index wraparound case), and
-element cleanup through a custom `drop` method at scope exit and on index
-replacement. Dynamic `Array<T>`, borrowed slices, slicing, and the
-constant-index move-extraction carve-out of §31.2 remain pending. Remaining
-rows below — slicing, dynamic arrays, mutable slice contextual typing, and
-region/liveness behavior — are still pending parser, typing, ownership,
-lowering, and runtime cases, not executable tests.
+index is covered in `tests/ownership/ownership.rs`. LLVM codegen for fixed
+arrays is implemented and covered by `tests/codegen/native.rs`: array
+construction, index read/write, runtime bounds-check panics (including the
+unsigned-index wraparound case), and element cleanup through a custom `drop`
+method at scope exit and on index replacement.
+
+Borrowed slices are checked but not yet compiled natively. Slice types,
+`base[low:high]` with omitted bounds, rejection of a third bound and of slice
+literals, contextual shared/exclusive typing, mutable-source requirements,
+no implicit array-to-slice conversion, static rejection of provably invalid
+bounds, element mutability through shared versus mutable views, and the
+region rows (disjoint mutable views, reborrow suspension, last-use release,
+views outliving a local or temporary owner, and invalidating a live view's
+owner) are covered in `tests/parser/parser.rs`, `tests/typecheck/check.rs`, and
+`tests/ownership/ownership.rs`. Runtime slicing and slice bounds panics,
+dynamic `Array<T>`, the constant-index move-extraction carve-out of §31.2, and
+rows involving `await`, tasks, or channels remain pending.
 
 ## Typed literals
 

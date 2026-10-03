@@ -1,11 +1,19 @@
 # Return-borrow, caller-mutability, partial-move, and slice-aliasing conformance cases
 
 Authority: spec §5.6, §11.3, §11.6–11.7, §12.5, §14.6, §30.1, §31.2.
-`tests/typecheck/check.rs` covers mutable places and call-local exclusivity.
+`tests/typecheck/check.rs` covers mutable places, call-local exclusivity, and
+slice-element mutability through shared and mutable views.
 `tests/ownership/ownership.rs` covers whole-place moves, branch and loop move
 state, field-level partial moves, reinitialization restoring whole-value
-usability, and the custom-`drop`-ancestor restriction; `tests/codegen/native.rs`
-covers their runtime cleanup. Stored borrows remain pending.
+usability, the custom-`drop`-ancestor restriction, and stored slice borrows:
+slice aliasing at the originating place, mutable-descriptor reborrows,
+return-borrow contracts (including two-input precision, recursion, and zero
+slices from `?`), and recursive provenance through structs.
+`tests/codegen/native.rs` covers the runtime cleanup of partial moves.
+Pending: rows needing `Array<T>`, `await`, closures, maps, or tasks; views
+nested in owned containers or stored through parameters (rejected for now as
+unsupported); destructor-observed views (a type containing a view cannot yet
+define `drop`); and `mut []T` nested in composites (rejected for now).
 
 ## Mutable place requirements for callers (§11.6)
 

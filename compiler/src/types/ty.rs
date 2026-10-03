@@ -64,5 +64,13 @@ pub enum TypeKind {
     String,
     Error,
     Struct(StructId),
-    Array { element: TypeId, size: u32 },
+    Array {
+        element: TypeId,
+        size: u32,
+    },
+    /// A borrowed view, `[]T` or `mut []T`; it never owns its elements.
+    Slice {
+        element: TypeId,
+        mutable: bool,
+    },
 }

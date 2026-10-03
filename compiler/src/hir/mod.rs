@@ -40,12 +40,47 @@ impl Package {
             | TypeKind::Float(_)
             | TypeKind::Rune
             | TypeKind::String
-            | TypeKind::Error => true,
+            | TypeKind::Error
+            | TypeKind::Slice { .. } => true,
             TypeKind::Struct(id) => {
                 let strukt = self.strukt(id);
                 strukt.drop.is_none() && strukt.fields.iter().all(|f| self.is_copy(f.ty))
             }
             TypeKind::Array { element, .. } => self.is_copy(element),
+        }
+    }
+
+    /// Whether a value of `ty` holds a borrowed view, directly or in a field
+    /// or array element; a slice's own elements are not part of the value.
+    pub fn contains_view(&self, ty: TypeId) -> bool {
+        self.contains(ty, &|kind| matches!(kind, TypeKind::Slice { .. }))
+    }
+
+    /// Whether a value of `ty` holds a `mut []T` view.
+    pub fn contains_mut_view(&self, ty: TypeId) -> bool {
+        self.contains(ty, &|kind| {
+            matches!(kind, TypeKind::Slice { mutable: true, .. })
+        })
+    }
+
+    /// Whether a value of `ty` holds fixed-array storage that could be sliced.
+    pub fn contains_array(&self, ty: TypeId) -> bool {
+        self.contains(ty, &|kind| matches!(kind, TypeKind::Array { .. }))
+    }
+
+    fn contains(&self, ty: TypeId, matches: &dyn Fn(TypeKind) -> bool) -> bool {
+        let kind = self.types.kind(ty);
+        if matches(kind) {
+            return true;
+        }
+        match kind {
+            TypeKind::Struct(id) => self
+                .strukt(id)
+                .fields
+                .iter()
+                .any(|field| self.contains(field.ty, matches)),
+            TypeKind::Array { element, .. } => self.contains(element, matches),
+            _ => false,
         }
     }
 }

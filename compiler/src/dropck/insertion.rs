@@ -1,8 +1,7 @@
 use crate::hir;
 use crate::mir::{
-    BasicBlock, BlockId, Body, Callee, Local, Place, Program, Projection, Statement, Terminator,
+    BasicBlock, BlockId, Body, Callee, Local, Place, Program, Statement, Terminator, place_type,
 };
-use crate::types::{TypeId, TypeKind};
 
 pub fn insert(package: &hir::Package, program: &mut Program) {
     for body in &mut program.bodies {
@@ -29,7 +28,7 @@ fn insert_body(package: &hir::Package, body: &mut Body) {
                     rvalue,
                     span,
                 } => {
-                    if !package.is_copy(place_type(package, body, &place)) {
+                    if !package.is_copy(place_type(package, &body.locals, &place)) {
                         statements.push(Statement::Drop {
                             replacement: !place.projections.is_empty(),
                             place: place.clone(),
@@ -126,21 +125,4 @@ fn insert_body(package: &hir::Package, body: &mut Body) {
         terminator: Terminator::PanicReturn,
     });
     body.unwind = Some(unwind);
-}
-
-fn place_type(package: &hir::Package, body: &Body, place: &Place) -> TypeId {
-    let mut ty = body.locals[place.local.0 as usize].ty;
-    for projection in &place.projections {
-        ty = match projection {
-            Projection::Field(field) => {
-                let id = package.types.struct_id(ty).expect("field projection");
-                package.strukt(id).fields[field.0 as usize].ty
-            }
-            Projection::Index(_) => match package.types.kind(ty) {
-                TypeKind::Array { element, .. } => element,
-                _ => unreachable!("index projection on a non-array"),
-            },
-        };
-    }
-    ty
 }

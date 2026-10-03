@@ -210,7 +210,16 @@ impl<'a> Checker<'a> {
             self.name(expected),
             self.name(found)
         );
-        self.error(message, span);
+        let mut diagnostic = Diagnostic::new(Severity::Error, message, span);
+        if let (TypeKind::Slice { element, .. }, TypeKind::Array { element: found, .. }) =
+            (self.types.kind(expected), self.types.kind(found))
+            && element == found
+        {
+            diagnostic = diagnostic.note(
+                "arrays do not convert to slices implicitly; borrow a view with `x[:]` (§12.6)",
+            );
+        }
+        self.diagnostics.push(diagnostic);
     }
 
     fn resolve_type(&mut self, ty: &ast::Type) -> Option<TypeId> {
@@ -221,6 +230,9 @@ impl<'a> Checker<'a> {
                 _ => None,
             },
             ast::Type::Array { element, size, .. } => {
+                if !self.reject_stored_mut_slice(element) {
+                    return None;
+                }
                 let element_ty = self.resolve_type(element)?;
                 let value = self.expr(size, Some(TypeStore::INT))?;
                 let sized = self.coerce(value, TypeStore::INT)?;
@@ -237,7 +249,66 @@ impl<'a> Checker<'a> {
                 };
                 Some(self.types.array_type(element_ty, count))
             }
+            ast::Type::Slice {
+                element, mutable, ..
+            } => {
+                if !self.reject_stored_mut_slice(element) {
+                    return None;
+                }
+                let element_ty = self.resolve_type(element)?;
+                Some(self.types.slice_type(element_ty, *mutable))
+            }
         }
+    }
+
+    /// Rejects `ty` when it is itself `mut []T`, for positions that store a
+    /// value inside another one: a struct field, array, or slice element.
+    fn reject_stored_mut_slice(&mut self, ty: &ast::Type) -> bool {
+        let ast::Type::Slice {
+            mutable: true,
+            span,
+            ..
+        } = ty
+        else {
+            return true;
+        };
+        self.unsupported(
+            "`mut []T` nested in a struct field, array, or slice element is",
+            *span,
+            "a mutable view can be a parameter, result, or local binding for now",
+        );
+        false
+    }
+
+    /// Whether a value of `ty` holds a component matching `matches`, looking
+    /// through struct fields and array elements but not slice elements.
+    fn type_contains(&self, ty: TypeId, matches: &dyn Fn(TypeKind) -> bool) -> bool {
+        let mut pending = vec![ty];
+        let mut seen = Vec::new();
+        while let Some(ty) = pending.pop() {
+            if seen.contains(&ty) {
+                continue;
+            }
+            seen.push(ty);
+            let kind = self.types.kind(ty);
+            if matches(kind) {
+                return true;
+            }
+            match kind {
+                TypeKind::Struct(id) => pending.extend(
+                    self.fields[id.0 as usize]
+                        .iter()
+                        .filter_map(|(_, field_ty, _)| *field_ty),
+                ),
+                TypeKind::Array { element, .. } => pending.push(element),
+                _ => {}
+            }
+        }
+        false
+    }
+
+    fn is_mut_slice(&self, ty: TypeId) -> bool {
+        matches!(self.types.kind(ty), TypeKind::Slice { mutable: true, .. })
     }
 
     fn signatures_and_fields(&mut self) {
@@ -251,7 +322,14 @@ impl<'a> Checker<'a> {
                 let fields = decl.fields.clone();
                 fields
                     .iter()
-                    .map(|f| (f.name.text.clone(), self.resolve_type(&f.ty), f.name.span))
+                    .map(|f| {
+                        let ty = if self.reject_stored_mut_slice(&f.ty) {
+                            self.resolve_type(&f.ty)
+                        } else {
+                            None
+                        };
+                        (f.name.text.clone(), ty, f.name.span)
+                    })
                     .collect()
             })
             .collect();
@@ -263,7 +341,7 @@ impl<'a> Checker<'a> {
                     func.receiver.iter().chain(&func.params).cloned().collect();
                 let params: Option<Vec<_>> = receiver_and_params
                     .iter()
-                    .map(|p| self.resolve_type(&p.ty))
+                    .map(|p| self.param_type(p))
                     .collect();
                 let results = func.results.clone();
                 let results: Option<Vec<_>> =
@@ -274,6 +352,59 @@ impl<'a> Checker<'a> {
                 })
             })
             .collect();
+        self.reject_drop_observing_views(&structs);
+    }
+
+    fn param_type(&mut self, param: &ast::Param) -> Option<TypeId> {
+        let ty = self.resolve_type(&param.ty)?;
+        if !matches!(self.types.kind(ty), TypeKind::Slice { .. }) {
+            return Some(ty);
+        }
+        match param.mode {
+            ast::ParamMode::Borrow => Some(ty),
+            ast::ParamMode::Own => {
+                self.diagnostics.push(
+                    Diagnostic::new(
+                        Severity::Error,
+                        "`own []T` is not part of Zore; a slice never owns its elements (§12.4)",
+                        param.span,
+                    )
+                    .note("own the elements with a fixed array instead"),
+                );
+                None
+            }
+            ast::ParamMode::Mut => {
+                self.unsupported(
+                    "a `mut` mode on a slice parameter is",
+                    param.span,
+                    "write `name mut []T` for mutable element access",
+                );
+                None
+            }
+        }
+    }
+
+    /// A custom destructor could observe a contained view after its last
+    /// ordinary use, which region analysis does not model yet.
+    fn reject_drop_observing_views(&mut self, structs: &[&ast::StructDecl]) {
+        for (index, decl) in structs.iter().enumerate() {
+            let id = StructId(index as u32);
+            let Some(&drop) = self.res.methods.get(&(id, "drop".to_string())) else {
+                continue;
+            };
+            let ty = self.types.struct_type(id);
+            if self.type_contains(ty, &|kind| matches!(kind, TypeKind::Slice { .. })) {
+                let span = self.res.functions[drop.0 as usize].name.span;
+                self.unsupported(
+                    "a custom `drop` for a type containing a borrowed slice is",
+                    span,
+                    &format!(
+                        "`{}` holds a view that its destructor could observe (§11.7)",
+                        decl.name.text
+                    ),
+                );
+            }
+        }
     }
 
     fn function(&mut self, id: FunctionId) -> Option<hir::Function> {
@@ -326,7 +457,7 @@ impl<'a> Checker<'a> {
                 ast::Type::Named(type_name) => {
                     format!("{}.{}", type_name.text, func.name.text)
                 }
-                ast::Type::Array { .. } => func.name.text.clone(),
+                ast::Type::Array { .. } | ast::Type::Slice { .. } => func.name.text.clone(),
             },
             None => func.name.text.clone(),
         };
@@ -624,6 +755,9 @@ impl<'a> Checker<'a> {
             ast::ExprKind::Call { callee, args } => self.call(callee, args, span),
             ast::ExprKind::Field { base, name } => self.field(base, name, span),
             ast::ExprKind::Index { base, index } => self.index(base, index, span),
+            ast::ExprKind::Slice { base, low, high } => {
+                self.slice(base, low.as_deref(), high.as_deref(), span, expected)
+            }
             ast::ExprKind::StructLit { ty, fields } => self.struct_lit(ty, fields, span),
             ast::ExprKind::ArrayLit { ty, elements } => self.array_lit(ty, elements, span),
         }
@@ -1242,16 +1376,32 @@ impl<'a> Checker<'a> {
         }))
     }
 
-    fn check_mut_arguments(&mut self, id: FunctionId, args: &[hir::Expr]) -> bool {
-        let by_mut: Vec<bool> = self.res.locals[id.0 as usize]
+    /// Which arguments of a call to `id` need mutable access: a `mut`
+    /// parameter, or a `mut []T` one (§11.6).
+    fn mutable_arguments(&self, id: FunctionId, count: usize) -> Vec<bool> {
+        let param_types = self.signatures[id.0 as usize]
+            .as_ref()
+            .map(|signature| signature.params.clone())
+            .unwrap_or_default();
+        self.res.locals[id.0 as usize]
             .iter()
-            .take(args.len())
-            .map(|local| local.kind == LocalKind::Param(ast::ParamMode::Mut))
-            .collect();
+            .take(count)
+            .enumerate()
+            .map(|(index, local)| {
+                local.kind == LocalKind::Param(ast::ParamMode::Mut)
+                    || param_types
+                        .get(index)
+                        .is_some_and(|&ty| self.is_mut_slice(ty))
+            })
+            .collect()
+    }
+
+    fn check_mut_arguments(&mut self, id: FunctionId, args: &[hir::Expr]) -> bool {
+        let by_mut = self.mutable_arguments(id, args.len());
         let mut ok = true;
         for (arg, &is_mut) in args.iter().zip(&by_mut) {
             if is_mut {
-                ok &= self.mutable_place(arg);
+                ok &= self.mutable_place(arg, MutableUse::Argument);
             }
         }
         if !ok {
@@ -1282,19 +1432,89 @@ impl<'a> Checker<'a> {
                 ok = false;
             }
         }
+        ok && self.check_later_argument_mutation(id, args)
+    }
+
+    /// Rejects `f(x, g(x))` where evaluating a later argument mutates a place
+    /// an earlier argument already borrows for the call (§11.3).
+    fn check_later_argument_mutation(&mut self, id: FunctionId, args: &[hir::Expr]) -> bool {
+        let borrowing: Vec<bool> = self.res.locals[id.0 as usize]
+            .iter()
+            .take(args.len())
+            .map(|local| local.kind != LocalKind::Param(ast::ParamMode::Own))
+            .collect();
+        let mut ok = true;
+        for later in 1..args.len() {
+            let mut mutated = Vec::new();
+            self.mutated_places(&args[later], &mut mutated);
+            for earlier in 0..later {
+                let Some(borrowed) = argument_place(&args[earlier]).filter(|_| borrowing[earlier])
+                else {
+                    continue;
+                };
+                if !mutated.iter().any(|place| places_overlap(&borrowed, place)) {
+                    continue;
+                }
+                let name = self.res.locals[self.current][borrowed.0.0 as usize]
+                    .name
+                    .clone();
+                self.diagnostics.push(
+                    Diagnostic::new(
+                        Severity::Error,
+                        format!(
+                            "`{name}` is borrowed by an earlier argument and mutated by a later one"
+                        ),
+                        args[later].span,
+                    )
+                    .related(args[earlier].span, "borrowed for the call here")
+                    .note("a mutable borrow requires exclusive access (§11.3)"),
+                );
+                ok = false;
+            }
+        }
         ok
     }
 
-    fn mutable_place(&mut self, expr: &hir::Expr) -> bool {
+    /// Places that evaluating `expr` mutably borrows through nested calls or
+    /// exclusive slicing.
+    fn mutated_places(&self, expr: &hir::Expr, out: &mut Vec<ArgumentPlace>) {
+        match &expr.kind {
+            ExprKind::Call { function, args } => {
+                let by_mut = self.mutable_arguments(*function, args.len());
+                for (arg, is_mut) in args.iter().zip(by_mut) {
+                    if is_mut && let Some(place) = argument_place(arg) {
+                        out.push(place);
+                    }
+                }
+            }
+            ExprKind::Slice {
+                base,
+                mutable: true,
+                ..
+            } => out.extend(argument_place(base)),
+            _ => {}
+        }
+        for child in subexpressions(expr) {
+            self.mutated_places(child, out);
+        }
+    }
+
+    fn mutable_place(&mut self, expr: &hir::Expr, usage: MutableUse) -> bool {
         match &expr.kind {
             ExprKind::Local(id) => {
                 let decl = &self.res.locals[self.current][id.0 as usize];
                 let (name, kind, decl_span) = (decl.name.clone(), decl.kind, decl.span);
                 let (what, note) = match kind {
                     LocalKind::Var | LocalKind::Param(ast::ParamMode::Mut) => return true,
+                    LocalKind::Param(ast::ParamMode::Borrow) if self.is_mut_slice(expr.ty()) => {
+                        return true;
+                    }
                     LocalKind::Let => (
                         "immutable binding",
-                        "declare it with `var` to pass it as `mut`",
+                        match usage {
+                            MutableUse::Argument => "declare it with `var` to pass it as `mut`",
+                            MutableUse::Slice => "declare it with `var` to borrow it mutably",
+                        },
                     ),
                     LocalKind::Param(ast::ParamMode::Borrow) => (
                         "shared parameter",
@@ -1305,23 +1525,55 @@ impl<'a> Checker<'a> {
                         "only `var` bindings and `mut` parameters are mutable places (§11.6)",
                     ),
                 };
+                let message = match usage {
+                    MutableUse::Argument => {
+                        format!("cannot pass {what} `{name}` as a `mut` argument")
+                    }
+                    MutableUse::Slice => format!("cannot take a mutable slice of {what} `{name}`"),
+                };
                 self.diagnostics.push(
-                    Diagnostic::new(
-                        Severity::Error,
-                        format!("cannot pass {what} `{name}` as a `mut` argument"),
-                        expr.span,
-                    )
-                    .related(decl_span, "declared here")
-                    .note(note),
+                    Diagnostic::new(Severity::Error, message, expr.span)
+                        .related(decl_span, "declared here")
+                        .note(note),
                 );
                 false
             }
-            ExprKind::Field { base, .. } | ExprKind::Index { base, .. } => self.mutable_place(base),
+            ExprKind::Index { base, .. } => match self.types.kind(base.ty()) {
+                TypeKind::Slice { mutable: true, .. } => true,
+                TypeKind::Slice { .. } => {
+                    let name = self.source_text(base.span).to_owned();
+                    let message = match usage {
+                        MutableUse::Argument => {
+                            format!(
+                                "cannot pass an element of shared slice `{name}` as a `mut` argument"
+                            )
+                        }
+                        MutableUse::Slice => {
+                            format!(
+                                "cannot take a mutable slice of an element of shared slice `{name}`"
+                            )
+                        }
+                    };
+                    self.diagnostics.push(
+                        Diagnostic::new(Severity::Error, message, expr.span)
+                            .note("elements of `[]T` are read-only (§12.6)"),
+                    );
+                    false
+                }
+                _ => self.mutable_place(base, usage),
+            },
+            ExprKind::Field { base, .. } => self.mutable_place(base, usage),
+            ExprKind::Slice { mutable: true, .. } if usage == MutableUse::Argument => true,
             _ => {
-                self.error(
-                    "a `mut` argument must be a mutable place, not a temporary value",
-                    expr.span,
-                );
+                let message = match usage {
+                    MutableUse::Argument => {
+                        "a `mut` argument must be a mutable place, not a temporary value"
+                    }
+                    MutableUse::Slice => {
+                        "a mutable slice needs a mutable place, not a temporary value"
+                    }
+                };
+                self.error(message, expr.span);
                 false
             }
         }
@@ -1518,39 +1770,8 @@ impl<'a> Checker<'a> {
     }
 
     fn index(&mut self, base: &ast::Expr, index: &ast::Expr, span: Span) -> Option<Value> {
-        let base = match self.expr(base, None)? {
-            Value::Untyped(_, span) => {
-                self.error("an integer constant cannot be indexed", span);
-                return None;
-            }
-            Value::Typed(expr) => self.single_value(expr)?,
-        };
-        let TypeKind::Array { element, size } = self.types.kind(base.ty()) else {
-            let message = format!("type `{}` cannot be indexed", self.name(base.ty()));
-            self.error(message, base.span);
-            self.expr(index, None);
-            return None;
-        };
-        let index_value = self.expr(index, None)?;
-        let index_expr = self.with_default_type(index_value)?;
-        if self.types.int(index_expr.ty()).is_none() {
-            let message = format!(
-                "array index must be an integer, found `{}`",
-                self.name(index_expr.ty())
-            );
-            self.error(message, index_expr.span);
-            return None;
-        }
-        if let Some(&Const::Int(n)) = constant(&index_expr)
-            && !(0..i128::from(size)).contains(&n)
-        {
-            let message = format!(
-                "array index `{n}` is out of range for `{}`",
-                self.name(base.ty())
-            );
-            self.error(message, index_expr.span);
-            return None;
-        }
+        let base = self.indexable_base(base)?;
+        let (index_expr, element) = self.checked_index(base.ty(), base.span, index)?;
         Some(Value::Typed(typed(
             ExprKind::Index {
                 base: Box::new(base),
@@ -1559,6 +1780,170 @@ impl<'a> Checker<'a> {
             element,
             span,
         )))
+    }
+
+    fn indexable_base(&mut self, base: &ast::Expr) -> Option<hir::Expr> {
+        match self.expr(base, None)? {
+            Value::Untyped(_, span) => {
+                self.error("an integer constant cannot be indexed", span);
+                None
+            }
+            Value::Typed(expr) => self.single_value(expr),
+        }
+    }
+
+    /// Checks `index` against a base of type `base_ty`, returning the typed
+    /// index and the element type (§12.6).
+    fn checked_index(
+        &mut self,
+        base_ty: TypeId,
+        base_span: Span,
+        index: &ast::Expr,
+    ) -> Option<(hir::Expr, TypeId)> {
+        let (element, length, what) = match self.types.kind(base_ty) {
+            TypeKind::Array { element, size } => (element, Some(size), "array"),
+            TypeKind::Slice { element, .. } => (element, None, "slice"),
+            _ => {
+                let message = format!("type `{}` cannot be indexed", self.name(base_ty));
+                self.error(message, base_span);
+                self.expr(index, None);
+                return None;
+            }
+        };
+        let index_value = self.expr(index, None)?;
+        let index_expr = self.with_default_type(index_value)?;
+        if self.types.int(index_expr.ty()).is_none() {
+            let message = format!(
+                "{what} index must be an integer, found `{}`",
+                self.name(index_expr.ty())
+            );
+            self.error(message, index_expr.span);
+            return None;
+        }
+        if let Some(&Const::Int(n)) = constant(&index_expr)
+            && (n < 0 || length.is_some_and(|size| n >= i128::from(size)))
+        {
+            let message = format!(
+                "{what} index `{n}` is out of range for `{}`",
+                self.name(base_ty)
+            );
+            self.error(message, index_expr.span);
+            return None;
+        }
+        Some((index_expr, element))
+    }
+
+    /// `base[low:high]`: an exclusive view only when `expected` asks for
+    /// `mut []T`, otherwise a shared one (§12.6).
+    fn slice(
+        &mut self,
+        base: &ast::Expr,
+        low: Option<&ast::Expr>,
+        high: Option<&ast::Expr>,
+        span: Span,
+        expected: Option<TypeId>,
+    ) -> Option<Value> {
+        let base = self.indexable_base(base)?;
+        let (element, length) = match self.types.kind(base.ty()) {
+            TypeKind::Array { element, size } => (element, Some(size)),
+            TypeKind::Slice { element, .. } => (element, None),
+            _ => {
+                let message = format!("type `{}` cannot be sliced", self.name(base.ty()));
+                self.error(message, base.span);
+                for bound in [low, high].into_iter().flatten() {
+                    self.expr(bound, None);
+                }
+                return None;
+            }
+        };
+        let low = low.map(|bound| self.slice_bound(bound, base.ty(), length));
+        let high = high.map(|bound| self.slice_bound(bound, base.ty(), length));
+        if [&low, &high]
+            .iter()
+            .any(|bound| matches!(bound, Some(None)))
+        {
+            return None;
+        }
+        let (low, high) = (low.flatten(), high.flatten());
+        if let (Some(lo), Some(hi)) = (
+            low.as_ref().and_then(constant),
+            high.as_ref().and_then(constant),
+        ) && let (Const::Int(lo), Const::Int(hi)) = (lo, hi)
+            && lo > hi
+        {
+            self.error(
+                format!("slice lower bound `{lo}` exceeds upper bound `{hi}`"),
+                span,
+            );
+            return None;
+        }
+        let mutable = expected.is_some_and(|ty| self.is_mut_slice(ty));
+        if mutable && !self.mutable_slice_source(&base) {
+            return None;
+        }
+        Some(Value::Typed(typed(
+            ExprKind::Slice {
+                base: Box::new(base),
+                low: low.map(Box::new),
+                high: high.map(Box::new),
+                mutable,
+            },
+            self.types.slice_type(element, mutable),
+            span,
+        )))
+    }
+
+    fn slice_bound(
+        &mut self,
+        bound: &ast::Expr,
+        base_ty: TypeId,
+        length: Option<u32>,
+    ) -> Option<hir::Expr> {
+        let value = self.expr(bound, None)?;
+        let bound = self.with_default_type(value)?;
+        if self.types.int(bound.ty()).is_none() {
+            let message = format!(
+                "slice bound must be an integer, found `{}`",
+                self.name(bound.ty())
+            );
+            self.error(message, bound.span);
+            return None;
+        }
+        if let Some(&Const::Int(n)) = constant(&bound)
+            && (n < 0 || length.is_some_and(|size| n > i128::from(size)))
+        {
+            let message = format!(
+                "slice bound `{n}` is out of range for `{}`",
+                self.name(base_ty)
+            );
+            self.error(message, bound.span);
+            return None;
+        }
+        Some(bound)
+    }
+
+    /// Whether `base` can supply the mutable access an exclusive view needs
+    /// (§11.6, §12.6): a mutable array place, or an existing `mut []T` view.
+    fn mutable_slice_source(&mut self, base: &hir::Expr) -> bool {
+        if let TypeKind::Slice { mutable, .. } = self.types.kind(base.ty()) {
+            if !mutable {
+                let name = self.source_text(base.span).to_owned();
+                self.diagnostics.push(
+                    Diagnostic::new(
+                        Severity::Error,
+                        format!("cannot take a mutable slice of shared slice `{name}`"),
+                        base.span,
+                    )
+                    .note("a shared view cannot be upgraded to `mut []T` (§12.6)"),
+                );
+            }
+            return mutable;
+        }
+        self.mutable_place(base, MutableUse::Slice)
+    }
+
+    fn source_text(&self, span: Span) -> &str {
+        &self.text[span.start() as usize..span.end() as usize]
     }
 
     fn array_lit(&mut self, ty: &ast::Type, elements: &[ast::Expr], span: Span) -> Option<Value> {
@@ -1869,6 +2254,74 @@ impl<'a> Checker<'a> {
     }
 
     fn assignable_place(&mut self, expr: &ast::Expr) -> Option<hir::Place> {
+        let (place, slice_deref) = self.target_place(expr)?;
+        match slice_deref {
+            Some(SliceDeref { mutable: true, .. }) => Some(place),
+            Some(SliceDeref { base_span, .. }) => {
+                let name = self.source_text(base_span).to_owned();
+                self.diagnostics.push(
+                    Diagnostic::new(
+                        Severity::Error,
+                        format!("cannot assign through shared slice `{name}`"),
+                        expr.span,
+                    )
+                    .note("elements of `[]T` are read-only (§12.6)"),
+                );
+                None
+            }
+            None => self.writable_root(&place, expr).then_some(place),
+        }
+    }
+
+    /// Whether the binding at `place`'s root permits assigning through it.
+    fn writable_root(&mut self, place: &hir::Place, expr: &ast::Expr) -> bool {
+        let decl = &self.res.locals[self.current][place.root.0 as usize];
+        let (name, kind, decl_span) = (decl.name.clone(), decl.kind, decl.span);
+        match kind {
+            LocalKind::Var | LocalKind::Param(ast::ParamMode::Mut) => true,
+            LocalKind::Let => {
+                self.diagnostics.push(
+                    Diagnostic::new(
+                        Severity::Error,
+                        format!("cannot assign to immutable binding `{name}`"),
+                        expr.span,
+                    )
+                    .related(decl_span, "declared with `let` here")
+                    .note("declare it with `var` to allow assignment"),
+                );
+                false
+            }
+            LocalKind::Param(ast::ParamMode::Borrow) => {
+                self.diagnostics.push(
+                    Diagnostic::new(
+                        Severity::Error,
+                        format!("cannot assign to parameter `{name}`"),
+                        expr.span,
+                    )
+                    .related(decl_span, "a shared borrow by default (§7.3)"),
+                );
+                false
+            }
+            LocalKind::Param(ast::ParamMode::Own) => {
+                self.unsupported(
+                    "assigning to `own` parameters is",
+                    expr.span,
+                    "planned for roadmap milestone M13–M17",
+                );
+                false
+            }
+        }
+    }
+
+    /// Builds an assignment target's place, along with the last slice it
+    /// indexes through, which decides its writability instead of the root.
+    fn target_place(&mut self, expr: &ast::Expr) -> Option<(hir::Place, Option<SliceDeref>)> {
+        let is_place = |base: &ast::Expr| {
+            matches!(
+                base.kind,
+                ast::ExprKind::Name(_) | ast::ExprKind::Field { .. } | ast::ExprKind::Index { .. }
+            )
+        };
         match &expr.kind {
             ast::ExprKind::Name(name) => {
                 let res = *self.res.uses.get(&expr.span)?;
@@ -1884,112 +2337,49 @@ impl<'a> Checker<'a> {
                     );
                     return None;
                 };
-                let decl = &self.res.locals[self.current][id.0 as usize];
-                let (kind, decl_span) = (decl.kind, decl.span);
-                match kind {
-                    LocalKind::Var => {}
-                    LocalKind::Let => {
-                        self.diagnostics.push(
-                            Diagnostic::new(
-                                Severity::Error,
-                                format!("cannot assign to immutable binding `{name}`"),
-                                expr.span,
-                            )
-                            .related(decl_span, "declared with `let` here")
-                            .note("declare it with `var` to allow assignment"),
-                        );
-                        return None;
-                    }
-                    LocalKind::Param(ast::ParamMode::Borrow) => {
-                        self.diagnostics.push(
-                            Diagnostic::new(
-                                Severity::Error,
-                                format!("cannot assign to parameter `{name}`"),
-                                expr.span,
-                            )
-                            .related(decl_span, "a shared borrow by default (§7.3)"),
-                        );
-                        return None;
-                    }
-                    LocalKind::Param(ast::ParamMode::Mut) => {}
-                    LocalKind::Param(ast::ParamMode::Own) => {
-                        self.unsupported(
-                            "assigning to `own` parameters is",
-                            expr.span,
-                            "planned for roadmap milestone M13–M17",
-                        );
-                        return None;
-                    }
-                }
                 let ty = self.locals[id.0 as usize]?;
-                Some(hir::Place {
+                let place = hir::Place {
                     root: id,
                     projections: Vec::new(),
                     ty,
                     span: expr.span,
-                })
+                };
+                Some((place, None))
             }
             ast::ExprKind::Field { base, name } => {
-                if !matches!(
-                    base.kind,
-                    ast::ExprKind::Name(_)
-                        | ast::ExprKind::Field { .. }
-                        | ast::ExprKind::Index { .. }
-                ) {
+                if !is_place(base) {
                     self.expr(base, None);
                     self.error("cannot assign to a field of a temporary value", expr.span);
                     return None;
                 }
-                let mut place = self.assignable_place(base)?;
+                let (mut place, slice_deref) = self.target_place(base)?;
                 let (field, ty) = self.field_of(place.ty, name)?;
                 place.projections.push(hir::Projection::Field(field));
                 place.ty = ty;
                 place.span = expr.span;
-                Some(place)
+                Some((place, slice_deref))
             }
             ast::ExprKind::Index { base, index } => {
-                if !matches!(
-                    base.kind,
-                    ast::ExprKind::Name(_)
-                        | ast::ExprKind::Field { .. }
-                        | ast::ExprKind::Index { .. }
-                ) {
+                if !is_place(base) {
                     self.expr(base, None);
                     self.expr(index, None);
                     self.error("cannot assign to an index of a temporary value", expr.span);
                     return None;
                 }
-                let mut place = self.assignable_place(base)?;
-                let array_name = self.name(place.ty);
-                let TypeKind::Array { element, size } = self.types.kind(place.ty) else {
-                    let message = format!("type `{array_name}` cannot be indexed");
-                    self.error(message, base.span);
-                    self.expr(index, None);
-                    return None;
-                };
-                let index_value = self.expr(index, None)?;
-                let index_expr = self.with_default_type(index_value)?;
-                if self.types.int(index_expr.ty()).is_none() {
-                    let message = format!(
-                        "array index must be an integer, found `{}`",
-                        self.name(index_expr.ty())
-                    );
-                    self.error(message, index_expr.span);
-                    return None;
+                let (mut place, mut slice_deref) = self.target_place(base)?;
+                if let TypeKind::Slice { mutable, .. } = self.types.kind(place.ty) {
+                    slice_deref = Some(SliceDeref {
+                        mutable,
+                        base_span: base.span,
+                    });
                 }
-                if let Some(&Const::Int(n)) = constant(&index_expr)
-                    && !(0..i128::from(size)).contains(&n)
-                {
-                    let message = format!("array index `{n}` is out of range for `{array_name}`");
-                    self.error(message, index_expr.span);
-                    return None;
-                }
+                let (index_expr, element) = self.checked_index(place.ty, base.span, index)?;
                 place
                     .projections
                     .push(hir::Projection::Index(Box::new(index_expr)));
                 place.ty = element;
                 place.span = expr.span;
-                Some(place)
+                Some((place, slice_deref))
             }
             _ => unreachable!("the parser accepts only name, field, and index targets"),
         }
@@ -2230,6 +2620,44 @@ impl<'a> Checker<'a> {
             .into_iter()
             .collect::<Option<Vec<_>>>()
             .map(hir::StmtKind::Return)
+    }
+}
+
+/// The last slice an assignment target indexes through.
+struct SliceDeref {
+    mutable: bool,
+    base_span: Span,
+}
+
+/// Why a place must be mutable, which shapes the diagnostic wording.
+#[derive(Clone, Copy, PartialEq)]
+enum MutableUse {
+    Argument,
+    Slice,
+}
+
+/// The direct subexpressions of `expr`, in evaluation order.
+fn subexpressions(expr: &hir::Expr) -> Vec<&hir::Expr> {
+    match &expr.kind {
+        ExprKind::Const(_) | ExprKind::Local(_) => Vec::new(),
+        ExprKind::Field { base, .. } => vec![base],
+        ExprKind::Index { base, index } => vec![base, index],
+        ExprKind::Slice {
+            base, low, high, ..
+        } => std::iter::once(&**base)
+            .chain(low.as_deref())
+            .chain(high.as_deref())
+            .collect(),
+        ExprKind::Call { args, .. } => args.iter().collect(),
+        ExprKind::StructLit { fields, .. } => fields.iter().map(|(_, value)| value).collect(),
+        ExprKind::ArrayLit { elements, .. } => elements.iter().collect(),
+        ExprKind::Println(inner)
+        | ExprKind::Drop(inner)
+        | ExprKind::Convert(inner)
+        | ExprKind::Error(inner)
+        | ExprKind::Try(inner)
+        | ExprKind::Unary { operand: inner, .. } => vec![inner],
+        ExprKind::Binary { lhs, rhs, .. } => vec![lhs, rhs],
     }
 }
 

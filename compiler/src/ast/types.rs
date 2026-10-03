@@ -2,7 +2,7 @@ use super::expr::Expr;
 use super::node::Name;
 use crate::source::Span;
 
-/// A type; slice and map forms are not parsed yet.
+/// A type; map, channel, and function forms are not parsed yet.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Type {
     Named(Name),
@@ -12,13 +12,19 @@ pub enum Type {
         size: Box<Expr>,
         span: Span,
     },
+    /// `[]element` or `mut []element`.
+    Slice {
+        element: Box<Type>,
+        mutable: bool,
+        span: Span,
+    },
 }
 
 impl Type {
     pub fn span(&self) -> Span {
         match self {
             Self::Named(name) => name.span,
-            Self::Array { span, .. } => *span,
+            Self::Array { span, .. } | Self::Slice { span, .. } => *span,
         }
     }
 }

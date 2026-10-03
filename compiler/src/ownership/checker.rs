@@ -4,7 +4,8 @@ use super::move_state::MovedSet;
 use crate::diagnostic::{Diagnostic, Severity};
 use crate::hir;
 use crate::mir::{
-    BasicBlock, BlockId, Body, Callee, Operand, Place, Program, Projection, Rvalue, Terminator,
+    BasicBlock, Body, Callee, Operand, Place, Program, Projection, Rvalue, Terminator,
+    projection_type,
 };
 use crate::resolve::FieldId;
 use crate::source::Span;
@@ -40,7 +41,7 @@ fn has_custom_ancestor(package: &hir::Package, local_ty: TypeId, fields: &[Field
 }
 
 /// Renders `place` as a dotted source-like name for diagnostics.
-fn describe_place(package: &hir::Package, body: &Body, place: &Place) -> String {
+pub(super) fn describe_place(package: &hir::Package, body: &Body, place: &Place) -> String {
     let mut ty = body.locals[place.local.0 as usize].ty;
     let mut name = body.locals[place.local.0 as usize]
         .name
@@ -58,10 +59,7 @@ fn describe_place(package: &hir::Package, body: &Body, place: &Place) -> String 
             }
             Projection::Index(_) => {
                 name.push_str("[_]");
-                ty = match package.types.kind(ty) {
-                    TypeKind::Array { element, .. } => element,
-                    _ => unreachable!("index projection on a non-array"),
-                };
+                ty = projection_type(package, ty, projection);
             }
         }
     }
@@ -73,6 +71,7 @@ pub fn check(package: &hir::Package, program: &Program) -> Vec<Diagnostic> {
     for body in &program.bodies {
         check_body(package, body, &mut diagnostics);
     }
+    super::region::check(package, program, &mut diagnostics);
     diagnostics
 }
 
@@ -91,7 +90,7 @@ fn check_body(package: &hir::Package, body: &Body, diagnostics: &mut Vec<Diagnos
                 continue;
             };
             transfer(package, body, block, &mut state, &mut Vec::new());
-            for successor in successors(&block.terminator) {
+            for successor in block.terminator.successors() {
                 let slot = &mut incoming[successor.0 as usize];
                 let joined = match slot {
                     Some(previous) => previous
@@ -112,19 +111,6 @@ fn check_body(package: &hir::Package, body: &Body, diagnostics: &mut Vec<Diagnos
         if let Some(mut state) = state {
             transfer(package, body, block, &mut state, diagnostics);
         }
-    }
-}
-
-fn successors(terminator: &Terminator) -> Vec<BlockId> {
-    match terminator {
-        Terminator::Goto(target) => vec![*target],
-        Terminator::Branch {
-            then_block,
-            else_block,
-            ..
-        } => vec![*then_block, *else_block],
-        Terminator::Call { target, .. } | Terminator::Assert { target, .. } => vec![*target],
-        Terminator::Return | Terminator::PanicReturn | Terminator::Unreachable => Vec::new(),
     }
 }
 
@@ -218,11 +204,10 @@ fn check_rvalue(
         Rvalue::Use(operand)
         | Rvalue::Unary(_, operand)
         | Rvalue::Convert(operand, _)
-        | Rvalue::Error(operand)
-        | Rvalue::BoundsCheck(operand, _) => {
+        | Rvalue::Error(operand) => {
             check_operand(package, body, operand, span, state, diagnostics);
         }
-        Rvalue::Binary(_, left, right) => {
+        Rvalue::Binary(_, left, right) | Rvalue::BoundsCheck(left, right) => {
             check_operand(package, body, left, span, state, diagnostics);
             check_operand(package, body, right, span, state, diagnostics);
         }
@@ -231,7 +216,34 @@ fn check_rvalue(
                 check_operand(package, body, field, span, state, diagnostics);
             }
         }
+        Rvalue::Length(place) => {
+            let base = Operand::Copy(place.clone());
+            check_operand(package, body, &base, span, state, diagnostics);
+        }
+        Rvalue::Slice {
+            place, low, high, ..
+        } => {
+            let base = Operand::Copy(place.clone());
+            check_operand(package, body, &base, span, state, diagnostics);
+            for bound in [low, high].into_iter().flatten() {
+                check_operand(package, body, bound, span, state, diagnostics);
+            }
+        }
     }
+}
+
+/// Whether `place` reaches its value through a slice's borrowed elements.
+fn through_slice(package: &hir::Package, body: &Body, place: &Place) -> bool {
+    let mut ty = body.locals[place.local.0 as usize].ty;
+    for projection in &place.projections {
+        if matches!(projection, Projection::Index(_))
+            && matches!(package.types.kind(ty), TypeKind::Slice { .. })
+        {
+            return true;
+        }
+        ty = projection_type(package, ty, projection);
+    }
+    false
 }
 
 /// Conservative: two indices are never proof of disjointness (§12.6).
@@ -303,6 +315,18 @@ fn check_operand(
                 span,
             )
             .note("a borrowed parameter does not own its argument"),
+        );
+        return;
+    }
+    if through_slice(package, body, place) {
+        let name = describe_place(package, body, place);
+        diagnostics.push(
+            Diagnostic::new(
+                Severity::Error,
+                format!("cannot move `{name}` out of a slice"),
+                span,
+            )
+            .note("a slice borrows its elements; moving them out is not allowed (§12.6)"),
         );
         return;
     }

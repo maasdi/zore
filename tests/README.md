@@ -18,7 +18,10 @@ error bindings and parameters. Synchronous `?` tests cover typing, early return,
 zero-filled results, evaluation order, and cleanup; awaited propagation remains
 pending. `tests/ownership/ownership.rs` tests the MIR ownership pass through the
 full frontend: whole-place and partial moves, reinitialization, call-local
-borrows, the custom-`drop`-ancestor restriction, and array-element move rules.
+borrows, the custom-`drop`-ancestor restriction, array- and slice-element move
+rules, and region analysis of stored slice borrows (aliasing at the
+originating place, reborrow suspension, last-use release, scope-end and
+loop-carried escapes, and return-borrow contracts).
 Unit tests in `compiler/src/types/bignum.rs`
 and `compiler/src/types/constant.rs` check
 big-number arithmetic and float rounding against Rust's `i128` and correctly
@@ -87,9 +90,13 @@ conservative-aliasing rules in `arrays-slices` have parser counterparts in
 `tests/typecheck/check.rs`; index-move rejection is in
 `tests/ownership/ownership.rs`; LLVM codegen (construction, index read/write,
 runtime bounds-check panics, and element cleanup) has native counterparts in
-`tests/codegen/native.rs`. Slicing, dynamic `Array<T>`, and mutable-slice
-rows in `arrays-slices` remain pending, as do the remaining ownership,
-runtime, and native rows elsewhere.
+`tests/codegen/native.rs`. Slice types, slicing, contextual mutable views,
+static slice-bound rejection, and slice-element mutability rows in
+`arrays-slices` and `ownership` have parser and checker counterparts; the
+region, aliasing, reborrow, and return-contract rows have counterparts in
+`tests/ownership/ownership.rs`. Native slice code generation, dynamic
+`Array<T>`, and rows that depend on async, closures, maps, tasks, or channels
+remain pending, as do the remaining runtime and native rows elsewhere.
 
 Use Rust unit tests for small source/IR utilities and pass algorithms. Use Cargo
 integration tests in subsystem folders under `tests/` for public compiler APIs

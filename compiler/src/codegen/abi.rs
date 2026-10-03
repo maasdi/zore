@@ -115,9 +115,11 @@ impl FunctionBuilder<'_, '_> {
                 };
                 self.line(format!("call void @{function}(i64 {wide})"));
             }
-            TypeKind::Float(_) | TypeKind::Error | TypeKind::Struct(_) | TypeKind::Array { .. } => {
-                unreachable!("checked printable type")
-            }
+            TypeKind::Float(_)
+            | TypeKind::Error
+            | TypeKind::Struct(_)
+            | TypeKind::Array { .. }
+            | TypeKind::Slice { .. } => unreachable!("checked printable type"),
         }
     }
 }
