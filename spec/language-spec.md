@@ -260,7 +260,29 @@ At a newline or EOF, insert a semicolon if the last significant token is:
 - an identifier,
 - a literal of a supported literal form,
 - the keywords `break`, `continue`, `return`, `true`, `false`, or `nil`,
-- one of `)`, `]`, `}`, or the postfix error-propagation operator `?`.
+- one of `)`, `]`, `}`, or the postfix error-propagation operator `?`, or
+- the `>` that closes a type argument list, such as the final `>` of
+  `Array<int>` (locked by Q17c).
+
+A closing type-argument `>` ends a type exactly where an identifier type name
+would, so it is eligible for the same reason the identifier is. The `>`
+comparison operator is never eligible, so a comparison may still continue after
+a line-ending `>`. When one source token holds several closing `>`, as in
+`Array<Array<int>>`, only the last one can end the line. Because only the
+grammar distinguishes a closing type-argument `>` from the comparison operator,
+this one case is recognized while parsing, not while lexing (see Compiler
+impact below). Its newline, comment, and EOF behavior is the same as every
+other eligible token's.
+
+```ore
+type Bag struct {
+    Items Array<int>      // the field ends after the closing `>`
+    Count int
+}
+
+let more = count >
+    limit                 // comparison: no insertion after `>`
+```
 
 Comments and horizontal whitespace are not significant tokens. An explicit or
 inserted semicolon is not eligible for another insertion, so blank lines,
@@ -330,6 +352,13 @@ Compiler impact: retain the last significant token and comment newline
 information in the lexer. Give synthetic semicolons a source location at the
 triggering newline (the first newline in a multiline comment) or EOF. The parser
 must honor inserted and explicit separators and diagnose invalid line breaks.
+The lexer cannot tell a closing type-argument `>` from the comparison operator,
+so the parser inserts that semicolon itself. It happens when the parser consumes
+the `>` closing a type argument list, including a `>` split off a `>>`, `>=`, or
+`>>=` token, provided the next token does not already follow on the same
+line. Insertion requires a newline (including one inside a block comment) or
+EOF between that `>` and the next token, and the next token must not already be
+a separator. The inserted semicolon is placed where the lexer would place it.
 Conformance cases are in `tests/conformance/statement-boundaries.md`; executable
 coverage is pending the lexer and parser milestones.
 

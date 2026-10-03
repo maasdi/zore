@@ -14,10 +14,10 @@ use super::abi;
 use crate::ast::{BinaryOp, UnaryOp};
 use crate::diagnostic::{Diagnostic, Severity};
 use crate::hir::{self, Const};
-use crate::mir::{self, Callee, Local, Operand, Place, Rvalue, Terminator};
+use crate::mir::{self, AggregateKind, Callee, Local, Operand, Place, Rvalue, Terminator};
 use crate::resolve::FieldId;
 use crate::source::{SourceFile, Span};
-use crate::types::{IntType, TypeId, TypeKind, TypeStore};
+use crate::types::{IntType, TypeId, TypeKind};
 
 pub fn emit(
     package: &hir::Package,
@@ -120,6 +120,8 @@ impl Module<'_> {
             next: 0,
             active_unwind: None,
             emitting_unwind: false,
+            drop_check_after_store: false,
+            hoisted: String::new(),
         };
         f.emit();
         f.out
@@ -133,6 +135,11 @@ pub(super) struct FunctionBuilder<'m, 'a> {
     pub(super) next: u32,
     pub(super) active_unwind: Option<mir::BlockId>,
     pub(super) emitting_unwind: bool,
+    /// A replacement drop's panic check waits for the store that follows it.
+    pub(super) drop_check_after_store: bool,
+    /// Allocas created mid-function, spliced into the entry block so that
+    /// code inside loops never grows the stack.
+    pub(super) hoisted: String,
 }
 
 impl FunctionBuilder<'_, '_> {
@@ -215,6 +222,7 @@ impl FunctionBuilder<'_, '_> {
                 self.line(format!("%lf{index} = alloca {flags}"));
             }
         }
+        let entry_allocas_end = self.out.len();
         for index in 0..self.body.locals.len() {
             let local = Local(index as u32);
             if !self.body.locals[index].by_reference && !package.is_copy(self.local_ty(local)) {
@@ -241,6 +249,8 @@ impl FunctionBuilder<'_, '_> {
             }
             self.terminator(&block.terminator);
         }
+        let hoisted = std::mem::take(&mut self.hoisted);
+        self.out.insert_str(entry_allocas_end, &hoisted);
         self.out.push_str("}\n\n");
     }
 
@@ -262,7 +272,9 @@ impl FunctionBuilder<'_, '_> {
                 mir::Projection::Field(f) => write!(indices, ", i32 {}", f.0).unwrap(),
                 mir::Projection::Index(operand) => {
                     let value = self.value(operand);
-                    if let TypeKind::Slice { element, .. } = self.module.package.types.kind(ty) {
+                    if let TypeKind::Slice { element, .. } | TypeKind::DynArray { element } =
+                        self.module.package.types.kind(ty)
+                    {
                         base = self.element_pointer(&base, gep_root, &mut indices);
                         let data = self.slice_data(&base);
                         let element_address = self.fresh();
@@ -340,7 +352,7 @@ impl FunctionBuilder<'_, '_> {
                 ));
                 (element, first, size.to_string())
             }
-            TypeKind::Slice { element, .. } => {
+            TypeKind::Slice { element, .. } | TypeKind::DynArray { element } => {
                 let address = self.address(place);
                 let descriptor = self.fresh();
                 self.line(format!("{descriptor} = load {{ ptr, i64 }}, ptr {address}"));
@@ -565,11 +577,25 @@ impl FunctionBuilder<'_, '_> {
                 span,
             } => {
                 self.assign_rvalue(place, rvalue, *span);
+                if self.drop_check_after_store {
+                    self.drop_check_after_store = false;
+                    self.check_after_drop(false);
+                }
             }
-            mir::Statement::Drop { place, replacement } => {
+            mir::Statement::Drop {
+                place,
+                replacement,
+                before_store,
+            } => {
                 self.drop_place(place);
-                if !self.emitting_unwind {
-                    self.check_after_drop(*replacement && self.has_custom_ancestor(place));
+                if self.emitting_unwind {
+                    return;
+                }
+                let abort = *replacement && self.has_custom_ancestor(place);
+                if *before_store && !abort {
+                    self.drop_check_after_store = true;
+                } else {
+                    self.check_after_drop(abort);
                 }
             }
             mir::Statement::EndScope(_) => unreachable!("drop insertion replaces scope markers"),
@@ -590,6 +616,9 @@ impl FunctionBuilder<'_, '_> {
             Rvalue::Slice {
                 place, low, high, ..
             } => self.slice(place, low.as_ref(), high.as_ref(), span),
+            Rvalue::Aggregate(AggregateKind::DynArray(element), operands) => {
+                self.dyn_array_literal(*element, operands)
+            }
             Rvalue::Aggregate(_, operands) => {
                 let ty = self.ty(result_ty);
                 let mut current = "undef".to_string();
@@ -608,6 +637,86 @@ impl FunctionBuilder<'_, '_> {
         self.store(place, &value);
     }
 
+    /// `{ data, length }` holding `operands`, moved into fresh heap storage.
+    fn dyn_array_literal(&mut self, element: TypeId, operands: &[Operand]) -> String {
+        if operands.is_empty() {
+            return "{ ptr null, i64 0 }".to_string();
+        }
+        let element_ty = self.ty(element);
+        let bytes = self.byte_size(&element_ty, &operands.len().to_string());
+        let data = self.fresh();
+        self.line(format!("{data} = call ptr @zore_alloc(i64 {bytes})"));
+        for (index, operand) in operands.iter().enumerate() {
+            let value = self.value(operand);
+            let slot = self.fresh();
+            self.line(format!(
+                "{slot} = getelementptr inbounds {element_ty}, ptr {data}, i64 {index}"
+            ));
+            self.line(format!("store {element_ty} {value}, ptr {slot}"));
+        }
+        let with_data = self.fresh();
+        self.line(format!(
+            "{with_data} = insertvalue {{ ptr, i64 }} undef, ptr {data}, 0"
+        ));
+        let array = self.fresh();
+        self.line(format!(
+            "{array} = insertvalue {{ ptr, i64 }} {with_data}, i64 {}, 1",
+            operands.len()
+        ));
+        array
+    }
+
+    /// The size in bytes of `count` values of LLVM type `ty`, as an `i64`.
+    fn byte_size(&mut self, ty: &str, count: &str) -> String {
+        let end = self.fresh();
+        self.line(format!("{end} = getelementptr {ty}, ptr null, i64 {count}"));
+        let bytes = self.fresh();
+        self.line(format!("{bytes} = ptrtoint ptr {end} to i64"));
+        bytes
+    }
+
+    /// Drops every element of the `Array<T>` at `address` in reverse index
+    /// order, then frees its storage.
+    fn drop_dyn_array(&mut self, address: &str, element: TypeId) {
+        let descriptor = self.fresh();
+        self.line(format!("{descriptor} = load {{ ptr, i64 }}, ptr {address}"));
+        let data = self.fresh();
+        self.line(format!(
+            "{data} = extractvalue {{ ptr, i64 }} {descriptor}, 0"
+        ));
+        let length = self.fresh();
+        self.line(format!(
+            "{length} = extractvalue {{ ptr, i64 }} {descriptor}, 1"
+        ));
+        let element_ty = self.ty(element);
+        if !self.module.package.is_copy(element) {
+            let counter = self.fresh();
+            self.hoist_alloca(&counter, "i64");
+            self.line(format!("store i64 {length}, ptr {counter}"));
+            let (check, body, done) = (self.label(), self.label(), self.label());
+            self.line(format!("br label %{check}"));
+            self.out.push_str(&format!("{check}:\n"));
+            let remaining = self.fresh();
+            self.line(format!("{remaining} = load i64, ptr {counter}"));
+            let more = self.fresh();
+            self.line(format!("{more} = icmp ugt i64 {remaining}, 0"));
+            self.line(format!("br i1 {more}, label %{body}, label %{done}"));
+            self.out.push_str(&format!("{body}:\n"));
+            let index = self.fresh();
+            self.line(format!("{index} = sub i64 {remaining}, 1"));
+            self.line(format!("store i64 {index}, ptr {counter}"));
+            let slot = self.fresh();
+            self.line(format!(
+                "{slot} = getelementptr inbounds {element_ty}, ptr {data}, i64 {index}"
+            ));
+            self.drop_unconditional(&slot, element);
+            self.line(format!("br label %{check}"));
+            self.out.push_str(&format!("{done}:\n"));
+        }
+        let bytes = self.byte_size(&element_ty, &length);
+        self.line(format!("call void @zore_free(ptr {data}, i64 {bytes})"));
+    }
+
     /// Drops `place` (type `ty`). Dispatches to the real, persistent flag
     /// at `flag_address(place)` for an ordinary (field-only) place, or to a
     /// transient scratch block when reached through an array index — array
@@ -620,22 +729,23 @@ impl FunctionBuilder<'_, '_> {
         if self.module.package.is_copy(ty) {
             return;
         }
+        let address = self.address(place);
         if place
             .projections
             .iter()
             .any(|p| matches!(p, mir::Projection::Index(_)))
         {
-            self.drop_unconditional(place, ty);
+            self.drop_unconditional(&address, ty);
             return;
         }
         let flags = self.flag_address(place);
-        self.drop_value(place, ty, &flags);
+        self.drop_value(&address, ty, &flags);
     }
 
-    /// Drops `place` (type `ty`) whose own liveness flag lives within the
-    /// already-computed `flags` block (root flag first, per `flag_ty`'s
-    /// layout).
-    pub(super) fn drop_value(&mut self, place: &Place, ty: TypeId, flags: &str) {
+    /// Drops the value at `address` (type `ty`) whose own liveness flag lives
+    /// within the already-computed `flags` block (root flag first, per
+    /// `flag_ty`'s layout).
+    pub(super) fn drop_value(&mut self, address: &str, ty: TypeId, flags: &str) {
         if self.module.package.is_copy(ty) {
             return;
         }
@@ -646,19 +756,20 @@ impl FunctionBuilder<'_, '_> {
         self.line(format!("br i1 {live}, label %{run}, label %{done}"));
         self.out.push_str(&format!("{run}:\n"));
         self.line(format!("store i1 false, ptr {root}"));
-        self.drop_contents(place, ty, flags);
+        self.drop_contents(address, ty, flags);
         self.line(format!("br label %{done}"));
         self.out.push_str(&format!("{done}:\n"));
     }
 
-    /// Drops `place` (an array element, type `ty`) unconditionally, backed
-    /// by a fresh scratch flags block rather than persistent storage.
-    pub(super) fn drop_unconditional(&mut self, place: &Place, ty: TypeId) {
+    /// Drops the value at `address` (an array element, type `ty`)
+    /// unconditionally, backed by a fresh scratch flags block rather than
+    /// persistent storage.
+    pub(super) fn drop_unconditional(&mut self, address: &str, ty: TypeId) {
         if self.module.package.is_copy(ty) {
             return;
         }
         let scratch = self.scratch_flags(ty);
-        self.drop_contents(place, ty, &scratch);
+        self.drop_contents(address, ty, &scratch);
     }
 
     /// A fresh `flag_ty(ty)` block with every flag initialized true and no
@@ -666,9 +777,15 @@ impl FunctionBuilder<'_, '_> {
     /// storage that doesn't exist (array elements).
     pub(super) fn scratch_flags(&mut self, ty: TypeId) -> String {
         let ptr = self.fresh();
-        self.line(format!("{ptr} = alloca {}", self.module.flag_ty(ty)));
+        let flag_ty = self.module.flag_ty(ty);
+        self.hoist_alloca(&ptr, &flag_ty);
         self.init_flags_true(&ptr, ty);
         ptr
+    }
+
+    /// Declares `name` as an `alloca` of `ty` in the entry block.
+    pub(super) fn hoist_alloca(&mut self, name: &str, ty: &str) {
+        writeln!(self.hoisted, "  {name} = alloca {ty}").unwrap();
     }
 
     pub(super) fn init_flags_true(&mut self, address: &str, ty: TypeId) {
@@ -695,9 +812,9 @@ impl FunctionBuilder<'_, '_> {
     }
 
     /// Runs `ty`'s custom `drop` (if any) and recurses into its parts,
-    /// given `place` is already known live and `flags` is a valid pointer
+    /// given the value at `address` is already known live and `flags` is a valid pointer
     /// to its `flag_ty(ty)` block (real or scratch).
-    pub(super) fn drop_contents(&mut self, place: &Place, ty: TypeId, flags: &str) {
+    pub(super) fn drop_contents(&mut self, address: &str, ty: TypeId, flags: &str) {
         match self.module.package.types.kind(ty) {
             TypeKind::Struct(id) => {
                 let strukt = self.module.package.strukt(id);
@@ -705,20 +822,20 @@ impl FunctionBuilder<'_, '_> {
                 let fields = strukt.fields.len();
                 if let Some(drop) = drop {
                     let name = self.module.package.function(drop).name.clone();
-                    let value_address = self.address(place);
                     self.line("call void @zore_enter_drop()");
                     self.line(format!(
-                        "call void @\"{}.{}\"(ptr {value_address}, ptr {flags})",
+                        "call void @\"{}.{}\"(ptr {address}, ptr {flags})",
                         self.module.package.name, name
                     ));
                     self.line("call void @zore_leave_drop()");
                 }
+                let struct_ty = self.ty(ty);
                 for index in (0..fields).rev() {
                     let field_ty = strukt.fields[index].ty;
-                    let mut child = place.clone();
-                    child
-                        .projections
-                        .push(mir::Projection::Field(FieldId(index as u32)));
+                    let child = self.fresh();
+                    self.line(format!(
+                        "{child} = getelementptr inbounds {struct_ty}, ptr {address}, i32 0, i32 {index}"
+                    ));
                     let child_flags = self.fresh();
                     self.line(format!(
                         "{child_flags} = getelementptr inbounds {}, ptr {flags}, i32 0, i32 {}",
@@ -729,17 +846,16 @@ impl FunctionBuilder<'_, '_> {
                 }
             }
             TypeKind::Array { element, size } => {
+                let array_ty = self.ty(ty);
                 for index in (0..size).rev() {
-                    let mut child = place.clone();
-                    child
-                        .projections
-                        .push(mir::Projection::Index(Operand::Const(
-                            Const::Int(i128::from(index)),
-                            TypeStore::INT64,
-                        )));
+                    let child = self.fresh();
+                    self.line(format!(
+                        "{child} = getelementptr inbounds {array_ty}, ptr {address}, i64 0, i64 {index}"
+                    ));
                     self.drop_unconditional(&child, element);
                 }
             }
+            TypeKind::DynArray { element } => self.drop_dyn_array(address, element),
             _ => {}
         }
     }
@@ -907,6 +1023,7 @@ impl FunctionBuilder<'_, '_> {
             TypeKind::Struct(_) => unreachable!("structs have no operators"),
             TypeKind::Array { .. } => unreachable!("arrays have no operators"),
             TypeKind::Slice { .. } => unreachable!("slices have no operators"),
+            TypeKind::DynArray { .. } => unreachable!("dynamic arrays have no operators"),
         }
     }
 

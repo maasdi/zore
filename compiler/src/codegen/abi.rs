@@ -14,6 +14,8 @@ declare void @zore_println_u64(i64)
 declare void @zore_println_bool(i1 zeroext)
 declare void @zore_println_rune(i32)
 declare i32 @zore_string_compare(ptr, i64, ptr, i64)
+declare noalias ptr @zore_alloc(i64)
+declare void @zore_free(ptr, i64)
 declare void @zore_raise_panic(ptr, i64)
 declare zeroext i1 @zore_panic_pending()
 declare void @zore_enter_drop()
@@ -119,7 +121,8 @@ impl FunctionBuilder<'_, '_> {
             | TypeKind::Error
             | TypeKind::Struct(_)
             | TypeKind::Array { .. }
-            | TypeKind::Slice { .. } => unreachable!("checked printable type"),
+            | TypeKind::Slice { .. }
+            | TypeKind::DynArray { .. } => unreachable!("checked printable type"),
         }
     }
 }

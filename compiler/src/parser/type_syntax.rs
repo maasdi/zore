@@ -1,8 +1,8 @@
-//! Type syntax: named, fixed-array, and slice types.
+//! Type syntax: named, fixed-array, slice, and dynamic-array types.
 
 use super::parser::{PResult, Parser};
 use crate::ast::*;
-use crate::lexer::{Keyword, Punct, Separator, TokenKind};
+use crate::lexer::{Keyword, Punct, Separator, Token, TokenKind};
 
 impl Parser<'_> {
     pub(super) fn ty(&mut self) -> PResult<Type> {
@@ -10,9 +10,7 @@ impl Parser<'_> {
             TokenKind::Ident => {
                 let name = self.name("a type")?;
                 if self.at(Punct::Lt) {
-                    return Err(
-                        self.unsupported("generic type arguments such as `Array<T>`", "M20–M25")
-                    );
+                    return self.type_arguments(name);
                 }
                 if self.at(Punct::Dot) && *self.peek_at(1) == TokenKind::Ident {
                     return Err(self.unsupported("package-qualified type names", "M23"));
@@ -43,6 +41,87 @@ impl Parser<'_> {
             }
             _ => Err(self.unexpected("a type")),
         }
+    }
+
+    /// `Name<...>` after `Name`: only the predeclared `Array` takes a type
+    /// argument here; `Array` cannot be shadowed (§3.18).
+    fn type_arguments(&mut self, name: Name) -> PResult<Type> {
+        match name.text.as_str() {
+            "Array" => {
+                self.bump();
+                let element = self.ty()?;
+                self.close_type_arguments()?;
+                Ok(Type::DynArray {
+                    element: Box::new(element),
+                    span: self.span_from(name.span),
+                })
+            }
+            "Task" => Err(self.unsupported("`Task<...>` types", "M25–M29")),
+            _ => Err(self.error(
+                format!(
+                    "`{}` does not take type arguments; user-defined generics are not part of the MVP (§22.1)",
+                    name.text
+                ),
+                name.span,
+            )),
+        }
+    }
+
+    /// Consumes the `>` closing a type argument list, splitting it off a
+    /// `>>`, `>=`, or `>>=` token so `Array<Array<int>>` closes both lists.
+    pub(super) fn close_type_arguments(&mut self) -> PResult<()> {
+        let rest = match self.peek() {
+            TokenKind::Punct(Punct::Gt) => {
+                self.bump();
+                self.insert_semicolon_after_type_arguments();
+                return Ok(());
+            }
+            TokenKind::Punct(Punct::Shr) => Punct::Gt,
+            TokenKind::Punct(Punct::GtEq) => Punct::Eq,
+            TokenKind::Punct(Punct::ShrEq) => Punct::GtEq,
+            _ => return Err(self.unexpected("`>`")),
+        };
+        let span = self.current_span();
+        let split = self
+            .file
+            .span(span.start() + 1, span.end())
+            .expect("a `>` token is one byte");
+        self.tokens[self.pos] = Token {
+            kind: TokenKind::Punct(rest),
+            span: split,
+        };
+        self.last_token_end = span.start() + 1;
+        Ok(())
+    }
+
+    /// §3.7: a closing type-argument `>` is an eligible ending token, but only
+    /// the parser can tell it from the comparison operator, so the semicolon
+    /// the lexer could not insert is inserted here, at the same location.
+    fn insert_semicolon_after_type_arguments(&mut self) {
+        if matches!(self.peek(), TokenKind::Semicolon(_)) {
+            return;
+        }
+        let gap_start = self.last_token_end as usize;
+        let gap_end = match self.peek() {
+            TokenKind::Eof => self.file.text().len(),
+            _ => self.current_span().start() as usize,
+        };
+        let gap = &self.file.text()[gap_start..gap_end];
+        let at = match gap.find('\n') {
+            Some(lf) if lf > 0 && gap.as_bytes()[lf - 1] == b'\r' => gap_start + lf - 1,
+            Some(lf) => gap_start + lf,
+            None if *self.peek() == TokenKind::Eof => gap_end,
+            None => return,
+        };
+        let at = at as u32;
+        let span = self.file.span(at, at).expect("a position inside the file");
+        self.tokens.insert(
+            self.pos,
+            Token {
+                kind: TokenKind::Semicolon(Separator::Newline),
+                span,
+            },
+        );
     }
 
     /// Whether the tokens `ahead` positions from here begin `[]`.

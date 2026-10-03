@@ -27,11 +27,22 @@ pub struct Resolution<'a> {
 }
 
 /// The named type a field stores by value beneath any array layers; a slice
-/// only borrows its elements, so it contains none.
+/// only borrows its elements and `Array<T>` stores them on the heap.
 fn by_value_named_type(ty: &ast::Type) -> Option<&ast::Name> {
     match ty {
         ast::Type::Named(name) => Some(name),
         ast::Type::Array { element, .. } => by_value_named_type(element),
+        ast::Type::Slice { .. } | ast::Type::DynArray { .. } => None,
+    }
+}
+
+/// The named type a field owns beneath any fixed or dynamic array layers.
+fn owned_named_type(ty: &ast::Type) -> Option<&ast::Name> {
+    match ty {
+        ast::Type::Named(name) => Some(name),
+        ast::Type::Array { element, .. } | ast::Type::DynArray { element, .. } => {
+            owned_named_type(element)
+        }
         ast::Type::Slice { .. } => None,
     }
 }
@@ -254,33 +265,58 @@ impl<'a> Resolver<'a> {
                 self.ty(element);
                 self.expr(size);
             }
-            ast::Type::Slice { element, .. } => self.ty(element),
+            ast::Type::Slice { element, .. } | ast::Type::DynArray { element, .. } => {
+                self.ty(element)
+            }
         }
     }
 
     fn reject_self_containing_structs(&mut self) {
-        let count = self.out.structs.len();
-        let edges: Vec<Vec<usize>> = self
-            .out
+        let mut reported = vec![false; self.out.structs.len()];
+        let by_value = self.struct_edges(by_value_named_type);
+        self.report_struct_cycles(&by_value, &mut reported, |name| {
+            format!("struct `{name}` contains itself by value and has no finite size")
+        });
+        // Destruction code is emitted inline per type, so a type owning
+        // itself through `Array<T>` would need out-of-line drop functions.
+        let owned = self.struct_edges(owned_named_type);
+        self.report_struct_cycles(&owned, &mut reported, |name| {
+            format!(
+                "struct `{name}` contains itself through `Array<T>`, which is not supported by this compiler yet"
+            )
+        });
+    }
+
+    /// For each struct, the structs its fields reach through `named`.
+    fn struct_edges(&self, named: fn(&ast::Type) -> Option<&ast::Name>) -> Vec<Vec<usize>> {
+        self.out
             .structs
             .iter()
             .map(|decl| {
                 decl.fields
                     .iter()
-                    .filter_map(|f| by_value_named_type(&f.ty))
+                    .filter_map(|f| named(&f.ty))
                     .filter_map(|name| match self.out.uses.get(&name.span) {
                         Some(Res::Struct(id)) => Some(id.0 as usize),
                         _ => None,
                     })
                     .collect()
             })
-            .collect();
+            .collect()
+    }
+
+    /// Reports each struct that closes a cycle in `edges`, once.
+    fn report_struct_cycles(
+        &mut self,
+        edges: &[Vec<usize>],
+        reported: &mut [bool],
+        message: impl Fn(&str) -> String,
+    ) {
         const UNVISITED: u8 = 0;
         const ON_PATH: u8 = 1;
         const FINISHED: u8 = 2;
-        let mut state = vec![UNVISITED; count];
-        let mut reported = vec![false; count];
-        for start in 0..count {
+        let mut state = vec![UNVISITED; edges.len()];
+        for start in 0..edges.len() {
             let mut stack = vec![(start, 0usize)];
             while let Some(&mut (node, ref mut next)) = stack.last_mut() {
                 if *next == 0 && state[node] == UNVISITED {
@@ -295,13 +331,7 @@ impl<'a> Resolver<'a> {
                     if state[target] == ON_PATH && !reported[target] {
                         reported[target] = true;
                         let decl = self.out.structs[target];
-                        self.error(
-                            format!(
-                                "struct `{}` contains itself by value and has no finite size",
-                                decl.name.text
-                            ),
-                            decl.name.span,
-                        );
+                        self.error(message(&decl.name.text), decl.name.span);
                     } else if state[target] == UNVISITED {
                         stack.push((target, 0));
                     }

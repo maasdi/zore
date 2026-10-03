@@ -232,13 +232,16 @@ fn check_rvalue(
     }
 }
 
-/// Whether `place` reaches its value through a slice's borrowed elements.
-fn through_slice(package: &hir::Package, body: &Body, place: &Place) -> bool {
+/// Whether `place` indexes into a value whose type matches `indexed`.
+fn indexes_into(
+    package: &hir::Package,
+    body: &Body,
+    place: &Place,
+    indexed: fn(TypeKind) -> bool,
+) -> bool {
     let mut ty = body.locals[place.local.0 as usize].ty;
     for projection in &place.projections {
-        if matches!(projection, Projection::Index(_))
-            && matches!(package.types.kind(ty), TypeKind::Slice { .. })
-        {
+        if matches!(projection, Projection::Index(_)) && indexed(package.types.kind(ty)) {
             return true;
         }
         ty = projection_type(package, ty, projection);
@@ -318,7 +321,9 @@ fn check_operand(
         );
         return;
     }
-    if through_slice(package, body, place) {
+    if indexes_into(package, body, place, |kind| {
+        matches!(kind, TypeKind::Slice { .. })
+    }) {
         let name = describe_place(package, body, place);
         diagnostics.push(
             Diagnostic::new(
@@ -327,6 +332,20 @@ fn check_operand(
                 span,
             )
             .note("a slice borrows its elements; moving them out is not allowed (§12.6)"),
+        );
+        return;
+    }
+    if indexes_into(package, body, place, |kind| {
+        matches!(kind, TypeKind::DynArray { .. })
+    }) {
+        let name = describe_place(package, body, place);
+        diagnostics.push(
+            Diagnostic::new(
+                Severity::Error,
+                format!("cannot move `{name}` out of a dynamic array"),
+                span,
+            )
+            .note("`Array<T>` keeps ownership of its elements; borrow the element instead (§12.6, §31.2)"),
         );
         return;
     }

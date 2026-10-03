@@ -1250,7 +1250,10 @@ fn unsupported_features_are_never_accepted() {
             program("let top = 1"),
             "package-level `let` and `var` are not supported",
         ),
-        (program("func f(xs Array) {}"), "`Array` is not supported"),
+        (
+            program("func f(xs Array) {}"),
+            "`Array` needs an element type",
+        ),
         (body("let x = clone(1)"), "`clone` is not supported"),
         (
             body("let r = rune(65)"),
@@ -1804,4 +1807,130 @@ fn later_arguments_cannot_mutate_an_earlier_borrowed_argument() {
         func f(n int, a [int; 2]) {}
         func use() { var a = [int; 2]{1, 2}\nf(g(a), a) }",
     ));
+}
+
+#[test]
+fn dynamic_array_literals_take_any_count_of_typed_elements() {
+    let case = accepts(&program(
+        "func use() { let empty = Array<int>{}\nlet three = Array<int>{1, 2, 3}\n_ = three[2] }",
+    ));
+    assert_eq!(local_type(&case, "use", "three"), "Array<int64>");
+    rejects(
+        &program("func use() { let xs = Array<int>{1, \"two\"} }"),
+        "mismatched types: expected `int64`, found `string`",
+    );
+    rejects(
+        &program("func use() { let xs = Array<uint8>{256} }"),
+        "does not fit",
+    );
+    rejects(
+        &program(
+            "func pair() (int, int) { return 1, 2 }\nfunc use() { let xs = Array<int>{pair()} }",
+        ),
+        "expected one value, but this call returns 2 values",
+    );
+}
+
+#[test]
+fn dynamic_arrays_are_move_values() {
+    let case = accepts(&program(
+        "type Bag struct { Items Array<int> }\nfunc use() { let bag = Bag{Items: Array<int>{1}}\n_ = bag.Items[0] }",
+    ));
+    let package = case.package();
+    let bag = package.types.struct_type(zore::types::StructId(0));
+    assert!(!package.is_copy(bag));
+    let xs = package
+        .functions
+        .iter()
+        .find(|f| f.name == "use")
+        .unwrap()
+        .locals[0]
+        .ty;
+    assert!(!package.is_copy(xs));
+}
+
+#[test]
+fn dynamic_array_elements_follow_place_mutability() {
+    accepts(&program(
+        "func set(xs mut Array<int>) { xs[0] = 1 }
+        func take(xs own Array<int>) { var mine = xs\nmine[0] = 2 }
+        func use() { var xs = Array<int>{1, 2}\nxs[1] = 3\nxs[0] += 1\nset(xs)\ntake(xs) }",
+    ));
+    rejects(
+        &program("func use() { let xs = Array<int>{1}\nxs[0] = 2 }"),
+        "cannot assign to immutable binding `xs`",
+    );
+    rejects(
+        &program("func use(xs Array<int>) { xs[0] = 2 }"),
+        "cannot assign to parameter `xs`",
+    );
+    rejects(
+        &program("func use(xs Array<int>) { _ = xs[-1] }"),
+        "array index `-1` is out of range for `Array<int64>`",
+    );
+    rejects(
+        &program("func use(xs Array<int>) { _ = xs[true] }"),
+        "array index must be an integer",
+    );
+    accepts(&program("func use(xs Array<int>) { _ = xs[100] }"));
+}
+
+#[test]
+fn dynamic_arrays_slice_like_fixed_arrays() {
+    accepts(&slice_program(
+        "func use() { var xs = Array<int>{1, 2, 3}\n_ = inspect(xs[1:])\nedit(xs[:]) }",
+    ));
+    rejects(
+        &slice_program("func use() { let xs = Array<int>{1, 2}\nedit(xs[:]) }"),
+        "cannot take a mutable slice of immutable binding `xs`",
+    );
+    let case = rejects(
+        &slice_program("func use() { let xs = Array<int>{1}\n_ = inspect(xs) }"),
+        "mismatched types: expected `[]int64`, found `Array<int64>`",
+    );
+    assert!(
+        case.checked.diagnostics[0]
+            .notes()
+            .iter()
+            .any(|note| note.contains("borrow a view with `x[:]`"))
+    );
+}
+
+#[test]
+fn unsupported_dynamic_array_forms_are_rejected() {
+    rejects(
+        &program("func f(xs Array<mut []int>) {}"),
+        "`mut []T` nested in",
+    );
+    rejects(&body("let xs = Array"), "`Array` needs an element type");
+    let case = rejects(
+        &program("func f(xs Array<int>) { _ = xs.len() }"),
+        "type `Array<int64>` has no method `len`",
+    );
+    assert!(
+        case.checked.diagnostics[0]
+            .notes()
+            .iter()
+            .any(|note| note.contains("not specified yet (Q05)"))
+    );
+    rejects(
+        &program("func f(xs Array<int>) { let ys = clone(xs) }"),
+        "`clone` is not supported",
+    );
+    rejects(
+        &body("let xs = Array<int>{1}\nprintln(xs)"),
+        "`println` cannot print values of type `Array<int64>`",
+    );
+    rejects(
+        &program("func f(a Array<int>, b Array<int>) bool { return a == b }"),
+        "operator `==` cannot be applied to `Array<int64>`",
+    );
+    rejects(
+        &program("type Node struct { Kids Array<Node> }"),
+        "struct `Node` contains itself through `Array<T>`",
+    );
+    rejects(
+        &program("type Bag struct { Views Array<[]int> }\nfunc (b mut Bag) drop() {}"),
+        "a custom `drop` for a type containing a borrowed slice",
+    );
 }

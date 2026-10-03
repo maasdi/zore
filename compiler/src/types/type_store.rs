@@ -12,6 +12,7 @@ pub struct TypeStore {
     struct_types: Vec<TypeId>,
     array_types: HashMap<(TypeId, u32), TypeId>,
     slice_types: HashMap<(TypeId, bool), TypeId>,
+    dyn_array_types: HashMap<TypeId, TypeId>,
 }
 
 impl Default for TypeStore {
@@ -54,6 +55,7 @@ impl TypeStore {
             struct_types: Vec::new(),
             array_types: HashMap::new(),
             slice_types: HashMap::new(),
+            dyn_array_types: HashMap::new(),
         }
     }
 
@@ -89,6 +91,17 @@ impl TypeStore {
         let ty = TypeId(self.kinds.len() as u32);
         self.kinds.push(TypeKind::Slice { element, mutable });
         self.slice_types.insert((element, mutable), ty);
+        ty
+    }
+
+    /// Interns `Array<element>`.
+    pub fn dyn_array_type(&mut self, element: TypeId) -> TypeId {
+        if let Some(&ty) = self.dyn_array_types.get(&element) {
+            return ty;
+        }
+        let ty = TypeId(self.kinds.len() as u32);
+        self.kinds.push(TypeKind::DynArray { element });
+        self.dyn_array_types.insert(element, ty);
         ty
     }
 
@@ -170,6 +183,9 @@ impl fmt::Display for TypeName<'_> {
             TypeKind::Slice { element, mutable } => {
                 let prefix = if mutable { "mut " } else { "" };
                 write!(f, "{prefix}[]{}", self.store.display(element))
+            }
+            TypeKind::DynArray { element } => {
+                write!(f, "Array<{}>", self.store.display(element))
             }
         }
     }

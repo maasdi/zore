@@ -1,8 +1,10 @@
 # Zero value and `nil` conformance cases
 
 Authority: spec §41.4, with cross-references §5.4, §8.4, §15.6, §18.9, §19.8,
-§19.12, §13.3. These are pending type-checking, lowering, and runtime cases; they are
-not executable tests or passing coverage.
+§19.12, §13.3. These are mostly pending type-checking, lowering, and runtime
+cases, not executable tests. The `Array<T>` and slice zero values produced by
+`?` result filling are covered in `tests/codegen/native.rs`: an empty array
+drops safely, and a zero slice has no backing loan and panics on indexing.
 
 | Scenario | Expected result |
 | --- | --- |

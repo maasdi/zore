@@ -73,4 +73,8 @@ pub enum TypeKind {
         element: TypeId,
         mutable: bool,
     },
+    /// The owned dynamic array `Array<T>`; always Move (§10.5).
+    DynArray {
+        element: TypeId,
+    },
 }

@@ -400,18 +400,18 @@ impl<'a> Analysis<'a> {
                         continue;
                     };
                     if origin.storage && matches!(arg, Operand::Ref(_)) {
+                        let path = Path::of(self.package, self.body, place);
+                        loans.extend(self.inherited_loans(place, &path, state));
                         let loan = Loan {
                             kind,
-                            target: LoanTarget::Place(Path::of(self.package, self.body, place)),
+                            target: LoanTarget::Place(path),
                             span: site.span,
                             name: self.describe(place),
                             from_slicing: false,
                         };
                         loans.insert(self.intern(site.next_key(), loan));
                     }
-                    if (origin.storage || origin.contents)
-                        && self.package.contains_view(self.place_ty(place))
-                    {
+                    if origin.contents && self.package.contains_view(self.place_ty(place)) {
                         loans.extend(state[place.local.0 as usize].iter().copied());
                     }
                 }
@@ -434,6 +434,17 @@ impl<'a> Analysis<'a> {
         let path = Path::of(self.package, self.body, target);
         for held in state.iter_mut() {
             held.retain(|&id| !self.loans[id].ended_by_assignment_to(&path));
+        }
+    }
+
+    /// The loans a new borrow of `place` (covering `path`) must carry over
+    /// from its root: storage reached through a view stays borrowed from that
+    /// view's backing, and a value holding views keeps their provenance.
+    fn inherited_loans(&self, place: &Place, path: &Path, state: &Holdings) -> BTreeSet<LoanId> {
+        if path.goes_through_deref() || self.package.contains_view(self.place_ty(place)) {
+            state[place.local.0 as usize].clone()
+        } else {
+            BTreeSet::new()
         }
     }
 
@@ -486,21 +497,21 @@ impl<'a> Analysis<'a> {
                     TypeKind::Slice { .. }
                 );
                 let path = Path::of(self.package, self.body, place);
+                let path = if base_is_slice { path.deref() } else { path };
+                let inherited = self.inherited_loans(place, &path, state);
                 let loan = Loan {
                     kind: if *mutable {
                         LoanKind::Exclusive
                     } else {
                         LoanKind::Shared
                     },
-                    target: LoanTarget::Place(if base_is_slice { path.deref() } else { path }),
+                    target: LoanTarget::Place(path),
                     span: site.span,
                     name: self.describe(place),
                     from_slicing: true,
                 };
                 let mut loans = BTreeSet::from([self.intern(site.next_key(), loan)]);
-                if base_is_slice {
-                    loans.extend(state[place.local.0 as usize].iter().copied());
-                }
+                loans.extend(inherited);
                 loans
             }
             Rvalue::Zero

@@ -427,6 +427,201 @@ func main() {
     assert_eq!(stdout(&output), "");
 }
 
+/// A `Guard` whose destructor prints its id and panics for id 1.
+const PANICKING_GUARD: &str = "type Guard struct { id int }
+func (g mut Guard) drop() {
+    println(g.id)
+    if g.id == 1 {
+        var zero = 0
+        println(1 / zero)
+    }
+}";
+
+#[test]
+fn a_panicking_replaced_element_is_never_dropped_twice() {
+    panics(
+        &format!(
+            "package main\n{PANICKING_GUARD}\nfunc main() {{\nvar gs = [Guard; 2]{{Guard{{id: 1}}, Guard{{id: 2}}}}\ngs[0] = Guard{{id: 3}}\n}}\n"
+        ),
+        "division by zero",
+        "1\n2\n3\n",
+    );
+    panics(
+        &format!(
+            "package main\n{PANICKING_GUARD}\nfunc replace(g mut Guard) {{ g = Guard{{id: 3}} }}\nfunc main() {{\nvar gs = [Guard; 2]{{Guard{{id: 1}}, Guard{{id: 2}}}}\nreplace(gs[0])\n}}\n"
+        ),
+        "division by zero",
+        "1\n2\n3\n",
+    );
+}
+
+#[test]
+fn scratch_flag_allocas_live_in_the_entry_block() {
+    let source = "package main
+type Guard struct { id int }
+func (g mut Guard) drop() {}
+func inspect(g Guard) {}
+func main() {
+    var gs = [Guard; 2]{Guard{id: 1}, Guard{id: 2}}
+    for var i = 0; i < 2; i += 1 {
+        inspect(gs[i])
+        gs[i] = Guard{id: i}
+    }
+}
+";
+    let mut sources = SourceMap::new();
+    let id = sources.add("test.ore", source.into()).unwrap();
+    let ir = emit_llvm(sources.file(id).unwrap()).unwrap();
+    for function in ir.split("define ").skip(1) {
+        let body = function
+            .split_once("br label %bb0")
+            .map_or("", |(_, rest)| rest);
+        assert!(
+            !body.contains("alloca"),
+            "alloca after the entry block:\n{function}"
+        );
+    }
+}
+
+/// A `Guard` whose destructor prints its id.
+const GUARD: &str = "type Guard struct { id int }
+func (g mut Guard) drop() { println(g.id) }";
+
+#[test]
+fn dynamic_arrays_store_index_and_slice() {
+    prints(
+        &slice_main(
+            "func bump(xs mut Array<int>) { xs[0] += 100 }
+            func make() Array<int> { return Array<int>{7, 8, 9} }
+            func first(xs Array<int>) int { return xs[0] }",
+            "var data = Array<int>{1, 2, 3}
+            println(data[1])
+            data[1] = 20
+            bump(data)
+            show(data[:], 3)
+            var tail mut []int = data[1:]
+            tail[0] = 5
+            println(data[1])
+            println(first(make()))
+            show(make()[1:], 2)
+            let empty = Array<int>{}
+            show(empty[:], 0)
+            var i uint8 = 2
+            println(data[i])",
+        ),
+        "2\n101\n20\n3\n5\n7\n8\n9\n3\n",
+    );
+}
+
+#[test]
+fn dynamic_array_elements_are_dropped_once_in_reverse_order() {
+    prints(
+        &format!(
+            "package main\n{GUARD}
+func consume(gs own Array<Guard>) {{ println(0) }}
+func id(g Guard) int {{ return g.id }}
+func main() {{
+    var gs = Array<Guard>{{Guard{{id: 1}}, Guard{{id: 2}}, Guard{{id: 3}}}}
+    gs[1] = Guard{{id: 22}}
+    println(id(Array<Guard>{{Guard{{id: 9}}}}[0]))
+    consume(Array<Guard>{{Guard{{id: 50}}}})
+    let nested = Array<Array<Guard>>{{Array<Guard>{{Guard{{id: 41}}, Guard{{id: 42}}}}, Array<Guard>{{Guard{{id: 43}}}}}}
+    var replaced = Array<Guard>{{Guard{{id: 60}}}}
+    replaced = Array<Guard>{{Guard{{id: 61}}}}
+}}
+"
+        ),
+        "2\n9\n9\n0\n50\n60\n61\n43\n42\n41\n3\n22\n1\n",
+    );
+}
+
+#[test]
+fn dynamic_array_fields_and_empty_arrays_drop_safely() {
+    prints(
+        &format!(
+            "package main\n{GUARD}
+type Bag struct {{ Name Guard; Items Array<Guard> }}
+func fail() error {{ return error(\"failed\") }}
+func gather() (Array<Guard>, error) {{ fail()?\nreturn Array<Guard>{{Guard{{id: 7}}}}, nil }}
+func main() {{
+    let empty = Array<Guard>{{}}
+    let zero, _ = gather()
+    let bag = Bag{{Name: Guard{{id: 1}}, Items: Array<Guard>{{Guard{{id: 2}}, Guard{{id: 3}}}}}}
+    let name = bag.Name
+    println(0)
+}}
+"
+        ),
+        "0\n1\n3\n2\n",
+    );
+}
+
+#[test]
+fn invalid_dynamic_array_access_panics() {
+    for (setup, expr) in [
+        ("var i = 3", "xs[i]"),
+        ("var i = -1", "xs[i]"),
+        ("var i uint64 = 18446744073709551615", "xs[i]"),
+        ("var i = 0", "Array<int>{}[i]"),
+    ] {
+        panics(
+            &main_body(&format!(
+                "let xs = Array<int>{{1, 2, 3}}\n{setup}\nprintln(1)\nprintln({expr})"
+            )),
+            "index out of range",
+            "1\n",
+        );
+    }
+    panics(
+        &slice_main(
+            "",
+            "let xs = Array<int>{1, 2, 3}\nvar hi = 4\nprintln(1)\nshow(xs[1:hi], 0)",
+        ),
+        "slice bounds out of range",
+        "1\n",
+    );
+}
+
+#[test]
+fn dynamic_array_construction_and_replacement_clean_up_on_panic() {
+    panics(
+        &format!(
+            "package main\n{GUARD}
+func boom() Guard {{ var zero = 0\nreturn Guard{{id: 1 / zero}} }}
+func main() {{ let gs = Array<Guard>{{Guard{{id: 1}}, Guard{{id: 2}}, boom()}} }}
+"
+        ),
+        "division by zero",
+        "2\n1\n",
+    );
+    panics(
+        &format!(
+            "package main\n{PANICKING_GUARD}\nfunc main() {{\nvar gs = Array<Guard>{{Guard{{id: 1}}, Guard{{id: 2}}}}\ngs[0] = Guard{{id: 3}}\n}}\n"
+        ),
+        "division by zero",
+        "1\n2\n3\n",
+    );
+}
+
+#[test]
+fn dynamic_array_drop_loops_hoist_their_allocas() {
+    let source = format!(
+        "package main\n{GUARD}\nfunc main() {{ let gs = Array<Array<Guard>>{{Array<Guard>{{Guard{{id: 1}}}}}} }}\n"
+    );
+    let mut sources = SourceMap::new();
+    let id = sources.add("test.ore", source).unwrap();
+    let ir = emit_llvm(sources.file(id).unwrap()).unwrap();
+    for function in ir.split("define ").skip(1) {
+        let body = function
+            .split_once("br label %bb0")
+            .map_or("", |(_, rest)| rest);
+        assert!(
+            !body.contains("alloca"),
+            "alloca after the entry block:\n{function}"
+        );
+    }
+}
+
 #[test]
 fn semantic_target_prints_john() {
     let source = std::fs::read_to_string(concat!(

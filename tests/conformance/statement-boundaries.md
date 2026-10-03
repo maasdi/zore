@@ -30,6 +30,12 @@ marks the end of input; these are test notation, not source syntax.
 | `func main()\n{}` | Reject: inserted separator between signature and body |
 | `let a = 1; let b = 2` | Explicit separator permits two statements on one line |
 | Struct initializer with each field followed by a comma | No insertion after field commas |
+| `Items Array<int>\nCount int` inside a struct | Insert after the closing type-argument `>`; two fields (Q17c) |
+| `Nested Array<Array<int>>\n` | Insert once, after the final `>` of the split `>>` token |
+| `Views Array<[]int> /* a\nb */ Count int` | Insert at the first comment newline after the closing `>` |
+| `let more = count >\nlimit` | No insertion after the comparison `>`; initializer continues |
+| `func f(\nxs Array<int>\n)` | Insert after the closing `>`; reject parameter list with missing trailing comma |
+| `let xs = Array<int>\r\n{1}` | Insert at the CRLF; the literal's `{` no longer follows its type |
 
 Assert inserted-token source locations at the triggering LF or EOF, including
 the first LF inside a multiline comment. When additional literal forms and

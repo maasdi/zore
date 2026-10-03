@@ -64,7 +64,7 @@ impl Case {
 fn type_name(t: &Type) -> &str {
     match t {
         Type::Named(name) => &name.text,
-        Type::Array { .. } | Type::Slice { .. } => {
+        Type::Array { .. } | Type::Slice { .. } | Type::DynArray { .. } => {
             panic!("expected a named type, found an array or slice type")
         }
     }
@@ -76,6 +76,7 @@ fn ty(case: &Case, t: &Type) -> String {
         Type::Array { element, size, .. } => {
             format!("[{} ; {}]", ty(case, element), expr(case, size))
         }
+        Type::DynArray { element, .. } => format!("Array<{}>", ty(case, element)),
         Type::Slice {
             element, mutable, ..
         } => format!(
@@ -784,6 +785,106 @@ fn slice_types_and_slicing_expressions() {
 }
 
 #[test]
+fn dynamic_array_types_and_literals() {
+    let case = Case::body(
+        "let a Array<int> = Array<int>{1, 2}
+        let nested Array<Array<int>>= Array<Array<int>>{}
+        let views Array<[]int> = views
+        let fixed [Array<int>; 2] = fixed
+        let rows mut []Array<int> = rows
+        let grid = Array<int>{
+            1,
+            2,
+        }
+        if Array<int>{1}[0] == 1 { work() }
+        _ = a < b",
+    );
+    case.assert_clean();
+    assert_eq!(
+        case.shape(),
+        [
+            "(let a Array<int> (lit Array<int> 1 2))",
+            "(let nested Array<Array<int>> (lit Array<Array<int>>))",
+            "(let views Array<[]int> views)",
+            "(let fixed [Array<int> ; 2] fixed)",
+            "(let rows mut []Array<int> rows)",
+            "(let grid (lit Array<int> 1 2))",
+            "(if (== (index (lit Array<int> 1) 0) 1) {(call work)})",
+            "(= _ (< a b))",
+        ]
+    );
+}
+
+#[test]
+fn invalid_dynamic_array_syntax_is_rejected() {
+    for (body, message) in [
+        ("let xs = Array<int>(1)", "expected `{` after `Array<T>`"),
+        ("let xs Foo<int> = xs", "`Foo` does not take type arguments"),
+        ("let xs Array<int = xs", "expected `>`"),
+        ("let xs = Array<int>{1,\n2\n}", "missing trailing comma"),
+    ] {
+        rejects(body, message);
+    }
+    rejects_file(
+        "package main\nfunc f(t Task<int>) {}\n",
+        "not supported by this compiler yet",
+    );
+}
+
+#[test]
+fn a_closing_type_argument_ends_a_line_like_an_identifier() {
+    let case = Case::new(
+        "package main
+type Bag struct {
+    Items Array<int>
+    Nested Array<Array<int>> // trailing comment
+    Views Array<[]int> /* block
+    comment */ Count int
+    Last Array<int>
+}
+func main() {
+    let more = count >
+        limit
+}
+",
+    );
+    case.assert_clean();
+    let Item::Struct(bag) = &case.parsed.file.items[0] else {
+        panic!("expected a struct");
+    };
+    let fields: Vec<String> = bag
+        .fields
+        .iter()
+        .map(|f| format!("{} {}", f.name.text, ty(&case, &f.ty)))
+        .collect();
+    assert_eq!(
+        fields,
+        [
+            "Items Array<int>",
+            "Nested Array<Array<int>>",
+            "Views Array<[]int>",
+            "Count int",
+            "Last Array<int>",
+        ]
+    );
+    assert_eq!(case.shape(), ["(let more (> count limit))"]);
+    rejects_file(
+        "package main\nfunc f(\n    xs Array<int>\n) {}\n",
+        "missing trailing comma",
+    );
+    rejects("let xs Array<int>\n= other", "expected");
+    rejects("let xs Array<Array<int>\n> = other", "expected `>`");
+    rejects_file(
+        "package main\nfunc f() Array<int>\n{ return xs }\n",
+        "expected",
+    );
+    Case::new("package main\nfunc f(\n    xs Array<int>,\n) {}\n").assert_clean();
+    let case = Case::new("package main\nfunc main() {\n    let xs = Array<int>\r\n{1}\n}\n");
+    let at_line_end = case.render();
+    assert!(at_line_end.contains("test.ore:3:24"), "{at_line_end}");
+}
+
+#[test]
 fn mut_before_a_slice_type_is_part_of_the_type() {
     let case = Case::new(
         "package main
@@ -961,7 +1062,6 @@ fn later_milestone_syntax_is_reported_as_unsupported() {
         rejects(body, "not supported by this compiler yet");
     }
     for text in [
-        "func f(xs Array<int>) {}",
         "func f(t Task<int>) {}",
         "func f(c channel<int>) {}",
         "func f(m map[string]int) {}",

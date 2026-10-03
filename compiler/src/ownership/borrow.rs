@@ -31,6 +31,8 @@ impl Path {
             match projection {
                 Projection::Field(field) => elems.push(PathElem::Field(*field)),
                 Projection::Index(_) => {
+                    // An `Array<T>` owns its elements like a fixed array, so
+                    // replacing it must conflict with views of them.
                     if matches!(package.types.kind(ty), TypeKind::Slice { .. }) {
                         elems.push(PathElem::Deref);
                     }

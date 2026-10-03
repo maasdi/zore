@@ -211,8 +211,10 @@ impl<'a> Checker<'a> {
             self.name(found)
         );
         let mut diagnostic = Diagnostic::new(Severity::Error, message, span);
-        if let (TypeKind::Slice { element, .. }, TypeKind::Array { element: found, .. }) =
-            (self.types.kind(expected), self.types.kind(found))
+        if let (
+            TypeKind::Slice { element, .. },
+            TypeKind::Array { element: found, .. } | TypeKind::DynArray { element: found },
+        ) = (self.types.kind(expected), self.types.kind(found))
             && element == found
         {
             diagnostic = diagnostic.note(
@@ -248,6 +250,13 @@ impl<'a> Checker<'a> {
                     return None;
                 };
                 Some(self.types.array_type(element_ty, count))
+            }
+            ast::Type::DynArray { element, .. } => {
+                if !self.reject_stored_mut_slice(element) {
+                    return None;
+                }
+                let element_ty = self.resolve_type(element)?;
+                Some(self.types.dyn_array_type(element_ty))
             }
             ast::Type::Slice {
                 element, mutable, ..
@@ -300,7 +309,9 @@ impl<'a> Checker<'a> {
                         .iter()
                         .filter_map(|(_, field_ty, _)| *field_ty),
                 ),
-                TypeKind::Array { element, .. } => pending.push(element),
+                TypeKind::Array { element, .. } | TypeKind::DynArray { element } => {
+                    pending.push(element)
+                }
                 _ => {}
             }
         }
@@ -457,7 +468,9 @@ impl<'a> Checker<'a> {
                 ast::Type::Named(type_name) => {
                     format!("{}.{}", type_name.text, func.name.text)
                 }
-                ast::Type::Array { .. } | ast::Type::Slice { .. } => func.name.text.clone(),
+                ast::Type::Array { .. } | ast::Type::Slice { .. } | ast::Type::DynArray { .. } => {
+                    func.name.text.clone()
+                }
             },
             None => func.name.text.clone(),
         };
@@ -1304,7 +1317,13 @@ impl<'a> Checker<'a> {
             } else {
                 format!("type `{}` has no method `{}`", self.name(ty), name.text)
             };
-            self.error(message, name.span);
+            let mut diagnostic = Diagnostic::new(Severity::Error, message, name.span);
+            if matches!(self.types.kind(ty), TypeKind::DynArray { .. }) {
+                diagnostic = diagnostic.note(
+                    "`Array<T>` length, append, remove, and capacity APIs are not specified yet (Q05)",
+                );
+            }
+            self.diagnostics.push(diagnostic);
             self.report_arg_errors(args);
             return None;
         };
@@ -1802,6 +1821,7 @@ impl<'a> Checker<'a> {
     ) -> Option<(hir::Expr, TypeId)> {
         let (element, length, what) = match self.types.kind(base_ty) {
             TypeKind::Array { element, size } => (element, Some(size), "array"),
+            TypeKind::DynArray { element } => (element, None, "array"),
             TypeKind::Slice { element, .. } => (element, None, "slice"),
             _ => {
                 let message = format!("type `{}` cannot be indexed", self.name(base_ty));
@@ -1846,7 +1866,7 @@ impl<'a> Checker<'a> {
         let base = self.indexable_base(base)?;
         let (element, length) = match self.types.kind(base.ty()) {
             TypeKind::Array { element, size } => (element, Some(size)),
-            TypeKind::Slice { element, .. } => (element, None),
+            TypeKind::Slice { element, .. } | TypeKind::DynArray { element } => (element, None),
             _ => {
                 let message = format!("type `{}` cannot be sliced", self.name(base.ty()));
                 self.error(message, base.span);
@@ -1948,11 +1968,14 @@ impl<'a> Checker<'a> {
 
     fn array_lit(&mut self, ty: &ast::Type, elements: &[ast::Expr], span: Span) -> Option<Value> {
         let array_ty = self.resolve_type(ty)?;
-        let TypeKind::Array { element, size } = self.types.kind(array_ty) else {
-            unreachable!("an array literal's own type always resolves to TypeKind::Array")
+        let (element, size) = match self.types.kind(array_ty) {
+            TypeKind::Array { element, size } => (element, Some(size)),
+            TypeKind::DynArray { element } => (element, None),
+            _ => unreachable!("array literals are written with an array type"),
         };
-        let count = size as usize;
-        if elements.len() != count {
+        if let Some(count) = size.map(|size| size as usize)
+            && elements.len() != count
+        {
             let message = format!(
                 "array literal has {} element{}, expected {count} (§12.6)",
                 elements.len(),

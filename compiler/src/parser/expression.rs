@@ -183,6 +183,12 @@ impl Parser<'_> {
     pub(super) fn primary(&mut self) -> PResult<Expr> {
         let span = self.current_span();
         let kind = match self.peek().clone() {
+            TokenKind::Ident
+                if self.current_text() == "Array"
+                    && *self.peek_at(1) == TokenKind::Punct(Punct::Lt) =>
+            {
+                return self.dyn_array_literal();
+            }
             TokenKind::Ident => {
                 let name = self.name("an expression")?;
                 if self.struct_literals_allowed && self.at(Punct::LBrace) {
@@ -263,6 +269,27 @@ impl Parser<'_> {
             ));
         }
         self.expect(Punct::LBrace)?;
+        let elements = self.with_struct_literals(true, |p| {
+            p.comma_list(Punct::RBrace, "element", true, Self::expr)
+        })?;
+        Ok(Expr {
+            span: self.span_from(span),
+            kind: ExprKind::ArrayLit { ty, elements },
+        })
+    }
+
+    /// `Array<element>{e1, e2, ...}`, recognized by the predeclared name.
+    fn dyn_array_literal(&mut self) -> PResult<Expr> {
+        let span = self.current_span();
+        let ty = self.ty()?;
+        if !self.at(Punct::LBrace) {
+            let at = self.current_span();
+            return Err(self.error(
+                "expected `{` after `Array<T>`; dynamic arrays are built with a typed literal such as `Array<int>{}` (§12.6)",
+                at,
+            ));
+        }
+        self.bump();
         let elements = self.with_struct_literals(true, |p| {
             p.comma_list(Punct::RBrace, "element", true, Self::expr)
         })?;
