@@ -1,24 +1,22 @@
 # Bootstrap architecture
 
-Status: The compiler supports a synchronous subset through parts of M18–M19,
-including Move structs, deterministic drops, and concrete error values.
-`compiler/src/main.rs` delegates to `driver`; `driver/command.rs` and
-`driver/session.rs` handle CLI arguments and exit status; `check`
-runs the frontend pipeline in `compiler/src/driver/check.rs`. `compiler/src/source/mod.rs` stores UTF-8 text
-under stable file IDs and validated byte spans, and `compiler/src/diagnostic/mod.rs` renders
-primary and related locations. `compiler/src/lexer/token.rs` and `compiler/src/lexer/mod.rs` produce tokens;
-`compiler/src/ast/mod.rs` and `compiler/src/parser/mod.rs` produce the syntax tree. `compiler/src/resolve/mod.rs` binds
-names to IDs, `compiler/src/types/mod.rs` interns types, and `compiler/src/types/checker.rs` produces the
-typed HIR in `compiler/src/hir/mod.rs`. `tests/driver/cli.rs`, `tests/diagnostics/source_diagnostics.rs`,
-`tests/lexer/lexer.rs`, `tests/parser/parser.rs`, and `tests/typecheck/check.rs` exercise these
-contracts. `compiler/src/mir/lower.rs` lowers HIR to the MIR in `compiler/src/mir/mod.rs`;
-MIR ownership and error-use passes validate the supported subset, and a separate
-pass inserts deterministic drops before native code generation.
-`compiler/src/codegen/llvm.rs` emits LLVM IR, and `compiler/src/driver/build.rs` compiles it with clang and
-the Rust sources in `runtime/src/` using rustc (decision record 0001);
-`tests/codegen/native.rs` builds and
-runs programs. Rust is the bootstrap implementation language; use one crate until
-stable boundaries justify extraction.
+Status: The compiler supports a synchronous subset through parts of M18–M20,
+including Move structs, deterministic drops, concrete error values, and fixed
+arrays. Paths below are relative to `compiler/src/`. `main.rs` delegates to
+`driver`; `driver/command.rs` and `driver/session.rs` handle CLI arguments and
+exit status; `driver/check.rs` orchestrates the frontend pipeline and
+`driver/build.rs` the native one. `source/` stores UTF-8 text under stable
+file IDs and validated byte spans, and `diagnostic/` renders primary and
+related locations. `lexer/` produces tokens; `parser/` produces the `ast/`
+syntax tree. `resolve/` binds names to IDs, `types/` interns types, and
+`hir/lower.rs` type-checks the resolved syntax while lowering it to the typed
+HIR defined in `hir/`. `mir/lower.rs` lowers HIR to the MIR in `mir/`;
+`ownership/` and `mir/error_use.rs` validate it, and `dropck/` inserts
+deterministic drops before `codegen/` emits LLVM IR, which `driver/build.rs`
+compiles with clang and links with the Rust sources in `runtime/src/` using
+rustc (decision record 0001). Integration tests under `tests/<subsystem>/`
+exercise each contract. Rust is the bootstrap implementation language; use one
+crate until stable boundaries justify extraction.
 
 ## Repository organization
 
@@ -26,20 +24,45 @@ The root Cargo manifest contains the `compiler/` and `runtime/` members.
 Root-level checks build and test both; `cargo run` selects the compiler's sole
 binary. The compiler has no dependency on the runtime crate, and `Cargo.lock` stays
 at the repository root. The layout follows
-[`compiler-structure.md`](../compiler-structure.md), with only implemented stages:
+[`compiler-structure.md`](../compiler-structure.md), creating a named file only
+when existing code belongs in it (rule 11: no empty scaffolding):
 
-- `compiler/src/driver/`: commands, sessions, frontend and native orchestration.
-- `source/`, `diagnostic/`, `lexer/`, `parser/`, `ast/`: source and syntax.
-- `resolve/`, `types/`, `hir/`: resolution, types, and typed representation.
-  Type checking, constant evaluation, and big-number arithmetic have separate
-  files under `types/`.
-- `mir/`: control-flow representation and HIR lowering.
-- `codegen/`: LLVM emission.
+- `driver/`: `command.rs`, `session.rs`, plus `check.rs` and `build.rs`, the
+  frontend and native pass orchestration.
+- `source/` (`span.rs`, `source_file.rs`, `source_map.rs`), `diagnostic/`
+  (`diagnostic.rs`, `label.rs`, `renderer.rs`).
+- `lexer/` (`lexer.rs`, `token.rs`, `token_kind.rs`), `parser/` (`parser.rs`,
+  `declaration.rs`, `statement.rs`, `expression.rs`, `type_syntax.rs`), `ast/`
+  (`node.rs`, `decl.rs`, `stmt.rs`, `expr.rs`, `types.rs`).
+- `resolve/` (`resolver.rs`, `scope.rs`, `symbol.rs`, `ids.rs`), `types/`
+  (`type_id.rs`, `ty.rs`, `type_store.rs`, plus `constant.rs` and `bignum.rs`
+  for exact constant evaluation), `hir/` (`expr.rs`, `stmt.rs`, `function.rs`,
+  `lower.rs`).
+- `ownership/` (`checker.rs`, `move_state.rs`), `mir/` (`body.rs`, `block.rs`,
+  `statement.rs`, `terminator.rs`, `operand.rs`, `rvalue.rs`, `lower.rs`, and
+  `error_use.rs`, the MIR error-use check), `dropck/` (`insertion.rs`).
+- `codegen/` (`llvm.rs`, `layout.rs`, `abi.rs`).
 
-Paths after the first bullet are relative to `compiler/src/`. Existing library
-paths such as `zore::check`, `zore::token`, and `zore::typeck` remain available
-through re-exports. Cohesive stage implementations use `mod.rs`; further file
-splits can follow when their responsibilities need them.
+Each stage's `mod.rs` re-exports its own submodules, so stage paths such as
+`zore::ast::Expr` or `zore::hir::ExprKind` do not expose the file split.
+`zore::check` and `zore::build` remain as crate-root shortcuts to the driver.
+The files the structure guide names but that have nothing to hold yet stay
+uncreated: `ownership/{place,projection,borrow,region}.rs` (until stored
+borrows), `dropck/analysis.rs`, `types/{function_type,classify}.rs`,
+`diagnostic/code.rs` (no diagnostic codes yet), `async_lowering/`, and
+`context/`.
+
+Dependencies point only from later stages to earlier ones, with no cycles,
+apart from three deliberate choices. `resolve` depends on `types` because
+binding type names to `TypeId`s is name resolution; `types` no longer depends
+on any later stage. The type checker lives in `hir/lower.rs` rather than
+`types/`, because it builds HIR: placing it in `types/` made `types` and `hir`
+(and `types` and `resolve`) depend on each other. `Package::is_copy` stays in
+`hir/` because Copy/Move classification needs struct fields and `drop`
+methods, which live in the HIR package; `types/classify.rs` would recreate the
+cycle. `Place` and `Projection` stay in `mir/` (the ownership checker reads
+them), since moving them into `ownership/` would make `mir` depend on
+`ownership`.
 
 Integration tests live in repository-level subsystem folders, explicitly
 registered in `compiler/Cargo.toml` with their existing target names. Example
@@ -50,8 +73,7 @@ The authoritative specification stays at `spec/language-spec.md`. The Rust
 runtime in `runtime/src/` separates I/O, panic reporting, and string comparison.
 Its `main.rs` is a native entry shim compiled only when linking a Zore program;
 the Cargo library target enables runtime unit tests without a generated entry.
-Future ownership, drop, async, shared-context, and standard-library modules
-remain uncreated.
+Async, shared-context, and standard-library modules remain uncreated.
 
 | Area | Responsibility | Spec |
 | --- | --- | --- |
@@ -67,9 +89,9 @@ remain uncreated.
 | Code generation | LLVM lowering, object generation, native linking | §2.2, §39.5 |
 | Runtime/library | Allocation, I/O, tasks, scheduler, channels, panic | §36–37 |
 
-M1 stores `Span` with its source manager in `source`; a separate `span` module
-would have no independent work. The library target exposes these APIs to
-integration tests and future stages. Do not stub future modules.
+M1's `source/` keeps `Span`, `FileId`, and `LineColumn` in `span.rs`, separate
+from the file and manager that issue them. The library target exposes these
+APIs to integration tests and future stages. Do not stub future modules.
 
 The lexer (M2) always consumes the whole file and ends with one `Eof` token.
 It inserts semicolons itself (§3.7), marking each as explicit, newline, or EOF,
@@ -110,10 +132,10 @@ declarations (so functions, types, and constants may be referenced before they
 are declared), assigns `StructId`/`FunctionId`/`ConstId`/`LocalId`, and records
 what every name and type name refers to in side tables keyed by the name's
 span. It enforces duplicate, scope-entry, and predeclared-shadowing rules and
-rejects structs that contain themselves by value. `typeck` then checks types
-without re-resolving strings and builds HIR: every expression has a type,
-constant expressions are folded, assignment targets are places (a local plus
-field projections), and locals carry their declaration kind. Typed constant
+rejects structs that contain themselves by value. `hir/lower.rs` then checks
+types without re-resolving strings and builds HIR: every expression has a
+type, constant expressions are folded, assignment targets are places (a local
+plus field and index projections), and locals carry their declaration kind. Typed constant
 overflow, division by zero, and invalid constant shift counts are compile-time
 errors. Return completeness is checked
 conservatively on the AST. HIR is produced only when there are no diagnostics,
@@ -135,23 +157,24 @@ the exact value of their `float32`/`float64` and fold by exact arithmetic
 followed by one rounding, which equals the correctly rounded IEEE result.
 
 The checker accepts a deliberately small, single-file subset: primitive values,
-`error`, structs including Move structs with custom `drop` methods, functions,
-methods, and `println`. MIR ownership analysis checks whole-place moves and
-borrows; error-use analysis checks named `error` bindings and parameters on
-normal control-flow paths. Awaited `?`, `async`/`await`, imports, package variables,
+`error`, structs including Move structs with custom `drop` methods, fixed
+arrays, functions, methods, and `println`. Ownership analysis (`ownership/`)
+checks whole-place and field-level partial moves, reinitialization, and
+call-local borrows over MIR; error-use analysis checks named `error` bindings
+and parameters on normal control-flow paths. Awaited `?`, `async`/`await`, imports, package variables,
 rune conversions, and function values remain unsupported. `println` of a float
 type-checks, but its text format is still TBD (§37.1).
 
 AST preserves written structure; HIR records resolved meaning; MIR describes
 execution. Source identity and spans survive transformations. Use typed IDs for
 semantic entities and place projections for fields/indexes. Ownership data-flow
-must handle branches and eventually partial moves and async state. Track
+handles branches and partial moves, and must eventually handle async state. Track
 recursive borrow provenance independently of Copy/Move classification, including
 exclusive reborrow relationships and input-to-result contracts (§11.7, §12.3).
 Projected moves must respect custom-destructor boundaries (§31.2). Task/channel
 escape checks need independent backing lifetime proofs across error and unwind
-paths (§18.4, §19.4). Partial moves, persistent borrows, and async lifetime
-proofs remain future work.
+paths (§18.4, §19.4). Persistent borrows and async lifetime proofs remain
+future work.
 
 The pass order in §25 is conceptual. The frontend lowers checked HIR to MIR,
 runs ownership and error-use analysis, then returns diagnostics or a package.

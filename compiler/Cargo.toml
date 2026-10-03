@@ -38,5 +38,9 @@ name = "check"
 path = "../tests/typecheck/check.rs"
 
 [[test]]
+name = "ownership"
+path = "../tests/ownership/ownership.rs"
+
+[[test]]
 name = "native"
 path = "../tests/codegen/native.rs"

@@ -3,10 +3,10 @@
 Authority: spec §12.6, with §3.7, §5.6, §7.5–7.6, §11.6–11.7, §12.3–12.5,
 §17.6, and §31.2. Fixed-array typed literals, indexing/bounds-shape checks
 (including static rejection of a provably-out-of-range constant index),
-mutable-place and conservative-aliasing rules for indexed places, and
-rejection of moving an element out through an index have executable parser
-and type-checking coverage in `tests/parser/parser.rs` and
-`tests/typecheck/check.rs`. LLVM codegen is implemented and covered by
+and mutable-place and conservative-aliasing rules for indexed places have
+executable parser and type-checking coverage in `tests/parser/parser.rs` and
+`tests/typecheck/check.rs`; rejection of moving an element out through an
+index is covered in `tests/ownership/ownership.rs`. LLVM codegen is implemented and covered by
 `tests/codegen/native.rs`: array construction, index read/write, runtime
 bounds-check panics (including the unsigned-index wraparound case), and
 element cleanup through a custom `drop` method at scope exit and on index

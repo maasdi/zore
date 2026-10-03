@@ -16,7 +16,10 @@ rather than accepted. Error-value tests cover `nil`, construction, equality,
 explicit discard, ignored-result diagnostics, and path-sensitive checks for named
 error bindings and parameters. Synchronous `?` tests cover typing, early return,
 zero-filled results, evaluation order, and cleanup; awaited propagation remains
-pending. Unit tests in `compiler/src/types/bignum.rs`
+pending. `tests/ownership/ownership.rs` tests the MIR ownership pass through the
+full frontend: whole-place and partial moves, reinitialization, call-local
+borrows, the custom-`drop`-ancestor restriction, and array-element move rules.
+Unit tests in `compiler/src/types/bignum.rs`
 and `compiler/src/types/constant.rs` check
 big-number arithmetic and float rounding against Rust's `i128` and correctly
 rounded `str::parse` as oracles. `tests/codegen/native.rs` builds programs with clang,
@@ -76,12 +79,13 @@ in `statement-boundaries`, `expressions`, `bindings-assignments`,
 `bindings-assignments`, `functions-structs`, `control-flow`, and `keywords` have
 counterparts in `tests/typecheck/check.rs`. Field-level partial moves,
 reinitialization, and the custom-`drop`-ancestor restriction in `ownership`
-have counterparts in both `tests/typecheck/check.rs` and `tests/codegen/native.rs`.
-Fixed-array literal/arity typing, indexing (including static out-of-range
-rejection), mutable-place and conservative-aliasing rules, and index-move
-rejection in `arrays-slices` have parser counterparts in
+have counterparts in both `tests/ownership/ownership.rs` and
+`tests/codegen/native.rs`. Fixed-array literal/arity typing, indexing
+(including static out-of-range rejection), and mutable-place and
+conservative-aliasing rules in `arrays-slices` have parser counterparts in
 `tests/parser/parser.rs` and checker counterparts in
-`tests/typecheck/check.rs`; LLVM codegen (construction, index read/write,
+`tests/typecheck/check.rs`; index-move rejection is in
+`tests/ownership/ownership.rs`; LLVM codegen (construction, index read/write,
 runtime bounds-check panics, and element cleanup) has native counterparts in
 `tests/codegen/native.rs`. Slicing, dynamic `Array<T>`, and mutable-slice
 rows in `arrays-slices` remain pending, as do the remaining ownership,
@@ -91,7 +95,8 @@ Use Rust unit tests for small source/IR utilities and pass algorithms. Use Cargo
 integration tests in subsystem folders under `tests/` for public compiler APIs
 and CLI subprocess behavior. Each target is registered in `compiler/Cargo.toml`
 with its original name (`cli`, `source_diagnostics`, `lexer`, `parser`, `check`,
-and `native`), so commands such as `cargo test --test lexer` still work.
+`ownership`, and `native`), so commands such as `cargo test --test lexer` still
+work.
 Resolve examples from `env!("CARGO_MANIFEST_DIR")` plus `../examples/`, not the
 process working directory. A directory of fixtures alone is not an executable test.
 

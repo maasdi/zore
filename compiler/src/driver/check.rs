@@ -2,11 +2,11 @@
 
 use crate::diagnostic::Diagnostic;
 use crate::hir;
-use crate::mir::{error_use, lower, ownership};
+use crate::mir::{self, error_use};
+use crate::ownership;
 use crate::parser::parse;
 use crate::resolve::resolve;
 use crate::source::SourceFile;
-use crate::types::checker;
 
 #[derive(Debug)]
 pub struct Checked {
@@ -25,9 +25,9 @@ pub fn check_file(file: &SourceFile) -> Checked {
         };
     }
     let resolution = resolve(&parsed.file);
-    let (mut package, mut diagnostics) = checker::check(&parsed.file, resolution, file.text());
+    let (mut package, mut diagnostics) = hir::lower::check(&parsed.file, resolution, file.text());
     if let Some(checked) = &package {
-        let program = lower::lower(checked);
+        let program = mir::lower::lower(checked);
         diagnostics.extend(ownership::check(checked, &program));
         diagnostics.extend(error_use::check(checked, &program));
     }

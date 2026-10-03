@@ -1,8 +1,7 @@
 //! Lexer tests for tokenization, literals, comments, and recovery.
 
-use zore::lexer::{Lexed, lex};
+use zore::lexer::{IntBase, Keyword, Lexed, Punct, ReservedWord, Separator, TokenKind, lex};
 use zore::source::SourceMap;
-use zore::token::{IntBase, Keyword, Punct, ReservedWord, Separator, TokenKind};
 
 struct Case {
     sources: SourceMap,

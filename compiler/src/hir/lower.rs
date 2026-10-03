@@ -1,4 +1,4 @@
-//! Type checking of resolved syntax into typed HIR.
+//! Lowering from resolved syntax to typed HIR, type-checking along the way.
 
 use std::collections::HashMap;
 
@@ -6,8 +6,8 @@ use crate::ast::{
     self, AssignOp, AssignTarget, BinaryOp, BindingKind, BindingTarget, ForHeader, UnaryOp,
 };
 use crate::diagnostic::{Diagnostic, Severity};
-use crate::hir::{self, Const, ExprKind, FieldId, FunctionId, LocalId, LocalKind};
-use crate::resolve::{ConstId, Res, Resolution};
+use crate::hir::{self, Const, ExprKind};
+use crate::resolve::{ConstId, FieldId, FunctionId, LocalId, LocalKind, Res, Resolution};
 use crate::source::Span;
 use crate::types::bignum::BigInt;
 use crate::types::constant::{self, ConstError, Folded, Unrepresentable, Untyped};
