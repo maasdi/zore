@@ -859,10 +859,6 @@ fn unsupported_backend_features_are_diagnosed() {
             "println(1.5)",
             "printing floating-point values is not supported",
         ),
-        (
-            "let data = [int; 2]{1, 2}\nlet view = data[:]\nprintln(view[0])",
-            "borrowed slices are not supported by the native backend yet",
-        ),
     ] {
         let mut sources = SourceMap::new();
         let id = sources.add("test.ore", main_body(stmts)).unwrap();
@@ -902,6 +898,141 @@ func main() {
 }
 ",
         "6\n16\n15\n16\ngrid\n12\n",
+    );
+}
+
+/// Prints the first `count` elements of a view, one per line.
+const SHOW: &str = "func show(items []int, count int) {
+    for var i = 0; i < count; i += 1 {
+        println(items[i])
+    }
+}";
+
+/// `SHOW` and other declarations, then `stmts` as `main`'s body.
+fn slice_main(decls: &str, stmts: &str) -> String {
+    format!("package main\n\n{SHOW}\n{decls}\n\nfunc main() {{\n{stmts}\n}}\n")
+}
+
+#[test]
+fn slices_view_the_requested_range() {
+    prints(
+        &slice_main(
+            "",
+            "let data = [int; 4]{10, 20, 30, 40}
+            show(data[1:3], 2)
+            show(data[:2], 2)
+            show(data[2:], 2)
+            show(data[:], 4)
+            show(data[4:4], 0)
+            show(data[0:0], 0)
+            println(data[1:][0])",
+        ),
+        "20\n30\n10\n20\n30\n40\n10\n20\n30\n40\n20\n",
+    );
+}
+
+#[test]
+fn writes_through_mutable_views_reach_the_backing_array() {
+    prints(
+        &slice_main(
+            "func edit(items mut []int) { items[0] = items[0] * 10\nitems[1] += 1 }",
+            "var data = [int; 3]{1, 2, 3}
+            edit(data[:])
+            var part mut []int = data[1:]
+            edit(part)
+            show(data[:], 3)",
+        ),
+        "10\n30\n4\n",
+    );
+}
+
+#[test]
+fn views_flow_through_calls_structs_and_subslices() {
+    prints(
+        &slice_main(
+            "type View struct { Items []int\n Count int }
+            func sum(items []int, count int) int {
+                var total = 0
+                for var i = 0; i < count; i += 1 { total += items[i] }
+                return total
+            }
+            func rest(items []int) []int { return items[1:] }
+            func window(a [int; 4]) []int { return a[1:3] }
+            func middle(a mut [int; 4]) mut []int { return a[1:3] }
+            func wrap(items []int, count int) View { return View{Items: items, Count: count} }",
+            "var data = [int; 4]{1, 2, 3, 4}
+            println(sum(data[:], 4))
+            let r = rest(rest(data[:]))
+            println(r[0])
+            let w = window(data)
+            println(w[1])
+            let v = wrap(data[2:], 2)
+            println(sum(v.Items, v.Count))
+            var m mut []int = middle(data)
+            m[0] = 7
+            println(data[1])
+            var s []int = data[:]
+            s = s[3:]
+            println(s[0])",
+        ),
+        "10\n3\n3\n7\n7\n4\n",
+    );
+}
+
+#[test]
+fn replacing_a_move_element_through_a_view_drops_the_old_one() {
+    prints(
+        "package main
+type Res struct { id int }
+func (r mut Res) drop() { println(r.id) }
+func replace(rs mut []Res) { rs[0] = Res{id: 9} }
+func id(r Res) int { return r.id }
+func first(rs []Res) int { return id(rs[0]) }
+func main() {
+    var rs = [Res; 2]{Res{id: 1}, Res{id: 2}}
+    replace(rs[:])
+    println(first(rs[:]))
+}
+",
+        "1\n9\n2\n9\n",
+    );
+}
+
+#[test]
+fn invalid_runtime_slice_bounds_panic() {
+    for (setup, expr) in [
+        ("var hi = 4", "data[1:hi]"),
+        ("var lo = 2\nvar hi = 1", "data[lo:hi]"),
+        ("var lo = -1", "data[lo:]"),
+        ("var hi uint64 = 18446744073709551615", "data[:hi]"),
+        ("var lo = 3", "data[1:][lo:]"),
+    ] {
+        panics(
+            &slice_main(
+                "",
+                &format!("let data = [int; 3]{{1, 2, 3}}\n{setup}\nprintln(1)\nshow({expr}, 0)"),
+            ),
+            "slice bounds out of range",
+            "1\n",
+        );
+    }
+}
+
+#[test]
+fn indexing_past_a_view_panics() {
+    panics(
+        &slice_main("", "let data = [int; 3]{1, 2, 3}\nshow(data[1:], 3)"),
+        "index out of range",
+        "2\n3\n",
+    );
+    panics(
+        &slice_main(
+            "func fail() error { return error(\"failed\") }
+            func view(items []int) ([]int, error) { fail()?\nreturn items, nil }",
+            "let data = [int; 1]{1}\nlet s, _ = view(data[:])\nprintln(s[0])",
+        ),
+        "index out of range",
+        "",
     );
 }
 

@@ -12,7 +12,7 @@ construction, index read/write, runtime bounds-check panics (including the
 unsigned-index wraparound case), and element cleanup through a custom `drop`
 method at scope exit and on index replacement.
 
-Borrowed slices are checked but not yet compiled natively. Slice types,
+Borrowed slices are implemented end to end. Slice types,
 `base[low:high]` with omitted bounds, rejection of a third bound and of slice
 literals, contextual shared/exclusive typing, mutable-source requirements,
 no implicit array-to-slice conversion, static rejection of provably invalid
@@ -20,8 +20,12 @@ bounds, element mutability through shared versus mutable views, and the
 region rows (disjoint mutable views, reborrow suspension, last-use release,
 views outliving a local or temporary owner, and invalidating a live view's
 owner) are covered in `tests/parser/parser.rs`, `tests/typecheck/check.rs`, and
-`tests/ownership/ownership.rs`. Runtime slicing and slice bounds panics,
-dynamic `Array<T>`, the constant-index move-extraction carve-out of §31.2, and
+`tests/ownership/ownership.rs`. `tests/codegen/native.rs` covers range forms
+and empty views, writes through mutable views reaching the backing array,
+views flowing through calls, structs, and subslices, Move-element replacement
+through a view, and runtime "slice bounds out of range" and "index out of
+range" panics (including negative signed, maximum `uint64`, and zero-slice
+cases). Dynamic `Array<T>`, the constant-index move-extraction carve-out of §31.2, and
 rows involving `await`, tasks, or channels remain pending.
 
 ## Typed literals

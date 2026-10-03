@@ -113,19 +113,6 @@ impl Module<'_> {
     }
 
     pub(super) fn function(&mut self, body: &mir::Body) -> String {
-        if body
-            .locals
-            .iter()
-            .any(|local| self.package.contains_view(local.ty))
-        {
-            let span = self.package.function(body.function).span;
-            self.unsupported(
-                "borrowed slices are",
-                span,
-                "native slice code generation lands in the next M20–M21 stage",
-            );
-            return String::new();
-        }
         let mut f = FunctionBuilder {
             module: self,
             body,
@@ -257,6 +244,9 @@ impl FunctionBuilder<'_, '_> {
         self.out.push_str("}\n\n");
     }
 
+    /// The address of `place`. Fields and array elements fold into one
+    /// `getelementptr`; indexing a slice loads its descriptor's data pointer
+    /// and continues from the element it designates.
     pub(super) fn address(&mut self, place: &Place) -> String {
         let mut base = format!("%l{}", place.local.0);
         if self.body.locals[place.local.0 as usize].by_reference {
@@ -264,25 +254,133 @@ impl FunctionBuilder<'_, '_> {
             self.line(format!("{referent} = load ptr, ptr {base}"));
             base = referent;
         }
-        if place.projections.is_empty() {
-            return base;
-        }
-        let ty = self.ty(self.local_ty(place.local));
+        let mut ty = self.local_ty(place.local);
+        let mut gep_root = ty;
         let mut indices = String::new();
         for projection in &place.projections {
             match projection {
                 mir::Projection::Field(f) => write!(indices, ", i32 {}", f.0).unwrap(),
                 mir::Projection::Index(operand) => {
                     let value = self.value(operand);
-                    write!(indices, ", i64 {value}").unwrap();
+                    if let TypeKind::Slice { element, .. } = self.module.package.types.kind(ty) {
+                        base = self.element_pointer(&base, gep_root, &mut indices);
+                        let data = self.slice_data(&base);
+                        let element_address = self.fresh();
+                        self.line(format!(
+                            "{element_address} = getelementptr inbounds {}, ptr {data}, i64 {value}",
+                            self.ty(element)
+                        ));
+                        base = element_address;
+                        gep_root = element;
+                    } else {
+                        write!(indices, ", i64 {value}").unwrap();
+                    }
                 }
             }
+            ty = mir::projection_type(self.module.package, ty, projection);
+        }
+        self.element_pointer(&base, gep_root, &mut indices)
+    }
+
+    /// Applies the pending `indices` to `base` (of type `root`), if any.
+    fn element_pointer(&mut self, base: &str, root: TypeId, indices: &mut String) -> String {
+        if indices.is_empty() {
+            return base.to_string();
         }
         let name = self.fresh();
         self.line(format!(
-            "{name} = getelementptr inbounds {ty}, ptr {base}, i32 0{indices}"
+            "{name} = getelementptr inbounds {}, ptr {base}, i32 0{indices}",
+            self.ty(root)
         ));
+        indices.clear();
         name
+    }
+
+    /// Loads the data pointer of the slice descriptor stored at `address`.
+    fn slice_data(&mut self, address: &str) -> String {
+        let descriptor = self.fresh();
+        self.line(format!("{descriptor} = load {{ ptr, i64 }}, ptr {address}"));
+        let data = self.fresh();
+        self.line(format!(
+            "{data} = extractvalue {{ ptr, i64 }} {descriptor}, 0"
+        ));
+        data
+    }
+
+    /// The `int64` length of the slice descriptor at `place`.
+    fn slice_length(&mut self, place: &Place) -> String {
+        let address = self.address(place);
+        let descriptor = self.fresh();
+        self.line(format!("{descriptor} = load {{ ptr, i64 }}, ptr {address}"));
+        let length = self.fresh();
+        self.line(format!(
+            "{length} = extractvalue {{ ptr, i64 }} {descriptor}, 1"
+        ));
+        length
+    }
+
+    /// A view of `place` from `low` up to `high`, panicking unless
+    /// `0 <= low <= high <= length` (§12.6). Bounds are widened per their own
+    /// signedness, so unsigned comparisons also catch negative signed bounds.
+    fn slice(
+        &mut self,
+        place: &Place,
+        low: Option<&Operand>,
+        high: Option<&Operand>,
+        span: Span,
+    ) -> String {
+        let base_ty = self.place_ty(place);
+        let (element, data, length) = match self.module.package.types.kind(base_ty) {
+            TypeKind::Array { element, size } => {
+                let array = self.address(place);
+                let first = self.fresh();
+                self.line(format!(
+                    "{first} = getelementptr inbounds {}, ptr {array}, i64 0, i64 0",
+                    self.ty(base_ty)
+                ));
+                (element, first, size.to_string())
+            }
+            TypeKind::Slice { element, .. } => {
+                let address = self.address(place);
+                let descriptor = self.fresh();
+                self.line(format!("{descriptor} = load {{ ptr, i64 }}, ptr {address}"));
+                let data = self.fresh();
+                self.line(format!(
+                    "{data} = extractvalue {{ ptr, i64 }} {descriptor}, 0"
+                ));
+                let length = self.fresh();
+                self.line(format!(
+                    "{length} = extractvalue {{ ptr, i64 }} {descriptor}, 1"
+                ));
+                (element, data, length)
+            }
+            _ => unreachable!("only arrays and slices can be sliced"),
+        };
+        let low = low.map_or_else(|| "0".to_string(), |low| self.widen_to_i64(low));
+        let high = high.map_or_else(|| length.clone(), |high| self.widen_to_i64(high));
+        let high_past_end = self.fresh();
+        self.line(format!("{high_past_end} = icmp ugt i64 {high}, {length}"));
+        let reversed = self.fresh();
+        self.line(format!("{reversed} = icmp ugt i64 {low}, {high}"));
+        let invalid = self.fresh();
+        self.line(format!("{invalid} = or i1 {high_past_end}, {reversed}"));
+        self.panic_if(&invalid, "slice bounds out of range", span);
+        let start = self.fresh();
+        self.line(format!(
+            "{start} = getelementptr inbounds {}, ptr {data}, i64 {low}",
+            self.ty(element)
+        ));
+        let count = self.fresh();
+        self.line(format!("{count} = sub i64 {high}, {low}"));
+        let with_data = self.fresh();
+        self.line(format!(
+            "{with_data} = insertvalue {{ ptr, i64 }} undef, ptr {start}, 0"
+        ));
+        let view = self.fresh();
+        self.line(format!(
+            "{view} = insertvalue {{ ptr, i64 }} {with_data}, i64 {count}, 1"
+        ));
+        view
     }
 
     pub(super) fn flag_address(&mut self, place: &Place) -> String {
@@ -295,7 +393,7 @@ impl FunctionBuilder<'_, '_> {
         }
         for projection in &place.projections {
             let mir::Projection::Field(field) = projection else {
-                unreachable!("array codegen is rejected by the upfront array-support guard")
+                unreachable!("indexed places use scratch flags, not persistent ones")
             };
             let id = self
                 .module
@@ -488,9 +586,10 @@ impl FunctionBuilder<'_, '_> {
             Rvalue::Convert(operand, to) => self.convert(operand, *to, span),
             Rvalue::Error(operand) => self.error_value(operand),
             Rvalue::BoundsCheck(index, length) => self.bounds_check(index, length, span),
-            Rvalue::Length(_) | Rvalue::Slice { .. } => {
-                unreachable!("functions using slices are rejected before code generation")
-            }
+            Rvalue::Length(place) => self.slice_length(place),
+            Rvalue::Slice {
+                place, low, high, ..
+            } => self.slice(place, low.as_ref(), high.as_ref(), span),
             Rvalue::Aggregate(_, operands) => {
                 let ty = self.ty(result_ty);
                 let mut current = "undef".to_string();

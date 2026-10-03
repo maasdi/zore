@@ -34,9 +34,9 @@ is guidance, not a language contract.
 | M3–M4 — subset implemented; validation pending | AST and parser together for package/functions/structs/bindings/calls; test shape, spans, recovery, and rejection. Resolve relevant grammar questions first. |
 | M5–M8 — subset implemented; validation pending | Hello program, variables, functions, structs. Establish the minimal native backend and builtin output support needed to run examples. Use resolution/type work below as prerequisites where needed. |
 | M9–M12 — subset implemented; validation pending | Name resolution, types, HIR, MIR/CFG; semantic IDs, typed calls/fields, explicit control flow, frontend-only checking. |
-| M13–M17 — partial | Copy/Move classification, mutable borrowing, whole-place move analysis, field-level partial moves (with reinitialization and the custom-`drop`-ancestor restriction), and stored borrows with region analysis exist in CLI checking. Region analysis tracks slice loans per local, frees them at the holder's last use (backward liveness), checks exclusivity at the originating place, suspends sources during mutable reborrows, rejects views that outlive a local or temporary owner, and infers return-borrow contracts by fixpoint. Remaining, each diagnosed as unsupported: `mut []T` nested inside a composite, storing a view through a slice element or by-reference parameter (output provenance), destructors that could observe a contained view, and every async/closure/task interaction. Complete the §42 semantic target with paired acceptance/rejection tests. |
+| M13–M17 — partial | Copy/Move classification, mutable borrowing, whole-place move analysis, field-level partial moves (with reinitialization and the custom-`drop`-ancestor restriction), and stored borrows with region analysis exist in CLI checking and builds. Region analysis tracks slice loans per local, frees them at the holder's last use (backward liveness), checks exclusivity at the originating place, suspends sources during mutable reborrows, rejects views that outlive a local or temporary owner, and infers return-borrow contracts by fixpoint. Remaining, each diagnosed as unsupported: `mut []T` nested inside a composite, storing a view through a slice element or by-reference parameter (output provenance), destructors that could observe a contained view, and every async/closure/task interaction. Complete the §42 semantic target with paired acceptance/rejection tests. |
 | M18–M19 — synchronous subset implemented; validation pending | Drop insertion and panic cleanup cover the synchronous subset. The concrete Copy `error` type, `nil` in an error context, `error(message)`, content equality, explicit discards, rejection of silently ignored error results, and path-sensitive checks for named errors are implemented. Synchronous `?` propagates call errors, zero-fills other return values, and runs cleanup. Awaited propagation remains for M25–M29. |
-| M20–M23 — partial | Fixed-array types, typed literals, and indexing (read, mutable-place write/replacement, conservative-aliasing, and rejection of moving an element out through an index) are implemented end to end: `zore check`, and now `zore build`/`zore run` — LLVM `[N x T]` type emission, GEP-based indexed addressing, runtime bounds-check panics, and element cleanup without per-element drop flags (sound because element extraction stays rejected). Borrowed slices (`[]T`, `mut []T`, `base[low:high]`, contextual exclusive views, indexing and element writes through views) are implemented in `zore check`; their native code generation is diagnosed as unsupported until the next stage. Dynamic `Array<T>`, owned arrays' full M21 scope, maps, and packages/imports remain; validate ownership and package visibility. |
+| M20–M23 — partial | Fixed-array types, typed literals, and indexing (read, mutable-place write/replacement, conservative-aliasing, and rejection of moving an element out through an index) are implemented end to end: `zore check`, and now `zore build`/`zore run` — LLVM `[N x T]` type emission, GEP-based indexed addressing, runtime bounds-check panics, and element cleanup without per-element drop flags (sound because element extraction stays rejected). Borrowed slices (`[]T`, `mut []T`, `base[low:high]`, contextual exclusive views, indexing and element writes through views) are implemented end to end: `zore check` with region analysis, and `zore build`/`zore run` with `{ ptr, i64 }` descriptors, slice-aware addressing, and runtime "slice bounds out of range" panics. Dynamic `Array<T>`, owned arrays' full M21 scope, maps, and packages/imports remain; validate ownership and package visibility. |
 | M24 | Closures with capture analysis; reject captures that cannot remain valid. |
 | M25–M29 | Task model, `go`, async states, `await`, scheduler; test lifetime proof, suspension, completion, error results, and detach behavior. |
 | M30–M31 | Channels and async I/O; test copying handles, message ownership, buffering, close/drain, and panic on closed send. |
@@ -81,7 +81,11 @@ Backward liveness frees a loan at its holder's last use, so a backing owner
 is usable again afterwards. Shared parameters whose type contains a fixed
 array are now passed by reference, so a callee can return a view of the
 caller's array; a later argument that mutates an earlier by-reference
-argument is rejected. Native slice code generation is the next stage.
+argument is rejected. Native code generation represents a view as a
+`{ ptr, i64 }` descriptor; indexing a slice loads its data pointer mid-path,
+and slicing checks `0 <= low <= high <= length` with unsigned comparisons
+after widening each bound per its own signedness, so negative signed and huge
+unsigned bounds both panic.
 
 The first M18–M19 slices reject non-final and repeated `error` results, then
 support explicit error values, returns, comparisons, and discards. Named local
@@ -2020,10 +2024,9 @@ propagation (M19). Fixed-array types, literals, and indexing (M20) are now
 implemented end to end, including LLVM codegen (array type emission,
 GEP-based indexed addressing, runtime bounds-check panics, and element
 cleanup without per-element drop flags — see above). Borrowed slices and
-the region analysis they require are implemented in checking (see above);
-their native code generation is in progress.
+the region analysis they require are implemented end to end (see above).
 
-After slice code generation, the next concrete options are: (a) dynamic
+The next concrete options are: (a) dynamic
 `Array<T>` (the rest of M20–M21); (b) closures (M24); or (c) lifting the
 region-analysis restrictions (nested `mut []T`, output provenance through
 parameters, destructor-observed views). Do not accept a

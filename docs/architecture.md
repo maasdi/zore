@@ -2,7 +2,7 @@
 
 Status: The compiler supports a synchronous subset through parts of M18–M20,
 including Move structs, deterministic drops, concrete error values, fixed
-arrays, and (in checking) borrowed slices with region analysis. Paths below are relative to `compiler/src/`. `main.rs` delegates to
+arrays, and borrowed slices with region analysis. Paths below are relative to `compiler/src/`. `main.rs` delegates to
 `driver`; `driver/command.rs` and `driver/session.rs` handle CLI arguments and
 exit status; `driver/check.rs` orchestrates the frontend pipeline and
 `driver/build.rs` the native one. `source/` stores UTF-8 text under stable
