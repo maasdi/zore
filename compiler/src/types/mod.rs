@@ -4,6 +4,7 @@ pub mod bignum;
 pub mod checker;
 pub mod constant;
 
+use std::collections::HashMap;
 use std::fmt;
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -76,6 +77,7 @@ pub enum TypeKind {
     String,
     Error,
     Struct(StructId),
+    Array { element: TypeId, size: u32 },
 }
 
 /// Type identities; aliases such as `int` and `int64` share one identity.
@@ -84,6 +86,7 @@ pub struct TypeStore {
     kinds: Vec<TypeKind>,
     struct_names: Vec<String>,
     struct_types: Vec<TypeId>,
+    array_types: HashMap<(TypeId, u32), TypeId>,
 }
 
 impl Default for TypeStore {
@@ -124,6 +127,7 @@ impl TypeStore {
             kinds,
             struct_names: Vec::new(),
             struct_types: Vec::new(),
+            array_types: HashMap::new(),
         }
     }
 
@@ -138,6 +142,17 @@ impl TypeStore {
 
     pub fn struct_type(&self, id: StructId) -> TypeId {
         self.struct_types[id.0 as usize]
+    }
+
+    /// Interns `[element; size]`, so the same shape always shares one `TypeId`.
+    pub fn array_type(&mut self, element: TypeId, size: u32) -> TypeId {
+        if let Some(&ty) = self.array_types.get(&(element, size)) {
+            return ty;
+        }
+        let ty = TypeId(self.kinds.len() as u32);
+        self.kinds.push(TypeKind::Array { element, size });
+        self.array_types.insert((element, size), ty);
+        ty
     }
 
     pub fn kind(&self, ty: TypeId) -> TypeKind {
@@ -212,6 +227,9 @@ impl fmt::Display for TypeName<'_> {
             }
             TypeKind::Float(FloatType { bits }) => write!(f, "float{bits}"),
             TypeKind::Struct(id) => f.write_str(&self.store.struct_names[id.0 as usize]),
+            TypeKind::Array { element, size } => {
+                write!(f, "[{}; {size}]", self.store.display(element))
+            }
         }
     }
 }

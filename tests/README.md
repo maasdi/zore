@@ -74,8 +74,18 @@ in `statement-boundaries`, `expressions`, `bindings-assignments`,
 `tests/parser/parser.rs`. Resolution and typing rows for the checker subset in
 `entry-point`, `println`, `numerics`, `constant-expressions`,
 `bindings-assignments`, `functions-structs`, `control-flow`, and `keywords` have
-counterparts in `tests/typecheck/check.rs`. Ownership, runtime, and native rows remain
-pending.
+counterparts in `tests/typecheck/check.rs`. Field-level partial moves,
+reinitialization, and the custom-`drop`-ancestor restriction in `ownership`
+have counterparts in both `tests/typecheck/check.rs` and `tests/codegen/native.rs`.
+Fixed-array literal/arity typing, indexing (including static out-of-range
+rejection), mutable-place and conservative-aliasing rules, and index-move
+rejection in `arrays-slices` have parser counterparts in
+`tests/parser/parser.rs` and checker counterparts in
+`tests/typecheck/check.rs`; LLVM codegen (construction, index read/write,
+runtime bounds-check panics, and element cleanup) has native counterparts in
+`tests/codegen/native.rs`. Slicing, dynamic `Array<T>`, and mutable-slice
+rows in `arrays-slices` remain pending, as do the remaining ownership,
+runtime, and native rows elsewhere.
 
 Use Rust unit tests for small source/IR utilities and pass algorithms. Use Cargo
 integration tests in subsystem folders under `tests/` for public compiler APIs

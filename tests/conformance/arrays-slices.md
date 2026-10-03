@@ -1,8 +1,20 @@
 # Arrays, indexing, and slicing conformance cases
 
 Authority: spec §12.6, with §3.7, §5.6, §7.5–7.6, §11.6–11.7, §12.3–12.5,
-§17.6, and §31.2. These are pending parser, typing, ownership, lowering, and
-runtime cases. They are not executable tests or passing coverage.
+§17.6, and §31.2. Fixed-array typed literals, indexing/bounds-shape checks
+(including static rejection of a provably-out-of-range constant index),
+mutable-place and conservative-aliasing rules for indexed places, and
+rejection of moving an element out through an index have executable parser
+and type-checking coverage in `tests/parser/parser.rs` and
+`tests/typecheck/check.rs`. LLVM codegen is implemented and covered by
+`tests/codegen/native.rs`: array construction, index read/write, runtime
+bounds-check panics (including the unsigned-index wraparound case), and
+element cleanup through a custom `drop` method at scope exit and on index
+replacement. Dynamic `Array<T>`, borrowed slices, slicing, and the
+constant-index move-extraction carve-out of §31.2 remain pending. Remaining
+rows below — slicing, dynamic arrays, mutable slice contextual typing, and
+region/liveness behavior — are still pending parser, typing, ownership,
+lowering, and runtime cases, not executable tests.
 
 ## Typed literals
 

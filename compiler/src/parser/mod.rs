@@ -435,17 +435,36 @@ impl Parser<'_> {
                 if self.at(Punct::Dot) && *self.peek_at(1) == TokenKind::Ident {
                     return Err(self.unsupported("package-qualified type names", "M23"));
                 }
-                Ok(Type { name })
+                Ok(Type::Named(name))
             }
-            TokenKind::Punct(Punct::LBracket) => {
-                Err(self.unsupported("array and slice types", "M20–M21"))
-            }
+            TokenKind::Punct(Punct::LBracket) => self.array_type(),
             TokenKind::Keyword(Keyword::Map) => Err(self.unsupported("map types", "M22")),
             TokenKind::Keyword(Keyword::Channel) => Err(self.unsupported("channel types", "M30")),
             TokenKind::Keyword(Keyword::Func) => Err(self.unsupported("function types", "M24")),
             TokenKind::Keyword(Keyword::Mut) => Err(self.unsupported("`mut` slice types", "M21")),
             _ => Err(self.unexpected("a type")),
         }
+    }
+
+    /// `[element; size]`; slice types (`[]T`) stay unsupported.
+    fn array_type(&mut self) -> PResult<Type> {
+        let start = self.current_span();
+        self.bump();
+        if self.at(Punct::RBracket) {
+            return Err(self.unsupported("slice types", "M20–M21"));
+        }
+        let element = self.ty()?;
+        if !matches!(self.peek(), TokenKind::Semicolon(Separator::Explicit)) {
+            return Err(self.unexpected("`;`"));
+        }
+        self.bump();
+        let size = self.with_struct_literals(true, Self::expr)?;
+        self.expect(Punct::RBracket)?;
+        Ok(Type::Array {
+            element: Box::new(element),
+            size: Box::new(size),
+            span: self.span_from(start),
+        })
     }
 
     fn struct_decl(&mut self) -> PResult<StructDecl> {
@@ -728,7 +747,10 @@ impl Parser<'_> {
         let op_span = self.bump().span;
         for target in &targets {
             if let AssignTarget::Place(expr) = target
-                && !matches!(expr.kind, ExprKind::Name(_) | ExprKind::Field { .. })
+                && !matches!(
+                    expr.kind,
+                    ExprKind::Name(_) | ExprKind::Field { .. } | ExprKind::Index { .. }
+                )
             {
                 return Err(self.error("invalid assignment target", expr.span));
             }
@@ -1025,7 +1047,19 @@ impl Parser<'_> {
                     },
                 };
             } else if self.at(Punct::LBracket) {
-                return Err(self.unsupported("indexing and slicing expressions", "M20–M21"));
+                self.bump();
+                let index = self.with_struct_literals(true, Self::expr)?;
+                if self.at(Punct::Colon) {
+                    return Err(self.unsupported("slicing expressions", "M20–M21"));
+                }
+                self.expect(Punct::RBracket)?;
+                expr = Expr {
+                    span: self.span_from(expr.span),
+                    kind: ExprKind::Index {
+                        base: Box::new(expr),
+                        index: Box::new(index),
+                    },
+                };
             } else {
                 return Ok(expr);
             }
@@ -1071,8 +1105,11 @@ impl Parser<'_> {
             TokenKind::Keyword(Keyword::Go) => {
                 return Err(self.unsupported("`go` task-creation expressions", "M25–M29"));
             }
-            TokenKind::Keyword(Keyword::Map) | TokenKind::Punct(Punct::LBracket) => {
-                return Err(self.unsupported("array and map literals", "M20–M22"));
+            TokenKind::Keyword(Keyword::Map) => {
+                return Err(self.unsupported("map literals", "M22"));
+            }
+            TokenKind::Punct(Punct::LBracket) => {
+                return self.array_literal();
             }
             TokenKind::Keyword(Keyword::Channel) => {
                 return Err(self.unsupported("channel expressions", "M30"));
@@ -1098,6 +1135,20 @@ impl Parser<'_> {
         Ok(Expr {
             span: self.span_from(ty.span),
             kind: ExprKind::StructLit { ty, fields },
+        })
+    }
+
+    /// `[element; size]{e1, e2, ...}`.
+    fn array_literal(&mut self) -> PResult<Expr> {
+        let span = self.current_span();
+        let ty = self.array_type()?;
+        self.expect(Punct::LBrace)?;
+        let elements = self.with_struct_literals(true, |p| {
+            p.comma_list(Punct::RBrace, "element", true, Self::expr)
+        })?;
+        Ok(Expr {
+            span: self.span_from(span),
+            kind: ExprKind::ArrayLit { ty, elements },
         })
     }
 

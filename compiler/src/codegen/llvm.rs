@@ -14,7 +14,7 @@ use crate::diagnostic::{Diagnostic, Severity};
 use crate::hir::{self, Const};
 use crate::mir::{self, Callee, Local, Operand, Place, Rvalue, Terminator};
 use crate::source::{SourceFile, Span};
-use crate::types::{IntType, TypeId, TypeKind};
+use crate::types::{IntType, TypeId, TypeKind, TypeStore};
 
 pub fn emit(
     package: &hir::Package,
@@ -136,6 +136,7 @@ impl Module<'_> {
                     self.package.strukt(id).name
                 )
             }
+            TypeKind::Array { element, size } => format!("[{size} x {}]", self.ty(element)),
         }
     }
 
@@ -256,9 +257,17 @@ impl FunctionBuilder<'_, '_> {
     fn place_ty(&self, place: &Place) -> TypeId {
         let package = self.module.package;
         let mut ty = self.local_ty(place.local);
-        for field in &place.fields {
-            let id = package.types.struct_id(ty).expect("struct projection");
-            ty = package.strukt(id).fields[field.0 as usize].ty;
+        for projection in &place.projections {
+            ty = match projection {
+                mir::Projection::Field(field) => {
+                    let id = package.types.struct_id(ty).expect("struct projection");
+                    package.strukt(id).fields[field.0 as usize].ty
+                }
+                mir::Projection::Index(_) => match package.types.kind(ty) {
+                    TypeKind::Array { element, .. } => element,
+                    _ => unreachable!("index projection on a non-array"),
+                },
+            };
         }
         ty
     }
@@ -341,15 +350,20 @@ impl FunctionBuilder<'_, '_> {
             self.line(format!("{referent} = load ptr, ptr {base}"));
             base = referent;
         }
-        if place.fields.is_empty() {
+        if place.projections.is_empty() {
             return base;
         }
         let ty = self.ty(self.local_ty(place.local));
-        let indices: String = place
-            .fields
-            .iter()
-            .map(|f| format!(", i32 {}", f.0))
-            .collect();
+        let mut indices = String::new();
+        for projection in &place.projections {
+            match projection {
+                mir::Projection::Field(f) => write!(indices, ", i32 {}", f.0).unwrap(),
+                mir::Projection::Index(operand) => {
+                    let value = self.value(operand);
+                    write!(indices, ", i64 {value}").unwrap();
+                }
+            }
+        }
         let name = self.fresh();
         self.line(format!(
             "{name} = getelementptr inbounds {ty}, ptr {base}, i32 0{indices}"
@@ -365,7 +379,10 @@ impl FunctionBuilder<'_, '_> {
             self.line(format!("{loaded} = load ptr, ptr {address}"));
             address = loaded;
         }
-        for field in &place.fields {
+        for projection in &place.projections {
+            let mir::Projection::Field(field) = projection else {
+                unreachable!("array codegen is rejected by the upfront array-support guard")
+            };
             let id = self
                 .module
                 .package
@@ -387,15 +404,22 @@ impl FunctionBuilder<'_, '_> {
     fn root_flag_address(&mut self, place: &Place) -> String {
         let address = self.flag_address(place);
         let ty = self.place_ty(place);
+        self.root_flag_address_from(&address, ty)
+    }
+
+    /// The root liveness-flag address within an already-computed `flags`
+    /// block of type `flag_ty(ty)` (a real persistent one from
+    /// `flag_address`, or a transient one from `scratch_flags`).
+    fn root_flag_address_from(&mut self, flags: &str, ty: TypeId) -> String {
         if matches!(self.module.package.types.kind(ty), TypeKind::Struct(_)) {
             let root = self.fresh();
             self.line(format!(
-                "{root} = getelementptr inbounds {}, ptr {address}, i32 0, i32 0",
+                "{root} = getelementptr inbounds {}, ptr {flags}, i32 0, i32 0",
                 self.module.flag_ty(ty)
             ));
             root
         } else {
-            address
+            flags.to_string()
         }
     }
 
@@ -412,12 +436,24 @@ impl FunctionBuilder<'_, '_> {
         if self.module.package.is_copy(ty) {
             return;
         }
+        if place
+            .projections
+            .iter()
+            .any(|p| matches!(p, mir::Projection::Index(_)))
+        {
+            // Array elements have no independent liveness flag (§31.2): the
+            // array's own single flag already covers them, and there is no
+            // per-element storage to address.
+            return;
+        }
         self.set_root_flag(place, value);
         if let TypeKind::Struct(id) = self.module.package.types.kind(ty) {
             let count = self.module.package.strukt(id).fields.len();
             for index in 0..count {
                 let mut child = place.clone();
-                child.fields.push(hir::FieldId(index as u32));
+                child
+                    .projections
+                    .push(mir::Projection::Field(hir::FieldId(index as u32)));
                 self.set_flags(&child, value);
             }
         }
@@ -478,6 +514,40 @@ impl FunctionBuilder<'_, '_> {
         self.out.push_str(&format!("{ok}:\n"));
     }
 
+    /// Widens `operand` to `int64` per its own signedness, panics if it
+    /// falls outside `[0, length)`, and evaluates to the widened value.
+    fn bounds_check(&mut self, operand: &Operand, length: u32, span: Span) -> String {
+        let int = self
+            .module
+            .package
+            .types
+            .int(self.operand_ty(operand))
+            .expect("array index is an integer");
+        let value = self.value(operand);
+        let wide = if int.bits == 64 {
+            value
+        } else {
+            let name = self.fresh();
+            let extend = if int.signed { "sext" } else { "zext" };
+            self.line(format!("{name} = {extend} i{} {value} to i64", int.bits));
+            name
+        };
+        let high = self.fresh();
+        let predicate = if int.signed { "sge" } else { "uge" };
+        self.line(format!("{high} = icmp {predicate} i64 {wide}, {length}"));
+        let condition = if int.signed {
+            let low = self.fresh();
+            self.line(format!("{low} = icmp slt i64 {wide}, 0"));
+            let both = self.fresh();
+            self.line(format!("{both} = or i1 {low}, {high}"));
+            both
+        } else {
+            high
+        };
+        self.panic_if(&condition, "index out of range", span);
+        wide
+    }
+
     fn statement(&mut self, statement: &mir::Statement) {
         match statement {
             mir::Statement::Assign {
@@ -506,6 +576,7 @@ impl FunctionBuilder<'_, '_> {
             Rvalue::Unary(op, operand) => self.unary(*op, operand, span),
             Rvalue::Convert(operand, to) => self.convert(operand, *to, span),
             Rvalue::Error(operand) => self.error_value(operand),
+            Rvalue::BoundsCheck(operand, length) => self.bounds_check(operand, *length, span),
             Rvalue::Aggregate(_, operands) => {
                 let ty = self.ty(result_ty);
                 let mut current = "undef".to_string();
@@ -524,56 +595,163 @@ impl FunctionBuilder<'_, '_> {
         self.store(place, &value);
     }
 
+    /// Drops `place` (type `ty`). Dispatches to the real, persistent flag
+    /// at `flag_address(place)` for an ordinary (field-only) place, or to a
+    /// transient scratch block when reached through an array index — array
+    /// elements have no independent liveness flag (§31.2: ownership
+    /// analysis never lets one become partially moved), so there is nothing
+    /// to branch on, only a real pointer needed for the duration of one
+    /// custom-`drop` call and its immediate field cleanup.
     fn drop_place(&mut self, place: &Place) {
         let ty = self.place_ty(place);
         if self.module.package.is_copy(ty) {
             return;
         }
-        let flag = self.root_flag_address(place);
+        if place
+            .projections
+            .iter()
+            .any(|p| matches!(p, mir::Projection::Index(_)))
+        {
+            self.drop_unconditional(place, ty);
+            return;
+        }
+        let flags = self.flag_address(place);
+        self.drop_value(place, ty, &flags);
+    }
+
+    /// Drops `place` (type `ty`) whose own liveness flag lives within the
+    /// already-computed `flags` block (root flag first, per `flag_ty`'s
+    /// layout).
+    fn drop_value(&mut self, place: &Place, ty: TypeId, flags: &str) {
+        if self.module.package.is_copy(ty) {
+            return;
+        }
+        let root = self.root_flag_address_from(flags, ty);
         let live = self.fresh();
-        self.line(format!("{live} = load i1, ptr {flag}"));
+        self.line(format!("{live} = load i1, ptr {root}"));
         let (run, done) = (self.label(), self.label());
         self.line(format!("br i1 {live}, label %{run}, label %{done}"));
         self.out.push_str(&format!("{run}:\n"));
-        self.line(format!("store i1 false, ptr {flag}"));
-        if let TypeKind::Struct(id) = self.module.package.types.kind(ty) {
-            let strukt = self.module.package.strukt(id);
-            let drop = strukt.drop;
-            let fields = strukt.fields.len();
-            if let Some(drop) = drop {
-                let name = self.module.package.function(drop).name.clone();
-                let value_address = self.address(place);
-                let flag_address = self.flag_address(place);
-                self.line("call void @zore_enter_drop()");
-                self.line(format!(
-                    "call void @\"{}.{}\"(ptr {value_address}, ptr {flag_address})",
-                    self.module.package.name, name
-                ));
-                self.line("call void @zore_leave_drop()");
-            }
-            for index in (0..fields).rev() {
-                let mut child = place.clone();
-                child.fields.push(hir::FieldId(index as u32));
-                self.drop_place(&child);
-            }
-        }
+        self.line(format!("store i1 false, ptr {root}"));
+        self.drop_contents(place, ty, flags);
         self.line(format!("br label %{done}"));
         self.out.push_str(&format!("{done}:\n"));
     }
 
+    /// Drops `place` (an array element, type `ty`) unconditionally, backed
+    /// by a fresh scratch flags block rather than persistent storage.
+    fn drop_unconditional(&mut self, place: &Place, ty: TypeId) {
+        if self.module.package.is_copy(ty) {
+            return;
+        }
+        let scratch = self.scratch_flags(ty);
+        self.drop_contents(place, ty, &scratch);
+    }
+
+    /// A fresh `flag_ty(ty)` block with every flag initialized true and no
+    /// persistent backing: used wherever a real flags address would need
+    /// storage that doesn't exist (array elements).
+    fn scratch_flags(&mut self, ty: TypeId) -> String {
+        let ptr = self.fresh();
+        self.line(format!("{ptr} = alloca {}", self.module.flag_ty(ty)));
+        self.init_flags_true(&ptr, ty);
+        ptr
+    }
+
+    fn init_flags_true(&mut self, address: &str, ty: TypeId) {
+        if self.module.package.is_copy(ty) {
+            return;
+        }
+        let root = self.root_flag_address_from(address, ty);
+        self.line(format!("store i1 true, ptr {root}"));
+        if let TypeKind::Struct(id) = self.module.package.types.kind(ty) {
+            let strukt = self.module.package.strukt(id);
+            for (index, field) in strukt.fields.iter().enumerate() {
+                if self.module.package.is_copy(field.ty) {
+                    continue;
+                }
+                let child = self.fresh();
+                self.line(format!(
+                    "{child} = getelementptr inbounds {}, ptr {address}, i32 0, i32 {}",
+                    self.module.flag_ty(ty),
+                    index + 1
+                ));
+                self.init_flags_true(&child, field.ty);
+            }
+        }
+    }
+
+    /// Runs `ty`'s custom `drop` (if any) and recurses into its parts,
+    /// given `place` is already known live and `flags` is a valid pointer
+    /// to its `flag_ty(ty)` block (real or scratch).
+    fn drop_contents(&mut self, place: &Place, ty: TypeId, flags: &str) {
+        match self.module.package.types.kind(ty) {
+            TypeKind::Struct(id) => {
+                let strukt = self.module.package.strukt(id);
+                let drop = strukt.drop;
+                let fields = strukt.fields.len();
+                if let Some(drop) = drop {
+                    let name = self.module.package.function(drop).name.clone();
+                    let value_address = self.address(place);
+                    self.line("call void @zore_enter_drop()");
+                    self.line(format!(
+                        "call void @\"{}.{}\"(ptr {value_address}, ptr {flags})",
+                        self.module.package.name, name
+                    ));
+                    self.line("call void @zore_leave_drop()");
+                }
+                for index in (0..fields).rev() {
+                    let field_ty = strukt.fields[index].ty;
+                    let mut child = place.clone();
+                    child
+                        .projections
+                        .push(mir::Projection::Field(hir::FieldId(index as u32)));
+                    let child_flags = self.fresh();
+                    self.line(format!(
+                        "{child_flags} = getelementptr inbounds {}, ptr {flags}, i32 0, i32 {}",
+                        self.module.flag_ty(ty),
+                        index + 1
+                    ));
+                    self.drop_value(&child, field_ty, &child_flags);
+                }
+            }
+            TypeKind::Array { element, size } => {
+                for index in (0..size).rev() {
+                    let mut child = place.clone();
+                    child
+                        .projections
+                        .push(mir::Projection::Index(Operand::Const(
+                            Const::Int(i128::from(index)),
+                            TypeStore::INT64,
+                        )));
+                    self.drop_unconditional(&child, element);
+                }
+            }
+            _ => {}
+        }
+    }
+
     fn has_custom_ancestor(&self, place: &Place) -> bool {
         let mut ty = self.local_ty(place.local);
-        for field in &place.fields {
-            let id = self
-                .module
-                .package
-                .types
-                .struct_id(ty)
-                .expect("field projection");
-            if self.module.package.strukt(id).drop.is_some() {
-                return true;
+        for projection in &place.projections {
+            match projection {
+                mir::Projection::Field(field) => {
+                    let id = self
+                        .module
+                        .package
+                        .types
+                        .struct_id(ty)
+                        .expect("field projection");
+                    if self.module.package.strukt(id).drop.is_some() {
+                        return true;
+                    }
+                    ty = self.module.package.strukt(id).fields[field.0 as usize].ty;
+                }
+                mir::Projection::Index(_) => match self.module.package.types.kind(ty) {
+                    TypeKind::Array { element, .. } => ty = element,
+                    _ => unreachable!("index projection on a non-array"),
+                },
             }
-            ty = self.module.package.strukt(id).fields[field.0 as usize].ty;
         }
         false
     }
@@ -709,6 +887,7 @@ impl FunctionBuilder<'_, '_> {
                 }
             }
             TypeKind::Struct(_) => unreachable!("structs have no operators"),
+            TypeKind::Array { .. } => unreachable!("arrays have no operators"),
         }
     }
 
@@ -1049,8 +1228,17 @@ impl FunctionBuilder<'_, '_> {
             if let Operand::Ref(place) = arg {
                 let address = self.address(place);
                 rendered.push(format!("ptr {address}"));
-                if !package.is_copy(self.place_ty(place)) {
-                    let flags = self.flag_address(place);
+                let ty = self.place_ty(place);
+                if !package.is_copy(ty) {
+                    let flags = if place
+                        .projections
+                        .iter()
+                        .any(|p| matches!(p, mir::Projection::Index(_)))
+                    {
+                        self.scratch_flags(ty)
+                    } else {
+                        self.flag_address(place)
+                    };
                     rendered.push(format!("ptr {flags}"));
                 }
                 continue;
@@ -1112,7 +1300,7 @@ impl FunctionBuilder<'_, '_> {
                 };
                 self.line(format!("call void @{function}(i64 {wide})"));
             }
-            TypeKind::Float(_) | TypeKind::Error | TypeKind::Struct(_) => {
+            TypeKind::Float(_) | TypeKind::Error | TypeKind::Struct(_) | TypeKind::Array { .. } => {
                 unreachable!("checked printable type")
             }
         }

@@ -73,10 +73,25 @@ pub struct FieldDecl {
     pub span: Span,
 }
 
-/// A named type; other type syntax is not parsed yet.
+/// A type; slice and map forms are not parsed yet.
 #[derive(Clone, Debug, PartialEq)]
-pub struct Type {
-    pub name: Name,
+pub enum Type {
+    Named(Name),
+    /// `[element; size]`.
+    Array {
+        element: Box<Type>,
+        size: Box<Expr>,
+        span: Span,
+    },
+}
+
+impl Type {
+    pub fn span(&self) -> Span {
+        match self {
+            Self::Named(name) => name.span,
+            Self::Array { span, .. } => *span,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -216,9 +231,17 @@ pub enum ExprKind {
         base: Box<Expr>,
         name: Name,
     },
+    Index {
+        base: Box<Expr>,
+        index: Box<Expr>,
+    },
     StructLit {
         ty: Name,
         fields: Vec<FieldInit>,
+    },
+    ArrayLit {
+        ty: Type,
+        elements: Vec<Expr>,
     },
     /// A literal the lexer already diagnosed.
     Malformed,

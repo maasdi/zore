@@ -3,11 +3,11 @@
 use crate::ast::{BinaryOp, ParamMode};
 use crate::hir::{self, Const, ExprKind, FunctionId, LocalKind, StmtKind};
 use crate::mir::{
-    BasicBlock, BlockId, Body, Callee, Local, LocalDecl, Operand, Place, Program, Rvalue,
-    Statement, Terminator,
+    AggregateKind, BasicBlock, BlockId, Body, Callee, Local, LocalDecl, Operand, Place, Program,
+    Projection, Rvalue, Statement, Terminator,
 };
 use crate::source::Span;
-use crate::types::{TypeId, TypeStore};
+use crate::types::{TypeId, TypeKind, TypeStore};
 
 pub fn lower(package: &hir::Package) -> Program {
     let bodies = package
@@ -125,7 +125,7 @@ impl Builder {
         }
         if matches!(
             rvalue,
-            Rvalue::Binary(..) | Rvalue::Unary(..) | Rvalue::Convert(..)
+            Rvalue::Binary(..) | Rvalue::Unary(..) | Rvalue::Convert(..) | Rvalue::BoundsCheck(..)
         ) {
             let target = self.new_block();
             self.terminate(Terminator::Assert {
@@ -226,8 +226,10 @@ impl Builder {
                 self.store_results(package, &places, value, stmt.span);
             }
             StmtKind::Assign { targets, values } => {
-                let places: Vec<Option<Place>> =
-                    targets.iter().map(|t| t.as_ref().map(place)).collect();
+                let places: Vec<Option<Place>> = targets
+                    .iter()
+                    .map(|t| t.as_ref().map(|p| self.place(package, p)))
+                    .collect();
                 if let [value] = &values[..]
                     && places.len() > 1
                 {
@@ -252,7 +254,7 @@ impl Builder {
                 op,
                 value,
             } => {
-                let target = place(target);
+                let target = self.place(package, target);
                 let ty = self.place_type(package, &target);
                 // The target is read before the right-hand side is evaluated.
                 let current = self.assign_temp(
@@ -537,12 +539,20 @@ impl Builder {
 
     fn place_type(&self, package: &hir::Package, place: &Place) -> TypeId {
         let mut ty = self.locals[place.local.0 as usize].ty;
-        for field in &place.fields {
-            let strukt = package
-                .types
-                .struct_id(ty)
-                .expect("field projection on a struct");
-            ty = package.strukt(strukt).fields[field.0 as usize].ty;
+        for projection in &place.projections {
+            ty = match projection {
+                Projection::Field(field) => {
+                    let strukt = package
+                        .types
+                        .struct_id(ty)
+                        .expect("field projection on a struct");
+                    package.strukt(strukt).fields[field.0 as usize].ty
+                }
+                Projection::Index(_) => match package.types.kind(ty) {
+                    TypeKind::Array { element, .. } => element,
+                    _ => unreachable!("index projection on a non-array"),
+                },
+            };
         }
         ty
     }
@@ -584,7 +594,7 @@ impl Builder {
                 Callee::Drop => (false, true),
             };
             operands.push(if by_reference {
-                match argument_place_opt(arg) {
+                match self.argument_place_opt(package, arg) {
                     Some(place) => Operand::Ref(place),
                     None => {
                         let operand = self.operand(package, arg);
@@ -624,7 +634,7 @@ impl Builder {
             ExprKind::Local(id) => value_operand(package, Place::local(Local(id.0)), expr.ty()),
             ExprKind::Field { base, field } => match self.operand(package, base) {
                 Operand::Copy(mut base) | Operand::Move(mut base) => {
-                    base.fields.push(*field);
+                    base.projections.push(Projection::Field(*field));
                     value_operand(package, base, expr.ty())
                 }
                 other => {
@@ -634,12 +644,35 @@ impl Builder {
                         package,
                         Place {
                             local: temp,
-                            fields: vec![*field],
+                            projections: vec![Projection::Field(*field)],
                         },
                         expr.ty(),
                     )
                 }
             },
+            ExprKind::Index { base, index } => {
+                // §12.6: evaluate the base, then the index, once each.
+                let base_operand = self.operand(package, base);
+                let index_operand = self.checked_index_operand(package, base.ty(), index);
+                match base_operand {
+                    Operand::Copy(mut place) | Operand::Move(mut place) => {
+                        place.projections.push(Projection::Index(index_operand));
+                        value_operand(package, place, expr.ty())
+                    }
+                    other => {
+                        let temp = self.temp(base.ty());
+                        self.push(Place::local(temp), Rvalue::Use(other), span);
+                        value_operand(
+                            package,
+                            Place {
+                                local: temp,
+                                projections: vec![Projection::Index(index_operand)],
+                            },
+                            expr.ty(),
+                        )
+                    }
+                }
+            }
             ExprKind::Call { .. } => {
                 let temp = self.temp(expr.ty());
                 self.call(package, expr, vec![Some(Place::local(temp))]);
@@ -673,7 +706,19 @@ impl Builder {
                 self.assign_temp(
                     package,
                     expr.ty(),
-                    Rvalue::Aggregate(*strukt, operands),
+                    Rvalue::Aggregate(AggregateKind::Struct(*strukt), operands),
+                    span,
+                )
+            }
+            ExprKind::ArrayLit { element, elements } => {
+                let operands = elements
+                    .iter()
+                    .map(|value| self.evaluate_to_temporary(package, value))
+                    .collect();
+                self.assign_temp(
+                    package,
+                    expr.ty(),
+                    Rvalue::Aggregate(AggregateKind::Array(*element), operands),
                     span,
                 )
             }
@@ -731,17 +776,75 @@ impl Builder {
         self.goto_new(join);
         Operand::Copy(Place::local(result))
     }
-}
 
-fn argument_place_opt(expr: &hir::Expr) -> Option<Place> {
-    match &expr.kind {
-        ExprKind::Local(id) => Some(Place::local(Local(id.0))),
-        ExprKind::Field { base, field } => {
-            let mut place = argument_place_opt(base)?;
-            place.fields.push(*field);
-            Some(place)
+    /// The place an argument names, if it is a plain place rather than a
+    /// temporary value; evaluates any index subexpressions it contains.
+    fn argument_place_opt(&mut self, package: &hir::Package, expr: &hir::Expr) -> Option<Place> {
+        match &expr.kind {
+            ExprKind::Local(id) => Some(Place::local(Local(id.0))),
+            ExprKind::Field { base, field } => {
+                let mut place = self.argument_place_opt(package, base)?;
+                place.projections.push(Projection::Field(*field));
+                Some(place)
+            }
+            ExprKind::Index { base, index } => {
+                let mut place = self.argument_place_opt(package, base)?;
+                let index_operand = self.checked_index_operand(package, base.ty(), index);
+                place.projections.push(Projection::Index(index_operand));
+                Some(place)
+            }
+            _ => None,
         }
-        _ => None,
+    }
+
+    /// Evaluates `index`, bounds-checks it against `array_ty`'s length, and
+    /// returns the (now `int64`-typed) checked value, ready to use in an
+    /// `Index` projection.
+    fn checked_index_operand(
+        &mut self,
+        package: &hir::Package,
+        array_ty: TypeId,
+        index: &hir::Expr,
+    ) -> Operand {
+        let TypeKind::Array { size, .. } = package.types.kind(array_ty) else {
+            unreachable!("index projection on a non-array")
+        };
+        let operand = self.operand(package, index);
+        self.assign_temp(
+            package,
+            TypeStore::INT64,
+            Rvalue::BoundsCheck(operand, size),
+            index.span,
+        )
+    }
+
+    fn place(&mut self, package: &hir::Package, place: &hir::Place) -> Place {
+        let mut ty = self.locals[place.root.0 as usize].ty;
+        let mut projections = Vec::with_capacity(place.projections.len());
+        for projection in &place.projections {
+            match projection {
+                hir::Projection::Field(id) => {
+                    let strukt = package
+                        .types
+                        .struct_id(ty)
+                        .expect("field projection on a struct");
+                    ty = package.strukt(strukt).fields[id.0 as usize].ty;
+                    projections.push(Projection::Field(*id));
+                }
+                hir::Projection::Index(index) => {
+                    let operand = self.checked_index_operand(package, ty, index);
+                    let TypeKind::Array { element, .. } = package.types.kind(ty) else {
+                        unreachable!("index projection on a non-array")
+                    };
+                    ty = element;
+                    projections.push(Projection::Index(operand));
+                }
+            }
+        }
+        Place {
+            local: Local(place.root.0),
+            projections,
+        }
     }
 }
 
@@ -750,12 +853,5 @@ fn value_operand(package: &hir::Package, place: Place, ty: TypeId) -> Operand {
         Operand::Copy(place)
     } else {
         Operand::Move(place)
-    }
-}
-
-fn place(place: &hir::Place) -> Place {
-    Place {
-        local: Local(place.root.0),
-        fields: place.fields.clone(),
     }
 }
