@@ -36,7 +36,7 @@ is guidance, not a language contract.
 | M9–M12 — subset implemented; validation pending | Name resolution, types, HIR, MIR/CFG; semantic IDs, typed calls/fields, explicit control flow, frontend-only checking. |
 | M13–M17 — partial | Copy/Move classification, mutable borrowing, whole-place move analysis, field-level partial moves (with reinitialization and the custom-`drop`-ancestor restriction), and stored borrows with region analysis exist in CLI checking and builds. Region analysis tracks slice loans per local, frees them at the holder's last use (backward liveness), checks exclusivity at the originating place, suspends sources during mutable reborrows, rejects views that outlive a local or temporary owner, and infers return-borrow contracts by fixpoint. Remaining, each diagnosed as unsupported: `mut []T` nested inside a composite, storing a view through a slice element or by-reference parameter (output provenance), destructors that could observe a contained view, and every async/closure/task interaction. Complete the §42 semantic target with paired acceptance/rejection tests. |
 | M18–M19 — synchronous subset implemented; validation pending | Drop insertion and panic cleanup cover the synchronous subset. The concrete Copy `error` type, `nil` in an error context, `error(message)`, content equality, explicit discards, rejection of silently ignored error results, and path-sensitive checks for named errors are implemented. Synchronous `?` propagates call errors, zero-fills other return values, and runs cleanup. Awaited propagation remains for M25–M29. |
-| M20–M23 — partial | Fixed-array types, typed literals, and indexing (read, mutable-place write/replacement, conservative-aliasing, and rejection of moving an element out through an index) are implemented end to end: `zore check`, and now `zore build`/`zore run` — LLVM `[N x T]` type emission, GEP-based indexed addressing, runtime bounds-check panics, and element cleanup without per-element drop flags (sound because element extraction stays rejected). Borrowed slices (`[]T`, `mut []T`, `base[low:high]`, contextual exclusive views, indexing and element writes through views) are implemented end to end: `zore check` with region analysis, and `zore build`/`zore run` with `{ ptr, i64 }` descriptors, slice-aware addressing, and runtime "slice bounds out of range" panics. Dynamic `Array<T>`, owned arrays' full M21 scope, maps, and packages/imports remain; validate ownership and package visibility. |
+| M20–M23 — partial | Fixed-array types, typed literals, and indexing (read, mutable-place write/replacement, conservative-aliasing, and rejection of moving an element out through an index) are implemented end to end: `zore check`, and now `zore build`/`zore run` — LLVM `[N x T]` type emission, GEP-based indexed addressing, runtime bounds-check panics, and element cleanup without per-element drop flags (sound because element extraction stays rejected). Borrowed slices (`[]T`, `mut []T`, `base[low:high]`, contextual exclusive views, indexing and element writes through views) are implemented end to end: `zore check` with region analysis, and `zore build`/`zore run` with `{ ptr, i64 }` descriptors, slice-aware addressing, and runtime "slice bounds out of range" panics. Dynamic `Array<T>` is implemented end to end for literal-sized arrays: typed literals, indexing, element writes, slicing, borrow/`mut`/`own` passing, returns, the zero value, and heap storage freed after dropping elements in reverse order (Q17). Growth and length APIs (Q05), `clone`, structs that contain themselves through `Array<T>` (rejected until out-of-line drop functions exist), maps, and packages/imports remain; validate ownership and package visibility. |
 | M24 | Closures with capture analysis; reject captures that cannot remain valid. |
 | M25–M29 | Task model, `go`, async states, `await`, scheduler; test lifetime proof, suspension, completion, error results, and detach behavior. |
 | M30–M31 | Channels and async I/O; test copying handles, message ownership, buffering, close/drain, and panic on closed send. |
@@ -2026,10 +2026,21 @@ GEP-based indexed addressing, runtime bounds-check panics, and element
 cleanup without per-element drop flags — see above). Borrowed slices and
 the region analysis they require are implemented end to end (see above).
 
-The next concrete options are: (a) dynamic
-`Array<T>` (the rest of M20–M21); (b) closures (M24); or (c) lifting the
-region-analysis restrictions (nested `mut []T`, output provenance through
-parameters, destructor-observed views). Do not accept a
+Dynamic `Array<T>` followed (Q17). It is stored as a `{ ptr, i64 }`
+descriptor whose elements live in runtime heap storage
+(`runtime/src/alloc.rs`) and are dropped by a reverse-order loop before the
+storage is freed. Before it landed, three existing soundness holes were
+closed. Borrows that reach storage through a view now keep that view's
+backing borrowed. A drop inserted before a replacing store now acts on a
+panic only after the store, which removes a double drop of indexed elements.
+Scratch drop-flag allocas now go in the entry block, so loops no longer grow
+the stack.
+
+The next concrete options are: (a) closures (M24), once Q02 locks their types
+and capture rules; (b) maps (M22); (c) `clone` (§10.7) for structs, fixed
+arrays, and `Array<T>`; or (d) lifting the region-analysis restrictions
+(nested `mut []T`, output provenance through parameters,
+destructor-observed views). Do not accept a
 feature whose move/borrow checks and required cleanup are not yet
 implemented. Any newly discovered semantic gap follows specification §53 and
 `docs/spec-questions.md`.

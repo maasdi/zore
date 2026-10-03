@@ -2,7 +2,7 @@
 
 Status: The compiler supports a synchronous subset through parts of M18–M20,
 including Move structs, deterministic drops, concrete error values, fixed
-arrays, and borrowed slices with region analysis. Paths below are relative to `compiler/src/`. `main.rs` delegates to
+arrays, dynamic `Array<T>`, and borrowed slices with region analysis. Paths below are relative to `compiler/src/`. `main.rs` delegates to
 `driver`; `driver/command.rs` and `driver/session.rs` handle CLI arguments and
 exit status; `driver/check.rs` orchestrates the frontend pipeline and
 `driver/build.rs` the native one. `source/` stores UTF-8 text under stable
@@ -159,7 +159,8 @@ followed by one rounding, which equals the correctly rounded IEEE result.
 
 The checker accepts a deliberately small, single-file subset: primitive values,
 `error`, structs including Move structs with custom `drop` methods, fixed
-arrays, borrowed slices (`[]T`, `mut []T`, `base[low:high]`), functions,
+arrays, literal-sized dynamic arrays (`Array<T>`), borrowed slices (`[]T`,
+`mut []T`, `base[low:high]`), functions,
 methods, and `println`. Ownership analysis (`ownership/`) checks whole-place
 and field-level partial moves, reinitialization, and call-local borrows over
 MIR (`checker.rs`), then runs region analysis (`region.rs`) over the loans
@@ -196,6 +197,16 @@ all functions, so recursion is handled, and substituted at each call. A
 returned view must be backed by a by-reference parameter or forwarded from a
 parameter's views (§11.7). Shared parameters whose type contains a fixed array
 are passed by reference so such views can be returned. Temporary
+`Array<T>` indexing takes no `Deref` step: its elements are the owning
+local's storage, so replacing the array conflicts with live views of it.
+
+Native code represents `Array<T>` as a `{ ptr, i64 }` descriptor over heap
+storage from the runtime's `zore_alloc`. Dropping it drops the elements in
+reverse index order with an IR loop, then calls `zore_free`. The drop helpers
+take addresses rather than MIR places so that loop can address elements by a
+runtime index. Scratch drop-flag allocas are hoisted into the entry block. A
+drop inserted before a replacing store acts on a panic only after the store.
+Temporary
 restrictions, each diagnosed: `mut []T` cannot be nested inside a struct field,
 array, or slice element; a view cannot be stored through a slice element or a
 by-reference parameter; and a type containing a view cannot define a custom

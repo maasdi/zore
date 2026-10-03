@@ -14,7 +14,7 @@ use super::abi;
 use crate::ast::{BinaryOp, UnaryOp};
 use crate::diagnostic::{Diagnostic, Severity};
 use crate::hir::{self, Const};
-use crate::mir::{self, Callee, Local, Operand, Place, Rvalue, Terminator};
+use crate::mir::{self, AggregateKind, Callee, Local, Operand, Place, Rvalue, Terminator};
 use crate::resolve::FieldId;
 use crate::source::{SourceFile, Span};
 use crate::types::{IntType, TypeId, TypeKind};
@@ -272,7 +272,9 @@ impl FunctionBuilder<'_, '_> {
                 mir::Projection::Field(f) => write!(indices, ", i32 {}", f.0).unwrap(),
                 mir::Projection::Index(operand) => {
                     let value = self.value(operand);
-                    if let TypeKind::Slice { element, .. } = self.module.package.types.kind(ty) {
+                    if let TypeKind::Slice { element, .. } | TypeKind::DynArray { element } =
+                        self.module.package.types.kind(ty)
+                    {
                         base = self.element_pointer(&base, gep_root, &mut indices);
                         let data = self.slice_data(&base);
                         let element_address = self.fresh();
@@ -350,7 +352,7 @@ impl FunctionBuilder<'_, '_> {
                 ));
                 (element, first, size.to_string())
             }
-            TypeKind::Slice { element, .. } => {
+            TypeKind::Slice { element, .. } | TypeKind::DynArray { element } => {
                 let address = self.address(place);
                 let descriptor = self.fresh();
                 self.line(format!("{descriptor} = load {{ ptr, i64 }}, ptr {address}"));
@@ -614,6 +616,9 @@ impl FunctionBuilder<'_, '_> {
             Rvalue::Slice {
                 place, low, high, ..
             } => self.slice(place, low.as_ref(), high.as_ref(), span),
+            Rvalue::Aggregate(AggregateKind::DynArray(element), operands) => {
+                self.dyn_array_literal(*element, operands)
+            }
             Rvalue::Aggregate(_, operands) => {
                 let ty = self.ty(result_ty);
                 let mut current = "undef".to_string();
@@ -630,6 +635,86 @@ impl FunctionBuilder<'_, '_> {
             }
         };
         self.store(place, &value);
+    }
+
+    /// `{ data, length }` holding `operands`, moved into fresh heap storage.
+    fn dyn_array_literal(&mut self, element: TypeId, operands: &[Operand]) -> String {
+        if operands.is_empty() {
+            return "{ ptr null, i64 0 }".to_string();
+        }
+        let element_ty = self.ty(element);
+        let bytes = self.byte_size(&element_ty, &operands.len().to_string());
+        let data = self.fresh();
+        self.line(format!("{data} = call ptr @zore_alloc(i64 {bytes})"));
+        for (index, operand) in operands.iter().enumerate() {
+            let value = self.value(operand);
+            let slot = self.fresh();
+            self.line(format!(
+                "{slot} = getelementptr inbounds {element_ty}, ptr {data}, i64 {index}"
+            ));
+            self.line(format!("store {element_ty} {value}, ptr {slot}"));
+        }
+        let with_data = self.fresh();
+        self.line(format!(
+            "{with_data} = insertvalue {{ ptr, i64 }} undef, ptr {data}, 0"
+        ));
+        let array = self.fresh();
+        self.line(format!(
+            "{array} = insertvalue {{ ptr, i64 }} {with_data}, i64 {}, 1",
+            operands.len()
+        ));
+        array
+    }
+
+    /// The size in bytes of `count` values of LLVM type `ty`, as an `i64`.
+    fn byte_size(&mut self, ty: &str, count: &str) -> String {
+        let end = self.fresh();
+        self.line(format!("{end} = getelementptr {ty}, ptr null, i64 {count}"));
+        let bytes = self.fresh();
+        self.line(format!("{bytes} = ptrtoint ptr {end} to i64"));
+        bytes
+    }
+
+    /// Drops every element of the `Array<T>` at `address` in reverse index
+    /// order, then frees its storage.
+    fn drop_dyn_array(&mut self, address: &str, element: TypeId) {
+        let descriptor = self.fresh();
+        self.line(format!("{descriptor} = load {{ ptr, i64 }}, ptr {address}"));
+        let data = self.fresh();
+        self.line(format!(
+            "{data} = extractvalue {{ ptr, i64 }} {descriptor}, 0"
+        ));
+        let length = self.fresh();
+        self.line(format!(
+            "{length} = extractvalue {{ ptr, i64 }} {descriptor}, 1"
+        ));
+        let element_ty = self.ty(element);
+        if !self.module.package.is_copy(element) {
+            let counter = self.fresh();
+            self.hoist_alloca(&counter, "i64");
+            self.line(format!("store i64 {length}, ptr {counter}"));
+            let (check, body, done) = (self.label(), self.label(), self.label());
+            self.line(format!("br label %{check}"));
+            self.out.push_str(&format!("{check}:\n"));
+            let remaining = self.fresh();
+            self.line(format!("{remaining} = load i64, ptr {counter}"));
+            let more = self.fresh();
+            self.line(format!("{more} = icmp ugt i64 {remaining}, 0"));
+            self.line(format!("br i1 {more}, label %{body}, label %{done}"));
+            self.out.push_str(&format!("{body}:\n"));
+            let index = self.fresh();
+            self.line(format!("{index} = sub i64 {remaining}, 1"));
+            self.line(format!("store i64 {index}, ptr {counter}"));
+            let slot = self.fresh();
+            self.line(format!(
+                "{slot} = getelementptr inbounds {element_ty}, ptr {data}, i64 {index}"
+            ));
+            self.drop_unconditional(&slot, element);
+            self.line(format!("br label %{check}"));
+            self.out.push_str(&format!("{done}:\n"));
+        }
+        let bytes = self.byte_size(&element_ty, &length);
+        self.line(format!("call void @zore_free(ptr {data}, i64 {bytes})"));
     }
 
     /// Drops `place` (type `ty`). Dispatches to the real, persistent flag
@@ -770,6 +855,7 @@ impl FunctionBuilder<'_, '_> {
                     self.drop_unconditional(&child, element);
                 }
             }
+            TypeKind::DynArray { element } => self.drop_dyn_array(address, element),
             _ => {}
         }
     }
@@ -937,6 +1023,7 @@ impl FunctionBuilder<'_, '_> {
             TypeKind::Struct(_) => unreachable!("structs have no operators"),
             TypeKind::Array { .. } => unreachable!("arrays have no operators"),
             TypeKind::Slice { .. } => unreachable!("slices have no operators"),
+            TypeKind::DynArray { .. } => unreachable!("dynamic arrays have no operators"),
         }
     }
 

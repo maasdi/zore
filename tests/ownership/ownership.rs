@@ -645,3 +645,138 @@ fn borrows_through_a_view_keep_the_view_backing_borrowed() {
         "{grid}\nlet rows = grid[:]\nlet row = rows[0][:]\n_ = inspect(row)\ngrid[0][0] = 5"
     )));
 }
+
+const GUARD: &str = "type Guard struct { id int }\nfunc (g mut Guard) drop() {}";
+
+#[test]
+fn dynamic_arrays_move_whole() {
+    rejects(
+        &body("let xs = Array<int>{1}\nlet ys = xs\nlet zs = xs"),
+        "use of moved value `xs`",
+    );
+    rejects(
+        &program(
+            "func take(xs own Array<int>) {}\nfunc use() { let xs = Array<int>{1}\ntake(xs)\n_ = xs[0] }",
+        ),
+        "use of moved value `xs`",
+    );
+    accepts(&program(
+        "func read(xs Array<int>) int { return xs[0] }\nfunc use() { let xs = Array<int>{1}\n_ = read(xs)\n_ = read(xs) }",
+    ));
+}
+
+#[test]
+fn dynamic_array_elements_cannot_be_moved_out() {
+    for stmts in [
+        "let first = gs[0]",
+        "consume(gs[0])",
+        "let bag = Bag{Items: Array<Guard>{Guard{id: 1}}}\nlet first = bag.Items[0]",
+    ] {
+        rejects(
+            &program(&format!(
+                "{GUARD}\ntype Bag struct {{ Items Array<Guard> }}\nfunc consume(g own Guard) {{}}\nfunc use() {{ let gs = Array<Guard>{{Guard{{id: 1}}}}\n{stmts} }}"
+            )),
+            "out of a dynamic array",
+        );
+    }
+    accepts(&program(&format!(
+        "{GUARD}\nfunc read(g Guard) int {{ return g.id }}\nfunc use() {{ let gs = Array<Guard>{{Guard{{id: 1}}}}\n_ = read(gs[0])\n_ = read(Array<Guard>{{Guard{{id: 2}}}}[0]) }}"
+    )));
+}
+
+#[test]
+fn views_of_a_dynamic_array_keep_its_owner_in_place() {
+    for (stmts, message) in [
+        (
+            "xs = Array<int>{4}",
+            "cannot assign to `xs` while it is borrowed",
+        ),
+        ("let moved = xs", "cannot move `xs` while it is borrowed"),
+        ("drop(xs)", "cannot move `xs` while it is borrowed"),
+        ("xs[0] = 9", "cannot assign to `xs[_]` while it is borrowed"),
+        (
+            "bump(xs)",
+            "cannot borrow `xs` as mutable because it is already borrowed",
+        ),
+    ] {
+        rejects(
+            &slice_program(&format!(
+                "func bump(xs mut Array<int>) {{}}\nfunc use() {{ var xs = Array<int>{{1, 2}}\nlet view = xs[:]\n{stmts}\n_ = inspect(view) }}"
+            )),
+            message,
+        );
+    }
+    accepts(&slice_program(
+        "func use() { var xs = Array<int>{1, 2}\nlet view = xs[:]\n_ = inspect(view)\nxs = Array<int>{4} }",
+    ));
+    rejects(
+        &slice_program("func use() { let view = Array<int>{1}[:]\n_ = inspect(view) }"),
+        "temporary value does not live long enough",
+    );
+    accepts(&slice_program(
+        "func use() { _ = inspect(Array<int>{1}[:]) }",
+    ));
+}
+
+#[test]
+fn views_of_dynamic_arrays_return_only_from_borrowed_parameters() {
+    accepts(&slice_program(
+        "func all(xs Array<int>) []int { return xs[:] }\nfunc edit_all(xs mut Array<int>) mut []int { return xs[:] }",
+    ));
+    rejects(
+        &slice_program("func all(xs own Array<int>) []int { return xs[:] }"),
+        "cannot return a view of `own` parameter `xs`",
+    );
+    rejects(
+        &slice_program("func all() []int { let xs = Array<int>{1}\nreturn xs[:] }"),
+        "cannot return a view of local `xs`",
+    );
+}
+
+#[test]
+fn views_stored_in_dynamic_arrays_keep_their_backing_borrowed() {
+    rejects(
+        &slice_body(
+            "var data = [int; 2]{1, 2}
+            var views = Array<[]int>{data[:]}
+            data[0] = 5
+            _ = inspect(views[0])",
+        ),
+        "cannot assign to `data[_]` while it is borrowed",
+    );
+    rejects(
+        &slice_body(
+            "var data = [int; 2]{1, 2}
+            var other = [int; 2]{3, 4}
+            var views = Array<[]int>{other[:]}
+            views[0] = data[:]
+            data[0] = 5
+            _ = inspect(views[0])",
+        ),
+        "cannot assign to `data[_]` while it is borrowed",
+    );
+    rejects(
+        &slice_body(
+            "var data = [int; 2]{1, 2}
+            var views = Array<[]int>{data[:]}
+            let all = views[:]
+            data[0] = 5
+            _ = inspect(all[0])",
+        ),
+        "cannot assign to `data[_]` while it is borrowed",
+    );
+    rejects(
+        &program("func fill(views mut Array<[]int>, items []int) { views[0] = items }"),
+        "storing a borrowed view through `views[_]` is not supported yet",
+    );
+}
+
+#[test]
+fn two_mutable_element_borrows_of_a_dynamic_array_conflict() {
+    rejects(
+        &program(
+            "func both(a mut int, b mut int) {}\nfunc use() { var xs = Array<int>{1, 2}\nboth(xs[0], xs[1]) }",
+        ),
+        "is also borrowed by another argument of this call",
+    );
+}

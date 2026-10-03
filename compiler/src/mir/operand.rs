@@ -46,7 +46,9 @@ pub fn projection_type(package: &hir::Package, ty: TypeId, projection: &Projecti
             package.strukt(id).fields[field.0 as usize].ty
         }
         Projection::Index(_) => match package.types.kind(ty) {
-            TypeKind::Array { element, .. } | TypeKind::Slice { element, .. } => element,
+            TypeKind::Array { element, .. }
+            | TypeKind::Slice { element, .. }
+            | TypeKind::DynArray { element } => element,
             _ => unreachable!("index projection on a non-array, non-slice"),
         },
     }

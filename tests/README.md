@@ -95,8 +95,10 @@ static slice-bound rejection, and slice-element mutability rows in
 `arrays-slices` and `ownership` have parser and checker counterparts; the
 region, aliasing, reborrow, and return-contract rows have counterparts in
 `tests/ownership/ownership.rs`, and native slicing, element access, and slice
-bounds panics have counterparts in `tests/codegen/native.rs`. Dynamic
-`Array<T>` and rows that depend on async, closures, maps, tasks, or channels
+bounds panics have counterparts in `tests/codegen/native.rs`. `Array<T>`
+literals, typing, element mutability, slicing, move and view rules, and
+native construction, access, drop order, and panics have counterparts in the
+parser, check, ownership, and native suites. `clone`, growth APIs, and rows that depend on async, closures, maps, tasks, or channels
 remain pending, as do the remaining runtime and native rows elsewhere.
 
 Use Rust unit tests for small source/IR utilities and pass algorithms. Use Cargo

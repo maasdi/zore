@@ -89,7 +89,12 @@ impl Resolver<'_> {
             self.error(format!("cannot find `{name}` in this scope"), span);
             return None;
         };
-        if res == Res::Unsupported {
+        if res == Res::Unsupported && name == "Array" {
+            self.error(
+                "`Array` needs an element type, as in `Array<int>` (§6.2)",
+                span,
+            );
+        } else if res == Res::Unsupported {
             self.unsupported(unsupported_predeclared(name), span, "M19–M25");
         }
         self.out.uses.insert(span, res);

@@ -35,6 +35,12 @@ impl Parser<'_> {
         &self.tokens[index].kind
     }
 
+    /// The source text of the current token.
+    pub(super) fn current_text(&self) -> &str {
+        let span = self.current_span();
+        &self.file.text()[span.start() as usize..span.end() as usize]
+    }
+
     pub(super) fn current_span(&self) -> Span {
         self.tokens[self.pos].span
     }

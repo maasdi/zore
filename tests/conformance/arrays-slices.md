@@ -12,6 +12,15 @@ construction, index read/write, runtime bounds-check panics (including the
 unsigned-index wraparound case), and element cleanup through a custom `drop`
 method at scope exit and on index replacement.
 
+Dynamic `Array<T>` is implemented end to end for literal-sized arrays.
+Typed literals of any length, element typing, indexing with runtime bounds
+panics, element writes through mutable places, slicing, Move ownership with
+element extraction rejected, and drops of Move elements are covered in
+`tests/parser/parser.rs`, `tests/typecheck/check.rs`,
+`tests/ownership/ownership.rs`, and `tests/codegen/native.rs`. Statically
+rejecting a constant index past an `Array<T>` literal's length is not
+implemented, because no length is known from the type (Q17h).
+
 Borrowed slices are implemented end to end. Slice types,
 `base[low:high]` with omitted bounds, rejection of a third bound and of slice
 literals, contextual shared/exclusive typing, mutable-source requirements,
@@ -25,7 +34,7 @@ and empty views, writes through mutable views reaching the backing array,
 views flowing through calls, structs, and subslices, Move-element replacement
 through a view, and runtime "slice bounds out of range" and "index out of
 range" panics (including negative signed, maximum `uint64`, and zero-slice
-cases). Dynamic `Array<T>`, the constant-index move-extraction carve-out of §31.2, and
+cases). The constant-index move-extraction carve-out of §31.2, and
 rows involving `await`, tasks, or channels remain pending.
 
 ## Typed literals

@@ -4,6 +4,8 @@
 //! Runtime for the synchronous bootstrap subset.
 //! The exported C ABI is internal to the compiler, not a source-language API.
 
+#[path = "alloc.rs"]
+mod alloc;
 #[path = "io.rs"]
 mod io;
 #[path = "panic.rs"]

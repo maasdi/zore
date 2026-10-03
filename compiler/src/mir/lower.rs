@@ -710,12 +710,11 @@ impl Builder {
                     .iter()
                     .map(|value| self.evaluate_to_temporary(package, value))
                     .collect();
-                self.assign_temp(
-                    package,
-                    expr.ty(),
-                    Rvalue::Aggregate(AggregateKind::Array(*element), operands),
-                    span,
-                )
+                let kind = match package.types.kind(expr.ty()) {
+                    TypeKind::DynArray { .. } => AggregateKind::DynArray(*element),
+                    _ => AggregateKind::Array(*element),
+                };
+                self.assign_temp(package, expr.ty(), Rvalue::Aggregate(kind, operands), span)
             }
             ExprKind::Unary { op, operand } => {
                 let operand = self.operand(package, operand);
@@ -783,7 +782,13 @@ impl Builder {
                 Some(place)
             }
             ExprKind::Index { base, index } => {
-                let mut place = self.argument_place_opt(package, base)?;
+                // §12.6: an element of a temporary owner is still borrowed in
+                // place, never extracted.
+                let mut place = match self.argument_place_opt(package, base) {
+                    Some(place) => place,
+                    None if !package.is_copy(base.ty()) => self.base_place(package, base),
+                    None => return None,
+                };
                 let index_operand = self.checked_index_operand(package, &place, base.ty(), index);
                 place.projections.push(Projection::Index(index_operand));
                 Some(place)
@@ -820,7 +825,7 @@ impl Builder {
             TypeKind::Array { size, .. } => {
                 Operand::Const(Const::Int(size.into()), TypeStore::INT64)
             }
-            TypeKind::Slice { .. } => self.assign_temp(
+            TypeKind::Slice { .. } | TypeKind::DynArray { .. } => self.assign_temp(
                 package,
                 TypeStore::INT64,
                 Rvalue::Length(base.clone()),

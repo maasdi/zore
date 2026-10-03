@@ -16,6 +16,7 @@ use crate::source::SourceFile;
 const RUNTIME_SOURCES: &[(&str, &str)] = &[
     ("main.rs", include_str!("../../../runtime/src/main.rs")),
     ("lib.rs", include_str!("../../../runtime/src/lib.rs")),
+    ("alloc.rs", include_str!("../../../runtime/src/alloc.rs")),
     ("io.rs", include_str!("../../../runtime/src/io.rs")),
     ("panic.rs", include_str!("../../../runtime/src/panic.rs")),
     ("string.rs", include_str!("../../../runtime/src/string.rs")),

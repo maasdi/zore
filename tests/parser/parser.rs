@@ -64,7 +64,7 @@ impl Case {
 fn type_name(t: &Type) -> &str {
     match t {
         Type::Named(name) => &name.text,
-        Type::Array { .. } | Type::Slice { .. } => {
+        Type::Array { .. } | Type::Slice { .. } | Type::DynArray { .. } => {
             panic!("expected a named type, found an array or slice type")
         }
     }
@@ -76,6 +76,7 @@ fn ty(case: &Case, t: &Type) -> String {
         Type::Array { element, size, .. } => {
             format!("[{} ; {}]", ty(case, element), expr(case, size))
         }
+        Type::DynArray { element, .. } => format!("Array<{}>", ty(case, element)),
         Type::Slice {
             element, mutable, ..
         } => format!(
@@ -784,6 +785,62 @@ fn slice_types_and_slicing_expressions() {
 }
 
 #[test]
+fn dynamic_array_types_and_literals() {
+    let case = Case::body(
+        "let a Array<int> = Array<int>{1, 2}
+        let nested Array<Array<int>>= Array<Array<int>>{}
+        let views Array<[]int> = views
+        let fixed [Array<int>; 2] = fixed
+        let rows mut []Array<int> = rows
+        let grid = Array<int>{
+            1,
+            2,
+        }
+        if Array<int>{1}[0] == 1 { work() }
+        _ = a < b",
+    );
+    case.assert_clean();
+    assert_eq!(
+        case.shape(),
+        [
+            "(let a Array<int> (lit Array<int> 1 2))",
+            "(let nested Array<Array<int>> (lit Array<Array<int>>))",
+            "(let views Array<[]int> views)",
+            "(let fixed [Array<int> ; 2] fixed)",
+            "(let rows mut []Array<int> rows)",
+            "(let grid (lit Array<int> 1 2))",
+            "(if (== (index (lit Array<int> 1) 0) 1) {(call work)})",
+            "(= _ (< a b))",
+        ]
+    );
+}
+
+#[test]
+fn invalid_dynamic_array_syntax_is_rejected() {
+    for (body, message) in [
+        ("let xs = Array<int>(1)", "expected `{` after `Array<T>`"),
+        ("let xs Foo<int> = xs", "`Foo` does not take type arguments"),
+        ("let xs Array<int = xs", "expected `>`"),
+        ("let xs = Array<int>{1,\n2\n}", "missing trailing comma"),
+    ] {
+        rejects(body, message);
+    }
+    rejects_file(
+        "package main\nfunc f(t Task<int>) {}\n",
+        "not supported by this compiler yet",
+    );
+    let case = Case::new("package main\ntype Bag struct {\n Items Array<int>\n Count int\n}\n");
+    let rendered = case.render();
+    assert!(
+        rendered.contains("§3.7 inserts no semicolon after `>`"),
+        "{rendered}"
+    );
+    Case::new("package main\ntype Bag struct {\n Items Array<int>;\n Count int\n}\n")
+        .assert_clean();
+    Case::new("package main\ntype Bag struct {\n Count int\n Items Array<int>\n}\n").assert_clean();
+}
+
+#[test]
 fn mut_before_a_slice_type_is_part_of_the_type() {
     let case = Case::new(
         "package main
@@ -961,7 +1018,6 @@ fn later_milestone_syntax_is_reported_as_unsupported() {
         rejects(body, "not supported by this compiler yet");
     }
     for text in [
-        "func f(xs Array<int>) {}",
         "func f(t Task<int>) {}",
         "func f(c channel<int>) {}",
         "func f(m map[string]int) {}",

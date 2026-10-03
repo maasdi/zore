@@ -36,7 +36,7 @@ impl Module<'_> {
                 )
             }
             TypeKind::Array { element, size } => format!("[{size} x {}]", self.ty(element)),
-            TypeKind::Slice { .. } => "{ ptr, i64 }".into(),
+            TypeKind::Slice { .. } | TypeKind::DynArray { .. } => "{ ptr, i64 }".into(),
         }
     }
 

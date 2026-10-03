@@ -7,6 +7,8 @@ pub enum AggregateKind {
     Struct(StructId),
     /// Element type; the count is the operand list's length.
     Array(TypeId),
+    /// A newly allocated `Array<T>` of the element type, holding the operands.
+    DynArray(TypeId),
 }
 
 #[derive(Debug)]
@@ -22,9 +24,9 @@ pub enum Rvalue {
     /// Checks `0 <= index < length` (an `int64` length) per the index's own
     /// signedness, panics otherwise, and evaluates to the index widened to `int64`.
     BoundsCheck(Operand, Operand),
-    /// The length of the slice at the place, as an `int64`.
+    /// The length of the slice or dynamic array at the place, as an `int64`.
     Length(Place),
-    /// A view of `place` (an array or slice) from `low` (default zero) up to
+    /// A view of `place` (an array, dynamic array, or slice) from `low` (default zero) up to
     /// `high` (default its length); panics unless `0 <= low <= high <= length`.
     Slice {
         place: Place,

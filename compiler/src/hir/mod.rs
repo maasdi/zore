@@ -47,6 +47,7 @@ impl Package {
                 strukt.drop.is_none() && strukt.fields.iter().all(|f| self.is_copy(f.ty))
             }
             TypeKind::Array { element, .. } => self.is_copy(element),
+            TypeKind::DynArray { .. } => false,
         }
     }
 
@@ -79,7 +80,9 @@ impl Package {
                 .fields
                 .iter()
                 .any(|field| self.contains(field.ty, matches)),
-            TypeKind::Array { element, .. } => self.contains(element, matches),
+            TypeKind::Array { element, .. } | TypeKind::DynArray { element } => {
+                self.contains(element, matches)
+            }
             _ => false,
         }
     }

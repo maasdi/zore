@@ -51,7 +51,6 @@ pub(super) fn predeclared(name: &str) -> Option<Res> {
 
 pub(super) fn unsupported_predeclared(name: &str) -> &'static str {
     match name {
-        "Array" => "`Array` is",
         "Task" => "`Task` is",
         _ => "`clone` is",
     }

@@ -1,8 +1,8 @@
-//! Type syntax: named, fixed-array, and slice types.
+//! Type syntax: named, fixed-array, slice, and dynamic-array types.
 
 use super::parser::{PResult, Parser};
 use crate::ast::*;
-use crate::lexer::{Keyword, Punct, Separator, TokenKind};
+use crate::lexer::{Keyword, Punct, Separator, Token, TokenKind};
 
 impl Parser<'_> {
     pub(super) fn ty(&mut self) -> PResult<Type> {
@@ -10,9 +10,7 @@ impl Parser<'_> {
             TokenKind::Ident => {
                 let name = self.name("a type")?;
                 if self.at(Punct::Lt) {
-                    return Err(
-                        self.unsupported("generic type arguments such as `Array<T>`", "M20–M25")
-                    );
+                    return self.type_arguments(name);
                 }
                 if self.at(Punct::Dot) && *self.peek_at(1) == TokenKind::Ident {
                     return Err(self.unsupported("package-qualified type names", "M23"));
@@ -43,6 +41,56 @@ impl Parser<'_> {
             }
             _ => Err(self.unexpected("a type")),
         }
+    }
+
+    /// `Name<...>` after `Name`: only the predeclared `Array` takes a type
+    /// argument here; `Array` cannot be shadowed (§3.18).
+    fn type_arguments(&mut self, name: Name) -> PResult<Type> {
+        match name.text.as_str() {
+            "Array" => {
+                self.bump();
+                let element = self.ty()?;
+                self.close_type_arguments()?;
+                Ok(Type::DynArray {
+                    element: Box::new(element),
+                    span: self.span_from(name.span),
+                })
+            }
+            "Task" => Err(self.unsupported("`Task<...>` types", "M25–M29")),
+            _ => Err(self.error(
+                format!(
+                    "`{}` does not take type arguments; user-defined generics are not part of the MVP (§22.1)",
+                    name.text
+                ),
+                name.span,
+            )),
+        }
+    }
+
+    /// Consumes the `>` closing a type argument list, splitting it off a
+    /// `>>`, `>=`, or `>>=` token so `Array<Array<int>>` closes both lists.
+    pub(super) fn close_type_arguments(&mut self) -> PResult<()> {
+        let rest = match self.peek() {
+            TokenKind::Punct(Punct::Gt) => {
+                self.bump();
+                return Ok(());
+            }
+            TokenKind::Punct(Punct::Shr) => Punct::Gt,
+            TokenKind::Punct(Punct::GtEq) => Punct::Eq,
+            TokenKind::Punct(Punct::ShrEq) => Punct::GtEq,
+            _ => return Err(self.unexpected("`>`")),
+        };
+        let span = self.current_span();
+        let split = self
+            .file
+            .span(span.start() + 1, span.end())
+            .expect("a `>` token is one byte");
+        self.tokens[self.pos] = Token {
+            kind: TokenKind::Punct(rest),
+            span: split,
+        };
+        self.last_token_end = span.start() + 1;
+        Ok(())
     }
 
     /// Whether the tokens `ahead` positions from here begin `[]`.
