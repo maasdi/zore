@@ -1,8 +1,8 @@
 # Bootstrap architecture
 
 Status: The compiler supports a synchronous subset through parts of M18–M20,
-including Move structs, deterministic drops, concrete error values, and fixed
-arrays. Paths below are relative to `compiler/src/`. `main.rs` delegates to
+including Move structs, deterministic drops, concrete error values, fixed
+arrays, and borrowed slices with region analysis. Paths below are relative to `compiler/src/`. `main.rs` delegates to
 `driver`; `driver/command.rs` and `driver/session.rs` handle CLI arguments and
 exit status; `driver/check.rs` orchestrates the frontend pipeline and
 `driver/build.rs` the native one. `source/` stores UTF-8 text under stable
@@ -38,17 +38,18 @@ when existing code belongs in it (rule 11: no empty scaffolding):
   (`type_id.rs`, `ty.rs`, `type_store.rs`, plus `constant.rs` and `bignum.rs`
   for exact constant evaluation), `hir/` (`expr.rs`, `stmt.rs`, `function.rs`,
   `lower.rs`).
-- `ownership/` (`checker.rs`, `move_state.rs`), `mir/` (`body.rs`, `block.rs`,
-  `statement.rs`, `terminator.rs`, `operand.rs`, `rvalue.rs`, `lower.rs`, and
-  `error_use.rs`, the MIR error-use check), `dropck/` (`insertion.rs`).
+- `ownership/` (`checker.rs`, `move_state.rs`, `borrow.rs`, `region.rs`),
+  `mir/` (`body.rs`, `block.rs`, `statement.rs`, `terminator.rs`,
+  `operand.rs`, `rvalue.rs`, `lower.rs`, and `error_use.rs`, the MIR
+  error-use check), `dropck/` (`insertion.rs`).
 - `codegen/` (`llvm.rs`, `layout.rs`, `abi.rs`).
 
 Each stage's `mod.rs` re-exports its own submodules, so stage paths such as
 `zore::ast::Expr` or `zore::hir::ExprKind` do not expose the file split.
 `zore::check` and `zore::build` remain as crate-root shortcuts to the driver.
 The files the structure guide names but that have nothing to hold yet stay
-uncreated: `ownership/{place,projection,borrow,region}.rs` (until stored
-borrows), `dropck/analysis.rs`, `types/{function_type,classify}.rs`,
+uncreated: `ownership/{place,projection}.rs` (MIR places serve both
+purposes), `dropck/analysis.rs`, `types/{function_type,classify}.rs`,
 `diagnostic/code.rs` (no diagnostic codes yet), `async_lowering/`, and
 `context/`.
 
@@ -158,9 +159,11 @@ followed by one rounding, which equals the correctly rounded IEEE result.
 
 The checker accepts a deliberately small, single-file subset: primitive values,
 `error`, structs including Move structs with custom `drop` methods, fixed
-arrays, functions, methods, and `println`. Ownership analysis (`ownership/`)
-checks whole-place and field-level partial moves, reinitialization, and
-call-local borrows over MIR; error-use analysis checks named `error` bindings
+arrays, borrowed slices (`[]T`, `mut []T`, `base[low:high]`), functions,
+methods, and `println`. Ownership analysis (`ownership/`) checks whole-place
+and field-level partial moves, reinitialization, and call-local borrows over
+MIR (`checker.rs`), then runs region analysis (`region.rs`) over the loans
+described in `borrow.rs`; error-use analysis checks named `error` bindings
 and parameters on normal control-flow paths. Awaited `?`, `async`/`await`, imports, package variables,
 rune conversions, and function values remain unsupported. `println` of a float
 type-checks, but its text format is still TBD (§37.1).
@@ -173,8 +176,30 @@ recursive borrow provenance independently of Copy/Move classification, including
 exclusive reborrow relationships and input-to-result contracts (§11.7, §12.3).
 Projected moves must respect custom-destructor boundaries (§31.2). Task/channel
 escape checks need independent backing lifetime proofs across error and unwind
-paths (§18.4, §19.4). Persistent borrows and async lifetime proofs remain
-future work.
+paths (§18.4, §19.4). Async lifetime proofs remain future work.
+
+Region analysis is an NLL-style pass. A loan is created by slicing, by copying
+a `mut []T` (an exclusive reborrow, §12.3), or by a call whose result borrows
+from an argument. Loans cover storage paths: a MIR place with an explicit
+`Deref` step wherever a slice descriptor is indexed, so a loan through a
+descriptor never blocks reassigning or ending the descriptor itself. Each
+local that can hold a view carries a may-set of loans (forward data flow;
+whole-local assignment replaces it and ends loans through the replaced
+descriptor). Backward liveness decides where each local's value can still be
+read; a loan is live exactly while a live local holds it. Every access is
+checked against the live loans (reads conflict only with exclusive loans;
+writes, moves, and scope ends with any), and a slice of any part of an owner
+borrows the whole originating place (§12.5). Return contracts record, per
+result and parameter, whether the result views the argument's own storage or
+forwards views it already holds; they are computed as a least fixpoint over
+all functions, so recursion is handled, and substituted at each call. A
+returned view must be backed by a by-reference parameter or forwarded from a
+parameter's views (§11.7). Shared parameters whose type contains a fixed array
+are passed by reference so such views can be returned. Temporary
+restrictions, each diagnosed: `mut []T` cannot be nested inside a struct field,
+array, or slice element; a view cannot be stored through a slice element or a
+by-reference parameter; and a type containing a view cannot define a custom
+`drop`.
 
 The pass order in §25 is conceptual. The frontend lowers checked HIR to MIR,
 runs ownership and error-use analysis, then returns diagnostics or a package.

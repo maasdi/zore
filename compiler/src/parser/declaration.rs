@@ -152,7 +152,7 @@ impl Parser<'_> {
             );
             return Err(self.error(message, name.span));
         }
-        let mode = if self.at_keyword(Keyword::Mut) {
+        let mode = if self.at_keyword(Keyword::Mut) && !self.at_slice_type_after(1) {
             self.bump();
             ParamMode::Mut
         } else if self.at_keyword(Keyword::Own) {

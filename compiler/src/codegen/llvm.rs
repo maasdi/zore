@@ -170,21 +170,7 @@ impl FunctionBuilder<'_, '_> {
     }
 
     pub(super) fn place_ty(&self, place: &Place) -> TypeId {
-        let package = self.module.package;
-        let mut ty = self.local_ty(place.local);
-        for projection in &place.projections {
-            ty = match projection {
-                mir::Projection::Field(field) => {
-                    let id = package.types.struct_id(ty).expect("struct projection");
-                    package.strukt(id).fields[field.0 as usize].ty
-                }
-                mir::Projection::Index(_) => match package.types.kind(ty) {
-                    TypeKind::Array { element, .. } => element,
-                    _ => unreachable!("index projection on a non-array"),
-                },
-            };
-        }
-        ty
+        mir::place_type(self.module.package, &self.body.locals, place)
     }
 
     pub(super) fn operand_ty(&self, operand: &Operand) -> TypeId {
@@ -258,6 +244,9 @@ impl FunctionBuilder<'_, '_> {
         self.out.push_str("}\n\n");
     }
 
+    /// The address of `place`. Fields and array elements fold into one
+    /// `getelementptr`; indexing a slice loads its descriptor's data pointer
+    /// and continues from the element it designates.
     pub(super) fn address(&mut self, place: &Place) -> String {
         let mut base = format!("%l{}", place.local.0);
         if self.body.locals[place.local.0 as usize].by_reference {
@@ -265,25 +254,133 @@ impl FunctionBuilder<'_, '_> {
             self.line(format!("{referent} = load ptr, ptr {base}"));
             base = referent;
         }
-        if place.projections.is_empty() {
-            return base;
-        }
-        let ty = self.ty(self.local_ty(place.local));
+        let mut ty = self.local_ty(place.local);
+        let mut gep_root = ty;
         let mut indices = String::new();
         for projection in &place.projections {
             match projection {
                 mir::Projection::Field(f) => write!(indices, ", i32 {}", f.0).unwrap(),
                 mir::Projection::Index(operand) => {
                     let value = self.value(operand);
-                    write!(indices, ", i64 {value}").unwrap();
+                    if let TypeKind::Slice { element, .. } = self.module.package.types.kind(ty) {
+                        base = self.element_pointer(&base, gep_root, &mut indices);
+                        let data = self.slice_data(&base);
+                        let element_address = self.fresh();
+                        self.line(format!(
+                            "{element_address} = getelementptr inbounds {}, ptr {data}, i64 {value}",
+                            self.ty(element)
+                        ));
+                        base = element_address;
+                        gep_root = element;
+                    } else {
+                        write!(indices, ", i64 {value}").unwrap();
+                    }
                 }
             }
+            ty = mir::projection_type(self.module.package, ty, projection);
+        }
+        self.element_pointer(&base, gep_root, &mut indices)
+    }
+
+    /// Applies the pending `indices` to `base` (of type `root`), if any.
+    fn element_pointer(&mut self, base: &str, root: TypeId, indices: &mut String) -> String {
+        if indices.is_empty() {
+            return base.to_string();
         }
         let name = self.fresh();
         self.line(format!(
-            "{name} = getelementptr inbounds {ty}, ptr {base}, i32 0{indices}"
+            "{name} = getelementptr inbounds {}, ptr {base}, i32 0{indices}",
+            self.ty(root)
         ));
+        indices.clear();
         name
+    }
+
+    /// Loads the data pointer of the slice descriptor stored at `address`.
+    fn slice_data(&mut self, address: &str) -> String {
+        let descriptor = self.fresh();
+        self.line(format!("{descriptor} = load {{ ptr, i64 }}, ptr {address}"));
+        let data = self.fresh();
+        self.line(format!(
+            "{data} = extractvalue {{ ptr, i64 }} {descriptor}, 0"
+        ));
+        data
+    }
+
+    /// The `int64` length of the slice descriptor at `place`.
+    fn slice_length(&mut self, place: &Place) -> String {
+        let address = self.address(place);
+        let descriptor = self.fresh();
+        self.line(format!("{descriptor} = load {{ ptr, i64 }}, ptr {address}"));
+        let length = self.fresh();
+        self.line(format!(
+            "{length} = extractvalue {{ ptr, i64 }} {descriptor}, 1"
+        ));
+        length
+    }
+
+    /// A view of `place` from `low` up to `high`, panicking unless
+    /// `0 <= low <= high <= length` (§12.6). Bounds are widened per their own
+    /// signedness, so unsigned comparisons also catch negative signed bounds.
+    fn slice(
+        &mut self,
+        place: &Place,
+        low: Option<&Operand>,
+        high: Option<&Operand>,
+        span: Span,
+    ) -> String {
+        let base_ty = self.place_ty(place);
+        let (element, data, length) = match self.module.package.types.kind(base_ty) {
+            TypeKind::Array { element, size } => {
+                let array = self.address(place);
+                let first = self.fresh();
+                self.line(format!(
+                    "{first} = getelementptr inbounds {}, ptr {array}, i64 0, i64 0",
+                    self.ty(base_ty)
+                ));
+                (element, first, size.to_string())
+            }
+            TypeKind::Slice { element, .. } => {
+                let address = self.address(place);
+                let descriptor = self.fresh();
+                self.line(format!("{descriptor} = load {{ ptr, i64 }}, ptr {address}"));
+                let data = self.fresh();
+                self.line(format!(
+                    "{data} = extractvalue {{ ptr, i64 }} {descriptor}, 0"
+                ));
+                let length = self.fresh();
+                self.line(format!(
+                    "{length} = extractvalue {{ ptr, i64 }} {descriptor}, 1"
+                ));
+                (element, data, length)
+            }
+            _ => unreachable!("only arrays and slices can be sliced"),
+        };
+        let low = low.map_or_else(|| "0".to_string(), |low| self.widen_to_i64(low));
+        let high = high.map_or_else(|| length.clone(), |high| self.widen_to_i64(high));
+        let high_past_end = self.fresh();
+        self.line(format!("{high_past_end} = icmp ugt i64 {high}, {length}"));
+        let reversed = self.fresh();
+        self.line(format!("{reversed} = icmp ugt i64 {low}, {high}"));
+        let invalid = self.fresh();
+        self.line(format!("{invalid} = or i1 {high_past_end}, {reversed}"));
+        self.panic_if(&invalid, "slice bounds out of range", span);
+        let start = self.fresh();
+        self.line(format!(
+            "{start} = getelementptr inbounds {}, ptr {data}, i64 {low}",
+            self.ty(element)
+        ));
+        let count = self.fresh();
+        self.line(format!("{count} = sub i64 {high}, {low}"));
+        let with_data = self.fresh();
+        self.line(format!(
+            "{with_data} = insertvalue {{ ptr, i64 }} undef, ptr {start}, 0"
+        ));
+        let view = self.fresh();
+        self.line(format!(
+            "{view} = insertvalue {{ ptr, i64 }} {with_data}, i64 {count}, 1"
+        ));
+        view
     }
 
     pub(super) fn flag_address(&mut self, place: &Place) -> String {
@@ -296,7 +393,7 @@ impl FunctionBuilder<'_, '_> {
         }
         for projection in &place.projections {
             let mir::Projection::Field(field) = projection else {
-                unreachable!("array codegen is rejected by the upfront array-support guard")
+                unreachable!("indexed places use scratch flags, not persistent ones")
             };
             let id = self
                 .module
@@ -431,35 +528,32 @@ impl FunctionBuilder<'_, '_> {
 
     /// Widens `operand` to `int64` per its own signedness, panics if it
     /// falls outside `[0, length)`, and evaluates to the widened value.
-    pub(super) fn bounds_check(&mut self, operand: &Operand, length: u32, span: Span) -> String {
+    /// Widens an integer operand to `int64` per its own signedness, so a
+    /// negative signed value becomes a huge unsigned one and fails any
+    /// unsigned comparison against a length.
+    pub(super) fn widen_to_i64(&mut self, operand: &Operand) -> String {
         let int = self
             .module
             .package
             .types
             .int(self.operand_ty(operand))
-            .expect("array index is an integer");
+            .expect("index operands are integers");
         let value = self.value(operand);
-        let wide = if int.bits == 64 {
-            value
-        } else {
-            let name = self.fresh();
-            let extend = if int.signed { "sext" } else { "zext" };
-            self.line(format!("{name} = {extend} i{} {value} to i64", int.bits));
-            name
-        };
-        let high = self.fresh();
-        let predicate = if int.signed { "sge" } else { "uge" };
-        self.line(format!("{high} = icmp {predicate} i64 {wide}, {length}"));
-        let condition = if int.signed {
-            let low = self.fresh();
-            self.line(format!("{low} = icmp slt i64 {wide}, 0"));
-            let both = self.fresh();
-            self.line(format!("{both} = or i1 {low}, {high}"));
-            both
-        } else {
-            high
-        };
-        self.panic_if(&condition, "index out of range", span);
+        if int.bits == 64 {
+            return value;
+        }
+        let name = self.fresh();
+        let extend = if int.signed { "sext" } else { "zext" };
+        self.line(format!("{name} = {extend} i{} {value} to i64", int.bits));
+        name
+    }
+
+    pub(super) fn bounds_check(&mut self, index: &Operand, length: &Operand, span: Span) -> String {
+        let wide = self.widen_to_i64(index);
+        let length = self.value(length);
+        let out_of_range = self.fresh();
+        self.line(format!("{out_of_range} = icmp uge i64 {wide}, {length}"));
+        self.panic_if(&out_of_range, "index out of range", span);
         wide
     }
 
@@ -491,7 +585,11 @@ impl FunctionBuilder<'_, '_> {
             Rvalue::Unary(op, operand) => self.unary(*op, operand, span),
             Rvalue::Convert(operand, to) => self.convert(operand, *to, span),
             Rvalue::Error(operand) => self.error_value(operand),
-            Rvalue::BoundsCheck(operand, length) => self.bounds_check(operand, *length, span),
+            Rvalue::BoundsCheck(index, length) => self.bounds_check(index, length, span),
+            Rvalue::Length(place) => self.slice_length(place),
+            Rvalue::Slice {
+                place, low, high, ..
+            } => self.slice(place, low.as_ref(), high.as_ref(), span),
             Rvalue::Aggregate(_, operands) => {
                 let ty = self.ty(result_ty);
                 let mut current = "undef".to_string();
@@ -662,10 +760,9 @@ impl FunctionBuilder<'_, '_> {
                     }
                     ty = self.module.package.strukt(id).fields[field.0 as usize].ty;
                 }
-                mir::Projection::Index(_) => match self.module.package.types.kind(ty) {
-                    TypeKind::Array { element, .. } => ty = element,
-                    _ => unreachable!("index projection on a non-array"),
-                },
+                index @ mir::Projection::Index(_) => {
+                    ty = mir::projection_type(self.module.package, ty, index);
+                }
             }
         }
         false
@@ -809,6 +906,7 @@ impl FunctionBuilder<'_, '_> {
             }
             TypeKind::Struct(_) => unreachable!("structs have no operators"),
             TypeKind::Array { .. } => unreachable!("arrays have no operators"),
+            TypeKind::Slice { .. } => unreachable!("slices have no operators"),
         }
     }
 

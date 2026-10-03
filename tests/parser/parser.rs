@@ -64,7 +64,9 @@ impl Case {
 fn type_name(t: &Type) -> &str {
     match t {
         Type::Named(name) => &name.text,
-        Type::Array { .. } => panic!("expected a named type, found an array type"),
+        Type::Array { .. } | Type::Slice { .. } => {
+            panic!("expected a named type, found an array or slice type")
+        }
     }
 }
 
@@ -74,6 +76,13 @@ fn ty(case: &Case, t: &Type) -> String {
         Type::Array { element, size, .. } => {
             format!("[{} ; {}]", ty(case, element), expr(case, size))
         }
+        Type::Slice {
+            element, mutable, ..
+        } => format!(
+            "{}[]{}",
+            if *mutable { "mut " } else { "" },
+            ty(case, element)
+        ),
     }
 }
 
@@ -112,6 +121,15 @@ fn expr(case: &Case, e: &Expr) -> String {
         ExprKind::Field { base, name } => format!("(. {} {})", expr(case, base), name.text),
         ExprKind::Index { base, index } => {
             format!("(index {} {})", expr(case, base), expr(case, index))
+        }
+        ExprKind::Slice { base, low, high } => {
+            let bound = |b: &Option<Box<Expr>>| b.as_ref().map_or("_".into(), |b| expr(case, b));
+            format!(
+                "(slice {} {} {})",
+                expr(case, base),
+                bound(low),
+                bound(high)
+            )
         }
         ExprKind::StructLit {
             ty: struct_ty,
@@ -738,11 +756,72 @@ fn arrays_and_indexing() {
 }
 
 #[test]
+fn slice_types_and_slicing_expressions() {
+    let case = Case::body(
+        "let a []int = xs[1:3]
+        var b mut []int = xs[:2]
+        let c = xs[1:]
+        let d = xs[:]
+        edit(xs[:])
+        let nested [][]int = grid[:]
+        let rows [[]int; 2] = rows
+        _ = c[0]",
+    );
+    case.assert_clean();
+    assert_eq!(
+        case.shape(),
+        [
+            "(let a []int (slice xs 1 3))",
+            "(var b mut []int (slice xs _ 2))",
+            "(let c (slice xs 1 _))",
+            "(let d (slice xs _ _))",
+            "(call edit (slice xs _ _))",
+            "(let nested [][]int (slice grid _ _))",
+            "(let rows [[]int ; 2] rows)",
+            "(= _ (index c 0))",
+        ]
+    );
+}
+
+#[test]
+fn mut_before_a_slice_type_is_part_of_the_type() {
+    let case = Case::new(
+        "package main
+        type View struct { Items []int }
+        func edit(items mut []int, fixed mut [int; 3], again mut mut []int) mut []int { return items }
+        ",
+    );
+    case.assert_clean();
+    let Item::Func(edit) = &case.parsed.file.items[1] else {
+        panic!("expected a function");
+    };
+    let params: Vec<(ParamMode, String)> = edit
+        .params
+        .iter()
+        .map(|p| (p.mode, ty(&case, &p.ty)))
+        .collect();
+    assert_eq!(
+        params,
+        [
+            (ParamMode::Borrow, "mut []int".to_string()),
+            (ParamMode::Mut, "[int ; 3]".to_string()),
+            (ParamMode::Mut, "mut []int".to_string()),
+        ]
+    );
+    assert_eq!(ty(&case, &edit.results[0]), "mut []int");
+}
+
+#[test]
 fn invalid_array_syntax_is_rejected() {
     for (body, message) in [
         ("let xs [int 3] = xs", "`;`"),
-        ("let xs []int = xs", "slice types"),
-        ("_ = xs[1:2]", "slicing expressions"),
+        ("_ = xs[0:1:2]", "at most two bounds"),
+        ("_ = xs[::2]", "at most two bounds"),
+        ("let s = []int{1, 2}", "slice literals are not part of Zore"),
+        (
+            "var x mut [int; 3] = xs",
+            "`mut` in a type only forms a mutable slice type",
+        ),
         (
             "let xs = [int; 3]{1,\n2,\n3\n}\n_ = xs",
             "missing trailing comma",
@@ -874,7 +953,6 @@ fn package_level_bindings_are_parsed() {
 #[test]
 fn later_milestone_syntax_is_reported_as_unsupported() {
     for body in [
-        "_ = items[1:2]",
         "let m = map[string]int{}",
         "let t = go work()",
         "go work()",
@@ -883,7 +961,6 @@ fn later_milestone_syntax_is_reported_as_unsupported() {
         rejects(body, "not supported by this compiler yet");
     }
     for text in [
-        "func f(xs []int) {}",
         "func f(xs Array<int>) {}",
         "func f(t Task<int>) {}",
         "func f(c channel<int>) {}",

@@ -228,3 +228,386 @@ fn assigning_through_an_index_of_a_moved_array_is_rejected() {
         "cannot assign through moved value `w.arr[_]`",
     );
 }
+
+const SLICE_FUNCS: &str = "func inspect(items []int) int { return items[0] }
+func edit(items mut []int) { items[0] = 9 }
+func firstHalf(s mut []int) mut []int { return s[:1] }";
+
+/// Statements as `main`'s body, after the shared slice helpers.
+fn slice_body(stmts: &str) -> String {
+    format!("package main\n\n{SLICE_FUNCS}\n\nfunc main() {{\n{stmts}\n}}\n")
+}
+
+/// Declarations after the shared slice helpers, in a `main` package.
+fn slice_program(decls: &str) -> String {
+    program(&format!("{SLICE_FUNCS}\n{decls}"))
+}
+
+#[test]
+fn mutable_views_of_one_owner_conflict_regardless_of_ranges() {
+    let case = rejects(
+        &slice_body(
+            "var data = [int; 4]{1, 2, 3, 4}
+            var low mut []int = data[0:2]
+            var high mut []int = data[2:4]
+            edit(low)
+            edit(high)",
+        ),
+        "cannot borrow `data` as mutable because it is already borrowed",
+    );
+    let rendered = case.checked.diagnostics[0].render(&case.sources).unwrap();
+    assert!(
+        rendered.contains("mutable borrow of `data` created here"),
+        "{rendered}"
+    );
+    assert!(
+        rendered.contains("the view `low` is used later"),
+        "{rendered}"
+    );
+    assert!(rendered.contains("whole originating place"), "{rendered}");
+    accepts(&slice_body(
+        "var data = [int; 4]{1, 2, 3, 4}
+        var low mut []int = data[0:2]
+        edit(low)
+        var high mut []int = data[2:4]
+        edit(high)",
+    ));
+}
+
+#[test]
+fn shared_and_mutable_views_cannot_overlap_while_live() {
+    rejects(
+        &slice_body(
+            "var data = [int; 3]{1, 2, 3}
+            let view = data[:]
+            var part mut []int = data[1:]
+            edit(part)
+            _ = inspect(view)",
+        ),
+        "cannot borrow `data` as mutable because it is already borrowed",
+    );
+    accepts(&slice_body(
+        "var data = [int; 3]{1, 2, 3}
+        let view = data[:]
+        _ = inspect(view)
+        var part mut []int = data[1:]
+        edit(part)",
+    ));
+    accepts(&slice_body(
+        "var data = [int; 3]{1, 2, 3}
+        let a = data[:]
+        let b = data[1:]
+        _ = inspect(a)
+        _ = inspect(b)
+        _ = data[0]",
+    ));
+}
+
+#[test]
+fn the_owner_is_usable_again_after_the_view_last_use() {
+    rejects(
+        &slice_body(
+            "var data = [int; 3]{1, 2, 3}
+            let view = data[:]
+            data[0] = 5
+            _ = inspect(view)",
+        ),
+        "cannot assign to `data[_]` while it is borrowed",
+    );
+    accepts(&slice_body(
+        "var data = [int; 3]{1, 2, 3}
+        let view = data[:]
+        _ = inspect(view)
+        data[0] = 5",
+    ));
+    rejects(
+        &slice_body(
+            "var data = [int; 3]{1, 2, 3}
+            var part mut []int = data[:]
+            _ = data[0]
+            edit(part)",
+        ),
+        "cannot use `data[_]` while it is mutably borrowed",
+    );
+}
+
+#[test]
+fn returned_views_keep_the_argument_borrowed() {
+    rejects(
+        &slice_body(
+            "var data = [int; 3]{1, 2, 3}
+            let half = firstHalf(data[:])
+            _ = data[0]
+            _ = half[0]",
+        ),
+        "cannot use `data[_]` while it is mutably borrowed",
+    );
+    accepts(&slice_body(
+        "var data = [int; 3]{1, 2, 3}
+        let half = firstHalf(data[:])
+        _ = half[0]
+        _ = data[0]",
+    ));
+}
+
+#[test]
+fn copying_a_mutable_view_suspends_the_source() {
+    rejects(
+        &slice_program("func use(s mut []int) { var next = s\ns[0] = 1\nnext[0] = 2 }"),
+        "cannot assign to `s[_]` while it is borrowed",
+    );
+    accepts(&slice_program(
+        "func use(s mut []int) { var next = s\nnext[0] = 2\ns[0] = 1 }",
+    ));
+    rejects(
+        &slice_program(
+            "func use(s mut []int) { var tail mut []int = s[1:]\n_ = s[0]\ntail[0] = 2 }",
+        ),
+        "cannot use `s[_]` while it is mutably borrowed",
+    );
+    accepts(&slice_program(
+        "func use(s mut []int) { var tail mut []int = s[1:]\ntail[0] = 2\n_ = s[0] }",
+    ));
+    accepts(&slice_program(
+        "func use(s []int) int { let copy = s\nreturn s[0] + copy[0] }",
+    ));
+    accepts(&slice_program(
+        "func use(s []int) int { var rest = s\nrest = rest[1:]\nreturn rest[0] }",
+    ));
+}
+
+#[test]
+fn return_contracts_require_parameter_backed_views() {
+    accepts(&slice_program(
+        "type View struct { Items []int }
+        func same(s mut []int) mut []int { return s }
+        func whole(a [int; 2]) []int { return a[:] }
+        func exclusive(a mut [int; 2]) mut []int { return a[1:] }
+        func wrap(items []int) View { return View{Items: items} }
+        func forward(view View) View { return view }",
+    ));
+    for (decl, message) in [
+        (
+            "func f() []int { let a = [int; 2]{1, 2}\nreturn a[:] }",
+            "cannot return a view of local `a`",
+        ),
+        (
+            "func f() []int { let a = [int; 2]{1, 2}\nreturn a[0:0] }",
+            "cannot return a view of local `a`",
+        ),
+        (
+            "func mk() [int; 2] { return [int; 2]{1, 2} }\nfunc f() []int { return mk()[:] }",
+            "cannot return a view of a temporary value",
+        ),
+        (
+            "func f(a own [int; 2]) []int { return a[:] }",
+            "cannot return a view of `own` parameter `a`",
+        ),
+        (
+            "type View struct { Items []int }\nfunc f() View { let a = [int; 2]{1, 2}\nreturn View{Items: a[:]} }",
+            "cannot return a view of local `a`",
+        ),
+    ] {
+        rejects(&slice_program(decl), message);
+    }
+    accepts(&slice_program(
+        "type Holder struct { Items []int }
+        func f(h own Holder) []int { return h.Items }",
+    ));
+}
+
+#[test]
+fn contracts_bind_results_only_to_the_inputs_they_derive_from() {
+    let pick_first = "func pick(a []int, b []int) []int { return a }";
+    accepts(&slice_program(&format!(
+        "{pick_first}
+        func use() {{ var x = [int; 2]{{1, 2}}\nvar y = [int; 2]{{3, 4}}\nlet r = pick(x[:], y[:])\ny[0] = 7\n_ = r[0] }}"
+    )));
+    let either = "func either(c bool, a []int, b []int) []int { if c { return a }\nreturn b }";
+    rejects(
+        &slice_program(&format!(
+            "{either}
+            func use() {{ var x = [int; 2]{{1, 2}}\nvar y = [int; 2]{{3, 4}}\nlet r = either(true, x[:], y[:])\ny[0] = 7\n_ = r[0] }}"
+        )),
+        "cannot assign to `y[_]` while it is borrowed",
+    );
+    let wrap = "type View struct { Items []int }\nfunc wrap(items []int) View { return View{Items: items} }";
+    rejects(
+        &slice_program(&format!(
+            "{wrap}
+            func use() {{ var x = [int; 2]{{1, 2}}\nlet v = wrap(x[:])\nx[0] = 3\n_ = v.Items[0] }}"
+        )),
+        "cannot assign to `x[_]` while it is borrowed",
+    );
+}
+
+#[test]
+fn recursive_functions_get_consistent_contracts() {
+    let rec =
+        "func rec(n int, s mut []int) mut []int { if n == 0 { return s }\nreturn rec(n - 1, s) }";
+    rejects(
+        &slice_program(&format!(
+            "{rec}
+            func use() {{ var x = [int; 2]{{1, 2}}\nlet r = rec(3, x[:])\n_ = x[0]\n_ = r[0] }}"
+        )),
+        "cannot use `x[_]` while it is mutably borrowed",
+    );
+    accepts(&slice_program(&format!(
+        "{rec}
+        func use() {{ var x = [int; 2]{{1, 2}}\nlet r = rec(3, x[:])\n_ = r[0]\n_ = x[0] }}"
+    )));
+}
+
+#[test]
+fn zero_slices_returned_by_propagation_have_no_loan() {
+    accepts(&program(
+        "func g() error { return nil }
+        func f() ([]int, error) {\ng()?\nreturn f() }",
+    ));
+}
+
+#[test]
+fn views_cannot_outlive_their_owner() {
+    rejects(
+        &slice_body(
+            "var data = [int; 2]{1, 2}
+            var s []int = data[:]
+            if true {
+                let inner = [int; 2]{3, 4}
+                s = inner[:]
+            }
+            _ = inspect(s)",
+        ),
+        "`inner` does not live long enough",
+    );
+    accepts(&slice_body(
+        "var data = [int; 2]{1, 2}
+        var s []int = data[:]
+        if true {
+            let inner = [int; 2]{3, 4}
+            s = inner[:]
+            _ = inspect(s)
+            s = data[:]
+        }
+        _ = inspect(s)",
+    ));
+    rejects(
+        &slice_program(
+            "func mk() [int; 2] { return [int; 2]{1, 2} }
+            func use() { let s = mk()[:]\n_ = inspect(s) }",
+        ),
+        "temporary value does not live long enough",
+    );
+    accepts(&slice_program(
+        "func mk() [int; 2] { return [int; 2]{1, 2} }
+        func use() { _ = inspect(mk()[:]) }",
+    ));
+}
+
+#[test]
+fn loops_carry_live_views_across_iterations() {
+    rejects(
+        &slice_body(
+            "var data = [int; 2]{1, 2}
+            var s []int = data[:]
+            for var i = 0; i < 2; i += 1 {
+                let inner = [int; 2]{3, 4}
+                _ = inspect(s)
+                s = inner[:]
+            }",
+        ),
+        "does not live long enough",
+    );
+    rejects(
+        &slice_body(
+            "var data = [int; 2]{1, 2}
+            var other = [int; 2]{3, 4}
+            var previous mut []int = other[:]
+            for var i = 0; i < 2; i += 1 {
+                var current mut []int = data[:]
+                edit(previous)
+                previous = current
+            }",
+        ),
+        "cannot borrow `data` as mutable because it is already borrowed",
+    );
+    accepts(&slice_body(
+        "var data = [int; 2]{1, 2}
+        var keep mut []int = data[:]
+        for var i = 0; i < 2; i += 1 {
+            edit(keep)
+            keep = data[:]
+        }",
+    ));
+    accepts(&slice_body(
+        "var data = [int; 2]{1, 2}
+        for var i = 0; i < 2; i += 1 {
+            var part mut []int = data[:]
+            edit(part)
+        }",
+    ));
+}
+
+#[test]
+fn backing_owners_cannot_be_moved_replaced_or_dropped_while_viewed() {
+    let resource = "type Res struct { id int }\nfunc (r mut Res) drop() {}\nfunc first(rs []Res) int { return rs[0].id }";
+    for (stmts, message) in [
+        ("let taken = rs", "cannot move `rs` while it is borrowed"),
+        (
+            "rs = [Res; 2]{Res{id: 3}, Res{id: 4}}",
+            "cannot assign to `rs` while it is borrowed",
+        ),
+        ("drop(rs)", "cannot move `rs` while it is borrowed"),
+    ] {
+        rejects(
+            &program(&format!(
+                "{resource}
+                func use() {{ var rs = [Res; 2]{{Res{{id: 1}}, Res{{id: 2}}}}\nlet view = rs[:]\n{stmts}\n_ = first(view) }}"
+            )),
+            message,
+        );
+    }
+    accepts(&program(&format!(
+        "{resource}
+        func use() {{ var rs = [Res; 2]{{Res{{id: 1}}, Res{{id: 2}}}}\nlet view = rs[:]\n_ = first(view)\nlet taken = rs }}"
+    )));
+}
+
+#[test]
+fn views_cannot_be_stored_through_parameters_or_slice_elements_yet() {
+    rejects(
+        &program(
+            "type View struct { Items []int }
+            func fill(out mut View, items []int) { out.Items = items }",
+        ),
+        "storing a borrowed view through `out.Items` is not supported yet",
+    );
+    rejects(
+        &program("func set(rows mut [][]int, items []int) { rows[0] = items }"),
+        "storing a borrowed view through `rows[_]` is not supported yet",
+    );
+}
+
+#[test]
+fn a_call_cannot_take_a_mutable_view_and_read_its_source() {
+    rejects(
+        &slice_program(
+            "func both(a mut []int, b [int; 3]) {}
+            func use() { var data = [int; 3]{1, 2, 3}\nboth(data[:], data) }",
+        ),
+        "cannot borrow `data` because it is mutably borrowed",
+    );
+}
+
+#[test]
+fn moving_an_element_out_of_a_slice_is_rejected() {
+    rejects(
+        &program(
+            "type Res struct { id int }
+            func (r mut Res) drop() {}
+            func take(r own Res) {}
+            func use(rs []Res) { take(rs[0]) }",
+        ),
+        "cannot move `rs[_]` out of a slice",
+    );
+}

@@ -111,6 +111,7 @@ impl Parser<'_> {
 
     pub(super) fn access(&mut self) -> PResult<Expr> {
         let mut expr = self.primary()?;
+        let start = expr.span;
         loop {
             if self.at(Punct::LParen) {
                 self.bump();
@@ -136,22 +137,47 @@ impl Parser<'_> {
                 };
             } else if self.at(Punct::LBracket) {
                 self.bump();
-                let index = self.with_struct_literals(true, Self::expr)?;
-                if self.at(Punct::Colon) {
-                    return Err(self.unsupported("slicing expressions", "M20–M21"));
-                }
-                self.expect(Punct::RBracket)?;
+                let kind = self.with_struct_literals(true, |p| p.index_or_slice(expr))?;
                 expr = Expr {
-                    span: self.span_from(expr.span),
-                    kind: ExprKind::Index {
-                        base: Box::new(expr),
-                        index: Box::new(index),
-                    },
+                    span: self.span_from(start),
+                    kind,
                 };
             } else {
                 return Ok(expr);
             }
         }
+    }
+
+    /// The rest of `base[index]` or `base[low:high]`, after the `[`.
+    fn index_or_slice(&mut self, base: Expr) -> PResult<ExprKind> {
+        let base = Box::new(base);
+        let low = if self.at(Punct::Colon) {
+            None
+        } else {
+            let index = self.expr()?;
+            if self.eat(Punct::RBracket) {
+                return Ok(ExprKind::Index {
+                    base,
+                    index: Box::new(index),
+                });
+            }
+            Some(Box::new(index))
+        };
+        self.expect(Punct::Colon)?;
+        let high = if self.at(Punct::RBracket) || self.at(Punct::Colon) {
+            None
+        } else {
+            Some(Box::new(self.expr()?))
+        };
+        if self.at(Punct::Colon) {
+            let span = self.current_span();
+            return Err(self.error(
+                "a slice expression takes at most two bounds; Zore has no capacity bound or stride (§12.6)",
+                span,
+            ));
+        }
+        self.expect(Punct::RBracket)?;
+        Ok(ExprKind::Slice { base, low, high })
     }
 
     pub(super) fn primary(&mut self) -> PResult<Expr> {
@@ -229,7 +255,13 @@ impl Parser<'_> {
     /// `[element; size]{e1, e2, ...}`.
     pub(super) fn array_literal(&mut self) -> PResult<Expr> {
         let span = self.current_span();
-        let ty = self.array_type()?;
+        let ty = self.bracket_type()?;
+        if let Type::Slice { span, .. } = ty {
+            return Err(self.error(
+                "slice literals are not part of Zore; slice existing storage instead, e.g. `data[:]` (§12.6)",
+                span,
+            ));
+        }
         self.expect(Punct::LBrace)?;
         let elements = self.with_struct_literals(true, |p| {
             p.comma_list(Punct::RBrace, "element", true, Self::expr)

@@ -45,6 +45,12 @@ pub enum ExprKind {
         base: Box<Expr>,
         index: Box<Expr>,
     },
+    /// `base[low:high]`; either bound may be omitted.
+    Slice {
+        base: Box<Expr>,
+        low: Option<Box<Expr>>,
+        high: Option<Box<Expr>>,
+    },
     StructLit {
         ty: Name,
         fields: Vec<FieldInit>,

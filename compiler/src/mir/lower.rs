@@ -4,7 +4,7 @@ use crate::ast::{BinaryOp, ParamMode};
 use crate::hir::{self, Const, ExprKind, StmtKind};
 use crate::mir::{
     AggregateKind, BasicBlock, BlockId, Body, Callee, Local, LocalDecl, Operand, Place, Program,
-    Projection, Rvalue, Statement, Terminator,
+    Projection, Rvalue, Statement, Terminator, place_type, projection_type,
 };
 use crate::resolve::{FunctionId, LocalKind};
 use crate::source::Span;
@@ -54,9 +54,10 @@ fn lower_function(package: &hir::Package, id: FunctionId, function: &hir::Functi
             .map(|local| LocalDecl {
                 ty: local.ty,
                 name: Some(local.name.clone()),
-                by_reference: matches!(local.kind, LocalKind::Param(ParamMode::Mut))
-                    || matches!(local.kind, LocalKind::Param(ParamMode::Borrow))
-                        && !package.is_copy(local.ty),
+                by_reference: match local.kind {
+                    LocalKind::Param(mode) => passes_by_reference(package, mode, local.ty),
+                    _ => false,
+                },
             })
             .collect(),
         blocks: Vec::new(),
@@ -126,7 +127,11 @@ impl Builder {
         }
         if matches!(
             rvalue,
-            Rvalue::Binary(..) | Rvalue::Unary(..) | Rvalue::Convert(..) | Rvalue::BoundsCheck(..)
+            Rvalue::Binary(..)
+                | Rvalue::Unary(..)
+                | Rvalue::Convert(..)
+                | Rvalue::BoundsCheck(..)
+                | Rvalue::Slice { .. }
         ) {
             let target = self.new_block();
             self.terminate(Terminator::Assert {
@@ -256,7 +261,7 @@ impl Builder {
                 value,
             } => {
                 let target = self.place(package, target);
-                let ty = self.place_type(package, &target);
+                let ty = place_type(package, &self.locals, &target);
                 // The target is read before the right-hand side is evaluated.
                 let current = self.assign_temp(
                     package,
@@ -538,26 +543,6 @@ impl Builder {
             .collect()
     }
 
-    fn place_type(&self, package: &hir::Package, place: &Place) -> TypeId {
-        let mut ty = self.locals[place.local.0 as usize].ty;
-        for projection in &place.projections {
-            ty = match projection {
-                Projection::Field(field) => {
-                    let strukt = package
-                        .types
-                        .struct_id(ty)
-                        .expect("field projection on a struct");
-                    package.strukt(strukt).fields[field.0 as usize].ty
-                }
-                Projection::Index(_) => match package.types.kind(ty) {
-                    TypeKind::Array { element, .. } => element,
-                    _ => unreachable!("index projection on a non-array"),
-                },
-            };
-        }
-        ty
-    }
-
     fn evaluate_to_temporary(&mut self, package: &hir::Package, expr: &hir::Expr) -> Operand {
         let operand = self.operand(package, expr);
         match operand {
@@ -583,12 +568,13 @@ impl Builder {
             let (by_reference, by_ownership) = match &callee {
                 Callee::Function(id) => {
                     let function = package.function(*id);
-                    let mode = function.locals[function.params[index].0 as usize].kind;
+                    let param = &function.locals[function.params[index].0 as usize];
+                    let LocalKind::Param(mode) = param.kind else {
+                        unreachable!("parameters are parameter locals")
+                    };
                     (
-                        mode == LocalKind::Param(ParamMode::Mut)
-                            || mode == LocalKind::Param(ParamMode::Borrow)
-                                && !package.is_copy(arg.ty()),
-                        mode == LocalKind::Param(ParamMode::Own),
+                        passes_by_reference(package, mode, param.ty),
+                        mode == ParamMode::Own,
                     )
                 }
                 Callee::Println => (false, false),
@@ -653,26 +639,34 @@ impl Builder {
             },
             ExprKind::Index { base, index } => {
                 // §12.6: evaluate the base, then the index, once each.
-                let base_operand = self.operand(package, base);
-                let index_operand = self.checked_index_operand(package, base.ty(), index);
-                match base_operand {
-                    Operand::Copy(mut place) | Operand::Move(mut place) => {
-                        place.projections.push(Projection::Index(index_operand));
-                        value_operand(package, place, expr.ty())
-                    }
-                    other => {
-                        let temp = self.temp(base.ty());
-                        self.push(Place::local(temp), Rvalue::Use(other), span);
-                        value_operand(
-                            package,
-                            Place {
-                                local: temp,
-                                projections: vec![Projection::Index(index_operand)],
-                            },
-                            expr.ty(),
-                        )
-                    }
-                }
+                let mut place = self.base_place(package, base);
+                let index_operand = self.checked_index_operand(package, &place, base.ty(), index);
+                place.projections.push(Projection::Index(index_operand));
+                value_operand(package, place, expr.ty())
+            }
+            ExprKind::Slice {
+                base,
+                low,
+                high,
+                mutable,
+            } => {
+                // §12.6: evaluate the base, then low, then high, once each.
+                let place = self.base_place(package, base);
+                let low = low
+                    .as_deref()
+                    .map(|low| self.evaluate_to_temporary(package, low));
+                let high = high.as_deref().map(|high| self.operand(package, high));
+                self.assign_temp(
+                    package,
+                    expr.ty(),
+                    Rvalue::Slice {
+                        place,
+                        low,
+                        high,
+                        mutable: *mutable,
+                    },
+                    span,
+                )
             }
             ExprKind::Call { .. } => {
                 let temp = self.temp(expr.ty());
@@ -790,7 +784,7 @@ impl Builder {
             }
             ExprKind::Index { base, index } => {
                 let mut place = self.argument_place_opt(package, base)?;
-                let index_operand = self.checked_index_operand(package, base.ty(), index);
+                let index_operand = self.checked_index_operand(package, &place, base.ty(), index);
                 place.projections.push(Projection::Index(index_operand));
                 Some(place)
             }
@@ -798,23 +792,46 @@ impl Builder {
         }
     }
 
-    /// Evaluates `index`, bounds-checks it against `array_ty`'s length, and
-    /// returns the (now `int64`-typed) checked value, ready to use in an
-    /// `Index` projection.
+    /// The place an indexed or sliced base designates, copying a temporary
+    /// base value into a fresh local first.
+    fn base_place(&mut self, package: &hir::Package, base: &hir::Expr) -> Place {
+        match self.operand(package, base) {
+            Operand::Copy(place) | Operand::Move(place) => place,
+            other => {
+                let temp = self.temp(base.ty());
+                self.push(Place::local(temp), Rvalue::Use(other), base.span);
+                Place::local(temp)
+            }
+        }
+    }
+
+    /// Evaluates `index`, bounds-checks it against the length of `base` (of
+    /// type `base_ty`), and returns the (now `int64`-typed) checked value,
+    /// ready to use in an `Index` projection.
     fn checked_index_operand(
         &mut self,
         package: &hir::Package,
-        array_ty: TypeId,
+        base: &Place,
+        base_ty: TypeId,
         index: &hir::Expr,
     ) -> Operand {
-        let TypeKind::Array { size, .. } = package.types.kind(array_ty) else {
-            unreachable!("index projection on a non-array")
-        };
         let operand = self.operand(package, index);
+        let length = match package.types.kind(base_ty) {
+            TypeKind::Array { size, .. } => {
+                Operand::Const(Const::Int(size.into()), TypeStore::INT64)
+            }
+            TypeKind::Slice { .. } => self.assign_temp(
+                package,
+                TypeStore::INT64,
+                Rvalue::Length(base.clone()),
+                index.span,
+            ),
+            _ => unreachable!("index projection on a non-array, non-slice"),
+        };
         self.assign_temp(
             package,
             TypeStore::INT64,
-            Rvalue::BoundsCheck(operand, size),
+            Rvalue::BoundsCheck(operand, length),
             index.span,
         )
     }
@@ -833,12 +850,14 @@ impl Builder {
                     projections.push(Projection::Field(*id));
                 }
                 hir::Projection::Index(index) => {
-                    let operand = self.checked_index_operand(package, ty, index);
-                    let TypeKind::Array { element, .. } = package.types.kind(ty) else {
-                        unreachable!("index projection on a non-array")
+                    let base = Place {
+                        local: Local(place.root.0),
+                        projections: projections.clone(),
                     };
-                    ty = element;
-                    projections.push(Projection::Index(operand));
+                    let operand = self.checked_index_operand(package, &base, ty, index);
+                    let projection = Projection::Index(operand);
+                    ty = projection_type(package, ty, &projection);
+                    projections.push(projection);
                 }
             }
         }
@@ -846,6 +865,17 @@ impl Builder {
             local: Local(place.root.0),
             projections,
         }
+    }
+}
+
+/// Whether a parameter receives a reference to its argument rather than a
+/// copy: `mut` always does, and a shared parameter does unless it is a Copy
+/// value with no array storage a callee could slice and return (§11.7).
+fn passes_by_reference(package: &hir::Package, mode: ParamMode, ty: TypeId) -> bool {
+    match mode {
+        ParamMode::Mut => true,
+        ParamMode::Borrow => !package.is_copy(ty) || package.contains_array(ty),
+        ParamMode::Own => false,
     }
 }
 

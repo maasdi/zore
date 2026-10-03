@@ -1,4 +1,4 @@
-//! Type syntax: named and fixed-array types.
+//! Type syntax: named, fixed-array, and slice types.
 
 use super::parser::{PResult, Parser};
 use crate::ast::*;
@@ -19,21 +19,49 @@ impl Parser<'_> {
                 }
                 Ok(Type::Named(name))
             }
-            TokenKind::Punct(Punct::LBracket) => self.array_type(),
+            TokenKind::Punct(Punct::LBracket) => self.bracket_type(),
             TokenKind::Keyword(Keyword::Map) => Err(self.unsupported("map types", "M22")),
             TokenKind::Keyword(Keyword::Channel) => Err(self.unsupported("channel types", "M30")),
             TokenKind::Keyword(Keyword::Func) => Err(self.unsupported("function types", "M24")),
-            TokenKind::Keyword(Keyword::Mut) => Err(self.unsupported("`mut` slice types", "M21")),
+            TokenKind::Keyword(Keyword::Mut) => {
+                let start = self.current_span();
+                if !self.at_slice_type_after(1) {
+                    return Err(self.error(
+                        "`mut` in a type only forms a mutable slice type `mut []T` (§12.2)",
+                        start,
+                    ));
+                }
+                self.bump();
+                let Type::Slice { element, .. } = self.bracket_type()? else {
+                    unreachable!("checked: `[]` follows")
+                };
+                Ok(Type::Slice {
+                    element,
+                    mutable: true,
+                    span: self.span_from(start),
+                })
+            }
             _ => Err(self.unexpected("a type")),
         }
     }
 
-    /// `[element; size]`; slice types (`[]T`) stay unsupported.
-    pub(super) fn array_type(&mut self) -> PResult<Type> {
+    /// Whether the tokens `ahead` positions from here begin `[]`.
+    pub(super) fn at_slice_type_after(&self, ahead: usize) -> bool {
+        *self.peek_at(ahead) == TokenKind::Punct(Punct::LBracket)
+            && *self.peek_at(ahead + 1) == TokenKind::Punct(Punct::RBracket)
+    }
+
+    /// `[element; size]` or the shared slice type `[]element`.
+    pub(super) fn bracket_type(&mut self) -> PResult<Type> {
         let start = self.current_span();
         self.bump();
-        if self.at(Punct::RBracket) {
-            return Err(self.unsupported("slice types", "M20–M21"));
+        if self.eat(Punct::RBracket) {
+            let element = self.ty()?;
+            return Ok(Type::Slice {
+                element: Box::new(element),
+                mutable: false,
+                span: self.span_from(start),
+            });
         }
         let element = self.ty()?;
         if !matches!(self.peek(), TokenKind::Semicolon(Separator::Explicit)) {

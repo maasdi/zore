@@ -40,3 +40,19 @@ pub enum Terminator {
     PanicReturn,
     Unreachable,
 }
+
+impl Terminator {
+    /// The blocks control may continue to on the normal (non-unwind) path.
+    pub fn successors(&self) -> Vec<BlockId> {
+        match self {
+            Terminator::Goto(target) => vec![*target],
+            Terminator::Branch {
+                then_block,
+                else_block,
+                ..
+            } => vec![*then_block, *else_block],
+            Terminator::Call { target, .. } | Terminator::Assert { target, .. } => vec![*target],
+            Terminator::Return | Terminator::PanicReturn | Terminator::Unreachable => Vec::new(),
+        }
+    }
+}

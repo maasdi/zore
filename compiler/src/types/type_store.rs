@@ -11,6 +11,7 @@ pub struct TypeStore {
     struct_names: Vec<String>,
     struct_types: Vec<TypeId>,
     array_types: HashMap<(TypeId, u32), TypeId>,
+    slice_types: HashMap<(TypeId, bool), TypeId>,
 }
 
 impl Default for TypeStore {
@@ -52,6 +53,7 @@ impl TypeStore {
             struct_names: Vec::new(),
             struct_types: Vec::new(),
             array_types: HashMap::new(),
+            slice_types: HashMap::new(),
         }
     }
 
@@ -76,6 +78,17 @@ impl TypeStore {
         let ty = TypeId(self.kinds.len() as u32);
         self.kinds.push(TypeKind::Array { element, size });
         self.array_types.insert((element, size), ty);
+        ty
+    }
+
+    /// Interns `[]element` or `mut []element`.
+    pub fn slice_type(&mut self, element: TypeId, mutable: bool) -> TypeId {
+        if let Some(&ty) = self.slice_types.get(&(element, mutable)) {
+            return ty;
+        }
+        let ty = TypeId(self.kinds.len() as u32);
+        self.kinds.push(TypeKind::Slice { element, mutable });
+        self.slice_types.insert((element, mutable), ty);
         ty
     }
 
@@ -153,6 +166,10 @@ impl fmt::Display for TypeName<'_> {
             TypeKind::Struct(id) => f.write_str(&self.store.struct_names[id.0 as usize]),
             TypeKind::Array { element, size } => {
                 write!(f, "[{}; {size}]", self.store.display(element))
+            }
+            TypeKind::Slice { element, mutable } => {
+                let prefix = if mutable { "mut " } else { "" };
+                write!(f, "{prefix}[]{}", self.store.display(element))
             }
         }
     }

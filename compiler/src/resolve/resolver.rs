@@ -26,11 +26,13 @@ pub struct Resolution<'a> {
     pub diagnostics: Vec<Diagnostic>,
 }
 
-/// The eventual named type at the bottom of any array layers.
-fn named_type(ty: &ast::Type) -> &ast::Name {
+/// The named type a field stores by value beneath any array layers; a slice
+/// only borrows its elements, so it contains none.
+fn by_value_named_type(ty: &ast::Type) -> Option<&ast::Name> {
     match ty {
-        ast::Type::Named(name) => name,
-        ast::Type::Array { element, .. } => named_type(element),
+        ast::Type::Named(name) => Some(name),
+        ast::Type::Array { element, .. } => by_value_named_type(element),
+        ast::Type::Slice { .. } => None,
     }
 }
 
@@ -252,6 +254,7 @@ impl<'a> Resolver<'a> {
                 self.ty(element);
                 self.expr(size);
             }
+            ast::Type::Slice { element, .. } => self.ty(element),
         }
     }
 
@@ -264,7 +267,8 @@ impl<'a> Resolver<'a> {
             .map(|decl| {
                 decl.fields
                     .iter()
-                    .filter_map(|f| match self.out.uses.get(&named_type(&f.ty).span) {
+                    .filter_map(|f| by_value_named_type(&f.ty))
+                    .filter_map(|name| match self.out.uses.get(&name.span) {
                         Some(Res::Struct(id)) => Some(id.0 as usize),
                         _ => None,
                     })
@@ -463,6 +467,12 @@ impl<'a> Resolver<'a> {
             ExprKind::Index { base, index } => {
                 self.expr(base);
                 self.expr(index);
+            }
+            ExprKind::Slice { base, low, high } => {
+                self.expr(base);
+                for bound in [low, high].into_iter().flatten() {
+                    self.expr(bound);
+                }
             }
             ExprKind::ArrayLit { ty, elements } => {
                 self.ty(ty);

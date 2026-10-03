@@ -1579,3 +1579,229 @@ fn array_mutable_places_and_aliasing() {
         "is also borrowed by another argument of this call",
     );
 }
+
+const SLICE_FUNCS: &str = "func inspect(items []int) int { return items[0] }
+func edit(items mut []int) { items[0] = 9 }";
+
+/// Declarations plus `SLICE_FUNCS`, in a `main` package.
+fn slice_program(decls: &str) -> String {
+    program(&format!("{SLICE_FUNCS}\n{decls}"))
+}
+
+/// The displayed type of local `local` in function `function`.
+fn local_type(case: &Case, function: &str, local: &str) -> String {
+    let ty = case
+        .function(function)
+        .locals
+        .iter()
+        .find(|l| l.name == local)
+        .unwrap_or_else(|| panic!("no local {local}"))
+        .ty;
+    case.package().types.display(ty).to_string()
+}
+
+#[test]
+fn slicing_is_shared_unless_a_mutable_view_is_requested() {
+    let shared = accepts(&slice_program(
+        "func use() { var data = [int; 3]{1, 2, 3}\nlet view = data[:]\n_ = view[0] }",
+    ));
+    assert_eq!(local_type(&shared, "use", "view"), "[]int64");
+    let exclusive = accepts(&slice_program(
+        "func use() { var data = [int; 3]{1, 2, 3}\nvar part mut []int = data[1:]\nedit(part) }",
+    ));
+    assert_eq!(local_type(&exclusive, "use", "part"), "mut []int64");
+    accepts(&slice_program(
+        "func use() { var data = [int; 3]{1, 2, 3}\n_ = inspect(data[:])\nedit(data[:])\n_ = inspect(data[1:3])\n_ = inspect(data[0:0]) }",
+    ));
+    accepts(&slice_program(
+        "func half(a mut [int; 4]) mut []int { return a[:2] }
+        func whole(a [int; 4]) []int { return a[:] }",
+    ));
+    rejects(
+        &slice_program(
+            "func use() { var data = [int; 3]{1, 2, 3}\nlet view = data[:]\nedit(view) }",
+        ),
+        "mismatched types: expected `mut []int64`, found `[]int64`",
+    );
+    rejects(
+        &slice_program("func use(s mut []int) { _ = inspect(s) }"),
+        "mismatched types: expected `[]int64`, found `mut []int64`",
+    );
+    accepts(&slice_program(
+        "func use(s mut []int) { _ = inspect(s[:]) }",
+    ));
+}
+
+#[test]
+fn arrays_never_convert_to_slices_implicitly() {
+    let case = rejects(
+        &slice_program("func use() { let data = [int; 3]{1, 2, 3}\n_ = inspect(data) }"),
+        "mismatched types: expected `[]int64`, found `[int64; 3]`",
+    );
+    assert!(
+        case.checked.diagnostics[0]
+            .notes()
+            .iter()
+            .any(|note| note.contains("borrow a view with `x[:]`"))
+    );
+}
+
+#[test]
+fn mutable_views_need_a_mutable_source() {
+    rejects(
+        &slice_program("func use() { let data = [int; 3]{1, 2, 3}\nedit(data[:]) }"),
+        "cannot take a mutable slice of immutable binding `data`",
+    );
+    rejects(
+        &slice_program("func use(data [int; 3]) { edit(data[:]) }"),
+        "cannot take a mutable slice of shared parameter `data`",
+    );
+    accepts(&slice_program(
+        "func use(data mut [int; 3]) { edit(data[:]) }",
+    ));
+    rejects(
+        &slice_program("func use(s []int) { edit(s[1:]) }"),
+        "cannot take a mutable slice of shared slice `s`",
+    );
+    accepts(&slice_program("func use(s mut []int) { edit(s[1:]) }"));
+    rejects(
+        &slice_program(
+            "func use() { var data = [int; 3]{1, 2, 3}\nlet p mut []int = data[:]\nedit(p) }",
+        ),
+        "cannot pass immutable binding `p` as a `mut` argument",
+    );
+    accepts(&slice_program(
+        "func use() { var data = [int; 3]{1, 2, 3}\nvar p mut []int = data[:]\nedit(p) }",
+    ));
+    accepts(&slice_program("func use(s mut []int) { edit(s) }"));
+}
+
+#[test]
+fn slice_elements_are_writable_only_through_mutable_views() {
+    rejects(
+        &slice_program("func use(s []int) { s[0] = 1 }"),
+        "cannot assign through shared slice `s`",
+    );
+    accepts(&slice_program(
+        "func use(s mut []int) { s[0] = 1\ns[1] += 2 }",
+    ));
+    accepts(&slice_program(
+        "func use() { var data = [int; 3]{1, 2, 3}\nlet p mut []int = data[:]\np[0] = 4 }",
+    ));
+    rejects(
+        &slice_program("func use(s mut []int) { s = s[1:] }"),
+        "cannot assign to parameter `s`",
+    );
+    let bump = "func bump(n mut int) { n += 1 }";
+    rejects(
+        &slice_program(&format!("{bump}\nfunc use(s []int) {{ bump(s[0]) }}")),
+        "cannot pass an element of shared slice `s` as a `mut` argument",
+    );
+    accepts(&slice_program(&format!(
+        "{bump}\nfunc use(s mut []int) {{ bump(s[0]) }}"
+    )));
+}
+
+#[test]
+fn slice_bounds_and_indices_are_checked_statically() {
+    for (expr, message) in [
+        (
+            "data[1:4]",
+            "slice bound `4` is out of range for `[int64; 3]`",
+        ),
+        (
+            "data[-1:]",
+            "slice bound `-1` is out of range for `[int64; 3]`",
+        ),
+        ("data[2:1]", "slice lower bound `2` exceeds upper bound `1`"),
+        (
+            "data[1.5:]",
+            "slice bound must be an integer, found `float64`",
+        ),
+        (
+            "data[:true]",
+            "slice bound must be an integer, found `bool`",
+        ),
+    ] {
+        rejects(
+            &slice_program(&format!(
+                "func use() {{ let data = [int; 3]{{1, 2, 3}}\n_ = inspect({expr}) }}"
+            )),
+            message,
+        );
+    }
+    accepts(&slice_program(
+        "func use() { let data = [int; 3]{1, 2, 3}\n_ = inspect(data[3:3])\n_ = inspect(data[:3]) }",
+    ));
+    rejects(
+        &slice_program("func use(s []int) { _ = s[-1] }"),
+        "slice index `-1` is out of range for `[]int64`",
+    );
+    rejects(
+        &slice_program("func use(s []int) { _ = s[true] }"),
+        "slice index must be an integer",
+    );
+    accepts(&slice_program(
+        "func use(s []int) { var i uint8 = 1\n_ = s[i]\n_ = s[100] }",
+    ));
+    rejects(
+        &slice_program("func use(n int) { _ = n[1:] }"),
+        "type `int64` cannot be sliced",
+    );
+}
+
+#[test]
+fn unsupported_slice_forms_are_rejected() {
+    rejects(
+        &program("func f(s own []int) {}"),
+        "`own []T` is not part of Zore",
+    );
+    rejects(
+        &program("func f(s mut mut []int) {}"),
+        "a `mut` mode on a slice parameter is not supported",
+    );
+    rejects(
+        &program("type T struct { s mut []int }"),
+        "`mut []T` nested in a struct field, array, or slice element",
+    );
+    rejects(
+        &program("func f(rows [mut []int; 2]) {}"),
+        "`mut []T` nested in a struct field, array, or slice element",
+    );
+    rejects(
+        &program("func f(rows []mut []int) {}"),
+        "`mut []T` nested in a struct field, array, or slice element",
+    );
+    rejects(
+        &program("type T struct { s []int }\nfunc (t mut T) drop() {}"),
+        "a custom `drop` for a type containing a borrowed slice",
+    );
+    rejects(
+        &body("let d = [int; 2]{1, 2}\nprintln(d[:])"),
+        "`println` cannot print values of type `[]int64`",
+    );
+    rejects(
+        &program("func f(a []int, b []int) bool { return a == b }"),
+        "operator `==` cannot be applied to `[]int64`",
+    );
+    accepts(&program(
+        "type Node struct { Children []Node }\nfunc f(n Node) Node { return n }",
+    ));
+}
+
+#[test]
+fn later_arguments_cannot_mutate_an_earlier_borrowed_argument() {
+    rejects(
+        &program(
+            "func g(a mut [int; 2]) int { return 1 }
+            func f(a [int; 2], n int) {}
+            func use() { var a = [int; 2]{1, 2}\nf(a, g(a)) }",
+        ),
+        "`a` is borrowed by an earlier argument and mutated by a later one",
+    );
+    accepts(&program(
+        "func g(a mut [int; 2]) int { return 1 }
+        func f(n int, a [int; 2]) {}
+        func use() { var a = [int; 2]{1, 2}\nf(g(a), a) }",
+    ));
+}
