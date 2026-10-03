@@ -1,14 +1,18 @@
+//! The ownership checker: forward data flow of move state over MIR.
+
+use super::move_state::MovedSet;
 use crate::diagnostic::{Diagnostic, Severity};
 use crate::hir;
 use crate::mir::{
     BasicBlock, BlockId, Body, Callee, Operand, Place, Program, Projection, Rvalue, Terminator,
 };
+use crate::resolve::FieldId;
 use crate::source::Span;
 use crate::types::{TypeId, TypeKind};
 
 /// The leading run of `Field` projections, stopping at the first `Index` (or the end).
 /// Array contents aren't partial-move-tracked past the array field itself (§31.2).
-fn leading_field_path(projections: &[Projection]) -> Vec<hir::FieldId> {
+fn leading_field_path(projections: &[Projection]) -> Vec<FieldId> {
     projections
         .iter()
         .take_while(|p| matches!(p, Projection::Field(_)))
@@ -19,79 +23,11 @@ fn leading_field_path(projections: &[Projection]) -> Vec<hir::FieldId> {
         .collect()
 }
 
-/// The set of field paths moved out of a local and not yet reinitialized.
-///
-/// An empty path (`vec![]`) represents the whole local having been moved; by
-/// construction it never coexists with any other entry (see `join`).
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
-struct MovedSet {
-    entries: Vec<(Vec<hir::FieldId>, Span)>,
-}
-
-impl MovedSet {
-    /// A moved path that is `fields` itself or a container of it.
-    fn moved_or_ancestor_moved(&self, fields: &[hir::FieldId]) -> Option<Span> {
-        self.entries
-            .iter()
-            .find(|(path, _)| {
-                path.len() <= fields.len() && path.as_slice() == &fields[..path.len()]
-            })
-            .map(|&(_, span)| span)
-    }
-
-    /// A moved path strictly nested inside `fields`.
-    fn moved_descendant(&self, fields: &[hir::FieldId]) -> Option<Span> {
-        self.entries
-            .iter()
-            .find(|(path, _)| path.len() > fields.len() && &path[..fields.len()] == fields)
-            .map(|&(_, span)| span)
-    }
-
-    /// A moved path that is a proper container of `fields`, excluding `fields` itself.
-    fn moved_strict_ancestor(&self, fields: &[hir::FieldId]) -> Option<Span> {
-        self.entries
-            .iter()
-            .find(|(path, _)| path.len() < fields.len() && path.as_slice() == &fields[..path.len()])
-            .map(|&(_, span)| span)
-    }
-
-    fn record_move(&mut self, fields: Vec<hir::FieldId>, span: Span) {
-        self.entries.push((fields, span));
-    }
-
-    /// Restores `fields` and everything moved out from beneath it.
-    fn reinitialize(&mut self, fields: &[hir::FieldId]) {
-        self.entries
-            .retain(|(path, _)| !(path.len() >= fields.len() && &path[..fields.len()] == fields));
-    }
-
-    fn clear(&mut self) {
-        self.entries.clear();
-    }
-
-    /// Conservative union: a path moved on either side counts as moved after the join.
-    fn join(&self, other: &Self) -> Self {
-        let mut entries: Vec<(Vec<hir::FieldId>, Span)> =
-            self.entries.iter().chain(&other.entries).cloned().collect();
-        entries.sort_by_key(|(path, span)| (path.len(), path.clone(), span.start(), span.end()));
-        let mut reduced: Vec<(Vec<hir::FieldId>, Span)> = Vec::new();
-        for (path, span) in entries {
-            let covered = reduced.iter().any(|(kept, _)| {
-                kept.len() <= path.len() && kept.as_slice() == &path[..kept.len()]
-            });
-            if !covered {
-                reduced.push((path, span));
-            }
-        }
-        Self { entries: reduced }
-    }
-}
-
 /// Whether any struct containing `local`'s path (never the designated field's own type)
 /// defines a custom `drop`, which forbids moving that field out on its own.
 /// Only ever called with a pure-field path: `check_operand` rejects any move
 /// through an `Index` before reaching this check.
-fn has_custom_ancestor(package: &hir::Package, local_ty: TypeId, fields: &[hir::FieldId]) -> bool {
+fn has_custom_ancestor(package: &hir::Package, local_ty: TypeId, fields: &[FieldId]) -> bool {
     let mut ty = local_ty;
     for field in fields {
         let id = package.types.struct_id(ty).expect("field projection");
@@ -444,35 +380,11 @@ fn assign(
 
 #[cfg(test)]
 mod tests {
-    use super::{MovedSet, leading_field_path};
-    use crate::hir::FieldId;
+    use super::super::move_state::MovedSet;
+    use super::leading_field_path;
     use crate::mir::{Operand, Place, Projection};
-    use crate::source::{SourceMap, Span};
-
-    fn two_spans() -> (Span, Span) {
-        let mut sources = SourceMap::new();
-        let file = sources.add("test.ore", "0123456789".to_string()).unwrap();
-        (
-            sources.span(file, 0, 1).unwrap(),
-            sources.span(file, 2, 3).unwrap(),
-        )
-    }
-
-    #[test]
-    fn whole_local_move_absorbs_any_other_entry_on_join() {
-        let (whole_span, field_span) = two_spans();
-        let mut whole = MovedSet::default();
-        whole.record_move(Vec::new(), whole_span);
-
-        let mut field = MovedSet::default();
-        field.record_move(vec![FieldId(0)], field_span);
-
-        let joined = whole.join(&field);
-        assert_eq!(joined.entries, vec![(Vec::new(), whole_span)]);
-
-        let joined = field.join(&whole);
-        assert_eq!(joined.entries, vec![(Vec::new(), whole_span)]);
-    }
+    use crate::resolve::FieldId;
+    use crate::source::SourceMap;
 
     #[test]
     fn leading_field_path_stops_at_the_first_index() {

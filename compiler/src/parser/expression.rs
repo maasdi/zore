@@ -1,0 +1,299 @@
+//! Expressions: precedence climbing, postfix chains, and literals.
+
+use super::parser::{PResult, Parser};
+use crate::ast::*;
+use crate::diagnostic::{Diagnostic, Severity};
+use crate::lexer::{Keyword, Punct, TokenKind};
+
+impl Parser<'_> {
+    pub(super) fn expr_list(&mut self) -> PResult<Vec<Expr>> {
+        let mut exprs = vec![self.expr()?];
+        while self.eat(Punct::Comma) {
+            exprs.push(self.expr()?);
+        }
+        Ok(exprs)
+    }
+
+    pub(super) fn expr(&mut self) -> PResult<Expr> {
+        self.binary(1)
+    }
+
+    pub(super) fn binary(&mut self, min: u8) -> PResult<Expr> {
+        let mut lhs = self.unary()?;
+        let mut compared = false;
+        while let Some(op) = binary_op(self.peek()).filter(|op| op.precedence() >= min) {
+            if op.is_comparison() && compared {
+                let span = self.current_span();
+                return Err(self.report(
+                    Diagnostic::new(
+                        Severity::Error,
+                        "comparison operators cannot be chained",
+                        span,
+                    )
+                    .note("combine comparisons with `&&`, or add parentheses"),
+                ));
+            }
+            compared = op.is_comparison();
+            self.bump();
+            let rhs = self.binary(op.precedence() + 1)?;
+            let span = self.span_from(lhs.span);
+            lhs = Expr {
+                kind: ExprKind::Binary {
+                    op,
+                    lhs: Box::new(lhs),
+                    rhs: Box::new(rhs),
+                },
+                span,
+            };
+        }
+        Ok(lhs)
+    }
+
+    pub(super) fn unary(&mut self) -> PResult<Expr> {
+        let start = self.current_span();
+        let op = match self.peek() {
+            TokenKind::Punct(Punct::Plus) => UnaryOp::Plus,
+            TokenKind::Punct(Punct::Minus) => UnaryOp::Neg,
+            TokenKind::Punct(Punct::Not) => UnaryOp::Not,
+            TokenKind::Punct(Punct::Caret) => UnaryOp::Complement,
+            TokenKind::Keyword(Keyword::Await) => return self.await_expr(),
+            _ => return self.postfix(),
+        };
+        self.bump();
+        let operand = Box::new(self.unary()?);
+        Ok(Expr {
+            kind: ExprKind::Unary { op, operand },
+            span: self.span_from(start),
+        })
+    }
+
+    pub(super) fn await_expr(&mut self) -> PResult<Expr> {
+        // `await x?` groups as `(await x)?`.
+        let start = self.bump().span;
+        let operand = if is_prefix(self.peek()) {
+            self.unary()?
+        } else {
+            self.access()?
+        };
+        let expr = Expr {
+            kind: ExprKind::Await(Box::new(operand)),
+            span: self.span_from(start),
+        };
+        self.propagations(expr)
+    }
+
+    pub(super) fn postfix(&mut self) -> PResult<Expr> {
+        let expr = self.access()?;
+        self.propagations(expr)
+    }
+
+    pub(super) fn propagations(&mut self, mut expr: Expr) -> PResult<Expr> {
+        while self.at(Punct::Question) {
+            self.bump();
+            expr = Expr {
+                span: self.span_from(expr.span),
+                kind: ExprKind::Try(Box::new(expr)),
+            };
+            if self.at(Punct::Dot) || self.at(Punct::LParen) {
+                let span = self.current_span();
+                return Err(self.report(
+                    Diagnostic::new(
+                        Severity::Error,
+                        "`?` binds more loosely than calls and field access",
+                        span,
+                    )
+                    .note("add parentheses, as in `(value?).field`"),
+                ));
+            }
+        }
+        Ok(expr)
+    }
+
+    pub(super) fn access(&mut self) -> PResult<Expr> {
+        let mut expr = self.primary()?;
+        loop {
+            if self.at(Punct::LParen) {
+                self.bump();
+                let args = self.with_struct_literals(true, |p| {
+                    p.comma_list(Punct::RParen, "argument", true, Self::expr)
+                })?;
+                expr = Expr {
+                    span: self.span_from(expr.span),
+                    kind: ExprKind::Call {
+                        callee: Box::new(expr),
+                        args,
+                    },
+                };
+            } else if self.at(Punct::Dot) {
+                self.bump();
+                let name = self.name("a field or method name")?;
+                expr = Expr {
+                    span: self.span_from(expr.span),
+                    kind: ExprKind::Field {
+                        base: Box::new(expr),
+                        name,
+                    },
+                };
+            } else if self.at(Punct::LBracket) {
+                self.bump();
+                let index = self.with_struct_literals(true, Self::expr)?;
+                if self.at(Punct::Colon) {
+                    return Err(self.unsupported("slicing expressions", "M20–M21"));
+                }
+                self.expect(Punct::RBracket)?;
+                expr = Expr {
+                    span: self.span_from(expr.span),
+                    kind: ExprKind::Index {
+                        base: Box::new(expr),
+                        index: Box::new(index),
+                    },
+                };
+            } else {
+                return Ok(expr);
+            }
+        }
+    }
+
+    pub(super) fn primary(&mut self) -> PResult<Expr> {
+        let span = self.current_span();
+        let kind = match self.peek().clone() {
+            TokenKind::Ident => {
+                let name = self.name("an expression")?;
+                if self.struct_literals_allowed && self.at(Punct::LBrace) {
+                    return self.struct_literal(name);
+                }
+                return Ok(Expr {
+                    kind: ExprKind::Name(name.text),
+                    span,
+                });
+            }
+            TokenKind::Int(base) => ExprKind::Int(base),
+            TokenKind::Float => ExprKind::Float,
+            TokenKind::String(value) => ExprKind::String(value),
+            TokenKind::Rune(value) => ExprKind::Rune(value),
+            TokenKind::Keyword(Keyword::True) => ExprKind::Bool(true),
+            TokenKind::Keyword(Keyword::False) => ExprKind::Bool(false),
+            TokenKind::Keyword(Keyword::Nil) => ExprKind::Nil,
+            TokenKind::MalformedLiteral => ExprKind::Malformed,
+            TokenKind::Punct(Punct::LParen) => {
+                self.bump();
+                let inner = self.with_struct_literals(true, Self::expr)?;
+                self.expect(Punct::RParen)?;
+                return Ok(Expr {
+                    kind: ExprKind::Paren(Box::new(inner)),
+                    span: self.span_from(span),
+                });
+            }
+            TokenKind::Underscore => {
+                return Err(self.error("`_` cannot be used as a value", span));
+            }
+            TokenKind::Keyword(Keyword::Func) => {
+                return Err(self.unsupported("function literals (closures)", "M24"));
+            }
+            TokenKind::Keyword(Keyword::Go) => {
+                return Err(self.unsupported("`go` task-creation expressions", "M25–M29"));
+            }
+            TokenKind::Keyword(Keyword::Map) => {
+                return Err(self.unsupported("map literals", "M22"));
+            }
+            TokenKind::Punct(Punct::LBracket) => {
+                return self.array_literal();
+            }
+            TokenKind::Keyword(Keyword::Channel) => {
+                return Err(self.unsupported("channel expressions", "M30"));
+            }
+            TokenKind::Reserved(word) => {
+                let message = format!(
+                    "`{}` is reserved for possible future use; the feature is not available",
+                    word.as_str()
+                );
+                return Err(self.error(message, span));
+            }
+            _ => return Err(self.unexpected("an expression")),
+        };
+        self.bump();
+        Ok(Expr { kind, span })
+    }
+
+    pub(super) fn struct_literal(&mut self, ty: Name) -> PResult<Expr> {
+        self.bump();
+        let fields = self.with_struct_literals(true, |p| {
+            p.comma_list(Punct::RBrace, "field", true, Self::field_init)
+        })?;
+        Ok(Expr {
+            span: self.span_from(ty.span),
+            kind: ExprKind::StructLit { ty, fields },
+        })
+    }
+
+    /// `[element; size]{e1, e2, ...}`.
+    pub(super) fn array_literal(&mut self) -> PResult<Expr> {
+        let span = self.current_span();
+        let ty = self.array_type()?;
+        self.expect(Punct::LBrace)?;
+        let elements = self.with_struct_literals(true, |p| {
+            p.comma_list(Punct::RBrace, "element", true, Self::expr)
+        })?;
+        Ok(Expr {
+            span: self.span_from(span),
+            kind: ExprKind::ArrayLit { ty, elements },
+        })
+    }
+
+    pub(super) fn field_init(&mut self) -> PResult<FieldInit> {
+        if !(*self.peek() == TokenKind::Ident && self.peek_at(1) == &TokenKind::Punct(Punct::Colon))
+        {
+            if matches!(self.peek(), TokenKind::Keyword(_) | TokenKind::Reserved(_)) {
+                self.name("a field name")?;
+            }
+            let span = self.current_span();
+            return Err(self.report(
+                Diagnostic::new(Severity::Error, "struct literal fields must be named", span)
+                    .note("write each field as `Name: value`"),
+            ));
+        }
+        let name = self.name("a field name")?;
+        self.bump();
+        let value = self.expr()?;
+        Ok(FieldInit {
+            span: self.span_from(name.span),
+            name,
+            value,
+        })
+    }
+}
+
+fn is_prefix(kind: &TokenKind) -> bool {
+    matches!(
+        kind,
+        TokenKind::Punct(Punct::Plus | Punct::Minus | Punct::Not | Punct::Caret)
+            | TokenKind::Keyword(Keyword::Await)
+    )
+}
+
+fn binary_op(kind: &TokenKind) -> Option<BinaryOp> {
+    let TokenKind::Punct(punct) = kind else {
+        return None;
+    };
+    Some(match punct {
+        Punct::Star => BinaryOp::Mul,
+        Punct::Slash => BinaryOp::Div,
+        Punct::Percent => BinaryOp::Rem,
+        Punct::Shl => BinaryOp::Shl,
+        Punct::Shr => BinaryOp::Shr,
+        Punct::Amp => BinaryOp::BitAnd,
+        Punct::Plus => BinaryOp::Add,
+        Punct::Minus => BinaryOp::Sub,
+        Punct::Pipe => BinaryOp::BitOr,
+        Punct::Caret => BinaryOp::BitXor,
+        Punct::EqEq => BinaryOp::Eq,
+        Punct::NotEq => BinaryOp::NotEq,
+        Punct::Lt => BinaryOp::Lt,
+        Punct::LtEq => BinaryOp::LtEq,
+        Punct::Gt => BinaryOp::Gt,
+        Punct::GtEq => BinaryOp::GtEq,
+        Punct::AndAnd => BinaryOp::And,
+        Punct::OrOr => BinaryOp::Or,
+        _ => return None,
+    })
+}

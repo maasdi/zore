@@ -1,11 +1,12 @@
 //! Lowering from typed HIR to MIR, making evaluation order explicit.
 
 use crate::ast::{BinaryOp, ParamMode};
-use crate::hir::{self, Const, ExprKind, FunctionId, LocalKind, StmtKind};
+use crate::hir::{self, Const, ExprKind, StmtKind};
 use crate::mir::{
     AggregateKind, BasicBlock, BlockId, Body, Callee, Local, LocalDecl, Operand, Place, Program,
     Projection, Rvalue, Statement, Terminator,
 };
+use crate::resolve::{FunctionId, LocalKind};
 use crate::source::Span;
 use crate::types::{TypeId, TypeKind, TypeStore};
 

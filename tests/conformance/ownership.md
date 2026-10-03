@@ -1,12 +1,11 @@
 # Return-borrow, caller-mutability, partial-move, and slice-aliasing conformance cases
 
 Authority: spec §5.6, §11.3, §11.6–11.7, §12.5, §14.6, §30.1, §31.2.
-`tests/typecheck/check.rs` covers mutable places, call-local exclusivity,
-whole-place moves, branch and loop move state, and reinitialization.
-Field-level partial moves, reinitialization restoring whole-value usability,
-and the custom-`drop`-ancestor restriction are covered by
-`tests/typecheck/check.rs` and, for runtime cleanup, `tests/codegen/native.rs`.
-Stored borrows remain pending.
+`tests/typecheck/check.rs` covers mutable places and call-local exclusivity.
+`tests/ownership/ownership.rs` covers whole-place moves, branch and loop move
+state, field-level partial moves, reinitialization restoring whole-value
+usability, and the custom-`drop`-ancestor restriction; `tests/codegen/native.rs`
+covers their runtime cleanup. Stored borrows remain pending.
 
 ## Mutable place requirements for callers (§11.6)
 
