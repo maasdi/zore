@@ -32,6 +32,7 @@ fn insert_body(package: &hir::Package, body: &mut Body) {
                         statements.push(Statement::Drop {
                             replacement: !place.projections.is_empty(),
                             place: place.clone(),
+                            before_store: true,
                         });
                     }
                     statements.push(Statement::Assign {
@@ -46,6 +47,7 @@ fn insert_body(package: &hir::Package, body: &mut Body) {
                             statements.push(Statement::Drop {
                                 place: Place::local(local),
                                 replacement: false,
+                                before_store: false,
                             });
                         }
                     }
@@ -66,6 +68,7 @@ fn insert_body(package: &hir::Package, body: &mut Body) {
                     statements.push(Statement::Drop {
                         place: place.clone(),
                         replacement: false,
+                        before_store: false,
                     });
                 }
                 Terminator::Goto(target)
@@ -104,6 +107,7 @@ fn insert_body(package: &hir::Package, body: &mut Body) {
                         statements.push(Statement::Drop {
                             place: Place::local(local),
                             replacement: false,
+                            before_store: false,
                         });
                     }
                 }
@@ -120,6 +124,7 @@ fn insert_body(package: &hir::Package, body: &mut Body) {
             .map(|local| Statement::Drop {
                 place: Place::local(local),
                 replacement: false,
+                before_store: false,
             })
             .collect(),
         terminator: Terminator::PanicReturn,

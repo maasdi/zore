@@ -611,3 +611,37 @@ fn moving_an_element_out_of_a_slice_is_rejected() {
         "cannot move `rs[_]` out of a slice",
     );
 }
+
+#[test]
+fn borrows_through_a_view_keep_the_view_backing_borrowed() {
+    let grid = "var grid = [[int; 2]; 2]{[int; 2]{1, 2}, [int; 2]{3, 4}}";
+    rejects(
+        &slice_body(&format!(
+            "{grid}\nlet rows = grid[:]\nlet row = rows[0][:]\ngrid[0][0] = 5\n_ = inspect(row)"
+        )),
+        "cannot assign to `grid[_][_]` while it is borrowed",
+    );
+    rejects(
+        &slice_program(
+            &format!(
+                "func first(rows [][2]int) []int {{ return rows[0][:] }}
+            func use() {{ {grid}\nlet row = first(grid[:])\ngrid[0][0] = 5\n_ = inspect(row) }}"
+            )
+            .replace("[][2]int", "[][int; 2]"),
+        ),
+        "cannot assign to `grid[_][_]` while it is borrowed",
+    );
+    rejects(
+        &slice_body(
+            "var data = [int; 2]{1, 2}
+            var views = [[]int; 1]{data[:]}
+            let all = views[:]
+            data[0] = 5
+            _ = inspect(all[0])",
+        ),
+        "cannot assign to `data[_]` while it is borrowed",
+    );
+    accepts(&slice_body(&format!(
+        "{grid}\nlet rows = grid[:]\nlet row = rows[0][:]\n_ = inspect(row)\ngrid[0][0] = 5"
+    )));
+}

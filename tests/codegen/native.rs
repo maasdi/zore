@@ -427,6 +427,62 @@ func main() {
     assert_eq!(stdout(&output), "");
 }
 
+/// A `Guard` whose destructor prints its id and panics for id 1.
+const PANICKING_GUARD: &str = "type Guard struct { id int }
+func (g mut Guard) drop() {
+    println(g.id)
+    if g.id == 1 {
+        var zero = 0
+        println(1 / zero)
+    }
+}";
+
+#[test]
+fn a_panicking_replaced_element_is_never_dropped_twice() {
+    panics(
+        &format!(
+            "package main\n{PANICKING_GUARD}\nfunc main() {{\nvar gs = [Guard; 2]{{Guard{{id: 1}}, Guard{{id: 2}}}}\ngs[0] = Guard{{id: 3}}\n}}\n"
+        ),
+        "division by zero",
+        "1\n2\n3\n",
+    );
+    panics(
+        &format!(
+            "package main\n{PANICKING_GUARD}\nfunc replace(g mut Guard) {{ g = Guard{{id: 3}} }}\nfunc main() {{\nvar gs = [Guard; 2]{{Guard{{id: 1}}, Guard{{id: 2}}}}\nreplace(gs[0])\n}}\n"
+        ),
+        "division by zero",
+        "1\n2\n3\n",
+    );
+}
+
+#[test]
+fn scratch_flag_allocas_live_in_the_entry_block() {
+    let source = "package main
+type Guard struct { id int }
+func (g mut Guard) drop() {}
+func inspect(g Guard) {}
+func main() {
+    var gs = [Guard; 2]{Guard{id: 1}, Guard{id: 2}}
+    for var i = 0; i < 2; i += 1 {
+        inspect(gs[i])
+        gs[i] = Guard{id: i}
+    }
+}
+";
+    let mut sources = SourceMap::new();
+    let id = sources.add("test.ore", source.into()).unwrap();
+    let ir = emit_llvm(sources.file(id).unwrap()).unwrap();
+    for function in ir.split("define ").skip(1) {
+        let body = function
+            .split_once("br label %bb0")
+            .map_or("", |(_, rest)| rest);
+        assert!(
+            !body.contains("alloca"),
+            "alloca after the entry block:\n{function}"
+        );
+    }
+}
+
 #[test]
 fn semantic_target_prints_john() {
     let source = std::fs::read_to_string(concat!(
