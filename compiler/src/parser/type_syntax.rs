@@ -73,6 +73,7 @@ impl Parser<'_> {
         let rest = match self.peek() {
             TokenKind::Punct(Punct::Gt) => {
                 self.bump();
+                self.insert_semicolon_after_type_arguments();
                 return Ok(());
             }
             TokenKind::Punct(Punct::Shr) => Punct::Gt,
@@ -91,6 +92,36 @@ impl Parser<'_> {
         };
         self.last_token_end = span.start() + 1;
         Ok(())
+    }
+
+    /// §3.7: a closing type-argument `>` is an eligible ending token, but only
+    /// the parser can tell it from the comparison operator, so the semicolon
+    /// the lexer could not insert is inserted here, at the same location.
+    fn insert_semicolon_after_type_arguments(&mut self) {
+        if matches!(self.peek(), TokenKind::Semicolon(_)) {
+            return;
+        }
+        let gap_start = self.last_token_end as usize;
+        let gap_end = match self.peek() {
+            TokenKind::Eof => self.file.text().len(),
+            _ => self.current_span().start() as usize,
+        };
+        let gap = &self.file.text()[gap_start..gap_end];
+        let at = match gap.find('\n') {
+            Some(lf) if lf > 0 && gap.as_bytes()[lf - 1] == b'\r' => gap_start + lf - 1,
+            Some(lf) => gap_start + lf,
+            None if *self.peek() == TokenKind::Eof => gap_end,
+            None => return,
+        };
+        let at = at as u32;
+        let span = self.file.span(at, at).expect("a position inside the file");
+        self.tokens.insert(
+            self.pos,
+            Token {
+                kind: TokenKind::Semicolon(Separator::Newline),
+                span,
+            },
+        );
     }
 
     /// Whether the tokens `ahead` positions from here begin `[]`.

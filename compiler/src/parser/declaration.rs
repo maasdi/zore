@@ -198,23 +198,6 @@ impl Parser<'_> {
         Ok(vec![self.ty()?])
     }
 
-    /// The separator after a struct field. §3.7 inserts no semicolon after
-    /// a `>`, so a field whose type ends in type arguments needs an explicit
-    /// `;` unless it is the last field.
-    fn field_end(&mut self) -> bool {
-        let after_type_arguments = self.last_token_end > 0
-            && self.file.text().as_bytes()[self.last_token_end as usize - 1] == b'>';
-        if self.statement_end("field") {
-            return true;
-        }
-        if after_type_arguments && let Some(diagnostic) = self.diagnostics.pop() {
-            self.diagnostics.push(diagnostic.note(
-                "§3.7 inserts no semicolon after `>`; end this field with `;` or declare it last (Q17)",
-            ));
-        }
-        false
-    }
-
     pub(super) fn struct_decl(&mut self) -> PResult<StructDecl> {
         let start = self.bump().span;
         let name = self.name("a type name")?;
@@ -237,7 +220,7 @@ impl Parser<'_> {
             let ok = match field {
                 Ok(field) => {
                     fields.push(field);
-                    self.field_end()
+                    self.statement_end("field")
                 }
                 Err(Reported) => false,
             };

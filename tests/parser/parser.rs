@@ -829,15 +829,59 @@ fn invalid_dynamic_array_syntax_is_rejected() {
         "package main\nfunc f(t Task<int>) {}\n",
         "not supported by this compiler yet",
     );
-    let case = Case::new("package main\ntype Bag struct {\n Items Array<int>\n Count int\n}\n");
-    let rendered = case.render();
-    assert!(
-        rendered.contains("§3.7 inserts no semicolon after `>`"),
-        "{rendered}"
+}
+
+#[test]
+fn a_closing_type_argument_ends_a_line_like_an_identifier() {
+    let case = Case::new(
+        "package main
+type Bag struct {
+    Items Array<int>
+    Nested Array<Array<int>> // trailing comment
+    Views Array<[]int> /* block
+    comment */ Count int
+    Last Array<int>
+}
+func main() {
+    let more = count >
+        limit
+}
+",
     );
-    Case::new("package main\ntype Bag struct {\n Items Array<int>;\n Count int\n}\n")
-        .assert_clean();
-    Case::new("package main\ntype Bag struct {\n Count int\n Items Array<int>\n}\n").assert_clean();
+    case.assert_clean();
+    let Item::Struct(bag) = &case.parsed.file.items[0] else {
+        panic!("expected a struct");
+    };
+    let fields: Vec<String> = bag
+        .fields
+        .iter()
+        .map(|f| format!("{} {}", f.name.text, ty(&case, &f.ty)))
+        .collect();
+    assert_eq!(
+        fields,
+        [
+            "Items Array<int>",
+            "Nested Array<Array<int>>",
+            "Views Array<[]int>",
+            "Count int",
+            "Last Array<int>",
+        ]
+    );
+    assert_eq!(case.shape(), ["(let more (> count limit))"]);
+    rejects_file(
+        "package main\nfunc f(\n    xs Array<int>\n) {}\n",
+        "missing trailing comma",
+    );
+    rejects("let xs Array<int>\n= other", "expected");
+    rejects("let xs Array<Array<int>\n> = other", "expected `>`");
+    rejects_file(
+        "package main\nfunc f() Array<int>\n{ return xs }\n",
+        "expected",
+    );
+    Case::new("package main\nfunc f(\n    xs Array<int>,\n) {}\n").assert_clean();
+    let case = Case::new("package main\nfunc main() {\n    let xs = Array<int>\r\n{1}\n}\n");
+    let at_line_end = case.render();
+    assert!(at_line_end.contains("test.ore:3:24"), "{at_line_end}");
 }
 
 #[test]
