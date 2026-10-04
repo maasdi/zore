@@ -9,6 +9,29 @@ pub enum Callee {
     Function(FunctionId),
     Println,
     Drop,
+    /// `[Ref(map), key, value]`: adds a literal entry, panicking without
+    /// consuming the value if the key is already present.
+    MapInsertNew,
+    /// `[Ref(map), key, value]`: replaces or inserts an entry (§13.3).
+    MapAssign,
+    /// `[Ref(map), key]` to `[found, value]`: copies the value out.
+    MapLookup,
+    /// `[Ref(map), key]` to `[found, value]`: detaches and returns the value.
+    MapRemove,
+}
+
+impl Callee {
+    /// Whether this is a compiler-provided map operation, whose first
+    /// argument is the map borrowed mutably unless it only looks up.
+    pub fn map_access(&self) -> Option<crate::ast::ParamMode> {
+        match self {
+            Callee::MapLookup => Some(crate::ast::ParamMode::Borrow),
+            Callee::MapInsertNew | Callee::MapAssign | Callee::MapRemove => {
+                Some(crate::ast::ParamMode::Mut)
+            }
+            Callee::Function(_) | Callee::Println | Callee::Drop => None,
+        }
+    }
 }
 
 #[derive(Debug)]

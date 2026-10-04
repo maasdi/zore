@@ -125,11 +125,15 @@ fn check_reports_unreadable_targets() {
 
 #[test]
 fn check_accepts_supported_examples_silently() {
-    for example in ["hello", "semantic-target"] {
-        let path = format!(
-            "{}/../examples/{example}/main.ore",
-            env!("CARGO_MANIFEST_DIR")
-        );
+    let root = format!("{}/../examples", env!("CARGO_MANIFEST_DIR"));
+    let examples: Vec<String> = std::fs::read_dir(&root)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| path.join("main.ore").is_file())
+        .map(|path| path.join("main.ore").to_string_lossy().into_owned())
+        .collect();
+    assert!(examples.len() >= 13, "{examples:?}");
+    for path in examples {
         let output = invoke(&["check", &path]);
         assert!(output.status.success(), "{output:?}");
         assert!(

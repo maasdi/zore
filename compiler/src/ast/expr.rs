@@ -59,8 +59,20 @@ pub enum ExprKind {
         ty: Type,
         elements: Vec<Expr>,
     },
+    /// `map[K]V{key: value, ...}`, entries in written order.
+    MapLit {
+        ty: Type,
+        entries: Vec<MapEntry>,
+    },
     /// A literal the lexer already diagnosed.
     Malformed,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct MapEntry {
+    pub key: Expr,
+    pub value: Expr,
+    pub span: Span,
 }
 
 #[derive(Clone, Debug, PartialEq)]

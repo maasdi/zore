@@ -1,0 +1,24 @@
+package main
+
+// Constants are exact until they are given a type (§6.7).
+const limit = 1 << 10
+const greeting = "Hello, " + "Zore"
+
+func main() {
+    let answer = 42          // immutable binding, inferred as int
+    var counter uint8 = 250  // mutable binding with an explicit type
+    counter += 5
+
+    let small int16 = limit / 4
+    let letter = 'Z'
+    let ready = answer > 40 && counter == 255
+
+    println(greeting)
+    println(answer)
+    println(counter)
+    println(small)
+    println(letter)
+    println(ready)
+    println(int32(small) * 2)
+    println(limit)
+}

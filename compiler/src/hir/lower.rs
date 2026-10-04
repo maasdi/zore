@@ -258,6 +258,24 @@ impl<'a> Checker<'a> {
                 let element_ty = self.resolve_type(element)?;
                 Some(self.types.dyn_array_type(element_ty))
             }
+            ast::Type::Map { key, value, .. } => {
+                let key_ty = self.resolve_type(key);
+                let value_ty = if self.reject_stored_mut_slice(value) {
+                    self.resolve_type(value)
+                } else {
+                    None
+                };
+                let key_ty = key_ty?;
+                if !self.is_map_key(key_ty) {
+                    let message = format!(
+                        "type `{}` cannot be a map key; keys are bool, integer, rune, or string (§13.3)",
+                        self.name(key_ty)
+                    );
+                    self.error(message, key.span());
+                    return None;
+                }
+                Some(self.types.map_type(key_ty, value_ty?))
+            }
             ast::Type::Slice {
                 element, mutable, ..
             } => {
@@ -312,10 +330,40 @@ impl<'a> Checker<'a> {
                 TypeKind::Array { element, .. } | TypeKind::DynArray { element } => {
                     pending.push(element)
                 }
+                TypeKind::Map { value, .. } => pending.push(value),
                 _ => {}
             }
         }
         false
+    }
+
+    fn is_map_key(&self, ty: TypeId) -> bool {
+        matches!(
+            self.types.kind(ty),
+            TypeKind::Bool | TypeKind::Int(_) | TypeKind::Rune | TypeKind::String
+        )
+    }
+
+    /// Copy/Move classification during checking, before the HIR package
+    /// exists; agrees with `hir::Package::is_copy`.
+    fn type_is_copy(&self, ty: TypeId) -> bool {
+        match self.types.kind(ty) {
+            TypeKind::Bool
+            | TypeKind::Int(_)
+            | TypeKind::Float(_)
+            | TypeKind::Rune
+            | TypeKind::String
+            | TypeKind::Error
+            | TypeKind::Slice { .. } => true,
+            TypeKind::Struct(id) => {
+                !self.res.methods.contains_key(&(id, "drop".to_string()))
+                    && self.fields[id.0 as usize]
+                        .iter()
+                        .all(|(_, field_ty, _)| field_ty.is_none_or(|ty| self.type_is_copy(ty)))
+            }
+            TypeKind::Array { element, .. } => self.type_is_copy(element),
+            TypeKind::DynArray { .. } | TypeKind::Map { .. } => false,
+        }
     }
 
     fn is_mut_slice(&self, ty: TypeId) -> bool {
@@ -468,9 +516,10 @@ impl<'a> Checker<'a> {
                 ast::Type::Named(type_name) => {
                     format!("{}.{}", type_name.text, func.name.text)
                 }
-                ast::Type::Array { .. } | ast::Type::Slice { .. } | ast::Type::DynArray { .. } => {
-                    func.name.text.clone()
-                }
+                ast::Type::Array { .. }
+                | ast::Type::Slice { .. }
+                | ast::Type::DynArray { .. }
+                | ast::Type::Map { .. } => func.name.text.clone(),
             },
             None => func.name.text.clone(),
         };
@@ -704,6 +753,13 @@ impl<'a> Checker<'a> {
                 self.error("this call has no value", expr.span);
                 None
             }
+            _ if matches!(expr.kind, ExprKind::MapLookup { .. }) => {
+                self.error(
+                    "map lookup produces two results, presence then value; bind both, as in `let found, value = m[key]` (§13.3)",
+                    expr.span,
+                );
+                None
+            }
             n => {
                 let message = format!(
                     "expected one value, but this call returns {n} values; bind them first"
@@ -773,6 +829,7 @@ impl<'a> Checker<'a> {
             }
             ast::ExprKind::StructLit { ty, fields } => self.struct_lit(ty, fields, span),
             ast::ExprKind::ArrayLit { ty, elements } => self.array_lit(ty, elements, span),
+            ast::ExprKind::MapLit { ty, entries } => self.map_lit(ty, entries, span),
         }
     }
 
@@ -1304,6 +1361,11 @@ impl<'a> Checker<'a> {
             return None;
         };
         let ty = receiver.ty();
+        if let TypeKind::Map { key, value } = self.types.kind(ty)
+            && name.text == "remove"
+        {
+            return self.map_remove(receiver, key, value, args, span);
+        }
         let strukt = self.types.struct_id(ty);
         let method = strukt.and_then(|s| self.res.methods.get(&(s, name.text.clone())).copied());
         let Some(id) = method else {
@@ -1321,6 +1383,11 @@ impl<'a> Checker<'a> {
             if matches!(self.types.kind(ty), TypeKind::DynArray { .. }) {
                 diagnostic = diagnostic.note(
                     "`Array<T>` length, append, remove, and capacity APIs are not specified yet (Q05)",
+                );
+            }
+            if matches!(self.types.kind(ty), TypeKind::Map { .. }) {
+                diagnostic = diagnostic.note(
+                    "map length, iteration, and borrowed entry APIs are not specified yet (Q02/Q05)",
                 );
             }
             self.diagnostics.push(diagnostic);
@@ -1342,6 +1409,43 @@ impl<'a> Checker<'a> {
             return None;
         }
         self.function_call(id, &name.text, Some(receiver), args, span)
+    }
+
+    /// The built-in `m.remove(key)`: a `mut` receiver, one key, and the
+    /// presence-first result pair (§13.3).
+    fn map_remove(
+        &mut self,
+        map: hir::Expr,
+        key_ty: TypeId,
+        value_ty: TypeId,
+        args: &[ast::Expr],
+        span: Span,
+    ) -> Option<Value> {
+        let [key] = args else {
+            let message = format!(
+                "`remove` takes 1 argument but {} {} given",
+                args.len(),
+                if args.len() == 1 { "was" } else { "were" }
+            );
+            self.error(message, span);
+            self.report_arg_errors(args);
+            return None;
+        };
+        let key = self
+            .expr(key, Some(key_ty))
+            .and_then(|k| self.coerce(k, key_ty));
+        let receiver_ok = self.mutable_place(&map, MutableUse::Argument);
+        let key = key?;
+        receiver_ok.then(|| {
+            Value::Typed(hir::Expr {
+                kind: ExprKind::MapRemove {
+                    map: Box::new(map),
+                    key: Box::new(key),
+                },
+                types: vec![TypeStore::BOOL, value_ty],
+                span,
+            })
+        })
     }
 
     fn function_call(
@@ -1511,6 +1615,7 @@ impl<'a> Checker<'a> {
                 mutable: true,
                 ..
             } => out.extend(argument_place(base)),
+            ExprKind::MapRemove { map, .. } => out.extend(argument_place(map)),
             _ => {}
         }
         for child in subexpressions(expr) {
@@ -1790,6 +1895,9 @@ impl<'a> Checker<'a> {
 
     fn index(&mut self, base: &ast::Expr, index: &ast::Expr, span: Span) -> Option<Value> {
         let base = self.indexable_base(base)?;
+        if let TypeKind::Map { key, value } = self.types.kind(base.ty()) {
+            return self.map_lookup(base, key, value, index, span);
+        }
         let (index_expr, element) = self.checked_index(base.ty(), base.span, index)?;
         Some(Value::Typed(typed(
             ExprKind::Index {
@@ -1964,6 +2072,91 @@ impl<'a> Checker<'a> {
 
     fn source_text(&self, span: Span) -> &str {
         &self.text[span.start() as usize..span.end() as usize]
+    }
+
+    /// `map[key]` as a two-result value; only Copy values can be copied out
+    /// through the shared borrow a lookup takes (§13.3).
+    fn map_lookup(
+        &mut self,
+        map: hir::Expr,
+        key_ty: TypeId,
+        value_ty: TypeId,
+        key: &ast::Expr,
+        span: Span,
+    ) -> Option<Value> {
+        let key = self
+            .expr(key, Some(key_ty))
+            .and_then(|k| self.coerce(k, key_ty))?;
+        if !self.type_is_copy(value_ty) {
+            let message = format!(
+                "cannot look up a Move value of type `{}`; use `m.remove(key)` to take ownership (§13.3)",
+                self.name(value_ty)
+            );
+            self.error(message, span);
+            return None;
+        }
+        Some(Value::Typed(hir::Expr {
+            kind: ExprKind::MapLookup {
+                map: Box::new(map),
+                key: Box::new(key),
+            },
+            types: vec![TypeStore::BOOL, value_ty],
+            span,
+        }))
+    }
+
+    fn map_lit(&mut self, ty: &ast::Type, entries: &[ast::MapEntry], span: Span) -> Option<Value> {
+        let map_ty = self.resolve_type(ty);
+        let Some(TypeKind::Map { key, value }) = map_ty.map(|ty| self.types.kind(ty)) else {
+            for entry in entries {
+                self.expr(&entry.key, None);
+                self.expr(&entry.value, None);
+            }
+            return None;
+        };
+        let mut checked = Vec::with_capacity(entries.len());
+        let mut constant_keys: Vec<(Const, Span)> = Vec::new();
+        let mut ok = true;
+        for entry in entries {
+            let key_expr = self
+                .expr(&entry.key, Some(key))
+                .and_then(|k| self.coerce(k, key));
+            let value_expr = self
+                .expr(&entry.value, Some(value))
+                .and_then(|v| self.coerce(v, value));
+            let (Some(key_expr), Some(value_expr)) = (key_expr, value_expr) else {
+                ok = false;
+                continue;
+            };
+            if let Some(constant) = constant(&key_expr) {
+                if let Some((_, first)) = constant_keys.iter().find(|(seen, _)| seen == constant) {
+                    let text = self.source_text(key_expr.span).to_owned();
+                    self.diagnostics.push(
+                        Diagnostic::new(
+                            Severity::Error,
+                            format!("duplicate key `{text}` in map literal (§13.3)"),
+                            key_expr.span,
+                        )
+                        .related(*first, "first used here"),
+                    );
+                    ok = false;
+                } else {
+                    constant_keys.push((constant.clone(), key_expr.span));
+                }
+            }
+            checked.push((key_expr, value_expr));
+        }
+        ok.then(|| {
+            Value::Typed(typed(
+                ExprKind::MapLit {
+                    key,
+                    value,
+                    entries: checked,
+                },
+                map_ty.expect("resolved above"),
+                span,
+            ))
+        })
     }
 
     fn array_lit(&mut self, ty: &ast::Type, elements: &[ast::Expr], span: Span) -> Option<Value> {
@@ -2278,6 +2471,16 @@ impl<'a> Checker<'a> {
 
     fn assignable_place(&mut self, expr: &ast::Expr) -> Option<hir::Place> {
         let (place, slice_deref) = self.target_place(expr)?;
+        self.writable_place(place, slice_deref, expr)
+    }
+
+    /// `place` (written as `expr`) if assigning through it is allowed.
+    fn writable_place(
+        &mut self,
+        place: hir::Place,
+        slice_deref: Option<SliceDeref>,
+        expr: &ast::Expr,
+    ) -> Option<hir::Place> {
         match slice_deref {
             Some(SliceDeref { mutable: true, .. }) => Some(place),
             Some(SliceDeref { base_span, .. }) => {
@@ -2390,6 +2593,14 @@ impl<'a> Checker<'a> {
                     return None;
                 }
                 let (mut place, mut slice_deref) = self.target_place(base)?;
+                if matches!(self.types.kind(place.ty), TypeKind::Map { .. }) {
+                    self.expr(index, None);
+                    self.error(
+                        "map entries are not addressable places; assign `m[key] = value` on its own, or update a copy and assign it back (§13.3)",
+                        expr.span,
+                    );
+                    return None;
+                }
                 if let TypeKind::Slice { mutable, .. } = self.types.kind(place.ty) {
                     slice_deref = Some(SliceDeref {
                         mutable,
@@ -2408,6 +2619,79 @@ impl<'a> Checker<'a> {
         }
     }
 
+    /// For a target `base[key]` whose base is a map place: the map place and
+    /// its parts. `Some(None)` means the base already failed to check.
+    #[allow(clippy::type_complexity)]
+    fn map_entry_target<'e>(
+        &mut self,
+        target: &'e ast::Expr,
+    ) -> Option<Option<(hir::Place, Option<SliceDeref>, &'e ast::Expr, &'e ast::Expr)>> {
+        let ast::ExprKind::Index { base, index } = &target.kind else {
+            return None;
+        };
+        if !matches!(
+            base.kind,
+            ast::ExprKind::Name(_) | ast::ExprKind::Field { .. } | ast::ExprKind::Index { .. }
+        ) {
+            return None;
+        }
+        let Some((place, slice_deref)) = self.target_place(base) else {
+            return Some(None);
+        };
+        matches!(self.types.kind(place.ty), TypeKind::Map { .. }).then_some(Some((
+            place,
+            slice_deref,
+            &**base,
+            &**index,
+        )))
+    }
+
+    /// `map[key] = value` (§13.3); the map must be a writable place.
+    #[allow(clippy::too_many_arguments)]
+    fn map_assign(
+        &mut self,
+        map: hir::Place,
+        slice_deref: Option<SliceDeref>,
+        base: &ast::Expr,
+        key: &ast::Expr,
+        op: AssignOp,
+        values: &[ast::Expr],
+        span: Span,
+    ) -> Option<hir::StmtKind> {
+        let TypeKind::Map {
+            key: key_ty,
+            value: value_ty,
+        } = self.types.kind(map.ty)
+        else {
+            unreachable!("checked by map_entry_target")
+        };
+        if let AssignOp::Compound(_) = op {
+            self.error(
+                "compound map assignment is not allowed; look up, compute, then assign (§13.3)",
+                span,
+            );
+            self.report_arg_errors(values);
+            return None;
+        }
+        let [value] = values else {
+            let message = format!("assignment has 1 target but {} values", values.len());
+            self.error(message, span);
+            return None;
+        };
+        let map = self.writable_place(map, slice_deref, base);
+        let key = self
+            .expr(key, Some(key_ty))
+            .and_then(|k| self.coerce(k, key_ty));
+        let value = self
+            .expr(value, Some(value_ty))
+            .and_then(|v| self.coerce(v, value_ty));
+        Some(hir::StmtKind::MapAssign {
+            map: map?,
+            key: key?,
+            value: value?,
+        })
+    }
+
     fn assign(
         &mut self,
         targets: &[AssignTarget],
@@ -2415,6 +2699,18 @@ impl<'a> Checker<'a> {
         values: &[ast::Expr],
         span: Span,
     ) -> Option<hir::StmtKind> {
+        if let [AssignTarget::Place(target)] = targets {
+            match self.map_entry_target(target) {
+                Some(Some((map, slice_deref, base, key))) => {
+                    return self.map_assign(map, slice_deref, base, key, op, values, span);
+                }
+                Some(None) => {
+                    self.report_arg_errors(values);
+                    return None;
+                }
+                None => {}
+            }
+        }
         // `None` is a discard; `Some(None)` is a target that failed to check.
         let places: Vec<Option<Option<hir::Place>>> = targets
             .iter()
@@ -2674,6 +2970,11 @@ fn subexpressions(expr: &hir::Expr) -> Vec<&hir::Expr> {
         ExprKind::Call { args, .. } => args.iter().collect(),
         ExprKind::StructLit { fields, .. } => fields.iter().map(|(_, value)| value).collect(),
         ExprKind::ArrayLit { elements, .. } => elements.iter().collect(),
+        ExprKind::MapLit { entries, .. } => entries
+            .iter()
+            .flat_map(|(key, value)| [key, value])
+            .collect(),
+        ExprKind::MapLookup { map, key } | ExprKind::MapRemove { map, key } => vec![map, key],
         ExprKind::Println(inner)
         | ExprKind::Drop(inner)
         | ExprKind::Convert(inner)

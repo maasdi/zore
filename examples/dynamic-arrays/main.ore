@@ -1,0 +1,40 @@
+package main
+
+type Job struct {
+    Id int
+}
+
+func (j mut Job) drop() {
+    println(j.Id)
+}
+
+func sum(items []int, count int) int {
+    var total = 0
+    for var i = 0; i < count; i += 1 {
+        total += items[i]
+    }
+    return total
+}
+
+func bump(values mut Array<int>) {
+    values[0] += 100
+}
+
+func make() Array<int> {
+    return Array<int>{7, 8, 9}
+}
+
+func main() {
+    var values = Array<int>{1, 2, 3}
+    values[1] = 20
+    bump(values)
+    println(values[0])
+    println(sum(values[:], 3))
+
+    let made = make()
+    println(made[2])
+
+    var jobs = Array<Job>{Job{Id: 1}, Job{Id: 2}}
+    jobs[0] = Job{Id: 3}          // the replaced job is dropped
+    println(0)
+}                                   // elements drop in reverse order

@@ -1,8 +1,11 @@
 # Map conformance cases
 
 Authority: spec §13.3, with §5.6, §7.2, §7.5–7.8, §11.7, §12.3, §15,
-§31.2, and §41.4. These are pending parser, typing, ownership, and runtime
-expectations, not executable tests or passing coverage.
+§31.2, and §41.4. Most rows have executable counterparts in
+`tests/parser/parser.rs`, `tests/typecheck/check.rs`,
+`tests/ownership/ownership.rs`, and `tests/codegen/native.rs`. Rows involving
+`await` and the stated Q02/Q05 limitations remain pending. A map entry among several
+assignment targets is always rejected (Q18a).
 
 ## Construction and keys
 

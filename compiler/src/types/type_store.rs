@@ -13,6 +13,7 @@ pub struct TypeStore {
     array_types: HashMap<(TypeId, u32), TypeId>,
     slice_types: HashMap<(TypeId, bool), TypeId>,
     dyn_array_types: HashMap<TypeId, TypeId>,
+    map_types: HashMap<(TypeId, TypeId), TypeId>,
 }
 
 impl Default for TypeStore {
@@ -56,6 +57,7 @@ impl TypeStore {
             array_types: HashMap::new(),
             slice_types: HashMap::new(),
             dyn_array_types: HashMap::new(),
+            map_types: HashMap::new(),
         }
     }
 
@@ -102,6 +104,17 @@ impl TypeStore {
         let ty = TypeId(self.kinds.len() as u32);
         self.kinds.push(TypeKind::DynArray { element });
         self.dyn_array_types.insert(element, ty);
+        ty
+    }
+
+    /// Interns `map[key]value`.
+    pub fn map_type(&mut self, key: TypeId, value: TypeId) -> TypeId {
+        if let Some(&ty) = self.map_types.get(&(key, value)) {
+            return ty;
+        }
+        let ty = TypeId(self.kinds.len() as u32);
+        self.kinds.push(TypeKind::Map { key, value });
+        self.map_types.insert((key, value), ty);
         ty
     }
 
@@ -187,6 +200,12 @@ impl fmt::Display for TypeName<'_> {
             TypeKind::DynArray { element } => {
                 write!(f, "Array<{}>", self.store.display(element))
             }
+            TypeKind::Map { key, value } => write!(
+                f,
+                "map[{}]{}",
+                self.store.display(key),
+                self.store.display(value)
+            ),
         }
     }
 }

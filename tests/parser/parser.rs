@@ -64,7 +64,7 @@ impl Case {
 fn type_name(t: &Type) -> &str {
     match t {
         Type::Named(name) => &name.text,
-        Type::Array { .. } | Type::Slice { .. } | Type::DynArray { .. } => {
+        Type::Array { .. } | Type::Slice { .. } | Type::DynArray { .. } | Type::Map { .. } => {
             panic!("expected a named type, found an array or slice type")
         }
     }
@@ -77,6 +77,7 @@ fn ty(case: &Case, t: &Type) -> String {
             format!("[{} ; {}]", ty(case, element), expr(case, size))
         }
         Type::DynArray { element, .. } => format!("Array<{}>", ty(case, element)),
+        Type::Map { key, value, .. } => format!("map[{}]{}", ty(case, key), ty(case, value)),
         Type::Slice {
             element, mutable, ..
         } => format!(
@@ -142,6 +143,20 @@ fn expr(case: &Case, e: &Expr) -> String {
                     " {}:{}",
                     field.name.text,
                     expr(case, &field.value)
+                ));
+            }
+            out + ")"
+        }
+        ExprKind::MapLit {
+            ty: map_ty,
+            entries,
+        } => {
+            let mut out = format!("(lit {}", ty(case, map_ty));
+            for entry in entries {
+                out.push_str(&format!(
+                    " {}:{}",
+                    expr(case, &entry.key),
+                    expr(case, &entry.value)
                 ));
             }
             out + ")"
@@ -885,6 +900,49 @@ func main() {
 }
 
 #[test]
+fn map_types_and_literals() {
+    let case = Case::body(
+        "let scores map[string]int = map[string]int{\"Ada\": 10, \"Lin\": 20}
+        let empty = map[string]int{}
+        let nested map[string]Array<int> = nested
+        let many Array<map[bool]rune> = many
+        let grid = map[int]int{
+            1: 2,
+            3: 4,
+        }
+        if map[int]bool{1: true}[1] == true { work() }
+        let found, value = scores[\"Ada\"]
+        scores[\"Ada\"] = 30
+        let removed, old = scores.remove(\"Ada\")",
+    );
+    case.assert_clean();
+    assert_eq!(
+        case.shape(),
+        [
+            "(let scores map[string]int (lit map[string]int \"Ada\":10 \"Lin\":20))",
+            "(let empty (lit map[string]int))",
+            "(let nested map[string]Array<int> nested)",
+            "(let many Array<map[bool]rune> many)",
+            "(let grid (lit map[int]int 1:2 3:4))",
+            "(if (== (index (lit map[int]bool 1:true) 1) true) {(call work)})",
+            "(let found,value (index scores \"Ada\"))",
+            "(= (index scores \"Ada\") 30)",
+            "(let removed,old (call (. scores remove) \"Ada\"))",
+        ]
+    );
+    for (body, message) in [
+        (
+            "let m = map[string]int{\"a\": 1,\n\"b\": 2\n}",
+            "missing trailing comma",
+        ),
+        ("let m = map[string]int{\"a\" 1}", "expected `:`"),
+        ("let m = map[string]{}", "expected a type"),
+    ] {
+        rejects(body, message);
+    }
+}
+
+#[test]
 fn mut_before_a_slice_type_is_part_of_the_type() {
     let case = Case::new(
         "package main
@@ -1054,7 +1112,6 @@ fn package_level_bindings_are_parsed() {
 #[test]
 fn later_milestone_syntax_is_reported_as_unsupported() {
     for body in [
-        "let m = map[string]int{}",
         "let t = go work()",
         "go work()",
         "let f = func() { work() }",
@@ -1064,7 +1121,6 @@ fn later_milestone_syntax_is_reported_as_unsupported() {
     for text in [
         "func f(t Task<int>) {}",
         "func f(c channel<int>) {}",
-        "func f(m map[string]int) {}",
         "func f(u pkg.User) {}",
         "func f(cb func()) {}",
     ] {

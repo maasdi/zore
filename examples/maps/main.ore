@@ -1,0 +1,35 @@
+package main
+
+type Resource struct {
+    Name string
+}
+
+func (r mut Resource) drop() {
+    println(r.Name)
+}
+
+func main() {
+    var scores = map[string]int{"Ada": 10, "Lin": 20}
+    let found, score = scores["Ada"]   // presence first, then the value
+    println(found)
+    println(score)
+
+    scores["Ada"] = 30
+    let _, updated = scores["Ada"]
+    println(updated)
+
+    let missing, zero = scores["Bob"]
+    println(missing)
+    println(zero)
+
+    let removed, old = scores.remove("Lin")
+    println(removed)
+    println(old)
+
+    var resources = map[string]Resource{"primary": Resource{Name: "disk"}}
+    let has, resource = resources.remove("primary")   // ownership moves out
+    println(has)
+    println(resource.Name)
+    resources["backup"] = Resource{Name: "tape"}
+    println("end")
+}

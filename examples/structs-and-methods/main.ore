@@ -1,0 +1,39 @@
+package main
+
+type Point struct {
+    X int
+    Y int
+}
+
+type Counter struct {
+    Name  string
+    Count int
+}
+
+// A shared receiver only reads the value.
+func (p Point) sum() int {
+    return p.X + p.Y
+}
+
+// A `mut` receiver may change the caller's value.
+func (c mut Counter) bump() {
+    c.Count += 1
+}
+
+// An `own` receiver takes the value over.
+func (c own Counter) finish() int {
+    return c.Count
+}
+
+func main() {
+    let origin = Point{X: 0, Y: 0}
+    let p = Point{X: 3, Y: 4}
+    println(origin.sum())
+    println(p.sum())
+
+    var counter = Counter{Name: "clicks", Count: 0}
+    counter.bump()
+    counter.bump()
+    println(counter.Name)
+    println(counter.finish())
+}

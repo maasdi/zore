@@ -1,0 +1,27 @@
+package main
+
+func parsePositive(n int) (int, error) {
+    if n < 0 {
+        return 0, error("negative input")
+    }
+    return n, nil
+}
+
+// `?` returns early with the error, filling other results with zero values.
+func doubled(n int) (int, error) {
+    let value = parsePositive(n)?
+    return value * 2, nil
+}
+
+func main() {
+    let ok, err = doubled(21)
+    println(ok)
+    println(err == nil)
+
+    let failed, failure = doubled(-1)
+    println(failed)
+    println(failure == error("negative input"))
+
+    let _, ignored = parsePositive(5)
+    _ = ignored
+}

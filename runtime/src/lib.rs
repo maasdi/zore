@@ -8,6 +8,8 @@
 mod alloc;
 #[path = "io.rs"]
 mod io;
+#[path = "map.rs"]
+mod map;
 #[path = "panic.rs"]
 mod panic;
 #[path = "string.rs"]

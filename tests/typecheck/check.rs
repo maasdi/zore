@@ -1934,3 +1934,175 @@ fn unsupported_dynamic_array_forms_are_rejected() {
         "a custom `drop` for a type containing a borrowed slice",
     );
 }
+
+const MAP_GUARD: &str = "type Guard struct { id int }\nfunc (g mut Guard) drop() {}";
+
+#[test]
+fn map_keys_are_bool_integer_rune_or_string() {
+    accepts(&program(
+        "func use() { let a = map[bool]int{}\nlet b = map[uint8]int{}\nlet c = map[rune]int{}\nlet d = map[string]int{} }",
+    ));
+    for key in [
+        "float64",
+        "error",
+        "[]int",
+        "[int; 2]",
+        "Array<int>",
+        "map[int]int",
+        "Guard",
+    ] {
+        rejects(
+            &program(&format!("{MAP_GUARD}\nfunc use(m map[{key}]int) {{}}")),
+            "cannot be a map key",
+        );
+    }
+    rejects(
+        &program("func f(m map[string]mut []int) {}"),
+        "`mut []T` nested in",
+    );
+}
+
+#[test]
+fn map_literals_type_entries_and_reject_constant_duplicates() {
+    let case = accepts(&program(
+        "func use() { let m = map[string]int{\"Ada\": 10, \"Lin\": 20,}\nlet found, _ = m[\"Ada\"]\n_ = found }",
+    ));
+    assert_eq!(local_type(&case, "use", "m"), "map[string]int64");
+    rejects(
+        &program("func use() { let m = map[string]int{\"a\": \"b\"} }"),
+        "mismatched types: expected `int64`, found `string`",
+    );
+    rejects(
+        &program("func use() { let m = map[uint8]int{256: 1} }"),
+        "does not fit",
+    );
+    rejects(
+        &program("func use() { let m = map[string]int{\"a\": 1, \"a\": 2} }"),
+        "duplicate key `\"a\"` in map literal",
+    );
+    accepts(&program(
+        "func use(k string) { let m = map[string]int{k: 1, \"a\": 2}\nlet f, _ = m[k]\n_ = f }",
+    ));
+}
+
+#[test]
+fn map_lookups_always_produce_presence_then_value() {
+    accepts(&program(
+        "func use(m map[string]int) int { let found, value = m[\"a\"]\nlet _, other = m[\"b\"]\n_, _ = m[\"c\"]\nif found { return value }\nreturn other }",
+    ));
+    accepts(&program(
+        "func get(m map[string]int) (bool, int) { return m[\"a\"] }",
+    ));
+    rejects(
+        &program("func use(m map[string]int) { let value = m[\"a\"] }"),
+        "map lookup produces two results",
+    );
+    rejects(
+        &program("func take(n int) {}\nfunc use(m map[string]int) { take(m[\"a\"]) }"),
+        "map lookup produces two results",
+    );
+    rejects(
+        &program(&format!(
+            "{MAP_GUARD}\nfunc use(m map[string]Guard) {{ let found, g = m[\"a\"] }}"
+        )),
+        "cannot look up a Move value of type `Guard`",
+    );
+    rejects(
+        &program("func use(m map[string]error) error { let found = m[\"a\"]?\nreturn nil }"),
+        "`?` requires a call or awaited operation",
+    );
+    rejects(
+        &program("func use(m map[string]int) { m[\"a\"] }"),
+        "expression is not a statement",
+    );
+}
+
+#[test]
+fn map_removal_needs_a_mutable_map_and_supports_propagation() {
+    accepts(&program(&format!(
+        "{MAP_GUARD}\nfunc use(m mut map[string]Guard) {{ let found, g = m.remove(\"a\")\n_ = found }}"
+    )));
+    accepts(&program(
+        "func use(m mut map[string]error) (bool, error) { let found = m.remove(\"a\")?\nreturn found, nil }",
+    ));
+    rejects(
+        &program(
+            "func use(m mut map[string]error) bool { let found = m.remove(\"a\")?\nreturn found }",
+        ),
+        "`?` requires a trailing `error` result",
+    );
+    rejects(
+        &program("func use() { let m = map[string]int{}\nlet f, v = m.remove(\"a\") }"),
+        "cannot pass immutable binding `m` as a `mut` argument",
+    );
+    rejects(
+        &program("func use(m map[string]int) { let f, v = m.remove(\"a\") }"),
+        "cannot pass shared parameter `m` as a `mut` argument",
+    );
+    rejects(
+        &program(
+            "func use(m mut map[string]error) { let found, err = m.remove(\"a\")\n_ = found }",
+        ),
+        "error value in `err` may be unused before scope exit",
+    );
+    let case = rejects(
+        &program("func use(m map[string]int) { m.len() }"),
+        "type `map[string]int64` has no method `len`",
+    );
+    assert!(
+        case.checked.diagnostics[0]
+            .notes()
+            .iter()
+            .any(|note| note.contains("Q02/Q05"))
+    );
+}
+
+#[test]
+fn map_assignment_targets_a_mutable_map_and_one_entry() {
+    accepts(&program(
+        "func set(m mut map[string]int) { m[\"a\"] = 1 }\nfunc use() { var m = map[string]int{}\nm[\"b\"] = 2\nset(m) }",
+    ));
+    rejects(
+        &program("func use() { let m = map[string]int{}\nm[\"a\"] = 1 }"),
+        "cannot assign to immutable binding `m`",
+    );
+    rejects(
+        &program("func use(m map[string]int) { m[\"a\"] = 1 }"),
+        "cannot assign to parameter `m`",
+    );
+    rejects(
+        &program("func use() { var m = map[string]int{}\nm[\"a\"] += 1 }"),
+        "compound map assignment is not allowed",
+    );
+    rejects(
+        &program("type P struct { X int }\nfunc use() { var m = map[string]P{}\nm[\"a\"].X = 1 }"),
+        "map entries are not addressable places",
+    );
+    rejects(
+        &program("func use() { var m = map[string]int{}\nvar x = 0\nm[\"a\"], x = 1, 2 }"),
+        "map entries are not addressable places",
+    );
+    rejects(
+        &program("func use() { var m = map[string]int{}\nm[\"a\"] = \"b\" }"),
+        "mismatched types: expected `int64`, found `string`",
+    );
+}
+
+#[test]
+fn maps_are_move_values_without_operators() {
+    let case = accepts(&program("func use() { let m = map[string]int{} }"));
+    let ty = case.function("use").locals[0].ty;
+    assert!(!case.package().is_copy(ty));
+    rejects(
+        &body("let m = map[string]int{}\nprintln(m)"),
+        "`println` cannot print values of type `map[string]int64`",
+    );
+    rejects(
+        &program("func f(a map[string]int, b map[string]int) bool { return a == b }"),
+        "operator `==` cannot be applied to `map[string]int64`",
+    );
+    rejects(
+        &program("type Node struct { Kids map[string]Node }"),
+        "struct `Node` contains itself through `Array<T>` or a map",
+    );
+}

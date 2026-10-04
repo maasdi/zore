@@ -1,0 +1,29 @@
+package main
+
+type Lamp struct {
+    Id int
+}
+
+func (l mut Lamp) drop() {
+    println(l.Id)
+}
+
+func total(values [int; 4]) int {
+    var sum = 0
+    for var i = 0; i < 4; i += 1 {
+        sum += values[i]
+    }
+    return sum
+}
+
+func main() {
+    var values = [int; 4]{1, 2, 3, 4}
+    values[0] = 10
+    values[3] += 30
+    println(values[0])
+    println(total(values))
+
+    var lamps = [Lamp; 2]{Lamp{Id: 1}, Lamp{Id: 2}}
+    lamps[0] = Lamp{Id: 3}          // the replaced lamp is dropped
+    println(0)
+}                                   // remaining lamps drop in reverse order

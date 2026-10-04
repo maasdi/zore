@@ -99,7 +99,7 @@ and `test` are not implemented yet.
 | [`spec/`](spec/language-spec.md) | The language specification (authoritative) |
 | [`compiler/`](compiler) | The single Rust compiler crate, organized by stage |
 | [`runtime/`](runtime) | The Rust runtime linked into native programs |
-| [`examples/`](examples) | Example programs |
+| [`examples/`](examples/README.md) | One tested, runnable program per supported feature |
 | [`tests/`](tests) | Integration tests and conformance cases |
 | [`docs/`](docs/README.md) | Architecture, roadmap, decision records, open questions |
 

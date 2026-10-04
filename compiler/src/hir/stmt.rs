@@ -27,6 +27,13 @@ pub enum StmtKind {
         targets: Vec<Option<Place>>,
         values: Vec<Expr>,
     },
+    /// `map[key] = value`: evaluates the map place, key, then value, and only
+    /// then inserts or replaces the entry (§13.3).
+    MapAssign {
+        map: Place,
+        key: Expr,
+        value: Expr,
+    },
     /// `place op= value`, evaluating the place once.
     CompoundAssign {
         place: Place,
