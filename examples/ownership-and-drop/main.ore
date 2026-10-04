@@ -1,0 +1,33 @@
+package main
+
+// A custom `drop` makes `File` a Move type with deterministic cleanup.
+type File struct {
+    Name string
+}
+
+func (f mut File) drop() {
+    println("closing")
+    println(f.Name)
+}
+
+type Pair struct {
+    First  File
+    Second File
+}
+
+func consume(file own File) {
+    println("consumed")
+}
+
+func main() {
+    let config = File{Name: "config"}
+    consume(config)                 // ownership moves; `config` is now unusable
+
+    let log = File{Name: "log"}
+    drop(log)                       // explicit cleanup
+
+    var pair = Pair{First: File{Name: "a"}, Second: File{Name: "b"}}
+    let taken = pair.First          // partial move of one field
+    pair.First = File{Name: "c"}    // reinitialize it; `pair` is whole again
+    println("end of main")
+}                                   // cleanup runs in reverse order

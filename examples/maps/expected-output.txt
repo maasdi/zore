@@ -1,0 +1,12 @@
+true
+10
+30
+false
+0
+true
+20
+true
+disk
+end
+disk
+tape

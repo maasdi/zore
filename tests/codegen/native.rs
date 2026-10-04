@@ -748,6 +748,43 @@ func main() {{
     );
 }
 
+/// Every example directory, sorted, as `(name, path)`.
+fn examples() -> Vec<(String, std::path::PathBuf)> {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../examples");
+    let mut examples: Vec<_> = std::fs::read_dir(&root)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| path.join("main.ore").is_file())
+        .map(|path| {
+            (
+                path.file_name().unwrap().to_string_lossy().into_owned(),
+                path,
+            )
+        })
+        .collect();
+    examples.sort();
+    examples
+}
+
+#[test]
+fn every_example_prints_its_expected_output() {
+    let examples = examples();
+    assert!(examples.len() >= 13, "{examples:?}");
+    for (name, path) in examples {
+        let source = std::fs::read_to_string(path.join("main.ore")).unwrap();
+        let expected = std::fs::read_to_string(path.join("expected-output.txt"))
+            .unwrap_or_else(|_| panic!("examples/{name} needs expected-output.txt"));
+        let output = run(&source);
+        assert_eq!(
+            output.status.code(),
+            Some(0),
+            "examples/{name}: {}",
+            stderr(&output)
+        );
+        assert_eq!(stdout(&output), expected, "examples/{name}");
+    }
+}
+
 #[test]
 fn semantic_target_prints_john() {
     let source = std::fs::read_to_string(concat!(

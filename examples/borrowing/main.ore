@@ -1,0 +1,36 @@
+package main
+
+type Account struct {
+    Owner   string
+    Balance int
+}
+
+// Parameters borrow by default: the caller keeps its value.
+func report(account Account) {
+    println(account.Owner)
+    println(account.Balance)
+}
+
+// `mut` grants a mutable borrow; the argument must be a mutable place.
+func deposit(account mut Account, amount int) {
+    account.Balance += amount
+}
+
+func swap(a mut int, b mut int) {
+    let saved = a
+    a = b
+    b = saved
+}
+
+func main() {
+    var account = Account{Owner: "Ada", Balance: 10}
+    report(account)
+    deposit(account, 5)
+    report(account)
+
+    var left = 1
+    var right = 2
+    swap(left, right)
+    println(left)
+    println(right)
+}

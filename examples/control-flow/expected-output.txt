@@ -1,0 +1,6 @@
+negative
+zero
+positive
+25
+111
+35

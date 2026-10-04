@@ -1,0 +1,46 @@
+package main
+
+// A shared view reads elements without owning them.
+func sum(items []int, count int) int {
+    var total = 0
+    for var i = 0; i < count; i += 1 {
+        total += items[i]
+    }
+    return total
+}
+
+// A mutable view may change the elements it views.
+func scale(items mut []int, count int, factor int) {
+    for var i = 0; i < count; i += 1 {
+        items[i] *= factor
+    }
+}
+
+// A returned view borrows from the parameter it came from.
+func middle(values [int; 5]) []int {
+    return values[1:4]
+}
+
+type Window struct {
+    Items []int
+    Count int
+}
+
+func main() {
+    var data = [int; 5]{1, 2, 3, 4, 5}
+    println(sum(data[:], 5))
+    println(sum(data[2:], 3))
+
+    scale(data[:2], 2, 10)          // contextual exclusive view for the call
+    println(data[0])
+
+    var tail mut []int = data[3:]   // a named mutable view
+    tail[1] = 50
+    println(data[4])                // `tail` is no longer used, so `data` is free
+
+    let inner = middle(data)
+    println(sum(inner, 3))
+
+    let window = Window{Items: data[1:3], Count: 2}
+    println(sum(window.Items, window.Count))
+}

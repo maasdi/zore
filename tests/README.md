@@ -110,7 +110,9 @@ with its original name (`cli`, `source_diagnostics`, `lexer`, `parser`, `check`,
 `ownership`, and `native`), so commands such as `cargo test --test lexer` still
 work.
 Resolve examples from `env!("CARGO_MANIFEST_DIR")` plus `../examples/`, not the
-process working directory. A directory of fixtures alone is not an executable test.
+process working directory. Every directory under `examples/` is checked by
+`tests/driver/cli.rs`, and built and run by `tests/codegen/native.rs` against
+its `expected-output.txt`. A directory of fixtures alone is not an executable test.
 
 Introduce fixture suites as the corresponding stage is implemented:
 

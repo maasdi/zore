@@ -1,0 +1,32 @@
+package main
+
+func add(a int, b int) int {
+    return a + b
+}
+
+// Several results are returned and bound together.
+func divide(total int, parts int) (int, int) {
+    return total / parts, total % parts
+}
+
+// A call with several results can be forwarded whole.
+func forward(total int) (int, int) {
+    return divide(total, 4)
+}
+
+func factorial(n int) int {
+    if n <= 1 {
+        return 1
+    }
+    return n * factorial(n - 1)
+}
+
+func main() {
+    println(add(2, 3))
+    let quotient, remainder = divide(17, 5)
+    println(quotient)
+    println(remainder)
+    let whole, _ = forward(10)
+    println(whole)
+    println(factorial(10))
+}

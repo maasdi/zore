@@ -1,0 +1,12 @@
+consumed
+closing
+config
+closing
+log
+end of main
+closing
+a
+closing
+b
+closing
+c
