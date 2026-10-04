@@ -667,7 +667,7 @@ impl FunctionBuilder<'_, '_> {
     }
 
     /// The size in bytes of `count` values of LLVM type `ty`, as an `i64`.
-    fn byte_size(&mut self, ty: &str, count: &str) -> String {
+    pub(super) fn byte_size(&mut self, ty: &str, count: &str) -> String {
         let end = self.fresh();
         self.line(format!("{end} = getelementptr {ty}, ptr null, i64 {count}"));
         let bytes = self.fresh();
@@ -715,6 +715,51 @@ impl FunctionBuilder<'_, '_> {
         }
         let bytes = self.byte_size(&element_ty, &length);
         self.line(format!("call void @zore_free(ptr {data}, i64 {bytes})"));
+    }
+
+    /// Drops every remaining value of the map at `address` (order
+    /// unspecified, §13.3), then frees the map.
+    fn drop_map(&mut self, address: &str, value: TypeId) {
+        let map = self.fresh();
+        self.line(format!("{map} = load ptr, ptr {address}"));
+        if !self.module.package.is_copy(value) {
+            let length = self.fresh();
+            self.line(format!("{length} = call i64 @zore_map_len(ptr {map})"));
+            let counter = self.fresh();
+            self.hoist_alloca(&counter, "i64");
+            self.line(format!("store i64 0, ptr {counter}"));
+            let (check, body, done) = (self.label(), self.label(), self.label());
+            self.line(format!("br label %{check}"));
+            self.out.push_str(&format!("{check}:\n"));
+            let index = self.fresh();
+            self.line(format!("{index} = load i64, ptr {counter}"));
+            let more = self.fresh();
+            self.line(format!("{more} = icmp ult i64 {index}, {length}"));
+            self.line(format!("br i1 {more}, label %{body}, label %{done}"));
+            self.out.push_str(&format!("{body}:\n"));
+            let entry = self.fresh();
+            self.line(format!(
+                "{entry} = call ptr @zore_map_value_at(ptr {map}, i64 {index})"
+            ));
+            self.drop_unconditional(&entry, value);
+            let next = self.fresh();
+            self.line(format!("{next} = add i64 {index}, 1"));
+            self.line(format!("store i64 {next}, ptr {counter}"));
+            self.line(format!("br label %{check}"));
+            self.out.push_str(&format!("{done}:\n"));
+        }
+        self.line(format!("call void @zore_map_free(ptr {map})"));
+    }
+
+    /// Records a pending panic with `message` at `span`; the caller branches
+    /// to cleanup.
+    pub(super) fn raise_panic(&mut self, message: &str, span: Span) {
+        let text = format!("{message} at {}", self.module.location(span));
+        let global = self.module.string_global(text.as_bytes());
+        self.line(format!(
+            "call void @zore_raise_panic(ptr {global}, i64 {})",
+            text.len()
+        ));
     }
 
     /// Drops `place` (type `ty`). Dispatches to the real, persistent flag
@@ -856,6 +901,7 @@ impl FunctionBuilder<'_, '_> {
                 }
             }
             TypeKind::DynArray { element } => self.drop_dyn_array(address, element),
+            TypeKind::Map { value, .. } => self.drop_map(address, value),
             _ => {}
         }
     }
@@ -1024,6 +1070,7 @@ impl FunctionBuilder<'_, '_> {
             TypeKind::Array { .. } => unreachable!("arrays have no operators"),
             TypeKind::Slice { .. } => unreachable!("slices have no operators"),
             TypeKind::DynArray { .. } => unreachable!("dynamic arrays have no operators"),
+            TypeKind::Map { .. } => unreachable!("maps have no operators"),
         }
     }
 
@@ -1276,6 +1323,10 @@ impl FunctionBuilder<'_, '_> {
                         None
                     }
                     Callee::Drop => unreachable!("explicit drop is a MIR statement"),
+                    Callee::MapInsertNew
+                    | Callee::MapAssign
+                    | Callee::MapLookup
+                    | Callee::MapRemove => self.map_call(callee, args, *span),
                 };
                 let pending = self.fresh();
                 self.line(format!("{pending} = call zeroext i1 @zore_panic_pending()"));

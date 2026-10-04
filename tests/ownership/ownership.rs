@@ -780,3 +780,75 @@ fn two_mutable_element_borrows_of_a_dynamic_array_conflict() {
         "is also borrowed by another argument of this call",
     );
 }
+
+#[test]
+fn maps_move_whole_and_removed_values_belong_to_the_caller() {
+    rejects(
+        &body("let m = map[string]int{}\nlet n = m\nlet f, v = m[\"a\"]"),
+        "use of moved value `m`",
+    );
+    rejects(
+        &program(&format!(
+            "{GUARD}\nfunc consume(g own Guard) {{}}\nfunc use() {{ var m = map[string]Guard{{\"a\": Guard{{id: 1}}}}\nlet found, g = m.remove(\"a\")\nconsume(g)\nlet h = g }}"
+        )),
+        "use of moved value `g`",
+    );
+    accepts(&program(&format!(
+        "{GUARD}\nfunc consume(g own Guard) {{}}\nfunc use() {{ var m = map[string]Guard{{\"a\": Guard{{id: 1}}}}\nlet found, g = m.remove(\"a\")\nconsume(g) }}"
+    )));
+    rejects(
+        &program(&format!(
+            "{GUARD}\nfunc use() {{ let g = Guard{{id: 1}}\nvar m = map[string]Guard{{}}\nm[\"a\"] = g\nlet h = g }}"
+        )),
+        "use of moved value `g`",
+    );
+}
+
+#[test]
+fn views_stored_in_maps_keep_their_backing_borrowed() {
+    rejects(
+        &slice_body(
+            "var data = [int; 2]{1, 2}
+            var views = map[string][]int{}
+            views[\"a\"] = data[:]
+            data[0] = 5
+            let found, view = views[\"a\"]
+            _ = inspect(view)",
+        ),
+        "cannot assign to `data[_]` while it is borrowed",
+    );
+    rejects(
+        &slice_body(
+            "var data = [int; 2]{1, 2}
+            var views = map[string][]int{\"a\": data[:]}
+            let found, view = views.remove(\"a\")
+            data[0] = 5
+            _ = inspect(view)",
+        ),
+        "cannot assign to `data[_]` while it is borrowed",
+    );
+    accepts(&slice_body(
+        "var data = [int; 2]{1, 2}
+        var views = map[string][]int{\"a\": data[:]}
+        let found, view = views[\"a\"]
+        _ = inspect(view)
+        drop(views)
+        data[0] = 5",
+    ));
+    rejects(
+        &program("func fill(m mut map[string][]int, items []int) { m[\"a\"] = items }"),
+        "storing a borrowed view through `m` is not supported yet",
+    );
+}
+
+#[test]
+fn a_later_argument_cannot_remove_from_an_earlier_borrowed_map() {
+    rejects(
+        &program(
+            "func f(m map[string]int, found bool) {}
+            func pick(m mut map[string]int) bool { let found, _ = m.remove(\"a\")\nreturn found }
+            func use() { var m = map[string]int{}\nf(m, pick(m)) }",
+        ),
+        "`m` is borrowed by an earlier argument and mutated by a later one",
+    );
+}

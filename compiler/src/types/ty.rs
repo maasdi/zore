@@ -77,4 +77,9 @@ pub enum TypeKind {
     DynArray {
         element: TypeId,
     },
+    /// The owned map `map[K]V`; always Move (§13.2).
+    Map {
+        key: TypeId,
+        value: TypeId,
+    },
 }

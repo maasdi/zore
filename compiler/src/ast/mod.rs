@@ -7,7 +7,7 @@ mod stmt;
 mod types;
 
 pub use decl::{FieldDecl, File, FuncDecl, Import, Item, Param, ParamMode, StructDecl};
-pub use expr::{BinaryOp, Expr, ExprKind, FieldInit, UnaryOp};
+pub use expr::{BinaryOp, Expr, ExprKind, FieldInit, MapEntry, UnaryOp};
 pub use node::Name;
 pub use stmt::{
     AssignOp, AssignTarget, Binding, BindingKind, BindingTarget, Block, Else, For, ForHeader, If,

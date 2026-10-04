@@ -86,6 +86,22 @@ pub enum ExprKind {
         element: TypeId,
         elements: Vec<Expr>,
     },
+    /// `map[K]V{...}`: entries in written order, each key before its value.
+    MapLit {
+        key: TypeId,
+        value: TypeId,
+        entries: Vec<(Expr, Expr)>,
+    },
+    /// `map[key]`: presence, then a copy of the value or its zero (§13.3).
+    MapLookup {
+        map: Box<Expr>,
+        key: Box<Expr>,
+    },
+    /// `map.remove(key)`: presence, then the detached value or its zero.
+    MapRemove {
+        map: Box<Expr>,
+        key: Box<Expr>,
+    },
     Unary {
         op: UnaryOp,
         operand: Box<Expr>,

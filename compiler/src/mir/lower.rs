@@ -211,6 +211,7 @@ impl Builder {
             &stmt.kind,
             StmtKind::Let { .. }
                 | StmtKind::Assign { .. }
+                | StmtKind::MapAssign { .. }
                 | StmtKind::CompoundAssign { .. }
                 | StmtKind::Expr(_)
         );
@@ -254,6 +255,18 @@ impl Builder {
                         self.push(target, Rvalue::Use(operand), span);
                     }
                 }
+            }
+            StmtKind::MapAssign { map, key, value } => {
+                // §5.6, §13.3: map place, key, then value, before any change.
+                let map = self.place(package, map);
+                let key = self.evaluate_to_temporary(package, key);
+                let value = self.operand(package, value);
+                self.emit_call(
+                    Callee::MapAssign,
+                    vec![Operand::Ref(map), key, value],
+                    Vec::new(),
+                    stmt.span,
+                );
             }
             StmtKind::CompoundAssign {
                 place: target,
@@ -485,7 +498,10 @@ impl Builder {
             unreachable!("checked propagation expression")
         };
         let result_locals: Vec<Local> = inner.types.iter().map(|&ty| self.temp(ty)).collect();
-        if matches!(inner.kind, ExprKind::Call { .. }) {
+        if matches!(
+            inner.kind,
+            ExprKind::Call { .. } | ExprKind::MapLookup { .. } | ExprKind::MapRemove { .. }
+        ) {
             self.call(
                 package,
                 inner,
@@ -557,10 +573,20 @@ impl Builder {
         expr: &hir::Expr,
         mut destinations: Vec<Option<Place>>,
     ) {
+        let map_args: Vec<hir::Expr>;
         let (callee, args) = match &expr.kind {
             ExprKind::Call { function, args } => (Callee::Function(*function), &args[..]),
             ExprKind::Println(arg) => (Callee::Println, std::slice::from_ref(&**arg)),
             ExprKind::Drop(arg) => (Callee::Drop, std::slice::from_ref(&**arg)),
+            ExprKind::MapLookup { map, key } | ExprKind::MapRemove { map, key } => {
+                map_args = vec![(**map).clone(), (**key).clone()];
+                let callee = if matches!(expr.kind, ExprKind::MapLookup { .. }) {
+                    Callee::MapLookup
+                } else {
+                    Callee::MapRemove
+                };
+                (callee, &map_args[..])
+            }
             _ => unreachable!("only calls produce multiple or no results"),
         };
         let mut operands = Vec::new();
@@ -579,6 +605,10 @@ impl Builder {
                 }
                 Callee::Println => (false, false),
                 Callee::Drop => (false, true),
+                Callee::MapInsertNew
+                | Callee::MapAssign
+                | Callee::MapLookup
+                | Callee::MapRemove => (index == 0, index == 2),
             };
             operands.push(if by_reference {
                 match self.argument_place_opt(package, arg) {
@@ -602,6 +632,16 @@ impl Builder {
                 *destination = Some(Place::local(self.temp(expr.types[index])));
             }
         }
+        self.emit_call(callee, args, destinations, expr.span);
+    }
+
+    fn emit_call(
+        &mut self,
+        callee: Callee,
+        args: Vec<Operand>,
+        destinations: Vec<Option<Place>>,
+        span: Span,
+    ) {
         let target = self.new_block();
         self.terminate(Terminator::Call {
             callee,
@@ -609,7 +649,7 @@ impl Builder {
             destinations,
             target,
             unwind: None,
-            span: expr.span,
+            span,
         });
         self.current = target;
     }
@@ -704,6 +744,25 @@ impl Builder {
                     Rvalue::Aggregate(AggregateKind::Struct(*strukt), operands),
                     span,
                 )
+            }
+            ExprKind::MapLit { entries, .. } => {
+                let map = self.temp(expr.ty());
+                self.push(Place::local(map), Rvalue::Zero, span);
+                for (key, value) in entries {
+                    // §13.3: each entry's key, then its value, then the insert.
+                    let key = self.evaluate_to_temporary(package, key);
+                    let value = self.operand(package, value);
+                    self.emit_call(
+                        Callee::MapInsertNew,
+                        vec![Operand::Ref(Place::local(map)), key, value],
+                        Vec::new(),
+                        span,
+                    );
+                }
+                value_operand(package, Place::local(map), expr.ty())
+            }
+            ExprKind::MapLookup { .. } | ExprKind::MapRemove { .. } => {
+                unreachable!("map lookups and removals have two results")
             }
             ExprKind::ArrayLit { element, elements } => {
                 let operands = elements

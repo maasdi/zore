@@ -623,6 +623,132 @@ fn dynamic_array_drop_loops_hoist_their_allocas() {
 }
 
 #[test]
+fn maps_look_up_assign_and_remove() {
+    prints(
+        &main_body(
+            "var scores = map[string]int{\"Ada\": 10, \"Lin\": 0}
+            let found, score = scores[\"Ada\"]
+            println(found)
+            println(score)
+            let zero_found, zero = scores[\"Lin\"]
+            println(zero_found)
+            println(zero)
+            let missing, none = scores[\"Bob\"]
+            println(missing)
+            println(none)
+            scores[\"Ada\"] = 30
+            scores[\"Bob\"] = 5
+            let _, ada = scores[\"Ada\"]
+            let _, bob = scores[\"Bob\"]
+            println(ada + bob)
+            let removed, old = scores.remove(\"Ada\")
+            println(removed)
+            println(old)
+            let again, gone = scores.remove(\"Ada\")
+            println(again)
+            println(gone)
+            var flags = map[bool]rune{true: 'y', false: 'n'}
+            let _, yes = flags[1 == 1]
+            println(yes)
+            var small = map[int8]int{-1: 7}
+            let _, seven = small[-1]
+            println(seven)
+            let empty = map[string]int{}
+            let present, _ = empty[\"x\"]
+            println(present)",
+        ),
+        "true\n10\ntrue\n0\nfalse\n0\n35\ntrue\n30\nfalse\n0\ny\n7\nfalse\n",
+    );
+}
+
+#[test]
+fn string_keys_match_by_content() {
+    prints(
+        "package main
+func key(choice bool) string { if choice { return \"same\" }\nreturn \"other\" }
+func main() {
+    var m = map[string]int{key(true): 1}
+    let found, value = m[\"same\"]
+    println(found)
+    println(value)
+}
+",
+        "true\n1\n",
+    );
+}
+
+#[test]
+fn map_values_are_dropped_exactly_once() {
+    prints(
+        &format!(
+            "package main\n{GUARD}
+func take(gs mut map[string]Guard) {{
+    let found, g = gs.remove(\"a\")
+    if found {{ println(g.id + 100) }}
+}}
+type Bag struct {{ Items map[int]Guard }}
+func gather() (map[int]Guard, error) {{ var zero = 0\nif zero == 0 {{ return map[int]Guard{{}}, error(\"x\") }}\nreturn map[int]Guard{{1: Guard{{id: 9}}}}, nil }}
+func lift() (map[int]Guard, error) {{ let m = gather()?\nreturn m, nil }}
+func main() {{
+    var gs = map[string]Guard{{\"a\": Guard{{id: 1}}}}
+    take(gs)
+    take(gs)
+    gs[\"b\"] = Guard{{id: 2}}
+    gs[\"b\"] = Guard{{id: 3}}
+    println(0)
+    let bag = Bag{{Items: map[int]Guard{{5: Guard{{id: 5}}}}}}
+    let nested = map[int]map[int]Guard{{1: map[int]Guard{{6: Guard{{id: 6}}}}}}
+    let zero, _ = lift()
+}}
+"
+        ),
+        "101\n1\n0\n2\n0\n6\n5\n3\n",
+    );
+}
+
+#[test]
+fn map_literal_duplicates_and_failures_clean_up() {
+    panics(
+        &format!(
+            "package main\n{GUARD}
+func key() string {{ return \"a\" }}
+func main() {{ let gs = map[string]Guard{{\"a\": Guard{{id: 1}}, key(): Guard{{id: 2}}}} }}
+"
+        ),
+        "duplicate key in map literal",
+        "2\n1\n",
+    );
+    panics(
+        &format!(
+            "package main\n{GUARD}
+func boom() Guard {{ var zero = 0\nreturn Guard{{id: 1 / zero}} }}
+func main() {{ let gs = map[int]Guard{{1: Guard{{id: 1}}, 2: boom()}} }}
+"
+        ),
+        "division by zero",
+        "1\n",
+    );
+}
+
+#[test]
+fn a_panicking_replaced_map_value_leaves_its_key_absent() {
+    panics(
+        &format!(
+            "package main\n{PANICKING_GUARD}
+type Holder struct {{ Items map[string]Guard }}
+func (h mut Holder) drop() {{ let found, _ = h.Items.remove(\"k\")\nprintln(found) }}
+func main() {{
+    var holder = Holder{{Items: map[string]Guard{{\"k\": Guard{{id: 1}}}}}}
+    holder.Items[\"k\"] = Guard{{id: 3}}
+}}
+"
+        ),
+        "division by zero",
+        "1\n3\n0\nfalse\n",
+    );
+}
+
+#[test]
 fn semantic_target_prints_john() {
     let source = std::fs::read_to_string(concat!(
         env!("CARGO_MANIFEST_DIR"),

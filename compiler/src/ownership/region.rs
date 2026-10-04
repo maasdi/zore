@@ -363,6 +363,11 @@ impl<'a> Analysis<'a> {
                     .collect()
             }
             Callee::Println | Callee::Drop => vec![None; args.len()],
+            Callee::MapInsertNew | Callee::MapAssign | Callee::MapLookup | Callee::MapRemove => {
+                let mut modes = vec![None; args.len()];
+                modes[0] = callee.map_access();
+                modes
+            }
         };
         if let Some(findings) = findings {
             let mut accesses = Vec::new();
@@ -373,10 +378,17 @@ impl<'a> Analysis<'a> {
                 self.target_accesses(destination, site.span, &mut accesses);
                 self.check_view_store(destination, site.span, findings);
             }
+            if let (Some(ParamMode::Mut), [Operand::Ref(map), _, _]) = (callee.map_access(), args) {
+                self.check_view_store(map, site.span, findings);
+            }
             let live = findings.live.before(BlockId(site.block), site.position);
             for access in &accesses {
                 self.check_access(access, live, state, findings);
             }
+        }
+        if callee.map_access().is_some() {
+            self.map_call(args, destinations, site, state);
+            return;
         }
         let Callee::Function(id) = callee else {
             return;
@@ -416,6 +428,40 @@ impl<'a> Analysis<'a> {
                     }
                 }
             }
+            self.assign(destination, loans, state);
+        }
+    }
+
+    /// A stored map value keeps its views' loans on the map; a value taken out
+    /// of the map carries the map's loans with it.
+    fn map_call(
+        &mut self,
+        args: &[Operand],
+        destinations: &[Option<Place>],
+        site: &mut Site,
+        state: &mut Holdings,
+    ) {
+        let Operand::Ref(map) = &args[0] else {
+            unreachable!("map operations borrow their map")
+        };
+        if let [_, _, value] = args {
+            let loans = self.operand_loans(value, site, state);
+            if self.carries_views(map.local) {
+                state[map.local.0 as usize].extend(loans);
+            }
+            return;
+        }
+        let held = state[map.local.0 as usize].clone();
+        for (index, destination) in destinations.iter().enumerate() {
+            let Some(destination) = destination else {
+                continue;
+            };
+            let carries = index == 1 && self.package.contains_view(self.place_ty(destination));
+            let loans = if carries {
+                held.clone()
+            } else {
+                BTreeSet::new()
+            };
             self.assign(destination, loans, state);
         }
     }

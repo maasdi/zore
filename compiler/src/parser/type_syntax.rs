@@ -18,7 +18,7 @@ impl Parser<'_> {
                 Ok(Type::Named(name))
             }
             TokenKind::Punct(Punct::LBracket) => self.bracket_type(),
-            TokenKind::Keyword(Keyword::Map) => Err(self.unsupported("map types", "M22")),
+            TokenKind::Keyword(Keyword::Map) => self.map_type(),
             TokenKind::Keyword(Keyword::Channel) => Err(self.unsupported("channel types", "M30")),
             TokenKind::Keyword(Keyword::Func) => Err(self.unsupported("function types", "M24")),
             TokenKind::Keyword(Keyword::Mut) => {
@@ -122,6 +122,20 @@ impl Parser<'_> {
                 span,
             },
         );
+    }
+
+    /// `map[key]value`.
+    pub(super) fn map_type(&mut self) -> PResult<Type> {
+        let start = self.bump().span;
+        self.expect(Punct::LBracket)?;
+        let key = self.ty()?;
+        self.expect(Punct::RBracket)?;
+        let value = self.ty()?;
+        Ok(Type::Map {
+            key: Box::new(key),
+            value: Box::new(value),
+            span: self.span_from(start),
+        })
     }
 
     /// Whether the tokens `ahead` positions from here begin `[]`.

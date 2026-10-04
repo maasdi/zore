@@ -2,7 +2,7 @@
 
 Status: The compiler supports a synchronous subset through parts of M18–M20,
 including Move structs, deterministic drops, concrete error values, fixed
-arrays, dynamic `Array<T>`, and borrowed slices with region analysis. Paths below are relative to `compiler/src/`. `main.rs` delegates to
+arrays, dynamic `Array<T>`, maps, and borrowed slices with region analysis. Paths below are relative to `compiler/src/`. `main.rs` delegates to
 `driver`; `driver/command.rs` and `driver/session.rs` handle CLI arguments and
 exit status; `driver/check.rs` orchestrates the frontend pipeline and
 `driver/build.rs` the native one. `source/` stores UTF-8 text under stable
@@ -159,7 +159,7 @@ followed by one rounding, which equals the correctly rounded IEEE result.
 
 The checker accepts a deliberately small, single-file subset: primitive values,
 `error`, structs including Move structs with custom `drop` methods, fixed
-arrays, literal-sized dynamic arrays (`Array<T>`), borrowed slices (`[]T`,
+arrays, literal-sized dynamic arrays (`Array<T>`), maps (`map[K]V`), borrowed slices (`[]T`,
 `mut []T`, `base[low:high]`), functions,
 methods, and `println`. Ownership analysis (`ownership/`) checks whole-place
 and field-level partial moves, reinitialization, and call-local borrows over
@@ -206,6 +206,12 @@ reverse index order with an IR loop, then calls `zore_free`. The drop helpers
 take addresses rather than MIR places so that loop can address elements by a
 runtime index. Scratch drop-flag allocas are hoisted into the entry block. A
 drop inserted before a replacing store acts on a panic only after the store.
+Maps are pointers to a type-erased hash table in `runtime/src/map.rs`; null is
+the empty zero map. MIR expresses literal entries, lookup, `m[k] = v`, and
+`m.remove(k)` as compiler-provided `Callee`s. Codegen passes the key through
+a hoisted slot with a runtime kind code. A stored value's loans join the
+map's holdings, and a value read or removed from the map carries them out.
+
 Temporary
 restrictions, each diagnosed: `mut []T` cannot be nested inside a struct field,
 array, or slice element; a view cannot be stored through a slice element or a

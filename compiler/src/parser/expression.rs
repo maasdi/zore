@@ -226,7 +226,7 @@ impl Parser<'_> {
                 return Err(self.unsupported("`go` task-creation expressions", "M25–M29"));
             }
             TokenKind::Keyword(Keyword::Map) => {
-                return Err(self.unsupported("map literals", "M22"));
+                return self.map_literal();
             }
             TokenKind::Punct(Punct::LBracket) => {
                 return self.array_literal();
@@ -275,6 +275,31 @@ impl Parser<'_> {
         Ok(Expr {
             span: self.span_from(span),
             kind: ExprKind::ArrayLit { ty, elements },
+        })
+    }
+
+    /// `map[K]V{key: value, ...}`.
+    fn map_literal(&mut self) -> PResult<Expr> {
+        let span = self.current_span();
+        let ty = self.map_type()?;
+        self.expect(Punct::LBrace)?;
+        let entries = self.with_struct_literals(true, |p| {
+            p.comma_list(Punct::RBrace, "map entry", true, Self::map_entry)
+        })?;
+        Ok(Expr {
+            span: self.span_from(span),
+            kind: ExprKind::MapLit { ty, entries },
+        })
+    }
+
+    fn map_entry(&mut self) -> PResult<MapEntry> {
+        let key = self.expr()?;
+        self.expect(Punct::Colon)?;
+        let value = self.expr()?;
+        Ok(MapEntry {
+            span: self.span_from(key.span),
+            key,
+            value,
         })
     }
 

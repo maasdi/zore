@@ -98,7 +98,9 @@ region, aliasing, reborrow, and return-contract rows have counterparts in
 bounds panics have counterparts in `tests/codegen/native.rs`. `Array<T>`
 literals, typing, element mutability, slicing, move and view rules, and
 native construction, access, drop order, and panics have counterparts in the
-parser, check, ownership, and native suites. `clone`, growth APIs, and rows that depend on async, closures, maps, tasks, or channels
+parser, check, ownership, and native suites, as do the `maps` rows for
+literals, key types, lookup, assignment, removal, provenance, and cleanup.
+`clone`, growth and length APIs, map iteration, and rows that depend on async, closures, maps, tasks, or channels
 remain pending, as do the remaining runtime and native rows elsewhere.
 
 Use Rust unit tests for small source/IR utilities and pass algorithms. Use Cargo

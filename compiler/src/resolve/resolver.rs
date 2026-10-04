@@ -32,7 +32,7 @@ fn by_value_named_type(ty: &ast::Type) -> Option<&ast::Name> {
     match ty {
         ast::Type::Named(name) => Some(name),
         ast::Type::Array { element, .. } => by_value_named_type(element),
-        ast::Type::Slice { .. } | ast::Type::DynArray { .. } => None,
+        ast::Type::Slice { .. } | ast::Type::DynArray { .. } | ast::Type::Map { .. } => None,
     }
 }
 
@@ -43,6 +43,7 @@ fn owned_named_type(ty: &ast::Type) -> Option<&ast::Name> {
         ast::Type::Array { element, .. } | ast::Type::DynArray { element, .. } => {
             owned_named_type(element)
         }
+        ast::Type::Map { value, .. } => owned_named_type(value),
         ast::Type::Slice { .. } => None,
     }
 }
@@ -268,6 +269,10 @@ impl<'a> Resolver<'a> {
             ast::Type::Slice { element, .. } | ast::Type::DynArray { element, .. } => {
                 self.ty(element)
             }
+            ast::Type::Map { key, value, .. } => {
+                self.ty(key);
+                self.ty(value);
+            }
         }
     }
 
@@ -282,7 +287,7 @@ impl<'a> Resolver<'a> {
         let owned = self.struct_edges(owned_named_type);
         self.report_struct_cycles(&owned, &mut reported, |name| {
             format!(
-                "struct `{name}` contains itself through `Array<T>`, which is not supported by this compiler yet"
+                "struct `{name}` contains itself through `Array<T>` or a map, which is not supported by this compiler yet"
             )
         });
     }
@@ -508,6 +513,13 @@ impl<'a> Resolver<'a> {
                 self.ty(ty);
                 for element in elements {
                     self.expr(element);
+                }
+            }
+            ExprKind::MapLit { ty, entries } => {
+                self.ty(ty);
+                for entry in entries {
+                    self.expr(&entry.key);
+                    self.expr(&entry.value);
                 }
             }
             ExprKind::StructLit { ty, fields } => {
