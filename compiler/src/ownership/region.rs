@@ -378,7 +378,7 @@ impl<'a> Analysis<'a> {
                 .iter()
                 .map(|&(mode, ty)| Some(exclusive_if_func(mode, ty)))
                 .collect(),
-            Callee::Println | Callee::Drop => vec![None; args.len()],
+            Callee::Println | Callee::Drop | Callee::Clone(_) => vec![None; args.len()],
             Callee::MapInsertNew | Callee::MapAssign | Callee::MapLookup | Callee::MapRemove => {
                 let mut modes = vec![None; args.len()];
                 modes[0] = callee.map_access();
@@ -415,6 +415,16 @@ impl<'a> Analysis<'a> {
         }
         if callee.map_access().is_some() {
             self.map_call(args, destinations, site, state);
+            return;
+        }
+        if let Callee::Clone(ty) = callee {
+            let loans = match (args, self.package.contains_view(*ty)) {
+                ([Operand::Ref(source)], true) => state[source.local.0 as usize].clone(),
+                _ => BTreeSet::new(),
+            };
+            for destination in destinations.iter().flatten() {
+                self.assign(destination, loans.clone(), state);
+            }
             return;
         }
         if let Callee::Value(_) = callee {

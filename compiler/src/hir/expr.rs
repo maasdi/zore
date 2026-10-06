@@ -78,6 +78,7 @@ pub enum ExprKind {
     },
     Println(Box<Expr>),
     Drop(Box<Expr>),
+    Clone(Box<Expr>),
     Convert(Box<Expr>),
     Error(Box<Expr>),
     Try(Box<Expr>),

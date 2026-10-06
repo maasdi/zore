@@ -12,6 +12,7 @@ pub enum Res {
     Primitive(TypeId),
     Println,
     Drop,
+    Clone,
     /// A predeclared name whose feature is not supported yet; uses are diagnosed.
     Unsupported,
 }
@@ -52,14 +53,12 @@ pub(super) fn predeclared(name: &str) -> Option<Res> {
     match name {
         "println" => Some(Res::Println),
         "drop" => Some(Res::Drop),
-        "Array" | "Task" | "clone" => Some(Res::Unsupported),
+        "clone" => Some(Res::Clone),
+        "Array" | "Task" => Some(Res::Unsupported),
         _ => None,
     }
 }
 
-pub(super) fn unsupported_predeclared(name: &str) -> &'static str {
-    match name {
-        "Task" => "`Task` is",
-        _ => "`clone` is",
-    }
+pub(super) fn unsupported_predeclared(_name: &str) -> &'static str {
+    "`Task` is"
 }

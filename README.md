@@ -51,7 +51,7 @@ John
 | Native code generation | Implemented for that subset: LLVM IR with runtime checks for overflow, division by zero, shifts, conversions, and bounds, linked with a Rust runtime |
 | Ownership, borrowing, and cleanup | Implemented: Copy/Move classification, moves and partial moves, shared and `mut` borrows, borrowed slices with region analysis, deterministic drops, and panic cleanup |
 | Errors and `?` | Implemented for synchronous code; awaited `?` waits for async |
-| Collections | `[T; N]`, `Array<T>`, `map[K]V`, and `[]T` work; growth and length APIs, iteration, `clone`, and borrowed map entries are planned |
+| Collections | `[T; N]`, `Array<T>`, `map[K]V`, and `[]T` work; `clone` works for structs and collections; growth and length APIs, iteration, and borrowed map entries are planned |
 | Closures and function types | Non-escaping closures implemented; escaping and call-once closures planned |
 | Packages and imports | Planned |
 | `async`/`await`, tasks, channels | Planned (part of the MVP) |

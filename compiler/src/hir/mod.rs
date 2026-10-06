@@ -96,6 +96,7 @@ pub struct Struct {
     pub fields: Vec<Field>,
     /// Makes the struct Move.
     pub drop: Option<FunctionId>,
+    pub clone: Option<FunctionId>,
 }
 
 #[derive(Debug)]

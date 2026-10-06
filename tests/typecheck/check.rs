@@ -1250,7 +1250,7 @@ fn unsupported_features_are_never_accepted() {
             program("func f(xs Array) {}"),
             "`Array` needs an element type",
         ),
-        (body("let x = clone(1)"), "`clone` is not supported"),
+        (body("let x = clone(1)"), "cannot clone a value of type"),
         (
             body("let r = rune(65)"),
             "rune conversions are not supported",
@@ -1907,10 +1907,7 @@ fn unsupported_dynamic_array_forms_are_rejected() {
             .iter()
             .any(|note| note.contains("not specified yet"))
     );
-    rejects(
-        &program("func f(xs Array<int>) { let ys = clone(xs) }"),
-        "`clone` is not supported",
-    );
+    accepts(&program("func f(xs Array<int>) { let ys = clone(xs) }"));
     rejects(
         &body("let xs = Array<int>{1}\nprintln(xs)"),
         "`println` cannot print values of type `Array<int64>`",
@@ -2358,4 +2355,175 @@ fn function_value_arguments_are_borrowed_exclusively() {
     accepts(&program(
         "func run(f func()) { f()\nf() }\nfunc h() { let f = func() {}\nrun(f)\nrun(f)\nrun(func() {}) }",
     ));
+}
+
+const CLONE_TYPES: &str = "type Point struct { x int }
+type Res struct { id int }
+func (r mut Res) drop() {}
+type Tracked struct { id int }
+func (t mut Tracked) drop() {}
+func (t Tracked) clone() Tracked { return Tracked{id: t.id} }
+type Wrap struct { r Res }
+type Kept struct { t Tracked
+n int }";
+
+fn clone_program(body: &str) -> String {
+    program(&format!("{CLONE_TYPES}\nfunc g() {{\n{body}\n}}"))
+}
+
+#[test]
+fn clone_selects_a_custom_method_before_the_structural_default() {
+    let case = accepts(&program(
+        "type Point struct { x int }
+        type Loud struct { x int }
+        func (l Loud) clone() Loud { return Loud{x: l.x + 1} }
+        func g() {
+            let p = Point{x: 1}
+            let l = Loud{x: 1}
+            let a = clone(p)
+            let b = clone(l)
+        }",
+    ));
+    let g = case.function("g");
+    assert!(matches!(let_value(g, "a").kind, ExprKind::Clone(_)));
+    let ExprKind::Call { function, .. } = &let_value(g, "b").kind else {
+        panic!("expected a call to the custom method")
+    };
+    assert_eq!(case.package().function(*function).name, "Loud.clone");
+}
+
+#[test]
+fn clone_produces_a_value_of_the_argument_type() {
+    let case = accepts(&clone_program(
+        "let list = Array<int>{1}
+        let a = clone(list)
+        let m = map[string]int{\"k\": 1}
+        let b = clone(m)
+        let f = [int; 2]{1, 2}
+        let c = clone(f)
+        let k = Kept{t: Tracked{id: 1}, n: 2}
+        let d = clone(k)",
+    ));
+    let g = case.function("g");
+    let package = case.package();
+    for (name, shown) in [
+        ("a", "Array<int64>"),
+        ("b", "map[string]int64"),
+        ("c", "[int64; 2]"),
+        ("d", "Kept"),
+    ] {
+        assert_eq!(
+            package.types.display(let_value(g, name).ty()).to_string(),
+            shown
+        );
+        assert!(matches!(let_value(g, name).kind, ExprKind::Clone(_)));
+    }
+}
+
+#[test]
+fn clone_needs_every_part_to_be_copy_or_clonable() {
+    for (body, blocker) in [
+        ("let r = Res{id: 1}\nlet c = clone(r)", "`Res`"),
+        ("let w = Wrap{r: Res{id: 1}}\nlet c = clone(w)", "`Res`"),
+        ("let a = Array<Res>{Res{id: 1}}\nlet c = clone(a)", "`Res`"),
+        ("let a = [Res; 1]{Res{id: 1}}\nlet c = clone(a)", "`Res`"),
+        (
+            "let m = map[string]Res{\"k\": Res{id: 1}}\nlet c = clone(m)",
+            "`Res`",
+        ),
+    ] {
+        let case = rejects(
+            &clone_program(body),
+            &format!("type {blocker} cannot be cloned"),
+        );
+        let rendered = case.checked.diagnostics[0].render(&case.sources).unwrap();
+        assert!(
+            rendered.contains("func (value Res) clone() Res"),
+            "{rendered}"
+        );
+    }
+    accepts(&clone_program(
+        "let a = Array<Tracked>{Tracked{id: 1}}\nlet c = clone(a)\nlet m = map[int]Tracked{1: Tracked{id: 1}}\nlet d = clone(m)",
+    ));
+}
+
+#[test]
+fn clone_applies_only_to_structs_arrays_and_maps() {
+    for body in [
+        "let c = clone(1)",
+        "let c = clone(\"s\")",
+        "let c = clone(true)",
+        "let c = clone(error(\"e\"))",
+        "var d = [int; 1]{1}\nlet s = d[:]\nlet c = clone(s)",
+        "let f = func() {}\nlet c = clone(f)",
+    ] {
+        rejects(&clone_program(body), "cannot clone a value of type");
+    }
+    rejects(
+        &clone_program("let a = Array<int>{1}\nlet c = clone(a, a)"),
+        "`clone` takes exactly 1 argument",
+    );
+    rejects(
+        &clone_program("let c = clone()"),
+        "`clone` takes exactly 1 argument",
+    );
+    rejects(
+        &clone_program("let f = clone"),
+        "`clone` can only be called",
+    );
+    rejects(
+        &program("func clone() {}"),
+        "`clone` shadows a predeclared name",
+    );
+}
+
+#[test]
+fn a_custom_clone_has_a_fixed_signature() {
+    for (method, message) in [
+        (
+            "func (b mut Bad) clone() Bad { return b }",
+            "shared receiver",
+        ),
+        (
+            "func (b own Bad) clone() Bad { return b }",
+            "shared receiver",
+        ),
+        (
+            "func (b Bad) clone(x int) Bad { return b }",
+            "`clone` takes no parameters",
+        ),
+        (
+            "func (b Bad) clone() int { return 1 }",
+            "`clone` must return exactly `Bad`",
+        ),
+        (
+            "func (b Bad) clone() {}",
+            "`clone` must return exactly `Bad`",
+        ),
+        (
+            "func (b Bad) clone() (Bad, error) { return b, nil }",
+            "`clone` must return exactly `Bad`",
+        ),
+    ] {
+        rejects(
+            &program(&format!("type Bad struct {{ n int }}\n{method}")),
+            message,
+        );
+    }
+    accepts(&program(
+        "type Fine struct { n int }\nfunc (f Fine) clone() Fine { return Fine{n: f.n} }",
+    ));
+}
+
+#[test]
+fn the_method_form_calls_only_a_custom_clone() {
+    accepts(&clone_program(
+        "let t = Tracked{id: 1}\nlet a = t.clone()\nlet b = clone(t)",
+    ));
+    let case = rejects(
+        &clone_program("let p = Point{x: 1}\nlet c = p.clone()"),
+        "type `Point` has no method `clone`",
+    );
+    let rendered = case.checked.diagnostics[0].render(&case.sources).unwrap();
+    assert!(rendered.contains("write `clone(value)`"), "{rendered}");
 }

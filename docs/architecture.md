@@ -235,6 +235,20 @@ receives it as a leading `ptr` parameter and loads its capture locals from it.
 Function-typed results, fields, and elements are rejected, so a closure cannot
 escape the frame that holds its environment.
 
+Clone (§10.7) has two forms. A declared custom `clone` is an ordinary method,
+validated at its declaration (shared receiver, no parameters, own type as the
+only result) and selected before any structural clone. Every other clone is
+`Callee::Clone`, one MIR call that borrows its argument and writes an owned
+value into its destination. Codegen (`codegen/clone.rs`) expands it inline per
+type: a Copy value is copied, a struct clones field by field, a fixed array or
+`Array<T>` clones element by element into fresh storage, and a map clones its
+values into a copy made by the runtime's `zore_map_clone_shape`. A custom clone
+of a non-Copy part is called with the part's address and scratch drop flags,
+then the pending-panic flag is checked; on a panic the parts already cloned are
+dropped and the new storage freed before control reaches the call's ordinary
+unwind edge. Region analysis gives the destination the loans of a source that
+holds views.
+
 Temporary
 restrictions, each diagnosed: `mut []T` cannot be nested inside a struct field,
 array, or slice element; a view cannot be stored through a slice element or a

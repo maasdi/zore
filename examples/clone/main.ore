@@ -1,0 +1,45 @@
+package main
+
+type Point struct {
+    X int
+    Y int
+}
+
+type Resource struct {
+    Name string
+}
+
+func (r mut Resource) drop() {
+    println(r.Name)
+}
+
+func (r Resource) clone() Resource {
+    println("cloning")
+    return Resource{Name: r.Name}
+}
+
+func main() {
+    var point = Point{X: 1, Y: 2}
+    let copy = clone(point)
+    point.X = 100
+    println(copy.X)
+
+    var numbers = Array<int>{1, 2, 3}
+    let numbers2 = clone(numbers)
+    numbers[0] = 100
+    println(numbers2[0])
+
+    var scores = map[string]int{"Ada": 10}
+    let scores2 = clone(scores)
+    scores["Ada"] = 99
+    let found, score = scores2["Ada"]
+    println(score)
+
+    let resource = Resource{Name: "disk"}
+    let duplicate = clone(resource)
+    println(duplicate.Name)
+
+    let resources = Array<Resource>{Resource{Name: "a"}, Resource{Name: "b"}}
+    let resources2 = clone(resources)
+    println("end")
+}

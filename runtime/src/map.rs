@@ -126,6 +126,31 @@ pub unsafe extern "C" fn zore_map_value_at(map: *const Map, index: i64) -> *mut 
     map.entries[usize::try_from(index).unwrap_or(usize::MAX)].1
 }
 
+/// A map with the same keys in the same order and uninitialized values; null when empty.
+///
+/// # Safety
+/// `map` must be null or a live map.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn zore_map_clone_shape(map: *const Map) -> *mut Map {
+    // SAFETY: guaranteed by the caller.
+    let Some(map) = (unsafe { map.as_ref() }) else {
+        return std::ptr::null_mut();
+    };
+    if map.entries.is_empty() {
+        return std::ptr::null_mut();
+    }
+    let entries = map
+        .entries
+        .iter()
+        .map(|(key, _)| (key.clone(), zore_alloc(map.value_size)))
+        .collect();
+    Box::into_raw(Box::new(Map {
+        index: map.index.clone(),
+        entries,
+        value_size: map.value_size,
+    }))
+}
+
 /// Frees a map whose values have already been destroyed; null is a no-op.
 ///
 /// # Safety
@@ -189,6 +214,35 @@ mod tests {
                 let found = zore_map_find(map, 8, (&key as *const i64).cast());
                 assert_eq!(*(found as *const i64), key * 10);
             }
+            zore_map_free(map);
+        }
+    }
+
+    #[test]
+    fn clone_shape_keeps_keys_and_order_with_fresh_values() {
+        let mut map: *mut Map = std::ptr::null_mut();
+        // SAFETY: the empty map is null, which every function accepts.
+        unsafe {
+            assert!(zore_map_clone_shape(map).is_null());
+        }
+        for key in 0..5 {
+            insert(&mut map, key, key * 10);
+        }
+        // SAFETY: `map` is live; the copy's values are written before reading.
+        unsafe {
+            let copy = zore_map_clone_shape(map);
+            assert_eq!(zore_map_len(copy), 5);
+            for index in 0..5 {
+                let source = zore_map_value_at(map, index);
+                let target = zore_map_value_at(copy, index);
+                assert_ne!(source, target);
+                *(target as *mut i64) = *(source as *const i64) + 1;
+            }
+            let found = zore_map_find(copy, 8, (&3i64 as *const i64).cast());
+            assert_eq!(*(found as *const i64), 31);
+            let original = zore_map_find(map, 8, (&3i64 as *const i64).cast());
+            assert_eq!(*(original as *const i64), 30);
+            zore_map_free(copy);
             zore_map_free(map);
         }
     }

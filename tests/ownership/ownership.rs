@@ -1060,3 +1060,53 @@ fn storing_through_a_capture_is_limited_to_values_without_borrows() {
         "storing a borrowed view through `f` is not supported yet",
     );
 }
+
+#[test]
+fn clone_borrows_its_argument_and_never_consumes_it() {
+    accepts(&body(
+        "let a = Array<int>{1, 2}
+        let b = clone(a)
+        let c = clone(a)
+        println(a[0] + b[0] + c[1])",
+    ));
+    rejects(
+        &body("let a = Array<int>{1}\nlet b = a\nlet c = clone(a)"),
+        "use of moved value `a`",
+    );
+    rejects(
+        &body("let a = Array<int>{1}\nlet c = clone(a)\nlet b = a\nlet d = clone(a)"),
+        "use of moved value `a`",
+    );
+    accepts(&body(
+        "var a = Array<int>{1}\nlet c = clone(a)\na[0] = 5\nprintln(c[0])",
+    ));
+}
+
+#[test]
+fn clone_of_a_value_holding_views_keeps_the_backing_borrowed() {
+    let views = "type View struct { items []int }";
+    rejects(
+        &program(&format!(
+            "{views}\nfunc g() {{ var d = [int; 2]{{1, 2}}\nlet v = View{{items: d[:]}}\nlet c = clone(v)\nd[0] = 5\nprintln(c.items[0]) }}"
+        )),
+        "cannot assign to `d[_]` while it is borrowed",
+    );
+    accepts(&program(&format!(
+        "{views}\nfunc g() {{ var d = [int; 2]{{1, 2}}\nlet v = View{{items: d[:]}}\nlet c = clone(v)\nprintln(c.items[0])\nd[0] = 5 }}"
+    )));
+}
+
+#[test]
+fn clone_can_be_discarded_and_borrowed_through_places() {
+    accepts(&resource_body(
+        "let list = Array<int>{1}
+        clone(list)
+        let nested = Array<Array<int>>{Array<int>{1}}
+        let copy = clone(nested[0])
+        println(copy[0])",
+    ));
+    rejects(
+        &body("var a = Array<int>{1}\nlet s = a[:]\nlet c = clone(a)\na[0] = 2\nprintln(s[0])"),
+        "cannot assign to `a[_]` while it is borrowed",
+    );
+}
