@@ -47,11 +47,13 @@ John
 | --- | --- |
 | Language specification | MVP decisions locked in [`spec/language-spec.md`](spec/language-spec.md) |
 | Lexer, parser, diagnostics | Implemented, with error recovery |
-| Name resolution and type checking | Implemented for a subset: one file per package; `bool`, integer and float types, `rune`, `string`, and structs of those; functions, methods with shared or `own` receivers, control flow, and Go-style untyped constants |
-| Native code generation | Implemented for that subset: MIR lowering, LLVM IR, and runtime checks for overflow, division by zero, shifts, and conversions |
-| Ownership and borrow checking, drop insertion | Planned (next major milestone) |
-| Errors and `?`, collections | Planned |
-| Closures and function types | Non-escaping closures implemented (§16); escaping and call-once closures planned |
+| Name resolution and type checking | Implemented for a single-file, synchronous subset: primitives, `error`, structs, fixed arrays, `Array<T>`, maps, slices, functions and methods, closures, control flow, and Go-style untyped constants |
+| Native code generation | Implemented for that subset: LLVM IR with runtime checks for overflow, division by zero, shifts, conversions, and bounds, linked with a Rust runtime |
+| Ownership, borrowing, and cleanup | Implemented: Copy/Move classification, moves and partial moves, shared and `mut` borrows, borrowed slices with region analysis, deterministic drops, and panic cleanup |
+| Errors and `?` | Implemented for synchronous code; awaited `?` waits for async |
+| Collections | `[T; N]`, `Array<T>`, `map[K]V`, and `[]T` work; growth and length APIs, iteration, `clone`, and borrowed map entries are planned |
+| Closures and function types | Non-escaping closures implemented; escaping and call-once closures planned |
+| Packages and imports | Planned |
 | `async`/`await`, tasks, channels | Planned (part of the MVP) |
 | Self-hosting | Long-term goal |
 
