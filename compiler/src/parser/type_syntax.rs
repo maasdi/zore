@@ -11,19 +11,19 @@ impl Parser<'_> {
                     return self.type_arguments(name);
                 }
                 if self.at(Punct::Dot) && *self.peek_at(1) == TokenKind::Ident {
-                    return Err(self.unsupported("package-qualified type names", "M23"));
+                    return Err(self.unsupported("package-qualified type names"));
                 }
                 Ok(Type::Named(name))
             }
             TokenKind::Punct(Punct::LBracket) => self.bracket_type(),
             TokenKind::Keyword(Keyword::Map) => self.map_type(),
-            TokenKind::Keyword(Keyword::Channel) => Err(self.unsupported("channel types", "M30")),
+            TokenKind::Keyword(Keyword::Channel) => Err(self.unsupported("channel types")),
             TokenKind::Keyword(Keyword::Func) => self.func_type(),
             TokenKind::Keyword(Keyword::Mut) => {
                 let start = self.current_span();
                 if !self.at_slice_type_after(1) {
                     return Err(self.error(
-                        "`mut` in a type only forms a mutable slice type `mut []T` (§12.2)",
+                        "`mut` in a type only forms a mutable slice type `mut []T`",
                         start,
                     ));
                 }
@@ -53,10 +53,10 @@ impl Parser<'_> {
                     span: self.span_from(name.span),
                 })
             }
-            "Task" => Err(self.unsupported("`Task<...>` types", "M25–M29")),
+            "Task" => Err(self.unsupported("`Task<...>` types")),
             _ => Err(self.error(
                 format!(
-                    "`{}` does not take type arguments; user-defined generics are not part of the MVP (§22.1)",
+                    "`{}` does not take type arguments; user-defined generics are not part of the MVP",
                     name.text
                 ),
                 name.span,
@@ -148,7 +148,7 @@ impl Parser<'_> {
         {
             let span = self.current_span();
             return Err(self.error(
-                "function type parameters have no names; write only the type, as in `func(int)` (§16.2)",
+                "function type parameters have no names; write only the type, as in `func(int)`",
                 span,
             ));
         }

@@ -137,12 +137,9 @@ impl Resolver<'_> {
             return None;
         };
         if res == Res::Unsupported && name == "Array" {
-            self.error(
-                "`Array` needs an element type, as in `Array<int>` (§6.2)",
-                span,
-            );
+            self.error("`Array` needs an element type, as in `Array<int>`", span);
         } else if res == Res::Unsupported {
-            self.unsupported(unsupported_predeclared(name), span, "M19–M25");
+            self.unsupported(unsupported_predeclared(name), span);
         }
         self.out.uses.insert(span, res);
         Some(res)

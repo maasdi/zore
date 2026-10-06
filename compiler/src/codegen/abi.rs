@@ -283,7 +283,7 @@ impl FunctionBuilder<'_, '_> {
             self.module.unsupported(
                 "printing floating-point values is",
                 span,
-                "the float text format for `println` is still TBD (§37.1)",
+                "the float text format for `println` is still TBD",
             );
             return;
         }

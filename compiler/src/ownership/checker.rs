@@ -324,7 +324,7 @@ fn check_operand(
                 format!("moving captured value `{name}` out of a function literal is not supported yet"),
                 span,
             )
-            .note("a closure borrows what it captures; consuming a capture would make it callable only once (§16.3, Q02g)"),
+            .note("a closure borrows what it captures; consuming a capture would make it callable only once"),
         );
         return;
     }
@@ -350,7 +350,7 @@ fn check_operand(
                 format!("cannot move `{name}` out of a slice"),
                 span,
             )
-            .note("a slice borrows its elements; moving them out is not allowed (§12.6)"),
+            .note("a slice borrows its elements; moving them out is not allowed"),
         );
         return;
     }
@@ -364,7 +364,7 @@ fn check_operand(
                 format!("cannot move `{name}` out of a dynamic array"),
                 span,
             )
-            .note("`Array<T>` keeps ownership of its elements; borrow the element instead (§12.6, §31.2)"),
+            .note("`Array<T>` keeps ownership of its elements; borrow the element instead"),
         );
         return;
     }
@@ -380,7 +380,7 @@ fn check_operand(
                 format!("moving `{name}` out through an array index is not supported yet"),
                 span,
             )
-            .note("fixed-array element extraction is planned for a later milestone (§31.2)"),
+            .note("fixed-array element extraction is planned for a later milestone"),
         );
         return;
     }
@@ -392,7 +392,7 @@ fn check_operand(
                 format!("cannot move `{name}` out of a value with a custom `drop` method"),
                 span,
             )
-            .note("a destructor always requires a complete, unmoved receiver (§31.2)"),
+            .note("a destructor always requires a complete, unmoved receiver"),
         );
         return;
     }

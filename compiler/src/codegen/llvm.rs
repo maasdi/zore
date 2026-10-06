@@ -1049,7 +1049,7 @@ impl FunctionBuilder<'_, '_> {
                     self.module.unsupported(
                         "runtime string concatenation is",
                         span,
-                        "string buffer allocation is not designed yet (§41.5); constant concatenation works",
+                        "string buffer allocation is not designed yet; constant concatenation works",
                     );
                     return "undef".into();
                 }

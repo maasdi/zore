@@ -242,9 +242,8 @@ impl<'a> Checker<'a> {
         ) = (self.types.kind(expected), self.types.kind(found))
             && element == found
         {
-            diagnostic = diagnostic.note(
-                "arrays do not convert to slices implicitly; borrow a view with `x[:]` (§12.6)",
-            );
+            diagnostic = diagnostic
+                .note("arrays do not convert to slices implicitly; borrow a view with `x[:]`");
         }
         self.diagnostics.push(diagnostic);
     }
@@ -264,12 +263,12 @@ impl<'a> Checker<'a> {
                 let value = self.expr(size, Some(TypeStore::INT))?;
                 let sized = self.coerce(value, TypeStore::INT)?;
                 let ExprKind::Const(Const::Int(n)) = sized.kind else {
-                    self.error("array size must be a constant expression (§5.3)", size.span);
+                    self.error("array size must be a constant expression", size.span);
                     return None;
                 };
                 let Ok(count) = u32::try_from(n) else {
                     self.error(
-                        "array size must be a nonnegative constant that fits in 32 bits (§5.3)",
+                        "array size must be a nonnegative constant that fits in 32 bits",
                         size.span,
                     );
                     return None;
@@ -293,7 +292,7 @@ impl<'a> Checker<'a> {
                 let key_ty = key_ty?;
                 if !self.is_map_key(key_ty) {
                     let message = format!(
-                        "type `{}` cannot be a map key; keys are bool, integer, rune, or string (§13.3)",
+                        "type `{}` cannot be a map key; keys are bool, integer, rune, or string",
                         self.name(key_ty)
                     );
                     self.error(message, key.span());
@@ -355,7 +354,7 @@ impl<'a> Checker<'a> {
                     "a function cannot return a function value",
                     span,
                 )
-                .note("closures cannot escape the scope that created them (§16.4)"),
+                .note("closures cannot escape the scope that created them"),
             );
             return false;
         }
@@ -364,7 +363,7 @@ impl<'a> Checker<'a> {
             self.unsupported(
                 "a function type or literal returning a borrowed view is",
                 span,
-                "a call through a function value cannot tell which argument the view borrows from (§11.7)",
+                "a call through a function value cannot tell which argument the view borrows from",
             );
             return false;
         }
@@ -379,7 +378,7 @@ impl<'a> Checker<'a> {
                     "function values cannot be stored in a struct field, array, slice, or map",
                     *span,
                 )
-                .note("closures cannot escape the scope that created them (§16.4)"),
+                .note("closures cannot escape the scope that created them"),
             );
             return false;
         }
@@ -533,9 +532,7 @@ impl<'a> Checker<'a> {
                     "a function-typed parameter cannot be `mut` or `own`",
                     span,
                 )
-                .note(
-                    "a function value is passed by borrowing it exclusively for the call (§16.4)",
-                ),
+                .note("a function value is passed by borrowing it exclusively for the call"),
             );
             return None;
         }
@@ -548,7 +545,7 @@ impl<'a> Checker<'a> {
                 self.diagnostics.push(
                     Diagnostic::new(
                         Severity::Error,
-                        "`own []T` is not part of Zore; a slice never owns its elements (§12.4)",
+                        "`own []T` is not part of Zore; a slice never owns its elements",
                         span,
                     )
                     .note("own the elements with a fixed array instead"),
@@ -580,7 +577,7 @@ impl<'a> Checker<'a> {
                     "a custom `drop` for a type containing a borrowed slice is",
                     span,
                     &format!(
-                        "`{}` holds a view that its destructor could observe (§11.7)",
+                        "`{}` holds a view that its destructor could observe",
                         decl.name.text
                     ),
                 );
@@ -613,7 +610,7 @@ impl<'a> Checker<'a> {
                     ),
                     func.name.span,
                 )
-                .note("every path must return the declared results (§7.7)"),
+                .note("every path must return the declared results"),
             );
         }
         let decls = &self.res.locals[id.0 as usize];
@@ -747,7 +744,7 @@ impl<'a> Checker<'a> {
                     "function literal can reach the end of its body without returning a value",
                     span,
                 )
-                .note("every path must return the declared results (§7.7)"),
+                .note("every path must return the declared results"),
             );
         }
         let locals: Option<Vec<hir::Local>> = self.res.locals[self.current]
@@ -834,7 +831,7 @@ impl<'a> Checker<'a> {
                     "package `main` has no `main` function",
                     package.span,
                 )
-                .note("an executable package declares `func main() { ... }` (§3.19)"),
+                .note("an executable package declares `func main() { ... }`"),
             );
             return None;
         };
@@ -850,7 +847,7 @@ impl<'a> Checker<'a> {
         if let Some(problem) = problem {
             self.diagnostics.push(
                 Diagnostic::new(Severity::Error, problem, main.name.span)
-                    .note("declare it as `func main() { ... }` (§3.19)"),
+                    .note("declare it as `func main() { ... }`"),
             );
             return None;
         }
@@ -904,7 +901,7 @@ impl<'a> Checker<'a> {
                                     expr.span,
                                 )
                                 .related(span, "constant declared here")
-                                .note("constants use literals, other constants, operators, and numeric conversions (§5.3)"),
+                                .note("constants use literals, other constants, operators, and numeric conversions"),
                             );
                             None
                         }
@@ -1007,14 +1004,14 @@ impl<'a> Checker<'a> {
                 ),
                 span,
             )
-            .note("§6.7 requires at least 256 bits; the larger limit is an implementation limit"),
+            .note("the language requires at least 256 bits; the larger limit is an implementation limit"),
             ConstError::FloatOverflow => Diagnostic::new(
                 Severity::Error,
                 "floating-point constant is too large",
                 span,
             )
             .note(format!(
-                "constants must stay below 2^{} (§6.7 implementation limit)",
+                "constants must stay below 2^{} (implementation limit)",
                 constant::MAX_FLOAT_LOG2
             )),
             ConstError::Overflow => {
@@ -1038,7 +1035,7 @@ impl<'a> Checker<'a> {
             }
             _ if matches!(expr.kind, ExprKind::MapLookup { .. }) => {
                 self.error(
-                    "map lookup produces two results, presence then value; bind both, as in `let found, value = m[key]` (§13.3)",
+                    "map lookup produces two results, presence then value; bind both, as in `let found, value = m[key]`",
                     expr.span,
                 );
                 None
@@ -1100,7 +1097,7 @@ impl<'a> Checker<'a> {
             ast::ExprKind::Unary { op, operand } => self.unary(*op, operand, span, expected),
             ast::ExprKind::Binary { op, lhs, rhs } => self.binary(*op, lhs, rhs, span, expected),
             ast::ExprKind::Await(_) => {
-                self.unsupported("`await` is", span, "planned for roadmap milestone M25–M29");
+                self.unsupported("`await` is", span, "planned for a later milestone");
                 None
             }
             ast::ExprKind::Try(inner) => self.try_expr(inner, span),
@@ -1167,7 +1164,7 @@ impl<'a> Checker<'a> {
                 self.unsupported(
                     "declared functions used as values are",
                     span,
-                    "wrap the call in a function literal, as in `func() { f() }` (Q02g)",
+                    "wrap the call in a function literal, as in `func() { f() }`",
                 );
                 None
             }
@@ -1704,7 +1701,7 @@ impl<'a> Checker<'a> {
                     format!("`{name}` is passed to its own call"),
                     arg.span,
                 )
-                .note("calling a function value uses it exclusively (§16.2)"),
+                .note("calling a function value uses it exclusively"),
             );
             return None;
         }
@@ -1769,13 +1766,12 @@ impl<'a> Checker<'a> {
             let mut diagnostic = Diagnostic::new(Severity::Error, message, name.span);
             if matches!(self.types.kind(ty), TypeKind::DynArray { .. }) {
                 diagnostic = diagnostic.note(
-                    "`Array<T>` length, append, remove, and capacity APIs are not specified yet (Q05)",
+                    "`Array<T>` length, append, remove, and capacity APIs are not specified yet",
                 );
             }
             if matches!(self.types.kind(ty), TypeKind::Map { .. }) {
-                diagnostic = diagnostic.note(
-                    "map length, iteration, and borrowed entry APIs are not specified yet (Q02/Q05)",
-                );
+                diagnostic = diagnostic
+                    .note("map length, iteration, and borrowed entry APIs are not specified yet");
             }
             self.diagnostics.push(diagnostic);
             self.report_arg_errors(args);
@@ -1788,9 +1784,7 @@ impl<'a> Checker<'a> {
                     "the `drop` method cannot be called directly",
                     name.span,
                 )
-                .note(
-                    "destruction runs when ownership ends or through `drop(value)` (§14.3, §14.4)",
-                ),
+                .note("destruction runs when ownership ends or through `drop(value)`"),
             );
             self.report_arg_errors(args);
             return None;
@@ -1948,7 +1942,7 @@ impl<'a> Checker<'a> {
                         args[later].span,
                     )
                     .related(args[earlier].span, "the overlapping argument")
-                    .note("a mutable borrow requires exclusive access (§11.3)"),
+                    .note("a mutable borrow requires exclusive access"),
                 );
                 ok = false;
             }
@@ -1987,7 +1981,7 @@ impl<'a> Checker<'a> {
                         args[later].span,
                     )
                     .related(args[earlier].span, "borrowed for the call here")
-                    .note("a mutable borrow requires exclusive access (§11.3)"),
+                    .note("a mutable borrow requires exclusive access"),
                 );
                 ok = false;
             }
@@ -2067,11 +2061,11 @@ impl<'a> Checker<'a> {
                     ),
                     LocalKind::Param(ast::ParamMode::Borrow) => (
                         "shared parameter",
-                        "a parameter is a shared borrow unless declared `mut` (§7.3)",
+                        "a parameter is a shared borrow unless declared `mut`",
                     ),
                     LocalKind::Param(ast::ParamMode::Own) => (
                         "`own` parameter",
-                        "only `var` bindings and `mut` parameters are mutable places (§11.6)",
+                        "only `var` bindings and `mut` parameters are mutable places",
                     ),
                 };
                 let message = match usage {
@@ -2105,7 +2099,7 @@ impl<'a> Checker<'a> {
                     };
                     self.diagnostics.push(
                         Diagnostic::new(Severity::Error, message, expr.span)
-                            .note("elements of `[]T` are read-only (§12.6)"),
+                            .note("elements of `[]T` are read-only"),
                     );
                     false
                 }
@@ -2154,7 +2148,7 @@ impl<'a> Checker<'a> {
             );
             self.diagnostics.push(
                 Diagnostic::new(Severity::Error, message, expr.span)
-                    .note("printable types are bool, integers, floats, rune, and string (§37.1)"),
+                    .note("printable types are bool, integers, floats, rune, and string"),
             );
             return None;
         }
@@ -2211,7 +2205,7 @@ impl<'a> Checker<'a> {
                 );
             } else {
                 let message = format!(
-                    "`{}` is not a conversion; only numeric conversions exist (§6.6)",
+                    "`{}` is not a conversion; only numeric conversions exist",
                     self.name(target)
                 );
                 self.error(message, span);
@@ -2482,7 +2476,7 @@ impl<'a> Checker<'a> {
                         format!("cannot take a mutable slice of shared slice `{name}`"),
                         base.span,
                     )
-                    .note("a shared view cannot be upgraded to `mut []T` (§12.6)"),
+                    .note("a shared view cannot be upgraded to `mut []T`"),
                 );
             }
             return mutable;
@@ -2508,7 +2502,7 @@ impl<'a> Checker<'a> {
             .and_then(|k| self.coerce(k, key_ty))?;
         if !self.type_is_copy(value_ty) {
             let message = format!(
-                "cannot look up a Move value of type `{}`; use `m.remove(key)` to take ownership (§13.3)",
+                "cannot look up a Move value of type `{}`; use `m.remove(key)` to take ownership",
                 self.name(value_ty)
             );
             self.error(message, span);
@@ -2553,7 +2547,7 @@ impl<'a> Checker<'a> {
                     self.diagnostics.push(
                         Diagnostic::new(
                             Severity::Error,
-                            format!("duplicate key `{text}` in map literal (§13.3)"),
+                            format!("duplicate key `{text}` in map literal"),
                             key_expr.span,
                         )
                         .related(*first, "first used here"),
@@ -2589,7 +2583,7 @@ impl<'a> Checker<'a> {
             && elements.len() != count
         {
             let message = format!(
-                "array literal has {} element{}, expected {count} (§12.6)",
+                "array literal has {} element{}, expected {count}",
                 elements.len(),
                 if elements.len() == 1 { "" } else { "s" }
             );
@@ -2684,7 +2678,7 @@ impl<'a> Checker<'a> {
             );
             self.diagnostics.push(
                 Diagnostic::new(Severity::Error, message, span)
-                    .note("struct literals must initialize every field (§8.4)"),
+                    .note("struct literals must initialize every field"),
             );
             ok = false;
         }
@@ -2909,7 +2903,7 @@ impl<'a> Checker<'a> {
                         format!("cannot assign through shared slice `{name}`"),
                         expr.span,
                     )
-                    .note("elements of `[]T` are read-only (§12.6)"),
+                    .note("elements of `[]T` are read-only"),
                 );
                 None
             }
@@ -2945,7 +2939,7 @@ impl<'a> Checker<'a> {
                         format!("cannot assign to parameter `{name}`"),
                         expr.span,
                     )
-                    .related(decl_span, "a shared borrow by default (§7.3)"),
+                    .related(decl_span, "a shared borrow by default"),
                 );
                 false
             }
@@ -2953,7 +2947,7 @@ impl<'a> Checker<'a> {
                 self.unsupported(
                     "assigning to `own` parameters is",
                     expr.span,
-                    "planned for roadmap milestone M13–M17",
+                    "planned for a later milestone",
                 );
                 false
             }
@@ -3016,7 +3010,7 @@ impl<'a> Checker<'a> {
                 if matches!(self.types.kind(place.ty), TypeKind::Map { .. }) {
                     self.expr(index, None);
                     self.error(
-                        "map entries are not addressable places; assign `m[key] = value` on its own, or update a copy and assign it back (§13.3)",
+                        "map entries are not addressable places; assign `m[key] = value` on its own, or update a copy and assign it back",
                         expr.span,
                     );
                     return None;
@@ -3085,7 +3079,7 @@ impl<'a> Checker<'a> {
         };
         if let AssignOp::Compound(_) = op {
             self.error(
-                "compound map assignment is not allowed; look up, compute, then assign (§13.3)",
+                "compound map assignment is not allowed; look up, compute, then assign",
                 span,
             );
             self.report_arg_errors(values);

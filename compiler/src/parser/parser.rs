@@ -135,7 +135,7 @@ impl Parser<'_> {
         }
     }
 
-    pub(super) fn unsupported(&mut self, what: &str, milestone: &str) -> Reported {
+    pub(super) fn unsupported(&mut self, what: &str) -> Reported {
         let span = self.current_span();
         self.report(
             Diagnostic::new(
@@ -143,7 +143,7 @@ impl Parser<'_> {
                 format!("{what} are not supported by this compiler yet"),
                 span,
             )
-            .note(format!("planned for roadmap milestone {milestone}")),
+            .note("planned for a later milestone"),
         )
     }
 

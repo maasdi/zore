@@ -807,10 +807,10 @@ impl<'a> Analysis<'a> {
             matches!(self.package.types.kind(holder_decl.ty), TypeKind::Func(_));
         let later = match &holder_decl.name {
             Some(closure) if holder_is_closure => {
-                format!("the closure `{closure}` is used later (§11.3, §16.3)")
+                format!("the closure `{closure}` is used later")
             }
-            Some(view) => format!("the view `{view}` is used later (§11.3)"),
-            None => "a later use keeps this borrow live (§11.3)".to_string(),
+            Some(view) => format!("the view `{view}` is used later"),
+            None => "a later use keeps this borrow live".to_string(),
         };
         let temporary_scope_end = access.action == Action::StorageDead
             && self.body.locals[access.path.local.0 as usize]
@@ -824,7 +824,7 @@ impl<'a> Analysis<'a> {
         .note(later);
         if access.from_slicing && loan.from_slicing {
             diagnostic = diagnostic.note(
-                "slice borrows are checked against the whole originating place, not index ranges (§12.5)",
+                "slice borrows are checked against the whole originating place, not index ranges",
             );
         }
         diagnostic
@@ -849,7 +849,7 @@ impl<'a> Analysis<'a> {
                     ),
                     span,
                 )
-                .note("views can only be stored in local variables for now; storing through a parameter or slice element needs output provenance contracts (§11.7)"),
+                .note("views can only be stored in local variables for now; storing through a parameter or slice element needs output provenance contracts"),
             );
         }
     }
@@ -888,9 +888,7 @@ impl<'a> Analysis<'a> {
                         format!("cannot return a view of {owner}"),
                         loan.span,
                     )
-                    .note(
-                        "a returned view must refer to storage borrowed from a parameter (§11.7)",
-                    ),
+                    .note("a returned view must refer to storage borrowed from a parameter"),
                 );
             }
         }

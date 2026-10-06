@@ -169,7 +169,7 @@ impl Parser<'_> {
         if self.at(Punct::Colon) {
             let span = self.current_span();
             return Err(self.error(
-                "a slice expression takes at most two bounds; Zore has no capacity bound or stride (§12.6)",
+                "a slice expression takes at most two bounds; Zore has no capacity bound or stride",
                 span,
             ));
         }
@@ -220,7 +220,7 @@ impl Parser<'_> {
                 return self.closure();
             }
             TokenKind::Keyword(Keyword::Go) => {
-                return Err(self.unsupported("`go` task-creation expressions", "M25–M29"));
+                return Err(self.unsupported("`go` task-creation expressions"));
             }
             TokenKind::Keyword(Keyword::Map) => {
                 return self.map_literal();
@@ -229,7 +229,7 @@ impl Parser<'_> {
                 return self.array_literal();
             }
             TokenKind::Keyword(Keyword::Channel) => {
-                return Err(self.unsupported("channel expressions", "M30"));
+                return Err(self.unsupported("channel expressions"));
             }
             TokenKind::Reserved(word) => {
                 let message = format!(
@@ -290,7 +290,7 @@ impl Parser<'_> {
         let ty = self.bracket_type()?;
         if let Type::Slice { span, .. } = ty {
             return Err(self.error(
-                "slice literals are not part of Zore; slice existing storage instead, e.g. `data[:]` (§12.6)",
+                "slice literals are not part of Zore; slice existing storage instead, e.g. `data[:]`",
                 span,
             ));
         }
@@ -335,7 +335,7 @@ impl Parser<'_> {
         if !self.at(Punct::LBrace) {
             let at = self.current_span();
             return Err(self.error(
-                "expected `{` after `Array<T>`; dynamic arrays are built with a typed literal such as `Array<int>{}` (§12.6)",
+                "expected `{` after `Array<T>`; dynamic arrays are built with a typed literal such as `Array<int>{}`",
                 at,
             ));
         }

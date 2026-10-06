@@ -98,14 +98,14 @@ impl<'a> Resolver<'a> {
             .push(Diagnostic::new(Severity::Error, message, span));
     }
 
-    pub(super) fn unsupported(&mut self, what: &str, span: Span, milestone: &str) {
+    pub(super) fn unsupported(&mut self, what: &str, span: Span) {
         self.out.diagnostics.push(
             Diagnostic::new(
                 Severity::Error,
                 format!("{what} not supported by the checker yet"),
                 span,
             )
-            .note(format!("planned for roadmap milestone {milestone}")),
+            .note("planned for a later milestone"),
         );
     }
 
@@ -117,7 +117,7 @@ impl<'a> Resolver<'a> {
                     "imports are not supported by the checker yet",
                     import.span,
                 )
-                .note("`zore check` currently treats one file as the whole package (M23)"),
+                .note("`zore check` currently treats one file as the whole package"),
             );
         }
         // Collect declarations first so bodies can use later ones.
@@ -130,7 +130,7 @@ impl<'a> Resolver<'a> {
                     self.declare_package(&decl.name, Res::Struct(id));
                 }
                 Item::Func(func) if func.is_async => {
-                    self.unsupported("`async` functions are", func.name.span, "M25–M29");
+                    self.unsupported("`async` functions are", func.name.span);
                 }
                 Item::Func(func) => {
                     let id = FunctionId(self.out.functions.len() as u32);
@@ -155,7 +155,7 @@ impl<'a> Resolver<'a> {
                             "package-level `let` and `var` are not supported by the checker yet",
                             binding.span,
                         )
-                        .note("package variable initialization order is unresolved (Q05)"),
+                        .note("package variable initialization order is unresolved"),
                     );
                 }
             }
@@ -240,7 +240,7 @@ impl<'a> Resolver<'a> {
                     receiver.span,
                 )
                 .note(
-                    "a destructor gets mutable access without ownership, never a shared or `own` receiver (§14.3)",
+                    "a destructor gets mutable access without ownership, never a shared or `own` receiver",
                 ),
             );
         }

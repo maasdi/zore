@@ -1905,7 +1905,7 @@ fn unsupported_dynamic_array_forms_are_rejected() {
         case.checked.diagnostics[0]
             .notes()
             .iter()
-            .any(|note| note.contains("not specified yet (Q05)"))
+            .any(|note| note.contains("not specified yet"))
     );
     rejects(
         &program("func f(xs Array<int>) { let ys = clone(xs) }"),
@@ -2047,7 +2047,7 @@ fn map_removal_needs_a_mutable_map_and_supports_propagation() {
         case.checked.diagnostics[0]
             .notes()
             .iter()
-            .any(|note| note.contains("Q02/Q05"))
+            .any(|note| note.contains("borrowed entry APIs are not specified yet"))
     );
 }
 
