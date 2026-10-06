@@ -72,6 +72,8 @@ escape/close/zero-value/cleanup behavior.
 contextual mutable slices, and partial-construction cleanup (§12.6).
 `conformance/maps.md` covers map literals, key restrictions, presence-first lookup
 and removal, mutation, and entry cleanup (§13.3).
+`conformance/closures.md` covers closure literals, function types, inferred
+captures, and the non-escaping rule (§16).
 These documents do not count as passing tests. Lexical rows in `identifiers`,
 `comments`, `statement-boundaries`, `strings`, `runes`, `integers`, `floats`,
 and `keywords` now have executable counterparts in `tests/lexer/lexer.rs`. Syntax rows
