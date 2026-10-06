@@ -1,5 +1,3 @@
-//! Scopes: declaring names and looking them up.
-
 use super::ids::{FunctionId, LocalId};
 use super::resolver::Resolver;
 use super::symbol::{LocalDecl, LocalKind, Res, predeclared, unsupported_predeclared};
@@ -84,8 +82,7 @@ impl Resolver<'_> {
             .or_else(|| predeclared(name))
     }
 
-    /// Like `lookup`, but a local of an enclosing function seen from inside a
-    /// closure resolves to that closure's capture of it.
+    /// A local of an enclosing body resolves to this closure's capture of it.
     fn lookup_capturing(&mut self, name: &str) -> Option<Res> {
         let found = self
             .scopes
@@ -100,8 +97,7 @@ impl Resolver<'_> {
         }
     }
 
-    /// The local standing for `local`, declared in scope `scope`, inside the
-    /// innermost body: a chain of captures through every closure in between.
+    /// Chains captures through every closure between the declaration and here.
     fn capture(&mut self, scope: usize, mut local: LocalId) -> LocalId {
         let crossed: Vec<FunctionId> = self
             .frames

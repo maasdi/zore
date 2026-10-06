@@ -1,6 +1,3 @@
-//! Ownership-analysis tests: moves, borrows, partial moves, reinitialization,
-//! and array-element restrictions, checked through the full frontend.
-
 use zore::check::{Checked, check_file};
 use zore::source::SourceMap;
 
@@ -26,12 +23,10 @@ impl Case {
     }
 }
 
-/// Wrap declarations in a `main` package with a trivial entry point.
 fn program(decls: &str) -> String {
     format!("package main\n\n{decls}\n\nfunc main() {{}}\n")
 }
 
-/// Wrap statements as the body of `main`.
 fn body(stmts: &str) -> String {
     format!("package main\n\nfunc main() {{\n{stmts}\n}}\n")
 }
@@ -233,12 +228,10 @@ const SLICE_FUNCS: &str = "func inspect(items []int) int { return items[0] }
 func edit(items mut []int) { items[0] = 9 }
 func firstHalf(s mut []int) mut []int { return s[:1] }";
 
-/// Statements as `main`'s body, after the shared slice helpers.
 fn slice_body(stmts: &str) -> String {
     format!("package main\n\n{SLICE_FUNCS}\n\nfunc main() {{\n{stmts}\n}}\n")
 }
 
-/// Declarations after the shared slice helpers, in a `main` package.
 fn slice_program(decls: &str) -> String {
     program(&format!("{SLICE_FUNCS}\n{decls}"))
 }
@@ -858,7 +851,6 @@ func (r mut Res) drop() {}
 func take(r own Res) {}
 func show(r Res) {}";
 
-/// Statements as `main`'s body, after a Move resource type and helpers.
 fn resource_body(stmts: &str) -> String {
     format!("package main\n\n{RESOURCE}\n\nfunc main() {{\n{stmts}\n}}\n")
 }

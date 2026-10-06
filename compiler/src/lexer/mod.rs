@@ -1,5 +1,3 @@
-//! Source text to tokens, with automatic semicolon insertion.
-
 #[allow(clippy::module_inception)]
 mod lexer;
 mod token;

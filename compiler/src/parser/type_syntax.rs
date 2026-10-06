@@ -1,5 +1,3 @@
-//! Type syntax: named, fixed-array, slice, dynamic-array, map, and function types.
-
 use super::parser::{PResult, Parser};
 use crate::ast::*;
 use crate::lexer::{Keyword, Punct, Separator, Token, TokenKind};
@@ -43,8 +41,7 @@ impl Parser<'_> {
         }
     }
 
-    /// `Name<...>` after `Name`: only the predeclared `Array` takes a type
-    /// argument here; `Array` cannot be shadowed (§3.18).
+    /// Only the predeclared `Array` takes a type argument, and it cannot be shadowed.
     fn type_arguments(&mut self, name: Name) -> PResult<Type> {
         match name.text.as_str() {
             "Array" => {
@@ -67,8 +64,7 @@ impl Parser<'_> {
         }
     }
 
-    /// Consumes the `>` closing a type argument list, splitting it off a
-    /// `>>`, `>=`, or `>>=` token so `Array<Array<int>>` closes both lists.
+    /// Splits `>>`, `>=`, or `>>=` so `Array<Array<int>>` closes both lists.
     pub(super) fn close_type_arguments(&mut self) -> PResult<()> {
         let rest = match self.peek() {
             TokenKind::Punct(Punct::Gt) => {
@@ -94,9 +90,7 @@ impl Parser<'_> {
         Ok(())
     }
 
-    /// §3.7: a closing type-argument `>` is an eligible ending token, but only
-    /// the parser can tell it from the comparison operator, so the semicolon
-    /// the lexer could not insert is inserted here, at the same location.
+    /// Only the parser can tell a closing `>` from a comparison, so it inserts the semicolon the lexer could not.
     fn insert_semicolon_after_type_arguments(&mut self) {
         if matches!(self.peek(), TokenKind::Semicolon(_)) {
             return;
@@ -124,8 +118,6 @@ impl Parser<'_> {
         );
     }
 
-    /// `func(T, mut U) R`: unnamed parameters with optional modes, then an
-    /// optional result list (§16.2).
     fn func_type(&mut self) -> PResult<Type> {
         let start = self.bump().span;
         self.expect(Punct::LParen)?;
@@ -173,8 +165,6 @@ impl Parser<'_> {
         Ok(FuncTypeParam { mode, ty })
     }
 
-    /// Whether the current token can begin a type or a parenthesized result
-    /// list, so a function type's results continue here.
     fn at_type_start(&self) -> bool {
         matches!(
             self.peek(),
@@ -186,7 +176,6 @@ impl Parser<'_> {
         )
     }
 
-    /// `map[key]value`.
     pub(super) fn map_type(&mut self) -> PResult<Type> {
         let start = self.bump().span;
         self.expect(Punct::LBracket)?;
@@ -200,13 +189,11 @@ impl Parser<'_> {
         })
     }
 
-    /// Whether the tokens `ahead` positions from here begin `[]`.
     pub(super) fn at_slice_type_after(&self, ahead: usize) -> bool {
         *self.peek_at(ahead) == TokenKind::Punct(Punct::LBracket)
             && *self.peek_at(ahead + 1) == TokenKind::Punct(Punct::RBracket)
     }
 
-    /// `[element; size]` or the shared slice type `[]element`.
     pub(super) fn bracket_type(&mut self) -> PResult<Type> {
         let start = self.current_span();
         self.bump();

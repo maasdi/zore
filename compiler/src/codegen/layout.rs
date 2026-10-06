@@ -1,5 +1,3 @@
-//! How Zore types are laid out as LLVM types, including drop-flag blocks.
-
 use std::fmt::Write;
 
 use super::llvm::Module;
@@ -54,7 +52,6 @@ impl Module<'_> {
         }
     }
 
-    /// Named LLVM struct types for every Zore struct and its drop flags.
     pub(super) fn type_declarations(&self) -> String {
         let mut out = String::new();
         for strukt in &self.package.structs {

@@ -1,10 +1,4 @@
-//! MIR to textual LLVM IR.
-//!
-//! Every MIR local gets a stack slot; LLVM's optimizer promotes them to
-//! registers. Runtime checks (integer overflow, division by zero, shift
-//! counts, conversion ranges) branch to MIR cleanup with the source location.
-//! Features the backend cannot compile yet are reported as diagnostics instead
-//! of being miscompiled.
+//! Every MIR local gets a stack slot; LLVM promotes them to registers.
 
 use std::collections::{BTreeSet, HashMap};
 use std::fmt::Write;
@@ -137,8 +131,7 @@ pub(super) struct FunctionBuilder<'m, 'a> {
     pub(super) emitting_unwind: bool,
     /// A replacement drop's panic check waits for the store that follows it.
     pub(super) drop_check_after_store: bool,
-    /// Allocas created mid-function, spliced into the entry block so that
-    /// code inside loops never grows the stack.
+    /// Spliced into the entry block so loops never grow the stack.
     pub(super) hoisted: String,
 }
 
@@ -167,7 +160,6 @@ impl FunctionBuilder<'_, '_> {
         self.body.locals[local.0 as usize].ty
     }
 
-    /// The LLVM type stored in a local's stack slot.
     pub(super) fn slot_ty(&self, local: Local) -> String {
         if self.body.locals[local.0 as usize].by_reference {
             "ptr".into()
@@ -258,9 +250,7 @@ impl FunctionBuilder<'_, '_> {
         self.out.push_str("}\n\n");
     }
 
-    /// Points each capture local at what the closure borrowed: the
-    /// environment holds, per capture, its address and then (for a Move
-    /// value) its drop flags' address.
+    /// Per capture, the environment holds its address, then its drop flags' address for a Move value.
     fn load_captures(&mut self) {
         let mut slot = 0;
         for &capture in &self.body.captures {
@@ -281,8 +271,6 @@ impl FunctionBuilder<'_, '_> {
         }
     }
 
-    /// A closure value: the body's code and an environment in this frame
-    /// holding the captured places' addresses (and drop flags' addresses).
     fn closure_value(
         &mut self,
         function: crate::resolve::FunctionId,
@@ -299,8 +287,7 @@ impl FunctionBuilder<'_, '_> {
         let environment = if pointers.is_empty() {
             "null".to_string()
         } else {
-            // Each creation site stores the same addresses every time it
-            // runs, so one slot per site serves every value it creates.
+            // A site stores the same addresses every run, so one slot serves all its values.
             let environment = self.fresh();
             self.hoist_alloca(&environment, &format!("[{} x ptr]", pointers.len()));
             for (index, pointer) in pointers.iter().enumerate() {
@@ -324,9 +311,7 @@ impl FunctionBuilder<'_, '_> {
         value
     }
 
-    /// The address of `place`. Fields and array elements fold into one
-    /// `getelementptr`; indexing a slice loads its descriptor's data pointer
-    /// and continues from the element it designates.
+    /// Indexing a slice continues from the element its data pointer designates.
     pub(super) fn address(&mut self, place: &Place) -> String {
         let mut base = format!("%l{}", place.local.0);
         if self.body.locals[place.local.0 as usize].by_reference {
@@ -364,7 +349,6 @@ impl FunctionBuilder<'_, '_> {
         self.element_pointer(&base, gep_root, &mut indices)
     }
 
-    /// Applies the pending `indices` to `base` (of type `root`), if any.
     fn element_pointer(&mut self, base: &str, root: TypeId, indices: &mut String) -> String {
         if indices.is_empty() {
             return base.to_string();
@@ -378,7 +362,6 @@ impl FunctionBuilder<'_, '_> {
         name
     }
 
-    /// Loads the data pointer of the slice descriptor stored at `address`.
     fn slice_data(&mut self, address: &str) -> String {
         let descriptor = self.fresh();
         self.line(format!("{descriptor} = load {{ ptr, i64 }}, ptr {address}"));
@@ -389,7 +372,6 @@ impl FunctionBuilder<'_, '_> {
         data
     }
 
-    /// The `int64` length of the slice descriptor at `place`.
     fn slice_length(&mut self, place: &Place) -> String {
         let address = self.address(place);
         let descriptor = self.fresh();
@@ -401,9 +383,7 @@ impl FunctionBuilder<'_, '_> {
         length
     }
 
-    /// A view of `place` from `low` up to `high`, panicking unless
-    /// `0 <= low <= high <= length` (§12.6). Bounds are widened per their own
-    /// signedness, so unsigned comparisons also catch negative signed bounds.
+    /// Bounds are widened per signedness, so unsigned comparisons catch negative bounds.
     fn slice(
         &mut self,
         place: &Place,
@@ -501,9 +481,6 @@ impl FunctionBuilder<'_, '_> {
         self.root_flag_address_from(&address, ty)
     }
 
-    /// The root liveness-flag address within an already-computed `flags`
-    /// block of type `flag_ty(ty)` (a real persistent one from
-    /// `flag_address`, or a transient one from `scratch_flags`).
     pub(super) fn root_flag_address_from(&mut self, flags: &str, ty: TypeId) -> String {
         if matches!(self.module.package.types.kind(ty), TypeKind::Struct(_)) {
             let root = self.fresh();
@@ -535,9 +512,7 @@ impl FunctionBuilder<'_, '_> {
             .iter()
             .any(|p| matches!(p, mir::Projection::Index(_)))
         {
-            // Array elements have no independent liveness flag (§31.2): the
-            // array's own single flag already covers them, and there is no
-            // per-element storage to address.
+            // Array elements share the array's single flag.
             return;
         }
         self.set_root_flag(place, value);
@@ -608,11 +583,7 @@ impl FunctionBuilder<'_, '_> {
         self.out.push_str(&format!("{ok}:\n"));
     }
 
-    /// Widens `operand` to `int64` per its own signedness, panics if it
-    /// falls outside `[0, length)`, and evaluates to the widened value.
-    /// Widens an integer operand to `int64` per its own signedness, so a
-    /// negative signed value becomes a huge unsigned one and fails any
-    /// unsigned comparison against a length.
+    /// Negative signed values become huge unsigned ones and fail length checks.
     pub(super) fn widen_to_i64(&mut self, operand: &Operand) -> String {
         let int = self
             .module
@@ -708,7 +679,6 @@ impl FunctionBuilder<'_, '_> {
         self.store(place, &value);
     }
 
-    /// `{ data, length }` holding `operands`, moved into fresh heap storage.
     fn dyn_array_literal(&mut self, element: TypeId, operands: &[Operand]) -> String {
         if operands.is_empty() {
             return "{ ptr null, i64 0 }".to_string();
@@ -737,7 +707,6 @@ impl FunctionBuilder<'_, '_> {
         array
     }
 
-    /// The size in bytes of `count` values of LLVM type `ty`, as an `i64`.
     pub(super) fn byte_size(&mut self, ty: &str, count: &str) -> String {
         let end = self.fresh();
         self.line(format!("{end} = getelementptr {ty}, ptr null, i64 {count}"));
@@ -746,8 +715,6 @@ impl FunctionBuilder<'_, '_> {
         bytes
     }
 
-    /// Drops every element of the `Array<T>` at `address` in reverse index
-    /// order, then frees its storage.
     fn drop_dyn_array(&mut self, address: &str, element: TypeId) {
         let descriptor = self.fresh();
         self.line(format!("{descriptor} = load {{ ptr, i64 }}, ptr {address}"));
@@ -788,8 +755,6 @@ impl FunctionBuilder<'_, '_> {
         self.line(format!("call void @zore_free(ptr {data}, i64 {bytes})"));
     }
 
-    /// Drops every remaining value of the map at `address` (order
-    /// unspecified, §13.3), then frees the map.
     fn drop_map(&mut self, address: &str, value: TypeId) {
         let map = self.fresh();
         self.line(format!("{map} = load ptr, ptr {address}"));
@@ -822,8 +787,7 @@ impl FunctionBuilder<'_, '_> {
         self.line(format!("call void @zore_map_free(ptr {map})"));
     }
 
-    /// Records a pending panic with `message` at `span`; the caller branches
-    /// to cleanup.
+    /// The caller branches to cleanup.
     pub(super) fn raise_panic(&mut self, message: &str, span: Span) {
         let text = format!("{message} at {}", self.module.location(span));
         let global = self.module.string_global(text.as_bytes());
@@ -833,13 +797,7 @@ impl FunctionBuilder<'_, '_> {
         ));
     }
 
-    /// Drops `place` (type `ty`). Dispatches to the real, persistent flag
-    /// at `flag_address(place)` for an ordinary (field-only) place, or to a
-    /// transient scratch block when reached through an array index — array
-    /// elements have no independent liveness flag (§31.2: ownership
-    /// analysis never lets one become partially moved), so there is nothing
-    /// to branch on, only a real pointer needed for the duration of one
-    /// custom-`drop` call and its immediate field cleanup.
+    /// Array elements have no own flag, so they use transient scratch flags.
     pub(super) fn drop_place(&mut self, place: &Place) {
         let ty = self.place_ty(place);
         if self.module.package.is_copy(ty) {
@@ -858,9 +816,7 @@ impl FunctionBuilder<'_, '_> {
         self.drop_value(&address, ty, &flags);
     }
 
-    /// Drops the value at `address` (type `ty`) whose own liveness flag lives
-    /// within the already-computed `flags` block (root flag first, per
-    /// `flag_ty`'s layout).
+    /// The root flag comes first in `flags`.
     pub(super) fn drop_value(&mut self, address: &str, ty: TypeId, flags: &str) {
         if self.module.package.is_copy(ty) {
             return;
@@ -877,9 +833,6 @@ impl FunctionBuilder<'_, '_> {
         self.out.push_str(&format!("{done}:\n"));
     }
 
-    /// Drops the value at `address` (an array element, type `ty`)
-    /// unconditionally, backed by a fresh scratch flags block rather than
-    /// persistent storage.
     pub(super) fn drop_unconditional(&mut self, address: &str, ty: TypeId) {
         if self.module.package.is_copy(ty) {
             return;
@@ -888,9 +841,7 @@ impl FunctionBuilder<'_, '_> {
         self.drop_contents(address, ty, &scratch);
     }
 
-    /// A fresh `flag_ty(ty)` block with every flag initialized true and no
-    /// persistent backing: used wherever a real flags address would need
-    /// storage that doesn't exist (array elements).
+    /// Every flag starts true, with no persistent backing.
     pub(super) fn scratch_flags(&mut self, ty: TypeId) -> String {
         let ptr = self.fresh();
         let flag_ty = self.module.flag_ty(ty);
@@ -899,7 +850,6 @@ impl FunctionBuilder<'_, '_> {
         ptr
     }
 
-    /// Declares `name` as an `alloca` of `ty` in the entry block.
     pub(super) fn hoist_alloca(&mut self, name: &str, ty: &str) {
         writeln!(self.hoisted, "  {name} = alloca {ty}").unwrap();
     }
@@ -927,9 +877,7 @@ impl FunctionBuilder<'_, '_> {
         }
     }
 
-    /// Runs `ty`'s custom `drop` (if any) and recurses into its parts,
-    /// given the value at `address` is already known live and `flags` is a valid pointer
-    /// to its `flag_ty(ty)` block (real or scratch).
+    /// The value must be live and `flags` must point at its flag block.
     pub(super) fn drop_contents(&mut self, address: &str, ty: TypeId, flags: &str) {
         match self.module.package.types.kind(ty) {
             TypeKind::Struct(id) => {

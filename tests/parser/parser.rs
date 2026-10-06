@@ -1,5 +1,3 @@
-//! Parser tests for AST shape, spans, rejection, and recovery.
-
 use zore::ast::*;
 use zore::parser::{Parsed, parse};
 use zore::source::{SourceMap, Span};
@@ -17,7 +15,6 @@ impl Case {
         Self { sources, parsed }
     }
 
-    /// Parse `body` as the statements of `func main()`.
     fn body(body: &str) -> Self {
         Self::new(&format!("package main\n\nfunc main() {{\n{body}\n}}\n"))
     }
@@ -60,7 +57,7 @@ impl Case {
     }
 }
 
-/// The name of a `Type::Named`; tests that use this assume the type isn't an array.
+/// Panics unless the type is `Type::Named`.
 fn type_name(t: &Type) -> &str {
     match t {
         Type::Named(name) => &name.text,
@@ -343,7 +340,6 @@ fn expr_shape(source: &str) -> String {
         .to_owned()
 }
 
-/// Assert that `body` is rejected with a diagnostic containing `message`.
 fn rejects(body: &str, message: &str) {
     let case = Case::body(body);
     let errors = case.errors();

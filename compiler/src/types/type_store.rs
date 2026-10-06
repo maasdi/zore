@@ -5,7 +5,7 @@ use super::ty::{FloatType, FuncSignature, IntType, TypeKind};
 use super::type_id::{FuncTypeId, StructId, TypeId};
 use crate::ast::ParamMode;
 
-/// Type identities; aliases such as `int` and `int64` share one identity.
+/// Aliases such as `int` and `int64` share one identity.
 #[derive(Debug)]
 pub struct TypeStore {
     kinds: Vec<TypeKind>,
@@ -79,7 +79,7 @@ impl TypeStore {
         self.struct_types[id.0 as usize]
     }
 
-    /// Interns `[element; size]`, so the same shape always shares one `TypeId`.
+    /// Interning gives each shape exactly one `TypeId`.
     pub fn array_type(&mut self, element: TypeId, size: u32) -> TypeId {
         if let Some(&ty) = self.array_types.get(&(element, size)) {
             return ty;
@@ -90,7 +90,6 @@ impl TypeStore {
         ty
     }
 
-    /// Interns `[]element` or `mut []element`.
     pub fn slice_type(&mut self, element: TypeId, mutable: bool) -> TypeId {
         if let Some(&ty) = self.slice_types.get(&(element, mutable)) {
             return ty;
@@ -101,7 +100,6 @@ impl TypeStore {
         ty
     }
 
-    /// Interns `Array<element>`.
     pub fn dyn_array_type(&mut self, element: TypeId) -> TypeId {
         if let Some(&ty) = self.dyn_array_types.get(&element) {
             return ty;
@@ -112,7 +110,6 @@ impl TypeStore {
         ty
     }
 
-    /// Interns `map[key]value`.
     pub fn map_type(&mut self, key: TypeId, value: TypeId) -> TypeId {
         if let Some(&ty) = self.map_types.get(&(key, value)) {
             return ty;
@@ -123,7 +120,6 @@ impl TypeStore {
         ty
     }
 
-    /// Interns the function type with `signature`.
     pub fn func_type(&mut self, signature: FuncSignature) -> TypeId {
         if let Some(&ty) = self.func_types.get(&signature) {
             return ty;
@@ -140,7 +136,6 @@ impl TypeStore {
         &self.signatures[id.0 as usize]
     }
 
-    /// The signature of `ty`, when it is a function type.
     pub fn func_signature(&self, ty: TypeId) -> Option<&FuncSignature> {
         match self.kind(ty) {
             TypeKind::Func(id) => Some(self.signature(id)),
@@ -181,7 +176,6 @@ impl TypeStore {
         TypeName { store: self, ty }
     }
 
-    /// Looks up a primitive type name.
     pub fn primitive(name: &str) -> Option<TypeId> {
         Some(match name {
             "bool" => Self::BOOL,

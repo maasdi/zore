@@ -1,5 +1,3 @@
-//! Interned semantic types.
-
 pub mod bignum;
 pub mod constant;
 mod ty;

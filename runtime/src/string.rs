@@ -1,5 +1,3 @@
-//! Byte-wise string ordering, independent of locale and NUL termination.
-
 /// Compares two compiler-produced strings lexicographically by UTF-8 bytes.
 ///
 /// # Safety

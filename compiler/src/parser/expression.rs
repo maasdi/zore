@@ -1,5 +1,3 @@
-//! Expressions: precedence climbing, postfix chains, and literals.
-
 use super::parser::{PResult, Parser};
 use crate::ast::*;
 use crate::diagnostic::{Diagnostic, Severity};
@@ -148,7 +146,6 @@ impl Parser<'_> {
         }
     }
 
-    /// The rest of `base[index]` or `base[low:high]`, after the `[`.
     fn index_or_slice(&mut self, base: Expr) -> PResult<ExprKind> {
         let base = Box::new(base);
         let low = if self.at(Punct::Colon) {
@@ -247,7 +244,6 @@ impl Parser<'_> {
         Ok(Expr { kind, span })
     }
 
-    /// `func(params) results { body }` (§16.1).
     fn closure(&mut self) -> PResult<Expr> {
         let start = self.bump().span;
         if *self.peek() == TokenKind::Ident {
@@ -289,7 +285,6 @@ impl Parser<'_> {
         })
     }
 
-    /// `[element; size]{e1, e2, ...}`.
     pub(super) fn array_literal(&mut self) -> PResult<Expr> {
         let span = self.current_span();
         let ty = self.bracket_type()?;
@@ -309,7 +304,6 @@ impl Parser<'_> {
         })
     }
 
-    /// `map[K]V{key: value, ...}`.
     fn map_literal(&mut self) -> PResult<Expr> {
         let span = self.current_span();
         let ty = self.map_type()?;
@@ -334,7 +328,7 @@ impl Parser<'_> {
         })
     }
 
-    /// `Array<element>{e1, e2, ...}`, recognized by the predeclared name.
+    /// Recognized by the predeclared name `Array`.
     fn dyn_array_literal(&mut self) -> PResult<Expr> {
         let span = self.current_span();
         let ty = self.ty()?;

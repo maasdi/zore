@@ -1,6 +1,3 @@
-//! The runtime ABI: declared runtime symbols, the calling convention for Zore
-//! functions, runtime output calls, and the native entry shim.
-
 use super::llvm::{FunctionBuilder, Module};
 use crate::mir::{self, Callee, Operand};
 use crate::resolve::FunctionId;
@@ -32,7 +29,6 @@ declare double @llvm.fabs.f64(double)
 ";
 
 impl Module<'_> {
-    /// The native entry point the Rust runtime calls into.
     pub(super) fn entry_shim(&self, entry: FunctionId) -> String {
         let name = &self.package.function(entry).name;
         format!(
@@ -51,8 +47,7 @@ impl FunctionBuilder<'_, '_> {
         self.emit_call(&target, &callee.results, &rendered)
     }
 
-    /// Calls the closure stored at `place`: its code receives the captured
-    /// environment before the ordinary arguments (§16.5).
+    /// The closure's code takes its environment before the ordinary arguments.
     pub(super) fn call_value(
         &mut self,
         place: &mir::Place,
@@ -96,8 +91,7 @@ impl FunctionBuilder<'_, '_> {
         Some((ret, result))
     }
 
-    /// Renders call arguments: a borrowed Move value passes its address and
-    /// its drop flags' address; everything else passes by value.
+    /// A borrowed Move value passes its address and its drop flags' address.
     fn arguments(&mut self, args: &[Operand]) -> Vec<String> {
         let package = self.module.package;
         let mut rendered = Vec::new();
@@ -127,8 +121,7 @@ impl FunctionBuilder<'_, '_> {
         rendered
     }
 
-    /// Emits a compiler-provided map operation (§13.3). Lookup and removal
-    /// return the `{ i1, V }` presence/value pair for their destinations.
+    /// Lookup and removal return a `{ i1, V }` presence/value pair.
     pub(super) fn map_call(
         &mut self,
         callee: &Callee,
@@ -183,8 +176,7 @@ impl FunctionBuilder<'_, '_> {
                     self.drop_unconditional(&old, value);
                     self.line(format!("br label %{stored}"));
                     self.out.push_str(&format!("{stored}:\n"));
-                    // §13.3: the old entry is already detached; on a panic the
-                    // new value stays with its temporary for unwinding.
+                    // The old entry is detached; on a panic the new value stays with its temporary.
                     self.check_after_drop(false);
                 }
                 self.store_map_value(&slot, &kind, &key, &args[2], &value_ty);
@@ -213,8 +205,6 @@ impl FunctionBuilder<'_, '_> {
         }
     }
 
-    /// Stores the key operand in a hoisted slot, returning the runtime key
-    /// kind and the slot's address.
     fn map_key(&mut self, operand: &Operand, ty: TypeId) -> (String, String) {
         let value = self.value(operand);
         let slot = self.fresh();
@@ -247,7 +237,6 @@ impl FunctionBuilder<'_, '_> {
         }
     }
 
-    /// A hoisted buffer for one value of `ty`, zeroed here.
     fn zeroed_buffer(&mut self, ty: &str) -> String {
         let buffer = self.fresh();
         self.hoist_alloca(&buffer, ty);
@@ -255,7 +244,6 @@ impl FunctionBuilder<'_, '_> {
         buffer
     }
 
-    /// The `{ i1, V }` pair of `found` and the value loaded from `source`.
     fn presence_pair(&mut self, found: &str, source: &str, value_ty: &str) -> (String, String) {
         let value = self.fresh();
         self.line(format!("{value} = load {value_ty}, ptr {source}"));
@@ -271,7 +259,6 @@ impl FunctionBuilder<'_, '_> {
         (pair_ty, pair)
     }
 
-    /// Inserts the absent key into the map behind `slot` and moves `value` in.
     fn store_map_value(
         &mut self,
         slot: &str,

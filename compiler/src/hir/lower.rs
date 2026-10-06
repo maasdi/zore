@@ -1,5 +1,3 @@
-//! Lowering from resolved syntax to typed HIR, type-checking along the way.
-
 use std::collections::{HashMap, HashSet};
 
 use crate::ast::{
@@ -13,7 +11,7 @@ use crate::types::bignum::BigInt;
 use crate::types::constant::{self, ConstError, Folded, Unrepresentable, Untyped};
 use crate::types::{FuncSignature, IntType, StructId, TypeId, TypeKind, TypeStore};
 
-/// Type-checks a resolved file; HIR is returned only when there are no diagnostics.
+/// HIR is returned only when there are no diagnostics.
 pub fn check(
     file: &ast::File,
     mut resolution: Resolution<'_>,
@@ -144,13 +142,11 @@ struct Checker<'a> {
     locals: Vec<Option<TypeId>>,
     results: Vec<TypeId>,
     loop_depth: usize,
-    /// Checked closure bodies, by index into `res.closures`.
+    /// Indexed like `res.closures`.
     closures: Vec<Option<hir::Function>>,
-    /// Captures `(function, local)` that must borrow exclusively (§16.3).
     exclusive_captures: HashSet<(usize, LocalId)>,
 }
 
-/// The per-body state saved while a nested closure body is checked.
 struct BodyState {
     current: usize,
     locals: Vec<Option<TypeId>>,
@@ -338,8 +334,7 @@ impl<'a> Checker<'a> {
         }
     }
 
-    /// Resolves the result types of a function type or literal, which may
-    /// hold neither a closure nor a borrowed view (§16.4).
+    /// Results of function types and literals hold neither closures nor views.
     fn closure_results(&mut self, results: &[ast::Type]) -> Option<Vec<TypeId>> {
         let mut checked = Vec::new();
         let mut ok = true;
@@ -352,9 +347,6 @@ impl<'a> Checker<'a> {
         ok.then_some(checked)
     }
 
-    /// Whether `ty` may be a function result: a closure value would escape
-    /// (§16.4), and a function value cannot say which argument a returned
-    /// view borrows from.
     fn result_allowed(&mut self, ty: TypeId, span: Span, function_value: bool) -> bool {
         if self.type_contains(ty, &|kind| matches!(kind, TypeKind::Func(_))) {
             self.diagnostics.push(
@@ -379,8 +371,6 @@ impl<'a> Checker<'a> {
         true
     }
 
-    /// Rejects storing `ty` inside another value: a `mut []T` view or a
-    /// function value as a struct field, array, slice, or map element.
     fn reject_stored(&mut self, ty: &ast::Type) -> bool {
         if let ast::Type::Func { span, .. } = ty {
             self.diagnostics.push(
@@ -396,8 +386,6 @@ impl<'a> Checker<'a> {
         self.reject_stored_mut_slice(ty)
     }
 
-    /// Rejects `ty` when it is itself `mut []T`, for positions that store a
-    /// value inside another one: a struct field, array, or slice element.
     fn reject_stored_mut_slice(&mut self, ty: &ast::Type) -> bool {
         let ast::Type::Slice {
             mutable: true,
@@ -415,8 +403,7 @@ impl<'a> Checker<'a> {
         false
     }
 
-    /// Whether a value of `ty` holds a component matching `matches`, looking
-    /// through struct fields and array elements but not slice elements.
+    /// Looks through fields and array elements, not slice elements.
     fn type_contains(&self, ty: TypeId, matches: &dyn Fn(TypeKind) -> bool) -> bool {
         let mut pending = vec![ty];
         let mut seen = Vec::new();
@@ -452,8 +439,7 @@ impl<'a> Checker<'a> {
         )
     }
 
-    /// Copy/Move classification during checking, before the HIR package
-    /// exists; agrees with `hir::Package::is_copy`.
+    /// Must agree with `hir::Package::is_copy`.
     fn type_is_copy(&self, ty: TypeId) -> bool {
         match self.types.kind(ty) {
             TypeKind::Bool
@@ -483,9 +469,7 @@ impl<'a> Checker<'a> {
     }
 
     fn signatures_and_fields(&mut self) {
-        // Cloned up front: `resolve_type` needs `&mut self` (to intern array
-        // types and fold array-size constants), which can't overlap a live
-        // borrow of `self.res` held by iterating it directly.
+        // Cloned because `resolve_type` needs `&mut self`.
         let structs: Vec<&'a ast::StructDecl> = self.res.structs.clone();
         self.fields = structs
             .iter()
@@ -535,7 +519,6 @@ impl<'a> Checker<'a> {
         self.param_mode_type(param.mode, &param.ty, param.span)
     }
 
-    /// The type of a parameter declared with `mode` and type syntax `ty`.
     fn param_mode_type(
         &mut self,
         mode: ast::ParamMode,
@@ -583,8 +566,7 @@ impl<'a> Checker<'a> {
         }
     }
 
-    /// A custom destructor could observe a contained view after its last
-    /// ordinary use, which region analysis does not model yet.
+    /// Region analysis cannot model a destructor observing a view.
     fn reject_drop_observing_views(&mut self, structs: &[&ast::StructDecl]) {
         for (index, decl) in structs.iter().enumerate() {
             let id = StructId(index as u32);
@@ -662,8 +644,7 @@ impl<'a> Checker<'a> {
         })
     }
 
-    /// The symbol-level name of a function, method (`Type.method`), or
-    /// closure (`enclosing$closureN`, numbered within its declared function).
+    /// Closures are named `enclosing$closureN`, numbered per declared function.
     fn function_name(&self, id: FunctionId) -> String {
         let declared = self.res.functions.len();
         let index = id.0 as usize;
@@ -708,14 +689,11 @@ impl<'a> Checker<'a> {
         self.loop_depth = state.loop_depth;
     }
 
-    /// The function that encloses closure `function`.
     fn closure_parent(&self, function: usize) -> usize {
         let index = function - self.res.functions.len();
         self.res.closures[index].parent.0 as usize
     }
 
-    /// Follows a chain of captures from `local` in `function` to the local
-    /// it ultimately refers to, returning that local's function and kind.
     fn binding_origin(&self, mut function: usize, mut local: LocalId) -> (usize, LocalId) {
         while let LocalKind::Capture(outer) = self.res.locals[function][local.0 as usize].kind {
             function = self.closure_parent(function);
@@ -724,14 +702,12 @@ impl<'a> Checker<'a> {
         (function, local)
     }
 
-    /// The kind of the binding `local` (in the current body) refers to.
     fn binding_kind(&self, local: LocalId) -> LocalKind {
         let (function, local) = self.binding_origin(self.current, local);
         self.res.locals[function][local.0 as usize].kind
     }
 
-    /// Records that `local` in the current body, if it is a capture, needs
-    /// exclusive access, along with every capture it is borrowed through.
+    /// Marks the whole capture chain behind `local` exclusive.
     fn mark_exclusive(&mut self, local: LocalId) {
         let (mut function, mut local) = (self.current, local);
         while let LocalKind::Capture(outer) = self.res.locals[function][local.0 as usize].kind {
@@ -741,8 +717,6 @@ impl<'a> Checker<'a> {
         }
     }
 
-    /// A closure literal: checks its body as a function whose captures
-    /// borrow locals of the enclosing body (§16).
     fn closure(&mut self, closure: &ast::Closure, span: Span) -> Option<Value> {
         // Resolution reports a literal it could not give a body.
         let index = self.res.closures.iter().position(|c| c.span == span)?;
@@ -788,8 +762,7 @@ impl<'a> Checker<'a> {
                 })
             })
             .collect();
-        // Calling a captured closure or copying a captured `mut []T` borrows
-        // it exclusively, even without assigning to it (§16.3).
+        // Calling a captured closure or copying a captured `mut []T` needs exclusivity.
         for &(_, local) in &captures {
             if let Some(ty) = self.locals[local.0 as usize]
                 && self.type_contains(ty, &|kind| {
@@ -1678,8 +1651,6 @@ impl<'a> Checker<'a> {
         }
     }
 
-    /// A call through a closure value: ordinary argument rules from its
-    /// function type, and an exclusive use of the callee (§16.2).
     fn value_call(&mut self, callee: hir::Expr, args: &[ast::Expr], span: Span) -> Option<Value> {
         let signature = self
             .types
@@ -1747,13 +1718,11 @@ impl<'a> Checker<'a> {
         }))
     }
 
-    /// How an argument for a parameter of `mode` and type `ty` is accessed.
     fn argument_access(&self, mode: ast::ParamMode, ty: TypeId) -> ArgumentAccess {
         let mutable_place = mode == ast::ParamMode::Mut || self.is_mut_slice(ty);
         ArgumentAccess {
             mutable_place,
-            // A function value is borrowed exclusively, since calling it may
-            // write through its captures (§16.4).
+            // Calling a function value may write through its captures.
             exclusive: mutable_place || self.is_func(ty),
             borrowing: mode != ast::ParamMode::Own,
         }
@@ -1829,8 +1798,6 @@ impl<'a> Checker<'a> {
         self.function_call(id, &name.text, Some(receiver), args, span)
     }
 
-    /// The built-in `m.remove(key)`: a `mut` receiver, one key, and the
-    /// presence-first result pair (§13.3).
     fn map_remove(
         &mut self,
         map: hir::Expr,
@@ -1917,7 +1884,6 @@ impl<'a> Checker<'a> {
         }))
     }
 
-    /// How each argument of a call to `id` is accessed (§11.6).
     fn argument_accesses(&self, id: FunctionId, count: usize) -> Vec<ArgumentAccess> {
         let param_types = self.signatures[id.0 as usize]
             .as_ref()
@@ -1990,8 +1956,7 @@ impl<'a> Checker<'a> {
         ok && self.check_later_argument_mutation(accesses, args)
     }
 
-    /// Rejects `f(x, g(x))` where evaluating a later argument mutates a place
-    /// an earlier argument already borrows for the call (§11.3).
+    /// Rejects `f(x, g(x))` when `g` mutates `x`.
     fn check_later_argument_mutation(
         &mut self,
         accesses: &[ArgumentAccess],
@@ -2030,8 +1995,6 @@ impl<'a> Checker<'a> {
         ok
     }
 
-    /// Places that evaluating `expr` mutably borrows through nested calls or
-    /// exclusive slicing.
     fn mutated_places(&self, expr: &hir::Expr, out: &mut Vec<ArgumentPlace>) {
         match &expr.kind {
             ExprKind::Call { function, args } => {
@@ -2381,8 +2344,6 @@ impl<'a> Checker<'a> {
         }
     }
 
-    /// Checks `index` against a base of type `base_ty`, returning the typed
-    /// index and the element type (§12.6).
     fn checked_index(
         &mut self,
         base_ty: TypeId,
@@ -2423,8 +2384,7 @@ impl<'a> Checker<'a> {
         Some((index_expr, element))
     }
 
-    /// `base[low:high]`: an exclusive view only when `expected` asks for
-    /// `mut []T`, otherwise a shared one (§12.6).
+    /// Exclusive only when the context expects `mut []T`.
     fn slice(
         &mut self,
         base: &ast::Expr,
@@ -2512,8 +2472,6 @@ impl<'a> Checker<'a> {
         Some(bound)
     }
 
-    /// Whether `base` can supply the mutable access an exclusive view needs
-    /// (§11.6, §12.6): a mutable array place, or an existing `mut []T` view.
     fn mutable_slice_source(&mut self, base: &hir::Expr) -> bool {
         if let TypeKind::Slice { mutable, .. } = self.types.kind(base.ty()) {
             if !mutable {
@@ -2536,8 +2494,7 @@ impl<'a> Checker<'a> {
         &self.text[span.start() as usize..span.end() as usize]
     }
 
-    /// `map[key]` as a two-result value; only Copy values can be copied out
-    /// through the shared borrow a lookup takes (§13.3).
+    /// Only Copy values can be copied out through the shared borrow.
     fn map_lookup(
         &mut self,
         map: hir::Expr,
@@ -2936,7 +2893,6 @@ impl<'a> Checker<'a> {
         self.writable_place(place, slice_deref, expr)
     }
 
-    /// `place` (written as `expr`) if assigning through it is allowed.
     fn writable_place(
         &mut self,
         place: hir::Place,
@@ -2961,7 +2917,6 @@ impl<'a> Checker<'a> {
         }
     }
 
-    /// Whether the binding at `place`'s root permits assigning through it.
     fn writable_root(&mut self, place: &hir::Place, expr: &ast::Expr) -> bool {
         let decl = &self.res.locals[self.current][place.root.0 as usize];
         let (name, decl_span) = (decl.name.clone(), decl.span);
@@ -3005,8 +2960,7 @@ impl<'a> Checker<'a> {
         }
     }
 
-    /// Builds an assignment target's place, along with the last slice it
-    /// indexes through, which decides its writability instead of the root.
+    /// The last slice indexed through decides writability instead of the root.
     fn target_place(&mut self, expr: &ast::Expr) -> Option<(hir::Place, Option<SliceDeref>)> {
         let is_place = |base: &ast::Expr| {
             matches!(
@@ -3085,8 +3039,7 @@ impl<'a> Checker<'a> {
         }
     }
 
-    /// For a target `base[key]` whose base is a map place: the map place and
-    /// its parts. `Some(None)` means the base already failed to check.
+    /// `Some(None)` means the base already failed to check.
     #[allow(clippy::type_complexity)]
     fn map_entry_target<'e>(
         &mut self,
@@ -3112,7 +3065,6 @@ impl<'a> Checker<'a> {
         )))
     }
 
-    /// `map[key] = value` (§13.3); the map must be a writable place.
     #[allow(clippy::too_many_arguments)]
     fn map_assign(
         &mut self,
@@ -3408,30 +3360,24 @@ impl<'a> Checker<'a> {
     }
 }
 
-/// The last slice an assignment target indexes through.
 struct SliceDeref {
     mutable: bool,
     base_span: Span,
 }
 
-/// How a call accesses one argument.
 struct ArgumentAccess {
-    /// The argument must be a mutable place (§11.6).
     mutable_place: bool,
-    /// The call borrows the argument exclusively.
     exclusive: bool,
-    /// The call borrows rather than takes the argument.
     borrowing: bool,
 }
 
-/// Why a place must be mutable, which shapes the diagnostic wording.
 #[derive(Clone, Copy, PartialEq)]
 enum MutableUse {
     Argument,
     Slice,
 }
 
-/// The direct subexpressions of `expr`, in evaluation order.
+/// In evaluation order.
 fn subexpressions(expr: &hir::Expr) -> Vec<&hir::Expr> {
     match &expr.kind {
         ExprKind::Const(_) | ExprKind::Local(_) | ExprKind::Closure { .. } => Vec::new(),
@@ -3462,9 +3408,7 @@ fn subexpressions(expr: &hir::Expr) -> Vec<&hir::Expr> {
     }
 }
 
-/// A projection step for argument-aliasing purposes; an index's value
-/// doesn't matter here, only that indexing happened (§12.6: two differently
-/// written indices are not proof of disjointness).
+/// Index values are ignored: two indices never prove disjointness.
 #[derive(PartialEq)]
 enum ArgumentProjection {
     Field(FieldId),
@@ -3473,7 +3417,6 @@ enum ArgumentProjection {
 
 type ArgumentPlace = (LocalId, Vec<ArgumentProjection>);
 
-/// The local and projection path an argument names, if it is a plain place.
 fn argument_place(expr: &hir::Expr) -> Option<ArgumentPlace> {
     match &expr.kind {
         ExprKind::Local(id) => Some((*id, Vec::new())),
@@ -3491,7 +3434,7 @@ fn argument_place(expr: &hir::Expr) -> Option<ArgumentPlace> {
     }
 }
 
-/// Conservative: two indices are never proof of disjointness (§12.6).
+/// Two indices never prove disjointness.
 fn projections_conservatively_equal(a: &hir::Projection, b: &hir::Projection) -> bool {
     match (a, b) {
         (hir::Projection::Field(x), hir::Projection::Field(y)) => x == y,

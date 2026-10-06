@@ -14,9 +14,9 @@ pub struct Expr {
 #[derive(Clone, Debug, PartialEq)]
 pub enum ExprKind {
     Name(String),
-    /// Integer literal; its value is decoded from the span during typing.
+    /// Decoded from the span during typing.
     Int(IntBase),
-    /// Decimal float literal; its value is decoded from the span during typing.
+    /// Decoded from the span during typing.
     Float,
     String(String),
     Rune(char),
@@ -33,7 +33,6 @@ pub enum ExprKind {
         rhs: Box<Expr>,
     },
     Await(Box<Expr>),
-    /// Postfix `?`.
     Try(Box<Expr>),
     Call {
         callee: Box<Expr>,
@@ -47,7 +46,7 @@ pub enum ExprKind {
         base: Box<Expr>,
         index: Box<Expr>,
     },
-    /// `base[low:high]`; either bound may be omitted.
+    /// Either bound may be omitted.
     Slice {
         base: Box<Expr>,
         low: Option<Box<Expr>>,
@@ -61,12 +60,11 @@ pub enum ExprKind {
         ty: Type,
         elements: Vec<Expr>,
     },
-    /// `map[K]V{key: value, ...}`, entries in written order.
+    /// Entries in written order.
     MapLit {
         ty: Type,
         entries: Vec<MapEntry>,
     },
-    /// A closure literal `func(params) results { body }` (§16.1).
     Closure(Box<Closure>),
     /// A literal the lexer already diagnosed.
     Malformed,
@@ -98,7 +96,6 @@ pub enum UnaryOp {
     Plus,
     Neg,
     Not,
-    /// Unary `^`: bitwise complement.
     Complement,
 }
 
@@ -125,7 +122,7 @@ pub enum BinaryOp {
 }
 
 impl BinaryOp {
-    /// Binding power: larger binds tighter.
+    /// Larger binds tighter.
     pub fn precedence(self) -> u8 {
         match self {
             Self::Mul | Self::Div | Self::Rem | Self::Shl | Self::Shr | Self::BitAnd => 5,

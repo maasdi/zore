@@ -1,19 +1,13 @@
-//! Per-local move state: which field paths have been moved out.
-
 use crate::resolve::FieldId;
 use crate::source::Span;
 
-/// The set of field paths moved out of a local and not yet reinitialized.
-///
-/// An empty path (`vec![]`) represents the whole local having been moved; by
-/// construction it never coexists with any other entry (see `join`).
+/// An empty path means the whole local moved and never coexists with other entries.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(super) struct MovedSet {
     entries: Vec<(Vec<FieldId>, Span)>,
 }
 
 impl MovedSet {
-    /// A moved path that is `fields` itself or a container of it.
     pub(super) fn moved_or_ancestor_moved(&self, fields: &[FieldId]) -> Option<Span> {
         self.entries
             .iter()
@@ -23,7 +17,6 @@ impl MovedSet {
             .map(|&(_, span)| span)
     }
 
-    /// A moved path strictly nested inside `fields`.
     pub(super) fn moved_descendant(&self, fields: &[FieldId]) -> Option<Span> {
         self.entries
             .iter()
@@ -31,7 +24,6 @@ impl MovedSet {
             .map(|&(_, span)| span)
     }
 
-    /// A moved path that is a proper container of `fields`, excluding `fields` itself.
     pub(super) fn moved_strict_ancestor(&self, fields: &[FieldId]) -> Option<Span> {
         self.entries
             .iter()
@@ -43,7 +35,6 @@ impl MovedSet {
         self.entries.push((fields, span));
     }
 
-    /// Restores `fields` and everything moved out from beneath it.
     pub(super) fn reinitialize(&mut self, fields: &[FieldId]) {
         self.entries
             .retain(|(path, _)| !(path.len() >= fields.len() && &path[..fields.len()] == fields));
@@ -53,7 +44,7 @@ impl MovedSet {
         self.entries.clear();
     }
 
-    /// Conservative union: a path moved on either side counts as moved after the join.
+    /// A path moved on either side counts as moved.
     pub(super) fn join(&self, other: &Self) -> Self {
         let mut entries: Vec<(Vec<FieldId>, Span)> =
             self.entries.iter().chain(&other.entries).cloned().collect();

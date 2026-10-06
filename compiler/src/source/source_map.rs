@@ -1,5 +1,3 @@
-//! The source manager: owns files and issues their IDs.
-
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};

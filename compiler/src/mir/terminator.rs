@@ -7,24 +7,22 @@ use crate::source::Span;
 #[derive(Debug)]
 pub enum Callee {
     Function(FunctionId),
-    /// The closure stored at the place, which the call uses exclusively.
+    /// Uses the closure at the place exclusively.
     Value(Place),
     Println,
     Drop,
-    /// `[Ref(map), key, value]`: adds a literal entry, panicking without
-    /// consuming the value if the key is already present.
+    /// `[Ref(map), key, value]`; panics without consuming the value on a duplicate key.
     MapInsertNew,
-    /// `[Ref(map), key, value]`: replaces or inserts an entry (§13.3).
+    /// `[Ref(map), key, value]`.
     MapAssign,
-    /// `[Ref(map), key]` to `[found, value]`: copies the value out.
+    /// `[Ref(map), key]` to `[found, value]`; copies the value out.
     MapLookup,
-    /// `[Ref(map), key]` to `[found, value]`: detaches and returns the value.
+    /// `[Ref(map), key]` to `[found, value]`; detaches the value.
     MapRemove,
 }
 
 impl Callee {
-    /// Whether this is a compiler-provided map operation, whose first
-    /// argument is the map borrowed mutably unless it only looks up.
+    /// The map is borrowed mutably unless the operation only looks up.
     pub fn map_access(&self) -> Option<crate::ast::ParamMode> {
         match self {
             Callee::MapLookup => Some(crate::ast::ParamMode::Borrow),
@@ -48,7 +46,7 @@ pub enum Terminator {
     Call {
         callee: Callee,
         args: Vec<Operand>,
-        /// One destination per result; `None` discards it.
+        /// `None` discards the result.
         destinations: Vec<Option<Place>>,
         target: BlockId,
         unwind: Option<BlockId>,
@@ -67,7 +65,7 @@ pub enum Terminator {
 }
 
 impl Terminator {
-    /// The blocks control may continue to on the normal (non-unwind) path.
+    /// Excludes unwind edges.
     pub fn successors(&self) -> Vec<BlockId> {
         match self {
             Terminator::Goto(target) => vec![*target],

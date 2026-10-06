@@ -1,5 +1,3 @@
-//! The resolver pass: collects package declarations, then walks bodies.
-
 use std::collections::HashMap;
 
 use super::ids::{ConstId, FunctionId};
@@ -13,23 +11,22 @@ pub struct Resolution<'a> {
     pub package: String,
     pub types: TypeStore,
     pub structs: Vec<&'a ast::StructDecl>,
-    /// Functions and methods; a method's receiver is its first parameter.
+    /// A method's receiver is its first parameter.
     pub functions: Vec<&'a ast::FuncDecl>,
     pub methods: HashMap<(StructId, String), FunctionId>,
     pub consts: Vec<ConstDecl<'a>>,
-    /// Name and type-name uses, by the span of the name.
+    /// Keyed by the span of the name.
     pub uses: HashMap<Span, Res>,
-    /// Locals of each function and closure, indexed by `FunctionId`.
+    /// Indexed by `FunctionId`.
     pub locals: Vec<Vec<LocalDecl>>,
-    /// Closure literals; closure `i` has `FunctionId(functions.len() + i)`.
+    /// Closure `i` has `FunctionId(functions.len() + i)`.
     pub closures: Vec<ClosureDecl<'a>>,
-    /// Declared local or local constant, by the span of its declaring name.
+    /// Keyed by the span of the declaring name.
     pub declarations: HashMap<Span, Res>,
     pub diagnostics: Vec<Diagnostic>,
 }
 
-/// The named type a field stores by value beneath any array layers; a slice
-/// only borrows its elements and `Array<T>` stores them on the heap.
+/// Slices borrow and `Array<T>` stores on the heap, so neither stores by value.
 fn by_value_named_type(ty: &ast::Type) -> Option<&ast::Name> {
     match ty {
         ast::Type::Named(name) => Some(name),
@@ -41,7 +38,6 @@ fn by_value_named_type(ty: &ast::Type) -> Option<&ast::Name> {
     }
 }
 
-/// The named type a field owns beneath any fixed or dynamic array layers.
 fn owned_named_type(ty: &ast::Type) -> Option<&ast::Name> {
     match ty {
         ast::Type::Named(name) => Some(name),
@@ -85,15 +81,13 @@ pub(super) struct Resolver<'a> {
     pub(super) package_scope: HashMap<String, (Res, Span)>,
     pub(super) scopes: Vec<HashMap<String, (Res, Span)>>,
     pub(super) function: Option<FunctionId>,
-    /// The function bodies being resolved, outermost first.
+    /// Outermost first.
     pub(super) frames: Vec<Frame>,
 }
 
-/// A function or closure body under resolution.
 #[derive(Clone, Copy)]
 pub(super) struct Frame {
     pub(super) function: FunctionId,
-    /// The index of the body's outermost scope in `scopes`.
     pub(super) scope_base: usize,
 }
 
@@ -310,8 +304,7 @@ impl<'a> Resolver<'a> {
         self.report_struct_cycles(&by_value, &mut reported, |name| {
             format!("struct `{name}` contains itself by value and has no finite size")
         });
-        // Destruction code is emitted inline per type, so a type owning
-        // itself through `Array<T>` would need out-of-line drop functions.
+        // Drops are emitted inline per type, so self-ownership needs out-of-line drop functions.
         let owned = self.struct_edges(owned_named_type);
         self.report_struct_cycles(&owned, &mut reported, |name| {
             format!(
@@ -320,7 +313,6 @@ impl<'a> Resolver<'a> {
         });
     }
 
-    /// For each struct, the structs its fields reach through `named`.
     fn struct_edges(&self, named: fn(&ast::Type) -> Option<&ast::Name>) -> Vec<Vec<usize>> {
         self.out
             .structs
@@ -338,7 +330,7 @@ impl<'a> Resolver<'a> {
             .collect()
     }
 
-    /// Reports each struct that closes a cycle in `edges`, once.
+    /// Reports each cycle once.
     fn report_struct_cycles(
         &mut self,
         edges: &[Vec<usize>],
@@ -381,7 +373,6 @@ impl<'a> Resolver<'a> {
         self.body(id, &params, &func.results, &func.body);
     }
 
-    /// Resolves a function or closure body with its parameters and results.
     fn body(
         &mut self,
         id: FunctionId,
@@ -420,8 +411,6 @@ impl<'a> Resolver<'a> {
         self.function = enclosing;
     }
 
-    /// A closure literal gets its own function ID and locals; names it uses
-    /// from enclosing bodies become captures (§16.3).
     fn closure(&mut self, closure: &'a ast::Closure, span: Span) {
         let Some(parent) = self.function else {
             self.error(

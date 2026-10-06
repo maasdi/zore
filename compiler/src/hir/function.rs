@@ -9,11 +9,8 @@ pub struct Function {
     pub span: Span,
     pub params: Vec<LocalId>,
     pub results: Vec<TypeId>,
-    /// For a closure, its capture locals, in the order the creating
-    /// expression lists them; each refers to its referent by reference.
+    /// Capture locals, in the order the closure expression lists them.
     pub captures: Vec<LocalId>,
-    /// Whether this is a closure body, called through a function value
-    /// with its captured environment.
     pub is_closure: bool,
     pub locals: Vec<Local>,
     pub body: Block,

@@ -1,5 +1,3 @@
-//! The lexer pass.
-
 use super::token::Token;
 use super::token_kind::{IntBase, Keyword, Punct, ReservedWord, Separator, TokenKind};
 use crate::diagnostic::{Diagnostic, Severity};

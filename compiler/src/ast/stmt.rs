@@ -10,7 +10,6 @@ pub enum BindingKind {
     Const,
 }
 
-/// A `let`, `var`, or `const` declaration.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Binding {
     pub kind: BindingKind,
@@ -24,7 +23,6 @@ pub struct Binding {
 #[derive(Clone, Debug, PartialEq)]
 pub enum BindingTarget {
     Name(Name),
-    /// `_`, which introduces no name.
     Discard(Span),
 }
 
@@ -67,7 +65,6 @@ pub enum AssignTarget {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum AssignOp {
     Assign,
-    /// A compound assignment such as `+=`.
     Compound(BinaryOp),
 }
 

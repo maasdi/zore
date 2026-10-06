@@ -1,5 +1,3 @@
-//! The Zore bootstrap compiler.
-
 pub mod ast;
 pub mod codegen;
 pub mod diagnostic;

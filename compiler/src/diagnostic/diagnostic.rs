@@ -1,5 +1,3 @@
-//! Structured diagnostics and their builders.
-
 use super::label::Label;
 use crate::source::Span;
 

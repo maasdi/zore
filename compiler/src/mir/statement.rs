@@ -14,9 +14,7 @@ pub enum Statement {
     Drop {
         place: Place,
         replacement: bool,
-        /// The next statement stores a new value into `place`; a panic from
-        /// this drop is acted on only after that store, so the slot always
-        /// holds exactly one live value.
+        /// A panic from this drop is acted on after the following store.
         before_store: bool,
     },
 }

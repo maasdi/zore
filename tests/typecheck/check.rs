@@ -1,6 +1,4 @@
-//! Resolution and type-checking tests. Accepted programs are paired with
-//! rejections; features outside the checker's subset must be reported as
-//! unsupported, never accepted.
+//! Accepted programs are paired with rejections; unsupported features must never be accepted.
 
 use zore::check::{Checked, check_file};
 use zore::hir::{self, Const, ExprKind, StmtKind};
@@ -46,12 +44,10 @@ impl Case {
     }
 }
 
-/// Wrap declarations in a `main` package with a trivial entry point.
 fn program(decls: &str) -> String {
     format!("package main\n\n{decls}\n\nfunc main() {{}}\n")
 }
 
-/// Wrap statements as the body of `main`.
 fn body(stmts: &str) -> String {
     format!("package main\n\nfunc main() {{\n{stmts}\n}}\n")
 }
@@ -1586,12 +1582,10 @@ fn array_mutable_places_and_aliasing() {
 const SLICE_FUNCS: &str = "func inspect(items []int) int { return items[0] }
 func edit(items mut []int) { items[0] = 9 }";
 
-/// Declarations plus `SLICE_FUNCS`, in a `main` package.
 fn slice_program(decls: &str) -> String {
     program(&format!("{SLICE_FUNCS}\n{decls}"))
 }
 
-/// The displayed type of local `local` in function `function`.
 fn local_type(case: &Case, function: &str, local: &str) -> String {
     let ty = case
         .function(function)
@@ -2107,7 +2101,6 @@ fn maps_are_move_values_without_operators() {
     );
 }
 
-/// The initializer of the `let` declaring `name` in `function`'s top-level statements.
 fn let_value<'a>(function: &'a hir::Function, name: &str) -> &'a hir::Expr {
     function
         .body

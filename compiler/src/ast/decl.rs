@@ -13,7 +13,6 @@ pub struct File {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Import {
-    /// Decoded import path.
     pub path: String,
     pub path_span: Span,
     pub span: Span,

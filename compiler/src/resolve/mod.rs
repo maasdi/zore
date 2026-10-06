@@ -1,5 +1,3 @@
-//! Name resolution: assigns stable IDs and records what each name refers to.
-
 mod ids;
 mod resolver;
 mod scope;

@@ -1,5 +1,3 @@
-//! Syntax tree: what the programmer wrote, with unresolved names.
-
 mod decl;
 mod expr;
 mod node;

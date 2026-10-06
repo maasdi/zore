@@ -1,6 +1,4 @@
-//! Region analysis: which borrows each local's views hold, where those views
-//! are live, and the exclusivity conflicts and escapes that follow (§11.3–11.7,
-//! §12.3, §12.5). A loan stays live exactly while some live local holds it.
+//! A loan stays live exactly while some live local holds it.
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 
@@ -19,7 +17,6 @@ use crate::resolve::LocalKind;
 use crate::source::Span;
 use crate::types::{TypeId, TypeKind};
 
-/// For one result of a function, how each parameter can back it.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 struct Origin {
     /// The result views the argument's own storage (a by-reference parameter).
@@ -28,7 +25,7 @@ struct Origin {
     contents: bool,
 }
 
-/// A function's return-borrow contract (§11.7): `results[r][p]`.
+/// Indexed `results[r][p]`.
 #[derive(Clone, Debug, PartialEq)]
 struct Contract {
     results: Vec<Vec<Origin>>,
@@ -78,7 +75,6 @@ struct Analysis<'a> {
     interned: HashMap<LoanKey, LoanId>,
 }
 
-/// Where loans created by the current statement are keyed.
 struct Site {
     block: u32,
     position: usize,
@@ -93,7 +89,6 @@ impl Site {
     }
 }
 
-/// Diagnostics and contract facts gathered on the final pass over a body.
 struct Findings<'l> {
     live: &'l Liveness,
     contract: Contract,
@@ -311,7 +306,7 @@ impl<'a> Analysis<'a> {
         }
     }
 
-    /// The span a scope-end access is reported at: the binding's declaration.
+    /// Reported at the binding's declaration.
     fn scope_end_span(&self, local: Local) -> Span {
         let function = self.package.function(self.body.function);
         function
@@ -351,8 +346,7 @@ impl<'a> Analysis<'a> {
         state: &mut Holdings,
         findings: Option<&mut Findings>,
     ) {
-        // A function value passed as an argument is borrowed exclusively,
-        // since the callee may call it (§16.4).
+        // A function value argument may be called, so it is borrowed exclusively.
         let exclusive_if_func = |mode: ParamMode, ty: TypeId| {
             if matches!(self.package.types.kind(ty), TypeKind::Func(_)) {
                 ParamMode::Mut
@@ -424,7 +418,7 @@ impl<'a> Analysis<'a> {
             return;
         }
         if let Callee::Value(_) = callee {
-            // Results through a function value hold no views (§16.4).
+            // Results through a function value hold no views.
             for destination in destinations.iter().flatten() {
                 self.assign(destination, BTreeSet::new(), state);
             }
@@ -473,8 +467,7 @@ impl<'a> Analysis<'a> {
         }
     }
 
-    /// A stored map value keeps its views' loans on the map; a value taken out
-    /// of the map carries the map's loans with it.
+    /// Stored values' loans join the map's; values taken out carry them.
     fn map_call(
         &mut self,
         args: &[Operand],
@@ -507,8 +500,7 @@ impl<'a> Analysis<'a> {
         }
     }
 
-    /// Stores `loans` as what `target` now holds, then ends every loan that
-    /// borrowed through the descriptor the assignment replaced.
+    /// Also ends loans through the descriptor the assignment replaces.
     fn assign(&mut self, target: &Place, loans: BTreeSet<LoanId>, state: &mut Holdings) {
         let root = target.local.0 as usize;
         if self.carries_views(target.local) {
@@ -524,9 +516,7 @@ impl<'a> Analysis<'a> {
         }
     }
 
-    /// The loans a new borrow of `place` (covering `path`) must carry over
-    /// from its root: storage reached through a view stays borrowed from that
-    /// view's backing, and a value holding views keeps their provenance.
+    /// Storage behind a view stays borrowed from its backing; held views keep their provenance.
     fn inherited_loans(&self, place: &Place, path: &Path, state: &Holdings) -> BTreeSet<LoanId> {
         if path.goes_through_deref() || self.package.contains_view(self.place_ty(place)) {
             state[place.local.0 as usize].clone()
@@ -550,7 +540,7 @@ impl<'a> Analysis<'a> {
         }
         let mut loans = state[place.local.0 as usize].clone();
         if matches!(operand, Operand::Copy(_)) && self.is_mut_slice(ty) {
-            // §12.3: copying a mutable view is an exclusive reborrow.
+            // Copying a mutable view is an exclusive reborrow.
             let loan = Loan {
                 kind: LoanKind::Exclusive,
                 target: LoanTarget::Place(Path::of(self.package, self.body, place).deref()),
@@ -840,8 +830,7 @@ impl<'a> Analysis<'a> {
         diagnostic
     }
 
-    /// Storing a view through a slice element or a by-reference parameter
-    /// would need output-provenance contracts, which do not exist yet.
+    /// Needs output provenance, which does not exist yet.
     fn check_view_store(&self, target: &Place, span: Span, findings: &mut Findings) {
         if !self.package.contains_view(self.place_ty(target)) {
             return;
@@ -865,8 +854,7 @@ impl<'a> Analysis<'a> {
         }
     }
 
-    /// Records which parameters each returned view borrows from, rejecting
-    /// views of storage that does not outlive the call (§11.7).
+    /// Rejects returned views of storage that does not outlive the call.
     fn return_origins(&self, state: &Holdings, findings: &mut Findings) {
         for (result, ret) in self.body.returns.iter().enumerate() {
             for &id in &state[ret.0 as usize] {
@@ -909,11 +897,9 @@ impl<'a> Analysis<'a> {
     }
 }
 
-/// Backward liveness: a local is live where its current value may still be
-/// read, which is exactly where the loans it holds stay in force.
+/// Backward liveness: a loan stays in force while its holder is live.
 struct Liveness {
-    /// `before[block][k]`: live locals before statement `k`; index
-    /// `statements.len()` is before the terminator, one more is after it.
+    /// Index `statements.len()` is before the terminator, one more is after it.
     before: Vec<Vec<LiveSet>>,
 }
 
@@ -1017,8 +1003,7 @@ impl Liveness {
         }
     }
 
-    /// A projected target reads its index operands, and writing through a
-    /// slice element reads the descriptor that locates it.
+    /// Writing through a slice element reads the descriptor that locates it.
     fn use_target(body: &Body, place: &Place, live: &mut LiveSet) {
         Self::use_indices(place, live);
         if !place.projections.is_empty() && !body.locals[place.local.0 as usize].by_reference {

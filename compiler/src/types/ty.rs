@@ -40,7 +40,6 @@ impl IntType {
     }
 }
 
-/// IEEE 754 binary32 or binary64.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct FloatType {
     pub bits: u8,
@@ -69,25 +68,23 @@ pub enum TypeKind {
         element: TypeId,
         size: u32,
     },
-    /// A borrowed view, `[]T` or `mut []T`; it never owns its elements.
+    /// Borrowed; never owns its elements.
     Slice {
         element: TypeId,
         mutable: bool,
     },
-    /// The owned dynamic array `Array<T>`; always Move (§10.5).
+    /// Always Move.
     DynArray {
         element: TypeId,
     },
-    /// The owned map `map[K]V`; always Move (§13.2).
+    /// Always Move.
     Map {
         key: TypeId,
         value: TypeId,
     },
-    /// A function type `func(...) ...`, the type of closure values (§16.2).
     Func(FuncTypeId),
 }
 
-/// The parameter modes and types, and the result types, of a function type.
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct FuncSignature {
     pub params: Vec<(ParamMode, TypeId)>,

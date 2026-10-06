@@ -1,5 +1,3 @@
-//! Statements: bindings, blocks, assignments, and control flow.
-
 use super::parser::{PResult, Parser, Reported, StatementOrExpr};
 use crate::ast::*;
 use crate::diagnostic::{Diagnostic, Severity};

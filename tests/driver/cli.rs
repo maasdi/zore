@@ -1,5 +1,3 @@
-//! Test the user-visible process contract, independent of compiler internals.
-
 use std::ffi::OsStr;
 use std::process::{Command, Output};
 

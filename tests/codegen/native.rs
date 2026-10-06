@@ -1,7 +1,4 @@
-//! Native build-and-run tests (decision record 0001). They require clang with
-//! LLVM 15 or newer (or `ZORE_CC`) and rustc 1.98+ (or `ZORE_RUSTC`).
-//! A missing toolchain fails loudly rather
-//! than skipping, so absent coverage is visible.
+//! Requires clang (LLVM 15+) and rustc 1.98+; a missing toolchain fails rather than skips.
 
 use std::io::Write;
 use std::path::Path;
@@ -10,7 +7,6 @@ use std::process::{Command, Output, Stdio};
 use zore::build::{BuildError, TempDir, build, emit_llvm};
 use zore::source::SourceMap;
 
-/// Build `source` and run it, returning the process output.
 fn run(source: &str) -> Output {
     let dir = TempDir::new().unwrap();
     let executable = dir.path().join("program");
@@ -38,7 +34,6 @@ fn main_body(stmts: &str) -> String {
     format!("package main\n\nfunc main() {{\n{stmts}\n}}\n")
 }
 
-/// Expect a successful run printing exactly `expected`.
 fn prints(source: &str, expected: &str) {
     let output = run(source);
     assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
@@ -170,7 +165,6 @@ func main() {
     prints(source, "true\ntrue\ntrue\n");
 }
 
-/// Expect a panic in the initial task.
 fn panics(source: &str, message: &str, stdout_before: &str) {
     let output = run(source);
     assert_eq!(
@@ -356,8 +350,7 @@ fn array_index_out_of_range_panics() {
         "index out of range",
         "",
     );
-    // A huge unsigned index must not wrap around to a valid one when
-    // widened to int64 and compared (§12.6).
+    // A huge unsigned index must not wrap to a valid one when widened to int64.
     panics(
         &main_body(
             "let xs = [int; 3]{1, 2, 3}\nvar i uint64 = 18446744073709551615\nprintln(xs[i])",
@@ -748,7 +741,6 @@ func main() {{
     );
 }
 
-/// Every example directory, sorted, as `(name, path)`.
 fn examples() -> Vec<(String, std::path::PathBuf)> {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../examples");
     let mut examples: Vec<_> = std::fs::read_dir(&root)

@@ -1,5 +1,3 @@
-//! Tokens produced by the lexer.
-
 use super::token_kind::TokenKind;
 use crate::source::Span;
 
