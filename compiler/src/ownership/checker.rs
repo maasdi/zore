@@ -213,9 +213,14 @@ fn check_rvalue(
                 check_operand(package, body, field, span, state, diagnostics);
             }
         }
-        Rvalue::Length(place) => {
-            let base = Operand::Copy(place.clone());
+        Rvalue::Length(place) | Rvalue::Ref(place) => {
+            let base = Operand::Ref(place.clone());
             check_operand(package, body, &base, span, state, diagnostics);
+        }
+        Rvalue::MapKeyAt(place, position) | Rvalue::MapValueRef(place, position) => {
+            let base = Operand::Ref(place.clone());
+            check_operand(package, body, &base, span, state, diagnostics);
+            check_operand(package, body, position, span, state, diagnostics);
         }
         Rvalue::Slice {
             place, low, high, ..
@@ -330,13 +335,23 @@ fn check_operand(
     }
     if body.locals[index].by_reference {
         let name = describe_place(package, body, place);
+        let is_item = package
+            .function(body.function)
+            .locals
+            .get(index)
+            .is_some_and(|local| local.kind == LocalKind::Item);
+        let note = if is_item {
+            "a loop item borrows the current element; it does not own it"
+        } else {
+            "a borrowed parameter does not own its argument"
+        };
         diagnostics.push(
             Diagnostic::new(
                 Severity::Error,
                 format!("cannot move borrowed value `{name}`"),
                 span,
             )
-            .note("a borrowed parameter does not own its argument"),
+            .note(note),
         );
         return;
     }

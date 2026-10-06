@@ -1894,14 +1894,14 @@ fn unsupported_dynamic_array_forms_are_rejected() {
     );
     rejects(&body("let xs = Array"), "`Array` needs an element type");
     let case = rejects(
-        &program("func f(xs Array<int>) { _ = xs.len() }"),
-        "type `Array<int64>` has no method `len`",
+        &program("func f(xs Array<int>) { _ = xs.size() }"),
+        "type `Array<int64>` has no method `size`",
     );
     assert!(
         case.checked.diagnostics[0]
             .notes()
             .iter()
-            .any(|note| note.contains("not specified yet"))
+            .any(|note| note.contains("`len`, `push`, and `pop`"))
     );
     accepts(&program("func f(xs Array<int>) { let ys = clone(xs) }"));
     rejects(
@@ -2032,14 +2032,14 @@ fn map_removal_needs_a_mutable_map_and_supports_propagation() {
         "error value in `err` may be unused before scope exit",
     );
     let case = rejects(
-        &program("func use(m map[string]int) { m.len() }"),
-        "type `map[string]int64` has no method `len`",
+        &program("func use(m map[string]int) { _ = m.size() }"),
+        "type `map[string]int64` has no method `size`",
     );
     assert!(
         case.checked.diagnostics[0]
             .notes()
             .iter()
-            .any(|note| note.contains("borrowed entry APIs are not specified yet"))
+            .any(|note| note.contains("`len` and `remove`"))
     );
 }
 
@@ -2612,4 +2612,101 @@ fn function_types_may_return_views() {
         let tail = func(items []int) []int { return items[1:] }
         println(tail(data[:])[0])",
     ));
+}
+
+#[test]
+fn collections_have_len_push_and_pop() {
+    accepts(&program(
+        "func sizes(a [int; 3], s []int, m map[string]int, xs Array<int>) int {
+            return a.len() + s.len() + m.len() + xs.len()
+        }
+        func grow(xs mut Array<string>) { xs.push(\"a\")\nlet found, last = xs.pop()\n_ = found\n_ = last }",
+    ));
+    rejects(
+        &body("let xs = Array<int>{}\nxs.push(1)"),
+        "cannot pass immutable binding `xs` as a `mut` argument",
+    );
+    rejects(
+        &program("func f(xs Array<int>) { let found, last = xs.pop()\n_ = found\n_ = last }"),
+        "shared parameter",
+    );
+    rejects(
+        &body("var xs = Array<int>{}\nxs.push(\"a\")"),
+        "mismatched types",
+    );
+    rejects(
+        &body("var xs = Array<int>{}\nxs.push()"),
+        "`push` takes 1 argument but 0 were given",
+    );
+    rejects(
+        &body("var xs = Array<int>{}\n_ = xs.len(1)"),
+        "`len` takes 0 arguments but 1 was given",
+    );
+    rejects(
+        &body("var xs = Array<int>{}\nlet n = xs.pop()"),
+        "bind them first",
+    );
+    rejects(
+        &body("var a = [int; 2]{1, 2}\na.push(3)"),
+        "type `[int64; 2]` has no method `push`",
+    );
+    rejects(
+        &body("let s = \"ab\"\n_ = s.len()"),
+        "type `string` has no method `len`",
+    );
+    rejects(
+        &program(
+            "func use(m mut map[string]error) { var xs = Array<error>{}\nlet found, err = xs.pop()\n_ = found }",
+        ),
+        "error value in `err` may be unused before scope exit",
+    );
+}
+
+#[test]
+fn collection_loops_bind_an_index_or_key_and_an_item() {
+    accepts(&program(
+        "func total(a [int; 3], s []int, xs Array<int>, m map[string]int) int {
+            var sum = 0
+            for x in a { sum += x }
+            for i, x in s { sum += i + x }
+            for _, x in xs { sum += x }
+            for k, v in m { if k == \"a\" { sum += v } }
+            for x in xs[1:] { sum += x }
+            for _ in Array<int>{1} { sum += 1 }
+            return sum
+        }",
+    ));
+    rejects(
+        &body("var m = map[int]int{}\nfor v in m { _ = v }"),
+        "names both the key and the value",
+    );
+    rejects(
+        &body("for x in 3 { _ = x }"),
+        "a constant cannot be looped over",
+    );
+    rejects(
+        &body("let s = \"ab\"\nfor c in s { _ = c }"),
+        "type `string` cannot be looped over",
+    );
+    rejects(
+        &body("var xs = Array<int>{}\nfor x in xs { x = 1 }"),
+        "cannot assign to loop item `x`",
+    );
+    rejects(
+        &body("var xs = Array<int>{}\nfor x in xs { }\n_ = x"),
+        "cannot find `x` in this scope",
+    );
+    rejects(
+        &body("var xs = Array<int>{}\nfor x, x in xs { }"),
+        "duplicate declaration `x`",
+    );
+    rejects(
+        &body("var d = [int; 1]{1}\nvar xs = Array<mut []int>{d[:]}\nfor v in xs { _ = v }"),
+        "whose elements hold a `mut []T` view",
+    );
+    rejects(
+        &body("var xs = Array<int>{}\nfor x in xs { break }\nbreak"),
+        "`break` outside of a loop",
+    );
+    accepts(&body("var xs = Array<error>{}\nfor e in xs { }"));
 }

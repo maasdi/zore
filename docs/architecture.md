@@ -276,6 +276,15 @@ assignment replaces it. `EndScope` checks each local's storage death against
 only the observing locals of the same scope that drop after it, newest first.
 A whole-local move clears the moved local's holdings.
 
+A collection loop lowers to a counting loop. MIR binds two by-reference
+temporaries with `Rvalue::Ref`: one to the collection, read by the loop header
+each iteration so its shared loan lasts the whole loop, and one per iteration
+to the current element (`Rvalue::MapValueRef` for a map value; keys are copied
+with `Rvalue::MapKeyAt`). These binding loans are marked so that a value copied
+out of an item keeps only the views the element holds. Drop insertion never
+treats binding a reference as replacing a value. `Array<T>` is `{ ptr, len,
+cap }`; `push` grows the storage through the runtime, doubling from 4.
+
 The pass order in §25 is conceptual. The frontend lowers checked HIR to MIR,
 runs ownership and error-use analysis, then returns diagnostics or a package.
 Native builds lower the accepted package again and insert drops before code

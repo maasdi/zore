@@ -35,6 +35,8 @@ pub enum LocalKind {
     Let,
     Var,
     Capture(LocalId),
+    /// A collection loop's shared borrow of the current element.
+    Item,
 }
 
 pub struct ClosureDecl<'a> {

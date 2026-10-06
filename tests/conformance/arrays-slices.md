@@ -129,5 +129,27 @@ compiler exists; these scenarios do not add a source-level instrumentation API.
 | Bound/index awaits while retaining a base borrow | Accept only if borrow remains valid through suspension under §17.6 |
 | Returned slice crosses task/channel boundary | Existing independent-provenance restrictions still apply |
 
-Map access is covered separately in `maps.md` (§13.3). String access, iteration,
-and remaining collection library operations await their specification decisions.
+Map access is covered separately in `maps.md` (§13.3). String access and
+capacity APIs await their specification decisions.
+
+## Length, `push`, and `pop` (§12.7)
+
+Executable counterparts: `tests/typecheck/check.rs`, `tests/ownership/ownership.rs`,
+and `tests/codegen/native.rs`; `examples/collections` runs natively.
+
+| Scenario | Expected result |
+| --- | --- |
+| `a.len()` on a fixed array, slice, `Array<T>`, or map | The element or entry count as `int` |
+| `len` with arguments, or on a string | Reject |
+| `xs.push(v)` on a `var` or `mut` `Array<T>` | Appends; storage grows as needed |
+| `push` on a `let` binding or shared parameter | Reject |
+| `push`/`pop` on a fixed array, slice, or map | Reject; no such method |
+| Pushed Move value used afterwards | Reject use of moved value |
+| `xs.pop()` on a nonempty array | `(true, last)`; ownership moves to the caller |
+| `xs.pop()` on an empty array | `(false, zero value)` |
+| `pop` bound to one name | Reject; it has two results |
+| Popped `error` left unused | Reject, as for any error value |
+| `push`/`pop` while a view of the array is live | Reject; growth may move the elements |
+| Pushed view whose storage ends before the array | Reject |
+| Popped view used after its storage changes | Reject; it keeps the array's provenance |
+| Array of Move values pushed, popped, and dropped | Each value destroyed exactly once |

@@ -1448,3 +1448,150 @@ fn the_viewed_storage_must_be_declared_before_the_observing_value() {
         "cannot assign to `data[_]` while it is borrowed",
     );
 }
+
+#[test]
+fn a_collection_loop_borrows_its_collection_for_the_whole_loop() {
+    accepts(&body(
+        "var xs = Array<int>{1, 2}
+        for x in xs { println(x + xs[0] + xs.len()) }
+        xs.push(3)
+        var m = map[string]int{\"a\": 1}
+        for k, v in m { let found, w = m[k]\nprintln(v + w)\n_ = found }
+        m[\"b\"] = 2",
+    ));
+    for (stmts, message) in [
+        (
+            "var xs = Array<int>{1}\nfor x in xs { xs.push(x) }",
+            "cannot borrow `xs` as mutable because it is already borrowed",
+        ),
+        (
+            "var xs = Array<int>{1}\nfor _ in xs { xs[0] = 2 }",
+            "cannot assign to `xs[_]` while it is borrowed",
+        ),
+        (
+            "var xs = Array<int>{1}\nfor i, _ in xs { let found, last = xs.pop()\n_ = found\n_ = last\nprintln(i) }",
+            "cannot borrow `xs` as mutable",
+        ),
+        (
+            "var xs = Array<int>{1}\nfor _ in xs { xs = Array<int>{} }",
+            "cannot assign to `xs` while it is borrowed",
+        ),
+        (
+            "var m = map[int]int{1: 2}\nfor k, v in m { m[k] = v }",
+            "cannot borrow `m` as mutable",
+        ),
+        (
+            "var m = map[int]int{1: 2}\nfor k, _ in m { let found, v = m.remove(k)\n_ = found\n_ = v }",
+            "cannot borrow `m` as mutable",
+        ),
+        (
+            "var d = [int; 2]{1, 2}\nvar s mut []int = d[:]\nfor x in d { s[0] = x }",
+            "cannot borrow `d`",
+        ),
+    ] {
+        let case = rejects(&body(stmts), message);
+        let _ = case;
+    }
+    let case = rejects(
+        &body("var xs = Array<int>{1}\nfor x in xs { xs.push(x) }"),
+        "already borrowed",
+    );
+    assert!(
+        case.checked.diagnostics[0]
+            .notes()
+            .iter()
+            .any(|note| note.contains("the loop over `xs` keeps it borrowed until the loop ends"))
+    );
+}
+
+#[test]
+fn a_loop_item_is_a_shared_borrow_of_the_element() {
+    let res = "type Res struct { id int }
+        func (r mut Res) drop() {}
+        func take(r own Res) {}
+        func peek(r Res) {}
+        func edit(r mut Res) {}";
+    accepts(&program(&format!(
+        "{res}\nfunc g(xs Array<Res>) {{ for r in xs {{ peek(r)\nprintln(r.id) }} }}"
+    )));
+    rejects(
+        &program(&format!(
+            "{res}\nfunc g(xs Array<Res>) {{ for r in xs {{ take(r) }} }}"
+        )),
+        "cannot move borrowed value `r`",
+    );
+    rejects(
+        &program(&format!(
+            "{res}\nfunc g(xs mut Array<Res>) {{ for r in xs {{ edit(r) }} }}"
+        )),
+        "cannot pass loop item `r` as a `mut` argument",
+    );
+    rejects(
+        &program(&format!(
+            "{res}\nfunc g(m map[int]Res) {{ for _, r in m {{ let kept = r\n_ = kept }} }}"
+        )),
+        "cannot move borrowed value `r`",
+    );
+}
+
+#[test]
+fn views_copied_from_loop_items_keep_the_element_provenance() {
+    accepts(&body(
+        "var x = [int; 2]{1, 2}\nvar keep []int = x[:0]
+        { var views = Array<[]int>{x[:]}\nfor v in views { keep = v } }
+        println(keep[1])",
+    ));
+    rejects(
+        &body(
+            "var x = [int; 2]{1, 2}\nvar keep []int = x[:0]
+            { var views = Array<[]int>{x[:]}\nfor v in views { keep = v } }
+            x[0] = 5\nprintln(keep[1])",
+        ),
+        "cannot assign to `x[_]` while it is borrowed",
+    );
+    accepts(&program(
+        "func first(xs Array<[]int>) []int { for v in xs { return v }\nreturn xs[0] }",
+    ));
+    rejects(
+        &body(
+            "var keep []int = [int; 0]{}[:]
+            { var x = [int; 2]{1, 2}\nvar views = Array<[]int>{x[:]}\nfor v in views { keep = v } }
+            println(keep.len())",
+        ),
+        "does not live long enough",
+    );
+}
+
+#[test]
+fn push_and_pop_move_values_and_carry_views() {
+    let res = "type Res struct { id int }\nfunc (r mut Res) drop() {}";
+    rejects(
+        &program(&format!(
+            "{res}\nfunc g() {{ var xs = Array<Res>{{}}\nlet r = Res{{id: 1}}\nxs.push(r)\nprintln(r.id) }}"
+        )),
+        "use of moved value `r.id`",
+    );
+    rejects(
+        &body(
+            "var xs = Array<[]int>{}
+            { var d = [int; 1]{1}\nxs.push(d[:]) }
+            println(xs.len())",
+        ),
+        "`d` does not live long enough",
+    );
+    rejects(
+        &body(
+            "var d = [int; 1]{1}\nvar xs = Array<[]int>{}\nxs.push(d[:])
+            let found, v = xs.pop()\n_ = found\nd[0] = 2\nprintln(v[0])",
+        ),
+        "cannot assign to `d[_]` while it is borrowed",
+    );
+    rejects(
+        &body("var xs = Array<int>{1}\nvar s []int = xs[:]\nxs.push(2)\nprintln(s[0])"),
+        "cannot borrow `xs` as mutable",
+    );
+    rejects(
+        &program("func keep(xs mut Array<[]int>) { var d = [int; 1]{1}\nxs.push(d[:]) }"),
+        "cannot store a view of local `d` into `xs`",
+    );
+}

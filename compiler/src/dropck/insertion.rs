@@ -1,6 +1,7 @@
 use crate::hir;
 use crate::mir::{
-    BasicBlock, BlockId, Body, Callee, Local, Place, Program, Statement, Terminator, place_type,
+    BasicBlock, BlockId, Body, Callee, Local, Place, Program, Rvalue, Statement, Terminator,
+    place_type,
 };
 
 pub fn insert(package: &hir::Package, program: &mut Program) {
@@ -28,7 +29,11 @@ fn insert_body(package: &hir::Package, body: &mut Body) {
                     rvalue,
                     span,
                 } => {
-                    if !package.is_copy(place_type(package, &body.locals, &place)) {
+                    let binds_reference =
+                        matches!(rvalue, Rvalue::Ref(_) | Rvalue::MapValueRef(..));
+                    if !binds_reference
+                        && !package.is_copy(place_type(package, &body.locals, &place))
+                    {
                         statements.push(Statement::Drop {
                             replacement: !place.projections.is_empty(),
                             place: place.clone(),

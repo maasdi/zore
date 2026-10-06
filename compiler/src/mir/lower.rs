@@ -4,7 +4,7 @@ use crate::mir::{
     AggregateKind, BasicBlock, BlockId, Body, Callee, Local, LocalDecl, Operand, Place, Program,
     Projection, Rvalue, Statement, Terminator, place_type, projection_type,
 };
-use crate::resolve::{FunctionId, LocalKind};
+use crate::resolve::{FunctionId, LocalId, LocalKind};
 use crate::source::Span;
 use crate::types::{TypeId, TypeKind, TypeStore};
 
@@ -54,7 +54,7 @@ fn lower_function(package: &hir::Package, id: FunctionId, function: &hir::Functi
                 name: Some(local.name.clone()),
                 by_reference: match local.kind {
                     LocalKind::Param(mode) => passes_by_reference(package, mode, local.ty),
-                    LocalKind::Capture(_) => true,
+                    LocalKind::Capture(_) | LocalKind::Item => true,
                     LocalKind::Let | LocalKind::Var => false,
                 },
             })
@@ -111,6 +111,15 @@ impl Builder {
             temps.push(local);
         }
         local
+    }
+
+    fn reference(&mut self, ty: TypeId) -> Local {
+        self.locals.push(LocalDecl {
+            ty,
+            name: None,
+            by_reference: true,
+        });
+        Local(self.locals.len() as u32 - 1)
     }
 
     fn new_block(&mut self) -> BlockId {
@@ -214,6 +223,7 @@ impl Builder {
                 | StmtKind::MapAssign { .. }
                 | StmtKind::CompoundAssign { .. }
                 | StmtKind::Expr(_)
+                | StmtKind::ForEach { .. }
         );
         if has_temp_scope {
             self.temp_scopes.push(Vec::new());
@@ -290,7 +300,9 @@ impl Builder {
                 | ExprKind::CallValue { .. }
                 | ExprKind::Clone(_)
                 | ExprKind::Println(_)
-                | ExprKind::Drop(_) => {
+                | ExprKind::Drop(_)
+                | ExprKind::ArrayPush { .. }
+                | ExprKind::ArrayPop(_) => {
                     let discard = vec![None; expr.types.len()];
                     self.call(package, expr, discard);
                 }
@@ -443,12 +455,123 @@ impl Builder {
                 let locals = self.scopes.pop().expect("loop scope");
                 self.end_scope(locals);
             }
+            StmtKind::ForEach {
+                key,
+                item,
+                collection,
+                body,
+            } => self.for_each(package, *key, *item, collection, body, stmt.span),
             StmtKind::Block(block) => self.block(package, block),
         }
         if has_temp_scope {
             let temps = self.temp_scopes.pop().expect("statement temps");
             self.end_scope(temps);
         }
+    }
+
+    /// A counting loop over a borrow of the collection that lives for the whole loop.
+    fn for_each(
+        &mut self,
+        package: &hir::Package,
+        key: Option<LocalId>,
+        item: Option<LocalId>,
+        collection: &hir::Expr,
+        body: &hir::Block,
+        span: Span,
+    ) {
+        self.scopes.push(Vec::new());
+        let collection_ty = collection.ty();
+        let place = match self.argument_place_opt(package, collection) {
+            Some(place) => place,
+            None => {
+                let operand = self.operand(package, collection);
+                let held = self.temp(collection_ty);
+                self.push(Place::local(held), Rvalue::Use(operand), span);
+                Place::local(held)
+            }
+        };
+        let anchor = self.reference(collection_ty);
+        self.push(Place::local(anchor), Rvalue::Ref(place), collection.span);
+        let anchor = Place::local(anchor);
+        let counter = self.temp(TypeStore::INT);
+        self.push(
+            Place::local(counter),
+            Rvalue::Use(Operand::Const(Const::Int(0), TypeStore::INT)),
+            span,
+        );
+        let position = Operand::Copy(Place::local(counter));
+        let header = self.new_block();
+        let body_id = self.new_block();
+        let next = self.new_block();
+        let exit = self.new_block();
+        self.goto_new(header);
+        // Read every iteration, so the collection stays borrowed for the whole loop.
+        let length = self.assign_temp(
+            package,
+            TypeStore::INT,
+            Rvalue::Length(anchor.clone()),
+            span,
+        );
+        let more = self.assign_temp(
+            package,
+            TypeStore::BOOL,
+            Rvalue::Binary(BinaryOp::Lt, position.clone(), length),
+            span,
+        );
+        self.terminate(Terminator::Branch {
+            condition: more,
+            then_block: body_id,
+            else_block: exit,
+            span,
+        });
+        self.current = body_id;
+        let is_map = matches!(package.types.kind(collection_ty), TypeKind::Map { .. });
+        if let Some(key) = key {
+            let key = Local(key.0);
+            self.scopes.last_mut().expect("loop scope").push(key);
+            let rvalue = if is_map {
+                Rvalue::MapKeyAt(anchor.clone(), position.clone())
+            } else {
+                Rvalue::Use(position.clone())
+            };
+            self.push(Place::local(key), rvalue, span);
+        }
+        if let Some(item) = item {
+            let item = Local(item.0);
+            self.scopes.last_mut().expect("loop scope").push(item);
+            let rvalue = if is_map {
+                Rvalue::MapValueRef(anchor.clone(), position.clone())
+            } else {
+                let mut element = anchor.clone();
+                element
+                    .projections
+                    .push(Projection::Index(position.clone()));
+                Rvalue::Ref(element)
+            };
+            self.push(Place::local(item), rvalue, span);
+        }
+        self.loops.push(LoopTargets {
+            continue_to: next,
+            break_to: exit,
+            scope_depth: self.scopes.len(),
+        });
+        self.block(package, body);
+        self.loops.pop();
+        self.terminate(Terminator::Goto(next));
+        self.current = next;
+        self.push(
+            Place::local(counter),
+            Rvalue::Binary(
+                BinaryOp::Add,
+                position,
+                Operand::Const(Const::Int(1), TypeStore::INT),
+            ),
+            span,
+        );
+        self.terminate(Terminator::Goto(header));
+        self.current = exit;
+        let locals = self.scopes.pop().expect("loop scope");
+        self.end_scope(locals);
     }
 
     fn store_results(
@@ -508,6 +631,7 @@ impl Builder {
                 | ExprKind::CallValue { .. }
                 | ExprKind::MapLookup { .. }
                 | ExprKind::MapRemove { .. }
+                | ExprKind::ArrayPop(_)
         ) {
             self.call(
                 package,
@@ -599,6 +723,11 @@ impl Builder {
                 };
                 (callee, &map_args[..])
             }
+            ExprKind::ArrayPush { array, value } => {
+                map_args = vec![(**array).clone(), (**value).clone()];
+                (Callee::ArrayPush, &map_args[..])
+            }
+            ExprKind::ArrayPop(array) => (Callee::ArrayPop, std::slice::from_ref(&**array)),
             _ => unreachable!("only calls produce multiple or no results"),
         };
         let mut operands = Vec::new();
@@ -634,6 +763,7 @@ impl Builder {
                 | Callee::MapAssign
                 | Callee::MapLookup
                 | Callee::MapRemove => (index == 0, index == 2),
+                Callee::ArrayPush | Callee::ArrayPop => (index == 0, index == 1),
             };
             operands.push(if by_reference {
                 match self.argument_place_opt(package, arg) {
@@ -801,8 +931,16 @@ impl Builder {
                 }
                 value_operand(package, Place::local(map), expr.ty())
             }
-            ExprKind::MapLookup { .. } | ExprKind::MapRemove { .. } => {
-                unreachable!("map lookups and removals have two results")
+            ExprKind::MapLookup { .. } | ExprKind::MapRemove { .. } | ExprKind::ArrayPop(_) => {
+                unreachable!("lookups and removals have two results")
+            }
+            ExprKind::ArrayPush { .. } => unreachable!("push has no value"),
+            ExprKind::Len(collection) => {
+                let place = match self.argument_place_opt(package, collection) {
+                    Some(place) => place,
+                    None => self.base_place(package, collection),
+                };
+                self.assign_temp(package, expr.ty(), Rvalue::Length(place), span)
             }
             ExprKind::ArrayLit { element, elements } => {
                 let operands = elements

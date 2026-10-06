@@ -372,6 +372,84 @@ impl FunctionBuilder<'_, '_> {
         data
     }
 
+    fn length(&mut self, place: &Place) -> String {
+        match self.module.package.types.kind(self.place_ty(place)) {
+            TypeKind::Array { size, .. } => size.to_string(),
+            TypeKind::Map { .. } => {
+                let address = self.address(place);
+                let map = self.fresh();
+                self.line(format!("{map} = load ptr, ptr {address}"));
+                let length = self.fresh();
+                self.line(format!("{length} = call i64 @zore_map_len(ptr {map})"));
+                length
+            }
+            _ => self.slice_length(place),
+        }
+    }
+
+    /// A by-reference local designates the referent and borrows its drop flags.
+    fn bind_reference(&mut self, local: Local, rvalue: &Rvalue) {
+        let (address, ty) = match rvalue {
+            Rvalue::Ref(place) => (self.address(place), self.place_ty(place)),
+            Rvalue::MapValueRef(map, position) => {
+                let TypeKind::Map { value, .. } =
+                    self.module.package.types.kind(self.place_ty(map))
+                else {
+                    unreachable!("a map entry reference takes a map")
+                };
+                let slot = self.address(map);
+                let loaded = self.fresh();
+                self.line(format!("{loaded} = load ptr, ptr {slot}"));
+                let position = self.value(position);
+                let entry = self.fresh();
+                self.line(format!(
+                    "{entry} = call ptr @zore_map_value_at(ptr {loaded}, i64 {position})"
+                ));
+                (entry, value)
+            }
+            _ => unreachable!("only references are bound"),
+        };
+        self.line(format!("store ptr {address}, ptr %l{}", local.0));
+        if !self.module.package.is_copy(ty) {
+            let flags = match rvalue {
+                Rvalue::Ref(place)
+                    if !place
+                        .projections
+                        .iter()
+                        .any(|p| matches!(p, mir::Projection::Index(_))) =>
+                {
+                    self.flag_address(place)
+                }
+                _ => self.scratch_flags(ty),
+            };
+            self.line(format!("store ptr {flags}, ptr %lf{}", local.0));
+        }
+    }
+
+    fn map_key_at(&mut self, map: &Place, position: &Operand) -> String {
+        let TypeKind::Map { key, .. } = self.module.package.types.kind(self.place_ty(map)) else {
+            unreachable!("a map key read takes a map")
+        };
+        let slot = self.address(map);
+        let loaded = self.fresh();
+        self.line(format!("{loaded} = load ptr, ptr {slot}"));
+        let position = self.value(position);
+        let raw = self.fresh();
+        self.line(format!(
+            "{raw} = call ptr @zore_map_key_at(ptr {loaded}, i64 {position})"
+        ));
+        let value = self.fresh();
+        if key == crate::types::TypeStore::BOOL {
+            let byte = self.fresh();
+            self.line(format!("{byte} = load i8, ptr {raw}"));
+            self.line(format!("{value} = trunc i8 {byte} to i1"));
+        } else {
+            let ty = self.ty(key);
+            self.line(format!("{value} = load {ty}, ptr {raw}"));
+        }
+        value
+    }
+
     fn slice_length(&mut self, place: &Place) -> String {
         let address = self.address(place);
         let descriptor = self.fresh();
@@ -644,6 +722,10 @@ impl FunctionBuilder<'_, '_> {
     }
 
     pub(super) fn assign_rvalue(&mut self, place: &Place, rvalue: &Rvalue, span: Span) {
+        if let Rvalue::Ref(_) | Rvalue::MapValueRef(..) = rvalue {
+            self.bind_reference(place.local, rvalue);
+            return;
+        }
         let result_ty = self.place_ty(place);
         let value = match rvalue {
             Rvalue::Use(operand) => self.value(operand),
@@ -653,7 +735,9 @@ impl FunctionBuilder<'_, '_> {
             Rvalue::Convert(operand, to) => self.convert(operand, *to, span),
             Rvalue::Error(operand) => self.error_value(operand),
             Rvalue::BoundsCheck(index, length) => self.bounds_check(index, length, span),
-            Rvalue::Length(place) => self.slice_length(place),
+            Rvalue::Length(place) => self.length(place),
+            Rvalue::MapKeyAt(map, position) => self.map_key_at(map, position),
+            Rvalue::Ref(_) | Rvalue::MapValueRef(..) => unreachable!("bound above"),
             Rvalue::Slice {
                 place, low, high, ..
             } => self.slice(place, low.as_ref(), high.as_ref(), span),
@@ -681,7 +765,7 @@ impl FunctionBuilder<'_, '_> {
 
     fn dyn_array_literal(&mut self, element: TypeId, operands: &[Operand]) -> String {
         if operands.is_empty() {
-            return "{ ptr null, i64 0 }".to_string();
+            return "{ ptr null, i64 0, i64 0 }".to_string();
         }
         let element_ty = self.ty(element);
         let bytes = self.byte_size(&element_ty, &operands.len().to_string());
@@ -695,15 +779,26 @@ impl FunctionBuilder<'_, '_> {
             ));
             self.line(format!("store {element_ty} {value}, ptr {slot}"));
         }
-        let with_data = self.fresh();
-        self.line(format!(
-            "{with_data} = insertvalue {{ ptr, i64 }} undef, ptr {data}, 0"
-        ));
-        let array = self.fresh();
-        self.line(format!(
-            "{array} = insertvalue {{ ptr, i64 }} {with_data}, i64 {}, 1",
-            operands.len()
-        ));
+        self.dyn_array_value(&data, &operands.len().to_string())
+    }
+
+    /// Storage holding exactly `length` elements.
+    pub(super) fn dyn_array_value(&mut self, data: &str, length: &str) -> String {
+        let mut array = "undef".to_string();
+        for (index, field) in [
+            format!("ptr {data}"),
+            format!("i64 {length}"),
+            format!("i64 {length}"),
+        ]
+        .iter()
+        .enumerate()
+        {
+            let next = self.fresh();
+            self.line(format!(
+                "{next} = insertvalue {{ ptr, i64, i64 }} {array}, {field}, {index}"
+            ));
+            array = next;
+        }
         array
     }
 
@@ -717,18 +812,19 @@ impl FunctionBuilder<'_, '_> {
 
     fn drop_dyn_array(&mut self, address: &str, element: TypeId) {
         let descriptor = self.fresh();
-        self.line(format!("{descriptor} = load {{ ptr, i64 }}, ptr {address}"));
-        let data = self.fresh();
         self.line(format!(
-            "{data} = extractvalue {{ ptr, i64 }} {descriptor}, 0"
+            "{descriptor} = load {{ ptr, i64, i64 }}, ptr {address}"
         ));
-        let length = self.fresh();
-        self.line(format!(
-            "{length} = extractvalue {{ ptr, i64 }} {descriptor}, 1"
-        ));
+        let [data, length, capacity] = [0, 1, 2].map(|index| {
+            let field = self.fresh();
+            self.line(format!(
+                "{field} = extractvalue {{ ptr, i64, i64 }} {descriptor}, {index}"
+            ));
+            field
+        });
         self.drop_elements(&data, element, &length);
         let element_ty = self.ty(element);
-        let bytes = self.byte_size(&element_ty, &length);
+        let bytes = self.byte_size(&element_ty, &capacity);
         self.line(format!("call void @zore_free(ptr {data}, i64 {bytes})"));
     }
 
@@ -1355,6 +1451,7 @@ impl FunctionBuilder<'_, '_> {
                     | Callee::MapAssign
                     | Callee::MapLookup
                     | Callee::MapRemove => self.map_call(callee, args, *span),
+                    Callee::ArrayPush | Callee::ArrayPop => self.array_call(callee, args),
                 };
                 let pending = self.fresh();
                 self.line(format!("{pending} = call zeroext i1 @zore_panic_pending()"));

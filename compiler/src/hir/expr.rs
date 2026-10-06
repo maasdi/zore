@@ -106,6 +106,14 @@ pub enum ExprKind {
         map: Box<Expr>,
         key: Box<Expr>,
     },
+    /// Elements of an array or slice, or entries of a map.
+    Len(Box<Expr>),
+    ArrayPush {
+        array: Box<Expr>,
+        value: Box<Expr>,
+    },
+    /// Presence, then the detached last element or its zero.
+    ArrayPop(Box<Expr>),
     Unary {
         op: UnaryOp,
         operand: Box<Expr>,

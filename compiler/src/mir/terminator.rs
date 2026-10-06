@@ -21,6 +21,10 @@ pub enum Callee {
     MapLookup,
     /// `[Ref(map), key]` to `[found, value]`; detaches the value.
     MapRemove,
+    /// `[Ref(array), value]`.
+    ArrayPush,
+    /// `[Ref(array)]` to `[found, value]`; detaches the last element.
+    ArrayPop,
 }
 
 impl Callee {
@@ -35,7 +39,9 @@ impl Callee {
             | Callee::Value(_)
             | Callee::Println
             | Callee::Drop
-            | Callee::Clone(_) => None,
+            | Callee::Clone(_)
+            | Callee::ArrayPush
+            | Callee::ArrayPop => None,
         }
     }
 }

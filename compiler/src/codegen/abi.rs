@@ -18,6 +18,8 @@ declare ptr @zore_map_insert(ptr, i32, ptr, i64)
 declare zeroext i1 @zore_map_detach(ptr, i32, ptr, ptr)
 declare i64 @zore_map_len(ptr)
 declare ptr @zore_map_value_at(ptr, i64)
+declare ptr @zore_map_key_at(ptr, i64)
+declare noalias ptr @zore_realloc(ptr, i64, i64)
 declare void @zore_map_free(ptr)
 declare ptr @zore_map_clone_shape(ptr)
 declare void @zore_raise_panic(ptr, i64)
@@ -204,10 +206,130 @@ impl FunctionBuilder<'_, '_> {
             | Callee::Value(_)
             | Callee::Println
             | Callee::Drop
-            | Callee::Clone(_) => {
+            | Callee::Clone(_)
+            | Callee::ArrayPush
+            | Callee::ArrayPop => {
                 unreachable!("not a map operation")
             }
         }
+    }
+
+    /// `{ data, length, capacity }`; growth doubles the capacity.
+    pub(super) fn array_call(
+        &mut self,
+        callee: &Callee,
+        args: &[Operand],
+    ) -> Option<(String, String)> {
+        let Operand::Ref(array) = &args[0] else {
+            unreachable!("array operations borrow their array")
+        };
+        let TypeKind::DynArray { element } = self.module.package.types.kind(self.place_ty(array))
+        else {
+            unreachable!("array operations take an `Array<T>`")
+        };
+        let element_ty = self.ty(element);
+        let address = self.address(array);
+        let descriptor = self.fresh();
+        self.line(format!(
+            "{descriptor} = load {{ ptr, i64, i64 }}, ptr {address}"
+        ));
+        let [data, length, capacity] = [0, 1, 2].map(|index| {
+            let field = self.fresh();
+            self.line(format!(
+                "{field} = extractvalue {{ ptr, i64, i64 }} {descriptor}, {index}"
+            ));
+            field
+        });
+        if let Callee::ArrayPop = callee {
+            let found = self.fresh();
+            self.line(format!("{found} = icmp ugt i64 {length}, 0"));
+            let buffer = self.fresh();
+            self.hoist_alloca(&buffer, &element_ty);
+            self.line(format!("store {element_ty} zeroinitializer, ptr {buffer}"));
+            let (take, done) = (self.label(), self.label());
+            self.line(format!("br i1 {found}, label %{take}, label %{done}"));
+            self.out.push_str(&format!(
+                "{take}:
+"
+            ));
+            let last = self.fresh();
+            self.line(format!("{last} = sub i64 {length}, 1"));
+            let slot = self.fresh();
+            self.line(format!(
+                "{slot} = getelementptr inbounds {element_ty}, ptr {data}, i64 {last}"
+            ));
+            let value = self.fresh();
+            self.line(format!("{value} = load {element_ty}, ptr {slot}"));
+            self.line(format!("store {element_ty} {value}, ptr {buffer}"));
+            let length_slot = self.fresh();
+            self.line(format!(
+                "{length_slot} = getelementptr inbounds {{ ptr, i64, i64 }}, ptr {address}, i32 0, i32 1"
+            ));
+            self.line(format!("store i64 {last}, ptr {length_slot}"));
+            self.line(format!("br label %{done}"));
+            self.out.push_str(&format!(
+                "{done}:
+"
+            ));
+            return Some(self.presence_pair(&found, &buffer, &element_ty));
+        }
+        let full = self.fresh();
+        self.line(format!("{full} = icmp eq i64 {length}, {capacity}"));
+        let (grow, store) = (self.label(), self.label());
+        let current = self.label();
+        self.line(format!("br label %{current}"));
+        self.out.push_str(&format!(
+            "{current}:
+"
+        ));
+        self.line(format!("br i1 {full}, label %{grow}, label %{store}"));
+        self.out.push_str(&format!(
+            "{grow}:
+"
+        ));
+        let doubled = self.fresh();
+        self.line(format!("{doubled} = shl i64 {capacity}, 1"));
+        let is_empty = self.fresh();
+        self.line(format!("{is_empty} = icmp eq i64 {capacity}, 0"));
+        let grown_capacity = self.fresh();
+        self.line(format!(
+            "{grown_capacity} = select i1 {is_empty}, i64 4, i64 {doubled}"
+        ));
+        let old_bytes = self.byte_size(&element_ty, &capacity);
+        let new_bytes = self.byte_size(&element_ty, &grown_capacity);
+        let grown = self.fresh();
+        self.line(format!(
+            "{grown} = call ptr @zore_realloc(ptr {data}, i64 {old_bytes}, i64 {new_bytes})"
+        ));
+        self.line(format!("store ptr {grown}, ptr {address}"));
+        let capacity_slot = self.fresh();
+        self.line(format!(
+            "{capacity_slot} = getelementptr inbounds {{ ptr, i64, i64 }}, ptr {address}, i32 0, i32 2"
+        ));
+        self.line(format!("store i64 {grown_capacity}, ptr {capacity_slot}"));
+        self.line(format!("br label %{store}"));
+        self.out.push_str(&format!(
+            "{store}:
+"
+        ));
+        let storage = self.fresh();
+        self.line(format!(
+            "{storage} = phi ptr [ {data}, %{current} ], [ {grown}, %{grow} ]"
+        ));
+        let slot = self.fresh();
+        self.line(format!(
+            "{slot} = getelementptr inbounds {element_ty}, ptr {storage}, i64 {length}"
+        ));
+        let value = self.value(&args[1]);
+        self.line(format!("store {element_ty} {value}, ptr {slot}"));
+        let longer = self.fresh();
+        self.line(format!("{longer} = add i64 {length}, 1"));
+        let length_slot = self.fresh();
+        self.line(format!(
+            "{length_slot} = getelementptr inbounds {{ ptr, i64, i64 }}, ptr {address}, i32 0, i32 1"
+        ));
+        self.line(format!("store i64 {longer}, ptr {length_slot}"));
+        None
     }
 
     fn map_key(&mut self, operand: &Operand, ty: TypeId) -> (String, String) {

@@ -326,6 +326,25 @@ impl Parser<'_> {
             let span = self.current_span();
             return Err(self.error("counting loop clauses cannot be empty", span));
         }
+        if self.at_each_header() {
+            let first = self.binding_target(BindingKind::Let)?;
+            let second = if self.eat(Punct::Comma) {
+                Some(self.binding_target(BindingKind::Let)?)
+            } else {
+                None
+            };
+            self.bump();
+            let collection = self.header_expr()?;
+            let body = self.body_block("`for` header", "expected `{` after `for` header")?;
+            return Ok(For {
+                header: ForHeader::Each {
+                    first,
+                    second,
+                    collection,
+                },
+                body,
+            });
+        }
         let first = self.for_first_clause()?;
         let header = if *self.peek() == TokenKind::Semicolon(Separator::Explicit) {
             self.bump();
@@ -356,6 +375,16 @@ impl Parser<'_> {
         };
         let body = self.body_block("`for` header", "expected `{` after `for` header")?;
         Ok(For { header, body })
+    }
+
+    fn at_each_header(&self) -> bool {
+        let is_name = |kind: &TokenKind| matches!(kind, TokenKind::Ident | TokenKind::Underscore);
+        let is_in = |kind: &TokenKind| *kind == TokenKind::Keyword(Keyword::In);
+        is_name(self.peek())
+            && (is_in(self.peek_at(1))
+                || *self.peek_at(1) == TokenKind::Punct(Punct::Comma)
+                    && is_name(self.peek_at(2))
+                    && is_in(self.peek_at(3)))
     }
 
     pub(super) fn for_first_clause(&mut self) -> PResult<StatementOrExpr> {

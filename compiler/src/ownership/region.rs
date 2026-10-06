@@ -149,6 +149,7 @@ impl<'a> Analysis<'a> {
                         name: String::new(),
                         from_slicing: false,
                         captured: false,
+                        binding: false,
                     },
                 );
                 entry[param.0 as usize].insert(id);
@@ -181,12 +182,17 @@ impl<'a> Analysis<'a> {
                 }
             }
         }
+        let inputs = self.inputs();
         let kept_at_return: Vec<bool> = body
             .locals
             .iter()
             .zip(&self.observing)
-            .map(|(local, &observing)| {
-                observing || local.by_reference && self.package.contains_view(local.ty)
+            .enumerate()
+            .map(|(index, (local, &observing))| {
+                observing
+                    || local.by_reference
+                        && inputs.contains(&Local(index as u32))
+                        && self.package.contains_view(local.ty)
             })
             .collect();
         let live = Liveness::compute(body, &self.observing, &kept_at_return);
@@ -229,7 +235,12 @@ impl<'a> Analysis<'a> {
     }
 
     fn carries_views(&self, local: Local) -> bool {
-        self.package.contains_view(self.local_ty(local))
+        self.package.contains_view(self.local_ty(local)) || self.binds_reference(local)
+    }
+
+    /// A loop's borrow of its collection or of the current element.
+    fn binds_reference(&self, local: Local) -> bool {
+        self.body.locals[local.0 as usize].by_reference && !self.inputs().contains(&local)
     }
 
     /// Holds a `mut []T` whose elements can hold views.
@@ -484,6 +495,7 @@ impl<'a> Analysis<'a> {
                     name: self.describe(place),
                     from_slicing: false,
                     captured: false,
+                    binding: false,
                 };
                 loans.insert(self.intern(site.next_key(), loan));
             }
@@ -652,6 +664,11 @@ impl<'a> Analysis<'a> {
                 modes[0] = callee.map_access();
                 modes
             }
+            Callee::ArrayPush | Callee::ArrayPop => {
+                let mut modes = vec![None; args.len()];
+                modes[0] = Some(ParamMode::Mut);
+                modes
+            }
         };
         if let Some(findings) = findings {
             let mut accesses = Vec::new();
@@ -699,6 +716,9 @@ impl<'a> Analysis<'a> {
             if let (Some(ParamMode::Mut), [Operand::Ref(map), _, _]) = (callee.map_access(), args) {
                 self.check_view_store(map, state, site.span, findings);
             }
+            if let (Callee::ArrayPush, [Operand::Ref(array), _]) = (callee, args) {
+                self.check_view_store(array, state, site.span, findings);
+            }
             let live = findings.live.before(BlockId(site.block), site.position);
             for access in &accesses {
                 self.check_access(access, live, state, findings);
@@ -711,6 +731,29 @@ impl<'a> Analysis<'a> {
         };
         if callee.map_access().is_some() {
             self.map_call(args, destinations, site, state);
+            clear(state);
+            return;
+        }
+        if let (Callee::ArrayPush, [Operand::Ref(array), value]) = (callee, args) {
+            let loans = self.operand_loans(value, site, state);
+            self.store_views(array, &loans, state);
+            clear(state);
+            return;
+        }
+        if let (Callee::ArrayPop, [Operand::Ref(array)]) = (callee, args) {
+            let held = state[array.local.0 as usize].clone();
+            for (index, destination) in destinations.iter().enumerate() {
+                if let Some(destination) = destination {
+                    let carries =
+                        index == 1 && self.package.contains_view(self.place_ty(destination));
+                    let loans = if carries {
+                        held.clone()
+                    } else {
+                        BTreeSet::new()
+                    };
+                    self.assign(destination, loans, state);
+                }
+            }
             clear(state);
             return;
         }
@@ -932,6 +975,9 @@ impl<'a> Analysis<'a> {
             return BTreeSet::new();
         }
         let mut loans = state[place.local.0 as usize].clone();
+        if self.binds_reference(place.local) {
+            loans.retain(|&id| !self.loans[id].binding);
+        }
         if matches!(operand, Operand::Copy(_)) {
             // Copying a mutable view, alone or inside a composite, is an exclusive reborrow.
             for elems in self.mut_view_paths(ty) {
@@ -944,6 +990,7 @@ impl<'a> Analysis<'a> {
                     name: self.describe(place),
                     from_slicing: false,
                     captured: false,
+                    binding: false,
                 };
                 loans.insert(self.intern(site.next_key(), loan));
             }
@@ -1014,9 +1061,28 @@ impl<'a> Analysis<'a> {
                     name: self.describe(place),
                     from_slicing: true,
                     captured: false,
+                    binding: false,
                 };
                 let mut loans = BTreeSet::from([self.intern(site.next_key(), loan)]);
                 loans.extend(inherited);
+                loans
+            }
+            Rvalue::Ref(place) | Rvalue::MapValueRef(place, _) => {
+                let mut path = Path::of(self.package, self.body, place);
+                if matches!(rvalue, Rvalue::MapValueRef(..)) {
+                    path.elems.push(PathElem::Index);
+                }
+                let loan = Loan {
+                    kind: LoanKind::Shared,
+                    target: LoanTarget::Place(path),
+                    span: site.span,
+                    name: self.describe(place),
+                    from_slicing: false,
+                    captured: false,
+                    binding: true,
+                };
+                let mut loans = BTreeSet::from([self.intern(site.next_key(), loan)]);
+                loans.extend(state[place.local.0 as usize].iter().copied());
                 loans
             }
             Rvalue::Closure { captures, .. } => {
@@ -1035,6 +1101,7 @@ impl<'a> Analysis<'a> {
                         name: self.describe(place),
                         from_slicing: false,
                         captured: true,
+                        binding: false,
                     };
                     loans.insert(self.intern(site.next_key(), loan));
                 }
@@ -1046,7 +1113,8 @@ impl<'a> Analysis<'a> {
             | Rvalue::Convert(..)
             | Rvalue::Error(_)
             | Rvalue::BoundsCheck(..)
-            | Rvalue::Length(_) => BTreeSet::new(),
+            | Rvalue::Length(_)
+            | Rvalue::MapKeyAt(..) => BTreeSet::new(),
         }
     }
 
@@ -1107,6 +1175,28 @@ impl<'a> Analysis<'a> {
                     span,
                     false,
                 ));
+            }
+            Rvalue::Ref(place) => {
+                self.index_accesses(place, span, out);
+                out.push(self.access(
+                    place,
+                    AccessKind::Read,
+                    Depth::Deep,
+                    Action::Borrow,
+                    span,
+                    false,
+                ));
+            }
+            Rvalue::MapKeyAt(place, position) | Rvalue::MapValueRef(place, position) => {
+                out.push(self.access(
+                    place,
+                    AccessKind::Read,
+                    Depth::Deep,
+                    Action::Borrow,
+                    span,
+                    false,
+                ));
+                self.operand_accesses(position, None, span, out);
             }
             Rvalue::Slice {
                 place,
@@ -1237,6 +1327,12 @@ impl<'a> Analysis<'a> {
             }
             Some(closure) if holder_is_closure => {
                 format!("the closure `{closure}` is used later")
+            }
+            _ if self.binds_reference(holder) => {
+                format!(
+                    "the loop over `{}` keeps it borrowed until the loop ends",
+                    loan.name
+                )
             }
             Some(view) => format!("the view `{view}` is used later"),
             None => "a later use keeps this borrow live".to_string(),
@@ -1579,7 +1675,11 @@ impl Liveness {
                     Self::use_operand(operand, live);
                 }
             }
-            Rvalue::Length(place) => Self::use_place(place, live),
+            Rvalue::Length(place) | Rvalue::Ref(place) => Self::use_place(place, live),
+            Rvalue::MapKeyAt(place, position) | Rvalue::MapValueRef(place, position) => {
+                Self::use_place(place, live);
+                Self::use_operand(position, live);
+            }
             Rvalue::Slice {
                 place, low, high, ..
             } => {

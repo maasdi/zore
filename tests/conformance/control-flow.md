@@ -30,7 +30,7 @@ ownership, CFG, and runtime cases, not executable tests or passing coverage.
 | Counting-loop break | Exit loop; do not run update |
 | Nested loop break/continue | Target nearest loop only |
 | Break/continue outside loop or targeting an enclosing function's loop | Reject |
-| Labelled break/continue, range/foreach, goto | Reject unsupported forms |
+| Labelled break/continue, `range`, goto | Reject unsupported forms |
 | Counting header with missing clause or declaration as update | Reject unsupported header |
 | Read counting initializer binding after loop | Reject out-of-scope name |
 | Read body-local binding in counting update | Reject out-of-scope name |
@@ -56,3 +56,30 @@ runtime cases. Infinite-loop completeness cases should be checked statically,
 not executed without a bound. Do not assume a non-returning panic contract or
 unspecified error typing ahead of their separate decisions. Result forwarding
 cases are covered in `functions-structs.md` under §7.8.
+
+## Collection loops (§5.10)
+
+Executable counterparts: `tests/parser/parser.rs`, `tests/typecheck/check.rs`,
+`tests/ownership/ownership.rs`, and `tests/codegen/native.rs`;
+`examples/collections` runs natively.
+
+| Scenario | Expected result |
+| --- | --- |
+| `for item in c` over a fixed array, slice, or `Array<T>` | Visits elements in index order |
+| `for i, item in c` | `i` is the `int` index |
+| `for key, value in m` | Visits each entry once, in a stable unspecified order |
+| `for value in m` | Reject; a map loop names both parts |
+| `_` for either name | Valid; that part is not bound |
+| Loop over a string, number, or constant | Reject |
+| Same name for both parts | Reject duplicate declaration |
+| Loop names used after the loop | Reject out-of-scope name |
+| Assign to the item | Reject; the item is a shared borrow |
+| Move the item or pass it to `mut`/`own` | Reject |
+| Copy a Copy item, or pass it to a shared parameter | Valid |
+| Collection whose elements hold `mut []T` | Reject; use a counting loop |
+| Assign, push, pop, remove, or mutably borrow the collection in the body | Reject, even when the item is unused |
+| Read the collection in the body | Valid |
+| View copied from an item | Keeps the element's provenance, not the loop's borrow |
+| Collection is a temporary (call result, literal, slice expression) | Held for the loop and destroyed when it ends |
+| `break`, `return`, or a panic in the body | The held collection is destroyed once |
+| `continue` | Proceeds to the next element |

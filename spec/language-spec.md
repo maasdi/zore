@@ -782,7 +782,7 @@ The MVP keyword list is:
 | Structure | `package import func type struct` |
 | Bindings | `let var const` |
 | Ownership | `mut own` |
-| Control flow | `if else for break continue return` |
+| Control flow | `if else for in break continue return` |
 | Concurrency | `async await go` |
 | Built-in type syntax | `map channel` |
 | Literal values | `true false nil` |
@@ -1319,7 +1319,7 @@ clauses, and lower branches to explicit control flow with source spans.
 
 ## 5.10 Loop statements and loop exits — LOCKED
 
-The MVP supports these three loop forms:
+The MVP supports these four loop forms:
 
 ```ore
 for {
@@ -1331,6 +1331,10 @@ for ready() {
 }
 
 for var i = 0; i < limit; i += 1 {
+    work()
+}
+
+for index, item in items {
     work()
 }
 ```
@@ -1360,8 +1364,45 @@ counting-loop update. Neither statement takes an operand or label. Using either
 outside a loop is a compile-time error. They cannot target a loop outside the
 current function or closure.
 
-The MVP has no `range`/foreach loops, labelled jumps, or `goto`. This syntax does
-not import additional Go loop forms or permit `:=`, `++`, or `--`.
+### Collection loops
+
+```ore
+for name in names { println(name) }
+for i, name in names { println(i) }
+for key, value in scores { println(key) }
+for _, value in scores { total += value }
+```
+
+`for item in c` and `for index, item in c` visit the elements of a fixed array,
+slice (shared or `mut`), or `Array<T>` in increasing index order from 0;
+`index` is an `int`. `for key, value in m` visits each entry of a map once;
+both names are required for a map. Map visiting order is unspecified, but two
+loops over the same unchanged map visit entries in the same order. `in` is a
+keyword. Either name may be `_`, and there is no `:=`, `range`, or
+declaration keyword in the header.
+
+The collection expression is evaluated once, before the first iteration. If it
+is a place, the loop shared-borrows that place until the loop ends: the body
+may read it but may not assign, move, push to, pop from, remove from, or
+mutably borrow it, directly or through another name. Otherwise its value is
+held by the loop and destroyed when the loop ends, on every exit path. The
+number of iterations is therefore fixed when the loop starts.
+
+`item` and `value` are shared borrows of the current element or entry value,
+not copies. They cannot be assigned, moved, or passed to `mut` or `own`
+parameters; they can be read, passed to shared parameters, and copied when
+their type is Copy. A collection whose elements or values hold a `mut []T` view
+cannot be looped over this way, since a shared borrow gives no mutable access
+through views inside it (§12.3); use a counting loop over indexes instead.
+`index` and `key` are copies. Every name is a fresh binding for each
+iteration, scoped to the loop, as for a counting loop's initializer.
+
+`continue` proceeds to the next element; `break` ends the loop. Both obey the
+cleanup rules below; a loop-held collection value is destroyed after `break`.
+
+The MVP has no `range` loops over integers, channels, or strings, labelled
+jumps, or `goto`. This syntax does not import additional Go loop forms or
+permit `:=`, `++`, or `--`.
 
 Before a control transfer, perform required cleanup for scopes exited by that
 transfer. A `continue` cleans up iteration-local resources as required but does
@@ -1371,7 +1412,9 @@ Loop-carried ownership state must be valid on every iteration. Explicit errors,
 
 Compiler impact: lower initialization, condition, body, update, and exit to
 distinct control-flow regions; resolve exits to the nearest loop in the current
-function; analyze loop backedges and required drops. Pending cases for §5.8–5.10
+function; analyze loop backedges and required drops. Lower a collection loop
+to a counting loop over a shared borrow of the collection that stays live for
+the whole loop, rebinding the item borrow on each iteration. Pending cases for §5.8–5.10
 are in `tests/conformance/control-flow.md`.
 
 ---
@@ -2831,10 +2874,58 @@ partial-initialization state for cleanup. Do not treat runtime-index writable
 places as permission for partial moves or proven disjointness.
 
 Pending conformance cases: `tests/conformance/arrays-slices.md`. Map operations
-are specified separately in §13.3. String indexing/slicing/length, iteration,
-array append/remove/capacity APIs, and full `go` grammar
-remain separate Q02/Q05 decisions. Array/slice rules
-do not supply semantics for those forms.
+are specified separately in §13.3. Length, growth, and removal of the last
+element are specified in §12.7 and iteration in §5.10. String
+indexing/slicing/length, capacity APIs, and full `go` grammar remain separate
+Q02/Q05 decisions. Array/slice rules do not supply semantics for those forms.
+
+---
+
+## 12.7 Collection length, `push`, and `pop` — LOCKED
+
+```ore
+var names = Array<string>{"Ada"}
+names.push("Lin")
+println(names.len())          // 2
+let found, last = names.pop() // true, "Lin"
+let empty = Array<string>{}
+let none, zero = empty.pop()  // rejected: `empty` is a `let` binding
+```
+
+`c.len()` returns the number of elements of a fixed array, slice (shared or
+`mut`), or `Array<T>`, or the number of entries of a map, as an `int`. It takes
+no arguments and shared-borrows its receiver only while it runs. A fixed
+array's length is its declared size; the receiver is still evaluated once.
+
+`a.push(value)` appends one element to an `Array<T>`. `a.pop()` removes the
+last element and returns `(bool, T)`: presence first, then the removed value,
+like map removal (§13.3). An empty array yields false and T's zero value
+(§41.4). Both require `a` to be a mutable place (a `var` binding, a `mut`
+parameter, or a field or element of one), as for assignment. Neither has a
+method form on fixed arrays, slices, or maps.
+
+Evaluation order: the array place first, then the pushed value, then the
+change. The pushed value is copied if Copy and transferred if Move; `pop`
+transfers the removed element to the caller. A Move result of `pop` follows
+the ordinary rules for multiple results (§7.2), including use of an error
+result. Growth may move the elements to new storage, so `push` and `pop`
+mutably borrow the whole array: no view of its elements may be live across the
+call (§12.5). Growth reserves extra room so that repeated pushes take amortized
+constant time; capacity is not observable. Allocation failure aborts the
+process (Q17g).
+
+Ownership, error, and async implications: no new ownership category. `push`
+is a mutable use of the array and a use (copy or move) of the value; `pop` is a
+mutable use of the array that produces an owned value. Views held by the
+pushed value join the array's provenance, as for element assignment; views
+held by the popped value keep the array's provenance. Neither suspends.
+
+Compiler impact: resolve the three names as compiler-provided methods on
+collection types only (user code cannot declare methods on them); check
+mutable receivers; lower `push`/`pop` as calls that exclusively borrow the
+array, and `len` as a read of the descriptor or the map's entry count. Pending
+conformance cases: `tests/conformance/arrays-slices.md` and
+`tests/conformance/maps.md`.
 
 ---
 
@@ -3020,8 +3111,9 @@ copies, track external view provenance, and lower mutable operations without
 retaining raw bucket addresses across arbitrary RHS evaluation. Maintain entry
 ownership states for duplicate failure, replacement panic, removal, and drop.
 
-Pending conformance cases: `tests/conformance/maps.md`. Iteration,
-length/capacity APIs, and borrowed in-place entry access remain Q02/Q05 work.
+Pending conformance cases: `tests/conformance/maps.md`. Map length is
+specified in §12.7 and iteration in §5.10; capacity APIs and borrowed in-place
+entry access remain Q02/Q05 work.
 
 ---
 
@@ -5070,8 +5162,8 @@ forwarding in §7.8. Numeric and comparison type rules are locked in §6.5–6.6
 
 ## 41.2 Loop grammar — LOCKED
 
-Infinite, conditional, and counting loops and unlabelled `break`/`continue` are
-specified in §5.10. Do not infer additional forms from another language.
+Infinite, conditional, counting, and collection loops and unlabelled
+`break`/`continue` are specified in §5.10. Do not infer additional forms from another language.
 
 ## 41.3 Conditional grammar — LOCKED
 

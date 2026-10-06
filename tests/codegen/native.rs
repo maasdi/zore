@@ -2091,3 +2091,136 @@ func main() {
         "3\n2\n8\n7\n",
     );
 }
+
+#[test]
+fn collections_grow_shrink_and_report_their_length() {
+    prints(
+        "package main
+
+type Res struct { id int }
+
+func (r mut Res) drop() { println(r.id) }
+
+func main() {
+    var names = Array<string>{}
+    for var i = 0; i < 20; i += 1 {
+        names.push(\"x\")
+    }
+    names.push(\"last\")
+    println(names.len())
+    let found, last = names.pop()
+    println(found)
+    println(last)
+    println(names.len())
+    var empty = Array<int>{}
+    let none, zero = empty.pop()
+    println(none)
+    println(zero)
+    let fixed = [int; 3]{1, 2, 3}
+    println(fixed.len() + fixed[1:].len())
+    var scores = map[string]int{\"a\": 1, \"b\": 2}
+    println(scores.len())
+    var held = Array<Res>{Res{id: 1}}
+    held.push(Res{id: 2})
+    held.push(Res{id: 3})
+    let ok, popped = held.pop()
+    println(ok)
+    println(popped.id + 10)
+}
+",
+        "21\ntrue\nlast\n20\nfalse\n0\n5\n2\ntrue\n13\n3\n2\n1\n",
+    );
+}
+
+#[test]
+fn collection_loops_visit_every_element_and_clean_up() {
+    prints(
+        "package main
+
+type Res struct { id int }
+
+func (r mut Res) drop() { println(r.id) }
+
+func make() Array<Res> {
+    var out = Array<Res>{}
+    for var i = 1; i <= 3; i += 1 {
+        out.push(Res{id: i})
+    }
+    return out
+}
+
+func find(xs Array<Res>, id int) int {
+    for i, r in xs {
+        if r.id == id {
+            return i
+        }
+    }
+    return -1
+}
+
+func main() {
+    for r in make() {
+        if r.id == 2 {
+            break
+        }
+        println(r.id + 10)
+    }
+    var xs = make()
+    println(find(xs, 3))
+    var sum = 0
+    for i, r in xs {
+        if i == 0 {
+            continue
+        }
+        sum += r.id
+    }
+    println(sum)
+    for x in [int; 3]{4, 5, 6}[1:] {
+        println(x)
+    }
+    var m = map[string]int{\"a\": 1, \"b\": 2, \"c\": 3}
+    var total = 0
+    for key, value in m {
+        if key != \"b\" {
+            total += value
+        }
+    }
+    println(total)
+    var empty = map[bool]int{}
+    for _, _ in empty {
+        println(99)
+    }
+    var flags = map[bool]int{true: 1}
+    for flag, _ in flags {
+        println(flag)
+    }
+}
+",
+        "11\n3\n2\n1\n2\n5\n5\n6\n4\ntrue\n3\n2\n1\n",
+    );
+}
+
+#[test]
+fn a_panic_inside_a_loop_destroys_the_held_collection() {
+    panics(
+        "package main
+
+type Res struct { id int }
+
+func (r mut Res) drop() { println(r.id) }
+
+func make() Array<Res> {
+    return Array<Res>{Res{id: 1}, Res{id: 2}}
+}
+
+func main() {
+    var zero = 0
+    for r in make() {
+        println(r.id / zero)
+    }
+}
+",
+        "division by zero",
+        "2\n1\n",
+    );
+}

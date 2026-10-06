@@ -517,6 +517,28 @@ impl<'a> Resolver<'a> {
                         self.expr(condition);
                         self.stmt(update);
                     }
+                    ForHeader::Each {
+                        first,
+                        second,
+                        collection,
+                    } => {
+                        self.expr(collection);
+                        let (key, item) = match second {
+                            Some(second) => (Some(first), second),
+                            None => (None, first),
+                        };
+                        if let (Some(BindingTarget::Name(key)), BindingTarget::Name(item)) =
+                            (key, item)
+                            && key.text == item.text
+                        {
+                            self.duplicate(item, key.span, "declaration");
+                        } else if let Some(BindingTarget::Name(key)) = key {
+                            self.new_local(key, LocalKind::Let);
+                        }
+                        if let BindingTarget::Name(item) = item {
+                            self.new_local(item, LocalKind::Item);
+                        }
+                    }
                 }
                 self.block(&for_stmt.body);
                 self.scopes.pop();
