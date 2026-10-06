@@ -65,6 +65,16 @@ impl Package {
         })
     }
 
+    /// Whether destroying a value of `ty` runs a custom `drop` that can read a borrow.
+    pub fn drop_observes_view(&self, ty: TypeId) -> bool {
+        self.contains(ty, &|kind| match kind {
+            TypeKind::Struct(id) => {
+                self.strukt(id).drop.is_some() && self.contains_view(self.types.struct_type(id))
+            }
+            _ => false,
+        })
+    }
+
     pub fn contains_array(&self, ty: TypeId) -> bool {
         self.contains(ty, &|kind| matches!(kind, TypeKind::Array { .. }))
     }

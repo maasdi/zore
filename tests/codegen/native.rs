@@ -1907,3 +1907,152 @@ fn a_panicking_clone_in_a_loop_cleans_up_every_iteration() {
         "12\n11\n2\n1\n12\n11\n2\n1\n3\n",
     );
 }
+
+#[test]
+fn mutable_views_inside_structs_and_arrays_write_through() {
+    prints(
+        "package main
+
+type Window struct {
+    items mut []int
+    label int
+}
+
+func fill(w mut Window, value int) {
+    w.items[0] = value
+}
+
+func first(w own Window) int {
+    return w.items[0]
+}
+
+func narrow(data mut []int) Window {
+    return Window{items: data[1:], label: 2}
+}
+
+func main() {
+    var data = [int; 3]{1, 2, 3}
+    var w = Window{items: data[:], label: 1}
+    w.items[1] = 20
+    fill(w, 10)
+    println(first(w))
+    let n = narrow(data[:])
+    n.items[0] = 7
+    println(data[0] + data[1] + data[2])
+
+    var a = [int; 2]{1, 2}
+    var b = [int; 2]{3, 4}
+    var rows = [mut []int; 2]{a[:], b[:]}
+    rows[0][1] = 20
+    rows[1][0] = 30
+    println(a[0] + a[1] + b[0])
+}
+",
+        "10\n20\n51\n",
+    );
+}
+
+#[test]
+fn a_drop_reads_the_views_it_holds_on_every_exit() {
+    prints(
+        "package main
+
+type Watch struct {
+    items []int
+    id int
+}
+
+func (w mut Watch) drop() {
+    println(w.items[0])
+}
+
+func keep(w own Watch) {
+    println(w.id)
+}
+
+func main() {
+    var data = [int; 2]{1, 2}
+    let w = Watch{items: data[:], id: 7}
+    println(w.id)
+    var a = [int; 1]{10}
+    var b = [int; 1]{20}
+    var replaced = Watch{items: a[:], id: 1}
+    replaced = Watch{items: b[:], id: 2}
+    a[0] = 11
+    let moved = Watch{items: a[:], id: 3}
+    keep(moved)
+    a[0] = 12
+    println(a[0])
+}
+",
+        "7\n10\n3\n11\n12\n20\n1\n",
+    );
+    panics(
+        "package main
+
+type Watch struct {
+    items []int
+}
+
+func (w mut Watch) drop() {
+    println(w.items[0] + w.items[1])
+}
+
+func boom(n int) int {
+    var zero = 0
+    return n / zero
+}
+
+func main() {
+    var list = Array<int>{1, 2}
+    var other = Array<int>{30, 40}
+    let w = Watch{items: list[:]}
+    var heap = Array<Watch>{Watch{items: other[:]}}
+    println(boom(1))
+}
+",
+        "division by zero",
+        "70\n3\n",
+    );
+}
+
+#[test]
+fn views_flow_through_mut_parameters_captures_and_closure_results() {
+    prints(
+        "package main
+
+type View struct {
+    Items []int
+}
+
+func fill(out mut View, items []int) {
+    out.Items = items
+}
+
+func apply(f func([]int) []int, s []int) []int {
+    return f(s)
+}
+
+func main() {
+    var data = [int; 3]{1, 2, 3}
+    var other = [int; 1]{0}
+    var view = View{Items: other[:]}
+    fill(view, data[:])
+    println(view.Items[2])
+
+    let tail = func(items []int) []int { return items[1:] }
+    println(apply(tail, data[:])[0])
+
+    var arr = [int; 2]{7, 8}
+    let whole = func() []int { return arr[:] }
+    println(whole()[1])
+
+    var pointed = other[:]
+    let point = func() { pointed = arr[:] }
+    point()
+    println(pointed[0])
+}
+",
+        "3\n2\n8\n7\n",
+    );
+}

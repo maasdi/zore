@@ -250,11 +250,27 @@ unwind edge. Region analysis gives the destination the loans of a source that
 holds views.
 
 Temporary
-restrictions, each diagnosed: `mut []T` cannot be nested inside a struct field,
-array, or slice element; a view cannot be stored through a slice element or a
-by-reference parameter or a closure capture; a type containing a view cannot
-define a custom `drop`; a function type cannot return a view; and a closure
-cannot consume a captured Move value.
+restrictions, each diagnosed: `mut []T` cannot be held in an `Array<T>`, map, or
+slice element, and a shared parameter cannot hold one inside a struct or fixed
+array; a view cannot be stored through a slice element; a closure can store
+into a capture only views of other captures; a value whose custom `drop`
+reads a view must be declared after the storage it views; and a closure cannot
+consume a captured Move value.
+
+Return contracts also carry outputs (Q22): for each `mut` parameter or
+capture, which inputs' storage or views it may receive, read from its holdings
+at `Return` (such by-reference locals stay live until then). A call applies a
+function's outputs to its `mut` arguments, and a closure's capture outputs are
+applied where it is created. A call through a function value assumes its
+results and `mut` arguments may borrow from every argument and from the
+callee's own holdings.
+
+A value whose destruction runs a custom `drop` that can read a view (Q21) is
+an "observing" local in region analysis. Its destruction is a use: liveness
+marks it live at its `EndScope`, at `Return`, and before a whole-value
+assignment replaces it. `EndScope` checks each local's storage death against
+only the observing locals of the same scope that drop after it, newest first.
+A whole-local move clears the moved local's holdings.
 
 The pass order in §25 is conceptual. The frontend lowers checked HIR to MIR,
 runs ownership and error-use analysis, then returns diagnostics or a package.

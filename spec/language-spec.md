@@ -3458,10 +3458,12 @@ number of times. A closure that mutates captured state needs no `var` binding:
 its exclusive loan is held by the closure itself, and only one live name for it
 exists.
 
-Inside a closure body, a capture refers to the outer local in place. Storing a
-value that holds a borrow (a view or a closure) into a captured local would need
-output provenance and is rejected as unsupported; storing other values is
-allowed through an exclusive capture.
+Inside a closure body, a capture refers to the outer local in place. A value
+that holds a borrow may be stored into a captured local only when it borrows
+from other captured locals; the outer local is then treated as borrowing them
+from the point the closure is created. Storing a view of the closure's own
+parameters or locals into a capture is rejected (the first as unsupported).
+Storing other values is allowed through an exclusive capture.
 
 Consuming a captured Move value inside the body would make the closure
 callable only once. That form is rejected with an "unsupported" diagnostic until
@@ -3489,9 +3491,11 @@ borrowed value and follows the same rules: the callee may call it or pass it on,
 but not store, move, or return it. Function-typed parameters cannot be declared
 `mut` or `own`.
 
-A function type or literal cannot yet have a result containing a borrowed view:
-a call through a function value cannot tell which argument such a view borrows
-from (§11.7). This is reported as unsupported.
+A function type or literal may have a result containing a borrowed view. Since
+a call through a function value cannot tell which input such a view borrows
+from (§11.7), the result is treated as borrowing from every argument and from
+everything the called closure captured; a `mut` argument holding views is
+treated the same way.
 
 Because the closure cannot escape, no closure needs heap storage or a
 destructor, and nothing is dropped when it goes out of scope; captured locals

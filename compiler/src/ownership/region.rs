@@ -3,7 +3,7 @@
 use std::collections::{BTreeSet, HashMap, HashSet};
 
 use super::borrow::{
-    Access, AccessKind, Action, Depth, Loan, LoanKind, LoanTarget, Path, conflicts,
+    Access, AccessKind, Action, Depth, Loan, LoanKind, LoanTarget, Path, PathElem, conflicts,
 };
 use super::checker::describe_place;
 use crate::ast::ParamMode;
@@ -13,7 +13,7 @@ use crate::mir::{
     BasicBlock, BlockId, Body, Callee, Local, Operand, Place, Program, Projection, Rvalue,
     Statement, Terminator, place_type,
 };
-use crate::resolve::LocalKind;
+use crate::resolve::{FieldId, LocalKind};
 use crate::source::Span;
 use crate::types::{TypeId, TypeKind};
 
@@ -25,20 +25,27 @@ struct Origin {
     contents: bool,
 }
 
-/// Indexed `results[r][p]`.
+/// Inputs are the parameters, then a closure's captures.
 #[derive(Clone, Debug, PartialEq)]
 struct Contract {
+    /// Indexed `results[result][input]`.
     results: Vec<Vec<Origin>>,
+    /// Indexed `outputs[input][input]`: views a `mut` parameter or capture may receive.
+    outputs: Vec<Vec<Origin>>,
+}
+
+impl Contract {
+    fn empty(body: &Body) -> Self {
+        let inputs = body.params.len() + body.captures.len();
+        Self {
+            results: vec![vec![Origin::default(); inputs]; body.returns.len()],
+            outputs: vec![vec![Origin::default(); inputs]; inputs],
+        }
+    }
 }
 
 pub(super) fn check(package: &hir::Package, program: &Program, diagnostics: &mut Vec<Diagnostic>) {
-    let mut contracts: Vec<Contract> = program
-        .bodies
-        .iter()
-        .map(|body| Contract {
-            results: vec![vec![Origin::default(); body.params.len()]; body.returns.len()],
-        })
-        .collect();
+    let mut contracts: Vec<Contract> = program.bodies.iter().map(Contract::empty).collect();
     // Least fixpoint, so mutually recursive functions get consistent contracts.
     loop {
         let mut changed = false;
@@ -71,6 +78,8 @@ struct Analysis<'a> {
     package: &'a hir::Package,
     body: &'a Body,
     contracts: &'a [Contract],
+    /// Locals whose custom `drop` can read the borrows they hold.
+    observing: Vec<bool>,
     loans: Vec<Loan>,
     interned: HashMap<LoanKey, LoanId>,
 }
@@ -94,14 +103,29 @@ struct Findings<'l> {
     contract: Contract,
     diagnostics: Vec<Diagnostic>,
     reported: HashSet<Span>,
+    drop_order_reported: HashSet<(Local, Local)>,
+}
+
+impl Findings<'_> {
+    fn report_once(&mut self, span: Span, diagnostic: Diagnostic) {
+        if self.reported.insert(span) {
+            self.diagnostics.push(diagnostic);
+        }
+    }
 }
 
 impl<'a> Analysis<'a> {
     fn new(package: &'a hir::Package, body: &'a Body, contracts: &'a [Contract]) -> Self {
+        let observing = body
+            .locals
+            .iter()
+            .map(|local| !local.by_reference && package.drop_observes_view(local.ty))
+            .collect();
         Self {
             package,
             body,
             contracts,
+            observing,
             loans: Vec::new(),
             interned: HashMap::new(),
         }
@@ -109,14 +133,12 @@ impl<'a> Analysis<'a> {
 
     fn run(mut self) -> (Contract, Vec<Diagnostic>) {
         let body = self.body;
-        let empty_contract = Contract {
-            results: vec![vec![Origin::default(); body.params.len()]; body.returns.len()],
-        };
+        let empty_contract = Contract::empty(body);
         if body.blocks.is_empty() {
             return (empty_contract, Vec::new());
         }
         let mut entry: Holdings = vec![BTreeSet::new(); body.locals.len()];
-        for (index, &param) in body.params.iter().enumerate() {
+        for (index, param) in self.inputs().into_iter().enumerate() {
             if self.carries_views(param) {
                 let id = self.intern(
                     (ENTRY_BLOCK_KEY, index, 0),
@@ -159,12 +181,21 @@ impl<'a> Analysis<'a> {
                 }
             }
         }
-        let live = Liveness::compute(body);
+        let kept_at_return: Vec<bool> = body
+            .locals
+            .iter()
+            .zip(&self.observing)
+            .map(|(local, &observing)| {
+                observing || local.by_reference && self.package.contains_view(local.ty)
+            })
+            .collect();
+        let live = Liveness::compute(body, &self.observing, &kept_at_return);
         let mut findings = Findings {
             live: &live,
             contract: empty_contract,
             diagnostics: Vec::new(),
             reported: HashSet::new(),
+            drop_order_reported: HashSet::new(),
         };
         for (index, (block, state)) in body.blocks.iter().zip(incoming).enumerate() {
             if let Some(mut state) = state {
@@ -201,13 +232,6 @@ impl<'a> Analysis<'a> {
         self.package.contains_view(self.local_ty(local))
     }
 
-    fn is_mut_slice(&self, ty: TypeId) -> bool {
-        matches!(
-            self.package.types.kind(ty),
-            TypeKind::Slice { mutable: true, .. }
-        )
-    }
-
     fn describe(&self, place: &Place) -> String {
         describe_place(self.package, self.body, place)
     }
@@ -237,7 +261,13 @@ impl<'a> Analysis<'a> {
                 Statement::EndScope(locals) => {
                     if let Some(findings) = findings.as_deref_mut() {
                         let live_after = findings.live.before(block_id, position + 1);
-                        for &local in locals {
+                        for (dropped, &local) in locals.iter().enumerate() {
+                            // Locals drop newest first; only those dropped later still need their borrows.
+                            let mut live = live_after.clone();
+                            for (order, other) in locals.iter().enumerate() {
+                                live[other.0 as usize] =
+                                    order < dropped && self.observing[other.0 as usize];
+                            }
                             let place = Place::local(local);
                             let access = Access {
                                 path: Path::of(self.package, self.body, &place),
@@ -248,7 +278,7 @@ impl<'a> Analysis<'a> {
                                 name: self.describe(&place),
                                 from_slicing: false,
                             };
-                            self.check_access(&access, live_after, state, findings);
+                            self.check_access(&access, &live, state, findings);
                         }
                     }
                     for local in locals {
@@ -300,6 +330,7 @@ impl<'a> Analysis<'a> {
             Terminator::Return => {
                 if let Some(findings) = findings {
                     self.return_origins(state, findings);
+                    self.output_origins(state, findings);
                 }
             }
             Terminator::Goto(_) | Terminator::PanicReturn | Terminator::Unreachable => {}
@@ -321,9 +352,9 @@ impl<'a> Analysis<'a> {
         rvalue: &Rvalue,
         site: &mut Site,
         state: &mut Holdings,
-        findings: Option<&mut Findings>,
+        mut findings: Option<&mut Findings>,
     ) {
-        if let Some(findings) = findings {
+        if let Some(findings) = findings.as_deref_mut() {
             let mut accesses = Vec::new();
             self.rvalue_accesses(rvalue, site.span, &mut accesses);
             self.target_accesses(place, site.span, &mut accesses);
@@ -334,7 +365,160 @@ impl<'a> Analysis<'a> {
             self.check_view_store(place, site.span, findings);
         }
         let loans = self.rvalue_loans(rvalue, site, state);
+        let moved: Vec<&Operand> = match rvalue {
+            Rvalue::Use(operand) => vec![operand],
+            Rvalue::Aggregate(_, operands) => operands.iter().collect(),
+            _ => Vec::new(),
+        };
+        self.clear_moved(moved, state);
         self.assign(place, loans, state);
+        if let Rvalue::Closure { function, captures } = rvalue {
+            self.apply_capture_outputs(*function, captures, site, state);
+        }
+        if let Some(findings) = findings {
+            self.check_drop_order(state, site.span, findings);
+        }
+    }
+
+    fn inputs(&self) -> Vec<Local> {
+        self.body
+            .params
+            .iter()
+            .chain(&self.body.captures)
+            .copied()
+            .collect()
+    }
+
+    /// Whether `local` can receive views for the caller: a `mut` parameter or a capture.
+    fn is_output(&self, local: Local) -> bool {
+        self.body.locals[local.0 as usize].by_reference
+            && matches!(
+                self.package
+                    .function(self.body.function)
+                    .locals
+                    .get(local.0 as usize)
+                    .map(|local| local.kind),
+                Some(LocalKind::Param(ParamMode::Mut) | LocalKind::Capture(_))
+            )
+    }
+
+    fn loan_kind_for(&self, ty: TypeId) -> LoanKind {
+        if self.package.contains_mut_view(ty) {
+            LoanKind::Exclusive
+        } else {
+            LoanKind::Shared
+        }
+    }
+
+    /// Loans on each source's storage, its existing views, or both, as its origin says.
+    fn origin_loans<'p>(
+        &mut self,
+        sources: impl IntoIterator<Item = (&'p Place, Origin, bool)>,
+        kind: LoanKind,
+        site: &mut Site,
+        state: &Holdings,
+    ) -> BTreeSet<LoanId> {
+        let mut loans = BTreeSet::new();
+        for (place, origin, borrowable) in sources {
+            if origin.storage && borrowable {
+                let path = Path::of(self.package, self.body, place);
+                loans.extend(self.inherited_loans(place, &path, state));
+                let loan = Loan {
+                    kind,
+                    target: LoanTarget::Place(path),
+                    span: site.span,
+                    name: self.describe(place),
+                    from_slicing: false,
+                    captured: false,
+                };
+                loans.insert(self.intern(site.next_key(), loan));
+            }
+            if origin.contents && self.package.contains_view(self.place_ty(place)) {
+                loans.extend(state[place.local.0 as usize].iter().copied());
+            }
+        }
+        loans
+    }
+
+    /// A closure that stores views into captured variables may do so whenever it runs.
+    fn apply_capture_outputs(
+        &mut self,
+        function: crate::resolve::FunctionId,
+        captures: &[(Place, bool)],
+        site: &mut Site,
+        state: &mut Holdings,
+    ) {
+        let contract = self.contracts[function.0 as usize].clone();
+        let skipped = contract.outputs.len() - captures.len();
+        for (index, (target, _)) in captures.iter().enumerate() {
+            let origins = &contract.outputs[skipped + index][skipped..];
+            if origins.iter().all(|origin| *origin == Origin::default()) {
+                continue;
+            }
+            let kind = self.loan_kind_for(self.place_ty(target));
+            let sources: Vec<(&Place, Origin, bool)> = captures
+                .iter()
+                .zip(origins)
+                .map(|((place, _), &origin)| (place, origin, true))
+                .collect();
+            let loans = self.origin_loans(sources, kind, site, state);
+            if self.carries_views(target.local) {
+                state[target.local.0 as usize].extend(loans);
+            }
+        }
+    }
+
+    /// A value moved out whole no longer holds borrows; its new owner does.
+    fn clear_moved<'o>(
+        &self,
+        operands: impl IntoIterator<Item = &'o Operand>,
+        state: &mut Holdings,
+    ) {
+        for operand in operands {
+            if let Operand::Move(place) = operand
+                && place.projections.is_empty()
+            {
+                state[place.local.0 as usize].clear();
+            }
+        }
+    }
+
+    /// Locals drop in reverse declaration order, so a `drop` reading a borrow needs older storage.
+    fn check_drop_order(&self, state: &Holdings, span: Span, findings: &mut Findings) {
+        let named = self.package.function(self.body.function).locals.len();
+        for (index, held) in state.iter().enumerate() {
+            if !self.observing[index] {
+                continue;
+            }
+            let holder = Local(index as u32);
+            for &id in held {
+                let LoanTarget::Place(path) = &self.loans[id].target else {
+                    continue;
+                };
+                let owner = path.local;
+                if path.goes_through_deref()
+                    || owner.0 <= holder.0
+                    || owner.0 as usize >= named
+                    || self.body.locals[owner.0 as usize].by_reference
+                    || !findings.drop_order_reported.insert((holder, owner))
+                {
+                    continue;
+                }
+                let holder_name = self.describe(&Place::local(holder));
+                let owner_name = self.describe(&Place::local(owner));
+                findings.diagnostics.push(
+                    Diagnostic::new(
+                        Severity::Error,
+                        format!(
+                            "`{holder_name}` borrows `{owner_name}`, which is dropped before `{holder_name}`'s custom `drop` runs"
+                        ),
+                        span,
+                    )
+                    .related(self.scope_end_span(owner), "declared after the value that borrows it")
+                    .note("declare the borrowed storage before the value whose `drop` reads it"),
+                );
+            }
+        }
     }
 
     fn call(
@@ -342,6 +526,38 @@ impl<'a> Analysis<'a> {
         callee: &Callee,
         args: &[Operand],
         destinations: &[Option<Place>],
+        site: &mut Site,
+        state: &mut Holdings,
+        mut findings: Option<&mut Findings>,
+    ) {
+        let moved: Vec<Local> = args
+            .iter()
+            .filter_map(|arg| match arg {
+                Operand::Move(place) if place.projections.is_empty() => Some(place.local),
+                _ => None,
+            })
+            .collect();
+        self.call_effects(
+            callee,
+            args,
+            destinations,
+            &moved,
+            site,
+            state,
+            findings.as_deref_mut(),
+        );
+        if let Some(findings) = findings {
+            self.check_drop_order(state, site.span, findings);
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn call_effects(
+        &mut self,
+        callee: &Callee,
+        args: &[Operand],
+        destinations: &[Option<Place>],
+        moved: &[Local],
         site: &mut Site,
         state: &mut Holdings,
         findings: Option<&mut Findings>,
@@ -401,6 +617,25 @@ impl<'a> Analysis<'a> {
             for (arg, mode) in args.iter().zip(&modes) {
                 self.operand_accesses(arg, *mode, site.span, &mut accesses);
             }
+            for (index, arg) in args.iter().enumerate() {
+                let Operand::Ref(target) = arg else {
+                    continue;
+                };
+                let receives_views = match callee {
+                    Callee::Function(id) => self.contracts[id.0 as usize].outputs[index]
+                        .iter()
+                        .any(|origin| *origin != Origin::default()),
+                    Callee::Value(place) => self
+                        .package
+                        .types
+                        .func_signature(self.place_ty(place))
+                        .is_some_and(|signature| signature.params[index].0 == ParamMode::Mut),
+                    _ => false,
+                };
+                if receives_views {
+                    self.check_view_store(target, site.span, findings);
+                }
+            }
             for destination in destinations.iter().flatten() {
                 self.target_accesses(destination, site.span, &mut accesses);
                 self.check_view_store(destination, site.span, findings);
@@ -413,8 +648,14 @@ impl<'a> Analysis<'a> {
                 self.check_access(access, live, state, findings);
             }
         }
+        let clear = |state: &mut Holdings| {
+            for local in moved {
+                state[local.0 as usize].clear();
+            }
+        };
         if callee.map_access().is_some() {
             self.map_call(args, destinations, site, state);
+            clear(state);
             return;
         }
         if let Callee::Clone(ty) = callee {
@@ -422,58 +663,151 @@ impl<'a> Analysis<'a> {
                 ([Operand::Ref(source)], true) => state[source.local.0 as usize].clone(),
                 _ => BTreeSet::new(),
             };
+            clear(state);
             for destination in destinations.iter().flatten() {
                 self.assign(destination, loans.clone(), state);
             }
             return;
         }
-        if let Callee::Value(_) = callee {
-            // Results through a function value hold no views.
-            for destination in destinations.iter().flatten() {
-                self.assign(destination, BTreeSet::new(), state);
-            }
+        if let Callee::Value(callee_place) = callee {
+            self.value_call_effects(callee_place, args, destinations, site, state);
+            clear(state);
             return;
         }
         let Callee::Function(id) = callee else {
+            clear(state);
             return;
         };
-        let results = &self.package.function(*id).results;
+        let results = self.package.function(*id).results.clone();
+        let contract = self.contracts[id.0 as usize].clone();
+        let sources = |args: &'_ [Operand], origins: &[Origin]| -> Vec<(Place, Origin, bool)> {
+            args.iter()
+                .zip(origins)
+                .filter_map(|(arg, &origin)| match arg {
+                    Operand::Copy(place) | Operand::Move(place) => {
+                        Some((place.clone(), origin, false))
+                    }
+                    Operand::Ref(place) => Some((place.clone(), origin, true)),
+                    Operand::Const(..) => None,
+                })
+                .collect()
+        };
+        let mut stores = Vec::new();
         for (index, destination) in destinations.iter().enumerate() {
             let Some(destination) = destination else {
                 continue;
             };
-            let mut loans = BTreeSet::new();
-            if self.package.contains_view(results[index]) {
-                let kind = if self.package.contains_mut_view(results[index]) {
-                    LoanKind::Exclusive
-                } else {
-                    LoanKind::Shared
-                };
-                let origins = self.contracts[id.0 as usize].results[index].clone();
-                for (arg, origin) in args.iter().zip(origins) {
-                    let (Operand::Copy(place) | Operand::Move(place) | Operand::Ref(place)) = arg
-                    else {
-                        continue;
-                    };
-                    if origin.storage && matches!(arg, Operand::Ref(_)) {
-                        let path = Path::of(self.package, self.body, place);
-                        loans.extend(self.inherited_loans(place, &path, state));
-                        let loan = Loan {
-                            kind,
-                            target: LoanTarget::Place(path),
-                            span: site.span,
-                            name: self.describe(place),
-                            from_slicing: false,
-                            captured: false,
-                        };
-                        loans.insert(self.intern(site.next_key(), loan));
-                    }
-                    if origin.contents && self.package.contains_view(self.place_ty(place)) {
-                        loans.extend(state[place.local.0 as usize].iter().copied());
-                    }
-                }
+            let loans = if self.package.contains_view(results[index]) {
+                let kind = self.loan_kind_for(results[index]);
+                let found = sources(args, &contract.results[index]);
+                self.origin_loans(found.iter().map(|(p, o, b)| (p, *o, *b)), kind, site, state)
+            } else {
+                BTreeSet::new()
+            };
+            stores.push((destination, loans));
+        }
+        let mut outputs = Vec::new();
+        for (index, arg) in args.iter().enumerate() {
+            let Operand::Ref(target) = arg else {
+                continue;
+            };
+            let origins = &contract.outputs[index];
+            if origins.iter().all(|origin| *origin == Origin::default()) {
+                continue;
             }
+            let kind = self.loan_kind_for(self.place_ty(target));
+            let found = sources(args, origins);
+            let loans =
+                self.origin_loans(found.iter().map(|(p, o, b)| (p, *o, *b)), kind, site, state);
+            outputs.push((target.local, loans));
+        }
+        clear(state);
+        for (destination, loans) in stores {
             self.assign(destination, loans, state);
+        }
+        for (local, loans) in outputs {
+            if self.carries_views(local) {
+                state[local.0 as usize].extend(loans);
+            }
+        }
+    }
+
+    /// An unknown callee may pass any argument's or capture's views to its results and `mut` arguments.
+    fn value_call_effects(
+        &mut self,
+        callee: &Place,
+        args: &[Operand],
+        destinations: &[Option<Place>],
+        site: &mut Site,
+        state: &mut Holdings,
+    ) {
+        let everything = Origin {
+            storage: true,
+            contents: true,
+        };
+        let signature = self
+            .package
+            .types
+            .func_signature(self.place_ty(callee))
+            .expect("a function-typed callee")
+            .clone();
+        let mut sources: Vec<(Place, Origin, bool)> = args
+            .iter()
+            .filter_map(|arg| match arg {
+                Operand::Copy(place) | Operand::Move(place) => {
+                    Some((place.clone(), everything, false))
+                }
+                Operand::Ref(place) => Some((place.clone(), everything, true)),
+                Operand::Const(..) => None,
+            })
+            .collect();
+        let closure_views = Origin {
+            storage: false,
+            contents: true,
+        };
+        sources.push((callee.clone(), closure_views, false));
+        let mut stores = Vec::new();
+        for (index, destination) in destinations.iter().enumerate() {
+            let Some(destination) = destination else {
+                continue;
+            };
+            let ty = signature.results[index];
+            let loans = if self.package.contains_view(ty) {
+                let kind = self.loan_kind_for(ty);
+                self.origin_loans(
+                    sources.iter().map(|(p, o, b)| (p, *o, *b)),
+                    kind,
+                    site,
+                    state,
+                )
+            } else {
+                BTreeSet::new()
+            };
+            stores.push((destination, loans));
+        }
+        let mut outputs = Vec::new();
+        for (arg, &(mode, ty)) in args.iter().zip(&signature.params) {
+            if let Operand::Ref(target) = arg
+                && mode == ParamMode::Mut
+                && self.package.contains_view(ty)
+            {
+                let kind = self.loan_kind_for(ty);
+                let loans = self.origin_loans(
+                    sources.iter().map(|(p, o, b)| (p, *o, *b)),
+                    kind,
+                    site,
+                    state,
+                );
+                outputs.push((target.local, loans));
+            }
+        }
+        for (destination, loans) in stores {
+            self.assign(destination, loans, state);
+        }
+        for (local, loans) in outputs {
+            if self.carries_views(local) {
+                state[local.0 as usize].extend(loans);
+            }
         }
     }
 
@@ -549,19 +883,52 @@ impl<'a> Analysis<'a> {
             return BTreeSet::new();
         }
         let mut loans = state[place.local.0 as usize].clone();
-        if matches!(operand, Operand::Copy(_)) && self.is_mut_slice(ty) {
-            // Copying a mutable view is an exclusive reborrow.
-            let loan = Loan {
-                kind: LoanKind::Exclusive,
-                target: LoanTarget::Place(Path::of(self.package, self.body, place).deref()),
-                span: site.span,
-                name: self.describe(place),
-                from_slicing: false,
-                captured: false,
-            };
-            loans.insert(self.intern(site.next_key(), loan));
+        if matches!(operand, Operand::Copy(_)) {
+            // Copying a mutable view, alone or inside a composite, is an exclusive reborrow.
+            for elems in self.mut_view_paths(ty) {
+                let mut path = Path::of(self.package, self.body, place);
+                path.elems.extend(elems);
+                let loan = Loan {
+                    kind: LoanKind::Exclusive,
+                    target: LoanTarget::Place(path.deref()),
+                    span: site.span,
+                    name: self.describe(place),
+                    from_slicing: false,
+                    captured: false,
+                };
+                loans.insert(self.intern(site.next_key(), loan));
+            }
         }
         loans
+    }
+
+    fn mut_view_paths(&self, ty: TypeId) -> Vec<Vec<PathElem>> {
+        let prefixed = |prefix: PathElem, paths: Vec<Vec<PathElem>>| {
+            paths
+                .into_iter()
+                .map(|path| std::iter::once(prefix).chain(path).collect())
+                .collect::<Vec<_>>()
+        };
+        match self.package.types.kind(ty) {
+            TypeKind::Slice { mutable: true, .. } => vec![Vec::new()],
+            TypeKind::Struct(id) => self
+                .package
+                .strukt(id)
+                .fields
+                .iter()
+                .enumerate()
+                .flat_map(|(index, field)| {
+                    prefixed(
+                        PathElem::Field(FieldId(index as u32)),
+                        self.mut_view_paths(field.ty),
+                    )
+                })
+                .collect(),
+            TypeKind::Array { element, .. } => {
+                prefixed(PathElem::Index, self.mut_view_paths(element))
+            }
+            _ => Vec::new(),
+        }
     }
 
     fn rvalue_loans(
@@ -643,7 +1010,7 @@ impl<'a> Analysis<'a> {
     ) {
         let (place, kind, action) = match operand {
             Operand::Const(..) => return,
-            Operand::Copy(place) if self.is_mut_slice(self.place_ty(place)) => {
+            Operand::Copy(place) if !self.mut_view_paths(self.place_ty(place)).is_empty() => {
                 (place, AccessKind::Write, Action::MutBorrow)
             }
             Operand::Copy(place) => (place, AccessKind::Read, Action::Use),
@@ -816,6 +1183,9 @@ impl<'a> Analysis<'a> {
         let holder_is_closure =
             matches!(self.package.types.kind(holder_decl.ty), TypeKind::Func(_));
         let later = match &holder_decl.name {
+            Some(value) if self.observing[holder.0 as usize] => {
+                format!("`{value}`'s custom `drop` can read this borrow until `{value}` is dropped")
+            }
             Some(closure) if holder_is_closure => {
                 format!("the closure `{closure}` is used later")
             }
@@ -846,7 +1216,8 @@ impl<'a> Analysis<'a> {
             return;
         }
         let path = Path::of(self.package, self.body, target);
-        if !path.goes_through_deref() && !self.body.locals[target.local.0 as usize].by_reference {
+        let by_reference = self.body.locals[target.local.0 as usize].by_reference;
+        if !path.goes_through_deref() && (!by_reference || self.is_output(target.local)) {
             return;
         }
         if findings.reported.insert(span) {
@@ -859,47 +1230,104 @@ impl<'a> Analysis<'a> {
                     ),
                     span,
                 )
-                .note("views can only be stored in local variables for now; storing through a parameter or slice element needs output provenance contracts"),
+                .note("a view can be stored in a local, a `mut` parameter, or a captured variable, but not through a slice element"),
             );
         }
+    }
+
+    /// Which input a held loan comes from, or the description of local storage it escapes.
+    fn loan_origin(&self, id: LoanId) -> Option<Result<(usize, bool), String>> {
+        let path = match &self.loans[id].target {
+            LoanTarget::Param(index) => return Some(Ok((*index, false))),
+            LoanTarget::Place(path) if path.goes_through_deref() => return None,
+            LoanTarget::Place(path) => path,
+        };
+        let root = &self.body.locals[path.local.0 as usize];
+        if root.by_reference
+            && let Some(index) = self.inputs().iter().position(|&input| input == path.local)
+        {
+            return Some(Ok((index, true)));
+        }
+        Some(Err(
+            match (&root.name, self.body.params.contains(&path.local)) {
+                (Some(name), true) => format!("`own` parameter `{name}`"),
+                (Some(name), false) => format!("local `{name}`"),
+                (None, _) => "a temporary value".to_string(),
+            },
+        ))
     }
 
     /// Rejects returned views of storage that does not outlive the call.
     fn return_origins(&self, state: &Holdings, findings: &mut Findings) {
         for (result, ret) in self.body.returns.iter().enumerate() {
             for &id in &state[ret.0 as usize] {
-                let loan = &self.loans[id];
-                let path = match &loan.target {
-                    LoanTarget::Param(index) => {
-                        findings.contract.results[result][*index].contents = true;
-                        continue;
+                match self.loan_origin(id) {
+                    None => {}
+                    Some(Ok((index, true))) => {
+                        findings.contract.results[result][index].storage = true
                     }
-                    LoanTarget::Place(path) if path.goes_through_deref() => continue,
-                    LoanTarget::Place(path) => path,
-                };
-                let root = &self.body.locals[path.local.0 as usize];
-                if let Some(index) = self.body.params.iter().position(|&p| p == path.local)
-                    && root.by_reference
-                {
-                    findings.contract.results[result][index].storage = true;
-                    continue;
+                    Some(Ok((index, false))) => {
+                        findings.contract.results[result][index].contents = true
+                    }
+                    Some(Err(owner)) => {
+                        let span = self.loans[id].span;
+                        findings.report_once(
+                            span,
+                            Diagnostic::new(
+                                Severity::Error,
+                                format!("cannot return a view of {owner}"),
+                                span,
+                            )
+                            .note(
+                                "a returned view must refer to storage borrowed from a parameter",
+                            ),
+                        );
+                    }
                 }
-                if !findings.reported.insert(loan.span) {
-                    continue;
+            }
+        }
+    }
+
+    /// Records which inputs' views each `mut` parameter or capture may now hold.
+    fn output_origins(&self, state: &Holdings, findings: &mut Findings) {
+        let params = self.body.params.len();
+        for (slot, local) in self.inputs().into_iter().enumerate() {
+            if !self.is_output(local) || !self.carries_views(local) {
+                continue;
+            }
+            let name = self.describe(&Place::local(local));
+            for &id in &state[local.0 as usize] {
+                let span = self.loans[id].span;
+                match self.loan_origin(id) {
+                    None => {}
+                    Some(Ok((index, _))) if index == slot => {}
+                    Some(Ok((index, _))) if slot >= params && index < params => {
+                        findings.report_once(span, Diagnostic::new(
+                                    Severity::Error,
+                                    format!(
+                                        "storing a view from a function literal's parameter into captured `{name}` is not supported yet"
+                                    ),
+                                    span,
+                                )
+                                .note("a closure can store views of other captured variables into a captured variable"));
+                    }
+                    Some(Ok((index, storage))) => {
+                        let origin = &mut findings.contract.outputs[slot][index];
+                        if storage {
+                            origin.storage = true;
+                        } else {
+                            origin.contents = true;
+                        }
+                    }
+                    Some(Err(owner)) => {
+                        findings.report_once(span, Diagnostic::new(
+                                    Severity::Error,
+                                    format!("cannot store a view of {owner} into `{name}`"),
+                                    span,
+                                )
+                                .note("a view stored through a `mut` parameter or captured variable must borrow storage from outside the function"));
+                    }
                 }
-                let owner = match (&root.name, self.body.params.contains(&path.local)) {
-                    (Some(name), true) => format!("`own` parameter `{name}`"),
-                    (Some(name), false) => format!("local `{name}`"),
-                    (None, _) => "a temporary value".to_string(),
-                };
-                findings.diagnostics.push(
-                    Diagnostic::new(
-                        Severity::Error,
-                        format!("cannot return a view of {owner}"),
-                        loan.span,
-                    )
-                    .note("a returned view must refer to storage borrowed from a parameter"),
-                );
             }
         }
     }
@@ -912,7 +1340,7 @@ struct Liveness {
 }
 
 impl Liveness {
-    fn compute(body: &Body) -> Self {
+    fn compute(body: &Body, observing: &[bool], kept_at_return: &[bool]) -> Self {
         let count = body.locals.len();
         let mut live_in: Vec<LiveSet> = vec![vec![false; count]; body.blocks.len()];
         let mut changed = true;
@@ -920,9 +1348,15 @@ impl Liveness {
             changed = false;
             for (index, block) in body.blocks.iter().enumerate().rev() {
                 let mut live = Self::live_out(body, block, &live_in);
-                Self::step_terminator(body, &block.terminator, &mut live);
+                Self::step_terminator(
+                    body,
+                    observing,
+                    kept_at_return,
+                    &block.terminator,
+                    &mut live,
+                );
                 for statement in block.statements.iter().rev() {
-                    Self::step_statement(body, statement, &mut live);
+                    Self::step_statement(body, observing, statement, &mut live);
                 }
                 if live != live_in[index] {
                     live_in[index] = live;
@@ -936,10 +1370,16 @@ impl Liveness {
             .map(|block| {
                 let mut points = vec![Self::live_out(body, block, &live_in)];
                 let mut live = points[0].clone();
-                Self::step_terminator(body, &block.terminator, &mut live);
+                Self::step_terminator(
+                    body,
+                    observing,
+                    kept_at_return,
+                    &block.terminator,
+                    &mut live,
+                );
                 points.push(live.clone());
                 for statement in block.statements.iter().rev() {
-                    Self::step_statement(body, statement, &mut live);
+                    Self::step_statement(body, observing, statement, &mut live);
                     points.push(live.clone());
                 }
                 points.reverse();
@@ -963,18 +1403,42 @@ impl Liveness {
         live
     }
 
-    fn step_statement(body: &Body, statement: &Statement, live: &mut LiveSet) {
-        if let Statement::Assign { place, rvalue, .. } = statement {
-            Self::define(place, live);
-            Self::use_target(body, place, live);
-            Self::use_rvalue(rvalue, live);
+    fn step_statement(body: &Body, observing: &[bool], statement: &Statement, live: &mut LiveSet) {
+        match statement {
+            Statement::Assign { place, rvalue, .. } => {
+                Self::define_dropping(place, observing, live);
+                Self::use_target(body, place, live);
+                Self::use_rvalue(rvalue, live);
+            }
+            Statement::EndScope(locals) => {
+                for local in locals {
+                    if observing[local.0 as usize] {
+                        live[local.0 as usize] = true;
+                    }
+                }
+            }
+            Statement::Drop { .. } => {}
         }
     }
 
-    fn step_terminator(body: &Body, terminator: &Terminator, live: &mut LiveSet) {
+    /// Replacing a value whose `drop` reads borrows is a use of the old value.
+    fn define_dropping(place: &Place, observing: &[bool], live: &mut LiveSet) {
+        Self::define(place, live);
+        if observing[place.local.0 as usize] {
+            live[place.local.0 as usize] = true;
+        }
+    }
+
+    fn step_terminator(
+        body: &Body,
+        observing: &[bool],
+        kept_at_return: &[bool],
+        terminator: &Terminator,
+        live: &mut LiveSet,
+    ) {
         match terminator {
             Terminator::Assert { place, rvalue, .. } => {
-                Self::define(place, live);
+                Self::define_dropping(place, observing, live);
                 Self::use_target(body, place, live);
                 Self::use_rvalue(rvalue, live);
             }
@@ -986,7 +1450,7 @@ impl Liveness {
                 ..
             } => {
                 for destination in destinations.iter().flatten() {
-                    Self::define(destination, live);
+                    Self::define_dropping(destination, observing, live);
                     Self::use_target(body, destination, live);
                 }
                 for arg in args {
@@ -999,6 +1463,9 @@ impl Liveness {
             Terminator::Return => {
                 for ret in &body.returns {
                     live[ret.0 as usize] = true;
+                }
+                for (index, &kept) in kept_at_return.iter().enumerate() {
+                    live[index] |= kept;
                 }
             }
             Terminator::Goto(_) | Terminator::PanicReturn | Terminator::Unreachable => {}

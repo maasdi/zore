@@ -1757,22 +1757,18 @@ fn unsupported_slice_forms_are_rejected() {
         &program("func f(s mut mut []int) {}"),
         "a `mut` mode on a slice parameter is not supported",
     );
-    rejects(
-        &program("type T struct { s mut []int }"),
-        "`mut []T` nested in a struct field, array, or slice element",
-    );
+    accepts(&program("type T struct { s mut []int }"));
     rejects(
         &program("func f(rows [mut []int; 2]) {}"),
-        "`mut []T` nested in a struct field, array, or slice element",
+        "a shared parameter of type `[mut []int64; 2]` cannot hold a `mut []T` view",
     );
     rejects(
         &program("func f(rows []mut []int) {}"),
-        "`mut []T` nested in a struct field, array, or slice element",
+        "a `mut []T` view inside an `Array<T>`, map, or slice element is not supported",
     );
-    rejects(
-        &program("type T struct { s []int }\nfunc (t mut T) drop() {}"),
-        "a custom `drop` for a type containing a borrowed slice",
-    );
+    accepts(&program(
+        "type T struct { s []int }\nfunc (t mut T) drop() {}",
+    ));
     rejects(
         &body("let d = [int; 2]{1, 2}\nprintln(d[:])"),
         "`println` cannot print values of type `[]int64`",
@@ -1894,7 +1890,7 @@ fn dynamic_arrays_slice_like_fixed_arrays() {
 fn unsupported_dynamic_array_forms_are_rejected() {
     rejects(
         &program("func f(xs Array<mut []int>) {}"),
-        "`mut []T` nested in",
+        "a `mut []T` view inside an `Array<T>`, map, or slice element",
     );
     rejects(&body("let xs = Array"), "`Array` needs an element type");
     let case = rejects(
@@ -1920,10 +1916,9 @@ fn unsupported_dynamic_array_forms_are_rejected() {
         &program("type Node struct { Kids Array<Node> }"),
         "struct `Node` contains itself through `Array<T>`",
     );
-    rejects(
-        &program("type Bag struct { Views Array<[]int> }\nfunc (b mut Bag) drop() {}"),
-        "a custom `drop` for a type containing a borrowed slice",
-    );
+    accepts(&program(
+        "type Bag struct { Views Array<[]int> }\nfunc (b mut Bag) drop() {}",
+    ));
 }
 
 const MAP_GUARD: &str = "type Guard struct { id int }\nfunc (g mut Guard) drop() {}";
@@ -1949,7 +1944,7 @@ fn map_keys_are_bool_integer_rune_or_string() {
     }
     rejects(
         &program("func f(m map[string]mut []int) {}"),
-        "`mut []T` nested in",
+        "a `mut []T` view inside an `Array<T>`, map, or slice element",
     );
 }
 
@@ -2328,10 +2323,7 @@ fn closures_cannot_escape_their_scope() {
         &program("func g(f mut func()) {}"),
         "a function-typed parameter cannot be `mut` or `own`",
     );
-    rejects(
-        &program("func g(f func() []int) {}"),
-        "a function type or literal returning a borrowed view is not supported",
-    );
+    accepts(&program("func g(f func([]int) []int) {}"));
     rejects(
         &program("func greet() {}\nfunc g() { let f = greet }"),
         "declared functions used as values are not supported",
@@ -2526,4 +2518,82 @@ fn the_method_form_calls_only_a_custom_clone() {
     );
     let rendered = case.checked.diagnostics[0].render(&case.sources).unwrap();
     assert!(rendered.contains("write `clone(value)`"), "{rendered}");
+}
+
+const WINDOW: &str = "type Window struct { items mut []int\nlabel int }";
+
+#[test]
+fn mutable_views_can_be_struct_fields_and_fixed_array_elements() {
+    accepts(&program(&format!(
+        "{WINDOW}
+        type Pair struct {{ left Window\nright Window }}
+        func fill(w mut Window) {{ w.items[0] = 1 }}
+        func take(w own Window) int {{ return w.items[0] }}
+        func narrow(data mut []int) Window {{ return Window{{items: data[1:], label: 0}} }}
+        func g() {{
+            var data = [int; 2]{{1, 2}}
+            var w = Window{{items: data[:], label: 1}}
+            fill(w)
+            _ = take(w)
+            var other = [int; 2]{{3, 4}}
+            var rows = [mut []int; 2]{{data[:], other[:]}}
+            rows[1][0] = 5
+        }}"
+    )));
+}
+
+#[test]
+fn a_shared_parameter_cannot_hold_a_nested_mutable_view() {
+    for decl in [
+        "func peek(w Window) {}",
+        "func peek(rows [mut []int; 2]) {}",
+        "func (w Window) peek() {}",
+        "func peek(f func(Window)) {}",
+        "func g() { let f = func(w Window) {} }",
+    ] {
+        rejects(
+            &program(&format!("{WINDOW}\n{decl}")),
+            "cannot hold a `mut []T` view",
+        );
+    }
+    accepts(&program(&format!(
+        "{WINDOW}\nfunc peek(w mut Window) {{}}\nfunc keep(w own Window) {{}}\nfunc view(s mut []int) {{}}"
+    )));
+}
+
+#[test]
+fn collections_cannot_hold_mutable_views_even_through_structs() {
+    for decl in [
+        "type Bag struct { list Array<Window> }",
+        "type Bag struct { table map[string]Window }",
+        "type Bag struct { view []Window }",
+        "func g() { let a = Array<Window>{} }",
+    ] {
+        rejects(
+            &program(&format!("{decl}\n{WINDOW}")),
+            "a `mut []T` view inside an `Array<T>`, map, or slice element is not supported",
+        );
+    }
+    accepts(&program(&format!(
+        "{WINDOW}\ntype Shared struct {{ items []int }}\ntype Bag struct {{ list Array<Shared> }}"
+    )));
+}
+
+#[test]
+fn a_value_holding_a_mutable_view_cannot_be_cloned() {
+    rejects(
+        &program(&format!(
+            "{WINDOW}\nfunc g() {{ var d = [int; 1]{{1}}\nlet w = Window{{items: d[:], label: 0}}\nlet c = clone(w) }}"
+        )),
+        "cannot clone `Window`, which holds a `mut []T` view",
+    );
+}
+
+#[test]
+fn function_types_may_return_views() {
+    accepts(&body(
+        "var data = [int; 2]{1, 2}
+        let tail = func(items []int) []int { return items[1:] }
+        println(tail(data[:])[0])",
+    ));
 }

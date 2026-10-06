@@ -53,7 +53,8 @@ tests. Every other row has an executable counterpart in
 | Two closures that both only read the same local | Accepted |
 | Nested closure writes a local two levels out | Every capture in the chain is exclusive; rejected for a `let` binding |
 | Captured view whose backing is written while the closure is live | Rejected |
-| Body stores a closure or view into a captured local | Rejected as unsupported |
+| Body stores a view of another captured local into a captured local | Accepted; the outer local borrows it from the closure's creation (Q22) |
+| Body stores a view of its own parameter or local into a captured local | Rejected (the first as unsupported) |
 | Body stores a plain value into a captured `var` | Accepted |
 
 ## Calls and function-typed parameters
@@ -75,7 +76,7 @@ tests. Every other row has an executable counterpart in
 | --- | --- |
 | Closure bound with `let g = f` | `f` moved; later use of `f` rejected |
 | Function or function type with a function-typed result | Rejected |
-| Function type or literal with a result holding a view | Rejected as unsupported |
+| Function type or literal with a result holding a view | Accepted; a call's result borrows from every argument and the closure's captures (Q22) |
 | Function type as a struct field, array, `Array<T>`, slice, or map element | Rejected |
 | Closure outlives a captured local's block through an outer `var` | Rejected |
 | Closure used in `go`, or live across `await` | Pending: tasks and `await` are not implemented |
