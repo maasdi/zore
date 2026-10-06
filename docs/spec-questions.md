@@ -78,10 +78,12 @@ A newly discovered semantic gap blocks its affected feature, not unrelated work.
   inputs' storage or views each `mut` parameter may receive, and each call
   applies it to the argument, as for results. (a) A stored view must borrow
   storage from outside the function: a parameter's storage or views, never a
-  local or `own` parameter. (b) Storing a view through a slice element, or
-  passing a slice element to a `mut` parameter that may receive views, stays
-  unsupported, since the new borrow would belong to storage the caller reaches
-  only through a view. (c) A call through a function value cannot know the
+  local or `own` parameter. (b) A view stored through a mutable slice, directly
+  or by a callee, belongs to the slice's backing: every owner the slice
+  exclusively borrows from now holds it too. A parameter or capture holding a
+  `mut []T` whose elements can hold views is an output like a `mut` parameter,
+  even when passed by value, so the stored view must borrow storage from
+  outside the function. (c) A call through a function value cannot know the
   callee, so its results and its `mut` arguments are treated as borrowing from
   every argument and from everything the closure captured; this allows function
   types to return views. (d) A closure may store into a captured local only
@@ -108,8 +110,12 @@ A newly discovered semantic gap blocks its affected feature, not unrelated work.
   view must be `mut` or `own`: a shared borrow of a container gives no mutable
   access through a view inside it, and requiring an owned or mutable container
   enforces that without tracking it. A parameter of type `mut []T` itself is
-  unchanged. (b) A mutable view inside an `Array<T>`, map, or slice element,
-  directly or through a struct, stays unsupported. (c) Any clone of a value
+  unchanged. (b) A mutable view may be held in an `Array<T>`, map, or
+  `mut []T` element, directly or through a struct; reading it out of an
+  `Array<T>` or mutable slice is an exclusive reborrow, as for a fixed array.
+  A shared slice cannot hold one, since copies of the shared slice would hand
+  out the same mutable view twice, and a map lookup cannot copy one out
+  (`remove` can). (c) Any clone of a value
   holding a mutable view is rejected, since a struct holding one cannot declare
   a custom `clone` (its receiver would be a shared parameter). (d) Copying such
   a value is an exclusive reborrow of every view inside it, and counts as a

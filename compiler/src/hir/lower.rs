@@ -287,16 +287,12 @@ impl<'a> Checker<'a> {
                     return None;
                 }
                 let element_ty = self.resolve_type(element)?;
-                if !self.reject_collected_mut_view(element_ty, element.span()) {
-                    return None;
-                }
                 Some(self.types.dyn_array_type(element_ty))
             }
             ast::Type::Map { key, value, .. } => {
                 let key_ty = self.resolve_type(key);
                 let value_ty = if self.reject_stored_func(value) {
                     self.resolve_type(value)
-                        .filter(|&ty| self.reject_collected_mut_view(ty, value.span()))
                 } else {
                     None
                 };
@@ -318,7 +314,7 @@ impl<'a> Checker<'a> {
                     return None;
                 }
                 let element_ty = self.resolve_type(element)?;
-                if !self.reject_collected_mut_view(element_ty, element.span()) {
+                if !*mutable && !self.reject_shared_slice_of_mut_view(element_ty, element.span()) {
                     return None;
                 }
                 Some(self.types.slice_type(element_ty, *mutable))
@@ -397,19 +393,26 @@ impl<'a> Checker<'a> {
     }
 
     /// Struct fields are checked once all of them are resolved.
-    fn reject_collected_mut_view(&mut self, element: TypeId, span: Span) -> bool {
+    fn reject_shared_slice_of_mut_view(&mut self, element: TypeId, span: Span) -> bool {
         if self.resolving_fields || !self.contains_mut_view(element) {
             return true;
         }
-        self.unsupported(
-            "a `mut []T` view inside an `Array<T>`, map, or slice element is",
-            span,
-            "a mutable view can be a struct field, fixed-array element, parameter, result, or local",
-        );
+        self.shared_slice_of_mut_view_error(span);
         false
     }
 
-    fn collects_mut_view(&self, ty: TypeId) -> bool {
+    fn shared_slice_of_mut_view_error(&mut self, span: Span) {
+        self.diagnostics.push(
+            Diagnostic::new(
+                Severity::Error,
+                "a shared slice cannot hold `mut []T` views",
+                span,
+            )
+            .note("a shared view gives no mutable access through the views inside it; use `mut []T` for the outer slice"),
+        );
+    }
+
+    fn holds_shared_slice_of_mut_view(&self, ty: TypeId) -> bool {
         let mut pending = vec![ty];
         let mut seen = Vec::new();
         while let Some(ty) = pending.pop() {
@@ -418,15 +421,16 @@ impl<'a> Checker<'a> {
             }
             seen.push(ty);
             match self.types.kind(ty) {
-                TypeKind::DynArray { element: held, .. }
-                | TypeKind::Slice { element: held, .. }
-                | TypeKind::Map { value: held, .. } => {
-                    if self.contains_mut_view(held) {
+                TypeKind::Slice { element, mutable } => {
+                    if !mutable && self.contains_mut_view(element) {
                         return true;
                     }
-                    pending.push(held);
+                    pending.push(element);
                 }
-                TypeKind::Array { element, .. } => pending.push(element),
+                TypeKind::DynArray { element } | TypeKind::Array { element, .. } => {
+                    pending.push(element)
+                }
+                TypeKind::Map { value, .. } => pending.push(value),
                 TypeKind::Struct(id) => pending.extend(
                     self.fields[id.0 as usize]
                         .iter()
@@ -438,15 +442,11 @@ impl<'a> Checker<'a> {
         false
     }
 
-    fn reject_collected_mut_views_in_fields(&mut self, structs: &[&ast::StructDecl]) {
+    fn reject_shared_slices_of_mut_views_in_fields(&mut self, structs: &[&ast::StructDecl]) {
         for (index, decl) in structs.iter().enumerate() {
             for (field, (_, ty, _)) in decl.fields.iter().zip(self.fields[index].clone()) {
-                if ty.is_some_and(|ty| self.collects_mut_view(ty)) {
-                    self.unsupported(
-                        "a `mut []T` view inside an `Array<T>`, map, or slice element is",
-                        field.ty.span(),
-                        "a mutable view can be a struct field, fixed-array element, parameter, result, or local",
-                    );
+                if ty.is_some_and(|ty| self.holds_shared_slice_of_mut_view(ty)) {
+                    self.shared_slice_of_mut_view_error(field.ty.span());
                 }
             }
         }
@@ -539,7 +539,7 @@ impl<'a> Checker<'a> {
             })
             .collect();
         self.resolving_fields = false;
-        self.reject_collected_mut_views_in_fields(&structs);
+        self.reject_shared_slices_of_mut_views_in_fields(&structs);
         let functions: Vec<&'a ast::FuncDecl> = self.res.functions.clone();
         self.signatures = functions
             .iter()
@@ -2572,6 +2572,10 @@ impl<'a> Checker<'a> {
         if mutable && !self.mutable_slice_source(&base) {
             return None;
         }
+        if !mutable && self.contains_mut_view(element) {
+            self.shared_slice_of_mut_view_error(span);
+            return None;
+        }
         Some(Value::Typed(typed(
             ExprKind::Slice {
                 base: Box::new(base),
@@ -2650,6 +2654,14 @@ impl<'a> Checker<'a> {
         if !self.type_is_copy(value_ty) {
             let message = format!(
                 "cannot look up a Move value of type `{}`; use `m.remove(key)` to take ownership",
+                self.name(value_ty)
+            );
+            self.error(message, span);
+            return None;
+        }
+        if self.contains_mut_view(value_ty) {
+            let message = format!(
+                "cannot look up a value of type `{}`, which holds a `mut []T` view; use `m.remove(key)` to take it",
                 self.name(value_ty)
             );
             self.error(message, span);

@@ -1764,7 +1764,7 @@ fn unsupported_slice_forms_are_rejected() {
     );
     rejects(
         &program("func f(rows []mut []int) {}"),
-        "a `mut []T` view inside an `Array<T>`, map, or slice element is not supported",
+        "a shared slice cannot hold `mut []T` views",
     );
     accepts(&program(
         "type T struct { s []int }\nfunc (t mut T) drop() {}",
@@ -1890,7 +1890,7 @@ fn dynamic_arrays_slice_like_fixed_arrays() {
 fn unsupported_dynamic_array_forms_are_rejected() {
     rejects(
         &program("func f(xs Array<mut []int>) {}"),
-        "a `mut []T` view inside an `Array<T>`, map, or slice element",
+        "cannot hold a `mut []T` view",
     );
     rejects(&body("let xs = Array"), "`Array` needs an element type");
     let case = rejects(
@@ -1944,7 +1944,7 @@ fn map_keys_are_bool_integer_rune_or_string() {
     }
     rejects(
         &program("func f(m map[string]mut []int) {}"),
-        "a `mut []T` view inside an `Array<T>`, map, or slice element",
+        "cannot hold a `mut []T` view",
     );
 }
 
@@ -2562,21 +2562,37 @@ fn a_shared_parameter_cannot_hold_a_nested_mutable_view() {
 }
 
 #[test]
-fn collections_cannot_hold_mutable_views_even_through_structs() {
+fn only_shared_slices_cannot_hold_mutable_views() {
     for decl in [
-        "type Bag struct { list Array<Window> }",
-        "type Bag struct { table map[string]Window }",
         "type Bag struct { view []Window }",
-        "func g() { let a = Array<Window>{} }",
+        "type Bag struct { rows Array<[]Window> }",
+        "func g() { var d = [int; 1]{1}\nvar a = [Window; 1]{Window{items: d[:], label: 0}}\nlet s = a[:] }",
+        "func g(rows []mut []int) {}",
     ] {
         rejects(
             &program(&format!("{decl}\n{WINDOW}")),
-            "a `mut []T` view inside an `Array<T>`, map, or slice element is not supported",
+            "a shared slice cannot hold `mut []T` views",
         );
     }
     accepts(&program(&format!(
-        "{WINDOW}\ntype Shared struct {{ items []int }}\ntype Bag struct {{ list Array<Shared> }}"
+        "{WINDOW}
+        type Bag struct {{ list Array<Window>\ntable map[string]Window\nrows mut []Window }}
+        func g() {{ var d = [int; 1]{{1}}\nvar a = [Window; 1]{{Window{{items: d[:], label: 0}}}}\nvar s mut []Window = a[:]\n_ = s
+        let b = Array<Window>{{}}\n_ = b }}"
     )));
+}
+
+#[test]
+fn a_map_lookup_cannot_copy_out_a_mutable_view() {
+    rejects(
+        &body(
+            "var d = [int; 1]{1}\nvar m = map[int]mut []int{1: d[:]}\nvar found, v = m[1]\n_ = found\n_ = v",
+        ),
+        "which holds a `mut []T` view; use `m.remove(key)` to take it",
+    );
+    accepts(&body(
+        "var d = [int; 1]{1}\nvar m = map[int]mut []int{1: d[:]}\nvar found, v = m.remove(1)\nif found { v[0] = 2 }",
+    ));
 }
 
 #[test]

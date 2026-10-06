@@ -598,17 +598,77 @@ fn views_stored_through_mut_parameters_borrow_for_the_caller() {
         func forward(out mut View, items []int) { fill(out, items) }
         func borrowArray(out mut View, data [int; 2]) { out.Items = data[:] }",
     ));
+}
+
+#[test]
+fn views_stored_through_slice_elements_borrow_for_the_slice_owner() {
+    let fill = "type View struct { Items []int }
+        func fill(out mut View, items []int) { out.Items = items }
+        func set(rows mut [][]int, items []int) { rows[0] = items }
+        func setVia(rows mut [][]int, items []int) { var alias mut [][]int = rows[:]\nalias[0] = items }";
+    accepts(&program(&format!(
+        "{fill}
+        func g() {{ var other = [int; 1]{{0}}\nvar rows = [View; 1]{{View{{Items: other[:]}}}}\nvar slots mut []View = rows[:]\nvar data = [int; 1]{{1}}\nfill(slots[0], data[:])\nprintln(rows[0].Items[0]) }}
+        func h() {{ var other = [int; 1]{{0}}\nvar rows = [[]int; 1]{{other[:]}}\nvar data = [int; 1]{{1}}\nsetVia(rows[:], data[:])\nprintln(rows[0][0]) }}"
+    )));
     rejects(
-        &program(
-            "type View struct { Items []int }
-            func fill(out mut View, items []int) { out.Items = items }
-            func g() { var other = [int; 1]{0}\nvar rows = [View; 1]{View{Items: other[:]}}\nvar slots mut []View = rows[:]\nvar data = [int; 1]{1}\nfill(slots[0], data[:]) }",
-        ),
-        "storing a borrowed view through `slots[_]` is not supported yet",
+        &program(&format!(
+            "{fill}
+            func g() {{ var other = [int; 1]{{0}}\nvar rows = [[]int; 1]{{other[:]}}\n{{ var data = [int; 1]{{1}}\nset(rows[:], data[:]) }}\nprintln(rows[0][0]) }}"
+        )),
+        "`data` does not live long enough",
     );
     rejects(
-        &program("func set(rows mut [][]int, items []int) { rows[0] = items }"),
-        "storing a borrowed view through `rows[_]` is not supported yet",
+        &program(&format!(
+            "{fill}
+            func g() {{ var other = [int; 1]{{0}}\nvar rows = [[]int; 1]{{other[:]}}\nvar slots mut [][]int = rows[:]\nvar data = [int; 1]{{1}}\nslots[0] = data[:]\ndata[0] = 2\nprintln(rows[0][0]) }}"
+        )),
+        "cannot assign to `data[_]` while it is borrowed",
+    );
+    rejects(
+        &program("func set(rows mut [][]int) { var local = [int; 1]{1}\nrows[0] = local[:] }"),
+        "cannot store a view of local `local` into `rows`",
+    );
+    rejects(
+        &program(
+            "type Holder struct { rows mut [][]int }
+            func keep(h own Holder, items []int) { var moved = h\nmoved.rows[0] = items }
+            func g() { var other = [int; 1]{0}\nvar rows = [[]int; 1]{other[:]}\n{ var data = [int; 1]{1}\nkeep(Holder{rows: rows[:]}, data[:]) }\nprintln(rows[0][0]) }",
+        ),
+        "`data` does not live long enough",
+    );
+    rejects(
+        &body(
+            "var other = [int; 1]{0}\nvar rows = [[]int; 1]{other[:]}\nvar slots mut [][]int = rows[:]
+            let put = func(items mut [][]int, view []int) { items[0] = view }
+            { var data = [int; 1]{1}\nput(slots, data[:]) }\nprintln(rows[0][0])",
+        ),
+        "`data` does not live long enough",
+    );
+}
+
+#[test]
+fn mutable_views_inside_collections_are_exclusive_reborrows() {
+    accepts(&body(
+        "var x = [int; 2]{1, 2}\nvar y = [int; 2]{3, 4}
+        var views = Array<mut []int>{x[:], y[:]}
+        var first = views[0]\nfirst[0] = 5
+        var second = views[1]\nsecond[0] = 6
+        var all mut []mut []int = views[:]\nvar again = all[0]\nagain[1] = 7
+        var m = map[int]mut []int{1: x[:]}\nvar found, taken = m.remove(1)\nif found { taken[0] = 8 }",
+    ));
+    rejects(
+        &body(
+            "var x = [int; 2]{1, 2}\nvar views = Array<mut []int>{x[:]}
+            var first = views[0]\nvar second = views[0]\nfirst[0] = 5\nsecond[0] = 6",
+        ),
+        "cannot borrow `views[_]` as mutable because it is already borrowed",
+    );
+    rejects(
+        &body(
+            "var x = [int; 2]{1, 2}\nvar views = Array<mut []int>{x[:]}\nx[0] = 5\nvar first = views[0]\nfirst[0] = 6",
+        ),
+        "cannot assign to `x[_]` while it is borrowed",
     );
 }
 

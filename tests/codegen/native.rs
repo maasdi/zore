@@ -1953,6 +1953,41 @@ func main() {
 }
 
 #[test]
+fn views_in_collections_and_slice_elements_write_through() {
+    prints(
+        "package main
+
+func put(rows mut [][]int, view []int) {
+    rows[1] = view
+}
+
+func main() {
+    var a = [int; 2]{1, 2}
+    var b = [int; 2]{3, 4}
+    var views = Array<mut []int>{a[:], b[:]}
+    var first = views[0]
+    first[0] = 10
+    var all mut []mut []int = views[:]
+    all[1][1] = 40
+    var m = map[string]mut []int{\"a\": a[:]}
+    var found, taken = m.remove(\"a\")
+    if found {
+        taken[1] = 20
+    }
+    println(a[0] + a[1] + b[1])
+
+    var rows = [[]int; 2]{a[:], a[:]}
+    var slots mut [][]int = rows[:]
+    slots[0] = b[:]
+    put(rows[:], b[1:])
+    println(rows[0][0] + rows[1][0])
+}
+",
+        "70\n43\n",
+    );
+}
+
+#[test]
 fn a_drop_reads_the_views_it_holds_on_every_exit() {
     prints(
         "package main

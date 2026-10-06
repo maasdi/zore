@@ -249,10 +249,14 @@ dropped and the new storage freed before control reaches the call's ordinary
 unwind edge. Region analysis gives the destination the loans of a source that
 holds views.
 
+A view stored through a mutable slice is added to every owner that the slice
+exclusively borrows from, following reborrows back to the original storage
+(Q22b). `mut []T` may be held in `Array<T>`, map, and `mut []T` elements, but
+not in a shared slice element or copied out by a map lookup (Q20b).
+
 Temporary
-restrictions, each diagnosed: `mut []T` cannot be held in an `Array<T>`, map, or
-slice element, and a shared parameter cannot hold one inside a struct or fixed
-array; a view cannot be stored through a slice element; a closure can store
+restrictions, each diagnosed: a shared parameter cannot hold a `mut []T` inside
+a struct, fixed array, or collection; a closure can store
 into a capture only views of other captures; a value whose custom `drop`
 reads a view must be declared after the storage it views; and a closure cannot
 consume a captured Move value.

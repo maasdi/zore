@@ -232,6 +232,57 @@ impl<'a> Analysis<'a> {
         self.package.contains_view(self.local_ty(local))
     }
 
+    /// Holds a `mut []T` whose elements can hold views.
+    fn stores_through_views(&self, ty: TypeId) -> bool {
+        self.package.contains_mut_slice_of_views(ty)
+    }
+
+    /// `local` and every owner whose storage a write through its mutable views reaches.
+    fn store_holders(&self, local: Local, state: &Holdings) -> Vec<Local> {
+        let inputs = self.inputs();
+        let mut holders = vec![local];
+        let mut next = 0;
+        while let Some(&holder) = holders.get(next) {
+            next += 1;
+            for &id in &state[holder.0 as usize] {
+                let loan = &self.loans[id];
+                let owner = match (&loan.target, loan.kind) {
+                    (LoanTarget::Place(path), LoanKind::Exclusive) => path.local,
+                    (LoanTarget::Param(index), _) => inputs[*index],
+                    (LoanTarget::Place(_), LoanKind::Shared) => continue,
+                };
+                if !holders.contains(&owner) {
+                    holders.push(owner);
+                }
+            }
+        }
+        holders
+    }
+
+    /// Views stored into `target`, or written by a callee through the views it holds.
+    fn store_views(&self, target: &Place, loans: &BTreeSet<LoanId>, state: &mut Holdings) {
+        let holders = self.receivers(target, state);
+        self.hold(&holders, loans, state);
+    }
+
+    fn receivers(&self, target: &Place, state: &Holdings) -> Vec<Local> {
+        let through_views = Path::of(self.package, self.body, target).goes_through_deref()
+            || self.stores_through_views(self.place_ty(target));
+        if through_views {
+            self.store_holders(target.local, state)
+        } else {
+            vec![target.local]
+        }
+    }
+
+    fn hold(&self, holders: &[Local], loans: &BTreeSet<LoanId>, state: &mut Holdings) {
+        for &holder in holders {
+            if self.carries_views(holder) {
+                state[holder.0 as usize].extend(loans.iter().copied());
+            }
+        }
+    }
+
     fn describe(&self, place: &Place) -> String {
         describe_place(self.package, self.body, place)
     }
@@ -362,7 +413,7 @@ impl<'a> Analysis<'a> {
             for access in &accesses {
                 self.check_access(access, live, state, findings);
             }
-            self.check_view_store(place, site.span, findings);
+            self.check_view_store(place, state, site.span, findings);
         }
         let loans = self.rvalue_loans(rvalue, site, state);
         let moved: Vec<&Operand> = match rvalue {
@@ -391,6 +442,9 @@ impl<'a> Analysis<'a> {
 
     /// Whether `local` can receive views for the caller: a `mut` parameter or a capture.
     fn is_output(&self, local: Local) -> bool {
+        if self.stores_through_views(self.local_ty(local)) {
+            return self.inputs().contains(&local);
+        }
         self.body.locals[local.0 as usize].by_reference
             && matches!(
                 self.package
@@ -462,9 +516,7 @@ impl<'a> Analysis<'a> {
                 .map(|((place, _), &origin)| (place, origin, true))
                 .collect();
             let loans = self.origin_loans(sources, kind, site, state);
-            if self.carries_views(target.local) {
-                state[target.local.0 as usize].extend(loans);
-            }
+            self.store_views(target, &loans, state);
         }
     }
 
@@ -618,7 +670,8 @@ impl<'a> Analysis<'a> {
                 self.operand_accesses(arg, *mode, site.span, &mut accesses);
             }
             for (index, arg) in args.iter().enumerate() {
-                let Operand::Ref(target) = arg else {
+                let (Operand::Ref(target) | Operand::Copy(target) | Operand::Move(target)) = arg
+                else {
                     continue;
                 };
                 let receives_views = match callee {
@@ -629,19 +682,22 @@ impl<'a> Analysis<'a> {
                         .package
                         .types
                         .func_signature(self.place_ty(place))
-                        .is_some_and(|signature| signature.params[index].0 == ParamMode::Mut),
+                        .is_some_and(|signature| {
+                            let (mode, ty) = signature.params[index];
+                            mode == ParamMode::Mut || self.stores_through_views(ty)
+                        }),
                     _ => false,
                 };
                 if receives_views {
-                    self.check_view_store(target, site.span, findings);
+                    self.check_view_store(target, state, site.span, findings);
                 }
             }
             for destination in destinations.iter().flatten() {
                 self.target_accesses(destination, site.span, &mut accesses);
-                self.check_view_store(destination, site.span, findings);
+                self.check_view_store(destination, state, site.span, findings);
             }
             if let (Some(ParamMode::Mut), [Operand::Ref(map), _, _]) = (callee.map_access(), args) {
-                self.check_view_store(map, site.span, findings);
+                self.check_view_store(map, state, site.span, findings);
             }
             let live = findings.live.before(BlockId(site.block), site.position);
             for access in &accesses {
@@ -708,7 +764,7 @@ impl<'a> Analysis<'a> {
         }
         let mut outputs = Vec::new();
         for (index, arg) in args.iter().enumerate() {
-            let Operand::Ref(target) = arg else {
+            let (Operand::Ref(target) | Operand::Copy(target) | Operand::Move(target)) = arg else {
                 continue;
             };
             let origins = &contract.outputs[index];
@@ -719,16 +775,14 @@ impl<'a> Analysis<'a> {
             let found = sources(args, origins);
             let loans =
                 self.origin_loans(found.iter().map(|(p, o, b)| (p, *o, *b)), kind, site, state);
-            outputs.push((target.local, loans));
+            outputs.push((self.receivers(target, state), loans));
         }
         clear(state);
         for (destination, loans) in stores {
             self.assign(destination, loans, state);
         }
-        for (local, loans) in outputs {
-            if self.carries_views(local) {
-                state[local.0 as usize].extend(loans);
-            }
+        for (holders, loans) in outputs {
+            self.hold(&holders, &loans, state);
         }
     }
 
@@ -787,9 +841,9 @@ impl<'a> Analysis<'a> {
         }
         let mut outputs = Vec::new();
         for (arg, &(mode, ty)) in args.iter().zip(&signature.params) {
-            if let Operand::Ref(target) = arg
-                && mode == ParamMode::Mut
-                && self.package.contains_view(ty)
+            if let Operand::Ref(target) | Operand::Copy(target) | Operand::Move(target) = arg
+                && (mode == ParamMode::Mut && self.package.contains_view(ty)
+                    || self.stores_through_views(ty))
             {
                 let kind = self.loan_kind_for(ty);
                 let loans = self.origin_loans(
@@ -798,16 +852,14 @@ impl<'a> Analysis<'a> {
                     site,
                     state,
                 );
-                outputs.push((target.local, loans));
+                outputs.push((self.receivers(target, state), loans));
             }
         }
         for (destination, loans) in stores {
             self.assign(destination, loans, state);
         }
-        for (local, loans) in outputs {
-            if self.carries_views(local) {
-                state[local.0 as usize].extend(loans);
-            }
+        for (holders, loans) in outputs {
+            self.hold(&holders, &loans, state);
         }
     }
 
@@ -824,9 +876,7 @@ impl<'a> Analysis<'a> {
         };
         if let [_, _, value] = args {
             let loans = self.operand_loans(value, site, state);
-            if self.carries_views(map.local) {
-                state[map.local.0 as usize].extend(loans);
-            }
+            self.store_views(map, &loans, state);
             return;
         }
         let held = state[map.local.0 as usize].clone();
@@ -846,13 +896,12 @@ impl<'a> Analysis<'a> {
 
     /// Also ends loans through the descriptor the assignment replaces.
     fn assign(&mut self, target: &Place, loans: BTreeSet<LoanId>, state: &mut Holdings) {
-        let root = target.local.0 as usize;
-        if self.carries_views(target.local) {
-            if target.projections.is_empty() {
-                state[root] = loans;
-            } else {
-                state[root].extend(loans);
+        if target.projections.is_empty() {
+            if self.carries_views(target.local) {
+                state[target.local.0 as usize] = loans;
             }
+        } else {
+            self.store_views(target, &loans, state);
         }
         let path = Path::of(self.package, self.body, target);
         for held in state.iter_mut() {
@@ -1210,29 +1259,38 @@ impl<'a> Analysis<'a> {
         diagnostic
     }
 
-    /// Needs output provenance, which does not exist yet.
-    fn check_view_store(&self, target: &Place, span: Span, findings: &mut Findings) {
+    /// A view written into storage reached through an input must land in an output.
+    fn check_view_store(
+        &self,
+        target: &Place,
+        state: &Holdings,
+        span: Span,
+        findings: &mut Findings,
+    ) {
         if !self.package.contains_view(self.place_ty(target)) {
             return;
         }
-        let path = Path::of(self.package, self.body, target);
-        let by_reference = self.body.locals[target.local.0 as usize].by_reference;
-        if !path.goes_through_deref() && (!by_reference || self.is_output(target.local)) {
+        let inputs = self.inputs();
+        let Some(&input) = self
+            .receivers(target, state)
+            .iter()
+            .find(|&&holder| inputs.contains(&holder) && !self.is_output(holder))
+        else {
             return;
-        }
-        if findings.reported.insert(span) {
-            findings.diagnostics.push(
-                Diagnostic::new(
-                    Severity::Error,
-                    format!(
-                        "storing a borrowed view through `{}` is not supported yet",
-                        self.describe(target)
-                    ),
-                    span,
-                )
-                .note("a view can be stored in a local, a `mut` parameter, or a captured variable, but not through a slice element"),
-            );
-        }
+        };
+        findings.report_once(
+            span,
+            Diagnostic::new(
+                Severity::Error,
+                format!(
+                    "cannot store a view through `{}`, which belongs to shared parameter `{}`",
+                    self.describe(target),
+                    self.describe(&Place::local(input))
+                ),
+                span,
+            )
+            .note("a function can store views only through `mut` parameters, mutable slices, and captured variables"),
+        );
     }
 
     /// Which input a held loan comes from, or the description of local storage it escapes.
@@ -1325,7 +1383,7 @@ impl<'a> Analysis<'a> {
                                     format!("cannot store a view of {owner} into `{name}`"),
                                     span,
                                 )
-                                .note("a view stored through a `mut` parameter or captured variable must borrow storage from outside the function"));
+                                .note("a view stored through a `mut` parameter, mutable slice, or captured variable must borrow storage from outside the function"));
                     }
                 }
             }
