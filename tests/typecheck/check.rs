@@ -2323,10 +2323,7 @@ fn closures_cannot_escape_their_scope() {
         &program("func g(f mut func()) {}"),
         "a function-typed parameter cannot be `mut` or `own`",
     );
-    rejects(
-        &program("func g(f func() []int) {}"),
-        "a function type or literal returning a borrowed view is not supported",
-    );
+    accepts(&program("func g(f func([]int) []int) {}"));
     rejects(
         &program("func greet() {}\nfunc g() { let f = greet }"),
         "declared functions used as values are not supported",
@@ -2590,4 +2587,13 @@ fn a_value_holding_a_mutable_view_cannot_be_cloned() {
         )),
         "cannot clone `Window`, which holds a `mut []T` view",
     );
+}
+
+#[test]
+fn function_types_may_return_views() {
+    accepts(&body(
+        "var data = [int; 2]{1, 2}
+        let tail = func(items []int) []int { return items[1:] }
+        println(tail(data[:])[0])",
+    ));
 }

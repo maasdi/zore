@@ -44,6 +44,7 @@ A newly discovered semantic gap blocks its affected feature, not unrelated work.
 | Q19 | Clone choices made while implementing §10.7 where the text is silent; each rejects rather than guesses and can be relaxed later. See Q19 below. | §8.3, §10.7, §11.7 | Checker and codegen changes only |
 | Q20 | Choices for `mut []T` held in struct fields and fixed arrays (§11.7, §12.3); each rejects rather than guesses. See Q20 below. | §11.7, §12.3, §12.5, §10.7 | Checker and ownership changes only |
 | Q21 | Choices for types whose custom `drop` can read a borrowed view (§11.7, §14.3); each rejects rather than guesses. See Q21 below. | §11.7, §14.3, §14.5 | Ownership changes only |
+| Q22 | Output provenance: views stored through `mut` parameters and closure captures, and views returned through function values (§11.7, §16). See Q22 below. | §11.7, §16.3–16.4 | Ownership changes only |
 
 ## Resolved decisions
 
@@ -71,6 +72,22 @@ A newly discovered semantic gap blocks its affected feature, not unrelated work.
   suspend. Each line is written as one unit, and a blocked write keeps the
   §18.9 progress guarantee. Float text format remains open under Q05. Pending cases:
   `tests/conformance/entry-point.md` and `tests/conformance/println.md`.
+
+- **Q22 — Output provenance:** a function may store a view into a `mut`
+  parameter. Its contract now records, besides each result's origins, which
+  inputs' storage or views each `mut` parameter may receive, and each call
+  applies it to the argument, as for results. (a) A stored view must borrow
+  storage from outside the function: a parameter's storage or views, never a
+  local or `own` parameter. (b) Storing a view through a slice element, or
+  passing a slice element to a `mut` parameter that may receive views, stays
+  unsupported, since the new borrow would belong to storage the caller reaches
+  only through a view. (c) A call through a function value cannot know the
+  callee, so its results and its `mut` arguments are treated as borrowing from
+  every argument and from everything the closure captured; this allows function
+  types to return views. (d) A closure may store into a captured local only
+  views of other captured locals; the outer local is treated as borrowing them
+  from the closure's creation. Storing a view of the closure's own parameters
+  into a capture is unsupported. Pending cases: `tests/conformance/ownership.md`.
 
 - **Q21 — Destructors that observe views:** a type with a custom `drop` may
   contain a view. A value whose destruction runs such a `drop` keeps its
@@ -127,9 +144,8 @@ A newly discovered semantic gap blocks its affected feature, not unrelated work.
   parameters cannot be `mut` or `own`. Implemented end to end; executable cases
   are listed in `tests/conformance/closures.md`. **Still open:** escaping
   closures with owned environments, call-once closures that consume a captured
-  Move value, declared functions used as values, function types whose results
-  hold borrowed views (needs result provenance through a function value),
-  storing a view or closure through a capture (output provenance), `async`
+  Move value, declared functions used as values, storing a view of a closure's
+  own parameter into a capture (Q22), `async`
   closures, field-level captures, and closures with tasks (M25+).
 
 - **Q02f — Map construction, lookup, assignment, removal:** accepted and

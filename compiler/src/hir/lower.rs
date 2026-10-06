@@ -347,20 +347,20 @@ impl<'a> Checker<'a> {
         }
     }
 
-    /// Results of function types and literals hold neither closures nor views.
+    /// Results of function types and literals cannot hold closures.
     fn closure_results(&mut self, results: &[ast::Type]) -> Option<Vec<TypeId>> {
         let mut checked = Vec::new();
         let mut ok = true;
         for result in results {
             match self.resolve_type(result) {
-                Some(ty) if self.result_allowed(ty, result.span(), true) => checked.push(ty),
+                Some(ty) if self.result_allowed(ty, result.span()) => checked.push(ty),
                 _ => ok = false,
             }
         }
         ok.then_some(checked)
     }
 
-    fn result_allowed(&mut self, ty: TypeId, span: Span, function_value: bool) -> bool {
+    fn result_allowed(&mut self, ty: TypeId, span: Span) -> bool {
         if self.type_contains(ty, &|kind| matches!(kind, TypeKind::Func(_))) {
             self.diagnostics.push(
                 Diagnostic::new(
@@ -369,15 +369,6 @@ impl<'a> Checker<'a> {
                     span,
                 )
                 .note("closures cannot escape the scope that created them"),
-            );
-            return false;
-        }
-        if function_value && self.type_contains(ty, &|kind| matches!(kind, TypeKind::Slice { .. }))
-        {
-            self.unsupported(
-                "a function type or literal returning a borrowed view is",
-                span,
-                "a call through a function value cannot tell which argument the view borrows from",
             );
             return false;
         }
@@ -564,7 +555,7 @@ impl<'a> Checker<'a> {
                     .iter()
                     .map(|t| {
                         let ty = self.resolve_type(t)?;
-                        self.result_allowed(ty, t.span(), false).then_some(ty)
+                        self.result_allowed(ty, t.span()).then_some(ty)
                     })
                     .collect();
                 Some(Signature {

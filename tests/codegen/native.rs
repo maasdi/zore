@@ -2015,3 +2015,44 @@ func main() {
         "70\n3\n",
     );
 }
+
+#[test]
+fn views_flow_through_mut_parameters_captures_and_closure_results() {
+    prints(
+        "package main
+
+type View struct {
+    Items []int
+}
+
+func fill(out mut View, items []int) {
+    out.Items = items
+}
+
+func apply(f func([]int) []int, s []int) []int {
+    return f(s)
+}
+
+func main() {
+    var data = [int; 3]{1, 2, 3}
+    var other = [int; 1]{0}
+    var view = View{Items: other[:]}
+    fill(view, data[:])
+    println(view.Items[2])
+
+    let tail = func(items []int) []int { return items[1:] }
+    println(apply(tail, data[:])[0])
+
+    var arr = [int; 2]{7, 8}
+    let whole = func() []int { return arr[:] }
+    println(whole()[1])
+
+    var pointed = other[:]
+    let point = func() { pointed = arr[:] }
+    point()
+    println(pointed[0])
+}
+",
+        "3\n2\n8\n7\n",
+    );
+}

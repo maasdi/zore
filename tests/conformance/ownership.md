@@ -14,9 +14,11 @@ slices from `?`), and recursive provenance through structs.
 ownership, and native suites (Q20).
 Destructor-observed views have coverage in the ownership and native suites
 (Q21).
+Views stored through `mut` parameters and captures have coverage in the
+ownership and native suites (Q22).
 Pending: rows needing `await` or tasks; and mutable views inside `Array<T>`,
-map, or slice elements and views stored through parameters or captures
-(rejected for now as unsupported).
+map, or slice elements and views stored through slice elements (rejected for
+now as unsupported).
 
 ## Mutable place requirements for callers (§11.6)
 

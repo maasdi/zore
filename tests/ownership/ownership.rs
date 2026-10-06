@@ -567,13 +567,44 @@ fn backing_owners_cannot_be_moved_replaced_or_dropped_while_viewed() {
 }
 
 #[test]
-fn views_cannot_be_stored_through_parameters_or_slice_elements_yet() {
+fn views_stored_through_mut_parameters_borrow_for_the_caller() {
+    let fill = "type View struct { Items []int }
+        func fill(out mut View, items []int) { out.Items = items }";
+    rejects(
+        &program(&format!(
+            "{fill}\nfunc g() {{ var data = [int; 2]{{1, 2}}\nvar other = [int; 1]{{0}}\nvar v = View{{Items: other[:]}}\nfill(v, data[:])\ndata[0] = 5\nprintln(v.Items[0]) }}"
+        )),
+        "cannot assign to `data[_]` while it is borrowed",
+    );
+    accepts(&program(&format!(
+        "{fill}\nfunc g() {{ var data = [int; 2]{{1, 2}}\nvar other = [int; 1]{{0}}\nvar v = View{{Items: other[:]}}\nfill(v, data[:])\nprintln(v.Items[0])\ndata[0] = 5 }}"
+    )));
+    rejects(
+        &program(&format!(
+            "{fill}\nfunc g() {{ var other = [int; 1]{{0}}\nvar v = View{{Items: other[:]}}\n{{ var data = [int; 1]{{1}}\nfill(v, data[:]) }}\nprintln(v.Items[0]) }}"
+        )),
+        "`data` does not live long enough",
+    );
     rejects(
         &program(
             "type View struct { Items []int }
-            func fill(out mut View, items []int) { out.Items = items }",
+            func fill(out mut View) { var local = [int; 1]{1}\nout.Items = local[:] }",
         ),
-        "storing a borrowed view through `out.Items` is not supported yet",
+        "cannot store a view of local `local` into `out`",
+    );
+    accepts(&program(
+        "type View struct { Items []int }
+        func fill(out mut View, items []int) { out.Items = items }
+        func forward(out mut View, items []int) { fill(out, items) }
+        func borrowArray(out mut View, data [int; 2]) { out.Items = data[:] }",
+    ));
+    rejects(
+        &program(
+            "type View struct { Items []int }
+            func fill(out mut View, items []int) { out.Items = items }
+            func g() { var other = [int; 1]{0}\nvar rows = [View; 1]{View{Items: other[:]}}\nvar slots mut []View = rows[:]\nvar data = [int; 1]{1}\nfill(slots[0], data[:]) }",
+        ),
+        "storing a borrowed view through `slots[_]` is not supported yet",
     );
     rejects(
         &program("func set(rows mut [][]int, items []int) { rows[0] = items }"),
@@ -758,9 +789,15 @@ fn views_stored_in_dynamic_arrays_keep_their_backing_borrowed() {
         ),
         "cannot assign to `data[_]` while it is borrowed",
     );
+    accepts(&program(
+        "func fill(views mut Array<[]int>, items []int) { views[0] = items }",
+    ));
     rejects(
-        &program("func fill(views mut Array<[]int>, items []int) { views[0] = items }"),
-        "storing a borrowed view through `views[_]` is not supported yet",
+        &program(
+            "func fill(views mut Array<[]int>, items []int) { views[0] = items }
+            func g() { var data = [int; 1]{1}\nvar other = [int; 1]{0}\nvar views = Array<[]int>{other[:]}\nfill(views, data[:])\ndata[0] = 5\nprintln(views[0][0]) }",
+        ),
+        "cannot assign to `data[_]` while it is borrowed",
     );
 }
 
@@ -829,8 +866,11 @@ fn views_stored_in_maps_keep_their_backing_borrowed() {
         data[0] = 5",
     ));
     rejects(
-        &program("func fill(m mut map[string][]int, items []int) { m[\"a\"] = items }"),
-        "storing a borrowed view through `m` is not supported yet",
+        &program(
+            "func fill(m mut map[string][]int, items []int) { m[\"a\"] = items }
+            func g() { var data = [int; 1]{1}\nvar m = map[string][]int{}\nfill(m, data[:])\ndata[0] = 5\nlet found, items = m[\"a\"] }",
+        ),
+        "cannot assign to `data[_]` while it is borrowed",
     );
 }
 
@@ -1051,13 +1091,48 @@ fn storing_through_a_capture_is_limited_to_values_without_borrows() {
         f()
         println(n)",
     ));
+    accepts(&body(
+        "var f = func() {}
+        let g = func() { f = func() {} }
+        g()
+        f()",
+    ));
     rejects(
         &body(
-            "var f = func() {}
-            let g = func() { f = func() {} }
-            g()",
+            "var a = [int; 1]{1}
+            var b = [int; 1]{2}
+            var s = a[:]
+            let point = func() { s = b[:] }
+            point()
+            b[0] = 5
+            println(s[0])",
         ),
-        "storing a borrowed view through `f` is not supported yet",
+        "cannot assign to `b[_]` while it is borrowed",
+    );
+    accepts(&body(
+        "var a = [int; 1]{1}
+        var b = [int; 1]{2}
+        var s = a[:]
+        let point = func() { s = b[:] }
+        point()
+        println(s[0])
+        b[0] = 5",
+    ));
+    rejects(
+        &body(
+            "var a = [int; 1]{1}
+            var s = a[:]
+            let point = func(items []int) { s = items }",
+        ),
+        "storing a view from a function literal's parameter into captured `s` is not supported yet",
+    );
+    rejects(
+        &body(
+            "var a = [int; 1]{1}
+            var s = a[:]
+            let point = func() { var local = [int; 1]{2}\ns = local[:] }",
+        ),
+        "cannot store a view of local `local` into `s`",
     );
 }
 
