@@ -1,5 +1,3 @@
-//! The `zore` command-line driver.
-
 use super::command as cli;
 
 use std::path::{Path, PathBuf};

@@ -1,5 +1,3 @@
-//! Expressions: precedence climbing, postfix chains, and literals.
-
 use super::parser::{PResult, Parser};
 use crate::ast::*;
 use crate::diagnostic::{Diagnostic, Severity};
@@ -148,7 +146,6 @@ impl Parser<'_> {
         }
     }
 
-    /// The rest of `base[index]` or `base[low:high]`, after the `[`.
     fn index_or_slice(&mut self, base: Expr) -> PResult<ExprKind> {
         let base = Box::new(base);
         let low = if self.at(Punct::Colon) {
@@ -172,7 +169,7 @@ impl Parser<'_> {
         if self.at(Punct::Colon) {
             let span = self.current_span();
             return Err(self.error(
-                "a slice expression takes at most two bounds; Zore has no capacity bound or stride (§12.6)",
+                "a slice expression takes at most two bounds; Zore has no capacity bound or stride",
                 span,
             ));
         }
@@ -220,10 +217,10 @@ impl Parser<'_> {
                 return Err(self.error("`_` cannot be used as a value", span));
             }
             TokenKind::Keyword(Keyword::Func) => {
-                return Err(self.unsupported("function literals (closures)", "M24"));
+                return self.closure();
             }
             TokenKind::Keyword(Keyword::Go) => {
-                return Err(self.unsupported("`go` task-creation expressions", "M25–M29"));
+                return Err(self.unsupported("`go` task-creation expressions"));
             }
             TokenKind::Keyword(Keyword::Map) => {
                 return self.map_literal();
@@ -232,7 +229,7 @@ impl Parser<'_> {
                 return self.array_literal();
             }
             TokenKind::Keyword(Keyword::Channel) => {
-                return Err(self.unsupported("channel expressions", "M30"));
+                return Err(self.unsupported("channel expressions"));
             }
             TokenKind::Reserved(word) => {
                 let message = format!(
@@ -247,6 +244,36 @@ impl Parser<'_> {
         Ok(Expr { kind, span })
     }
 
+    fn closure(&mut self) -> PResult<Expr> {
+        let start = self.bump().span;
+        if *self.peek() == TokenKind::Ident {
+            let span = self.current_span();
+            return Err(self.error(
+                "a function literal has no name; declare named functions at package level",
+                span,
+            ));
+        }
+        self.expect(Punct::LParen)?;
+        let params = self.comma_list(Punct::RParen, "parameter", true, |p| {
+            p.param("a parameter name")
+        })?;
+        let results = self.results()?;
+        let body = self.with_struct_literals(true, |p| {
+            p.body_block(
+                "function literal signature",
+                "function literals require a body",
+            )
+        })?;
+        Ok(Expr {
+            kind: ExprKind::Closure(Box::new(Closure {
+                params,
+                results,
+                body,
+            })),
+            span: self.span_from(start),
+        })
+    }
+
     pub(super) fn struct_literal(&mut self, ty: Name) -> PResult<Expr> {
         self.bump();
         let fields = self.with_struct_literals(true, |p| {
@@ -258,13 +285,12 @@ impl Parser<'_> {
         })
     }
 
-    /// `[element; size]{e1, e2, ...}`.
     pub(super) fn array_literal(&mut self) -> PResult<Expr> {
         let span = self.current_span();
         let ty = self.bracket_type()?;
         if let Type::Slice { span, .. } = ty {
             return Err(self.error(
-                "slice literals are not part of Zore; slice existing storage instead, e.g. `data[:]` (§12.6)",
+                "slice literals are not part of Zore; slice existing storage instead, e.g. `data[:]`",
                 span,
             ));
         }
@@ -278,7 +304,6 @@ impl Parser<'_> {
         })
     }
 
-    /// `map[K]V{key: value, ...}`.
     fn map_literal(&mut self) -> PResult<Expr> {
         let span = self.current_span();
         let ty = self.map_type()?;
@@ -303,14 +328,14 @@ impl Parser<'_> {
         })
     }
 
-    /// `Array<element>{e1, e2, ...}`, recognized by the predeclared name.
+    /// Recognized by the predeclared name `Array`.
     fn dyn_array_literal(&mut self) -> PResult<Expr> {
         let span = self.current_span();
         let ty = self.ty()?;
         if !self.at(Punct::LBrace) {
             let at = self.current_span();
             return Err(self.error(
-                "expected `{` after `Array<T>`; dynamic arrays are built with a typed literal such as `Array<int>{}` (§12.6)",
+                "expected `{` after `Array<T>`; dynamic arrays are built with a typed literal such as `Array<int>{}`",
                 at,
             ));
         }

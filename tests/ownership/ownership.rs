@@ -1,6 +1,3 @@
-//! Ownership-analysis tests: moves, borrows, partial moves, reinitialization,
-//! and array-element restrictions, checked through the full frontend.
-
 use zore::check::{Checked, check_file};
 use zore::source::SourceMap;
 
@@ -26,12 +23,10 @@ impl Case {
     }
 }
 
-/// Wrap declarations in a `main` package with a trivial entry point.
 fn program(decls: &str) -> String {
     format!("package main\n\n{decls}\n\nfunc main() {{}}\n")
 }
 
-/// Wrap statements as the body of `main`.
 fn body(stmts: &str) -> String {
     format!("package main\n\nfunc main() {{\n{stmts}\n}}\n")
 }
@@ -233,12 +228,10 @@ const SLICE_FUNCS: &str = "func inspect(items []int) int { return items[0] }
 func edit(items mut []int) { items[0] = 9 }
 func firstHalf(s mut []int) mut []int { return s[:1] }";
 
-/// Statements as `main`'s body, after the shared slice helpers.
 fn slice_body(stmts: &str) -> String {
     format!("package main\n\n{SLICE_FUNCS}\n\nfunc main() {{\n{stmts}\n}}\n")
 }
 
-/// Declarations after the shared slice helpers, in a `main` package.
 fn slice_program(decls: &str) -> String {
     program(&format!("{SLICE_FUNCS}\n{decls}"))
 }
@@ -850,5 +843,220 @@ fn a_later_argument_cannot_remove_from_an_earlier_borrowed_map() {
             func use() { var m = map[string]int{}\nf(m, pick(m)) }",
         ),
         "`m` is borrowed by an earlier argument and mutated by a later one",
+    );
+}
+
+const RESOURCE: &str = "type Res struct { id int }
+func (r mut Res) drop() {}
+func take(r own Res) {}
+func show(r Res) {}";
+
+fn resource_body(stmts: &str) -> String {
+    format!("package main\n\n{RESOURCE}\n\nfunc main() {{\n{stmts}\n}}\n")
+}
+
+#[test]
+fn a_shared_capture_blocks_writes_until_the_closure_last_use() {
+    let case = rejects(
+        &body(
+            "var n = 1
+            let f = func() { println(n) }
+            n = 2
+            f()",
+        ),
+        "cannot assign to `n` while it is borrowed",
+    );
+    let rendered = case.checked.diagnostics[0].render(&case.sources).unwrap();
+    assert!(
+        rendered.contains("`n` captured by this function literal"),
+        "{rendered}"
+    );
+    assert!(
+        rendered.contains("the closure `f` is used later"),
+        "{rendered}"
+    );
+    accepts(&body(
+        "var n = 1
+        let f = func() { println(n) }
+        f()
+        n = 2
+        println(n)",
+    ));
+    accepts(&body(
+        "let n = 1
+        let a = func() { println(n) }
+        let b = func() { println(n) }
+        a()
+        b()
+        println(n)",
+    ));
+}
+
+#[test]
+fn an_exclusive_capture_blocks_every_other_use() {
+    rejects(
+        &body(
+            "var count = 0
+            let f = func() { count += 1 }
+            println(count)
+            f()",
+        ),
+        "cannot use `count` while it is mutably borrowed",
+    );
+    rejects(
+        &body(
+            "var count = 0
+            let a = func() { count += 1 }
+            let b = func() { count += 2 }
+            a()
+            b()",
+        ),
+        "cannot borrow `count` as mutable because it is already borrowed",
+    );
+    rejects(
+        &program(
+            "func run(f func(), n mut int) { f() }
+            func g() { var count = 0
+            let f = func() { count += 1 }
+            run(f, count) }",
+        ),
+        "cannot borrow `count` as mutable because it is already borrowed",
+    );
+    accepts(&body(
+        "var count = 0
+        let a = func() { count += 1 }
+        a()
+        let b = func() { count += 2 }
+        b()
+        println(count)",
+    ));
+}
+
+#[test]
+fn captured_slices_keep_their_backing_borrowed() {
+    rejects(
+        &body(
+            "var data = [int; 2]{1, 2}
+            let view = data[:]
+            let f = func() { println(view[0]) }
+            data[0] = 5
+            f()",
+        ),
+        "cannot assign to `data[_]` while it is borrowed",
+    );
+    rejects(
+        &body(
+            "var data = [int; 2]{1, 2}
+            let f = func() { data[0] = 9 }
+            let view = data[:]
+            f()
+            println(view[0])",
+        ),
+        "cannot borrow `data` because it is mutably borrowed",
+    );
+}
+
+#[test]
+fn a_closure_cannot_outlive_what_it_captures() {
+    rejects(
+        &body(
+            "var f = func() {}
+            {
+                let x = 1
+                f = func() { println(x) }
+            }
+            f()",
+        ),
+        "`x` does not live long enough",
+    );
+    accepts(&body(
+        "var f = func() {}
+        {
+            let x = 1
+            f = func() { println(x) }
+            f()
+        }",
+    ));
+}
+
+#[test]
+fn closures_are_move_values_and_calls_use_them_exclusively() {
+    rejects(
+        &body("let f = func() {}\nlet g = f\nf()\ng()"),
+        "use of moved value `f`",
+    );
+    rejects(
+        &body(
+            "var f = func() {}
+            let g = func() { f() }
+            f()
+            g()",
+        ),
+        "cannot call `f` while it is borrowed",
+    );
+    accepts(&body(
+        "let f = func() {}
+        let g = func() { f() }
+        g()
+        g()",
+    ));
+    rejects(
+        &program("func keep(f func()) { let g = f }"),
+        "cannot move borrowed value `f`",
+    );
+}
+
+#[test]
+fn captured_move_values_are_borrowed_never_consumed() {
+    accepts(&resource_body(
+        "let r = Res{id: 1}
+        let f = func() { show(r) }
+        f()
+        f()
+        take(r)",
+    ));
+    rejects(
+        &resource_body(
+            "let r = Res{id: 1}
+            let f = func() { take(r) }
+            f()",
+        ),
+        "moving captured value `r` out of a function literal is not supported yet",
+    );
+    rejects(
+        &resource_body(
+            "let r = Res{id: 1}
+            let f = func() { show(r) }
+            take(r)
+            f()",
+        ),
+        "cannot move `r` while it is borrowed",
+    );
+    rejects(
+        &resource_body(
+            "let r = Res{id: 1}
+            take(r)
+            let f = func() { show(r) }
+            f()",
+        ),
+        "use of moved value `r`",
+    );
+}
+
+#[test]
+fn storing_through_a_capture_is_limited_to_values_without_borrows() {
+    accepts(&body(
+        "var n = 0
+        let f = func() { n = 5 }
+        f()
+        println(n)",
+    ));
+    rejects(
+        &body(
+            "var f = func() {}
+            let g = func() { f = func() {} }
+            g()",
+        ),
+        "storing a borrowed view through `f` is not supported yet",
     );
 }

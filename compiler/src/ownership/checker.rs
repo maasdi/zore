@@ -1,5 +1,3 @@
-//! The ownership checker: forward data flow of move state over MIR.
-
 use super::move_state::MovedSet;
 use crate::diagnostic::{Diagnostic, Severity};
 use crate::hir;
@@ -7,12 +5,11 @@ use crate::mir::{
     BasicBlock, Body, Callee, Operand, Place, Program, Projection, Rvalue, Terminator,
     projection_type,
 };
-use crate::resolve::FieldId;
+use crate::resolve::{FieldId, LocalKind};
 use crate::source::Span;
 use crate::types::{TypeId, TypeKind};
 
-/// The leading run of `Field` projections, stopping at the first `Index` (or the end).
-/// Array contents aren't partial-move-tracked past the array field itself (§31.2).
+/// Array contents aren't partial-move-tracked past the array field.
 fn leading_field_path(projections: &[Projection]) -> Vec<FieldId> {
     projections
         .iter()
@@ -24,10 +21,7 @@ fn leading_field_path(projections: &[Projection]) -> Vec<FieldId> {
         .collect()
 }
 
-/// Whether any struct containing `local`'s path (never the designated field's own type)
-/// defines a custom `drop`, which forbids moving that field out on its own.
-/// Only ever called with a pure-field path: `check_operand` rejects any move
-/// through an `Index` before reaching this check.
+/// Only called with a field-only path.
 fn has_custom_ancestor(package: &hir::Package, local_ty: TypeId, fields: &[FieldId]) -> bool {
     let mut ty = local_ty;
     for field in fields {
@@ -40,7 +34,6 @@ fn has_custom_ancestor(package: &hir::Package, local_ty: TypeId, fields: &[Field
     false
 }
 
-/// Renders `place` as a dotted source-like name for diagnostics.
 pub(super) fn describe_place(package: &hir::Package, body: &Body, place: &Place) -> String {
     let mut ty = body.locals[place.local.0 as usize].ty;
     let mut name = body.locals[place.local.0 as usize]
@@ -175,6 +168,10 @@ fn transfer(
                     }
                 }
             }
+            if let Callee::Value(place) = callee {
+                let callee = Operand::Copy(place.clone());
+                check_operand(package, body, &callee, *span, state, diagnostics);
+            }
             for arg in args {
                 check_operand(package, body, arg, *span, state, diagnostics);
             }
@@ -229,10 +226,15 @@ fn check_rvalue(
                 check_operand(package, body, bound, span, state, diagnostics);
             }
         }
+        Rvalue::Closure { captures, .. } => {
+            for (place, _) in captures {
+                let captured = Operand::Copy(place.clone());
+                check_operand(package, body, &captured, span, state, diagnostics);
+            }
+        }
     }
 }
 
-/// Whether `place` indexes into a value whose type matches `indexed`.
 fn indexes_into(
     package: &hir::Package,
     body: &Body,
@@ -249,7 +251,7 @@ fn indexes_into(
     false
 }
 
-/// Conservative: two indices are never proof of disjointness (§12.6).
+/// Two indices never prove disjointness.
 fn projections_conservatively_equal(a: &Projection, b: &Projection) -> bool {
     match (a, b) {
         (Projection::Field(x), Projection::Field(y)) => x == y,
@@ -309,6 +311,23 @@ fn check_operand(
     if !moving {
         return;
     }
+    let is_capture = package
+        .function(body.function)
+        .locals
+        .get(index)
+        .is_some_and(|local| matches!(local.kind, LocalKind::Capture(_)));
+    if is_capture {
+        let name = describe_place(package, body, place);
+        diagnostics.push(
+            Diagnostic::new(
+                Severity::Error,
+                format!("moving captured value `{name}` out of a function literal is not supported yet"),
+                span,
+            )
+            .note("a closure borrows what it captures; consuming a capture would make it callable only once"),
+        );
+        return;
+    }
     if body.locals[index].by_reference {
         let name = describe_place(package, body, place);
         diagnostics.push(
@@ -331,7 +350,7 @@ fn check_operand(
                 format!("cannot move `{name}` out of a slice"),
                 span,
             )
-            .note("a slice borrows its elements; moving them out is not allowed (§12.6)"),
+            .note("a slice borrows its elements; moving them out is not allowed"),
         );
         return;
     }
@@ -345,7 +364,7 @@ fn check_operand(
                 format!("cannot move `{name}` out of a dynamic array"),
                 span,
             )
-            .note("`Array<T>` keeps ownership of its elements; borrow the element instead (§12.6, §31.2)"),
+            .note("`Array<T>` keeps ownership of its elements; borrow the element instead"),
         );
         return;
     }
@@ -361,7 +380,7 @@ fn check_operand(
                 format!("moving `{name}` out through an array index is not supported yet"),
                 span,
             )
-            .note("fixed-array element extraction is planned for a later milestone (§31.2)"),
+            .note("fixed-array element extraction is planned for a later milestone"),
         );
         return;
     }
@@ -373,7 +392,7 @@ fn check_operand(
                 format!("cannot move `{name}` out of a value with a custom `drop` method"),
                 span,
             )
-            .note("a destructor always requires a complete, unmoved receiver (§31.2)"),
+            .note("a destructor always requires a complete, unmoved receiver"),
         );
         return;
     }
@@ -394,10 +413,7 @@ fn assign(
         return;
     }
     let field_path = leading_field_path(&place.projections);
-    // An index in the path means this place is strictly *inside* the array
-    // field at `field_path`, never equal to it, so an exact match there is
-    // itself an ancestor (the whole array field was moved away) — unlike the
-    // no-index case, where an exact match is a legitimate reinitialization.
+    // Through an index, an exact match is a moved ancestor, not a reinitialization.
     let truncated = place.projections.len() > field_path.len();
     let ancestor = if truncated {
         state[index].moved_or_ancestor_moved(&field_path)
@@ -450,11 +466,7 @@ mod tests {
 
     #[test]
     fn whole_array_field_move_blocks_assignment_through_an_index() {
-        // `let other = outer.arr` then `outer.arr[0] = v` must be rejected,
-        // the same as it is for a plain field (finding 1: the naive fix using
-        // `moved_or_ancestor_moved`/`moved_strict_ancestor` based only on the
-        // truncated key's length, without checking whether truncation
-        // happened, silently allowed this).
+        // `let other = outer.arr` then `outer.arr[0] = v` must be rejected.
         let mut sources = SourceMap::new();
         let file = sources.add("test.ore", "0123456789".to_string()).unwrap();
         let span = sources.span(file, 0, 1).unwrap();
@@ -467,11 +479,7 @@ mod tests {
         assert_eq!(field_path, vec![FieldId(0)]);
         let truncated = index_path.len() > field_path.len();
         assert!(truncated);
-        // The fixed `assign` logic: truncated => ancestor check includes an
-        // exact match, so this must find the whole-field move.
         assert!(state.moved_or_ancestor_moved(&field_path).is_some());
-        // The unfixed logic would have used `moved_strict_ancestor`, which
-        // excludes an exact match and would have missed it.
         assert!(state.moved_strict_ancestor(&field_path).is_none());
     }
 

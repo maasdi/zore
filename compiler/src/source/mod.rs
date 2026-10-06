@@ -1,5 +1,3 @@
-//! UTF-8 source files, file IDs, and byte spans.
-
 mod source_file;
 mod source_map;
 mod span;

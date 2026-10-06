@@ -1,6 +1,3 @@
-//! The runtime ABI: declared runtime symbols, the calling convention for Zore
-//! functions, runtime output calls, and the native entry shim.
-
 use super::llvm::{FunctionBuilder, Module};
 use crate::mir::{self, Callee, Operand};
 use crate::resolve::FunctionId;
@@ -32,7 +29,6 @@ declare double @llvm.fabs.f64(double)
 ";
 
 impl Module<'_> {
-    /// The native entry point the Rust runtime calls into.
     pub(super) fn entry_shim(&self, entry: FunctionId) -> String {
         let name = &self.package.function(entry).name;
         format!(
@@ -46,6 +42,58 @@ impl FunctionBuilder<'_, '_> {
     pub(super) fn call(&mut self, id: FunctionId, args: &[Operand]) -> Option<(String, String)> {
         let package = self.module.package;
         let callee = package.function(id);
+        let rendered = self.arguments(args);
+        let target = format!("@\"{}.{}\"", package.name, callee.name);
+        self.emit_call(&target, &callee.results, &rendered)
+    }
+
+    /// The closure's code takes its environment before the ordinary arguments.
+    pub(super) fn call_value(
+        &mut self,
+        place: &mir::Place,
+        args: &[Operand],
+    ) -> Option<(String, String)> {
+        let package = self.module.package;
+        let results = package
+            .types
+            .func_signature(self.place_ty(place))
+            .expect("a function-typed callee")
+            .results
+            .clone();
+        let address = self.address(place);
+        let closure = self.fresh();
+        self.line(format!("{closure} = load {{ ptr, ptr }}, ptr {address}"));
+        let code = self.fresh();
+        self.line(format!("{code} = extractvalue {{ ptr, ptr }} {closure}, 0"));
+        let environment = self.fresh();
+        self.line(format!(
+            "{environment} = extractvalue {{ ptr, ptr }} {closure}, 1"
+        ));
+        let mut rendered = vec![format!("ptr {environment}")];
+        rendered.extend(self.arguments(args));
+        self.emit_call(&code, &results, &rendered)
+    }
+
+    fn emit_call(
+        &mut self,
+        target: &str,
+        results: &[TypeId],
+        rendered: &[String],
+    ) -> Option<(String, String)> {
+        let call = format!("{target}({})", rendered.join(", "));
+        if results.is_empty() {
+            self.line(format!("call void {call}"));
+            return None;
+        }
+        let ret = self.module.results_ty(results);
+        let result = self.fresh();
+        self.line(format!("{result} = call {ret} {call}"));
+        Some((ret, result))
+    }
+
+    /// A borrowed Move value passes its address and its drop flags' address.
+    fn arguments(&mut self, args: &[Operand]) -> Vec<String> {
+        let package = self.module.package;
         let mut rendered = Vec::new();
         for arg in args {
             if let Operand::Ref(place) = arg {
@@ -70,24 +118,10 @@ impl FunctionBuilder<'_, '_> {
             let value = self.value(arg);
             rendered.push(format!("{ty} {value}"));
         }
-        let ret = self.module.results_ty(&callee.results);
-        let target = format!(
-            "@\"{}.{}\"({})",
-            package.name,
-            callee.name,
-            rendered.join(", ")
-        );
-        if callee.results.is_empty() {
-            self.line(format!("call void {target}"));
-            return None;
-        }
-        let result = self.fresh();
-        self.line(format!("{result} = call {ret} {target}"));
-        Some((ret, result))
+        rendered
     }
 
-    /// Emits a compiler-provided map operation (§13.3). Lookup and removal
-    /// return the `{ i1, V }` presence/value pair for their destinations.
+    /// Lookup and removal return a `{ i1, V }` presence/value pair.
     pub(super) fn map_call(
         &mut self,
         callee: &Callee,
@@ -142,8 +176,7 @@ impl FunctionBuilder<'_, '_> {
                     self.drop_unconditional(&old, value);
                     self.line(format!("br label %{stored}"));
                     self.out.push_str(&format!("{stored}:\n"));
-                    // §13.3: the old entry is already detached; on a panic the
-                    // new value stays with its temporary for unwinding.
+                    // The old entry is detached; on a panic the new value stays with its temporary.
                     self.check_after_drop(false);
                 }
                 self.store_map_value(&slot, &kind, &key, &args[2], &value_ty);
@@ -166,14 +199,12 @@ impl FunctionBuilder<'_, '_> {
                 self.store_map_value(&slot, &kind, &key, &args[2], &value_ty);
                 None
             }
-            Callee::Function(_) | Callee::Println | Callee::Drop => {
+            Callee::Function(_) | Callee::Value(_) | Callee::Println | Callee::Drop => {
                 unreachable!("not a map operation")
             }
         }
     }
 
-    /// Stores the key operand in a hoisted slot, returning the runtime key
-    /// kind and the slot's address.
     fn map_key(&mut self, operand: &Operand, ty: TypeId) -> (String, String) {
         let value = self.value(operand);
         let slot = self.fresh();
@@ -206,7 +237,6 @@ impl FunctionBuilder<'_, '_> {
         }
     }
 
-    /// A hoisted buffer for one value of `ty`, zeroed here.
     fn zeroed_buffer(&mut self, ty: &str) -> String {
         let buffer = self.fresh();
         self.hoist_alloca(&buffer, ty);
@@ -214,7 +244,6 @@ impl FunctionBuilder<'_, '_> {
         buffer
     }
 
-    /// The `{ i1, V }` pair of `found` and the value loaded from `source`.
     fn presence_pair(&mut self, found: &str, source: &str, value_ty: &str) -> (String, String) {
         let value = self.fresh();
         self.line(format!("{value} = load {value_ty}, ptr {source}"));
@@ -230,7 +259,6 @@ impl FunctionBuilder<'_, '_> {
         (pair_ty, pair)
     }
 
-    /// Inserts the absent key into the map behind `slot` and moves `value` in.
     fn store_map_value(
         &mut self,
         slot: &str,
@@ -255,7 +283,7 @@ impl FunctionBuilder<'_, '_> {
             self.module.unsupported(
                 "printing floating-point values is",
                 span,
-                "the float text format for `println` is still TBD (§37.1)",
+                "the float text format for `println` is still TBD",
             );
             return;
         }
@@ -291,7 +319,8 @@ impl FunctionBuilder<'_, '_> {
             | TypeKind::Array { .. }
             | TypeKind::Slice { .. }
             | TypeKind::DynArray { .. }
-            | TypeKind::Map { .. } => unreachable!("checked printable type"),
+            | TypeKind::Map { .. }
+            | TypeKind::Func(_) => unreachable!("checked printable type"),
         }
     }
 }

@@ -1,20 +1,14 @@
-//! What kind of token a span is: literals, words, punctuation, separators.
-
 #[derive(Clone, Debug, PartialEq)]
 pub enum TokenKind {
     Ident,
-    /// Standalone `_`, reserved for discards.
     Underscore,
     Keyword(Keyword),
-    /// A future-reserved word.
     Reserved(ReservedWord),
-    /// Integer literal; its value is decoded from the span during typing.
+    /// Decoded from the span during typing.
     Int(IntBase),
-    /// Decimal float literal; its value is decoded from the span during typing.
+    /// Decoded from the span during typing.
     Float,
-    /// Decoded string literal.
     String(String),
-    /// Decoded rune literal.
     Rune(char),
     /// A literal whose spelling was diagnosed.
     MalformedLiteral,
@@ -69,11 +63,8 @@ impl IntBase {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Separator {
-    /// A `;` written in the source.
     Explicit,
-    /// Inserted at a newline.
     Newline,
-    /// Inserted at end of input.
     Eof,
 }
 
@@ -93,7 +84,6 @@ macro_rules! words {
                 }
             }
 
-            /// Exact, case-sensitive lookup.
             pub fn lookup(text: &str) -> Option<Self> {
                 match text {
                     $($text => Some(Self::$variant),)*

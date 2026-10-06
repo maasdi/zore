@@ -1,6 +1,3 @@
-//! Tokens to syntax tree, recovering from errors at statement and
-//! declaration boundaries.
-
 mod declaration;
 mod expression;
 #[allow(clippy::module_inception)]
@@ -17,7 +14,7 @@ use parser::Parser;
 #[derive(Debug)]
 pub struct Parsed {
     pub file: File,
-    /// Lexical then syntax diagnostics; empty exactly when the file is valid.
+    /// Empty exactly when the file is valid.
     pub diagnostics: Vec<Diagnostic>,
 }
 

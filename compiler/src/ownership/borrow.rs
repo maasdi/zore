@@ -1,22 +1,18 @@
-//! Loans, the storage paths they cover, and when an access conflicts with one.
-
 use crate::hir;
 use crate::mir::{Body, Local, Place, Projection, projection_type};
 use crate::resolve::FieldId;
 use crate::source::Span;
 use crate::types::TypeKind;
 
-/// A step along a storage path. Unlike a MIR projection, indexing a slice
-/// first leaves the descriptor for the storage it views (`Deref`).
+/// Indexing a slice first steps through its descriptor (`Deref`).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) enum PathElem {
     Field(FieldId),
-    /// Any element; index values are never proof of disjointness (§12.6).
+    /// Index values never prove disjointness.
     Index,
     Deref,
 }
 
-/// A storage location, as a root local plus the steps taken from it.
 #[derive(Clone, Debug, PartialEq)]
 pub(super) struct Path {
     pub(super) local: Local,
@@ -31,8 +27,7 @@ impl Path {
             match projection {
                 Projection::Field(field) => elems.push(PathElem::Field(*field)),
                 Projection::Index(_) => {
-                    // An `Array<T>` owns its elements like a fixed array, so
-                    // replacing it must conflict with views of them.
+                    // `Array<T>` owns its elements, so replacing it conflicts with views of them.
                     if matches!(package.types.kind(ty), TypeKind::Slice { .. }) {
                         elems.push(PathElem::Deref);
                     }
@@ -47,7 +42,6 @@ impl Path {
         }
     }
 
-    /// The storage a slice descriptor at this path views.
     pub(super) fn deref(mut self) -> Self {
         self.elems.push(PathElem::Deref);
         self
@@ -57,7 +51,6 @@ impl Path {
         self.elems.contains(&PathElem::Deref)
     }
 
-    /// Whether one path is a prefix of the other, so they share storage.
     fn overlaps(&self, other: &Path) -> bool {
         self.local == other.local && self.elems.iter().zip(&other.elems).all(|(a, b)| a == b)
     }
@@ -76,21 +69,19 @@ pub(super) enum LoanTarget {
     Param(usize),
 }
 
-/// One borrow, created at a slicing expression, a mutable-view copy, or a
-/// call whose result borrows from an argument.
 #[derive(Debug)]
 pub(super) struct Loan {
     pub(super) kind: LoanKind,
     pub(super) target: LoanTarget,
     pub(super) span: Span,
-    /// The borrowed place as written, for diagnostics.
+    /// As written, for diagnostics.
     pub(super) name: String,
     pub(super) from_slicing: bool,
+    pub(super) captured: bool,
 }
 
 impl Loan {
-    /// Whether assigning to `path` ends this loan: the loan borrows through a
-    /// descriptor stored at `path`, which the assignment replaces.
+    /// The loan borrows through a descriptor stored at `path`.
     pub(super) fn ended_by_assignment_to(&self, path: &Path) -> bool {
         let LoanTarget::Place(borrowed) = &self.target else {
             return false;
@@ -108,8 +99,7 @@ pub(super) enum AccessKind {
     Write,
 }
 
-/// A shallow access touches a place's own storage but not what a slice
-/// descriptor inside it views.
+/// Shallow accesses skip what a slice descriptor inside the place views.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) enum Depth {
     Shallow,
@@ -119,6 +109,7 @@ pub(super) enum Depth {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) enum Action {
     Use,
+    Call,
     Assign,
     Borrow,
     MutBorrow,
@@ -137,8 +128,7 @@ pub(super) struct Access {
     pub(super) from_slicing: bool,
 }
 
-/// Whether performing `access` while `loan` is live violates exclusivity
-/// (§11.3): reads conflict only with exclusive loans, writes with any.
+/// Reads conflict only with exclusive loans, writes with any.
 pub(super) fn conflicts(loan: &Loan, access: &Access) -> bool {
     let LoanTarget::Place(borrowed) = &loan.target else {
         return false;
@@ -178,6 +168,7 @@ mod tests {
             span: span(),
             name: "s".into(),
             from_slicing: true,
+            captured: false,
         }
     }
 

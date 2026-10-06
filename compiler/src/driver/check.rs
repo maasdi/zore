@@ -1,5 +1,3 @@
-//! The frontend pipeline: lex, parse, resolve, and type check.
-
 use crate::diagnostic::Diagnostic;
 use crate::hir;
 use crate::mir::{self, error_use};
@@ -15,7 +13,6 @@ pub struct Checked {
     pub diagnostics: Vec<Diagnostic>,
 }
 
-/// Checks one file as a complete package.
 pub fn check_file(file: &SourceFile) -> Checked {
     let parsed = parse(file);
     if !parsed.diagnostics.is_empty() {

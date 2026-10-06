@@ -1,4 +1,5 @@
-use super::type_id::{StructId, TypeId};
+use super::type_id::{FuncTypeId, StructId, TypeId};
+use crate::ast::ParamMode;
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct IntType {
@@ -39,7 +40,6 @@ impl IntType {
     }
 }
 
-/// IEEE 754 binary32 or binary64.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct FloatType {
     pub bits: u8,
@@ -68,18 +68,25 @@ pub enum TypeKind {
         element: TypeId,
         size: u32,
     },
-    /// A borrowed view, `[]T` or `mut []T`; it never owns its elements.
+    /// Borrowed; never owns its elements.
     Slice {
         element: TypeId,
         mutable: bool,
     },
-    /// The owned dynamic array `Array<T>`; always Move (§10.5).
+    /// Always Move.
     DynArray {
         element: TypeId,
     },
-    /// The owned map `map[K]V`; always Move (§13.2).
+    /// Always Move.
     Map {
         key: TypeId,
         value: TypeId,
     },
+    Func(FuncTypeId),
+}
+
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+pub struct FuncSignature {
+    pub params: Vec<(ParamMode, TypeId)>,
+    pub results: Vec<TypeId>,
 }

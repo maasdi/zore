@@ -2,7 +2,8 @@
 
 Status: The compiler supports a synchronous subset through parts of M18–M20,
 including Move structs, deterministic drops, concrete error values, fixed
-arrays, dynamic `Array<T>`, maps, and borrowed slices with region analysis. Paths below are relative to `compiler/src/`. `main.rs` delegates to
+arrays, dynamic `Array<T>`, maps, borrowed slices with region analysis, and
+non-escaping closures. Paths below are relative to `compiler/src/`. `main.rs` delegates to
 `driver`; `driver/command.rs` and `driver/session.rs` handle CLI arguments and
 exit status; `driver/check.rs` orchestrates the frontend pipeline and
 `driver/build.rs` the native one. `source/` stores UTF-8 text under stable
@@ -160,13 +161,14 @@ followed by one rounding, which equals the correctly rounded IEEE result.
 The checker accepts a deliberately small, single-file subset: primitive values,
 `error`, structs including Move structs with custom `drop` methods, fixed
 arrays, literal-sized dynamic arrays (`Array<T>`), maps (`map[K]V`), borrowed slices (`[]T`,
-`mut []T`, `base[low:high]`), functions,
-methods, and `println`. Ownership analysis (`ownership/`) checks whole-place
+`mut []T`, `base[low:high]`), functions, methods, non-escaping closures with
+function types (§16), and `println`. Ownership analysis (`ownership/`) checks whole-place
 and field-level partial moves, reinitialization, and call-local borrows over
 MIR (`checker.rs`), then runs region analysis (`region.rs`) over the loans
 described in `borrow.rs`; error-use analysis checks named `error` bindings
 and parameters on normal control-flow paths. Awaited `?`, `async`/`await`, imports, package variables,
-rune conversions, and function values remain unsupported. `println` of a float
+rune conversions, declared functions used as values, and escaping or call-once
+closures remain unsupported. `println` of a float
 type-checks, but its text format is still TBD (§37.1).
 
 AST preserves written structure; HIR records resolved meaning; MIR describes
@@ -212,11 +214,33 @@ the empty zero map. MIR expresses literal entries, lookup, `m[k] = v`, and
 a hoisted slot with a runtime kind code. A stored value's loans join the
 map's holdings, and a value read or removed from the map carries them out.
 
+Closures (§16) reuse this machinery. The resolver gives each closure literal
+its own `FunctionId` (after the declared functions) and locals; a name that
+resolves to a local of an enclosing body becomes a `LocalKind::Capture` local,
+chained through every closure in between. The checker types a literal's body in
+place, with its captures typed from the enclosing locals, and marks a capture
+exclusive when the body writes through it (which requires the original binding
+to be a mutable place) or when it holds a closure or `mut []T`. A function type
+is interned in the `TypeStore` with its signature; closure values are Move and
+count as view-holding, so every closure-related borrow is a loan. MIR creates a
+closure with `Rvalue::Closure`, whose loans on the captured places (shared or
+exclusive) are held by the closure value until its last use; a call through a
+value is `Callee::Value(place)`, an exclusive access of the callee, and a
+function value passed to a function-typed parameter is borrowed exclusively.
+The closure body is an ordinary MIR body whose capture locals are by-reference
+locals. Codegen represents a closure as `{ code, environment }`: the
+environment is a hoisted `[N x ptr]` in the creating frame holding each captured
+place's address (and its drop flags' address for a Move value), and the body
+receives it as a leading `ptr` parameter and loads its capture locals from it.
+Function-typed results, fields, and elements are rejected, so a closure cannot
+escape the frame that holds its environment.
+
 Temporary
 restrictions, each diagnosed: `mut []T` cannot be nested inside a struct field,
 array, or slice element; a view cannot be stored through a slice element or a
-by-reference parameter; and a type containing a view cannot define a custom
-`drop`.
+by-reference parameter or a closure capture; a type containing a view cannot
+define a custom `drop`; a function type cannot return a view; and a closure
+cannot consume a captured Move value.
 
 The pass order in §25 is conceptual. The frontend lowers checked HIR to MIR,
 runs ownership and error-use analysis, then returns diagnostics or a package.

@@ -1,9 +1,7 @@
-//! The resolver pass: collects package declarations, then walks bodies.
-
 use std::collections::HashMap;
 
 use super::ids::{ConstId, FunctionId};
-use super::symbol::{ConstDecl, LocalDecl, LocalKind, Res};
+use super::symbol::{ClosureDecl, ConstDecl, LocalDecl, LocalKind, Res};
 use crate::ast::{self, BindingKind, BindingTarget, ExprKind, ForHeader, Item, StmtKind};
 use crate::diagnostic::{Diagnostic, Severity};
 use crate::source::Span;
@@ -13,30 +11,33 @@ pub struct Resolution<'a> {
     pub package: String,
     pub types: TypeStore,
     pub structs: Vec<&'a ast::StructDecl>,
-    /// Functions and methods; a method's receiver is its first parameter.
+    /// A method's receiver is its first parameter.
     pub functions: Vec<&'a ast::FuncDecl>,
     pub methods: HashMap<(StructId, String), FunctionId>,
     pub consts: Vec<ConstDecl<'a>>,
-    /// Name and type-name uses, by the span of the name.
+    /// Keyed by the span of the name.
     pub uses: HashMap<Span, Res>,
-    /// Locals of each function, indexed by `FunctionId`.
+    /// Indexed by `FunctionId`.
     pub locals: Vec<Vec<LocalDecl>>,
-    /// Declared local or local constant, by the span of its declaring name.
+    /// Closure `i` has `FunctionId(functions.len() + i)`.
+    pub closures: Vec<ClosureDecl<'a>>,
+    /// Keyed by the span of the declaring name.
     pub declarations: HashMap<Span, Res>,
     pub diagnostics: Vec<Diagnostic>,
 }
 
-/// The named type a field stores by value beneath any array layers; a slice
-/// only borrows its elements and `Array<T>` stores them on the heap.
+/// Slices borrow and `Array<T>` stores on the heap, so neither stores by value.
 fn by_value_named_type(ty: &ast::Type) -> Option<&ast::Name> {
     match ty {
         ast::Type::Named(name) => Some(name),
         ast::Type::Array { element, .. } => by_value_named_type(element),
-        ast::Type::Slice { .. } | ast::Type::DynArray { .. } | ast::Type::Map { .. } => None,
+        ast::Type::Slice { .. }
+        | ast::Type::DynArray { .. }
+        | ast::Type::Map { .. }
+        | ast::Type::Func { .. } => None,
     }
 }
 
-/// The named type a field owns beneath any fixed or dynamic array layers.
 fn owned_named_type(ty: &ast::Type) -> Option<&ast::Name> {
     match ty {
         ast::Type::Named(name) => Some(name),
@@ -44,7 +45,7 @@ fn owned_named_type(ty: &ast::Type) -> Option<&ast::Name> {
             owned_named_type(element)
         }
         ast::Type::Map { value, .. } => owned_named_type(value),
-        ast::Type::Slice { .. } => None,
+        ast::Type::Slice { .. } | ast::Type::Func { .. } => None,
     }
 }
 
@@ -62,12 +63,14 @@ pub fn resolve(file: &ast::File) -> Resolution<'_> {
             consts: Vec::new(),
             uses: HashMap::new(),
             locals: Vec::new(),
+            closures: Vec::new(),
             declarations: HashMap::new(),
             diagnostics: Vec::new(),
         },
         package_scope: HashMap::new(),
         scopes: Vec::new(),
         function: None,
+        frames: Vec::new(),
     };
     resolver.file(file);
     resolver.out
@@ -78,6 +81,14 @@ pub(super) struct Resolver<'a> {
     pub(super) package_scope: HashMap<String, (Res, Span)>,
     pub(super) scopes: Vec<HashMap<String, (Res, Span)>>,
     pub(super) function: Option<FunctionId>,
+    /// Outermost first.
+    pub(super) frames: Vec<Frame>,
+}
+
+#[derive(Clone, Copy)]
+pub(super) struct Frame {
+    pub(super) function: FunctionId,
+    pub(super) scope_base: usize,
 }
 
 impl<'a> Resolver<'a> {
@@ -87,14 +98,14 @@ impl<'a> Resolver<'a> {
             .push(Diagnostic::new(Severity::Error, message, span));
     }
 
-    pub(super) fn unsupported(&mut self, what: &str, span: Span, milestone: &str) {
+    pub(super) fn unsupported(&mut self, what: &str, span: Span) {
         self.out.diagnostics.push(
             Diagnostic::new(
                 Severity::Error,
                 format!("{what} not supported by the checker yet"),
                 span,
             )
-            .note(format!("planned for roadmap milestone {milestone}")),
+            .note("planned for a later milestone"),
         );
     }
 
@@ -106,7 +117,7 @@ impl<'a> Resolver<'a> {
                     "imports are not supported by the checker yet",
                     import.span,
                 )
-                .note("`zore check` currently treats one file as the whole package (M23)"),
+                .note("`zore check` currently treats one file as the whole package"),
             );
         }
         // Collect declarations first so bodies can use later ones.
@@ -119,7 +130,7 @@ impl<'a> Resolver<'a> {
                     self.declare_package(&decl.name, Res::Struct(id));
                 }
                 Item::Func(func) if func.is_async => {
-                    self.unsupported("`async` functions are", func.name.span, "M25–M29");
+                    self.unsupported("`async` functions are", func.name.span);
                 }
                 Item::Func(func) => {
                     let id = FunctionId(self.out.functions.len() as u32);
@@ -144,7 +155,7 @@ impl<'a> Resolver<'a> {
                             "package-level `let` and `var` are not supported by the checker yet",
                             binding.span,
                         )
-                        .note("package variable initialization order is unresolved (Q05)"),
+                        .note("package variable initialization order is unresolved"),
                     );
                 }
             }
@@ -172,6 +183,7 @@ impl<'a> Resolver<'a> {
             }
             self.expr(value);
         }
+        self.out.locals = self.out.functions.iter().map(|_| Vec::new()).collect();
         for (index, func) in self.out.functions.clone().into_iter().enumerate() {
             self.function(FunctionId(index as u32), func);
         }
@@ -228,7 +240,7 @@ impl<'a> Resolver<'a> {
                     receiver.span,
                 )
                 .note(
-                    "a destructor gets mutable access without ownership, never a shared or `own` receiver (§14.3)",
+                    "a destructor gets mutable access without ownership, never a shared or `own` receiver",
                 ),
             );
         }
@@ -273,6 +285,16 @@ impl<'a> Resolver<'a> {
                 self.ty(key);
                 self.ty(value);
             }
+            ast::Type::Func {
+                params, results, ..
+            } => {
+                for param in params {
+                    self.ty(&param.ty);
+                }
+                for result in results {
+                    self.ty(result);
+                }
+            }
         }
     }
 
@@ -282,8 +304,7 @@ impl<'a> Resolver<'a> {
         self.report_struct_cycles(&by_value, &mut reported, |name| {
             format!("struct `{name}` contains itself by value and has no finite size")
         });
-        // Destruction code is emitted inline per type, so a type owning
-        // itself through `Array<T>` would need out-of-line drop functions.
+        // Drops are emitted inline per type, so self-ownership needs out-of-line drop functions.
         let owned = self.struct_edges(owned_named_type);
         self.report_struct_cycles(&owned, &mut reported, |name| {
             format!(
@@ -292,7 +313,6 @@ impl<'a> Resolver<'a> {
         });
     }
 
-    /// For each struct, the structs its fields reach through `named`.
     fn struct_edges(&self, named: fn(&ast::Type) -> Option<&ast::Name>) -> Vec<Vec<usize>> {
         self.out
             .structs
@@ -310,7 +330,7 @@ impl<'a> Resolver<'a> {
             .collect()
     }
 
-    /// Reports each struct that closes a cycle in `edges`, once.
+    /// Reports each cycle once.
     fn report_struct_cycles(
         &mut self,
         edges: &[Vec<usize>],
@@ -349,18 +369,32 @@ impl<'a> Resolver<'a> {
     }
 
     fn function(&mut self, id: FunctionId, func: &'a ast::FuncDecl) {
-        self.function = Some(id);
-        self.out.locals.push(Vec::new());
+        let params: Vec<&'a ast::Param> = func.receiver.iter().chain(&func.params).collect();
+        self.body(id, &params, &func.results, &func.body);
+    }
+
+    fn body(
+        &mut self,
+        id: FunctionId,
+        params: &[&'a ast::Param],
+        results: &'a [ast::Type],
+        body: &'a ast::Block,
+    ) {
+        let enclosing = self.function.replace(id);
+        self.frames.push(Frame {
+            function: id,
+            scope_base: self.scopes.len(),
+        });
         // Parameters share the outermost body scope.
         self.scopes.push(HashMap::new());
-        for param in func.receiver.iter().chain(&func.params) {
+        for param in params {
             self.ty(&param.ty);
             self.new_local(&param.name, LocalKind::Param(param.mode));
         }
-        for (index, result) in func.results.iter().enumerate() {
+        for (index, result) in results.iter().enumerate() {
             if let ast::Type::Named(name) = result
                 && name.text == "error"
-                && index + 1 != func.results.len()
+                && index + 1 != results.len()
             {
                 self.error(
                     "an `error` result must be the last result and appear only once",
@@ -369,11 +403,33 @@ impl<'a> Resolver<'a> {
             }
             self.ty(result);
         }
-        for stmt in &func.body.stmts {
+        for stmt in &body.stmts {
             self.stmt(stmt);
         }
         self.scopes.pop();
-        self.function = None;
+        self.frames.pop();
+        self.function = enclosing;
+    }
+
+    fn closure(&mut self, closure: &'a ast::Closure, span: Span) {
+        let Some(parent) = self.function else {
+            self.error(
+                "a function literal can only appear inside a function body",
+                span,
+            );
+            return;
+        };
+        let id = FunctionId(self.out.locals.len() as u32);
+        self.out.locals.push(Vec::new());
+        self.out.closures.push(ClosureDecl {
+            id,
+            closure,
+            span,
+            parent,
+            captures: Vec::new(),
+        });
+        let params: Vec<&'a ast::Param> = closure.params.iter().collect();
+        self.body(id, &params, &closure.results, &closure.body);
     }
 
     fn block(&mut self, block: &'a ast::Block) {
@@ -522,6 +578,7 @@ impl<'a> Resolver<'a> {
                     self.expr(&entry.value);
                 }
             }
+            ExprKind::Closure(closure) => self.closure(closure, expr.span),
             ExprKind::StructLit { ty, fields } => {
                 match self.use_name(&ty.text, ty.span) {
                     Some(Res::Struct(_) | Res::Unsupported) | None => {}

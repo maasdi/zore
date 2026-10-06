@@ -1,5 +1,3 @@
-//! Human-readable diagnostics tied to validated source spans.
-
 #[allow(clippy::module_inception)]
 mod diagnostic;
 mod label;

@@ -8,7 +8,6 @@ pub struct Local(pub u32);
 #[derive(Debug)]
 pub struct Program {
     pub bodies: Vec<Body>,
-    /// The entry point.
     pub entry: Option<FunctionId>,
 }
 
@@ -17,9 +16,10 @@ pub struct Body {
     pub function: FunctionId,
     pub name: String,
     pub locals: Vec<LocalDecl>,
-    /// Parameter locals, in order.
     pub params: Vec<Local>,
-    /// Result locals, in order; `Return` returns their values.
+    /// Closure capture locals, in environment order; each holds a reference.
+    pub captures: Vec<Local>,
+    /// `Return` returns their values.
     pub returns: Vec<Local>,
     pub blocks: Vec<BasicBlock>,
     pub unwind: Option<BlockId>,
@@ -28,8 +28,8 @@ pub struct Body {
 #[derive(Debug)]
 pub struct LocalDecl {
     pub ty: TypeId,
-    /// Source name for user bindings; `None` for temporaries.
+    /// `None` for temporaries.
     pub name: Option<String>,
-    /// The local holds a reference to a value of `ty`, which is what its places designate.
+    /// The local's places designate the referenced value.
     pub by_reference: bool,
 }

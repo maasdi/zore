@@ -34,10 +34,10 @@ is guidance, not a language contract.
 | M3–M4 — subset implemented; validation pending | AST and parser together for package/functions/structs/bindings/calls; test shape, spans, recovery, and rejection. Resolve relevant grammar questions first. |
 | M5–M8 — subset implemented; validation pending | Hello program, variables, functions, structs. Establish the minimal native backend and builtin output support needed to run examples. Use resolution/type work below as prerequisites where needed. |
 | M9–M12 — subset implemented; validation pending | Name resolution, types, HIR, MIR/CFG; semantic IDs, typed calls/fields, explicit control flow, frontend-only checking. |
-| M13–M17 — partial | Copy/Move classification, mutable borrowing, whole-place move analysis, field-level partial moves (with reinitialization and the custom-`drop`-ancestor restriction), and stored borrows with region analysis exist in CLI checking and builds. Region analysis tracks slice loans per local, frees them at the holder's last use (backward liveness), checks exclusivity at the originating place, suspends sources during mutable reborrows, rejects views that outlive a local or temporary owner, and infers return-borrow contracts by fixpoint. Remaining, each diagnosed as unsupported: `mut []T` nested inside a composite, storing a view through a slice element or by-reference parameter (output provenance), destructors that could observe a contained view, and every async/closure/task interaction. Complete the §42 semantic target with paired acceptance/rejection tests. |
+| M13–M17 — partial | Copy/Move classification, mutable borrowing, whole-place move analysis, field-level partial moves (with reinitialization and the custom-`drop`-ancestor restriction), and stored borrows with region analysis exist in CLI checking and builds. Region analysis tracks slice loans per local, frees them at the holder's last use (backward liveness), checks exclusivity at the originating place, suspends sources during mutable reborrows, rejects views that outlive a local or temporary owner, and infers return-borrow contracts by fixpoint. Remaining, each diagnosed as unsupported: `mut []T` nested inside a composite, storing a view through a slice element, by-reference parameter, or closure capture (output provenance), destructors that could observe a contained view, and every async/task interaction. Complete the §42 semantic target with paired acceptance/rejection tests. |
 | M18–M19 — synchronous subset implemented; validation pending | Drop insertion and panic cleanup cover the synchronous subset. The concrete Copy `error` type, `nil` in an error context, `error(message)`, content equality, explicit discards, rejection of silently ignored error results, and path-sensitive checks for named errors are implemented. Synchronous `?` propagates call errors, zero-fills other return values, and runs cleanup. Awaited propagation remains for M25–M29. |
 | M20–M23 — partial | Fixed-array types, typed literals, and indexing (read, mutable-place write/replacement, conservative-aliasing, and rejection of moving an element out through an index) are implemented end to end: `zore check`, and now `zore build`/`zore run` — LLVM `[N x T]` type emission, GEP-based indexed addressing, runtime bounds-check panics, and element cleanup without per-element drop flags (sound because element extraction stays rejected). Borrowed slices (`[]T`, `mut []T`, `base[low:high]`, contextual exclusive views, indexing and element writes through views) are implemented end to end: `zore check` with region analysis, and `zore build`/`zore run` with `{ ptr, i64 }` descriptors, slice-aware addressing, and runtime "slice bounds out of range" panics. Dynamic `Array<T>` is implemented end to end for literal-sized arrays: typed literals, indexing, element writes, slicing, borrow/`mut`/`own` passing, returns, the zero value, and heap storage freed after dropping elements in reverse order (Q17). Growth and length APIs (Q05), `clone`, structs that contain themselves through `Array<T>` or a map (rejected until out-of-line drop functions exist), and packages/imports remain; validate ownership and package visibility. Maps (`map[K]V`, §13.3) are implemented end to end: typed literals with static and runtime duplicate-key rejection, the two-result lookup for Copy values, `m[k] = v` insert/replace, and `m.remove(k)` transferring ownership (Q18). Iteration, length, and borrowed entry access remain Q02/Q05. |
-| M24 | Closures with capture analysis; reject captures that cannot remain valid. |
+| M24 — non-escaping slice implemented | Non-escaping closures (§16, Q02g) work end to end in `zore check`, `zore build`, and `zore run`: closure literals, `func(T) R` types, calls through values, function-typed parameters, captures inferred per whole local as shared or exclusive loans checked by region analysis, nested captures, `?` and panic cleanup inside closures. Paired acceptance/rejection tests cover each rule. Remaining, each diagnosed as unsupported or rejected: escaping closures, closures that consume a captured Move value, declared functions as values, function types returning views, storing a view or closure through a capture, and closures with tasks or `await` (M25+). |
 | M25–M29 | Task model, `go`, async states, `await`, scheduler; test lifetime proof, suspension, completion, error results, and detach behavior. |
 | M30–M31 | Channels and async I/O; test copying handles, message ownership, buffering, close/drain, and panic on closed send. |
 | M32–M34 | LLVM/native toolchain hardening and library growth; native execution tests and full MVP coverage audit against §39/§46/§52. |
@@ -144,7 +144,7 @@ isolate the affected feature and continue unrelated supported work.
 | Import discovery, project mapping, package initialization | Before supporting imports, project checking, or package variables; an explicitly limited single-file milestone need not resolve the whole package system |
 | String indexing/slicing/length | Before implementing those operations; literal decoding and immutable string values are already specified |
 | Collection iteration, borrowed map-entry access, remaining collection APIs | Before implementing those operations at M20–M24; accepted array/map forms remain usable as their stages arrive |
-| Closure types/captures/invocation | Before the affected M24 parser and semantic work |
+| Closure types/captures/invocation | Resolved for non-escaping closures (§16, Q02g); escaping and call-once forms before their implementation |
 | Full go grammar, concurrency library APIs | Before affected M25–M31 work; preserve already locked ownership/runtime contracts |
 | Scoped tasks (Q10) | Optional extension, not a current implementation prerequisite |
 | LLVM version/ABI, allocation, scheduler | Internal choices when the relevant backend/runtime stage begins; document and test then |
@@ -2044,10 +2044,22 @@ post-call panic check. Replacement detaches the old value and drops it before
 storing the new one. If that drop panics, the key stays absent and the new
 value is cleaned up by its temporary.
 
-The next concrete options are: (a) closures (M24), once Q02 locks their types
-and capture rules; (b) `clone` (§10.7) for structs, fixed arrays, `Array<T>`,
-and maps; or (c) lifting the region-analysis restrictions (nested `mut []T`,
-output provenance through parameters, destructor-observed views). Do not accept a
+Non-escaping closures (M24) followed (§16, Q02g). Each literal is a separate
+body whose captures are by-reference locals; creating a closure gives the
+closure value shared or exclusive loans on the captured locals, so region
+analysis enforces capture exclusivity and lifetimes without new machinery.
+Calling a closure, and passing one to a function-typed parameter, use it
+exclusively, which rules out reentrant calls through captured state. Codegen
+passes a `{ code, environment }` pair; the environment of captured addresses
+lives in the creating frame, which is sound because function-typed results,
+fields, and elements are rejected.
+
+The next concrete options are: (a) `clone` (§10.7) for structs, fixed arrays,
+`Array<T>`, and maps; (b) lifting the region-analysis restrictions (nested
+`mut []T`, output provenance through parameters and captures,
+destructor-observed views); or (c) the remaining closure forms (escaping
+closures with owned environments, call-once closures), which need a §53
+decision first. Do not accept a
 feature whose move/borrow checks and required cleanup are not yet
 implemented. Any newly discovered semantic gap follows specification §53 and
 `docs/spec-questions.md`.

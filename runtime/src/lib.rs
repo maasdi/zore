@@ -1,7 +1,6 @@
 // Copyright 2026 The Zore Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Runtime for the synchronous bootstrap subset.
 //! The exported C ABI is internal to the compiler, not a source-language API.
 
 #[path = "alloc.rs"]

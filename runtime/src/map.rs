@@ -1,9 +1,4 @@
-//! Type-erased hash maps backing `map[K]V`.
-//!
-//! Keys arrive as a pointer plus a kind code: 1, 2, 4, or 8 for that many raw
-//! bytes (bool, integer, or rune keys), or `STRING_KEY` for a `{ ptr, i64 }`
-//! string, which matches by content. Each value lives in its own allocation,
-//! so a value's address stays stable while other entries come and go.
+//! Keys are `kind` raw bytes or a string matched by content; each value has a stable address.
 
 use std::collections::HashMap;
 
@@ -48,8 +43,7 @@ pub unsafe extern "C" fn zore_map_find(map: *const Map, kind: i32, key: *const u
         .map_or(std::ptr::null_mut(), |&index| map.entries[index].1)
 }
 
-/// Adds an entry for a key known to be absent, creating the map behind
-/// `slot` on first use, and returns uninitialized storage for its value.
+/// The key must be absent; returns uninitialized storage for its value.
 ///
 /// # Safety
 /// `slot` must point to a null or live map pointer; `key` must match `kind`.
@@ -78,8 +72,7 @@ pub unsafe extern "C" fn zore_map_insert(
     value
 }
 
-/// Removes the key's entry, moving its value's bytes to `out`; returns
-/// whether the key was present. `out` is untouched when it was not.
+/// Moves the value's bytes to `out` and returns whether the key was present.
 ///
 /// # Safety
 /// `map` must be null or a live map; `key` must match `kind`; `out` must

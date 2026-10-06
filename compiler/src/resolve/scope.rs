@@ -1,6 +1,4 @@
-//! Scopes: declaring names and looking them up.
-
-use super::ids::LocalId;
+use super::ids::{FunctionId, LocalId};
 use super::resolver::Resolver;
 use super::symbol::{LocalDecl, LocalKind, Res, predeclared, unsupported_predeclared};
 use crate::ast;
@@ -84,18 +82,64 @@ impl Resolver<'_> {
             .or_else(|| predeclared(name))
     }
 
+    /// A local of an enclosing body resolves to this closure's capture of it.
+    fn lookup_capturing(&mut self, name: &str) -> Option<Res> {
+        let found = self
+            .scopes
+            .iter()
+            .enumerate()
+            .rev()
+            .find_map(|(index, scope)| scope.get(name).map(|&(res, _)| (index, res)));
+        match found {
+            Some((scope, Res::Local(local))) => Some(Res::Local(self.capture(scope, local))),
+            Some((_, res)) => Some(res),
+            None => self.lookup(name),
+        }
+    }
+
+    /// Chains captures through every closure between the declaration and here.
+    fn capture(&mut self, scope: usize, mut local: LocalId) -> LocalId {
+        let crossed: Vec<FunctionId> = self
+            .frames
+            .iter()
+            .filter(|frame| frame.scope_base > scope)
+            .map(|frame| frame.function)
+            .collect();
+        for closure in crossed {
+            let index = closure.0 as usize - self.out.functions.len();
+            if let Some(&(_, existing)) = self.out.closures[index]
+                .captures
+                .iter()
+                .find(|(outer, _)| *outer == local)
+            {
+                local = existing;
+                continue;
+            }
+            let parent = self.out.closures[index].parent;
+            let outer = &self.out.locals[parent.0 as usize][local.0 as usize];
+            let decl = LocalDecl {
+                name: outer.name.clone(),
+                span: outer.span,
+                kind: LocalKind::Capture(local),
+            };
+            let locals = &mut self.out.locals[closure.0 as usize];
+            let captured = LocalId(locals.len() as u32);
+            locals.push(decl);
+            self.out.closures[index].captures.push((local, captured));
+            local = captured;
+        }
+        local
+    }
+
     pub(super) fn use_name(&mut self, name: &str, span: Span) -> Option<Res> {
-        let Some(res) = self.lookup(name) else {
+        let Some(res) = self.lookup_capturing(name) else {
             self.error(format!("cannot find `{name}` in this scope"), span);
             return None;
         };
         if res == Res::Unsupported && name == "Array" {
-            self.error(
-                "`Array` needs an element type, as in `Array<int>` (§6.2)",
-                span,
-            );
+            self.error("`Array` needs an element type, as in `Array<int>`", span);
         } else if res == Res::Unsupported {
-            self.unsupported(unsupported_predeclared(name), span, "M19–M25");
+            self.unsupported(unsupported_predeclared(name), span);
         }
         self.out.uses.insert(span, res);
         Some(res)

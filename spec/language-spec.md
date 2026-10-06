@@ -2579,8 +2579,8 @@ func firstHalf(s mut []int) mut []int {
 A `View` built from a local owned array cannot escape that array's lifetime,
 including by return, assignment into longer-lived storage, or capture in an
 escaping closure. Array/slice syntax is specified in §12.6 and map syntax in
-§13.3. Closure type grammar remains under Q02; these provenance rules do not
-introduce further syntax.
+§13.3. Closure and function types are specified in §16; these provenance rules
+do not introduce further syntax.
 
 The backing owner must remain valid through every use and any destructor that
 can observe a contained view. Shared views prevent conflicting mutation; mutable
@@ -2832,7 +2832,7 @@ places as permission for partial moves or proven disjointness.
 
 Pending conformance cases: `tests/conformance/arrays-slices.md`. Map operations
 are specified separately in §13.3. String indexing/slicing/length, iteration,
-array append/remove/capacity APIs, closures/function types, and full `go` grammar
+array append/remove/capacity APIs, and full `go` grammar
 remain separate Q02/Q05 decisions. Array/slice rules
 do not supply semantics for those forms.
 
@@ -3357,7 +3357,9 @@ or unused binding and suggest handling, propagation where valid, or explicit
 
 ## 16.1 Closure syntax — LOCKED
 
-Minimal closure syntax:
+A closure literal is an expression written like a function declaration without
+a name. Parameters (with the `mut`/`own` modes of §7.3), the optional result
+list (§7.2), and the block body follow the function-declaration rules:
 
 ```ore
 let name = "John"
@@ -3367,18 +3369,150 @@ let greet = func() {
 }
 
 greet()
+
+let add = func(a int, b int) int {
+    return a + b
+}
 ```
 
-## 16.2 Capture rules — LOCKED DIRECTION
+Parameter names, duplicate checks, shadowing, and the outermost-body scope
+follow §5.7–5.8 and §7.8. `return` exits the closure, not an enclosing function
+(§7.7), and `?` needs a trailing `error` result declared by the closure itself
+(§15.3). `break` and `continue` cannot reach a loop outside the closure.
+`await` is invalid in a closure body (§17.2); `async` closures are not part of
+this decision. A closure literal appears only inside a function body, never in
+a constant or a type.
 
-Closure captures use the same ownership model as normal code.
+A literal may be called where it is written, as in `func(x int) int { return x }(2)`.
 
-- Copy values may be copied into the closure.
-- Move-only values may be moved into a closure when required.
-- Borrowed captures must remain valid for the closure lifetime.
-- A closure passed to a task must satisfy task lifetime and ownership rules.
+## 16.2 Function types — LOCKED
 
-The compiler may initially use conservative capture analysis.
+A function type is written like a signature with no names. Each parameter is a
+type with an optional leading `mut` or `own`, and an optional result list
+follows:
+
+```ore
+func(int, int) int
+func(mut []int)
+func(string) (int, error)
+func()
+```
+
+Two function types are identical when their parameter types, modes, and result
+types are identical, in order. Function types are not comparable, have no zero
+value (a binding must be initialized, §5.4), cannot be printed, and cannot be
+map keys (§13.3). Using a declared function's name as a value is not locked by
+this section and is rejected as unsupported.
+
+Calling a value of function type uses ordinary call syntax and ordinary
+parameter rules (§7.3–7.4): arguments are borrowed unless the parameter is
+`mut` or `own`, with no call-site markers. The callee is evaluated before the
+arguments (§7.5). The call yields the closure's results, which may be
+forwarded, discarded, or propagated with `?` as for any call.
+
+Calling a closure uses it **exclusively** for the duration of the call, because
+the call may write through its captures. A closure that is captured by
+another live closure therefore cannot be called directly (§16.3).
+
+## 16.3 Capture rules — LOCKED
+
+Closure captures use the same ownership model as normal code. The compiler
+infers, for every outer local the body mentions, the weakest capture that
+satisfies its uses; the programmer writes no capture list.
+
+| Use inside the body | Capture |
+| --- | --- |
+| Only read (including copying a Copy value out, or passing it to a borrowed parameter) | Shared borrow of the outer local |
+| Assigned, compound-updated, or passed to a `mut` parameter or receiver | Exclusive borrow; the outer binding must be a mutable place (§11.6) |
+| A captured closure or `mut []T` value, whatever the use | Exclusive borrow; no `var` is required, as for copying a mutable view (§12.3) |
+| A Move value consumed (passed to `own`, returned, or `drop`ped) | **Rejected in this slice** (see below) |
+
+A local used from a closure nested inside another closure is captured by each
+enclosing closure in turn, and an exclusive use anywhere makes every capture in
+the chain exclusive. Capture is per whole local; field-level captures are not
+part of this decision.
+
+A capture is a loan that begins when the closure literal is evaluated and ends
+at the last use of the closure value (§12, region analysis). While it lasts, the
+outer local obeys the normal borrow rules: a shared capture forbids writing or
+moving the local, and an exclusive capture forbids any other use. A capture of
+a value that holds views also keeps those views' backing borrowed. Because
+writes are rejected while a closure is live, a closure never observes a stale
+copy.
+
+```ore
+var count = 0
+let bump = func() { count += 1 }
+bump()
+println(count)   // accepted: `bump` is not used again
+
+let late = func() { count += 1 }
+println(count)   // rejected: `late` holds `count` exclusively and is used below
+late()
+```
+
+A closure value is a Move value. Binding it to another name moves it. Passing it
+to a parameter of function type borrows it **exclusively** for the call, so the
+same closure cannot be passed twice to one call; the callee may call it any
+number of times. A closure that mutates captured state needs no `var` binding:
+its exclusive loan is held by the closure itself, and only one live name for it
+exists.
+
+Inside a closure body, a capture refers to the outer local in place. Storing a
+value that holds a borrow (a view or a closure) into a captured local would need
+output provenance and is rejected as unsupported; storing other values is
+allowed through an exclusive capture.
+
+Consuming a captured Move value inside the body would make the closure
+callable only once. That form is rejected with an "unsupported" diagnostic until
+a call-once rule is locked under Q02. This is a stated limitation, not a
+permanent rule.
+
+## 16.4 Non-escaping closures — LOCKED
+
+In this slice a closure never outlives the scope that created it. A closure
+value may be bound to a local, assigned to a local of the same function type,
+called, and passed as an argument to a parameter of function type. It may not
+be:
+
+- returned, or forwarded out as a result: no function or function type may
+  have a result containing a function type;
+- stored in a struct field, array, slice, `Array<T>`, map, or channel: no such
+  element or field type may be a function type;
+- assigned to a place that outlives any local it captures;
+- moved into a task (`go`), captured by another escaping closure, or live across
+  an `await`.
+
+Each of these is a compile-time error (an "unsupported" diagnostic where the
+form is deferred rather than unsafe). A parameter of function type is itself a
+borrowed value and follows the same rules: the callee may call it or pass it on,
+but not store, move, or return it. Function-typed parameters cannot be declared
+`mut` or `own`.
+
+A function type or literal cannot yet have a result containing a borrowed view:
+a call through a function value cannot tell which argument such a view borrows
+from (§11.7). This is reported as unsupported.
+
+Because the closure cannot escape, no closure needs heap storage or a
+destructor, and nothing is dropped when it goes out of scope; captured locals
+keep their ordinary drop points. A panic or `?` inside a closure runs the
+closure's own cleanup and then continues in its caller as for any call.
+
+Escaping closures (owned environments), call-once closures, and use with tasks
+require a further decision under §53 and are tracked in Q02g.
+
+## 16.5 Compiler impact (informative)
+
+Resolution gives each closure literal its own body and records its captures;
+typing adds interned function types; MIR lowers a closure to a separate body
+whose capture locals refer to their referents by reference, plus a
+closure-creation value; ownership reuses the existing loan and region machinery
+with the closure value as the loan holder. Code generation represents a closure
+as a code pointer plus a pointer to an environment in the creator's frame that
+holds the captured places' addresses. None of this representation is a
+source-language contract.
+
+Pending conformance cases: `tests/conformance/closures.md`.
 
 ---
 
@@ -4921,8 +5055,9 @@ Coding agents must not silently choose permanent semantics for them.
 
 Operator inventory, precedence, associativity, short-circuit logic, and the
 `await operation()?` grouping rule are locked in §7.6. Operand/call evaluation
-is left to right (§7.5). Remaining work includes the complete primary/postfix
-grammar for strings and closures, iteration, and full task expression grammar.
+is left to right (§7.5). Closure literals and function types are locked in §16.
+Remaining work includes the complete primary/postfix grammar for strings,
+iteration, and full task expression grammar.
 Array literals, array/slice indexing, and slicing are locked in §12.6. Map
 construction, two-result lookup, assignment, and removal are locked in §13.3;
 borrowed entry access and iteration remain separate Q02/Q05 API decisions.

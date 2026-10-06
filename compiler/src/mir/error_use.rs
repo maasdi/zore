@@ -3,6 +3,7 @@ use std::collections::HashSet;
 use crate::diagnostic::{Diagnostic, Severity};
 use crate::hir;
 use crate::mir::{BasicBlock, Body, Operand, Place, Program, Rvalue, Statement, Terminator};
+use crate::resolve::LocalKind;
 use crate::source::Span;
 use crate::types::TypeStore;
 
@@ -167,6 +168,12 @@ fn read_rvalue(rvalue: &Rvalue, state: &mut [UseState]) {
                 read_operand(bound, state);
             }
         }
+        // A closure may read what it captures whenever it is called.
+        Rvalue::Closure { captures, .. } => {
+            for (place, _) in captures {
+                read_operand(&Operand::Copy(place.clone()), state);
+            }
+        }
     }
 }
 
@@ -190,9 +197,11 @@ fn write(
     reported: &mut HashSet<(Span, usize, bool)>,
 ) {
     let index = place.local.0 as usize;
+    // A closure's write through a capture is for its enclosing function to use.
     if !place.projections.is_empty()
         || index >= state.len()
         || function.locals[index].ty != TypeStore::ERROR
+        || matches!(function.locals[index].kind, LocalKind::Capture(_))
     {
         return;
     }

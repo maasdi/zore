@@ -72,6 +72,10 @@ escape/close/zero-value/cleanup behavior.
 contextual mutable slices, and partial-construction cleanup (§12.6).
 `conformance/maps.md` covers map literals, key restrictions, presence-first lookup
 and removal, mutation, and entry cleanup (§13.3).
+`conformance/closures.md` covers closure literals, function types, inferred
+captures, exclusive calls, the non-escaping rule, and cleanup (§16); every row
+except those needing tasks or `await` has a counterpart in the parser, check,
+ownership, and native suites.
 These documents do not count as passing tests. Lexical rows in `identifiers`,
 `comments`, `statement-boundaries`, `strings`, `runes`, `integers`, `floats`,
 and `keywords` now have executable counterparts in `tests/lexer/lexer.rs`. Syntax rows
@@ -100,7 +104,7 @@ literals, typing, element mutability, slicing, move and view rules, and
 native construction, access, drop order, and panics have counterparts in the
 parser, check, ownership, and native suites, as do the `maps` rows for
 literals, key types, lookup, assignment, removal, provenance, and cleanup.
-`clone`, growth and length APIs, map iteration, and rows that depend on async, closures, maps, tasks, or channels
+`clone`, growth and length APIs, map iteration, and rows that depend on async, maps, tasks, or channels
 remain pending, as do the remaining runtime and native rows elsewhere.
 
 Use Rust unit tests for small source/IR utilities and pass algorithms. Use Cargo

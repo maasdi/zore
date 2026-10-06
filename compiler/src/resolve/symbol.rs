@@ -1,5 +1,3 @@
-//! What a resolved name refers to, and the declarations resolution records.
-
 use super::ids::{ConstId, FunctionId, LocalId};
 use crate::ast::{self, ParamMode};
 use crate::source::Span;
@@ -35,6 +33,16 @@ pub enum LocalKind {
     Param(ParamMode),
     Let,
     Var,
+    Capture(LocalId),
+}
+
+pub struct ClosureDecl<'a> {
+    pub id: FunctionId,
+    pub closure: &'a ast::Closure,
+    pub span: Span,
+    pub parent: FunctionId,
+    /// `(outer, local)`: a local of `parent` and its capture.
+    pub captures: Vec<(LocalId, LocalId)>,
 }
 
 pub(super) fn predeclared(name: &str) -> Option<Res> {

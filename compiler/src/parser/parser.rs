@@ -1,5 +1,3 @@
-//! The parser's state, token cursor, diagnostics, and shared list helpers.
-
 use crate::ast::*;
 use crate::diagnostic::{Diagnostic, Severity};
 use crate::lexer::{Keyword, Punct, Separator, Token, TokenKind};
@@ -35,7 +33,6 @@ impl Parser<'_> {
         &self.tokens[index].kind
     }
 
-    /// The source text of the current token.
     pub(super) fn current_text(&self) -> &str {
         let span = self.current_span();
         &self.file.text()[span.start() as usize..span.end() as usize]
@@ -138,7 +135,7 @@ impl Parser<'_> {
         }
     }
 
-    pub(super) fn unsupported(&mut self, what: &str, milestone: &str) -> Reported {
+    pub(super) fn unsupported(&mut self, what: &str) -> Reported {
         let span = self.current_span();
         self.report(
             Diagnostic::new(
@@ -146,7 +143,7 @@ impl Parser<'_> {
                 format!("{what} are not supported by this compiler yet"),
                 span,
             )
-            .note(format!("planned for roadmap milestone {milestone}")),
+            .note("planned for a later milestone"),
         )
     }
 

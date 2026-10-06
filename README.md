@@ -50,7 +50,8 @@ John
 | Name resolution and type checking | Implemented for a subset: one file per package; `bool`, integer and float types, `rune`, `string`, and structs of those; functions, methods with shared or `own` receivers, control flow, and Go-style untyped constants |
 | Native code generation | Implemented for that subset: MIR lowering, LLVM IR, and runtime checks for overflow, division by zero, shifts, and conversions |
 | Ownership and borrow checking, drop insertion | Planned (next major milestone) |
-| Errors and `?`, collections, closures | Planned |
+| Errors and `?`, collections | Planned |
+| Closures and function types | Non-escaping closures implemented (§16); escaping and call-once closures planned |
 | `async`/`await`, tasks, channels | Planned (part of the MVP) |
 | Self-hosting | Long-term goal |
 

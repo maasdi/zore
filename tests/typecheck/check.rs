@@ -1,6 +1,4 @@
-//! Resolution and type-checking tests. Accepted programs are paired with
-//! rejections; features outside the checker's subset must be reported as
-//! unsupported, never accepted.
+//! Accepted programs are paired with rejections; unsupported features must never be accepted.
 
 use zore::check::{Checked, check_file};
 use zore::hir::{self, Const, ExprKind, StmtKind};
@@ -46,12 +44,10 @@ impl Case {
     }
 }
 
-/// Wrap declarations in a `main` package with a trivial entry point.
 fn program(decls: &str) -> String {
     format!("package main\n\n{decls}\n\nfunc main() {{}}\n")
 }
 
-/// Wrap statements as the body of `main`.
 fn body(stmts: &str) -> String {
     format!("package main\n\nfunc main() {{\n{stmts}\n}}\n")
 }
@@ -847,7 +843,7 @@ fn calls_arguments_and_results() {
     );
     rejects(
         &program("func greet() {}\nfunc g() { let f = greet }"),
-        "function values are not supported",
+        "declared functions used as values are not supported",
     );
     rejects(&body("let x = int"), "`int` is a type, not a value");
     rejects(&body("let x = string(1)"), "only numeric conversions exist");
@@ -1586,12 +1582,10 @@ fn array_mutable_places_and_aliasing() {
 const SLICE_FUNCS: &str = "func inspect(items []int) int { return items[0] }
 func edit(items mut []int) { items[0] = 9 }";
 
-/// Declarations plus `SLICE_FUNCS`, in a `main` package.
 fn slice_program(decls: &str) -> String {
     program(&format!("{SLICE_FUNCS}\n{decls}"))
 }
 
-/// The displayed type of local `local` in function `function`.
 fn local_type(case: &Case, function: &str, local: &str) -> String {
     let ty = case
         .function(function)
@@ -1911,7 +1905,7 @@ fn unsupported_dynamic_array_forms_are_rejected() {
         case.checked.diagnostics[0]
             .notes()
             .iter()
-            .any(|note| note.contains("not specified yet (Q05)"))
+            .any(|note| note.contains("not specified yet"))
     );
     rejects(
         &program("func f(xs Array<int>) { let ys = clone(xs) }"),
@@ -2053,7 +2047,7 @@ fn map_removal_needs_a_mutable_map_and_supports_propagation() {
         case.checked.diagnostics[0]
             .notes()
             .iter()
-            .any(|note| note.contains("Q02/Q05"))
+            .any(|note| note.contains("borrowed entry APIs are not specified yet"))
     );
 }
 
@@ -2105,4 +2099,263 @@ fn maps_are_move_values_without_operators() {
         &program("type Node struct { Kids map[string]Node }"),
         "struct `Node` contains itself through `Array<T>` or a map",
     );
+}
+
+fn let_value<'a>(function: &'a hir::Function, name: &str) -> &'a hir::Expr {
+    function
+        .body
+        .stmts
+        .iter()
+        .find_map(|stmt| match &stmt.kind {
+            StmtKind::Let { targets, value }
+                if targets
+                    .iter()
+                    .flatten()
+                    .any(|id| function.locals[id.0 as usize].name == name) =>
+            {
+                Some(value)
+            }
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("no `let {name}`"))
+}
+
+#[test]
+fn closures_become_functions_that_borrow_their_captures() {
+    let case = accepts(&body(
+        "let name = \"x\"
+        var count = 0
+        let read = func() { println(name) }
+        let write = func() { count += 1 }
+        read()
+        write()
+        let pure = func(a int, b int) int { return a + b }
+        _ = pure(1, 2)",
+    ));
+    let main = case.function("main");
+    let closure = |name: &str| match &let_value(main, name).kind {
+        ExprKind::Closure { function, captures } => (*function, captures.clone()),
+        other => panic!("expected a closure, found {other:?}"),
+    };
+    let local = |name: &str| {
+        let index = main.locals.iter().position(|l| l.name == name).unwrap();
+        zore::resolve::LocalId(index as u32)
+    };
+    let (read, captures) = closure("read");
+    assert_eq!(captures, [(local("name"), false)]);
+    let (write, captures) = closure("write");
+    assert_eq!(captures, [(local("count"), true)]);
+    let (pure, captures) = closure("pure");
+    assert!(captures.is_empty());
+    let package = case.package();
+    for (id, name) in [
+        (read, "main$closure1"),
+        (write, "main$closure2"),
+        (pure, "main$closure3"),
+    ] {
+        let function = package.function(id);
+        assert_eq!(function.name, name);
+        assert!(function.is_closure);
+    }
+    let write_body = package.function(write);
+    assert_eq!(write_body.captures.len(), 1);
+    let capture = &write_body.locals[write_body.captures[0].0 as usize];
+    assert_eq!(capture.name, "count");
+    assert!(matches!(capture.kind, LocalKind::Capture(_)));
+    assert_eq!(
+        package
+            .types
+            .display(let_value(main, "pure").ty())
+            .to_string(),
+        "func(int64, int64) int64"
+    );
+    assert!(!package.is_copy(let_value(main, "pure").ty()));
+}
+
+#[test]
+fn nested_captures_borrow_through_each_enclosing_closure() {
+    let case = accepts(&body(
+        "var total = 0
+        let outer = func() {
+            let inner = func() { total += 1 }
+            inner()
+        }
+        outer()",
+    ));
+    let ExprKind::Closure { captures, .. } = &let_value(case.function("main"), "outer").kind else {
+        panic!("expected a closure");
+    };
+    assert_eq!(captures.len(), 1);
+    assert!(
+        captures[0].1,
+        "a write in the inner closure is exclusive outside too"
+    );
+    rejects(
+        &body(
+            "let total = 0
+            let outer = func() {
+                let inner = func() { total += 1 }
+                inner()
+            }
+            outer()",
+        ),
+        "cannot assign to immutable binding `total`",
+    );
+}
+
+#[test]
+fn captured_bindings_keep_their_mutability_rules() {
+    rejects(
+        &body("let count = 0\nlet f = func() { count = 1 }\nf()"),
+        "cannot assign to immutable binding `count`",
+    );
+    rejects(
+        &program("func g(n int) { let f = func() { n += 1 }\nf() }"),
+        "cannot assign to parameter `n`",
+    );
+    accepts(&program(
+        "func g(n mut int) { let f = func() { n += 1 }\nf() }",
+    ));
+    rejects(
+        &program(
+            "func bump(x mut int) { x += 1 }\nfunc g() { let n = 0\nlet f = func() { bump(n) }\nf() }",
+        ),
+        "cannot pass immutable binding `n` as a `mut` argument",
+    );
+    accepts(&body(
+        "let name = \"x\"\nlet f = func() { let name = 1\n_ = name }\nf()",
+    ));
+}
+
+#[test]
+fn function_types_check_calls_through_values() {
+    accepts(&body(
+        "let f func(int) int = func(x int) int { return x }
+        let g = f
+        _ = g(1)
+        _ = func(x int) int { return x * 2 }(3)",
+    ));
+    rejects(
+        &body("let f func(mut int) = func(x int) {}"),
+        "expected `func(mut int64)`, found `func(int64)`",
+    );
+    rejects(
+        &body("let f = func(x int) {}\nf(\"s\")"),
+        "expected `int64`, found `string`",
+    );
+    rejects(
+        &body("let f = func(x int) {}\nf(1, 2)"),
+        "`f` takes 1 argument but 2 were given",
+    );
+    rejects(
+        &body("let f = func() {}\nlet x = f()"),
+        "this call has no value",
+    );
+    rejects(
+        &body("let f = func() {}\nlet g = func() {}\n_ = f == g"),
+        "operator `==` cannot be applied to `func()`",
+    );
+    rejects(
+        &body("let f = func() {}\nprintln(f)"),
+        "cannot print values of type `func()`",
+    );
+    rejects(
+        &body("let f = func() error { return nil }\nf()"),
+        "error result must be used or explicitly discarded",
+    );
+}
+
+#[test]
+fn closure_bodies_are_checked_as_functions() {
+    rejects(
+        &body("let f = func() int { println(\"x\") }"),
+        "function literal can reach the end of its body without returning a value",
+    );
+    rejects(
+        &body("for {\nlet f = func() { break }\n}"),
+        "`break` outside of a loop",
+    );
+    rejects(
+        &program(
+            "func read() (int, error) { return 1, nil }\nfunc g() { let f = func() { _ = read()? } }",
+        ),
+        "`?` requires a trailing `error` result in this function",
+    );
+    accepts(&program(
+        "func read() (int, error) { return 1, nil }
+        func g() {
+            let f = func() (int, error) {
+                let v = read()?
+                return v, nil
+            }
+            let _, _ = f()
+        }",
+    ));
+    rejects(
+        &body("let f = func() { await work() }"),
+        "`await` is not supported",
+    );
+    rejects(
+        &body("let f = func(a int) { let a = 2 }"),
+        "duplicate declaration `a`",
+    );
+}
+
+#[test]
+fn closures_cannot_escape_their_scope() {
+    rejects(
+        &program("func make() func() { return func() {} }"),
+        "a function cannot return a function value",
+    );
+    for decl in [
+        "type S struct { f func() }",
+        "func g(a [func(); 1]) {}",
+        "func g(a Array<func()>) {}",
+        "func g(a []func()) {}",
+        "func g(a map[string]func()) {}",
+    ] {
+        rejects(
+            &program(decl),
+            "function values cannot be stored in a struct field, array, slice, or map",
+        );
+    }
+    rejects(
+        &program("func g(m map[func()]int) {}"),
+        "type `func()` cannot be a map key",
+    );
+    rejects(
+        &program("func g(f own func()) {}"),
+        "a function-typed parameter cannot be `mut` or `own`",
+    );
+    rejects(
+        &program("func g(f mut func()) {}"),
+        "a function-typed parameter cannot be `mut` or `own`",
+    );
+    rejects(
+        &program("func g(f func() []int) {}"),
+        "a function type or literal returning a borrowed view is not supported",
+    );
+    rejects(
+        &program("func greet() {}\nfunc g() { let f = greet }"),
+        "declared functions used as values are not supported",
+    );
+    rejects(
+        &program("const c = func() {}"),
+        "a function literal can only appear inside a function body",
+    );
+}
+
+#[test]
+fn function_value_arguments_are_borrowed_exclusively() {
+    rejects(
+        &program("func run(f func(), g func()) {}\nfunc h() { let f = func() {}\nrun(f, f) }"),
+        "`f` is also borrowed by another argument of this call",
+    );
+    rejects(
+        &program("func run(n int, f func()) {}\nfunc h() { var n = 0\nrun(n, func() { n += 1 }) }"),
+        "`n` is borrowed by an earlier argument and mutated by a later one",
+    );
+    accepts(&program(
+        "func run(f func()) { f()\nf() }\nfunc h() { let f = func() {}\nrun(f)\nrun(f)\nrun(func() {}) }",
+    ));
 }

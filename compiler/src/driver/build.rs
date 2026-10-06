@@ -1,5 +1,3 @@
-//! Native builds: clang compiles LLVM IR; rustc links it with the Rust runtime.
-
 use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -25,11 +23,8 @@ const RUNTIME_SOURCES: &[(&str, &str)] = &[
 
 #[derive(Debug)]
 pub enum BuildError {
-    /// The program has diagnostics.
     Diagnostics(Vec<Diagnostic>),
-    /// The package has no entry point.
     NotExecutable(String),
-    /// An external native toolchain component is missing or failed.
     Toolchain(String),
     Io(String),
 }
@@ -45,7 +40,6 @@ impl fmt::Display for BuildError {
     }
 }
 
-/// Checks and lowers a file to LLVM IR.
 pub fn emit_llvm(file: &SourceFile) -> Result<String, BuildError> {
     let checked = check_file(file);
     if !checked.diagnostics.is_empty() {
@@ -67,7 +61,7 @@ pub fn emit_llvm(file: &SourceFile) -> Result<String, BuildError> {
 
 static NEXT_DIR: AtomicU64 = AtomicU64::new(0);
 
-/// A temporary directory removed on drop.
+/// Removed on drop.
 pub struct TempDir(PathBuf);
 
 impl TempDir {
@@ -93,12 +87,11 @@ impl Drop for TempDir {
     }
 }
 
-/// The LLVM compiler and linker driver: `ZORE_CC`, otherwise `clang` on `PATH`.
+/// `ZORE_CC`, otherwise `clang` on `PATH`.
 pub fn compiler() -> String {
     std::env::var("ZORE_CC").unwrap_or_else(|_| "clang".into())
 }
 
-/// Builds an executable at `output`.
 pub fn build(file: &SourceFile, output: &Path) -> Result<(), BuildError> {
     let ir = emit_llvm(file)?;
     let dir = TempDir::new()?;

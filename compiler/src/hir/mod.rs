@@ -1,5 +1,3 @@
-//! Typed, resolved HIR: what the program means.
-
 mod expr;
 mod function;
 pub mod lower;
@@ -19,7 +17,6 @@ pub struct Package {
     pub types: TypeStore,
     pub structs: Vec<Struct>,
     pub functions: Vec<Function>,
-    /// The entry point, when this is an executable `main` package.
     pub entry: Option<FunctionId>,
 }
 
@@ -32,7 +29,6 @@ impl Package {
         &self.structs[id.0 as usize]
     }
 
-    /// Whether values of `ty` are Copy.
     pub fn is_copy(&self, ty: TypeId) -> bool {
         match self.types.kind(ty) {
             TypeKind::Bool
@@ -42,6 +38,8 @@ impl Package {
             | TypeKind::String
             | TypeKind::Error
             | TypeKind::Slice { .. } => true,
+            // A closure may hold exclusive borrows, so it is never duplicated.
+            TypeKind::Func(_) => false,
             TypeKind::Struct(id) => {
                 let strukt = self.strukt(id);
                 strukt.drop.is_none() && strukt.fields.iter().all(|f| self.is_copy(f.ty))
@@ -51,20 +49,22 @@ impl Package {
         }
     }
 
-    /// Whether a value of `ty` holds a borrowed view, directly or in a field
-    /// or array element; a slice's own elements are not part of the value.
+    /// Slices and closures hold borrows; a slice's own elements are not part of the value.
     pub fn contains_view(&self, ty: TypeId) -> bool {
-        self.contains(ty, &|kind| matches!(kind, TypeKind::Slice { .. }))
-    }
-
-    /// Whether a value of `ty` holds a `mut []T` view.
-    pub fn contains_mut_view(&self, ty: TypeId) -> bool {
         self.contains(ty, &|kind| {
-            matches!(kind, TypeKind::Slice { mutable: true, .. })
+            matches!(kind, TypeKind::Slice { .. } | TypeKind::Func(_))
         })
     }
 
-    /// Whether a value of `ty` holds fixed-array storage that could be sliced.
+    pub fn contains_mut_view(&self, ty: TypeId) -> bool {
+        self.contains(ty, &|kind| {
+            matches!(
+                kind,
+                TypeKind::Slice { mutable: true, .. } | TypeKind::Func(_)
+            )
+        })
+    }
+
     pub fn contains_array(&self, ty: TypeId) -> bool {
         self.contains(ty, &|kind| matches!(kind, TypeKind::Array { .. }))
     }
@@ -94,7 +94,7 @@ pub struct Struct {
     pub name: String,
     pub span: Span,
     pub fields: Vec<Field>,
-    /// The user-defined `drop` method, which makes the struct Move.
+    /// Makes the struct Move.
     pub drop: Option<FunctionId>,
 }
 

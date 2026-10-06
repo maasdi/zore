@@ -1,6 +1,4 @@
-//! Lowering from resolved syntax to typed HIR, type-checking along the way.
-
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::ast::{
     self, AssignOp, AssignTarget, BinaryOp, BindingKind, BindingTarget, ForHeader, UnaryOp,
@@ -11,9 +9,9 @@ use crate::resolve::{ConstId, FieldId, FunctionId, LocalId, LocalKind, Res, Reso
 use crate::source::Span;
 use crate::types::bignum::BigInt;
 use crate::types::constant::{self, ConstError, Folded, Unrepresentable, Untyped};
-use crate::types::{IntType, StructId, TypeId, TypeKind, TypeStore};
+use crate::types::{FuncSignature, IntType, StructId, TypeId, TypeKind, TypeStore};
 
-/// Type-checks a resolved file; HIR is returned only when there are no diagnostics.
+/// HIR is returned only when there are no diagnostics.
 pub fn check(
     file: &ast::File,
     mut resolution: Resolution<'_>,
@@ -37,7 +35,10 @@ pub fn check(
         locals: Vec::new(),
         results: Vec::new(),
         loop_depth: 0,
+        closures: Vec::new(),
+        exclusive_captures: HashSet::new(),
     };
+    checker.closures = checker.res.closures.iter().map(|_| None).collect();
     checker.signatures_and_fields();
     let mut functions = Vec::new();
     for index in 0..checker.res.functions.len() {
@@ -47,6 +48,15 @@ pub fn check(
         checker.eval_const(ConstId(index as u32));
     }
     let entry = checker.check_entry_point(file);
+    if checker.diagnostics.is_empty()
+        && let Some(index) = checker.closures.iter().position(Option::is_none)
+    {
+        let span = checker.res.closures[index].span;
+        checker.error(
+            "internal error: this function literal was not checked",
+            span,
+        );
+    }
     if !checker.diagnostics.is_empty() {
         return (None, checker.diagnostics);
     }
@@ -74,11 +84,16 @@ pub fn check(
                 .collect(),
         })
         .collect();
+    let closures = std::mem::take(&mut checker.closures);
     let package = hir::Package {
         name: checker.res.package.clone(),
         types: std::mem::take(&mut checker.types),
         structs,
-        functions: functions.into_iter().map(|f| f.expect("checked")).collect(),
+        functions: functions
+            .into_iter()
+            .chain(closures)
+            .map(|f| f.expect("every function and closure was checked"))
+            .collect(),
         entry,
     };
     (Some(package), checker.diagnostics)
@@ -123,6 +138,16 @@ struct Checker<'a> {
     signatures: Vec<Option<Signature>>,
     consts: Vec<ConstState>,
     diagnostics: Vec<Diagnostic>,
+    current: usize,
+    locals: Vec<Option<TypeId>>,
+    results: Vec<TypeId>,
+    loop_depth: usize,
+    /// Indexed like `res.closures`.
+    closures: Vec<Option<hir::Function>>,
+    exclusive_captures: HashSet<(usize, LocalId)>,
+}
+
+struct BodyState {
     current: usize,
     locals: Vec<Option<TypeId>>,
     results: Vec<TypeId>,
@@ -217,9 +242,8 @@ impl<'a> Checker<'a> {
         ) = (self.types.kind(expected), self.types.kind(found))
             && element == found
         {
-            diagnostic = diagnostic.note(
-                "arrays do not convert to slices implicitly; borrow a view with `x[:]` (§12.6)",
-            );
+            diagnostic = diagnostic
+                .note("arrays do not convert to slices implicitly; borrow a view with `x[:]`");
         }
         self.diagnostics.push(diagnostic);
     }
@@ -232,19 +256,19 @@ impl<'a> Checker<'a> {
                 _ => None,
             },
             ast::Type::Array { element, size, .. } => {
-                if !self.reject_stored_mut_slice(element) {
+                if !self.reject_stored(element) {
                     return None;
                 }
                 let element_ty = self.resolve_type(element)?;
                 let value = self.expr(size, Some(TypeStore::INT))?;
                 let sized = self.coerce(value, TypeStore::INT)?;
                 let ExprKind::Const(Const::Int(n)) = sized.kind else {
-                    self.error("array size must be a constant expression (§5.3)", size.span);
+                    self.error("array size must be a constant expression", size.span);
                     return None;
                 };
                 let Ok(count) = u32::try_from(n) else {
                     self.error(
-                        "array size must be a nonnegative constant that fits in 32 bits (§5.3)",
+                        "array size must be a nonnegative constant that fits in 32 bits",
                         size.span,
                     );
                     return None;
@@ -252,7 +276,7 @@ impl<'a> Checker<'a> {
                 Some(self.types.array_type(element_ty, count))
             }
             ast::Type::DynArray { element, .. } => {
-                if !self.reject_stored_mut_slice(element) {
+                if !self.reject_stored(element) {
                     return None;
                 }
                 let element_ty = self.resolve_type(element)?;
@@ -260,7 +284,7 @@ impl<'a> Checker<'a> {
             }
             ast::Type::Map { key, value, .. } => {
                 let key_ty = self.resolve_type(key);
-                let value_ty = if self.reject_stored_mut_slice(value) {
+                let value_ty = if self.reject_stored(value) {
                     self.resolve_type(value)
                 } else {
                     None
@@ -268,7 +292,7 @@ impl<'a> Checker<'a> {
                 let key_ty = key_ty?;
                 if !self.is_map_key(key_ty) {
                     let message = format!(
-                        "type `{}` cannot be a map key; keys are bool, integer, rune, or string (§13.3)",
+                        "type `{}` cannot be a map key; keys are bool, integer, rune, or string",
                         self.name(key_ty)
                     );
                     self.error(message, key.span());
@@ -279,17 +303,88 @@ impl<'a> Checker<'a> {
             ast::Type::Slice {
                 element, mutable, ..
             } => {
-                if !self.reject_stored_mut_slice(element) {
+                if !self.reject_stored(element) {
                     return None;
                 }
                 let element_ty = self.resolve_type(element)?;
                 Some(self.types.slice_type(element_ty, *mutable))
             }
+            ast::Type::Func {
+                params, results, ..
+            } => {
+                let mut ok = true;
+                let mut checked_params = Vec::new();
+                for param in params {
+                    match self.param_mode_type(param.mode, &param.ty, param.ty.span()) {
+                        Some(ty) => checked_params.push((param.mode, ty)),
+                        None => ok = false,
+                    }
+                }
+                let checked_results = self.closure_results(results);
+                if !ok {
+                    return None;
+                }
+                let results = checked_results?;
+                Some(self.types.func_type(FuncSignature {
+                    params: checked_params,
+                    results,
+                }))
+            }
         }
     }
 
-    /// Rejects `ty` when it is itself `mut []T`, for positions that store a
-    /// value inside another one: a struct field, array, or slice element.
+    /// Results of function types and literals hold neither closures nor views.
+    fn closure_results(&mut self, results: &[ast::Type]) -> Option<Vec<TypeId>> {
+        let mut checked = Vec::new();
+        let mut ok = true;
+        for result in results {
+            match self.resolve_type(result) {
+                Some(ty) if self.result_allowed(ty, result.span(), true) => checked.push(ty),
+                _ => ok = false,
+            }
+        }
+        ok.then_some(checked)
+    }
+
+    fn result_allowed(&mut self, ty: TypeId, span: Span, function_value: bool) -> bool {
+        if self.type_contains(ty, &|kind| matches!(kind, TypeKind::Func(_))) {
+            self.diagnostics.push(
+                Diagnostic::new(
+                    Severity::Error,
+                    "a function cannot return a function value",
+                    span,
+                )
+                .note("closures cannot escape the scope that created them"),
+            );
+            return false;
+        }
+        if function_value && self.type_contains(ty, &|kind| matches!(kind, TypeKind::Slice { .. }))
+        {
+            self.unsupported(
+                "a function type or literal returning a borrowed view is",
+                span,
+                "a call through a function value cannot tell which argument the view borrows from",
+            );
+            return false;
+        }
+        true
+    }
+
+    fn reject_stored(&mut self, ty: &ast::Type) -> bool {
+        if let ast::Type::Func { span, .. } = ty {
+            self.diagnostics.push(
+                Diagnostic::new(
+                    Severity::Error,
+                    "function values cannot be stored in a struct field, array, slice, or map",
+                    *span,
+                )
+                .note("closures cannot escape the scope that created them"),
+            );
+            return false;
+        }
+        self.reject_stored_mut_slice(ty)
+    }
+
     fn reject_stored_mut_slice(&mut self, ty: &ast::Type) -> bool {
         let ast::Type::Slice {
             mutable: true,
@@ -307,8 +402,7 @@ impl<'a> Checker<'a> {
         false
     }
 
-    /// Whether a value of `ty` holds a component matching `matches`, looking
-    /// through struct fields and array elements but not slice elements.
+    /// Looks through fields and array elements, not slice elements.
     fn type_contains(&self, ty: TypeId, matches: &dyn Fn(TypeKind) -> bool) -> bool {
         let mut pending = vec![ty];
         let mut seen = Vec::new();
@@ -344,8 +438,7 @@ impl<'a> Checker<'a> {
         )
     }
 
-    /// Copy/Move classification during checking, before the HIR package
-    /// exists; agrees with `hir::Package::is_copy`.
+    /// Must agree with `hir::Package::is_copy`.
     fn type_is_copy(&self, ty: TypeId) -> bool {
         match self.types.kind(ty) {
             TypeKind::Bool
@@ -362,8 +455,12 @@ impl<'a> Checker<'a> {
                         .all(|(_, field_ty, _)| field_ty.is_none_or(|ty| self.type_is_copy(ty)))
             }
             TypeKind::Array { element, .. } => self.type_is_copy(element),
-            TypeKind::DynArray { .. } | TypeKind::Map { .. } => false,
+            TypeKind::DynArray { .. } | TypeKind::Map { .. } | TypeKind::Func(_) => false,
         }
+    }
+
+    fn is_func(&self, ty: TypeId) -> bool {
+        matches!(self.types.kind(ty), TypeKind::Func(_))
     }
 
     fn is_mut_slice(&self, ty: TypeId) -> bool {
@@ -371,9 +468,7 @@ impl<'a> Checker<'a> {
     }
 
     fn signatures_and_fields(&mut self) {
-        // Cloned up front: `resolve_type` needs `&mut self` (to intern array
-        // types and fold array-size constants), which can't overlap a live
-        // borrow of `self.res` held by iterating it directly.
+        // Cloned because `resolve_type` needs `&mut self`.
         let structs: Vec<&'a ast::StructDecl> = self.res.structs.clone();
         self.fields = structs
             .iter()
@@ -382,7 +477,7 @@ impl<'a> Checker<'a> {
                 fields
                     .iter()
                     .map(|f| {
-                        let ty = if self.reject_stored_mut_slice(&f.ty) {
+                        let ty = if self.reject_stored(&f.ty) {
                             self.resolve_type(&f.ty)
                         } else {
                             None
@@ -403,8 +498,13 @@ impl<'a> Checker<'a> {
                     .map(|p| self.param_type(p))
                     .collect();
                 let results = func.results.clone();
-                let results: Option<Vec<_>> =
-                    results.iter().map(|t| self.resolve_type(t)).collect();
+                let results: Option<Vec<_>> = results
+                    .iter()
+                    .map(|t| {
+                        let ty = self.resolve_type(t)?;
+                        self.result_allowed(ty, t.span(), false).then_some(ty)
+                    })
+                    .collect();
                 Some(Signature {
                     params: params?,
                     results: results?,
@@ -415,18 +515,38 @@ impl<'a> Checker<'a> {
     }
 
     fn param_type(&mut self, param: &ast::Param) -> Option<TypeId> {
-        let ty = self.resolve_type(&param.ty)?;
+        self.param_mode_type(param.mode, &param.ty, param.span)
+    }
+
+    fn param_mode_type(
+        &mut self,
+        mode: ast::ParamMode,
+        ty: &ast::Type,
+        span: Span,
+    ) -> Option<TypeId> {
+        let ty = self.resolve_type(ty)?;
+        if self.is_func(ty) && mode != ast::ParamMode::Borrow {
+            self.diagnostics.push(
+                Diagnostic::new(
+                    Severity::Error,
+                    "a function-typed parameter cannot be `mut` or `own`",
+                    span,
+                )
+                .note("a function value is passed by borrowing it exclusively for the call"),
+            );
+            return None;
+        }
         if !matches!(self.types.kind(ty), TypeKind::Slice { .. }) {
             return Some(ty);
         }
-        match param.mode {
+        match mode {
             ast::ParamMode::Borrow => Some(ty),
             ast::ParamMode::Own => {
                 self.diagnostics.push(
                     Diagnostic::new(
                         Severity::Error,
-                        "`own []T` is not part of Zore; a slice never owns its elements (§12.4)",
-                        param.span,
+                        "`own []T` is not part of Zore; a slice never owns its elements",
+                        span,
                     )
                     .note("own the elements with a fixed array instead"),
                 );
@@ -435,7 +555,7 @@ impl<'a> Checker<'a> {
             ast::ParamMode::Mut => {
                 self.unsupported(
                     "a `mut` mode on a slice parameter is",
-                    param.span,
+                    span,
                     "write `name mut []T` for mutable element access",
                 );
                 None
@@ -443,8 +563,7 @@ impl<'a> Checker<'a> {
         }
     }
 
-    /// A custom destructor could observe a contained view after its last
-    /// ordinary use, which region analysis does not model yet.
+    /// Region analysis cannot model a destructor observing a view.
     fn reject_drop_observing_views(&mut self, structs: &[&ast::StructDecl]) {
         for (index, decl) in structs.iter().enumerate() {
             let id = StructId(index as u32);
@@ -458,7 +577,7 @@ impl<'a> Checker<'a> {
                     "a custom `drop` for a type containing a borrowed slice is",
                     span,
                     &format!(
-                        "`{}` holds a view that its destructor could observe (§11.7)",
+                        "`{}` holds a view that its destructor could observe",
                         decl.name.text
                     ),
                 );
@@ -491,7 +610,7 @@ impl<'a> Checker<'a> {
                     ),
                     func.name.span,
                 )
-                .note("every path must return the declared results (§7.7)"),
+                .note("every path must return the declared results"),
             );
         }
         let decls = &self.res.locals[id.0 as usize];
@@ -510,27 +629,188 @@ impl<'a> Checker<'a> {
         if !has_signature {
             return None;
         }
-        let name = match &func.receiver {
-            // Resolution already rejects any receiver that isn't a named struct type.
-            Some(receiver) => match &receiver.ty {
-                ast::Type::Named(type_name) => {
-                    format!("{}.{}", type_name.text, func.name.text)
-                }
-                ast::Type::Array { .. }
-                | ast::Type::Slice { .. }
-                | ast::Type::DynArray { .. }
-                | ast::Type::Map { .. } => func.name.text.clone(),
-            },
-            None => func.name.text.clone(),
-        };
         Some(hir::Function {
-            name,
+            name: self.function_name(id),
             span: func.name.span,
             params: (0..params.len()).map(|i| LocalId(i as u32)).collect(),
             results,
             locals: locals?,
             body,
+            captures: Vec::new(),
+            is_closure: false,
         })
+    }
+
+    /// Closures are named `enclosing$closureN`, numbered per declared function.
+    fn function_name(&self, id: FunctionId) -> String {
+        let declared = self.res.functions.len();
+        let index = id.0 as usize;
+        if index < declared {
+            let func = self.res.functions[index];
+            // Resolution already rejects any receiver that isn't a named struct type.
+            return match func.receiver.as_ref().map(|receiver| &receiver.ty) {
+                Some(ast::Type::Named(type_name)) => {
+                    format!("{}.{}", type_name.text, func.name.text)
+                }
+                _ => func.name.text.clone(),
+            };
+        }
+        let root = |mut id: FunctionId| {
+            while id.0 as usize >= declared {
+                id = self.res.closures[id.0 as usize - declared].parent;
+            }
+            id
+        };
+        let own_root = root(id);
+        let ordinal = self.res.closures[..index - declared]
+            .iter()
+            .filter(|closure| root(closure.id) == own_root)
+            .count()
+            + 1;
+        format!("{}$closure{ordinal}", self.function_name(own_root))
+    }
+
+    fn save_body(&mut self) -> BodyState {
+        BodyState {
+            current: self.current,
+            locals: std::mem::take(&mut self.locals),
+            results: std::mem::take(&mut self.results),
+            loop_depth: self.loop_depth,
+        }
+    }
+
+    fn restore_body(&mut self, state: BodyState) {
+        self.current = state.current;
+        self.locals = state.locals;
+        self.results = state.results;
+        self.loop_depth = state.loop_depth;
+    }
+
+    fn closure_parent(&self, function: usize) -> usize {
+        let index = function - self.res.functions.len();
+        self.res.closures[index].parent.0 as usize
+    }
+
+    fn binding_origin(&self, mut function: usize, mut local: LocalId) -> (usize, LocalId) {
+        while let LocalKind::Capture(outer) = self.res.locals[function][local.0 as usize].kind {
+            function = self.closure_parent(function);
+            local = outer;
+        }
+        (function, local)
+    }
+
+    fn binding_kind(&self, local: LocalId) -> LocalKind {
+        let (function, local) = self.binding_origin(self.current, local);
+        self.res.locals[function][local.0 as usize].kind
+    }
+
+    /// Marks the whole capture chain behind `local` exclusive.
+    fn mark_exclusive(&mut self, local: LocalId) {
+        let (mut function, mut local) = (self.current, local);
+        while let LocalKind::Capture(outer) = self.res.locals[function][local.0 as usize].kind {
+            self.exclusive_captures.insert((function, local));
+            function = self.closure_parent(function);
+            local = outer;
+        }
+    }
+
+    fn closure(&mut self, closure: &ast::Closure, span: Span) -> Option<Value> {
+        // Resolution reports a literal it could not give a body.
+        let index = self.res.closures.iter().position(|c| c.span == span)?;
+        let id = self.res.closures[index].id;
+        let captures = self.res.closures[index].captures.clone();
+        let params: Vec<Option<TypeId>> = closure
+            .params
+            .iter()
+            .map(|param| self.param_type(param))
+            .collect();
+        let results = self.closure_results(&closure.results);
+        let state = self.save_body();
+        self.current = id.0 as usize;
+        self.locals = vec![None; self.res.locals[self.current].len()];
+        for (index, ty) in params.iter().enumerate() {
+            self.locals[index] = *ty;
+        }
+        for &(outer, local) in &captures {
+            self.locals[local.0 as usize] = state.locals[outer.0 as usize];
+        }
+        self.results = results.clone().unwrap_or_default();
+        self.loop_depth = 0;
+        let body = self.block(&closure.body);
+        if results.as_ref().is_some_and(|r| !r.is_empty()) && !block_always_exits(&closure.body) {
+            self.diagnostics.push(
+                Diagnostic::new(
+                    Severity::Error,
+                    "function literal can reach the end of its body without returning a value",
+                    span,
+                )
+                .note("every path must return the declared results"),
+            );
+        }
+        let locals: Option<Vec<hir::Local>> = self.res.locals[self.current]
+            .iter()
+            .zip(&self.locals)
+            .map(|(decl, ty)| {
+                Some(hir::Local {
+                    name: decl.name.clone(),
+                    ty: (*ty)?,
+                    kind: decl.kind,
+                    span: decl.span,
+                })
+            })
+            .collect();
+        // Calling a captured closure or copying a captured `mut []T` needs exclusivity.
+        for &(_, local) in &captures {
+            if let Some(ty) = self.locals[local.0 as usize]
+                && self.type_contains(ty, &|kind| {
+                    matches!(
+                        kind,
+                        TypeKind::Func(_) | TypeKind::Slice { mutable: true, .. }
+                    )
+                })
+            {
+                self.mark_exclusive(local);
+            }
+        }
+        let closure_function = self.current;
+        self.restore_body(state);
+        let params: Option<Vec<TypeId>> = params.into_iter().collect();
+        let (params, results, locals) = (params?, results?, locals?);
+        let signature = FuncSignature {
+            params: closure
+                .params
+                .iter()
+                .map(|param| param.mode)
+                .zip(params.iter().copied())
+                .collect(),
+            results: results.clone(),
+        };
+        let ty = self.types.func_type(signature);
+        self.closures[index] = Some(hir::Function {
+            name: self.function_name(id),
+            span,
+            params: (0..params.len()).map(|i| LocalId(i as u32)).collect(),
+            results,
+            locals,
+            body,
+            captures: captures.iter().map(|&(_, local)| local).collect(),
+            is_closure: true,
+        });
+        let captures = captures
+            .iter()
+            .map(|&(outer, local)| {
+                let exclusive = self.exclusive_captures.contains(&(closure_function, local));
+                (outer, exclusive)
+            })
+            .collect();
+        Some(Value::Typed(typed(
+            ExprKind::Closure {
+                function: id,
+                captures,
+            },
+            ty,
+            span,
+        )))
     }
 
     fn check_entry_point(&mut self, file: &ast::File) -> Option<FunctionId> {
@@ -551,7 +831,7 @@ impl<'a> Checker<'a> {
                     "package `main` has no `main` function",
                     package.span,
                 )
-                .note("an executable package declares `func main() { ... }` (§3.19)"),
+                .note("an executable package declares `func main() { ... }`"),
             );
             return None;
         };
@@ -567,7 +847,7 @@ impl<'a> Checker<'a> {
         if let Some(problem) = problem {
             self.diagnostics.push(
                 Diagnostic::new(Severity::Error, problem, main.name.span)
-                    .note("declare it as `func main() { ... }` (§3.19)"),
+                    .note("declare it as `func main() { ... }`"),
             );
             return None;
         }
@@ -621,7 +901,7 @@ impl<'a> Checker<'a> {
                                     expr.span,
                                 )
                                 .related(span, "constant declared here")
-                                .note("constants use literals, other constants, operators, and numeric conversions (§5.3)"),
+                                .note("constants use literals, other constants, operators, and numeric conversions"),
                             );
                             None
                         }
@@ -724,14 +1004,14 @@ impl<'a> Checker<'a> {
                 ),
                 span,
             )
-            .note("§6.7 requires at least 256 bits; the larger limit is an implementation limit"),
+            .note("the language requires at least 256 bits; the larger limit is an implementation limit"),
             ConstError::FloatOverflow => Diagnostic::new(
                 Severity::Error,
                 "floating-point constant is too large",
                 span,
             )
             .note(format!(
-                "constants must stay below 2^{} (§6.7 implementation limit)",
+                "constants must stay below 2^{} (implementation limit)",
                 constant::MAX_FLOAT_LOG2
             )),
             ConstError::Overflow => {
@@ -755,7 +1035,7 @@ impl<'a> Checker<'a> {
             }
             _ if matches!(expr.kind, ExprKind::MapLookup { .. }) => {
                 self.error(
-                    "map lookup produces two results, presence then value; bind both, as in `let found, value = m[key]` (§13.3)",
+                    "map lookup produces two results, presence then value; bind both, as in `let found, value = m[key]`",
                     expr.span,
                 );
                 None
@@ -817,7 +1097,7 @@ impl<'a> Checker<'a> {
             ast::ExprKind::Unary { op, operand } => self.unary(*op, operand, span, expected),
             ast::ExprKind::Binary { op, lhs, rhs } => self.binary(*op, lhs, rhs, span, expected),
             ast::ExprKind::Await(_) => {
-                self.unsupported("`await` is", span, "planned for roadmap milestone M25–M29");
+                self.unsupported("`await` is", span, "planned for a later milestone");
                 None
             }
             ast::ExprKind::Try(inner) => self.try_expr(inner, span),
@@ -830,6 +1110,7 @@ impl<'a> Checker<'a> {
             ast::ExprKind::StructLit { ty, fields } => self.struct_lit(ty, fields, span),
             ast::ExprKind::ArrayLit { ty, elements } => self.array_lit(ty, elements, span),
             ast::ExprKind::MapLit { ty, entries } => self.map_lit(ty, entries, span),
+            ast::ExprKind::Closure(closure) => self.closure(closure, span),
         }
     }
 
@@ -881,9 +1162,9 @@ impl<'a> Checker<'a> {
             },
             Res::Function(_) => {
                 self.unsupported(
-                    "function values are",
+                    "declared functions used as values are",
                     span,
-                    "functions can currently only be called (closures and function types: M24)",
+                    "wrap the call in a function literal, as in `func() { f() }`",
                 );
                 None
             }
@@ -1296,11 +1577,26 @@ impl<'a> Checker<'a> {
                 return self.method_call(base, name, args, span);
             }
             _ => {
-                if self.expr(callee, None).is_some() {
-                    self.error("this expression cannot be called", callee.span);
-                }
-                self.report_arg_errors(args);
-                return None;
+                let callee_expr = match self.expr(callee, None) {
+                    Some(Value::Typed(expr)) => self.single_value(expr),
+                    Some(Value::Untyped(..)) => {
+                        self.error("this expression cannot be called", callee.span);
+                        None
+                    }
+                    None => None,
+                };
+                return match callee_expr {
+                    Some(expr) if self.is_func(expr.ty()) => self.value_call(expr, args, span),
+                    Some(_) => {
+                        self.error("this expression cannot be called", callee.span);
+                        self.report_arg_errors(args);
+                        None
+                    }
+                    None => {
+                        self.report_arg_errors(args);
+                        None
+                    }
+                };
             }
         };
         let name = match &callee.kind {
@@ -1323,6 +1619,17 @@ impl<'a> Checker<'a> {
                 self.report_arg_errors(args);
                 None
             }
+            Some(Res::Local(id))
+                if self.locals[id.0 as usize].is_some_and(|ty| self.is_func(ty)) =>
+            {
+                let ty = self.locals[id.0 as usize].expect("checked above");
+                let callee = typed(ExprKind::Local(id), ty, callee.span);
+                self.value_call(callee, args, span)
+            }
+            Some(Res::Local(id)) if self.locals[id.0 as usize].is_none() => {
+                self.report_arg_errors(args);
+                None
+            }
             Some(Res::Local(_) | Res::Const(_)) => {
                 self.error(format!("`{name}` is not a function"), callee.span);
                 self.report_arg_errors(args);
@@ -1338,6 +1645,83 @@ impl<'a> Checker<'a> {
     fn report_arg_errors(&mut self, args: &[ast::Expr]) {
         for arg in args {
             self.expr(arg, None);
+        }
+    }
+
+    fn value_call(&mut self, callee: hir::Expr, args: &[ast::Expr], span: Span) -> Option<Value> {
+        let signature = self
+            .types
+            .func_signature(callee.ty())
+            .expect("a function-typed callee")
+            .clone();
+        if args.len() != signature.params.len() {
+            let message = format!(
+                "`{}` takes {} argument{} but {} {} given",
+                self.source_text(callee.span),
+                signature.params.len(),
+                if signature.params.len() == 1 { "" } else { "s" },
+                args.len(),
+                if args.len() == 1 { "was" } else { "were" },
+            );
+            self.error(message, span);
+            self.report_arg_errors(args);
+            return None;
+        }
+        if let ExprKind::Local(local) = callee.kind {
+            self.mark_exclusive(local);
+        }
+        let mut checked = Vec::new();
+        let mut ok = true;
+        for (arg, &(_, param)) in args.iter().zip(&signature.params) {
+            match self
+                .expr(arg, Some(param))
+                .and_then(|v| self.coerce(v, param))
+            {
+                Some(expr) => checked.push(expr),
+                None => ok = false,
+            }
+        }
+        let accesses: Vec<ArgumentAccess> = signature
+            .params
+            .iter()
+            .map(|&(mode, ty)| self.argument_access(mode, ty))
+            .collect();
+        if !ok || !self.check_argument_accesses(&accesses, &checked) {
+            return None;
+        }
+        if let Some(callee_place) = argument_place(&callee)
+            && let Some(arg) = checked.iter().find(|arg| {
+                argument_place(arg).is_some_and(|place| places_overlap(&callee_place, &place))
+            })
+        {
+            let name = self.source_text(callee.span).to_owned();
+            self.diagnostics.push(
+                Diagnostic::new(
+                    Severity::Error,
+                    format!("`{name}` is passed to its own call"),
+                    arg.span,
+                )
+                .note("calling a function value uses it exclusively"),
+            );
+            return None;
+        }
+        Some(Value::Typed(hir::Expr {
+            kind: ExprKind::CallValue {
+                callee: Box::new(callee),
+                args: checked,
+            },
+            types: signature.results,
+            span,
+        }))
+    }
+
+    fn argument_access(&self, mode: ast::ParamMode, ty: TypeId) -> ArgumentAccess {
+        let mutable_place = mode == ast::ParamMode::Mut || self.is_mut_slice(ty);
+        ArgumentAccess {
+            mutable_place,
+            // Calling a function value may write through its captures.
+            exclusive: mutable_place || self.is_func(ty),
+            borrowing: mode != ast::ParamMode::Own,
         }
     }
 
@@ -1382,13 +1766,12 @@ impl<'a> Checker<'a> {
             let mut diagnostic = Diagnostic::new(Severity::Error, message, name.span);
             if matches!(self.types.kind(ty), TypeKind::DynArray { .. }) {
                 diagnostic = diagnostic.note(
-                    "`Array<T>` length, append, remove, and capacity APIs are not specified yet (Q05)",
+                    "`Array<T>` length, append, remove, and capacity APIs are not specified yet",
                 );
             }
             if matches!(self.types.kind(ty), TypeKind::Map { .. }) {
-                diagnostic = diagnostic.note(
-                    "map length, iteration, and borrowed entry APIs are not specified yet (Q02/Q05)",
-                );
+                diagnostic = diagnostic
+                    .note("map length, iteration, and borrowed entry APIs are not specified yet");
             }
             self.diagnostics.push(diagnostic);
             self.report_arg_errors(args);
@@ -1401,9 +1784,7 @@ impl<'a> Checker<'a> {
                     "the `drop` method cannot be called directly",
                     name.span,
                 )
-                .note(
-                    "destruction runs when ownership ends or through `drop(value)` (§14.3, §14.4)",
-                ),
+                .note("destruction runs when ownership ends or through `drop(value)`"),
             );
             self.report_arg_errors(args);
             return None;
@@ -1411,8 +1792,6 @@ impl<'a> Checker<'a> {
         self.function_call(id, &name.text, Some(receiver), args, span)
     }
 
-    /// The built-in `m.remove(key)`: a `mut` receiver, one key, and the
-    /// presence-first result pair (§13.3).
     fn map_remove(
         &mut self,
         map: hir::Expr,
@@ -1499,9 +1878,7 @@ impl<'a> Checker<'a> {
         }))
     }
 
-    /// Which arguments of a call to `id` need mutable access: a `mut`
-    /// parameter, or a `mut []T` one (§11.6).
-    fn mutable_arguments(&self, id: FunctionId, count: usize) -> Vec<bool> {
+    fn argument_accesses(&self, id: FunctionId, count: usize) -> Vec<ArgumentAccess> {
         let param_types = self.signatures[id.0 as usize]
             .as_ref()
             .map(|signature| signature.params.clone())
@@ -1511,20 +1888,35 @@ impl<'a> Checker<'a> {
             .take(count)
             .enumerate()
             .map(|(index, local)| {
-                local.kind == LocalKind::Param(ast::ParamMode::Mut)
-                    || param_types
-                        .get(index)
-                        .is_some_and(|&ty| self.is_mut_slice(ty))
+                let LocalKind::Param(mode) = local.kind else {
+                    unreachable!("parameters come first among a function's locals")
+                };
+                match param_types.get(index) {
+                    Some(&ty) => self.argument_access(mode, ty),
+                    None => ArgumentAccess {
+                        mutable_place: mode == ast::ParamMode::Mut,
+                        exclusive: mode == ast::ParamMode::Mut,
+                        borrowing: mode != ast::ParamMode::Own,
+                    },
+                }
             })
             .collect()
     }
 
     fn check_mut_arguments(&mut self, id: FunctionId, args: &[hir::Expr]) -> bool {
-        let by_mut = self.mutable_arguments(id, args.len());
+        let accesses = self.argument_accesses(id, args.len());
+        self.check_argument_accesses(&accesses, args)
+    }
+
+    fn check_argument_accesses(&mut self, accesses: &[ArgumentAccess], args: &[hir::Expr]) -> bool {
         let mut ok = true;
-        for (arg, &is_mut) in args.iter().zip(&by_mut) {
-            if is_mut {
+        for (arg, access) in args.iter().zip(accesses) {
+            if access.mutable_place {
                 ok &= self.mutable_place(arg, MutableUse::Argument);
+            } else if access.exclusive
+                && let ExprKind::Local(local) = arg.kind
+            {
+                self.mark_exclusive(local);
             }
         }
         if !ok {
@@ -1533,7 +1925,7 @@ impl<'a> Checker<'a> {
         let places: Vec<_> = args.iter().map(argument_place).collect();
         for later in 1..args.len() {
             for earlier in 0..later {
-                if !by_mut[earlier] && !by_mut[later] {
+                if !accesses[earlier].exclusive && !accesses[later].exclusive {
                     continue;
                 }
                 let (Some(a), Some(b)) = (&places[earlier], &places[later]) else {
@@ -1550,28 +1942,27 @@ impl<'a> Checker<'a> {
                         args[later].span,
                     )
                     .related(args[earlier].span, "the overlapping argument")
-                    .note("a mutable borrow requires exclusive access (§11.3)"),
+                    .note("a mutable borrow requires exclusive access"),
                 );
                 ok = false;
             }
         }
-        ok && self.check_later_argument_mutation(id, args)
+        ok && self.check_later_argument_mutation(accesses, args)
     }
 
-    /// Rejects `f(x, g(x))` where evaluating a later argument mutates a place
-    /// an earlier argument already borrows for the call (§11.3).
-    fn check_later_argument_mutation(&mut self, id: FunctionId, args: &[hir::Expr]) -> bool {
-        let borrowing: Vec<bool> = self.res.locals[id.0 as usize]
-            .iter()
-            .take(args.len())
-            .map(|local| local.kind != LocalKind::Param(ast::ParamMode::Own))
-            .collect();
+    /// Rejects `f(x, g(x))` when `g` mutates `x`.
+    fn check_later_argument_mutation(
+        &mut self,
+        accesses: &[ArgumentAccess],
+        args: &[hir::Expr],
+    ) -> bool {
         let mut ok = true;
         for later in 1..args.len() {
             let mut mutated = Vec::new();
             self.mutated_places(&args[later], &mut mutated);
             for earlier in 0..later {
-                let Some(borrowed) = argument_place(&args[earlier]).filter(|_| borrowing[earlier])
+                let Some(borrowed) =
+                    argument_place(&args[earlier]).filter(|_| accesses[earlier].borrowing)
                 else {
                     continue;
                 };
@@ -1590,7 +1981,7 @@ impl<'a> Checker<'a> {
                         args[later].span,
                     )
                     .related(args[earlier].span, "borrowed for the call here")
-                    .note("a mutable borrow requires exclusive access (§11.3)"),
+                    .note("a mutable borrow requires exclusive access"),
                 );
                 ok = false;
             }
@@ -1598,17 +1989,40 @@ impl<'a> Checker<'a> {
         ok
     }
 
-    /// Places that evaluating `expr` mutably borrows through nested calls or
-    /// exclusive slicing.
     fn mutated_places(&self, expr: &hir::Expr, out: &mut Vec<ArgumentPlace>) {
         match &expr.kind {
             ExprKind::Call { function, args } => {
-                let by_mut = self.mutable_arguments(*function, args.len());
-                for (arg, is_mut) in args.iter().zip(by_mut) {
-                    if is_mut && let Some(place) = argument_place(arg) {
+                let accesses = self.argument_accesses(*function, args.len());
+                for (arg, access) in args.iter().zip(accesses) {
+                    if access.exclusive
+                        && let Some(place) = argument_place(arg)
+                    {
                         out.push(place);
                     }
                 }
+            }
+            ExprKind::CallValue { callee, args } => {
+                out.extend(argument_place(callee));
+                let signature = self
+                    .types
+                    .func_signature(callee.ty())
+                    .expect("a function-typed callee");
+                for (arg, &(mode, ty)) in args.iter().zip(&signature.params) {
+                    if self.argument_access(mode, ty).exclusive
+                        && let Some(place) = argument_place(arg)
+                    {
+                        out.push(place);
+                    }
+                }
+            }
+            // Creating a closure borrows its captures for as long as it lives.
+            ExprKind::Closure { captures, .. } => {
+                out.extend(
+                    captures
+                        .iter()
+                        .filter(|(_, exclusive)| *exclusive)
+                        .map(|&(local, _)| (local, Vec::new())),
+                );
             }
             ExprKind::Slice {
                 base,
@@ -1627,12 +2041,17 @@ impl<'a> Checker<'a> {
         match &expr.kind {
             ExprKind::Local(id) => {
                 let decl = &self.res.locals[self.current][id.0 as usize];
-                let (name, kind, decl_span) = (decl.name.clone(), decl.kind, decl.span);
+                let (name, decl_span) = (decl.name.clone(), decl.span);
+                let kind = self.binding_kind(*id);
                 let (what, note) = match kind {
-                    LocalKind::Var | LocalKind::Param(ast::ParamMode::Mut) => return true,
+                    LocalKind::Var | LocalKind::Param(ast::ParamMode::Mut) => {
+                        self.mark_exclusive(*id);
+                        return true;
+                    }
                     LocalKind::Param(ast::ParamMode::Borrow) if self.is_mut_slice(expr.ty()) => {
                         return true;
                     }
+                    LocalKind::Capture(_) => unreachable!("binding_kind follows captures"),
                     LocalKind::Let => (
                         "immutable binding",
                         match usage {
@@ -1642,11 +2061,11 @@ impl<'a> Checker<'a> {
                     ),
                     LocalKind::Param(ast::ParamMode::Borrow) => (
                         "shared parameter",
-                        "a parameter is a shared borrow unless declared `mut` (§7.3)",
+                        "a parameter is a shared borrow unless declared `mut`",
                     ),
                     LocalKind::Param(ast::ParamMode::Own) => (
                         "`own` parameter",
-                        "only `var` bindings and `mut` parameters are mutable places (§11.6)",
+                        "only `var` bindings and `mut` parameters are mutable places",
                     ),
                 };
                 let message = match usage {
@@ -1680,7 +2099,7 @@ impl<'a> Checker<'a> {
                     };
                     self.diagnostics.push(
                         Diagnostic::new(Severity::Error, message, expr.span)
-                            .note("elements of `[]T` are read-only (§12.6)"),
+                            .note("elements of `[]T` are read-only"),
                     );
                     false
                 }
@@ -1729,7 +2148,7 @@ impl<'a> Checker<'a> {
             );
             self.diagnostics.push(
                 Diagnostic::new(Severity::Error, message, expr.span)
-                    .note("printable types are bool, integers, floats, rune, and string (§37.1)"),
+                    .note("printable types are bool, integers, floats, rune, and string"),
             );
             return None;
         }
@@ -1786,7 +2205,7 @@ impl<'a> Checker<'a> {
                 );
             } else {
                 let message = format!(
-                    "`{}` is not a conversion; only numeric conversions exist (§6.6)",
+                    "`{}` is not a conversion; only numeric conversions exist",
                     self.name(target)
                 );
                 self.error(message, span);
@@ -1919,8 +2338,6 @@ impl<'a> Checker<'a> {
         }
     }
 
-    /// Checks `index` against a base of type `base_ty`, returning the typed
-    /// index and the element type (§12.6).
     fn checked_index(
         &mut self,
         base_ty: TypeId,
@@ -1961,8 +2378,7 @@ impl<'a> Checker<'a> {
         Some((index_expr, element))
     }
 
-    /// `base[low:high]`: an exclusive view only when `expected` asks for
-    /// `mut []T`, otherwise a shared one (§12.6).
+    /// Exclusive only when the context expects `mut []T`.
     fn slice(
         &mut self,
         base: &ast::Expr,
@@ -2050,8 +2466,6 @@ impl<'a> Checker<'a> {
         Some(bound)
     }
 
-    /// Whether `base` can supply the mutable access an exclusive view needs
-    /// (§11.6, §12.6): a mutable array place, or an existing `mut []T` view.
     fn mutable_slice_source(&mut self, base: &hir::Expr) -> bool {
         if let TypeKind::Slice { mutable, .. } = self.types.kind(base.ty()) {
             if !mutable {
@@ -2062,7 +2476,7 @@ impl<'a> Checker<'a> {
                         format!("cannot take a mutable slice of shared slice `{name}`"),
                         base.span,
                     )
-                    .note("a shared view cannot be upgraded to `mut []T` (§12.6)"),
+                    .note("a shared view cannot be upgraded to `mut []T`"),
                 );
             }
             return mutable;
@@ -2074,8 +2488,7 @@ impl<'a> Checker<'a> {
         &self.text[span.start() as usize..span.end() as usize]
     }
 
-    /// `map[key]` as a two-result value; only Copy values can be copied out
-    /// through the shared borrow a lookup takes (§13.3).
+    /// Only Copy values can be copied out through the shared borrow.
     fn map_lookup(
         &mut self,
         map: hir::Expr,
@@ -2089,7 +2502,7 @@ impl<'a> Checker<'a> {
             .and_then(|k| self.coerce(k, key_ty))?;
         if !self.type_is_copy(value_ty) {
             let message = format!(
-                "cannot look up a Move value of type `{}`; use `m.remove(key)` to take ownership (§13.3)",
+                "cannot look up a Move value of type `{}`; use `m.remove(key)` to take ownership",
                 self.name(value_ty)
             );
             self.error(message, span);
@@ -2134,7 +2547,7 @@ impl<'a> Checker<'a> {
                     self.diagnostics.push(
                         Diagnostic::new(
                             Severity::Error,
-                            format!("duplicate key `{text}` in map literal (§13.3)"),
+                            format!("duplicate key `{text}` in map literal"),
                             key_expr.span,
                         )
                         .related(*first, "first used here"),
@@ -2170,7 +2583,7 @@ impl<'a> Checker<'a> {
             && elements.len() != count
         {
             let message = format!(
-                "array literal has {} element{}, expected {count} (§12.6)",
+                "array literal has {} element{}, expected {count}",
                 elements.len(),
                 if elements.len() == 1 { "" } else { "s" }
             );
@@ -2265,7 +2678,7 @@ impl<'a> Checker<'a> {
             );
             self.diagnostics.push(
                 Diagnostic::new(Severity::Error, message, span)
-                    .note("struct literals must initialize every field (§8.4)"),
+                    .note("struct literals must initialize every field"),
             );
             ok = false;
         }
@@ -2474,7 +2887,6 @@ impl<'a> Checker<'a> {
         self.writable_place(place, slice_deref, expr)
     }
 
-    /// `place` (written as `expr`) if assigning through it is allowed.
     fn writable_place(
         &mut self,
         place: hir::Place,
@@ -2491,7 +2903,7 @@ impl<'a> Checker<'a> {
                         format!("cannot assign through shared slice `{name}`"),
                         expr.span,
                     )
-                    .note("elements of `[]T` are read-only (§12.6)"),
+                    .note("elements of `[]T` are read-only"),
                 );
                 None
             }
@@ -2499,12 +2911,15 @@ impl<'a> Checker<'a> {
         }
     }
 
-    /// Whether the binding at `place`'s root permits assigning through it.
     fn writable_root(&mut self, place: &hir::Place, expr: &ast::Expr) -> bool {
         let decl = &self.res.locals[self.current][place.root.0 as usize];
-        let (name, kind, decl_span) = (decl.name.clone(), decl.kind, decl.span);
-        match kind {
-            LocalKind::Var | LocalKind::Param(ast::ParamMode::Mut) => true,
+        let (name, decl_span) = (decl.name.clone(), decl.span);
+        match self.binding_kind(place.root) {
+            LocalKind::Var | LocalKind::Param(ast::ParamMode::Mut) => {
+                self.mark_exclusive(place.root);
+                true
+            }
+            LocalKind::Capture(_) => unreachable!("binding_kind follows captures"),
             LocalKind::Let => {
                 self.diagnostics.push(
                     Diagnostic::new(
@@ -2524,7 +2939,7 @@ impl<'a> Checker<'a> {
                         format!("cannot assign to parameter `{name}`"),
                         expr.span,
                     )
-                    .related(decl_span, "a shared borrow by default (§7.3)"),
+                    .related(decl_span, "a shared borrow by default"),
                 );
                 false
             }
@@ -2532,15 +2947,14 @@ impl<'a> Checker<'a> {
                 self.unsupported(
                     "assigning to `own` parameters is",
                     expr.span,
-                    "planned for roadmap milestone M13–M17",
+                    "planned for a later milestone",
                 );
                 false
             }
         }
     }
 
-    /// Builds an assignment target's place, along with the last slice it
-    /// indexes through, which decides its writability instead of the root.
+    /// The last slice indexed through decides writability instead of the root.
     fn target_place(&mut self, expr: &ast::Expr) -> Option<(hir::Place, Option<SliceDeref>)> {
         let is_place = |base: &ast::Expr| {
             matches!(
@@ -2596,7 +3010,7 @@ impl<'a> Checker<'a> {
                 if matches!(self.types.kind(place.ty), TypeKind::Map { .. }) {
                     self.expr(index, None);
                     self.error(
-                        "map entries are not addressable places; assign `m[key] = value` on its own, or update a copy and assign it back (§13.3)",
+                        "map entries are not addressable places; assign `m[key] = value` on its own, or update a copy and assign it back",
                         expr.span,
                     );
                     return None;
@@ -2619,8 +3033,7 @@ impl<'a> Checker<'a> {
         }
     }
 
-    /// For a target `base[key]` whose base is a map place: the map place and
-    /// its parts. `Some(None)` means the base already failed to check.
+    /// `Some(None)` means the base already failed to check.
     #[allow(clippy::type_complexity)]
     fn map_entry_target<'e>(
         &mut self,
@@ -2646,7 +3059,6 @@ impl<'a> Checker<'a> {
         )))
     }
 
-    /// `map[key] = value` (§13.3); the map must be a writable place.
     #[allow(clippy::too_many_arguments)]
     fn map_assign(
         &mut self,
@@ -2667,7 +3079,7 @@ impl<'a> Checker<'a> {
         };
         if let AssignOp::Compound(_) = op {
             self.error(
-                "compound map assignment is not allowed; look up, compute, then assign (§13.3)",
+                "compound map assignment is not allowed; look up, compute, then assign",
                 span,
             );
             self.report_arg_errors(values);
@@ -2942,23 +3354,27 @@ impl<'a> Checker<'a> {
     }
 }
 
-/// The last slice an assignment target indexes through.
 struct SliceDeref {
     mutable: bool,
     base_span: Span,
 }
 
-/// Why a place must be mutable, which shapes the diagnostic wording.
+struct ArgumentAccess {
+    mutable_place: bool,
+    exclusive: bool,
+    borrowing: bool,
+}
+
 #[derive(Clone, Copy, PartialEq)]
 enum MutableUse {
     Argument,
     Slice,
 }
 
-/// The direct subexpressions of `expr`, in evaluation order.
+/// In evaluation order.
 fn subexpressions(expr: &hir::Expr) -> Vec<&hir::Expr> {
     match &expr.kind {
-        ExprKind::Const(_) | ExprKind::Local(_) => Vec::new(),
+        ExprKind::Const(_) | ExprKind::Local(_) | ExprKind::Closure { .. } => Vec::new(),
         ExprKind::Field { base, .. } => vec![base],
         ExprKind::Index { base, index } => vec![base, index],
         ExprKind::Slice {
@@ -2968,6 +3384,7 @@ fn subexpressions(expr: &hir::Expr) -> Vec<&hir::Expr> {
             .chain(high.as_deref())
             .collect(),
         ExprKind::Call { args, .. } => args.iter().collect(),
+        ExprKind::CallValue { callee, args } => std::iter::once(&**callee).chain(args).collect(),
         ExprKind::StructLit { fields, .. } => fields.iter().map(|(_, value)| value).collect(),
         ExprKind::ArrayLit { elements, .. } => elements.iter().collect(),
         ExprKind::MapLit { entries, .. } => entries
@@ -2985,9 +3402,7 @@ fn subexpressions(expr: &hir::Expr) -> Vec<&hir::Expr> {
     }
 }
 
-/// A projection step for argument-aliasing purposes; an index's value
-/// doesn't matter here, only that indexing happened (§12.6: two differently
-/// written indices are not proof of disjointness).
+/// Index values are ignored: two indices never prove disjointness.
 #[derive(PartialEq)]
 enum ArgumentProjection {
     Field(FieldId),
@@ -2996,7 +3411,6 @@ enum ArgumentProjection {
 
 type ArgumentPlace = (LocalId, Vec<ArgumentProjection>);
 
-/// The local and projection path an argument names, if it is a plain place.
 fn argument_place(expr: &hir::Expr) -> Option<ArgumentPlace> {
     match &expr.kind {
         ExprKind::Local(id) => Some((*id, Vec::new())),
@@ -3014,7 +3428,7 @@ fn argument_place(expr: &hir::Expr) -> Option<ArgumentPlace> {
     }
 }
 
-/// Conservative: two indices are never proof of disjointness (§12.6).
+/// Two indices never prove disjointness.
 fn projections_conservatively_equal(a: &hir::Projection, b: &hir::Projection) -> bool {
     match (a, b) {
         (hir::Projection::Field(x), hir::Projection::Field(y)) => x == y,

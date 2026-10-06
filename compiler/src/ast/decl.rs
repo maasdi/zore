@@ -13,7 +13,6 @@ pub struct File {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Import {
-    /// Decoded import path.
     pub path: String,
     pub path_span: Span,
     pub span: Span,
@@ -37,7 +36,7 @@ pub struct FuncDecl {
     pub span: Span,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum ParamMode {
     /// No modifier: a shared borrow.
     Borrow,

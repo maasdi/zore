@@ -1,5 +1,3 @@
-//! Heap storage for owned dynamic arrays.
-
 use std::alloc::{Layout, alloc, dealloc};
 use std::io::Write;
 
@@ -18,8 +16,7 @@ fn layout(bytes: i64) -> Option<Layout> {
     Layout::from_size_align(size, ALIGN).ok()
 }
 
-/// Allocates `bytes` bytes; zero bytes yield a dangling, aligned, non-null
-/// pointer that is never dereferenced. Aborts if memory is unavailable.
+/// Zero bytes yield a dangling, aligned pointer; aborts if memory is unavailable.
 #[unsafe(no_mangle)]
 pub extern "C" fn zore_alloc(bytes: i64) -> *mut u8 {
     if bytes == 0 {

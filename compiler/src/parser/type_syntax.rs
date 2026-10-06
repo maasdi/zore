@@ -1,5 +1,3 @@
-//! Type syntax: named, fixed-array, slice, and dynamic-array types.
-
 use super::parser::{PResult, Parser};
 use crate::ast::*;
 use crate::lexer::{Keyword, Punct, Separator, Token, TokenKind};
@@ -13,19 +11,19 @@ impl Parser<'_> {
                     return self.type_arguments(name);
                 }
                 if self.at(Punct::Dot) && *self.peek_at(1) == TokenKind::Ident {
-                    return Err(self.unsupported("package-qualified type names", "M23"));
+                    return Err(self.unsupported("package-qualified type names"));
                 }
                 Ok(Type::Named(name))
             }
             TokenKind::Punct(Punct::LBracket) => self.bracket_type(),
             TokenKind::Keyword(Keyword::Map) => self.map_type(),
-            TokenKind::Keyword(Keyword::Channel) => Err(self.unsupported("channel types", "M30")),
-            TokenKind::Keyword(Keyword::Func) => Err(self.unsupported("function types", "M24")),
+            TokenKind::Keyword(Keyword::Channel) => Err(self.unsupported("channel types")),
+            TokenKind::Keyword(Keyword::Func) => self.func_type(),
             TokenKind::Keyword(Keyword::Mut) => {
                 let start = self.current_span();
                 if !self.at_slice_type_after(1) {
                     return Err(self.error(
-                        "`mut` in a type only forms a mutable slice type `mut []T` (§12.2)",
+                        "`mut` in a type only forms a mutable slice type `mut []T`",
                         start,
                     ));
                 }
@@ -43,8 +41,7 @@ impl Parser<'_> {
         }
     }
 
-    /// `Name<...>` after `Name`: only the predeclared `Array` takes a type
-    /// argument here; `Array` cannot be shadowed (§3.18).
+    /// Only the predeclared `Array` takes a type argument, and it cannot be shadowed.
     fn type_arguments(&mut self, name: Name) -> PResult<Type> {
         match name.text.as_str() {
             "Array" => {
@@ -56,10 +53,10 @@ impl Parser<'_> {
                     span: self.span_from(name.span),
                 })
             }
-            "Task" => Err(self.unsupported("`Task<...>` types", "M25–M29")),
+            "Task" => Err(self.unsupported("`Task<...>` types")),
             _ => Err(self.error(
                 format!(
-                    "`{}` does not take type arguments; user-defined generics are not part of the MVP (§22.1)",
+                    "`{}` does not take type arguments; user-defined generics are not part of the MVP",
                     name.text
                 ),
                 name.span,
@@ -67,8 +64,7 @@ impl Parser<'_> {
         }
     }
 
-    /// Consumes the `>` closing a type argument list, splitting it off a
-    /// `>>`, `>=`, or `>>=` token so `Array<Array<int>>` closes both lists.
+    /// Splits `>>`, `>=`, or `>>=` so `Array<Array<int>>` closes both lists.
     pub(super) fn close_type_arguments(&mut self) -> PResult<()> {
         let rest = match self.peek() {
             TokenKind::Punct(Punct::Gt) => {
@@ -94,9 +90,7 @@ impl Parser<'_> {
         Ok(())
     }
 
-    /// §3.7: a closing type-argument `>` is an eligible ending token, but only
-    /// the parser can tell it from the comparison operator, so the semicolon
-    /// the lexer could not insert is inserted here, at the same location.
+    /// Only the parser can tell a closing `>` from a comparison, so it inserts the semicolon the lexer could not.
     fn insert_semicolon_after_type_arguments(&mut self) {
         if matches!(self.peek(), TokenKind::Semicolon(_)) {
             return;
@@ -124,7 +118,64 @@ impl Parser<'_> {
         );
     }
 
-    /// `map[key]value`.
+    fn func_type(&mut self) -> PResult<Type> {
+        let start = self.bump().span;
+        self.expect(Punct::LParen)?;
+        let params =
+            self.comma_list(Punct::RParen, "parameter type", true, Self::func_type_param)?;
+        let results = if self.at_type_start() {
+            self.results()?
+        } else {
+            Vec::new()
+        };
+        Ok(Type::Func {
+            params,
+            results,
+            span: self.span_from(start),
+        })
+    }
+
+    fn func_type_param(&mut self) -> PResult<FuncTypeParam> {
+        if *self.peek() == TokenKind::Ident
+            && matches!(
+                self.peek_at(1),
+                TokenKind::Ident
+                    | TokenKind::Punct(Punct::LBracket)
+                    | TokenKind::Keyword(
+                        Keyword::Mut | Keyword::Own | Keyword::Func | Keyword::Map
+                    )
+            )
+        {
+            let span = self.current_span();
+            return Err(self.error(
+                "function type parameters have no names; write only the type, as in `func(int)`",
+                span,
+            ));
+        }
+        let mode = if self.at_keyword(Keyword::Mut) && !self.at_slice_type_after(1) {
+            self.bump();
+            ParamMode::Mut
+        } else if self.at_keyword(Keyword::Own) {
+            self.bump();
+            ParamMode::Own
+        } else {
+            ParamMode::Borrow
+        };
+        let ty = self.ty()?;
+        Ok(FuncTypeParam { mode, ty })
+    }
+
+    fn at_type_start(&self) -> bool {
+        matches!(
+            self.peek(),
+            TokenKind::Ident
+                | TokenKind::Punct(Punct::LBracket | Punct::LParen)
+                | TokenKind::Keyword(
+                    Keyword::Map | Keyword::Func | Keyword::Channel | Keyword::Mut
+                )
+        )
+    }
+
     pub(super) fn map_type(&mut self) -> PResult<Type> {
         let start = self.bump().span;
         self.expect(Punct::LBracket)?;
@@ -138,13 +189,11 @@ impl Parser<'_> {
         })
     }
 
-    /// Whether the tokens `ahead` positions from here begin `[]`.
     pub(super) fn at_slice_type_after(&self, ahead: usize) -> bool {
         *self.peek_at(ahead) == TokenKind::Punct(Punct::LBracket)
             && *self.peek_at(ahead + 1) == TokenKind::Punct(Punct::RBracket)
     }
 
-    /// `[element; size]` or the shared slice type `[]element`.
     pub(super) fn bracket_type(&mut self) -> PResult<Type> {
         let start = self.current_span();
         self.bump();

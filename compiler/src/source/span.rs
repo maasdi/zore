@@ -1,5 +1,3 @@
-//! File identities, byte spans, and line/column locations.
-
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct FileId {
     pub(super) map: u64,

@@ -1,5 +1,3 @@
-//! How Zore types are laid out as LLVM types, including drop-flag blocks.
-
 use std::fmt::Write;
 
 use super::llvm::Module;
@@ -38,6 +36,8 @@ impl Module<'_> {
             TypeKind::Array { element, size } => format!("[{size} x {}]", self.ty(element)),
             TypeKind::Slice { .. } | TypeKind::DynArray { .. } => "{ ptr, i64 }".into(),
             TypeKind::Map { .. } => "ptr".into(),
+            // The closure body's code, then its captured environment.
+            TypeKind::Func(_) => "{ ptr, ptr }".into(),
         }
     }
 
@@ -52,7 +52,6 @@ impl Module<'_> {
         }
     }
 
-    /// Named LLVM struct types for every Zore struct and its drop flags.
     pub(super) fn type_declarations(&self) -> String {
         let mut out = String::new();
         for strukt in &self.package.structs {

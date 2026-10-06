@@ -1,5 +1,3 @@
-//! Lexer tests for tokenization, literals, comments, and recovery.
-
 use zore::lexer::{IntBase, Keyword, Lexed, Punct, ReservedWord, Separator, TokenKind, lex};
 use zore::source::SourceMap;
 
@@ -16,7 +14,6 @@ impl Case {
         Self { sources, lexed }
     }
 
-    /// Token kinds with source text, excluding the final `Eof`.
     fn tokens(&self) -> Vec<(TokenKind, &str)> {
         let (eof, rest) = self.lexed.tokens.split_last().unwrap();
         assert_eq!(eof.kind, TokenKind::Eof);
@@ -29,7 +26,6 @@ impl Case {
         self.tokens().into_iter().map(|(kind, _)| kind).collect()
     }
 
-    /// Diagnostic messages with the source text their primary span covers.
     fn errors(&self) -> Vec<(&str, &str)> {
         self.lexed
             .diagnostics
@@ -86,8 +82,7 @@ fn rune_value(text: &str) -> char {
     }
 }
 
-/// Lex a malformed spelling and return the primary diagnostic message and the
-/// source text it covers. The literal must remain one recovery token.
+/// The literal must remain one recovery token.
 fn malformed(text: &str) -> (String, String) {
     let case = Case::new(text);
     let errors = case.errors();

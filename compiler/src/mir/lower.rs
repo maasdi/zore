@@ -1,5 +1,3 @@
-//! Lowering from typed HIR to MIR, making evaluation order explicit.
-
 use crate::ast::{BinaryOp, ParamMode};
 use crate::hir::{self, Const, ExprKind, StmtKind};
 use crate::mir::{
@@ -56,7 +54,8 @@ fn lower_function(package: &hir::Package, id: FunctionId, function: &hir::Functi
                 name: Some(local.name.clone()),
                 by_reference: match local.kind {
                     LocalKind::Param(mode) => passes_by_reference(package, mode, local.ty),
-                    _ => false,
+                    LocalKind::Capture(_) => true,
+                    LocalKind::Let | LocalKind::Var => false,
                 },
             })
             .collect(),
@@ -85,6 +84,7 @@ fn lower_function(package: &hir::Package, id: FunctionId, function: &hir::Functi
         function: id,
         name: function.name.clone(),
         params: function.params.iter().map(|p| Local(p.0)).collect(),
+        captures: function.captures.iter().map(|c| Local(c.0)).collect(),
         returns: builder.returns,
         locals: builder.locals,
         blocks: builder
@@ -257,7 +257,7 @@ impl Builder {
                 }
             }
             StmtKind::MapAssign { map, key, value } => {
-                // §5.6, §13.3: map place, key, then value, before any change.
+                // Map place, key, then value, before any change.
                 let map = self.place(package, map);
                 let key = self.evaluate_to_temporary(package, key);
                 let value = self.operand(package, value);
@@ -286,7 +286,10 @@ impl Builder {
                 self.push(target, Rvalue::Binary(*op, current, rhs), stmt.span);
             }
             StmtKind::Expr(expr) => match &expr.kind {
-                ExprKind::Call { .. } | ExprKind::Println(_) | ExprKind::Drop(_) => {
+                ExprKind::Call { .. }
+                | ExprKind::CallValue { .. }
+                | ExprKind::Println(_)
+                | ExprKind::Drop(_) => {
                     let discard = vec![None; expr.types.len()];
                     self.call(package, expr, discard);
                 }
@@ -500,7 +503,10 @@ impl Builder {
         let result_locals: Vec<Local> = inner.types.iter().map(|&ty| self.temp(ty)).collect();
         if matches!(
             inner.kind,
-            ExprKind::Call { .. } | ExprKind::MapLookup { .. } | ExprKind::MapRemove { .. }
+            ExprKind::Call { .. }
+                | ExprKind::CallValue { .. }
+                | ExprKind::MapLookup { .. }
+                | ExprKind::MapRemove { .. }
         ) {
             self.call(
                 package,
@@ -576,6 +582,10 @@ impl Builder {
         let map_args: Vec<hir::Expr>;
         let (callee, args) = match &expr.kind {
             ExprKind::Call { function, args } => (Callee::Function(*function), &args[..]),
+            // The callee is evaluated before the arguments.
+            ExprKind::CallValue { callee, args } => {
+                (Callee::Value(self.base_place(package, callee)), &args[..])
+            }
             ExprKind::Println(arg) => (Callee::Println, std::slice::from_ref(&**arg)),
             ExprKind::Drop(arg) => (Callee::Drop, std::slice::from_ref(&**arg)),
             ExprKind::MapLookup { map, key } | ExprKind::MapRemove { map, key } => {
@@ -600,6 +610,18 @@ impl Builder {
                     };
                     (
                         passes_by_reference(package, mode, param.ty),
+                        mode == ParamMode::Own,
+                    )
+                }
+                Callee::Value(place) => {
+                    let ty = place_type(package, &self.locals, place);
+                    let signature = package
+                        .types
+                        .func_signature(ty)
+                        .expect("a function-typed callee");
+                    let (mode, ty) = signature.params[index];
+                    (
+                        passes_by_reference(package, mode, ty),
                         mode == ParamMode::Own,
                     )
                 }
@@ -678,7 +700,7 @@ impl Builder {
                 }
             },
             ExprKind::Index { base, index } => {
-                // §12.6: evaluate the base, then the index, once each.
+                // Evaluate the base, then the index, once each.
                 let mut place = self.base_place(package, base);
                 let index_operand = self.checked_index_operand(package, &place, base.ty(), index);
                 place.projections.push(Projection::Index(index_operand));
@@ -690,7 +712,7 @@ impl Builder {
                 high,
                 mutable,
             } => {
-                // §12.6: evaluate the base, then low, then high, once each.
+                // Evaluate the base, then low, then high, once each.
                 let place = self.base_place(package, base);
                 let low = low
                     .as_deref()
@@ -708,10 +730,25 @@ impl Builder {
                     span,
                 )
             }
-            ExprKind::Call { .. } => {
+            ExprKind::Call { .. } | ExprKind::CallValue { .. } => {
                 let temp = self.temp(expr.ty());
                 self.call(package, expr, vec![Some(Place::local(temp))]);
                 value_operand(package, Place::local(temp), expr.ty())
+            }
+            ExprKind::Closure { function, captures } => {
+                let captures = captures
+                    .iter()
+                    .map(|&(local, exclusive)| (Place::local(Local(local.0)), exclusive))
+                    .collect();
+                self.assign_temp(
+                    package,
+                    expr.ty(),
+                    Rvalue::Closure {
+                        function: *function,
+                        captures,
+                    },
+                    span,
+                )
             }
             ExprKind::Try(_) => {
                 let values = self.try_values(package, expr);
@@ -749,7 +786,7 @@ impl Builder {
                 let map = self.temp(expr.ty());
                 self.push(Place::local(map), Rvalue::Zero, span);
                 for (key, value) in entries {
-                    // §13.3: each entry's key, then its value, then the insert.
+                    // Each entry's key, then its value, then the insert.
                     let key = self.evaluate_to_temporary(package, key);
                     let value = self.operand(package, value);
                     self.emit_call(
@@ -830,8 +867,7 @@ impl Builder {
         Operand::Copy(Place::local(result))
     }
 
-    /// The place an argument names, if it is a plain place rather than a
-    /// temporary value; evaluates any index subexpressions it contains.
+    /// Evaluates any index subexpressions it contains.
     fn argument_place_opt(&mut self, package: &hir::Package, expr: &hir::Expr) -> Option<Place> {
         match &expr.kind {
             ExprKind::Local(id) => Some(Place::local(Local(id.0))),
@@ -841,8 +877,7 @@ impl Builder {
                 Some(place)
             }
             ExprKind::Index { base, index } => {
-                // §12.6: an element of a temporary owner is still borrowed in
-                // place, never extracted.
+                // An element of a temporary owner is borrowed in place, never extracted.
                 let mut place = match self.argument_place_opt(package, base) {
                     Some(place) => place,
                     None if !package.is_copy(base.ty()) => self.base_place(package, base),
@@ -856,8 +891,7 @@ impl Builder {
         }
     }
 
-    /// The place an indexed or sliced base designates, copying a temporary
-    /// base value into a fresh local first.
+    /// Copies a temporary base value into a fresh local first.
     fn base_place(&mut self, package: &hir::Package, base: &hir::Expr) -> Place {
         match self.operand(package, base) {
             Operand::Copy(place) | Operand::Move(place) => place,
@@ -869,9 +903,7 @@ impl Builder {
         }
     }
 
-    /// Evaluates `index`, bounds-checks it against the length of `base` (of
-    /// type `base_ty`), and returns the (now `int64`-typed) checked value,
-    /// ready to use in an `Index` projection.
+    /// Returns the checked index as `int64`.
     fn checked_index_operand(
         &mut self,
         package: &hir::Package,
@@ -932,9 +964,7 @@ impl Builder {
     }
 }
 
-/// Whether a parameter receives a reference to its argument rather than a
-/// copy: `mut` always does, and a shared parameter does unless it is a Copy
-/// value with no array storage a callee could slice and return (§11.7).
+/// `mut` always does; shared does unless the value is Copy without array storage.
 fn passes_by_reference(package: &hir::Package, mode: ParamMode, ty: TypeId) -> bool {
     match mode {
         ParamMode::Mut => true,

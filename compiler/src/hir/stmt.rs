@@ -17,7 +17,7 @@ pub struct Stmt {
 
 #[derive(Debug)]
 pub enum StmtKind {
-    /// One initializer; `None` targets discard their value.
+    /// `None` targets discard their value.
     Let {
         targets: Vec<Option<LocalId>>,
         value: Expr,
@@ -27,14 +27,13 @@ pub enum StmtKind {
         targets: Vec<Option<Place>>,
         values: Vec<Expr>,
     },
-    /// `map[key] = value`: evaluates the map place, key, then value, and only
-    /// then inserts or replaces the entry (§13.3).
+    /// Evaluates the map place, key, then value before changing the entry.
     MapAssign {
         map: Place,
         key: Expr,
         value: Expr,
     },
-    /// `place op= value`, evaluating the place once.
+    /// Evaluates the place once.
     CompoundAssign {
         place: Place,
         op: BinaryOp,
@@ -49,7 +48,7 @@ pub enum StmtKind {
         then_block: Block,
         else_block: Option<Block>,
     },
-    /// Any loop form; absent parts are `None`.
+    /// Absent parts are `None`.
     Loop {
         init: Option<Box<Stmt>>,
         condition: Option<Expr>,

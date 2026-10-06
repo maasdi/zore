@@ -1,13 +1,9 @@
-//! Arbitrary-precision integers and exact rationals.
-//!
-//! Hand-written to keep the compiler free of numeric dependencies and easy to
-//! port. Targets compile-time constants, not general computation: multiplication
-//! is schoolbook and multi-limb division is bitwise.
+//! Hand-written arbitrary-precision integers and rationals, free of numeric dependencies.
 
 use std::cmp::Ordering;
 use std::fmt;
 
-// Magnitude helpers: little-endian u32 limbs without trailing zeros.
+// Magnitudes are little-endian u32 limbs without trailing zeros.
 
 fn trim(mut v: Vec<u32>) -> Vec<u32> {
     while v.last() == Some(&0) {
@@ -464,7 +460,6 @@ pub struct Rational {
     den: BigInt,
 }
 
-/// An IEEE 754 binary format: precision in bits and normal exponent range.
 #[derive(Clone, Copy, Debug)]
 pub struct FloatFormat {
     pub precision: u32,
@@ -555,7 +550,6 @@ impl Rational {
         (self.den == BigInt::from_u32(1)).then(|| self.num.clone())
     }
 
-    /// Bit sizes of the numerator and denominator.
     pub fn size_bits(&self) -> u64 {
         self.num.bits().max(self.den.bits())
     }
@@ -584,7 +578,7 @@ impl Rational {
         Self::new(self.num.mul(&other.den), self.den.mul(&other.num))
     }
 
-    /// `E` with `2^E <= |self| < 2^(E+1)`; requires a nonzero value.
+    /// `E` with `2^E <= |self| < 2^(E+1)`; the value must be nonzero.
     pub fn floor_log2(&self) -> i64 {
         let (p, q) = (self.num.abs(), &self.den);
         let mut e = p.bits() as i64 - q.bits() as i64;
@@ -617,9 +611,7 @@ impl Rational {
         }
     }
 
-    /// Rounds to an IEEE 754 format, nearest with ties to even, including
-    /// subnormals; `None` on overflow. Negative zero is returned as positive
-    /// zero.
+    /// Nearest with ties to even, including subnormals; `None` on overflow; never negative zero.
     pub fn to_float(&self, format: FloatFormat) -> Option<f64> {
         if self.is_zero() {
             return Some(0.0);
@@ -646,7 +638,6 @@ impl Rational {
         })
     }
 
-    /// Rounds to `precision` significant bits.
     pub fn round_to_precision(&self, precision: u32) -> Self {
         if self.is_zero() {
             return self.clone();
@@ -674,9 +665,7 @@ impl PartialOrd for Rational {
     }
 }
 
-/// Parses a validated decimal float spelling into an exact rational.
-/// Returns `None` if the magnitude reaches `2^max_log2`; values far below
-/// `2^-max_log2` round to zero.
+/// `None` when the magnitude reaches `2^max_log2`.
 pub fn parse_decimal(text: &str, max_log2: i64) -> Option<Rational> {
     let text: String = text.chars().filter(|&c| c != '_').collect();
     let (significand, exponent) = match text.find(['e', 'E']) {

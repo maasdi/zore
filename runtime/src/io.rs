@@ -1,5 +1,3 @@
-//! Synchronous output and text conversion for println.
-
 use std::io::Write;
 
 use super::panic::{fail, raise};
@@ -16,8 +14,7 @@ fn write_line(text: &[u8]) {
     }
     line.extend_from_slice(text);
     line.push(b'\n');
-    // Hold the lock over the whole line, including any short-write retries.
-    // Flush explicitly so a failed write is observed before returning.
+    // Hold the lock for the whole line and flush, so write failures are observed.
     let mut stdout = std::io::stdout().lock();
     if stdout
         .write_all(&line)

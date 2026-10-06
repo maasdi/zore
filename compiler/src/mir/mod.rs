@@ -1,5 +1,3 @@
-//! Control-flow-graph MIR: how the program executes.
-
 mod block;
 mod body;
 pub mod error_use;

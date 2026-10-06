@@ -1,0 +1,68 @@
+package main
+
+type Resource struct {
+    Name string
+}
+
+func (r mut Resource) drop() {
+    println(r.Name)
+}
+
+func show(r Resource) {
+    println(r.Name)
+}
+
+// A function-typed parameter: the callee may call `f` any number of times.
+func each(count int, f func(int)) {
+    for var i = 0; i < count; i += 1 {
+        f(i)
+    }
+}
+
+func parse(text string) (int, error) {
+    if text == "" {
+        return 0, error("empty input")
+    }
+    return 42, nil
+}
+
+func main() {
+    // Reading a captured local borrows it.
+    let greeting = "hello from a closure"
+    let greet = func() {
+        println(greeting)
+    }
+    greet()
+
+    // Closures have parameters, results, and function types.
+    let add func(int, int) int = func(a int, b int) int {
+        return a + b
+    }
+    println(add(2, 3))
+
+    // Writing a captured `var` borrows it exclusively until the closure's last use.
+    var total = 0
+    each(4, func(i int) {
+        total += i
+    })
+    println(total)
+
+    // A closure borrows a Move value without taking it; cleanup stays with the owner.
+    let resource = Resource{Name: "disk"}
+    let report = func() {
+        show(resource)
+    }
+    report()
+    report()
+
+    // `?` propagates to the closure's own trailing `error` result.
+    let checked = func(text string) (int, error) {
+        let value = parse(text)?
+        return value + 1, nil
+    }
+    let value, err = checked("x")
+    println(value)
+    println(err == nil)
+    let _, failure = checked("")
+    println(failure == error("empty input"))
+}

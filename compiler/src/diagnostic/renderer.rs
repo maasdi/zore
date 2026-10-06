@@ -1,5 +1,3 @@
-//! Rendering diagnostics against their source text.
-
 use std::error::Error;
 use std::fmt;
 

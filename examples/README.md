@@ -11,7 +11,7 @@ zore run examples/maps/main.ore
 `cargo test` checks every example with `zore check` and builds and runs each
 one natively, comparing its output with `expected-output.txt`. So a directory
 here is supported working code, not an aspiration. Features still in
-progress (closures, packages and imports, tasks and async, channels) have no
+progress (packages and imports, tasks and async, channels) have no
 example until they work.
 
 | Example | Shows | Spec |
@@ -29,3 +29,4 @@ example until they work.
 | [`slices`](slices) | `[]T` and `mut []T` views, slicing, returned views, views in structs | §11.7, §12 |
 | [`dynamic-arrays`](dynamic-arrays) | Owned `Array<T>`: literals, indexing, slicing, `mut` passing, element cleanup | §10.5, §12.6 |
 | [`maps`](maps) | `map[K]V` literals, two-result lookup, assignment, ownership-transferring `remove` | §13.3 |
+| [`closures`](closures) | Closure literals, function types and parameters, shared and exclusive captures, `?` in a closure | §16 |

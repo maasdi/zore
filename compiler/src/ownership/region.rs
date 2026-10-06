@@ -1,6 +1,4 @@
-//! Region analysis: which borrows each local's views hold, where those views
-//! are live, and the exclusivity conflicts and escapes that follow (§11.3–11.7,
-//! §12.3, §12.5). A loan stays live exactly while some live local holds it.
+//! A loan stays live exactly while some live local holds it.
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 
@@ -19,7 +17,6 @@ use crate::resolve::LocalKind;
 use crate::source::Span;
 use crate::types::{TypeId, TypeKind};
 
-/// For one result of a function, how each parameter can back it.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 struct Origin {
     /// The result views the argument's own storage (a by-reference parameter).
@@ -28,7 +25,7 @@ struct Origin {
     contents: bool,
 }
 
-/// A function's return-borrow contract (§11.7): `results[r][p]`.
+/// Indexed `results[r][p]`.
 #[derive(Clone, Debug, PartialEq)]
 struct Contract {
     results: Vec<Vec<Origin>>,
@@ -78,7 +75,6 @@ struct Analysis<'a> {
     interned: HashMap<LoanKey, LoanId>,
 }
 
-/// Where loans created by the current statement are keyed.
 struct Site {
     block: u32,
     position: usize,
@@ -93,7 +89,6 @@ impl Site {
     }
 }
 
-/// Diagnostics and contract facts gathered on the final pass over a body.
 struct Findings<'l> {
     live: &'l Liveness,
     contract: Contract,
@@ -131,6 +126,7 @@ impl<'a> Analysis<'a> {
                         span: self.package.function(body.function).span,
                         name: String::new(),
                         from_slicing: false,
+                        captured: false,
                     },
                 );
                 entry[param.0 as usize].insert(id);
@@ -310,7 +306,7 @@ impl<'a> Analysis<'a> {
         }
     }
 
-    /// The span a scope-end access is reported at: the binding's declaration.
+    /// Reported at the binding's declaration.
     fn scope_end_span(&self, local: Local) -> Span {
         let function = self.package.function(self.body.function);
         function
@@ -350,18 +346,38 @@ impl<'a> Analysis<'a> {
         state: &mut Holdings,
         findings: Option<&mut Findings>,
     ) {
+        // A function value argument may be called, so it is borrowed exclusively.
+        let exclusive_if_func = |mode: ParamMode, ty: TypeId| {
+            if matches!(self.package.types.kind(ty), TypeKind::Func(_)) {
+                ParamMode::Mut
+            } else {
+                mode
+            }
+        };
         let modes: Vec<Option<ParamMode>> = match callee {
             Callee::Function(id) => {
                 let function = self.package.function(*id);
                 function
                     .params
                     .iter()
-                    .map(|param| match function.locals[param.0 as usize].kind {
-                        LocalKind::Param(mode) => Some(mode),
-                        _ => None,
+                    .map(|param| {
+                        let local = &function.locals[param.0 as usize];
+                        match local.kind {
+                            LocalKind::Param(mode) => Some(exclusive_if_func(mode, local.ty)),
+                            _ => None,
+                        }
                     })
                     .collect()
             }
+            Callee::Value(place) => self
+                .package
+                .types
+                .func_signature(self.place_ty(place))
+                .expect("a function-typed callee")
+                .params
+                .iter()
+                .map(|&(mode, ty)| Some(exclusive_if_func(mode, ty)))
+                .collect(),
             Callee::Println | Callee::Drop => vec![None; args.len()],
             Callee::MapInsertNew | Callee::MapAssign | Callee::MapLookup | Callee::MapRemove => {
                 let mut modes = vec![None; args.len()];
@@ -371,6 +387,17 @@ impl<'a> Analysis<'a> {
         };
         if let Some(findings) = findings {
             let mut accesses = Vec::new();
+            if let Callee::Value(place) = callee {
+                self.index_accesses(place, site.span, &mut accesses);
+                accesses.push(self.access(
+                    place,
+                    AccessKind::Write,
+                    Depth::Deep,
+                    Action::Call,
+                    site.span,
+                    false,
+                ));
+            }
             for (arg, mode) in args.iter().zip(&modes) {
                 self.operand_accesses(arg, *mode, site.span, &mut accesses);
             }
@@ -388,6 +415,13 @@ impl<'a> Analysis<'a> {
         }
         if callee.map_access().is_some() {
             self.map_call(args, destinations, site, state);
+            return;
+        }
+        if let Callee::Value(_) = callee {
+            // Results through a function value hold no views.
+            for destination in destinations.iter().flatten() {
+                self.assign(destination, BTreeSet::new(), state);
+            }
             return;
         }
         let Callee::Function(id) = callee else {
@@ -420,6 +454,7 @@ impl<'a> Analysis<'a> {
                             span: site.span,
                             name: self.describe(place),
                             from_slicing: false,
+                            captured: false,
                         };
                         loans.insert(self.intern(site.next_key(), loan));
                     }
@@ -432,8 +467,7 @@ impl<'a> Analysis<'a> {
         }
     }
 
-    /// A stored map value keeps its views' loans on the map; a value taken out
-    /// of the map carries the map's loans with it.
+    /// Stored values' loans join the map's; values taken out carry them.
     fn map_call(
         &mut self,
         args: &[Operand],
@@ -466,8 +500,7 @@ impl<'a> Analysis<'a> {
         }
     }
 
-    /// Stores `loans` as what `target` now holds, then ends every loan that
-    /// borrowed through the descriptor the assignment replaced.
+    /// Also ends loans through the descriptor the assignment replaces.
     fn assign(&mut self, target: &Place, loans: BTreeSet<LoanId>, state: &mut Holdings) {
         let root = target.local.0 as usize;
         if self.carries_views(target.local) {
@@ -483,9 +516,7 @@ impl<'a> Analysis<'a> {
         }
     }
 
-    /// The loans a new borrow of `place` (covering `path`) must carry over
-    /// from its root: storage reached through a view stays borrowed from that
-    /// view's backing, and a value holding views keeps their provenance.
+    /// Storage behind a view stays borrowed from its backing; held views keep their provenance.
     fn inherited_loans(&self, place: &Place, path: &Path, state: &Holdings) -> BTreeSet<LoanId> {
         if path.goes_through_deref() || self.package.contains_view(self.place_ty(place)) {
             state[place.local.0 as usize].clone()
@@ -509,13 +540,14 @@ impl<'a> Analysis<'a> {
         }
         let mut loans = state[place.local.0 as usize].clone();
         if matches!(operand, Operand::Copy(_)) && self.is_mut_slice(ty) {
-            // §12.3: copying a mutable view is an exclusive reborrow.
+            // Copying a mutable view is an exclusive reborrow.
             let loan = Loan {
                 kind: LoanKind::Exclusive,
                 target: LoanTarget::Place(Path::of(self.package, self.body, place).deref()),
                 span: site.span,
                 name: self.describe(place),
                 from_slicing: false,
+                captured: false,
             };
             loans.insert(self.intern(site.next_key(), loan));
         }
@@ -555,9 +587,31 @@ impl<'a> Analysis<'a> {
                     span: site.span,
                     name: self.describe(place),
                     from_slicing: true,
+                    captured: false,
                 };
                 let mut loans = BTreeSet::from([self.intern(site.next_key(), loan)]);
                 loans.extend(inherited);
+                loans
+            }
+            Rvalue::Closure { captures, .. } => {
+                let mut loans = BTreeSet::new();
+                for (place, exclusive) in captures {
+                    let path = Path::of(self.package, self.body, place);
+                    loans.extend(self.inherited_loans(place, &path, state));
+                    let loan = Loan {
+                        kind: if *exclusive {
+                            LoanKind::Exclusive
+                        } else {
+                            LoanKind::Shared
+                        },
+                        target: LoanTarget::Place(path),
+                        span: site.span,
+                        name: self.describe(place),
+                        from_slicing: false,
+                        captured: true,
+                    };
+                    loans.insert(self.intern(site.next_key(), loan));
+                }
                 loans
             }
             Rvalue::Zero
@@ -645,6 +699,16 @@ impl<'a> Analysis<'a> {
                     self.operand_accesses(bound, None, span, out);
                 }
             }
+            Rvalue::Closure { captures, .. } => {
+                for (place, exclusive) in captures {
+                    let (kind, action) = if *exclusive {
+                        (AccessKind::Write, Action::MutBorrow)
+                    } else {
+                        (AccessKind::Read, Action::Borrow)
+                    };
+                    out.push(self.access(place, kind, Depth::Deep, action, span, false));
+                }
+            }
         }
     }
 
@@ -709,6 +773,7 @@ impl<'a> Analysis<'a> {
         let name = &access.name;
         let exclusive = loan.kind == LoanKind::Exclusive;
         let message = match access.action {
+            Action::Call => format!("cannot call `{name}` while it is borrowed"),
             Action::Use if exclusive => format!("cannot use `{name}` while it is mutably borrowed"),
             Action::Use => format!("cannot use `{name}` while it is borrowed"),
             Action::Assign => format!("cannot assign to `{name}` while it is borrowed"),
@@ -726,16 +791,26 @@ impl<'a> Analysis<'a> {
             }
             Action::StorageDead => "temporary value does not live long enough".to_string(),
         };
-        let created = if access.action == Action::StorageDead {
+        let created = if loan.captured && exclusive {
+            format!("`{}` captured mutably by this function literal", loan.name)
+        } else if loan.captured {
+            format!("`{}` captured by this function literal", loan.name)
+        } else if access.action == Action::StorageDead {
             format!("`{}` borrowed here", loan.name)
         } else if exclusive {
             format!("mutable borrow of `{}` created here", loan.name)
         } else {
             format!("borrow of `{}` created here", loan.name)
         };
-        let later = match &self.body.locals[holder.0 as usize].name {
-            Some(view) => format!("the view `{view}` is used later (§11.3)"),
-            None => "a later use keeps this borrow live (§11.3)".to_string(),
+        let holder_decl = &self.body.locals[holder.0 as usize];
+        let holder_is_closure =
+            matches!(self.package.types.kind(holder_decl.ty), TypeKind::Func(_));
+        let later = match &holder_decl.name {
+            Some(closure) if holder_is_closure => {
+                format!("the closure `{closure}` is used later")
+            }
+            Some(view) => format!("the view `{view}` is used later"),
+            None => "a later use keeps this borrow live".to_string(),
         };
         let temporary_scope_end = access.action == Action::StorageDead
             && self.body.locals[access.path.local.0 as usize]
@@ -749,14 +824,13 @@ impl<'a> Analysis<'a> {
         .note(later);
         if access.from_slicing && loan.from_slicing {
             diagnostic = diagnostic.note(
-                "slice borrows are checked against the whole originating place, not index ranges (§12.5)",
+                "slice borrows are checked against the whole originating place, not index ranges",
             );
         }
         diagnostic
     }
 
-    /// Storing a view through a slice element or a by-reference parameter
-    /// would need output-provenance contracts, which do not exist yet.
+    /// Needs output provenance, which does not exist yet.
     fn check_view_store(&self, target: &Place, span: Span, findings: &mut Findings) {
         if !self.package.contains_view(self.place_ty(target)) {
             return;
@@ -775,13 +849,12 @@ impl<'a> Analysis<'a> {
                     ),
                     span,
                 )
-                .note("views can only be stored in local variables for now; storing through a parameter or slice element needs output provenance contracts (§11.7)"),
+                .note("views can only be stored in local variables for now; storing through a parameter or slice element needs output provenance contracts"),
             );
         }
     }
 
-    /// Records which parameters each returned view borrows from, rejecting
-    /// views of storage that does not outlive the call (§11.7).
+    /// Rejects returned views of storage that does not outlive the call.
     fn return_origins(&self, state: &Holdings, findings: &mut Findings) {
         for (result, ret) in self.body.returns.iter().enumerate() {
             for &id in &state[ret.0 as usize] {
@@ -815,20 +888,16 @@ impl<'a> Analysis<'a> {
                         format!("cannot return a view of {owner}"),
                         loan.span,
                     )
-                    .note(
-                        "a returned view must refer to storage borrowed from a parameter (§11.7)",
-                    ),
+                    .note("a returned view must refer to storage borrowed from a parameter"),
                 );
             }
         }
     }
 }
 
-/// Backward liveness: a local is live where its current value may still be
-/// read, which is exactly where the loans it holds stay in force.
+/// Backward liveness: a loan stays in force while its holder is live.
 struct Liveness {
-    /// `before[block][k]`: live locals before statement `k`; index
-    /// `statements.len()` is before the terminator, one more is after it.
+    /// Index `statements.len()` is before the terminator, one more is after it.
     before: Vec<Vec<LiveSet>>,
 }
 
@@ -901,7 +970,10 @@ impl Liveness {
             }
             Terminator::Branch { condition, .. } => Self::use_operand(condition, live),
             Terminator::Call {
-                args, destinations, ..
+                callee,
+                args,
+                destinations,
+                ..
             } => {
                 for destination in destinations.iter().flatten() {
                     Self::define(destination, live);
@@ -909,6 +981,9 @@ impl Liveness {
                 }
                 for arg in args {
                     Self::use_operand(arg, live);
+                }
+                if let Callee::Value(place) = callee {
+                    Self::use_place(place, live);
                 }
             }
             Terminator::Return => {
@@ -926,8 +1001,7 @@ impl Liveness {
         }
     }
 
-    /// A projected target reads its index operands, and writing through a
-    /// slice element reads the descriptor that locates it.
+    /// Writing through a slice element reads the descriptor that locates it.
     fn use_target(body: &Body, place: &Place, live: &mut LiveSet) {
         Self::use_indices(place, live);
         if !place.projections.is_empty() && !body.locals[place.local.0 as usize].by_reference {
@@ -977,6 +1051,11 @@ impl Liveness {
                 Self::use_place(place, live);
                 for bound in [low, high].into_iter().flatten() {
                     Self::use_operand(bound, live);
+                }
+            }
+            Rvalue::Closure { captures, .. } => {
+                for (place, _) in captures {
+                    Self::use_place(place, live);
                 }
             }
         }

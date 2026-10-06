@@ -1,5 +1,3 @@
-//! Declarations: package clause, imports, functions, and struct types.
-
 use super::parser::{PResult, Parser, Reported};
 use crate::ast::*;
 use crate::lexer::{Keyword, Punct, TokenKind};

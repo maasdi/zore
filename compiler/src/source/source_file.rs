@@ -1,5 +1,3 @@
-//! One loaded UTF-8 source file and its line index.
-
 use std::error::Error;
 use std::fmt;
 use std::path::{Path, PathBuf};
@@ -77,7 +75,7 @@ impl SourceFile {
         self.line_starts.len()
     }
 
-    /// Returns the line without its line terminator.
+    /// Excludes the line terminator.
     pub fn line(&self, zero_based: usize) -> Option<&str> {
         let start = *self.line_starts.get(zero_based)? as usize;
         let end = self
@@ -106,7 +104,7 @@ impl SourceFile {
         })
     }
 
-    /// Returns a span if both ends are ordered UTF-8 boundaries in this file.
+    /// `None` unless both ends are ordered UTF-8 boundaries in this file.
     pub fn span(&self, start: u32, end: u32) -> Option<Span> {
         let span = Span {
             file: self.id,

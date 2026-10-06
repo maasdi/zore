@@ -1,10 +1,4 @@
-//! Untyped constant evaluation: exact integer and float arithmetic,
-//! representability, and typed constant folding.
-//!
-//! Untyped integers are exact up to [`MAX_INT_BITS`] bits. Untyped floats are
-//! exact rationals, rounded to [`ROUND_PRECISION`] significant bits once they
-//! exceed [`MAX_RATIONAL_BITS`], with a binary exponent range of
-//! ±[`MAX_FLOAT_LOG2`].
+//! Exact untyped constant arithmetic and typed constant folding.
 
 use std::cmp::Ordering;
 
@@ -17,7 +11,6 @@ pub const MAX_RATIONAL_BITS: u64 = 40_000;
 pub const ROUND_PRECISION: u32 = 512;
 pub const MAX_FLOAT_LOG2: i64 = 32_767;
 
-/// An untyped numeric constant: integer or float kind.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Untyped {
     Int(BigInt),
@@ -33,16 +26,13 @@ pub enum Folded {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ConstError {
     DivisionByZero,
-    /// The operator needs integer operands.
     NeedsInteger,
-    /// A boolean operator applied to a number.
     NeedsBool,
     IntLimit,
     FloatOverflow,
     Overflow,
 }
 
-/// Why an untyped constant cannot take a type.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Unrepresentable {
     NotInteger,
@@ -168,8 +158,7 @@ pub fn untyped_unary(op: UnaryOp, a: &Untyped) -> Result<Untyped, ConstError> {
     }
 }
 
-/// Shifts an integral untyped constant. Right shifts round toward negative
-/// infinity.
+/// Right shifts round toward negative infinity.
 pub fn untyped_shift(op: BinaryOp, value: &BigInt, count: &BigInt) -> Result<Untyped, ConstError> {
     let count = count.to_u64().ok_or(ConstError::IntLimit)?;
     if op == BinaryOp::Shl {
@@ -192,7 +181,7 @@ pub fn to_int(value: &Untyped, ty: IntType) -> Result<i128, Unrepresentable> {
         .ok_or(Unrepresentable::OutOfRange)
 }
 
-/// Rounds to a float type, nearest with ties to even, without overflow.
+/// Nearest with ties to even; overflow is rejected.
 pub fn to_float(value: &Untyped, ty: FloatType) -> Option<f64> {
     value.to_rational().to_float(ty.format())
 }
@@ -217,8 +206,7 @@ pub fn typed_int(op: BinaryOp, x: i128, y: i128, ty: IntType) -> Result<i128, Co
         .ok_or(ConstError::Overflow)
 }
 
-/// Folds a typed float operation: exact arithmetic then one rounding, the
-/// correctly rounded IEEE result. Overflow and division by zero are errors.
+/// Exact arithmetic then one rounding, matching correctly rounded IEEE results.
 pub fn typed_float(op: BinaryOp, x: f64, y: f64, ty: FloatType) -> Result<f64, ConstError> {
     let (a, b) = (Rational::from_f64(x), Rational::from_f64(y));
     let exact = match op {
@@ -235,8 +223,7 @@ pub fn float_to_float(x: f64, ty: FloatType) -> Option<f64> {
     Rational::from_f64(x).to_float(ty.format())
 }
 
-/// Converts a typed float constant to an integer type; it must be integral
-/// and in range.
+/// The constant must be integral and in range.
 pub fn float_to_int(x: f64, ty: IntType) -> Result<i128, Unrepresentable> {
     to_int(&Untyped::Float(Rational::from_f64(x)), ty)
 }
