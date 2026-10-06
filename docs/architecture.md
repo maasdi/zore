@@ -250,8 +250,9 @@ unwind edge. Region analysis gives the destination the loans of a source that
 holds views.
 
 Temporary
-restrictions, each diagnosed: `mut []T` cannot be nested inside a struct field,
-array, or slice element; a view cannot be stored through a slice element or a
+restrictions, each diagnosed: `mut []T` cannot be held in an `Array<T>`, map, or
+slice element, and a shared parameter cannot hold one inside a struct or fixed
+array; a view cannot be stored through a slice element or a
 by-reference parameter or a closure capture; a type containing a view cannot
 define a custom `drop`; a function type cannot return a view; and a closure
 cannot consume a captured Move value.

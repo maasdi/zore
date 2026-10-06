@@ -88,7 +88,7 @@ impl Loan {
         };
         borrowed.local == path.local
             && borrowed.elems.len() > path.elems.len()
-            && borrowed.elems[path.elems.len()] == PathElem::Deref
+            && borrowed.elems[path.elems.len()..].contains(&PathElem::Deref)
             && borrowed.elems.iter().zip(&path.elems).all(|(a, b)| a == b)
     }
 }

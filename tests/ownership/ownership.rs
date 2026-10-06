@@ -1110,3 +1110,95 @@ fn clone_can_be_discarded_and_borrowed_through_places() {
         "cannot assign to `a[_]` while it is borrowed",
     );
 }
+
+const WINDOW: &str = "type Window struct { items mut []int\nlabel int }";
+
+fn window_body(stmts: &str) -> String {
+    format!("package main\n\n{WINDOW}\n\nfunc main() {{\n{stmts}\n}}\n")
+}
+
+#[test]
+fn a_struct_holding_a_mutable_view_borrows_its_backing_exclusively() {
+    rejects(
+        &window_body(
+            "var data = [int; 2]{1, 2}
+            let w = Window{items: data[:], label: 1}
+            println(data[0])
+            w.items[0] = 5",
+        ),
+        "cannot use `data[_]` while it is mutably borrowed",
+    );
+    accepts(&window_body(
+        "var data = [int; 2]{1, 2}
+        let w = Window{items: data[:], label: 1}
+        w.items[0] = 5
+        println(data[0])",
+    ));
+}
+
+#[test]
+fn copying_a_struct_reborrows_the_mutable_views_inside_it() {
+    rejects(
+        &window_body(
+            "var data = [int; 2]{1, 2}
+            let w = Window{items: data[:], label: 1}
+            let copy = w
+            w.items[0] = 5
+            copy.items[0] = 6",
+        ),
+        "cannot assign to `w.items[_]` while it is borrowed",
+    );
+    accepts(&window_body(
+        "var data = [int; 2]{1, 2}
+        let w = Window{items: data[:], label: 1}
+        let copy = w
+        println(w.label)
+        copy.items[0] = 6
+        w.items[1] = 7",
+    ));
+    rejects(
+        &window_body(
+            "var a = [int; 1]{1}
+            var b = [int; 1]{2}
+            var rows = [mut []int; 2]{a[:], b[:]}
+            let other = rows
+            rows[0][0] = 3
+            other[1][0] = 4",
+        ),
+        "cannot assign to `rows[_][_]` while it is borrowed",
+    );
+}
+
+#[test]
+fn replacing_a_struct_ends_reborrows_through_its_old_views() {
+    accepts(&window_body(
+        "var a = [int; 1]{1}
+        var b = [int; 1]{2}
+        var w = Window{items: a[:], label: 1}
+        w = Window{items: b[:], label: 2}
+        a[0] = 10
+        w.items[0] = 30",
+    ));
+}
+
+#[test]
+fn a_struct_holding_a_mutable_view_cannot_outlive_its_backing() {
+    rejects(
+        &program(&format!(
+            "{WINDOW}\nfunc escape() Window {{ var data = [int; 1]{{1}}\nreturn Window{{items: data[:], label: 0}} }}"
+        )),
+        "cannot return a view of local `data`",
+    );
+    rejects(
+        &window_body(
+            "var outer = [int; 1]{0}
+            var w = Window{items: outer[:], label: 0}
+            {
+                var data = [int; 1]{1}
+                w = Window{items: data[:], label: 1}
+            }
+            w.items[0] = 2",
+        ),
+        "does not live long enough",
+    );
+}

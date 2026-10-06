@@ -1907,3 +1907,47 @@ fn a_panicking_clone_in_a_loop_cleans_up_every_iteration() {
         "12\n11\n2\n1\n12\n11\n2\n1\n3\n",
     );
 }
+
+#[test]
+fn mutable_views_inside_structs_and_arrays_write_through() {
+    prints(
+        "package main
+
+type Window struct {
+    items mut []int
+    label int
+}
+
+func fill(w mut Window, value int) {
+    w.items[0] = value
+}
+
+func first(w own Window) int {
+    return w.items[0]
+}
+
+func narrow(data mut []int) Window {
+    return Window{items: data[1:], label: 2}
+}
+
+func main() {
+    var data = [int; 3]{1, 2, 3}
+    var w = Window{items: data[:], label: 1}
+    w.items[1] = 20
+    fill(w, 10)
+    println(first(w))
+    let n = narrow(data[:])
+    n.items[0] = 7
+    println(data[0] + data[1] + data[2])
+
+    var a = [int; 2]{1, 2}
+    var b = [int; 2]{3, 4}
+    var rows = [mut []int; 2]{a[:], b[:]}
+    rows[0][1] = 20
+    rows[1][0] = 30
+    println(a[0] + a[1] + b[0])
+}
+",
+        "10\n20\n51\n",
+    );
+}

@@ -3,7 +3,7 @@
 use std::collections::{BTreeSet, HashMap, HashSet};
 
 use super::borrow::{
-    Access, AccessKind, Action, Depth, Loan, LoanKind, LoanTarget, Path, conflicts,
+    Access, AccessKind, Action, Depth, Loan, LoanKind, LoanTarget, Path, PathElem, conflicts,
 };
 use super::checker::describe_place;
 use crate::ast::ParamMode;
@@ -13,7 +13,7 @@ use crate::mir::{
     BasicBlock, BlockId, Body, Callee, Local, Operand, Place, Program, Projection, Rvalue,
     Statement, Terminator, place_type,
 };
-use crate::resolve::LocalKind;
+use crate::resolve::{FieldId, LocalKind};
 use crate::source::Span;
 use crate::types::{TypeId, TypeKind};
 
@@ -199,13 +199,6 @@ impl<'a> Analysis<'a> {
 
     fn carries_views(&self, local: Local) -> bool {
         self.package.contains_view(self.local_ty(local))
-    }
-
-    fn is_mut_slice(&self, ty: TypeId) -> bool {
-        matches!(
-            self.package.types.kind(ty),
-            TypeKind::Slice { mutable: true, .. }
-        )
     }
 
     fn describe(&self, place: &Place) -> String {
@@ -549,19 +542,52 @@ impl<'a> Analysis<'a> {
             return BTreeSet::new();
         }
         let mut loans = state[place.local.0 as usize].clone();
-        if matches!(operand, Operand::Copy(_)) && self.is_mut_slice(ty) {
-            // Copying a mutable view is an exclusive reborrow.
-            let loan = Loan {
-                kind: LoanKind::Exclusive,
-                target: LoanTarget::Place(Path::of(self.package, self.body, place).deref()),
-                span: site.span,
-                name: self.describe(place),
-                from_slicing: false,
-                captured: false,
-            };
-            loans.insert(self.intern(site.next_key(), loan));
+        if matches!(operand, Operand::Copy(_)) {
+            // Copying a mutable view, alone or inside a composite, is an exclusive reborrow.
+            for elems in self.mut_view_paths(ty) {
+                let mut path = Path::of(self.package, self.body, place);
+                path.elems.extend(elems);
+                let loan = Loan {
+                    kind: LoanKind::Exclusive,
+                    target: LoanTarget::Place(path.deref()),
+                    span: site.span,
+                    name: self.describe(place),
+                    from_slicing: false,
+                    captured: false,
+                };
+                loans.insert(self.intern(site.next_key(), loan));
+            }
         }
         loans
+    }
+
+    fn mut_view_paths(&self, ty: TypeId) -> Vec<Vec<PathElem>> {
+        let prefixed = |prefix: PathElem, paths: Vec<Vec<PathElem>>| {
+            paths
+                .into_iter()
+                .map(|path| std::iter::once(prefix).chain(path).collect())
+                .collect::<Vec<_>>()
+        };
+        match self.package.types.kind(ty) {
+            TypeKind::Slice { mutable: true, .. } => vec![Vec::new()],
+            TypeKind::Struct(id) => self
+                .package
+                .strukt(id)
+                .fields
+                .iter()
+                .enumerate()
+                .flat_map(|(index, field)| {
+                    prefixed(
+                        PathElem::Field(FieldId(index as u32)),
+                        self.mut_view_paths(field.ty),
+                    )
+                })
+                .collect(),
+            TypeKind::Array { element, .. } => {
+                prefixed(PathElem::Index, self.mut_view_paths(element))
+            }
+            _ => Vec::new(),
+        }
     }
 
     fn rvalue_loans(
@@ -643,7 +669,7 @@ impl<'a> Analysis<'a> {
     ) {
         let (place, kind, action) = match operand {
             Operand::Const(..) => return,
-            Operand::Copy(place) if self.is_mut_slice(self.place_ty(place)) => {
+            Operand::Copy(place) if !self.mut_view_paths(self.place_ty(place)).is_empty() => {
                 (place, AccessKind::Write, Action::MutBorrow)
             }
             Operand::Copy(place) => (place, AccessKind::Read, Action::Use),

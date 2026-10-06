@@ -42,6 +42,7 @@ A newly discovered semantic gap blocks its affected feature, not unrelated work.
 | Q17 | `Array<T>` choices made while implementing §12.6. (a) The parser recognizes `Array<` by spelling, in type and expression position: `Array` is predeclared and cannot be shadowed (§3.18), and without this `Array<int>{...}` is ambiguous with comparisons. Other `Name<...>` forms are rejected (`Task<...>` waits for M25). (b) A `>>`, `>=`, or `>>=` token is split when it closes a type argument list, so `Array<Array<int>>` closes both lists. (c) Resolved and locked in §3.7: the `>` that closes a type argument list is an eligible ending token, so a newline after `Items Array<int>` ends the field. The comparison `>` stays ineligible. The parser applies this rule at the closing `>`, because the lexer cannot distinguish it. (d) Like `[T; N]{...}`, an `Array<T>{...}` literal needs no parentheses in `if`/`for` headers. (e) Elements are destroyed in reverse index order, as for fixed arrays. (f) When an element's or field's old value panics during replacement, the new value is still stored before unwinding, so each slot always holds exactly one live value (§5.6 leaves this cleanup order open). The existing abort under a custom-`drop` ancestor is unchanged. (g) Allocation failure aborts the process. (h) The "statically known" length in §12.6 means a length known from the type, so out-of-range constant indices into `Array<T>` panic at run time, while negative ones are rejected. (i) `len`, `append`, `remove`, and capacity APIs (Q05) are not provided; method calls on `Array<T>` are rejected with a note. | §3.7, §3.18, §5.6, §10.5, §10.7, §12.6, §14.5 | Parser, checker, and codegen changes |
 | Q18 | Map choices made while implementing §13.3. (a) A map entry cannot be one of several assignment targets, even when the key expressions differ: §13.3 requires rejection when independence cannot be proven, and the compiler proves none, so it rejects every such target. (b) Destroying a map destroys its remaining values in the runtime's entry order, which §13.3 leaves unspecified. (c) A duplicate key found at run time in a literal panics with "duplicate key in map literal". The entry's value is destroyed by ordinary cleanup, as are the entries built so far. (d) Allocation failure aborts the process, as for `Array<T>` (Q17g). (e) `remove` on a map reached through a shared or `let` place uses the existing `mut`-argument diagnostic, since its receiver is `mut`. | §13.3 | Checker, runtime, and codegen changes |
 | Q19 | Clone choices made while implementing §10.7 where the text is silent; each rejects rather than guesses and can be relaxed later. See Q19 below. | §8.3, §10.7, §11.7 | Checker and codegen changes only |
+| Q20 | Choices for `mut []T` held in struct fields and fixed arrays (§11.7, §12.3); each rejects rather than guesses. See Q20 below. | §11.7, §12.3, §12.5, §10.7 | Checker and ownership changes only |
 
 ## Resolved decisions
 
@@ -69,6 +70,21 @@ A newly discovered semantic gap blocks its affected feature, not unrelated work.
   suspend. Each line is written as one unit, and a blocked write keeps the
   §18.9 progress guarantee. Float text format remains open under Q05. Pending cases:
   `tests/conformance/entry-point.md` and `tests/conformance/println.md`.
+
+- **Q20 — Mutable views held in composites:** a `mut []T` may be a struct
+  field or fixed-array element at any depth. (a) A parameter (including a
+  receiver, a closure or function-type parameter) whose type holds such a nested
+  view must be `mut` or `own`: a shared borrow of a container gives no mutable
+  access through a view inside it, and requiring an owned or mutable container
+  enforces that without tracking it. A parameter of type `mut []T` itself is
+  unchanged. (b) A mutable view inside an `Array<T>`, map, or slice element,
+  directly or through a struct, stays unsupported. (c) Any clone of a value
+  holding a mutable view is rejected, since a struct holding one cannot declare
+  a custom `clone` (its receiver would be a shared parameter). (d) Copying such
+  a value is an exclusive reborrow of every view inside it, and counts as a
+  write of the whole copied place; the source's other fields stay usable.
+  (e) Assigning a container ends the reborrows taken through its old views.
+  Pending cases: `tests/conformance/ownership.md`.
 
 - **Q19 — Clone details:** §10.7 is implemented as locked; these gaps are
   filled conservatively. (a) Only structs, fixed arrays, `Array<T>`, and maps

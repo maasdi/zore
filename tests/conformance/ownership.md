@@ -10,10 +10,12 @@ slice aliasing at the originating place, mutable-descriptor reborrows,
 return-borrow contracts (including two-input precision, recursion, and zero
 slices from `?`), and recursive provenance through structs.
 `tests/codegen/native.rs` covers the runtime cleanup of partial moves.
-Pending: rows needing `Array<T>`, `await`, closures, maps, or tasks; views
-nested in owned containers or stored through parameters (rejected for now as
-unsupported); destructor-observed views (a type containing a view cannot yet
-define `drop`); and `mut []T` nested in composites (rejected for now).
+`mut []T` held in struct fields and fixed arrays has coverage in the check,
+ownership, and native suites (Q20).
+Pending: rows needing `await` or tasks; mutable views inside `Array<T>`, map,
+or slice elements and views stored through parameters or captures (rejected
+for now as unsupported); and destructor-observed views (a type containing a
+view cannot yet define `drop`).
 
 ## Mutable place requirements for callers (§11.6)
 
@@ -118,9 +120,10 @@ locked in §12.6; see `arrays-slices.md`. Map operations follow §13.3 and
 | Inside `func edit(s mut []int)`, bind `var next = s` and mutate only through next | Valid exclusive reborrow |
 | Access backing storage through s while next has a later use | Reject; source access is suspended during the reborrow |
 | Use s after next's last use | Valid; the derived loan has ended |
-| Copy a struct containing a mutable slice | Same reborrow restrictions apply recursively |
-| Obtain mutable access through a shared borrow of such a struct or descriptor | Reject; shared access cannot grant mutable capability |
-| Structural clone of a shared-borrowed container would duplicate a mutable view | Reject; cloning cannot bypass exclusive access |
+| Copy a struct containing a mutable slice | Same reborrow restrictions apply recursively; the source's other fields stay usable |
+| Obtain mutable access through a shared borrow of such a struct or descriptor | Reject; a shared parameter cannot hold a nested `mut []T` at all (Q20) |
+| Structural clone of a shared-borrowed container would duplicate a mutable view | Reject; any clone of a value holding a `mut []T` is rejected (Q20) |
+| Replace a struct holding a mutable view | Reborrows through its old views end; the old backing is usable again |
 | Reborrow remains live across await | Source remains suspended; backing validity must satisfy §17.6 |
 | Two derived mutable views remain independently usable | Reject, including through nested composites |
 
