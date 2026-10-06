@@ -71,6 +71,8 @@ struct Analysis<'a> {
     package: &'a hir::Package,
     body: &'a Body,
     contracts: &'a [Contract],
+    /// Locals whose custom `drop` can read the borrows they hold.
+    observing: Vec<bool>,
     loans: Vec<Loan>,
     interned: HashMap<LoanKey, LoanId>,
 }
@@ -94,14 +96,21 @@ struct Findings<'l> {
     contract: Contract,
     diagnostics: Vec<Diagnostic>,
     reported: HashSet<Span>,
+    drop_order_reported: HashSet<(Local, Local)>,
 }
 
 impl<'a> Analysis<'a> {
     fn new(package: &'a hir::Package, body: &'a Body, contracts: &'a [Contract]) -> Self {
+        let observing = body
+            .locals
+            .iter()
+            .map(|local| !local.by_reference && package.drop_observes_view(local.ty))
+            .collect();
         Self {
             package,
             body,
             contracts,
+            observing,
             loans: Vec::new(),
             interned: HashMap::new(),
         }
@@ -159,12 +168,13 @@ impl<'a> Analysis<'a> {
                 }
             }
         }
-        let live = Liveness::compute(body);
+        let live = Liveness::compute(body, &self.observing);
         let mut findings = Findings {
             live: &live,
             contract: empty_contract,
             diagnostics: Vec::new(),
             reported: HashSet::new(),
+            drop_order_reported: HashSet::new(),
         };
         for (index, (block, state)) in body.blocks.iter().zip(incoming).enumerate() {
             if let Some(mut state) = state {
@@ -230,7 +240,13 @@ impl<'a> Analysis<'a> {
                 Statement::EndScope(locals) => {
                     if let Some(findings) = findings.as_deref_mut() {
                         let live_after = findings.live.before(block_id, position + 1);
-                        for &local in locals {
+                        for (dropped, &local) in locals.iter().enumerate() {
+                            // Locals drop newest first; only those dropped later still need their borrows.
+                            let mut live = live_after.clone();
+                            for (order, other) in locals.iter().enumerate() {
+                                live[other.0 as usize] =
+                                    order < dropped && self.observing[other.0 as usize];
+                            }
                             let place = Place::local(local);
                             let access = Access {
                                 path: Path::of(self.package, self.body, &place),
@@ -241,7 +257,7 @@ impl<'a> Analysis<'a> {
                                 name: self.describe(&place),
                                 from_slicing: false,
                             };
-                            self.check_access(&access, live_after, state, findings);
+                            self.check_access(&access, &live, state, findings);
                         }
                     }
                     for local in locals {
@@ -314,9 +330,9 @@ impl<'a> Analysis<'a> {
         rvalue: &Rvalue,
         site: &mut Site,
         state: &mut Holdings,
-        findings: Option<&mut Findings>,
+        mut findings: Option<&mut Findings>,
     ) {
-        if let Some(findings) = findings {
+        if let Some(findings) = findings.as_deref_mut() {
             let mut accesses = Vec::new();
             self.rvalue_accesses(rvalue, site.span, &mut accesses);
             self.target_accesses(place, site.span, &mut accesses);
@@ -327,7 +343,69 @@ impl<'a> Analysis<'a> {
             self.check_view_store(place, site.span, findings);
         }
         let loans = self.rvalue_loans(rvalue, site, state);
+        let moved: Vec<&Operand> = match rvalue {
+            Rvalue::Use(operand) => vec![operand],
+            Rvalue::Aggregate(_, operands) => operands.iter().collect(),
+            _ => Vec::new(),
+        };
+        self.clear_moved(moved, state);
         self.assign(place, loans, state);
+        if let Some(findings) = findings {
+            self.check_drop_order(state, site.span, findings);
+        }
+    }
+
+    /// A value moved out whole no longer holds borrows; its new owner does.
+    fn clear_moved<'o>(
+        &self,
+        operands: impl IntoIterator<Item = &'o Operand>,
+        state: &mut Holdings,
+    ) {
+        for operand in operands {
+            if let Operand::Move(place) = operand
+                && place.projections.is_empty()
+            {
+                state[place.local.0 as usize].clear();
+            }
+        }
+    }
+
+    /// Locals drop in reverse declaration order, so a `drop` reading a borrow needs older storage.
+    fn check_drop_order(&self, state: &Holdings, span: Span, findings: &mut Findings) {
+        let named = self.package.function(self.body.function).locals.len();
+        for (index, held) in state.iter().enumerate() {
+            if !self.observing[index] {
+                continue;
+            }
+            let holder = Local(index as u32);
+            for &id in held {
+                let LoanTarget::Place(path) = &self.loans[id].target else {
+                    continue;
+                };
+                let owner = path.local;
+                if path.goes_through_deref()
+                    || owner.0 <= holder.0
+                    || owner.0 as usize >= named
+                    || self.body.locals[owner.0 as usize].by_reference
+                    || !findings.drop_order_reported.insert((holder, owner))
+                {
+                    continue;
+                }
+                let holder_name = self.describe(&Place::local(holder));
+                let owner_name = self.describe(&Place::local(owner));
+                findings.diagnostics.push(
+                    Diagnostic::new(
+                        Severity::Error,
+                        format!(
+                            "`{holder_name}` borrows `{owner_name}`, which is dropped before `{holder_name}`'s custom `drop` runs"
+                        ),
+                        span,
+                    )
+                    .related(self.scope_end_span(owner), "declared after the value that borrows it")
+                    .note("declare the borrowed storage before the value whose `drop` reads it"),
+                );
+            }
+        }
     }
 
     fn call(
@@ -335,6 +413,38 @@ impl<'a> Analysis<'a> {
         callee: &Callee,
         args: &[Operand],
         destinations: &[Option<Place>],
+        site: &mut Site,
+        state: &mut Holdings,
+        mut findings: Option<&mut Findings>,
+    ) {
+        let moved: Vec<Local> = args
+            .iter()
+            .filter_map(|arg| match arg {
+                Operand::Move(place) if place.projections.is_empty() => Some(place.local),
+                _ => None,
+            })
+            .collect();
+        self.call_effects(
+            callee,
+            args,
+            destinations,
+            &moved,
+            site,
+            state,
+            findings.as_deref_mut(),
+        );
+        if let Some(findings) = findings {
+            self.check_drop_order(state, site.span, findings);
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn call_effects(
+        &mut self,
+        callee: &Callee,
+        args: &[Operand],
+        destinations: &[Option<Place>],
+        moved: &[Local],
         site: &mut Site,
         state: &mut Holdings,
         findings: Option<&mut Findings>,
@@ -406,8 +516,14 @@ impl<'a> Analysis<'a> {
                 self.check_access(access, live, state, findings);
             }
         }
+        let clear = |state: &mut Holdings| {
+            for local in moved {
+                state[local.0 as usize].clear();
+            }
+        };
         if callee.map_access().is_some() {
             self.map_call(args, destinations, site, state);
+            clear(state);
             return;
         }
         if let Callee::Clone(ty) = callee {
@@ -415,12 +531,14 @@ impl<'a> Analysis<'a> {
                 ([Operand::Ref(source)], true) => state[source.local.0 as usize].clone(),
                 _ => BTreeSet::new(),
             };
+            clear(state);
             for destination in destinations.iter().flatten() {
                 self.assign(destination, loans.clone(), state);
             }
             return;
         }
         if let Callee::Value(_) = callee {
+            clear(state);
             // Results through a function value hold no views.
             for destination in destinations.iter().flatten() {
                 self.assign(destination, BTreeSet::new(), state);
@@ -428,9 +546,11 @@ impl<'a> Analysis<'a> {
             return;
         }
         let Callee::Function(id) = callee else {
+            clear(state);
             return;
         };
         let results = &self.package.function(*id).results;
+        let mut stores = Vec::new();
         for (index, destination) in destinations.iter().enumerate() {
             let Some(destination) = destination else {
                 continue;
@@ -466,6 +586,10 @@ impl<'a> Analysis<'a> {
                     }
                 }
             }
+            stores.push((destination, loans));
+        }
+        clear(state);
+        for (destination, loans) in stores {
             self.assign(destination, loans, state);
         }
     }
@@ -842,6 +966,9 @@ impl<'a> Analysis<'a> {
         let holder_is_closure =
             matches!(self.package.types.kind(holder_decl.ty), TypeKind::Func(_));
         let later = match &holder_decl.name {
+            Some(value) if self.observing[holder.0 as usize] => {
+                format!("`{value}`'s custom `drop` can read this borrow until `{value}` is dropped")
+            }
             Some(closure) if holder_is_closure => {
                 format!("the closure `{closure}` is used later")
             }
@@ -938,7 +1065,7 @@ struct Liveness {
 }
 
 impl Liveness {
-    fn compute(body: &Body) -> Self {
+    fn compute(body: &Body, observing: &[bool]) -> Self {
         let count = body.locals.len();
         let mut live_in: Vec<LiveSet> = vec![vec![false; count]; body.blocks.len()];
         let mut changed = true;
@@ -946,9 +1073,9 @@ impl Liveness {
             changed = false;
             for (index, block) in body.blocks.iter().enumerate().rev() {
                 let mut live = Self::live_out(body, block, &live_in);
-                Self::step_terminator(body, &block.terminator, &mut live);
+                Self::step_terminator(body, observing, &block.terminator, &mut live);
                 for statement in block.statements.iter().rev() {
-                    Self::step_statement(body, statement, &mut live);
+                    Self::step_statement(body, observing, statement, &mut live);
                 }
                 if live != live_in[index] {
                     live_in[index] = live;
@@ -962,10 +1089,10 @@ impl Liveness {
             .map(|block| {
                 let mut points = vec![Self::live_out(body, block, &live_in)];
                 let mut live = points[0].clone();
-                Self::step_terminator(body, &block.terminator, &mut live);
+                Self::step_terminator(body, observing, &block.terminator, &mut live);
                 points.push(live.clone());
                 for statement in block.statements.iter().rev() {
-                    Self::step_statement(body, statement, &mut live);
+                    Self::step_statement(body, observing, statement, &mut live);
                     points.push(live.clone());
                 }
                 points.reverse();
@@ -989,18 +1116,41 @@ impl Liveness {
         live
     }
 
-    fn step_statement(body: &Body, statement: &Statement, live: &mut LiveSet) {
-        if let Statement::Assign { place, rvalue, .. } = statement {
-            Self::define(place, live);
-            Self::use_target(body, place, live);
-            Self::use_rvalue(rvalue, live);
+    fn step_statement(body: &Body, observing: &[bool], statement: &Statement, live: &mut LiveSet) {
+        match statement {
+            Statement::Assign { place, rvalue, .. } => {
+                Self::define_dropping(place, observing, live);
+                Self::use_target(body, place, live);
+                Self::use_rvalue(rvalue, live);
+            }
+            Statement::EndScope(locals) => {
+                for local in locals {
+                    if observing[local.0 as usize] {
+                        live[local.0 as usize] = true;
+                    }
+                }
+            }
+            Statement::Drop { .. } => {}
         }
     }
 
-    fn step_terminator(body: &Body, terminator: &Terminator, live: &mut LiveSet) {
+    /// Replacing a value whose `drop` reads borrows is a use of the old value.
+    fn define_dropping(place: &Place, observing: &[bool], live: &mut LiveSet) {
+        Self::define(place, live);
+        if observing[place.local.0 as usize] {
+            live[place.local.0 as usize] = true;
+        }
+    }
+
+    fn step_terminator(
+        body: &Body,
+        observing: &[bool],
+        terminator: &Terminator,
+        live: &mut LiveSet,
+    ) {
         match terminator {
             Terminator::Assert { place, rvalue, .. } => {
-                Self::define(place, live);
+                Self::define_dropping(place, observing, live);
                 Self::use_target(body, place, live);
                 Self::use_rvalue(rvalue, live);
             }
@@ -1012,7 +1162,7 @@ impl Liveness {
                 ..
             } => {
                 for destination in destinations.iter().flatten() {
-                    Self::define(destination, live);
+                    Self::define_dropping(destination, observing, live);
                     Self::use_target(body, destination, live);
                 }
                 for arg in args {
@@ -1025,6 +1175,9 @@ impl Liveness {
             Terminator::Return => {
                 for ret in &body.returns {
                     live[ret.0 as usize] = true;
+                }
+                for (index, &observes) in observing.iter().enumerate() {
+                    live[index] |= observes;
                 }
             }
             Terminator::Goto(_) | Terminator::PanicReturn | Terminator::Unreachable => {}

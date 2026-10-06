@@ -1951,3 +1951,67 @@ func main() {
         "10\n20\n51\n",
     );
 }
+
+#[test]
+fn a_drop_reads_the_views_it_holds_on_every_exit() {
+    prints(
+        "package main
+
+type Watch struct {
+    items []int
+    id int
+}
+
+func (w mut Watch) drop() {
+    println(w.items[0])
+}
+
+func keep(w own Watch) {
+    println(w.id)
+}
+
+func main() {
+    var data = [int; 2]{1, 2}
+    let w = Watch{items: data[:], id: 7}
+    println(w.id)
+    var a = [int; 1]{10}
+    var b = [int; 1]{20}
+    var replaced = Watch{items: a[:], id: 1}
+    replaced = Watch{items: b[:], id: 2}
+    a[0] = 11
+    let moved = Watch{items: a[:], id: 3}
+    keep(moved)
+    a[0] = 12
+    println(a[0])
+}
+",
+        "7\n10\n3\n11\n12\n20\n1\n",
+    );
+    panics(
+        "package main
+
+type Watch struct {
+    items []int
+}
+
+func (w mut Watch) drop() {
+    println(w.items[0] + w.items[1])
+}
+
+func boom(n int) int {
+    var zero = 0
+    return n / zero
+}
+
+func main() {
+    var list = Array<int>{1, 2}
+    var other = Array<int>{30, 40}
+    let w = Watch{items: list[:]}
+    var heap = Array<Watch>{Watch{items: other[:]}}
+    println(boom(1))
+}
+",
+        "division by zero",
+        "70\n3\n",
+    );
+}

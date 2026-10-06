@@ -12,10 +12,11 @@ slices from `?`), and recursive provenance through structs.
 `tests/codegen/native.rs` covers the runtime cleanup of partial moves.
 `mut []T` held in struct fields and fixed arrays has coverage in the check,
 ownership, and native suites (Q20).
-Pending: rows needing `await` or tasks; mutable views inside `Array<T>`, map,
-or slice elements and views stored through parameters or captures (rejected
-for now as unsupported); and destructor-observed views (a type containing a
-view cannot yet define `drop`).
+Destructor-observed views have coverage in the ownership and native suites
+(Q21).
+Pending: rows needing `await` or tasks; and mutable views inside `Array<T>`,
+map, or slice elements and views stored through parameters or captures
+(rejected for now as unsupported).
 
 ## Mutable place requirements for callers (§11.6)
 
@@ -108,7 +109,9 @@ locked in §12.6; see `arrays-slices.md`. Map operations follow §13.3 and
 | Return an externally backed view already stored in an `own` input container | Valid only with preserved, proven external provenance; owning the container does not own the backing |
 | Return may select a view backed by either of two inputs | Contract retains both possible origins; caller respects both |
 | Recursive functions have unresolved borrowed-result origins | Reject rather than erase provenance or assume ownership |
-| Destructor observes a contained view after its ordinary last read | Backing lifetime includes the destructor's use |
+| Destructor observes a contained view after its ordinary last read | Backing lifetime includes the destructor's use, at scope end, `return`, `?`, replacement, and panic cleanup |
+| Value whose destructor reads a view is moved or explicitly dropped | Its borrows end there; the new owner or the drop is the last use |
+| Value whose destructor reads a view is declared before the storage it views | Reject; locals drop in reverse declaration order (Q21) |
 | Built-in zero shared/mutable slice returned by `?` | Empty result has no backing loan |
 | Arbitrary zero-length subslice of local storage escapes | Reject; zero length alone does not erase provenance |
 

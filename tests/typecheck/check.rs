@@ -1766,10 +1766,9 @@ fn unsupported_slice_forms_are_rejected() {
         &program("func f(rows []mut []int) {}"),
         "a `mut []T` view inside an `Array<T>`, map, or slice element is not supported",
     );
-    rejects(
-        &program("type T struct { s []int }\nfunc (t mut T) drop() {}"),
-        "a custom `drop` for a type containing a borrowed slice",
-    );
+    accepts(&program(
+        "type T struct { s []int }\nfunc (t mut T) drop() {}",
+    ));
     rejects(
         &body("let d = [int; 2]{1, 2}\nprintln(d[:])"),
         "`println` cannot print values of type `[]int64`",
@@ -1917,10 +1916,9 @@ fn unsupported_dynamic_array_forms_are_rejected() {
         &program("type Node struct { Kids Array<Node> }"),
         "struct `Node` contains itself through `Array<T>`",
     );
-    rejects(
-        &program("type Bag struct { Views Array<[]int> }\nfunc (b mut Bag) drop() {}"),
-        "a custom `drop` for a type containing a borrowed slice",
-    );
+    accepts(&program(
+        "type Bag struct { Views Array<[]int> }\nfunc (b mut Bag) drop() {}",
+    ));
 }
 
 const MAP_GUARD: &str = "type Guard struct { id int }\nfunc (g mut Guard) drop() {}";

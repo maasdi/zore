@@ -43,6 +43,7 @@ A newly discovered semantic gap blocks its affected feature, not unrelated work.
 | Q18 | Map choices made while implementing §13.3. (a) A map entry cannot be one of several assignment targets, even when the key expressions differ: §13.3 requires rejection when independence cannot be proven, and the compiler proves none, so it rejects every such target. (b) Destroying a map destroys its remaining values in the runtime's entry order, which §13.3 leaves unspecified. (c) A duplicate key found at run time in a literal panics with "duplicate key in map literal". The entry's value is destroyed by ordinary cleanup, as are the entries built so far. (d) Allocation failure aborts the process, as for `Array<T>` (Q17g). (e) `remove` on a map reached through a shared or `let` place uses the existing `mut`-argument diagnostic, since its receiver is `mut`. | §13.3 | Checker, runtime, and codegen changes |
 | Q19 | Clone choices made while implementing §10.7 where the text is silent; each rejects rather than guesses and can be relaxed later. See Q19 below. | §8.3, §10.7, §11.7 | Checker and codegen changes only |
 | Q20 | Choices for `mut []T` held in struct fields and fixed arrays (§11.7, §12.3); each rejects rather than guesses. See Q20 below. | §11.7, §12.3, §12.5, §10.7 | Checker and ownership changes only |
+| Q21 | Choices for types whose custom `drop` can read a borrowed view (§11.7, §14.3); each rejects rather than guesses. See Q21 below. | §11.7, §14.3, §14.5 | Ownership changes only |
 
 ## Resolved decisions
 
@@ -70,6 +71,19 @@ A newly discovered semantic gap blocks its affected feature, not unrelated work.
   suspend. Each line is written as one unit, and a blocked write keeps the
   §18.9 progress guarantee. Float text format remains open under Q05. Pending cases:
   `tests/conformance/entry-point.md` and `tests/conformance/println.md`.
+
+- **Q21 — Destructors that observe views:** a type with a custom `drop` may
+  contain a view. A value whose destruction runs such a `drop` keeps its
+  borrows until it is destroyed: at the end of its scope, at `return` (including
+  `?`), when it is replaced by assignment, and during panic cleanup, not just
+  until its last ordinary use. (a) Moving it out whole, or passing it to
+  `drop`, ends its borrows there, since the new owner destroys it. (b) Since
+  locals are destroyed in reverse declaration order on every exit, such a value
+  must be declared after any local whose storage it views; viewing storage
+  declared later is rejected even when every exit would be safe.
+  (c) Whether a type's destruction can observe a view is decided by its type:
+  it contains a struct with a custom `drop` that itself contains a view.
+  Pending cases: `tests/conformance/ownership.md`.
 
 - **Q20 — Mutable views held in composites:** a `mut []T` may be a struct
   field or fixed-array element at any depth. (a) A parameter (including a

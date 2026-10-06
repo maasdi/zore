@@ -573,7 +573,6 @@ impl<'a> Checker<'a> {
                 })
             })
             .collect();
-        self.reject_drop_observing_views(&structs);
     }
 
     fn param_type(&mut self, param: &ast::Param) -> Option<TypeId> {
@@ -635,28 +634,6 @@ impl<'a> Checker<'a> {
                     "write `name mut []T` for mutable element access",
                 );
                 None
-            }
-        }
-    }
-
-    /// Region analysis cannot model a destructor observing a view.
-    fn reject_drop_observing_views(&mut self, structs: &[&ast::StructDecl]) {
-        for (index, decl) in structs.iter().enumerate() {
-            let id = StructId(index as u32);
-            let Some(&drop) = self.res.methods.get(&(id, "drop".to_string())) else {
-                continue;
-            };
-            let ty = self.types.struct_type(id);
-            if self.type_contains(ty, &|kind| matches!(kind, TypeKind::Slice { .. })) {
-                let span = self.res.functions[drop.0 as usize].name.span;
-                self.unsupported(
-                    "a custom `drop` for a type containing a borrowed slice is",
-                    span,
-                    &format!(
-                        "`{}` holds a view that its destructor could observe",
-                        decl.name.text
-                    ),
-                );
             }
         }
     }

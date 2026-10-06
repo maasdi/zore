@@ -1202,3 +1202,114 @@ fn a_struct_holding_a_mutable_view_cannot_outlive_its_backing() {
         "does not live long enough",
     );
 }
+
+const WATCH: &str = "type Watch struct { items []int\nid int }
+func (w mut Watch) drop() { println(w.items[0]) }
+func keep(w own Watch) {}";
+
+fn watch_body(stmts: &str) -> String {
+    format!("package main\n\n{WATCH}\n\nfunc main() {{\n{stmts}\n}}\n")
+}
+
+#[test]
+fn a_drop_that_reads_a_view_keeps_it_borrowed_until_the_drop() {
+    accepts(&watch_body(
+        "var data = [int; 2]{1, 2}
+        let w = Watch{items: data[:], id: 7}
+        println(w.id)",
+    ));
+    let case = rejects(
+        &watch_body(
+            "var data = [int; 2]{1, 2}
+            let w = Watch{items: data[:], id: 7}
+            println(w.id)
+            data[0] = 5",
+        ),
+        "cannot assign to `data[_]` while it is borrowed",
+    );
+    let rendered = case.checked.diagnostics[0].render(&case.sources).unwrap();
+    assert!(
+        rendered.contains("`w`'s custom `drop` can read this borrow until `w` is dropped"),
+        "{rendered}"
+    );
+    rejects(
+        &watch_body(
+            "var list = Array<int>{1}
+            let w = Watch{items: list[:], id: 1}
+            let other = list",
+        ),
+        "cannot move `list` while it is borrowed",
+    );
+    rejects(
+        &program(&format!(
+            "{WATCH}\nfunc g(flag bool) {{ var data = [int; 1]{{6}}\nlet w = Watch{{items: data[:], id: 1}}\nif flag {{ return }}\ndata[0] = 1 }}"
+        )),
+        "cannot assign to `data[_]` while it is borrowed",
+    );
+    accepts(&watch_body(
+        "var data = [int; 1]{3}
+        {
+            let w = Watch{items: data[:], id: 1}
+        }
+        data[0] = 9",
+    ));
+}
+
+#[test]
+fn moving_or_dropping_the_value_ends_its_borrows() {
+    accepts(&watch_body(
+        "var data = [int; 1]{1}
+        let w = Watch{items: data[:], id: 1}
+        keep(w)
+        data[0] = 5",
+    ));
+    accepts(&watch_body(
+        "var data = [int; 1]{1}
+        let w = Watch{items: data[:], id: 1}
+        drop(w)
+        data[0] = 5",
+    ));
+    accepts(&watch_body(
+        "var a = [int; 1]{1}
+        var b = [int; 1]{2}
+        var w = Watch{items: a[:], id: 1}
+        w = Watch{items: b[:], id: 2}
+        a[0] = 10",
+    ));
+    rejects(
+        &watch_body(
+            "var a = [int; 1]{1}
+            var b = [int; 1]{2}
+            var w = Watch{items: a[:], id: 1}
+            a[0] = 10
+            w = Watch{items: b[:], id: 2}",
+        ),
+        "cannot assign to `a[_]` while it is borrowed",
+    );
+}
+
+#[test]
+fn the_viewed_storage_must_be_declared_before_the_observing_value() {
+    rejects(
+        &watch_body(
+            "var first = [int; 1]{1}
+            var w = Watch{items: first[:], id: 1}
+            var data = [int; 1]{2}
+            w = Watch{items: data[:], id: 2}",
+        ),
+        "`w` borrows `data`, which is dropped before `w`'s custom `drop` runs",
+    );
+    rejects(
+        &watch_body("var w = Watch{items: [int; 1]{0}[:], id: 0}"),
+        "temporary value does not live long enough",
+    );
+    accepts(&program(&format!(
+        "{WATCH}\ntype Holder struct {{ w Watch }}\nfunc g() {{ var data = [int; 1]{{3}}\nlet h = Holder{{w: Watch{{items: data[:], id: 1}}}}\nvar heap = Array<Watch>{{Watch{{items: data[:], id: 2}}}} }}"
+    )));
+    rejects(
+        &program(&format!(
+            "{WATCH}\ntype Holder struct {{ w Watch }}\nfunc g() {{ var data = [int; 1]{{3}}\nlet h = Holder{{w: Watch{{items: data[:], id: 1}}}}\ndata[0] = 4 }}"
+        )),
+        "cannot assign to `data[_]` while it is borrowed",
+    );
+}
