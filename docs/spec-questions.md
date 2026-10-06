@@ -24,7 +24,7 @@ A newly discovered semantic gap blocks its affected feature, not unrelated work.
 | ID | Question / missing detail | Reference | Needed before |
 | --- | --- | --- | --- |
 | Q01 | Listed lexical choices and `_` target forms are resolved; see Q01a–o below. Explicit error discards are permitted by §15.6. This does not imply a complete formal grammar. | §3.5–3.18, §5.5, §15.6, §4.1, §41.1 | Affected lexer/parser/resolution behavior |
-| Q02 | Remaining grammar for strings, iteration, and full `go` expressions; closures and function types are resolved for the first slice in Q02g (escaping/call-once forms remain open). Map borrowed entry APIs remain Q05. Arrays/indexing/slicing are resolved in Q02e and map construction/lookup/assignment/removal in Q02f; assignment, operators, calls, and struct construction are also locked. | §5.6, §7.5–7.8, §8.4, §41.1 | Expression parser/lowering |
+| Q02 | Remaining grammar for strings and full `go` expressions; collection loops are resolved in §5.10 (Q02h); closures and function types are resolved in Q02g, with owning and call-once closures in Q02i. Map borrowed entry APIs remain Q05. Arrays/indexing/slicing are resolved in Q02e and map construction/lookup/assignment/removal in Q02f; assignment, operators, calls, and struct construction are also locked. | §5.6, §7.5–7.8, §8.4, §41.1 | Expression parser/lowering |
 | Q03 | Core bindings, blocks, conditionals, loops, scope-entry points, returns, result forwarding, and expression-statement policy are resolved. Detailed `?` typing is resolved (Q06b); task retrieval forms are resolved (Q09a); collection forms remain in Q02. | §5.4–5.10, §7.7–7.8, §41.2–3 | Statement parser/typing |
 | Q04 | Zero/resource interaction resolved in Q04e; see Q04a–d for earlier decisions. Shift contradiction resolved in Q11. This does not imply a complete collection/task expression grammar (Q02) or predeclared conversion API (Q05). | §5.3–5.4, §6.5–6.6, §7.6, §10.2, §19.8, §41.4–5 | Type checking and runtime semantics |
 | Q05 | Local package discovery/import mapping, complete predeclared API inventory, initial standard-library signatures beyond `println`, float text formatting for `println`, package variable initialization order, and remaining type-layout validity rules. The entry-point contract and `println` are resolved in Q05a. Functions/types support forward references and method conflicts are defined (§7.8). Registry/solver remain out of MVP. | §3, §5.7, §7.8, §37, §42, §45 | Resolution/package checking and first native example |
@@ -39,7 +39,7 @@ A newly discovered semantic gap blocks its affected feature, not unrelated work.
 | Q14 | Parser choices made in M3–M4 where the grammar is silent; each rejects rather than guesses and can be relaxed later. (a) `value?.field` and `value?()` are rejected, following the §7.6 table literally (postfix `?` is below calls/fields); write `(value?).field`. (b) Result lists: `(T)` with one type, `()`, and a trailing comma are rejected; §7.8 allows trailing commas only in parameter and argument lists. (c) Expression statements must be calls, optionally wrapped in `await`/`?`; `await task` alone is rejected (use `_ = await task`), since §7.8 names "call-based forms". (d) Struct literals need parentheses in a counting loop's update clause as well as its condition, because the update also precedes the body brace; §8.4 names only the condition. (e) Imports must precede other declarations; grouped `import (...)` and raw-string paths are rejected. (f) Parenthesized assignment targets such as `(a) = 1` and empty statements (`;;`) are rejected. (g) `let _ T = value` is accepted as the single-target typed form. Package-level `let`/`var` are parsed; their meaning remains Q05. | §5.4–5.6, §7.6, §7.8, §8.4, §3.3 | Parser changes only; not blocking resolution |
 | Q15 | Resolved: untyped constants follow Go's model (§6.7). See Q15 below. | §6.5–6.7, §5.3 | Checker and constant-evaluation changes |
 | Q16 | Slice choices made while implementing §12 where the text is silent; each rejects rather than guesses and can be relaxed later. (a) No implicit `mut []T` → `[]T` conversion: passing a mutable view where a shared one is expected is a type mismatch; write `s[:]` for a shared subslice. (b) Copying a `let`-bound `mut []T` (an exclusive reborrow, §12.3) is allowed; §12.6 restricts only passing it onward as a `mut []T` argument. (c) A `mut` mode on a slice-typed parameter (`s mut mut []T`, a mutable borrow of the descriptor) is rejected as unsupported. (d) A `mut []T` parameter is a mutable place for passing onward (§11.6), but its descriptor is not assignable, like any non-`mut` parameter (§7.3). (e) The parser reads `name mut []T` as a parameter of type `mut []T` (§12.2), not a `mut` mode applied to `[]T`, while `name mut [T; N]` stays a `mut` mode. (f) Constant indices and bounds that are negative are rejected for slices even though the length is unknown, since no length makes them valid. | §7.3, §11.6, §12.2–12.3, §12.6 | Parser, checker, and ownership changes only |
-| Q17 | `Array<T>` choices made while implementing §12.6. (a) The parser recognizes `Array<` by spelling, in type and expression position: `Array` is predeclared and cannot be shadowed (§3.18), and without this `Array<int>{...}` is ambiguous with comparisons. Other `Name<...>` forms are rejected (`Task<...>` waits for M25). (b) A `>>`, `>=`, or `>>=` token is split when it closes a type argument list, so `Array<Array<int>>` closes both lists. (c) Resolved and locked in §3.7: the `>` that closes a type argument list is an eligible ending token, so a newline after `Items Array<int>` ends the field. The comparison `>` stays ineligible. The parser applies this rule at the closing `>`, because the lexer cannot distinguish it. (d) Like `[T; N]{...}`, an `Array<T>{...}` literal needs no parentheses in `if`/`for` headers. (e) Elements are destroyed in reverse index order, as for fixed arrays. (f) When an element's or field's old value panics during replacement, the new value is still stored before unwinding, so each slot always holds exactly one live value (§5.6 leaves this cleanup order open). The existing abort under a custom-`drop` ancestor is unchanged. (g) Allocation failure aborts the process. (h) The "statically known" length in §12.6 means a length known from the type, so out-of-range constant indices into `Array<T>` panic at run time, while negative ones are rejected. (i) `len`, `append`, `remove`, and capacity APIs (Q05) are not provided; method calls on `Array<T>` are rejected with a note. | §3.7, §3.18, §5.6, §10.5, §10.7, §12.6, §14.5 | Parser, checker, and codegen changes |
+| Q17 | `Array<T>` choices made while implementing §12.6. (a) The parser recognizes `Array<` by spelling, in type and expression position: `Array` is predeclared and cannot be shadowed (§3.18), and without this `Array<int>{...}` is ambiguous with comparisons. Other `Name<...>` forms are rejected (`Task<...>` waits for M25). (b) A `>>`, `>=`, or `>>=` token is split when it closes a type argument list, so `Array<Array<int>>` closes both lists. (c) Resolved and locked in §3.7: the `>` that closes a type argument list is an eligible ending token, so a newline after `Items Array<int>` ends the field. The comparison `>` stays ineligible. The parser applies this rule at the closing `>`, because the lexer cannot distinguish it. (d) Like `[T; N]{...}`, an `Array<T>{...}` literal needs no parentheses in `if`/`for` headers. (e) Elements are destroyed in reverse index order, as for fixed arrays. (f) When an element's or field's old value panics during replacement, the new value is still stored before unwinding, so each slot always holds exactly one live value (§5.6 leaves this cleanup order open). The existing abort under a custom-`drop` ancestor is unchanged. (g) Allocation failure aborts the process. (h) The "statically known" length in §12.6 means a length known from the type, so out-of-range constant indices into `Array<T>` panic at run time, while negative ones are rejected. (i) Resolved in §12.7: `len`, `push`, and `pop`; capacity APIs and removal from the middle remain open, and other method calls on `Array<T>` are rejected with a note. | §3.7, §3.18, §5.6, §10.5, §10.7, §12.6, §14.5 | Parser, checker, and codegen changes |
 | Q18 | Map choices made while implementing §13.3. (a) A map entry cannot be one of several assignment targets, even when the key expressions differ: §13.3 requires rejection when independence cannot be proven, and the compiler proves none, so it rejects every such target. (b) Destroying a map destroys its remaining values in the runtime's entry order, which §13.3 leaves unspecified. (c) A duplicate key found at run time in a literal panics with "duplicate key in map literal". The entry's value is destroyed by ordinary cleanup, as are the entries built so far. (d) Allocation failure aborts the process, as for `Array<T>` (Q17g). (e) `remove` on a map reached through a shared or `let` place uses the existing `mut`-argument diagnostic, since its receiver is `mut`. | §13.3 | Checker, runtime, and codegen changes |
 | Q19 | Clone choices made while implementing §10.7 where the text is silent; each rejects rather than guesses and can be relaxed later. See Q19 below. | §8.3, §10.7, §11.7 | Checker and codegen changes only |
 | Q20 | Choices for `mut []T` held in struct fields and fixed arrays (§11.7, §12.3); each rejects rather than guesses. See Q20 below. | §11.7, §12.3, §12.5, §10.7 | Checker and ownership changes only |
@@ -78,10 +78,12 @@ A newly discovered semantic gap blocks its affected feature, not unrelated work.
   inputs' storage or views each `mut` parameter may receive, and each call
   applies it to the argument, as for results. (a) A stored view must borrow
   storage from outside the function: a parameter's storage or views, never a
-  local or `own` parameter. (b) Storing a view through a slice element, or
-  passing a slice element to a `mut` parameter that may receive views, stays
-  unsupported, since the new borrow would belong to storage the caller reaches
-  only through a view. (c) A call through a function value cannot know the
+  local or `own` parameter. (b) A view stored through a mutable slice, directly
+  or by a callee, belongs to the slice's backing: every owner the slice
+  exclusively borrows from now holds it too. A parameter or capture holding a
+  `mut []T` whose elements can hold views is an output like a `mut` parameter,
+  even when passed by value, so the stored view must borrow storage from
+  outside the function. (c) A call through a function value cannot know the
   callee, so its results and its `mut` arguments are treated as borrowing from
   every argument and from everything the closure captured; this allows function
   types to return views. (d) A closure may store into a captured local only
@@ -108,8 +110,12 @@ A newly discovered semantic gap blocks its affected feature, not unrelated work.
   view must be `mut` or `own`: a shared borrow of a container gives no mutable
   access through a view inside it, and requiring an owned or mutable container
   enforces that without tracking it. A parameter of type `mut []T` itself is
-  unchanged. (b) A mutable view inside an `Array<T>`, map, or slice element,
-  directly or through a struct, stays unsupported. (c) Any clone of a value
+  unchanged. (b) A mutable view may be held in an `Array<T>`, map, or
+  `mut []T` element, directly or through a struct; reading it out of an
+  `Array<T>` or mutable slice is an exclusive reborrow, as for a fixed array.
+  A shared slice cannot hold one, since copies of the shared slice would hand
+  out the same mutable view twice, and a map lookup cannot copy one out
+  (`remove` can). (c) Any clone of a value
   holding a mutable view is rejected, since a struct holding one cannot declare
   a custom `clone` (its receiver would be a shared parameter). (d) Copying such
   a value is an exclusive reborrow of every view inside it, and counts as a
@@ -134,6 +140,34 @@ A newly discovered semantic gap blocks its affected feature, not unrelated work.
   new storage is freed, and unwinding continues. (g) Allocation failure aborts,
   as for `Array<T>` (Q17g). Pending cases: `tests/conformance/destruction.md`.
 
+- **Q02i — Owning and call-once closures:** locked in §16.4 and §16.6 at the
+  maintainer's direction. Ownership is inferred: a literal is owning when it, or
+  a local it initializes (followed through `let g = f`), is returned, stored in
+  a field, fixed array, `Array<T>`, or map value, or passed to `own`. A closure
+  that consumes a captured Move value is call-once, which also makes it owning;
+  it must initialize a `let` binding that is only called directly, and the call
+  consumes it. Filled conservatively: (a) a Copy local an owning closure
+  assigns is treated as moved unless it is a by-reference parameter; (b) an
+  owning closure may not store a view of one captured value's storage into
+  another, since the values move together; (c) a shared parameter whose type
+  holds a function value inside a struct, array, or collection is rejected, and
+  slices never hold function values; (d) captured values are destroyed in
+  reverse capture order. Executable cases are listed in
+  `tests/conformance/closures.md`.
+
+- **Q02h — Collection loops and methods:** locked in §5.10 and §12.7 at the
+  maintainer's direction. `for item in c`, `for i, item in c`, and `for key,
+  value in m`; `in` is a keyword. The item is a shared borrow and the loop
+  shared-borrows a place collection until it ends; a temporary collection is
+  held by the loop. `len` on every collection, and `push` and `pop` (presence
+  first, like map removal) on `Array<T>`. Filled conservatively: (a) a loop over
+  elements that hold a `mut []T` is rejected; (b) a view copied out of an item
+  keeps the element's provenance, not the loop's borrow; (c) `Array<T>` keeps a
+  capacity that doubles from 4, and `pop` does not shrink it; (d) map keys read
+  by a loop are the stored keys, so a string key keeps its original text
+  storage, which is always a literal today. Executable cases are listed in
+  `tests/conformance/control-flow.md` and `tests/conformance/arrays-slices.md`.
+
 - **Q02g — Closures and function types (first slice):** locked in §16.
   `func(params) results { body }` literals; unnamed function types
   `func(T, mut U) R`; captures inferred per whole local (shared borrow for reads,
@@ -144,8 +178,8 @@ A newly discovered semantic gap blocks its affected feature, not unrelated work.
   parameters cannot be `mut` or `own`. Implemented end to end; executable cases
   are listed in `tests/conformance/closures.md`. **Still open:** escaping
   closures with owned environments, call-once closures that consume a captured
-  Move value, declared functions used as values, storing a view of a closure's
-  own parameter into a capture (Q22), `async`
+  Move value (both resolved in Q02i), declared functions used as values,
+  storing a view of a closure's own parameter into a capture (Q22), `async`
   closures, field-level captures, and closures with tasks (M25+).
 
 - **Q02f — Map construction, lookup, assignment, removal:** accepted and

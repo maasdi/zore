@@ -49,6 +49,23 @@ pub unsafe extern "C" fn zore_free(data: *mut u8, bytes: i64) {
     }
 }
 
+/// Moves storage from `zore_alloc(old_bytes)` to a new `new_bytes` allocation.
+///
+/// # Safety
+/// `data` must come from `zore_alloc(old_bytes)` and must not be used afterwards.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn zore_realloc(data: *mut u8, old_bytes: i64, new_bytes: i64) -> *mut u8 {
+    let grown = zore_alloc(new_bytes);
+    let kept = usize::try_from(old_bytes.min(new_bytes)).unwrap_or(0);
+    if kept > 0 {
+        // SAFETY: both allocations hold at least `kept` bytes and are distinct.
+        unsafe { std::ptr::copy_nonoverlapping(data, grown, kept) };
+    }
+    // SAFETY: guaranteed by the caller.
+    unsafe { zore_free(data, old_bytes) };
+    grown
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -70,6 +87,20 @@ mod tests {
         unsafe {
             zore_free(empty, 0);
             zore_free(std::ptr::null_mut(), 0);
+        }
+    }
+
+    #[test]
+    fn reallocation_keeps_the_prefix() {
+        let data = zore_alloc(8);
+        // SAFETY: `data` holds 8 writable bytes; `zore_realloc` takes ownership.
+        unsafe {
+            data.write_bytes(3, 8);
+            let grown = zore_realloc(data, 8, 32);
+            assert_eq!(*grown.add(7), 3);
+            zore_free(grown, 32);
+            let fresh = zore_realloc(std::ptr::null_mut(), 0, 16);
+            zore_free(fresh, 16);
         }
     }
 }

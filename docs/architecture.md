@@ -249,10 +249,14 @@ dropped and the new storage freed before control reaches the call's ordinary
 unwind edge. Region analysis gives the destination the loans of a source that
 holds views.
 
+A view stored through a mutable slice is added to every owner that the slice
+exclusively borrows from, following reborrows back to the original storage
+(Q22b). `mut []T` may be held in `Array<T>`, map, and `mut []T` elements, but
+not in a shared slice element or copied out by a map lookup (Q20b).
+
 Temporary
-restrictions, each diagnosed: `mut []T` cannot be held in an `Array<T>`, map, or
-slice element, and a shared parameter cannot hold one inside a struct or fixed
-array; a view cannot be stored through a slice element; a closure can store
+restrictions, each diagnosed: a shared parameter cannot hold a `mut []T` inside
+a struct, fixed array, or collection; a closure can store
 into a capture only views of other captures; a value whose custom `drop`
 reads a view must be declared after the storage it views; and a closure cannot
 consume a captured Move value.
@@ -271,6 +275,24 @@ marks it live at its `EndScope`, at `Return`, and before a whole-value
 assignment replaces it. `EndScope` checks each local's storage death against
 only the observing locals of the same scope that drop after it, newest first.
 A whole-local move clears the moved local's holdings.
+
+An owning closure (Q02i) is decided after its enclosing body is checked:
+literals in escaping positions, or bound to locals that escape, become owning,
+and a literal whose body moves a capture is call-once. MIR's
+`Rvalue::Closure { owning: true }` copies or moves each capture into the
+environment instead of borrowing it, and a direct call of a call-once local is
+followed by a `drop` of it. Code generation gives every closure a destructor
+slot; an owning closure's heap environment begins with the capture pointers
+its body loads, so one body serves both kinds.
+
+A collection loop lowers to a counting loop. MIR binds two by-reference
+temporaries with `Rvalue::Ref`: one to the collection, read by the loop header
+each iteration so its shared loan lasts the whole loop, and one per iteration
+to the current element (`Rvalue::MapValueRef` for a map value; keys are copied
+with `Rvalue::MapKeyAt`). These binding loans are marked so that a value copied
+out of an item keeps only the views the element holds. Drop insertion never
+treats binding a reference as replacing a value. `Array<T>` is `{ ptr, len,
+cap }`; `push` grows the storage through the runtime, doubling from 4.
 
 The pass order in §25 is conceptual. The frontend lowers checked HIR to MIR,
 runs ownership and error-use analysis, then returns diagnostics or a package.

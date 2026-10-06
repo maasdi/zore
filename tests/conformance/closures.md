@@ -45,7 +45,7 @@ tests. Every other row has an executable counterpart in
 | Body assigns an outer `mut` parameter | Accepted; the caller's place changes |
 | Body passes outer Move value to a borrowed parameter | Shared borrow; outer value stays usable after the last closure use |
 | Body passes outer value to a `mut` parameter | Exclusive borrow; rejected for a `let` binding |
-| Body consumes outer Move value (`own`, return, `drop`) | Rejected as unsupported (call-once closures open) |
+| Body consumes outer Move value (`own`, return, `drop`) | Accepted; the closure is call-once (§16.6) |
 | Outer value moved or dropped while a closure capturing it is live | Rejected |
 | Capture of a value already moved | Rejected |
 | Same name declared inside the body | Shadows the outer local; nothing captured |
@@ -67,25 +67,47 @@ tests. Every other row has an executable counterpart in
 | Closure called while another live closure captures it | Rejected |
 | Closure called after the capturing closure's last use | Accepted |
 | Closure passed while a later argument needs its exclusive capture | Rejected |
-| Callee moves or stores its function-typed parameter | Rejected |
-| Function-typed parameter declared `mut` or `own` | Rejected |
+| Callee moves or stores its shared function-typed parameter | Rejected |
+| Function-typed parameter declared `mut` | Rejected |
+| Function-typed parameter declared `own`, then stored or returned | Accepted |
 
-## Non-escaping rule
+## Borrowing and owning closures
 
 | Scenario | Expected result |
 | --- | --- |
 | Closure bound with `let g = f` | `f` moved; later use of `f` rejected |
-| Function or function type with a function-typed result | Rejected |
-| Function type or literal with a result holding a view | Accepted; a call's result borrows from every argument and the closure's captures (Q22) |
-| Function type as a struct field, array, `Array<T>`, slice, or map element | Rejected |
-| Closure outlives a captured local's block through an outer `var` | Rejected |
+| Literal returned, or bound to a local that is returned (directly or through `let g = f`) | Accepted; owning |
+| Literal stored in a struct field, fixed array, `Array<T>`, or map value, or passed to `own` | Accepted; owning |
+| Owning closure assigns a captured `var` | Changes its own copy; the outer local is treated as moved |
+| Owning closure only reads a captured Copy local | Outer local stays usable and independent |
+| Owning closure captures a Move value | The value moves into the closure |
+| Owning closure captures a view of a local and is returned | Rejected; the view's backing does not outlive the call |
+| Owning closure stores a view of one capture's storage into another | Rejected |
+| Function type as a result, struct field, fixed-array, `Array<T>`, or map value type | Accepted |
+| Function type as a slice element, or slicing storage that holds function values | Rejected |
+| Shared parameter whose struct or collection type holds a function value | Rejected; declare it `mut` or `own` |
+| Collection loop over function values | Rejected |
+| Borrowing closure assigned to an outer `var` that outlives a captured local | Rejected |
 | Closure used in `go`, or live across `await` | Pending: tasks and `await` are not implemented |
+
+## Call-once closures
+
+| Scenario | Expected result |
+| --- | --- |
+| `let f = func() { consume(job) }` then `f()` | Accepted; `job` moves into `f`, and the call consumes `f` |
+| Call-once closure called twice, or used after its call | Rejected as a use of a moved value |
+| Call-once closure passed, rebound, returned, stored, or captured | Rejected |
+| Call-once literal bound with `var`, or not bound at all | Rejected |
+| Body consumes the same capture twice | Rejected as a use of a moved value |
+| Call-once closure created and called inside a loop over an outer value | Rejected on the second iteration's move |
+| Call-once closure never called | Its captured values are destroyed at its scope end |
+| Owning closure destroyed or replaced | Its captured Move values are destroyed in reverse capture order |
 
 ## Cleanup
 
 | Scenario | Expected result |
 | --- | --- |
-| Closure goes out of scope | Nothing dropped; captured locals drop at their own scope exits |
+| Borrowing closure goes out of scope | Nothing dropped; captured locals drop at their own scope exits |
 | Captured Move value used through the closure | Dropped once, by its owner |
 | Captured `var` replaced through an exclusive capture | Old value dropped at the replacement; new value dropped by the owner |
 | `own` parameter of a closure | Dropped when the closure body ends |

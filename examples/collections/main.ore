@@ -1,0 +1,53 @@
+package main
+
+type Order struct {
+    Id int
+}
+
+func (t mut Order) drop() {
+    println(t.Id)
+}
+
+func total(values []int) int {
+    var sum = 0
+    for value in values {
+        sum += value
+    }
+    return sum
+}
+
+func main() {
+    var values = Array<int>{}
+    for var i = 1; i <= 4; i += 1 {
+        values.push(i * 10)
+    }
+    println(values.len())
+    println(total(values[:]))
+
+    for index, value in values {
+        if index == 1 {
+            continue
+        }
+        println(value)
+    }
+
+    let found, last = values.pop()
+    println(found)
+    println(last)
+
+    var stock = map[string]int{"apples": 3, "pears": 0}
+    var empty = 0
+    for name, count in stock {
+        if count == 0 && name == "pears" {
+            empty += 1
+        }
+    }
+    println(empty)
+    println(stock.len())
+
+    var orders = Array<Order>{Order{Id: 1}}
+    orders.push(Order{Id: 2})
+    for order in orders {
+        println(order.Id + 100)       // a loop item borrows; it is not moved
+    }
+}                                   // orders drop in reverse order

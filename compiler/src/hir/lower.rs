@@ -1,3 +1,5 @@
+mod closure_kind;
+
 use std::collections::{HashMap, HashSet};
 
 use crate::ast::{
@@ -263,9 +265,6 @@ impl<'a> Checker<'a> {
                 _ => None,
             },
             ast::Type::Array { element, size, .. } => {
-                if !self.reject_stored_func(element) {
-                    return None;
-                }
                 let element_ty = self.resolve_type(element)?;
                 let value = self.expr(size, Some(TypeStore::INT))?;
                 let sized = self.coerce(value, TypeStore::INT)?;
@@ -283,23 +282,12 @@ impl<'a> Checker<'a> {
                 Some(self.types.array_type(element_ty, count))
             }
             ast::Type::DynArray { element, .. } => {
-                if !self.reject_stored_func(element) {
-                    return None;
-                }
                 let element_ty = self.resolve_type(element)?;
-                if !self.reject_collected_mut_view(element_ty, element.span()) {
-                    return None;
-                }
                 Some(self.types.dyn_array_type(element_ty))
             }
             ast::Type::Map { key, value, .. } => {
                 let key_ty = self.resolve_type(key);
-                let value_ty = if self.reject_stored_func(value) {
-                    self.resolve_type(value)
-                        .filter(|&ty| self.reject_collected_mut_view(ty, value.span()))
-                } else {
-                    None
-                };
+                let value_ty = self.resolve_type(value);
                 let key_ty = key_ty?;
                 if !self.is_map_key(key_ty) {
                     let message = format!(
@@ -314,11 +302,11 @@ impl<'a> Checker<'a> {
             ast::Type::Slice {
                 element, mutable, ..
             } => {
-                if !self.reject_stored_func(element) {
+                let element_ty = self.resolve_type(element)?;
+                if !self.reject_func_in_slice(element_ty, element.span()) {
                     return None;
                 }
-                let element_ty = self.resolve_type(element)?;
-                if !self.reject_collected_mut_view(element_ty, element.span()) {
+                if !*mutable && !self.reject_shared_slice_of_mut_view(element_ty, element.span()) {
                     return None;
                 }
                 Some(self.types.slice_type(element_ty, *mutable))
@@ -347,47 +335,36 @@ impl<'a> Checker<'a> {
         }
     }
 
-    /// Results of function types and literals cannot hold closures.
     fn closure_results(&mut self, results: &[ast::Type]) -> Option<Vec<TypeId>> {
         let mut checked = Vec::new();
         let mut ok = true;
         for result in results {
             match self.resolve_type(result) {
-                Some(ty) if self.result_allowed(ty, result.span()) => checked.push(ty),
-                _ => ok = false,
+                Some(ty) => checked.push(ty),
+                None => ok = false,
             }
         }
         ok.then_some(checked)
     }
 
-    fn result_allowed(&mut self, ty: TypeId, span: Span) -> bool {
-        if self.type_contains(ty, &|kind| matches!(kind, TypeKind::Func(_))) {
-            self.diagnostics.push(
-                Diagnostic::new(
-                    Severity::Error,
-                    "a function cannot return a function value",
-                    span,
-                )
-                .note("closures cannot escape the scope that created them"),
-            );
-            return false;
-        }
-        true
+    fn holds_func(&self, ty: TypeId) -> bool {
+        self.type_contains(ty, &|kind| matches!(kind, TypeKind::Func(_)))
     }
 
-    fn reject_stored_func(&mut self, ty: &ast::Type) -> bool {
-        let ast::Type::Func { span, .. } = ty else {
+    /// Struct fields are checked once all of them are resolved.
+    fn reject_func_in_slice(&mut self, element: TypeId, span: Span) -> bool {
+        if self.resolving_fields || !self.holds_func(element) {
             return true;
-        };
-        self.diagnostics.push(
-            Diagnostic::new(
-                Severity::Error,
-                "function values cannot be stored in a struct field, array, slice, or map",
-                *span,
-            )
-            .note("closures cannot escape the scope that created them"),
-        );
+        }
+        self.func_in_slice_error(span);
         false
+    }
+
+    fn func_in_slice_error(&mut self, span: Span) {
+        self.diagnostics.push(
+            Diagnostic::new(Severity::Error, "a slice cannot hold function values", span)
+                .note("calling a closure uses it exclusively, which a slice element cannot give; use a fixed array or `Array<T>`"),
+        );
     }
 
     fn contains_mut_view(&self, ty: TypeId) -> bool {
@@ -397,19 +374,63 @@ impl<'a> Checker<'a> {
     }
 
     /// Struct fields are checked once all of them are resolved.
-    fn reject_collected_mut_view(&mut self, element: TypeId, span: Span) -> bool {
+    fn reject_shared_slice_of_mut_view(&mut self, element: TypeId, span: Span) -> bool {
         if self.resolving_fields || !self.contains_mut_view(element) {
             return true;
         }
-        self.unsupported(
-            "a `mut []T` view inside an `Array<T>`, map, or slice element is",
-            span,
-            "a mutable view can be a struct field, fixed-array element, parameter, result, or local",
-        );
+        self.shared_slice_of_mut_view_error(span);
         false
     }
 
-    fn collects_mut_view(&self, ty: TypeId) -> bool {
+    fn shared_slice_of_mut_view_error(&mut self, span: Span) {
+        self.diagnostics.push(
+            Diagnostic::new(
+                Severity::Error,
+                "a shared slice cannot hold `mut []T` views",
+                span,
+            )
+            .note("a shared view gives no mutable access through the views inside it; use `mut []T` for the outer slice"),
+        );
+    }
+
+    fn holds_slice_of_func(&self, ty: TypeId) -> bool {
+        self.type_contains(ty, &|kind| matches!(kind, TypeKind::Slice { .. }))
+            && self
+                .slices_within(ty)
+                .into_iter()
+                .any(|element| self.holds_func(element))
+    }
+
+    fn slices_within(&self, ty: TypeId) -> Vec<TypeId> {
+        let mut pending = vec![ty];
+        let mut seen = Vec::new();
+        let mut elements = Vec::new();
+        while let Some(ty) = pending.pop() {
+            if seen.contains(&ty) {
+                continue;
+            }
+            seen.push(ty);
+            match self.types.kind(ty) {
+                TypeKind::Slice { element, .. } => {
+                    elements.push(element);
+                    pending.push(element);
+                }
+                TypeKind::DynArray { element } | TypeKind::Array { element, .. } => {
+                    pending.push(element)
+                }
+                TypeKind::Map { value, .. } => pending.push(value),
+                TypeKind::Struct(id) => pending.extend(
+                    self.fields[id.0 as usize]
+                        .iter()
+                        .filter_map(|(_, field_ty, _)| *field_ty),
+                ),
+                _ => {}
+            }
+        }
+        elements
+    }
+
+    fn holds_shared_slice_of_mut_view(&self, ty: TypeId) -> bool {
         let mut pending = vec![ty];
         let mut seen = Vec::new();
         while let Some(ty) = pending.pop() {
@@ -418,15 +439,16 @@ impl<'a> Checker<'a> {
             }
             seen.push(ty);
             match self.types.kind(ty) {
-                TypeKind::DynArray { element: held, .. }
-                | TypeKind::Slice { element: held, .. }
-                | TypeKind::Map { value: held, .. } => {
-                    if self.contains_mut_view(held) {
+                TypeKind::Slice { element, mutable } => {
+                    if !mutable && self.contains_mut_view(element) {
                         return true;
                     }
-                    pending.push(held);
+                    pending.push(element);
                 }
-                TypeKind::Array { element, .. } => pending.push(element),
+                TypeKind::DynArray { element } | TypeKind::Array { element, .. } => {
+                    pending.push(element)
+                }
+                TypeKind::Map { value, .. } => pending.push(value),
                 TypeKind::Struct(id) => pending.extend(
                     self.fields[id.0 as usize]
                         .iter()
@@ -438,15 +460,14 @@ impl<'a> Checker<'a> {
         false
     }
 
-    fn reject_collected_mut_views_in_fields(&mut self, structs: &[&ast::StructDecl]) {
+    fn reject_shared_slices_of_mut_views_in_fields(&mut self, structs: &[&ast::StructDecl]) {
         for (index, decl) in structs.iter().enumerate() {
             for (field, (_, ty, _)) in decl.fields.iter().zip(self.fields[index].clone()) {
-                if ty.is_some_and(|ty| self.collects_mut_view(ty)) {
-                    self.unsupported(
-                        "a `mut []T` view inside an `Array<T>`, map, or slice element is",
-                        field.ty.span(),
-                        "a mutable view can be a struct field, fixed-array element, parameter, result, or local",
-                    );
+                if ty.is_some_and(|ty| self.holds_shared_slice_of_mut_view(ty)) {
+                    self.shared_slice_of_mut_view_error(field.ty.span());
+                }
+                if ty.is_some_and(|ty| self.holds_slice_of_func(ty)) {
+                    self.func_in_slice_error(field.ty.span());
                 }
             }
         }
@@ -527,19 +548,12 @@ impl<'a> Checker<'a> {
                 let fields = decl.fields.clone();
                 fields
                     .iter()
-                    .map(|f| {
-                        let ty = if self.reject_stored_func(&f.ty) {
-                            self.resolve_type(&f.ty)
-                        } else {
-                            None
-                        };
-                        (f.name.text.clone(), ty, f.name.span)
-                    })
+                    .map(|f| (f.name.text.clone(), self.resolve_type(&f.ty), f.name.span))
                     .collect()
             })
             .collect();
         self.resolving_fields = false;
-        self.reject_collected_mut_views_in_fields(&structs);
+        self.reject_shared_slices_of_mut_views_in_fields(&structs);
         let functions: Vec<&'a ast::FuncDecl> = self.res.functions.clone();
         self.signatures = functions
             .iter()
@@ -551,13 +565,8 @@ impl<'a> Checker<'a> {
                     .map(|p| self.param_type(p))
                     .collect();
                 let results = func.results.clone();
-                let results: Option<Vec<_>> = results
-                    .iter()
-                    .map(|t| {
-                        let ty = self.resolve_type(t)?;
-                        self.result_allowed(ty, t.span()).then_some(ty)
-                    })
-                    .collect();
+                let results: Option<Vec<_>> =
+                    results.iter().map(|t| self.resolve_type(t)).collect();
                 Some(Signature {
                     params: params?,
                     results: results?,
@@ -577,14 +586,28 @@ impl<'a> Checker<'a> {
         span: Span,
     ) -> Option<TypeId> {
         let ty = self.resolve_type(ty)?;
-        if self.is_func(ty) && mode != ast::ParamMode::Borrow {
+        if self.is_func(ty) && mode == ast::ParamMode::Mut {
             self.diagnostics.push(
                 Diagnostic::new(
                     Severity::Error,
-                    "a function-typed parameter cannot be `mut` or `own`",
+                    "a function-typed parameter cannot be `mut`",
                     span,
                 )
-                .note("a function value is passed by borrowing it exclusively for the call"),
+                .note("a function value is passed by borrowing it exclusively for the call; use `own` to keep it"),
+            );
+            return None;
+        }
+        if !self.is_func(ty) && mode == ast::ParamMode::Borrow && self.holds_func(ty) {
+            self.diagnostics.push(
+                Diagnostic::new(
+                    Severity::Error,
+                    format!(
+                        "a shared parameter of type `{}` cannot hold a function value",
+                        self.name(ty)
+                    ),
+                    span,
+                )
+                .note("declare it `mut` or `own`; calling a closure uses it exclusively, which a shared borrow cannot give"),
             );
             return None;
         }
@@ -643,7 +666,8 @@ impl<'a> Checker<'a> {
         }
         self.results = results.clone();
         self.loop_depth = 0;
-        let body = self.block(&func.body);
+        let mut body = self.block(&func.body);
+        self.infer_closure_kinds(&mut body);
         if !results.is_empty() && !block_always_exits(&func.body) {
             self.diagnostics.push(
                 Diagnostic::new(
@@ -682,6 +706,7 @@ impl<'a> Checker<'a> {
             body,
             captures: Vec::new(),
             is_closure: false,
+            call_once: false,
         })
     }
 
@@ -780,7 +805,10 @@ impl<'a> Checker<'a> {
         }
         self.results = results.clone().unwrap_or_default();
         self.loop_depth = 0;
-        let body = self.block(&closure.body);
+        let mut body = self.block(&closure.body);
+        self.infer_closure_kinds(&mut body);
+        let capture_locals: Vec<LocalId> = captures.iter().map(|&(_, local)| local).collect();
+        let call_once = self.consumes_capture(&body, &capture_locals);
         if results.as_ref().is_some_and(|r| !r.is_empty()) && !block_always_exits(&closure.body) {
             self.diagnostics.push(
                 Diagnostic::new(
@@ -837,8 +865,9 @@ impl<'a> Checker<'a> {
             results,
             locals,
             body,
-            captures: captures.iter().map(|&(_, local)| local).collect(),
+            captures: capture_locals,
             is_closure: true,
+            call_once,
         });
         let captures = captures
             .iter()
@@ -851,6 +880,7 @@ impl<'a> Checker<'a> {
             ExprKind::Closure {
                 function: id,
                 captures,
+                owning: false,
             },
             ty,
             span,
@@ -1716,8 +1746,8 @@ impl<'a> Checker<'a> {
             self.report_arg_errors(args);
             return None;
         }
-        if let ExprKind::Local(local) = callee.kind {
-            self.mark_exclusive(local);
+        if let Some((root, _)) = argument_place(&callee) {
+            self.mark_exclusive(root);
         }
         let mut checked = Vec::new();
         let mut ok = true;
@@ -1758,6 +1788,7 @@ impl<'a> Checker<'a> {
             kind: ExprKind::CallValue {
                 callee: Box::new(callee),
                 args: checked,
+                once: false,
             },
             types: signature.results,
             span,
@@ -1799,6 +1830,21 @@ impl<'a> Checker<'a> {
         {
             return self.map_remove(receiver, key, value, args, span);
         }
+        let is_collection = matches!(
+            self.types.kind(ty),
+            TypeKind::Array { .. }
+                | TypeKind::Slice { .. }
+                | TypeKind::DynArray { .. }
+                | TypeKind::Map { .. }
+        );
+        if is_collection && name.text == "len" {
+            return self.collection_len(receiver, args, span);
+        }
+        if let TypeKind::DynArray { element } = self.types.kind(ty)
+            && matches!(name.text.as_str(), "push" | "pop")
+        {
+            return self.array_push_or_pop(receiver, element, &name.text, args, span);
+        }
         let strukt = self.types.struct_id(ty);
         let method = strukt.and_then(|s| self.res.methods.get(&(s, name.text.clone())).copied());
         let Some(id) = method else {
@@ -1814,17 +1860,14 @@ impl<'a> Checker<'a> {
             };
             let mut diagnostic = Diagnostic::new(Severity::Error, message, name.span);
             if matches!(self.types.kind(ty), TypeKind::DynArray { .. }) {
-                diagnostic = diagnostic.note(
-                    "`Array<T>` length, append, remove, and capacity APIs are not specified yet",
-                );
+                diagnostic = diagnostic.note("`Array<T>` has the methods `len`, `push`, and `pop`");
             }
             if name.text == "clone" {
                 diagnostic = diagnostic
                     .note("write `clone(value)`; a method form exists only for a custom `clone`");
             }
             if matches!(self.types.kind(ty), TypeKind::Map { .. }) {
-                diagnostic = diagnostic
-                    .note("map length, iteration, and borrowed entry APIs are not specified yet");
+                diagnostic = diagnostic.note("a map has the methods `len` and `remove`");
             }
             self.diagnostics.push(diagnostic);
             self.report_arg_errors(args);
@@ -1843,6 +1886,84 @@ impl<'a> Checker<'a> {
             return None;
         }
         self.function_call(id, &name.text, Some(receiver), args, span)
+    }
+
+    fn argument_count(
+        &mut self,
+        method: &str,
+        expected: usize,
+        args: &[ast::Expr],
+        span: Span,
+    ) -> bool {
+        if args.len() == expected {
+            return true;
+        }
+        let message = format!(
+            "`{method}` takes {expected} argument{} but {} {} given",
+            if expected == 1 { "" } else { "s" },
+            args.len(),
+            if args.len() == 1 { "was" } else { "were" }
+        );
+        self.error(message, span);
+        self.report_arg_errors(args);
+        false
+    }
+
+    fn collection_len(
+        &mut self,
+        receiver: hir::Expr,
+        args: &[ast::Expr],
+        span: Span,
+    ) -> Option<Value> {
+        if !self.argument_count("len", 0, args, span) {
+            return None;
+        }
+        Some(Value::Typed(typed(
+            ExprKind::Len(Box::new(receiver)),
+            TypeStore::INT,
+            span,
+        )))
+    }
+
+    fn array_push_or_pop(
+        &mut self,
+        array: hir::Expr,
+        element: TypeId,
+        method: &str,
+        args: &[ast::Expr],
+        span: Span,
+    ) -> Option<Value> {
+        if method == "pop" {
+            if !self.argument_count("pop", 0, args, span) {
+                return None;
+            }
+            let receiver_ok = self.mutable_place(&array, MutableUse::Argument);
+            return receiver_ok.then(|| {
+                Value::Typed(hir::Expr {
+                    kind: ExprKind::ArrayPop(Box::new(array)),
+                    types: vec![TypeStore::BOOL, element],
+                    span,
+                })
+            });
+        }
+        if !self.argument_count("push", 1, args, span) {
+            return None;
+        }
+        let value = self
+            .expr(&args[0], Some(element))
+            .and_then(|value| self.coerce(value, element));
+        let receiver_ok = self.mutable_place(&array, MutableUse::Argument);
+        let value = value?;
+        receiver_ok.then(|| {
+            Value::Typed(hir::Expr {
+                kind: ExprKind::ArrayPush {
+                    array: Box::new(array),
+                    value: Box::new(value),
+                },
+                types: Vec::new(),
+                span,
+            })
+        })
     }
 
     fn map_remove(
@@ -2054,7 +2175,7 @@ impl<'a> Checker<'a> {
                     }
                 }
             }
-            ExprKind::CallValue { callee, args } => {
+            ExprKind::CallValue { callee, args, .. } => {
                 out.extend(argument_place(callee));
                 let signature = self
                     .types
@@ -2082,7 +2203,9 @@ impl<'a> Checker<'a> {
                 mutable: true,
                 ..
             } => out.extend(argument_place(base)),
-            ExprKind::MapRemove { map, .. } => out.extend(argument_place(map)),
+            ExprKind::MapRemove { map, .. }
+            | ExprKind::ArrayPush { array: map, .. }
+            | ExprKind::ArrayPop(map) => out.extend(argument_place(map)),
             _ => {}
         }
         for child in subexpressions(expr) {
@@ -2115,6 +2238,10 @@ impl<'a> Checker<'a> {
                     LocalKind::Param(ast::ParamMode::Borrow) => (
                         "shared parameter",
                         "a parameter is a shared borrow unless declared `mut`",
+                    ),
+                    LocalKind::Item => (
+                        "loop item",
+                        "a loop item is a shared borrow of the current element",
                     ),
                     LocalKind::Param(ast::ParamMode::Own) => (
                         "`own` parameter",
@@ -2572,6 +2699,14 @@ impl<'a> Checker<'a> {
         if mutable && !self.mutable_slice_source(&base) {
             return None;
         }
+        if !mutable && self.contains_mut_view(element) {
+            self.shared_slice_of_mut_view_error(span);
+            return None;
+        }
+        if self.holds_func(element) {
+            self.func_in_slice_error(span);
+            return None;
+        }
         Some(Value::Typed(typed(
             ExprKind::Slice {
                 base: Box::new(base),
@@ -2650,6 +2785,14 @@ impl<'a> Checker<'a> {
         if !self.type_is_copy(value_ty) {
             let message = format!(
                 "cannot look up a Move value of type `{}`; use `m.remove(key)` to take ownership",
+                self.name(value_ty)
+            );
+            self.error(message, span);
+            return None;
+        }
+        if self.contains_mut_view(value_ty) {
+            let message = format!(
+                "cannot look up a value of type `{}`, which holds a `mut []T` view; use `m.remove(key)` to take it",
                 self.name(value_ty)
             );
             self.error(message, span);
@@ -2884,8 +3027,18 @@ impl<'a> Checker<'a> {
             }
             ast::StmtKind::If(if_stmt) => self.if_stmt(if_stmt)?,
             ast::StmtKind::For(for_stmt) => {
+                if let ForHeader::Each {
+                    first,
+                    second,
+                    collection,
+                } = &for_stmt.header
+                {
+                    return self
+                        .for_each(first, second.as_ref(), collection, &for_stmt.body)
+                        .map(|kind| hir::Stmt { kind, span });
+                }
                 let (init, condition, update) = match &for_stmt.header {
-                    ForHeader::Infinite => (None, None, None),
+                    ForHeader::Infinite | ForHeader::Each { .. } => (None, None, None),
                     ForHeader::Condition(condition) => {
                         (None, Some(self.condition(condition)), None)
                     }
@@ -2923,6 +3076,101 @@ impl<'a> Checker<'a> {
             ast::StmtKind::Block(block) => hir::StmtKind::Block(self.block(block)),
         };
         Some(hir::Stmt { kind, span })
+    }
+
+    fn for_each(
+        &mut self,
+        first: &BindingTarget,
+        second: Option<&BindingTarget>,
+        collection: &ast::Expr,
+        body: &ast::Block,
+    ) -> Option<hir::StmtKind> {
+        let (key, item) = match second {
+            Some(second) => (Some(first), second),
+            None => (None, first),
+        };
+        let collection = match self.expr(collection, None) {
+            Some(Value::Typed(expr)) => self.single_value(expr),
+            Some(Value::Untyped(_, span)) => {
+                self.error("a constant cannot be looped over", span);
+                None
+            }
+            None => None,
+        };
+        let types = collection.as_ref().and_then(|collection| {
+            let ty = collection.ty();
+            let types = match self.types.kind(ty) {
+                TypeKind::Array { element, .. }
+                | TypeKind::Slice { element, .. }
+                | TypeKind::DynArray { element } => Some((TypeStore::INT, element)),
+                TypeKind::Map { key: key_ty, value } if key.is_some() => Some((key_ty, value)),
+                TypeKind::Map { .. } => {
+                    self.diagnostics.push(
+                        Diagnostic::new(
+                            Severity::Error,
+                            "a loop over a map names both the key and the value",
+                            collection.span,
+                        )
+                        .note("write `for key, value in m`, using `_` for a part you do not need"),
+                    );
+                    None
+                }
+                _ => {
+                    let message = format!("type `{}` cannot be looped over", self.name(ty));
+                    self.diagnostics.push(
+                        Diagnostic::new(Severity::Error, message, collection.span)
+                            .note("a loop visits a fixed array, slice, `Array<T>`, or map"),
+                    );
+                    None
+                }
+            }?;
+            if self.holds_func(types.1) {
+                self.diagnostics.push(
+                    Diagnostic::new(
+                        Severity::Error,
+                        format!("cannot loop over `{}`, whose elements hold a function value", self.name(ty)),
+                        collection.span,
+                    )
+                    .note("a loop item is a shared borrow, and calling a closure needs exclusive use; use a counting loop over indexes instead"),
+                );
+                return None;
+            }
+            if self.contains_mut_view(types.1) {
+                self.diagnostics.push(
+                    Diagnostic::new(
+                        Severity::Error,
+                        format!(
+                            "cannot loop over `{}`, whose elements hold a `mut []T` view",
+                            self.name(ty)
+                        ),
+                        collection.span,
+                    )
+                    .note(
+                        "a loop item is a shared borrow; use a counting loop over indexes instead",
+                    ),
+                );
+                return None;
+            }
+            Some(types)
+        });
+        if let Some((key_ty, item_ty)) = types {
+            if let Some(BindingTarget::Name(name)) = key {
+                self.set_local(name, key_ty);
+            }
+            if let BindingTarget::Name(name) = item {
+                self.set_local(name, item_ty);
+            }
+        }
+        self.loop_depth += 1;
+        let body = self.block(body);
+        self.loop_depth -= 1;
+        types?;
+        Some(hir::StmtKind::ForEach {
+            key: key.and_then(|key| self.local_of(key)),
+            item: self.local_of(item),
+            collection: collection?,
+            body,
+        })
     }
 
     fn condition(&mut self, condition: &ast::Expr) -> Option<hir::Expr> {
@@ -3087,6 +3335,17 @@ impl<'a> Checker<'a> {
                         expr.span,
                     )
                     .related(decl_span, "a shared borrow by default"),
+                );
+                false
+            }
+            LocalKind::Item => {
+                self.diagnostics.push(
+                    Diagnostic::new(
+                        Severity::Error,
+                        format!("cannot assign to loop item `{name}`"),
+                        expr.span,
+                    )
+                    .related(decl_span, "a shared borrow of the current element"),
                 );
                 false
             }
@@ -3531,7 +3790,9 @@ fn subexpressions(expr: &hir::Expr) -> Vec<&hir::Expr> {
             .chain(high.as_deref())
             .collect(),
         ExprKind::Call { args, .. } => args.iter().collect(),
-        ExprKind::CallValue { callee, args } => std::iter::once(&**callee).chain(args).collect(),
+        ExprKind::CallValue { callee, args, .. } => {
+            std::iter::once(&**callee).chain(args).collect()
+        }
         ExprKind::StructLit { fields, .. } => fields.iter().map(|(_, value)| value).collect(),
         ExprKind::ArrayLit { elements, .. } => elements.iter().collect(),
         ExprKind::MapLit { entries, .. } => entries
@@ -3539,7 +3800,10 @@ fn subexpressions(expr: &hir::Expr) -> Vec<&hir::Expr> {
             .flat_map(|(key, value)| [key, value])
             .collect(),
         ExprKind::MapLookup { map, key } | ExprKind::MapRemove { map, key } => vec![map, key],
-        ExprKind::Println(inner)
+        ExprKind::ArrayPush { array, value } => vec![array, value],
+        ExprKind::Len(inner)
+        | ExprKind::ArrayPop(inner)
+        | ExprKind::Println(inner)
         | ExprKind::Drop(inner)
         | ExprKind::Convert(inner)
         | ExprKind::Clone(inner)

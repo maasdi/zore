@@ -1953,6 +1953,41 @@ func main() {
 }
 
 #[test]
+fn views_in_collections_and_slice_elements_write_through() {
+    prints(
+        "package main
+
+func put(rows mut [][]int, view []int) {
+    rows[1] = view
+}
+
+func main() {
+    var a = [int; 2]{1, 2}
+    var b = [int; 2]{3, 4}
+    var views = Array<mut []int>{a[:], b[:]}
+    var first = views[0]
+    first[0] = 10
+    var all mut []mut []int = views[:]
+    all[1][1] = 40
+    var m = map[string]mut []int{\"a\": a[:]}
+    var found, taken = m.remove(\"a\")
+    if found {
+        taken[1] = 20
+    }
+    println(a[0] + a[1] + b[1])
+
+    var rows = [[]int; 2]{a[:], a[:]}
+    var slots mut [][]int = rows[:]
+    slots[0] = b[:]
+    put(rows[:], b[1:])
+    println(rows[0][0] + rows[1][0])
+}
+",
+        "70\n43\n",
+    );
+}
+
+#[test]
 fn a_drop_reads_the_views_it_holds_on_every_exit() {
     prints(
         "package main
@@ -2054,5 +2089,198 @@ func main() {
 }
 ",
         "3\n2\n8\n7\n",
+    );
+}
+
+#[test]
+fn collections_grow_shrink_and_report_their_length() {
+    prints(
+        "package main
+
+type Res struct { id int }
+
+func (r mut Res) drop() { println(r.id) }
+
+func main() {
+    var names = Array<string>{}
+    for var i = 0; i < 20; i += 1 {
+        names.push(\"x\")
+    }
+    names.push(\"last\")
+    println(names.len())
+    let found, last = names.pop()
+    println(found)
+    println(last)
+    println(names.len())
+    var empty = Array<int>{}
+    let none, zero = empty.pop()
+    println(none)
+    println(zero)
+    let fixed = [int; 3]{1, 2, 3}
+    println(fixed.len() + fixed[1:].len())
+    var scores = map[string]int{\"a\": 1, \"b\": 2}
+    println(scores.len())
+    var held = Array<Res>{Res{id: 1}}
+    held.push(Res{id: 2})
+    held.push(Res{id: 3})
+    let ok, popped = held.pop()
+    println(ok)
+    println(popped.id + 10)
+}
+",
+        "21\ntrue\nlast\n20\nfalse\n0\n5\n2\ntrue\n13\n3\n2\n1\n",
+    );
+}
+
+#[test]
+fn collection_loops_visit_every_element_and_clean_up() {
+    prints(
+        "package main
+
+type Res struct { id int }
+
+func (r mut Res) drop() { println(r.id) }
+
+func make() Array<Res> {
+    var out = Array<Res>{}
+    for var i = 1; i <= 3; i += 1 {
+        out.push(Res{id: i})
+    }
+    return out
+}
+
+func find(xs Array<Res>, id int) int {
+    for i, r in xs {
+        if r.id == id {
+            return i
+        }
+    }
+    return -1
+}
+
+func main() {
+    for r in make() {
+        if r.id == 2 {
+            break
+        }
+        println(r.id + 10)
+    }
+    var xs = make()
+    println(find(xs, 3))
+    var sum = 0
+    for i, r in xs {
+        if i == 0 {
+            continue
+        }
+        sum += r.id
+    }
+    println(sum)
+    for x in [int; 3]{4, 5, 6}[1:] {
+        println(x)
+    }
+    var m = map[string]int{\"a\": 1, \"b\": 2, \"c\": 3}
+    var total = 0
+    for key, value in m {
+        if key != \"b\" {
+            total += value
+        }
+    }
+    println(total)
+    var empty = map[bool]int{}
+    for _, _ in empty {
+        println(99)
+    }
+    var flags = map[bool]int{true: 1}
+    for flag, _ in flags {
+        println(flag)
+    }
+}
+",
+        "11\n3\n2\n1\n2\n5\n5\n6\n4\ntrue\n3\n2\n1\n",
+    );
+}
+
+#[test]
+fn a_panic_inside_a_loop_destroys_the_held_collection() {
+    panics(
+        "package main
+
+type Res struct { id int }
+
+func (r mut Res) drop() { println(r.id) }
+
+func make() Array<Res> {
+    return Array<Res>{Res{id: 1}, Res{id: 2}}
+}
+
+func main() {
+    var zero = 0
+    for r in make() {
+        println(r.id / zero)
+    }
+}
+",
+        "division by zero",
+        "2\n1\n",
+    );
+}
+
+#[test]
+fn owning_closures_keep_their_state_and_free_it() {
+    prints(
+        "package main
+
+type Job struct { Id int }
+
+func (j mut Job) drop() { println(j.Id) }
+
+func consume(j own Job) { println(j.Id + 1000) }
+
+func counter() func() int {
+    var count = 0
+    return func() int {
+        count += 1
+        return count
+    }
+}
+
+type Handler struct {
+    run func(int) int
+}
+
+func scaled(scale int) Handler {
+    return Handler{run: func(x int) int { return x * scale }}
+}
+
+func holding(job own Job) func() int {
+    return func() int { return job.Id }
+}
+
+func main() {
+    let next = counter()
+    println(next())
+    println(next())
+    let other = counter()
+    println(other())
+    var h = scaled(3)
+    println((h.run)(5))
+    var hold = holding(Job{Id: 1})
+    println(hold())
+    hold = holding(Job{Id: 2})
+    println(hold())
+    var seen = 10
+    var later = Array<func() int>{}
+    later.push(func() int { return seen })
+    seen = 20
+    println((later[0])() + seen)
+    let job = Job{Id: 3}
+    let finish = func() { consume(job) }
+    finish()
+    let kept = Job{Id: 4}
+    let never = func() { consume(kept) }
+    println(0)
+}
+",
+        "1\n2\n1\n15\n1\n1\n2\n30\n1003\n3\n0\n4\n2\n",
     );
 }

@@ -1,6 +1,6 @@
 //! Every MIR local gets a stack slot; LLVM promotes them to registers.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fmt::Write;
 
 use super::abi;
@@ -9,7 +9,7 @@ use crate::ast::{BinaryOp, UnaryOp};
 use crate::diagnostic::{Diagnostic, Severity};
 use crate::hir::{self, Const};
 use crate::mir::{self, AggregateKind, Callee, Local, Operand, Place, Rvalue, Terminator};
-use crate::resolve::FieldId;
+use crate::resolve::{FieldId, FunctionId};
 use crate::source::{SourceFile, Span};
 use crate::types::{IntType, TypeId, TypeKind};
 
@@ -18,6 +18,24 @@ pub fn emit(
     program: &mir::Program,
     file: &SourceFile,
 ) -> Result<String, Vec<Diagnostic>> {
+    let owning_closures = program
+        .bodies
+        .iter()
+        .flat_map(|body| &body.blocks)
+        .flat_map(|block| &block.statements)
+        .filter_map(|statement| match statement {
+            mir::Statement::Assign {
+                rvalue:
+                    Rvalue::Closure {
+                        function,
+                        owning: true,
+                        ..
+                    },
+                ..
+            } => Some(*function),
+            _ => None,
+        })
+        .collect();
     let mut module = Module {
         package,
         file,
@@ -25,6 +43,7 @@ pub fn emit(
         intrinsics: BTreeSet::new(),
         globals: String::new(),
         diagnostics: Vec::new(),
+        owning_closures,
     };
     let mut functions = String::new();
     for body in &program.bodies {
@@ -57,9 +76,57 @@ pub(super) struct Module<'a> {
     pub(super) intrinsics: BTreeSet<String>,
     pub(super) globals: String,
     pub(super) diagnostics: Vec<Diagnostic>,
+    pub(super) owning_closures: HashSet<FunctionId>,
+}
+
+/// An owning closure's heap environment: capture pointers first, then each value and its flags.
+pub(super) struct Environment {
+    pub(super) ty: String,
+    /// Per capture: its type, its value field, and its flags field for a Move value.
+    pub(super) fields: Vec<(TypeId, usize, Option<usize>)>,
 }
 
 impl Module<'_> {
+    pub(super) fn environment(&self, closure: FunctionId) -> Environment {
+        let function = self.package.function(closure);
+        let mut parts = Vec::new();
+        let mut fields = Vec::new();
+        let mut pointers = 0;
+        for &capture in &function.captures {
+            let ty = function.locals[capture.0 as usize].ty;
+            parts.push(self.ty(ty));
+            let value = parts.len();
+            pointers += 1;
+            let flags = (!self.package.is_copy(ty)).then(|| {
+                parts.push(self.flag_ty(ty));
+                pointers += 1;
+                parts.len()
+            });
+            fields.push((ty, value, flags));
+        }
+        let mut ty = format!("{{ [{pointers} x ptr]");
+        for part in parts {
+            write!(ty, ", {part}").unwrap();
+        }
+        ty.push_str(" }");
+        Environment { ty, fields }
+    }
+
+    fn closure_name(&self, closure: FunctionId) -> String {
+        format!(
+            "@\"{}.{}\"",
+            self.package.name,
+            self.package.function(closure).name
+        )
+    }
+
+    pub(super) fn environment_drop_name(&self, closure: FunctionId) -> String {
+        format!(
+            "@\"{}.{}.drop\"",
+            self.package.name,
+            self.package.function(closure).name
+        )
+    }
     pub(super) fn string_global(&mut self, bytes: &[u8]) -> String {
         if let Some(name) = self.strings.get(bytes) {
             return name.clone();
@@ -118,7 +185,51 @@ impl Module<'_> {
             hoisted: String::new(),
         };
         f.emit();
-        f.out
+        let mut out = f.out;
+        if self.owning_closures.contains(&body.function) {
+            out.push_str(&self.environment_drop(body));
+        }
+        out
+    }
+
+    /// Destroys the captured values a call has not consumed, newest first, then frees the storage.
+    fn environment_drop(&mut self, body: &mir::Body) -> String {
+        let closure = body.function;
+        let environment = self.environment(closure);
+        let name = self.environment_drop_name(closure);
+        let mut f = FunctionBuilder {
+            module: self,
+            body,
+            out: String::new(),
+            next: 0,
+            active_unwind: None,
+            emitting_unwind: false,
+            drop_check_after_store: false,
+            hoisted: String::new(),
+        };
+        for &(ty, value, flags) in environment.fields.iter().rev() {
+            let Some(flags) = flags else {
+                continue;
+            };
+            let slot = f.fresh();
+            f.line(format!(
+                "{slot} = getelementptr inbounds {}, ptr %env, i32 0, i32 {value}",
+                environment.ty
+            ));
+            let flag_slot = f.fresh();
+            f.line(format!(
+                "{flag_slot} = getelementptr inbounds {}, ptr %env, i32 0, i32 {flags}",
+                environment.ty
+            ));
+            f.drop_value(&slot, ty, &flag_slot);
+        }
+        let size = f.byte_size(&environment.ty, "1");
+        f.line(format!("call void @zore_free(ptr %env, i64 {size})"));
+        f.line("ret void");
+        format!(
+            "define private void {name}(ptr %env) {{\nentry:\n{}{}}}\n\n",
+            f.hoisted, f.out
+        )
     }
 }
 
@@ -273,9 +384,13 @@ impl FunctionBuilder<'_, '_> {
 
     fn closure_value(
         &mut self,
-        function: crate::resolve::FunctionId,
+        function: FunctionId,
         captures: &[(Place, bool)],
+        owning: bool,
     ) -> String {
+        if owning {
+            return self.owning_closure_value(function, captures);
+        }
         let package = self.module.package;
         let mut pointers = Vec::new();
         for (place, _) in captures {
@@ -299,16 +414,76 @@ impl FunctionBuilder<'_, '_> {
             }
             environment
         };
-        let code = format!("@\"{}.{}\"", package.name, package.function(function).name);
-        let with_code = self.fresh();
-        self.line(format!(
-            "{with_code} = insertvalue {{ ptr, ptr }} undef, ptr {code}, 0"
-        ));
-        let value = self.fresh();
-        self.line(format!(
-            "{value} = insertvalue {{ ptr, ptr }} {with_code}, ptr {environment}, 1"
-        ));
+        let code = self.module.closure_name(function);
+        self.closure_triple(&code, &environment, "null")
+    }
+
+    fn closure_triple(&mut self, code: &str, environment: &str, drop: &str) -> String {
+        let mut value = "undef".to_string();
+        for (index, field) in [code, environment, drop].into_iter().enumerate() {
+            let next = self.fresh();
+            self.line(format!(
+                "{next} = insertvalue {{ ptr, ptr, ptr }} {value}, ptr {field}, {index}"
+            ));
+            value = next;
+        }
         value
+    }
+
+    /// Copies or moves each capture into heap storage that the closure value owns.
+    fn owning_closure_value(&mut self, function: FunctionId, captures: &[(Place, bool)]) -> String {
+        let environment = self.module.environment(function);
+        let size = self.byte_size(&environment.ty, "1");
+        let block = self.fresh();
+        self.line(format!("{block} = call ptr @zore_alloc(i64 {size})"));
+        let mut pointer = 0;
+        for ((place, exclusive), &(ty, value, flags)) in captures.iter().zip(&environment.fields) {
+            let operand =
+                mir::captured_operand(self.module.package, &self.body.locals, place, *exclusive);
+            let loaded = self.value(&operand);
+            let slot = self.environment_field(&environment, &block, value);
+            self.line(format!("store {} {loaded}, ptr {slot}", self.ty(ty)));
+            self.store_environment_pointer(&environment, &block, pointer, &slot);
+            pointer += 1;
+            if let Some(flags) = flags {
+                let flag_slot = self.environment_field(&environment, &block, flags);
+                self.init_flags_true(&flag_slot, ty);
+                self.store_environment_pointer(&environment, &block, pointer, &flag_slot);
+                pointer += 1;
+            }
+        }
+        let code = self.module.closure_name(function);
+        let drop = self.module.environment_drop_name(function);
+        self.closure_triple(&code, &block, &drop)
+    }
+
+    fn environment_field(
+        &mut self,
+        environment: &Environment,
+        block: &str,
+        field: usize,
+    ) -> String {
+        let slot = self.fresh();
+        self.line(format!(
+            "{slot} = getelementptr inbounds {}, ptr {block}, i32 0, i32 {field}",
+            environment.ty
+        ));
+        slot
+    }
+
+    fn store_environment_pointer(
+        &mut self,
+        environment: &Environment,
+        block: &str,
+        index: usize,
+        pointer: &str,
+    ) {
+        let entry = self.fresh();
+        self.line(format!(
+            "{entry} = getelementptr inbounds {}, ptr {block}, i32 0, i32 0, i64 {index}",
+            environment.ty
+        ));
+        self.line(format!("store ptr {pointer}, ptr {entry}"));
     }
 
     /// Indexing a slice continues from the element its data pointer designates.
@@ -370,6 +545,84 @@ impl FunctionBuilder<'_, '_> {
             "{data} = extractvalue {{ ptr, i64 }} {descriptor}, 0"
         ));
         data
+    }
+
+    fn length(&mut self, place: &Place) -> String {
+        match self.module.package.types.kind(self.place_ty(place)) {
+            TypeKind::Array { size, .. } => size.to_string(),
+            TypeKind::Map { .. } => {
+                let address = self.address(place);
+                let map = self.fresh();
+                self.line(format!("{map} = load ptr, ptr {address}"));
+                let length = self.fresh();
+                self.line(format!("{length} = call i64 @zore_map_len(ptr {map})"));
+                length
+            }
+            _ => self.slice_length(place),
+        }
+    }
+
+    /// A by-reference local designates the referent and borrows its drop flags.
+    fn bind_reference(&mut self, local: Local, rvalue: &Rvalue) {
+        let (address, ty) = match rvalue {
+            Rvalue::Ref(place) => (self.address(place), self.place_ty(place)),
+            Rvalue::MapValueRef(map, position) => {
+                let TypeKind::Map { value, .. } =
+                    self.module.package.types.kind(self.place_ty(map))
+                else {
+                    unreachable!("a map entry reference takes a map")
+                };
+                let slot = self.address(map);
+                let loaded = self.fresh();
+                self.line(format!("{loaded} = load ptr, ptr {slot}"));
+                let position = self.value(position);
+                let entry = self.fresh();
+                self.line(format!(
+                    "{entry} = call ptr @zore_map_value_at(ptr {loaded}, i64 {position})"
+                ));
+                (entry, value)
+            }
+            _ => unreachable!("only references are bound"),
+        };
+        self.line(format!("store ptr {address}, ptr %l{}", local.0));
+        if !self.module.package.is_copy(ty) {
+            let flags = match rvalue {
+                Rvalue::Ref(place)
+                    if !place
+                        .projections
+                        .iter()
+                        .any(|p| matches!(p, mir::Projection::Index(_))) =>
+                {
+                    self.flag_address(place)
+                }
+                _ => self.scratch_flags(ty),
+            };
+            self.line(format!("store ptr {flags}, ptr %lf{}", local.0));
+        }
+    }
+
+    fn map_key_at(&mut self, map: &Place, position: &Operand) -> String {
+        let TypeKind::Map { key, .. } = self.module.package.types.kind(self.place_ty(map)) else {
+            unreachable!("a map key read takes a map")
+        };
+        let slot = self.address(map);
+        let loaded = self.fresh();
+        self.line(format!("{loaded} = load ptr, ptr {slot}"));
+        let position = self.value(position);
+        let raw = self.fresh();
+        self.line(format!(
+            "{raw} = call ptr @zore_map_key_at(ptr {loaded}, i64 {position})"
+        ));
+        let value = self.fresh();
+        if key == crate::types::TypeStore::BOOL {
+            let byte = self.fresh();
+            self.line(format!("{byte} = load i8, ptr {raw}"));
+            self.line(format!("{value} = trunc i8 {byte} to i1"));
+        } else {
+            let ty = self.ty(key);
+            self.line(format!("{value} = load {ty}, ptr {raw}"));
+        }
+        value
     }
 
     fn slice_length(&mut self, place: &Place) -> String {
@@ -644,6 +897,10 @@ impl FunctionBuilder<'_, '_> {
     }
 
     pub(super) fn assign_rvalue(&mut self, place: &Place, rvalue: &Rvalue, span: Span) {
+        if let Rvalue::Ref(_) | Rvalue::MapValueRef(..) = rvalue {
+            self.bind_reference(place.local, rvalue);
+            return;
+        }
         let result_ty = self.place_ty(place);
         let value = match rvalue {
             Rvalue::Use(operand) => self.value(operand),
@@ -653,14 +910,20 @@ impl FunctionBuilder<'_, '_> {
             Rvalue::Convert(operand, to) => self.convert(operand, *to, span),
             Rvalue::Error(operand) => self.error_value(operand),
             Rvalue::BoundsCheck(index, length) => self.bounds_check(index, length, span),
-            Rvalue::Length(place) => self.slice_length(place),
+            Rvalue::Length(place) => self.length(place),
+            Rvalue::MapKeyAt(map, position) => self.map_key_at(map, position),
+            Rvalue::Ref(_) | Rvalue::MapValueRef(..) => unreachable!("bound above"),
             Rvalue::Slice {
                 place, low, high, ..
             } => self.slice(place, low.as_ref(), high.as_ref(), span),
             Rvalue::Aggregate(AggregateKind::DynArray(element), operands) => {
                 self.dyn_array_literal(*element, operands)
             }
-            Rvalue::Closure { function, captures } => self.closure_value(*function, captures),
+            Rvalue::Closure {
+                function,
+                captures,
+                owning,
+            } => self.closure_value(*function, captures, *owning),
             Rvalue::Aggregate(_, operands) => {
                 let ty = self.ty(result_ty);
                 let mut current = "undef".to_string();
@@ -681,7 +944,7 @@ impl FunctionBuilder<'_, '_> {
 
     fn dyn_array_literal(&mut self, element: TypeId, operands: &[Operand]) -> String {
         if operands.is_empty() {
-            return "{ ptr null, i64 0 }".to_string();
+            return "{ ptr null, i64 0, i64 0 }".to_string();
         }
         let element_ty = self.ty(element);
         let bytes = self.byte_size(&element_ty, &operands.len().to_string());
@@ -695,15 +958,26 @@ impl FunctionBuilder<'_, '_> {
             ));
             self.line(format!("store {element_ty} {value}, ptr {slot}"));
         }
-        let with_data = self.fresh();
-        self.line(format!(
-            "{with_data} = insertvalue {{ ptr, i64 }} undef, ptr {data}, 0"
-        ));
-        let array = self.fresh();
-        self.line(format!(
-            "{array} = insertvalue {{ ptr, i64 }} {with_data}, i64 {}, 1",
-            operands.len()
-        ));
+        self.dyn_array_value(&data, &operands.len().to_string())
+    }
+
+    /// Storage holding exactly `length` elements.
+    pub(super) fn dyn_array_value(&mut self, data: &str, length: &str) -> String {
+        let mut array = "undef".to_string();
+        for (index, field) in [
+            format!("ptr {data}"),
+            format!("i64 {length}"),
+            format!("i64 {length}"),
+        ]
+        .iter()
+        .enumerate()
+        {
+            let next = self.fresh();
+            self.line(format!(
+                "{next} = insertvalue {{ ptr, i64, i64 }} {array}, {field}, {index}"
+            ));
+            array = next;
+        }
         array
     }
 
@@ -717,18 +991,19 @@ impl FunctionBuilder<'_, '_> {
 
     fn drop_dyn_array(&mut self, address: &str, element: TypeId) {
         let descriptor = self.fresh();
-        self.line(format!("{descriptor} = load {{ ptr, i64 }}, ptr {address}"));
-        let data = self.fresh();
         self.line(format!(
-            "{data} = extractvalue {{ ptr, i64 }} {descriptor}, 0"
+            "{descriptor} = load {{ ptr, i64, i64 }}, ptr {address}"
         ));
-        let length = self.fresh();
-        self.line(format!(
-            "{length} = extractvalue {{ ptr, i64 }} {descriptor}, 1"
-        ));
+        let [data, length, capacity] = [0, 1, 2].map(|index| {
+            let field = self.fresh();
+            self.line(format!(
+                "{field} = extractvalue {{ ptr, i64, i64 }} {descriptor}, {index}"
+            ));
+            field
+        });
         self.drop_elements(&data, element, &length);
         let element_ty = self.ty(element);
-        let bytes = self.byte_size(&element_ty, &length);
+        let bytes = self.byte_size(&element_ty, &capacity);
         self.line(format!("call void @zore_free(ptr {data}, i64 {bytes})"));
     }
 
@@ -927,8 +1202,33 @@ impl FunctionBuilder<'_, '_> {
             }
             TypeKind::DynArray { element } => self.drop_dyn_array(address, element),
             TypeKind::Map { value, .. } => self.drop_map(address, value),
+            TypeKind::Func(_) => self.drop_closure(address),
             _ => {}
         }
+    }
+
+    /// Only an owning closure has a destructor.
+    fn drop_closure(&mut self, address: &str) {
+        let closure = self.fresh();
+        self.line(format!(
+            "{closure} = load {{ ptr, ptr, ptr }}, ptr {address}"
+        ));
+        let environment = self.fresh();
+        self.line(format!(
+            "{environment} = extractvalue {{ ptr, ptr, ptr }} {closure}, 1"
+        ));
+        let destructor = self.fresh();
+        self.line(format!(
+            "{destructor} = extractvalue {{ ptr, ptr, ptr }} {closure}, 2"
+        ));
+        let owning = self.fresh();
+        self.line(format!("{owning} = icmp ne ptr {destructor}, null"));
+        let (run, done) = (self.label(), self.label());
+        self.line(format!("br i1 {owning}, label %{run}, label %{done}"));
+        self.out.push_str(&format!("{run}:\n"));
+        self.line(format!("call void {destructor}(ptr {environment})"));
+        self.line(format!("br label %{done}"));
+        self.out.push_str(&format!("{done}:\n"));
     }
 
     pub(super) fn has_custom_ancestor(&self, place: &Place) -> bool {
@@ -1355,6 +1655,7 @@ impl FunctionBuilder<'_, '_> {
                     | Callee::MapAssign
                     | Callee::MapLookup
                     | Callee::MapRemove => self.map_call(callee, args, *span),
+                    Callee::ArrayPush | Callee::ArrayPop => self.array_call(callee, args),
                 };
                 let pending = self.fresh();
                 self.line(format!("{pending} = call zeroext i1 @zore_panic_pending()"));

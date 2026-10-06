@@ -9,7 +9,7 @@ mod terminator;
 
 pub use block::{BasicBlock, BlockId};
 pub use body::{Body, Local, LocalDecl, Program};
-pub use operand::{Operand, Place, Projection, place_type, projection_type};
+pub use operand::{Operand, Place, Projection, captured_operand, place_type, projection_type};
 pub use rvalue::{AggregateKind, Rvalue};
 pub use statement::Statement;
 pub use terminator::{Callee, Terminator};

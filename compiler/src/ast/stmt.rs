@@ -97,4 +97,10 @@ pub enum ForHeader {
         condition: Expr,
         update: Box<Stmt>,
     },
+    /// `for first in collection` or `for first, second in collection`.
+    Each {
+        first: BindingTarget,
+        second: Option<BindingTarget>,
+        collection: Expr,
+    },
 }

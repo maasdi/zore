@@ -196,15 +196,8 @@ impl FunctionBuilder<'_, '_> {
         self.clone_elements(&data, &copy, element, &length, failed, |this| {
             this.line(format!("call void @zore_free(ptr {copy}, i64 {bytes})"));
         });
-        let with_data = self.fresh();
-        self.line(format!(
-            "{with_data} = insertvalue {{ ptr, i64 }} undef, ptr {copy}, 0"
-        ));
-        let array = self.fresh();
-        self.line(format!(
-            "{array} = insertvalue {{ ptr, i64 }} {with_data}, i64 {length}, 1"
-        ));
-        self.line(format!("store {{ ptr, i64 }} {array}, ptr {target}"));
+        let array = self.dyn_array_value(&copy, &length);
+        self.line(format!("store {{ ptr, i64, i64 }} {array}, ptr {target}"));
     }
 
     fn clone_map(&mut self, source: &str, target: &str, value: TypeId, failed: &str) {

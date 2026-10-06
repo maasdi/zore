@@ -162,7 +162,10 @@ fn read_rvalue(rvalue: &Rvalue, state: &mut [UseState]) {
                 read_operand(value, state);
             }
         }
-        Rvalue::Length(_) => {}
+        Rvalue::Length(_) | Rvalue::Ref(_) => {}
+        Rvalue::MapKeyAt(_, position) | Rvalue::MapValueRef(_, position) => {
+            read_operand(position, state)
+        }
         Rvalue::Slice { low, high, .. } => {
             for bound in [low, high].into_iter().flatten() {
                 read_operand(bound, state);
@@ -201,7 +204,10 @@ fn write(
     if !place.projections.is_empty()
         || index >= state.len()
         || function.locals[index].ty != TypeStore::ERROR
-        || matches!(function.locals[index].kind, LocalKind::Capture(_))
+        || matches!(
+            function.locals[index].kind,
+            LocalKind::Capture(_) | LocalKind::Item
+        )
     {
         return;
     }

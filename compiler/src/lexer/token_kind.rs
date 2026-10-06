@@ -108,6 +108,7 @@ words!(Keyword {
     If = "if",
     Else = "else",
     For = "for",
+    In = "in",
     Break = "break",
     Continue = "continue",
     Return = "return",

@@ -307,6 +307,22 @@ fn stmt(case: &Case, s: &Stmt) -> String {
                     expr(case, condition),
                     stmt(case, update)
                 ),
+                ForHeader::Each {
+                    first,
+                    second,
+                    collection,
+                } => {
+                    let name = |target: &BindingTarget| match target {
+                        BindingTarget::Name(name) => name.text.clone(),
+                        BindingTarget::Discard(_) => "_".into(),
+                    };
+                    let names = std::iter::once(first)
+                        .chain(second)
+                        .map(name)
+                        .collect::<Vec<_>>()
+                        .join(",");
+                    format!(" {names} in {}", expr(case, collection))
+                }
             };
             format!("(for{header} {})", block(case, &f.body))
         }
@@ -1054,6 +1070,28 @@ fn control_flow_statements() {
 }
 
 #[test]
+fn collection_loops_parse() {
+    let case = Case::body(
+        "for item in items { work(item) }
+        for i, item in list[1:] { work(i) }
+        for _, value in scores { work(value) }
+        for key, _ in Array<int>{1, 2} { }
+        for ready() { }",
+    );
+    case.assert_clean();
+    assert_eq!(
+        case.shape(),
+        [
+            "(for item in items {(call work item)})",
+            "(for i,item in (slice list 1 _) {(call work i)})",
+            "(for _,value in scores {(call work value)})",
+            "(for key,_ in (lit Array<int> 1 2) {})",
+            "(for (call ready) {})",
+        ]
+    );
+}
+
+#[test]
 fn invalid_control_flow_syntax_is_rejected() {
     for (body, message) in [
         ("if ready work()", "expected `{`"),
@@ -1073,7 +1111,10 @@ fn invalid_control_flow_syntax_is_rejected() {
         ("for var i = 0; ; i += 1 { }", "expected an expression"),
         ("for i = 0; i < n; { }", "expected an expression"),
         ("for ready()\n{ }", "same line as the `for` header"),
-        ("for x in items { }", "expected `{`"),
+        ("for x in items\n{ }", "same line as the `for` header"),
+        ("for x, y, z in items { }", "expected"),
+        ("for in items { }", "expected"),
+        ("let in = 1", "`in` is a keyword"),
         ("x++", "not a Zore operator"),
     ] {
         rejects(body, message);

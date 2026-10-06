@@ -12,6 +12,8 @@ pub struct Function {
     /// Capture locals, in the order the closure expression lists them.
     pub captures: Vec<LocalId>,
     pub is_closure: bool,
+    /// The body consumes a captured value, so the closure runs at most once.
+    pub call_once: bool,
     pub locals: Vec<Local>,
     pub body: Block,
 }

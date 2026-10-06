@@ -1764,7 +1764,7 @@ fn unsupported_slice_forms_are_rejected() {
     );
     rejects(
         &program("func f(rows []mut []int) {}"),
-        "a `mut []T` view inside an `Array<T>`, map, or slice element is not supported",
+        "a shared slice cannot hold `mut []T` views",
     );
     accepts(&program(
         "type T struct { s []int }\nfunc (t mut T) drop() {}",
@@ -1890,18 +1890,18 @@ fn dynamic_arrays_slice_like_fixed_arrays() {
 fn unsupported_dynamic_array_forms_are_rejected() {
     rejects(
         &program("func f(xs Array<mut []int>) {}"),
-        "a `mut []T` view inside an `Array<T>`, map, or slice element",
+        "cannot hold a `mut []T` view",
     );
     rejects(&body("let xs = Array"), "`Array` needs an element type");
     let case = rejects(
-        &program("func f(xs Array<int>) { _ = xs.len() }"),
-        "type `Array<int64>` has no method `len`",
+        &program("func f(xs Array<int>) { _ = xs.size() }"),
+        "type `Array<int64>` has no method `size`",
     );
     assert!(
         case.checked.diagnostics[0]
             .notes()
             .iter()
-            .any(|note| note.contains("not specified yet"))
+            .any(|note| note.contains("`len`, `push`, and `pop`"))
     );
     accepts(&program("func f(xs Array<int>) { let ys = clone(xs) }"));
     rejects(
@@ -1944,7 +1944,7 @@ fn map_keys_are_bool_integer_rune_or_string() {
     }
     rejects(
         &program("func f(m map[string]mut []int) {}"),
-        "a `mut []T` view inside an `Array<T>`, map, or slice element",
+        "cannot hold a `mut []T` view",
     );
 }
 
@@ -2032,14 +2032,14 @@ fn map_removal_needs_a_mutable_map_and_supports_propagation() {
         "error value in `err` may be unused before scope exit",
     );
     let case = rejects(
-        &program("func use(m map[string]int) { m.len() }"),
-        "type `map[string]int64` has no method `len`",
+        &program("func use(m map[string]int) { _ = m.size() }"),
+        "type `map[string]int64` has no method `size`",
     );
     assert!(
         case.checked.diagnostics[0]
             .notes()
             .iter()
-            .any(|note| note.contains("borrowed entry APIs are not specified yet"))
+            .any(|note| note.contains("`len` and `remove`"))
     );
 }
 
@@ -2126,7 +2126,9 @@ fn closures_become_functions_that_borrow_their_captures() {
     ));
     let main = case.function("main");
     let closure = |name: &str| match &let_value(main, name).kind {
-        ExprKind::Closure { function, captures } => (*function, captures.clone()),
+        ExprKind::Closure {
+            function, captures, ..
+        } => (*function, captures.clone()),
         other => panic!("expected a closure, found {other:?}"),
     };
     let local = |name: &str| {
@@ -2294,34 +2296,31 @@ fn closure_bodies_are_checked_as_functions() {
 }
 
 #[test]
-fn closures_cannot_escape_their_scope() {
-    rejects(
-        &program("func make() func() { return func() {} }"),
-        "a function cannot return a function value",
-    );
+fn function_values_can_be_returned_and_stored_but_not_sliced() {
+    accepts(&program(
+        "type S struct { f func() }
+        func make() func() { return func() {} }
+        func g(a own [func(); 1], b own Array<func()>, c own map[string]func(), f own func()) {}
+        func h(s mut S) { (s.f)() }",
+    ));
     for decl in [
-        "type S struct { f func() }",
-        "func g(a [func(); 1]) {}",
-        "func g(a Array<func()>) {}",
         "func g(a []func()) {}",
-        "func g(a map[string]func()) {}",
+        "type S struct { fs mut []func() }",
+        "func g() { var fs = [func(); 1]{func() {}}\nlet s = fs[:] }",
     ] {
-        rejects(
-            &program(decl),
-            "function values cannot be stored in a struct field, array, slice, or map",
-        );
+        rejects(&program(decl), "a slice cannot hold function values");
     }
+    rejects(
+        &program("type S struct { f func() }\nfunc g(s S) {}"),
+        "a shared parameter of type `S` cannot hold a function value",
+    );
     rejects(
         &program("func g(m map[func()]int) {}"),
         "type `func()` cannot be a map key",
     );
     rejects(
-        &program("func g(f own func()) {}"),
-        "a function-typed parameter cannot be `mut` or `own`",
-    );
-    rejects(
         &program("func g(f mut func()) {}"),
-        "a function-typed parameter cannot be `mut` or `own`",
+        "a function-typed parameter cannot be `mut`",
     );
     accepts(&program("func g(f func([]int) []int) {}"));
     rejects(
@@ -2332,6 +2331,46 @@ fn closures_cannot_escape_their_scope() {
         &program("const c = func() {}"),
         "a function literal can only appear inside a function body",
     );
+}
+
+#[test]
+fn call_once_closures_are_bound_with_let_and_called_directly() {
+    let job = "type Job struct { Id int }
+        func (j mut Job) drop() {}
+        func consume(j own Job) {}
+        func run(f func()) { f() }";
+    accepts(&program(&format!(
+        "{job}\nfunc g() {{ let job = Job{{Id: 1}}\nlet finish = func() {{ consume(job) }}\nfinish() }}"
+    )));
+    for (body, message) in [
+        (
+            "let finish = func() { consume(job) }\nrun(finish)",
+            "call-once closure `finish` can only be called directly",
+        ),
+        (
+            "let finish = func() { consume(job) }\nlet again = finish",
+            "call-once closure `finish` can only be called directly",
+        ),
+        (
+            "let finish = func() { consume(job) }\nlet outer = func() { finish() }",
+            "call-once closure `finish` can only be called directly",
+        ),
+        (
+            "var finish = func() { consume(job) }",
+            "a call-once function literal must initialize a `let` binding",
+        ),
+        (
+            "run(func() { consume(job) })",
+            "a call-once function literal must initialize a `let` binding",
+        ),
+    ] {
+        rejects(
+            &program(&format!(
+                "{job}\nfunc g() {{ let job = Job{{Id: 1}}\n{body} }}"
+            )),
+            message,
+        );
+    }
 }
 
 #[test]
@@ -2562,21 +2601,37 @@ fn a_shared_parameter_cannot_hold_a_nested_mutable_view() {
 }
 
 #[test]
-fn collections_cannot_hold_mutable_views_even_through_structs() {
+fn only_shared_slices_cannot_hold_mutable_views() {
     for decl in [
-        "type Bag struct { list Array<Window> }",
-        "type Bag struct { table map[string]Window }",
         "type Bag struct { view []Window }",
-        "func g() { let a = Array<Window>{} }",
+        "type Bag struct { rows Array<[]Window> }",
+        "func g() { var d = [int; 1]{1}\nvar a = [Window; 1]{Window{items: d[:], label: 0}}\nlet s = a[:] }",
+        "func g(rows []mut []int) {}",
     ] {
         rejects(
             &program(&format!("{decl}\n{WINDOW}")),
-            "a `mut []T` view inside an `Array<T>`, map, or slice element is not supported",
+            "a shared slice cannot hold `mut []T` views",
         );
     }
     accepts(&program(&format!(
-        "{WINDOW}\ntype Shared struct {{ items []int }}\ntype Bag struct {{ list Array<Shared> }}"
+        "{WINDOW}
+        type Bag struct {{ list Array<Window>\ntable map[string]Window\nrows mut []Window }}
+        func g() {{ var d = [int; 1]{{1}}\nvar a = [Window; 1]{{Window{{items: d[:], label: 0}}}}\nvar s mut []Window = a[:]\n_ = s
+        let b = Array<Window>{{}}\n_ = b }}"
     )));
+}
+
+#[test]
+fn a_map_lookup_cannot_copy_out_a_mutable_view() {
+    rejects(
+        &body(
+            "var d = [int; 1]{1}\nvar m = map[int]mut []int{1: d[:]}\nvar found, v = m[1]\n_ = found\n_ = v",
+        ),
+        "which holds a `mut []T` view; use `m.remove(key)` to take it",
+    );
+    accepts(&body(
+        "var d = [int; 1]{1}\nvar m = map[int]mut []int{1: d[:]}\nvar found, v = m.remove(1)\nif found { v[0] = 2 }",
+    ));
 }
 
 #[test]
@@ -2596,4 +2651,101 @@ fn function_types_may_return_views() {
         let tail = func(items []int) []int { return items[1:] }
         println(tail(data[:])[0])",
     ));
+}
+
+#[test]
+fn collections_have_len_push_and_pop() {
+    accepts(&program(
+        "func sizes(a [int; 3], s []int, m map[string]int, xs Array<int>) int {
+            return a.len() + s.len() + m.len() + xs.len()
+        }
+        func grow(xs mut Array<string>) { xs.push(\"a\")\nlet found, last = xs.pop()\n_ = found\n_ = last }",
+    ));
+    rejects(
+        &body("let xs = Array<int>{}\nxs.push(1)"),
+        "cannot pass immutable binding `xs` as a `mut` argument",
+    );
+    rejects(
+        &program("func f(xs Array<int>) { let found, last = xs.pop()\n_ = found\n_ = last }"),
+        "shared parameter",
+    );
+    rejects(
+        &body("var xs = Array<int>{}\nxs.push(\"a\")"),
+        "mismatched types",
+    );
+    rejects(
+        &body("var xs = Array<int>{}\nxs.push()"),
+        "`push` takes 1 argument but 0 were given",
+    );
+    rejects(
+        &body("var xs = Array<int>{}\n_ = xs.len(1)"),
+        "`len` takes 0 arguments but 1 was given",
+    );
+    rejects(
+        &body("var xs = Array<int>{}\nlet n = xs.pop()"),
+        "bind them first",
+    );
+    rejects(
+        &body("var a = [int; 2]{1, 2}\na.push(3)"),
+        "type `[int64; 2]` has no method `push`",
+    );
+    rejects(
+        &body("let s = \"ab\"\n_ = s.len()"),
+        "type `string` has no method `len`",
+    );
+    rejects(
+        &program(
+            "func use(m mut map[string]error) { var xs = Array<error>{}\nlet found, err = xs.pop()\n_ = found }",
+        ),
+        "error value in `err` may be unused before scope exit",
+    );
+}
+
+#[test]
+fn collection_loops_bind_an_index_or_key_and_an_item() {
+    accepts(&program(
+        "func total(a [int; 3], s []int, xs Array<int>, m map[string]int) int {
+            var sum = 0
+            for x in a { sum += x }
+            for i, x in s { sum += i + x }
+            for _, x in xs { sum += x }
+            for k, v in m { if k == \"a\" { sum += v } }
+            for x in xs[1:] { sum += x }
+            for _ in Array<int>{1} { sum += 1 }
+            return sum
+        }",
+    ));
+    rejects(
+        &body("var m = map[int]int{}\nfor v in m { _ = v }"),
+        "names both the key and the value",
+    );
+    rejects(
+        &body("for x in 3 { _ = x }"),
+        "a constant cannot be looped over",
+    );
+    rejects(
+        &body("let s = \"ab\"\nfor c in s { _ = c }"),
+        "type `string` cannot be looped over",
+    );
+    rejects(
+        &body("var xs = Array<int>{}\nfor x in xs { x = 1 }"),
+        "cannot assign to loop item `x`",
+    );
+    rejects(
+        &body("var xs = Array<int>{}\nfor x in xs { }\n_ = x"),
+        "cannot find `x` in this scope",
+    );
+    rejects(
+        &body("var xs = Array<int>{}\nfor x, x in xs { }"),
+        "duplicate declaration `x`",
+    );
+    rejects(
+        &body("var d = [int; 1]{1}\nvar xs = Array<mut []int>{d[:]}\nfor v in xs { _ = v }"),
+        "whose elements hold a `mut []T` view",
+    );
+    rejects(
+        &body("var xs = Array<int>{}\nfor x in xs { break }\nbreak"),
+        "`break` outside of a loop",
+    );
+    accepts(&body("var xs = Array<error>{}\nfor e in xs { }"));
 }

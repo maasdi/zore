@@ -11,9 +11,9 @@ use crate::diagnostic::{Diagnostic, Severity};
 use crate::hir;
 use crate::mir::{
     BasicBlock, BlockId, Body, Callee, Local, Operand, Place, Program, Projection, Rvalue,
-    Statement, Terminator, place_type,
+    Statement, Terminator, captured_operand, place_type,
 };
-use crate::resolve::{FieldId, LocalKind};
+use crate::resolve::{FieldId, FunctionId, LocalKind};
 use crate::source::Span;
 use crate::types::{TypeId, TypeKind};
 
@@ -149,6 +149,7 @@ impl<'a> Analysis<'a> {
                         name: String::new(),
                         from_slicing: false,
                         captured: false,
+                        binding: false,
                     },
                 );
                 entry[param.0 as usize].insert(id);
@@ -181,12 +182,17 @@ impl<'a> Analysis<'a> {
                 }
             }
         }
+        let inputs = self.inputs();
         let kept_at_return: Vec<bool> = body
             .locals
             .iter()
             .zip(&self.observing)
-            .map(|(local, &observing)| {
-                observing || local.by_reference && self.package.contains_view(local.ty)
+            .enumerate()
+            .map(|(index, (local, &observing))| {
+                observing
+                    || local.by_reference
+                        && inputs.contains(&Local(index as u32))
+                        && self.package.contains_view(local.ty)
             })
             .collect();
         let live = Liveness::compute(body, &self.observing, &kept_at_return);
@@ -229,7 +235,63 @@ impl<'a> Analysis<'a> {
     }
 
     fn carries_views(&self, local: Local) -> bool {
-        self.package.contains_view(self.local_ty(local))
+        self.package.contains_view(self.local_ty(local)) || self.binds_reference(local)
+    }
+
+    /// A loop's borrow of its collection or of the current element.
+    fn binds_reference(&self, local: Local) -> bool {
+        self.body.locals[local.0 as usize].by_reference && !self.inputs().contains(&local)
+    }
+
+    /// Holds a `mut []T` whose elements can hold views.
+    fn stores_through_views(&self, ty: TypeId) -> bool {
+        self.package.contains_mut_slice_of_views(ty)
+    }
+
+    /// `local` and every owner whose storage a write through its mutable views reaches.
+    fn store_holders(&self, local: Local, state: &Holdings) -> Vec<Local> {
+        let inputs = self.inputs();
+        let mut holders = vec![local];
+        let mut next = 0;
+        while let Some(&holder) = holders.get(next) {
+            next += 1;
+            for &id in &state[holder.0 as usize] {
+                let loan = &self.loans[id];
+                let owner = match (&loan.target, loan.kind) {
+                    (LoanTarget::Place(path), LoanKind::Exclusive) => path.local,
+                    (LoanTarget::Param(index), _) => inputs[*index],
+                    (LoanTarget::Place(_), LoanKind::Shared) => continue,
+                };
+                if !holders.contains(&owner) {
+                    holders.push(owner);
+                }
+            }
+        }
+        holders
+    }
+
+    /// Views stored into `target`, or written by a callee through the views it holds.
+    fn store_views(&self, target: &Place, loans: &BTreeSet<LoanId>, state: &mut Holdings) {
+        let holders = self.receivers(target, state);
+        self.hold(&holders, loans, state);
+    }
+
+    fn receivers(&self, target: &Place, state: &Holdings) -> Vec<Local> {
+        let through_views = Path::of(self.package, self.body, target).goes_through_deref()
+            || self.stores_through_views(self.place_ty(target));
+        if through_views {
+            self.store_holders(target.local, state)
+        } else {
+            vec![target.local]
+        }
+    }
+
+    fn hold(&self, holders: &[Local], loans: &BTreeSet<LoanId>, state: &mut Holdings) {
+        for &holder in holders {
+            if self.carries_views(holder) {
+                state[holder.0 as usize].extend(loans.iter().copied());
+            }
+        }
     }
 
     fn describe(&self, place: &Place) -> String {
@@ -362,18 +424,33 @@ impl<'a> Analysis<'a> {
             for access in &accesses {
                 self.check_access(access, live, state, findings);
             }
-            self.check_view_store(place, site.span, findings);
+            self.check_view_store(place, state, site.span, findings);
         }
         let loans = self.rvalue_loans(rvalue, site, state);
+        let captured = self.owned_captures(rvalue);
         let moved: Vec<&Operand> = match rvalue {
             Rvalue::Use(operand) => vec![operand],
             Rvalue::Aggregate(_, operands) => operands.iter().collect(),
-            _ => Vec::new(),
+            _ => captured.iter().collect(),
         };
         self.clear_moved(moved, state);
         self.assign(place, loans, state);
-        if let Rvalue::Closure { function, captures } = rvalue {
-            self.apply_capture_outputs(*function, captures, site, state);
+        match rvalue {
+            Rvalue::Closure {
+                function,
+                captures,
+                owning: false,
+            } => self.apply_capture_outputs(*function, captures, site, state),
+            Rvalue::Closure {
+                function,
+                owning: true,
+                ..
+            } => {
+                if let Some(findings) = findings.as_deref_mut() {
+                    self.check_owned_capture_outputs(*function, site.span, findings);
+                }
+            }
+            _ => {}
         }
         if let Some(findings) = findings {
             self.check_drop_order(state, site.span, findings);
@@ -391,6 +468,9 @@ impl<'a> Analysis<'a> {
 
     /// Whether `local` can receive views for the caller: a `mut` parameter or a capture.
     fn is_output(&self, local: Local) -> bool {
+        if self.stores_through_views(self.local_ty(local)) {
+            return self.inputs().contains(&local);
+        }
         self.body.locals[local.0 as usize].by_reference
             && matches!(
                 self.package
@@ -430,6 +510,7 @@ impl<'a> Analysis<'a> {
                     name: self.describe(place),
                     from_slicing: false,
                     captured: false,
+                    binding: false,
                 };
                 loans.insert(self.intern(site.next_key(), loan));
             }
@@ -441,6 +522,48 @@ impl<'a> Analysis<'a> {
     }
 
     /// A closure that stores views into captured variables may do so whenever it runs.
+    /// The values an owning closure copies or moves into its environment.
+    fn owned_captures(&self, rvalue: &Rvalue) -> Vec<Operand> {
+        match rvalue {
+            Rvalue::Closure {
+                captures,
+                owning: true,
+                ..
+            } => captures
+                .iter()
+                .map(|(place, exclusive)| {
+                    captured_operand(self.package, &self.body.locals, place, *exclusive)
+                })
+                .collect(),
+            _ => Vec::new(),
+        }
+    }
+
+    /// An owning closure keeps its captures together, so one may not view another's storage.
+    fn check_owned_capture_outputs(
+        &self,
+        function: FunctionId,
+        span: Span,
+        findings: &mut Findings,
+    ) {
+        let contract = &self.contracts[function.0 as usize];
+        let skipped = self.package.function(function).params.len();
+        let stores_own_storage = contract.outputs[skipped..]
+            .iter()
+            .any(|origins| origins[skipped..].iter().any(|origin| origin.storage));
+        if stores_own_storage {
+            findings.report_once(
+                span,
+                Diagnostic::new(
+                    Severity::Error,
+                    "an owning closure cannot store a view of one captured value in another",
+                    span,
+                )
+                .note("the captured values move with the closure, so such a view could outlive a later change"),
+            );
+        }
+    }
+
     fn apply_capture_outputs(
         &mut self,
         function: crate::resolve::FunctionId,
@@ -462,9 +585,7 @@ impl<'a> Analysis<'a> {
                 .map(|((place, _), &origin)| (place, origin, true))
                 .collect();
             let loans = self.origin_loans(sources, kind, site, state);
-            if self.carries_views(target.local) {
-                state[target.local.0 as usize].extend(loans);
-            }
+            self.store_views(target, &loans, state);
         }
     }
 
@@ -600,6 +721,11 @@ impl<'a> Analysis<'a> {
                 modes[0] = callee.map_access();
                 modes
             }
+            Callee::ArrayPush | Callee::ArrayPop => {
+                let mut modes = vec![None; args.len()];
+                modes[0] = Some(ParamMode::Mut);
+                modes
+            }
         };
         if let Some(findings) = findings {
             let mut accesses = Vec::new();
@@ -618,7 +744,8 @@ impl<'a> Analysis<'a> {
                 self.operand_accesses(arg, *mode, site.span, &mut accesses);
             }
             for (index, arg) in args.iter().enumerate() {
-                let Operand::Ref(target) = arg else {
+                let (Operand::Ref(target) | Operand::Copy(target) | Operand::Move(target)) = arg
+                else {
                     continue;
                 };
                 let receives_views = match callee {
@@ -629,19 +756,25 @@ impl<'a> Analysis<'a> {
                         .package
                         .types
                         .func_signature(self.place_ty(place))
-                        .is_some_and(|signature| signature.params[index].0 == ParamMode::Mut),
+                        .is_some_and(|signature| {
+                            let (mode, ty) = signature.params[index];
+                            mode == ParamMode::Mut || self.stores_through_views(ty)
+                        }),
                     _ => false,
                 };
                 if receives_views {
-                    self.check_view_store(target, site.span, findings);
+                    self.check_view_store(target, state, site.span, findings);
                 }
             }
             for destination in destinations.iter().flatten() {
                 self.target_accesses(destination, site.span, &mut accesses);
-                self.check_view_store(destination, site.span, findings);
+                self.check_view_store(destination, state, site.span, findings);
             }
             if let (Some(ParamMode::Mut), [Operand::Ref(map), _, _]) = (callee.map_access(), args) {
-                self.check_view_store(map, site.span, findings);
+                self.check_view_store(map, state, site.span, findings);
+            }
+            if let (Callee::ArrayPush, [Operand::Ref(array), _]) = (callee, args) {
+                self.check_view_store(array, state, site.span, findings);
             }
             let live = findings.live.before(BlockId(site.block), site.position);
             for access in &accesses {
@@ -655,6 +788,29 @@ impl<'a> Analysis<'a> {
         };
         if callee.map_access().is_some() {
             self.map_call(args, destinations, site, state);
+            clear(state);
+            return;
+        }
+        if let (Callee::ArrayPush, [Operand::Ref(array), value]) = (callee, args) {
+            let loans = self.operand_loans(value, site, state);
+            self.store_views(array, &loans, state);
+            clear(state);
+            return;
+        }
+        if let (Callee::ArrayPop, [Operand::Ref(array)]) = (callee, args) {
+            let held = state[array.local.0 as usize].clone();
+            for (index, destination) in destinations.iter().enumerate() {
+                if let Some(destination) = destination {
+                    let carries =
+                        index == 1 && self.package.contains_view(self.place_ty(destination));
+                    let loans = if carries {
+                        held.clone()
+                    } else {
+                        BTreeSet::new()
+                    };
+                    self.assign(destination, loans, state);
+                }
+            }
             clear(state);
             return;
         }
@@ -708,7 +864,7 @@ impl<'a> Analysis<'a> {
         }
         let mut outputs = Vec::new();
         for (index, arg) in args.iter().enumerate() {
-            let Operand::Ref(target) = arg else {
+            let (Operand::Ref(target) | Operand::Copy(target) | Operand::Move(target)) = arg else {
                 continue;
             };
             let origins = &contract.outputs[index];
@@ -719,16 +875,14 @@ impl<'a> Analysis<'a> {
             let found = sources(args, origins);
             let loans =
                 self.origin_loans(found.iter().map(|(p, o, b)| (p, *o, *b)), kind, site, state);
-            outputs.push((target.local, loans));
+            outputs.push((self.receivers(target, state), loans));
         }
         clear(state);
         for (destination, loans) in stores {
             self.assign(destination, loans, state);
         }
-        for (local, loans) in outputs {
-            if self.carries_views(local) {
-                state[local.0 as usize].extend(loans);
-            }
+        for (holders, loans) in outputs {
+            self.hold(&holders, &loans, state);
         }
     }
 
@@ -787,9 +941,9 @@ impl<'a> Analysis<'a> {
         }
         let mut outputs = Vec::new();
         for (arg, &(mode, ty)) in args.iter().zip(&signature.params) {
-            if let Operand::Ref(target) = arg
-                && mode == ParamMode::Mut
-                && self.package.contains_view(ty)
+            if let Operand::Ref(target) | Operand::Copy(target) | Operand::Move(target) = arg
+                && (mode == ParamMode::Mut && self.package.contains_view(ty)
+                    || self.stores_through_views(ty))
             {
                 let kind = self.loan_kind_for(ty);
                 let loans = self.origin_loans(
@@ -798,16 +952,14 @@ impl<'a> Analysis<'a> {
                     site,
                     state,
                 );
-                outputs.push((target.local, loans));
+                outputs.push((self.receivers(target, state), loans));
             }
         }
         for (destination, loans) in stores {
             self.assign(destination, loans, state);
         }
-        for (local, loans) in outputs {
-            if self.carries_views(local) {
-                state[local.0 as usize].extend(loans);
-            }
+        for (holders, loans) in outputs {
+            self.hold(&holders, &loans, state);
         }
     }
 
@@ -824,9 +976,7 @@ impl<'a> Analysis<'a> {
         };
         if let [_, _, value] = args {
             let loans = self.operand_loans(value, site, state);
-            if self.carries_views(map.local) {
-                state[map.local.0 as usize].extend(loans);
-            }
+            self.store_views(map, &loans, state);
             return;
         }
         let held = state[map.local.0 as usize].clone();
@@ -846,13 +996,12 @@ impl<'a> Analysis<'a> {
 
     /// Also ends loans through the descriptor the assignment replaces.
     fn assign(&mut self, target: &Place, loans: BTreeSet<LoanId>, state: &mut Holdings) {
-        let root = target.local.0 as usize;
-        if self.carries_views(target.local) {
-            if target.projections.is_empty() {
-                state[root] = loans;
-            } else {
-                state[root].extend(loans);
+        if target.projections.is_empty() {
+            if self.carries_views(target.local) {
+                state[target.local.0 as usize] = loans;
             }
+        } else {
+            self.store_views(target, &loans, state);
         }
         let path = Path::of(self.package, self.body, target);
         for held in state.iter_mut() {
@@ -883,6 +1032,9 @@ impl<'a> Analysis<'a> {
             return BTreeSet::new();
         }
         let mut loans = state[place.local.0 as usize].clone();
+        if self.binds_reference(place.local) {
+            loans.retain(|&id| !self.loans[id].binding);
+        }
         if matches!(operand, Operand::Copy(_)) {
             // Copying a mutable view, alone or inside a composite, is an exclusive reborrow.
             for elems in self.mut_view_paths(ty) {
@@ -895,6 +1047,7 @@ impl<'a> Analysis<'a> {
                     name: self.describe(place),
                     from_slicing: false,
                     captured: false,
+                    binding: false,
                 };
                 loans.insert(self.intern(site.next_key(), loan));
             }
@@ -965,9 +1118,35 @@ impl<'a> Analysis<'a> {
                     name: self.describe(place),
                     from_slicing: true,
                     captured: false,
+                    binding: false,
                 };
                 let mut loans = BTreeSet::from([self.intern(site.next_key(), loan)]);
                 loans.extend(inherited);
+                loans
+            }
+            Rvalue::Ref(place) | Rvalue::MapValueRef(place, _) => {
+                let mut path = Path::of(self.package, self.body, place);
+                if matches!(rvalue, Rvalue::MapValueRef(..)) {
+                    path.elems.push(PathElem::Index);
+                }
+                let loan = Loan {
+                    kind: LoanKind::Shared,
+                    target: LoanTarget::Place(path),
+                    span: site.span,
+                    name: self.describe(place),
+                    from_slicing: false,
+                    captured: false,
+                    binding: true,
+                };
+                let mut loans = BTreeSet::from([self.intern(site.next_key(), loan)]);
+                loans.extend(state[place.local.0 as usize].iter().copied());
+                loans
+            }
+            Rvalue::Closure { owning: true, .. } => {
+                let mut loans = BTreeSet::new();
+                for operand in self.owned_captures(rvalue) {
+                    loans.extend(self.operand_loans(&operand, site, state));
+                }
                 loans
             }
             Rvalue::Closure { captures, .. } => {
@@ -986,6 +1165,7 @@ impl<'a> Analysis<'a> {
                         name: self.describe(place),
                         from_slicing: false,
                         captured: true,
+                        binding: false,
                     };
                     loans.insert(self.intern(site.next_key(), loan));
                 }
@@ -997,7 +1177,8 @@ impl<'a> Analysis<'a> {
             | Rvalue::Convert(..)
             | Rvalue::Error(_)
             | Rvalue::BoundsCheck(..)
-            | Rvalue::Length(_) => BTreeSet::new(),
+            | Rvalue::Length(_)
+            | Rvalue::MapKeyAt(..) => BTreeSet::new(),
         }
     }
 
@@ -1059,6 +1240,28 @@ impl<'a> Analysis<'a> {
                     false,
                 ));
             }
+            Rvalue::Ref(place) => {
+                self.index_accesses(place, span, out);
+                out.push(self.access(
+                    place,
+                    AccessKind::Read,
+                    Depth::Deep,
+                    Action::Borrow,
+                    span,
+                    false,
+                ));
+            }
+            Rvalue::MapKeyAt(place, position) | Rvalue::MapValueRef(place, position) => {
+                out.push(self.access(
+                    place,
+                    AccessKind::Read,
+                    Depth::Deep,
+                    Action::Borrow,
+                    span,
+                    false,
+                ));
+                self.operand_accesses(position, None, span, out);
+            }
             Rvalue::Slice {
                 place,
                 low,
@@ -1074,6 +1277,11 @@ impl<'a> Analysis<'a> {
                 out.push(self.access(place, kind, Depth::Deep, action, span, true));
                 for bound in [low, high].into_iter().flatten() {
                     self.operand_accesses(bound, None, span, out);
+                }
+            }
+            Rvalue::Closure { owning: true, .. } => {
+                for operand in self.owned_captures(rvalue) {
+                    self.operand_accesses(&operand, None, span, out);
                 }
             }
             Rvalue::Closure { captures, .. } => {
@@ -1189,6 +1397,12 @@ impl<'a> Analysis<'a> {
             Some(closure) if holder_is_closure => {
                 format!("the closure `{closure}` is used later")
             }
+            _ if self.binds_reference(holder) => {
+                format!(
+                    "the loop over `{}` keeps it borrowed until the loop ends",
+                    loan.name
+                )
+            }
             Some(view) => format!("the view `{view}` is used later"),
             None => "a later use keeps this borrow live".to_string(),
         };
@@ -1210,29 +1424,38 @@ impl<'a> Analysis<'a> {
         diagnostic
     }
 
-    /// Needs output provenance, which does not exist yet.
-    fn check_view_store(&self, target: &Place, span: Span, findings: &mut Findings) {
+    /// A view written into storage reached through an input must land in an output.
+    fn check_view_store(
+        &self,
+        target: &Place,
+        state: &Holdings,
+        span: Span,
+        findings: &mut Findings,
+    ) {
         if !self.package.contains_view(self.place_ty(target)) {
             return;
         }
-        let path = Path::of(self.package, self.body, target);
-        let by_reference = self.body.locals[target.local.0 as usize].by_reference;
-        if !path.goes_through_deref() && (!by_reference || self.is_output(target.local)) {
+        let inputs = self.inputs();
+        let Some(&input) = self
+            .receivers(target, state)
+            .iter()
+            .find(|&&holder| inputs.contains(&holder) && !self.is_output(holder))
+        else {
             return;
-        }
-        if findings.reported.insert(span) {
-            findings.diagnostics.push(
-                Diagnostic::new(
-                    Severity::Error,
-                    format!(
-                        "storing a borrowed view through `{}` is not supported yet",
-                        self.describe(target)
-                    ),
-                    span,
-                )
-                .note("a view can be stored in a local, a `mut` parameter, or a captured variable, but not through a slice element"),
-            );
-        }
+        };
+        findings.report_once(
+            span,
+            Diagnostic::new(
+                Severity::Error,
+                format!(
+                    "cannot store a view through `{}`, which belongs to shared parameter `{}`",
+                    self.describe(target),
+                    self.describe(&Place::local(input))
+                ),
+                span,
+            )
+            .note("a function can store views only through `mut` parameters, mutable slices, and captured variables"),
+        );
     }
 
     /// Which input a held loan comes from, or the description of local storage it escapes.
@@ -1325,7 +1548,7 @@ impl<'a> Analysis<'a> {
                                     format!("cannot store a view of {owner} into `{name}`"),
                                     span,
                                 )
-                                .note("a view stored through a `mut` parameter or captured variable must borrow storage from outside the function"));
+                                .note("a view stored through a `mut` parameter, mutable slice, or captured variable must borrow storage from outside the function"));
                     }
                 }
             }
@@ -1521,7 +1744,11 @@ impl Liveness {
                     Self::use_operand(operand, live);
                 }
             }
-            Rvalue::Length(place) => Self::use_place(place, live),
+            Rvalue::Length(place) | Rvalue::Ref(place) => Self::use_place(place, live),
+            Rvalue::MapKeyAt(place, position) | Rvalue::MapValueRef(place, position) => {
+                Self::use_place(place, live);
+                Self::use_operand(position, live);
+            }
             Rvalue::Slice {
                 place, low, high, ..
             } => {

@@ -78,6 +78,8 @@ pub(super) struct Loan {
     pub(super) name: String,
     pub(super) from_slicing: bool,
     pub(super) captured: bool,
+    /// A loop's borrow of its collection or element, not a view a value holds.
+    pub(super) binding: bool,
 }
 
 impl Loan {
@@ -169,6 +171,7 @@ mod tests {
             name: "s".into(),
             from_slicing: true,
             captured: false,
+            binding: false,
         }
     }
 

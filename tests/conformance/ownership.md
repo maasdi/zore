@@ -16,9 +16,10 @@ Destructor-observed views have coverage in the ownership and native suites
 (Q21).
 Views stored through `mut` parameters and captures have coverage in the
 ownership and native suites (Q22).
-Pending: rows needing `await` or tasks; and mutable views inside `Array<T>`,
-map, or slice elements and views stored through slice elements (rejected for
-now as unsupported).
+Mutable views inside `Array<T>`, map, and `mut []T` elements, and views stored
+through mutable slices, have coverage in the check, ownership, and native
+suites (Q20b, Q22b).
+Pending: rows needing `await` or tasks.
 
 ## Mutable place requirements for callers (§11.6)
 
@@ -129,6 +130,12 @@ locked in §12.6; see `arrays-slices.md`. Map operations follow §13.3 and
 | Obtain mutable access through a shared borrow of such a struct or descriptor | Reject; a shared parameter cannot hold a nested `mut []T` at all (Q20) |
 | Structural clone of a shared-borrowed container would duplicate a mutable view | Reject; any clone of a value holding a `mut []T` is rejected (Q20) |
 | Replace a struct holding a mutable view | Reborrows through its old views end; the old backing is usable again |
+| Read a `mut []T` out of an `Array<T>` or `mut []T` element twice, both live | Reject; each read is an exclusive reborrow (Q20b) |
+| Take a shared slice of storage holding `mut []T` views, or name such a slice type | Reject (Q20b) |
+| Look up a map value holding a `mut []T` | Reject; `remove` takes it instead (Q20b) |
+| Store a view through a mutable slice element, directly or in a callee | Valid; the slice's backing owner holds the stored borrow (Q22b) |
+| Backing owner used after the stored view's storage ends | Reject (Q22b) |
+| Callee stores a view of its own local through a `mut []T` parameter | Reject (Q22b) |
 | Reborrow remains live across await | Source remains suspended; backing validity must satisfy §17.6 |
 | Two derived mutable views remain independently usable | Reject, including through nested composites |
 

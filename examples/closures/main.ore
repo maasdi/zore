@@ -19,6 +19,19 @@ func each(count int, f func(int)) {
     }
 }
 
+func consume(r own Resource) {
+    println(r.Name)
+}
+
+// Returning a closure makes it owning: it keeps its own copy of `count`.
+func counter() func() int {
+    var count = 0
+    return func() int {
+        count += 1
+        return count
+    }
+}
+
 func parse(text string) (int, error) {
     if text == "" {
         return 0, error("empty input")
@@ -65,4 +78,16 @@ func main() {
     println(err == nil)
     let _, failure = checked("")
     println(failure == error("empty input"))
+
+    let next = counter()
+    println(next())
+    println(next())
+
+    // Consuming a captured value makes a closure call-once.
+    let cache = Resource{Name: "cache"}
+    let release = func() {
+        consume(cache)
+    }
+    release()
+    println(0)
 }

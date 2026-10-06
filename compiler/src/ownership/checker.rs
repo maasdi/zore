@@ -3,7 +3,7 @@ use crate::diagnostic::{Diagnostic, Severity};
 use crate::hir;
 use crate::mir::{
     BasicBlock, Body, Callee, Operand, Place, Program, Projection, Rvalue, Terminator,
-    projection_type,
+    captured_operand, projection_type,
 };
 use crate::resolve::{FieldId, LocalKind};
 use crate::source::Span;
@@ -100,11 +100,17 @@ fn check_body(package: &hir::Package, body: &Body, diagnostics: &mut Vec<Diagnos
             }
         }
     }
+    let mut found = Vec::new();
     for (block, state) in body.blocks.iter().zip(incoming) {
         if let Some(mut state) = state {
-            transfer(package, body, block, &mut state, diagnostics);
+            transfer(package, body, block, &mut state, &mut found);
         }
     }
+    // A consuming call both uses and moves its callee, which can report one mistake twice.
+    found.dedup_by(|later, earlier| {
+        later.message() == earlier.message() && later.span() == earlier.span()
+    });
+    diagnostics.extend(found);
 }
 
 fn transfer(
@@ -213,9 +219,14 @@ fn check_rvalue(
                 check_operand(package, body, field, span, state, diagnostics);
             }
         }
-        Rvalue::Length(place) => {
-            let base = Operand::Copy(place.clone());
+        Rvalue::Length(place) | Rvalue::Ref(place) => {
+            let base = Operand::Ref(place.clone());
             check_operand(package, body, &base, span, state, diagnostics);
+        }
+        Rvalue::MapKeyAt(place, position) | Rvalue::MapValueRef(place, position) => {
+            let base = Operand::Ref(place.clone());
+            check_operand(package, body, &base, span, state, diagnostics);
+            check_operand(package, body, position, span, state, diagnostics);
         }
         Rvalue::Slice {
             place, low, high, ..
@@ -226,9 +237,15 @@ fn check_rvalue(
                 check_operand(package, body, bound, span, state, diagnostics);
             }
         }
-        Rvalue::Closure { captures, .. } => {
-            for (place, _) in captures {
-                let captured = Operand::Copy(place.clone());
+        Rvalue::Closure {
+            captures, owning, ..
+        } => {
+            for (place, exclusive) in captures {
+                let captured = if *owning {
+                    captured_operand(package, &body.locals, place, *exclusive)
+                } else {
+                    Operand::Copy(place.clone())
+                };
                 check_operand(package, body, &captured, span, state, diagnostics);
             }
         }
@@ -311,12 +328,13 @@ fn check_operand(
     if !moving {
         return;
     }
-    let is_capture = package
-        .function(body.function)
+    let function = package.function(body.function);
+    let is_capture = function
         .locals
         .get(index)
         .is_some_and(|local| matches!(local.kind, LocalKind::Capture(_)));
-    if is_capture {
+    let consumed_capture = is_capture && function.call_once;
+    if is_capture && !consumed_capture {
         let name = describe_place(package, body, place);
         diagnostics.push(
             Diagnostic::new(
@@ -328,15 +346,25 @@ fn check_operand(
         );
         return;
     }
-    if body.locals[index].by_reference {
+    if body.locals[index].by_reference && !consumed_capture {
         let name = describe_place(package, body, place);
+        let is_item = package
+            .function(body.function)
+            .locals
+            .get(index)
+            .is_some_and(|local| local.kind == LocalKind::Item);
+        let note = if is_item {
+            "a loop item borrows the current element; it does not own it"
+        } else {
+            "a borrowed parameter does not own its argument"
+        };
         diagnostics.push(
             Diagnostic::new(
                 Severity::Error,
                 format!("cannot move borrowed value `{name}`"),
                 span,
             )
-            .note("a borrowed parameter does not own its argument"),
+            .note(note),
         );
         return;
     }

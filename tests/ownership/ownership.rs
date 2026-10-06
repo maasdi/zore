@@ -598,17 +598,77 @@ fn views_stored_through_mut_parameters_borrow_for_the_caller() {
         func forward(out mut View, items []int) { fill(out, items) }
         func borrowArray(out mut View, data [int; 2]) { out.Items = data[:] }",
     ));
+}
+
+#[test]
+fn views_stored_through_slice_elements_borrow_for_the_slice_owner() {
+    let fill = "type View struct { Items []int }
+        func fill(out mut View, items []int) { out.Items = items }
+        func set(rows mut [][]int, items []int) { rows[0] = items }
+        func setVia(rows mut [][]int, items []int) { var alias mut [][]int = rows[:]\nalias[0] = items }";
+    accepts(&program(&format!(
+        "{fill}
+        func g() {{ var other = [int; 1]{{0}}\nvar rows = [View; 1]{{View{{Items: other[:]}}}}\nvar slots mut []View = rows[:]\nvar data = [int; 1]{{1}}\nfill(slots[0], data[:])\nprintln(rows[0].Items[0]) }}
+        func h() {{ var other = [int; 1]{{0}}\nvar rows = [[]int; 1]{{other[:]}}\nvar data = [int; 1]{{1}}\nsetVia(rows[:], data[:])\nprintln(rows[0][0]) }}"
+    )));
     rejects(
-        &program(
-            "type View struct { Items []int }
-            func fill(out mut View, items []int) { out.Items = items }
-            func g() { var other = [int; 1]{0}\nvar rows = [View; 1]{View{Items: other[:]}}\nvar slots mut []View = rows[:]\nvar data = [int; 1]{1}\nfill(slots[0], data[:]) }",
-        ),
-        "storing a borrowed view through `slots[_]` is not supported yet",
+        &program(&format!(
+            "{fill}
+            func g() {{ var other = [int; 1]{{0}}\nvar rows = [[]int; 1]{{other[:]}}\n{{ var data = [int; 1]{{1}}\nset(rows[:], data[:]) }}\nprintln(rows[0][0]) }}"
+        )),
+        "`data` does not live long enough",
     );
     rejects(
-        &program("func set(rows mut [][]int, items []int) { rows[0] = items }"),
-        "storing a borrowed view through `rows[_]` is not supported yet",
+        &program(&format!(
+            "{fill}
+            func g() {{ var other = [int; 1]{{0}}\nvar rows = [[]int; 1]{{other[:]}}\nvar slots mut [][]int = rows[:]\nvar data = [int; 1]{{1}}\nslots[0] = data[:]\ndata[0] = 2\nprintln(rows[0][0]) }}"
+        )),
+        "cannot assign to `data[_]` while it is borrowed",
+    );
+    rejects(
+        &program("func set(rows mut [][]int) { var local = [int; 1]{1}\nrows[0] = local[:] }"),
+        "cannot store a view of local `local` into `rows`",
+    );
+    rejects(
+        &program(
+            "type Holder struct { rows mut [][]int }
+            func keep(h own Holder, items []int) { var moved = h\nmoved.rows[0] = items }
+            func g() { var other = [int; 1]{0}\nvar rows = [[]int; 1]{other[:]}\n{ var data = [int; 1]{1}\nkeep(Holder{rows: rows[:]}, data[:]) }\nprintln(rows[0][0]) }",
+        ),
+        "`data` does not live long enough",
+    );
+    rejects(
+        &body(
+            "var other = [int; 1]{0}\nvar rows = [[]int; 1]{other[:]}\nvar slots mut [][]int = rows[:]
+            let put = func(items mut [][]int, view []int) { items[0] = view }
+            { var data = [int; 1]{1}\nput(slots, data[:]) }\nprintln(rows[0][0])",
+        ),
+        "`data` does not live long enough",
+    );
+}
+
+#[test]
+fn mutable_views_inside_collections_are_exclusive_reborrows() {
+    accepts(&body(
+        "var x = [int; 2]{1, 2}\nvar y = [int; 2]{3, 4}
+        var views = Array<mut []int>{x[:], y[:]}
+        var first = views[0]\nfirst[0] = 5
+        var second = views[1]\nsecond[0] = 6
+        var all mut []mut []int = views[:]\nvar again = all[0]\nagain[1] = 7
+        var m = map[int]mut []int{1: x[:]}\nvar found, taken = m.remove(1)\nif found { taken[0] = 8 }",
+    ));
+    rejects(
+        &body(
+            "var x = [int; 2]{1, 2}\nvar views = Array<mut []int>{x[:]}
+            var first = views[0]\nvar second = views[0]\nfirst[0] = 5\nsecond[0] = 6",
+        ),
+        "cannot borrow `views[_]` as mutable because it is already borrowed",
+    );
+    rejects(
+        &body(
+            "var x = [int; 2]{1, 2}\nvar views = Array<mut []int>{x[:]}\nx[0] = 5\nvar first = views[0]\nfirst[0] = 6",
+        ),
+        "cannot assign to `x[_]` while it is borrowed",
     );
 }
 
@@ -1047,7 +1107,7 @@ fn closures_are_move_values_and_calls_use_them_exclusively() {
 }
 
 #[test]
-fn captured_move_values_are_borrowed_never_consumed() {
+fn borrowing_closures_never_consume_captured_values() {
     accepts(&resource_body(
         "let r = Res{id: 1}
         let f = func() { show(r) }
@@ -1055,13 +1115,28 @@ fn captured_move_values_are_borrowed_never_consumed() {
         f()
         take(r)",
     ));
+    accepts(&resource_body(
+        "let r = Res{id: 1}
+        let f = func() { take(r) }
+        f()",
+    ));
     rejects(
         &resource_body(
             "let r = Res{id: 1}
             let f = func() { take(r) }
+            f()
+            show(r)",
+        ),
+        "use of moved value `r`",
+    );
+    rejects(
+        &resource_body(
+            "let r = Res{id: 1}
+            let f = func() { take(r) }
+            f()
             f()",
         ),
-        "moving captured value `r` out of a function literal is not supported yet",
+        "use of moved value `f`",
     );
     rejects(
         &resource_body(
@@ -1386,5 +1461,235 @@ fn the_viewed_storage_must_be_declared_before_the_observing_value() {
             "{WATCH}\ntype Holder struct {{ w Watch }}\nfunc g() {{ var data = [int; 1]{{3}}\nlet h = Holder{{w: Watch{{items: data[:], id: 1}}}}\ndata[0] = 4 }}"
         )),
         "cannot assign to `data[_]` while it is borrowed",
+    );
+}
+
+#[test]
+fn a_collection_loop_borrows_its_collection_for_the_whole_loop() {
+    accepts(&body(
+        "var xs = Array<int>{1, 2}
+        for x in xs { println(x + xs[0] + xs.len()) }
+        xs.push(3)
+        var m = map[string]int{\"a\": 1}
+        for k, v in m { let found, w = m[k]\nprintln(v + w)\n_ = found }
+        m[\"b\"] = 2",
+    ));
+    for (stmts, message) in [
+        (
+            "var xs = Array<int>{1}\nfor x in xs { xs.push(x) }",
+            "cannot borrow `xs` as mutable because it is already borrowed",
+        ),
+        (
+            "var xs = Array<int>{1}\nfor _ in xs { xs[0] = 2 }",
+            "cannot assign to `xs[_]` while it is borrowed",
+        ),
+        (
+            "var xs = Array<int>{1}\nfor i, _ in xs { let found, last = xs.pop()\n_ = found\n_ = last\nprintln(i) }",
+            "cannot borrow `xs` as mutable",
+        ),
+        (
+            "var xs = Array<int>{1}\nfor _ in xs { xs = Array<int>{} }",
+            "cannot assign to `xs` while it is borrowed",
+        ),
+        (
+            "var m = map[int]int{1: 2}\nfor k, v in m { m[k] = v }",
+            "cannot borrow `m` as mutable",
+        ),
+        (
+            "var m = map[int]int{1: 2}\nfor k, _ in m { let found, v = m.remove(k)\n_ = found\n_ = v }",
+            "cannot borrow `m` as mutable",
+        ),
+        (
+            "var d = [int; 2]{1, 2}\nvar s mut []int = d[:]\nfor x in d { s[0] = x }",
+            "cannot borrow `d`",
+        ),
+    ] {
+        let case = rejects(&body(stmts), message);
+        let _ = case;
+    }
+    let case = rejects(
+        &body("var xs = Array<int>{1}\nfor x in xs { xs.push(x) }"),
+        "already borrowed",
+    );
+    assert!(
+        case.checked.diagnostics[0]
+            .notes()
+            .iter()
+            .any(|note| note.contains("the loop over `xs` keeps it borrowed until the loop ends"))
+    );
+}
+
+#[test]
+fn a_loop_item_is_a_shared_borrow_of_the_element() {
+    let res = "type Res struct { id int }
+        func (r mut Res) drop() {}
+        func take(r own Res) {}
+        func peek(r Res) {}
+        func edit(r mut Res) {}";
+    accepts(&program(&format!(
+        "{res}\nfunc g(xs Array<Res>) {{ for r in xs {{ peek(r)\nprintln(r.id) }} }}"
+    )));
+    rejects(
+        &program(&format!(
+            "{res}\nfunc g(xs Array<Res>) {{ for r in xs {{ take(r) }} }}"
+        )),
+        "cannot move borrowed value `r`",
+    );
+    rejects(
+        &program(&format!(
+            "{res}\nfunc g(xs mut Array<Res>) {{ for r in xs {{ edit(r) }} }}"
+        )),
+        "cannot pass loop item `r` as a `mut` argument",
+    );
+    rejects(
+        &program(&format!(
+            "{res}\nfunc g(m map[int]Res) {{ for _, r in m {{ let kept = r\n_ = kept }} }}"
+        )),
+        "cannot move borrowed value `r`",
+    );
+}
+
+#[test]
+fn views_copied_from_loop_items_keep_the_element_provenance() {
+    accepts(&body(
+        "var x = [int; 2]{1, 2}\nvar keep []int = x[:0]
+        { var views = Array<[]int>{x[:]}\nfor v in views { keep = v } }
+        println(keep[1])",
+    ));
+    rejects(
+        &body(
+            "var x = [int; 2]{1, 2}\nvar keep []int = x[:0]
+            { var views = Array<[]int>{x[:]}\nfor v in views { keep = v } }
+            x[0] = 5\nprintln(keep[1])",
+        ),
+        "cannot assign to `x[_]` while it is borrowed",
+    );
+    accepts(&program(
+        "func first(xs Array<[]int>) []int { for v in xs { return v }\nreturn xs[0] }",
+    ));
+    rejects(
+        &body(
+            "var keep []int = [int; 0]{}[:]
+            { var x = [int; 2]{1, 2}\nvar views = Array<[]int>{x[:]}\nfor v in views { keep = v } }
+            println(keep.len())",
+        ),
+        "does not live long enough",
+    );
+}
+
+#[test]
+fn push_and_pop_move_values_and_carry_views() {
+    let res = "type Res struct { id int }\nfunc (r mut Res) drop() {}";
+    rejects(
+        &program(&format!(
+            "{res}\nfunc g() {{ var xs = Array<Res>{{}}\nlet r = Res{{id: 1}}\nxs.push(r)\nprintln(r.id) }}"
+        )),
+        "use of moved value `r.id`",
+    );
+    rejects(
+        &body(
+            "var xs = Array<[]int>{}
+            { var d = [int; 1]{1}\nxs.push(d[:]) }
+            println(xs.len())",
+        ),
+        "`d` does not live long enough",
+    );
+    rejects(
+        &body(
+            "var d = [int; 1]{1}\nvar xs = Array<[]int>{}\nxs.push(d[:])
+            let found, v = xs.pop()\n_ = found\nd[0] = 2\nprintln(v[0])",
+        ),
+        "cannot assign to `d[_]` while it is borrowed",
+    );
+    rejects(
+        &body("var xs = Array<int>{1}\nvar s []int = xs[:]\nxs.push(2)\nprintln(s[0])"),
+        "cannot borrow `xs` as mutable",
+    );
+    rejects(
+        &program("func keep(xs mut Array<[]int>) { var d = [int; 1]{1}\nxs.push(d[:]) }"),
+        "cannot store a view of local `d` into `xs`",
+    );
+}
+
+#[test]
+fn an_escaping_closure_owns_copies_and_moves_of_its_captures() {
+    accepts(&program(
+        "func counter() func() int { var count = 0\nreturn func() int { count += 1\nreturn count } }
+        func adder(base int) func(int) int { let f = func(x int) int { return base + x }\nlet g = f\nreturn g }
+        type Handler struct { run func(int) int }
+        func handler(scale int) Handler { return Handler{run: func(x int) int { return x * scale }} }
+        func keep(f own func() int) Array<func() int> { var out = Array<func() int>{}\nout.push(f)\nreturn out }",
+    ));
+    accepts(&body(
+        "var seen = 1
+        var fs = Array<func() int>{}
+        fs.push(func() int { return seen + 1 })
+        seen = 5
+        println(seen + fs.len())",
+    ));
+    rejects(
+        &body(
+            "var count = 0
+            var fs = Array<func()>{}
+            fs.push(func() { count += 1 })
+            println(count)",
+        ),
+        "use of moved value `count`",
+    );
+    rejects(
+        &resource_body(
+            "let r = Res{id: 1}
+            var fs = Array<func()>{}
+            fs.push(func() { show(r) })
+            show(r)",
+        ),
+        "use of moved value `r`",
+    );
+}
+
+#[test]
+fn an_owning_closure_keeps_the_borrows_of_captured_views() {
+    rejects(
+        &program(
+            "func view() func() int { var data = [int; 2]{1, 2}\nlet s = data[:]\nreturn func() int { return s[0] } }",
+        ),
+        "cannot return a view of local `data`",
+    );
+    accepts(&program(
+        "func view(data []int) func() int { return func() int { return data[0] } }",
+    ));
+    rejects(
+        &body(
+            "var fs = Array<func() int>{}
+            { var data = [int; 2]{1, 2}\nlet s = data[:]\nfs.push(func() int { return s[0] }) }
+            println(fs.len())",
+        ),
+        "`data` does not live long enough",
+    );
+    accepts(&program(
+        "func outer() func() int { var n = 1\nlet inner = func() int { return n }\nreturn inner }",
+    ));
+}
+
+#[test]
+fn an_owning_closure_cannot_view_one_capture_from_another() {
+    rejects(
+        &program(
+            "func f(empty []int) func() int { var data = [int; 2]{1, 2}\nvar keep = empty
+            return func() int { keep = data[:]\nreturn keep.len() } }",
+        ),
+        "an owning closure cannot store a view of one captured value in another",
+    );
+}
+
+#[test]
+fn a_borrowing_closure_still_cannot_outlive_its_captures() {
+    rejects(
+        &body(
+            "var keep = func() int { return 0 }
+            { let n = 1\nkeep = func() int { return n } }
+            println(keep())",
+        ),
+        "`n` does not live long enough",
     );
 }

@@ -56,6 +56,16 @@ impl Package {
         })
     }
 
+    pub fn contains_mut_slice_of_views(&self, ty: TypeId) -> bool {
+        self.contains(ty, &|kind| match kind {
+            TypeKind::Slice {
+                element,
+                mutable: true,
+            } => self.contains_view(element),
+            _ => false,
+        })
+    }
+
     pub fn contains_mut_view(&self, ty: TypeId) -> bool {
         self.contains(ty, &|kind| {
             matches!(

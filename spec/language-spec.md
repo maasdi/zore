@@ -782,7 +782,7 @@ The MVP keyword list is:
 | Structure | `package import func type struct` |
 | Bindings | `let var const` |
 | Ownership | `mut own` |
-| Control flow | `if else for break continue return` |
+| Control flow | `if else for in break continue return` |
 | Concurrency | `async await go` |
 | Built-in type syntax | `map channel` |
 | Literal values | `true false nil` |
@@ -1319,7 +1319,7 @@ clauses, and lower branches to explicit control flow with source spans.
 
 ## 5.10 Loop statements and loop exits — LOCKED
 
-The MVP supports these three loop forms:
+The MVP supports these four loop forms:
 
 ```ore
 for {
@@ -1331,6 +1331,10 @@ for ready() {
 }
 
 for var i = 0; i < limit; i += 1 {
+    work()
+}
+
+for index, item in items {
     work()
 }
 ```
@@ -1360,8 +1364,45 @@ counting-loop update. Neither statement takes an operand or label. Using either
 outside a loop is a compile-time error. They cannot target a loop outside the
 current function or closure.
 
-The MVP has no `range`/foreach loops, labelled jumps, or `goto`. This syntax does
-not import additional Go loop forms or permit `:=`, `++`, or `--`.
+### Collection loops
+
+```ore
+for name in names { println(name) }
+for i, name in names { println(i) }
+for key, value in scores { println(key) }
+for _, value in scores { total += value }
+```
+
+`for item in c` and `for index, item in c` visit the elements of a fixed array,
+slice (shared or `mut`), or `Array<T>` in increasing index order from 0;
+`index` is an `int`. `for key, value in m` visits each entry of a map once;
+both names are required for a map. Map visiting order is unspecified, but two
+loops over the same unchanged map visit entries in the same order. `in` is a
+keyword. Either name may be `_`, and there is no `:=`, `range`, or
+declaration keyword in the header.
+
+The collection expression is evaluated once, before the first iteration. If it
+is a place, the loop shared-borrows that place until the loop ends: the body
+may read it but may not assign, move, push to, pop from, remove from, or
+mutably borrow it, directly or through another name. Otherwise its value is
+held by the loop and destroyed when the loop ends, on every exit path. The
+number of iterations is therefore fixed when the loop starts.
+
+`item` and `value` are shared borrows of the current element or entry value,
+not copies. They cannot be assigned, moved, or passed to `mut` or `own`
+parameters; they can be read, passed to shared parameters, and copied when
+their type is Copy. A collection whose elements or values hold a `mut []T` view
+cannot be looped over this way, since a shared borrow gives no mutable access
+through views inside it (§12.3); use a counting loop over indexes instead.
+`index` and `key` are copies. Every name is a fresh binding for each
+iteration, scoped to the loop, as for a counting loop's initializer.
+
+`continue` proceeds to the next element; `break` ends the loop. Both obey the
+cleanup rules below; a loop-held collection value is destroyed after `break`.
+
+The MVP has no `range` loops over integers, channels, or strings, labelled
+jumps, or `goto`. This syntax does not import additional Go loop forms or
+permit `:=`, `++`, or `--`.
 
 Before a control transfer, perform required cleanup for scopes exited by that
 transfer. A `continue` cleans up iteration-local resources as required but does
@@ -1371,7 +1412,9 @@ Loop-carried ownership state must be valid on every iteration. Explicit errors,
 
 Compiler impact: lower initialization, condition, body, update, and exit to
 distinct control-flow regions; resolve exits to the nearest loop in the current
-function; analyze loop backedges and required drops. Pending cases for §5.8–5.10
+function; analyze loop backedges and required drops. Lower a collection loop
+to a counting loop over a shared borrow of the collection that stays live for
+the whole loop, rebinding the item borrow on each iteration. Pending cases for §5.8–5.10
 are in `tests/conformance/control-flow.md`.
 
 ---
@@ -2831,10 +2874,58 @@ partial-initialization state for cleanup. Do not treat runtime-index writable
 places as permission for partial moves or proven disjointness.
 
 Pending conformance cases: `tests/conformance/arrays-slices.md`. Map operations
-are specified separately in §13.3. String indexing/slicing/length, iteration,
-array append/remove/capacity APIs, and full `go` grammar
-remain separate Q02/Q05 decisions. Array/slice rules
-do not supply semantics for those forms.
+are specified separately in §13.3. Length, growth, and removal of the last
+element are specified in §12.7 and iteration in §5.10. String
+indexing/slicing/length, capacity APIs, and full `go` grammar remain separate
+Q02/Q05 decisions. Array/slice rules do not supply semantics for those forms.
+
+---
+
+## 12.7 Collection length, `push`, and `pop` — LOCKED
+
+```ore
+var names = Array<string>{"Ada"}
+names.push("Lin")
+println(names.len())          // 2
+let found, last = names.pop() // true, "Lin"
+let empty = Array<string>{}
+let none, zero = empty.pop()  // rejected: `empty` is a `let` binding
+```
+
+`c.len()` returns the number of elements of a fixed array, slice (shared or
+`mut`), or `Array<T>`, or the number of entries of a map, as an `int`. It takes
+no arguments and shared-borrows its receiver only while it runs. A fixed
+array's length is its declared size; the receiver is still evaluated once.
+
+`a.push(value)` appends one element to an `Array<T>`. `a.pop()` removes the
+last element and returns `(bool, T)`: presence first, then the removed value,
+like map removal (§13.3). An empty array yields false and T's zero value
+(§41.4). Both require `a` to be a mutable place (a `var` binding, a `mut`
+parameter, or a field or element of one), as for assignment. Neither has a
+method form on fixed arrays, slices, or maps.
+
+Evaluation order: the array place first, then the pushed value, then the
+change. The pushed value is copied if Copy and transferred if Move; `pop`
+transfers the removed element to the caller. A Move result of `pop` follows
+the ordinary rules for multiple results (§7.2), including use of an error
+result. Growth may move the elements to new storage, so `push` and `pop`
+mutably borrow the whole array: no view of its elements may be live across the
+call (§12.5). Growth reserves extra room so that repeated pushes take amortized
+constant time; capacity is not observable. Allocation failure aborts the
+process (Q17g).
+
+Ownership, error, and async implications: no new ownership category. `push`
+is a mutable use of the array and a use (copy or move) of the value; `pop` is a
+mutable use of the array that produces an owned value. Views held by the
+pushed value join the array's provenance, as for element assignment; views
+held by the popped value keep the array's provenance. Neither suspends.
+
+Compiler impact: resolve the three names as compiler-provided methods on
+collection types only (user code cannot declare methods on them); check
+mutable receivers; lower `push`/`pop` as calls that exclusively borrow the
+array, and `len` as a read of the descriptor or the map's entry count. Pending
+conformance cases: `tests/conformance/arrays-slices.md` and
+`tests/conformance/maps.md`.
 
 ---
 
@@ -3020,8 +3111,9 @@ copies, track external view provenance, and lower mutable operations without
 retaining raw bucket addresses across arbitrary RHS evaluation. Maintain entry
 ownership states for duplicate failure, replacement panic, removal, and drop.
 
-Pending conformance cases: `tests/conformance/maps.md`. Iteration,
-length/capacity APIs, and borrowed in-place entry access remain Q02/Q05 work.
+Pending conformance cases: `tests/conformance/maps.md`. Map length is
+specified in §12.7 and iteration in §5.10; capacity APIs and borrowed in-place
+entry access remain Q02/Q05 work.
 
 ---
 
@@ -3425,7 +3517,7 @@ satisfies its uses; the programmer writes no capture list.
 | Only read (including copying a Copy value out, or passing it to a borrowed parameter) | Shared borrow of the outer local |
 | Assigned, compound-updated, or passed to a `mut` parameter or receiver | Exclusive borrow; the outer binding must be a mutable place (§11.6) |
 | A captured closure or `mut []T` value, whatever the use | Exclusive borrow; no `var` is required, as for copying a mutable view (§12.3) |
-| A Move value consumed (passed to `own`, returned, or `drop`ped) | **Rejected in this slice** (see below) |
+| A Move value consumed (passed to `own`, returned, `drop`ped, or moved into a binding or value) | The closure owns the value and is call-once (§16.6) |
 
 A local used from a closure nested inside another closure is captured by each
 enclosing closure in turn, and an exclusive use anywhere makes every capture in
@@ -3458,65 +3550,121 @@ number of times. A closure that mutates captured state needs no `var` binding:
 its exclusive loan is held by the closure itself, and only one live name for it
 exists.
 
-Inside a closure body, a capture refers to the outer local in place. A value
+The rules above describe a **borrowing** closure. An owning closure (§16.4)
+captures values instead of borrowing places.
+
+Inside a borrowing closure's body, a capture refers to the outer local in place. A value
 that holds a borrow may be stored into a captured local only when it borrows
 from other captured locals; the outer local is then treated as borrowing them
 from the point the closure is created. Storing a view of the closure's own
 parameters or locals into a capture is rejected (the first as unsupported).
 Storing other values is allowed through an exclusive capture.
 
-Consuming a captured Move value inside the body would make the closure
-callable only once. That form is rejected with an "unsupported" diagnostic until
-a call-once rule is locked under Q02. This is a stated limitation, not a
-permanent rule.
+Consuming a captured Move value inside the body makes the closure call-once
+(§16.6).
 
-## 16.4 Non-escaping closures — LOCKED
+## 16.4 Borrowing and owning closures — LOCKED
 
-In this slice a closure never outlives the scope that created it. A closure
-value may be bound to a local, assigned to a local of the same function type,
-called, and passed as an argument to a parameter of function type. It may not
-be:
+A closure is **borrowing** unless it escapes; then it is **owning**. The
+compiler infers which; no syntax marks it. A closure literal is owning when the
+literal itself, or a local it initializes (directly or through `let g = f`
+rebinding), is:
 
-- returned, or forwarded out as a result: no function or function type may
-  have a result containing a function type;
-- stored in a struct field, array, slice, `Array<T>`, map, or channel: no such
-  element or field type may be a function type;
-- assigned to a place that outlives any local it captures;
-- moved into a task (`go`), captured by another escaping closure, or live across
-  an `await`.
+- returned from a function or closure;
+- stored in a struct field, fixed-array or `Array<T>` element, or map value,
+  whether by a literal, an assignment to a field or element, a map assignment,
+  or `push`;
+- passed to an `own` parameter.
 
-Each of these is a compile-time error (an "unsupported" diagnostic where the
-form is deferred rather than unsafe). A parameter of function type is itself a
-borrowed value and follows the same rules: the callee may call it or pass it on,
-but not store, move, or return it. Function-typed parameters cannot be declared
-`mut` or `own`.
+A call-once closure (§16.6) is also owning.
 
-A function type or literal may have a result containing a borrowed view. Since
-a call through a function value cannot tell which input such a view borrows
-from (§11.7), the result is treated as borrowing from every argument and from
-everything the called closure captured; a `mut` argument holding views is
-treated the same way.
+```ore
+func counter() func() int {
+    var count = 0
+    return func() int {     // owning: the literal is returned
+        count += 1
+        return count
+    }
+}
+```
 
-Because the closure cannot escape, no closure needs heap storage or a
-destructor, and nothing is dropped when it goes out of scope; captured locals
-keep their ordinary drop points. A panic or `?` inside a closure runs the
-closure's own cleanup and then continues in its caller as for any call.
+An owning closure captures **values** when it is created, not places:
 
-Escaping closures (owned environments), call-once closures, and use with tasks
-require a further decision under §53 and are tracked in Q02g.
+- a captured Copy local is copied; later changes inside and outside the closure
+  are independent;
+- a captured Move local is moved into the closure, so the outer local cannot be
+  used afterwards;
+- a captured Copy local that the closure assigns is also treated as moved, so
+  the outer local cannot be read afterwards and nobody mistakes the closure's
+  copy for the original.
+
+The closure value owns those captured values. They are destroyed, in reverse
+capture order, when the closure value is destroyed: at the end of its owner's
+scope, on replacement, through `drop`, or when its owner is destroyed. A captured
+value that holds a view keeps that view's backing borrowed for as long as the
+closure lives (§11.7), so an owning closure still cannot outlive what its
+captured views borrow.
+
+Function types may therefore be results, struct field types, and fixed-array,
+`Array<T>`, and map value types. They are never slice element types or map
+keys. A parameter of function type may be `own`, which lets the callee store or
+return it; it cannot be `mut`. As for mutable views (Q20), a shared parameter
+whose type holds a function value inside a struct, array, or collection is
+rejected: calling a closure uses it exclusively, which a shared borrow cannot
+grant. For the same reason a collection loop (§5.10) cannot visit function
+values. Calling a closure stored in a field or element requires that place to
+be usable exclusively, as for any call (§16.2).
+
+Every closure value, borrowing or owning, is checked by the same region
+analysis: a borrowing closure that would outlive a local it captures (by being
+returned, stored, or assigned to an outer place) is rejected, and the
+diagnostic names the captured local. Use with tasks (`go`) and liveness across
+`await` remain unsupported (Q02g).
+
+A panic or `?` inside a closure runs the closure's own cleanup and then
+continues in its caller as for any call.
 
 ## 16.5 Compiler impact (informative)
 
 Resolution gives each closure literal its own body and records its captures;
-typing adds interned function types; MIR lowers a closure to a separate body
-whose capture locals refer to their referents by reference, plus a
-closure-creation value; ownership reuses the existing loan and region machinery
-with the closure value as the loan holder. Code generation represents a closure
-as a code pointer plus a pointer to an environment in the creator's frame that
-holds the captured places' addresses. None of this representation is a
-source-language contract.
+typing adds interned function types and infers whether each literal is
+borrowing, owning, or call-once; MIR lowers a closure to a separate body whose
+capture locals refer to their referents by reference, plus a closure-creation
+value; ownership reuses the existing loan and region machinery with the closure
+value as the loan holder. Code generation represents a closure as a code
+pointer, an environment pointer, and a destructor pointer. A borrowing
+closure's environment lives in the creator's frame and holds the captured
+places' addresses; an owning closure's environment is heap storage holding the
+captured values, which its destructor destroys and frees. None of this
+representation is a source-language contract.
 
 Pending conformance cases: `tests/conformance/closures.md`.
+
+## 16.6 Call-once closures — LOCKED
+
+A closure whose body consumes a captured Move value is **call-once**:
+
+```ore
+let job = Job{Id: 7}
+let finish = func() { consume(job) }   // owns `job`
+finish()                                // consumes `finish`
+finish()                                // rejected: `finish` was used
+```
+
+A call-once closure must be the initializer of a single-name `let` binding.
+That binding may only be called directly, as in `finish()`; it cannot be passed
+as an argument, returned, stored, rebound, captured by another closure, or
+moved. Calling it consumes it, so a second call, or any use after the call, is
+rejected as a use of a moved value. Inside the body each captured value is
+consumed at most once, by the ordinary move rules (§31). Captured values the
+call does not consume are destroyed when the call returns. A call-once closure
+that is never called is destroyed at the end of its scope with every captured
+value.
+
+Ownership, error, and async implications: no new ownership category; an owning
+closure is a Move value that owns its captures, and a call-once call is a move
+of the closure. Panics and `?` inside the body follow §16.4. Async interaction
+remains open.
 
 ---
 
@@ -5070,8 +5218,8 @@ forwarding in §7.8. Numeric and comparison type rules are locked in §6.5–6.6
 
 ## 41.2 Loop grammar — LOCKED
 
-Infinite, conditional, and counting loops and unlabelled `break`/`continue` are
-specified in §5.10. Do not infer additional forms from another language.
+Infinite, conditional, counting, and collection loops and unlabelled
+`break`/`continue` are specified in §5.10. Do not infer additional forms from another language.
 
 ## 41.3 Conditional grammar — LOCKED
 

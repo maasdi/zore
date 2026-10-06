@@ -66,15 +66,18 @@ pub enum ExprKind {
         function: FunctionId,
         args: Vec<Expr>,
     },
-    /// The callee is evaluated first and used exclusively.
+    /// The callee is evaluated first and used exclusively; a call-once callee is consumed.
     CallValue {
         callee: Box<Expr>,
         args: Vec<Expr>,
+        once: bool,
     },
-    /// Each capture is `(local, exclusive)` in the enclosing function.
+    /// Each capture is `(local, exclusive)` in the enclosing function; an
+    /// owning closure captures their values instead of borrowing them.
     Closure {
         function: FunctionId,
         captures: Vec<(LocalId, bool)>,
+        owning: bool,
     },
     Println(Box<Expr>),
     Drop(Box<Expr>),
@@ -106,6 +109,14 @@ pub enum ExprKind {
         map: Box<Expr>,
         key: Box<Expr>,
     },
+    /// Elements of an array or slice, or entries of a map.
+    Len(Box<Expr>),
+    ArrayPush {
+        array: Box<Expr>,
+        value: Box<Expr>,
+    },
+    /// Presence, then the detached last element or its zero.
+    ArrayPop(Box<Expr>),
     Unary {
         op: UnaryOp,
         operand: Box<Expr>,

@@ -8,8 +8,32 @@ const STRING_KEY: i32 = 16;
 
 pub struct Map {
     index: HashMap<Vec<u8>, usize>,
-    entries: Vec<(Vec<u8>, *mut u8)>,
+    entries: Vec<Entry>,
     value_size: i64,
+}
+
+struct Entry {
+    key: Vec<u8>,
+    /// The key as the program passed it; a string key keeps its descriptor.
+    // Valid only while string data is never freed, which holds for literals.
+    raw: [u8; 16],
+    value: *mut u8,
+}
+
+/// The key's in-memory representation, which is at most 16 bytes.
+///
+/// # Safety
+/// `key` must point to a live key of the layout `kind` names.
+unsafe fn raw_key(kind: i32, key: *const u8) -> [u8; 16] {
+    let size = if kind == STRING_KEY {
+        16
+    } else {
+        kind as usize
+    };
+    let mut raw = [0; 16];
+    // SAFETY: the caller supplies `size` readable bytes.
+    unsafe { std::ptr::copy_nonoverlapping(key, raw.as_mut_ptr(), size.min(16)) };
+    raw
 }
 
 /// The canonical bytes of the key at `key`.
@@ -40,7 +64,7 @@ pub unsafe extern "C" fn zore_map_find(map: *const Map, kind: i32, key: *const u
     let key = unsafe { key_bytes(kind, key) };
     map.index
         .get(&key)
-        .map_or(std::ptr::null_mut(), |&index| map.entries[index].1)
+        .map_or(std::ptr::null_mut(), |&index| map.entries[index].value)
 }
 
 /// The key must be absent; returns uninitialized storage for its value.
@@ -65,10 +89,11 @@ pub unsafe extern "C" fn zore_map_insert(
         }
         &mut **slot
     };
+    let raw = unsafe { raw_key(kind, key) };
     let key = unsafe { key_bytes(kind, key) };
     let value = zore_alloc(value_size);
     map.index.insert(key.clone(), map.entries.len());
-    map.entries.push((key, value));
+    map.entries.push(Entry { key, raw, value });
     value
 }
 
@@ -92,9 +117,9 @@ pub unsafe extern "C" fn zore_map_detach(
     let Some(index) = map.index.remove(&key) else {
         return false;
     };
-    let (_, value) = map.entries.swap_remove(index);
-    if let Some((moved_key, _)) = map.entries.get(index) {
-        map.index.insert(moved_key.clone(), index);
+    let value = map.entries.swap_remove(index).value;
+    if let Some(moved) = map.entries.get(index) {
+        map.index.insert(moved.key.clone(), index);
     }
     let size = usize::try_from(map.value_size).unwrap_or(0);
     // SAFETY: `value` holds one initialized value and `out` has room for it.
@@ -123,7 +148,20 @@ pub unsafe extern "C" fn zore_map_len(map: *const Map) -> i64 {
 pub unsafe extern "C" fn zore_map_value_at(map: *const Map, index: i64) -> *mut u8 {
     // SAFETY: guaranteed by the caller.
     let map = unsafe { &*map };
-    map.entries[usize::try_from(index).unwrap_or(usize::MAX)].1
+    map.entries[usize::try_from(index).unwrap_or(usize::MAX)].value
+}
+
+/// The key of entry `index` as the program stored it.
+///
+/// # Safety
+/// `map` must be live and `index` below its length.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn zore_map_key_at(map: *const Map, index: i64) -> *const u8 {
+    // SAFETY: guaranteed by the caller.
+    let map = unsafe { &*map };
+    map.entries[usize::try_from(index).unwrap_or(usize::MAX)]
+        .raw
+        .as_ptr()
 }
 
 /// A map with the same keys in the same order and uninitialized values; null when empty.
@@ -142,7 +180,11 @@ pub unsafe extern "C" fn zore_map_clone_shape(map: *const Map) -> *mut Map {
     let entries = map
         .entries
         .iter()
-        .map(|(key, _)| (key.clone(), zore_alloc(map.value_size)))
+        .map(|entry| Entry {
+            key: entry.key.clone(),
+            raw: entry.raw,
+            value: zore_alloc(map.value_size),
+        })
         .collect();
     Box::into_raw(Box::new(Map {
         index: map.index.clone(),
@@ -162,9 +204,9 @@ pub unsafe extern "C" fn zore_map_free(map: *mut Map) {
     }
     // SAFETY: the map came from `Box::into_raw` in `zore_map_insert`.
     let map = unsafe { Box::from_raw(map) };
-    for (_, value) in map.entries {
+    for entry in map.entries {
         // SAFETY: each value came from `zore_alloc(map.value_size)`.
-        unsafe { zore_free(value, map.value_size) };
+        unsafe { zore_free(entry.value, map.value_size) };
     }
 }
 
@@ -267,6 +309,31 @@ mod tests {
             let found = zore_map_find(map, STRING_KEY, (&other as *const (*const u8, i64)).cast());
             assert_eq!(*(found as *const i64), 5);
             zore_map_free(map);
+        }
+    }
+
+    #[test]
+    fn keys_are_read_back_by_position_as_stored() {
+        let mut map: *mut Map = std::ptr::null_mut();
+        for key in [5, 9] {
+            insert(&mut map, key, key);
+        }
+        let text = b"key";
+        let descriptor: (*const u8, i64) = (text.as_ptr(), 3);
+        let mut names: *mut Map = std::ptr::null_mut();
+        // SAFETY: both maps are live and positions are below their lengths.
+        unsafe {
+            assert_eq!(*(zore_map_key_at(map, 1) as *const i64), 9);
+            zore_map_insert(
+                &mut names,
+                STRING_KEY,
+                (&descriptor as *const (*const u8, i64)).cast(),
+                0,
+            );
+            let stored = *(zore_map_key_at(names, 0) as *const (*const u8, i64));
+            assert_eq!(stored, descriptor);
+            zore_map_free(map);
+            zore_map_free(names);
         }
     }
 }

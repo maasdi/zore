@@ -22,8 +22,14 @@ pub enum Rvalue {
     Error(Operand),
     /// Panics unless `0 <= index < length`, then evaluates to the index as `int64`.
     BoundsCheck(Operand, Operand),
-    /// As an `int64`.
+    /// As an `int64`: elements of an array or slice, or entries of a map.
     Length(Place),
+    /// The address of the place, stored into a by-reference local.
+    Ref(Place),
+    /// A copy of the key of the map entry at a position below its length.
+    MapKeyAt(Place, Operand),
+    /// The address of the value of the map entry at a position below its length.
+    MapValueRef(Place, Operand),
     /// Panics unless `0 <= low <= high <= length`.
     Slice {
         place: Place,
@@ -33,9 +39,11 @@ pub enum Rvalue {
     },
     /// In declaration/evaluation order.
     Aggregate(AggregateKind, Vec<Operand>),
-    /// Borrows each place, exclusively when marked, in capture order.
+    /// Borrows each place, exclusively when marked, in capture order; an owning
+    /// closure instead copies or moves each value into its own environment.
     Closure {
         function: FunctionId,
         captures: Vec<(Place, bool)>,
+        owning: bool,
     },
 }

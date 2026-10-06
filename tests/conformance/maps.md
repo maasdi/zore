@@ -95,5 +95,7 @@ assignment targets is always rejected (Q18a).
 | Completed removal followed by `?`/panic | No rollback or reinsertion; returned owned value cleaned at its current owner |
 
 Use instrumented resources for exact-once accounting and bounded runtime tests
-when the compiler exists. Borrowed in-place entry APIs, iteration, and map
-length/capacity operations remain Q02/Q05 decisions; do not invent their syntax.
+when the compiler exists. `m.len()` is covered in `arrays-slices.md` (§12.7)
+and `for key, value in m` in `control-flow.md` (§5.10). Borrowed in-place entry
+APIs and capacity operations remain Q02/Q05 decisions; do not invent their
+syntax.

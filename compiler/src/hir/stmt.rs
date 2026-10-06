@@ -55,5 +55,12 @@ pub enum StmtKind {
         update: Option<Box<Stmt>>,
         body: Block,
     },
+    /// Visits each element or entry; `item` borrows it and `key` is its index or key.
+    ForEach {
+        key: Option<LocalId>,
+        item: Option<LocalId>,
+        collection: Expr,
+        body: Block,
+    },
     Block(Block),
 }
