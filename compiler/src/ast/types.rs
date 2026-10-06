@@ -1,8 +1,9 @@
+use super::decl::ParamMode;
 use super::expr::Expr;
 use super::node::Name;
 use crate::source::Span;
 
-/// A type; channel and function forms are not parsed yet.
+/// A type; channel forms are not parsed yet.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Type {
     Named(Name),
@@ -29,6 +30,19 @@ pub enum Type {
         mutable: bool,
         span: Span,
     },
+    /// The function type `func(T, mut U) R` (§16.2).
+    Func {
+        params: Vec<FuncTypeParam>,
+        results: Vec<Type>,
+        span: Span,
+    },
+}
+
+/// One unnamed parameter of a function type.
+#[derive(Clone, Debug, PartialEq)]
+pub struct FuncTypeParam {
+    pub mode: ParamMode,
+    pub ty: Type,
 }
 
 impl Type {
@@ -38,7 +52,8 @@ impl Type {
             Self::Array { span, .. }
             | Self::Slice { span, .. }
             | Self::DynArray { span, .. }
-            | Self::Map { span, .. } => *span,
+            | Self::Map { span, .. }
+            | Self::Func { span, .. } => *span,
         }
     }
 }

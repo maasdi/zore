@@ -7,6 +7,8 @@ use crate::source::Span;
 #[derive(Debug)]
 pub enum Callee {
     Function(FunctionId),
+    /// The closure stored at the place, which the call uses exclusively.
+    Value(Place),
     Println,
     Drop,
     /// `[Ref(map), key, value]`: adds a literal entry, panicking without
@@ -29,7 +31,7 @@ impl Callee {
             Callee::MapInsertNew | Callee::MapAssign | Callee::MapRemove => {
                 Some(crate::ast::ParamMode::Mut)
             }
-            Callee::Function(_) | Callee::Println | Callee::Drop => None,
+            Callee::Function(_) | Callee::Value(_) | Callee::Println | Callee::Drop => None,
         }
     }
 }

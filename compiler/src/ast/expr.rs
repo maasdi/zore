@@ -1,4 +1,6 @@
+use super::decl::Param;
 use super::node::Name;
+use super::stmt::Block;
 use super::types::Type;
 use crate::lexer::IntBase;
 use crate::source::Span;
@@ -64,8 +66,17 @@ pub enum ExprKind {
         ty: Type,
         entries: Vec<MapEntry>,
     },
+    /// A closure literal `func(params) results { body }` (§16.1).
+    Closure(Box<Closure>),
     /// A literal the lexer already diagnosed.
     Malformed,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct Closure {
+    pub params: Vec<Param>,
+    pub results: Vec<Type>,
+    pub body: Block,
 }
 
 #[derive(Clone, Debug, PartialEq)]

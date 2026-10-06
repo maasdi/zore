@@ -56,7 +56,8 @@ fn lower_function(package: &hir::Package, id: FunctionId, function: &hir::Functi
                 name: Some(local.name.clone()),
                 by_reference: match local.kind {
                     LocalKind::Param(mode) => passes_by_reference(package, mode, local.ty),
-                    _ => false,
+                    LocalKind::Capture(_) => true,
+                    LocalKind::Let | LocalKind::Var => false,
                 },
             })
             .collect(),
@@ -85,6 +86,7 @@ fn lower_function(package: &hir::Package, id: FunctionId, function: &hir::Functi
         function: id,
         name: function.name.clone(),
         params: function.params.iter().map(|p| Local(p.0)).collect(),
+        captures: function.captures.iter().map(|c| Local(c.0)).collect(),
         returns: builder.returns,
         locals: builder.locals,
         blocks: builder
@@ -286,7 +288,10 @@ impl Builder {
                 self.push(target, Rvalue::Binary(*op, current, rhs), stmt.span);
             }
             StmtKind::Expr(expr) => match &expr.kind {
-                ExprKind::Call { .. } | ExprKind::Println(_) | ExprKind::Drop(_) => {
+                ExprKind::Call { .. }
+                | ExprKind::CallValue { .. }
+                | ExprKind::Println(_)
+                | ExprKind::Drop(_) => {
                     let discard = vec![None; expr.types.len()];
                     self.call(package, expr, discard);
                 }
@@ -500,7 +505,10 @@ impl Builder {
         let result_locals: Vec<Local> = inner.types.iter().map(|&ty| self.temp(ty)).collect();
         if matches!(
             inner.kind,
-            ExprKind::Call { .. } | ExprKind::MapLookup { .. } | ExprKind::MapRemove { .. }
+            ExprKind::Call { .. }
+                | ExprKind::CallValue { .. }
+                | ExprKind::MapLookup { .. }
+                | ExprKind::MapRemove { .. }
         ) {
             self.call(
                 package,
@@ -576,6 +584,10 @@ impl Builder {
         let map_args: Vec<hir::Expr>;
         let (callee, args) = match &expr.kind {
             ExprKind::Call { function, args } => (Callee::Function(*function), &args[..]),
+            // §7.5: the callee is evaluated before the arguments.
+            ExprKind::CallValue { callee, args } => {
+                (Callee::Value(self.base_place(package, callee)), &args[..])
+            }
             ExprKind::Println(arg) => (Callee::Println, std::slice::from_ref(&**arg)),
             ExprKind::Drop(arg) => (Callee::Drop, std::slice::from_ref(&**arg)),
             ExprKind::MapLookup { map, key } | ExprKind::MapRemove { map, key } => {
@@ -600,6 +612,18 @@ impl Builder {
                     };
                     (
                         passes_by_reference(package, mode, param.ty),
+                        mode == ParamMode::Own,
+                    )
+                }
+                Callee::Value(place) => {
+                    let ty = place_type(package, &self.locals, place);
+                    let signature = package
+                        .types
+                        .func_signature(ty)
+                        .expect("a function-typed callee");
+                    let (mode, ty) = signature.params[index];
+                    (
+                        passes_by_reference(package, mode, ty),
                         mode == ParamMode::Own,
                     )
                 }
@@ -708,10 +732,25 @@ impl Builder {
                     span,
                 )
             }
-            ExprKind::Call { .. } => {
+            ExprKind::Call { .. } | ExprKind::CallValue { .. } => {
                 let temp = self.temp(expr.ty());
                 self.call(package, expr, vec![Some(Place::local(temp))]);
                 value_operand(package, Place::local(temp), expr.ty())
+            }
+            ExprKind::Closure { function, captures } => {
+                let captures = captures
+                    .iter()
+                    .map(|&(local, exclusive)| (Place::local(Local(local.0)), exclusive))
+                    .collect();
+                self.assign_temp(
+                    package,
+                    expr.ty(),
+                    Rvalue::Closure {
+                        function: *function,
+                        captures,
+                    },
+                    span,
+                )
             }
             ExprKind::Try(_) => {
                 let values = self.try_values(package, expr);

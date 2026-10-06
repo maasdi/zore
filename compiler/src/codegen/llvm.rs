@@ -193,6 +193,9 @@ impl FunctionBuilder<'_, '_> {
         let package = self.module.package;
         let function = package.function(self.body.function);
         let mut params = Vec::new();
+        if function.is_closure {
+            params.push("ptr %env".to_string());
+        }
         for &param in &self.body.params {
             params.push(format!("{} %p{}", self.slot_ty(param), param.0));
             if self.body.locals[param.0 as usize].by_reference
@@ -240,6 +243,7 @@ impl FunctionBuilder<'_, '_> {
                 }
             }
         }
+        self.load_captures();
         self.line("br label %bb0");
         for (index, block) in self.body.blocks.iter().enumerate() {
             self.emitting_unwind = self.body.unwind == Some(mir::BlockId(index as u32));
@@ -252,6 +256,72 @@ impl FunctionBuilder<'_, '_> {
         let hoisted = std::mem::take(&mut self.hoisted);
         self.out.insert_str(entry_allocas_end, &hoisted);
         self.out.push_str("}\n\n");
+    }
+
+    /// Points each capture local at what the closure borrowed: the
+    /// environment holds, per capture, its address and then (for a Move
+    /// value) its drop flags' address.
+    fn load_captures(&mut self) {
+        let mut slot = 0;
+        for &capture in &self.body.captures {
+            let mut targets = vec![format!("%l{}", capture.0)];
+            if !self.module.package.is_copy(self.local_ty(capture)) {
+                targets.push(format!("%lf{}", capture.0));
+            }
+            for target in targets {
+                let entry = self.fresh();
+                self.line(format!(
+                    "{entry} = getelementptr inbounds ptr, ptr %env, i64 {slot}"
+                ));
+                let pointer = self.fresh();
+                self.line(format!("{pointer} = load ptr, ptr {entry}"));
+                self.line(format!("store ptr {pointer}, ptr {target}"));
+                slot += 1;
+            }
+        }
+    }
+
+    /// A closure value: the body's code and an environment in this frame
+    /// holding the captured places' addresses (and drop flags' addresses).
+    fn closure_value(
+        &mut self,
+        function: crate::resolve::FunctionId,
+        captures: &[(Place, bool)],
+    ) -> String {
+        let package = self.module.package;
+        let mut pointers = Vec::new();
+        for (place, _) in captures {
+            pointers.push(self.address(place));
+            if !package.is_copy(self.place_ty(place)) {
+                pointers.push(self.flag_address(place));
+            }
+        }
+        let environment = if pointers.is_empty() {
+            "null".to_string()
+        } else {
+            // Each creation site stores the same addresses every time it
+            // runs, so one slot per site serves every value it creates.
+            let environment = self.fresh();
+            self.hoist_alloca(&environment, &format!("[{} x ptr]", pointers.len()));
+            for (index, pointer) in pointers.iter().enumerate() {
+                let entry = self.fresh();
+                self.line(format!(
+                    "{entry} = getelementptr inbounds ptr, ptr {environment}, i64 {index}"
+                ));
+                self.line(format!("store ptr {pointer}, ptr {entry}"));
+            }
+            environment
+        };
+        let code = format!("@\"{}.{}\"", package.name, package.function(function).name);
+        let with_code = self.fresh();
+        self.line(format!(
+            "{with_code} = insertvalue {{ ptr, ptr }} undef, ptr {code}, 0"
+        ));
+        let value = self.fresh();
+        self.line(format!(
+            "{value} = insertvalue {{ ptr, ptr }} {with_code}, ptr {environment}, 1"
+        ));
+        value
     }
 
     /// The address of `place`. Fields and array elements fold into one
@@ -619,6 +689,7 @@ impl FunctionBuilder<'_, '_> {
             Rvalue::Aggregate(AggregateKind::DynArray(element), operands) => {
                 self.dyn_array_literal(*element, operands)
             }
+            Rvalue::Closure { function, captures } => self.closure_value(*function, captures),
             Rvalue::Aggregate(_, operands) => {
                 let ty = self.ty(result_ty);
                 let mut current = "undef".to_string();
@@ -1071,6 +1142,7 @@ impl FunctionBuilder<'_, '_> {
             TypeKind::Slice { .. } => unreachable!("slices have no operators"),
             TypeKind::DynArray { .. } => unreachable!("dynamic arrays have no operators"),
             TypeKind::Map { .. } => unreachable!("maps have no operators"),
+            TypeKind::Func(_) => unreachable!("function values have no operators"),
         }
     }
 
@@ -1318,6 +1390,7 @@ impl FunctionBuilder<'_, '_> {
             } => {
                 let result = match callee {
                     Callee::Function(id) => self.call(*id, args),
+                    Callee::Value(place) => self.call_value(place, args),
                     Callee::Println => {
                         self.println(&args[0], *span);
                         None

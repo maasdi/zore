@@ -46,6 +46,60 @@ impl FunctionBuilder<'_, '_> {
     pub(super) fn call(&mut self, id: FunctionId, args: &[Operand]) -> Option<(String, String)> {
         let package = self.module.package;
         let callee = package.function(id);
+        let rendered = self.arguments(args);
+        let target = format!("@\"{}.{}\"", package.name, callee.name);
+        self.emit_call(&target, &callee.results, &rendered)
+    }
+
+    /// Calls the closure stored at `place`: its code receives the captured
+    /// environment before the ordinary arguments (§16.5).
+    pub(super) fn call_value(
+        &mut self,
+        place: &mir::Place,
+        args: &[Operand],
+    ) -> Option<(String, String)> {
+        let package = self.module.package;
+        let results = package
+            .types
+            .func_signature(self.place_ty(place))
+            .expect("a function-typed callee")
+            .results
+            .clone();
+        let address = self.address(place);
+        let closure = self.fresh();
+        self.line(format!("{closure} = load {{ ptr, ptr }}, ptr {address}"));
+        let code = self.fresh();
+        self.line(format!("{code} = extractvalue {{ ptr, ptr }} {closure}, 0"));
+        let environment = self.fresh();
+        self.line(format!(
+            "{environment} = extractvalue {{ ptr, ptr }} {closure}, 1"
+        ));
+        let mut rendered = vec![format!("ptr {environment}")];
+        rendered.extend(self.arguments(args));
+        self.emit_call(&code, &results, &rendered)
+    }
+
+    fn emit_call(
+        &mut self,
+        target: &str,
+        results: &[TypeId],
+        rendered: &[String],
+    ) -> Option<(String, String)> {
+        let call = format!("{target}({})", rendered.join(", "));
+        if results.is_empty() {
+            self.line(format!("call void {call}"));
+            return None;
+        }
+        let ret = self.module.results_ty(results);
+        let result = self.fresh();
+        self.line(format!("{result} = call {ret} {call}"));
+        Some((ret, result))
+    }
+
+    /// Renders call arguments: a borrowed Move value passes its address and
+    /// its drop flags' address; everything else passes by value.
+    fn arguments(&mut self, args: &[Operand]) -> Vec<String> {
+        let package = self.module.package;
         let mut rendered = Vec::new();
         for arg in args {
             if let Operand::Ref(place) = arg {
@@ -70,20 +124,7 @@ impl FunctionBuilder<'_, '_> {
             let value = self.value(arg);
             rendered.push(format!("{ty} {value}"));
         }
-        let ret = self.module.results_ty(&callee.results);
-        let target = format!(
-            "@\"{}.{}\"({})",
-            package.name,
-            callee.name,
-            rendered.join(", ")
-        );
-        if callee.results.is_empty() {
-            self.line(format!("call void {target}"));
-            return None;
-        }
-        let result = self.fresh();
-        self.line(format!("{result} = call {ret} {target}"));
-        Some((ret, result))
+        rendered
     }
 
     /// Emits a compiler-provided map operation (§13.3). Lookup and removal
@@ -166,7 +207,7 @@ impl FunctionBuilder<'_, '_> {
                 self.store_map_value(&slot, &kind, &key, &args[2], &value_ty);
                 None
             }
-            Callee::Function(_) | Callee::Println | Callee::Drop => {
+            Callee::Function(_) | Callee::Value(_) | Callee::Println | Callee::Drop => {
                 unreachable!("not a map operation")
             }
         }
@@ -291,7 +332,8 @@ impl FunctionBuilder<'_, '_> {
             | TypeKind::Array { .. }
             | TypeKind::Slice { .. }
             | TypeKind::DynArray { .. }
-            | TypeKind::Map { .. } => unreachable!("checked printable type"),
+            | TypeKind::Map { .. }
+            | TypeKind::Func(_) => unreachable!("checked printable type"),
         }
     }
 }

@@ -64,9 +64,11 @@ impl Case {
 fn type_name(t: &Type) -> &str {
     match t {
         Type::Named(name) => &name.text,
-        Type::Array { .. } | Type::Slice { .. } | Type::DynArray { .. } | Type::Map { .. } => {
-            panic!("expected a named type, found an array or slice type")
-        }
+        Type::Array { .. }
+        | Type::Slice { .. }
+        | Type::DynArray { .. }
+        | Type::Map { .. }
+        | Type::Func { .. } => panic!("expected a named type, found a composite type"),
     }
 }
 
@@ -85,6 +87,24 @@ fn ty(case: &Case, t: &Type) -> String {
             if *mutable { "mut " } else { "" },
             ty(case, element)
         ),
+        Type::Func {
+            params, results, ..
+        } => {
+            let params: Vec<String> = params
+                .iter()
+                .map(|param| format!("{}{}", mode(param.mode), ty(case, &param.ty)))
+                .collect();
+            let results: Vec<String> = results.iter().map(|r| ty(case, r)).collect();
+            format!("func({}) ({})", params.join(", "), results.join(", "))
+        }
+    }
+}
+
+fn mode(mode: ParamMode) -> &'static str {
+    match mode {
+        ParamMode::Borrow => "",
+        ParamMode::Mut => "mut ",
+        ParamMode::Own => "own ",
     }
 }
 
@@ -171,6 +191,21 @@ fn expr(case: &Case, e: &Expr) -> String {
                 out.push_str(&expr(case, element));
             }
             out + ")"
+        }
+        ExprKind::Closure(closure) => {
+            let params: Vec<String> = closure
+                .params
+                .iter()
+                .map(|p| format!("{} {}{}", p.name.text, mode(p.mode), ty(case, &p.ty)))
+                .collect();
+            let results: Vec<String> = closure.results.iter().map(|r| ty(case, r)).collect();
+            let body: Vec<String> = closure.body.stmts.iter().map(|s| stmt(case, s)).collect();
+            format!(
+                "(func ({}) ({}) {{{}}})",
+                params.join(", "),
+                results.join(", "),
+                body.join("; ")
+            )
         }
     }
 }
@@ -1111,18 +1146,13 @@ fn package_level_bindings_are_parsed() {
 
 #[test]
 fn later_milestone_syntax_is_reported_as_unsupported() {
-    for body in [
-        "let t = go work()",
-        "go work()",
-        "let f = func() { work() }",
-    ] {
+    for body in ["let t = go work()", "go work()"] {
         rejects(body, "not supported by this compiler yet");
     }
     for text in [
         "func f(t Task<int>) {}",
         "func f(c channel<int>) {}",
         "func f(u pkg.User) {}",
-        "func f(cb func()) {}",
     ] {
         rejects_file(
             &format!("package main\n{text}\n"),
@@ -1233,4 +1263,84 @@ fn parsing_terminates_on_arbitrary_token_sequences() {
             assert!(case.sources.slice(diagnostic.span()).is_some(), "{text:?}");
         }
     }
+}
+
+#[test]
+fn function_literals_parse_as_expressions() {
+    for (source, expected) in [
+        ("func() {}", "(func () () {})"),
+        (
+            "func(a int, b mut int, c own User) int { return a }",
+            "(func (a int, b mut int, c own User) (int) {(return a)})",
+        ),
+        (
+            "func() (int, error) { return 1, nil }",
+            "(func () (int, error) {(return 1 nil)})",
+        ),
+        ("func(s mut []int) {}", "(func (s mut []int) () {})"),
+        (
+            "func(x int) int { return x }(2)",
+            "(call (func (x int) (int) {(return x)}) 2)",
+        ),
+        (
+            "apply(func(v int) int { return v * 2 }, 3)",
+            "(call apply (func (v int) (int) {(return (* v 2))}) 3)",
+        ),
+    ] {
+        assert_eq!(expr_shape(source), expected, "{source}");
+    }
+    let case = Case::body("let f = func() {\n    work()\n    count += 1\n}\nf()");
+    case.assert_clean();
+    assert_eq!(
+        case.shape(),
+        [
+            "(let f (func () () {(call work); (+= count 1)}))",
+            "(call f)"
+        ]
+    );
+    // A literal may appear in a condition header, since its body is braced.
+    Case::body("if check(func() bool { return true }) {\n}").assert_clean();
+}
+
+#[test]
+fn function_types_parse_in_type_positions() {
+    let case = Case::new(
+        "package main\nfunc run(f func(int, mut int, own User) (int, error), g func(), h func(func(int)) bool, s func(mut []int)) {}\n",
+    );
+    case.assert_clean();
+    let Some(Item::Func(func)) = case.parsed.file.items.first() else {
+        panic!("expected a function");
+    };
+    let types: Vec<String> = func.params.iter().map(|p| ty(&case, &p.ty)).collect();
+    assert_eq!(
+        types,
+        [
+            "func(int, mut int, own User) (int, error)",
+            "func() ()",
+            "func(func(int) ()) (bool)",
+            "func(mut []int) ()",
+        ]
+    );
+    let case = Case::body("let f func(int) int = g\nvar h func() = g");
+    case.assert_clean();
+    assert_eq!(
+        case.shape(),
+        ["(let f func(int) (int) g)", "(var h func() () g)"]
+    );
+}
+
+#[test]
+fn malformed_function_literals_and_types_are_rejected() {
+    rejects("let f = func named() {}", "a function literal has no name");
+    rejects("let f = func()", "function literals require a body");
+    rejects("let f = func() {", "unclosed `{`");
+    rejects("let f = func(a, b int) {}", "needs its own type");
+    rejects_file(
+        "package main\nfunc run(f func(x int)) {}\n",
+        "function type parameters have no names",
+    );
+    rejects_file(
+        "package main\nfunc run(f func() (int)) {}\n",
+        "a single result type is written without parentheses",
+    );
 }

@@ -131,6 +131,7 @@ impl<'a> Analysis<'a> {
                         span: self.package.function(body.function).span,
                         name: String::new(),
                         from_slicing: false,
+                        captured: false,
                     },
                 );
                 entry[param.0 as usize].insert(id);
@@ -350,18 +351,39 @@ impl<'a> Analysis<'a> {
         state: &mut Holdings,
         findings: Option<&mut Findings>,
     ) {
+        // A function value passed as an argument is borrowed exclusively,
+        // since the callee may call it (§16.4).
+        let exclusive_if_func = |mode: ParamMode, ty: TypeId| {
+            if matches!(self.package.types.kind(ty), TypeKind::Func(_)) {
+                ParamMode::Mut
+            } else {
+                mode
+            }
+        };
         let modes: Vec<Option<ParamMode>> = match callee {
             Callee::Function(id) => {
                 let function = self.package.function(*id);
                 function
                     .params
                     .iter()
-                    .map(|param| match function.locals[param.0 as usize].kind {
-                        LocalKind::Param(mode) => Some(mode),
-                        _ => None,
+                    .map(|param| {
+                        let local = &function.locals[param.0 as usize];
+                        match local.kind {
+                            LocalKind::Param(mode) => Some(exclusive_if_func(mode, local.ty)),
+                            _ => None,
+                        }
                     })
                     .collect()
             }
+            Callee::Value(place) => self
+                .package
+                .types
+                .func_signature(self.place_ty(place))
+                .expect("a function-typed callee")
+                .params
+                .iter()
+                .map(|&(mode, ty)| Some(exclusive_if_func(mode, ty)))
+                .collect(),
             Callee::Println | Callee::Drop => vec![None; args.len()],
             Callee::MapInsertNew | Callee::MapAssign | Callee::MapLookup | Callee::MapRemove => {
                 let mut modes = vec![None; args.len()];
@@ -371,6 +393,17 @@ impl<'a> Analysis<'a> {
         };
         if let Some(findings) = findings {
             let mut accesses = Vec::new();
+            if let Callee::Value(place) = callee {
+                self.index_accesses(place, site.span, &mut accesses);
+                accesses.push(self.access(
+                    place,
+                    AccessKind::Write,
+                    Depth::Deep,
+                    Action::Call,
+                    site.span,
+                    false,
+                ));
+            }
             for (arg, mode) in args.iter().zip(&modes) {
                 self.operand_accesses(arg, *mode, site.span, &mut accesses);
             }
@@ -388,6 +421,13 @@ impl<'a> Analysis<'a> {
         }
         if callee.map_access().is_some() {
             self.map_call(args, destinations, site, state);
+            return;
+        }
+        if let Callee::Value(_) = callee {
+            // Results through a function value hold no views (§16.4).
+            for destination in destinations.iter().flatten() {
+                self.assign(destination, BTreeSet::new(), state);
+            }
             return;
         }
         let Callee::Function(id) = callee else {
@@ -420,6 +460,7 @@ impl<'a> Analysis<'a> {
                             span: site.span,
                             name: self.describe(place),
                             from_slicing: false,
+                            captured: false,
                         };
                         loans.insert(self.intern(site.next_key(), loan));
                     }
@@ -516,6 +557,7 @@ impl<'a> Analysis<'a> {
                 span: site.span,
                 name: self.describe(place),
                 from_slicing: false,
+                captured: false,
             };
             loans.insert(self.intern(site.next_key(), loan));
         }
@@ -555,9 +597,31 @@ impl<'a> Analysis<'a> {
                     span: site.span,
                     name: self.describe(place),
                     from_slicing: true,
+                    captured: false,
                 };
                 let mut loans = BTreeSet::from([self.intern(site.next_key(), loan)]);
                 loans.extend(inherited);
+                loans
+            }
+            Rvalue::Closure { captures, .. } => {
+                let mut loans = BTreeSet::new();
+                for (place, exclusive) in captures {
+                    let path = Path::of(self.package, self.body, place);
+                    loans.extend(self.inherited_loans(place, &path, state));
+                    let loan = Loan {
+                        kind: if *exclusive {
+                            LoanKind::Exclusive
+                        } else {
+                            LoanKind::Shared
+                        },
+                        target: LoanTarget::Place(path),
+                        span: site.span,
+                        name: self.describe(place),
+                        from_slicing: false,
+                        captured: true,
+                    };
+                    loans.insert(self.intern(site.next_key(), loan));
+                }
                 loans
             }
             Rvalue::Zero
@@ -645,6 +709,16 @@ impl<'a> Analysis<'a> {
                     self.operand_accesses(bound, None, span, out);
                 }
             }
+            Rvalue::Closure { captures, .. } => {
+                for (place, exclusive) in captures {
+                    let (kind, action) = if *exclusive {
+                        (AccessKind::Write, Action::MutBorrow)
+                    } else {
+                        (AccessKind::Read, Action::Borrow)
+                    };
+                    out.push(self.access(place, kind, Depth::Deep, action, span, false));
+                }
+            }
         }
     }
 
@@ -709,6 +783,7 @@ impl<'a> Analysis<'a> {
         let name = &access.name;
         let exclusive = loan.kind == LoanKind::Exclusive;
         let message = match access.action {
+            Action::Call => format!("cannot call `{name}` while it is borrowed"),
             Action::Use if exclusive => format!("cannot use `{name}` while it is mutably borrowed"),
             Action::Use => format!("cannot use `{name}` while it is borrowed"),
             Action::Assign => format!("cannot assign to `{name}` while it is borrowed"),
@@ -726,14 +801,24 @@ impl<'a> Analysis<'a> {
             }
             Action::StorageDead => "temporary value does not live long enough".to_string(),
         };
-        let created = if access.action == Action::StorageDead {
+        let created = if loan.captured && exclusive {
+            format!("`{}` captured mutably by this function literal", loan.name)
+        } else if loan.captured {
+            format!("`{}` captured by this function literal", loan.name)
+        } else if access.action == Action::StorageDead {
             format!("`{}` borrowed here", loan.name)
         } else if exclusive {
             format!("mutable borrow of `{}` created here", loan.name)
         } else {
             format!("borrow of `{}` created here", loan.name)
         };
-        let later = match &self.body.locals[holder.0 as usize].name {
+        let holder_decl = &self.body.locals[holder.0 as usize];
+        let holder_is_closure =
+            matches!(self.package.types.kind(holder_decl.ty), TypeKind::Func(_));
+        let later = match &holder_decl.name {
+            Some(closure) if holder_is_closure => {
+                format!("the closure `{closure}` is used later (§11.3, §16.3)")
+            }
             Some(view) => format!("the view `{view}` is used later (§11.3)"),
             None => "a later use keeps this borrow live (§11.3)".to_string(),
         };
@@ -901,7 +986,10 @@ impl Liveness {
             }
             Terminator::Branch { condition, .. } => Self::use_operand(condition, live),
             Terminator::Call {
-                args, destinations, ..
+                callee,
+                args,
+                destinations,
+                ..
             } => {
                 for destination in destinations.iter().flatten() {
                     Self::define(destination, live);
@@ -909,6 +997,9 @@ impl Liveness {
                 }
                 for arg in args {
                     Self::use_operand(arg, live);
+                }
+                if let Callee::Value(place) = callee {
+                    Self::use_place(place, live);
                 }
             }
             Terminator::Return => {
@@ -977,6 +1068,11 @@ impl Liveness {
                 Self::use_place(place, live);
                 for bound in [low, high].into_iter().flatten() {
                     Self::use_operand(bound, live);
+                }
+            }
+            Rvalue::Closure { captures, .. } => {
+                for (place, _) in captures {
+                    Self::use_place(place, live);
                 }
             }
         }

@@ -769,7 +769,7 @@ fn examples() -> Vec<(String, std::path::PathBuf)> {
 #[test]
 fn every_example_prints_its_expected_output() {
     let examples = examples();
-    assert!(examples.len() >= 13, "{examples:?}");
+    assert!(examples.len() >= 14, "{examples:?}");
     for (name, path) in examples {
         let source = std::fs::read_to_string(path.join("main.ore")).unwrap();
         let expected = std::fs::read_to_string(path.join("expected-output.txt"))
@@ -1536,4 +1536,178 @@ fn emitted_ir_is_deterministic_and_names_the_entry() {
     assert!(ir.contains("define void @\"main.greet\""), "{ir}");
     assert!(ir.contains("define void @zore_entry()"), "{ir}");
     assert!(ir.contains("c\"John\""), "{ir}");
+}
+
+#[test]
+fn closures_read_and_write_their_captures() {
+    prints(
+        &main_body(
+            "let name = \"zore\"
+            let greet = func() { println(name) }
+            greet()
+            var count = 0
+            let bump = func() { count += 1 }
+            bump()
+            bump()
+            println(count)
+            var total = 0
+            let outer = func() {
+                let inner = func(v int) { total += v }
+                inner(2)
+                inner(3)
+            }
+            outer()
+            println(total)
+            var data = [int; 3]{1, 2, 3}
+            let set = func(i int, v int) { data[i] = v }
+            set(1, 20)
+            println(data[0] + data[1] + data[2])
+            println(func(x int) int { return x * x }(7))",
+        ),
+        "zore\n2\n5\n24\n49\n",
+    );
+}
+
+#[test]
+fn closures_pass_through_function_typed_parameters() {
+    prints(
+        "package main
+
+func each(n int, f func(int)) {
+    for var i = 0; i < n; i += 1 {
+        f(i)
+    }
+}
+
+func compose(f func(int) int, g func(int) int, x int) int {
+    let both = func(v int) int { return g(f(v)) }
+    return both(x)
+}
+
+func edit(x mut int, f func(mut int)) {
+    f(x)
+}
+
+func main() {
+    var sum = 0
+    each(5, func(i int) { sum += i })
+    println(sum)
+    println(compose(func(v int) int { return v + 1 }, func(v int) int { return v * 10 }, 4))
+    var n = 3
+    edit(n, func(x mut int) { x *= 7 })
+    println(n)
+}
+",
+        "10\n50\n21\n",
+    );
+}
+
+#[test]
+fn closures_return_results_and_propagate_errors() {
+    prints(
+        "package main
+
+func parse(text string) (int, error) {
+    if text == \"\" {
+        return 0, error(\"empty\")
+    }
+    return 41, nil
+}
+
+func main() {
+    let checked = func(text string) (int, error) {
+        let v = parse(text)?
+        return v + 1, nil
+    }
+    let a, e1 = checked(\"x\")
+    println(a)
+    println(e1 == nil)
+    let b, e2 = checked(\"\")
+    println(b)
+    println(e2 == error(\"empty\"))
+    let pair = func() (string, bool) { return \"pair\", true }
+    let s, ok = pair()
+    println(s)
+    println(ok)
+}
+",
+        "42\ntrue\n0\ntrue\npair\ntrue\n",
+    );
+}
+
+#[test]
+fn captured_move_values_keep_their_owner_cleanup() {
+    prints(
+        "package main
+
+type Res struct {
+    name string
+}
+
+func (r mut Res) drop() {
+    println(r.name)
+}
+
+func show(r Res) {
+    println(\"show \" + \"it\")
+}
+
+func outer(r Res, n mut int) {
+    let f = func() {
+        show(r)
+        n += 100
+    }
+    f()
+}
+
+func main() {
+    let kept = Res{name: \"kept\"}
+    let use = func() { show(kept) }
+    use()
+    use()
+    var slot = Res{name: \"first\"}
+    let replace = func() { slot = Res{name: \"second\"} }
+    replace()
+    let consume = func(r own Res) { println(\"consumed\") }
+    consume(Res{name: \"owned by closure\"})
+    var n = 1
+    outer(Res{name: \"temporary\"}, n)
+    println(n)
+}
+",
+        "show it\nshow it\nfirst\nconsumed\nowned by closure\nshow it\ntemporary\n101\nsecond\nkept\n",
+    );
+}
+
+#[test]
+fn a_panic_in_a_closure_unwinds_through_its_caller() {
+    panics(
+        "package main
+
+type Guard struct {
+    name string
+}
+
+func (g mut Guard) drop() {
+    println(g.name)
+}
+
+func run(f func(int)) {
+    let guard = Guard{name: \"run guard\"}
+    f(5)
+}
+
+func main() {
+    let outer = Guard{name: \"main guard\"}
+    let data = [int; 2]{1, 2}
+    run(func(i int) {
+        let inner = Guard{name: \"closure guard\"}
+        println(data[i])
+    })
+    println(\"unreachable\")
+}
+",
+        "index out of range",
+        "closure guard\nrun guard\nmain guard\n",
+    );
 }

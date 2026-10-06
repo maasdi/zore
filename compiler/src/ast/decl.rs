@@ -37,7 +37,7 @@ pub struct FuncDecl {
     pub span: Span,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum ParamMode {
     /// No modifier: a shared borrow.
     Borrow,

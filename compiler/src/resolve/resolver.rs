@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 
 use super::ids::{ConstId, FunctionId};
-use super::symbol::{ConstDecl, LocalDecl, LocalKind, Res};
+use super::symbol::{ClosureDecl, ConstDecl, LocalDecl, LocalKind, Res};
 use crate::ast::{self, BindingKind, BindingTarget, ExprKind, ForHeader, Item, StmtKind};
 use crate::diagnostic::{Diagnostic, Severity};
 use crate::source::Span;
@@ -19,8 +19,10 @@ pub struct Resolution<'a> {
     pub consts: Vec<ConstDecl<'a>>,
     /// Name and type-name uses, by the span of the name.
     pub uses: HashMap<Span, Res>,
-    /// Locals of each function, indexed by `FunctionId`.
+    /// Locals of each function and closure, indexed by `FunctionId`.
     pub locals: Vec<Vec<LocalDecl>>,
+    /// Closure literals; closure `i` has `FunctionId(functions.len() + i)`.
+    pub closures: Vec<ClosureDecl<'a>>,
     /// Declared local or local constant, by the span of its declaring name.
     pub declarations: HashMap<Span, Res>,
     pub diagnostics: Vec<Diagnostic>,
@@ -32,7 +34,10 @@ fn by_value_named_type(ty: &ast::Type) -> Option<&ast::Name> {
     match ty {
         ast::Type::Named(name) => Some(name),
         ast::Type::Array { element, .. } => by_value_named_type(element),
-        ast::Type::Slice { .. } | ast::Type::DynArray { .. } | ast::Type::Map { .. } => None,
+        ast::Type::Slice { .. }
+        | ast::Type::DynArray { .. }
+        | ast::Type::Map { .. }
+        | ast::Type::Func { .. } => None,
     }
 }
 
@@ -44,7 +49,7 @@ fn owned_named_type(ty: &ast::Type) -> Option<&ast::Name> {
             owned_named_type(element)
         }
         ast::Type::Map { value, .. } => owned_named_type(value),
-        ast::Type::Slice { .. } => None,
+        ast::Type::Slice { .. } | ast::Type::Func { .. } => None,
     }
 }
 
@@ -62,12 +67,14 @@ pub fn resolve(file: &ast::File) -> Resolution<'_> {
             consts: Vec::new(),
             uses: HashMap::new(),
             locals: Vec::new(),
+            closures: Vec::new(),
             declarations: HashMap::new(),
             diagnostics: Vec::new(),
         },
         package_scope: HashMap::new(),
         scopes: Vec::new(),
         function: None,
+        frames: Vec::new(),
     };
     resolver.file(file);
     resolver.out
@@ -78,6 +85,16 @@ pub(super) struct Resolver<'a> {
     pub(super) package_scope: HashMap<String, (Res, Span)>,
     pub(super) scopes: Vec<HashMap<String, (Res, Span)>>,
     pub(super) function: Option<FunctionId>,
+    /// The function bodies being resolved, outermost first.
+    pub(super) frames: Vec<Frame>,
+}
+
+/// A function or closure body under resolution.
+#[derive(Clone, Copy)]
+pub(super) struct Frame {
+    pub(super) function: FunctionId,
+    /// The index of the body's outermost scope in `scopes`.
+    pub(super) scope_base: usize,
 }
 
 impl<'a> Resolver<'a> {
@@ -172,6 +189,7 @@ impl<'a> Resolver<'a> {
             }
             self.expr(value);
         }
+        self.out.locals = self.out.functions.iter().map(|_| Vec::new()).collect();
         for (index, func) in self.out.functions.clone().into_iter().enumerate() {
             self.function(FunctionId(index as u32), func);
         }
@@ -273,6 +291,16 @@ impl<'a> Resolver<'a> {
                 self.ty(key);
                 self.ty(value);
             }
+            ast::Type::Func {
+                params, results, ..
+            } => {
+                for param in params {
+                    self.ty(&param.ty);
+                }
+                for result in results {
+                    self.ty(result);
+                }
+            }
         }
     }
 
@@ -349,18 +377,33 @@ impl<'a> Resolver<'a> {
     }
 
     fn function(&mut self, id: FunctionId, func: &'a ast::FuncDecl) {
-        self.function = Some(id);
-        self.out.locals.push(Vec::new());
+        let params: Vec<&'a ast::Param> = func.receiver.iter().chain(&func.params).collect();
+        self.body(id, &params, &func.results, &func.body);
+    }
+
+    /// Resolves a function or closure body with its parameters and results.
+    fn body(
+        &mut self,
+        id: FunctionId,
+        params: &[&'a ast::Param],
+        results: &'a [ast::Type],
+        body: &'a ast::Block,
+    ) {
+        let enclosing = self.function.replace(id);
+        self.frames.push(Frame {
+            function: id,
+            scope_base: self.scopes.len(),
+        });
         // Parameters share the outermost body scope.
         self.scopes.push(HashMap::new());
-        for param in func.receiver.iter().chain(&func.params) {
+        for param in params {
             self.ty(&param.ty);
             self.new_local(&param.name, LocalKind::Param(param.mode));
         }
-        for (index, result) in func.results.iter().enumerate() {
+        for (index, result) in results.iter().enumerate() {
             if let ast::Type::Named(name) = result
                 && name.text == "error"
-                && index + 1 != func.results.len()
+                && index + 1 != results.len()
             {
                 self.error(
                     "an `error` result must be the last result and appear only once",
@@ -369,11 +412,35 @@ impl<'a> Resolver<'a> {
             }
             self.ty(result);
         }
-        for stmt in &func.body.stmts {
+        for stmt in &body.stmts {
             self.stmt(stmt);
         }
         self.scopes.pop();
-        self.function = None;
+        self.frames.pop();
+        self.function = enclosing;
+    }
+
+    /// A closure literal gets its own function ID and locals; names it uses
+    /// from enclosing bodies become captures (§16.3).
+    fn closure(&mut self, closure: &'a ast::Closure, span: Span) {
+        let Some(parent) = self.function else {
+            self.error(
+                "a function literal can only appear inside a function body",
+                span,
+            );
+            return;
+        };
+        let id = FunctionId(self.out.locals.len() as u32);
+        self.out.locals.push(Vec::new());
+        self.out.closures.push(ClosureDecl {
+            id,
+            closure,
+            span,
+            parent,
+            captures: Vec::new(),
+        });
+        let params: Vec<&'a ast::Param> = closure.params.iter().collect();
+        self.body(id, &params, &closure.results, &closure.body);
     }
 
     fn block(&mut self, block: &'a ast::Block) {
@@ -522,6 +589,7 @@ impl<'a> Resolver<'a> {
                     self.expr(&entry.value);
                 }
             }
+            ExprKind::Closure(closure) => self.closure(closure, expr.span),
             ExprKind::StructLit { ty, fields } => {
                 match self.use_name(&ty.text, ty.span) {
                     Some(Res::Struct(_) | Res::Unsupported) | None => {}

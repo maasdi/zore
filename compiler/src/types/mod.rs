@@ -6,6 +6,6 @@ mod ty;
 mod type_id;
 mod type_store;
 
-pub use ty::{FloatType, IntType, TypeKind};
-pub use type_id::{StructId, TypeId};
+pub use ty::{FloatType, FuncSignature, IntType, TypeKind};
+pub use type_id::{FuncTypeId, StructId, TypeId};
 pub use type_store::{TypeName, TypeStore};

@@ -7,7 +7,7 @@ use crate::mir::{
     BasicBlock, Body, Callee, Operand, Place, Program, Projection, Rvalue, Terminator,
     projection_type,
 };
-use crate::resolve::FieldId;
+use crate::resolve::{FieldId, LocalKind};
 use crate::source::Span;
 use crate::types::{TypeId, TypeKind};
 
@@ -175,6 +175,10 @@ fn transfer(
                     }
                 }
             }
+            if let Callee::Value(place) = callee {
+                let callee = Operand::Copy(place.clone());
+                check_operand(package, body, &callee, *span, state, diagnostics);
+            }
             for arg in args {
                 check_operand(package, body, arg, *span, state, diagnostics);
             }
@@ -227,6 +231,12 @@ fn check_rvalue(
             check_operand(package, body, &base, span, state, diagnostics);
             for bound in [low, high].into_iter().flatten() {
                 check_operand(package, body, bound, span, state, diagnostics);
+            }
+        }
+        Rvalue::Closure { captures, .. } => {
+            for (place, _) in captures {
+                let captured = Operand::Copy(place.clone());
+                check_operand(package, body, &captured, span, state, diagnostics);
             }
         }
     }
@@ -307,6 +317,23 @@ fn check_operand(
         return;
     }
     if !moving {
+        return;
+    }
+    let is_capture = package
+        .function(body.function)
+        .locals
+        .get(index)
+        .is_some_and(|local| matches!(local.kind, LocalKind::Capture(_)));
+    if is_capture {
+        let name = describe_place(package, body, place);
+        diagnostics.push(
+            Diagnostic::new(
+                Severity::Error,
+                format!("moving captured value `{name}` out of a function literal is not supported yet"),
+                span,
+            )
+            .note("a closure borrows what it captures; consuming a capture would make it callable only once (§16.3, Q02g)"),
+        );
         return;
     }
     if body.locals[index].by_reference {

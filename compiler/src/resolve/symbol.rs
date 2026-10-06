@@ -35,6 +35,19 @@ pub enum LocalKind {
     Param(ParamMode),
     Let,
     Var,
+    /// A closure's borrow of a local of its enclosing function (§16.3).
+    Capture(LocalId),
+}
+
+/// A closure literal: its own function ID, where it appears, and what it captures.
+pub struct ClosureDecl<'a> {
+    pub id: FunctionId,
+    pub closure: &'a ast::Closure,
+    pub span: Span,
+    /// The function whose body contains the literal.
+    pub parent: FunctionId,
+    /// `(outer, local)`: a local of `parent` and the capture standing for it.
+    pub captures: Vec<(LocalId, LocalId)>,
 }
 
 pub(super) fn predeclared(name: &str) -> Option<Res> {

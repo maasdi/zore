@@ -1,4 +1,5 @@
-use super::type_id::{StructId, TypeId};
+use super::type_id::{FuncTypeId, StructId, TypeId};
+use crate::ast::ParamMode;
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct IntType {
@@ -82,4 +83,13 @@ pub enum TypeKind {
         key: TypeId,
         value: TypeId,
     },
+    /// A function type `func(...) ...`, the type of closure values (§16.2).
+    Func(FuncTypeId),
+}
+
+/// The parameter modes and types, and the result types, of a function type.
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+pub struct FuncSignature {
+    pub params: Vec<(ParamMode, TypeId)>,
+    pub results: Vec<TypeId>,
 }

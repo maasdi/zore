@@ -1,0 +1,9 @@
+hello from a closure
+5
+6
+disk
+disk
+43
+true
+true
+disk

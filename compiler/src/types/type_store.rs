@@ -1,8 +1,9 @@
 use std::collections::HashMap;
 use std::fmt;
 
-use super::ty::{FloatType, IntType, TypeKind};
-use super::type_id::{StructId, TypeId};
+use super::ty::{FloatType, FuncSignature, IntType, TypeKind};
+use super::type_id::{FuncTypeId, StructId, TypeId};
+use crate::ast::ParamMode;
 
 /// Type identities; aliases such as `int` and `int64` share one identity.
 #[derive(Debug)]
@@ -14,6 +15,8 @@ pub struct TypeStore {
     slice_types: HashMap<(TypeId, bool), TypeId>,
     dyn_array_types: HashMap<TypeId, TypeId>,
     map_types: HashMap<(TypeId, TypeId), TypeId>,
+    signatures: Vec<FuncSignature>,
+    func_types: HashMap<FuncSignature, TypeId>,
 }
 
 impl Default for TypeStore {
@@ -58,6 +61,8 @@ impl TypeStore {
             slice_types: HashMap::new(),
             dyn_array_types: HashMap::new(),
             map_types: HashMap::new(),
+            signatures: Vec::new(),
+            func_types: HashMap::new(),
         }
     }
 
@@ -116,6 +121,31 @@ impl TypeStore {
         self.kinds.push(TypeKind::Map { key, value });
         self.map_types.insert((key, value), ty);
         ty
+    }
+
+    /// Interns the function type with `signature`.
+    pub fn func_type(&mut self, signature: FuncSignature) -> TypeId {
+        if let Some(&ty) = self.func_types.get(&signature) {
+            return ty;
+        }
+        let id = FuncTypeId(self.signatures.len() as u32);
+        self.signatures.push(signature.clone());
+        let ty = TypeId(self.kinds.len() as u32);
+        self.kinds.push(TypeKind::Func(id));
+        self.func_types.insert(signature, ty);
+        ty
+    }
+
+    pub fn signature(&self, id: FuncTypeId) -> &FuncSignature {
+        &self.signatures[id.0 as usize]
+    }
+
+    /// The signature of `ty`, when it is a function type.
+    pub fn func_signature(&self, ty: TypeId) -> Option<&FuncSignature> {
+        match self.kind(ty) {
+            TypeKind::Func(id) => Some(self.signature(id)),
+            _ => None,
+        }
     }
 
     pub fn kind(&self, ty: TypeId) -> TypeKind {
@@ -206,6 +236,36 @@ impl fmt::Display for TypeName<'_> {
                 self.store.display(key),
                 self.store.display(value)
             ),
+            TypeKind::Func(id) => {
+                let signature = self.store.signature(id);
+                f.write_str("func(")?;
+                for (index, &(mode, ty)) in signature.params.iter().enumerate() {
+                    if index > 0 {
+                        f.write_str(", ")?;
+                    }
+                    match mode {
+                        ParamMode::Borrow => {}
+                        ParamMode::Mut => f.write_str("mut ")?,
+                        ParamMode::Own => f.write_str("own ")?,
+                    }
+                    write!(f, "{}", self.store.display(ty))?;
+                }
+                f.write_str(")")?;
+                match &signature.results[..] {
+                    [] => Ok(()),
+                    [one] => write!(f, " {}", self.store.display(*one)),
+                    many => {
+                        f.write_str(" (")?;
+                        for (index, &ty) in many.iter().enumerate() {
+                            if index > 0 {
+                                f.write_str(", ")?;
+                            }
+                            write!(f, "{}", self.store.display(ty))?;
+                        }
+                        f.write_str(")")
+                    }
+                }
+            }
         }
     }
 }

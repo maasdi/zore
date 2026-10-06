@@ -72,11 +72,17 @@ A newly discovered semantic gap blocks its affected feature, not unrelated work.
 - **Q02g — Closures and function types (first slice):** locked in §16.
   `func(params) results { body }` literals; unnamed function types
   `func(T, mut U) R`; captures inferred per whole local (shared borrow for reads,
-  exclusive borrow for writes); closure values are Move and non-escaping (no
-  return, storage, `go`, or live across `await`). **Still open:** escaping closures
-  with owned environments, call-once closures that consume a captured Move value,
-  declared functions used as values, `async` closures, field-level captures, and
-  closures with tasks (M25+). Pending cases: `tests/conformance/closures.md`.
+  exclusive borrow for writes and for captured closures or `mut []T` values);
+  closure values are Move and non-escaping (no function-typed results, fields,
+  or elements, no `go`, no liveness across `await`). Calling a closure, or
+  passing one to a function-typed parameter, uses it exclusively. Function-typed
+  parameters cannot be `mut` or `own`. Implemented end to end; executable cases
+  are listed in `tests/conformance/closures.md`. **Still open:** escaping
+  closures with owned environments, call-once closures that consume a captured
+  Move value, declared functions used as values, function types whose results
+  hold borrowed views (needs result provenance through a function value),
+  storing a view or closure through a capture (output provenance), `async`
+  closures, field-level captures, and closures with tasks (M25+).
 
 - **Q02f — Map construction, lookup, assignment, removal:** accepted and
   locked in §13.3. Explicit typed literals; bool/integer/rune/string keys;

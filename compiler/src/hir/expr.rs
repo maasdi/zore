@@ -70,6 +70,18 @@ pub enum ExprKind {
         function: FunctionId,
         args: Vec<Expr>,
     },
+    /// A call through a value of function type; the callee is evaluated
+    /// first, and calling it uses it exclusively (§16.2).
+    CallValue {
+        callee: Box<Expr>,
+        args: Vec<Expr>,
+    },
+    /// A closure literal: its body is `function`, and it borrows each
+    /// `(local, exclusive)` of the enclosing function (§16.3).
+    Closure {
+        function: FunctionId,
+        captures: Vec<(LocalId, bool)>,
+    },
     Println(Box<Expr>),
     Drop(Box<Expr>),
     /// Checked numeric conversion.

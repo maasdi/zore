@@ -42,6 +42,8 @@ impl Package {
             | TypeKind::String
             | TypeKind::Error
             | TypeKind::Slice { .. } => true,
+            // A closure may hold exclusive borrows, so it is never duplicated (§16.3).
+            TypeKind::Func(_) => false,
             TypeKind::Struct(id) => {
                 let strukt = self.strukt(id);
                 strukt.drop.is_none() && strukt.fields.iter().all(|f| self.is_copy(f.ty))
@@ -51,16 +53,23 @@ impl Package {
         }
     }
 
-    /// Whether a value of `ty` holds a borrowed view, directly or in a field
-    /// or array element; a slice's own elements are not part of the value.
+    /// Whether a value of `ty` holds a borrow: a slice view or a closure's
+    /// captures, directly or in a field or array element; a slice's own
+    /// elements are not part of the value.
     pub fn contains_view(&self, ty: TypeId) -> bool {
-        self.contains(ty, &|kind| matches!(kind, TypeKind::Slice { .. }))
+        self.contains(ty, &|kind| {
+            matches!(kind, TypeKind::Slice { .. } | TypeKind::Func(_))
+        })
     }
 
-    /// Whether a value of `ty` holds a `mut []T` view.
+    /// Whether a value of `ty` holds a `mut []T` view or a closure, either
+    /// of which may hold an exclusive borrow.
     pub fn contains_mut_view(&self, ty: TypeId) -> bool {
         self.contains(ty, &|kind| {
-            matches!(kind, TypeKind::Slice { mutable: true, .. })
+            matches!(
+                kind,
+                TypeKind::Slice { mutable: true, .. } | TypeKind::Func(_)
+            )
         })
     }
 

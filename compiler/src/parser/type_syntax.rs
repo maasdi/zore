@@ -1,4 +1,4 @@
-//! Type syntax: named, fixed-array, slice, and dynamic-array types.
+//! Type syntax: named, fixed-array, slice, dynamic-array, map, and function types.
 
 use super::parser::{PResult, Parser};
 use crate::ast::*;
@@ -20,7 +20,7 @@ impl Parser<'_> {
             TokenKind::Punct(Punct::LBracket) => self.bracket_type(),
             TokenKind::Keyword(Keyword::Map) => self.map_type(),
             TokenKind::Keyword(Keyword::Channel) => Err(self.unsupported("channel types", "M30")),
-            TokenKind::Keyword(Keyword::Func) => Err(self.unsupported("function types", "M24")),
+            TokenKind::Keyword(Keyword::Func) => self.func_type(),
             TokenKind::Keyword(Keyword::Mut) => {
                 let start = self.current_span();
                 if !self.at_slice_type_after(1) {
@@ -122,6 +122,68 @@ impl Parser<'_> {
                 span,
             },
         );
+    }
+
+    /// `func(T, mut U) R`: unnamed parameters with optional modes, then an
+    /// optional result list (§16.2).
+    fn func_type(&mut self) -> PResult<Type> {
+        let start = self.bump().span;
+        self.expect(Punct::LParen)?;
+        let params =
+            self.comma_list(Punct::RParen, "parameter type", true, Self::func_type_param)?;
+        let results = if self.at_type_start() {
+            self.results()?
+        } else {
+            Vec::new()
+        };
+        Ok(Type::Func {
+            params,
+            results,
+            span: self.span_from(start),
+        })
+    }
+
+    fn func_type_param(&mut self) -> PResult<FuncTypeParam> {
+        if *self.peek() == TokenKind::Ident
+            && matches!(
+                self.peek_at(1),
+                TokenKind::Ident
+                    | TokenKind::Punct(Punct::LBracket)
+                    | TokenKind::Keyword(
+                        Keyword::Mut | Keyword::Own | Keyword::Func | Keyword::Map
+                    )
+            )
+        {
+            let span = self.current_span();
+            return Err(self.error(
+                "function type parameters have no names; write only the type, as in `func(int)` (§16.2)",
+                span,
+            ));
+        }
+        let mode = if self.at_keyword(Keyword::Mut) && !self.at_slice_type_after(1) {
+            self.bump();
+            ParamMode::Mut
+        } else if self.at_keyword(Keyword::Own) {
+            self.bump();
+            ParamMode::Own
+        } else {
+            ParamMode::Borrow
+        };
+        let ty = self.ty()?;
+        Ok(FuncTypeParam { mode, ty })
+    }
+
+    /// Whether the current token can begin a type or a parenthesized result
+    /// list, so a function type's results continue here.
+    fn at_type_start(&self) -> bool {
+        matches!(
+            self.peek(),
+            TokenKind::Ident
+                | TokenKind::Punct(Punct::LBracket | Punct::LParen)
+                | TokenKind::Keyword(
+                    Keyword::Map | Keyword::Func | Keyword::Channel | Keyword::Mut
+                )
+        )
     }
 
     /// `map[key]value`.

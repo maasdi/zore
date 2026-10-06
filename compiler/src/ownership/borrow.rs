@@ -86,6 +86,8 @@ pub(super) struct Loan {
     /// The borrowed place as written, for diagnostics.
     pub(super) name: String,
     pub(super) from_slicing: bool,
+    /// A closure literal's capture created the loan.
+    pub(super) captured: bool,
 }
 
 impl Loan {
@@ -119,6 +121,8 @@ pub(super) enum Depth {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) enum Action {
     Use,
+    /// Calling a closure, which uses it exclusively.
+    Call,
     Assign,
     Borrow,
     MutBorrow,
@@ -178,6 +182,7 @@ mod tests {
             span: span(),
             name: "s".into(),
             from_slicing: true,
+            captured: false,
         }
     }
 

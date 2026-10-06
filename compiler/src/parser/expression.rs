@@ -220,7 +220,7 @@ impl Parser<'_> {
                 return Err(self.error("`_` cannot be used as a value", span));
             }
             TokenKind::Keyword(Keyword::Func) => {
-                return Err(self.unsupported("function literals (closures)", "M24"));
+                return self.closure();
             }
             TokenKind::Keyword(Keyword::Go) => {
                 return Err(self.unsupported("`go` task-creation expressions", "M25–M29"));
@@ -245,6 +245,37 @@ impl Parser<'_> {
         };
         self.bump();
         Ok(Expr { kind, span })
+    }
+
+    /// `func(params) results { body }` (§16.1).
+    fn closure(&mut self) -> PResult<Expr> {
+        let start = self.bump().span;
+        if *self.peek() == TokenKind::Ident {
+            let span = self.current_span();
+            return Err(self.error(
+                "a function literal has no name; declare named functions at package level",
+                span,
+            ));
+        }
+        self.expect(Punct::LParen)?;
+        let params = self.comma_list(Punct::RParen, "parameter", true, |p| {
+            p.param("a parameter name")
+        })?;
+        let results = self.results()?;
+        let body = self.with_struct_literals(true, |p| {
+            p.body_block(
+                "function literal signature",
+                "function literals require a body",
+            )
+        })?;
+        Ok(Expr {
+            kind: ExprKind::Closure(Box::new(Closure {
+                params,
+                results,
+                body,
+            })),
+            span: self.span_from(start),
+        })
     }
 
     pub(super) fn struct_literal(&mut self, ty: Name) -> PResult<Expr> {

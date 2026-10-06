@@ -1,5 +1,6 @@
 use super::operand::{Operand, Place};
 use crate::ast::{BinaryOp, UnaryOp};
+use crate::resolve::FunctionId;
 use crate::types::{StructId, TypeId};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -36,4 +37,10 @@ pub enum Rvalue {
     },
     /// Fields or elements in declaration/evaluation order.
     Aggregate(AggregateKind, Vec<Operand>),
+    /// A closure running `function`, borrowing each place (exclusively when
+    /// marked) in the order of the function's captures (§16.3).
+    Closure {
+        function: FunctionId,
+        captures: Vec<(Place, bool)>,
+    },
 }

@@ -19,6 +19,9 @@ pub struct Body {
     pub locals: Vec<LocalDecl>,
     /// Parameter locals, in order.
     pub params: Vec<Local>,
+    /// For a closure body, its capture locals, each holding a reference to
+    /// the borrowed place, in the order the closure's environment stores them.
+    pub captures: Vec<Local>,
     /// Result locals, in order; `Return` returns their values.
     pub returns: Vec<Local>,
     pub blocks: Vec<BasicBlock>,
