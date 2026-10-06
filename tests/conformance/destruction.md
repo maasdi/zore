@@ -3,8 +3,11 @@
 Authority: spec §8.3, §10.7, §14.1–14.5, §15.4. Drop signatures and Move
 classification have executable type-checking coverage in
 `tests/typecheck/check.rs`; explicit-drop consumption and double-drop
-rejection are covered in `tests/ownership/ownership.rs`. Automatic
-cleanup, clone, and panic unwinding remain pending runtime coverage. Field-level
+rejection are covered in `tests/ownership/ownership.rs`. Clone
+availability, the built-in clones, and cleanup after a panicking clone have
+coverage in `tests/typecheck/check.rs`, `tests/ownership/ownership.rs`, and
+`tests/codegen/native.rs`. Automatic cleanup and panic unwinding remain pending
+runtime coverage. Field-level
 partial-move cleanup — dropping only still-available fields, skipping a
 moved-out field that was never reinitialized, and rejecting a move that would
 leave a custom-`drop`-bearing value incomplete — has coverage in
@@ -51,6 +54,14 @@ leave a custom-`drop`-bearing value incomplete — has coverage in
 | `value.clone()` called directly via method-call syntax | Valid: no double-invocation hazard, unlike `.drop()` |
 | `[T; N]` array of a structurally clonable `T`, no custom `drop` on the array's element type | Valid: element-wise structural default |
 | `copy(value)` (generic copy builtin) | Reject: not part of the MVP |
+| `clone(1)`, `clone("s")`, `clone(err)`, a slice, or a closure | Reject: clone applies to structs, fixed arrays, `Array<T>`, and maps (Q19) |
+| `clone()` or `clone(a, b)`, or `clone` used as a value | Reject |
+| Custom `clone` with a `mut` or `own` receiver, parameters, or a result other than its own type | Reject at the declaration |
+| `value.clone()` on a type without a custom `clone` | Reject, noting `clone(value)` (Q19) |
+| `clone(v)` of a value holding views, then writing the viewed owner while the clone is live | Reject: the clone keeps the backing borrowed |
+| A clone is independent: changing the source afterwards leaves the clone unchanged | Valid |
+| Clone of a struct, `Array<T>`, fixed array, or map of resources with a custom `clone` | Each part cloned once; the clone and the source are each dropped once |
+| A custom `clone` panics partway through a struct, fixed array, `Array<T>`, or map | Parts already cloned are dropped once, storage is freed, then the source unwinds as usual |
 
 ## Panic and unwinding (§15.4)
 

@@ -761,7 +761,7 @@ fn examples() -> Vec<(String, std::path::PathBuf)> {
 #[test]
 fn every_example_prints_its_expected_output() {
     let examples = examples();
-    assert!(examples.len() >= 14, "{examples:?}");
+    assert!(examples.len() >= 15, "{examples:?}");
     for (name, path) in examples {
         let source = std::fs::read_to_string(path.join("main.ore")).unwrap();
         let expected = std::fs::read_to_string(path.join("expected-output.txt"))
@@ -1701,5 +1701,209 @@ func main() {
 ",
         "index out of range",
         "closure guard\nrun guard\nmain guard\n",
+    );
+}
+
+#[test]
+fn cloned_collections_are_independent_of_their_source() {
+    prints(
+        "package main
+
+type Point struct {
+    x int
+    y int
+}
+
+func main() {
+    var point = Point{x: 1, y: 2}
+    let point2 = clone(point)
+    point.x = 10
+    println(point2.x + point2.y)
+
+    var list = Array<int>{1, 2, 3}
+    let list2 = clone(list)
+    list[0] = 100
+    println(list2[0] + list2[1] + list2[2])
+
+    var grid = [int; 3]{4, 5, 6}
+    let grid2 = clone(grid)
+    grid[1] = 50
+    println(grid2[1])
+
+    var scores = map[string]int{\"a\": 1, \"b\": 2}
+    let copy = clone(scores)
+    scores[\"a\"] = 99
+    let found, value = copy[\"a\"]
+    println(value)
+    let removed, old = scores.remove(\"b\")
+    let still, kept = copy[\"b\"]
+    println(kept)
+
+    var nested = Array<Array<int>>{Array<int>{1, 2}, Array<int>{3}}
+    let nested2 = clone(nested)
+    nested[0][1] = 20
+    println(nested2[0][1] + nested2[1][0])
+
+    let empty = Array<int>{}
+    let empty2 = clone(empty)
+    let none = map[int]int{}
+    let none2 = clone(none)
+    let missing, zero = none2[1]
+    println(missing)
+}
+",
+        "3\n6\n5\n1\n2\n5\nfalse\n",
+    );
+}
+
+#[test]
+fn custom_clone_runs_instead_of_the_structural_default() {
+    prints(
+        "package main
+
+type Counter struct {
+    n int
+}
+
+func (c Counter) clone() Counter {
+    println(\"custom\")
+    return Counter{n: c.n + 1}
+}
+
+type Holder struct {
+    c Counter
+    label int
+}
+
+func main() {
+    let counter = Counter{n: 1}
+    println(clone(counter).n)
+    println(counter.clone().n)
+    println(counter.n)
+    let holder = Holder{c: counter, label: 7}
+    println(clone(holder).c.n)
+}
+",
+        "custom\n2\ncustom\n2\n1\n1\n",
+    );
+}
+
+#[test]
+fn clones_of_resources_drop_independently() {
+    prints(
+        "package main
+
+type Res struct {
+    id int
+}
+
+func (r mut Res) drop() {
+    println(r.id)
+}
+
+func (r Res) clone() Res {
+    return Res{id: r.id + 10}
+}
+
+type Pair struct {
+    a Res
+    b Res
+}
+
+func main() {
+    let pair = Pair{a: Res{id: 1}, b: Res{id: 2}}
+    let pair2 = clone(pair)
+    let list = Array<Res>{Res{id: 3}, Res{id: 4}}
+    let list2 = clone(list)
+    let fixed = [Res; 2]{Res{id: 5}, Res{id: 6}}
+    let fixed2 = clone(fixed)
+    let table = map[int]Res{1: Res{id: 7}}
+    let table2 = clone(table)
+    let single = clone(Res{id: 8})
+    println(0)
+}
+",
+        "8\n0\n18\n17\n7\n16\n15\n6\n5\n14\n13\n4\n3\n12\n11\n2\n1\n",
+    );
+}
+
+#[test]
+fn clone_is_usable_inside_closures_and_as_a_statement() {
+    prints(
+        "package main
+
+func main() {
+    let list = Array<int>{7, 8}
+    let first = func() int {
+        let copy = clone(list)
+        return copy[0]
+    }
+    println(first())
+    clone(list)
+    println(list[1])
+}
+",
+        "7\n8\n",
+    );
+}
+
+const FAILING_CLONE: &str = "type Res struct {
+    id int
+}
+
+func (r mut Res) drop() {
+    println(r.id)
+}
+
+func (r Res) clone() Res {
+    var zero = 0
+    if r.id == 3 {
+        println(1 / zero)
+    }
+    return Res{id: r.id + 10}
+}
+
+type Trio struct {
+    a Res
+    b Res
+    c Res
+}
+";
+
+fn failing_clone(body: &str, stdout_before: &str) {
+    panics(
+        &format!(
+            "package main\n\n{FAILING_CLONE}\nfunc main() {{\n{body}\nprintln(\"unreachable\")\n}}\n"
+        ),
+        "division by zero",
+        stdout_before,
+    );
+}
+
+#[test]
+fn a_panicking_clone_drops_the_parts_already_cloned() {
+    failing_clone(
+        "let items = Array<Res>{Res{id: 1}, Res{id: 2}, Res{id: 3}}\nlet copy = clone(items)",
+        "12\n11\n3\n2\n1\n",
+    );
+    failing_clone(
+        "let items = [Res; 3]{Res{id: 1}, Res{id: 2}, Res{id: 3}}\nlet copy = clone(items)",
+        "12\n11\n3\n2\n1\n",
+    );
+    failing_clone(
+        "let trio = Trio{a: Res{id: 1}, b: Res{id: 2}, c: Res{id: 3}}\nlet copy = clone(trio)",
+        "12\n11\n3\n2\n1\n",
+    );
+    failing_clone(
+        "let items = map[int]Res{1: Res{id: 1}, 2: Res{id: 2}, 3: Res{id: 3}}\nlet copy = clone(items)",
+        "11\n12\n1\n2\n3\n",
+    );
+}
+
+#[test]
+fn a_panicking_clone_in_a_loop_cleans_up_every_iteration() {
+    failing_clone(
+        "for var i = 0; i < 2; i += 1 {\nlet items = Array<Res>{Res{id: 1}, Res{id: 2}}\nlet copy = clone(items)\n}\nlet last = Array<Res>{Res{id: 3}}\nlet bad = clone(last)",
+        "12\n11\n2\n1\n12\n11\n2\n1\n3\n",
     );
 }

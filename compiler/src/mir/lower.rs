@@ -288,6 +288,7 @@ impl Builder {
             StmtKind::Expr(expr) => match &expr.kind {
                 ExprKind::Call { .. }
                 | ExprKind::CallValue { .. }
+                | ExprKind::Clone(_)
                 | ExprKind::Println(_)
                 | ExprKind::Drop(_) => {
                     let discard = vec![None; expr.types.len()];
@@ -588,6 +589,7 @@ impl Builder {
             }
             ExprKind::Println(arg) => (Callee::Println, std::slice::from_ref(&**arg)),
             ExprKind::Drop(arg) => (Callee::Drop, std::slice::from_ref(&**arg)),
+            ExprKind::Clone(arg) => (Callee::Clone(arg.ty()), std::slice::from_ref(&**arg)),
             ExprKind::MapLookup { map, key } | ExprKind::MapRemove { map, key } => {
                 map_args = vec![(**map).clone(), (**key).clone()];
                 let callee = if matches!(expr.kind, ExprKind::MapLookup { .. }) {
@@ -627,6 +629,7 @@ impl Builder {
                 }
                 Callee::Println => (false, false),
                 Callee::Drop => (false, true),
+                Callee::Clone(_) => (true, false),
                 Callee::MapInsertNew
                 | Callee::MapAssign
                 | Callee::MapLookup
@@ -730,7 +733,7 @@ impl Builder {
                     span,
                 )
             }
-            ExprKind::Call { .. } | ExprKind::CallValue { .. } => {
+            ExprKind::Call { .. } | ExprKind::CallValue { .. } | ExprKind::Clone(_) => {
                 let temp = self.temp(expr.ty());
                 self.call(package, expr, vec![Some(Place::local(temp))]);
                 value_operand(package, Place::local(temp), expr.ty())

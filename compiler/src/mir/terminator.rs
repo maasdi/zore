@@ -3,6 +3,7 @@ use super::operand::{Operand, Place};
 use super::rvalue::Rvalue;
 use crate::resolve::FunctionId;
 use crate::source::Span;
+use crate::types::TypeId;
 
 #[derive(Debug)]
 pub enum Callee {
@@ -11,6 +12,7 @@ pub enum Callee {
     Value(Place),
     Println,
     Drop,
+    Clone(TypeId),
     /// `[Ref(map), key, value]`; panics without consuming the value on a duplicate key.
     MapInsertNew,
     /// `[Ref(map), key, value]`.
@@ -29,7 +31,11 @@ impl Callee {
             Callee::MapInsertNew | Callee::MapAssign | Callee::MapRemove => {
                 Some(crate::ast::ParamMode::Mut)
             }
-            Callee::Function(_) | Callee::Value(_) | Callee::Println | Callee::Drop => None,
+            Callee::Function(_)
+            | Callee::Value(_)
+            | Callee::Println
+            | Callee::Drop
+            | Callee::Clone(_) => None,
         }
     }
 }

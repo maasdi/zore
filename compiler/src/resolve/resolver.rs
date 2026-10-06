@@ -216,6 +216,9 @@ impl<'a> Resolver<'a> {
         if func.name.text == "drop" {
             self.check_drop_signature(func, receiver);
         }
+        if func.name.text == "clone" {
+            self.check_clone_signature(func, receiver, type_name);
+        }
         let key = (strukt, func.name.text.clone());
         if let Some(&first) = self.out.methods.get(&key) {
             let first = self.out.functions[first.0 as usize].name.span;
@@ -249,6 +252,42 @@ impl<'a> Resolver<'a> {
         }
         if let Some(result) = func.results.first() {
             self.error("`drop` returns no result", result.span());
+        }
+    }
+
+    fn check_clone_signature(
+        &mut self,
+        func: &ast::FuncDecl,
+        receiver: &ast::Param,
+        type_name: &ast::Name,
+    ) {
+        if receiver.mode != ast::ParamMode::Borrow {
+            self.out.diagnostics.push(
+                Diagnostic::new(
+                    Severity::Error,
+                    "`clone` must have a shared receiver",
+                    receiver.span,
+                )
+                .note("cloning borrows its argument and never consumes or mutates it"),
+            );
+        }
+        if let Some(param) = func.params.first() {
+            self.error("`clone` takes no parameters", param.span);
+        }
+        let returns_receiver = matches!(
+            &func.results[..],
+            [ast::Type::Named(result)] if result.text == type_name.text
+        );
+        if !returns_receiver {
+            let span = func.results.first().map_or(func.name.span, ast::Type::span);
+            self.out.diagnostics.push(
+                Diagnostic::new(
+                    Severity::Error,
+                    format!("`clone` must return exactly `{}`", type_name.text),
+                    span,
+                )
+                .note("a custom clone returns an independent value of its own receiver type"),
+            );
         }
     }
 

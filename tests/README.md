@@ -64,7 +64,8 @@ forward-reference/cycle rules.
 partial moves/reinitialization, custom-destructor restrictions, recursive borrow
 provenance, and exclusive mutable-slice reborrows.
 `conformance/destruction.md` covers drop receiver rules, Copy/clone
-interaction, resource zero states, and panic unwinding.
+interaction, clone availability and cleanup after a panicking clone, resource
+zero states, and panic unwinding.
 `conformance/concurrency.md` covers async calls, task typing and retrieval,
 task panics, process exit, all-exit spawn lifetime proof, and channel message
 escape/close/zero-value/cleanup behavior.
@@ -104,7 +105,7 @@ literals, typing, element mutability, slicing, move and view rules, and
 native construction, access, drop order, and panics have counterparts in the
 parser, check, ownership, and native suites, as do the `maps` rows for
 literals, key types, lookup, assignment, removal, provenance, and cleanup.
-`clone`, growth and length APIs, map iteration, and rows that depend on async, maps, tasks, or channels
+Growth and length APIs, map iteration, and rows that depend on async, tasks, or channels
 remain pending, as do the remaining runtime and native rows elsewhere.
 
 Use Rust unit tests for small source/IR utilities and pass algorithms. Use Cargo

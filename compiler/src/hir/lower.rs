@@ -74,6 +74,11 @@ pub fn check(
                 .methods
                 .get(&(StructId(index as u32), "drop".to_string()))
                 .copied(),
+            clone: checker
+                .res
+                .methods
+                .get(&(StructId(index as u32), "clone".to_string()))
+                .copied(),
             fields: fields
                 .iter()
                 .map(|(name, ty, span)| hir::Field {
@@ -1180,6 +1185,10 @@ impl<'a> Checker<'a> {
                 self.error("`drop` can only be called", span);
                 None
             }
+            Res::Clone => {
+                self.error("`clone` can only be called", span);
+                None
+            }
             Res::Unsupported => None,
         }
     }
@@ -1607,6 +1616,7 @@ impl<'a> Checker<'a> {
             Some(Res::Function(id)) => self.function_call(id, name, None, args, span),
             Some(Res::Println) => self.println(args, span),
             Some(Res::Drop) => self.drop_call(args, span),
+            Some(Res::Clone) => self.clone_call(args, span),
             Some(Res::Primitive(ty)) if ty == TypeStore::ERROR => {
                 self.error_constructor(args, span)
             }
@@ -1768,6 +1778,10 @@ impl<'a> Checker<'a> {
                 diagnostic = diagnostic.note(
                     "`Array<T>` length, append, remove, and capacity APIs are not specified yet",
                 );
+            }
+            if name.text == "clone" {
+                diagnostic = diagnostic
+                    .note("write `clone(value)`; a method form exists only for a custom `clone`");
             }
             if matches!(self.types.kind(ty), TypeKind::Map { .. }) {
                 diagnostic = diagnostic
@@ -2172,6 +2186,89 @@ impl<'a> Checker<'a> {
             types: Vec::new(),
             span,
         }))
+    }
+
+    fn custom_clone(&self, ty: TypeId) -> Option<FunctionId> {
+        let id = self.types.struct_id(ty)?;
+        self.res.methods.get(&(id, "clone".to_string())).copied()
+    }
+
+    /// The field or element type that stops `ty` from being cloned.
+    fn clone_blocker(&self, ty: TypeId) -> Option<TypeId> {
+        let element_blocker = |element: TypeId| {
+            if self.type_is_copy(element) {
+                None
+            } else {
+                self.clone_blocker(element)
+            }
+        };
+        match self.types.kind(ty) {
+            TypeKind::Struct(id) => {
+                if self.custom_clone(ty).is_some() {
+                    return None;
+                }
+                if self.res.methods.contains_key(&(id, "drop".to_string())) {
+                    return Some(ty);
+                }
+                self.fields[id.0 as usize]
+                    .iter()
+                    .filter_map(|(_, field_ty, _)| *field_ty)
+                    .find_map(element_blocker)
+            }
+            TypeKind::Array { element, .. } | TypeKind::DynArray { element } => {
+                element_blocker(element)
+            }
+            TypeKind::Map { value, .. } => element_blocker(value),
+            _ => Some(ty),
+        }
+    }
+
+    fn clone_call(&mut self, args: &[ast::Expr], span: Span) -> Option<Value> {
+        let [arg] = args else {
+            self.error("`clone` takes exactly 1 argument", span);
+            self.report_arg_errors(args);
+            return None;
+        };
+        let value = self.expr(arg, None)?;
+        let expr = self.with_default_type(value)?;
+        let ty = expr.ty();
+        if !matches!(
+            self.types.kind(ty),
+            TypeKind::Struct(_)
+                | TypeKind::Array { .. }
+                | TypeKind::DynArray { .. }
+                | TypeKind::Map { .. }
+        ) {
+            let message = format!("cannot clone a value of type `{}`", self.name(ty));
+            self.diagnostics.push(
+                Diagnostic::new(Severity::Error, message, expr.span)
+                    .note("clone applies to structs, fixed arrays, `Array<T>`, and maps"),
+            );
+            return None;
+        }
+        if let Some(id) = self.custom_clone(ty) {
+            return self.function_call(id, "clone", Some(expr), &[], span);
+        }
+        if let Some(blocker) = self.clone_blocker(ty) {
+            let message = format!("type `{}` cannot be cloned", self.name(blocker));
+            let mut diagnostic = Diagnostic::new(Severity::Error, message, expr.span);
+            diagnostic = if self.types.struct_id(blocker).is_some() {
+                diagnostic.note(format!(
+                    "a type with a custom `drop` needs a custom `clone`: `func (value {}) clone() {}`",
+                    self.name(blocker),
+                    self.name(blocker)
+                ))
+            } else {
+                diagnostic.note("its fields or elements must be Copy or clonable")
+            };
+            self.diagnostics.push(diagnostic);
+            return None;
+        }
+        Some(Value::Typed(typed(
+            ExprKind::Clone(Box::new(expr)),
+            ty,
+            span,
+        )))
     }
 
     fn error_constructor(&mut self, args: &[ast::Expr], span: Span) -> Option<Value> {
@@ -3395,6 +3492,7 @@ fn subexpressions(expr: &hir::Expr) -> Vec<&hir::Expr> {
         ExprKind::Println(inner)
         | ExprKind::Drop(inner)
         | ExprKind::Convert(inner)
+        | ExprKind::Clone(inner)
         | ExprKind::Error(inner)
         | ExprKind::Try(inner)
         | ExprKind::Unary { operand: inner, .. } => vec![inner],

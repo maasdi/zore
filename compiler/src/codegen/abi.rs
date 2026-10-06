@@ -19,6 +19,7 @@ declare zeroext i1 @zore_map_detach(ptr, i32, ptr, ptr)
 declare i64 @zore_map_len(ptr)
 declare ptr @zore_map_value_at(ptr, i64)
 declare void @zore_map_free(ptr)
+declare ptr @zore_map_clone_shape(ptr)
 declare void @zore_raise_panic(ptr, i64)
 declare zeroext i1 @zore_panic_pending()
 declare void @zore_enter_drop()
@@ -199,7 +200,11 @@ impl FunctionBuilder<'_, '_> {
                 self.store_map_value(&slot, &kind, &key, &args[2], &value_ty);
                 None
             }
-            Callee::Function(_) | Callee::Value(_) | Callee::Println | Callee::Drop => {
+            Callee::Function(_)
+            | Callee::Value(_)
+            | Callee::Println
+            | Callee::Drop
+            | Callee::Clone(_) => {
                 unreachable!("not a map operation")
             }
         }

@@ -726,33 +726,39 @@ impl FunctionBuilder<'_, '_> {
         self.line(format!(
             "{length} = extractvalue {{ ptr, i64 }} {descriptor}, 1"
         ));
+        self.drop_elements(&data, element, &length);
         let element_ty = self.ty(element);
-        if !self.module.package.is_copy(element) {
-            let counter = self.fresh();
-            self.hoist_alloca(&counter, "i64");
-            self.line(format!("store i64 {length}, ptr {counter}"));
-            let (check, body, done) = (self.label(), self.label(), self.label());
-            self.line(format!("br label %{check}"));
-            self.out.push_str(&format!("{check}:\n"));
-            let remaining = self.fresh();
-            self.line(format!("{remaining} = load i64, ptr {counter}"));
-            let more = self.fresh();
-            self.line(format!("{more} = icmp ugt i64 {remaining}, 0"));
-            self.line(format!("br i1 {more}, label %{body}, label %{done}"));
-            self.out.push_str(&format!("{body}:\n"));
-            let index = self.fresh();
-            self.line(format!("{index} = sub i64 {remaining}, 1"));
-            self.line(format!("store i64 {index}, ptr {counter}"));
-            let slot = self.fresh();
-            self.line(format!(
-                "{slot} = getelementptr inbounds {element_ty}, ptr {data}, i64 {index}"
-            ));
-            self.drop_unconditional(&slot, element);
-            self.line(format!("br label %{check}"));
-            self.out.push_str(&format!("{done}:\n"));
-        }
         let bytes = self.byte_size(&element_ty, &length);
         self.line(format!("call void @zore_free(ptr {data}, i64 {bytes})"));
+    }
+
+    pub(super) fn drop_elements(&mut self, data: &str, element: TypeId, count: &str) {
+        if self.module.package.is_copy(element) {
+            return;
+        }
+        let element_ty = self.ty(element);
+        let counter = self.fresh();
+        self.hoist_alloca(&counter, "i64");
+        self.line(format!("store i64 {count}, ptr {counter}"));
+        let (check, body, done) = (self.label(), self.label(), self.label());
+        self.line(format!("br label %{check}"));
+        self.out.push_str(&format!("{check}:\n"));
+        let remaining = self.fresh();
+        self.line(format!("{remaining} = load i64, ptr {counter}"));
+        let more = self.fresh();
+        self.line(format!("{more} = icmp ugt i64 {remaining}, 0"));
+        self.line(format!("br i1 {more}, label %{body}, label %{done}"));
+        self.out.push_str(&format!("{body}:\n"));
+        let index = self.fresh();
+        self.line(format!("{index} = sub i64 {remaining}, 1"));
+        self.line(format!("store i64 {index}, ptr {counter}"));
+        let slot = self.fresh();
+        self.line(format!(
+            "{slot} = getelementptr inbounds {element_ty}, ptr {data}, i64 {index}"
+        ));
+        self.drop_unconditional(&slot, element);
+        self.line(format!("br label %{check}"));
+        self.out.push_str(&format!("{done}:\n"));
     }
 
     fn drop_map(&mut self, address: &str, value: TypeId) {
@@ -1339,6 +1345,7 @@ impl FunctionBuilder<'_, '_> {
                 let result = match callee {
                     Callee::Function(id) => self.call(*id, args),
                     Callee::Value(place) => self.call_value(place, args),
+                    Callee::Clone(ty) => Some(self.clone_call(*ty, args)),
                     Callee::Println => {
                         self.println(&args[0], *span);
                         None
