@@ -60,3 +60,19 @@ pub fn place_type(package: &hir::Package, locals: &[LocalDecl], place: &Place) -
             projection_type(package, ty, projection)
         })
 }
+
+/// How an owning closure takes a capture: Move values and assigned Copy locals are moved.
+pub fn captured_operand(
+    package: &hir::Package,
+    locals: &[LocalDecl],
+    place: &Place,
+    exclusive: bool,
+) -> Operand {
+    let moved = !package.is_copy(place_type(package, locals, place))
+        || exclusive && !locals[place.local.0 as usize].by_reference;
+    if moved {
+        Operand::Move(place.clone())
+    } else {
+        Operand::Copy(place.clone())
+    }
+}

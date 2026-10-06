@@ -2224,3 +2224,63 @@ func main() {
         "2\n1\n",
     );
 }
+
+#[test]
+fn owning_closures_keep_their_state_and_free_it() {
+    prints(
+        "package main
+
+type Job struct { Id int }
+
+func (j mut Job) drop() { println(j.Id) }
+
+func consume(j own Job) { println(j.Id + 1000) }
+
+func counter() func() int {
+    var count = 0
+    return func() int {
+        count += 1
+        return count
+    }
+}
+
+type Handler struct {
+    run func(int) int
+}
+
+func scaled(scale int) Handler {
+    return Handler{run: func(x int) int { return x * scale }}
+}
+
+func holding(job own Job) func() int {
+    return func() int { return job.Id }
+}
+
+func main() {
+    let next = counter()
+    println(next())
+    println(next())
+    let other = counter()
+    println(other())
+    var h = scaled(3)
+    println((h.run)(5))
+    var hold = holding(Job{Id: 1})
+    println(hold())
+    hold = holding(Job{Id: 2})
+    println(hold())
+    var seen = 10
+    var later = Array<func() int>{}
+    later.push(func() int { return seen })
+    seen = 20
+    println((later[0])() + seen)
+    let job = Job{Id: 3}
+    let finish = func() { consume(job) }
+    finish()
+    let kept = Job{Id: 4}
+    let never = func() { consume(kept) }
+    println(0)
+}
+",
+        "1\n2\n1\n15\n1\n1\n2\n30\n1003\n3\n0\n4\n2\n",
+    );
+}

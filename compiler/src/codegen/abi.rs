@@ -65,12 +65,16 @@ impl FunctionBuilder<'_, '_> {
             .clone();
         let address = self.address(place);
         let closure = self.fresh();
-        self.line(format!("{closure} = load {{ ptr, ptr }}, ptr {address}"));
+        self.line(format!(
+            "{closure} = load {{ ptr, ptr, ptr }}, ptr {address}"
+        ));
         let code = self.fresh();
-        self.line(format!("{code} = extractvalue {{ ptr, ptr }} {closure}, 0"));
+        self.line(format!(
+            "{code} = extractvalue {{ ptr, ptr, ptr }} {closure}, 0"
+        ));
         let environment = self.fresh();
         self.line(format!(
-            "{environment} = extractvalue {{ ptr, ptr }} {closure}, 1"
+            "{environment} = extractvalue {{ ptr, ptr, ptr }} {closure}, 1"
         ));
         let mut rendered = vec![format!("ptr {environment}")];
         rendered.extend(self.arguments(args));

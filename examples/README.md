@@ -31,4 +31,4 @@ example until they work.
 | [`collections`](collections) | `len`, `push`, and `pop`, and `for … in` loops over slices, `Array<T>`, and maps | §5.10, §12.7 |
 | [`maps`](maps) | `map[K]V` literals, two-result lookup, assignment, ownership-transferring `remove` | §13.3 |
 | [`clone`](clone) | `clone` of structs, `Array<T>`, and maps, and a custom `clone` for a resource | §10.7 |
-| [`closures`](closures) | Closure literals, function types and parameters, shared and exclusive captures, `?` in a closure | §16 |
+| [`closures`](closures) | Closure literals, function types and parameters, shared and exclusive captures, `?` in a closure, a returned counter, and a call-once closure | §16 |

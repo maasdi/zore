@@ -24,7 +24,7 @@ A newly discovered semantic gap blocks its affected feature, not unrelated work.
 | ID | Question / missing detail | Reference | Needed before |
 | --- | --- | --- | --- |
 | Q01 | Listed lexical choices and `_` target forms are resolved; see Q01a–o below. Explicit error discards are permitted by §15.6. This does not imply a complete formal grammar. | §3.5–3.18, §5.5, §15.6, §4.1, §41.1 | Affected lexer/parser/resolution behavior |
-| Q02 | Remaining grammar for strings and full `go` expressions; collection loops are resolved in §5.10 (Q02h); closures and function types are resolved for the first slice in Q02g (escaping/call-once forms remain open). Map borrowed entry APIs remain Q05. Arrays/indexing/slicing are resolved in Q02e and map construction/lookup/assignment/removal in Q02f; assignment, operators, calls, and struct construction are also locked. | §5.6, §7.5–7.8, §8.4, §41.1 | Expression parser/lowering |
+| Q02 | Remaining grammar for strings and full `go` expressions; collection loops are resolved in §5.10 (Q02h); closures and function types are resolved in Q02g, with owning and call-once closures in Q02i. Map borrowed entry APIs remain Q05. Arrays/indexing/slicing are resolved in Q02e and map construction/lookup/assignment/removal in Q02f; assignment, operators, calls, and struct construction are also locked. | §5.6, §7.5–7.8, §8.4, §41.1 | Expression parser/lowering |
 | Q03 | Core bindings, blocks, conditionals, loops, scope-entry points, returns, result forwarding, and expression-statement policy are resolved. Detailed `?` typing is resolved (Q06b); task retrieval forms are resolved (Q09a); collection forms remain in Q02. | §5.4–5.10, §7.7–7.8, §41.2–3 | Statement parser/typing |
 | Q04 | Zero/resource interaction resolved in Q04e; see Q04a–d for earlier decisions. Shift contradiction resolved in Q11. This does not imply a complete collection/task expression grammar (Q02) or predeclared conversion API (Q05). | §5.3–5.4, §6.5–6.6, §7.6, §10.2, §19.8, §41.4–5 | Type checking and runtime semantics |
 | Q05 | Local package discovery/import mapping, complete predeclared API inventory, initial standard-library signatures beyond `println`, float text formatting for `println`, package variable initialization order, and remaining type-layout validity rules. The entry-point contract and `println` are resolved in Q05a. Functions/types support forward references and method conflicts are defined (§7.8). Registry/solver remain out of MVP. | §3, §5.7, §7.8, §37, §42, §45 | Resolution/package checking and first native example |
@@ -140,6 +140,21 @@ A newly discovered semantic gap blocks its affected feature, not unrelated work.
   new storage is freed, and unwinding continues. (g) Allocation failure aborts,
   as for `Array<T>` (Q17g). Pending cases: `tests/conformance/destruction.md`.
 
+- **Q02i — Owning and call-once closures:** locked in §16.4 and §16.6 at the
+  maintainer's direction. Ownership is inferred: a literal is owning when it, or
+  a local it initializes (followed through `let g = f`), is returned, stored in
+  a field, fixed array, `Array<T>`, or map value, or passed to `own`. A closure
+  that consumes a captured Move value is call-once, which also makes it owning;
+  it must initialize a `let` binding that is only called directly, and the call
+  consumes it. Filled conservatively: (a) a Copy local an owning closure
+  assigns is treated as moved unless it is a by-reference parameter; (b) an
+  owning closure may not store a view of one captured value's storage into
+  another, since the values move together; (c) a shared parameter whose type
+  holds a function value inside a struct, array, or collection is rejected, and
+  slices never hold function values; (d) captured values are destroyed in
+  reverse capture order. Executable cases are listed in
+  `tests/conformance/closures.md`.
+
 - **Q02h — Collection loops and methods:** locked in §5.10 and §12.7 at the
   maintainer's direction. `for item in c`, `for i, item in c`, and `for key,
   value in m`; `in` is a keyword. The item is a shared borrow and the loop
@@ -163,8 +178,8 @@ A newly discovered semantic gap blocks its affected feature, not unrelated work.
   parameters cannot be `mut` or `own`. Implemented end to end; executable cases
   are listed in `tests/conformance/closures.md`. **Still open:** escaping
   closures with owned environments, call-once closures that consume a captured
-  Move value, declared functions used as values, storing a view of a closure's
-  own parameter into a capture (Q22), `async`
+  Move value (both resolved in Q02i), declared functions used as values,
+  storing a view of a closure's own parameter into a capture (Q22), `async`
   closures, field-level captures, and closures with tasks (M25+).
 
 - **Q02f — Map construction, lookup, assignment, removal:** accepted and

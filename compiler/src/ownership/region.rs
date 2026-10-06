@@ -11,9 +11,9 @@ use crate::diagnostic::{Diagnostic, Severity};
 use crate::hir;
 use crate::mir::{
     BasicBlock, BlockId, Body, Callee, Local, Operand, Place, Program, Projection, Rvalue,
-    Statement, Terminator, place_type,
+    Statement, Terminator, captured_operand, place_type,
 };
-use crate::resolve::{FieldId, LocalKind};
+use crate::resolve::{FieldId, FunctionId, LocalKind};
 use crate::source::Span;
 use crate::types::{TypeId, TypeKind};
 
@@ -427,15 +427,30 @@ impl<'a> Analysis<'a> {
             self.check_view_store(place, state, site.span, findings);
         }
         let loans = self.rvalue_loans(rvalue, site, state);
+        let captured = self.owned_captures(rvalue);
         let moved: Vec<&Operand> = match rvalue {
             Rvalue::Use(operand) => vec![operand],
             Rvalue::Aggregate(_, operands) => operands.iter().collect(),
-            _ => Vec::new(),
+            _ => captured.iter().collect(),
         };
         self.clear_moved(moved, state);
         self.assign(place, loans, state);
-        if let Rvalue::Closure { function, captures } = rvalue {
-            self.apply_capture_outputs(*function, captures, site, state);
+        match rvalue {
+            Rvalue::Closure {
+                function,
+                captures,
+                owning: false,
+            } => self.apply_capture_outputs(*function, captures, site, state),
+            Rvalue::Closure {
+                function,
+                owning: true,
+                ..
+            } => {
+                if let Some(findings) = findings.as_deref_mut() {
+                    self.check_owned_capture_outputs(*function, site.span, findings);
+                }
+            }
+            _ => {}
         }
         if let Some(findings) = findings {
             self.check_drop_order(state, site.span, findings);
@@ -507,6 +522,48 @@ impl<'a> Analysis<'a> {
     }
 
     /// A closure that stores views into captured variables may do so whenever it runs.
+    /// The values an owning closure copies or moves into its environment.
+    fn owned_captures(&self, rvalue: &Rvalue) -> Vec<Operand> {
+        match rvalue {
+            Rvalue::Closure {
+                captures,
+                owning: true,
+                ..
+            } => captures
+                .iter()
+                .map(|(place, exclusive)| {
+                    captured_operand(self.package, &self.body.locals, place, *exclusive)
+                })
+                .collect(),
+            _ => Vec::new(),
+        }
+    }
+
+    /// An owning closure keeps its captures together, so one may not view another's storage.
+    fn check_owned_capture_outputs(
+        &self,
+        function: FunctionId,
+        span: Span,
+        findings: &mut Findings,
+    ) {
+        let contract = &self.contracts[function.0 as usize];
+        let skipped = self.package.function(function).params.len();
+        let stores_own_storage = contract.outputs[skipped..]
+            .iter()
+            .any(|origins| origins[skipped..].iter().any(|origin| origin.storage));
+        if stores_own_storage {
+            findings.report_once(
+                span,
+                Diagnostic::new(
+                    Severity::Error,
+                    "an owning closure cannot store a view of one captured value in another",
+                    span,
+                )
+                .note("the captured values move with the closure, so such a view could outlive a later change"),
+            );
+        }
+    }
+
     fn apply_capture_outputs(
         &mut self,
         function: crate::resolve::FunctionId,
@@ -1085,6 +1142,13 @@ impl<'a> Analysis<'a> {
                 loans.extend(state[place.local.0 as usize].iter().copied());
                 loans
             }
+            Rvalue::Closure { owning: true, .. } => {
+                let mut loans = BTreeSet::new();
+                for operand in self.owned_captures(rvalue) {
+                    loans.extend(self.operand_loans(&operand, site, state));
+                }
+                loans
+            }
             Rvalue::Closure { captures, .. } => {
                 let mut loans = BTreeSet::new();
                 for (place, exclusive) in captures {
@@ -1213,6 +1277,11 @@ impl<'a> Analysis<'a> {
                 out.push(self.access(place, kind, Depth::Deep, action, span, true));
                 for bound in [low, high].into_iter().flatten() {
                     self.operand_accesses(bound, None, span, out);
+                }
+            }
+            Rvalue::Closure { owning: true, .. } => {
+                for operand in self.owned_captures(rvalue) {
+                    self.operand_accesses(&operand, None, span, out);
                 }
             }
             Rvalue::Closure { captures, .. } => {

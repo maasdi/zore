@@ -705,11 +705,16 @@ impl Builder {
         mut destinations: Vec<Option<Place>>,
     ) {
         let map_args: Vec<hir::Expr>;
+        let mut consumed = None;
         let (callee, args) = match &expr.kind {
             ExprKind::Call { function, args } => (Callee::Function(*function), &args[..]),
             // The callee is evaluated before the arguments.
-            ExprKind::CallValue { callee, args } => {
-                (Callee::Value(self.base_place(package, callee)), &args[..])
+            ExprKind::CallValue { callee, args, once } => {
+                let place = self.base_place(package, callee);
+                if *once {
+                    consumed = Some(place.clone());
+                }
+                (Callee::Value(place), &args[..])
             }
             ExprKind::Println(arg) => (Callee::Println, std::slice::from_ref(&**arg)),
             ExprKind::Drop(arg) => (Callee::Drop, std::slice::from_ref(&**arg)),
@@ -788,6 +793,14 @@ impl Builder {
             }
         }
         self.emit_call(callee, args, destinations, expr.span);
+        if let Some(closure) = consumed {
+            self.emit_call(
+                Callee::Drop,
+                vec![Operand::Move(closure)],
+                Vec::new(),
+                expr.span,
+            );
+        }
     }
 
     fn emit_call(
@@ -868,7 +881,11 @@ impl Builder {
                 self.call(package, expr, vec![Some(Place::local(temp))]);
                 value_operand(package, Place::local(temp), expr.ty())
             }
-            ExprKind::Closure { function, captures } => {
+            ExprKind::Closure {
+                function,
+                captures,
+                owning,
+            } => {
                 let captures = captures
                     .iter()
                     .map(|&(local, exclusive)| (Place::local(Local(local.0)), exclusive))
@@ -879,6 +896,7 @@ impl Builder {
                     Rvalue::Closure {
                         function: *function,
                         captures,
+                        owning: *owning,
                     },
                     span,
                 )

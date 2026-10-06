@@ -1107,7 +1107,7 @@ fn closures_are_move_values_and_calls_use_them_exclusively() {
 }
 
 #[test]
-fn captured_move_values_are_borrowed_never_consumed() {
+fn borrowing_closures_never_consume_captured_values() {
     accepts(&resource_body(
         "let r = Res{id: 1}
         let f = func() { show(r) }
@@ -1115,13 +1115,28 @@ fn captured_move_values_are_borrowed_never_consumed() {
         f()
         take(r)",
     ));
+    accepts(&resource_body(
+        "let r = Res{id: 1}
+        let f = func() { take(r) }
+        f()",
+    ));
     rejects(
         &resource_body(
             "let r = Res{id: 1}
             let f = func() { take(r) }
+            f()
+            show(r)",
+        ),
+        "use of moved value `r`",
+    );
+    rejects(
+        &resource_body(
+            "let r = Res{id: 1}
+            let f = func() { take(r) }
+            f()
             f()",
         ),
-        "moving captured value `r` out of a function literal is not supported yet",
+        "use of moved value `f`",
     );
     rejects(
         &resource_body(
@@ -1593,5 +1608,88 @@ fn push_and_pop_move_values_and_carry_views() {
     rejects(
         &program("func keep(xs mut Array<[]int>) { var d = [int; 1]{1}\nxs.push(d[:]) }"),
         "cannot store a view of local `d` into `xs`",
+    );
+}
+
+#[test]
+fn an_escaping_closure_owns_copies_and_moves_of_its_captures() {
+    accepts(&program(
+        "func counter() func() int { var count = 0\nreturn func() int { count += 1\nreturn count } }
+        func adder(base int) func(int) int { let f = func(x int) int { return base + x }\nlet g = f\nreturn g }
+        type Handler struct { run func(int) int }
+        func handler(scale int) Handler { return Handler{run: func(x int) int { return x * scale }} }
+        func keep(f own func() int) Array<func() int> { var out = Array<func() int>{}\nout.push(f)\nreturn out }",
+    ));
+    accepts(&body(
+        "var seen = 1
+        var fs = Array<func() int>{}
+        fs.push(func() int { return seen + 1 })
+        seen = 5
+        println(seen + fs.len())",
+    ));
+    rejects(
+        &body(
+            "var count = 0
+            var fs = Array<func()>{}
+            fs.push(func() { count += 1 })
+            println(count)",
+        ),
+        "use of moved value `count`",
+    );
+    rejects(
+        &resource_body(
+            "let r = Res{id: 1}
+            var fs = Array<func()>{}
+            fs.push(func() { show(r) })
+            show(r)",
+        ),
+        "use of moved value `r`",
+    );
+}
+
+#[test]
+fn an_owning_closure_keeps_the_borrows_of_captured_views() {
+    rejects(
+        &program(
+            "func view() func() int { var data = [int; 2]{1, 2}\nlet s = data[:]\nreturn func() int { return s[0] } }",
+        ),
+        "cannot return a view of local `data`",
+    );
+    accepts(&program(
+        "func view(data []int) func() int { return func() int { return data[0] } }",
+    ));
+    rejects(
+        &body(
+            "var fs = Array<func() int>{}
+            { var data = [int; 2]{1, 2}\nlet s = data[:]\nfs.push(func() int { return s[0] }) }
+            println(fs.len())",
+        ),
+        "`data` does not live long enough",
+    );
+    accepts(&program(
+        "func outer() func() int { var n = 1\nlet inner = func() int { return n }\nreturn inner }",
+    ));
+}
+
+#[test]
+fn an_owning_closure_cannot_view_one_capture_from_another() {
+    rejects(
+        &program(
+            "func f(empty []int) func() int { var data = [int; 2]{1, 2}\nvar keep = empty
+            return func() int { keep = data[:]\nreturn keep.len() } }",
+        ),
+        "an owning closure cannot store a view of one captured value in another",
+    );
+}
+
+#[test]
+fn a_borrowing_closure_still_cannot_outlive_its_captures() {
+    rejects(
+        &body(
+            "var keep = func() int { return 0 }
+            { let n = 1\nkeep = func() int { return n } }
+            println(keep())",
+        ),
+        "`n` does not live long enough",
     );
 }

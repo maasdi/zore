@@ -3517,7 +3517,7 @@ satisfies its uses; the programmer writes no capture list.
 | Only read (including copying a Copy value out, or passing it to a borrowed parameter) | Shared borrow of the outer local |
 | Assigned, compound-updated, or passed to a `mut` parameter or receiver | Exclusive borrow; the outer binding must be a mutable place (§11.6) |
 | A captured closure or `mut []T` value, whatever the use | Exclusive borrow; no `var` is required, as for copying a mutable view (§12.3) |
-| A Move value consumed (passed to `own`, returned, or `drop`ped) | **Rejected in this slice** (see below) |
+| A Move value consumed (passed to `own`, returned, `drop`ped, or moved into a binding or value) | The closure owns the value and is call-once (§16.6) |
 
 A local used from a closure nested inside another closure is captured by each
 enclosing closure in turn, and an exclusive use anywhere makes every capture in
@@ -3550,65 +3550,121 @@ number of times. A closure that mutates captured state needs no `var` binding:
 its exclusive loan is held by the closure itself, and only one live name for it
 exists.
 
-Inside a closure body, a capture refers to the outer local in place. A value
+The rules above describe a **borrowing** closure. An owning closure (§16.4)
+captures values instead of borrowing places.
+
+Inside a borrowing closure's body, a capture refers to the outer local in place. A value
 that holds a borrow may be stored into a captured local only when it borrows
 from other captured locals; the outer local is then treated as borrowing them
 from the point the closure is created. Storing a view of the closure's own
 parameters or locals into a capture is rejected (the first as unsupported).
 Storing other values is allowed through an exclusive capture.
 
-Consuming a captured Move value inside the body would make the closure
-callable only once. That form is rejected with an "unsupported" diagnostic until
-a call-once rule is locked under Q02. This is a stated limitation, not a
-permanent rule.
+Consuming a captured Move value inside the body makes the closure call-once
+(§16.6).
 
-## 16.4 Non-escaping closures — LOCKED
+## 16.4 Borrowing and owning closures — LOCKED
 
-In this slice a closure never outlives the scope that created it. A closure
-value may be bound to a local, assigned to a local of the same function type,
-called, and passed as an argument to a parameter of function type. It may not
-be:
+A closure is **borrowing** unless it escapes; then it is **owning**. The
+compiler infers which; no syntax marks it. A closure literal is owning when the
+literal itself, or a local it initializes (directly or through `let g = f`
+rebinding), is:
 
-- returned, or forwarded out as a result: no function or function type may
-  have a result containing a function type;
-- stored in a struct field, array, slice, `Array<T>`, map, or channel: no such
-  element or field type may be a function type;
-- assigned to a place that outlives any local it captures;
-- moved into a task (`go`), captured by another escaping closure, or live across
-  an `await`.
+- returned from a function or closure;
+- stored in a struct field, fixed-array or `Array<T>` element, or map value,
+  whether by a literal, an assignment to a field or element, a map assignment,
+  or `push`;
+- passed to an `own` parameter.
 
-Each of these is a compile-time error (an "unsupported" diagnostic where the
-form is deferred rather than unsafe). A parameter of function type is itself a
-borrowed value and follows the same rules: the callee may call it or pass it on,
-but not store, move, or return it. Function-typed parameters cannot be declared
-`mut` or `own`.
+A call-once closure (§16.6) is also owning.
 
-A function type or literal may have a result containing a borrowed view. Since
-a call through a function value cannot tell which input such a view borrows
-from (§11.7), the result is treated as borrowing from every argument and from
-everything the called closure captured; a `mut` argument holding views is
-treated the same way.
+```ore
+func counter() func() int {
+    var count = 0
+    return func() int {     // owning: the literal is returned
+        count += 1
+        return count
+    }
+}
+```
 
-Because the closure cannot escape, no closure needs heap storage or a
-destructor, and nothing is dropped when it goes out of scope; captured locals
-keep their ordinary drop points. A panic or `?` inside a closure runs the
-closure's own cleanup and then continues in its caller as for any call.
+An owning closure captures **values** when it is created, not places:
 
-Escaping closures (owned environments), call-once closures, and use with tasks
-require a further decision under §53 and are tracked in Q02g.
+- a captured Copy local is copied; later changes inside and outside the closure
+  are independent;
+- a captured Move local is moved into the closure, so the outer local cannot be
+  used afterwards;
+- a captured Copy local that the closure assigns is also treated as moved, so
+  the outer local cannot be read afterwards and nobody mistakes the closure's
+  copy for the original.
+
+The closure value owns those captured values. They are destroyed, in reverse
+capture order, when the closure value is destroyed: at the end of its owner's
+scope, on replacement, through `drop`, or when its owner is destroyed. A captured
+value that holds a view keeps that view's backing borrowed for as long as the
+closure lives (§11.7), so an owning closure still cannot outlive what its
+captured views borrow.
+
+Function types may therefore be results, struct field types, and fixed-array,
+`Array<T>`, and map value types. They are never slice element types or map
+keys. A parameter of function type may be `own`, which lets the callee store or
+return it; it cannot be `mut`. As for mutable views (Q20), a shared parameter
+whose type holds a function value inside a struct, array, or collection is
+rejected: calling a closure uses it exclusively, which a shared borrow cannot
+grant. For the same reason a collection loop (§5.10) cannot visit function
+values. Calling a closure stored in a field or element requires that place to
+be usable exclusively, as for any call (§16.2).
+
+Every closure value, borrowing or owning, is checked by the same region
+analysis: a borrowing closure that would outlive a local it captures (by being
+returned, stored, or assigned to an outer place) is rejected, and the
+diagnostic names the captured local. Use with tasks (`go`) and liveness across
+`await` remain unsupported (Q02g).
+
+A panic or `?` inside a closure runs the closure's own cleanup and then
+continues in its caller as for any call.
 
 ## 16.5 Compiler impact (informative)
 
 Resolution gives each closure literal its own body and records its captures;
-typing adds interned function types; MIR lowers a closure to a separate body
-whose capture locals refer to their referents by reference, plus a
-closure-creation value; ownership reuses the existing loan and region machinery
-with the closure value as the loan holder. Code generation represents a closure
-as a code pointer plus a pointer to an environment in the creator's frame that
-holds the captured places' addresses. None of this representation is a
-source-language contract.
+typing adds interned function types and infers whether each literal is
+borrowing, owning, or call-once; MIR lowers a closure to a separate body whose
+capture locals refer to their referents by reference, plus a closure-creation
+value; ownership reuses the existing loan and region machinery with the closure
+value as the loan holder. Code generation represents a closure as a code
+pointer, an environment pointer, and a destructor pointer. A borrowing
+closure's environment lives in the creator's frame and holds the captured
+places' addresses; an owning closure's environment is heap storage holding the
+captured values, which its destructor destroys and frees. None of this
+representation is a source-language contract.
 
 Pending conformance cases: `tests/conformance/closures.md`.
+
+## 16.6 Call-once closures — LOCKED
+
+A closure whose body consumes a captured Move value is **call-once**:
+
+```ore
+let job = Job{Id: 7}
+let finish = func() { consume(job) }   // owns `job`
+finish()                                // consumes `finish`
+finish()                                // rejected: `finish` was used
+```
+
+A call-once closure must be the initializer of a single-name `let` binding.
+That binding may only be called directly, as in `finish()`; it cannot be passed
+as an argument, returned, stored, rebound, captured by another closure, or
+moved. Calling it consumes it, so a second call, or any use after the call, is
+rejected as a use of a moved value. Inside the body each captured value is
+consumed at most once, by the ordinary move rules (§31). Captured values the
+call does not consume are destroyed when the call returns. A call-once closure
+that is never called is destroyed at the end of its scope with every captured
+value.
+
+Ownership, error, and async implications: no new ownership category; an owning
+closure is a Move value that owns its captures, and a call-once call is a move
+of the closure. Panics and `?` inside the body follow §16.4. Async interaction
+remains open.
 
 ---
 

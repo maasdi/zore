@@ -2126,7 +2126,9 @@ fn closures_become_functions_that_borrow_their_captures() {
     ));
     let main = case.function("main");
     let closure = |name: &str| match &let_value(main, name).kind {
-        ExprKind::Closure { function, captures } => (*function, captures.clone()),
+        ExprKind::Closure {
+            function, captures, ..
+        } => (*function, captures.clone()),
         other => panic!("expected a closure, found {other:?}"),
     };
     let local = |name: &str| {
@@ -2294,34 +2296,31 @@ fn closure_bodies_are_checked_as_functions() {
 }
 
 #[test]
-fn closures_cannot_escape_their_scope() {
-    rejects(
-        &program("func make() func() { return func() {} }"),
-        "a function cannot return a function value",
-    );
+fn function_values_can_be_returned_and_stored_but_not_sliced() {
+    accepts(&program(
+        "type S struct { f func() }
+        func make() func() { return func() {} }
+        func g(a own [func(); 1], b own Array<func()>, c own map[string]func(), f own func()) {}
+        func h(s mut S) { (s.f)() }",
+    ));
     for decl in [
-        "type S struct { f func() }",
-        "func g(a [func(); 1]) {}",
-        "func g(a Array<func()>) {}",
         "func g(a []func()) {}",
-        "func g(a map[string]func()) {}",
+        "type S struct { fs mut []func() }",
+        "func g() { var fs = [func(); 1]{func() {}}\nlet s = fs[:] }",
     ] {
-        rejects(
-            &program(decl),
-            "function values cannot be stored in a struct field, array, slice, or map",
-        );
+        rejects(&program(decl), "a slice cannot hold function values");
     }
+    rejects(
+        &program("type S struct { f func() }\nfunc g(s S) {}"),
+        "a shared parameter of type `S` cannot hold a function value",
+    );
     rejects(
         &program("func g(m map[func()]int) {}"),
         "type `func()` cannot be a map key",
     );
     rejects(
-        &program("func g(f own func()) {}"),
-        "a function-typed parameter cannot be `mut` or `own`",
-    );
-    rejects(
         &program("func g(f mut func()) {}"),
-        "a function-typed parameter cannot be `mut` or `own`",
+        "a function-typed parameter cannot be `mut`",
     );
     accepts(&program("func g(f func([]int) []int) {}"));
     rejects(
@@ -2332,6 +2331,46 @@ fn closures_cannot_escape_their_scope() {
         &program("const c = func() {}"),
         "a function literal can only appear inside a function body",
     );
+}
+
+#[test]
+fn call_once_closures_are_bound_with_let_and_called_directly() {
+    let job = "type Job struct { Id int }
+        func (j mut Job) drop() {}
+        func consume(j own Job) {}
+        func run(f func()) { f() }";
+    accepts(&program(&format!(
+        "{job}\nfunc g() {{ let job = Job{{Id: 1}}\nlet finish = func() {{ consume(job) }}\nfinish() }}"
+    )));
+    for (body, message) in [
+        (
+            "let finish = func() { consume(job) }\nrun(finish)",
+            "call-once closure `finish` can only be called directly",
+        ),
+        (
+            "let finish = func() { consume(job) }\nlet again = finish",
+            "call-once closure `finish` can only be called directly",
+        ),
+        (
+            "let finish = func() { consume(job) }\nlet outer = func() { finish() }",
+            "call-once closure `finish` can only be called directly",
+        ),
+        (
+            "var finish = func() { consume(job) }",
+            "a call-once function literal must initialize a `let` binding",
+        ),
+        (
+            "run(func() { consume(job) })",
+            "a call-once function literal must initialize a `let` binding",
+        ),
+    ] {
+        rejects(
+            &program(&format!(
+                "{job}\nfunc g() {{ let job = Job{{Id: 1}}\n{body} }}"
+            )),
+            message,
+        );
+    }
 }
 
 #[test]

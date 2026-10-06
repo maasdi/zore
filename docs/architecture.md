@@ -276,6 +276,15 @@ assignment replaces it. `EndScope` checks each local's storage death against
 only the observing locals of the same scope that drop after it, newest first.
 A whole-local move clears the moved local's holdings.
 
+An owning closure (Q02i) is decided after its enclosing body is checked:
+literals in escaping positions, or bound to locals that escape, become owning,
+and a literal whose body moves a capture is call-once. MIR's
+`Rvalue::Closure { owning: true }` copies or moves each capture into the
+environment instead of borrowing it, and a direct call of a call-once local is
+followed by a `drop` of it. Code generation gives every closure a destructor
+slot; an owning closure's heap environment begins with the capture pointers
+its body loads, so one body serves both kinds.
+
 A collection loop lowers to a counting loop. MIR binds two by-reference
 temporaries with `Rvalue::Ref`: one to the collection, read by the loop header
 each iteration so its shared loan lasts the whole loop, and one per iteration

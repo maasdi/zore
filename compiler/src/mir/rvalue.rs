@@ -39,9 +39,11 @@ pub enum Rvalue {
     },
     /// In declaration/evaluation order.
     Aggregate(AggregateKind, Vec<Operand>),
-    /// Borrows each place, exclusively when marked, in capture order.
+    /// Borrows each place, exclusively when marked, in capture order; an owning
+    /// closure instead copies or moves each value into its own environment.
     Closure {
         function: FunctionId,
         captures: Vec<(Place, bool)>,
+        owning: bool,
     },
 }

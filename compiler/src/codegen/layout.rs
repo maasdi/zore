@@ -37,8 +37,8 @@ impl Module<'_> {
             TypeKind::Slice { .. } => "{ ptr, i64 }".into(),
             TypeKind::DynArray { .. } => "{ ptr, i64, i64 }".into(),
             TypeKind::Map { .. } => "ptr".into(),
-            // The closure body's code, then its captured environment.
-            TypeKind::Func(_) => "{ ptr, ptr }".into(),
+            // The closure body's code, its captured environment, then the environment's destructor.
+            TypeKind::Func(_) => "{ ptr, ptr, ptr }".into(),
         }
     }
 
