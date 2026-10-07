@@ -976,6 +976,7 @@ impl FunctionBuilder<'_, '_> {
                 ));
             }
             TypeKind::Channel { .. } => self.call_on_channel("zore_channel_retain", address),
+            TypeKind::Mutex { .. } => self.call_on_channel("zore_mutex_retain", address),
             TypeKind::Struct(id) => {
                 let fields: Vec<TypeId> = self
                     .module
@@ -1484,6 +1485,7 @@ impl FunctionBuilder<'_, '_> {
             }
             TypeKind::String | TypeKind::Error => self.release_text(address, ty),
             TypeKind::Channel { .. } => self.call_on_channel("zore_channel_release", address),
+            TypeKind::Mutex { .. } => self.call_on_channel("zore_mutex_release", address),
             TypeKind::DynArray { element } => self.drop_dyn_array(address, element),
             TypeKind::Map { value, .. } => self.drop_map(address, value),
             TypeKind::Func(_) => self.drop_closure(address),
@@ -1683,6 +1685,7 @@ impl FunctionBuilder<'_, '_> {
             TypeKind::Func(_) => unreachable!("function values have no operators"),
             TypeKind::Task(_) => unreachable!("tasks have no operators"),
             TypeKind::Channel { .. } => unreachable!("channels have no operators"),
+            TypeKind::Mutex { .. } => unreachable!("mutexes have no operators"),
         }
     }
 
@@ -1956,6 +1959,9 @@ impl FunctionBuilder<'_, '_> {
                         self.channel_close(args);
                         None
                     }
+                    Callee::MutexNew(element) => Some(self.mutex_new(*element, &args[0])),
+                    Callee::MutexWithLock => self.mutex_with_lock(args),
+                    Callee::MutexIsPoisoned => Some(self.mutex_is_poisoned(&args[0])),
                 };
                 let pending = self.fresh();
                 self.line(format!("{pending} = call zeroext i1 @zore_panic_pending()"));

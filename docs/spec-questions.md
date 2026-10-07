@@ -50,6 +50,7 @@ A newly discovered semantic gap blocks its affected feature, not unrelated work.
 | Q25 | Task implementation choices made while implementing §17–18 where the text is silent; each rejects rather than guesses and can be relaxed later. See Q25 below. | §17.8, §18.4, §18.8–18.11 | Parser, checker, codegen, and runtime changes |
 | Q26 | Channel implementation choices made while implementing §19 where the text is silent; each rejects rather than guesses and can be relaxed later. See Q26 below. | §19.2–19.13 | Parser, checker, codegen, and runtime changes |
 | Q27 | Async I/O choices made while implementing §37.3 where the text is silent; each rejects rather than guesses and can be relaxed later. See Q27 below. | §37.3, §36.2 | Library, checker, codegen, and runtime changes |
+| Q28 | Mutex choices made while implementing §20.2 where the text is silent; each rejects rather than guesses and can be relaxed later. See Q28 below. | §20.2, §10.3, §3.18, §41.4 | Parser, checker, codegen, and runtime changes |
 
 ## Resolved decisions
 
@@ -144,6 +145,26 @@ A newly discovered semantic gap blocks its affected feature, not unrelated work.
   already cloned are dropped (in reverse order, map values in entry order), the
   new storage is freed, and unwinding continues. (g) Allocation failure aborts,
   as for `Array<T>` (Q17g). Pending cases: `tests/conformance/destruction.md`.
+
+- **Q28 — Mutex choices:** locked in §20.2 at the maintainer's direction. (a)
+  `Mutex<T>` is a Copy handle to one shared cell, not a Move value, since a Move
+  value cannot be shared between tasks; §10.3 is revised to say so. (b) The
+  constructor is the predeclared `mutex(value)`, with the type inferred from the
+  value as in the spec's conceptual example, and both `mutex` and `Mutex` are
+  protected names (§3.18). (c) The only way to reach the value is
+  `withLock(f)` with `f` of type `func(mut T) R...`; there is no separate lock
+  and unlock, so a lock cannot be forgotten. (d) A guarded value and a callback
+  result cannot hold a slice or function value. (e) A poisoned mutex stays
+  poisoned and every later `withLock` panics; `isPoisoned` is the only other
+  method, and there is no way to recover the value. (f) The lock is not
+  reentrant, and the lock is given to waiters in arrival order. (g) A waiting
+  task counts as blocked for deadlock detection, so locking a mutex inside its
+  own callback, or two tasks locking two mutexes in opposite orders with nothing
+  else running, is reported as a deadlock. (h) The zero mutex (from a drained
+  closed channel, for example) has no lock: `withLock` panics, `isPoisoned` is
+  `false`. (i) No read-write lock, `try` lock, timeout, or condition variable;
+  a task that needs to wait for a state change can use a channel. Pending
+  cases: `tests/conformance/mutex.md`.
 
 - **Q27 — Async I/O choices:** locked in §37.3 at the maintainer's direction
   (time, standard input, whole files, and TCP, waiting on an event loop). (a)

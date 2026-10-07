@@ -17,6 +17,8 @@ mod fiber;
 mod io;
 #[path = "map.rs"]
 mod map;
+#[path = "mutex.rs"]
+mod mutex;
 #[path = "net.rs"]
 mod net;
 #[path = "panic.rs"]
@@ -39,6 +41,11 @@ pub fn finish() {
     let leaked = string::live_buffers();
     if leaked > 0 && !tasks_running && std::env::var_os("ZORE_CHECK_LEAKS").is_some() {
         eprintln!("leak: {leaked} text buffers still owned at exit");
+        std::process::exit(70);
+    }
+    let mutexes = mutex::live_mutexes();
+    if mutexes > 0 && !tasks_running && std::env::var_os("ZORE_CHECK_LEAKS").is_some() {
+        eprintln!("leak: {mutexes} mutexes still alive at exit");
         std::process::exit(70);
     }
     let channels = channel::live_channels();

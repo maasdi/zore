@@ -438,6 +438,11 @@ impl Checker<'_> {
             ExprKind::Clone(inner) | ExprKind::Len(inner) | ExprKind::ArrayPop(inner) => {
                 self.place_moves(inner, moved)
             }
+            ExprKind::MutexWithLock { mutex, callback } => {
+                self.place_moves(mutex, moved);
+                self.place_moves(callback, moved);
+            }
+            ExprKind::MutexIsPoisoned(inner) => self.place_moves(inner, moved),
             ExprKind::MapLookup { map, key } | ExprKind::MapRemove { map, key } => {
                 self.place_moves(map, moved);
                 self.value_moves(key, moved);
@@ -636,6 +641,8 @@ fn children_mut(expr: &mut hir::Expr) -> Vec<&mut hir::Expr> {
         ExprKind::MapLookup { map, key } | ExprKind::MapRemove { map, key } => vec![map, key],
         ExprKind::ArrayPush { array, value } => vec![array, value],
         ExprKind::ChannelSend { channel, value } => vec![channel, value],
+        ExprKind::MutexWithLock { mutex, callback } => vec![mutex, callback],
+        ExprKind::MakeMutex(inner) | ExprKind::MutexIsPoisoned(inner) => vec![inner],
         ExprKind::MakeChannel { capacity, .. } => capacity.as_deref_mut().into_iter().collect(),
         ExprKind::ChannelReceive(inner) | ExprKind::ChannelClose(inner) => vec![inner],
         ExprKind::Len(inner)

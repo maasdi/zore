@@ -2219,7 +2219,17 @@ AArch64 fibers follow the x86-64 design: a 160-byte frame holds `x19`–`x30` an
 `d8`–`d15`, a new stack first returns into a start routine that calls the entry
 function, and the guard is one system page, which is 16 KB on Apple silicon.
 
-The next steps are `select`, mutexes, and byte arrays. Do not accept a
+Mutexes followed (§20.2, Q28). `Mutex<T>` is a pointer to a runtime cell holding
+the lock, a queue of waiters, and the guarded value, with the same counted
+handle as a channel, so copying a handle retains it and the last release drops
+the value through a per-type function the compiler generates. `withLock` is
+one MIR call whose code generation locks, calls the callback with the
+value's address (and a scratch drop-flag block for a Move value), checks the
+panic flag, and unlocks, passing the flag so a panicking callback poisons the
+mutex before the unwind continues. The lock is handed directly to the
+first waiter, which sleeps on a deadlock-counted `Slot`.
+
+The next steps are `select` and byte arrays. Do not accept a
 feature whose move/borrow checks and required cleanup are not yet
 implemented. Any newly discovered semantic gap follows specification §53 and
 `docs/spec-questions.md`.

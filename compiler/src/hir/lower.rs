@@ -301,6 +301,10 @@ impl<'a> Checker<'a> {
                 let element = self.resolve_type(element)?;
                 self.channel_type(element, *span)
             }
+            ast::Type::Mutex { element, span } => {
+                let element = self.resolve_type(element)?;
+                self.mutex_type(element, *span)
+            }
             ast::Type::Task { results, span } => {
                 let results = self.closure_results(results)?;
                 self.task_type(results, *span)
@@ -365,6 +369,24 @@ impl<'a> Checker<'a> {
             }
         }
         ok.then_some(checked)
+    }
+
+    /// A guarded value outlives every lock holder, so it cannot borrow anything.
+    fn mutex_type(&mut self, element: TypeId, span: Span) -> Option<TypeId> {
+        if self.type_contains(element, &|kind| {
+            matches!(kind, TypeKind::Slice { .. } | TypeKind::Func(_))
+        }) {
+            self.diagnostics.push(
+                Diagnostic::new(
+                    Severity::Error,
+                    "a mutex cannot guard slices or function values",
+                    span,
+                )
+                .note("the guarded value can outlive the storage a view borrows"),
+            );
+            return None;
+        }
+        Some(self.types.mutex_type(element))
     }
 
     /// A queued message outlives its sender, so it cannot borrow anything.
@@ -594,7 +616,7 @@ impl<'a> Checker<'a> {
                         .all(|(_, field_ty, _)| field_ty.is_none_or(|ty| self.type_is_copy(ty)))
             }
             TypeKind::Array { element, .. } => self.type_is_copy(element),
-            TypeKind::Channel { .. } => true,
+            TypeKind::Channel { .. } | TypeKind::Mutex { .. } => true,
             TypeKind::DynArray { .. }
             | TypeKind::Map { .. }
             | TypeKind::Func(_)
@@ -1424,6 +1446,88 @@ impl<'a> Checker<'a> {
         id
     }
 
+    fn new_mutex(&mut self, args: &[ast::Expr], span: Span) -> Option<Value> {
+        let [arg] = args else {
+            self.error("`mutex` takes exactly 1 argument", span);
+            self.report_arg_errors(args);
+            return None;
+        };
+        let value = self.expr(arg, None)?;
+        let value = self.with_default_type(value)?;
+        let value = self.single_value(value)?;
+        let mutex = self.mutex_type(value.ty(), span)?;
+        Some(Value::Typed(typed(
+            ExprKind::MakeMutex(Box::new(value)),
+            mutex,
+            span,
+        )))
+    }
+
+    fn mutex_method(
+        &mut self,
+        mutex: hir::Expr,
+        element: TypeId,
+        method: &str,
+        args: &[ast::Expr],
+        span: Span,
+    ) -> Option<Value> {
+        let wanted = usize::from(method == "withLock");
+        if !self.argument_count(method, wanted, args, span) {
+            return None;
+        }
+        if method == "isPoisoned" {
+            return Some(Value::Typed(hir::Expr {
+                kind: ExprKind::MutexIsPoisoned(Box::new(mutex)),
+                types: vec![TypeStore::BOOL],
+                span,
+            }));
+        }
+        let callback = match self.expr(&args[0], None)? {
+            Value::Typed(expr) => self.single_value(expr)?,
+            Value::Untyped(..) => {
+                self.error("`withLock` needs a function", args[0].span);
+                return None;
+            }
+        };
+        let signature = self.types.func_signature(callback.ty()).cloned();
+        let Some(signature) = signature.filter(|s| s.params == [(ast::ParamMode::Mut, element)])
+        else {
+            let message = format!(
+                "`withLock` needs a function that takes `mut {}`, not `{}`",
+                self.name(element),
+                self.name(callback.ty())
+            );
+            self.error(message, callback.span);
+            return None;
+        };
+        if signature.results.iter().any(|&ty| {
+            self.type_contains(ty, &|kind| {
+                matches!(kind, TypeKind::Slice { .. } | TypeKind::Func(_))
+            })
+        }) {
+            self.diagnostics.push(
+                Diagnostic::new(
+                    Severity::Error,
+                    "a function given to `withLock` cannot return slices or function values",
+                    callback.span,
+                )
+                .note("a result that borrows the guarded value would outlive the lock"),
+            );
+            return None;
+        }
+        if let ExprKind::Local(local) = callback.kind {
+            self.mark_exclusive(local);
+        }
+        Some(Value::Typed(hir::Expr {
+            kind: ExprKind::MutexWithLock {
+                mutex: Box::new(mutex),
+                callback: Box::new(callback),
+            },
+            types: signature.results,
+            span,
+        }))
+    }
+
     fn make_channel(
         &mut self,
         element: &ast::Type,
@@ -1628,6 +1732,10 @@ impl<'a> Checker<'a> {
             }
             Res::Clone => {
                 self.error("`clone` can only be called", span);
+                None
+            }
+            Res::NewMutex => {
+                self.error("`mutex` can only be called", span);
                 None
             }
             Res::Package(_) => None,
@@ -2063,6 +2171,7 @@ impl<'a> Checker<'a> {
             Some(Res::Println) => self.println(args, span),
             Some(Res::Drop) => self.drop_call(args, span),
             Some(Res::Clone) => self.clone_call(args, span),
+            Some(Res::NewMutex) => self.new_mutex(args, span),
             Some(Res::Primitive(ty)) if ty == TypeStore::ERROR => {
                 self.error_constructor(args, span)
             }
@@ -2241,6 +2350,11 @@ impl<'a> Checker<'a> {
             && matches!(name.text.as_str(), "send" | "receive" | "close")
         {
             return self.channel_method(receiver, element, &name.text, args, span);
+        }
+        if let TypeKind::Mutex { element } = self.types.kind(ty)
+            && matches!(name.text.as_str(), "withLock" | "isPoisoned")
+        {
+            return self.mutex_method(receiver, element, &name.text, args, span);
         }
         if let Some(results) = self.types.task_results(ty)
             && name.text == "wait"
@@ -4342,6 +4456,8 @@ fn subexpressions(expr: &hir::Expr) -> Vec<&hir::Expr> {
         ExprKind::MapLookup { map, key } | ExprKind::MapRemove { map, key } => vec![map, key],
         ExprKind::ArrayPush { array, value } => vec![array, value],
         ExprKind::ChannelSend { channel, value } => vec![channel, value],
+        ExprKind::MutexWithLock { mutex, callback } => vec![mutex, callback],
+        ExprKind::MakeMutex(inner) | ExprKind::MutexIsPoisoned(inner) => vec![inner],
         ExprKind::MakeChannel { capacity, .. } => capacity.as_deref().into_iter().collect(),
         ExprKind::ChannelReceive(inner) | ExprKind::ChannelClose(inner) => vec![inner],
         ExprKind::Len(inner)

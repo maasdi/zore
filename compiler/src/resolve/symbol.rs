@@ -15,6 +15,8 @@ pub enum Res {
     Println,
     Drop,
     Clone,
+    /// `mutex(value)`.
+    NewMutex,
     /// A predeclared name whose feature is not supported yet; uses are diagnosed.
     Unsupported,
 }
@@ -58,11 +60,8 @@ pub(super) fn predeclared(name: &str) -> Option<Res> {
         "println" => Some(Res::Println),
         "drop" => Some(Res::Drop),
         "clone" => Some(Res::Clone),
-        "Array" | "Task" => Some(Res::Unsupported),
+        "mutex" => Some(Res::NewMutex),
+        "Array" | "Task" | "Mutex" => Some(Res::Unsupported),
         _ => None,
     }
-}
-
-pub(super) fn unsupported_predeclared(_name: &str) -> &'static str {
-    "`Task` is"
 }
