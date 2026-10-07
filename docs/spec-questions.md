@@ -52,6 +52,7 @@ A newly discovered semantic gap blocks its affected feature, not unrelated work.
 | Q27 | Async I/O choices made while implementing §37.3 where the text is silent; each rejects rather than guesses and can be relaxed later. See Q27 below. | §37.3, §36.2 | Library, checker, codegen, and runtime changes |
 | Q28 | Mutex choices made while implementing §20.2 where the text is silent; each rejects rather than guesses and can be relaxed later. See Q28 below. | §20.2, §10.3, §3.18, §41.4 | Parser, checker, codegen, and runtime changes |
 | Q29 | `select` choices made while implementing §19.14 where the text is silent. See Q29 below. | §19.14, §3.17 | Lexer, parser, checker, codegen, and runtime changes |
+| Q30 | Byte-array API choices made while implementing §37.2–37.3 where the text is silent. See Q30 below. | §37.2, §37.3, §41.5 | Checker, codegen, and runtime changes |
 
 ## Resolved decisions
 
@@ -168,10 +169,11 @@ A newly discovered semantic gap blocks its affected feature, not unrelated work.
   cases: `tests/conformance/mutex.md`.
 
 - **Q29 — Select choices:** locked in §19.14 at the maintainer's direction. (a) `select` is the only new keyword; `case` and `default` are special only at the start of an arm, so they stay ordinary identifiers. (b) Every channel operand and send value is evaluated once, in order, before a case is chosen. (c) When several cases can proceed, the runtime starts from a rotating position so no case starves; the choice is otherwise unspecified. (d) A zero-value channel is always ready to receive and panics on send, like a closed one. (e) A `select` with no `default` and nothing that can ever proceed is reported by the deadlock detector. (f) A send case that is not chosen keeps its value, which is dropped at the end of the `select`.
+- **Q30 — Byte-array API choices:** locked in §37.2–37.3 at the maintainer's direction; this answers the byte-array part of Q05. (a) A byte array is an ordinary `Array<byte>`; there is no new type. (b) `strings.Bytes` copies a string's bytes; `strings.FromBytes` copies bytes into a string and fails on invalid UTF-8, as §41.5 requires, so no invalid string can exist. (c) Functions that take bytes take a `[]byte` view, written `data[:]` from an array, the same as `strings.Join`. (d) `os.ReadBytes`, `os.WriteBytes`, `Conn.ReadBytes`, and `Conn.WriteBytes` never check or change the bytes; `ReadBytes` returns up to `max` bytes and waits for at least one. (e) Mixing `Read` and `ReadBytes` on one connection is allowed: bytes of a character that `Read` held back are returned first by `ReadBytes`. (f) Standard input stays line text; there is no `io.ReadBytes` yet.
 - **Q27 — Async I/O choices:** locked in §37.3 at the maintainer's direction
   (time, standard input, whole files, and TCP, waiting on an event loop). (a)
   Strings are well-formed UTF-8, so every function that returns text from
-  outside reports an error for other bytes; there is no byte-array API yet.
+  outside reports an error for other bytes; byte-array functions are in Q30.
   (b) `net.Read` keeps an unfinished trailing character with the connection, so
   a result can exceed `max` by up to three bytes. (c) A `Conn` or `Listener`
   holds a runtime handle number that is never reused, so a closed or zero

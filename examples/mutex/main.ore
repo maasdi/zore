@@ -19,12 +19,12 @@ func deposit(counter Mutex<int>, done channel<bool>) {
     done.send(true)
 }
 
-func record(ledger Mutex<Ledger>, amount int, done channel<bool>) {
+func record(ledger Mutex<Ledger>, amount int) int {
     ledger.withLock(func(l mut Ledger) {
         l.Balance += amount
         l.History.push("deposit")
     })
-    done.send(true)
+    return amount
 }
 
 func main() {
@@ -42,11 +42,15 @@ func main() {
     println(total)
 
     let ledger = mutex(Ledger{Name: "savings", Balance: 100, History: Array<string>{}})
+    var recorders = Array<Task<int>>{}
     for var i = 1; i <= 10; i += 1 {
-        go record(ledger, i, done)
+        recorders.push(go record(ledger, i))
     }
-    for var i = 0; i < 10; i += 1 {
-        let _, _ = done.receive()
+    for recorders.len() > 0 {
+        let found, task = recorders.pop()
+        if found {
+            let _ = task.wait()
+        }
     }
     let balance, entries = ledger.withLock(func(l mut Ledger) (int, int) {
         return l.Balance, l.History.len()

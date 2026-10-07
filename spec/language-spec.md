@@ -5282,6 +5282,8 @@ their arguments (§6.8, §41.5).
 | `Replace(s string, old string, new string) string` | `s` with every non-overlapping occurrence of `old` replaced; an empty `old` matches before each character and at the end |
 | `Split(s string, sep string) Array<string>` | The pieces of `s` between occurrences of `sep`; an empty `sep` splits into characters; an empty `s` gives one empty piece, except for an empty `sep`, which gives no pieces |
 | `Join(parts []string, sep string) string` | The elements of `parts` joined with `sep` between them; no elements give `""` |
+| `Bytes(s string) Array<byte>` | A new array holding the bytes of `s`; the empty string gives an empty array |
+| `FromBytes(data []byte) (string, error)` | The string made of the bytes of `data`, copied; when they are not well-formed UTF-8, `""` and an error whose message is `strings.FromBytes: invalid UTF-8` (§41.5) |
 
 **`zore/strconv`**
 
@@ -5359,7 +5361,11 @@ same sense as the progress guarantee of §18.9. In the initial task a wait block
 the entry point's thread but not the other tasks.
 
 Text read from outside the program must be well-formed UTF-8 (§6.8). Every
-function that returns text reports `error` for input that is not.
+function that returns text reports `error` for input that is not. The byte
+functions (`os.ReadBytes`, `os.WriteBytes`, `Conn.ReadBytes`, `Conn.WriteBytes`)
+read and write any bytes, with no check and no change; turning bytes into text
+is `strings.FromBytes` (§37.2). An array argument is passed to a `[]byte`
+parameter as a view, `data[:]` (§12.1).
 
 **`zore/time`**
 
@@ -5380,6 +5386,8 @@ function that returns text reports `error` for input that is not.
 | --- | --- |
 | `ReadFile(path string) (string, error)` | The whole contents of the file; on failure `""` and an error whose message begins `os.ReadFile: ` followed by system-defined text, or is `os.ReadFile: invalid UTF-8` |
 | `WriteFile(path string, text string) error` | Creates or truncates the file and writes `text`; on failure an error whose message begins `os.WriteFile: ` |
+| `ReadBytes(path string) (Array<byte>, error)` | The whole contents of the file as bytes; on failure an empty array and an error whose message begins `os.ReadBytes: ` followed by system-defined text |
+| `WriteBytes(path string, data []byte) error` | Creates or truncates the file and writes `data`; on failure an error whose message begins `os.WriteBytes: ` |
 
 **`zore/net`** (TCP over IPv4 and IPv6)
 
@@ -5396,10 +5404,12 @@ on it fails with an error.
 | `(l Listener) Port() int` | The port the listener is bound to, or `-1` for a closed listener |
 | `(c Conn) Read(max int) (string, error)` | Waits until at least one character is available and returns whole characters read from at most `max` bytes of the stream; a character cut by the end of a read is kept by the connection and joined with the next bytes, so a result can be up to three bytes longer than `max`; at end of stream, `""` and an error whose message is `EOF`; `max` of zero or less is an error |
 | `(c Conn) Write(text string) error` | Waits until all of `text` is sent |
+| `(c Conn) ReadBytes(max int) (Array<byte>, error)` | Waits until at least one byte is available and returns at most `max` bytes of the stream, first any bytes of a character that `Read` kept back; at end of stream, an empty array and an error whose message is `EOF`; `max` of zero or less is an error |
+| `(c Conn) WriteBytes(data []byte) error` | Waits until all of `data` is sent |
 | `(c Conn) CloseWrite() error` | Ends the sending side so the peer reads `EOF`; reading continues to work |
 
 Error messages begin `net.Listen: `, `net.Dial: `, `net.Accept: `, `net.Read: `,
-`net.Write: `, or `net.CloseWrite: ` and continue with system-defined text,
+`net.Write: `, `net.ReadBytes: `, `net.WriteBytes: `, or `net.CloseWrite: ` and continue with system-defined text,
 except the fixed messages above.
 
 ```ore
@@ -5811,8 +5821,8 @@ here: any later operation that constructs a `string` from arbitrary bytes
 Q05) must validate its input and reject invalid UTF-8 — a compile-time error
 for a constant, a runtime error or panic otherwise — rather than silently
 accepting or repairing invalid bytes, consistent with how numeric conversions
-are checked rather than lossy (§6.6). No such conversion API is introduced by
-this section.
+are checked rather than lossy (§6.6). The conversion API is `strings.Bytes` and
+`strings.FromBytes` (§37.2, Q30); this section only constrains it.
 
 `string` values are immutable. No operation modifies a string's bytes in
 place; an operation that appears to change a string's contents produces a new
