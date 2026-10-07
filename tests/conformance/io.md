@@ -13,6 +13,18 @@ Authority: spec §37.3. The cases below are covered by executable tests in
 | A task sleeping while another computes | The computing task finishes first |
 | `Sleep("soon")`, `Sleep()` | Rejected: argument type and count |
 
+## Bytes
+
+| Scenario | Expected result |
+| --- | --- |
+| `strings.Bytes("héllo")` | Six bytes; `[1]` is 195 and `[2]` is 169 |
+| `strings.FromBytes(data[:])` for valid UTF-8, empty data, or a prefix cut at a character boundary | The text and `nil` |
+| `FromBytes` of `{104, 255}` or of a cut character | `""` and an error equal to `error("strings.FromBytes: invalid UTF-8")` |
+| `os.WriteBytes` of `0, 255, 10, 0, 128`, then `os.ReadBytes` | The same five bytes and `nil` |
+| `os.ReadFile` of that file | `""` and `error("os.ReadFile: invalid UTF-8")` |
+| `os.ReadBytes` of a missing file, `os.WriteBytes` into a missing directory | Errors beginning `os.ReadBytes: ` and `os.WriteBytes: ` |
+| `FromBytes(data)` with an `Array<byte>` argument | Rejected: arrays do not convert to slices implicitly |
+
 ## `zore/io`
 
 | Scenario | Expected result |
@@ -44,6 +56,8 @@ Authority: spec §37.3. The cases below are covered by executable tests in
 | `CloseWrite` | The peer reads `EOF`; the caller can still read |
 | Dial to a closed port, `Listen("not an address")` | Errors beginning `net.Dial: ` and `net.Listen: ` |
 | `Read(0)` | An error |
+| `WriteBytes` of bytes that are not UTF-8, `ReadBytes(3)` on the other side until `EOF` | Every byte arrives unchanged, at most 3 per call |
+| `ReadBytes(0)` | An error |
 | Peer sends bytes that are not UTF-8, or stops inside a character | `net.Read: invalid UTF-8` |
 | Zero-value `Conn` or `Listener` (from a drained closed channel) | Every operation fails; `Port()` is `-1` |
 | A task waiting in `Accept` | Other tasks keep running |

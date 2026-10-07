@@ -1,0 +1,80 @@
+package main
+
+import "zore/net"
+import "zore/strings"
+
+func digits(n int) string {
+    if n == 0 {
+        return "0"
+    }
+    var text = ""
+    var rest = n
+    for rest > 0 {
+        let d = rest % 10
+        text = "0123456789"[d:d + 1] + text
+        rest = rest / 10
+    }
+    return text
+}
+
+func checksum(data []byte) int {
+    var total = 0
+    for i, b in data {
+        total += int(b)
+    }
+    return total
+}
+
+func reverse(conn own net.Conn) {
+    let data, err = conn.ReadBytes(64)
+    if err != nil {
+        return
+    }
+    var flipped = Array<byte>{}
+    for var i = data.len(); i > 0; i -= 1 {
+        flipped.push(data[i - 1])
+    }
+    _ = conn.WriteBytes(flipped[:])
+}
+
+func main() {
+    let word = strings.Bytes("héllo")
+    println(word.len())
+    println(checksum(word[:]))
+
+    let back, err = strings.FromBytes(word[:])
+    println(back)
+    _ = err
+
+    let broken = Array<byte>{104, 255, 105}
+    let _, failure = strings.FromBytes(broken[:])
+    println(failure == error("strings.FromBytes: invalid UTF-8"))
+
+    let listener, listenErr = net.Listen("127.0.0.1:0")
+    if listenErr != nil {
+        println("listen failed")
+        return
+    }
+    let port = listener.Port()
+    let server = go accept(listener)
+    let conn, dialErr = net.Dial("127.0.0.1:" + digits(port))
+    if dialErr != nil {
+        println("dial failed")
+        return
+    }
+    _ = conn.WriteBytes(broken[:])
+    let reply, readErr = conn.ReadBytes(64)
+    _ = readErr
+    println(reply[0])
+    println(reply[1])
+    println(reply[2])
+    server.wait()
+}
+
+func accept(listener own net.Listener) {
+    let conn, err = listener.Accept()
+    if err != nil {
+        return
+    }
+    reverse(conn)
+}

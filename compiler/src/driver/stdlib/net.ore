@@ -52,6 +52,14 @@ func (c Conn) Write(text string) error {
     return write(c.id, text)
 }
 
+func (c Conn) ReadBytes(max int) (Array<byte>, error) {
+    return readBytes(c.id, max)
+}
+
+func (c Conn) WriteBytes(data []byte) error {
+    return writeBytes(c.id, data)
+}
+
 func (c Conn) CloseWrite() error {
     return closeWrite(c.id)
 }
@@ -62,5 +70,7 @@ func accept(id int) (int, error)
 func dial(address string) (int, error)
 func read(id int, max int) (string, error)
 func write(id int, text string) error
+func readBytes(id int, max int) (Array<byte>, error)
+func writeBytes(id int, data []byte) error
 func closeWrite(id int) error
 func closeHandle(id int)

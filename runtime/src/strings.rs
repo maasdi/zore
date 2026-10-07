@@ -2,6 +2,7 @@
 
 use super::alloc::zore_alloc;
 use super::string::{StringOut, character_at};
+use super::sys::{ByteArray, StringError};
 
 /// Where an `Array<string>` descriptor is written.
 #[repr(C)]
@@ -255,6 +256,34 @@ pub unsafe extern "C" fn zore_native_strings_join(
         }
     };
     unsafe { out.write(joined) };
+}
+
+/// # Safety
+/// `out` must be writable and the string must satisfy the storage rule of `bytes`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn zore_native_strings_bytes(out: *mut ByteArray, s: *const u8, s_len: i64) {
+    // SAFETY: guaranteed by the caller.
+    let whole = unsafe { text(s, s_len) };
+    // SAFETY: guaranteed by the caller.
+    unsafe { out.write(ByteArray::copy_of(whole)) };
+}
+
+/// # Safety
+/// `out` must be writable and `data` must point to `len` readable bytes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn zore_native_strings_from_bytes(
+    out: *mut StringError,
+    data: *const u8,
+    len: i64,
+) {
+    // SAFETY: guaranteed by the caller.
+    let bytes = unsafe { text(data, len) };
+    let result = match std::str::from_utf8(bytes) {
+        Ok(valid) => StringError::ok(valid),
+        Err(_) => StringError::failed("strings.FromBytes: invalid UTF-8"),
+    };
+    // SAFETY: guaranteed by the caller.
+    unsafe { out.write(result) };
 }
 
 #[cfg(test)]

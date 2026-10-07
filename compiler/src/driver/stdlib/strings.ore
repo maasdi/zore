@@ -11,3 +11,5 @@ func Repeat(s string, count int) string
 func Replace(s string, old string, new string) string
 func Split(s string, sep string) Array<string>
 func Join(parts []string, sep string) string
+func Bytes(s string) Array<byte>
+func FromBytes(data []byte) (string, error)

@@ -4,6 +4,7 @@ use std::io::{BufRead, Write};
 use std::sync::OnceLock;
 use std::time::Instant;
 
+use super::alloc::zore_alloc;
 use super::string::StringOut;
 use super::{blocking, reactor};
 
@@ -64,6 +65,71 @@ impl StringError {
             failed: 1,
             message: text.data,
             message_len: text.len,
+        }
+    }
+}
+
+/// Where an `Array<byte>` descriptor is written.
+#[repr(C)]
+pub struct ByteArray {
+    data: *mut u8,
+    len: i64,
+    cap: i64,
+}
+
+impl ByteArray {
+    pub(super) fn copy_of(bytes: &[u8]) -> Self {
+        if bytes.is_empty() {
+            return Self {
+                data: std::ptr::null_mut(),
+                len: 0,
+                cap: 0,
+            };
+        }
+        let data = zore_alloc(bytes.len() as i64);
+        // SAFETY: `data` has room for every byte.
+        unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), data, bytes.len()) };
+        Self {
+            data,
+            len: bytes.len() as i64,
+            cap: bytes.len() as i64,
+        }
+    }
+}
+
+/// An `Array<byte>` and an `error`, written by results of the shape `(Array<byte>, error)`.
+#[repr(C)]
+pub struct ByteArrayError {
+    array: ByteArray,
+    failed: u8,
+    message: *const u8,
+    message_len: i64,
+}
+
+impl ByteArrayError {
+    pub(super) fn ok(bytes: &[u8]) -> Self {
+        Self {
+            array: ByteArray::copy_of(bytes),
+            failed: 0,
+            message: std::ptr::null(),
+            message_len: 0,
+        }
+    }
+
+    pub(super) fn failed(message: &str) -> Self {
+        let text = StringOut::built(message.as_bytes());
+        Self {
+            array: ByteArray::copy_of(&[]),
+            failed: 1,
+            message: text.data,
+            message_len: text.len,
+        }
+    }
+
+    fn from_bytes(result: Result<Vec<u8>, String>) -> Self {
+        match result {
+            Ok(bytes) => Self::ok(&bytes),
+            Err(message) => Self::failed(&message),
         }
     }
 }
@@ -144,6 +210,37 @@ pub unsafe extern "C" fn zore_native_os_read_file(
 }
 
 /// # Safety
+/// `out` must be writable and the path must satisfy the storage rule of `bytes`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn zore_native_os_read_bytes(
+    out: *mut ByteArrayError,
+    path: *const u8,
+    path_len: i64,
+) {
+    // SAFETY: guaranteed by the caller.
+    let path = unsafe { text_of(path, path_len) };
+    let result = blocking::run(move || {
+        std::fs::read(&path).map_err(|error| format!("os.ReadBytes: {error}"))
+    });
+    // SAFETY: guaranteed by the caller.
+    unsafe { out.write(ByteArrayError::from_bytes(result)) };
+}
+
+fn write_to_file(name: &str, path: String, data: Vec<u8>) -> ErrorOut {
+    let name = name.to_string();
+    let failure = blocking::run(move || {
+        std::fs::File::create(&path)
+            .and_then(|mut file| file.write_all(&data))
+            .err()
+            .map(|error| format!("{name}: {error}"))
+    });
+    match failure {
+        None => ErrorOut::ok(),
+        Some(message) => ErrorOut::failed(&message),
+    }
+}
+
+/// # Safety
 /// `out` must be writable and each string must satisfy the storage rule of `bytes`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn zore_native_os_write_file(
@@ -160,16 +257,29 @@ pub unsafe extern "C" fn zore_native_os_write_file(
             super::bytes(text, text_len).to_vec(),
         )
     };
-    let failure = blocking::run(move || {
-        std::fs::File::create(&path)
-            .and_then(|mut file| file.write_all(&text))
-            .err()
-            .map(|error| format!("os.WriteFile: {error}"))
-    });
-    let result = match failure {
-        None => ErrorOut::ok(),
-        Some(message) => ErrorOut::failed(&message),
+    let result = write_to_file("os.WriteFile", path, text);
+    // SAFETY: guaranteed by the caller.
+    unsafe { out.write(result) };
+}
+
+/// # Safety
+/// `out` must be writable; the path and the bytes must satisfy the storage rule of `bytes`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn zore_native_os_write_bytes(
+    out: *mut ErrorOut,
+    path: *const u8,
+    path_len: i64,
+    data: *const u8,
+    data_len: i64,
+) {
+    // SAFETY: guaranteed by the caller.
+    let (path, data) = unsafe {
+        (
+            text_of(path, path_len),
+            super::bytes(data, data_len).to_vec(),
+        )
     };
+    let result = write_to_file("os.WriteBytes", path, data);
     // SAFETY: guaranteed by the caller.
     unsafe { out.write(result) };
 }

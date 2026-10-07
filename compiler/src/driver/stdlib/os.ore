@@ -2,3 +2,5 @@ package os
 
 func ReadFile(path string) (string, error)
 func WriteFile(path string, text string) error
+func ReadBytes(path string) (Array<byte>, error)
+func WriteBytes(path string, data []byte) error

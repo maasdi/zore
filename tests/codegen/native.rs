@@ -4453,3 +4453,112 @@ select {
 }",
     )));
 }
+
+#[test]
+fn strings_convert_to_bytes_and_back_with_a_utf8_check() {
+    prints(
+        "package main
+import \"zore/strings\"
+func main() {
+    let data = strings.Bytes(\"héllo\")
+    println(data.len())
+    println(data[1])
+    println(data[2])
+    let text, err = strings.FromBytes(data[:])
+    println(text)
+    println(err == nil)
+    let bad = Array<byte>{104, 255}
+    let none, failure = strings.FromBytes(bad[:])
+    println(none.len())
+    println(failure == error(\"strings.FromBytes: invalid UTF-8\"))
+    let cut = Array<byte>{195}
+    let _, cutErr = strings.FromBytes(cut[:])
+    println(cutErr != nil)
+    let empty = strings.Bytes(\"\")
+    println(empty.len())
+    let whole, emptyErr = strings.FromBytes(empty[:])
+    println(whole.len())
+    println(emptyErr == nil)
+    let part, partErr = strings.FromBytes(data[0:3])
+    println(part)
+    println(partErr == nil)
+}",
+        "6\n195\n169\nhéllo\ntrue\n0\ntrue\ntrue\n0\n0\ntrue\nhé\ntrue\n",
+    );
+}
+
+#[test]
+fn files_hold_any_bytes_and_text_reads_still_check_utf8() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("data.bin").display().to_string();
+    let source = format!(
+        "package main
+import \"zore/os\"
+func main() {{
+    let data = Array<byte>{{0, 255, 10, 0, 128}}
+    println(os.WriteBytes(\"{path}\", data[:]) == nil)
+    let back, err = os.ReadBytes(\"{path}\")
+    println(err == nil)
+    println(back.len())
+    for i, b in back {{ println(b) }}
+    let _, textErr = os.ReadFile(\"{path}\")
+    println(textErr == error(\"os.ReadFile: invalid UTF-8\"))
+    let _, missing = os.ReadBytes(\"{path}.missing\")
+    println(missing != nil)
+    println(os.WriteBytes(\"{path}.dir/none\", data[0:0]) != nil)
+}}"
+    );
+    prints(
+        &source,
+        "true\ntrue\n5\n0\n255\n10\n0\n128\ntrue\ntrue\ntrue\n",
+    );
+}
+
+#[test]
+fn a_connection_moves_raw_bytes_in_both_directions() {
+    let source = format!(
+        "package main
+{ECHO_PRELUDE}
+func bounce(conn own net.Conn) int {{
+    var total = 0
+    for {{
+        let data, err = conn.ReadBytes(3)
+        if err != nil {{ return total }}
+        total += data.len()
+        if conn.WriteBytes(data[:]) != nil {{ return total }}
+    }}
+}}
+func accept(listener own net.Listener) int {{
+    let conn, err = listener.Accept()
+    if err != nil {{ return -1 }}
+    return bounce(conn)
+}}
+func main() {{
+    let listener, err = net.Listen(\"127.0.0.1:0\")
+    if err != nil {{ println(\"listen failed\"); return }}
+    let port = listener.Port()
+    let server = go accept(listener)
+    let conn, dialErr = net.Dial(\"127.0.0.1:\" + digits(port))
+    if dialErr != nil {{ println(\"dial failed\"); return }}
+    let sent = Array<byte>{{0, 255, 254, 1, 2, 3, 128, 0}}
+    println(conn.WriteBytes(sent[:]) == nil)
+    _ = conn.CloseWrite()
+    var seen = Array<byte>{{}}
+    for {{
+        let data, readErr = conn.ReadBytes(64)
+        if readErr != nil {{ break }}
+        for i, b in data {{ seen.push(b) }}
+    }}
+    println(seen.len())
+    var same = true
+    for i, b in sent {{
+        if seen[i] != b {{ same = false }}
+    }}
+    println(same)
+    let _, zeroErr = conn.ReadBytes(0)
+    println(zeroErr != nil)
+    println(server.wait())
+}}"
+    );
+    prints(&source, "true\n8\ntrue\ntrue\n8\n");
+}

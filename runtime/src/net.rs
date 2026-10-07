@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 use super::reactor::Pollable;
 use super::strconv::ValueError;
-use super::sys::{ErrorOut, StringError};
+use super::sys::{ByteArrayError, ErrorOut, StringError};
 use super::{blocking, reactor};
 
 struct Connection {
@@ -212,18 +212,8 @@ pub unsafe extern "C" fn zore_native_net_read(out: *mut StringError, id: i64, ma
     unsafe { out.write(result) };
 }
 
-/// # Safety
-/// `out` must be writable and the string must satisfy the storage rule of `bytes`.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn zore_native_net_write(
-    out: *mut ErrorOut,
-    id: i64,
-    text: *const u8,
-    text_len: i64,
-) {
-    // SAFETY: guaranteed by the caller.
-    let bytes = unsafe { super::bytes(text, text_len) };
-    let result = match lookup(id).as_deref() {
+fn send_all(id: i64, bytes: &[u8], name: &str) -> ErrorOut {
+    match lookup(id).as_deref() {
         Some(Handle::Connection(connection)) => {
             let mut stream = &connection.stream;
             let mut sent = 0;
@@ -239,10 +229,80 @@ pub unsafe extern "C" fn zore_native_net_write(
             };
             match outcome {
                 Ok(()) => ErrorOut::ok(),
-                Err(error) => ErrorOut::failed(&format!("net.Write: {error}")),
+                Err(error) => ErrorOut::failed(&format!("{name}: {error}")),
             }
         }
-        _ => ErrorOut::failed("net.Write: not an open connection"),
+        _ => ErrorOut::failed(&format!("{name}: not an open connection")),
+    }
+}
+
+/// # Safety
+/// `out` must be writable and the string must satisfy the storage rule of `bytes`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn zore_native_net_write(
+    out: *mut ErrorOut,
+    id: i64,
+    text: *const u8,
+    text_len: i64,
+) {
+    // SAFETY: guaranteed by the caller.
+    let bytes = unsafe { super::bytes(text, text_len) };
+    // SAFETY: guaranteed by the caller.
+    unsafe { out.write(send_all(id, bytes, "net.Write")) };
+}
+
+/// # Safety
+/// `out` must be writable and `data` must point to `data_len` readable bytes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn zore_native_net_write_bytes(
+    out: *mut ErrorOut,
+    id: i64,
+    data: *const u8,
+    data_len: i64,
+) {
+    // SAFETY: guaranteed by the caller.
+    let bytes = unsafe { super::bytes(data, data_len) };
+    // SAFETY: guaranteed by the caller.
+    unsafe { out.write(send_all(id, bytes, "net.WriteBytes")) };
+}
+
+/// Waits for at least one byte, then returns up to `max` of them; bytes of a character that
+/// `Read` kept back come first.
+fn read_raw(connection: &Connection, max: usize) -> ByteArrayError {
+    let mut pending = std::mem::take(
+        &mut *connection
+            .pending
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()),
+    );
+    if pending.len() > max {
+        let rest = pending.split_off(max);
+        *connection
+            .pending
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = rest;
+        return ByteArrayError::ok(&pending);
+    }
+    if !pending.is_empty() {
+        return ByteArrayError::ok(&pending);
+    }
+    let mut stream = &connection.stream;
+    let mut chunk = vec![0u8; max];
+    match until_ready(&connection.stream, false, || stream.read(&mut chunk)) {
+        Ok(0) => ByteArrayError::failed("EOF"),
+        Ok(count) => ByteArrayError::ok(&chunk[..count]),
+        Err(error) => ByteArrayError::failed(&format!("net.ReadBytes: {error}")),
+    }
+}
+
+/// # Safety
+/// `out` must be writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn zore_native_net_read_bytes(out: *mut ByteArrayError, id: i64, max: i64) {
+    let result = match (lookup(id).as_deref(), usize::try_from(max)) {
+        (_, Ok(0) | Err(_)) => ByteArrayError::failed("net.ReadBytes: max must be positive"),
+        (Some(Handle::Connection(connection)), Ok(max)) => read_raw(connection, max),
+        _ => ByteArrayError::failed("net.ReadBytes: not an open connection"),
     };
     // SAFETY: guaranteed by the caller.
     unsafe { out.write(result) };
