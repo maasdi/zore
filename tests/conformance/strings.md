@@ -113,9 +113,14 @@ Executable counterparts: `tests/typecheck/check.rs` and `tests/codegen/native.rs
 | `string('é')` | `"é"`; a rune converts to its UTF-8 text |
 | `string(65)`, `string(s)`, `string(byte)` | Reject; only a `rune` converts to `string` |
 | Comparing built and literal strings with `==` and `<` | Compares bytes, not identity |
-| Slice or concatenation result kept after its source variable goes out of scope | Valid; strings are Copy and never dangle |
+| Slice or concatenation result kept after its source variable goes out of scope | Valid; strings are Copy and never dangle, because each kept copy owns a share |
 | Map keyed by a built string | Lookup by content finds a literal key |
 | `text += piece` repeated 200,000 times | Completes using memory proportional to the final length |
 | Appending to a text that an older string still shows | The older string is unchanged |
 | Appending to a text that is not at the end of its buffer, such as a prefix slice | A new text is built; the source is unchanged |
 
+| Text built in a loop and overwritten or dropped each round | Memory is returned when the last owner goes; usage stays bounded |
+| Text kept in a struct, fixed array, `Array<string>`, map entry, or closure capture | Lives as long as that owner; copies of the owner keep it alive independently |
+| Slice of a built text kept after the text's own variable is gone | Still valid; the slice is an owner of the shared buffer |
+| `error` built from a built message, then ignored or propagated | The message is freed with the last copy of the error |
+| Panic while built text is held by locals, arrays, or a custom `drop` value | Cleanup frees the text exactly once; the panic report is unchanged |

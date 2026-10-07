@@ -16,7 +16,7 @@ fn insert_body(package: &hir::Package, body: &mut Body) {
         .locals
         .iter()
         .enumerate()
-        .filter(|(_, local)| !local.by_reference && !package.is_copy(local.ty))
+        .filter(|(_, local)| !local.by_reference && package.needs_drop(local.ty))
         .map(|(index, _)| Local(index as u32))
         .collect();
     for index in 0..body.blocks.len() {

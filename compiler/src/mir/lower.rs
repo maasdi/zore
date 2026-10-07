@@ -890,7 +890,7 @@ impl Builder {
         }
         let args = operands;
         for (index, destination) in destinations.iter_mut().enumerate() {
-            if destination.is_none() && !package.is_copy(expr.types[index]) {
+            if destination.is_none() && package.needs_drop(expr.types[index]) {
                 *destination = Some(Place::local(self.temp(expr.types[index])));
             }
         }

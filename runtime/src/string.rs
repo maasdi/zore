@@ -4,20 +4,20 @@ use std::collections::BTreeMap;
 use super::alloc::{zore_alloc, zore_free};
 
 /// Built text lives in a buffer. No string reads past `used`, so appending at the end
-/// never changes the text any existing string shows.
+/// never changes the text any existing string shows. The buffer is freed when its last
+/// owner lets go.
 struct Buffer {
     data: *mut u8,
     capacity: usize,
     used: usize,
+    owners: usize,
 }
 
 thread_local! {
-    /// Buffers built at run time, keyed by address and released when the program ends
-    /// because `string` is Copy.
     static OWNED: RefCell<BTreeMap<usize, Buffer>> = const { RefCell::new(BTreeMap::new()) };
 }
 
-/// Adds a buffer holding `used` bytes of `capacity`, copied from the given pieces.
+/// Adds a buffer with one owner holding `used` bytes of `capacity`, copied from the given pieces.
 fn new_buffer(pieces: &[&[u8]], capacity: usize) -> *mut u8 {
     let data = zore_alloc(capacity as i64);
     let mut used = 0;
@@ -33,6 +33,7 @@ fn new_buffer(pieces: &[&[u8]], capacity: usize) -> *mut u8 {
                 data,
                 capacity,
                 used,
+                owners: 1,
             },
         )
     });
@@ -54,11 +55,12 @@ impl StringOut {
         }
     }
 
-    /// A string that reads `len` bytes of storage that already lives until the program ends.
+    /// A string that reads `len` bytes of storage that another string already keeps alive.
     pub(super) fn shared(data: *const u8, len: usize) -> Self {
         if len == 0 {
             return Self::empty();
         }
+        retain(data, len);
         Self {
             data,
             len: len as i64,
@@ -74,6 +76,52 @@ impl StringOut {
             len: bytes.len() as i64,
         }
     }
+}
+
+fn with_buffer<R>(data: *const u8, len: usize, act: impl FnOnce(&mut Buffer) -> R) -> Option<R> {
+    if len == 0 {
+        return None;
+    }
+    OWNED.with(|owned| {
+        let mut owned = owned.borrow_mut();
+        let start = data as usize;
+        let (_, buffer) = owned.range_mut(..=start).next_back()?;
+        (start < buffer.data as usize + buffer.capacity).then(|| act(buffer))
+    })
+}
+
+/// Another owner now reads these bytes. Static text and empty text have no buffer.
+pub(super) fn retain(data: *const u8, len: usize) {
+    with_buffer(data, len, |buffer| buffer.owners += 1);
+}
+
+/// One owner stops reading these bytes; the last one frees the buffer.
+pub(super) fn release(data: *const u8, len: usize) {
+    let freed = with_buffer(data, len, |buffer| {
+        buffer.owners -= 1;
+        (buffer.owners == 0).then_some((buffer.data, buffer.capacity))
+    });
+    if let Some(Some((base, capacity))) = freed {
+        OWNED.with(|owned| owned.borrow_mut().remove(&(base as usize)));
+        // SAFETY: the buffer came from `zore_alloc(capacity)` and had no owners left.
+        unsafe { zore_free(base, capacity as i64) };
+    }
+}
+
+/// Another owner now reads this string.
+#[unsafe(no_mangle)]
+pub extern "C" fn zore_string_retain(data: *const u8, len: i64) {
+    retain(data, usize::try_from(len).unwrap_or(0));
+}
+
+/// One owner stops reading this string.
+#[unsafe(no_mangle)]
+pub extern "C" fn zore_string_release(data: *const u8, len: i64) {
+    release(data, usize::try_from(len).unwrap_or(0));
+}
+
+pub(super) fn live_buffers() -> usize {
+    OWNED.with(|owned| owned.borrow().len())
 }
 
 pub(super) fn release_all() {
@@ -108,6 +156,7 @@ fn plan_append(left: *const u8, left_len: usize, right_len: usize) -> Append {
         }
         if buffer.used + right_len <= buffer.capacity {
             buffer.used += right_len;
+            buffer.owners += 1;
             Append::InPlace
         } else {
             Append::Grow
@@ -115,7 +164,7 @@ fn plan_append(left: *const u8, left_len: usize, right_len: usize) -> Append {
     })
 }
 
-/// The two strings joined; an empty operand shares the other's storage.
+/// The two strings joined, with one owner for the caller; an empty operand shares the other's storage.
 ///
 /// # Safety
 /// `out` must be writable, and each string must satisfy the storage rule of `bytes`.
@@ -130,11 +179,13 @@ pub unsafe extern "C" fn zore_string_concat(
     // SAFETY: guaranteed by the caller.
     let (left, right) = unsafe { (super::bytes(a, a_len), super::bytes(b, b_len)) };
     let joined = if right.is_empty() {
+        retain(a, left.len());
         StringOut {
             data: a,
             len: a_len,
         }
     } else if left.is_empty() {
+        retain(b, right.len());
         StringOut {
             data: b,
             len: b_len,
@@ -410,6 +461,48 @@ mod tests {
         let tail = StringOut::shared(unsafe { doubled.data.add(4) }, 4);
         assert_eq!(read(&append(&tail, "!")), "abab!");
         assert_eq!(read(&doubled), "abababab");
+        release_all();
+    }
+
+    #[test]
+    fn the_last_owner_frees_a_buffer_and_static_or_empty_text_has_none() {
+        let built = StringOut::built(b"hello");
+        assert_eq!(live_buffers(), 1);
+        let piece = StringOut::shared(unsafe { built.data.add(1) }, 3);
+        retain(built.data, 5);
+        release(built.data, 5);
+        release(built.data, 5);
+        assert_eq!(live_buffers(), 1, "the shared piece still owns the buffer");
+        assert_eq!(read(&piece), "ell");
+        release(piece.data, 3);
+        assert_eq!(live_buffers(), 0);
+        retain(b"static".as_ptr(), 6);
+        release(b"static".as_ptr(), 6);
+        retain(std::ptr::null(), 0);
+        release(std::ptr::null(), 0);
+        assert_eq!(live_buffers(), 0);
+    }
+
+    #[test]
+    fn every_concatenation_result_has_its_own_owner() {
+        let ab = append(&StringOut::shared(b"a".as_ptr(), 1), "b");
+        let abc = append(&ab, "c");
+        let same = append(&abc, "");
+        assert_eq!(same.data, abc.data);
+        release(ab.data, 2);
+        release(abc.data, 3);
+        assert_eq!(live_buffers(), 1, "the unchanged text still owns it");
+        release(same.data, 3);
+        assert_eq!(live_buffers(), 0);
+    }
+
+    #[test]
+    fn a_text_that_ends_a_buffer_is_still_readable_after_the_older_owners_leave() {
+        let ab = append(&StringOut::shared(b"a".as_ptr(), 1), "b");
+        let abcd = append(&append(&ab, "c"), "d");
+        release(ab.data, 2);
+        assert_eq!(read(&abcd), "abcd");
+        assert!(live_buffers() >= 1);
         release_all();
     }
 }

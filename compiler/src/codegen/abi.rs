@@ -20,6 +20,8 @@ declare i64 @zore_map_len(ptr)
 declare ptr @zore_map_value_at(ptr, i64)
 declare ptr @zore_map_key_at(ptr, i64)
 declare void @zore_string_concat(ptr, ptr, i64, ptr, i64)
+declare void @zore_string_retain(ptr, i64)
+declare void @zore_string_release(ptr, i64)
 declare void @zore_string_from_rune(ptr, i32)
 declare zeroext i1 @zore_string_is_boundary(ptr, i64, i64)
 declare i32 @zore_string_rune_at(ptr, i64, i64)
@@ -112,7 +114,7 @@ impl FunctionBuilder<'_, '_> {
                 let address = self.address(place);
                 rendered.push(format!("ptr {address}"));
                 let ty = self.place_ty(place);
-                if !package.is_copy(ty) {
+                if package.needs_drop(ty) {
                     let flags = if place
                         .projections
                         .iter()
@@ -127,7 +129,7 @@ impl FunctionBuilder<'_, '_> {
                 continue;
             }
             let ty = self.ty(self.operand_ty(arg));
-            let value = self.value(arg);
+            let value = self.owned_value(arg);
             rendered.push(format!("{ty} {value}"));
         }
         rendered
@@ -165,6 +167,9 @@ impl FunctionBuilder<'_, '_> {
                 self.line(format!(
                     "{source} = select i1 {found}, ptr {found_at}, ptr {zero}"
                 ));
+                if self.module.package.copies_text(value) {
+                    self.retain_at(&source, value);
+                }
                 Some(self.presence_pair(&found, &source, &value_ty))
             }
             Callee::MapRemove => {
@@ -181,7 +186,7 @@ impl FunctionBuilder<'_, '_> {
                 self.line(format!(
                     "{found} = call zeroext i1 @zore_map_detach(ptr {map}, i32 {kind}, ptr {key}, ptr {old})"
                 ));
-                if !self.module.package.is_copy(value) {
+                if self.module.package.needs_drop(value) {
                     let (drop_old, stored) = (self.label(), self.label());
                     self.line(format!("br i1 {found}, label %{drop_old}, label %{stored}"));
                     self.out.push_str(&format!("{drop_old}:\n"));
@@ -329,7 +334,7 @@ impl FunctionBuilder<'_, '_> {
         self.line(format!(
             "{slot} = getelementptr inbounds {element_ty}, ptr {storage}, i64 {length}"
         ));
-        let value = self.value(&args[1]);
+        let value = self.owned_value(&args[1]);
         self.line(format!("store {element_ty} {value}, ptr {slot}"));
         let longer = self.fresh();
         self.line(format!("{longer} = add i64 {length}, 1"));
@@ -408,7 +413,7 @@ impl FunctionBuilder<'_, '_> {
         self.line(format!(
             "{storage} = call ptr @zore_map_insert(ptr {slot}, i32 {kind}, ptr {key}, i64 {size})"
         ));
-        let value = self.value(value);
+        let value = self.owned_value(value);
         self.line(format!("store {value_ty} {value}, ptr {storage}"));
     }
 

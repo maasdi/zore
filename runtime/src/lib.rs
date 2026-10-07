@@ -19,6 +19,11 @@ mod string;
 mod strings;
 
 pub fn finish() {
+    let leaked = string::live_buffers();
+    if leaked > 0 && std::env::var_os("ZORE_CHECK_LEAKS").is_some() {
+        eprintln!("leak: {leaked} text buffers still owned at exit");
+        std::process::exit(70);
+    }
     panic::finish();
     string::release_all();
 }

@@ -163,13 +163,15 @@ A newly discovered semantic gap blocks its affected feature, not unrelated work.
   indexes; `+` concatenates at run time; `string(rune)` is the only string
   conversion. Filled conservatively: (a) a slice must start and end on character
   boundaries or it panics, so strings stay well-formed; (b) `s[i]` is a
-  read-only `byte`; (c) runtime-built string storage, including slices that
-  share it, is freed only when the program ends, because `string` is Copy and
-  cannot carry a destructor; appending to the newest text in a buffer grows
-  the buffer in place (doubling), which is safe because no string reads past
-  its own end, so building one text in a loop costs memory proportional to its
-  final length; texts that are simply discarded still wait for the end, and
-  reference counting is the planned replacement; (d) number
+  read-only `byte`; (c) runtime-built string storage is reference counted: each
+  kept copy of a `string`, including a slice that shares the buffer, is one
+  owner, and the buffer is freed when the last owner goes (`string` stays Copy
+  for the programmer; the compiler adds and removes owners itself, also while a
+  panic unwinds); appending to the newest text in a buffer grows the buffer in
+  place (doubling), which is safe because no string reads past its own end, so
+  building one text in a loop costs memory proportional to its final length;
+  counts are not atomic, so text cannot cross threads until tasks arrive and
+  decide how; (d) number
   formatting stays out of the language and lives in `zore/strconv`. Pending
   cases: `tests/conformance/strings.md`.
 

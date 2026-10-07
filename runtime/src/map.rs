@@ -10,12 +10,12 @@ pub struct Map {
     index: HashMap<Vec<u8>, usize>,
     entries: Vec<Entry>,
     value_size: i64,
+    text_keys: bool,
 }
 
 struct Entry {
     key: Vec<u8>,
-    /// The key as the program passed it; a string key keeps its descriptor.
-    // String storage is never freed before the program ends.
+    /// The key as the program passed it; a string key keeps its descriptor and owns its text.
     raw: [u8; 16],
     value: *mut u8,
 }
@@ -40,6 +40,26 @@ unsafe fn raw_key(kind: i32, key: *const u8) -> [u8; 16] {
 ///
 /// # Safety
 /// `key` must point to a live key of the layout `kind` names.
+fn text_of(raw: &[u8; 16]) -> (*const u8, usize) {
+    let data = usize::from_ne_bytes(raw[..8].try_into().unwrap()) as *const u8;
+    let len = i64::from_ne_bytes(raw[8..].try_into().unwrap());
+    (data, usize::try_from(len).unwrap_or(0))
+}
+
+fn retain_key(map: &Map, raw: &[u8; 16]) {
+    if map.text_keys {
+        let (data, len) = text_of(raw);
+        super::string::retain(data, len);
+    }
+}
+
+fn release_key(map: &Map, raw: &[u8; 16]) {
+    if map.text_keys {
+        let (data, len) = text_of(raw);
+        super::string::release(data, len);
+    }
+}
+
 unsafe fn key_bytes(kind: i32, key: *const u8) -> Vec<u8> {
     if kind == STRING_KEY {
         // SAFETY: a string key is a `{ ptr, i64 }` descriptor of live bytes.
@@ -85,12 +105,14 @@ pub unsafe extern "C" fn zore_map_insert(
                 index: HashMap::new(),
                 entries: Vec::new(),
                 value_size,
+                text_keys: kind == STRING_KEY,
             }));
         }
         &mut **slot
     };
     let raw = unsafe { raw_key(kind, key) };
     let key = unsafe { key_bytes(kind, key) };
+    retain_key(map, &raw);
     let value = zore_alloc(value_size);
     map.index.insert(key.clone(), map.entries.len());
     map.entries.push(Entry { key, raw, value });
@@ -117,7 +139,9 @@ pub unsafe extern "C" fn zore_map_detach(
     let Some(index) = map.index.remove(&key) else {
         return false;
     };
-    let value = map.entries.swap_remove(index).value;
+    let removed = map.entries.swap_remove(index);
+    release_key(map, &removed.raw);
+    let value = removed.value;
     if let Some(moved) = map.entries.get(index) {
         map.index.insert(moved.key.clone(), index);
     }
@@ -180,16 +204,20 @@ pub unsafe extern "C" fn zore_map_clone_shape(map: *const Map) -> *mut Map {
     let entries = map
         .entries
         .iter()
-        .map(|entry| Entry {
-            key: entry.key.clone(),
-            raw: entry.raw,
-            value: zore_alloc(map.value_size),
+        .map(|entry| {
+            retain_key(map, &entry.raw);
+            Entry {
+                key: entry.key.clone(),
+                raw: entry.raw,
+                value: zore_alloc(map.value_size),
+            }
         })
         .collect();
     Box::into_raw(Box::new(Map {
         index: map.index.clone(),
         entries,
         value_size: map.value_size,
+        text_keys: map.text_keys,
     }))
 }
 
@@ -204,7 +232,8 @@ pub unsafe extern "C" fn zore_map_free(map: *mut Map) {
     }
     // SAFETY: the map came from `Box::into_raw` in `zore_map_insert`.
     let map = unsafe { Box::from_raw(map) };
-    for entry in map.entries {
+    for entry in &map.entries {
+        release_key(&map, &entry.raw);
         // SAFETY: each value came from `zore_alloc(map.value_size)`.
         unsafe { zore_free(entry.value, map.value_size) };
     }
@@ -335,5 +364,40 @@ mod tests {
             zore_map_free(map);
             zore_map_free(names);
         }
+    }
+
+    #[test]
+    fn text_keys_keep_their_text_until_the_entry_or_the_map_goes() {
+        use super::super::string::StringOut;
+        let mut map: *mut Map = std::ptr::null_mut();
+        let keys: Vec<_> = ["one", "two", "three"]
+            .iter()
+            .map(|text| super::super::string::StringOut::built(text.as_bytes()))
+            .collect();
+        // SAFETY: `map` is null or live, keys are 16-byte descriptors, values are 8 bytes.
+        unsafe {
+            for key in &keys {
+                let slot =
+                    zore_map_insert(&mut map, STRING_KEY, (key as *const StringOut).cast(), 8);
+                *(slot as *mut i64) = 1;
+            }
+            for key in &keys {
+                super::super::string::release(key.data, key.len as usize);
+            }
+            assert_eq!(super::super::string::live_buffers(), 3);
+            let cloned = zore_map_clone_shape(map);
+            let mut out = 0i64;
+            assert!(zore_map_detach(
+                map,
+                STRING_KEY,
+                (&keys[1] as *const StringOut).cast(),
+                (&mut out as *mut i64).cast()
+            ));
+            assert_eq!(super::super::string::live_buffers(), 3);
+            zore_map_free(map);
+            assert_eq!(super::super::string::live_buffers(), 3);
+            zore_map_free(cloned);
+        }
+        assert_eq!(super::super::string::live_buffers(), 0);
     }
 }

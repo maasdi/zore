@@ -3,6 +3,7 @@ use std::process::{Command, Output};
 
 fn invoke(args: &[impl AsRef<OsStr>]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_zore"))
+        .env("ZORE_CHECK_LEAKS", "1")
         .args(args)
         .output()
         .expect("run zore binary")

@@ -5626,11 +5626,14 @@ or concatenation, since both are constructive from already-valid inputs.
 counted sharing, small-string optimization, etc.) and concatenation's
 allocation strategy remain unstandardized implementation details — they may
 change without a language-level specification revision, as long as the value
-guarantees above hold. The bootstrap compiler releases storage built at run
-time only when the program ends, but appending to the newest text in a buffer
-grows that buffer in place, so building one text in a loop uses memory
-proportional to its final length; discarded texts are not reclaimed earlier
-(Q23). Pending conformance cases are in
+guarantees above hold. The bootstrap compiler counts the owners of each buffer
+built at run time: every copy of a `string` that is kept (a variable, field,
+element, map entry, closure capture, argument, or result) is one owner, and the
+buffer is freed when the last owner goes, whether by leaving scope, being
+overwritten, or a panic unwinding. A slice shares its source's buffer and counts
+as an owner. Appending to the newest text in a buffer grows that buffer in
+place, so building one text in a loop uses memory proportional to its final
+length (Q23). Pending conformance cases are in
 `tests/conformance/strings.md`.
 
 ## 41.6 Async lowering order — IMPLEMENTATION DETAIL

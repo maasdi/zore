@@ -39,6 +39,7 @@ impl Module<'_> {
         let symbol = symbol(&function.name);
         let mut header = Vec::new();
         let mut prologue = String::new();
+        let mut release = String::new();
         let mut args = Vec::new();
         let mut declared = Vec::new();
         for (index, &param) in function.params.iter().enumerate() {
@@ -46,6 +47,13 @@ impl Module<'_> {
             header.push(format!("{} %p{index}", self.ty(ty)));
             match self.types().kind(ty) {
                 TypeKind::String | TypeKind::Slice { .. } => {
+                    if matches!(self.types().kind(ty), TypeKind::String) {
+                        writeln!(
+                            release,
+                            "  call void @zore_string_release(ptr %d{index}, i64 %n{index})"
+                        )
+                        .unwrap();
+                    }
                     writeln!(
                         prologue,
                         "  %d{index} = extractvalue {{ ptr, i64 }} %p{index}, 0\n  %n{index} = extractvalue {{ ptr, i64 }} %p{index}, 1"
@@ -77,7 +85,10 @@ impl Module<'_> {
         let returns = self.results_ty(&function.results);
         let (call, declaration) = match result {
             Result::None => (
-                format!("  call void @{symbol}({})\n  ret void\n", args.join(", ")),
+                format!(
+                    "  call void @{symbol}({})\n{release}  ret void\n",
+                    args.join(", ")
+                ),
                 format!("declare void @{symbol}({})", declared.join(", ")),
             ),
             Result::Scalar(ty) => {
@@ -88,7 +99,7 @@ impl Module<'_> {
                 };
                 (
                     format!(
-                        "  %r = call {marker}{ret} @{symbol}({})\n  ret {ret} %r\n",
+                        "  %r = call {marker}{ret} @{symbol}({})\n{release}  ret {ret} %r\n",
                         args.join(", ")
                     ),
                     format!("declare {marker}{ret} @{symbol}({})", declared.join(", ")),
@@ -102,7 +113,7 @@ impl Module<'_> {
                 parameters.extend(declared);
                 (
                     format!(
-                        "  %out = alloca {layout}\n  call void @{symbol}({})\n  %r = load {layout}, ptr %out\n  ret {layout} %r\n",
+                        "  %out = alloca {layout}\n  call void @{symbol}({})\n  %r = load {layout}, ptr %out\n{release}  ret {layout} %r\n",
                         rendered.join(", ")
                     ),
                     format!("declare void @{symbol}({})", parameters.join(", ")),
@@ -121,7 +132,7 @@ impl Module<'_> {
                 };
                 (
                     format!(
-                        "  %out = alloca {{ i64, i8, ptr, i64 }}\n  call void @{symbol}({})\n  %r = load {{ i64, i8, ptr, i64 }}, ptr %out\n  %value = extractvalue {{ i64, i8, ptr, i64 }} %r, 0\n  %failed = extractvalue {{ i64, i8, ptr, i64 }} %r, 1\n  %message = extractvalue {{ i64, i8, ptr, i64 }} %r, 2\n  %length = extractvalue {{ i64, i8, ptr, i64 }} %r, 3\n{narrow}  %present = icmp ne i8 %failed, 0\n  %e0 = insertvalue {{ i1, ptr, i64 }} undef, i1 %present, 0\n  %e1 = insertvalue {{ i1, ptr, i64 }} %e0, ptr %message, 1\n  %e2 = insertvalue {{ i1, ptr, i64 }} %e1, i64 %length, 2\n  %s0 = insertvalue {returns} undef, {value_ty} %v, 0\n  %s1 = insertvalue {returns} %s0, {{ i1, ptr, i64 }} %e2, 1\n  ret {returns} %s1\n",
+                        "  %out = alloca {{ i64, i8, ptr, i64 }}\n  call void @{symbol}({})\n  %r = load {{ i64, i8, ptr, i64 }}, ptr %out\n  %value = extractvalue {{ i64, i8, ptr, i64 }} %r, 0\n  %failed = extractvalue {{ i64, i8, ptr, i64 }} %r, 1\n  %message = extractvalue {{ i64, i8, ptr, i64 }} %r, 2\n  %length = extractvalue {{ i64, i8, ptr, i64 }} %r, 3\n{narrow}  %present = icmp ne i8 %failed, 0\n  %e0 = insertvalue {{ i1, ptr, i64 }} undef, i1 %present, 0\n  %e1 = insertvalue {{ i1, ptr, i64 }} %e0, ptr %message, 1\n  %e2 = insertvalue {{ i1, ptr, i64 }} %e1, i64 %length, 2\n  %s0 = insertvalue {returns} undef, {value_ty} %v, 0\n  %s1 = insertvalue {returns} %s0, {{ i1, ptr, i64 }} %e2, 1\n{release}  ret {returns} %s1\n",
                         rendered.join(", ")
                     ),
                     format!("declare void @{symbol}({})", parameters.join(", ")),

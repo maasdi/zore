@@ -97,7 +97,7 @@ impl Module<'_> {
             parts.push(self.ty(ty));
             let value = parts.len();
             pointers += 1;
-            let flags = (!self.package.is_copy(ty)).then(|| {
+            let flags = self.package.needs_drop(ty).then(|| {
                 parts.push(self.flag_ty(ty));
                 pointers += 1;
                 parts.len()
@@ -311,7 +311,7 @@ impl FunctionBuilder<'_, '_> {
         for &param in &self.body.params {
             params.push(format!("{} %p{}", self.slot_ty(param), param.0));
             if self.body.locals[param.0 as usize].by_reference
-                && !package.is_copy(self.local_ty(param))
+                && package.needs_drop(self.local_ty(param))
             {
                 params.push(format!("ptr %pf{}", param.0));
             }
@@ -328,7 +328,7 @@ impl FunctionBuilder<'_, '_> {
             let ty = self.slot_ty(Local(index as u32));
             self.line(format!("%l{index} = alloca {ty}"));
             let local = Local(index as u32);
-            if !package.is_copy(self.local_ty(local)) {
+            if package.needs_drop(self.local_ty(local)) {
                 let flags = if self.body.locals[index].by_reference {
                     "ptr".to_string()
                 } else {
@@ -340,14 +340,14 @@ impl FunctionBuilder<'_, '_> {
         let entry_allocas_end = self.out.len();
         for index in 0..self.body.locals.len() {
             let local = Local(index as u32);
-            if !self.body.locals[index].by_reference && !package.is_copy(self.local_ty(local)) {
+            if !self.body.locals[index].by_reference && package.needs_drop(self.local_ty(local)) {
                 self.set_flags(&Place::local(local), false);
             }
         }
         for &param in &self.body.params {
             let ty = self.slot_ty(param);
             self.line(format!("store {ty} %p{}, ptr %l{}", param.0, param.0));
-            if !package.is_copy(self.local_ty(param)) {
+            if package.needs_drop(self.local_ty(param)) {
                 if self.body.locals[param.0 as usize].by_reference {
                     self.line(format!("store ptr %pf{}, ptr %lf{}", param.0, param.0));
                 } else {
@@ -375,7 +375,7 @@ impl FunctionBuilder<'_, '_> {
         let mut slot = 0;
         for &capture in &self.body.captures {
             let mut targets = vec![format!("%l{}", capture.0)];
-            if !self.module.package.is_copy(self.local_ty(capture)) {
+            if self.module.package.needs_drop(self.local_ty(capture)) {
                 targets.push(format!("%lf{}", capture.0));
             }
             for target in targets {
@@ -404,7 +404,7 @@ impl FunctionBuilder<'_, '_> {
         let mut pointers = Vec::new();
         for (place, _) in captures {
             pointers.push(self.address(place));
-            if !package.is_copy(self.place_ty(place)) {
+            if package.needs_drop(self.place_ty(place)) {
                 pointers.push(self.flag_address(place));
             }
         }
@@ -449,7 +449,7 @@ impl FunctionBuilder<'_, '_> {
         for ((place, exclusive), &(ty, value, flags)) in captures.iter().zip(&environment.fields) {
             let operand =
                 mir::captured_operand(self.module.package, &self.body.locals, place, *exclusive);
-            let loaded = self.value(&operand);
+            let loaded = self.owned_value(&operand);
             let slot = self.environment_field(&environment, &block, value);
             self.line(format!("store {} {loaded}, ptr {slot}", self.ty(ty)));
             self.store_environment_pointer(&environment, &block, pointer, &slot);
@@ -617,10 +617,13 @@ impl FunctionBuilder<'_, '_> {
         self.line(format!(
             "{text} = insertvalue {{ ptr, i64 }} {with_data}, i64 {count}, 1"
         ));
+        self.line(format!(
+            "call void @zore_string_retain(ptr {start}, i64 {count})"
+        ));
         text
     }
 
-    /// Joined text is built by the runtime, which keeps it until the program ends.
+    /// Joined text is built by the runtime and arrives with one owner.
     pub(super) fn string_concat(&mut self, left: &str, right: &str) -> String {
         let (ap, al) = self.string_parts(left);
         let (bp, bl) = self.string_parts(right);
@@ -683,7 +686,7 @@ impl FunctionBuilder<'_, '_> {
             _ => unreachable!("only references are bound"),
         };
         self.line(format!("store ptr {address}, ptr %l{}", local.0));
-        if !self.module.package.is_copy(ty) {
+        if self.module.package.needs_drop(ty) {
             let flags = match rvalue {
                 Rvalue::Ref(place)
                     if !place
@@ -719,6 +722,9 @@ impl FunctionBuilder<'_, '_> {
         } else {
             let ty = self.ty(key);
             self.line(format!("{value} = load {ty}, ptr {raw}"));
+        }
+        if self.module.package.copies_text(key) {
+            self.retain_value(&value, key);
         }
         value
     }
@@ -846,7 +852,7 @@ impl FunctionBuilder<'_, '_> {
     }
 
     pub(super) fn set_root_flag(&mut self, place: &Place, value: bool) {
-        if self.module.package.is_copy(self.place_ty(place)) {
+        if !self.module.package.needs_drop(self.place_ty(place)) {
             return;
         }
         let address = self.root_flag_address(place);
@@ -855,7 +861,7 @@ impl FunctionBuilder<'_, '_> {
 
     pub(super) fn set_flags(&mut self, place: &Place, value: bool) {
         let ty = self.place_ty(place);
-        if self.module.package.is_copy(ty) {
+        if !self.module.package.needs_drop(ty) {
             return;
         }
         if place
@@ -910,7 +916,142 @@ impl FunctionBuilder<'_, '_> {
         }
     }
 
+    /// A value that will be kept: a Copy operand that holds text gains an owner.
+    pub(super) fn owned_value(&mut self, operand: &Operand) -> String {
+        let value = self.value(operand);
+        if let Operand::Copy(place) = operand {
+            let ty = self.place_ty(place);
+            if self.module.package.copies_text(ty) {
+                self.retain_value(&value, ty);
+            }
+        }
+        value
+    }
+
+    pub(super) fn retain_value(&mut self, value: &str, ty: TypeId) {
+        if matches!(self.module.package.types.kind(ty), TypeKind::String) {
+            let (data, len) = self.string_parts(value);
+            self.line(format!(
+                "call void @zore_string_retain(ptr {data}, i64 {len})"
+            ));
+            return;
+        }
+        let slot = self.fresh();
+        let ty_text = self.ty(ty);
+        self.hoist_alloca(&slot, &ty_text);
+        self.line(format!("store {ty_text} {value}, ptr {slot}"));
+        self.retain_at(&slot, ty);
+    }
+
+    /// Every text inside the value at `address` gains an owner.
+    pub(super) fn retain_at(&mut self, address: &str, ty: TypeId) {
+        if !self.module.package.holds_text(ty) {
+            return;
+        }
+        match self.module.package.types.kind(ty) {
+            TypeKind::String => {
+                let (data, len) = self.load_text(address, ty);
+                self.line(format!(
+                    "call void @zore_string_retain(ptr {data}, i64 {len})"
+                ));
+            }
+            TypeKind::Error => {
+                let (data, len) = self.load_text(address, ty);
+                self.line(format!(
+                    "call void @zore_string_retain(ptr {data}, i64 {len})"
+                ));
+            }
+            TypeKind::Struct(id) => {
+                let fields: Vec<TypeId> = self
+                    .module
+                    .package
+                    .strukt(id)
+                    .fields
+                    .iter()
+                    .map(|f| f.ty)
+                    .collect();
+                let struct_ty = self.ty(ty);
+                for (index, field) in fields.into_iter().enumerate() {
+                    if !self.module.package.holds_text(field) {
+                        continue;
+                    }
+                    let child = self.fresh();
+                    self.line(format!(
+                        "{child} = getelementptr inbounds {struct_ty}, ptr {address}, i32 0, i32 {index}"
+                    ));
+                    self.retain_at(&child, field);
+                }
+            }
+            TypeKind::Array { element, size } => {
+                let array_ty = self.ty(ty);
+                let first = self.fresh();
+                self.line(format!(
+                    "{first} = getelementptr inbounds {array_ty}, ptr {address}, i64 0, i64 0"
+                ));
+                self.for_each_element(&first, element, &size.to_string(), |this, slot| {
+                    this.retain_at(slot, element);
+                });
+            }
+            _ => unreachable!("only Copy values hold text"),
+        }
+    }
+
+    /// The bytes a string or error value reads, as a pointer and a length.
+    fn load_text(&mut self, address: &str, ty: TypeId) -> (String, String) {
+        let ty_text = self.ty(ty);
+        let value = self.fresh();
+        self.line(format!("{value} = load {ty_text}, ptr {address}"));
+        if matches!(self.module.package.types.kind(ty), TypeKind::Error) {
+            let (_, data, len) = self.error_parts(&value);
+            (data, len)
+        } else {
+            self.string_parts(&value)
+        }
+    }
+
+    pub(super) fn release_text(&mut self, address: &str, ty: TypeId) {
+        let (data, len) = self.load_text(address, ty);
+        self.line(format!(
+            "call void @zore_string_release(ptr {data}, i64 {len})"
+        ));
+    }
+
+    fn for_each_element(
+        &mut self,
+        data: &str,
+        element: TypeId,
+        count: &str,
+        mut each: impl FnMut(&mut Self, &str),
+    ) {
+        let element_ty = self.ty(element);
+        let counter = self.fresh();
+        self.hoist_alloca(&counter, "i64");
+        self.line(format!("store i64 0, ptr {counter}"));
+        let (check, body, done) = (self.label(), self.label(), self.label());
+        self.line(format!("br label %{check}"));
+        self.out.push_str(&format!("{check}:\n"));
+        let index = self.fresh();
+        self.line(format!("{index} = load i64, ptr {counter}"));
+        let more = self.fresh();
+        self.line(format!("{more} = icmp ult i64 {index}, {count}"));
+        self.line(format!("br i1 {more}, label %{body}, label %{done}"));
+        self.out.push_str(&format!("{body}:\n"));
+        let slot = self.fresh();
+        self.line(format!(
+            "{slot} = getelementptr inbounds {element_ty}, ptr {data}, i64 {index}"
+        ));
+        each(self, &slot);
+        let next = self.fresh();
+        self.line(format!("{next} = add i64 {index}, 1"));
+        self.line(format!("store i64 {next}, ptr {counter}"));
+        self.line(format!("br label %{check}"));
+        self.out.push_str(&format!("{done}:\n"));
+    }
+
     pub(super) fn store(&mut self, place: &Place, value: &str) {
+        if self.module.package.copies_text(self.place_ty(place)) {
+            self.drop_place(place);
+        }
         let ty = self.ty(self.place_ty(place));
         let address = self.address(place);
         self.line(format!("store {ty} {value}, ptr {address}"));
@@ -1001,7 +1142,7 @@ impl FunctionBuilder<'_, '_> {
         }
         let result_ty = self.place_ty(place);
         let value = match rvalue {
-            Rvalue::Use(operand) => self.value(operand),
+            Rvalue::Use(operand) => self.owned_value(operand),
             Rvalue::Zero => "zeroinitializer".into(),
             Rvalue::Binary(op, lhs, rhs) => self.binary(*op, lhs, rhs, span),
             Rvalue::Unary(op, operand) => self.unary(*op, operand, span),
@@ -1048,7 +1189,7 @@ impl FunctionBuilder<'_, '_> {
                 let mut current = "undef".to_string();
                 for (index, operand) in operands.iter().enumerate() {
                     let field_ty = self.ty(self.operand_ty(operand));
-                    let value = self.value(operand);
+                    let value = self.owned_value(operand);
                     let name = self.fresh();
                     self.line(format!(
                         "{name} = insertvalue {ty} {current}, {field_ty} {value}, {index}"
@@ -1070,7 +1211,7 @@ impl FunctionBuilder<'_, '_> {
         let data = self.fresh();
         self.line(format!("{data} = call ptr @zore_alloc(i64 {bytes})"));
         for (index, operand) in operands.iter().enumerate() {
-            let value = self.value(operand);
+            let value = self.owned_value(operand);
             let slot = self.fresh();
             self.line(format!(
                 "{slot} = getelementptr inbounds {element_ty}, ptr {data}, i64 {index}"
@@ -1127,7 +1268,7 @@ impl FunctionBuilder<'_, '_> {
     }
 
     pub(super) fn drop_elements(&mut self, data: &str, element: TypeId, count: &str) {
-        if self.module.package.is_copy(element) {
+        if !self.module.package.needs_drop(element) {
             return;
         }
         let element_ty = self.ty(element);
@@ -1158,7 +1299,7 @@ impl FunctionBuilder<'_, '_> {
     fn drop_map(&mut self, address: &str, value: TypeId) {
         let map = self.fresh();
         self.line(format!("{map} = load ptr, ptr {address}"));
-        if !self.module.package.is_copy(value) {
+        if self.module.package.needs_drop(value) {
             let length = self.fresh();
             self.line(format!("{length} = call i64 @zore_map_len(ptr {map})"));
             let counter = self.fresh();
@@ -1200,7 +1341,7 @@ impl FunctionBuilder<'_, '_> {
     /// Array elements have no own flag, so they use transient scratch flags.
     pub(super) fn drop_place(&mut self, place: &Place) {
         let ty = self.place_ty(place);
-        if self.module.package.is_copy(ty) {
+        if !self.module.package.needs_drop(ty) {
             return;
         }
         let address = self.address(place);
@@ -1218,7 +1359,7 @@ impl FunctionBuilder<'_, '_> {
 
     /// The root flag comes first in `flags`.
     pub(super) fn drop_value(&mut self, address: &str, ty: TypeId, flags: &str) {
-        if self.module.package.is_copy(ty) {
+        if !self.module.package.needs_drop(ty) {
             return;
         }
         let root = self.root_flag_address_from(flags, ty);
@@ -1234,7 +1375,7 @@ impl FunctionBuilder<'_, '_> {
     }
 
     pub(super) fn drop_unconditional(&mut self, address: &str, ty: TypeId) {
-        if self.module.package.is_copy(ty) {
+        if !self.module.package.needs_drop(ty) {
             return;
         }
         let scratch = self.scratch_flags(ty);
@@ -1255,7 +1396,7 @@ impl FunctionBuilder<'_, '_> {
     }
 
     pub(super) fn init_flags_true(&mut self, address: &str, ty: TypeId) {
-        if self.module.package.is_copy(ty) {
+        if !self.module.package.needs_drop(ty) {
             return;
         }
         let root = self.root_flag_address_from(address, ty);
@@ -1263,7 +1404,7 @@ impl FunctionBuilder<'_, '_> {
         if let TypeKind::Struct(id) = self.module.package.types.kind(ty) {
             let strukt = self.module.package.strukt(id);
             for (index, field) in strukt.fields.iter().enumerate() {
-                if self.module.package.is_copy(field.ty) {
+                if !self.module.package.needs_drop(field.ty) {
                     continue;
                 }
                 let child = self.fresh();
@@ -1319,6 +1460,7 @@ impl FunctionBuilder<'_, '_> {
                     self.drop_unconditional(&child, element);
                 }
             }
+            TypeKind::String | TypeKind::Error => self.release_text(address, ty),
             TypeKind::DynArray { element } => self.drop_dyn_array(address, element),
             TypeKind::Map { value, .. } => self.drop_map(address, value),
             TypeKind::Func(_) => self.drop_closure(address),
@@ -1412,7 +1554,7 @@ impl FunctionBuilder<'_, '_> {
     }
 
     pub(super) fn error_value(&mut self, operand: &Operand) -> String {
-        let value = self.value(operand);
+        let value = self.owned_value(operand);
         let (ptr, len) = self.string_parts(&value);
         let (first, second, third) = (self.fresh(), self.fresh(), self.fresh());
         self.line(format!(
@@ -1646,10 +1788,10 @@ impl FunctionBuilder<'_, '_> {
 
     pub(super) fn convert(&mut self, operand: &Operand, to: TypeId, span: Span) -> String {
         let from = self.operand_ty(operand);
-        let value = self.value(operand);
         if from == to {
-            return value;
+            return self.owned_value(operand);
         }
+        let value = self.value(operand);
         if from == crate::types::TypeStore::RUNE && to == crate::types::TypeStore::STRING {
             return self.string_from_rune(&value);
         }
