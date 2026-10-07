@@ -367,12 +367,18 @@ printing is reported as unsupported by the backend.
 The generated IR contains no target triple, so clang supplies the host's; it
 requires LLVM 15 or newer for opaque pointers.
 
-The driver embeds the Rust runtime sources, compiles the LLVM IR to a native
-object with clang, then invokes rustc 1.98+ to compile the runtime entry shim
-and link that object. Rustc manages its standard-library and system-library
-dependencies. Runtime sources do not need to be installed alongside `zore`.
-Native builds require both tools for the same host; `ZORE_CC` and `ZORE_RUSTC`
-select their executables. There is no runtime artifact cache yet. Rust startup
+The driver embeds the Rust runtime sources and compiles the LLVM IR to a native
+object with clang. It compiles the runtime once into a Rust library and keeps
+that library in a per-user cache folder (`$XDG_CACHE_HOME/zore`, `~/.cache/zore`,
+`~/Library/Caches/zore` on macOS, or `ZORE_CACHE_DIR`), named by a hash of the
+runtime sources and the `rustc -vV` output; a folder that cannot be used leads to
+compiling the runtime for that build alone. Each program then needs only rustc
+1.98+ to compile a small entry shim against that library and link the object.
+Rustc manages its standard-library and system-library dependencies. Runtime
+sources do not need to be installed alongside `zore`. Native builds require both
+tools for the same host; `ZORE_CC` and `ZORE_RUSTC` select their executables.
+Cache entries are never removed by the compiler; deleting the folder is always
+safe. Rust startup
 provides SIGPIPE handling; output is locked and explicitly flushed before
 returning, so write failures become Zore panics. The unsafe Rust boundary is
 limited to the internal ABI and does not introduce source-level unsafe syntax.

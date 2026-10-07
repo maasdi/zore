@@ -68,7 +68,9 @@ You need:
 - **Rust**, installed through [rustup](https://rustup.rs/). The repository pins
   the toolchain in `rust-toolchain.toml`, so rustup selects it automatically.
   Native builds also invoke `rustc` (1.98 or newer) to compile and link the Rust
-  runtime; set `ZORE_RUSTC` to choose its executable.
+  runtime; set `ZORE_RUSTC` to choose its executable. The compiled runtime is kept in
+  your cache folder (`~/.cache/zore`, `~/Library/Caches/zore` on macOS, or
+  `ZORE_CACHE_DIR`), so only the first build pays for compiling it.
 - **clang with LLVM 15 or newer**, for `zore build` and `zore run` only. macOS
   ships it with the Xcode Command Line Tools; on Linux, install your
   distribution's `clang` package. Set `ZORE_CC` to use a specific compiler.

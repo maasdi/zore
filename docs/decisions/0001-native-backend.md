@@ -16,13 +16,15 @@ source-language semantics.
 
 - The compiler lowers HIR to MIR (§33) and emits textual LLVM IR (`.ll`).
 - `zore build` and `zore run` invoke clang to compile that IR to a native
-  object, then rustc to compile and link the embedded Rust runtime sources
-  together with the object.
+  object, then rustc to link a small entry shim and the object against the
+  embedded Rust runtime, which is compiled once as a library and cached (see the
+  architecture notes).
 - clang is selected by `ZORE_CC`, falling back to `clang` on `PATH`.
   Invocation: `clang -O2 -Wno-override-module -fPIC -c program.ll -o program.o`.
 - rustc is selected by `ZORE_RUSTC`, falling back to `rustc` on `PATH`.
-  It compiles the runtime's `main.rs` with edition 2024, optimization level 2,
-  and `panic=abort`, using clang as the linker driver and passing the object
+  It compiles the runtime library, and the entry shim `main.rs` against it, with
+  edition 2024, optimization level 2, and `panic=abort`, using clang as the
+  linker driver and passing the object
   with `-C link-arg=<program.o>`. Rustc manages its standard-library and native
   library dependencies; see the
   [Rust linkage reference](https://doc.rust-lang.org/reference/linkage.html).

@@ -12,8 +12,9 @@ use crate::dropck;
 use crate::mir::lower::lower;
 use crate::source::{Layered, SourceFile, Sources};
 
+const RUNTIME_MAIN: &str = include_str!("../../../runtime/src/main.rs");
+
 const RUNTIME_SOURCES: &[(&str, &str)] = &[
-    ("main.rs", include_str!("../../../runtime/src/main.rs")),
     ("lib.rs", include_str!("../../../runtime/src/lib.rs")),
     ("alloc.rs", include_str!("../../../runtime/src/alloc.rs")),
     (
@@ -145,11 +146,6 @@ fn link(ir: &str, output: &Path) -> Result<(), BuildError> {
     let ir_path = dir.path().join("program.ll");
     let object_path = dir.path().join("program.o");
     fs::write(&ir_path, ir).map_err(|e| BuildError::Io(format!("{}: {e}", ir_path.display())))?;
-    for &(name, contents) in RUNTIME_SOURCES {
-        let path = dir.path().join(name);
-        fs::write(&path, contents)
-            .map_err(|e| BuildError::Io(format!("{}: {e}", path.display())))?;
-    }
     let cc = compiler();
     let result = Command::new(&cc)
         .arg("-O2")
@@ -176,28 +172,30 @@ fn link(ir: &str, output: &Path) -> Result<(), BuildError> {
         )));
     }
     let rustc = std::env::var_os("ZORE_RUSTC").unwrap_or_else(|| "rustc".into());
+    let runtime = runtime_library(&rustc, dir.path())?;
+    let main_path = dir.path().join("main.rs");
+    fs::write(&main_path, RUNTIME_MAIN)
+        .map_err(|e| BuildError::Io(format!("{}: {e}", main_path.display())))?;
     let mut link_arg = std::ffi::OsString::from("link-arg=");
     link_arg.push(&object_path);
+    let mut extern_arg = std::ffi::OsString::from("zore_runtime=");
+    extern_arg.push(&runtime);
     let result = Command::new(&rustc)
         .arg("--edition=2024")
         .arg("--crate-name=zore_program")
         .arg("-Copt-level=2")
         .arg("-Cpanic=abort")
+        .arg("--extern")
+        .arg(extern_arg)
         .arg("-C")
         .arg(format!("linker={cc}"))
         .arg("-C")
         .arg(link_arg)
-        .arg(dir.path().join("main.rs"))
+        .arg(&main_path)
         .arg("-o")
         .arg(output)
         .output()
-        .map_err(|error| {
-            BuildError::Toolchain(format!(
-                "could not run `{}` ({error}); `zore build` requires rustc 1.98 or newer \
-                 to compile the Rust runtime (set ZORE_RUSTC to choose a compiler)",
-                rustc.to_string_lossy()
-            ))
-        })?;
+        .map_err(|error| toolchain_error(&rustc, &error))?;
     if !result.status.success() {
         return Err(BuildError::Toolchain(format!(
             "`{}` failed to compile or link the Rust runtime; ensure rustc 1.98 or newer \
@@ -207,4 +205,101 @@ fn link(ir: &str, output: &Path) -> Result<(), BuildError> {
         )));
     }
     Ok(())
+}
+
+fn toolchain_error(rustc: &std::ffi::OsStr, error: &std::io::Error) -> BuildError {
+    BuildError::Toolchain(format!(
+        "could not run `{}` ({error}); `zore build` requires rustc 1.98 or newer \
+         to compile the Rust runtime (set ZORE_RUSTC to choose a compiler)",
+        rustc.to_string_lossy()
+    ))
+}
+
+/// Where compiled runtimes are kept between builds: `ZORE_CACHE_DIR`, otherwise the user's cache
+/// folder. A shared temporary folder is never used, since another user could plant a library there.
+fn cache_root() -> Option<PathBuf> {
+    if let Some(dir) = std::env::var_os("ZORE_CACHE_DIR") {
+        return Some(PathBuf::from(dir).join("zore"));
+    }
+    if let Some(dir) = std::env::var_os("XDG_CACHE_HOME").filter(|dir| !dir.is_empty()) {
+        return Some(PathBuf::from(dir).join("zore"));
+    }
+    let home = PathBuf::from(std::env::var_os("HOME").filter(|home| !home.is_empty())?);
+    if cfg!(target_os = "macos") {
+        Some(home.join("Library").join("Caches").join("zore"))
+    } else {
+        Some(home.join(".cache").join("zore"))
+    }
+}
+
+/// The runtime compiled as a library, reused across builds with the same sources and `rustc`.
+/// Without a usable cache folder it is compiled into `scratch` and used once.
+fn runtime_library(rustc: &std::ffi::OsStr, scratch: &Path) -> Result<PathBuf, BuildError> {
+    let version = Command::new(rustc)
+        .arg("-vV")
+        .output()
+        .map_err(|error| toolchain_error(rustc, &error))?;
+    let mut hasher = std::hash::DefaultHasher::new();
+    std::hash::Hash::hash(&version.stdout, &mut hasher);
+    for &(name, contents) in RUNTIME_SOURCES {
+        std::hash::Hash::hash(&(name, contents), &mut hasher);
+    }
+    let key = std::hash::Hasher::finish(&hasher);
+    let cached = cache_root().map(|root| {
+        root.join(format!("runtime-{key:016x}"))
+            .join("libzore_runtime.rlib")
+    });
+    if let Some(path) = cached.as_ref().filter(|path| path.is_file()) {
+        return Ok(path.clone());
+    }
+    let sources = scratch.join("runtime");
+    fs::create_dir_all(&sources)
+        .map_err(|e| BuildError::Io(format!("{}: {e}", sources.display())))?;
+    for &(name, contents) in RUNTIME_SOURCES {
+        let path = sources.join(name);
+        fs::write(&path, contents)
+            .map_err(|e| BuildError::Io(format!("{}: {e}", path.display())))?;
+    }
+    let built = scratch.join("libzore_runtime.rlib");
+    let result = Command::new(rustc)
+        .arg("--edition=2024")
+        .arg("--crate-name=zore_runtime")
+        .arg("--crate-type=rlib")
+        .arg("-Copt-level=2")
+        .arg("-Cpanic=abort")
+        .arg(sources.join("lib.rs"))
+        .arg("-o")
+        .arg(&built)
+        .output()
+        .map_err(|error| toolchain_error(rustc, &error))?;
+    if !result.status.success() {
+        return Err(BuildError::Toolchain(format!(
+            "`{}` failed to compile the Rust runtime; ensure rustc 1.98 or newer \
+             and clang target the same host:\n{}",
+            rustc.to_string_lossy(),
+            String::from_utf8_lossy(&result.stderr)
+        )));
+    }
+    Ok(cached
+        .and_then(|path| keep_in_cache(&built, &path))
+        .unwrap_or(built))
+}
+
+/// Copies `built` to `path` so that readers see either nothing or the whole file.
+fn keep_in_cache(built: &Path, path: &Path) -> Option<PathBuf> {
+    let folder = path.parent()?;
+    fs::create_dir_all(folder).ok()?;
+    let staged = folder.join(format!(
+        "staged-{}-{}",
+        std::process::id(),
+        NEXT_DIR.fetch_add(1, Ordering::Relaxed)
+    ));
+    let moved = fs::copy(built, &staged)
+        .and_then(|_| fs::rename(&staged, path))
+        .is_ok();
+    if !moved {
+        let _ = fs::remove_file(&staged);
+        return None;
+    }
+    Some(path.to_path_buf())
 }
