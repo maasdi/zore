@@ -3130,28 +3130,36 @@ func main() {
 
 #[test]
 fn tens_of_thousands_of_tasks_run_and_wait_on_each_other() {
-    let source = "package main
-func square(n int) int { return n * n }
-func chain(depth int) int {
-    if depth == 0 { return 0 }
+    // Only targets with fibers can hold this many tasks; elsewhere each task is a thread.
+    let fibers = cfg!(all(
+        target_arch = "x86_64",
+        any(target_os = "linux", target_os = "macos")
+    ));
+    let (count, depth) = if fibers { (50_000, 5000) } else { (1000, 100) };
+    let source = format!(
+        "package main
+func square(n int) int {{ return n * n }}
+func chain(depth int) int {{
+    if depth == 0 {{ return 0 }}
     let next = go chain(depth - 1)
     return next.wait() + 1
-}
-func main() {
-    var tasks = Array<Task<int>>{}
-    for var i = 0; i < 50000; i += 1 {
+}}
+func main() {{
+    var tasks = Array<Task<int>>{{}}
+    for var i = 0; i < {count}; i += 1 {{
         tasks.push(go square(i % 10))
-    }
+    }}
     var total = 0
-    for tasks.len() > 0 {
+    for tasks.len() > 0 {{
         let found, task = tasks.pop()
-        if found { total += task.wait() }
-    }
+        if found {{ total += task.wait() }}
+    }}
     println(total)
-    let deep = go chain(5000)
+    let deep = go chain({depth})
     println(deep.wait())
-}";
-    prints(source, "1425000\n5000\n");
+}}"
+    );
+    prints(&source, &format!("{}\n{depth}\n", count / 10 * 285));
 }
 
 #[test]
