@@ -289,6 +289,7 @@ mod tests {
 
     #[test]
     fn splitting_follows_go_for_empty_inputs() {
+        let _serial = crate::string::serial();
         assert_eq!(split("a,b,c", ","), ["a", "b", "c"]);
         assert_eq!(split("", ","), [""]);
         assert_eq!(split("abc", ""), ["a", "b", "c"]);
@@ -300,6 +301,7 @@ mod tests {
 
     #[test]
     fn searching_and_affixes() {
+        let _serial = crate::string::serial();
         // SAFETY: the strings are live literals.
         unsafe {
             let (s, sub) = ("hello", "ell");
@@ -342,6 +344,7 @@ mod tests {
 
     #[test]
     fn case_trim_replace_repeat_and_join() {
+        let _serial = crate::string::serial();
         let mut out = StringOut::empty();
         // SAFETY: every string is a live literal and `out` is writable.
         unsafe {

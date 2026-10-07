@@ -47,6 +47,7 @@ A newly discovered semantic gap blocks its affected feature, not unrelated work.
 | Q22 | Output provenance: views stored through `mut` parameters and closure captures, and views returned through function values (§11.7, §16). See Q22 below. | §11.7, §16.3–16.4 | Ownership changes only |
 | Q23 | Strings: byte length and indexing, boundary-checked slicing, loops by character, `string(rune)`, and when runtime-built strings are released (§6.8, §41.5). See Q23 below. | §6.8, §41.5 | Checker, codegen, and runtime changes |
 | Q24 | Projects, packages, and imports: folders as packages, import paths, export checks, and the first standard packages (§3.20, §37.2). See Q24 below. | §3.20, §4.1, §37.2 | Loader, resolver, checker, and codegen changes |
+| Q25 | Task implementation choices made while implementing §17–18 where the text is silent; each rejects rather than guesses and can be relaxed later. See Q25 below. | §17.8, §18.4, §18.8–18.11 | Parser, checker, codegen, and runtime changes |
 
 ## Resolved decisions
 
@@ -142,6 +143,29 @@ A newly discovered semantic gap blocks its affected feature, not unrelated work.
   new storage is freed, and unwinding continues. (g) Allocation failure aborts,
   as for `Array<T>` (Q17g). Pending cases: `tests/conformance/destruction.md`.
 
+- **Q25 — Task implementation choices:** (a) `go` takes a call to a declared
+  function or method, including an `async func`; a call through a function value,
+  a closure literal, and the built-in operations are rejected. (b) Inputs follow
+  §18.4 conservatively: a `mut` parameter, any argument whose type holds a slice
+  or function value, and a Move argument for a shared parameter are rejected;
+  Copy values, including text, are copied into the task, and `own` arguments are
+  moved in. (c) A task cannot return a slice or function value, and a written
+  `Task<...>` type with such a result is rejected. (d) `go f(args)` as a
+  statement detaches the task, and so does dropping or overwriting a handle; a
+  detached task's results are destroyed when it finishes. (e) Each task runs on
+  its own operating-system thread (§36.2 leaves the scheduler open), so a
+  blocking `.wait()` never starves another task, and `await task` waits the
+  same way; an `async func` awaited with `await` runs on the awaiting task's
+  stack. The scheduler can change without changing the language. (f) A task
+  panic is reported on standard error as `panic in task N: message` when it
+  happens, then raised again with the same message at `.wait()` or `await`.
+  Waiting on a `nil` task panics with "wait on a nil task". (g) Runtime-built
+  text is reference counted under one lock, so any task may hold, copy, and
+  release it. (h) When the initial task finishes, the process exits at once
+  without freeing the text that running tasks hold. (i) `await task` and
+  `.wait()` are the only operations on a task; there is no cancellation,
+  timeout, or join-all. Pending cases: `tests/conformance/concurrency.md`.
+
 - **Q24 — Projects, packages, and imports:** locked in §3.20 and §37.2 at the
   maintainer's direction: a folder is a package, import paths start with the
   project name (or `zore` for standard packages), and `zore run file.ore` builds
@@ -170,8 +194,8 @@ A newly discovered semantic gap blocks its affected feature, not unrelated work.
   panic unwinds); appending to the newest text in a buffer grows the buffer in
   place (doubling), which is safe because no string reads past its own end, so
   building one text in a loop costs memory proportional to its final length;
-  counts are not atomic, so text cannot cross threads until tasks arrive and
-  decide how; (d) number
+  the buffer table is shared by every task and guarded by a lock, so text
+  can cross tasks (Q25); (d) number
   formatting stays out of the language and lives in `zore/strconv`. Pending
   cases: `tests/conformance/strings.md`.
 

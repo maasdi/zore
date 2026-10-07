@@ -25,6 +25,8 @@ pub enum Callee {
     ArrayPush,
     /// `[Ref(array)]` to `[found, value]`; detaches the last element.
     ArrayPop,
+    /// `[task]` to the task's results; raises the task's panic if it had one.
+    TaskWait,
 }
 
 impl Callee {
@@ -41,7 +43,8 @@ impl Callee {
             | Callee::Drop
             | Callee::Clone(_)
             | Callee::ArrayPush
-            | Callee::ArrayPop => None,
+            | Callee::ArrayPop
+            | Callee::TaskWait => None,
         }
     }
 }

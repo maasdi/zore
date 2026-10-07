@@ -52,6 +52,8 @@ pub enum Rvalue {
     Aggregate(AggregateKind, Vec<Operand>),
     /// Borrows each place, exclusively when marked, in capture order; an owning
     /// closure instead copies or moves each value into its own environment.
+    /// Starts running the closure on a new task and gives the handle; consumes the closure.
+    Spawn(Operand),
     Closure {
         function: FunctionId,
         captures: Vec<(Place, bool)>,

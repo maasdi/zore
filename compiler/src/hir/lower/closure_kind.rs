@@ -623,7 +623,7 @@ fn children_mut(expr: &mut hir::Expr) -> Vec<&mut hir::Expr> {
             .chain(low.as_deref_mut())
             .chain(high.as_deref_mut())
             .collect(),
-        ExprKind::Call { args, .. } => args.iter_mut().collect(),
+        ExprKind::Call { args, .. } | ExprKind::Spawn { args, .. } => args.iter_mut().collect(),
         ExprKind::CallValue { callee, args, .. } => {
             std::iter::once(&mut **callee).chain(args).collect()
         }
@@ -643,6 +643,7 @@ fn children_mut(expr: &mut hir::Expr) -> Vec<&mut hir::Expr> {
         | ExprKind::Clone(inner)
         | ExprKind::Error(inner)
         | ExprKind::Try(inner)
+        | ExprKind::TaskWait(inner)
         | ExprKind::Unary { operand: inner, .. } => vec![inner],
         ExprKind::Binary { lhs, rhs, .. } => vec![lhs, rhs],
     }

@@ -253,6 +253,7 @@ mod tests {
 
     #[test]
     fn entries_insert_find_detach_and_free() {
+        let _serial = crate::string::serial();
         let mut map: *mut Map = std::ptr::null_mut();
         // SAFETY: the empty map is null, which every function accepts.
         unsafe {
@@ -291,6 +292,7 @@ mod tests {
 
     #[test]
     fn clone_shape_keeps_keys_and_order_with_fresh_values() {
+        let _serial = crate::string::serial();
         let mut map: *mut Map = std::ptr::null_mut();
         // SAFETY: the empty map is null, which every function accepts.
         unsafe {
@@ -320,6 +322,7 @@ mod tests {
 
     #[test]
     fn string_keys_match_by_content() {
+        let _serial = crate::string::serial();
         let mut map: *mut Map = std::ptr::null_mut();
         let first = b"key".to_vec();
         let second = b"key".to_vec();
@@ -343,6 +346,7 @@ mod tests {
 
     #[test]
     fn keys_are_read_back_by_position_as_stored() {
+        let _serial = crate::string::serial();
         let mut map: *mut Map = std::ptr::null_mut();
         for key in [5, 9] {
             insert(&mut map, key, key);
@@ -368,6 +372,7 @@ mod tests {
 
     #[test]
     fn text_keys_keep_their_text_until_the_entry_or_the_map_goes() {
+        let _serial = crate::string::serial();
         use super::super::string::StringOut;
         let mut map: *mut Map = std::ptr::null_mut();
         let keys: Vec<_> = ["one", "two", "three"]

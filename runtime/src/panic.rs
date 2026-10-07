@@ -30,6 +30,18 @@ pub(super) fn raise(message: &[u8]) {
     });
 }
 
+pub(super) fn take() -> Option<Vec<u8>> {
+    STATE.with(|state| state.borrow_mut().current.take())
+}
+
+pub(super) fn report_task(id: u64, message: &[u8]) {
+    let mut stderr = std::io::stderr().lock();
+    let _ = write!(stderr, "panic in task {id}: ");
+    let _ = stderr.write_all(message);
+    let _ = stderr.write_all(b"\n");
+    let _ = stderr.flush();
+}
+
 pub(super) fn finish() {
     STATE.with(|state| {
         if let Some(message) = &state.borrow().current {

@@ -34,6 +34,9 @@ declare zeroext i1 @zore_panic_pending()
 declare void @zore_enter_drop()
 declare void @zore_leave_drop()
 declare void @zore_abort() noreturn
+declare ptr @zore_task_spawn(ptr, ptr, ptr, i64)
+declare ptr @zore_task_wait(ptr, i64)
+declare void @zore_task_detach(ptr)
 declare double @llvm.trunc.f64(double)
 declare double @llvm.fabs.f64(double)
 ";
@@ -222,7 +225,8 @@ impl FunctionBuilder<'_, '_> {
             | Callee::Drop
             | Callee::Clone(_)
             | Callee::ArrayPush
-            | Callee::ArrayPop => {
+            | Callee::ArrayPop
+            | Callee::TaskWait => {
                 unreachable!("not a map operation")
             }
         }
@@ -461,7 +465,8 @@ impl FunctionBuilder<'_, '_> {
             | TypeKind::Slice { .. }
             | TypeKind::DynArray { .. }
             | TypeKind::Map { .. }
-            | TypeKind::Func(_) => unreachable!("checked printable type"),
+            | TypeKind::Func(_)
+            | TypeKind::Task(_) => unreachable!("checked printable type"),
         }
     }
 }

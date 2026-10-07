@@ -1,0 +1,94 @@
+package main
+
+type Report struct {
+    Name  string
+    Total int
+}
+
+func (r mut Report) drop() {
+    println("drop report " + r.Name)
+}
+
+func sum(from int, to int) int {
+    var total = 0
+    for var i = from; i <= to; i += 1 {
+        total += i
+    }
+    return total
+}
+
+func parse(text string) (int, error) {
+    if text.len() == 0 {
+        return 0, error("empty text")
+    }
+    return text.len(), nil
+}
+
+func summarize(name string, total int) Report {
+    return Report{Name: name, Total: total}
+}
+
+func finish(report own Report) int {
+    println("finishing " + report.Name)
+    return report.Total
+}
+
+async func measure(text string) (int, error) {
+    let task = go parse(text)
+    let length = await task?
+    return length * 2, nil
+}
+
+async func combine(first string, second string) (int, error) {
+    let a = go measure(first)
+    let b = go measure(second)
+    let x = await a?
+    let y = await b?
+    return x + y, nil
+}
+
+func main() {
+    let low = go sum(1, 100)
+    let high = go sum(101, 200)
+    println(low.wait() + high.wait())
+
+    let parsed = go parse("hello")
+    let length, err = parsed.wait()
+    if err == nil {
+        println(length)
+    }
+    let missing = go parse("")
+    let _, failure = missing.wait()
+    if failure != nil {
+        println("parse failed")
+    }
+
+    let report = go summarize("march", 42)
+    let owned = report.wait()
+    let closing = go finish(owned)
+    println(closing.wait())
+
+    let both = go combine("ab", "cde")
+    let combined, combineErr = both.wait()
+    if combineErr == nil {
+        println(combined)
+    }
+    let broken = go combine("ab", "")
+    let _, brokenErr = broken.wait()
+    if brokenErr != nil {
+        println("combine failed")
+    }
+
+    var workers = Array<Task<int>>{}
+    for var i = 1; i <= 4; i += 1 {
+        workers.push(go sum(1, i * 10))
+    }
+    var all = 0
+    for workers.len() > 0 {
+        let found, worker = workers.pop()
+        if found {
+            all += worker.wait()
+        }
+    }
+    println(all)
+}

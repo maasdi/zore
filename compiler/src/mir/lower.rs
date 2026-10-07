@@ -314,6 +314,7 @@ impl Builder {
                 | ExprKind::Clone(_)
                 | ExprKind::Println(_)
                 | ExprKind::Drop(_)
+                | ExprKind::TaskWait(_)
                 | ExprKind::ArrayPush { .. }
                 | ExprKind::ArrayPop(_) => {
                     let discard = vec![None; expr.types.len()];
@@ -731,6 +732,7 @@ impl Builder {
             inner.kind,
             ExprKind::Call { .. }
                 | ExprKind::CallValue { .. }
+                | ExprKind::TaskWait(_)
                 | ExprKind::MapLookup { .. }
                 | ExprKind::MapRemove { .. }
                 | ExprKind::ArrayPop(_)
@@ -835,6 +837,7 @@ impl Builder {
                 (Callee::ArrayPush, &map_args[..])
             }
             ExprKind::ArrayPop(array) => (Callee::ArrayPop, std::slice::from_ref(&**array)),
+            ExprKind::TaskWait(task) => (Callee::TaskWait, std::slice::from_ref(&**task)),
             _ => unreachable!("only calls produce multiple or no results"),
         };
         let mut operands = Vec::new();
@@ -871,6 +874,7 @@ impl Builder {
                 | Callee::MapLookup
                 | Callee::MapRemove => (index == 0, index == 2),
                 Callee::ArrayPush | Callee::ArrayPop => (index == 0, index == 1),
+                Callee::TaskWait => (false, true),
             };
             operands.push(if by_reference {
                 match self.argument_place_opt(package, arg) {
@@ -996,7 +1000,36 @@ impl Builder {
                     span,
                 )
             }
-            ExprKind::Call { .. } | ExprKind::CallValue { .. } | ExprKind::Clone(_) => {
+            ExprKind::Spawn {
+                thunk,
+                closure_ty,
+                args,
+            } => {
+                let captures = args
+                    .iter()
+                    .map(|arg| {
+                        let operand = self.operand(package, arg);
+                        let held = self.temp(arg.ty());
+                        self.push(Place::local(held), Rvalue::Use(operand), arg.span);
+                        (Place::local(held), false)
+                    })
+                    .collect();
+                let closure = self.assign_temp(
+                    package,
+                    *closure_ty,
+                    Rvalue::Closure {
+                        function: *thunk,
+                        captures,
+                        owning: true,
+                    },
+                    span,
+                );
+                self.assign_temp(package, expr.ty(), Rvalue::Spawn(closure), span)
+            }
+            ExprKind::Call { .. }
+            | ExprKind::CallValue { .. }
+            | ExprKind::Clone(_)
+            | ExprKind::TaskWait(_) => {
                 let temp = self.temp(expr.ty());
                 self.call(package, expr, vec![Some(Place::local(temp))]);
                 value_operand(package, Place::local(temp), expr.ty())

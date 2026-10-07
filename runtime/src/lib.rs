@@ -17,15 +17,20 @@ mod strconv;
 mod string;
 #[path = "strings.rs"]
 mod strings;
+#[path = "task.rs"]
+mod task;
 
 pub fn finish() {
+    let tasks_running = task::running() > 0;
     let leaked = string::live_buffers();
-    if leaked > 0 && std::env::var_os("ZORE_CHECK_LEAKS").is_some() {
+    if leaked > 0 && !tasks_running && std::env::var_os("ZORE_CHECK_LEAKS").is_some() {
         eprintln!("leak: {leaked} text buffers still owned at exit");
         std::process::exit(70);
     }
     panic::finish();
-    string::release_all();
+    if !tasks_running {
+        string::release_all();
+    }
 }
 
 /// Borrows compiler-produced string storage for one runtime call.

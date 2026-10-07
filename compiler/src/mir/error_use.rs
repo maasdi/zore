@@ -150,6 +150,7 @@ fn read_rvalue(rvalue: &Rvalue, state: &mut [UseState]) {
     match rvalue {
         Rvalue::Zero => {}
         Rvalue::Use(value)
+        | Rvalue::Spawn(value)
         | Rvalue::Unary(_, value)
         | Rvalue::Convert(value, _)
         | Rvalue::Error(value) => read_operand(value, state),

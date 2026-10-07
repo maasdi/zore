@@ -17,7 +17,11 @@ explicit discard, ignored-result diagnostics, and path-sensitive checks for name
 error bindings and parameters. Synchronous `?` tests cover typing, early return,
 zero-filled results, evaluation order, and cleanup; awaited calls cover async
 function declarations, the await-or-spawn rule, `await` outside async bodies,
-and awaited `?`. `tests/ownership/ownership.rs` tests the MIR ownership pass through the
+and awaited `?`; task cases cover `Task<...>` types and annotations, `go`
+typing and its input rules, Move classification, `nil`, `.wait()`, and
+`await task`. The native tests run tasks to completion, including results and
+errors, ownership transfer, panics (waited and detached), an endless detached
+task, `nil` waits, async functions awaiting tasks, and many tasks sharing text. `tests/ownership/ownership.rs` tests the MIR ownership pass through the
 full frontend: whole-place and partial moves, reinitialization, call-local
 borrows, the custom-`drop`-ancestor restriction, array- and slice-element move
 rules, and region analysis of stored slice borrows (aliasing at the

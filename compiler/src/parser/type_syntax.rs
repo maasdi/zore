@@ -10,6 +10,12 @@ impl Parser<'_> {
                 if self.at(Punct::Lt) {
                     return self.type_arguments(name);
                 }
+                if name.text == "Task" {
+                    return Ok(Type::Task {
+                        results: Vec::new(),
+                        span: name.span,
+                    });
+                }
                 if self.at(Punct::Dot) && *self.peek_at(1) == TokenKind::Ident {
                     self.bump();
                     let member = self.name("a type name")?;
@@ -59,7 +65,19 @@ impl Parser<'_> {
                     span: self.span_from(name.span),
                 })
             }
-            "Task" => Err(self.unsupported("`Task<...>` types")),
+            "Task" => {
+                self.bump();
+                let mut results = vec![self.ty()?];
+                while self.at(Punct::Comma) {
+                    self.bump();
+                    results.push(self.ty()?);
+                }
+                self.close_type_arguments()?;
+                Ok(Type::Task {
+                    results,
+                    span: self.span_from(name.span),
+                })
+            }
             _ => Err(self.error(
                 format!(
                     "`{}` does not take type arguments; user-defined generics are not part of the MVP",

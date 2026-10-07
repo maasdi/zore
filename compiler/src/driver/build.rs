@@ -28,6 +28,7 @@ const RUNTIME_SOURCES: &[(&str, &str)] = &[
         "strings.rs",
         include_str!("../../../runtime/src/strings.rs"),
     ),
+    ("task.rs", include_str!("../../../runtime/src/task.rs")),
 ];
 
 #[derive(Debug)]

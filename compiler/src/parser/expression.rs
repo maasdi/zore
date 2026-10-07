@@ -55,6 +55,7 @@ impl Parser<'_> {
             TokenKind::Punct(Punct::Not) => UnaryOp::Not,
             TokenKind::Punct(Punct::Caret) => UnaryOp::Complement,
             TokenKind::Keyword(Keyword::Await) => return self.await_expr(),
+            TokenKind::Keyword(Keyword::Go) => return self.go_expr(),
             _ => return self.postfix(),
         };
         self.bump();
@@ -78,6 +79,15 @@ impl Parser<'_> {
             span: self.span_from(start),
         };
         self.propagations(expr)
+    }
+
+    pub(super) fn go_expr(&mut self) -> PResult<Expr> {
+        let start = self.bump().span;
+        let operand = self.access()?;
+        Ok(Expr {
+            kind: ExprKind::Go(Box::new(operand)),
+            span: self.span_from(start),
+        })
     }
 
     pub(super) fn postfix(&mut self) -> PResult<Expr> {
@@ -227,9 +237,6 @@ impl Parser<'_> {
             }
             TokenKind::Keyword(Keyword::Func) => {
                 return self.closure();
-            }
-            TokenKind::Keyword(Keyword::Go) => {
-                return Err(self.unsupported("`go` task-creation expressions"));
             }
             TokenKind::Keyword(Keyword::Map) => {
                 return self.map_literal();

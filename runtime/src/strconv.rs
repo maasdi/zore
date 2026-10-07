@@ -120,6 +120,7 @@ mod tests {
 
     #[test]
     fn integers_parse_strictly() {
+        let _serial = crate::string::serial();
         assert_eq!(atoi("42"), Ok(42));
         assert_eq!(atoi("-7"), Ok(-7));
         assert_eq!(atoi("+7"), Ok(7));
@@ -148,6 +149,7 @@ mod tests {
 
     #[test]
     fn booleans_and_integers_format() {
+        let _serial = crate::string::serial();
         let mut out = StringOut::empty();
         // SAFETY: `out` is writable; the results are live until the registry is released.
         unsafe {

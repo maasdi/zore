@@ -1,5 +1,5 @@
-use std::cell::RefCell;
 use std::collections::BTreeMap;
+use std::sync::{Mutex, MutexGuard};
 
 use super::alloc::{zore_alloc, zore_free};
 
@@ -13,8 +13,41 @@ struct Buffer {
     owners: usize,
 }
 
-thread_local! {
-    static OWNED: RefCell<BTreeMap<usize, Buffer>> = const { RefCell::new(BTreeMap::new()) };
+struct Registry(BTreeMap<usize, Buffer>);
+
+// SAFETY: a buffer is only reached through the lock, and its storage is not tied to a thread.
+unsafe impl Send for Registry {}
+
+/// Every task shares one table, so text can move between tasks.
+static OWNED: Mutex<Registry> = Mutex::new(Registry(BTreeMap::new()));
+
+impl std::ops::Deref for Registry {
+    type Target = BTreeMap<usize, Buffer>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl std::ops::DerefMut for Registry {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
+/// Tests that count buffers cannot overlap with any test that makes text.
+#[cfg(test)]
+pub(super) fn serial() -> MutexGuard<'static, ()> {
+    static SERIAL: Mutex<()> = Mutex::new(());
+    SERIAL
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+fn owned() -> MutexGuard<'static, Registry> {
+    OWNED
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 /// Adds a buffer with one owner holding `used` bytes of `capacity`, copied from the given pieces.
@@ -26,17 +59,15 @@ fn new_buffer(pieces: &[&[u8]], capacity: usize) -> *mut u8 {
         unsafe { std::ptr::copy_nonoverlapping(piece.as_ptr(), data.add(used), piece.len()) };
         used += piece.len();
     }
-    OWNED.with(|owned| {
-        owned.borrow_mut().insert(
-            data as usize,
-            Buffer {
-                data,
-                capacity,
-                used,
-                owners: 1,
-            },
-        )
-    });
+    owned().insert(
+        data as usize,
+        Buffer {
+            data,
+            capacity,
+            used,
+            owners: 1,
+        },
+    );
     data
 }
 
@@ -82,12 +113,10 @@ fn with_buffer<R>(data: *const u8, len: usize, act: impl FnOnce(&mut Buffer) -> 
     if len == 0 {
         return None;
     }
-    OWNED.with(|owned| {
-        let mut owned = owned.borrow_mut();
-        let start = data as usize;
-        let (_, buffer) = owned.range_mut(..=start).next_back()?;
-        (start < buffer.data as usize + buffer.capacity).then(|| act(buffer))
-    })
+    let mut owned = owned();
+    let start = data as usize;
+    let (_, buffer) = owned.range_mut(..=start).next_back()?;
+    (start < buffer.data as usize + buffer.capacity).then(|| act(buffer))
 }
 
 /// Another owner now reads these bytes. Static text and empty text have no buffer.
@@ -102,7 +131,7 @@ pub(super) fn release(data: *const u8, len: usize) {
         (buffer.owners == 0).then_some((buffer.data, buffer.capacity))
     });
     if let Some(Some((base, capacity))) = freed {
-        OWNED.with(|owned| owned.borrow_mut().remove(&(base as usize)));
+        owned().remove(&(base as usize));
         // SAFETY: the buffer came from `zore_alloc(capacity)` and had no owners left.
         unsafe { zore_free(base, capacity as i64) };
     }
@@ -121,16 +150,15 @@ pub extern "C" fn zore_string_release(data: *const u8, len: i64) {
 }
 
 pub(super) fn live_buffers() -> usize {
-    OWNED.with(|owned| owned.borrow().len())
+    owned().len()
 }
 
 pub(super) fn release_all() {
-    OWNED.with(|owned| {
-        for buffer in std::mem::take(&mut *owned.borrow_mut()).into_values() {
-            // SAFETY: each buffer came from `zore_alloc(capacity)` and is released once.
-            unsafe { zore_free(buffer.data, buffer.capacity as i64) };
-        }
-    });
+    let buffers = std::mem::take(&mut owned().0);
+    for buffer in buffers.into_values() {
+        // SAFETY: each buffer came from `zore_alloc(capacity)` and is released once.
+        unsafe { zore_free(buffer.data, buffer.capacity as i64) };
+    }
 }
 
 /// How `left + right` can reuse the buffer that holds `left`.
@@ -144,24 +172,22 @@ enum Append {
 }
 
 fn plan_append(left: *const u8, left_len: usize, right_len: usize) -> Append {
-    OWNED.with(|owned| {
-        let mut owned = owned.borrow_mut();
-        let start = left as usize;
-        let Some((_, buffer)) = owned.range_mut(..=start).next_back() else {
-            return Append::Copy;
-        };
-        let base = buffer.data as usize;
-        if start >= base + buffer.capacity || start + left_len != base + buffer.used {
-            return Append::Copy;
-        }
-        if buffer.used + right_len <= buffer.capacity {
-            buffer.used += right_len;
-            buffer.owners += 1;
-            Append::InPlace
-        } else {
-            Append::Grow
-        }
-    })
+    let mut owned = owned();
+    let start = left as usize;
+    let Some((_, buffer)) = owned.range_mut(..=start).next_back() else {
+        return Append::Copy;
+    };
+    let base = buffer.data as usize;
+    if start >= base + buffer.capacity || start + left_len != base + buffer.used {
+        return Append::Copy;
+    }
+    if buffer.used + right_len <= buffer.capacity {
+        buffer.used += right_len;
+        buffer.owners += 1;
+        Append::InPlace
+    } else {
+        Append::Grow
+    }
 }
 
 /// The two strings joined, with one owner for the caller; an empty operand shares the other's storage.
@@ -313,6 +339,7 @@ mod tests {
 
     #[test]
     fn empty_null_strings_and_embedded_nuls_compare_by_bytes() {
+        let _serial = crate::string::serial();
         // SAFETY: empty strings need no allocation; byte literals stay live.
         unsafe {
             assert_eq!(
@@ -348,6 +375,7 @@ mod tests {
 
     #[test]
     fn concatenation_builds_new_text_and_shares_for_empty_operands() {
+        let _serial = crate::string::serial();
         // SAFETY: the operands are live string literals.
         unsafe {
             assert_eq!(joined("ab", "cd"), "abcd");
@@ -360,6 +388,7 @@ mod tests {
 
     #[test]
     fn runes_encode_and_decode_across_widths() {
+        let _serial = crate::string::serial();
         for (text, rune, width) in [
             ("a", 'a', 1),
             ("é", 'é', 2),
@@ -380,6 +409,7 @@ mod tests {
 
     #[test]
     fn boundaries_are_character_starts_and_the_end() {
+        let _serial = crate::string::serial();
         let text = "aé";
         // SAFETY: the text is a live literal.
         unsafe {
@@ -390,7 +420,7 @@ mod tests {
     }
 
     fn buffer_count() -> usize {
-        OWNED.with(|owned| owned.borrow().len())
+        live_buffers()
     }
 
     fn append(left: &StringOut, right: &str) -> StringOut {
@@ -415,6 +445,7 @@ mod tests {
 
     #[test]
     fn appending_at_the_end_reuses_the_buffer_and_leaves_older_text_alone() {
+        let _serial = crate::string::serial();
         release_all();
         let ab = append(&StringOut::shared(b"a".as_ptr(), 1), "b");
         let abc = append(&ab, "c");
@@ -436,6 +467,7 @@ mod tests {
 
     #[test]
     fn a_long_chain_of_appends_uses_few_buffers() {
+        let _serial = crate::string::serial();
         release_all();
         let mut text = StringOut::shared(b"x".as_ptr(), 1);
         for _ in 0..10_000 {
@@ -448,6 +480,7 @@ mod tests {
 
     #[test]
     fn appending_a_text_to_itself_and_to_a_suffix_is_correct() {
+        let _serial = crate::string::serial();
         release_all();
         let ab = append(&StringOut::shared(b"a".as_ptr(), 1), "b");
         let abab = append(&ab, "ab");
@@ -466,6 +499,7 @@ mod tests {
 
     #[test]
     fn the_last_owner_frees_a_buffer_and_static_or_empty_text_has_none() {
+        let _serial = crate::string::serial();
         let built = StringOut::built(b"hello");
         assert_eq!(live_buffers(), 1);
         let piece = StringOut::shared(unsafe { built.data.add(1) }, 3);
@@ -485,6 +519,7 @@ mod tests {
 
     #[test]
     fn every_concatenation_result_has_its_own_owner() {
+        let _serial = crate::string::serial();
         let ab = append(&StringOut::shared(b"a".as_ptr(), 1), "b");
         let abc = append(&ab, "c");
         let same = append(&abc, "");
@@ -498,6 +533,7 @@ mod tests {
 
     #[test]
     fn a_text_that_ends_a_buffer_is_still_readable_after_the_older_owners_leave() {
+        let _serial = crate::string::serial();
         let ab = append(&StringOut::shared(b"a".as_ptr(), 1), "b");
         let abcd = append(&append(&ab, "c"), "d");
         release(ab.data, 2);

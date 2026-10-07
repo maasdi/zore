@@ -6,7 +6,7 @@ use crate::ast::{
     self, AssignOp, AssignTarget, BinaryOp, BindingKind, BindingTarget, ForHeader, UnaryOp,
 };
 use crate::diagnostic::{Diagnostic, Severity};
-use crate::hir::{self, Const, ExprKind};
+use crate::hir::{self, Const, ExprKind, StmtKind};
 use crate::resolve::{ConstId, FieldId, FunctionId, LocalId, LocalKind, Res, Resolution};
 use crate::source::{Sources, Span};
 use crate::types::bignum::BigInt;
@@ -39,6 +39,7 @@ pub fn check(
         closures: Vec::new(),
         exclusive_captures: HashSet::new(),
         awaited_call: None,
+        spawn_thunks: Vec::new(),
         resolving_fields: false,
     };
     checker.closures = checker.res.closures.iter().map(|_| None).collect();
@@ -105,6 +106,7 @@ pub fn check(
             .into_iter()
             .chain(closures)
             .map(|f| f.expect("every function and closure was checked"))
+            .chain(std::mem::take(&mut checker.spawn_thunks))
             .collect(),
         entry,
     };
@@ -159,6 +161,8 @@ struct Checker<'a> {
     exclusive_captures: HashSet<(usize, LocalId)>,
     /// The span of the async call that the `await` being checked applies to.
     awaited_call: Option<Span>,
+    /// Entry points of spawned calls, with ids following every function and closure.
+    spawn_thunks: Vec<hir::Function>,
     resolving_fields: bool,
 }
 
@@ -293,6 +297,10 @@ impl<'a> Checker<'a> {
                 let element_ty = self.resolve_type(element)?;
                 Some(self.types.dyn_array_type(element_ty))
             }
+            ast::Type::Task { results, span } => {
+                let results = self.closure_results(results)?;
+                self.task_type(results, *span)
+            }
             ast::Type::Map { key, value, .. } => {
                 let key_ty = self.resolve_type(key);
                 let value_ty = self.resolve_type(value);
@@ -353,6 +361,36 @@ impl<'a> Checker<'a> {
             }
         }
         ok.then_some(checked)
+    }
+
+    /// The error result comes last, and a task's results cannot borrow the task's own storage.
+    fn task_type(&mut self, results: Vec<TypeId>, span: Span) -> Option<TypeId> {
+        let misplaced_error = results
+            .split_last()
+            .is_some_and(|(_, rest)| rest.contains(&TypeStore::ERROR));
+        if misplaced_error {
+            self.error(
+                "`error` can only be the last result of a `Task<...>` type",
+                span,
+            );
+            return None;
+        }
+        if results.iter().any(|&ty| {
+            self.type_contains(ty, &|kind| {
+                matches!(kind, TypeKind::Slice { .. } | TypeKind::Func(_))
+            })
+        }) {
+            self.diagnostics.push(
+                Diagnostic::new(
+                    Severity::Error,
+                    "a task cannot return slices or function values",
+                    span,
+                )
+                .note("a result that borrows the task's storage would outlive it"),
+            );
+            return None;
+        }
+        Some(self.types.task_type(results))
     }
 
     fn holds_func(&self, ty: TypeId) -> bool {
@@ -534,7 +572,10 @@ impl<'a> Checker<'a> {
                         .all(|(_, field_ty, _)| field_ty.is_none_or(|ty| self.type_is_copy(ty)))
             }
             TypeKind::Array { element, .. } => self.type_is_copy(element),
-            TypeKind::DynArray { .. } | TypeKind::Map { .. } | TypeKind::Func(_) => false,
+            TypeKind::DynArray { .. }
+            | TypeKind::Map { .. }
+            | TypeKind::Func(_)
+            | TypeKind::Task(_) => false,
         }
     }
 
@@ -1195,23 +1236,21 @@ impl<'a> Checker<'a> {
                 span,
             ))),
             ast::ExprKind::Bool(value) => bool_const(*value),
-            ast::ExprKind::Nil => {
-                if expected == Some(TypeStore::ERROR) {
-                    Some(Value::Typed(typed(
-                        ExprKind::Const(Const::Nil),
-                        TypeStore::ERROR,
-                        span,
-                    )))
-                } else {
-                    self.error("`nil` needs an `error` context", span);
+            ast::ExprKind::Nil => match expected {
+                Some(ty) if ty == TypeStore::ERROR || self.types.task_results(ty).is_some() => {
+                    Some(Value::Typed(typed(ExprKind::Const(Const::Nil), ty, span)))
+                }
+                _ => {
+                    self.error("`nil` needs an `error` or `Task<...>` context", span);
                     None
                 }
-            }
+            },
             ast::ExprKind::Malformed => None,
             ast::ExprKind::Paren(inner) => self.expr(inner, expected),
             ast::ExprKind::Unary { op, operand } => self.unary(*op, operand, span, expected),
             ast::ExprKind::Binary { op, lhs, rhs } => self.binary(*op, lhs, rhs, span, expected),
             ast::ExprKind::Await(operand) => self.await_expr(operand, span),
+            ast::ExprKind::Go(operand) => self.go_expr(operand, span),
             ast::ExprKind::Try(inner) => self.try_expr(inner, span),
             ast::ExprKind::Call { callee, args } => self.call(callee, args, span),
             ast::ExprKind::Field { base, name } => self.field(base, name, span),
@@ -1224,6 +1263,139 @@ impl<'a> Checker<'a> {
             ast::ExprKind::MapLit { ty, entries } => self.map_lit(ty, entries, span),
             ast::ExprKind::Closure(closure) => self.closure(closure, span),
         }
+    }
+
+    fn go_expr(&mut self, operand: &ast::Expr, span: Span) -> Option<Value> {
+        let mut call = operand;
+        while let ast::ExprKind::Paren(inner) = &call.kind {
+            call = inner;
+        }
+        if !matches!(call.kind, ast::ExprKind::Call { .. }) {
+            self.error("`go` needs a call", span);
+            return None;
+        }
+        let previous = self.awaited_call.replace(call.span);
+        let value = self.expr(operand, None);
+        self.awaited_call = previous;
+        let Value::Typed(expr) = value? else {
+            self.error("`go` needs a call", span);
+            return None;
+        };
+        let ExprKind::Call { function, args } = expr.kind else {
+            self.error("`go` needs a call to a declared function or method", span);
+            return None;
+        };
+        let results = expr.types;
+        if !self.spawn_inputs_are_independent(function, &args) {
+            return None;
+        }
+        let task = self.task_type(results.clone(), span)?;
+        let closure_ty = self.types.func_type(FuncSignature {
+            params: Vec::new(),
+            results: results.clone(),
+        });
+        let thunk = self.spawn_thunk(function, &args, results, span);
+        Some(Value::Typed(typed(
+            ExprKind::Spawn {
+                thunk,
+                closure_ty,
+                args,
+            },
+            task,
+            span,
+        )))
+    }
+
+    /// Every input must be valid for the task's whole life, whatever the spawner does next.
+    fn spawn_inputs_are_independent(&mut self, function: FunctionId, args: &[hir::Expr]) -> bool {
+        let mut ok = true;
+        for (index, arg) in args.iter().enumerate() {
+            let LocalKind::Param(mode) = self.res.locals[function.0 as usize][index].kind else {
+                unreachable!("parameters come first among a function's locals")
+            };
+            let ty = arg.ty();
+            let message = if mode == ast::ParamMode::Mut {
+                "a spawned call cannot take a `mut` parameter, since copying the argument would change what the caller sees"
+            } else if self.type_contains(ty, &|kind| {
+                matches!(kind, TypeKind::Slice { .. } | TypeKind::Func(_))
+            }) {
+                "a spawned call cannot take a view or a function value, since it may borrow storage the task does not own"
+            } else if mode == ast::ParamMode::Borrow && !self.type_is_copy(ty) {
+                "a spawned call needs `own` to take a value that is moved, since the task cannot borrow the spawner's storage"
+            } else {
+                continue;
+            };
+            self.error(message, arg.span);
+            ok = false;
+        }
+        ok
+    }
+
+    /// An owning closure over the arguments that makes the call; the runtime runs it once.
+    fn spawn_thunk(
+        &mut self,
+        function: FunctionId,
+        args: &[hir::Expr],
+        results: Vec<TypeId>,
+        span: Span,
+    ) -> FunctionId {
+        let id = FunctionId(
+            (self.res.functions.len() + self.closures.len() + self.spawn_thunks.len()) as u32,
+        );
+        let captures: Vec<LocalId> = (0..args.len()).map(|i| LocalId(i as u32)).collect();
+        let locals = args
+            .iter()
+            .enumerate()
+            .map(|(index, arg)| hir::Local {
+                name: format!("arg{index}"),
+                ty: arg.ty(),
+                kind: LocalKind::Capture(LocalId(index as u32)),
+                span,
+            })
+            .collect();
+        let call = hir::Expr {
+            kind: ExprKind::Call {
+                function,
+                args: captures
+                    .iter()
+                    .zip(args)
+                    .map(|(&capture, arg)| typed(ExprKind::Local(capture), arg.ty(), span))
+                    .collect(),
+            },
+            types: results.clone(),
+            span,
+        };
+        let statement = if results.is_empty() {
+            StmtKind::Expr(call)
+        } else {
+            StmtKind::Return(vec![call])
+        };
+        let body = hir::Block {
+            stmts: vec![hir::Stmt {
+                kind: statement,
+                span,
+            }],
+            span,
+        };
+        let call_once = self.consumes_capture(&body, &captures);
+        let name = format!(
+            "{}$go{}",
+            self.function_name(FunctionId(self.current as u32)),
+            self.spawn_thunks.len()
+        );
+        self.spawn_thunks.push(hir::Function {
+            name,
+            span,
+            params: Vec::new(),
+            results,
+            captures,
+            is_closure: true,
+            native: false,
+            call_once,
+            locals,
+            body,
+        });
+        id
     }
 
     fn in_async_body(&self) -> bool {
@@ -1269,23 +1441,24 @@ impl<'a> Checker<'a> {
             self.error("`await` needs a call to an `async func`", span);
             return None;
         };
-        match &expr.kind {
-            ExprKind::Call { function, .. } if self.is_async_function(*function) => {
-                Some(Value::Typed(expr))
-            }
-            ExprKind::Call { .. } | ExprKind::CallValue { .. } => {
-                self.error("`await` needs a call to an `async func`", span);
-                None
-            }
-            _ => {
-                self.unsupported(
-                    "awaiting a value is",
-                    span,
-                    "task handles are planned for a later milestone",
-                );
-                None
-            }
+        if matches!(&expr.kind, ExprKind::Call { function, .. } if self.is_async_function(*function))
+        {
+            return Some(Value::Typed(expr));
         }
+        if let [ty] = expr.types[..]
+            && let Some(results) = self.types.task_results(ty)
+        {
+            return Some(Value::Typed(hir::Expr {
+                types: results.to_vec(),
+                kind: ExprKind::TaskWait(Box::new(expr)),
+                span,
+            }));
+        }
+        self.error(
+            "`await` needs a call to an `async func` or a `Task<...>` value",
+            span,
+        );
+        None
     }
 
     fn is_async_function(&self, id: FunctionId) -> bool {
@@ -1917,6 +2090,36 @@ impl<'a> Checker<'a> {
         }
     }
 
+    fn task_wait(
+        &mut self,
+        task: hir::Expr,
+        results: Vec<TypeId>,
+        args: &[ast::Expr],
+        span: Span,
+    ) -> Option<Value> {
+        if !args.is_empty() {
+            self.error("`wait` takes no arguments", span);
+            self.report_arg_errors(args);
+            return None;
+        }
+        if self.in_async_body() {
+            self.diagnostics.push(
+                Diagnostic::new(
+                    Severity::Error,
+                    "`wait` blocks, so it is not allowed inside an `async func`",
+                    span,
+                )
+                .note("write `await task` to suspend instead"),
+            );
+            return None;
+        }
+        Some(Value::Typed(hir::Expr {
+            kind: ExprKind::TaskWait(Box::new(task)),
+            types: results,
+            span,
+        }))
+    }
+
     fn method_call(
         &mut self,
         base: &ast::Expr,
@@ -1941,6 +2144,12 @@ impl<'a> Checker<'a> {
             && name.text == "remove"
         {
             return self.map_remove(receiver, key, value, args, span);
+        }
+        if let Some(results) = self.types.task_results(ty)
+            && name.text == "wait"
+        {
+            let results = results.to_vec();
+            return self.task_wait(receiver, results, args, span);
         }
         let is_collection = matches!(
             self.types.kind(ty),
@@ -4023,7 +4232,7 @@ fn subexpressions(expr: &hir::Expr) -> Vec<&hir::Expr> {
             .chain(low.as_deref())
             .chain(high.as_deref())
             .collect(),
-        ExprKind::Call { args, .. } => args.iter().collect(),
+        ExprKind::Call { args, .. } | ExprKind::Spawn { args, .. } => args.iter().collect(),
         ExprKind::CallValue { callee, args, .. } => {
             std::iter::once(&**callee).chain(args).collect()
         }
@@ -4043,6 +4252,7 @@ fn subexpressions(expr: &hir::Expr) -> Vec<&hir::Expr> {
         | ExprKind::Clone(inner)
         | ExprKind::Error(inner)
         | ExprKind::Try(inner)
+        | ExprKind::TaskWait(inner)
         | ExprKind::Unary { operand: inner, .. } => vec![inner],
         ExprKind::Binary { lhs, rhs, .. } => vec![lhs, rhs],
     }

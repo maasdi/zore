@@ -1,5 +1,10 @@
 # Task, async, and channel runtime conformance cases
 
+The async call contract, task typing, retrieval, panic, process-exit, and spawn
+input rows are covered by executable tests in `tests/typecheck/check.rs` and
+`tests/codegen/native.rs`; the progress guarantee for blocked workers, mutex
+poisoning, and every channel row remain pending.
+
 Authority: spec §6.3, §7.6, §11.7, §15.2, §15.4, §17.8, §18.4,
 §18.8–18.11, §19.4, §19.8–19.13,
 §20.2, §36.2, §41.4. These are pending type-checking, ownership, and runtime

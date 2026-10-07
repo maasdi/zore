@@ -44,6 +44,8 @@ pub fn emit(
         globals: String::new(),
         diagnostics: Vec::new(),
         owning_closures,
+        task_shapes: HashMap::new(),
+        task_code: String::new(),
     };
     let mut functions = String::new();
     for body in &program.bodies {
@@ -63,6 +65,7 @@ pub fn emit(
     }
     out.push('\n');
     out.push_str(&functions);
+    out.push_str(&module.task_code);
     if let Some(entry) = program.entry {
         out.push_str(&module.entry_shim(entry));
     }
@@ -77,6 +80,9 @@ pub(super) struct Module<'a> {
     pub(super) globals: String,
     pub(super) diagnostics: Vec<Diagnostic>,
     pub(super) owning_closures: HashSet<FunctionId>,
+    /// Result lists that already have a task entry function.
+    pub(super) task_shapes: HashMap<Vec<TypeId>, usize>,
+    pub(super) task_code: String,
 }
 
 /// An owning closure's heap environment: capture pointers first, then each value and its flags.
@@ -901,6 +907,11 @@ impl FunctionBuilder<'_, '_> {
 
     pub(super) fn value(&mut self, operand: &Operand) -> String {
         match operand {
+            Operand::Const(Const::Nil, ty)
+                if self.module.package.types.task_results(*ty).is_some() =>
+            {
+                "null".into()
+            }
             Operand::Const(c, _) => self.constant(c),
             Operand::Ref(_) => unreachable!("references are only call arguments"),
             Operand::Copy(place) | Operand::Move(place) => {
@@ -1184,6 +1195,7 @@ impl FunctionBuilder<'_, '_> {
                 captures,
                 owning,
             } => self.closure_value(*function, captures, *owning),
+            Rvalue::Spawn(closure) => self.spawn(closure),
             Rvalue::Aggregate(_, operands) => {
                 let ty = self.ty(result_ty);
                 let mut current = "undef".to_string();
@@ -1464,6 +1476,11 @@ impl FunctionBuilder<'_, '_> {
             TypeKind::DynArray { element } => self.drop_dyn_array(address, element),
             TypeKind::Map { value, .. } => self.drop_map(address, value),
             TypeKind::Func(_) => self.drop_closure(address),
+            TypeKind::Task(_) => {
+                let handle = self.fresh();
+                self.line(format!("{handle} = load ptr, ptr {address}"));
+                self.line(format!("call void @zore_task_detach(ptr {handle})"));
+            }
             _ => {}
         }
     }
@@ -1653,6 +1670,7 @@ impl FunctionBuilder<'_, '_> {
             TypeKind::DynArray { .. } => unreachable!("dynamic arrays have no operators"),
             TypeKind::Map { .. } => unreachable!("maps have no operators"),
             TypeKind::Func(_) => unreachable!("function values have no operators"),
+            TypeKind::Task(_) => unreachable!("tasks have no operators"),
         }
     }
 
@@ -1915,6 +1933,7 @@ impl FunctionBuilder<'_, '_> {
                     | Callee::MapLookup
                     | Callee::MapRemove => self.map_call(callee, args, *span),
                     Callee::ArrayPush | Callee::ArrayPop => self.array_call(callee, args),
+                    Callee::TaskWait => self.task_wait(&args[0]),
                 };
                 let pending = self.fresh();
                 self.line(format!("{pending} = call zeroext i1 @zore_panic_pending()"));

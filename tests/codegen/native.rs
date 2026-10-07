@@ -2913,3 +2913,197 @@ func main() {
         "tx1\ndrop g1\n",
     );
 }
+
+#[test]
+fn spawned_calls_return_their_results_and_errors_through_wait() {
+    let source = "package main
+func double(n int) int { return n * 2 }
+func split(text string) (string, int, error) {
+    if text.len() == 0 { return \"\", 0, error(\"empty\") }
+    return text + \"!\", text.len(), nil
+}
+func note(text string) { println(text) }
+func main() {
+    let a = go double(21)
+    let b = go double(4)
+    println(a.wait() + b.wait())
+    let t = go split(\"abc\")
+    let text, count, err = t.wait()
+    println(text)
+    println(count)
+    println(err == nil)
+    let bad = go split(\"\")
+    let _, _, failure = bad.wait()
+    println(failure != nil)
+    let n = go note(\"noted\")
+    n.wait()
+}";
+    prints(source, "50\nabc!\n3\ntrue\ntrue\nnoted\n");
+}
+
+#[test]
+fn spawned_inputs_move_in_and_results_move_out() {
+    let source = "package main
+type Resource struct { Name string }
+func (r mut Resource) drop() { println(\"drop \" + r.Name) }
+func rename(r own Resource, suffix string) Resource {
+    println(\"rename \" + r.Name)
+    return Resource{Name: r.Name + suffix}
+}
+func main() {
+    let first = Resource{Name: \"a\"}
+    let t = go rename(first, \"-b\")
+    let second = t.wait()
+    println(second.Name)
+    let u = go rename(second, \"-c\")
+    let third = u.wait()
+    println(third.Name)
+}";
+    prints(
+        source,
+        "rename a\ndrop a\na-b\nrename a-b\ndrop a-b\na-b-c\ndrop a-b-c\n",
+    );
+}
+
+#[test]
+fn a_task_panic_unwinds_that_task_and_is_raised_again_at_the_wait() {
+    let source = "package main
+type Resource struct { Name string }
+func (r mut Resource) drop() { println(\"drop \" + r.Name) }
+func fail(r own Resource, zero int) int {
+    println(\"working\")
+    return 1 / zero
+}
+func main() {
+    let t = go fail(Resource{Name: \"held\"}, 0)
+    println(\"before\")
+    let v = t.wait()
+    println(\"unreachable\")
+}";
+    let output = run(source);
+    assert_eq!(output.status.code(), Some(2), "{}", stderr(&output));
+    assert_eq!(stdout(&output), "before\nworking\ndrop held\n");
+    let report = stderr(&output);
+    assert!(
+        report.contains("panic in task 1: division by zero"),
+        "{report}"
+    );
+    assert!(
+        report.contains("panic in the main task: division by zero"),
+        "{report}"
+    );
+}
+
+#[test]
+fn a_detached_task_panic_does_not_stop_the_program() {
+    let source = "package main
+func fail(zero int) int { return 1 / zero }
+func ready() int { return 5 }
+func main() {
+    let t = go fail(0)
+    drop(t)
+    let ok = go ready()
+    println(ok.wait())
+}";
+    let output = run(source);
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    assert_eq!(stdout(&output), "5\n");
+}
+
+#[test]
+fn an_endless_detached_task_does_not_keep_the_process_alive() {
+    let source = "package main
+func spin() {
+    for var i = 0; true; i += 1 { }
+}
+func main() {
+    go spin()
+    println(\"done\")
+}";
+    prints(source, "done\n");
+}
+
+#[test]
+fn waiting_on_a_nil_task_panics() {
+    let output = run(&main_body("var t Task<int> = nil\nprintln(t.wait())"));
+    assert_eq!(output.status.code(), Some(2));
+    assert!(
+        stderr(&output).contains("wait on a nil task"),
+        "{}",
+        stderr(&output)
+    );
+}
+
+#[test]
+fn async_functions_await_calls_and_tasks() {
+    let source = "package main
+func parse(text string) (int, error) {
+    if text.len() == 0 { return 0, error(\"empty\") }
+    return text.len(), nil
+}
+async func measure(text string) (int, error) {
+    let task = go parse(text)
+    let n = await task?
+    return n * 2, nil
+}
+async func twice(n int) int { return n * 2 }
+async func total(first string, second string) (int, error) {
+    let a = go measure(first)
+    let b = go measure(second)
+    let x = await a?
+    let y = await b?
+    return await twice(x + y), nil
+}
+func main() {
+    let t = go total(\"ab\", \"cde\")
+    let n, err = t.wait()
+    println(n)
+    println(err == nil)
+    let u = go total(\"ab\", \"\")
+    let _, failure = u.wait()
+    println(failure != nil)
+}";
+    prints(source, "20\ntrue\ntrue\n");
+}
+
+#[test]
+fn many_tasks_share_and_release_text() {
+    let source = "package main
+func build(prefix string, count int) string {
+    var text = prefix
+    for var i = 0; i < count; i += 1 { text = text + \"x\" }
+    return text
+}
+func main() {
+    let shared = build(\"shared\", 20)
+    var tasks = Array<Task<string>>{}
+    for var i = 0; i < 32; i += 1 {
+        tasks.push(go build(shared, 100 + i))
+    }
+    var total = 0
+    for tasks.len() > 0 {
+        let found, task = tasks.pop()
+        if found {
+            let text = task.wait()
+            total += text.len()
+        }
+    }
+    println(total)
+    println(shared)
+}";
+    prints(source, "4528\nsharedxxxxxxxxxxxxxxxxxxxx\n");
+}
+
+#[test]
+fn a_task_value_can_be_stored_and_moved_between_functions() {
+    let source = "package main
+type Job struct { Work Task<int> }
+func compute() int { return 11 }
+func start() Job { return Job{Work: go compute()} }
+func finish(job own Job) int { return job.Work.wait() }
+func main() {
+    let job = start()
+    println(finish(job))
+}";
+    prints(source, "11\n");
+}

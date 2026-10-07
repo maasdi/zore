@@ -33,6 +33,7 @@ pub enum ExprKind {
         rhs: Box<Expr>,
     },
     Await(Box<Expr>),
+    Go(Box<Expr>),
     Try(Box<Expr>),
     Call {
         callee: Box<Expr>,

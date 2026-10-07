@@ -11,8 +11,7 @@ zore run examples/maps/main.ore
 `cargo test` checks every example with `zore check` and builds and runs each
 one natively, comparing its output with `expected-output.txt`. So a directory
 here is supported working code, not an aspiration. Features still in
-progress (packages and imports, tasks and async, channels) have no
-example until they work.
+progress (channels) have no example until they work.
 
 | Example | Shows | Spec |
 | --- | --- | --- |
@@ -35,3 +34,4 @@ example until they work.
 | [`maps`](maps) | `map[K]V` literals, two-result lookup, assignment, ownership-transferring `remove` | §13.3 |
 | [`clone`](clone) | `clone` of structs, `Array<T>`, and maps, and a custom `clone` for a resource | §10.7 |
 | [`closures`](closures) | Closure literals, function types and parameters, shared and exclusive captures, `?` in a closure, a returned counter, and a call-once closure | §16 |
+| [`tasks`](tasks) | `go`, `Task<...>` handles, `.wait()`, `async func` and `await`, owned inputs and results, errors from tasks, and a collection of tasks | §17, §18 |

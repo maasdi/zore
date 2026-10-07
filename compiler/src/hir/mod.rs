@@ -39,7 +39,7 @@ impl Package {
             | TypeKind::Error
             | TypeKind::Slice { .. } => true,
             // A closure may hold exclusive borrows, so it is never duplicated.
-            TypeKind::Func(_) => false,
+            TypeKind::Func(_) | TypeKind::Task(_) => false,
             TypeKind::Struct(id) => {
                 let strukt = self.strukt(id);
                 strukt.drop.is_none() && strukt.fields.iter().all(|f| self.is_copy(f.ty))

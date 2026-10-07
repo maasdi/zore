@@ -44,7 +44,8 @@ fn by_value_named_type(ty: &ast::Type) -> Option<&ast::Name> {
         ast::Type::Slice { .. }
         | ast::Type::DynArray { .. }
         | ast::Type::Map { .. }
-        | ast::Type::Func { .. } => None,
+        | ast::Type::Func { .. }
+        | ast::Type::Task { .. } => None,
     }
 }
 
@@ -55,7 +56,7 @@ fn owned_named_type(ty: &ast::Type) -> Option<&ast::Name> {
             owned_named_type(element)
         }
         ast::Type::Map { value, .. } => owned_named_type(value),
-        ast::Type::Slice { .. } | ast::Type::Func { .. } => None,
+        ast::Type::Slice { .. } | ast::Type::Func { .. } | ast::Type::Task { .. } => None,
     }
 }
 
@@ -574,6 +575,11 @@ impl<'a> Resolver<'a> {
                 self.ty(key);
                 self.ty(value);
             }
+            ast::Type::Task { results, .. } => {
+                for result in results {
+                    self.ty(result);
+                }
+            }
             ast::Type::Func {
                 params, results, ..
             } => {
@@ -860,6 +866,7 @@ impl<'a> Resolver<'a> {
             | ExprKind::Malformed => {}
             ExprKind::Paren(inner)
             | ExprKind::Await(inner)
+            | ExprKind::Go(inner)
             | ExprKind::Try(inner)
             | ExprKind::Unary { operand: inner, .. } => self.expr(inner),
             ExprKind::Binary { lhs, rhs, .. } => {

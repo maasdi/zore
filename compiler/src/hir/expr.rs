@@ -79,6 +79,15 @@ pub enum ExprKind {
         captures: Vec<(LocalId, bool)>,
         owning: bool,
     },
+    /// Runs the call to the closure's result on a new task; the arguments become the closure's captures.
+    Spawn {
+        thunk: FunctionId,
+        /// The thunk's type, `func() R1, ..., Rn`.
+        closure_ty: TypeId,
+        args: Vec<Expr>,
+    },
+    /// Consumes the task handle and gives its results, raising its panic if it had one.
+    TaskWait(Box<Expr>),
     Println(Box<Expr>),
     Drop(Box<Expr>),
     Clone(Box<Expr>),

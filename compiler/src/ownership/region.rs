@@ -429,7 +429,7 @@ impl<'a> Analysis<'a> {
         let loans = self.rvalue_loans(rvalue, site, state);
         let captured = self.owned_captures(rvalue);
         let moved: Vec<&Operand> = match rvalue {
-            Rvalue::Use(operand) => vec![operand],
+            Rvalue::Use(operand) | Rvalue::Spawn(operand) => vec![operand],
             Rvalue::Aggregate(_, operands) => operands.iter().collect(),
             _ => captured.iter().collect(),
         };
@@ -715,7 +715,9 @@ impl<'a> Analysis<'a> {
                 .iter()
                 .map(|&(mode, ty)| Some(exclusive_if_func(mode, ty)))
                 .collect(),
-            Callee::Println | Callee::Drop | Callee::Clone(_) => vec![None; args.len()],
+            Callee::Println | Callee::Drop | Callee::Clone(_) | Callee::TaskWait => {
+                vec![None; args.len()]
+            }
             Callee::MapInsertNew | Callee::MapAssign | Callee::MapLookup | Callee::MapRemove => {
                 let mut modes = vec![None; args.len()];
                 modes[0] = callee.map_access();
@@ -1092,6 +1094,8 @@ impl<'a> Analysis<'a> {
     ) -> BTreeSet<LoanId> {
         match rvalue {
             Rvalue::Use(operand) => self.operand_loans(operand, site, state),
+            // The task owns independent inputs, so its handle borrows nothing.
+            Rvalue::Spawn(_) => BTreeSet::new(),
             Rvalue::Aggregate(_, operands) => {
                 let mut loans = BTreeSet::new();
                 for operand in operands {
@@ -1220,6 +1224,7 @@ impl<'a> Analysis<'a> {
         match rvalue {
             Rvalue::Zero => {}
             Rvalue::Use(operand)
+            | Rvalue::Spawn(operand)
             | Rvalue::Unary(_, operand)
             | Rvalue::Convert(operand, _)
             | Rvalue::Error(operand) => self.operand_accesses(operand, None, span, out),
@@ -1745,6 +1750,7 @@ impl Liveness {
         match rvalue {
             Rvalue::Zero => {}
             Rvalue::Use(operand)
+            | Rvalue::Spawn(operand)
             | Rvalue::Unary(_, operand)
             | Rvalue::Convert(operand, _)
             | Rvalue::Error(operand) => Self::use_operand(operand, live),

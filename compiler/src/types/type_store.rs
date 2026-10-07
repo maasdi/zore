@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::fmt;
 
 use super::ty::{FloatType, FuncSignature, IntType, TypeKind};
-use super::type_id::{FuncTypeId, StructId, TypeId};
+use super::type_id::{FuncTypeId, StructId, TaskTypeId, TypeId};
 use crate::ast::ParamMode;
 
 /// Aliases such as `int` and `int64` share one identity.
@@ -17,6 +17,8 @@ pub struct TypeStore {
     map_types: HashMap<(TypeId, TypeId), TypeId>,
     signatures: Vec<FuncSignature>,
     func_types: HashMap<FuncSignature, TypeId>,
+    task_results: Vec<Vec<TypeId>>,
+    task_types: HashMap<Vec<TypeId>, TypeId>,
 }
 
 impl Default for TypeStore {
@@ -63,6 +65,8 @@ impl TypeStore {
             map_types: HashMap::new(),
             signatures: Vec::new(),
             func_types: HashMap::new(),
+            task_results: Vec::new(),
+            task_types: HashMap::new(),
         }
     }
 
@@ -130,6 +134,26 @@ impl TypeStore {
         self.kinds.push(TypeKind::Func(id));
         self.func_types.insert(signature, ty);
         ty
+    }
+
+    /// `Task<R1, ..., Rn>` for a spawned call's result list.
+    pub fn task_type(&mut self, results: Vec<TypeId>) -> TypeId {
+        if let Some(&ty) = self.task_types.get(&results) {
+            return ty;
+        }
+        let id = TaskTypeId(self.task_results.len() as u32);
+        self.task_results.push(results.clone());
+        let ty = TypeId(self.kinds.len() as u32);
+        self.kinds.push(TypeKind::Task(id));
+        self.task_types.insert(results, ty);
+        ty
+    }
+
+    pub fn task_results(&self, ty: TypeId) -> Option<&[TypeId]> {
+        match self.kind(ty) {
+            TypeKind::Task(id) => Some(&self.task_results[id.0 as usize]),
+            _ => None,
+        }
     }
 
     pub fn signature(&self, id: FuncTypeId) -> &FuncSignature {
@@ -230,6 +254,21 @@ impl fmt::Display for TypeName<'_> {
                 self.store.display(key),
                 self.store.display(value)
             ),
+            TypeKind::Task(id) => {
+                let results = &self.store.task_results[id.0 as usize];
+                f.write_str("Task")?;
+                if results.is_empty() {
+                    return Ok(());
+                }
+                f.write_str("<")?;
+                for (index, &ty) in results.iter().enumerate() {
+                    if index > 0 {
+                        f.write_str(", ")?;
+                    }
+                    write!(f, "{}", self.store.display(ty))?;
+                }
+                f.write_str(">")
+            }
             TypeKind::Func(id) => {
                 let signature = self.store.signature(id);
                 f.write_str("func(")?;
