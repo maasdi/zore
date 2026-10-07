@@ -35,15 +35,19 @@ when existing code belongs in it (rule 11: no empty scaffolding):
 - `lexer/` (`lexer.rs`, `token.rs`, `token_kind.rs`), `parser/` (`parser.rs`,
   `declaration.rs`, `statement.rs`, `expression.rs`, `type_syntax.rs`), `ast/`
   (`node.rs`, `decl.rs`, `stmt.rs`, `expr.rs`, `types.rs`).
-- `resolve/` (`resolver.rs`, `scope.rs`, `symbol.rs`, `ids.rs`), `types/`
-  (`type_id.rs`, `ty.rs`, `type_store.rs`, plus `constant.rs` and `bignum.rs`
-  for exact constant evaluation), `hir/` (`expr.rs`, `stmt.rs`, `function.rs`,
-  `lower.rs`).
+- `resolve/` (`resolver.rs`, `scope.rs`, `symbol.rs`, `ids.rs`, and `units.rs`,
+  the package and file units handed to resolution), `types/` (`type_id.rs`,
+  `ty.rs`, `type_store.rs`, plus `constant.rs` and `bignum.rs` for exact
+  constant evaluation), `hir/` (`expr.rs`, `stmt.rs`, `function.rs`, `lower.rs`,
+  and `lower/closure_kind.rs`, which decides which closures own their captures).
 - `ownership/` (`checker.rs`, `move_state.rs`, `borrow.rs`, `region.rs`, and
   `error_use.rs`, the check that every `error` value is read or discarded),
   `mir/` (`body.rs`, `block.rs`, `statement.rs`, `terminator.rs`,
   `operand.rs`, `rvalue.rs`, `lower.rs`), `dropck/` (`insertion.rs`).
-- `codegen/` (`llvm.rs`, `layout.rs`, `abi.rs`).
+- `codegen/` (`llvm.rs`, `layout.rs`, `abi.rs`, plus `clone.rs`, `channel.rs`,
+  `mutex.rs`, and `task.rs`, which lower `clone` and the channel, `Mutex`, and
+  task operations, and `native.rs`, the shims that call the runtime for library
+  functions declared without a body).
 
 Each stage's `mod.rs` re-exports its own submodules, so stage paths such as
 `zore::ast::Expr` or `zore::hir::ExprKind` do not expose the file split.
@@ -51,8 +55,12 @@ Each stage's `mod.rs` re-exports its own submodules, so stage paths such as
 The files the structure guide names but that have nothing to hold yet stay
 uncreated: `ownership/{place,projection}.rs` (MIR places serve both
 purposes), `dropck/analysis.rs`, `types/{function_type,classify}.rs`,
-`diagnostic/code.rs` (no diagnostic codes yet), `async_lowering/`, and
-`context/`.
+`diagnostic/code.rs` (no diagnostic codes yet), and `context/`.
+`async_lowering/` stays uncreated for a different reason: tasks are stackful
+fibers in the runtime, so an async function is an ordinary function that runs on
+a fiber's stack and nothing lowers it to a state machine. The guide's
+`runtime/scheduler.rs` is likewise `fiber.rs` and `task.rs`. The structure guide
+lists these choices as approved deviations.
 
 Dependencies point only from later stages to earlier ones, with no cycles,
 apart from three deliberate choices. `resolve` depends on `types` because
@@ -72,10 +80,16 @@ paths are anchored to the compiler manifest directory, so tests work from
 either the workspace root or the compiler directory.
 
 The authoritative specification stays at `spec/language-spec.md`. The Rust
-runtime in `runtime/src/` separates I/O, panic reporting, and string comparison.
-Its `main.rs` is a native entry shim compiled only when linking a Zore program;
-the Cargo library target enables runtime unit tests without a generated entry.
-Async, shared-context, and standard-library modules remain uncreated.
+runtime in `runtime/src/` holds allocation (`alloc.rs`), text (`string.rs`,
+`strings.rs`, `strconv.rs`), maps (`map.rs`), panics (`panic.rs`), and output
+(`io.rs`). It also holds tasks and their stack-switching fibers (`task.rs`,
+`fiber.rs`), channels and `select` (`channel.rs`), `Mutex` (`mutex.rs`),
+deadlock detection (`deadlock.rs`), and async I/O: the event loop and timers
+(`reactor.rs`), helper threads for blocking calls (`blocking.rs`), and the
+natives behind `zore/time`, `zore/io`, `zore/os`, and `zore/net` (`sys.rs`,
+`net.rs`). The driver compiles it once into a cached library, and `main.rs` is
+the native entry shim compiled with each program; the Cargo library target
+enables runtime unit tests without a generated entry.
 
 | Area | Responsibility | Spec |
 | --- | --- | --- |
