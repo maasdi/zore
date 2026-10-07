@@ -115,6 +115,7 @@ words!(Keyword {
     Async = "async",
     Await = "await",
     Go = "go",
+    Select = "select",
     Map = "map",
     Channel = "channel",
     True = "true",

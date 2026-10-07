@@ -351,6 +351,21 @@ fn stmt(case: &Case, s: &Stmt) -> String {
             format!("(for{header} {})", block(case, &f.body))
         }
         StmtKind::Block(b) => block(case, b),
+        StmtKind::Select(select) => {
+            let mut out = String::from("(select");
+            for arm in &select.arms {
+                let comm = match &arm.comm {
+                    SelectComm::Bind(b) => binding(case, b),
+                    SelectComm::Expr(e) => expr(case, e),
+                };
+                out.push_str(&format!(" (case {comm} {})", block(case, &arm.body)));
+            }
+            if let Some(default) = &select.default {
+                out.push_str(&format!(" (default {})", block(case, default)));
+            }
+            out.push(')');
+            out
+        }
     }
 }
 
@@ -1525,4 +1540,43 @@ fn malformed_function_literals_and_types_are_rejected() {
         "package main\nfunc run(f func() (int)) {}\n",
         "a single result type is written without parentheses",
     );
+}
+
+#[test]
+fn select_arms_and_default() {
+    let case = Case::body(
+        "select {
+            case let v, ok = a.receive() { use(v) }
+            case b.receive() { }
+            case c.send(1) { }
+            default { }
+        }",
+    );
+    case.assert_clean();
+    let shape = case.shape();
+    assert_eq!(shape.len(), 1);
+    assert!(
+        shape[0].starts_with("(select (case (let v,ok "),
+        "{}",
+        shape[0]
+    );
+    assert!(shape[0].contains("(default "), "{}", shape[0]);
+}
+
+#[test]
+fn case_and_default_stay_identifiers_outside_select() {
+    Case::body("let case = 1\nlet default = case + 1").assert_clean();
+}
+
+#[test]
+fn malformed_select_is_rejected() {
+    for source in [
+        "select { }",
+        "select { default { } default { } }",
+        "select { foo { } }",
+        "select { case a.receive() }",
+    ] {
+        let case = Case::body(source);
+        assert!(!case.errors().is_empty(), "{source} parsed");
+    }
 }

@@ -1594,6 +1594,61 @@ impl<'a> Checker<'a> {
         Some(Value::Typed(hir::Expr { kind, types, span }))
     }
 
+    fn select_stmt(&mut self, select: &ast::Select) -> Option<hir::StmtKind> {
+        let not_a_channel_operation = "a `select` case must be a channel `send` or `receive`";
+        let mut arms = Vec::new();
+        let mut ok = true;
+        for arm in &select.arms {
+            let comm = match &arm.comm {
+                ast::SelectComm::Bind(binding) => match self.binding(binding) {
+                    Some(hir::StmtKind::Let { targets, value }) => match value.kind {
+                        ExprKind::ChannelReceive(channel) => Some(hir::SelectComm::Receive {
+                            channel: *channel,
+                            targets,
+                        }),
+                        _ => {
+                            self.error(not_a_channel_operation, value.span);
+                            None
+                        }
+                    },
+                    _ => None,
+                },
+                ast::SelectComm::Expr(expr) => match self.expr(expr, None) {
+                    Some(Value::Typed(typed)) => match typed.kind {
+                        ExprKind::ChannelReceive(channel) => Some(hir::SelectComm::Receive {
+                            channel: *channel,
+                            targets: Vec::new(),
+                        }),
+                        ExprKind::ChannelSend { channel, value } => Some(hir::SelectComm::Send {
+                            channel: *channel,
+                            value: *value,
+                        }),
+                        _ => {
+                            self.error(not_a_channel_operation, expr.span);
+                            None
+                        }
+                    },
+                    Some(Value::Untyped(..)) => {
+                        self.error(not_a_channel_operation, expr.span);
+                        None
+                    }
+                    None => None,
+                },
+            };
+            let body = self.block(&arm.body);
+            match comm {
+                Some(comm) => arms.push(hir::SelectArm {
+                    comm,
+                    body,
+                    span: arm.span,
+                }),
+                None => ok = false,
+            }
+        }
+        let default = select.default.as_ref().map(|block| self.block(block));
+        ok.then_some(hir::StmtKind::Select { arms, default })
+    }
+
     fn in_async_body(&self) -> bool {
         self.res
             .functions
@@ -3667,6 +3722,7 @@ impl<'a> Checker<'a> {
                 }
             }
             ast::StmtKind::If(if_stmt) => self.if_stmt(if_stmt)?,
+            ast::StmtKind::Select(select) => self.select_stmt(select)?,
             ast::StmtKind::For(for_stmt) => {
                 if let ForHeader::Each {
                     first,
@@ -4538,6 +4594,10 @@ fn stmt_always_exits(stmt: &ast::Stmt) -> bool {
         ast::StmtKind::For(for_stmt) => {
             matches!(for_stmt.header, ForHeader::Infinite) && !contains_break(&for_stmt.body)
         }
+        ast::StmtKind::Select(select) => {
+            select.arms.iter().all(|arm| block_always_exits(&arm.body))
+                && select.default.as_ref().is_none_or(block_always_exits)
+        }
         _ => false,
     }
 }
@@ -4556,6 +4616,10 @@ fn contains_break(block: &ast::Block) -> bool {
         ast::StmtKind::Break => true,
         ast::StmtKind::Block(block) => contains_break(block),
         ast::StmtKind::If(if_stmt) => if_contains_break(if_stmt),
+        ast::StmtKind::Select(select) => {
+            select.arms.iter().any(|arm| contains_break(&arm.body))
+                || select.default.as_ref().is_some_and(contains_break)
+        }
         _ => false,
     })
 }

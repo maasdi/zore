@@ -5,7 +5,7 @@ mod stmt;
 
 pub use expr::{Const, Expr, ExprKind, Place, Projection};
 pub use function::{Function, Local};
-pub use stmt::{Block, Stmt, StmtKind};
+pub use stmt::{Block, SelectArm, SelectComm, Stmt, StmtKind};
 
 use crate::resolve::FunctionId;
 use crate::source::Span;

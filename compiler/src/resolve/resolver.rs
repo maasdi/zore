@@ -797,6 +797,20 @@ impl<'a> Resolver<'a> {
                 self.block(&for_stmt.body);
                 self.scopes.pop();
             }
+            StmtKind::Select(select) => {
+                for arm in &select.arms {
+                    self.scopes.push(HashMap::new());
+                    match &arm.comm {
+                        ast::SelectComm::Bind(binding) => self.binding(binding),
+                        ast::SelectComm::Expr(expr) => self.expr(expr),
+                    }
+                    self.block(&arm.body);
+                    self.scopes.pop();
+                }
+                if let Some(default) = &select.default {
+                    self.block(default);
+                }
+            }
             StmtKind::Block(block) => self.block(block),
         }
     }

@@ -2,7 +2,7 @@ use crate::ast::{BinaryOp, ParamMode};
 use crate::hir::{self, Const, ExprKind, StmtKind};
 use crate::mir::{
     AggregateKind, BasicBlock, BlockId, Body, Callee, Local, LocalDecl, Operand, Place, Program,
-    Projection, Rvalue, Statement, Terminator, place_type, projection_type,
+    Projection, Rvalue, SelectKind, Statement, Terminator, place_type, projection_type,
 };
 use crate::resolve::{FunctionId, LocalId, LocalKind};
 use crate::source::Span;
@@ -479,11 +479,125 @@ impl Builder {
                 collection,
                 body,
             } => self.for_each(package, *key, *item, collection, body, stmt.span),
+            StmtKind::Select { arms, default } => {
+                self.select(package, arms, default.as_ref(), stmt.span)
+            }
             StmtKind::Block(block) => self.block(package, block),
         }
         if has_temp_scope {
             let temps = self.temp_scopes.pop().expect("statement temps");
             self.end_scope(temps);
+        }
+    }
+
+    /// Evaluates every operand, performs one case that can proceed, then runs that case's body.
+    fn select(
+        &mut self,
+        package: &hir::Package,
+        arms: &[hir::SelectArm],
+        default: Option<&hir::Block>,
+        span: Span,
+    ) {
+        self.temp_scopes.push(Vec::new());
+        let index = self.temp(TypeStore::INT);
+        let mut cases = Vec::new();
+        let mut args = Vec::new();
+        // The value and flag of each receive case, in case order.
+        let mut received: Vec<Option<(Local, Local)>> = Vec::new();
+        for arm in arms {
+            match &arm.comm {
+                hir::SelectComm::Receive { channel, .. } => {
+                    args.push(self.channel_reference(package, channel));
+                    let value = self.temp(channel_element(package, channel.ty()));
+                    let flag = self.temp(TypeStore::BOOL);
+                    self.push(Place::local(value), Rvalue::Zero, span);
+                    self.push(Place::local(flag), Rvalue::Zero, span);
+                    args.push(Operand::Ref(Place::local(value)));
+                    args.push(Operand::Ref(Place::local(flag)));
+                    cases.push(SelectKind::Receive);
+                    received.push(Some((value, flag)));
+                }
+                hir::SelectComm::Send { channel, value } => {
+                    args.push(self.channel_reference(package, channel));
+                    args.push(self.operand(package, value));
+                    cases.push(SelectKind::Send);
+                    received.push(None);
+                }
+            }
+        }
+        let temps = self.temp_scopes.pop().expect("select temps");
+        self.emit_call(
+            Callee::Select {
+                cases,
+                has_default: default.is_some(),
+            },
+            args,
+            vec![Some(Place::local(index))],
+            span,
+        );
+        let join = self.new_block();
+        for (position, arm) in arms.iter().enumerate() {
+            let chosen = self.assign_temp(
+                package,
+                TypeStore::BOOL,
+                Rvalue::Binary(
+                    BinaryOp::Eq,
+                    Operand::Copy(Place::local(index)),
+                    Operand::Const(Const::Int(position as i128), TypeStore::INT),
+                ),
+                arm.span,
+            );
+            let (entered, next) = (self.new_block(), self.new_block());
+            self.terminate(Terminator::Branch {
+                condition: chosen,
+                then_block: entered,
+                else_block: next,
+                span: arm.span,
+            });
+            self.current = entered;
+            self.scopes.push(Vec::new());
+            if let (hir::SelectComm::Receive { targets, .. }, Some((value, flag))) =
+                (&arm.comm, received[position])
+            {
+                for (target, source) in targets.iter().zip([value, flag]) {
+                    let Some(target) = target else {
+                        continue;
+                    };
+                    let target = Local(target.0);
+                    self.scopes.last_mut().expect("arm scope").push(target);
+                    let ty = self.locals[source.0 as usize].ty;
+                    self.push(
+                        Place::local(target),
+                        Rvalue::Use(value_operand(package, Place::local(source), ty)),
+                        arm.span,
+                    );
+                }
+            }
+            self.end_scope(temps.clone());
+            self.block(package, &arm.body);
+            let locals = self.scopes.pop().expect("arm scope");
+            self.end_scope(locals);
+            self.terminate(Terminator::Goto(join));
+            self.current = next;
+        }
+        self.end_scope(temps);
+        if let Some(default) = default {
+            self.block(package, default);
+        }
+        self.terminate(Terminator::Goto(join));
+        self.current = join;
+    }
+
+    /// The channel operand as a reference, copying a temporary handle into a local first.
+    fn channel_reference(&mut self, package: &hir::Package, channel: &hir::Expr) -> Operand {
+        match self.argument_place_opt(package, channel) {
+            Some(place) => Operand::Ref(place),
+            None => {
+                let operand = self.operand(package, channel);
+                let held = self.temp(channel.ty());
+                self.push(Place::local(held), Rvalue::Use(operand), channel.span);
+                Operand::Ref(Place::local(held))
+            }
         }
     }
 
@@ -914,6 +1028,7 @@ impl Builder {
                 Callee::ChannelMake(_) => (false, false),
                 Callee::ChannelSend => (index == 0, index == 1),
                 Callee::ChannelReceive | Callee::ChannelClose => (true, false),
+                Callee::Select { .. } => unreachable!("a select is lowered by `select`"),
                 Callee::MutexNew(_) => (false, true),
                 Callee::MutexWithLock => (true, true),
                 Callee::MutexIsPoisoned => (true, false),
@@ -1329,6 +1444,13 @@ impl Builder {
 }
 
 /// `mut` always does; shared does unless the value is Copy without array storage.
+fn channel_element(package: &hir::Package, ty: TypeId) -> TypeId {
+    match package.types.kind(ty) {
+        TypeKind::Channel { element } => element,
+        _ => unreachable!("a select case operates on a channel"),
+    }
+}
+
 fn passes_by_reference(package: &hir::Package, mode: ParamMode, ty: TypeId) -> bool {
     match mode {
         ParamMode::Mut => true,

@@ -146,6 +146,23 @@ impl Checker<'_> {
                 self.expr_escapes(collection, false, escapes);
                 self.block_escapes(body, escapes);
             }
+            StmtKind::Select { arms, default } => {
+                for arm in arms {
+                    match &mut arm.comm {
+                        hir::SelectComm::Receive { channel, .. } => {
+                            self.expr_escapes(channel, false, escapes)
+                        }
+                        hir::SelectComm::Send { channel, value } => {
+                            self.expr_escapes(channel, false, escapes);
+                            self.expr_escapes(value, true, escapes);
+                        }
+                    }
+                    self.block_escapes(&mut arm.body, escapes);
+                }
+                if let Some(default) = default {
+                    self.block_escapes(default, escapes);
+                }
+            }
             StmtKind::Block(block) => self.block_escapes(block, escapes),
         }
     }
@@ -310,6 +327,14 @@ impl Checker<'_> {
                 self.bind_closures(body, escaping, once_locals);
             }
             StmtKind::ForEach { body, .. } => self.bind_closures(body, escaping, once_locals),
+            StmtKind::Select { arms, default } => {
+                for arm in arms {
+                    self.bind_closures(&mut arm.body, escaping, once_locals);
+                }
+                if let Some(default) = default {
+                    self.bind_closures(default, escaping, once_locals);
+                }
+            }
             StmtKind::Block(block) => self.bind_closures(block, escaping, once_locals),
             _ => {}
         }
@@ -397,6 +422,23 @@ impl Checker<'_> {
             } => {
                 self.place_moves(collection, moved);
                 self.block_moves(body, moved);
+            }
+            StmtKind::Select { arms, default } => {
+                for arm in arms {
+                    match &arm.comm {
+                        hir::SelectComm::Receive { channel, .. } => {
+                            self.place_moves(channel, moved)
+                        }
+                        hir::SelectComm::Send { channel, value } => {
+                            self.place_moves(channel, moved);
+                            self.value_moves(value, moved);
+                        }
+                    }
+                    self.block_moves(&arm.body, moved);
+                }
+                if let Some(default) = default {
+                    self.block_moves(default, moved);
+                }
             }
             StmtKind::Block(block) => self.block_moves(block, moved),
         }
@@ -532,6 +574,14 @@ fn once_uses_in_block(block: &mut hir::Block, once: &HashSet<LocalId>, misused: 
             StmtKind::ForEach { body, .. } | StmtKind::Block(body) => {
                 once_uses_in_block(body, once, misused)
             }
+            StmtKind::Select { arms, default } => {
+                for arm in arms {
+                    once_uses_in_block(&mut arm.body, once, misused);
+                }
+                if let Some(default) = default {
+                    once_uses_in_block(default, once, misused);
+                }
+            }
             _ => {}
         }
     }
@@ -605,6 +655,17 @@ fn stmt_exprs(stmt: &mut hir::Stmt) -> Vec<&mut hir::Expr> {
         StmtKind::If { condition, .. } => roots.push(condition),
         StmtKind::Loop { condition, .. } => roots.extend(condition.as_mut()),
         StmtKind::ForEach { collection, .. } => roots.push(collection),
+        StmtKind::Select { arms, .. } => {
+            for arm in arms {
+                match &mut arm.comm {
+                    hir::SelectComm::Receive { channel, .. } => roots.push(channel),
+                    hir::SelectComm::Send { channel, value } => {
+                        roots.push(channel);
+                        roots.push(value);
+                    }
+                }
+            }
+        }
         StmtKind::Break | StmtKind::Continue | StmtKind::Block(_) => {}
     }
     roots

@@ -62,5 +62,30 @@ pub enum StmtKind {
         collection: Expr,
         body: Block,
     },
+    /// Evaluates every operand once, then performs one case that can proceed.
+    Select {
+        arms: Vec<SelectArm>,
+        default: Option<Block>,
+    },
     Block(Block),
+}
+
+#[derive(Debug)]
+pub struct SelectArm {
+    pub comm: SelectComm,
+    pub body: Block,
+    pub span: Span,
+}
+
+#[derive(Debug)]
+pub enum SelectComm {
+    /// `targets` is empty when the results are discarded, else the value and the flag.
+    Receive {
+        channel: Expr,
+        targets: Vec<Option<LocalId>>,
+    },
+    Send {
+        channel: Expr,
+        value: Expr,
+    },
 }

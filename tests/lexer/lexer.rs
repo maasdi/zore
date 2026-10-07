@@ -267,8 +267,8 @@ fn semicolons_are_inserted_after_eligible_tokens() {
     }
     for ending in [
         "package", "import", "func", "type", "struct", "let", "var", "const", "mut", "own", "if",
-        "else", "for", "in", "async", "await", "go", "map", "channel", "(", "[", "{", ",", "+",
-        "=", ".", ":", "!",
+        "else", "for", "in", "async", "await", "go", "select", "map", "channel", "(", "[", "{",
+        ",", "+", "=", ".", ":", "!",
     ] {
         for suffix in ["\n", ""] {
             let case = Case::new(&format!("{ending}{suffix}"));

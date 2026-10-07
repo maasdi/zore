@@ -723,6 +723,7 @@ impl<'a> Analysis<'a> {
             | Callee::ChannelSend
             | Callee::ChannelReceive
             | Callee::ChannelClose
+            | Callee::Select { .. }
             | Callee::MutexNew(_)
             | Callee::MutexIsPoisoned => vec![None; args.len()],
             // The callback is called, so it is used exclusively.

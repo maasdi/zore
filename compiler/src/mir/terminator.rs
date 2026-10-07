@@ -5,6 +5,12 @@ use crate::resolve::FunctionId;
 use crate::source::Span;
 use crate::types::TypeId;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SelectKind {
+    Receive,
+    Send,
+}
+
 #[derive(Debug)]
 pub enum Callee {
     Function(FunctionId),
@@ -35,6 +41,14 @@ pub enum Callee {
     ChannelReceive,
     /// `[Ref(channel)]`; panics on a closed channel.
     ChannelClose,
+    /// Per case in order, a receive gives `[Ref(channel), Ref(value), Ref(received)]` and a send
+    /// gives `[Ref(channel), value]`. Performs one case that can proceed and gives its index
+    /// (`-1` for the default); a received value and flag are written through the references,
+    /// and the values of the other send cases are dropped.
+    Select {
+        cases: Vec<SelectKind>,
+        has_default: bool,
+    },
     /// `[value]` to a mutex that owns the value.
     MutexNew(TypeId),
     /// `[Ref(mutex), Ref(callback)]` to the callback's results.
@@ -63,6 +77,7 @@ impl Callee {
             | Callee::ChannelSend
             | Callee::ChannelReceive
             | Callee::ChannelClose
+            | Callee::Select { .. }
             | Callee::MutexNew(_)
             | Callee::MutexWithLock
             | Callee::MutexIsPoisoned => None,

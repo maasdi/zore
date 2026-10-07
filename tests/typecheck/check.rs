@@ -3632,3 +3632,32 @@ fn tasks_share_a_mutex_through_copied_handles() {
         }",
     ));
 }
+
+#[test]
+fn select_cases_must_be_channel_operations() {
+    accepts(&channel_body(
+        "let a = channel<int>()
+        let jobs = channel<Job>(2)
+        select {
+            case let n, ok = a.receive() {
+                if ok { consume(a) }
+                _ = n
+            }
+            case jobs.send(Job{Name: \"x\"}) { }
+            case a.receive() { }
+            default { }
+        }",
+    ));
+    rejects(
+        &channel_body("let a = channel<int>()\nselect { case a.close() { } }"),
+        "a `select` case must be a channel `send` or `receive`",
+    );
+    rejects(
+        &channel_body("let a = channel<int>()\nselect { case a.send(\"x\") { } }"),
+        "",
+    );
+    rejects(
+        &channel_body("let a = channel<int>()\nselect { case consume(a) { } }"),
+        "a `select` case must be a channel `send` or `receive`",
+    );
+}
