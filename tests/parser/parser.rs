@@ -61,7 +61,8 @@ impl Case {
 fn type_name(t: &Type) -> &str {
     match t {
         Type::Named(name) => &name.text,
-        Type::Array { .. }
+        Type::Qualified { .. }
+        | Type::Array { .. }
         | Type::Slice { .. }
         | Type::DynArray { .. }
         | Type::Map { .. }
@@ -72,6 +73,7 @@ fn type_name(t: &Type) -> &str {
 fn ty(case: &Case, t: &Type) -> String {
     match t {
         Type::Named(name) => name.text.clone(),
+        Type::Qualified { package, name, .. } => format!("{}.{}", package.text, name.text),
         Type::Array { element, size, .. } => {
             format!("[{} ; {}]", ty(case, element), expr(case, size))
         }
@@ -151,10 +153,14 @@ fn expr(case: &Case, e: &Expr) -> String {
             )
         }
         ExprKind::StructLit {
+            package,
             ty: struct_ty,
             fields,
         } => {
-            let mut out = format!("(lit {}", struct_ty.text);
+            let qualifier = package
+                .as_ref()
+                .map_or(String::new(), |package| format!("{}.", package.text));
+            let mut out = format!("(lit {qualifier}{}", struct_ty.text);
             for field in fields {
                 out.push_str(&format!(
                     " {}:{}",
@@ -1092,6 +1098,30 @@ fn collection_loops_parse() {
 }
 
 #[test]
+fn package_qualified_names_parse() {
+    let case = Case::body(
+        "let a pkg.User = pkg.User{Name: \"x\", Tags: [pkg.Tag; 0]{}}
+        let b = pkg.make(1)
+        let c map[string]pkg.User = map[string]pkg.User{}
+        var d Array<pkg.User> = Array<pkg.User>{}
+        if pkg.Ready { work() }
+        for _, user in d { work(user) }",
+    );
+    case.assert_clean();
+    assert_eq!(
+        case.shape(),
+        [
+            "(let a pkg.User (lit pkg.User Name:\"x\" Tags:(lit [pkg.Tag ; 0])))",
+            "(let b (call (. pkg make) 1))",
+            "(let c map[string]pkg.User (lit map[string]pkg.User))",
+            "(var d Array<pkg.User> (lit Array<pkg.User>))",
+            "(if (. pkg Ready) {(call work)})",
+            "(for _,user in d {(call work user)})",
+        ]
+    );
+}
+
+#[test]
 fn invalid_control_flow_syntax_is_rejected() {
     for (body, message) in [
         ("if ready work()", "expected `{`"),
@@ -1186,11 +1216,7 @@ fn later_milestone_syntax_is_reported_as_unsupported() {
     for body in ["let t = go work()", "go work()"] {
         rejects(body, "not supported by this compiler yet");
     }
-    for text in [
-        "func f(t Task<int>) {}",
-        "func f(c channel<int>) {}",
-        "func f(u pkg.User) {}",
-    ] {
+    for text in ["func f(t Task<int>) {}", "func f(c channel<int>) {}"] {
         rejects_file(
             &format!("package main\n{text}\n"),
             "not supported by this compiler yet",

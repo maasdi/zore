@@ -19,6 +19,15 @@ pub struct Parsed {
 }
 
 pub fn parse(file: &SourceFile) -> Parsed {
+    parse_with(file, false)
+}
+
+/// Accepts function declarations without bodies, which are native to the runtime.
+pub fn parse_standard(file: &SourceFile) -> Parsed {
+    parse_with(file, true)
+}
+
+fn parse_with(file: &SourceFile, native_functions: bool) -> Parsed {
     let lexed = lex(file);
     let mut parser = Parser {
         file,
@@ -27,6 +36,7 @@ pub fn parse(file: &SourceFile) -> Parsed {
         last_token_end: 0,
         open_delimiters: 0,
         struct_literals_allowed: true,
+        native_functions,
         diagnostics: lexed.diagnostics,
     };
     let ast = parser.file_ast();

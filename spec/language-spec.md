@@ -941,9 +941,10 @@ ASCII letters, digits, `_`, or `-`, and must not be `zore`, which is reserved
 for standard packages.
 
 **Building a program.** `zore check`, `zore build`, and `zore run` take a file
-(§45). The file's folder is the entry package, which must be named `main`; the
-project root is found by walking up from that folder to the first folder that
-holds `zore.toml`. When there is none, the entry folder is a project with no
+(§45). The file's folder is the entry package; building or running it as a
+program requires it to be named `main` (§3.19), while `zore check` accepts any
+name. The project root is found by walking up from that folder to the first
+folder that holds `zore.toml`. When there is none, the entry folder is a project with no
 name, which can import only standard packages.
 
 **Import paths.** An import declaration names exactly one package by a

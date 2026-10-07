@@ -6,10 +6,11 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::codegen;
 use crate::diagnostic::Diagnostic;
-use crate::driver::check::check_file;
+use crate::driver::check::check_project;
+use crate::driver::project::{Project, load_file};
 use crate::dropck;
 use crate::mir::lower::lower;
-use crate::source::SourceFile;
+use crate::source::{Layered, SourceFile, Sources};
 
 const RUNTIME_SOURCES: &[(&str, &str)] = &[
     ("main.rs", include_str!("../../../runtime/src/main.rs")),
@@ -41,7 +42,12 @@ impl fmt::Display for BuildError {
 }
 
 pub fn emit_llvm(file: &SourceFile) -> Result<String, BuildError> {
-    let checked = check_file(file);
+    let project = load_file(file).map_err(BuildError::Diagnostics)?;
+    emit_project_llvm(&project, file)
+}
+
+pub fn emit_project_llvm(project: &Project, sources: &dyn Sources) -> Result<String, BuildError> {
+    let checked = check_project(project, sources);
     if !checked.diagnostics.is_empty() {
         return Err(BuildError::Diagnostics(checked.diagnostics));
     }
@@ -56,7 +62,8 @@ pub fn emit_llvm(file: &SourceFile) -> Result<String, BuildError> {
     }
     let mut program = lower(&package);
     dropck::insert(&package, &mut program);
-    codegen::emit(&package, &program, file).map_err(BuildError::Diagnostics)
+    let layered = Layered(sources, project.std_sources());
+    codegen::emit(&package, &program, &layered).map_err(BuildError::Diagnostics)
 }
 
 static NEXT_DIR: AtomicU64 = AtomicU64::new(0);
@@ -93,11 +100,22 @@ pub fn compiler() -> String {
 }
 
 pub fn build(file: &SourceFile, output: &Path) -> Result<(), BuildError> {
-    let ir = emit_llvm(file)?;
+    link(&emit_llvm(file)?, output)
+}
+
+pub fn build_project(
+    project: &Project,
+    sources: &dyn Sources,
+    output: &Path,
+) -> Result<(), BuildError> {
+    link(&emit_project_llvm(project, sources)?, output)
+}
+
+fn link(ir: &str, output: &Path) -> Result<(), BuildError> {
     let dir = TempDir::new()?;
     let ir_path = dir.path().join("program.ll");
     let object_path = dir.path().join("program.o");
-    fs::write(&ir_path, &ir).map_err(|e| BuildError::Io(format!("{}: {e}", ir_path.display())))?;
+    fs::write(&ir_path, ir).map_err(|e| BuildError::Io(format!("{}: {e}", ir_path.display())))?;
     for &(name, contents) in RUNTIME_SOURCES {
         let path = dir.path().join(name);
         fs::write(&path, contents)

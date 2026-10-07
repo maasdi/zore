@@ -158,7 +158,7 @@ round to nearest, ties to even, without overflow. Typed float constants hold
 the exact value of their `float32`/`float64` and fold by exact arithmetic
 followed by one rounding, which equals the correctly rounded IEEE result.
 
-The checker accepts a deliberately small, single-file subset: primitive values,
+The checker accepts a deliberately small subset: primitive values,
 `error`, structs including Move structs with custom `drop` methods, fixed
 arrays, literal-sized dynamic arrays (`Array<T>`), maps (`map[K]V`), borrowed slices (`[]T`,
 `mut []T`, `base[low:high]`), functions, methods, non-escaping closures with
@@ -166,10 +166,17 @@ function types (§16), and `println`. Ownership analysis (`ownership/`) checks w
 and field-level partial moves, reinitialization, and call-local borrows over
 MIR (`checker.rs`), then runs region analysis (`region.rs`) over the loans
 described in `borrow.rs`; error-use analysis checks named `error` bindings
-and parameters on normal control-flow paths. Awaited `?`, `async`/`await`, imports, package variables,
-rune conversions, declared functions used as values, and escaping or call-once
-closures remain unsupported. `println` of a float
+and parameters on normal control-flow paths. Awaited `?`, `async`/`await`, package variables,
+integer-to-rune conversions, and declared functions used as values remain
+unsupported. `println` of a float
 type-checks, but its text format is still TBD (§37.1).
+
+A program is more than one file. `driver/project.rs` loads the entry file's
+folder and every package it imports, through a `FileSystem` trait so tests can
+use memory instead of disk, and hands the resolver a list of packages with
+dependencies first. Spans carry their file, so diagnostics point into any
+package; the source text of the bundled standard packages lives in a separate
+map that the checker and code generator read through `Sources`.
 
 AST preserves written structure; HIR records resolved meaning; MIR describes
 execution. Source identity and spans survive transformations. Use typed IDs for

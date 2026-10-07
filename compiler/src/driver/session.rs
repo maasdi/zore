@@ -4,9 +4,10 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use crate::diagnostic::Diagnostic;
-use crate::driver::build::{BuildError, TempDir, build};
-use crate::driver::check::check_file;
-use crate::source::{FileId, SourceMap};
+use crate::driver::build::{BuildError, TempDir, build_project};
+use crate::driver::check::check_project;
+use crate::driver::project::{Disk, LoadError, Project, load_project};
+use crate::source::SourceMap;
 
 pub fn run() -> ExitCode {
     match cli::parse(std::env::args_os().skip(1).collect()) {
@@ -38,23 +39,24 @@ pub fn run() -> ExitCode {
     }
 }
 
-fn load(target: &Path) -> Result<(SourceMap, FileId), ExitCode> {
+fn load(target: &Path, verb: &str) -> Result<(SourceMap, Project), ExitCode> {
     let mut sources = SourceMap::new();
-    match sources.load(target) {
-        Ok(id) => Ok((sources, id)),
-        Err(error) => {
+    match load_project(&mut sources, &Disk, target) {
+        Ok(project) => Ok((sources, project)),
+        Err(LoadError::Source(error)) => {
             eprintln!("zore: {error}");
             Err(ExitCode::FAILURE)
         }
+        Err(LoadError::Diagnostics(diagnostics)) => Err(report(&sources, &diagnostics, verb)),
     }
 }
 
 fn report(sources: &SourceMap, diagnostics: &[Diagnostic], verb: &str) -> ExitCode {
     for diagnostic in diagnostics {
-        let rendered = diagnostic
-            .render(sources)
-            .expect("diagnostics refer to the loaded file");
-        eprintln!("{rendered}");
+        match diagnostic.render(sources) {
+            Ok(rendered) => eprintln!("{rendered}"),
+            Err(_) => eprintln!("error: {}", diagnostic.message()),
+        }
     }
     let count = diagnostics.len();
     eprintln!(
@@ -65,11 +67,11 @@ fn report(sources: &SourceMap, diagnostics: &[Diagnostic], verb: &str) -> ExitCo
 }
 
 fn check(target: &Path) -> ExitCode {
-    let (sources, id) = match load(target) {
+    let (sources, project) = match load(target, "check") {
         Ok(loaded) => loaded,
         Err(code) => return code,
     };
-    let checked = check_file(sources.file(id).expect("just loaded"));
+    let checked = check_project(&project, &sources);
     if checked.diagnostics.is_empty() {
         return ExitCode::SUCCESS;
     }
@@ -77,8 +79,8 @@ fn check(target: &Path) -> ExitCode {
 }
 
 fn build_to(target: &Path, output: &Path, verb: &str) -> Result<(), ExitCode> {
-    let (sources, id) = load(target)?;
-    match build(sources.file(id).expect("just loaded"), output) {
+    let (sources, project) = load(target, verb)?;
+    match build_project(&project, &sources, output) {
         Ok(()) => Ok(()),
         Err(BuildError::Diagnostics(diagnostics)) => Err(report(&sources, &diagnostics, verb)),
         Err(error) => {

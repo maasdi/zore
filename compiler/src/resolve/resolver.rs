@@ -1,14 +1,24 @@
 use std::collections::HashMap;
 
 use super::ids::{ConstId, FunctionId};
-use super::symbol::{ClosureDecl, ConstDecl, LocalDecl, LocalKind, Res};
+use super::symbol::{ClosureDecl, ConstDecl, LocalDecl, LocalKind, Res, predeclared};
+use super::units::{FileUnit, PackageInfo, PackageUnit};
 use crate::ast::{self, BindingKind, BindingTarget, ExprKind, ForHeader, Item, StmtKind};
 use crate::diagnostic::{Diagnostic, Severity};
 use crate::source::Span;
 use crate::types::{StructId, TypeStore};
 
 pub struct Resolution<'a> {
+    /// The entry package's name.
     pub package: String,
+    /// The first function named `main` without a receiver in the entry package.
+    pub entry_main: Option<&'a ast::FuncDecl>,
+    pub packages: Vec<PackageInfo>,
+    pub entry_package: usize,
+    /// Indexed like `structs`, `functions`, and `consts`.
+    pub struct_package: Vec<usize>,
+    pub function_package: Vec<usize>,
+    pub const_package: Vec<usize>,
     pub types: TypeStore,
     pub structs: Vec<&'a ast::StructDecl>,
     /// A method's receiver is its first parameter.
@@ -29,7 +39,7 @@ pub struct Resolution<'a> {
 /// Slices borrow and `Array<T>` stores on the heap, so neither stores by value.
 fn by_value_named_type(ty: &ast::Type) -> Option<&ast::Name> {
     match ty {
-        ast::Type::Named(name) => Some(name),
+        ast::Type::Named(name) | ast::Type::Qualified { name, .. } => Some(name),
         ast::Type::Array { element, .. } => by_value_named_type(element),
         ast::Type::Slice { .. }
         | ast::Type::DynArray { .. }
@@ -40,7 +50,7 @@ fn by_value_named_type(ty: &ast::Type) -> Option<&ast::Name> {
 
 fn owned_named_type(ty: &ast::Type) -> Option<&ast::Name> {
     match ty {
-        ast::Type::Named(name) => Some(name),
+        ast::Type::Named(name) | ast::Type::Qualified { name, .. } => Some(name),
         ast::Type::Array { element, .. } | ast::Type::DynArray { element, .. } => {
             owned_named_type(element)
         }
@@ -49,13 +59,16 @@ fn owned_named_type(ty: &ast::Type) -> Option<&ast::Name> {
     }
 }
 
-pub fn resolve(file: &ast::File) -> Resolution<'_> {
+pub fn resolve<'a>(units: &'a [PackageUnit<'a>]) -> Resolution<'a> {
     let mut resolver = Resolver {
         out: Resolution {
-            package: file
-                .package
-                .as_ref()
-                .map_or(String::new(), |n| n.text.clone()),
+            package: String::new(),
+            entry_main: None,
+            packages: Vec::new(),
+            entry_package: 0,
+            struct_package: Vec::new(),
+            function_package: Vec::new(),
+            const_package: Vec::new(),
             types: TypeStore::new(),
             structs: Vec::new(),
             functions: Vec::new(),
@@ -67,18 +80,47 @@ pub fn resolve(file: &ast::File) -> Resolution<'_> {
             declarations: HashMap::new(),
             diagnostics: Vec::new(),
         },
-        package_scope: HashMap::new(),
+        package_scopes: Vec::new(),
+        imports: Vec::new(),
+        current_package: 0,
+        current_file: 0,
+        file_of_struct: Vec::new(),
+        file_of_function: Vec::new(),
+        file_of_const: Vec::new(),
         scopes: Vec::new(),
         function: None,
         frames: Vec::new(),
     };
-    resolver.file(file);
+    resolver.all(units);
     resolver.out
+}
+
+/// What one file's import declarations make visible.
+#[derive(Default)]
+pub(super) struct FileImports {
+    pub(super) entries: Vec<ImportEntry>,
+    pub(super) by_name: HashMap<String, usize>,
+}
+
+pub(super) struct ImportEntry {
+    pub(super) name: String,
+    pub(super) package: usize,
+    pub(super) span: Span,
+    pub(super) used: bool,
 }
 
 pub(super) struct Resolver<'a> {
     pub(super) out: Resolution<'a>,
-    pub(super) package_scope: HashMap<String, (Res, Span)>,
+    /// Indexed by package.
+    pub(super) package_scopes: Vec<HashMap<String, (Res, Span)>>,
+    /// Indexed by package, then file.
+    pub(super) imports: Vec<Vec<FileImports>>,
+    pub(super) current_package: usize,
+    pub(super) current_file: usize,
+    /// The file each struct, function, and constant was declared in.
+    pub(super) file_of_struct: Vec<usize>,
+    pub(super) file_of_function: Vec<usize>,
+    pub(super) file_of_const: Vec<usize>,
     pub(super) scopes: Vec<HashMap<String, (Res, Span)>>,
     pub(super) function: Option<FunctionId>,
     /// Outermost first.
@@ -109,32 +151,121 @@ impl<'a> Resolver<'a> {
         );
     }
 
-    fn file(&mut self, file: &'a ast::File) {
-        for import in &file.imports {
-            self.out.diagnostics.push(
-                Diagnostic::new(
-                    Severity::Error,
-                    "imports are not supported by the checker yet",
-                    import.span,
-                )
-                .note("`zore check` currently treats one file as the whole package"),
-            );
-        }
+    fn all(&mut self, units: &'a [PackageUnit<'a>]) {
+        self.out.entry_package = units.len().saturating_sub(1);
+        self.out.package = units.last().map_or(String::new(), |unit| unit.name.clone());
+        self.out.packages = units
+            .iter()
+            .map(|unit| PackageInfo {
+                path: unit.path.clone(),
+                name: unit.name.clone(),
+                clause: unit.clause(),
+            })
+            .collect();
+        self.package_scopes = vec![HashMap::new(); units.len()];
+        self.imports = units
+            .iter()
+            .map(|unit| unit.files.iter().map(|_| FileImports::default()).collect())
+            .collect();
         // Collect declarations first so bodies can use later ones.
         let mut methods = Vec::new();
+        for (package, unit) in units.iter().enumerate() {
+            for (file, file_unit) in unit.files.iter().enumerate() {
+                (self.current_package, self.current_file) = (package, file);
+                self.declare_items(unit, file_unit.file, &mut methods);
+            }
+        }
+        for (package, unit) in units.iter().enumerate() {
+            for (file, file_unit) in unit.files.iter().enumerate() {
+                (self.current_package, self.current_file) = (package, file);
+                self.bind_imports(file_unit);
+            }
+        }
+        for (index, decl) in self.out.structs.clone().into_iter().enumerate() {
+            self.enter(self.out.struct_package[index], self.file_of_struct[index]);
+            let mut fields: HashMap<&str, Span> = HashMap::new();
+            for field in &decl.fields {
+                if let Some(&first) = fields.get(field.name.text.as_str()) {
+                    self.duplicate(&field.name, first, "field");
+                } else {
+                    fields.insert(&field.name.text, field.name.span);
+                }
+                self.ty(&field.ty);
+            }
+        }
+        for id in methods {
+            self.enter(
+                self.out.function_package[id.0 as usize],
+                self.file_of_function[id.0 as usize],
+            );
+            self.declare_method(id);
+        }
+        self.reject_self_containing_structs();
+        for index in 0..self.out.consts.len() {
+            self.enter(self.out.const_package[index], self.file_of_const[index]);
+            let value = self.out.consts[index].value;
+            let ty = self.out.consts[index].ty;
+            if let Some(ty) = ty {
+                self.ty(ty);
+            }
+            self.expr(value);
+        }
+        self.out.locals = self.out.functions.iter().map(|_| Vec::new()).collect();
+        for (index, func) in self.out.functions.clone().into_iter().enumerate() {
+            self.enter(
+                self.out.function_package[index],
+                self.file_of_function[index],
+            );
+            self.function(FunctionId(index as u32), func);
+        }
+        self.report_unused_imports();
+    }
+
+    fn note_entry_main(&mut self, func: &'a ast::FuncDecl) {
+        if self.current_package == self.out.entry_package
+            && func.receiver.is_none()
+            && func.name.text == "main"
+            && self.out.entry_main.is_none()
+        {
+            self.out.entry_main = Some(func);
+        }
+    }
+
+    fn enter(&mut self, package: usize, file: usize) {
+        (self.current_package, self.current_file) = (package, file);
+    }
+
+    fn declare_items(
+        &mut self,
+        unit: &PackageUnit<'a>,
+        file: &'a ast::File,
+        methods: &mut Vec<FunctionId>,
+    ) {
+        let (package, file_index) = (self.current_package, self.current_file);
         for item in &file.items {
             match item {
                 Item::Struct(decl) => {
-                    let (id, _) = self.out.types.add_struct(&decl.name.text);
+                    let display = if package == self.out.entry_package {
+                        decl.name.text.clone()
+                    } else {
+                        format!("{}.{}", unit.name, decl.name.text)
+                    };
+                    let (id, _) = self.out.types.add_struct(&display);
                     self.out.structs.push(decl);
+                    self.out.struct_package.push(package);
+                    self.file_of_struct.push(file_index);
                     self.declare_package(&decl.name, Res::Struct(id));
                 }
                 Item::Func(func) if func.is_async => {
+                    self.note_entry_main(func);
                     self.unsupported("`async` functions are", func.name.span);
                 }
                 Item::Func(func) => {
+                    self.note_entry_main(func);
                     let id = FunctionId(self.out.functions.len() as u32);
                     self.out.functions.push(func);
+                    self.out.function_package.push(package);
+                    self.file_of_function.push(file_index);
                     if func.receiver.is_some() {
                         methods.push(id);
                     } else {
@@ -145,6 +276,8 @@ impl<'a> Resolver<'a> {
                     if let Some(res) = self.const_decl(binding)
                         && let [BindingTarget::Name(name)] = &binding.targets[..]
                     {
+                        self.out.const_package.push(package);
+                        self.file_of_const.push(file_index);
                         self.declare_package(name, res);
                     }
                 }
@@ -160,32 +293,141 @@ impl<'a> Resolver<'a> {
                 }
             }
         }
-        for decl in self.out.structs.clone() {
-            let mut fields: HashMap<&str, Span> = HashMap::new();
-            for field in &decl.fields {
-                if let Some(&first) = fields.get(field.name.text.as_str()) {
-                    self.duplicate(&field.name, first, "field");
+    }
+
+    /// Makes this file's imports visible, rejecting the ones that clash.
+    fn bind_imports(&mut self, file_unit: &FileUnit<'a>) {
+        let (package, file) = (self.current_package, self.current_file);
+        for (import, binding) in file_unit.file.imports.iter().zip(&file_unit.imports) {
+            let table = &self.imports[package][file];
+            if let Some(&first) = table.by_name.get(&binding.name) {
+                let first_package = table.entries[first].package;
+                let message = if first_package == binding.package {
+                    format!("package `{}` is imported twice in this file", import.path)
                 } else {
-                    fields.insert(&field.name.text, field.name.span);
+                    format!("two imports in this file are both named `{}`", binding.name)
+                };
+                let first_span = table.entries[first].span;
+                self.out.diagnostics.push(
+                    Diagnostic::new(Severity::Error, message, import.span)
+                        .related(first_span, "first imported here"),
+                );
+                continue;
+            }
+            if let Some(&(_, declared)) = self.package_scopes[package].get(&binding.name) {
+                self.out.diagnostics.push(
+                    Diagnostic::new(
+                        Severity::Error,
+                        format!(
+                            "import `{}` conflicts with a declaration of the same name",
+                            binding.name
+                        ),
+                        import.span,
+                    )
+                    .related(declared, "declared here"),
+                );
+                continue;
+            }
+            if predeclared(&binding.name).is_some() {
+                self.out.diagnostics.push(
+                    Diagnostic::new(
+                        Severity::Error,
+                        format!("import `{}` shadows a predeclared name", binding.name),
+                        import.span,
+                    )
+                    .note("declarations cannot reuse predeclared names such as `int` or `println`"),
+                );
+                continue;
+            }
+            let table = &mut self.imports[package][file];
+            table
+                .by_name
+                .insert(binding.name.clone(), table.entries.len());
+            table.entries.push(ImportEntry {
+                name: binding.name.clone(),
+                package: binding.package,
+                span: import.span,
+                used: false,
+            });
+        }
+    }
+
+    fn report_unused_imports(&mut self) {
+        let mut unused = Vec::new();
+        for files in &self.imports {
+            for file in files {
+                for entry in file.entries.iter().filter(|entry| !entry.used) {
+                    unused.push((entry.span, entry.name.clone()));
                 }
-                self.ty(&field.ty);
             }
         }
-        for id in methods {
-            self.declare_method(id);
+        for (span, name) in unused {
+            self.out.diagnostics.push(
+                Diagnostic::new(
+                    Severity::Error,
+                    format!("package `{name}` is imported and not used"),
+                    span,
+                )
+                .note("remove the import, or use one of its exported names"),
+            );
         }
-        self.reject_self_containing_structs();
-        for index in 0..self.out.consts.len() {
-            let value = self.out.consts[index].value;
-            let ty = self.out.consts[index].ty;
-            if let Some(ty) = ty {
-                self.ty(ty);
+    }
+
+    pub(super) fn mark_import_used(&mut self, name: &str) {
+        let table = &mut self.imports[self.current_package][self.current_file];
+        if let Some(&index) = table.by_name.get(name) {
+            table.entries[index].used = true;
+        }
+    }
+
+    /// Resolves `package.Name` to an exported member of an imported package.
+    fn package_member(&mut self, package: &ast::Name, member: &ast::Name) -> Option<Res> {
+        let target = match self.lookup(&package.text) {
+            Some(Res::Package(target)) => target,
+            Some(_) => {
+                self.error(format!("`{}` is not a package", package.text), package.span);
+                return None;
             }
-            self.expr(value);
-        }
-        self.out.locals = self.out.functions.iter().map(|_| Vec::new()).collect();
-        for (index, func) in self.out.functions.clone().into_iter().enumerate() {
-            self.function(FunctionId(index as u32), func);
+            None => {
+                self.error(
+                    format!("cannot find package `{}` in this file", package.text),
+                    package.span,
+                );
+                return None;
+            }
+        };
+        self.mark_import_used(&package.text);
+        self.out.uses.insert(package.span, Res::Package(target));
+        let exported = member.text.starts_with(|c: char| c.is_ascii_uppercase());
+        match self.package_scopes[target].get(&member.text) {
+            Some(&(res, _)) if exported => {
+                self.out.uses.insert(member.span, res);
+                Some(res)
+            }
+            Some(_) => {
+                self.out.diagnostics.push(
+                    Diagnostic::new(
+                        Severity::Error,
+                        format!(
+                            "`{}` is not exported by package `{}`",
+                            member.text, package.text
+                        ),
+                        member.span,
+                    )
+                    .note("only names that start with an uppercase letter can be used from another package"),
+                );
+                None
+            }
+            None => {
+                self.error(
+                    format!(
+                        "package `{}` does not declare `{}`",
+                        package.text, member.text
+                    ),
+                    member.span,
+                );
+                None
+            }
         }
     }
 
@@ -313,6 +555,18 @@ impl<'a> Resolver<'a> {
                     self.error(format!("`{}` is not a type", name.text), name.span);
                 }
             },
+            ast::Type::Qualified { package, name, .. } => {
+                match self.package_member(package, name) {
+                    Some(Res::Struct(_)) | None => {}
+                    Some(_) => {
+                        self.out.uses.remove(&name.span);
+                        self.error(
+                            format!("`{}.{}` is not a type", package.text, name.text),
+                            name.span,
+                        );
+                    }
+                }
+            }
             ast::Type::Array { element, size, .. } => {
                 self.ty(element);
                 self.expr(size);
@@ -592,7 +846,14 @@ impl<'a> Resolver<'a> {
     fn expr(&mut self, expr: &'a ast::Expr) {
         match &expr.kind {
             ExprKind::Name(name) => {
-                self.use_name(name, expr.span);
+                if let Some(Res::Package(_)) = self.use_name(name, expr.span) {
+                    self.mark_import_used(name);
+                    self.out.uses.remove(&expr.span);
+                    self.error(
+                        format!("use of package `{name}` without selector"),
+                        expr.span,
+                    );
+                }
             }
             ExprKind::Int(_)
             | ExprKind::Float
@@ -615,7 +876,19 @@ impl<'a> Resolver<'a> {
                     self.expr(arg);
                 }
             }
-            ExprKind::Field { base, .. } => self.expr(base),
+            ExprKind::Field { base, name } => {
+                if let ExprKind::Name(package) = &base.kind
+                    && let Some(Res::Package(_)) = self.lookup(package)
+                {
+                    let package = ast::Name {
+                        text: package.clone(),
+                        span: base.span,
+                    };
+                    self.package_member(&package, name);
+                } else {
+                    self.expr(base);
+                }
+            }
             ExprKind::Index { base, index } => {
                 self.expr(base);
                 self.expr(index);
@@ -640,8 +913,16 @@ impl<'a> Resolver<'a> {
                 }
             }
             ExprKind::Closure(closure) => self.closure(closure, expr.span),
-            ExprKind::StructLit { ty, fields } => {
-                match self.use_name(&ty.text, ty.span) {
+            ExprKind::StructLit {
+                package,
+                ty,
+                fields,
+            } => {
+                let resolved = match package {
+                    Some(package) => self.package_member(package, ty),
+                    None => self.use_name(&ty.text, ty.span),
+                };
+                match resolved {
                     Some(Res::Struct(_) | Res::Unsupported) | None => {}
                     Some(_) => {
                         self.out.uses.remove(&ty.span);

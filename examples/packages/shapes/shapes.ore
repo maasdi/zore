@@ -1,0 +1,36 @@
+package shapes
+
+const Sides = 4
+
+type Circle struct {
+    radius int
+}
+
+type Square struct {
+    side int
+}
+
+type Tracker struct {
+    Name string
+}
+
+// The fields are private, so other packages build values with these.
+func NewCircle(radius int) Circle {
+    return Circle{radius: radius}
+}
+
+func NewSquare(side int) Square {
+    return Square{side: side}
+}
+
+func (c Circle) Area() int {
+    return 3 * c.radius * c.radius
+}
+
+func (s Square) Area() int {
+    return s.side * s.side
+}
+
+func (t mut Tracker) drop() {
+    println("closing " + t.Name)
+}

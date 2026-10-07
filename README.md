@@ -47,14 +47,14 @@ John
 | --- | --- |
 | Language specification | MVP decisions locked in [`spec/language-spec.md`](spec/language-spec.md) |
 | Lexer, parser, diagnostics | Implemented, with error recovery |
-| Name resolution and type checking | Implemented for a single-file, synchronous subset: primitives, `error`, structs, fixed arrays, `Array<T>`, maps, slices, functions and methods, closures, control flow, and Go-style untyped constants |
+| Name resolution and type checking | Implemented for a synchronous subset: primitives, `error`, structs, fixed arrays, `Array<T>`, maps, slices, functions and methods, closures, control flow, and Go-style untyped constants |
 | Native code generation | Implemented for that subset: LLVM IR with runtime checks for overflow, division by zero, shifts, conversions, and bounds, linked with a Rust runtime |
 | Ownership, borrowing, and cleanup | Implemented: Copy/Move classification, moves and partial moves, shared and `mut` borrows, borrowed slices with region analysis, deterministic drops, and panic cleanup |
 | Errors and `?` | Implemented for synchronous code; awaited `?` waits for async |
 | Strings | Length, indexing, slicing, loops by character, `+`, and `string(rune)` work |
 | Collections | `[T; N]`, `Array<T>`, `map[K]V`, and `[]T` work; `clone` works for structs and collections; `len`, `push`, `pop`, and `for … in` loops work; borrowed map entries are planned |
 | Closures and function types | Implemented, including closures that are returned or stored and call-once closures; closures with tasks are planned |
-| Packages and imports | Planned |
+| Packages and imports | Folders are packages; `import "project/folder"` and qualified names work, with exported (capitalized) names, import checks, and cycle detection; the standard packages are planned |
 | `async`/`await`, tasks, channels | Planned (part of the MVP) |
 | Self-hosting | Long-term goal |
 
@@ -89,7 +89,9 @@ zore run main.ore     # build into a temporary directory and run
 zore --help
 ```
 
-Each command takes one source file, which is treated as a whole package.
+Each command takes a source file. The file's folder is the program's `main`
+package, so every `.ore` file in it is compiled together, and `import` finds
+other packages as folders of the project (see `examples/packages`).
 Diagnostics are printed to standard error with source locations, and the
 command exits with status 1. A program that panics reports the panic on
 standard error and exits with status 2; `zore run` passes the program's exit

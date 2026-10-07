@@ -20,6 +20,8 @@ pub(super) struct Parser<'a> {
     pub(super) open_delimiters: usize,
     // Off in `if`/`for` headers, where `Name {` starts the body.
     pub(super) struct_literals_allowed: bool,
+    /// Only the compiler's bundled sources may declare functions without bodies.
+    pub(super) native_functions: bool,
     pub(super) diagnostics: Vec<Diagnostic>,
 }
 

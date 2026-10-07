@@ -1244,7 +1244,7 @@ fn unsupported_features_are_never_accepted() {
         ),
         (
             "package main\nimport \"zore/fmt\"\nfunc main() {}\n".into(),
-            "imports are not supported",
+            "no standard package `zore/fmt`",
         ),
         (
             program("let top = 1"),

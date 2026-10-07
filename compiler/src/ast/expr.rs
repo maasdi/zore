@@ -53,6 +53,8 @@ pub enum ExprKind {
         high: Option<Box<Expr>>,
     },
     StructLit {
+        /// Present for `package.Type{...}`.
+        package: Option<Name>,
         ty: Name,
         fields: Vec<FieldInit>,
     },

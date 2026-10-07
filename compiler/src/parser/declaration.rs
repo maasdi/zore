@@ -129,7 +129,16 @@ impl Parser<'_> {
             p.param("a parameter name")
         })?;
         let results = self.results()?;
-        let body = self.body_block("function signature", "function declarations require a body")?;
+        let native =
+            self.native_functions && (self.at_separator() || self.peek() == &TokenKind::Eof);
+        let body = if native {
+            Block {
+                stmts: Vec::new(),
+                span: self.current_span(),
+            }
+        } else {
+            self.body_block("function signature", "function declarations require a body")?
+        };
         Ok(FuncDecl {
             is_async,
             receiver,
@@ -137,6 +146,7 @@ impl Parser<'_> {
             params,
             results,
             body,
+            native,
             span: self.span_from(start),
         })
     }

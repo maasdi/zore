@@ -11,7 +11,13 @@ impl Parser<'_> {
                     return self.type_arguments(name);
                 }
                 if self.at(Punct::Dot) && *self.peek_at(1) == TokenKind::Ident {
-                    return Err(self.unsupported("package-qualified type names"));
+                    self.bump();
+                    let member = self.name("a type name")?;
+                    return Ok(Type::Qualified {
+                        span: self.span_from(name.span),
+                        package: name,
+                        name: member,
+                    });
                 }
                 Ok(Type::Named(name))
             }

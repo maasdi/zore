@@ -208,3 +208,122 @@ fn non_utf8_arguments_do_not_panic() {
     );
     failure(&invoke(&[path]), 2, "unknown command or option");
 }
+
+/// Writes a project into a fresh folder and returns it.
+fn project(name: &str, files: &[(&str, &str)]) -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join(format!("zore-cli-{name}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    for (path, text) in files {
+        let full = dir.join(path);
+        std::fs::create_dir_all(full.parent().unwrap()).unwrap();
+        std::fs::write(full, text).unwrap();
+    }
+    dir
+}
+
+#[test]
+fn check_follows_imports_and_names_the_file_with_the_error() {
+    let dir = project(
+        "imports",
+        &[
+            ("zore.toml", "name = \"app\"\n"),
+            (
+                "main.ore",
+                "package main\nimport \"app/lib\"\nfunc main() { lib.F() }\n",
+            ),
+            (
+                "lib/lib.ore",
+                "package lib\nfunc F() { println(missing) }\n",
+            ),
+        ],
+    );
+    let output = invoke(&[OsStr::new("check"), dir.join("main.ore").as_os_str()]);
+    let stderr = String::from_utf8(output.stderr.clone()).unwrap();
+    assert_eq!(output.status.code(), Some(1), "{stderr}");
+    assert!(stderr.contains("cannot find `missing`"), "{stderr}");
+    assert!(stderr.contains("lib.ore:2:"), "{stderr}");
+
+    std::fs::write(dir.join("lib/lib.ore"), "package lib\nfunc F() {}\n").unwrap();
+    let output = invoke(&[OsStr::new("check"), dir.join("main.ore").as_os_str()]);
+    assert!(output.status.success(), "{output:?}");
+    assert!(
+        output.stdout.is_empty() && output.stderr.is_empty(),
+        "{output:?}"
+    );
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn import_problems_are_reported_without_a_panic() {
+    let dir = project(
+        "bad-imports",
+        &[
+            ("zore.toml", "name = \"app\"\n"),
+            (
+                "main.ore",
+                "package main\nimport \"app/a\"\nimport \"other/b\"\nimport \"zore/nothing\"\nfunc main() {}\n",
+            ),
+            ("a/a.ore", "package a\nimport \"app/a\"\n"),
+        ],
+    );
+    let output = invoke(&[OsStr::new("check"), dir.join("main.ore").as_os_str()]);
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    std::fs::remove_dir_all(&dir).unwrap();
+    assert_eq!(output.status.code(), Some(1), "{stderr}");
+    for message in [
+        "import cycle: app/a -> app/a",
+        "package `other/b` was not found",
+        "no standard package `zore/nothing`",
+    ] {
+        assert!(stderr.contains(message), "{message}: {stderr}");
+    }
+    assert!(
+        stderr.ends_with("zore: check failed with 3 errors\n"),
+        "{stderr}"
+    );
+}
+
+#[test]
+fn only_a_main_package_runs_but_any_package_checks() {
+    let dir = project(
+        "library",
+        &[(
+            "lib.ore",
+            "package library\nfunc Hello() string { return \"hi\" }\n",
+        )],
+    );
+    let path = dir.join("lib.ore");
+    assert!(
+        invoke(&[OsStr::new("check"), path.as_os_str()])
+            .status
+            .success()
+    );
+    let output = invoke(&[OsStr::new("run"), path.as_os_str()]);
+    std::fs::remove_dir_all(&dir).unwrap();
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("is not executable"),
+        "{output:?}"
+    );
+}
+
+#[test]
+fn a_file_is_built_together_with_the_rest_of_its_folder() {
+    let dir = project(
+        "folder",
+        &[
+            ("main.ore", "package main\nfunc main() { helper() }\n"),
+            ("helper.ore", "package main\nfunc helper() { println(1) }\n"),
+        ],
+    );
+    let output = invoke(&[OsStr::new("check"), dir.join("main.ore").as_os_str()]);
+    assert!(output.status.success(), "{output:?}");
+    std::fs::write(dir.join("helper.ore"), "package main\nfunc helper( {\n").unwrap();
+    let output = invoke(&[OsStr::new("check"), dir.join("main.ore").as_os_str()]);
+    std::fs::remove_dir_all(&dir).unwrap();
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("helper.ore:2:"),
+        "{output:?}"
+    );
+}

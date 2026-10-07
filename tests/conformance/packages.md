@@ -11,7 +11,7 @@ counterpart in `tests/driver/cli.rs`, `tests/typecheck/check.rs`, or
 | Two files in one folder, both `package main` | One package; each sees the other's declarations |
 | A name declared in two files of one package | Reject as a duplicate |
 | Files in one folder declaring different package names | Reject, naming both |
-| Entry folder whose package is not `main` | Reject |
+| Entry folder whose package is not `main` | `check` accepts it; `build` and `run` reject it as not executable |
 | Sibling folders | Separate packages; not part of the entry package |
 | `zore.toml` found in a parent folder | That folder is the project root |
 | No `zore.toml` anywhere above | Project has no name; only `zore/...` imports resolve |

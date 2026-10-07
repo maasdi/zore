@@ -10,13 +10,13 @@ use crate::diagnostic::{Diagnostic, Severity};
 use crate::hir::{self, Const};
 use crate::mir::{self, AggregateKind, Callee, Local, Operand, Place, Rvalue, Terminator};
 use crate::resolve::{FieldId, FunctionId};
-use crate::source::{SourceFile, Span};
+use crate::source::{Sources, Span};
 use crate::types::{IntType, TypeId, TypeKind};
 
 pub fn emit(
     package: &hir::Package,
     program: &mir::Program,
-    file: &SourceFile,
+    sources: &dyn Sources,
 ) -> Result<String, Vec<Diagnostic>> {
     let owning_closures = program
         .bodies
@@ -38,7 +38,7 @@ pub fn emit(
         .collect();
     let mut module = Module {
         package,
-        file,
+        sources,
         strings: HashMap::new(),
         intrinsics: BTreeSet::new(),
         globals: String::new(),
@@ -71,7 +71,7 @@ pub fn emit(
 
 pub(super) struct Module<'a> {
     pub(super) package: &'a hir::Package,
-    pub(super) file: &'a SourceFile,
+    pub(super) sources: &'a dyn Sources,
     pub(super) strings: HashMap<Vec<u8>, String>,
     pub(super) intrinsics: BTreeSet<String>,
     pub(super) globals: String,
@@ -151,8 +151,10 @@ impl Module<'_> {
     }
 
     pub(super) fn location(&self, span: Span) -> String {
-        let at = self.file.location(span.start()).expect("span in file");
-        format!("{}:{}:{}", self.file.path().display(), at.line, at.column)
+        match self.sources.locate(span) {
+            Some((path, at)) => format!("{path}:{}:{}", at.line, at.column),
+            None => "<unknown>".to_string(),
+        }
     }
 
     pub(super) fn overflow_intrinsic(&mut self, op: &str, ty: &str) -> String {
