@@ -15,8 +15,9 @@ entry-point and `println` contracts, and that unsupported features are rejected
 rather than accepted. Error-value tests cover `nil`, construction, equality,
 explicit discard, ignored-result diagnostics, and path-sensitive checks for named
 error bindings and parameters. Synchronous `?` tests cover typing, early return,
-zero-filled results, evaluation order, and cleanup; awaited propagation remains
-pending. `tests/ownership/ownership.rs` tests the MIR ownership pass through the
+zero-filled results, evaluation order, and cleanup; awaited calls cover async
+function declarations, the await-or-spawn rule, `await` outside async bodies,
+and awaited `?`. `tests/ownership/ownership.rs` tests the MIR ownership pass through the
 full frontend: whole-place and partial moves, reinitialization, call-local
 borrows, the custom-`drop`-ancestor restriction, array- and slice-element move
 rules, and region analysis of stored slice borrows (aliasing at the

@@ -38,6 +38,7 @@ pub fn check(
         loop_depth: 0,
         closures: Vec::new(),
         exclusive_captures: HashSet::new(),
+        awaited_call: None,
         resolving_fields: false,
     };
     checker.closures = checker.res.closures.iter().map(|_| None).collect();
@@ -156,6 +157,8 @@ struct Checker<'a> {
     /// Indexed like `res.closures`.
     closures: Vec<Option<hir::Function>>,
     exclusive_captures: HashSet<(usize, LocalId)>,
+    /// The span of the async call that the `await` being checked applies to.
+    awaited_call: Option<Span>,
     resolving_fields: bool,
 }
 
@@ -1208,10 +1211,7 @@ impl<'a> Checker<'a> {
             ast::ExprKind::Paren(inner) => self.expr(inner, expected),
             ast::ExprKind::Unary { op, operand } => self.unary(*op, operand, span, expected),
             ast::ExprKind::Binary { op, lhs, rhs } => self.binary(*op, lhs, rhs, span, expected),
-            ast::ExprKind::Await(_) => {
-                self.unsupported("`await` is", span, "planned for a later milestone");
-                None
-            }
+            ast::ExprKind::Await(operand) => self.await_expr(operand, span),
             ast::ExprKind::Try(inner) => self.try_expr(inner, span),
             ast::ExprKind::Call { callee, args } => self.call(callee, args, span),
             ast::ExprKind::Field { base, name } => self.field(base, name, span),
@@ -1224,6 +1224,75 @@ impl<'a> Checker<'a> {
             ast::ExprKind::MapLit { ty, entries } => self.map_lit(ty, entries, span),
             ast::ExprKind::Closure(closure) => self.closure(closure, span),
         }
+    }
+
+    fn in_async_body(&self) -> bool {
+        self.res
+            .functions
+            .get(self.current)
+            .is_some_and(|func| func.is_async)
+    }
+
+    fn enclosing_description(&self) -> String {
+        match self.res.functions.get(self.current) {
+            Some(func) => format!("`{}`", func.name.text),
+            None => "this function literal".to_owned(),
+        }
+    }
+
+    fn await_expr(&mut self, operand: &ast::Expr, span: Span) -> Option<Value> {
+        let mut call = operand;
+        while let ast::ExprKind::Paren(inner) = &call.kind {
+            call = inner;
+        }
+        let in_async = self.in_async_body();
+        if !in_async {
+            self.diagnostics.push(
+                Diagnostic::new(
+                    Severity::Error,
+                    format!(
+                        "`await` is only valid inside an `async func`, but {} is not async",
+                        self.enclosing_description()
+                    ),
+                    span,
+                )
+                .note("a synchronous function reaches async work by spawning it with `go`"),
+            );
+        }
+        let previous = self.awaited_call.replace(call.span);
+        let value = self.expr(operand, None);
+        self.awaited_call = previous;
+        if !in_async {
+            return None;
+        }
+        let Value::Typed(expr) = value? else {
+            self.error("`await` needs a call to an `async func`", span);
+            return None;
+        };
+        match &expr.kind {
+            ExprKind::Call { function, .. } if self.is_async_function(*function) => {
+                Some(Value::Typed(expr))
+            }
+            ExprKind::Call { .. } | ExprKind::CallValue { .. } => {
+                self.error("`await` needs a call to an `async func`", span);
+                None
+            }
+            _ => {
+                self.unsupported(
+                    "awaiting a value is",
+                    span,
+                    "task handles are planned for a later milestone",
+                );
+                None
+            }
+        }
+    }
+
+    fn is_async_function(&self, id: FunctionId) -> bool {
+        self.res
+            .functions
+            .get(id.0 as usize)
+            .is_some_and(|func| func.is_async)
     }
 
     fn try_expr(&mut self, inner: &ast::Expr, span: Span) -> Option<Value> {
@@ -2091,6 +2160,17 @@ impl<'a> Checker<'a> {
             }
         }
         if !ok || !self.check_mut_arguments(id, &checked) {
+            return None;
+        }
+        if self.is_async_function(id) && self.awaited_call != Some(span) {
+            self.diagnostics.push(
+                Diagnostic::new(
+                    Severity::Error,
+                    format!("call to async function `{name}` is neither awaited nor spawned"),
+                    span,
+                )
+                .note("write `await` before the call, or spawn it with `go`"),
+            );
             return None;
         }
         Some(Value::Typed(hir::Expr {

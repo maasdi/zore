@@ -256,10 +256,6 @@ impl<'a> Resolver<'a> {
                     self.file_of_struct.push(file_index);
                     self.declare_package(&decl.name, Res::Struct(id));
                 }
-                Item::Func(func) if func.is_async => {
-                    self.note_entry_main(func);
-                    self.unsupported("`async` functions are", func.name.span);
-                }
                 Item::Func(func) => {
                     self.note_entry_main(func);
                     let id = FunctionId(self.out.functions.len() as u32);

@@ -1231,16 +1231,12 @@ fn propagation_checks_call_shape_and_return_contract() {
 fn unsupported_features_are_never_accepted() {
     for (text, message) in [
         (
-            program("async func f() {}"),
-            "`async` functions are not supported",
-        ),
-        (
             program("func g() int { return 1 }\nfunc f() { let x = g()? }"),
             "requires a trailing `error` result in this function",
         ),
         (
-            program("func g() int { return 1 }\nfunc f() { let x = await g() }"),
-            "`await` is not supported",
+            program("async func g() int { return 1 }\nasync func f() { let t = go g() }"),
+            "`go` task-creation expressions are not supported",
         ),
         (
             "package main\nimport \"zore/fmt\"\nfunc main() {}\n".into(),
@@ -2291,7 +2287,7 @@ fn closure_bodies_are_checked_as_functions() {
     ));
     rejects(
         &body("let f = func() { await work() }"),
-        "`await` is not supported",
+        "`await` is only valid inside an `async func`",
     );
     rejects(
         &body("let f = func(a int) { let a = 2 }"),
@@ -2895,4 +2891,118 @@ fn standard_packages_have_typed_signatures() {
             message,
         );
     }
+}
+
+const ASYNC_PRELUDE: &str = "
+async func double(n int) int { return n * 2 }
+async func parse(text string) (int, error) {
+    if text.len() == 0 { return 0, error(\"empty\") }
+    return text.len(), nil
+}
+func plain(n int) int { return n }
+";
+
+fn async_program(decls: &str) -> String {
+    program(&format!("{ASYNC_PRELUDE}\n{decls}"))
+}
+
+#[test]
+fn awaited_async_calls_are_accepted() {
+    accepts(&async_program(
+        "async func f() (int, error) {
+            let a = await parse(\"ab\")?
+            let b = await double(a)
+            let c, err = await parse(\"\")
+            if err != nil { return 0, err }
+            _ = await double(c)
+            await double(1)
+            return a + b + c, nil
+        }",
+    ));
+    let case = accepts(&async_program(
+        "async func f() int { return await double(await double(1)) }",
+    ));
+    assert!(case.function("f").results == vec![TypeStore::INT]);
+    accepts(&async_program(
+        "type Counter struct { N int }
+        async func (c mut Counter) bump() { c.N += 1 }
+        async func f() { var c = Counter{N: 0}; await c.bump() }",
+    ));
+}
+
+#[test]
+fn async_calls_must_be_awaited_or_spawned() {
+    let neither = "is neither awaited nor spawned";
+    for stmts in [
+        "double(1)",
+        "let x = double(1)",
+        "plain(double(1))",
+        "let x = await plain(double(1))",
+        "let x = (double(1))",
+    ] {
+        rejects(
+            &async_program(&format!("async func f() {{ {stmts} }}")),
+            neither,
+        );
+    }
+    rejects(&async_program("func f() { double(1) }"), neither);
+    rejects(
+        &async_program("async func f() { let x, err = parse(\"a\") }"),
+        neither,
+    );
+}
+
+#[test]
+fn await_is_valid_only_in_async_bodies() {
+    let outside = "`await` is only valid inside an `async func`";
+    let case = rejects(
+        &async_program("func f() int { return await double(1) }"),
+        outside,
+    );
+    assert!(
+        case.errors()
+            .iter()
+            .any(|(m, _)| m.contains("`f` is not async"))
+    );
+    rejects(
+        &async_program("async func f() { let g = func() int { return await double(1) }\n_ = g() }"),
+        "this function literal is not async",
+    );
+}
+
+#[test]
+fn await_needs_an_async_call() {
+    let message = "`await` needs a call to an `async func`";
+    rejects(
+        &async_program("async func f() int { return await plain(1) }"),
+        message,
+    );
+    rejects(
+        &async_program("async func f() int { let g = func() int { return 1 }\nreturn await g() }"),
+        message,
+    );
+    rejects(
+        &async_program("async func f() int { let n = 1\nreturn await n }"),
+        "awaiting a value is not supported",
+    );
+}
+
+#[test]
+fn async_entry_point_is_rejected() {
+    rejects(
+        "package main\nasync func main() {}\n",
+        "the entry point `main` cannot be `async`",
+    );
+}
+
+#[test]
+fn awaited_errors_follow_error_rules() {
+    rejects(
+        &async_program("async func f() { await parse(\"a\") }"),
+        "error result must be used or explicitly discarded",
+    );
+    rejects(
+        &async_program("async func f() { let n = await parse(\"a\")? }"),
+        "`?` requires a trailing `error` result in this function",
+    );
 }
