@@ -401,17 +401,31 @@ The runtime must not contain compiler parsing or semantic analysis.
 
 # 7. Standard Library Structure
 
-Expected high-level structure:
+Standard packages are Zore source under a top-level `std/` folder, one folder per
+package, named after the package as users import it:
 
 ```text
 std/
-├── core/
+├── cancel/
 ├── io/
-├── collections/
-└── sync/
+├── net/
+├── os/
+├── strconv/
+├── strings/
+└── time/
 ```
 
-Do not build a large standard library before the compiler supports the required language features.
+Each folder holds the package's `.ore` files (`std/strings/strings.ore`). The
+compiler embeds them and serves them for `zore/<name>` imports. Functions
+declared without a body call into the runtime.
+
+Approved deviation: the earlier plan for `core/`, `io/`, `collections/`, and
+`sync/` is not used. Collections and synchronization (`Array<T>`, maps, channels,
+`Mutex<T>`) are built into the language, not library packages, so those folders
+would be empty.
+
+Do not build a large standard library before the compiler supports the required
+language features.
 
 ---
 
