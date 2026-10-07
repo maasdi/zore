@@ -748,3 +748,34 @@ Optimize later for:
 - crate count
 - aggressive parallel compilation
 - advanced backend optimization
+
+---
+
+# 17. Approved Deviations
+
+The maintainer approved these differences between this guide and the code on
+2026-10-07. Each one has a reason; `docs/architecture.md` describes the current
+layout in detail.
+
+1. **The type checker lives in `hir/lower.rs`, not `types/`.** It builds HIR as
+   it checks. Putting it in `types/` made `types`, `hir`, and `resolve` depend on
+   each other.
+2. **Copy/Move classification is `Package::is_copy` in `hir/`, not
+   `types/classify.rs`.** It needs struct fields and `drop` methods, which live
+   in the HIR package; a `types/` home would recreate the same cycle.
+3. **`Place` and `Projection` live in `mir/`, not `ownership/`.** The ownership
+   checker reads them, and moving them would make `mir` depend on `ownership`.
+4. **There is no `async_lowering/` and no `runtime/scheduler.rs`.** Tasks are
+   stackful fibers (`runtime/fiber.rs`, `runtime/task.rs`), so an async function
+   is an ordinary function that runs on a fiber's stack and needs no state-machine
+   lowering. Async still reuses the ordinary ownership model (rule 7).
+5. **There is no `context/` and no `diagnostic/code.rs`.** Nothing needs shared
+   compiler context yet, and diagnostics have no codes yet (rule 11).
+6. **The runtime has more modules than section 6 lists.** It also holds
+   `fiber.rs`, `mutex.rs`, `deadlock.rs`, `reactor.rs`, `blocking.rs`, `sys.rs`,
+   `net.rs`, `map.rs`, and the text modules, one per implemented feature.
+7. **Integration tests are Rust files grouped by subsystem**, not `.ore` fixture
+   files per folder. Async and channel behavior is tested end to end in
+   `tests/codegen/native.rs`.
+
+Any other difference still needs explicit approval (section 1).
