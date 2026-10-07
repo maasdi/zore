@@ -782,7 +782,8 @@ layout in detail.
 4. **There is no `async_lowering/` and no `runtime/scheduler.rs`.** Tasks are
    stackful fibers (`runtime/fiber.rs`, `runtime/task.rs`), so an async function
    is an ordinary function that runs on a fiber's stack and needs no state-machine
-   lowering. Async still reuses the ordinary ownership model (rule 7).
+   lowering. Async still reuses the ordinary ownership model (rule 7). Q32 plans to
+   end this deviation by building `async_lowering/` and removing fibers.
 5. **There is no `context/` and no `diagnostic/code.rs`.** Nothing needs shared
    compiler context yet, and diagnostics have no codes yet (rule 11).
 6. **The runtime has more modules than section 6 lists.** It also holds

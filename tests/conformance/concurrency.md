@@ -26,6 +26,21 @@ bounded execution and explicit synchronization, not timing sleeps
 | `await fetchUser(1)` inside a synchronous function | Reject: `await` outside an async body |
 | `await` inside a non-async closure defined in an async function | Reject: the closure body is not an async body |
 
+## Waiting in async and plain functions (§17.3, §18.3)
+
+Pending until the state-machine slices land; the same programs also run with
+fibers today.
+
+| Scenario | Expected result |
+| --- | --- |
+| `ch.receive()` inside an `async func`, without `await` | Valid; suspends the task |
+| `ch.receive()` inside a plain function | Valid; blocks the calling thread |
+| `ch.receive()` inside a closure written in an `async func` | Valid; the closure body is not async, so it blocks the thread |
+| `await ch.receive()` | Reject: `await` needs a call to an `async func` or a `Task` |
+| Many `async func` tasks each waiting on a channel | All finish; no task needs a thread of its own |
+| An async function calls a plain function that waits, in many tasks at once | Other tasks keep making progress (§18.9) |
+| `go plainFn(x)` | Valid; yields a `Task`; the function runs to completion on a runtime thread |
+
 ## Task typing and classification (§18.8)
 
 | Scenario | Expected result |
