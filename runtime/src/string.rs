@@ -1,10 +1,42 @@
 use std::cell::RefCell;
+use std::collections::BTreeMap;
 
 use super::alloc::{zore_alloc, zore_free};
 
+/// Built text lives in a buffer. No string reads past `used`, so appending at the end
+/// never changes the text any existing string shows.
+struct Buffer {
+    data: *mut u8,
+    capacity: usize,
+    used: usize,
+}
+
 thread_local! {
-    /// Storage built at run time, released when the program ends because `string` is Copy.
-    static OWNED: RefCell<Vec<(*mut u8, i64)>> = const { RefCell::new(Vec::new()) };
+    /// Buffers built at run time, keyed by address and released when the program ends
+    /// because `string` is Copy.
+    static OWNED: RefCell<BTreeMap<usize, Buffer>> = const { RefCell::new(BTreeMap::new()) };
+}
+
+/// Adds a buffer holding `used` bytes of `capacity`, copied from the given pieces.
+fn new_buffer(pieces: &[&[u8]], capacity: usize) -> *mut u8 {
+    let data = zore_alloc(capacity as i64);
+    let mut used = 0;
+    for piece in pieces {
+        // SAFETY: `data` has room for every piece and does not overlap them.
+        unsafe { std::ptr::copy_nonoverlapping(piece.as_ptr(), data.add(used), piece.len()) };
+        used += piece.len();
+    }
+    OWNED.with(|owned| {
+        owned.borrow_mut().insert(
+            data as usize,
+            Buffer {
+                data,
+                capacity,
+                used,
+            },
+        )
+    });
+    data
 }
 
 /// Where a compiler-produced `string` descriptor is written.
@@ -37,22 +69,50 @@ impl StringOut {
         if bytes.is_empty() {
             return Self::empty();
         }
-        let len = bytes.len() as i64;
-        let data = zore_alloc(len);
-        // SAFETY: `data` holds `len` writable bytes and does not overlap `bytes`.
-        unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), data, bytes.len()) };
-        OWNED.with(|owned| owned.borrow_mut().push((data, len)));
-        Self { data, len }
+        Self {
+            data: new_buffer(&[bytes], bytes.len()),
+            len: bytes.len() as i64,
+        }
     }
 }
 
 pub(super) fn release_all() {
     OWNED.with(|owned| {
-        for (data, len) in owned.borrow_mut().drain(..) {
-            // SAFETY: each entry came from `zore_alloc(len)` and is released once.
-            unsafe { zore_free(data, len) };
+        for buffer in std::mem::take(&mut *owned.borrow_mut()).into_values() {
+            // SAFETY: each buffer came from `zore_alloc(capacity)` and is released once.
+            unsafe { zore_free(buffer.data, buffer.capacity as i64) };
         }
     });
+}
+
+/// How `left + right` can reuse the buffer that holds `left`.
+enum Append {
+    /// `left` ends where its buffer's text ends, and there is room.
+    InPlace,
+    /// `left` ends there, but the buffer is full: build a larger one.
+    Grow,
+    /// `left` is not at the end of a buffer: build exactly enough.
+    Copy,
+}
+
+fn plan_append(left: *const u8, left_len: usize, right_len: usize) -> Append {
+    OWNED.with(|owned| {
+        let mut owned = owned.borrow_mut();
+        let start = left as usize;
+        let Some((_, buffer)) = owned.range_mut(..=start).next_back() else {
+            return Append::Copy;
+        };
+        let base = buffer.data as usize;
+        if start >= base + buffer.capacity || start + left_len != base + buffer.used {
+            return Append::Copy;
+        }
+        if buffer.used + right_len <= buffer.capacity {
+            buffer.used += right_len;
+            Append::InPlace
+        } else {
+            Append::Grow
+        }
+    })
 }
 
 /// The two strings joined; an empty operand shares the other's storage.
@@ -80,7 +140,31 @@ pub unsafe extern "C" fn zore_string_concat(
             len: b_len,
         }
     } else {
-        StringOut::built(&[left, right].concat())
+        let total = left.len() + right.len();
+        match plan_append(a, left.len(), right.len()) {
+            Append::InPlace => {
+                // SAFETY: the buffer has room after `left`, which no string reads past.
+                unsafe {
+                    std::ptr::copy_nonoverlapping(
+                        right.as_ptr(),
+                        (a as *mut u8).add(left.len()),
+                        right.len(),
+                    )
+                };
+                StringOut {
+                    data: a,
+                    len: total as i64,
+                }
+            }
+            Append::Grow => StringOut {
+                data: new_buffer(&[left, right], total * 2),
+                len: total as i64,
+            },
+            Append::Copy => StringOut {
+                data: new_buffer(&[left, right], total),
+                len: total as i64,
+            },
+        }
     };
     // SAFETY: `out` is writable.
     unsafe { out.write(joined) };
@@ -252,5 +336,80 @@ mod tests {
             assert!(check(0) && check(1) && !check(2) && check(3));
             assert!(!check(4) && !check(-1));
         }
+    }
+
+    fn buffer_count() -> usize {
+        OWNED.with(|owned| owned.borrow().len())
+    }
+
+    fn append(left: &StringOut, right: &str) -> StringOut {
+        let mut out = StringOut::empty();
+        // SAFETY: `left` is live, `right` is a literal, and `out` is writable.
+        unsafe {
+            zore_string_concat(
+                &mut out,
+                left.data,
+                left.len,
+                right.as_ptr(),
+                right.len() as i64,
+            )
+        };
+        out
+    }
+
+    fn read(text: &StringOut) -> String {
+        // SAFETY: the text is live until the buffers are released.
+        unsafe { String::from_utf8(super::super::bytes(text.data, text.len).to_vec()).unwrap() }
+    }
+
+    #[test]
+    fn appending_at_the_end_reuses_the_buffer_and_leaves_older_text_alone() {
+        release_all();
+        let ab = append(&StringOut::shared(b"a".as_ptr(), 1), "b");
+        let abc = append(&ab, "c");
+        let abcd = append(&abc, "d");
+        assert_eq!(abcd.data, abc.data, "the tail grows in place");
+        let abx = append(&ab, "x");
+        let abcy = append(&abc, "y");
+        assert_ne!(abx.data, ab.data);
+        assert_ne!(
+            abcy.data, abc.data,
+            "a text that is not at the end is copied"
+        );
+        assert_eq!(
+            [read(&ab), read(&abc), read(&abcd), read(&abx), read(&abcy)],
+            ["ab", "abc", "abcd", "abx", "abcy"]
+        );
+        release_all();
+    }
+
+    #[test]
+    fn a_long_chain_of_appends_uses_few_buffers() {
+        release_all();
+        let mut text = StringOut::shared(b"x".as_ptr(), 1);
+        for _ in 0..10_000 {
+            text = append(&text, "y");
+        }
+        assert_eq!(text.len, 10_001);
+        assert!(buffer_count() <= 16, "{} buffers", buffer_count());
+        release_all();
+    }
+
+    #[test]
+    fn appending_a_text_to_itself_and_to_a_suffix_is_correct() {
+        release_all();
+        let ab = append(&StringOut::shared(b"a".as_ptr(), 1), "b");
+        let abab = append(&ab, "ab");
+        let doubled = {
+            let mut out = StringOut::empty();
+            // SAFETY: both operands are live and `out` is writable.
+            unsafe { zore_string_concat(&mut out, abab.data, abab.len, abab.data, abab.len) };
+            out
+        };
+        assert_eq!(read(&doubled), "abababab");
+        let tail = StringOut::shared(unsafe { doubled.data.add(4) }, 4);
+        assert_eq!(read(&append(&tail, "!")), "abab!");
+        assert_eq!(read(&doubled), "abababab");
+        release_all();
     }
 }

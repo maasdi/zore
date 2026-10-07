@@ -2661,3 +2661,28 @@ func main() {{
         );
     }
 }
+
+#[test]
+fn building_text_in_a_loop_does_not_copy_it_every_round() {
+    prints(
+        "package main
+
+func main() {
+    var text = \"\"
+    for var i = 0; i < 200000; i += 1 {
+        text += \"ab\"
+    }
+    println(text.len())
+    let early = text[:4]
+    text += \"!\"
+    println(text[text.len() - 1])
+    println(early)
+    var other = early + \"zz\"
+    other += \"yy\"
+    println(other)
+    println(text.len())
+}
+",
+        "400000\n33\nabab\nababzzyy\n400001\n",
+    );
+}

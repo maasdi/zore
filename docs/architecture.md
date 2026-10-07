@@ -354,8 +354,10 @@ checks for numeric conversions; each failure calls `zore_panic` with the
 operation and source location. MIR assert terminators carry cleanup paths so a
 panic runs pending drops before the runtime reports it. Runtime strings are
 `{ ptr, len }` descriptors: concatenation and `string(rune)` call the runtime,
-which allocates the text and keeps it until the program ends, and slices share
-their source's storage after a bounds and character-boundary check. Float
+which allocates the text in a buffer it keeps until the program ends, and
+slices share their source's storage after a bounds and character-boundary
+check. Concatenation extends the buffer in place when the left text ends where
+the buffer's text ends, which is safe because no string reads past its own end. Float
 printing is reported as unsupported by the backend.
 The generated IR contains no target triple, so clang supplies the host's; it
 requires LLVM 15 or newer for opaque pointers.

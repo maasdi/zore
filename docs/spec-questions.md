@@ -165,8 +165,11 @@ A newly discovered semantic gap blocks its affected feature, not unrelated work.
   boundaries or it panics, so strings stay well-formed; (b) `s[i]` is a
   read-only `byte`; (c) runtime-built string storage, including slices that
   share it, is freed only when the program ends, because `string` is Copy and
-  cannot carry a destructor; a loop that keeps building strings grows memory
-  until then, and reference counting is the planned replacement; (d) number
+  cannot carry a destructor; appending to the newest text in a buffer grows
+  the buffer in place (doubling), which is safe because no string reads past
+  its own end, so building one text in a loop costs memory proportional to its
+  final length; texts that are simply discarded still wait for the end, and
+  reference counting is the planned replacement; (d) number
   formatting stays out of the language and lives in `zore/strconv`. Pending
   cases: `tests/conformance/strings.md`.
 

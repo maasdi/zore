@@ -5627,8 +5627,10 @@ counted sharing, small-string optimization, etc.) and concatenation's
 allocation strategy remain unstandardized implementation details — they may
 change without a language-level specification revision, as long as the value
 guarantees above hold. The bootstrap compiler releases storage built at run
-time only when the program ends, so a loop that keeps building new strings
-grows memory until then (Q23). Pending conformance cases are in
+time only when the program ends, but appending to the newest text in a buffer
+grows that buffer in place, so building one text in a loop uses memory
+proportional to its final length; discarded texts are not reclaimed earlier
+(Q23). Pending conformance cases are in
 `tests/conformance/strings.md`.
 
 ## 41.6 Async lowering order — IMPLEMENTATION DETAIL

@@ -115,4 +115,7 @@ Executable counterparts: `tests/typecheck/check.rs` and `tests/codegen/native.rs
 | Comparing built and literal strings with `==` and `<` | Compares bytes, not identity |
 | Slice or concatenation result kept after its source variable goes out of scope | Valid; strings are Copy and never dangle |
 | Map keyed by a built string | Lookup by content finds a literal key |
+| `text += piece` repeated 200,000 times | Completes using memory proportional to the final length |
+| Appending to a text that an older string still shows | The older string is unchanged |
+| Appending to a text that is not at the end of its buffer, such as a prefix slice | A new text is built; the source is unchanged |
 
