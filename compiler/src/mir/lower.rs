@@ -314,6 +314,10 @@ impl Builder {
                 | ExprKind::Clone(_)
                 | ExprKind::Println(_)
                 | ExprKind::Drop(_)
+                | ExprKind::TaskWait(_)
+                | ExprKind::ChannelSend { .. }
+                | ExprKind::ChannelReceive(_)
+                | ExprKind::ChannelClose(_)
                 | ExprKind::ArrayPush { .. }
                 | ExprKind::ArrayPop(_) => {
                     let discard = vec![None; expr.types.len()];
@@ -731,6 +735,7 @@ impl Builder {
             inner.kind,
             ExprKind::Call { .. }
                 | ExprKind::CallValue { .. }
+                | ExprKind::TaskWait(_)
                 | ExprKind::MapLookup { .. }
                 | ExprKind::MapRemove { .. }
                 | ExprKind::ArrayPop(_)
@@ -835,6 +840,28 @@ impl Builder {
                 (Callee::ArrayPush, &map_args[..])
             }
             ExprKind::ArrayPop(array) => (Callee::ArrayPop, std::slice::from_ref(&**array)),
+            ExprKind::TaskWait(task) => (Callee::TaskWait, std::slice::from_ref(&**task)),
+            ExprKind::ChannelSend { channel, value } => {
+                map_args = vec![(**channel).clone(), (**value).clone()];
+                (Callee::ChannelSend, &map_args[..])
+            }
+            ExprKind::ChannelReceive(channel) => {
+                (Callee::ChannelReceive, std::slice::from_ref(&**channel))
+            }
+            ExprKind::ChannelClose(channel) => {
+                (Callee::ChannelClose, std::slice::from_ref(&**channel))
+            }
+            ExprKind::MakeChannel { element, capacity } => {
+                map_args = vec![match capacity {
+                    Some(capacity) => (**capacity).clone(),
+                    None => hir::Expr {
+                        kind: ExprKind::Const(Const::Int(0)),
+                        types: vec![TypeStore::INT],
+                        span: expr.span,
+                    },
+                }];
+                (Callee::ChannelMake(*element), &map_args[..])
+            }
             _ => unreachable!("only calls produce multiple or no results"),
         };
         let mut operands = Vec::new();
@@ -871,6 +898,10 @@ impl Builder {
                 | Callee::MapLookup
                 | Callee::MapRemove => (index == 0, index == 2),
                 Callee::ArrayPush | Callee::ArrayPop => (index == 0, index == 1),
+                Callee::TaskWait => (false, true),
+                Callee::ChannelMake(_) => (false, false),
+                Callee::ChannelSend => (index == 0, index == 1),
+                Callee::ChannelReceive | Callee::ChannelClose => (true, false),
             };
             operands.push(if by_reference {
                 match self.argument_place_opt(package, arg) {
@@ -996,7 +1027,37 @@ impl Builder {
                     span,
                 )
             }
-            ExprKind::Call { .. } | ExprKind::CallValue { .. } | ExprKind::Clone(_) => {
+            ExprKind::Spawn {
+                thunk,
+                closure_ty,
+                args,
+            } => {
+                let captures = args
+                    .iter()
+                    .map(|arg| {
+                        let operand = self.operand(package, arg);
+                        let held = self.temp(arg.ty());
+                        self.push(Place::local(held), Rvalue::Use(operand), arg.span);
+                        (Place::local(held), false)
+                    })
+                    .collect();
+                let closure = self.assign_temp(
+                    package,
+                    *closure_ty,
+                    Rvalue::Closure {
+                        function: *thunk,
+                        captures,
+                        owning: true,
+                    },
+                    span,
+                );
+                self.assign_temp(package, expr.ty(), Rvalue::Spawn(closure), span)
+            }
+            ExprKind::Call { .. }
+            | ExprKind::CallValue { .. }
+            | ExprKind::Clone(_)
+            | ExprKind::TaskWait(_)
+            | ExprKind::MakeChannel { .. } => {
                 let temp = self.temp(expr.ty());
                 self.call(package, expr, vec![Some(Place::local(temp))]);
                 value_operand(package, Place::local(temp), expr.ty())
@@ -1072,7 +1133,12 @@ impl Builder {
             ExprKind::MapLookup { .. } | ExprKind::MapRemove { .. } | ExprKind::ArrayPop(_) => {
                 unreachable!("lookups and removals have two results")
             }
-            ExprKind::ArrayPush { .. } => unreachable!("push has no value"),
+            ExprKind::ArrayPush { .. }
+            | ExprKind::ChannelSend { .. }
+            | ExprKind::ChannelClose(_) => {
+                unreachable!("push, send, and close have no value")
+            }
+            ExprKind::ChannelReceive(_) => unreachable!("receive has two results"),
             ExprKind::Len(collection) => {
                 let place = match self.argument_place_opt(package, collection) {
                     Some(place) => place,

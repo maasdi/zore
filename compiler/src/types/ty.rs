@@ -1,4 +1,4 @@
-use super::type_id::{FuncTypeId, StructId, TypeId};
+use super::type_id::{FuncTypeId, StructId, TaskTypeId, TypeId};
 use crate::ast::ParamMode;
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -83,6 +83,12 @@ pub enum TypeKind {
         value: TypeId,
     },
     Func(FuncTypeId),
+    /// Always Move.
+    Task(TaskTypeId),
+    /// A Copy handle to one shared queue.
+    Channel {
+        element: TypeId,
+    },
 }
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]

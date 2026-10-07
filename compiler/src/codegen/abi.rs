@@ -34,6 +34,15 @@ declare zeroext i1 @zore_panic_pending()
 declare void @zore_enter_drop()
 declare void @zore_leave_drop()
 declare void @zore_abort() noreturn
+declare ptr @zore_task_spawn(ptr, ptr, ptr, i64)
+declare ptr @zore_task_wait(ptr, i64)
+declare void @zore_task_detach(ptr)
+declare ptr @zore_channel_make(i64, i64, ptr)
+declare void @zore_channel_retain(ptr)
+declare void @zore_channel_release(ptr)
+declare void @zore_channel_send(ptr, ptr, ptr)
+declare zeroext i1 @zore_channel_receive(ptr, ptr, i64)
+declare void @zore_channel_close(ptr)
 declare double @llvm.trunc.f64(double)
 declare double @llvm.fabs.f64(double)
 ";
@@ -167,7 +176,7 @@ impl FunctionBuilder<'_, '_> {
                 self.line(format!(
                     "{source} = select i1 {found}, ptr {found_at}, ptr {zero}"
                 ));
-                if self.module.package.copies_text(value) {
+                if self.module.package.copies_shared(value) {
                     self.retain_at(&source, value);
                 }
                 Some(self.presence_pair(&found, &source, &value_ty))
@@ -222,7 +231,12 @@ impl FunctionBuilder<'_, '_> {
             | Callee::Drop
             | Callee::Clone(_)
             | Callee::ArrayPush
-            | Callee::ArrayPop => {
+            | Callee::ArrayPop
+            | Callee::TaskWait
+            | Callee::ChannelMake(_)
+            | Callee::ChannelSend
+            | Callee::ChannelReceive
+            | Callee::ChannelClose => {
                 unreachable!("not a map operation")
             }
         }
@@ -461,7 +475,9 @@ impl FunctionBuilder<'_, '_> {
             | TypeKind::Slice { .. }
             | TypeKind::DynArray { .. }
             | TypeKind::Map { .. }
-            | TypeKind::Func(_) => unreachable!("checked printable type"),
+            | TypeKind::Func(_)
+            | TypeKind::Task(_)
+            | TypeKind::Channel { .. } => unreachable!("checked printable type"),
         }
     }
 }

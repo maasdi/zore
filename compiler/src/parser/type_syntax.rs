@@ -10,6 +10,12 @@ impl Parser<'_> {
                 if self.at(Punct::Lt) {
                     return self.type_arguments(name);
                 }
+                if name.text == "Task" {
+                    return Ok(Type::Task {
+                        results: Vec::new(),
+                        span: name.span,
+                    });
+                }
                 if self.at(Punct::Dot) && *self.peek_at(1) == TokenKind::Ident {
                     self.bump();
                     let member = self.name("a type name")?;
@@ -23,7 +29,7 @@ impl Parser<'_> {
             }
             TokenKind::Punct(Punct::LBracket) => self.bracket_type(),
             TokenKind::Keyword(Keyword::Map) => self.map_type(),
-            TokenKind::Keyword(Keyword::Channel) => Err(self.unsupported("channel types")),
+            TokenKind::Keyword(Keyword::Channel) => self.channel_type(),
             TokenKind::Keyword(Keyword::Func) => self.func_type(),
             TokenKind::Keyword(Keyword::Mut) => {
                 let start = self.current_span();
@@ -47,6 +53,17 @@ impl Parser<'_> {
         }
     }
 
+    pub(super) fn channel_type(&mut self) -> PResult<Type> {
+        let start = self.bump().span;
+        self.expect(Punct::Lt)?;
+        let element = self.ty()?;
+        self.close_type_arguments()?;
+        Ok(Type::Channel {
+            element: Box::new(element),
+            span: self.span_from(start),
+        })
+    }
+
     /// Only the predeclared `Array` takes a type argument, and it cannot be shadowed.
     fn type_arguments(&mut self, name: Name) -> PResult<Type> {
         match name.text.as_str() {
@@ -59,7 +76,19 @@ impl Parser<'_> {
                     span: self.span_from(name.span),
                 })
             }
-            "Task" => Err(self.unsupported("`Task<...>` types")),
+            "Task" => {
+                self.bump();
+                let mut results = vec![self.ty()?];
+                while self.at(Punct::Comma) {
+                    self.bump();
+                    results.push(self.ty()?);
+                }
+                self.close_type_arguments()?;
+                Ok(Type::Task {
+                    results,
+                    span: self.span_from(name.span),
+                })
+            }
             _ => Err(self.error(
                 format!(
                     "`{}` does not take type arguments; user-defined generics are not part of the MVP",

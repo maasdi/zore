@@ -46,7 +46,7 @@ impl FunctionBuilder<'_, '_> {
             let value = self.fresh();
             self.line(format!("{value} = load {ty_text}, ptr {source}"));
             self.line(format!("store {ty_text} {value}, ptr {target}"));
-            if package.holds_text(ty) {
+            if package.holds_shared(ty) {
                 self.retain_at(target, ty);
             }
             return;

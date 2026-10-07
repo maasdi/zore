@@ -1077,7 +1077,10 @@ func use() { let value, _ = pair(); println(value) }",
         &program("func use(err error) {}"),
         "error value in `err` may be unused",
     );
-    rejects(&body("let value = nil"), "`nil` needs an `error` context");
+    rejects(
+        &body("let value = nil"),
+        "`nil` needs an `error` or `Task<...>` context",
+    );
     rejects(
         &body("println(error(\"x\") < error(\"y\"))"),
         "operator `<` cannot be applied to `error`",
@@ -1231,16 +1234,8 @@ fn propagation_checks_call_shape_and_return_contract() {
 fn unsupported_features_are_never_accepted() {
     for (text, message) in [
         (
-            program("async func f() {}"),
-            "`async` functions are not supported",
-        ),
-        (
             program("func g() int { return 1 }\nfunc f() { let x = g()? }"),
             "requires a trailing `error` result in this function",
-        ),
-        (
-            program("func g() int { return 1 }\nfunc f() { let x = await g() }"),
-            "`await` is not supported",
         ),
         (
             "package main\nimport \"zore/fmt\"\nfunc main() {}\n".into(),
@@ -2291,7 +2286,7 @@ fn closure_bodies_are_checked_as_functions() {
     ));
     rejects(
         &body("let f = func() { await work() }"),
-        "`await` is not supported",
+        "`await` is only valid inside an `async func`",
     );
     rejects(
         &body("let f = func(a int) { let a = 2 }"),
@@ -2895,4 +2890,559 @@ fn standard_packages_have_typed_signatures() {
             message,
         );
     }
+}
+
+const ASYNC_PRELUDE: &str = "
+async func double(n int) int { return n * 2 }
+async func parse(text string) (int, error) {
+    if text.len() == 0 { return 0, error(\"empty\") }
+    return text.len(), nil
+}
+func plain(n int) int { return n }
+";
+
+fn async_program(decls: &str) -> String {
+    program(&format!("{ASYNC_PRELUDE}\n{decls}"))
+}
+
+#[test]
+fn awaited_async_calls_are_accepted() {
+    accepts(&async_program(
+        "async func f() (int, error) {
+            let a = await parse(\"ab\")?
+            let b = await double(a)
+            let c, err = await parse(\"\")
+            if err != nil { return 0, err }
+            _ = await double(c)
+            await double(1)
+            return a + b + c, nil
+        }",
+    ));
+    let case = accepts(&async_program(
+        "async func f() int { return await double(await double(1)) }",
+    ));
+    assert!(case.function("f").results == vec![TypeStore::INT]);
+    accepts(&async_program(
+        "type Counter struct { N int }
+        async func (c mut Counter) bump() { c.N += 1 }
+        async func f() { var c = Counter{N: 0}; await c.bump() }",
+    ));
+}
+
+#[test]
+fn async_calls_must_be_awaited_or_spawned() {
+    let neither = "is neither awaited nor spawned";
+    for stmts in [
+        "double(1)",
+        "let x = double(1)",
+        "plain(double(1))",
+        "let x = await plain(double(1))",
+        "let x = (double(1))",
+    ] {
+        rejects(
+            &async_program(&format!("async func f() {{ {stmts} }}")),
+            neither,
+        );
+    }
+    rejects(&async_program("func f() { double(1) }"), neither);
+    rejects(
+        &async_program("async func f() { let x, err = parse(\"a\") }"),
+        neither,
+    );
+}
+
+#[test]
+fn await_is_valid_only_in_async_bodies() {
+    let outside = "`await` is only valid inside an `async func`";
+    let case = rejects(
+        &async_program("func f() int { return await double(1) }"),
+        outside,
+    );
+    assert!(
+        case.errors()
+            .iter()
+            .any(|(m, _)| m.contains("`f` is not async"))
+    );
+    rejects(
+        &async_program("async func f() { let g = func() int { return await double(1) }\n_ = g() }"),
+        "this function literal is not async",
+    );
+}
+
+#[test]
+fn await_needs_an_async_call() {
+    let message = "`await` needs a call to an `async func`";
+    rejects(
+        &async_program("async func f() int { return await plain(1) }"),
+        message,
+    );
+    rejects(
+        &async_program("async func f() int { let g = func() int { return 1 }\nreturn await g() }"),
+        message,
+    );
+    rejects(
+        &async_program("async func f() int { let n = 1\nreturn await n }"),
+        "`await` needs a call to an `async func` or a `Task<...>` value",
+    );
+}
+
+#[test]
+fn async_entry_point_is_rejected() {
+    rejects(
+        "package main\nasync func main() {}\n",
+        "the entry point `main` cannot be `async`",
+    );
+}
+
+#[test]
+fn awaited_errors_follow_error_rules() {
+    rejects(
+        &async_program("async func f() { await parse(\"a\") }"),
+        "error result must be used or explicitly discarded",
+    );
+    rejects(
+        &async_program("async func f() { let n = await parse(\"a\")? }"),
+        "`?` requires a trailing `error` result in this function",
+    );
+}
+
+const TASK_PRELUDE: &str = "
+func compute() int { return 1 }
+func load() (int, error) { return 1, nil }
+func log(message string) {}
+func bump(n mut int) { n += 1 }
+func look(values Array<int>) {}
+func eat(values own Array<int>) {}
+func view(values []int) {}
+async func fetch(id int) (string, error) { return \"x\", nil }
+type Counter struct { N int }
+func (c Counter) read() int { return c.N }
+";
+
+fn task_program(decls: &str) -> String {
+    program(&format!("{TASK_PRELUDE}\n{decls}"))
+}
+
+fn task_body(stmts: &str) -> String {
+    task_program(&format!("func entry() {{\n{stmts}\n}}"))
+}
+
+#[test]
+fn spawned_calls_have_task_types() {
+    let case = accepts(&task_body(
+        "let a = go compute()
+        let b = go load()
+        let c = go log(\"x\")
+        let d = go fetch(1)
+        let e Task<int, error> = go load()
+        let f Task = go log(\"y\")
+        let g Task<string, error> = go fetch(2)
+        let counter = Counter{N: 1}
+        let h = go counter.read()
+        println(a.wait())
+        let v, err = b.wait()
+        _ = err
+        c.wait()
+        let s, serr = d.wait()
+        _ = serr
+        let e1, e2 = e.wait()
+        _ = e2
+        f.wait()
+        let t1, t2 = g.wait()
+        _ = t2
+        println(h.wait())",
+    ));
+    let entry = case.function("entry");
+    let types: Vec<String> = entry
+        .locals
+        .iter()
+        .take(4)
+        .map(|local| case.package().types.display(local.ty).to_string())
+        .collect();
+    assert_eq!(
+        types,
+        [
+            "Task<int64>",
+            "Task<int64, error>",
+            "Task",
+            "Task<string, error>"
+        ]
+    );
+}
+
+#[test]
+fn spawn_statements_detach_without_a_handle() {
+    accepts(&task_body("go compute()\ngo load()\ngo log(\"x\")"));
+}
+
+#[test]
+fn task_annotations_must_mirror_the_result_list() {
+    rejects(
+        &task_body("let t Task<int> = go load()"),
+        "mismatched types",
+    );
+    rejects(
+        &task_body("let t Task<int, error> = go compute()"),
+        "mismatched types",
+    );
+    rejects(
+        &task_body("let t Task<int> = go log(\"x\")"),
+        "mismatched types",
+    );
+    rejects(
+        &task_program("func f(t Task<error, int>) {}"),
+        "`error` can only be the last result",
+    );
+    rejects(
+        &task_program("func f(t Task<[]int>) {}"),
+        "a task cannot return slices or function values",
+    );
+}
+
+#[test]
+fn tasks_are_move_values() {
+    rejects(
+        &task_body("let t = go compute()\nlet a = t.wait()\nlet b = t.wait()"),
+        "use of moved value `t`",
+    );
+    rejects(
+        &task_body("let t = go compute()\nlet u = t\nlet v = t.wait()"),
+        "use of moved value `t`",
+    );
+    rejects(
+        &task_program(
+            "async func f() int {
+                let t = go compute()
+                let a = await t
+                let b = await t
+                return a + b
+            }",
+        ),
+        "use of moved value `t`",
+    );
+    rejects(
+        &task_body("let t = go compute()\nlet u = clone(t)"),
+        "cannot clone",
+    );
+    rejects(
+        &task_body("let t = go compute()\n_ = t == t"),
+        "cannot be applied",
+    );
+    accepts(&task_program(
+        "func take(t own Task<int>) int { return t.wait() }
+        func f() int {
+            let t = go compute()
+            return take(t)
+        }",
+    ));
+    accepts(&task_program(
+        "func f() { var tasks = Array<Task<int>>{}
+            tasks.push(go compute())
+            let found, t = tasks.pop()
+            if found { _ = t.wait() }
+        }",
+    ));
+}
+
+#[test]
+fn nil_is_a_task_with_no_work() {
+    accepts(&task_body("var t Task<int> = nil\nprintln(t.wait())"));
+    rejects(&task_body("let t = nil"), "`nil` needs an");
+    rejects(&task_body("var t int = nil"), "`nil` needs an");
+}
+
+#[test]
+fn wait_and_await_follow_the_async_boundary() {
+    rejects(
+        &task_program("async func f() int { let t = go compute()\nreturn t.wait() }"),
+        "`wait` blocks, so it is not allowed inside an `async func`",
+    );
+    rejects(
+        &task_body("let t = go compute()\nlet v = await t"),
+        "`await` is only valid inside an `async func`",
+    );
+    accepts(&task_program(
+        "async func f() (int, error) {
+            let t = go load()
+            let v = await t?
+            return v, nil
+        }",
+    ));
+    accepts(&task_program(
+        "async func f() int {
+            let a = go compute()
+            return await a
+        }",
+    ));
+    rejects(
+        &task_body("let t = go compute()\nt.wait(1)"),
+        "takes no arguments",
+    );
+    rejects(
+        &task_body("let t = go compute()\nt.cancel()"),
+        "has no method `cancel`",
+    );
+}
+
+#[test]
+fn awaited_task_errors_follow_error_rules() {
+    rejects(
+        &task_body("let t = go load()\nlet v, err = t.wait()"),
+        "may be unused before scope exit",
+    );
+    rejects(
+        &task_body("let t = go load()\nt.wait()"),
+        "error result must be used or explicitly discarded",
+    );
+    accepts(&task_body(
+        "let t = go load()\nlet v, err = t.wait()\n_ = v\n_ = err",
+    ));
+    rejects(
+        &task_program("async func f() { let t = go load()\nlet v = await t? }"),
+        "`?` requires a trailing `error` result in this function",
+    );
+}
+
+#[test]
+fn go_needs_a_call_to_a_declared_function() {
+    rejects(&task_body("let t = go 5"), "`go` needs a call");
+    rejects(&task_body("let n = 1\nlet t = go n"), "`go` needs a call");
+    rejects(
+        &task_body("let f = func() int { return 1 }\nlet t = go f()"),
+        "`go` needs a call to a declared function or method",
+    );
+    rejects(
+        &task_body("let t = go println(\"x\")"),
+        "`go` needs a call to a declared function or method",
+    );
+    rejects(&task_body("let t = go undefined()"), "cannot find");
+}
+
+#[test]
+fn spawned_inputs_must_not_borrow_the_spawner() {
+    rejects(
+        &task_body("var n = 1\nlet t = go bump(n)"),
+        "cannot take a `mut` parameter",
+    );
+    rejects(
+        &task_program("func f(values own Array<int>) { let t = go look(values) }"),
+        "needs `own` to take a value that is moved",
+    );
+    rejects(
+        &task_program("func f(values []int) { let t = go view(values) }"),
+        "cannot take a view or a function value",
+    );
+    rejects(
+        &task_program("func f() { var values = [int; 3]{1, 2, 3}\nlet t = go view(values[0:2]) }"),
+        "cannot take a view or a function value",
+    );
+    rejects(
+        &task_body("let f = func(n int) int { return n }\nlet t = go inspect(f)"),
+        "cannot find",
+    );
+    accepts(&task_program(
+        "func f(values own Array<int>) { let t = go eat(values)\n t.wait() }",
+    ));
+    accepts(&task_program(
+        "func f(count int, name string) {
+            let a = go compute()
+            let b = go log(name)
+            let c = go fetch(count)
+        }",
+    ));
+    rejects(
+        &task_program("func f(values own Array<int>) { let t = go eat(values)\n eat(values) }"),
+        "use of moved value `values`",
+    );
+}
+
+const CHANNEL_PRELUDE: &str = "
+type Job struct { Name string }
+func (j mut Job) drop() {}
+type Request struct {
+    Text string
+    Reply channel<string>
+}
+func consume(ch channel<int>) {}
+";
+
+fn channel_body(stmts: &str) -> String {
+    program(&format!("{CHANNEL_PRELUDE}\nfunc entry() {{\n{stmts}\n}}"))
+}
+
+#[test]
+fn channels_are_created_with_a_capacity_or_without() {
+    let case = accepts(&channel_body(
+        "let a = channel<int>()
+        let b = channel<Job>(4)
+        let c = channel<channel<int>>(1 + 2)
+        let d channel<string> = channel<string>()
+        let e = [channel<int>; 2]{a, a}
+        let f = Array<channel<int>>{a}",
+    ));
+    let entry = case.function("entry");
+    let types: Vec<String> = entry
+        .locals
+        .iter()
+        .take(4)
+        .map(|local| case.package().types.display(local.ty).to_string())
+        .collect();
+    assert_eq!(
+        types,
+        [
+            "channel<int64>",
+            "channel<Job>",
+            "channel<channel<int64>>",
+            "channel<string>"
+        ]
+    );
+    rejects(
+        &channel_body("let c = channel<int>(\"big\")"),
+        "mismatched types",
+    );
+    rejects(
+        &channel_body("let c = channel<int>(-1)"),
+        "capacity cannot be negative",
+    );
+    rejects(&channel_body("let c = channel<Missing>()"), "cannot find");
+}
+
+#[test]
+fn channels_cannot_carry_borrowed_values() {
+    let message = "a channel cannot carry slices or function values";
+    rejects(&channel_body("let c = channel<[]int>()"), message);
+    rejects(&channel_body("let c = channel<mut []int>()"), message);
+    rejects(&channel_body("let c = channel<func()>(1)"), message);
+    rejects(
+        &program("type Wrapper struct { Items []int }\nfunc f(c channel<Wrapper>) {}"),
+        message,
+    );
+    rejects(&program("func f(c channel<Array<[]int>>) {}"), message);
+    accepts(&program(
+        "func f(c channel<Array<int>>, d channel<[int; 2]>) {}",
+    ));
+}
+
+#[test]
+fn channel_handles_are_copy_and_never_nil() {
+    accepts(&channel_body(
+        "let a = channel<int>()
+        let b = a
+        consume(a)
+        consume(b)
+        let r = Request{Text: \"x\", Reply: channel<string>()}
+        let copy = r",
+    ));
+    rejects(&channel_body("var c channel<int> = nil"), "`nil` needs an");
+    rejects(
+        &channel_body("let a = channel<int>()\n_ = a == a"),
+        "cannot be applied",
+    );
+    rejects(
+        &channel_body("let a = channel<int>()\n_ = a != nil"),
+        "`nil` needs an",
+    );
+    rejects(
+        &channel_body("let a = channel<int>()\nprintln(a)"),
+        "cannot print",
+    );
+    rejects(
+        &channel_body("let a = channel<int>()\nlet b = clone(a)"),
+        "cannot clone",
+    );
+}
+
+#[test]
+fn send_receive_and_close_have_fixed_shapes() {
+    accepts(&channel_body(
+        "let ch = channel<int>(1)
+        ch.send(1)
+        ch.send(2 + 3)
+        let value, ok = ch.receive()
+        _ = value
+        _ = ok
+        ch.receive()
+        ch.close()",
+    ));
+    rejects(
+        &channel_body("let ch = channel<int>()\nch.send(\"x\")"),
+        "mismatched types",
+    );
+    rejects(
+        &channel_body("let ch = channel<int>()\nch.send()"),
+        "`send` takes 1 argument",
+    );
+    rejects(
+        &channel_body("let ch = channel<int>()\nch.receive(1)"),
+        "`receive` takes 0 arguments",
+    );
+    rejects(
+        &channel_body("let ch = channel<int>()\nch.close(1)"),
+        "`close` takes 0 arguments",
+    );
+    rejects(
+        &channel_body("let ch = channel<int>()\nlet v = ch.receive()"),
+        "this call returns 2 values",
+    );
+    rejects(
+        &channel_body("let ch = channel<int>()\nch.flush()"),
+        "has no method `flush`",
+    );
+    rejects(
+        &channel_body("let ch = channel<int>()\nlet v, ok, extra = ch.receive()"),
+        "expected 3 values for this binding",
+    );
+}
+
+#[test]
+fn sending_a_move_value_gives_it_up() {
+    rejects(
+        &channel_body(
+            "let ch = channel<Job>(1)\nlet job = Job{Name: \"a\"}\nch.send(job)\nprintln(job.Name)",
+        ),
+        "use of moved value",
+    );
+    accepts(&channel_body(
+        "let ch = channel<Job>(1)\nlet job = Job{Name: \"a\"}\nch.send(job)\nch.send(Job{Name: \"b\"})",
+    ));
+    accepts(&channel_body(
+        "let ch = channel<Array<int>>(1)\nlet items = Array<int>{1, 2}\nch.send(items)",
+    ));
+    rejects(
+        &channel_body(
+            "let ch = channel<Array<int>>(1)\nlet items = Array<int>{1, 2}\nch.send(items)\nch.send(items)",
+        ),
+        "use of moved value",
+    );
+    accepts(&channel_body(
+        "let ch = channel<string>(1)\nlet text = \"kept\"\nch.send(text)\nprintln(text)",
+    ));
+}
+
+#[test]
+fn channels_work_with_tasks_and_async_functions() {
+    accepts(
+        "package main
+        func worker(ch channel<int>, done channel<bool>) {
+            for {
+                let value, ok = ch.receive()
+                if !ok { break }
+                _ = value
+            }
+            done.send(true)
+        }
+        async func relay(ch channel<int>) {
+            let value, ok = ch.receive()
+            if ok { ch.send(value + 1) }
+        }
+        func main() {
+            let ch = channel<int>()
+            let done = channel<bool>()
+            go worker(ch, done)
+            go relay(ch)
+            ch.close()
+            let finished, _ = done.receive()
+            _ = finished
+        }",
+    );
 }

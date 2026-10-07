@@ -36,6 +36,15 @@ pub enum Type {
         results: Vec<Type>,
         span: Span,
     },
+    Channel {
+        element: Box<Type>,
+        span: Span,
+    },
+    /// `Task<R1, ..., Rn>`, or plain `Task` with no results.
+    Task {
+        results: Vec<Type>,
+        span: Span,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -53,7 +62,9 @@ impl Type {
             | Self::Slice { span, .. }
             | Self::DynArray { span, .. }
             | Self::Map { span, .. }
-            | Self::Func { span, .. } => *span,
+            | Self::Func { span, .. }
+            | Self::Task { span, .. }
+            | Self::Channel { span, .. } => *span,
         }
     }
 }

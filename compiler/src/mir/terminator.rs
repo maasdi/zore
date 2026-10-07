@@ -25,6 +25,16 @@ pub enum Callee {
     ArrayPush,
     /// `[Ref(array)]` to `[found, value]`; detaches the last element.
     ArrayPop,
+    /// `[task]` to the task's results; raises the task's panic if it had one.
+    TaskWait,
+    /// `[capacity]` to a channel for values of the element type.
+    ChannelMake(TypeId),
+    /// `[Ref(channel), value]`; waits for room, and panics on a closed channel.
+    ChannelSend,
+    /// `[Ref(channel)]` to `[value, received]`; waits for a value.
+    ChannelReceive,
+    /// `[Ref(channel)]`; panics on a closed channel.
+    ChannelClose,
 }
 
 impl Callee {
@@ -41,7 +51,12 @@ impl Callee {
             | Callee::Drop
             | Callee::Clone(_)
             | Callee::ArrayPush
-            | Callee::ArrayPop => None,
+            | Callee::ArrayPop
+            | Callee::TaskWait
+            | Callee::ChannelMake(_)
+            | Callee::ChannelSend
+            | Callee::ChannelReceive
+            | Callee::ChannelClose => None,
         }
     }
 }

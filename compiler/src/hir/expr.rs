@@ -79,6 +79,27 @@ pub enum ExprKind {
         captures: Vec<(LocalId, bool)>,
         owning: bool,
     },
+    /// Runs the call to the closure's result on a new task; the arguments become the closure's captures.
+    Spawn {
+        thunk: FunctionId,
+        /// The thunk's type, `func() R1, ..., Rn`.
+        closure_ty: TypeId,
+        args: Vec<Expr>,
+    },
+    /// Consumes the task handle and gives its results, raising its panic if it had one.
+    TaskWait(Box<Expr>),
+    MakeChannel {
+        element: TypeId,
+        capacity: Option<Box<Expr>>,
+    },
+    /// Moves the value into the channel, waiting for room.
+    ChannelSend {
+        channel: Box<Expr>,
+        value: Box<Expr>,
+    },
+    /// The value, then whether one arrived.
+    ChannelReceive(Box<Expr>),
+    ChannelClose(Box<Expr>),
     Println(Box<Expr>),
     Drop(Box<Expr>),
     Clone(Box<Expr>),

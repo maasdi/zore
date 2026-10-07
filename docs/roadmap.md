@@ -1,6 +1,6 @@
 # Implementation roadmap
 
-The implementation covers an initial synchronous subset:
+The implementation covers a subset that includes tasks and async functions:
 bool, integers, floats, rune, string, `error`, and structs, including Move structs with
 custom `drop` methods and exact untyped constants (§6.7). `zore check` runs lex → parse → resolve → type-check and MIR ownership analysis;
 `zore build` and `zore run` lower to MIR, emit LLVM IR, and invoke clang and
@@ -34,12 +34,12 @@ is guidance, not a language contract.
 | M3–M4 — subset implemented; validation pending | AST and parser together for package/functions/structs/bindings/calls; test shape, spans, recovery, and rejection. Resolve relevant grammar questions first. |
 | M5–M8 — subset implemented; validation pending | Hello program, variables, functions, structs. Establish the minimal native backend and builtin output support needed to run examples. Use resolution/type work below as prerequisites where needed. |
 | M9–M12 — subset implemented; validation pending | Name resolution, types, HIR, MIR/CFG; semantic IDs, typed calls/fields, explicit control flow, frontend-only checking. |
-| M13–M17 — partial | Copy/Move classification, mutable borrowing, whole-place move analysis, field-level partial moves (with reinitialization and the custom-`drop`-ancestor restriction), and stored borrows with region analysis exist in CLI checking and builds. Region analysis tracks slice loans per local, frees them at the holder's last use (backward liveness), checks exclusivity at the originating place, suspends sources during mutable reborrows, rejects views that outlive a local or temporary owner, and infers return-borrow contracts by fixpoint. `mut []T` may be a struct field or fixed-array element; copying such a value reborrows each view inside it (Q20). `mut []T` may also be held in `Array<T>`, map, and `mut []T` elements, and views may be stored through mutable slices (Q20b, Q22b). Remaining, each diagnosed as unsupported: every async/task interaction. Views may be stored through `mut` parameters and closure captures (Q22). A custom `drop` may read a contained view; its borrows last until the value is destroyed (Q21). Complete the §42 semantic target with paired acceptance/rejection tests. |
+| M13–M17 — partial | Copy/Move classification, mutable borrowing, whole-place move analysis, field-level partial moves (with reinitialization and the custom-`drop`-ancestor restriction), and stored borrows with region analysis exist in CLI checking and builds. Region analysis tracks slice loans per local, frees them at the holder's last use (backward liveness), checks exclusivity at the originating place, suspends sources during mutable reborrows, rejects views that outlive a local or temporary owner, and infers return-borrow contracts by fixpoint. `mut []T` may be a struct field or fixed-array element; copying such a value reborrows each view inside it (Q20). `mut []T` may also be held in `Array<T>`, map, and `mut []T` elements, and views may be stored through mutable slices (Q20b, Q22b). Tasks reject every borrowed input (Q25), so no borrow crosses a task boundary. Views may be stored through `mut` parameters and closure captures (Q22). A custom `drop` may read a contained view; its borrows last until the value is destroyed (Q21). Complete the §42 semantic target with paired acceptance/rejection tests. |
 | M18–M19 — synchronous subset implemented; validation pending | Drop insertion and panic cleanup cover the synchronous subset. The concrete Copy `error` type, `nil` in an error context, `error(message)`, content equality, explicit discards, rejection of silently ignored error results, and path-sensitive checks for named errors are implemented. Synchronous `?` propagates call errors, zero-fills other return values, and runs cleanup. Awaited propagation remains for M25–M29. |
 | M20–M23 — partial | Fixed-array types, typed literals, and indexing (read, mutable-place write/replacement, conservative-aliasing, and rejection of moving an element out through an index) are implemented end to end: `zore check`, and now `zore build`/`zore run` — LLVM `[N x T]` type emission, GEP-based indexed addressing, runtime bounds-check panics, and element cleanup without per-element drop flags (sound because element extraction stays rejected). Borrowed slices (`[]T`, `mut []T`, `base[low:high]`, contextual exclusive views, indexing and element writes through views) are implemented end to end: `zore check` with region analysis, and `zore build`/`zore run` with `{ ptr, i64 }` descriptors, slice-aware addressing, and runtime "slice bounds out of range" panics. Dynamic `Array<T>` is implemented end to end for literal-sized arrays: typed literals, indexing, element writes, slicing, borrow/`mut`/`own` passing, returns, the zero value, and heap storage freed after dropping elements in reverse order (Q17). `len`, `push`, and `pop` (§12.7) work, and `Array<T>` storage keeps a capacity so pushes are amortized. Structs that contain themselves through `Array<T>` or a map (rejected until out-of-line drop functions exist), and packages/imports remain; validate ownership and package visibility. Maps (`map[K]V`, §13.3) are implemented end to end: typed literals with static and runtime duplicate-key rejection, the two-result lookup for Copy values, `m[k] = v` insert/replace, and `m.remove(k)` transferring ownership (Q18). `m.len()` and `for key, value in m` loops work (§5.10, §12.7); borrowed entry access remains Q02/Q05. |
 | M24 — implemented except tasks | Closures (§16, Q02g, Q02i) work end to end in `zore check`, `zore build`, and `zore run`: closure literals, `func(T) R` types, calls through values, function-typed parameters, captures inferred per whole local as shared or exclusive loans checked by region analysis, nested captures, `?` and panic cleanup inside closures. Paired acceptance/rejection tests cover each rule. Owning closures (returned or stored, with heap environments and destructors) and call-once closures are inferred automatically. Remaining, each diagnosed as unsupported or rejected: declared functions as values, storing a view of a closure's own parameter into a capture, and closures with tasks or `await` (M25+). |
-| M25–M29 | Task model, `go`, async states, `await`, scheduler; test lifetime proof, suspension, completion, error results, and detach behavior. |
-| M30–M31 | Channels and async I/O; test copying handles, message ownership, buffering, close/drain, and panic on closed send. |
+| M25–M29 — tasks implemented; suspension and scheduler pending | `async func`, `await`, `go`, `Task<...>`, `.wait()`, and `await task` work end to end in `zore check`, `zore build`, and `zore run` (§17–18, Q25). An async call must be awaited or spawned, `await` is valid only in an `async func` body, and `main` cannot be `async`. `go` takes a call to a declared function or method; its inputs are copied or moved into an owning closure that the runtime runs once on a new thread, and spawned `mut`, view, and unmoved-Move inputs are rejected. `Task<...>` is a Move handle: dropping it detaches the task, `.wait()` and `await task` consume it, a task panic is raised again at retrieval, and a nil task panics. Text counts are shared across threads under one lock. On x86-64 Linux and macOS tasks are lightweight fibers: each has a private 256 KB stack with a guard page, and a few worker threads (at least two, one per core) run them, so `.wait()` and `await task` park the task instead of blocking a thread and 100,000 tasks run at once; an awaited async call runs on the awaiter's stack. Other targets give each task its own OS thread. Remaining: fibers on other targets (an AArch64 switch routine needs a test machine), growable stacks and preemption, state machines that suspend an async function mid-body, `go` on function values and closures, and the lifetime proof for borrows that cross a task boundary beyond the current rejections. Channels are M30–M31. |
+| M30–M31 — channels and async I/O implemented | `channel<T>()` and `channel<T>(n)` with `send`, `receive`, and `close` work end to end (§19, Q26): handles are Copy and share one queue, a Move message is moved in and out, an unbuffered send waits for a receiver, a buffered send waits only when full, `receive` returns the value and whether one arrived, closing wakes every blocked task, a send on a closed channel panics (the runtime drops the unsent value first), closing twice panics, and the zero value is an always-closed empty channel. Buffered values are dropped when the last handle goes. Elements cannot hold slices or function values. A task that blocks on a channel parks, so fibers keep running. Async I/O (§37.3, Q27): `zore/time` (`Sleep`, `Millis`), `zore/io` (`ReadLine`), `zore/os` (`ReadFile`, `WriteFile`), and `zore/net` (TCP `Listen`, `Dial`, `Accept`, `Read`, `Write`, `CloseWrite`, `Port`) park only the calling task. Timers and socket readiness use an event loop (epoll on Linux, kqueue on macOS); files, standard input, connects, and name lookups run on a pool of helper threads. Remaining: `select`, deadlock detection (a program whose tasks all wait forever simply hangs), UDP, TLS, and other file operations. The kqueue path is written but was not run on a Mac. |
 | M32–M34 | LLVM/native toolchain hardening and library growth; native execution tests and full MVP coverage audit against §39/§46/§52. |
 | M35+ | Self-hosting work after bootstrap and library capabilities are sufficient. |
 
@@ -2138,7 +2138,74 @@ closure value is now `{ code, environment, destructor }`: an owning closure's
 environment is heap storage holding the capture pointers, the captured values,
 and their drop flags, so the closure body is the same either way.
 
-The next steps are packages and imports, and tasks (M25+). Do not accept a
+Async functions followed (§17.2, §17.8). The resolver declares an `async func`
+like any other function. The checker allows an async call only as the operand
+of `await`, requires `await` to sit in an `async func` body, and gives an
+awaited call the callee's result list, so `await f()?` and discards behave as
+for a synchronous call. Code generation treats an async function as an
+ordinary function and `await` as its call; a suspension-capable state machine
+arrives with tasks.
+
+Tasks followed (§18, Q25). The checker turns `go f(args)` into a spawn node
+that carries the argument expressions and a synthetic closure whose captures
+are those arguments and whose body makes the call. MIR evaluates each argument
+into a temporary, builds an owning closure around the temporaries (reusing the
+closure environment, drop flags, and call-once handling), and spawns it. The
+code generator allocates a block holding the closure and room for the results,
+and emits an entry function per result list that runs the closure once, keeps
+its results unless it panicked, and then runs the environment destructor. The
+runtime runs the block as a fiber (a thread where fibers are not available)
+and records completion and any panic; `.wait()` waits, takes the results, and
+re-raises a panic, and dropping a handle marks the task detached so whoever finishes second destroys its results and
+frees the block. Waiting on a task moves its handle, so ownership analysis
+needs no new rules. The shared text table is a locked map rather than a
+per-thread one.
+
+Fibers (`runtime/src/fiber.rs`). A fiber is a heap record plus a mapped stack
+that is allocated when the fiber first runs and pooled when it ends. A naked
+x86-64 routine saves the callee-saved registers, switches stack pointers, and
+restores the other side; a new stack first returns into a small start routine
+that calls the fiber's entry function. Workers pop ready fibers from one locked
+queue, and a fiber that must wait asks its worker to register it on the task it
+waits for only after the switch, so another worker cannot resume it while it is
+still running. The panic state follows the fiber: a worker swaps it in before
+resuming and out afterwards. The initial task is an ordinary thread and waits
+on a condition variable. Limits: stacks do not grow, so very deep recursion in a
+task overflows its guard page and the process dies; and each started fiber uses
+two memory mappings, so about 30,000 fibers can be started and unfinished at
+once under the default Linux limit, after which starting another reports
+"out of stack space".
+
+Channels followed (§19, Q26). `channel<T>` is a pointer to a runtime object
+holding a lock, a queue of buffered messages, and lists of blocked senders and
+receivers; null is the zero channel, which acts as closed and empty. Handles
+are counted like text: copying one retains it and dropping one releases it, in
+the same places the compiler already retains and releases strings, and the
+last release destroys the buffered messages through a per-type function the
+compiler generates. A message is copied into runtime storage on send and out on
+receive; the sender's local is marked moved, so no value is dropped twice. A
+blocked sender or receiver sleeps on a `Slot` shared with the fiber scheduler:
+a fiber parks and its worker runs another task, any other thread blocks, and a
+wake that arrives before the fiber has finished leaving is not lost. The four
+operations are MIR calls with their own `Callee` entries; the channel argument
+is passed by reference so no extra handle is made. Setting `ZORE_CHECK_LEAKS`
+also fails a program that ends with a live channel while no task runs.
+
+Async I/O followed (§37.3, Q27). The four packages are bundled Zore sources
+whose functions are declared without bodies and call into the runtime through
+generated shims; two new shim shapes carry `error` and `(string, error)`
+results. `Conn` and `Listener` are structs holding a number, with a custom
+`drop` that closes the handle, so they are Move and close when dropped. The
+runtime keeps a table of handles that are never reused. A task that must wait
+registers a one-shot interest with the event thread and parks on a `Slot`; a
+nonblocking operation that reports "would block" waits and tries again. The
+event thread owns one epoll or kqueue queue plus a wake-up pipe and a heap of
+timers. Blocking calls run on helper threads that grow to 512 and exit after
+five idle seconds. A connection keeps up to three bytes of an unfinished
+character between reads so text is never split. On targets without an event
+queue sockets stay in blocking mode and each task already has a thread.
+
+The next steps are `select` and deadlock detection. Do not accept a
 feature whose move/borrow checks and required cleanup are not yet
 implemented. Any newly discovered semantic gap follows specification §53 and
 `docs/spec-questions.md`.

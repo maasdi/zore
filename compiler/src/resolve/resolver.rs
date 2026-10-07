@@ -44,7 +44,9 @@ fn by_value_named_type(ty: &ast::Type) -> Option<&ast::Name> {
         ast::Type::Slice { .. }
         | ast::Type::DynArray { .. }
         | ast::Type::Map { .. }
-        | ast::Type::Func { .. } => None,
+        | ast::Type::Func { .. }
+        | ast::Type::Task { .. }
+        | ast::Type::Channel { .. } => None,
     }
 }
 
@@ -55,7 +57,10 @@ fn owned_named_type(ty: &ast::Type) -> Option<&ast::Name> {
             owned_named_type(element)
         }
         ast::Type::Map { value, .. } => owned_named_type(value),
-        ast::Type::Slice { .. } | ast::Type::Func { .. } => None,
+        ast::Type::Slice { .. }
+        | ast::Type::Func { .. }
+        | ast::Type::Task { .. }
+        | ast::Type::Channel { .. } => None,
     }
 }
 
@@ -255,10 +260,6 @@ impl<'a> Resolver<'a> {
                     self.out.struct_package.push(package);
                     self.file_of_struct.push(file_index);
                     self.declare_package(&decl.name, Res::Struct(id));
-                }
-                Item::Func(func) if func.is_async => {
-                    self.note_entry_main(func);
-                    self.unsupported("`async` functions are", func.name.span);
                 }
                 Item::Func(func) => {
                     self.note_entry_main(func);
@@ -578,6 +579,12 @@ impl<'a> Resolver<'a> {
                 self.ty(key);
                 self.ty(value);
             }
+            ast::Type::Channel { element, .. } => self.ty(element),
+            ast::Type::Task { results, .. } => {
+                for result in results {
+                    self.ty(result);
+                }
+            }
             ast::Type::Func {
                 params, results, ..
             } => {
@@ -862,8 +869,15 @@ impl<'a> Resolver<'a> {
             | ExprKind::Bool(_)
             | ExprKind::Nil
             | ExprKind::Malformed => {}
+            ExprKind::Channel { element, capacity } => {
+                self.ty(element);
+                if let Some(capacity) = capacity {
+                    self.expr(capacity);
+                }
+            }
             ExprKind::Paren(inner)
             | ExprKind::Await(inner)
+            | ExprKind::Go(inner)
             | ExprKind::Try(inner)
             | ExprKind::Unary { operand: inner, .. } => self.expr(inner),
             ExprKind::Binary { lhs, rhs, .. } => {

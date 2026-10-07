@@ -12,12 +12,23 @@ pub struct ValueError {
 }
 
 impl ValueError {
-    fn ok(value: i64) -> Self {
+    pub(super) fn ok(value: i64) -> Self {
         Self {
             value,
             failed: 0,
             message: std::ptr::null(),
             message_len: 0,
+        }
+    }
+
+    /// The error owns a share of its own copy of the text.
+    pub(super) fn failed_text(message: &str) -> Self {
+        let text = StringOut::built(message.as_bytes());
+        Self {
+            value: 0,
+            failed: 1,
+            message: text.data,
+            message_len: text.len,
         }
     }
 
@@ -120,6 +131,7 @@ mod tests {
 
     #[test]
     fn integers_parse_strictly() {
+        let _serial = crate::string::serial();
         assert_eq!(atoi("42"), Ok(42));
         assert_eq!(atoi("-7"), Ok(-7));
         assert_eq!(atoi("+7"), Ok(7));
@@ -148,6 +160,7 @@ mod tests {
 
     #[test]
     fn booleans_and_integers_format() {
+        let _serial = crate::string::serial();
         let mut out = StringOut::empty();
         // SAFETY: `out` is writable; the results are live until the registry is released.
         unsafe {

@@ -33,6 +33,7 @@ pub enum ExprKind {
         rhs: Box<Expr>,
     },
     Await(Box<Expr>),
+    Go(Box<Expr>),
     Try(Box<Expr>),
     Call {
         callee: Box<Expr>,
@@ -68,6 +69,11 @@ pub enum ExprKind {
         entries: Vec<MapEntry>,
     },
     Closure(Box<Closure>),
+    /// `channel<T>()` or `channel<T>(capacity)`.
+    Channel {
+        element: Type,
+        capacity: Option<Box<Expr>>,
+    },
     /// A literal the lexer already diagnosed.
     Malformed,
 }

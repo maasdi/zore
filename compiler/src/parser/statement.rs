@@ -434,7 +434,7 @@ impl Parser<'_> {
 
 fn is_call_based(expr: &Expr) -> bool {
     match &expr.kind {
-        ExprKind::Call { .. } => true,
+        ExprKind::Call { .. } | ExprKind::Go(_) => true,
         ExprKind::Await(inner) | ExprKind::Try(inner) => is_call_based(inner),
         _ => false,
     }

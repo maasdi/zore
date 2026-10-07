@@ -44,6 +44,9 @@ pub fn emit(
         globals: String::new(),
         diagnostics: Vec::new(),
         owning_closures,
+        task_shapes: HashMap::new(),
+        task_code: String::new(),
+        channel_destroyers: HashMap::new(),
     };
     let mut functions = String::new();
     for body in &program.bodies {
@@ -63,6 +66,7 @@ pub fn emit(
     }
     out.push('\n');
     out.push_str(&functions);
+    out.push_str(&module.task_code);
     if let Some(entry) = program.entry {
         out.push_str(&module.entry_shim(entry));
     }
@@ -77,6 +81,11 @@ pub(super) struct Module<'a> {
     pub(super) globals: String,
     pub(super) diagnostics: Vec<Diagnostic>,
     pub(super) owning_closures: HashSet<FunctionId>,
+    /// Result lists that already have a task entry function.
+    pub(super) task_shapes: HashMap<Vec<TypeId>, usize>,
+    pub(super) task_code: String,
+    /// Element types that already have a function destroying a queued value.
+    pub(super) channel_destroyers: HashMap<TypeId, usize>,
 }
 
 /// An owning closure's heap environment: capture pointers first, then each value and its flags.
@@ -723,7 +732,7 @@ impl FunctionBuilder<'_, '_> {
             let ty = self.ty(key);
             self.line(format!("{value} = load {ty}, ptr {raw}"));
         }
-        if self.module.package.copies_text(key) {
+        if self.module.package.copies_shared(key) {
             self.retain_value(&value, key);
         }
         value
@@ -901,6 +910,11 @@ impl FunctionBuilder<'_, '_> {
 
     pub(super) fn value(&mut self, operand: &Operand) -> String {
         match operand {
+            Operand::Const(Const::Nil, ty)
+                if self.module.package.types.task_results(*ty).is_some() =>
+            {
+                "null".into()
+            }
             Operand::Const(c, _) => self.constant(c),
             Operand::Ref(_) => unreachable!("references are only call arguments"),
             Operand::Copy(place) | Operand::Move(place) => {
@@ -921,7 +935,7 @@ impl FunctionBuilder<'_, '_> {
         let value = self.value(operand);
         if let Operand::Copy(place) = operand {
             let ty = self.place_ty(place);
-            if self.module.package.copies_text(ty) {
+            if self.module.package.copies_shared(ty) {
                 self.retain_value(&value, ty);
             }
         }
@@ -945,7 +959,7 @@ impl FunctionBuilder<'_, '_> {
 
     /// Every text inside the value at `address` gains an owner.
     pub(super) fn retain_at(&mut self, address: &str, ty: TypeId) {
-        if !self.module.package.holds_text(ty) {
+        if !self.module.package.holds_shared(ty) {
             return;
         }
         match self.module.package.types.kind(ty) {
@@ -961,6 +975,7 @@ impl FunctionBuilder<'_, '_> {
                     "call void @zore_string_retain(ptr {data}, i64 {len})"
                 ));
             }
+            TypeKind::Channel { .. } => self.call_on_channel("zore_channel_retain", address),
             TypeKind::Struct(id) => {
                 let fields: Vec<TypeId> = self
                     .module
@@ -972,7 +987,7 @@ impl FunctionBuilder<'_, '_> {
                     .collect();
                 let struct_ty = self.ty(ty);
                 for (index, field) in fields.into_iter().enumerate() {
-                    if !self.module.package.holds_text(field) {
+                    if !self.module.package.holds_shared(field) {
                         continue;
                     }
                     let child = self.fresh();
@@ -1007,6 +1022,12 @@ impl FunctionBuilder<'_, '_> {
         } else {
             self.string_parts(&value)
         }
+    }
+
+    fn call_on_channel(&mut self, function: &str, address: &str) {
+        let handle = self.fresh();
+        self.line(format!("{handle} = load ptr, ptr {address}"));
+        self.line(format!("call void @{function}(ptr {handle})"));
     }
 
     pub(super) fn release_text(&mut self, address: &str, ty: TypeId) {
@@ -1049,7 +1070,7 @@ impl FunctionBuilder<'_, '_> {
     }
 
     pub(super) fn store(&mut self, place: &Place, value: &str) {
-        if self.module.package.copies_text(self.place_ty(place)) {
+        if self.module.package.copies_shared(self.place_ty(place)) {
             self.drop_place(place);
         }
         let ty = self.ty(self.place_ty(place));
@@ -1184,6 +1205,7 @@ impl FunctionBuilder<'_, '_> {
                 captures,
                 owning,
             } => self.closure_value(*function, captures, *owning),
+            Rvalue::Spawn(closure) => self.spawn(closure),
             Rvalue::Aggregate(_, operands) => {
                 let ty = self.ty(result_ty);
                 let mut current = "undef".to_string();
@@ -1461,9 +1483,15 @@ impl FunctionBuilder<'_, '_> {
                 }
             }
             TypeKind::String | TypeKind::Error => self.release_text(address, ty),
+            TypeKind::Channel { .. } => self.call_on_channel("zore_channel_release", address),
             TypeKind::DynArray { element } => self.drop_dyn_array(address, element),
             TypeKind::Map { value, .. } => self.drop_map(address, value),
             TypeKind::Func(_) => self.drop_closure(address),
+            TypeKind::Task(_) => {
+                let handle = self.fresh();
+                self.line(format!("{handle} = load ptr, ptr {address}"));
+                self.line(format!("call void @zore_task_detach(ptr {handle})"));
+            }
             _ => {}
         }
     }
@@ -1653,6 +1681,8 @@ impl FunctionBuilder<'_, '_> {
             TypeKind::DynArray { .. } => unreachable!("dynamic arrays have no operators"),
             TypeKind::Map { .. } => unreachable!("maps have no operators"),
             TypeKind::Func(_) => unreachable!("function values have no operators"),
+            TypeKind::Task(_) => unreachable!("tasks have no operators"),
+            TypeKind::Channel { .. } => unreachable!("channels have no operators"),
         }
     }
 
@@ -1915,6 +1945,17 @@ impl FunctionBuilder<'_, '_> {
                     | Callee::MapLookup
                     | Callee::MapRemove => self.map_call(callee, args, *span),
                     Callee::ArrayPush | Callee::ArrayPop => self.array_call(callee, args),
+                    Callee::TaskWait => self.task_wait(&args[0]),
+                    Callee::ChannelMake(element) => Some(self.channel_make(*element, &args[0])),
+                    Callee::ChannelSend => {
+                        self.channel_send(args);
+                        None
+                    }
+                    Callee::ChannelReceive => Some(self.channel_receive(args)),
+                    Callee::ChannelClose => {
+                        self.channel_close(args);
+                        None
+                    }
                 };
                 let pending = self.fresh();
                 self.line(format!("{pending} = call zeroext i1 @zore_panic_pending()"));

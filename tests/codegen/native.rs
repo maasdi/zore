@@ -17,6 +17,26 @@ fn run(source: &str) -> Output {
         .expect("run built program")
 }
 
+fn run_with_input(source: &str, input: &[u8]) -> Output {
+    let dir = TempDir::new().unwrap();
+    let executable = dir.path().join("program");
+    build_file(source, &executable).unwrap_or_else(|e| panic!("build failed: {e:?}"));
+    let mut child = Command::new(&executable)
+        .env("ZORE_CHECK_LEAKS", "1")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("start built program");
+    child
+        .stdin
+        .take()
+        .expect("piped stdin")
+        .write_all(input)
+        .expect("write stdin");
+    child.wait_with_output().expect("run built program")
+}
+
 fn build_file(source: &str, output: &Path) -> Result<(), BuildError> {
     let mut sources = SourceMap::new();
     let id = sources.add("test.ore", source.into()).unwrap();
@@ -2912,4 +2932,999 @@ func main() {
         "index out of range",
         "tx1\ndrop g1\n",
     );
+}
+
+#[test]
+fn spawned_calls_return_their_results_and_errors_through_wait() {
+    let source = "package main
+func double(n int) int { return n * 2 }
+func split(text string) (string, int, error) {
+    if text.len() == 0 { return \"\", 0, error(\"empty\") }
+    return text + \"!\", text.len(), nil
+}
+func note(text string) { println(text) }
+func main() {
+    let a = go double(21)
+    let b = go double(4)
+    println(a.wait() + b.wait())
+    let t = go split(\"abc\")
+    let text, count, err = t.wait()
+    println(text)
+    println(count)
+    println(err == nil)
+    let bad = go split(\"\")
+    let _, _, failure = bad.wait()
+    println(failure != nil)
+    let n = go note(\"noted\")
+    n.wait()
+}";
+    prints(source, "50\nabc!\n3\ntrue\ntrue\nnoted\n");
+}
+
+#[test]
+fn spawned_inputs_move_in_and_results_move_out() {
+    let source = "package main
+type Resource struct { Name string }
+func (r mut Resource) drop() { println(\"drop \" + r.Name) }
+func rename(r own Resource, suffix string) Resource {
+    println(\"rename \" + r.Name)
+    return Resource{Name: r.Name + suffix}
+}
+func main() {
+    let first = Resource{Name: \"a\"}
+    let t = go rename(first, \"-b\")
+    let second = t.wait()
+    println(second.Name)
+    let u = go rename(second, \"-c\")
+    let third = u.wait()
+    println(third.Name)
+}";
+    prints(
+        source,
+        "rename a\ndrop a\na-b\nrename a-b\ndrop a-b\na-b-c\ndrop a-b-c\n",
+    );
+}
+
+#[test]
+fn a_task_panic_unwinds_that_task_and_is_raised_again_at_the_wait() {
+    let source = "package main
+type Resource struct { Name string }
+func (r mut Resource) drop() { println(\"drop \" + r.Name) }
+func fail(r own Resource, zero int) int {
+    println(\"working\")
+    return 1 / zero
+}
+func main() {
+    println(\"before\")
+    let t = go fail(Resource{Name: \"held\"}, 0)
+    let v = t.wait()
+    println(\"unreachable\")
+}";
+    let output = run(source);
+    assert_eq!(output.status.code(), Some(2), "{}", stderr(&output));
+    assert_eq!(stdout(&output), "before\nworking\ndrop held\n");
+    let report = stderr(&output);
+    assert!(
+        report.contains("panic in task 1: division by zero"),
+        "{report}"
+    );
+    assert!(
+        report.contains("panic in the main task: division by zero"),
+        "{report}"
+    );
+}
+
+#[test]
+fn a_detached_task_panic_does_not_stop_the_program() {
+    let source = "package main
+func fail(zero int) int { return 1 / zero }
+func ready() int { return 5 }
+func main() {
+    let t = go fail(0)
+    drop(t)
+    let ok = go ready()
+    println(ok.wait())
+}";
+    let output = run(source);
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    assert_eq!(stdout(&output), "5\n");
+}
+
+#[test]
+fn an_endless_detached_task_does_not_keep_the_process_alive() {
+    let source = "package main
+func spin() {
+    for var i = 0; true; i += 1 { }
+}
+func main() {
+    go spin()
+    println(\"done\")
+}";
+    prints(source, "done\n");
+}
+
+#[test]
+fn waiting_on_a_nil_task_panics() {
+    let output = run(&main_body("var t Task<int> = nil\nprintln(t.wait())"));
+    assert_eq!(output.status.code(), Some(2));
+    assert!(
+        stderr(&output).contains("wait on a nil task"),
+        "{}",
+        stderr(&output)
+    );
+}
+
+#[test]
+fn async_functions_await_calls_and_tasks() {
+    let source = "package main
+func parse(text string) (int, error) {
+    if text.len() == 0 { return 0, error(\"empty\") }
+    return text.len(), nil
+}
+async func measure(text string) (int, error) {
+    let task = go parse(text)
+    let n = await task?
+    return n * 2, nil
+}
+async func twice(n int) int { return n * 2 }
+async func total(first string, second string) (int, error) {
+    let a = go measure(first)
+    let b = go measure(second)
+    let x = await a?
+    let y = await b?
+    return await twice(x + y), nil
+}
+func main() {
+    let t = go total(\"ab\", \"cde\")
+    let n, err = t.wait()
+    println(n)
+    println(err == nil)
+    let u = go total(\"ab\", \"\")
+    let _, failure = u.wait()
+    println(failure != nil)
+}";
+    prints(source, "20\ntrue\ntrue\n");
+}
+
+#[test]
+fn many_tasks_share_and_release_text() {
+    let source = "package main
+func build(prefix string, count int) string {
+    var text = prefix
+    for var i = 0; i < count; i += 1 { text = text + \"x\" }
+    return text
+}
+func main() {
+    let shared = build(\"shared\", 20)
+    var tasks = Array<Task<string>>{}
+    for var i = 0; i < 32; i += 1 {
+        tasks.push(go build(shared, 100 + i))
+    }
+    var total = 0
+    for tasks.len() > 0 {
+        let found, task = tasks.pop()
+        if found {
+            let text = task.wait()
+            total += text.len()
+        }
+    }
+    println(total)
+    println(shared)
+}";
+    prints(source, "4528\nsharedxxxxxxxxxxxxxxxxxxxx\n");
+}
+
+#[test]
+fn a_task_value_can_be_stored_and_moved_between_functions() {
+    let source = "package main
+type Job struct { Work Task<int> }
+func compute() int { return 11 }
+func start() Job { return Job{Work: go compute()} }
+func finish(job own Job) int { return job.Work.wait() }
+func main() {
+    let job = start()
+    println(finish(job))
+}";
+    prints(source, "11\n");
+}
+
+#[test]
+fn tens_of_thousands_of_tasks_run_and_wait_on_each_other() {
+    // Only targets with fibers can hold this many tasks; elsewhere each task is a thread.
+    let fibers = cfg!(all(
+        target_arch = "x86_64",
+        any(target_os = "linux", target_os = "macos")
+    ));
+    let (count, depth) = if fibers { (50_000, 5000) } else { (1000, 100) };
+    let source = format!(
+        "package main
+func square(n int) int {{ return n * n }}
+func chain(depth int) int {{
+    if depth == 0 {{ return 0 }}
+    let next = go chain(depth - 1)
+    return next.wait() + 1
+}}
+func main() {{
+    var tasks = Array<Task<int>>{{}}
+    for var i = 0; i < {count}; i += 1 {{
+        tasks.push(go square(i % 10))
+    }}
+    var total = 0
+    for tasks.len() > 0 {{
+        let found, task = tasks.pop()
+        if found {{ total += task.wait() }}
+    }}
+    println(total)
+    let deep = go chain({depth})
+    println(deep.wait())
+}}"
+    );
+    prints(&source, &format!("{}\n{depth}\n", count / 10 * 285));
+}
+
+#[test]
+fn a_panic_in_one_of_many_tasks_stays_in_that_task() {
+    let source = "package main
+func work(n int) int { return 100 / (n % 7) }
+func main() {
+    var good = 0
+    for var i = 1; i < 7; i += 1 {
+        let t = go work(i)
+        good += t.wait()
+    }
+    println(good)
+    let bad = go work(7)
+    let again = go work(2)
+    println(again.wait())
+    println(bad.wait())
+}";
+    let output = run(source);
+    assert_eq!(output.status.code(), Some(2), "{}", stderr(&output));
+    assert_eq!(stdout(&output), "244\n50\n");
+    assert!(
+        stderr(&output).contains("division by zero"),
+        "{}",
+        stderr(&output)
+    );
+}
+
+#[test]
+fn an_unbuffered_channel_hands_values_between_tasks() {
+    let source = "package main
+func produce(ch channel<int>, count int) {
+    for var i = 1; i <= count; i += 1 { ch.send(i) }
+    ch.close()
+}
+func main() {
+    let ch = channel<int>()
+    go produce(ch, 100)
+    var sum = 0
+    var received = 0
+    for {
+        let value, ok = ch.receive()
+        if !ok { break }
+        sum += value
+        received += 1
+    }
+    println(sum)
+    println(received)
+}";
+    prints(source, "5050\n100\n");
+}
+
+#[test]
+fn a_buffered_channel_keeps_order_and_waits_only_when_full() {
+    let source = "package main
+func main() {
+    let ch = channel<string>(3)
+    ch.send(\"a\")
+    ch.send(\"b\")
+    ch.send(\"c\")
+    ch.close()
+    for {
+        let text, ok = ch.receive()
+        if !ok { break }
+        println(text)
+    }
+    let empty, ok = ch.receive()
+    println(empty.len())
+    println(ok)
+}";
+    prints(source, "a\nb\nc\n0\nfalse\n");
+}
+
+#[test]
+fn values_sent_over_a_channel_change_owner_and_are_dropped_once() {
+    let source = "package main
+type Job struct { Name string }
+func (j mut Job) drop() { println(\"drop \" + j.Name) }
+func main() {
+    let ch = channel<Job>(2)
+    ch.send(Job{Name: \"a\"})
+    ch.send(Job{Name: \"b\"})
+    let first, ok = ch.receive()
+    println(\"received \" + first.Name)
+    println(ok)
+}";
+    prints(source, "received a\ntrue\ndrop a\ndrop b\n");
+}
+
+#[test]
+fn buffered_values_are_dropped_when_the_last_handle_goes() {
+    let source = "package main
+type Job struct { Name string }
+func (j mut Job) drop() { println(\"drop \" + j.Name) }
+func hold(ch channel<Job>) { println(\"holding\") }
+func fill() {
+    let ch = channel<Job>(3)
+    let other = ch
+    ch.send(Job{Name: \"x\"})
+    other.send(Job{Name: \"y\"})
+    hold(other)
+    println(\"leaving\")
+}
+func main() {
+    fill()
+    println(\"done\")
+}";
+    let output = run(source);
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    let text = stdout(&output);
+    let lines: Vec<&str> = text.lines().collect();
+    assert_eq!(&lines[..2], ["holding", "leaving"]);
+    assert_eq!(lines[4], "done");
+    let mut dropped = [lines[2], lines[3]];
+    dropped.sort();
+    assert_eq!(dropped, ["drop x", "drop y"]);
+}
+
+#[test]
+fn closing_lets_buffered_values_drain_then_reports_zero_and_false() {
+    let source = "package main
+type Point struct { X int
+    Y int }
+func main() {
+    let ch = channel<Point>(2)
+    ch.send(Point{X: 1, Y: 2})
+    ch.close()
+    let a, aok = ch.receive()
+    let b, bok = ch.receive()
+    println(a.X + a.Y)
+    println(aok)
+    println(b.X + b.Y)
+    println(bok)
+}";
+    prints(source, "3\ntrue\n0\nfalse\n");
+}
+
+#[test]
+fn sending_on_a_closed_channel_panics_and_drops_the_value() {
+    let source = "package main
+type Job struct { Name string }
+func (j mut Job) drop() { println(\"drop \" + j.Name) }
+func main() {
+    let ch = channel<Job>(1)
+    ch.close()
+    println(\"sending\")
+    ch.send(Job{Name: \"lost\"})
+    println(\"unreachable\")
+}";
+    let output = run(source);
+    assert_eq!(output.status.code(), Some(2), "{}", stderr(&output));
+    assert_eq!(stdout(&output), "sending\ndrop lost\n");
+    assert!(
+        stderr(&output).contains("send on a closed channel"),
+        "{}",
+        stderr(&output)
+    );
+}
+
+#[test]
+fn closing_twice_panics() {
+    let output = run(&main_body(
+        "let ch = channel<int>()\nch.close()\nch.close()",
+    ));
+    assert_eq!(output.status.code(), Some(2));
+    assert!(
+        stderr(&output).contains("close of a closed channel"),
+        "{}",
+        stderr(&output)
+    );
+}
+
+#[test]
+fn the_zero_value_channel_is_closed_and_empty() {
+    let source = "package main
+func main() {
+    let holder = channel<channel<int>>(1)
+    holder.close()
+    let zero, ok = holder.receive()
+    println(ok)
+    let value, got = zero.receive()
+    println(value)
+    println(got)
+    let again, more = zero.receive()
+    println(again)
+    println(more)
+    zero.send(1)
+    println(\"unreachable\")
+}";
+    let output = run(source);
+    assert_eq!(output.status.code(), Some(2), "{}", stderr(&output));
+    assert_eq!(stdout(&output), "false\n0\nfalse\n0\nfalse\n");
+    assert!(
+        stderr(&output).contains("send on a closed channel"),
+        "{}",
+        stderr(&output)
+    );
+    let close = run(&main_body(
+        "let holder = channel<channel<int>>()\nholder.close()\nlet zero, _ = holder.receive()\nzero.close()",
+    ));
+    assert_eq!(close.status.code(), Some(2));
+}
+
+#[test]
+fn closing_wakes_a_blocked_receiver_with_false() {
+    let source = "package main
+func wait(ch channel<int>) bool {
+    let value, ok = ch.receive()
+    return ok
+}
+func main() {
+    let ch = channel<int>()
+    let t = go wait(ch)
+    ch.close()
+    println(t.wait())
+}";
+    prints(source, "false\n");
+}
+
+#[test]
+fn closing_wakes_a_blocked_sender_with_a_panic() {
+    let source = "package main
+type Job struct { Name string }
+func (j mut Job) drop() { println(\"drop \" + j.Name) }
+func push(ch channel<Job>) {
+    ch.send(Job{Name: \"stuck\"})
+}
+func main() {
+    let ch = channel<Job>()
+    let t = go push(ch)
+    ch.close()
+    t.wait()
+    println(\"unreachable\")
+}";
+    let output = run(source);
+    assert_eq!(output.status.code(), Some(2), "{}", stderr(&output));
+    assert_eq!(stdout(&output), "drop stuck\n");
+    assert!(
+        stderr(&output).contains("send on a closed channel"),
+        "{}",
+        stderr(&output)
+    );
+}
+
+#[test]
+fn a_request_carries_its_own_reply_channel() {
+    let source = "package main
+type Request struct {
+    Text string
+    Reply channel<string>
+}
+func serve(requests channel<Request>) {
+    for {
+        let request, ok = requests.receive()
+        if !ok { return }
+        request.Reply.send(\"echo \" + request.Text)
+    }
+}
+func main() {
+    let requests = channel<Request>()
+    go serve(requests)
+    let letters = \"abc\"
+    for var i = 0; i < 3; i += 1 {
+        let reply = channel<string>()
+        requests.send(Request{Text: \"hi\" + letters[i:i + 1], Reply: reply})
+        let answer, _ = reply.receive()
+        println(answer)
+    }
+    requests.close()
+}";
+    prints(source, "echo hia\necho hib\necho hic\n");
+}
+
+#[test]
+fn a_pool_of_workers_shares_one_channel() {
+    let source = "package main
+func worker(jobs channel<int>, results channel<int>) {
+    for {
+        let n, ok = jobs.receive()
+        if !ok { return }
+        results.send(n * n)
+    }
+}
+func main() {
+    let jobs = channel<int>(8)
+    let results = channel<int>(50)
+    for var w = 0; w < 4; w += 1 {
+        go worker(jobs, results)
+    }
+    for var n = 1; n <= 50; n += 1 {
+        jobs.send(n)
+    }
+    jobs.close()
+    var total = 0
+    for var n = 0; n < 50; n += 1 {
+        let square, _ = results.receive()
+        total += square
+    }
+    println(total)
+}";
+    prints(source, "42925\n");
+}
+
+#[test]
+fn a_thousand_tasks_pass_a_value_along_a_chain_of_channels() {
+    let source = "package main
+func link(from channel<int>, to channel<int>) {
+    let value, _ = from.receive()
+    to.send(value + 1)
+}
+func main() {
+    let first = channel<int>()
+    var last = first
+    for var i = 0; i < 1000; i += 1 {
+        let next = channel<int>()
+        go link(last, next)
+        last = next
+    }
+    first.send(0)
+    let result, _ = last.receive()
+    println(result)
+}";
+    prints(source, "1000\n");
+}
+
+#[test]
+fn async_functions_send_and_receive_on_channels() {
+    let source = "package main
+async func produce(ch channel<string>) {
+    ch.send(\"one\")
+    ch.send(\"two\")
+    ch.close()
+}
+async func gather(ch channel<string>) int {
+    var total = 0
+    for {
+        let text, ok = ch.receive()
+        if !ok { return total }
+        total += text.len()
+    }
+}
+func main() {
+    let ch = channel<string>()
+    go produce(ch)
+    let t = go gather(ch)
+    println(t.wait())
+}";
+    prints(source, "6\n");
+}
+
+#[test]
+fn channel_handles_in_structs_and_collections_are_shared_and_released() {
+    let source = "package main
+type Pair struct {
+    Left channel<int>
+    Right channel<int>
+}
+func main() {
+    let pair = Pair{Left: channel<int>(1), Right: channel<int>(1)}
+    let copy = pair
+    pair.Left.send(7)
+    let seen, _ = copy.Left.receive()
+    println(seen)
+    var all = Array<channel<int>>{pair.Left, pair.Right}
+    all.push(copy.Right)
+    let found, last = all.pop()
+    last.send(9)
+    let again, _ = pair.Right.receive()
+    println(again)
+    println(found)
+}";
+    prints(source, "7\n9\ntrue\n");
+}
+
+#[test]
+fn many_sleeping_tasks_wait_together() {
+    let source = "package main
+import \"zore/time\"
+func nap(ms int) int {
+    time.Sleep(ms)
+    return ms
+}
+func main() {
+    let start = time.Millis()
+    var tasks = Array<Task<int>>{}
+    for var i = 0; i < 300; i += 1 { tasks.push(go nap(250)) }
+    var total = 0
+    for tasks.len() > 0 {
+        let found, task = tasks.pop()
+        if found { total += task.wait() }
+    }
+    let elapsed = time.Millis() - start
+    println(total)
+    println(elapsed >= 250)
+    println(elapsed < 2000)
+    time.Sleep(0)
+    time.Sleep(-5)
+    println(time.Millis() >= start)
+}";
+    prints(source, "75000\ntrue\ntrue\ntrue\n");
+}
+
+#[test]
+fn a_sleeping_task_does_not_hold_up_a_busy_one() {
+    let source = "package main
+import \"zore/time\"
+func sleeper(done channel<string>) {
+    time.Sleep(150)
+    done.send(\"slept\")
+}
+func counter(done channel<string>) {
+    var n = 0
+    for var i = 0; i < 100000; i += 1 { n += 1 }
+    done.send(\"counted\")
+}
+func main() {
+    let done = channel<string>(2)
+    go sleeper(done)
+    go counter(done)
+    let first, _ = done.receive()
+    let second, _ = done.receive()
+    println(first)
+    println(second)
+}";
+    prints(source, "counted\nslept\n");
+}
+
+#[test]
+fn files_are_written_and_read_whole() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("note.txt");
+    let missing = dir.path().join("absent.txt");
+    let source = format!(
+        "package main
+import \"zore/os\"
+func main() {{
+    let wrote = os.WriteFile(\"{path}\", \"héllo\\nfile\")
+    println(wrote == nil)
+    let text, err = os.ReadFile(\"{path}\")
+    println(err == nil)
+    println(text)
+    let rewrote = os.WriteFile(\"{path}\", \"short\")
+    println(rewrote == nil)
+    let again, err2 = os.ReadFile(\"{path}\")
+    println(again)
+    println(err2 == nil)
+    let _, failure = os.ReadFile(\"{missing}\")
+    println(failure != nil)
+}}",
+        path = path.display(),
+        missing = missing.display()
+    );
+    prints(
+        &source,
+        "true\ntrue\nhéllo\nfile\ntrue\nshort\ntrue\ntrue\n",
+    );
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "short");
+}
+
+#[test]
+fn file_errors_name_the_operation_and_reject_bad_text() {
+    let dir = TempDir::new().unwrap();
+    let binary = dir.path().join("binary.dat");
+    std::fs::write(&binary, [0x66, 0xff, 0xfe]).unwrap();
+    let nowhere = dir.path().join("no-folder").join("file.txt");
+    let source = format!(
+        "package main
+import \"zore/os\"
+func main() {{
+    let _, bad = os.ReadFile(\"{binary}\")
+    println(bad == error(\"os.ReadFile: invalid UTF-8\"))
+    let write = os.WriteFile(\"{nowhere}\", \"x\")
+    println(write != nil)
+}}",
+        binary = binary.display(),
+        nowhere = nowhere.display()
+    );
+    prints(&source, "true\ntrue\n");
+}
+
+#[test]
+fn standard_input_is_read_line_by_line() {
+    let source = "package main
+import \"zore/io\"
+func main() {
+    var lines = 0
+    var length = 0
+    for {
+        let line, err = io.ReadLine()
+        if err != nil {
+            println(err == error(\"EOF\"))
+            break
+        }
+        lines += 1
+        length += line.len()
+        println(\"[\" + line + \"]\")
+    }
+    println(lines)
+    println(length)
+}";
+    let output = run_with_input(source, b"one\r\n\ntwo words\nlast");
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    assert_eq!(
+        stdout(&output),
+        "[one]\n[]\n[two words]\n[last]\ntrue\n4\n16\n"
+    );
+    let bad = run_with_input(
+        "package main
+import \"zore/io\"
+func main() {
+    let _, err = io.ReadLine()
+    println(err == error(\"io.ReadLine: invalid UTF-8\"))
+    let line, _ = io.ReadLine()
+    println(line)
+}",
+        b"\xff\xfe\nok\n",
+    );
+    assert_eq!(bad.status.code(), Some(0), "{}", stderr(&bad));
+    assert_eq!(stdout(&bad), "true\nok\n");
+}
+
+#[test]
+fn a_task_waiting_for_input_does_not_stop_the_others() {
+    let source = "package main
+import \"zore/io\"
+func reader(done channel<string>) {
+    let line, _ = io.ReadLine()
+    done.send(line)
+}
+func ticker(done channel<string>) {
+    var n = 0
+    for var i = 0; i < 1000; i += 1 { n += i }
+    done.send(\"ticked\")
+}
+func main() {
+    let done = channel<string>(2)
+    go reader(done)
+    go ticker(done)
+    let first, _ = done.receive()
+    let second, _ = done.receive()
+    println(first)
+    println(second)
+}";
+    let output = run_with_input(source, b"typed\n");
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    assert_eq!(stdout(&output), "ticked\ntyped\n");
+}
+
+const ECHO_PRELUDE: &str = "
+import \"zore/net\"
+func digits(n int) string {
+    if n == 0 { return \"0\" }
+    var text = \"\"
+    var rest = n
+    for rest > 0 {
+        let d = rest % 10
+        text = \"0123456789\"[d:d + 1] + text
+        rest = rest / 10
+    }
+    return text
+}
+func echo(conn own net.Conn) int {
+    var total = 0
+    for {
+        let text, err = conn.Read(64)
+        if err != nil { return total }
+        total += text.len()
+        if conn.Write(text) != nil { return total }
+    }
+}
+func serve(listener own net.Listener, clients int) int {
+    var tasks = Array<Task<int>>{}
+    for var i = 0; i < clients; i += 1 {
+        let conn, err = listener.Accept()
+        if err != nil { return -1 }
+        tasks.push(go echo(conn))
+    }
+    var total = 0
+    for tasks.len() > 0 {
+        let found, task = tasks.pop()
+        if found { total += task.wait() }
+    }
+    return total
+}
+func client(port int, message string, chunk int) string {
+    let conn, err = net.Dial(\"127.0.0.1:\" + digits(port))
+    if err != nil { return \"dial failed\" }
+    if conn.Write(message) != nil { return \"write failed\" }
+    _ = conn.CloseWrite()
+    var reply = \"\"
+    for {
+        let text, readErr = conn.Read(chunk)
+        if readErr != nil { return reply }
+        reply += text
+    }
+}
+";
+
+#[test]
+fn a_server_echoes_text_to_several_clients_without_splitting_characters() {
+    let source = format!(
+        "package main
+{ECHO_PRELUDE}
+func main() {{
+    let listener, err = net.Listen(\"127.0.0.1:0\")
+    if err != nil {{ println(\"listen failed\"); return }}
+    let port = listener.Port()
+    let server = go serve(listener, 3)
+    let a = go client(port, \"hello\", 64)
+    let b = go client(port, \"héllo wörld ✓\", 1)
+    let c = go client(port, \"x\", 5)
+    println(a.wait())
+    println(b.wait())
+    println(c.wait())
+    println(server.wait())
+}}"
+    );
+    prints(&source, "hello\nhéllo wörld ✓\nx\n23\n");
+}
+
+#[test]
+fn hundreds_of_connections_share_the_event_loop() {
+    let source = format!(
+        "package main
+{ECHO_PRELUDE}
+func main() {{
+    let listener, err = net.Listen(\"127.0.0.1:0\")
+    if err != nil {{ println(\"listen failed\"); return }}
+    let port = listener.Port()
+    let server = go serve(listener, 200)
+    var clients = Array<Task<string>>{{}}
+    for var i = 0; i < 200; i += 1 {{
+        clients.push(go client(port, \"message \" + digits(i), 7))
+    }}
+    var bytes = 0
+    for clients.len() > 0 {{
+        let found, task = clients.pop()
+        if found {{ bytes += task.wait().len() }}
+    }}
+    println(bytes)
+    println(server.wait())
+}}"
+    );
+    let expected: usize = (0..200)
+        .map(|i| "message ".len() + i.to_string().len())
+        .sum();
+    prints(&source, &format!("{expected}\n{expected}\n"));
+}
+
+#[test]
+fn dropping_a_connection_ends_the_peers_stream() {
+    let source = "package main
+import \"zore/net\"
+func greet(listener own net.Listener) {
+    let conn, err = listener.Accept()
+    if err != nil { return }
+    _ = conn.Write(\"hi\")
+    drop(conn)
+}
+func digits(n int) string {
+    var text = \"\"
+    var rest = n
+    for rest > 0 {
+        let d = rest % 10
+        text = \"0123456789\"[d:d + 1] + text
+        rest = rest / 10
+    }
+    return text
+}
+func main() {
+    let listener, err = net.Listen(\"127.0.0.1:0\")
+    if err != nil { return }
+    let port = listener.Port()
+    go greet(listener)
+    let conn, derr = net.Dial(\"127.0.0.1:\" + digits(port))
+    if derr != nil { println(\"dial failed\"); return }
+    let first, _ = conn.Read(10)
+    println(first)
+    let _, end = conn.Read(10)
+    println(end == error(\"EOF\"))
+}";
+    prints(source, "hi\ntrue\n");
+}
+
+#[test]
+fn network_errors_are_reported_and_closed_handles_fail() {
+    let source = "package main
+import \"zore/net\"
+func main() {
+    let conns = channel<net.Conn>(1)
+    conns.close()
+    let zero, _ = conns.receive()
+    let text, err = zero.Read(10)
+    println(text.len())
+    println(err != nil)
+    println(zero.Write(\"x\") != nil)
+    println(zero.CloseWrite() != nil)
+    let listeners = channel<net.Listener>(1)
+    listeners.close()
+    let closed, _ = listeners.receive()
+    let _, accept = closed.Accept()
+    println(accept != nil)
+    println(closed.Port())
+    let _, refused = net.Dial(\"127.0.0.1:1\")
+    println(refused != nil)
+    let _, malformed = net.Listen(\"not an address\")
+    println(malformed != nil)
+    let open, _ = net.Listen(\"127.0.0.1:0\")
+    println(open.Port() > 0)
+}";
+    prints(source, "0\ntrue\ntrue\ntrue\ntrue\n-1\ntrue\ntrue\ntrue\n");
+}
+
+#[test]
+fn a_peer_that_sends_bytes_that_are_not_text_gives_an_error() {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let peer = std::thread::spawn(move || {
+        for bytes in [&[b'o', b'k', 0xC3][..], &[0xFF, b'x'][..]] {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream.write_all(bytes).unwrap();
+        }
+    });
+    let source = format!(
+        "package main
+import \"zore/net\"
+func main() {{
+    let first, _ = net.Dial(\"127.0.0.1:{port}\")
+    let a, errA = first.Read(16)
+    println(a)
+    println(errA == nil)
+    let b, errB = first.Read(16)
+    println(errB == error(\"net.Read: invalid UTF-8\"))
+    let second, _ = net.Dial(\"127.0.0.1:{port}\")
+    let c, errC = second.Read(16)
+    println(errC == error(\"net.Read: invalid UTF-8\"))
+}}"
+    );
+    prints(&source, "ok\ntrue\ntrue\ntrue\n");
+    peer.join().unwrap();
+}
+
+#[test]
+fn a_listener_waiting_in_accept_does_not_stop_other_tasks() {
+    let source = "package main
+import \"zore/net\"
+func wait(listener own net.Listener) string {
+    let conn, err = listener.Accept()
+    if err != nil { return \"failed\" }
+    return \"accepted\"
+}
+func work(done channel<int>) {
+    var n = 0
+    for var i = 0; i < 1000; i += 1 { n += i }
+    done.send(n)
+}
+func main() {
+    let listener, err = net.Listen(\"127.0.0.1:0\")
+    if err != nil { return }
+    let pending = go wait(listener)
+    let done = channel<int>()
+    go work(done)
+    let n, _ = done.receive()
+    println(n)
+    drop(pending)
+}";
+    prints(source, "499500\n");
 }

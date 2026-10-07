@@ -137,18 +137,6 @@ impl Parser<'_> {
         }
     }
 
-    pub(super) fn unsupported(&mut self, what: &str) -> Reported {
-        let span = self.current_span();
-        self.report(
-            Diagnostic::new(
-                Severity::Error,
-                format!("{what} are not supported by this compiler yet"),
-                span,
-            )
-            .note("planned for a later milestone"),
-        )
-    }
-
     pub(super) fn expect(&mut self, punct: Punct) -> PResult<Span> {
         if self.at(punct) {
             return Ok(self.bump().span);

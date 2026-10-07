@@ -66,7 +66,9 @@ fn type_name(t: &Type) -> &str {
         | Type::Slice { .. }
         | Type::DynArray { .. }
         | Type::Map { .. }
-        | Type::Func { .. } => panic!("expected a named type, found a composite type"),
+        | Type::Func { .. }
+        | Type::Channel { .. }
+        | Type::Task { .. } => panic!("expected a named type, found a composite type"),
     }
 }
 
@@ -86,6 +88,11 @@ fn ty(case: &Case, t: &Type) -> String {
             if *mutable { "mut " } else { "" },
             ty(case, element)
         ),
+        Type::Channel { element, .. } => format!("channel<{}>", ty(case, element)),
+        Type::Task { results, .. } => {
+            let results: Vec<String> = results.iter().map(|r| ty(case, r)).collect();
+            format!("Task<{}>", results.join(", "))
+        }
         Type::Func {
             params, results, ..
         } => {
@@ -130,6 +137,15 @@ fn expr(case: &Case, e: &Expr) -> String {
             format!("({} {} {})", binary(*op), expr(case, lhs), expr(case, rhs))
         }
         ExprKind::Await(inner) => format!("(await {})", expr(case, inner)),
+        ExprKind::Go(inner) => format!("(go {})", expr(case, inner)),
+        ExprKind::Channel { element, capacity } => match capacity {
+            Some(capacity) => format!(
+                "(make channel<{}> {})",
+                ty(case, element),
+                expr(case, capacity)
+            ),
+            None => format!("(make channel<{}>)", ty(case, element)),
+        },
         ExprKind::Try(inner) => format!("(? {})", expr(case, inner)),
         ExprKind::Call { callee, args } => {
             let mut out = format!("(call {}", expr(case, callee));
@@ -884,6 +900,86 @@ fn dynamic_array_types_and_literals() {
 }
 
 #[test]
+fn task_types_and_go_expressions() {
+    let case = Case::body(
+        "let a Task<int> = go work(1)
+        let b Task<User, error> = go load()
+        let c Task = go log()
+        let d Array<Task<int>> = d
+        go log()
+        let e = go object.method(x)
+        let f = (go work())
+        let g = a + go work()",
+    );
+    case.assert_clean();
+    assert_eq!(
+        case.shape(),
+        [
+            "(let a Task<int> (go (call work 1)))",
+            "(let b Task<User, error> (go (call load)))",
+            "(let c Task<> (go (call log)))",
+            "(let d Array<Task<int>> d)",
+            "(go (call log))",
+            "(let e (go (call (. object method) x)))",
+            "(let f (paren (go (call work))))",
+            "(let g (+ a (go (call work))))",
+        ]
+    );
+}
+
+#[test]
+fn channel_types_and_creation() {
+    let case = Case::body(
+        "let a = channel<int>()
+        let b = channel<Array<int>>(n + 1)
+        let c channel<channel<int>> = c
+        let d Array<channel<User>> = d
+        a.send(1)
+        let v, ok = a.receive()
+        a.close()
+        let e = [channel<int>; 2]{a, b}",
+    );
+    case.assert_clean();
+    assert_eq!(
+        case.shape(),
+        [
+            "(let a (make channel<int>))",
+            "(let b (make channel<Array<int>> (+ n 1)))",
+            "(let c channel<channel<int>> c)",
+            "(let d Array<channel<User>> d)",
+            "(call (. a send) 1)",
+            "(let v,ok (call (. a receive)))",
+            "(call (. a close))",
+            "(let e (lit [channel<int> ; 2] a b))",
+        ]
+    );
+}
+
+#[test]
+fn invalid_channel_syntax_is_rejected() {
+    for (body, message) in [
+        ("let c = channel<int>", "expected `(`"),
+        ("let c = channel(1)", "expected `<`"),
+        ("let c channel = c", "expected `<`"),
+        ("let c = channel<>()", "expected a type"),
+        ("let c = channel<int>(1, 2)", "expected `)`"),
+    ] {
+        rejects(body, message);
+    }
+}
+
+#[test]
+fn invalid_task_syntax_is_rejected() {
+    for (body, message) in [
+        ("let t Task<> = t", "expected a type"),
+        ("let t Task<int = t", "expected `>`"),
+        ("let t = go", "expected"),
+    ] {
+        rejects(body, message);
+    }
+}
+
+#[test]
 fn invalid_dynamic_array_syntax_is_rejected() {
     for (body, message) in [
         ("let xs = Array<int>(1)", "expected `{` after `Array<T>`"),
@@ -893,10 +989,6 @@ fn invalid_dynamic_array_syntax_is_rejected() {
     ] {
         rejects(body, message);
     }
-    rejects_file(
-        "package main\nfunc f(t Task<int>) {}\n",
-        "not supported by this compiler yet",
-    );
 }
 
 #[test]
@@ -1212,16 +1304,7 @@ fn package_level_bindings_are_parsed() {
 }
 
 #[test]
-fn later_milestone_syntax_is_reported_as_unsupported() {
-    for body in ["let t = go work()", "go work()"] {
-        rejects(body, "not supported by this compiler yet");
-    }
-    for text in ["func f(t Task<int>) {}", "func f(c channel<int>) {}"] {
-        rejects_file(
-            &format!("package main\n{text}\n"),
-            "not supported by this compiler yet",
-        );
-    }
+fn reserved_words_are_rejected() {
     rejects("defer cleanup()", "`defer` is reserved");
     rejects("unsafe { }", "`unsafe` is reserved");
     rejects_file("package main\nenum Color {}\n", "`enum` is reserved");

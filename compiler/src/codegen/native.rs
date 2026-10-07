@@ -31,6 +31,10 @@ enum Result {
     Aggregate(TypeId),
     /// `(int, error)` or `(bool, error)`, written as `{ i64, i8, ptr, i64 }`.
     ValueError(TypeId),
+    /// `error`, written as `{ i8, ptr, i64 }`.
+    ErrorOnly,
+    /// `(string, error)`, written as `{ ptr, i64, i8, ptr, i64 }`.
+    StringError,
 }
 
 impl Module<'_> {
@@ -77,8 +81,12 @@ impl Module<'_> {
             [] => Result::None,
             [one] => match self.types().kind(*one) {
                 TypeKind::String | TypeKind::DynArray { .. } => Result::Aggregate(*one),
+                TypeKind::Error => Result::ErrorOnly,
                 _ => Result::Scalar(*one),
             },
+            [value, error] if *error == TypeStore::ERROR && *value == TypeStore::STRING => {
+                Result::StringError
+            }
             [value, error] if *error == TypeStore::ERROR => Result::ValueError(*value),
             _ => unreachable!("bundled functions have a supported result shape"),
         };
@@ -114,6 +122,32 @@ impl Module<'_> {
                 (
                     format!(
                         "  %out = alloca {layout}\n  call void @{symbol}({})\n  %r = load {layout}, ptr %out\n{release}  ret {layout} %r\n",
+                        rendered.join(", ")
+                    ),
+                    format!("declare void @{symbol}({})", parameters.join(", ")),
+                )
+            }
+            Result::ErrorOnly => {
+                let mut rendered = vec!["ptr %out".to_string()];
+                rendered.extend(args);
+                let mut parameters = vec!["ptr".to_string()];
+                parameters.extend(declared);
+                (
+                    format!(
+                        "  %out = alloca {{ i8, ptr, i64 }}\n  call void @{symbol}({})\n  %r = load {{ i8, ptr, i64 }}, ptr %out\n  %failed = extractvalue {{ i8, ptr, i64 }} %r, 0\n  %message = extractvalue {{ i8, ptr, i64 }} %r, 1\n  %length = extractvalue {{ i8, ptr, i64 }} %r, 2\n  %present = icmp ne i8 %failed, 0\n  %e0 = insertvalue {{ i1, ptr, i64 }} undef, i1 %present, 0\n  %e1 = insertvalue {{ i1, ptr, i64 }} %e0, ptr %message, 1\n  %e2 = insertvalue {{ i1, ptr, i64 }} %e1, i64 %length, 2\n{release}  ret {{ i1, ptr, i64 }} %e2\n",
+                        rendered.join(", ")
+                    ),
+                    format!("declare void @{symbol}({})", parameters.join(", ")),
+                )
+            }
+            Result::StringError => {
+                let mut rendered = vec!["ptr %out".to_string()];
+                rendered.extend(args);
+                let mut parameters = vec!["ptr".to_string()];
+                parameters.extend(declared);
+                (
+                    format!(
+                        "  %out = alloca {{ ptr, i64, i8, ptr, i64 }}\n  call void @{symbol}({})\n  %r = load {{ ptr, i64, i8, ptr, i64 }}, ptr %out\n  %data = extractvalue {{ ptr, i64, i8, ptr, i64 }} %r, 0\n  %size = extractvalue {{ ptr, i64, i8, ptr, i64 }} %r, 1\n  %failed = extractvalue {{ ptr, i64, i8, ptr, i64 }} %r, 2\n  %message = extractvalue {{ ptr, i64, i8, ptr, i64 }} %r, 3\n  %length = extractvalue {{ ptr, i64, i8, ptr, i64 }} %r, 4\n  %present = icmp ne i8 %failed, 0\n  %s0 = insertvalue {{ ptr, i64 }} undef, ptr %data, 0\n  %s1 = insertvalue {{ ptr, i64 }} %s0, i64 %size, 1\n  %e0 = insertvalue {{ i1, ptr, i64 }} undef, i1 %present, 0\n  %e1 = insertvalue {{ i1, ptr, i64 }} %e0, ptr %message, 1\n  %e2 = insertvalue {{ i1, ptr, i64 }} %e1, i64 %length, 2\n  %t0 = insertvalue {returns} undef, {{ ptr, i64 }} %s1, 0\n  %t1 = insertvalue {returns} %t0, {{ i1, ptr, i64 }} %e2, 1\n{release}  ret {returns} %t1\n",
                         rendered.join(", ")
                     ),
                     format!("declare void @{symbol}({})", parameters.join(", ")),

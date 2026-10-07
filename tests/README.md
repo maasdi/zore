@@ -15,8 +15,20 @@ entry-point and `println` contracts, and that unsupported features are rejected
 rather than accepted. Error-value tests cover `nil`, construction, equality,
 explicit discard, ignored-result diagnostics, and path-sensitive checks for named
 error bindings and parameters. Synchronous `?` tests cover typing, early return,
-zero-filled results, evaluation order, and cleanup; awaited propagation remains
-pending. `tests/ownership/ownership.rs` tests the MIR ownership pass through the
+zero-filled results, evaluation order, and cleanup; awaited calls cover async
+function declarations, the await-or-spawn rule, `await` outside async bodies,
+and awaited `?`; task cases cover `Task<...>` types and annotations, `go`
+typing and its input rules, Move classification, `nil`, `.wait()`, and
+`await task`. The native tests run tasks to completion, including results and
+errors, ownership transfer, panics (waited and detached), an endless detached
+task, `nil` waits, async functions awaiting tasks, many tasks sharing text, and tens of thousands
+of tasks running and waiting on each other, and channels: ordering, ownership and
+drops of messages, close and drain, the zero-value channel, blocked operations
+woken by close, reply channels, worker pools, and a chain of a thousand tasks. `conformance/io.md` covers `zore/time`, `zore/io`, `zore/os`,
+and `zore/net`; its native tests sleep, read piped standard input, round-trip
+files, echo text through a loopback TCP server (including a peer written in
+Rust that sends bytes that are not text), and check that a task waiting on
+input, a timer, or `Accept` never stops another task. `tests/ownership/ownership.rs` tests the MIR ownership pass through the
 full frontend: whole-place and partial moves, reinitialization, call-local
 borrows, the custom-`drop`-ancestor restriction, array- and slice-element move
 rules, and region analysis of stored slice borrows (aliasing at the

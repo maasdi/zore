@@ -205,6 +205,7 @@ fn check_rvalue(
     match rvalue {
         Rvalue::Zero => {}
         Rvalue::Use(operand)
+        | Rvalue::Spawn(operand)
         | Rvalue::Unary(_, operand)
         | Rvalue::Convert(operand, _)
         | Rvalue::Error(operand) => {

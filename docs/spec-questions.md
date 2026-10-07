@@ -47,6 +47,9 @@ A newly discovered semantic gap blocks its affected feature, not unrelated work.
 | Q22 | Output provenance: views stored through `mut` parameters and closure captures, and views returned through function values (§11.7, §16). See Q22 below. | §11.7, §16.3–16.4 | Ownership changes only |
 | Q23 | Strings: byte length and indexing, boundary-checked slicing, loops by character, `string(rune)`, and when runtime-built strings are released (§6.8, §41.5). See Q23 below. | §6.8, §41.5 | Checker, codegen, and runtime changes |
 | Q24 | Projects, packages, and imports: folders as packages, import paths, export checks, and the first standard packages (§3.20, §37.2). See Q24 below. | §3.20, §4.1, §37.2 | Loader, resolver, checker, and codegen changes |
+| Q25 | Task implementation choices made while implementing §17–18 where the text is silent; each rejects rather than guesses and can be relaxed later. See Q25 below. | §17.8, §18.4, §18.8–18.11 | Parser, checker, codegen, and runtime changes |
+| Q26 | Channel implementation choices made while implementing §19 where the text is silent; each rejects rather than guesses and can be relaxed later. See Q26 below. | §19.2–19.13 | Parser, checker, codegen, and runtime changes |
+| Q27 | Async I/O choices made while implementing §37.3 where the text is silent; each rejects rather than guesses and can be relaxed later. See Q27 below. | §37.3, §36.2 | Library, checker, codegen, and runtime changes |
 
 ## Resolved decisions
 
@@ -142,6 +145,69 @@ A newly discovered semantic gap blocks its affected feature, not unrelated work.
   new storage is freed, and unwinding continues. (g) Allocation failure aborts,
   as for `Array<T>` (Q17g). Pending cases: `tests/conformance/destruction.md`.
 
+- **Q27 — Async I/O choices:** locked in §37.3 at the maintainer's direction
+  (time, standard input, whole files, and TCP, waiting on an event loop). (a)
+  Strings are well-formed UTF-8, so every function that returns text from
+  outside reports an error for other bytes; there is no byte-array API yet.
+  (b) `net.Read` keeps an unfinished trailing character with the connection, so
+  a result can exceed `max` by up to three bytes. (c) A `Conn` or `Listener`
+  holds a runtime handle number that is never reused, so a closed or zero
+  handle can only fail; user code cannot build one because its field is not
+  exported and struct literals must name every field. (d) A connection is a Move
+  value used by one task at a time, so one task cannot read while another
+  writes; sharing one connection between tasks waits for a shared-state
+  feature. (e) Files, standard input, name lookup, and connecting use helper
+  threads because regular files cannot be polled; socket reads, writes, and
+  accepts and all timers use the event loop. (f) The messages after the fixed
+  prefixes come from the operating system and are not specified. (g) Waiting in
+  the initial task blocks its thread. (h) Operations have no timeout or
+  cancellation. Pending cases: `tests/conformance/io.md`.
+
+- **Q26 — Channel implementation choices:** (a) `channel<T>(n)` takes an `int`
+  capacity; a constant negative capacity is rejected and a negative runtime one
+  panics with "negative channel capacity". (b) `receive()` gives `(value, ok)`,
+  value first, so it must be bound or discarded as two results. (c) The element
+  type cannot hold a slice or function value, so a queued message never borrows
+  the sender's storage (§19.4); an owned array, a string, a channel handle, and
+  a Task are accepted. (d) A send that finds the channel closed, or is woken by
+  a close, panics with "send on a closed channel", after the runtime destroys
+  the value that was never queued; closing twice, or closing a zero-value
+  channel, panics with "close of a closed channel". (e) A receive from a
+  zero-value channel returns `(zero, false)` at once and a send panics. (f)
+  Waiting senders and receivers are served first come, first served, and a
+  receive that makes room moves the oldest blocked sender's value into the
+  buffer. (g) Channel handles are counted with an atomic reference count; a
+  handle cycle through buffers is never freed (§19.13). (h) A program whose
+  tasks all wait on channels forever hangs; there is no deadlock report. (i)
+  `select` is not available. Pending cases: `tests/conformance/concurrency.md`.
+
+- **Q25 — Task implementation choices:** (a) `go` takes a call to a declared
+  function or method, including an `async func`; a call through a function value,
+  a closure literal, and the built-in operations are rejected. (b) Inputs follow
+  §18.4 conservatively: a `mut` parameter, any argument whose type holds a slice
+  or function value, and a Move argument for a shared parameter are rejected;
+  Copy values, including text, are copied into the task, and `own` arguments are
+  moved in. (c) A task cannot return a slice or function value, and a written
+  `Task<...>` type with such a result is rejected. (d) `go f(args)` as a
+  statement detaches the task, and so does dropping or overwriting a handle; a
+  detached task's results are destroyed when it finishes. (e) Tasks are
+  fibers with private 256 KB stacks run by worker threads where stack switching
+  is available (x86-64 Linux and macOS), and operating-system threads elsewhere
+  (§36.2 leaves the scheduler open). A task that waits parks itself, so a wait
+  never starves another task, and `await task` waits the same way; an
+  `async func` awaited with `await` runs on the awaiting task's stack. Fiber
+  stacks do not grow, there is no preemption, and about 30,000 started,
+  unfinished fibers is the practical limit. The scheduler can change without
+  changing the language. (f) A task
+  panic is reported on standard error as `panic in task N: message` when it
+  happens, then raised again with the same message at `.wait()` or `await`.
+  Waiting on a `nil` task panics with "wait on a nil task". (g) Runtime-built
+  text is reference counted under one lock, so any task may hold, copy, and
+  release it. (h) When the initial task finishes, the process exits at once
+  without freeing the text that running tasks hold. (i) `await task` and
+  `.wait()` are the only operations on a task; there is no cancellation,
+  timeout, or join-all. Pending cases: `tests/conformance/concurrency.md`.
+
 - **Q24 — Projects, packages, and imports:** locked in §3.20 and §37.2 at the
   maintainer's direction: a folder is a package, import paths start with the
   project name (or `zore` for standard packages), and `zore run file.ore` builds
@@ -170,8 +236,8 @@ A newly discovered semantic gap blocks its affected feature, not unrelated work.
   panic unwinds); appending to the newest text in a buffer grows the buffer in
   place (doubling), which is safe because no string reads past its own end, so
   building one text in a loop costs memory proportional to its final length;
-  counts are not atomic, so text cannot cross threads until tasks arrive and
-  decide how; (d) number
+  the buffer table is shared by every task and guarded by a lock, so text
+  can cross tasks (Q25); (d) number
   formatting stays out of the language and lives in `zore/strconv`. Pending
   cases: `tests/conformance/strings.md`.
 
