@@ -40,6 +40,7 @@ impl Package {
             | TypeKind::Slice { .. } => true,
             // A closure may hold exclusive borrows, so it is never duplicated.
             TypeKind::Func(_) | TypeKind::Task(_) => false,
+            TypeKind::Channel { .. } => true,
             TypeKind::Struct(id) => {
                 let strukt = self.strukt(id);
                 strukt.drop.is_none() && strukt.fields.iter().all(|f| self.is_copy(f.ty))
@@ -49,24 +50,28 @@ impl Package {
         }
     }
 
-    /// Whether a value of `ty` owns a share of some runtime text.
-    pub fn holds_text(&self, ty: TypeId) -> bool {
+    /// Whether a value of `ty` owns a share of some runtime text or channel.
+    pub fn holds_shared(&self, ty: TypeId) -> bool {
         match self.types.kind(ty) {
-            TypeKind::String | TypeKind::Error => true,
-            TypeKind::Struct(id) => self.strukt(id).fields.iter().any(|f| self.holds_text(f.ty)),
-            TypeKind::Array { element, .. } => self.holds_text(element),
+            TypeKind::String | TypeKind::Error | TypeKind::Channel { .. } => true,
+            TypeKind::Struct(id) => self
+                .strukt(id)
+                .fields
+                .iter()
+                .any(|f| self.holds_shared(f.ty)),
+            TypeKind::Array { element, .. } => self.holds_shared(element),
             _ => false,
         }
     }
 
     /// Copy values that hold text are still copied freely, but each copy shares the text.
-    pub fn copies_text(&self, ty: TypeId) -> bool {
-        self.is_copy(ty) && self.holds_text(ty)
+    pub fn copies_shared(&self, ty: TypeId) -> bool {
+        self.is_copy(ty) && self.holds_shared(ty)
     }
 
     /// Destroying a value of `ty` does something: it runs cleanup or gives up shared text.
     pub fn needs_drop(&self, ty: TypeId) -> bool {
-        !self.is_copy(ty) || self.holds_text(ty)
+        !self.is_copy(ty) || self.holds_shared(ty)
     }
 
     /// Slices and closures hold borrows; a slice's own elements are not part of the value.

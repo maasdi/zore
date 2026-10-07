@@ -297,6 +297,10 @@ impl<'a> Checker<'a> {
                 let element_ty = self.resolve_type(element)?;
                 Some(self.types.dyn_array_type(element_ty))
             }
+            ast::Type::Channel { element, span } => {
+                let element = self.resolve_type(element)?;
+                self.channel_type(element, *span)
+            }
             ast::Type::Task { results, span } => {
                 let results = self.closure_results(results)?;
                 self.task_type(results, *span)
@@ -361,6 +365,24 @@ impl<'a> Checker<'a> {
             }
         }
         ok.then_some(checked)
+    }
+
+    /// A queued message outlives its sender, so it cannot borrow anything.
+    fn channel_type(&mut self, element: TypeId, span: Span) -> Option<TypeId> {
+        if self.type_contains(element, &|kind| {
+            matches!(kind, TypeKind::Slice { .. } | TypeKind::Func(_))
+        }) {
+            self.diagnostics.push(
+                Diagnostic::new(
+                    Severity::Error,
+                    "a channel cannot carry slices or function values",
+                    span,
+                )
+                .note("a queued value can outlive the storage a view borrows"),
+            );
+            return None;
+        }
+        Some(self.types.channel_type(element))
     }
 
     /// The error result comes last, and a task's results cannot borrow the task's own storage.
@@ -572,6 +594,7 @@ impl<'a> Checker<'a> {
                         .all(|(_, field_ty, _)| field_ty.is_none_or(|ty| self.type_is_copy(ty)))
             }
             TypeKind::Array { element, .. } => self.type_is_copy(element),
+            TypeKind::Channel { .. } => true,
             TypeKind::DynArray { .. }
             | TypeKind::Map { .. }
             | TypeKind::Func(_)
@@ -1251,6 +1274,9 @@ impl<'a> Checker<'a> {
             ast::ExprKind::Binary { op, lhs, rhs } => self.binary(*op, lhs, rhs, span, expected),
             ast::ExprKind::Await(operand) => self.await_expr(operand, span),
             ast::ExprKind::Go(operand) => self.go_expr(operand, span),
+            ast::ExprKind::Channel { element, capacity } => {
+                self.make_channel(element, capacity.as_deref(), span)
+            }
             ast::ExprKind::Try(inner) => self.try_expr(inner, span),
             ast::ExprKind::Call { callee, args } => self.call(callee, args, span),
             ast::ExprKind::Field { base, name } => self.field(base, name, span),
@@ -1396,6 +1422,72 @@ impl<'a> Checker<'a> {
             body,
         });
         id
+    }
+
+    fn make_channel(
+        &mut self,
+        element: &ast::Type,
+        capacity: Option<&ast::Expr>,
+        span: Span,
+    ) -> Option<Value> {
+        let element_ty = self.resolve_type(element);
+        let capacity = capacity.map(|capacity| {
+            self.expr(capacity, Some(TypeStore::INT))
+                .and_then(|value| self.coerce(value, TypeStore::INT))
+        });
+        let element_ty = self.channel_type(element_ty?, span)?;
+        let TypeKind::Channel { element } = self.types.kind(element_ty) else {
+            unreachable!("a channel type was just built")
+        };
+        let capacity = match capacity {
+            Some(capacity) => Some(Box::new(capacity?)),
+            None => None,
+        };
+        if let Some(capacity) = &capacity
+            && matches!(capacity.kind, ExprKind::Const(Const::Int(n)) if n < 0)
+        {
+            self.error("a channel's capacity cannot be negative", capacity.span);
+            return None;
+        }
+        Some(Value::Typed(typed(
+            ExprKind::MakeChannel { element, capacity },
+            element_ty,
+            span,
+        )))
+    }
+
+    fn channel_method(
+        &mut self,
+        channel: hir::Expr,
+        element: TypeId,
+        method: &str,
+        args: &[ast::Expr],
+        span: Span,
+    ) -> Option<Value> {
+        let wanted = usize::from(method == "send");
+        if !self.argument_count(method, wanted, args, span) {
+            return None;
+        }
+        let (kind, types) = match method {
+            "send" => {
+                let value = self
+                    .expr(&args[0], Some(element))
+                    .and_then(|value| self.coerce(value, element))?;
+                (
+                    ExprKind::ChannelSend {
+                        channel: Box::new(channel),
+                        value: Box::new(value),
+                    },
+                    Vec::new(),
+                )
+            }
+            "receive" => (
+                ExprKind::ChannelReceive(Box::new(channel)),
+                vec![element, TypeStore::BOOL],
+            ),
+            _ => (ExprKind::ChannelClose(Box::new(channel)), Vec::new()),
+        };
+        Some(Value::Typed(hir::Expr { kind, types, span }))
     }
 
     fn in_async_body(&self) -> bool {
@@ -2144,6 +2236,11 @@ impl<'a> Checker<'a> {
             && name.text == "remove"
         {
             return self.map_remove(receiver, key, value, args, span);
+        }
+        if let TypeKind::Channel { element } = self.types.kind(ty)
+            && matches!(name.text.as_str(), "send" | "receive" | "close")
+        {
+            return self.channel_method(receiver, element, &name.text, args, span);
         }
         if let Some(results) = self.types.task_results(ty)
             && name.text == "wait"
@@ -4244,6 +4341,9 @@ fn subexpressions(expr: &hir::Expr) -> Vec<&hir::Expr> {
             .collect(),
         ExprKind::MapLookup { map, key } | ExprKind::MapRemove { map, key } => vec![map, key],
         ExprKind::ArrayPush { array, value } => vec![array, value],
+        ExprKind::ChannelSend { channel, value } => vec![channel, value],
+        ExprKind::MakeChannel { capacity, .. } => capacity.as_deref().into_iter().collect(),
+        ExprKind::ChannelReceive(inner) | ExprKind::ChannelClose(inner) => vec![inner],
         ExprKind::Len(inner)
         | ExprKind::ArrayPop(inner)
         | ExprKind::Println(inner)

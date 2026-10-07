@@ -48,6 +48,7 @@ A newly discovered semantic gap blocks its affected feature, not unrelated work.
 | Q23 | Strings: byte length and indexing, boundary-checked slicing, loops by character, `string(rune)`, and when runtime-built strings are released (§6.8, §41.5). See Q23 below. | §6.8, §41.5 | Checker, codegen, and runtime changes |
 | Q24 | Projects, packages, and imports: folders as packages, import paths, export checks, and the first standard packages (§3.20, §37.2). See Q24 below. | §3.20, §4.1, §37.2 | Loader, resolver, checker, and codegen changes |
 | Q25 | Task implementation choices made while implementing §17–18 where the text is silent; each rejects rather than guesses and can be relaxed later. See Q25 below. | §17.8, §18.4, §18.8–18.11 | Parser, checker, codegen, and runtime changes |
+| Q26 | Channel implementation choices made while implementing §19 where the text is silent; each rejects rather than guesses and can be relaxed later. See Q26 below. | §19.2–19.13 | Parser, checker, codegen, and runtime changes |
 
 ## Resolved decisions
 
@@ -142,6 +143,24 @@ A newly discovered semantic gap blocks its affected feature, not unrelated work.
   already cloned are dropped (in reverse order, map values in entry order), the
   new storage is freed, and unwinding continues. (g) Allocation failure aborts,
   as for `Array<T>` (Q17g). Pending cases: `tests/conformance/destruction.md`.
+
+- **Q26 — Channel implementation choices:** (a) `channel<T>(n)` takes an `int`
+  capacity; a constant negative capacity is rejected and a negative runtime one
+  panics with "negative channel capacity". (b) `receive()` gives `(value, ok)`,
+  value first, so it must be bound or discarded as two results. (c) The element
+  type cannot hold a slice or function value, so a queued message never borrows
+  the sender's storage (§19.4); an owned array, a string, a channel handle, and
+  a Task are accepted. (d) A send that finds the channel closed, or is woken by
+  a close, panics with "send on a closed channel", after the runtime destroys
+  the value that was never queued; closing twice, or closing a zero-value
+  channel, panics with "close of a closed channel". (e) A receive from a
+  zero-value channel returns `(zero, false)` at once and a send panics. (f)
+  Waiting senders and receivers are served first come, first served, and a
+  receive that makes room moves the oldest blocked sender's value into the
+  buffer. (g) Channel handles are counted with an atomic reference count; a
+  handle cycle through buffers is never freed (§19.13). (h) A program whose
+  tasks all wait on channels forever hangs; there is no deadlock report. (i)
+  `select` is not available. Pending cases: `tests/conformance/concurrency.md`.
 
 - **Q25 — Task implementation choices:** (a) `go` takes a call to a declared
   function or method, including an `async func`; a call through a function value,

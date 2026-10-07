@@ -3159,3 +3159,349 @@ func main() {
         stderr(&output)
     );
 }
+
+#[test]
+fn an_unbuffered_channel_hands_values_between_tasks() {
+    let source = "package main
+func produce(ch channel<int>, count int) {
+    for var i = 1; i <= count; i += 1 { ch.send(i) }
+    ch.close()
+}
+func main() {
+    let ch = channel<int>()
+    go produce(ch, 100)
+    var sum = 0
+    var received = 0
+    for {
+        let value, ok = ch.receive()
+        if !ok { break }
+        sum += value
+        received += 1
+    }
+    println(sum)
+    println(received)
+}";
+    prints(source, "5050\n100\n");
+}
+
+#[test]
+fn a_buffered_channel_keeps_order_and_waits_only_when_full() {
+    let source = "package main
+func main() {
+    let ch = channel<string>(3)
+    ch.send(\"a\")
+    ch.send(\"b\")
+    ch.send(\"c\")
+    ch.close()
+    for {
+        let text, ok = ch.receive()
+        if !ok { break }
+        println(text)
+    }
+    let empty, ok = ch.receive()
+    println(empty.len())
+    println(ok)
+}";
+    prints(source, "a\nb\nc\n0\nfalse\n");
+}
+
+#[test]
+fn values_sent_over_a_channel_change_owner_and_are_dropped_once() {
+    let source = "package main
+type Job struct { Name string }
+func (j mut Job) drop() { println(\"drop \" + j.Name) }
+func main() {
+    let ch = channel<Job>(2)
+    ch.send(Job{Name: \"a\"})
+    ch.send(Job{Name: \"b\"})
+    let first, ok = ch.receive()
+    println(\"received \" + first.Name)
+    println(ok)
+}";
+    prints(source, "received a\ntrue\ndrop a\ndrop b\n");
+}
+
+#[test]
+fn buffered_values_are_dropped_when_the_last_handle_goes() {
+    let source = "package main
+type Job struct { Name string }
+func (j mut Job) drop() { println(\"drop \" + j.Name) }
+func hold(ch channel<Job>) { println(\"holding\") }
+func fill() {
+    let ch = channel<Job>(3)
+    let other = ch
+    ch.send(Job{Name: \"x\"})
+    other.send(Job{Name: \"y\"})
+    hold(other)
+    println(\"leaving\")
+}
+func main() {
+    fill()
+    println(\"done\")
+}";
+    let output = run(source);
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    let text = stdout(&output);
+    let lines: Vec<&str> = text.lines().collect();
+    assert_eq!(&lines[..2], ["holding", "leaving"]);
+    assert_eq!(lines[4], "done");
+    let mut dropped = [lines[2], lines[3]];
+    dropped.sort();
+    assert_eq!(dropped, ["drop x", "drop y"]);
+}
+
+#[test]
+fn closing_lets_buffered_values_drain_then_reports_zero_and_false() {
+    let source = "package main
+type Point struct { X int
+    Y int }
+func main() {
+    let ch = channel<Point>(2)
+    ch.send(Point{X: 1, Y: 2})
+    ch.close()
+    let a, aok = ch.receive()
+    let b, bok = ch.receive()
+    println(a.X + a.Y)
+    println(aok)
+    println(b.X + b.Y)
+    println(bok)
+}";
+    prints(source, "3\ntrue\n0\nfalse\n");
+}
+
+#[test]
+fn sending_on_a_closed_channel_panics_and_drops_the_value() {
+    let source = "package main
+type Job struct { Name string }
+func (j mut Job) drop() { println(\"drop \" + j.Name) }
+func main() {
+    let ch = channel<Job>(1)
+    ch.close()
+    println(\"sending\")
+    ch.send(Job{Name: \"lost\"})
+    println(\"unreachable\")
+}";
+    let output = run(source);
+    assert_eq!(output.status.code(), Some(2), "{}", stderr(&output));
+    assert_eq!(stdout(&output), "sending\ndrop lost\n");
+    assert!(
+        stderr(&output).contains("send on a closed channel"),
+        "{}",
+        stderr(&output)
+    );
+}
+
+#[test]
+fn closing_twice_panics() {
+    let output = run(&main_body(
+        "let ch = channel<int>()\nch.close()\nch.close()",
+    ));
+    assert_eq!(output.status.code(), Some(2));
+    assert!(
+        stderr(&output).contains("close of a closed channel"),
+        "{}",
+        stderr(&output)
+    );
+}
+
+#[test]
+fn the_zero_value_channel_is_closed_and_empty() {
+    let source = "package main
+func main() {
+    let holder = channel<channel<int>>(1)
+    holder.close()
+    let zero, ok = holder.receive()
+    println(ok)
+    let value, got = zero.receive()
+    println(value)
+    println(got)
+    let again, more = zero.receive()
+    println(again)
+    println(more)
+    zero.send(1)
+    println(\"unreachable\")
+}";
+    let output = run(source);
+    assert_eq!(output.status.code(), Some(2), "{}", stderr(&output));
+    assert_eq!(stdout(&output), "false\n0\nfalse\n0\nfalse\n");
+    assert!(
+        stderr(&output).contains("send on a closed channel"),
+        "{}",
+        stderr(&output)
+    );
+    let close = run(&main_body(
+        "let holder = channel<channel<int>>()\nholder.close()\nlet zero, _ = holder.receive()\nzero.close()",
+    ));
+    assert_eq!(close.status.code(), Some(2));
+}
+
+#[test]
+fn closing_wakes_a_blocked_receiver_with_false() {
+    let source = "package main
+func wait(ch channel<int>) bool {
+    let value, ok = ch.receive()
+    return ok
+}
+func main() {
+    let ch = channel<int>()
+    let t = go wait(ch)
+    ch.close()
+    println(t.wait())
+}";
+    prints(source, "false\n");
+}
+
+#[test]
+fn closing_wakes_a_blocked_sender_with_a_panic() {
+    let source = "package main
+type Job struct { Name string }
+func (j mut Job) drop() { println(\"drop \" + j.Name) }
+func push(ch channel<Job>) {
+    ch.send(Job{Name: \"stuck\"})
+}
+func main() {
+    let ch = channel<Job>()
+    let t = go push(ch)
+    ch.close()
+    t.wait()
+    println(\"unreachable\")
+}";
+    let output = run(source);
+    assert_eq!(output.status.code(), Some(2), "{}", stderr(&output));
+    assert_eq!(stdout(&output), "drop stuck\n");
+    assert!(
+        stderr(&output).contains("send on a closed channel"),
+        "{}",
+        stderr(&output)
+    );
+}
+
+#[test]
+fn a_request_carries_its_own_reply_channel() {
+    let source = "package main
+type Request struct {
+    Text string
+    Reply channel<string>
+}
+func serve(requests channel<Request>) {
+    for {
+        let request, ok = requests.receive()
+        if !ok { return }
+        request.Reply.send(\"echo \" + request.Text)
+    }
+}
+func main() {
+    let requests = channel<Request>()
+    go serve(requests)
+    let letters = \"abc\"
+    for var i = 0; i < 3; i += 1 {
+        let reply = channel<string>()
+        requests.send(Request{Text: \"hi\" + letters[i:i + 1], Reply: reply})
+        let answer, _ = reply.receive()
+        println(answer)
+    }
+    requests.close()
+}";
+    prints(source, "echo hia\necho hib\necho hic\n");
+}
+
+#[test]
+fn a_pool_of_workers_shares_one_channel() {
+    let source = "package main
+func worker(jobs channel<int>, results channel<int>) {
+    for {
+        let n, ok = jobs.receive()
+        if !ok { return }
+        results.send(n * n)
+    }
+}
+func main() {
+    let jobs = channel<int>(8)
+    let results = channel<int>(50)
+    for var w = 0; w < 4; w += 1 {
+        go worker(jobs, results)
+    }
+    for var n = 1; n <= 50; n += 1 {
+        jobs.send(n)
+    }
+    jobs.close()
+    var total = 0
+    for var n = 0; n < 50; n += 1 {
+        let square, _ = results.receive()
+        total += square
+    }
+    println(total)
+}";
+    prints(source, "42925\n");
+}
+
+#[test]
+fn a_thousand_tasks_pass_a_value_along_a_chain_of_channels() {
+    let source = "package main
+func link(from channel<int>, to channel<int>) {
+    let value, _ = from.receive()
+    to.send(value + 1)
+}
+func main() {
+    let first = channel<int>()
+    var last = first
+    for var i = 0; i < 1000; i += 1 {
+        let next = channel<int>()
+        go link(last, next)
+        last = next
+    }
+    first.send(0)
+    let result, _ = last.receive()
+    println(result)
+}";
+    prints(source, "1000\n");
+}
+
+#[test]
+fn async_functions_send_and_receive_on_channels() {
+    let source = "package main
+async func produce(ch channel<string>) {
+    ch.send(\"one\")
+    ch.send(\"two\")
+    ch.close()
+}
+async func gather(ch channel<string>) int {
+    var total = 0
+    for {
+        let text, ok = ch.receive()
+        if !ok { return total }
+        total += text.len()
+    }
+}
+func main() {
+    let ch = channel<string>()
+    go produce(ch)
+    let t = go gather(ch)
+    println(t.wait())
+}";
+    prints(source, "6\n");
+}
+
+#[test]
+fn channel_handles_in_structs_and_collections_are_shared_and_released() {
+    let source = "package main
+type Pair struct {
+    Left channel<int>
+    Right channel<int>
+}
+func main() {
+    let pair = Pair{Left: channel<int>(1), Right: channel<int>(1)}
+    let copy = pair
+    pair.Left.send(7)
+    let seen, _ = copy.Left.receive()
+    println(seen)
+    var all = Array<channel<int>>{pair.Left, pair.Right}
+    all.push(copy.Right)
+    let found, last = all.pop()
+    last.send(9)
+    let again, _ = pair.Right.receive()
+    println(again)
+    println(found)
+}";
+    prints(source, "7\n9\ntrue\n");
+}

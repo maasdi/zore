@@ -45,7 +45,8 @@ fn by_value_named_type(ty: &ast::Type) -> Option<&ast::Name> {
         | ast::Type::DynArray { .. }
         | ast::Type::Map { .. }
         | ast::Type::Func { .. }
-        | ast::Type::Task { .. } => None,
+        | ast::Type::Task { .. }
+        | ast::Type::Channel { .. } => None,
     }
 }
 
@@ -56,7 +57,10 @@ fn owned_named_type(ty: &ast::Type) -> Option<&ast::Name> {
             owned_named_type(element)
         }
         ast::Type::Map { value, .. } => owned_named_type(value),
-        ast::Type::Slice { .. } | ast::Type::Func { .. } | ast::Type::Task { .. } => None,
+        ast::Type::Slice { .. }
+        | ast::Type::Func { .. }
+        | ast::Type::Task { .. }
+        | ast::Type::Channel { .. } => None,
     }
 }
 
@@ -575,6 +579,7 @@ impl<'a> Resolver<'a> {
                 self.ty(key);
                 self.ty(value);
             }
+            ast::Type::Channel { element, .. } => self.ty(element),
             ast::Type::Task { results, .. } => {
                 for result in results {
                     self.ty(result);
@@ -864,6 +869,12 @@ impl<'a> Resolver<'a> {
             | ExprKind::Bool(_)
             | ExprKind::Nil
             | ExprKind::Malformed => {}
+            ExprKind::Channel { element, capacity } => {
+                self.ty(element);
+                if let Some(capacity) = capacity {
+                    self.expr(capacity);
+                }
+            }
             ExprKind::Paren(inner)
             | ExprKind::Await(inner)
             | ExprKind::Go(inner)

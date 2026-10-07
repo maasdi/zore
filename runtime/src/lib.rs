@@ -5,6 +5,8 @@
 
 #[path = "alloc.rs"]
 mod alloc;
+#[path = "channel.rs"]
+mod channel;
 #[path = "fiber.rs"]
 mod fiber;
 #[path = "io.rs"]
@@ -27,6 +29,11 @@ pub fn finish() {
     let leaked = string::live_buffers();
     if leaked > 0 && !tasks_running && std::env::var_os("ZORE_CHECK_LEAKS").is_some() {
         eprintln!("leak: {leaked} text buffers still owned at exit");
+        std::process::exit(70);
+    }
+    let channels = channel::live_channels();
+    if channels > 0 && !tasks_running && std::env::var_os("ZORE_CHECK_LEAKS").is_some() {
+        eprintln!("leak: {channels} channels still alive at exit");
         std::process::exit(70);
     }
     panic::finish();

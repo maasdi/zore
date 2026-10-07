@@ -1,0 +1,5 @@
+385
+10
+echo hello
+0
+false

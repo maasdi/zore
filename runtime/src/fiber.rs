@@ -1,7 +1,7 @@
 //! Where a task's code runs. Where stack switching is available, tasks are fibers on small
 //! private stacks scheduled over a few worker threads; elsewhere each task gets a thread.
 
-use std::sync::{Arc, Condvar, MutexGuard};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 
 use super::task::Shared;
 
@@ -20,6 +20,63 @@ fn block<'a, T>(condvar: &Condvar, guard: MutexGuard<'a, T>) -> MutexGuard<'a, T
         .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
+#[derive(Default)]
+struct SlotState {
+    woken: bool,
+    parked: Option<Waiter>,
+}
+
+/// One task's place to sleep until another task wakes it; it serves a single wait.
+#[derive(Default)]
+pub(super) struct Slot {
+    state: Mutex<SlotState>,
+    ready: Condvar,
+}
+
+impl Slot {
+    fn lock(&self) -> MutexGuard<'_, SlotState> {
+        self.state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    pub(super) fn wake(&self) {
+        let mut state = self.lock();
+        state.woken = true;
+        let parked = state.parked.take();
+        drop(state);
+        self.ready.notify_all();
+        if let Some(waiter) = parked {
+            wake(waiter);
+        }
+    }
+
+    /// A fiber parks so its worker runs other tasks; any other thread blocks.
+    pub(super) fn park(self: &Arc<Self>) {
+        if imp::park(self) {
+            return;
+        }
+        let mut state = self.lock();
+        while !state.woken {
+            state = block(&self.ready, state);
+        }
+    }
+
+    /// Called by a worker after the fiber has left: true when it was woken meanwhile.
+    fn settle(&self, waiter: Waiter) -> bool {
+        let mut state = self.lock();
+        if state.woken {
+            return true;
+        }
+        state.parked = Some(waiter);
+        false
+    }
+
+    fn is_woken(&self) -> bool {
+        self.lock().woken
+    }
+}
+
 #[cfg(all(target_arch = "x86_64", any(target_os = "linux", target_os = "macos")))]
 mod imp {
     use std::cell::Cell;
@@ -27,7 +84,7 @@ mod imp {
     use std::sync::{Condvar, Mutex, MutexGuard, Once};
 
     use super::super::panic::{self, PanicState};
-    use super::{Arc, Job, Shared, block, wait_on_condvar};
+    use super::{Arc, Job, Shared, Slot, block, wait_on_condvar};
 
     const STACK_BYTES: usize = 256 << 10;
     const GUARD_BYTES: usize = 4096;
@@ -79,6 +136,8 @@ mod imp {
         Finished,
         /// Wake me when this task finishes.
         Wait(Arc<Shared>),
+        /// Wake me when this slot is woken.
+        Park(Arc<Slot>),
     }
 
     struct Fiber {
@@ -189,6 +248,19 @@ mod imp {
         unsafe { leave(fiber, Request::Wait(Arc::clone(shared))) };
     }
 
+    /// Parks the running fiber on the slot; false when the caller is not a fiber.
+    pub(crate) fn park(slot: &Arc<Slot>) -> bool {
+        let fiber = current();
+        if fiber.is_null() {
+            return false;
+        }
+        if !slot.is_woken() {
+            // SAFETY: `fiber` is the fiber running on this thread.
+            unsafe { leave(fiber, Request::Park(Arc::clone(slot))) };
+        }
+        true
+    }
+
     /// Hands control back to the worker; the fiber continues here when it is resumed.
     unsafe fn leave(fiber: *mut Fiber, request: Request) {
         // SAFETY: the caller runs on this fiber's stack, resumed by the worker that set `worker_sp`.
@@ -292,6 +364,11 @@ mod imp {
                         state.waiter = Some(Waiter(Ptr(fiber)));
                     }
                 }
+                Request::Park(slot) => {
+                    if slot.settle(Waiter(Ptr(fiber))) {
+                        enqueue(Ptr(fiber));
+                    }
+                }
                 Request::None => enqueue(Ptr(fiber)),
             }
         }
@@ -300,7 +377,7 @@ mod imp {
 
 #[cfg(not(all(target_arch = "x86_64", any(target_os = "linux", target_os = "macos"))))]
 mod imp {
-    use super::{Arc, Job, Shared, wait_on_condvar};
+    use super::{Arc, Job, Shared, Slot, wait_on_condvar};
 
     /// Never made: a thread waits on the task's condition variable.
     #[derive(Clone, Copy)]

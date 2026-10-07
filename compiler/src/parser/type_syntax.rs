@@ -29,7 +29,7 @@ impl Parser<'_> {
             }
             TokenKind::Punct(Punct::LBracket) => self.bracket_type(),
             TokenKind::Keyword(Keyword::Map) => self.map_type(),
-            TokenKind::Keyword(Keyword::Channel) => Err(self.unsupported("channel types")),
+            TokenKind::Keyword(Keyword::Channel) => self.channel_type(),
             TokenKind::Keyword(Keyword::Func) => self.func_type(),
             TokenKind::Keyword(Keyword::Mut) => {
                 let start = self.current_span();
@@ -51,6 +51,17 @@ impl Parser<'_> {
             }
             _ => Err(self.unexpected("a type")),
         }
+    }
+
+    pub(super) fn channel_type(&mut self) -> PResult<Type> {
+        let start = self.bump().span;
+        self.expect(Punct::Lt)?;
+        let element = self.ty()?;
+        self.close_type_arguments()?;
+        Ok(Type::Channel {
+            element: Box::new(element),
+            span: self.span_from(start),
+        })
     }
 
     /// Only the predeclared `Array` takes a type argument, and it cannot be shadowed.

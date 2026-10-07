@@ -1,0 +1,88 @@
+package main
+
+type Job struct {
+    Name string
+    Cost int
+}
+
+type Request struct {
+    Text  string
+    Reply channel<string>
+}
+
+func generate(numbers channel<int>, count int) {
+    for var i = 1; i <= count; i += 1 {
+        numbers.send(i)
+    }
+    numbers.close()
+}
+
+func square(numbers channel<int>, squares channel<int>) {
+    for {
+        let n, ok = numbers.receive()
+        if !ok {
+            break
+        }
+        squares.send(n * n)
+    }
+    squares.close()
+}
+
+func work(jobs channel<Job>, totals channel<int>) {
+    var total = 0
+    for {
+        let job, ok = jobs.receive()
+        if !ok {
+            break
+        }
+        total += job.Cost
+    }
+    totals.send(total)
+}
+
+func serve(requests channel<Request>) {
+    for {
+        let request, ok = requests.receive()
+        if !ok {
+            return
+        }
+        request.Reply.send("echo " + request.Text)
+    }
+}
+
+func main() {
+    let numbers = channel<int>()
+    let squares = channel<int>(4)
+    go generate(numbers, 10)
+    go square(numbers, squares)
+    var sum = 0
+    for {
+        let value, ok = squares.receive()
+        if !ok {
+            break
+        }
+        sum += value
+    }
+    println(sum)
+
+    let jobs = channel<Job>(3)
+    let totals = channel<int>()
+    go work(jobs, totals)
+    jobs.send(Job{Name: "first", Cost: 4})
+    jobs.send(Job{Name: "second", Cost: 6})
+    jobs.close()
+    let total, _ = totals.receive()
+    println(total)
+
+    let requests = channel<Request>()
+    go serve(requests)
+    let reply = channel<string>()
+    requests.send(Request{Text: "hello", Reply: reply})
+    let answer, _ = reply.receive()
+    println(answer)
+    requests.close()
+
+    let late, open = jobs.receive()
+    println(late.Cost)
+    println(open)
+}

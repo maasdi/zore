@@ -19,6 +19,7 @@ pub struct TypeStore {
     func_types: HashMap<FuncSignature, TypeId>,
     task_results: Vec<Vec<TypeId>>,
     task_types: HashMap<Vec<TypeId>, TypeId>,
+    channel_types: HashMap<TypeId, TypeId>,
 }
 
 impl Default for TypeStore {
@@ -67,6 +68,7 @@ impl TypeStore {
             func_types: HashMap::new(),
             task_results: Vec::new(),
             task_types: HashMap::new(),
+            channel_types: HashMap::new(),
         }
     }
 
@@ -133,6 +135,16 @@ impl TypeStore {
         let ty = TypeId(self.kinds.len() as u32);
         self.kinds.push(TypeKind::Func(id));
         self.func_types.insert(signature, ty);
+        ty
+    }
+
+    pub fn channel_type(&mut self, element: TypeId) -> TypeId {
+        if let Some(&ty) = self.channel_types.get(&element) {
+            return ty;
+        }
+        let ty = TypeId(self.kinds.len() as u32);
+        self.kinds.push(TypeKind::Channel { element });
+        self.channel_types.insert(element, ty);
         ty
     }
 
@@ -254,6 +266,9 @@ impl fmt::Display for TypeName<'_> {
                 self.store.display(key),
                 self.store.display(value)
             ),
+            TypeKind::Channel { element } => {
+                write!(f, "channel<{}>", self.store.display(element))
+            }
             TypeKind::Task(id) => {
                 let results = &self.store.task_results[id.0 as usize];
                 f.write_str("Task")?;

@@ -88,6 +88,18 @@ pub enum ExprKind {
     },
     /// Consumes the task handle and gives its results, raising its panic if it had one.
     TaskWait(Box<Expr>),
+    MakeChannel {
+        element: TypeId,
+        capacity: Option<Box<Expr>>,
+    },
+    /// Moves the value into the channel, waiting for room.
+    ChannelSend {
+        channel: Box<Expr>,
+        value: Box<Expr>,
+    },
+    /// The value, then whether one arrived.
+    ChannelReceive(Box<Expr>),
+    ChannelClose(Box<Expr>),
     Println(Box<Expr>),
     Drop(Box<Expr>),
     Clone(Box<Expr>),

@@ -715,9 +715,14 @@ impl<'a> Analysis<'a> {
                 .iter()
                 .map(|&(mode, ty)| Some(exclusive_if_func(mode, ty)))
                 .collect(),
-            Callee::Println | Callee::Drop | Callee::Clone(_) | Callee::TaskWait => {
-                vec![None; args.len()]
-            }
+            Callee::Println
+            | Callee::Drop
+            | Callee::Clone(_)
+            | Callee::TaskWait
+            | Callee::ChannelMake(_)
+            | Callee::ChannelSend
+            | Callee::ChannelReceive
+            | Callee::ChannelClose => vec![None; args.len()],
             Callee::MapInsertNew | Callee::MapAssign | Callee::MapLookup | Callee::MapRemove => {
                 let mut modes = vec![None; args.len()];
                 modes[0] = callee.map_access();

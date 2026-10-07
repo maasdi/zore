@@ -16,6 +16,10 @@ const RUNTIME_SOURCES: &[(&str, &str)] = &[
     ("main.rs", include_str!("../../../runtime/src/main.rs")),
     ("lib.rs", include_str!("../../../runtime/src/lib.rs")),
     ("alloc.rs", include_str!("../../../runtime/src/alloc.rs")),
+    (
+        "channel.rs",
+        include_str!("../../../runtime/src/channel.rs"),
+    ),
     ("fiber.rs", include_str!("../../../runtime/src/fiber.rs")),
     ("io.rs", include_str!("../../../runtime/src/io.rs")),
     ("map.rs", include_str!("../../../runtime/src/map.rs")),

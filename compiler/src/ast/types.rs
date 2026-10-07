@@ -36,6 +36,10 @@ pub enum Type {
         results: Vec<Type>,
         span: Span,
     },
+    Channel {
+        element: Box<Type>,
+        span: Span,
+    },
     /// `Task<R1, ..., Rn>`, or plain `Task` with no results.
     Task {
         results: Vec<Type>,
@@ -59,7 +63,8 @@ impl Type {
             | Self::DynArray { span, .. }
             | Self::Map { span, .. }
             | Self::Func { span, .. }
-            | Self::Task { span, .. } => *span,
+            | Self::Task { span, .. }
+            | Self::Channel { span, .. } => *span,
         }
     }
 }

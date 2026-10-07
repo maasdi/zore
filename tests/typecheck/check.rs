@@ -3255,3 +3255,194 @@ fn spawned_inputs_must_not_borrow_the_spawner() {
         "use of moved value `values`",
     );
 }
+
+const CHANNEL_PRELUDE: &str = "
+type Job struct { Name string }
+func (j mut Job) drop() {}
+type Request struct {
+    Text string
+    Reply channel<string>
+}
+func consume(ch channel<int>) {}
+";
+
+fn channel_body(stmts: &str) -> String {
+    program(&format!("{CHANNEL_PRELUDE}\nfunc entry() {{\n{stmts}\n}}"))
+}
+
+#[test]
+fn channels_are_created_with_a_capacity_or_without() {
+    let case = accepts(&channel_body(
+        "let a = channel<int>()
+        let b = channel<Job>(4)
+        let c = channel<channel<int>>(1 + 2)
+        let d channel<string> = channel<string>()
+        let e = [channel<int>; 2]{a, a}
+        let f = Array<channel<int>>{a}",
+    ));
+    let entry = case.function("entry");
+    let types: Vec<String> = entry
+        .locals
+        .iter()
+        .take(4)
+        .map(|local| case.package().types.display(local.ty).to_string())
+        .collect();
+    assert_eq!(
+        types,
+        [
+            "channel<int64>",
+            "channel<Job>",
+            "channel<channel<int64>>",
+            "channel<string>"
+        ]
+    );
+    rejects(
+        &channel_body("let c = channel<int>(\"big\")"),
+        "mismatched types",
+    );
+    rejects(
+        &channel_body("let c = channel<int>(-1)"),
+        "capacity cannot be negative",
+    );
+    rejects(&channel_body("let c = channel<Missing>()"), "cannot find");
+}
+
+#[test]
+fn channels_cannot_carry_borrowed_values() {
+    let message = "a channel cannot carry slices or function values";
+    rejects(&channel_body("let c = channel<[]int>()"), message);
+    rejects(&channel_body("let c = channel<mut []int>()"), message);
+    rejects(&channel_body("let c = channel<func()>(1)"), message);
+    rejects(
+        &program("type Wrapper struct { Items []int }\nfunc f(c channel<Wrapper>) {}"),
+        message,
+    );
+    rejects(&program("func f(c channel<Array<[]int>>) {}"), message);
+    accepts(&program(
+        "func f(c channel<Array<int>>, d channel<[int; 2]>) {}",
+    ));
+}
+
+#[test]
+fn channel_handles_are_copy_and_never_nil() {
+    accepts(&channel_body(
+        "let a = channel<int>()
+        let b = a
+        consume(a)
+        consume(b)
+        let r = Request{Text: \"x\", Reply: channel<string>()}
+        let copy = r",
+    ));
+    rejects(&channel_body("var c channel<int> = nil"), "`nil` needs an");
+    rejects(
+        &channel_body("let a = channel<int>()\n_ = a == a"),
+        "cannot be applied",
+    );
+    rejects(
+        &channel_body("let a = channel<int>()\n_ = a != nil"),
+        "`nil` needs an",
+    );
+    rejects(
+        &channel_body("let a = channel<int>()\nprintln(a)"),
+        "cannot print",
+    );
+    rejects(
+        &channel_body("let a = channel<int>()\nlet b = clone(a)"),
+        "cannot clone",
+    );
+}
+
+#[test]
+fn send_receive_and_close_have_fixed_shapes() {
+    accepts(&channel_body(
+        "let ch = channel<int>(1)
+        ch.send(1)
+        ch.send(2 + 3)
+        let value, ok = ch.receive()
+        _ = value
+        _ = ok
+        ch.receive()
+        ch.close()",
+    ));
+    rejects(
+        &channel_body("let ch = channel<int>()\nch.send(\"x\")"),
+        "mismatched types",
+    );
+    rejects(
+        &channel_body("let ch = channel<int>()\nch.send()"),
+        "`send` takes 1 argument",
+    );
+    rejects(
+        &channel_body("let ch = channel<int>()\nch.receive(1)"),
+        "`receive` takes 0 arguments",
+    );
+    rejects(
+        &channel_body("let ch = channel<int>()\nch.close(1)"),
+        "`close` takes 0 arguments",
+    );
+    rejects(
+        &channel_body("let ch = channel<int>()\nlet v = ch.receive()"),
+        "this call returns 2 values",
+    );
+    rejects(
+        &channel_body("let ch = channel<int>()\nch.flush()"),
+        "has no method `flush`",
+    );
+    rejects(
+        &channel_body("let ch = channel<int>()\nlet v, ok, extra = ch.receive()"),
+        "expected 3 values for this binding",
+    );
+}
+
+#[test]
+fn sending_a_move_value_gives_it_up() {
+    rejects(
+        &channel_body(
+            "let ch = channel<Job>(1)\nlet job = Job{Name: \"a\"}\nch.send(job)\nprintln(job.Name)",
+        ),
+        "use of moved value",
+    );
+    accepts(&channel_body(
+        "let ch = channel<Job>(1)\nlet job = Job{Name: \"a\"}\nch.send(job)\nch.send(Job{Name: \"b\"})",
+    ));
+    accepts(&channel_body(
+        "let ch = channel<Array<int>>(1)\nlet items = Array<int>{1, 2}\nch.send(items)",
+    ));
+    rejects(
+        &channel_body(
+            "let ch = channel<Array<int>>(1)\nlet items = Array<int>{1, 2}\nch.send(items)\nch.send(items)",
+        ),
+        "use of moved value",
+    );
+    accepts(&channel_body(
+        "let ch = channel<string>(1)\nlet text = \"kept\"\nch.send(text)\nprintln(text)",
+    ));
+}
+
+#[test]
+fn channels_work_with_tasks_and_async_functions() {
+    accepts(
+        "package main
+        func worker(ch channel<int>, done channel<bool>) {
+            for {
+                let value, ok = ch.receive()
+                if !ok { break }
+                _ = value
+            }
+            done.send(true)
+        }
+        async func relay(ch channel<int>) {
+            let value, ok = ch.receive()
+            if ok { ch.send(value + 1) }
+        }
+        func main() {
+            let ch = channel<int>()
+            let done = channel<bool>()
+            go worker(ch, done)
+            go relay(ch)
+            ch.close()
+            let finished, _ = done.receive()
+            _ = finished
+        }",
+    );
+}

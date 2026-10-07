@@ -635,6 +635,9 @@ fn children_mut(expr: &mut hir::Expr) -> Vec<&mut hir::Expr> {
             .collect(),
         ExprKind::MapLookup { map, key } | ExprKind::MapRemove { map, key } => vec![map, key],
         ExprKind::ArrayPush { array, value } => vec![array, value],
+        ExprKind::ChannelSend { channel, value } => vec![channel, value],
+        ExprKind::MakeChannel { capacity, .. } => capacity.as_deref_mut().into_iter().collect(),
+        ExprKind::ChannelReceive(inner) | ExprKind::ChannelClose(inner) => vec![inner],
         ExprKind::Len(inner)
         | ExprKind::ArrayPop(inner)
         | ExprKind::Println(inner)

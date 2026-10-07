@@ -22,7 +22,9 @@ typing and its input rules, Move classification, `nil`, `.wait()`, and
 `await task`. The native tests run tasks to completion, including results and
 errors, ownership transfer, panics (waited and detached), an endless detached
 task, `nil` waits, async functions awaiting tasks, many tasks sharing text, and tens of thousands
-of tasks running and waiting on each other. `tests/ownership/ownership.rs` tests the MIR ownership pass through the
+of tasks running and waiting on each other, and channels: ordering, ownership and
+drops of messages, close and drain, the zero-value channel, blocked operations
+woken by close, reply channels, worker pools, and a chain of a thousand tasks. `tests/ownership/ownership.rs` tests the MIR ownership pass through the
 full frontend: whole-place and partial moves, reinitialization, call-local
 borrows, the custom-`drop`-ancestor restriction, array- and slice-element move
 rules, and region analysis of stored slice borrows (aliasing at the
