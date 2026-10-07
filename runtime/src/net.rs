@@ -3,9 +3,10 @@
 
 use std::collections::HashMap;
 use std::io::{ErrorKind, Read, Write};
-use std::net::{Shutdown, TcpListener, TcpStream};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::net::{Shutdown, TcpListener, TcpStream, ToSocketAddrs};
+use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
+use std::time::{Duration, Instant};
 
 use super::reactor::Pollable;
 use super::strconv::ValueError;
@@ -14,12 +15,19 @@ use super::{blocking, reactor};
 
 struct Connection {
     stream: TcpStream,
+    /// Milliseconds a read or write may wait; zero or less means no limit.
+    timeout: AtomicI64,
     /// Bytes read but not yet returned: the start of a character that is not complete.
     pending: Mutex<Vec<u8>>,
 }
 
+struct Listener {
+    socket: TcpListener,
+    timeout: AtomicI64,
+}
+
 enum Handle {
-    Listener(TcpListener),
+    Listener(Listener),
     Connection(Connection),
 }
 
@@ -51,21 +59,39 @@ unsafe fn text_of(data: *const u8, len: i64) -> String {
     String::from_utf8_lossy(unsafe { super::bytes(data, len) }).into_owned()
 }
 
+fn connection(stream: TcpStream) -> Handle {
+    Handle::Connection(Connection {
+        stream,
+        timeout: AtomicI64::new(0),
+        pending: Mutex::new(Vec::new()),
+    })
+}
+
 fn prepare(stream: &TcpStream) -> std::io::Result<()> {
     stream.set_nodelay(true)?;
     stream.set_nonblocking(reactor::POLLED)
 }
 
-/// Runs `attempt` until it stops reporting that it would block, waiting for the descriptor in between.
+/// Runs `attempt` until it stops reporting that it would block, waiting for the descriptor in
+/// between; with a positive `limit` in milliseconds, gives up with a timeout error once the
+/// descriptor has stayed unready that long.
 fn until_ready<T>(
     descriptor: &impl Pollable,
     write: bool,
+    limit: &AtomicI64,
     mut attempt: impl FnMut() -> std::io::Result<T>,
 ) -> std::io::Result<T> {
+    let deadline = u64::try_from(limit.load(Ordering::SeqCst))
+        .ok()
+        .filter(|&milliseconds| milliseconds > 0)
+        .map(|milliseconds| Instant::now() + Duration::from_millis(milliseconds));
     loop {
         match attempt() {
             Err(error) if error.kind() == ErrorKind::WouldBlock => {
-                reactor::wait_fd(descriptor.descriptor(), write);
+                if deadline.is_some_and(|when| Instant::now() >= when) {
+                    return Err(std::io::Error::new(ErrorKind::TimedOut, "timed out"));
+                }
+                reactor::wait_fd(descriptor.descriptor(), write, deadline);
             }
             Err(error) if error.kind() == ErrorKind::Interrupted => {}
             other => return other,
@@ -89,7 +115,10 @@ pub unsafe extern "C" fn zore_native_net_listen(
         Ok(listener)
     });
     let value = match result {
-        Ok(listener) => ValueError::ok(insert(Handle::Listener(listener))),
+        Ok(socket) => ValueError::ok(insert(Handle::Listener(Listener {
+            socket,
+            timeout: AtomicI64::new(0),
+        }))),
         Err(error) => ValueError::failed_text(&format!("net.Listen: {error}")),
     };
     // SAFETY: guaranteed by the caller.
@@ -100,6 +129,7 @@ pub unsafe extern "C" fn zore_native_net_listen(
 pub extern "C" fn zore_native_net_port(id: i64) -> i64 {
     match lookup(id).as_deref() {
         Some(Handle::Listener(listener)) => listener
+            .socket
             .local_addr()
             .map_or(-1, |address| i64::from(address.port())),
         _ => -1,
@@ -112,12 +142,11 @@ pub extern "C" fn zore_native_net_port(id: i64) -> i64 {
 pub unsafe extern "C" fn zore_native_net_accept(out: *mut ValueError, id: i64) {
     let value = match lookup(id).as_deref() {
         Some(Handle::Listener(listener)) => {
-            let accepted = until_ready(listener, false, || listener.accept());
+            let accepted = until_ready(&listener.socket, false, &listener.timeout, || {
+                listener.socket.accept()
+            });
             match accepted.and_then(|(stream, _)| prepare(&stream).map(|()| stream)) {
-                Ok(stream) => ValueError::ok(insert(Handle::Connection(Connection {
-                    stream,
-                    pending: Mutex::new(Vec::new()),
-                }))),
+                Ok(stream) => ValueError::ok(insert(connection(stream))),
                 Err(error) => ValueError::failed_text(&format!("net.Accept: {error}")),
             }
         }
@@ -127,6 +156,20 @@ pub unsafe extern "C" fn zore_native_net_accept(out: *mut ValueError, id: i64) {
     unsafe { out.write(value) };
 }
 
+fn connect(address: &str, milliseconds: u64) -> std::io::Result<TcpStream> {
+    if milliseconds == 0 {
+        return TcpStream::connect(address);
+    }
+    let mut last = std::io::Error::new(ErrorKind::InvalidInput, "no addresses to connect to");
+    for candidate in address.to_socket_addrs()? {
+        match TcpStream::connect_timeout(&candidate, Duration::from_millis(milliseconds)) {
+            Ok(stream) => return Ok(stream),
+            Err(error) => last = error,
+        }
+    }
+    Err(last)
+}
+
 /// # Safety
 /// `out` must be writable and the string must satisfy the storage rule of `bytes`.
 #[unsafe(no_mangle)]
@@ -134,23 +177,45 @@ pub unsafe extern "C" fn zore_native_net_dial(
     out: *mut ValueError,
     address: *const u8,
     address_len: i64,
+    milliseconds: i64,
 ) {
     // SAFETY: guaranteed by the caller.
     let address = unsafe { text_of(address, address_len) };
+    let milliseconds = u64::try_from(milliseconds).unwrap_or(0);
     let result: std::io::Result<TcpStream> = blocking::run(move || {
-        let stream = TcpStream::connect(&address)?;
+        let stream = connect(&address, milliseconds)?;
         prepare(&stream)?;
         Ok(stream)
     });
     let value = match result {
-        Ok(stream) => ValueError::ok(insert(Handle::Connection(Connection {
-            stream,
-            pending: Mutex::new(Vec::new()),
-        }))),
+        Ok(stream) => ValueError::ok(insert(connection(stream))),
         Err(error) => ValueError::failed_text(&format!("net.Dial: {error}")),
     };
     // SAFETY: guaranteed by the caller.
     unsafe { out.write(value) };
+}
+
+/// # Safety
+/// `out` must be writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn zore_native_net_set_timeout(
+    out: *mut ErrorOut,
+    id: i64,
+    milliseconds: i64,
+) {
+    let result = match lookup(id).as_deref() {
+        Some(Handle::Connection(connection)) => {
+            connection.timeout.store(milliseconds, Ordering::SeqCst);
+            ErrorOut::ok()
+        }
+        Some(Handle::Listener(listener)) => {
+            listener.timeout.store(milliseconds, Ordering::SeqCst);
+            ErrorOut::ok()
+        }
+        None => ErrorOut::failed("net.SetTimeout: not an open connection or listener"),
+    };
+    // SAFETY: guaranteed by the caller.
+    unsafe { out.write(result) };
 }
 
 /// Reads more bytes into `pending` until it starts with a whole character.
@@ -164,7 +229,9 @@ fn read_text(connection: &Connection, max: usize) -> StringError {
     let mut stream = &connection.stream;
     let mut chunk = vec![0u8; max];
     let result = loop {
-        match until_ready(&connection.stream, false, || stream.read(&mut chunk)) {
+        match until_ready(&connection.stream, false, &connection.timeout, || {
+            stream.read(&mut chunk)
+        }) {
             Ok(0) if pending.is_empty() => break StringError::failed("EOF"),
             Ok(0) => {
                 pending.clear();
@@ -221,7 +288,9 @@ fn send_all(id: i64, bytes: &[u8], name: &str) -> ErrorOut {
                 if sent == bytes.len() {
                     break Ok(());
                 }
-                match until_ready(&connection.stream, true, || stream.write(&bytes[sent..])) {
+                match until_ready(&connection.stream, true, &connection.timeout, || {
+                    stream.write(&bytes[sent..])
+                }) {
                     Ok(0) => break Err(std::io::Error::from(ErrorKind::WriteZero)),
                     Ok(count) => sent += count,
                     Err(error) => break Err(error),
@@ -288,7 +357,9 @@ fn read_raw(connection: &Connection, max: usize) -> ByteArrayError {
     }
     let mut stream = &connection.stream;
     let mut chunk = vec![0u8; max];
-    match until_ready(&connection.stream, false, || stream.read(&mut chunk)) {
+    match until_ready(&connection.stream, false, &connection.timeout, || {
+        stream.read(&mut chunk)
+    }) {
         Ok(0) => ByteArrayError::failed("EOF"),
         Ok(count) => ByteArrayError::ok(&chunk[..count]),
         Err(error) => ByteArrayError::failed(&format!("net.ReadBytes: {error}")),

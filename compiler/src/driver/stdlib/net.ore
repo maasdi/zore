@@ -37,11 +37,23 @@ func (l Listener) Accept() (Conn, error) {
 }
 
 func Dial(address string) (Conn, error) {
-    let id, err = dial(address)
+    return DialTimeout(address, 0)
+}
+
+func DialTimeout(address string, milliseconds int) (Conn, error) {
+    let id, err = dial(address, milliseconds)
     if err != nil {
         return Conn{id: 0}, err
     }
     return Conn{id: id}, nil
+}
+
+func (l Listener) SetTimeout(milliseconds int) error {
+    return setTimeout(l.id, milliseconds)
+}
+
+func (c Conn) SetTimeout(milliseconds int) error {
+    return setTimeout(c.id, milliseconds)
 }
 
 func (c Conn) Read(max int) (string, error) {
@@ -67,7 +79,8 @@ func (c Conn) CloseWrite() error {
 func listen(address string) (int, error)
 func port(id int) int
 func accept(id int) (int, error)
-func dial(address string) (int, error)
+func dial(address string, milliseconds int) (int, error)
+func setTimeout(id int, milliseconds int) error
 func read(id int, max int) (string, error)
 func write(id int, text string) error
 func readBytes(id int, max int) (Array<byte>, error)

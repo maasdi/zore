@@ -5373,6 +5373,7 @@ parameter as a view, `data[:]` (§12.1).
 | --- | --- |
 | `Sleep(milliseconds int)` | Suspends the calling task for at least that many milliseconds; a value of zero or less returns at once |
 | `Millis() int` | Milliseconds on a monotonic clock whose starting point is unspecified; the value never decreases |
+| `After(milliseconds int) channel<bool>` | A channel that receives `true` once after at least that many milliseconds and is then closed; a value of zero or less fires at once. The wait is a task that sleeps, so it is not a deadlock while it is pending. Use it as a `select` case to put a time limit on a channel operation |
 
 **`zore/io`**
 
@@ -5400,6 +5401,9 @@ on it fails with an error.
 | --- | --- |
 | `Listen(address string) (Listener, error)` | Listens on `host:port`; port `0` picks a free port |
 | `Dial(address string) (Conn, error)` | Connects to `host:port`, waiting for the connection |
+| `DialTimeout(address string, milliseconds int) (Conn, error)` | Like `Dial`, but gives up after that many milliseconds for each address tried, with an error whose message begins `net.Dial: `; zero or less means no limit |
+| `(l Listener) SetTimeout(milliseconds int) error` | Limits how long `Accept` waits; zero or less removes the limit, which is the default. The error is non-nil only for a closed listener |
+| `(c Conn) SetTimeout(milliseconds int) error` | Limits how long each `Read`, `ReadBytes`, `Write`, and `WriteBytes` waits for the connection to be ready; zero or less removes the limit, which is the default. The error is non-nil only for a closed connection |
 | `(l Listener) Accept() (Conn, error)` | Waits for and returns the next incoming connection |
 | `(l Listener) Port() int` | The port the listener is bound to, or `-1` for a closed listener |
 | `(c Conn) Read(max int) (string, error)` | Waits until at least one character is available and returns whole characters read from at most `max` bytes of the stream; a character cut by the end of a read is kept by the connection and joined with the next bytes, so a result can be up to three bytes longer than `max`; at end of stream, `""` and an error whose message is `EOF`; `max` of zero or less is an error |
@@ -5407,6 +5411,12 @@ on it fails with an error.
 | `(c Conn) ReadBytes(max int) (Array<byte>, error)` | Waits until at least one byte is available and returns at most `max` bytes of the stream, first any bytes of a character that `Read` kept back; at end of stream, an empty array and an error whose message is `EOF`; `max` of zero or less is an error |
 | `(c Conn) WriteBytes(data []byte) error` | Waits until all of `data` is sent |
 | `(c Conn) CloseWrite() error` | Ends the sending side so the peer reads `EOF`; reading continues to work |
+
+A call that waits longer than its limit fails with the error message
+`net.Accept: timed out`, `net.Read: timed out`, `net.ReadBytes: timed out`,
+`net.Write: timed out`, or `net.WriteBytes: timed out`. The connection stays
+usable: a timed-out read loses nothing, and a timed-out write may have sent part
+of its data. The limit applies to each wait, not to the whole call.
 
 Error messages begin `net.Listen: `, `net.Dial: `, `net.Accept: `, `net.Read: `,
 `net.Write: `, `net.ReadBytes: `, `net.WriteBytes: `, or `net.CloseWrite: ` and continue with system-defined text,
@@ -5443,6 +5453,48 @@ Compiler impact: the packages are bundled sources whose function bodies call the
 runtime (§37.2). The runtime parks the waiting task and wakes it from a timer,
 a readiness event, or a helper thread (§36.2); the mechanism is not specified.
 Pending conformance cases: `tests/conformance/io.md`.
+
+## 37.4 Standard package `zore/cancel` — LOCKED
+
+`"zore/cancel"` gives tasks a way to ask each other to stop. Cancellation is
+cooperative: nothing is interrupted, and a task stops when it looks at its
+token. A token is a Copy value; every copy refers to the same token.
+
+| Function | Behavior |
+| --- | --- |
+| `New() Token` | A token that is not cancelled |
+| `WithTimeout(milliseconds int) Token` | A token that cancels itself after at least that many milliseconds |
+| `(t Token) Cancel()` | Cancels the token and everything made from it with `Child`; cancelling again does nothing |
+| `(t Token) Cancelled() bool` | Whether the token has been cancelled |
+| `(t Token) Done() channel<bool>` | A channel that is closed when the token is cancelled, for use as a `select` case |
+| `(t Token) Child() Token` | A new token that is cancelled when `t` is; cancelling the child does not cancel `t` |
+| `(t Token) Sleep(milliseconds int) bool` | Waits that long, or until the token is cancelled; `true` when the full time passed, `false` when cancelled first or already |
+
+```ore
+import "zore/cancel"
+
+func worker(token cancel.Token, results channel<int>) {
+    var steps = 0
+    for token.Sleep(10) {
+        steps += 1
+    }
+    results.send(steps)
+}
+```
+
+A cancelled token is cancelled for good. A task blocked in an operation with no
+time limit does not notice cancellation; put a limit on it (§37.3) or wait on
+`Done()` in a `select`. Cancelling a token has no effect on tasks that never
+look at it, and a task is never stopped or dropped because of a token.
+
+Ownership, error, and async implications: a token holds a channel and a mutex
+handle, so copies are free and safe to pass to any task. `Child` and
+`WithTimeout` each start a small task that waits for the parent or the clock.
+
+Compiler impact: the package is bundled Zore source built from channels,
+`Mutex<bool>`, `select`, and `time.After`; the only runtime additions in this
+slice are the time limits of §37.3. Pending conformance cases:
+`tests/conformance/io.md`.
 
 ---
 

@@ -2,3 +2,15 @@ package time
 
 func Sleep(milliseconds int)
 func Millis() int
+
+func After(milliseconds int) channel<bool> {
+    let ready = channel<bool>(1)
+    go fire(ready, milliseconds)
+    return ready
+}
+
+func fire(ready channel<bool>, milliseconds int) {
+    Sleep(milliseconds)
+    ready.send(true)
+    ready.close()
+}
