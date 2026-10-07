@@ -3853,6 +3853,16 @@ async func fetchUser(id int) (User, error) {
 
 Suspension must not violate ownership safety.
 
+**Waiting operations.** Channel `send` and `receive` and `select` (§19),
+`Mutex.withLock` (§20.2), and the waiting functions of the standard packages
+(§37.3) are ordinary calls, written without `await`. In an `async func` body such
+a call suspends the task until it can proceed, exactly as an `await` does, so it
+is a suspension point for §17.5 and §17.6. In a function that is not async, the
+same call blocks the calling thread, as `task.wait()` does (§18.9). `await` still
+applies only to calls of `async func`s and to `Task` values (§17.8). The body of
+a closure is a non-async body even when the closure is written inside an
+`async func`, so a waiting call in it blocks the thread.
+
 ## 17.4 Unified ownership — LOCKED
 
 Async functions use exactly the same:
@@ -3902,7 +3912,13 @@ This applies especially to:
 
 ## 17.7 Async lowering — IMPLEMENTATION DETAIL
 
-Async functions are expected to lower to compiler-generated state machines.
+Async functions lower to compiler-generated state machines (§35.1). A task runs by
+being polled: the runtime resumes the state machine at its saved state, and the
+state machine either finishes or suspends again. No task needs a stack of its
+own. How locals are laid out in the saved state, how tasks are scheduled, and
+how a waiting call wakes its task are implementation details. The bootstrap
+compiler keeps every local of an async function in one heap frame and polls
+tasks on a pool of worker threads.
 
 The exact ordering between:
 
@@ -3984,6 +4000,13 @@ Async operations may be spawned:
 let task = go fetchUser(123)
 let user = task.wait()?
 ```
+
+`go` accepts a call to any declared function or method, async or not. A call to
+an `async func` becomes a task that the runtime resumes as it becomes ready. A
+call to a plain function runs to completion on a runtime thread as one task. A
+plain-function task that waits holds a thread while it waits (§17.3, §18.9), so
+programs that create very many tasks should make the task functions `async`;
+the calls inside them stay as they are.
 
 ## 18.4 Task ownership rules — LOCKED
 
@@ -4109,7 +4132,7 @@ as Move. Pending conformance cases: `tests/conformance/concurrency.md`.
 A task's results are retrieved in one of two forms, each with exactly one
 meaning:
 
-- **`task.wait()`** blocks the calling task until the task completes, then
+- **`task.wait()`** blocks the caller until the task completes, then
   returns its results `(R1, ..., Rn)`. It is valid only outside an `async func`
   body. The examples in §18.2–18.7 are synchronous uses.
 - **`await task`** suspends the calling async computation until the task
@@ -4572,7 +4595,8 @@ let total = counter.withLock(func(value mut int) int {
 - A task that waits for the lock suspends only itself (§17.3), and waiters are
   served in order of arrival. The lock is not reentrant: calling `withLock` on a
   mutex from inside its own `f` waits forever, which is a deadlock (§18.9). `f`
-  may suspend, for example on a channel, while it holds the lock.
+  may wait, for example on a channel, while it holds the lock; `f` is an ordinary
+  closure, so such a wait blocks the thread (§17.3).
 - If a task panics while `f` runs, the unwind releases the lock and marks the
   mutex **poisoned** (§18.10). Every later `withLock` on a poisoned mutex
   panics instead of handing out a value that may have been left half-updated;
@@ -5171,6 +5195,10 @@ State 2:
 
 This example is conceptual. The exact generated states are implementation details.
 
+A waiting operation inside an async function (§17.3) is a suspension point, so
+values still needed after it are part of the async state, whether or not it is
+written with `await`.
+
 ## 35.2 Ownership of async state — LOCKED
 
 The async state machine must correctly own or borrow every live value according to ordinary Zore ownership rules.
@@ -5354,11 +5382,12 @@ line's write, and keeps other tasks running while a write blocks. Pending confor
 
 These four bundled packages (§3.20, §37.2) give tasks a way to wait for the
 clock, standard input, files, and TCP connections without blocking other tasks.
-Functions are ordinary calls: they are written without `await`, may be called
-from synchronous and `async` functions alike, and suspend only the calling task
-(§17.3). While one task waits, every other task keeps making progress, in the
-same sense as the progress guarantee of §18.9. In the initial task a wait blocks
-the entry point's thread but not the other tasks.
+Functions are ordinary calls: they are written without `await`, and may be called
+from synchronous and `async` functions alike. In an `async func` body a call that
+waits suspends only the calling task (§17.3); in a synchronous function it blocks
+the calling thread. While one task waits, every other task keeps making
+progress, in the same sense as the progress guarantee of §18.9. In the initial
+task a wait blocks the entry point's thread but not the other tasks.
 
 Text read from outside the program must be well-formed UTF-8 (§6.8). Every
 function that returns text reports `error` for input that is not. The byte
@@ -5450,8 +5479,9 @@ returned with a non-nil error is the zero value. Dropping a connection while
 another task still waits on it cannot happen, since waiting borrows it.
 
 Compiler impact: the packages are bundled sources whose function bodies call the
-runtime (§37.2). The runtime parks the waiting task and wakes it from a timer,
-a readiness event, or a helper thread (§36.2); the mechanism is not specified.
+runtime (§37.2). The runtime suspends the waiting task, or blocks the waiting thread in a
+synchronous function, and wakes it from a timer, a readiness event, or a helper
+thread (§36.2); the mechanism is not specified.
 Pending conformance cases: `tests/conformance/io.md`.
 
 ## 37.4 Standard package `zore/cancel` — LOCKED

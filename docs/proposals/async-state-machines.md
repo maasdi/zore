@@ -1,8 +1,9 @@
 # Q32 proposal: async functions as state machines, without fibers
 
-Status: PROPOSED. Nothing here is authorized for implementation until the
-maintainer accepts it. On acceptance the spec sections named below are updated
-first (§53), then the work lands in the slices at the end.
+Status: ACCEPTED and incorporated into spec §17.3, §17.7, §18.3, §20.2, §35.1,
+and §37.3, with a small edit to §18.9. The specification is authoritative; this
+document preserves the accepted proposal. The work lands in the slices at the
+end, one pull request each; the runtime keeps using fibers until slice 5.
 
 ## Decisions this proposal carries out
 
