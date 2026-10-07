@@ -9,6 +9,8 @@ mod alloc;
 mod blocking;
 #[path = "channel.rs"]
 mod channel;
+#[path = "deadlock.rs"]
+mod deadlock;
 #[path = "fiber.rs"]
 mod fiber;
 #[path = "io.rs"]

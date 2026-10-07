@@ -144,3 +144,13 @@ entry-point signature or exit status (Q05), or scoped tasks (Q10).
 | Send local-backed view over an unbuffered channel | Reject; completed send is not completed receiver use |
 | Sender waits for a later acknowledgment after sending local-backed view | Reject; normal-path protocol does not prove safety across unwind |
 | Message contains borrowed storage with unknown external lifetime | Reject rather than assume independent lifetime |
+
+## Deadlock (runtime)
+
+| Scenario | Expected result |
+| --- | --- |
+| The initial task receives or sends on a channel no other task uses | Exit status 2 and "all tasks are asleep" on standard error |
+| Two tasks each wait for the other through channels | Same |
+| The initial task waits on a task that waits on a channel nobody serves | Same |
+| The last running task finishes while the others wait on channels | Same |
+| A task waits on a timer, a file read, a pending accept, or a busy task | Not a deadlock; the program continues |

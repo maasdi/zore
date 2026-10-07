@@ -16,6 +16,8 @@ pub(super) struct State {
     panic: Option<Vec<u8>>,
     /// A parked fiber to resume when the task finishes.
     pub(super) waiter: Option<Waiter>,
+    /// A task is waiting and counted as blocked for deadlock detection.
+    pub(super) counted: bool,
 }
 
 #[derive(Default)]
@@ -98,6 +100,9 @@ pub unsafe extern "C" fn zore_task_spawn(
         state.panic = panic;
         let detached = state.detached;
         let waiter = state.waiter.take();
+        if std::mem::take(&mut state.counted) {
+            super::deadlock::remove_blocked();
+        }
         drop(state);
         task_shared.finished.notify_all();
         if let Some(waiter) = waiter {
@@ -107,6 +112,7 @@ pub unsafe extern "C" fn zore_task_spawn(
             block.discard(panicked);
         }
         RUNNING.fetch_sub(1, Ordering::SeqCst);
+        super::deadlock::check();
     }));
     Box::into_raw(Box::new(Handle { shared, block }))
 }
