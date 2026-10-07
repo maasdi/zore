@@ -25,6 +25,28 @@ Authority: spec §37.3. The cases below are covered by executable tests in
 | `os.ReadBytes` of a missing file, `os.WriteBytes` into a missing directory | Errors beginning `os.ReadBytes: ` and `os.WriteBytes: ` |
 | `FromBytes(data)` with an `Array<byte>` argument | Rejected: arrays do not convert to slices implicitly |
 
+## Time limits and cancellation
+
+Authority: spec §37.3 (`After`, `DialTimeout`, `SetTimeout`) and §37.4.
+
+| Scenario | Expected result |
+| --- | --- |
+| `time.After(60).receive()` | `true, true` after at least 60 ms; a second receive gives `false, false` |
+| `time.After(0)` | Fires at once |
+| `select` over `After(5000)` and `After(20)` | The 20 ms case runs; the program does not wait 5 s |
+| `select` on a silent channel and `After(40)` | `After` wins; a pending timer is not a deadlock |
+| `Listener.SetTimeout(40)` then `Accept()` with no client | `error("net.Accept: timed out")` after at least 40 ms |
+| `Conn.SetTimeout(50)` then `Read` or `ReadBytes` on a silent peer | `error("net.Read: timed out")` and `error("net.ReadBytes: timed out")` |
+| `SetTimeout(0)` after a timeout, then the peer sends | The next `Read` returns the data; nothing was lost |
+| Writing 64 KiB chunks to a peer that never reads, with `SetTimeout(100)` | Eventually `error("net.WriteBytes: timed out")` |
+| `SetTimeout` on a zero-value `Conn` | `error("net.SetTimeout: not an open connection or listener")` |
+| `DialTimeout` to a closed port or `"not an address"` | An error beginning `net.Dial: ` |
+| `Token.Cancel()` twice | `Cancelled()` is `true`; no panic |
+| A worker looping on `token.Sleep(10)`, then `Cancel()` | `Sleep` returns `false` and the worker ends |
+| `token.Sleep(5000)` on a cancelled token | `false` at once |
+| `WithTimeout(30)` with a child and a grandchild | All three are cancelled; an unrelated token is not |
+| Cancelling a child | The parent stays uncancelled |
+
 ## `zore/io`
 
 | Scenario | Expected result |

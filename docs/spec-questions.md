@@ -53,6 +53,7 @@ A newly discovered semantic gap blocks its affected feature, not unrelated work.
 | Q28 | Mutex choices made while implementing §20.2 where the text is silent; each rejects rather than guesses and can be relaxed later. See Q28 below. | §20.2, §10.3, §3.18, §41.4 | Parser, checker, codegen, and runtime changes |
 | Q29 | `select` choices made while implementing §19.14 where the text is silent. See Q29 below. | §19.14, §3.17 | Lexer, parser, checker, codegen, and runtime changes |
 | Q30 | Byte-array API choices made while implementing §37.2–37.3 where the text is silent. See Q30 below. | §37.2, §37.3, §41.5 | Checker, codegen, and runtime changes |
+| Q31 | Time-limit and cancellation choices made while implementing §37.3–37.4 where the text is silent. See Q31 below. | §37.3, §37.4 | Runtime and bundled-package changes |
 
 ## Resolved decisions
 
@@ -170,6 +171,7 @@ A newly discovered semantic gap blocks its affected feature, not unrelated work.
 
 - **Q29 — Select choices:** locked in §19.14 at the maintainer's direction. (a) `select` is the only new keyword; `case` and `default` are special only at the start of an arm, so they stay ordinary identifiers. (b) Every channel operand and send value is evaluated once, in order, before a case is chosen. (c) When several cases can proceed, the runtime starts from a rotating position so no case starves; the choice is otherwise unspecified. (d) A zero-value channel is always ready to receive and panics on send, like a closed one. (e) A `select` with no `default` and nothing that can ever proceed is reported by the deadlock detector. (f) A send case that is not chosen keeps its value, which is dropped at the end of the `select`.
 - **Q30 — Byte-array API choices:** locked in §37.2–37.3 at the maintainer's direction; this answers the byte-array part of Q05. (a) A byte array is an ordinary `Array<byte>`; there is no new type. (b) `strings.Bytes` copies a string's bytes; `strings.FromBytes` copies bytes into a string and fails on invalid UTF-8, as §41.5 requires, so no invalid string can exist. (c) Functions that take bytes take a `[]byte` view, written `data[:]` from an array, the same as `strings.Join`. (d) `os.ReadBytes`, `os.WriteBytes`, `Conn.ReadBytes`, and `Conn.WriteBytes` never check or change the bytes; `ReadBytes` returns up to `max` bytes and waits for at least one. (e) Mixing `Read` and `ReadBytes` on one connection is allowed: bytes of a character that `Read` held back are returned first by `ReadBytes`. (f) Standard input stays line text; there is no `io.ReadBytes` yet.
+- **Q31 — Time limits and cancellation:** locked in §37.3–37.4 at the maintainer's direction. (a) Cancellation is cooperative through a `cancel.Token` built from a channel and a mutex; there is no way to stop or cancel a task from outside, so `Task` still has only `wait`. (b) A time limit is a per-connection setting (`SetTimeout`) that applies to each wait, rather than a parameter on every call, so existing calls keep their meaning. (c) `time.After` is a channel so it works with `select`; the timer is a sleeping task, which the deadlock check already treats as able to make progress. (d) A timed-out read loses nothing and a timed-out write may have sent part of its data. (e) Reads of standard input, whole-file operations, and name lookups have no limit yet, and a token cannot interrupt an operation that is already waiting.
 - **Q27 — Async I/O choices:** locked in §37.3 at the maintainer's direction
   (time, standard input, whole files, and TCP, waiting on an event loop). (a)
   Strings are well-formed UTF-8, so every function that returns text from
@@ -185,8 +187,7 @@ A newly discovered semantic gap blocks its affected feature, not unrelated work.
   threads because regular files cannot be polled; socket reads, writes, and
   accepts and all timers use the event loop. (f) The messages after the fixed
   prefixes come from the operating system and are not specified. (g) Waiting in
-  the initial task blocks its thread. (h) Operations have no timeout or
-  cancellation. Pending cases: `tests/conformance/io.md`.
+  the initial task blocks its thread. (h) Time limits and cancellation are in Q31. Pending cases: `tests/conformance/io.md`.
 
 - **Q26 — Channel implementation choices:** (a) `channel<T>(n)` takes an `int`
   capacity; a constant negative capacity is rejected and a negative runtime one

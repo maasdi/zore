@@ -400,19 +400,30 @@ mod imp {
 
     /// Waits until `fd` can be read, or written when `write` is set; a failed registration
     /// returns at once so the caller's next system call reports the problem.
-    pub fn wait_fd(fd: RawFd, write: bool) {
+    pub fn wait_fd(fd: RawFd, write: bool, deadline: Option<Instant>) {
         let reactor = started();
         let slot = Arc::new(Slot::default());
-        let token = {
+        let (token, earliest) = {
             let mut state = reactor.lock();
             let token = state.next;
             state.next += 1;
             state.waiters.insert(token, Arc::clone(&slot));
-            token
+            let earliest = deadline.is_some_and(|when| {
+                let first = state
+                    .timers
+                    .peek()
+                    .is_none_or(|Reverse((first, _))| when < *first);
+                state.timers.push(Reverse((when, token)));
+                first
+            });
+            (token, earliest)
         };
         if reactor.poller.arm(fd, write, token).is_err() {
             reactor.lock().waiters.remove(&token);
             return;
+        }
+        if earliest {
+            reactor.nudge();
         }
         slot.park();
     }
@@ -427,7 +438,7 @@ mod imp {
         std::thread::sleep(Duration::from_millis(milliseconds));
     }
 
-    pub fn wait_fd(_: Descriptor, _: bool) {
+    pub fn wait_fd(_: Descriptor, _: bool, _: Option<std::time::Instant>) {
         unreachable!("descriptors stay in blocking mode without an event queue")
     }
 }
@@ -439,6 +450,7 @@ pub(super) fn sleep(milliseconds: u64) {
     imp::sleep(milliseconds);
 }
 
-pub(super) fn wait_fd(fd: Descriptor, write: bool) {
-    imp::wait_fd(fd, write);
+/// Waits until `fd` is ready or `deadline` passes; the caller tries again to find out which.
+pub(super) fn wait_fd(fd: Descriptor, write: bool, deadline: Option<std::time::Instant>) {
+    imp::wait_fd(fd, write, deadline);
 }

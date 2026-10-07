@@ -39,4 +39,5 @@ progress have no example until they work.
 | [`select`](select) | `select` over two producers, a `default` arm, a send that finds room or not, and a receive that finds nothing | §19.14 |
 | [`io`](io) | `zore/time` and `zore/net`: tasks that sleep, a TCP server that accepts clients, and a reply read back over a loopback connection, with the answers ordered by their delays | §37.3 |
 | [`bytes`](bytes) | `Array<byte>` made from a string and turned back with a UTF-8 check, a sum over a byte view, and raw bytes sent over a loopback connection and read back reversed | §37.2, §37.3 |
+| [`timeouts`](timeouts) | A `select` that gives up after `time.After`, a worker stopped by a `cancel.WithTimeout` token, and a `Listener` whose `Accept` times out | §37.3, §37.4 |
 | [`mutex`](mutex) | `Mutex<T>`: forty tasks updating one shared counter, a guarded struct with a custom `drop`, results from `withLock`, and `isPoisoned` | §20.2 |

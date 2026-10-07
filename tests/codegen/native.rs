@@ -4562,3 +4562,199 @@ func main() {{
     );
     prints(&source, "true\n8\ntrue\ntrue\n8\n");
 }
+
+#[test]
+fn after_gives_a_channel_that_fires_once_and_closes() {
+    prints(
+        "package main
+import \"zore/time\"
+func main() {
+    let started = time.Millis()
+    let timer = time.After(60)
+    let first, ok = timer.receive()
+    println(first)
+    println(ok)
+    println(time.Millis() - started >= 60)
+    let again, more = timer.receive()
+    println(again)
+    println(more)
+    let instant = time.After(0)
+    let _, fired = instant.receive()
+    println(fired)
+    let slow = time.After(5000)
+    let quick = time.After(20)
+    select {
+        case slow.receive() { println(\"slow\") }
+        case quick.receive() { println(\"quick\") }
+    }
+    println(time.Millis() - started < 3000)
+}",
+        "true\ntrue\ntrue\nfalse\nfalse\ntrue\nquick\ntrue\n",
+    );
+}
+
+#[test]
+fn a_task_waiting_on_a_timer_channel_is_not_a_deadlock() {
+    prints(
+        "package main
+import \"zore/time\"
+func main() {
+    let never = channel<int>()
+    select {
+        case let v, ok = never.receive() { println(v) }
+        case time.After(40).receive() { println(\"timed out\") }
+    }
+}",
+        "timed out\n",
+    );
+}
+
+#[test]
+fn a_token_cancels_once_and_wakes_sleepers_and_children() {
+    prints(
+        "package main
+import \"zore/cancel\"
+import \"zore/time\"
+func worker(token cancel.Token, results channel<int>) {
+    var steps = 0
+    for {
+        if !token.Sleep(10) { break }
+        steps += 1
+    }
+    results.send(steps)
+}
+func main() {
+    let token = cancel.New()
+    println(token.Cancelled())
+    let results = channel<int>(1)
+    go worker(token, results)
+    time.Sleep(60)
+    token.Cancel()
+    token.Cancel()
+    println(token.Cancelled())
+    let steps, _ = results.receive()
+    println(steps >= 2)
+    println(token.Sleep(5000))
+
+    let limit = cancel.WithTimeout(30)
+    let child = limit.Child()
+    let grandchild = child.Child()
+    let other = cancel.New()
+    let _, _ = grandchild.Done().receive()
+    println(limit.Cancelled())
+    println(child.Cancelled())
+    println(other.Cancelled())
+    println(other.Sleep(20))
+
+    let quiet = cancel.New()
+    let kid = quiet.Child()
+    kid.Cancel()
+    println(quiet.Cancelled())
+    println(kid.Cancelled())
+}",
+        "false\ntrue\ntrue\nfalse\ntrue\ntrue\nfalse\ntrue\nfalse\ntrue\n",
+    );
+}
+
+#[test]
+fn reads_and_accepts_give_up_after_their_time_limit() {
+    let source = format!(
+        "package main
+import \"zore/time\"
+{ECHO_PRELUDE}
+func quiet(listener own net.Listener, release channel<bool>) {{
+    let conn, err = listener.Accept()
+    if err != nil {{ return }}
+    let _, _ = release.receive()
+    _ = conn.Write(\"late\")
+}}
+func main() {{
+    let listener, err = net.Listen(\"127.0.0.1:0\")
+    if err != nil {{ println(\"listen failed\"); return }}
+    let port = listener.Port()
+    println(listener.SetTimeout(40) == nil)
+    let started = time.Millis()
+    let _, acceptErr = listener.Accept()
+    println(acceptErr == error(\"net.Accept: timed out\"))
+    println(time.Millis() - started >= 40)
+    println(listener.SetTimeout(0) == nil)
+
+    let release = channel<bool>(1)
+    let server = go quiet(listener, release)
+    let conn, dialErr = net.DialTimeout(\"127.0.0.1:\" + digits(port), 2000)
+    if dialErr != nil {{ println(\"dial failed\"); return }}
+    println(conn.SetTimeout(50) == nil)
+    let first = time.Millis()
+    let _, readErr = conn.Read(16)
+    println(readErr == error(\"net.Read: timed out\"))
+    println(time.Millis() - first >= 50)
+    let _, bytesErr = conn.ReadBytes(16)
+    println(bytesErr == error(\"net.ReadBytes: timed out\"))
+    release.send(true)
+    println(conn.SetTimeout(0) == nil)
+    let text, laterErr = conn.Read(16)
+    println(text)
+    println(laterErr == nil)
+    server.wait()
+}}"
+    );
+    prints(
+        &source,
+        "true\ntrue\ntrue\ntrue\ntrue\ntrue\ntrue\ntrue\ntrue\nlate\ntrue\n",
+    );
+}
+
+#[test]
+fn a_write_to_a_peer_that_never_reads_gives_up() {
+    let source = format!(
+        "package main
+{ECHO_PRELUDE}
+func hold(listener own net.Listener, release channel<bool>) {{
+    let conn, err = listener.Accept()
+    if err != nil {{ return }}
+    let _, _ = release.receive()
+}}
+func flood(conn net.Conn) error {{
+    var chunk = Array<byte>{{}}
+    for var i = 0; i < 65536; i += 1 {{ chunk.push(7) }}
+    for var i = 0; i < 4000; i += 1 {{
+        let writeErr = conn.WriteBytes(chunk[:])
+        if writeErr != nil {{ return writeErr }}
+    }}
+    return nil
+}}
+func main() {{
+    let listener, err = net.Listen(\"127.0.0.1:0\")
+    if err != nil {{ println(\"listen failed\"); return }}
+    let port = listener.Port()
+    let release = channel<bool>(1)
+    let server = go hold(listener, release)
+    let conn, dialErr = net.Dial(\"127.0.0.1:\" + digits(port))
+    if dialErr != nil {{ println(\"dial failed\"); return }}
+    println(conn.SetTimeout(100) == nil)
+    println(flood(conn) == error(\"net.WriteBytes: timed out\"))
+    release.send(true)
+    server.wait()
+}}"
+    );
+    prints(&source, "true\ntrue\n");
+}
+
+#[test]
+fn time_limits_reject_closed_handles_and_connects_that_fail() {
+    prints(
+        "package main
+import \"zore/net\"
+func main() {
+    let holder = channel<net.Conn>(1)
+    holder.close()
+    let zero, _ = holder.receive()
+    println(zero.SetTimeout(10) == error(\"net.SetTimeout: not an open connection or listener\"))
+    let _, refused = net.DialTimeout(\"127.0.0.1:1\", 500)
+    println(refused != nil)
+    let _, bad = net.DialTimeout(\"not an address\", 500)
+    println(bad != nil)
+}",
+        "true\ntrue\ntrue\n",
+    );
+}
