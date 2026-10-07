@@ -1200,30 +1200,23 @@ fn closed_standard_output_panics() {
 
 #[test]
 fn unsupported_backend_features_are_diagnosed() {
-    for (stmts, message) in [
-        (
-            "var s = \"a\"\nprintln(s + \"b\")",
-            "runtime string concatenation is not supported",
-        ),
-        (
-            "println(1.5)",
-            "printing floating-point values is not supported",
-        ),
-    ] {
-        let mut sources = SourceMap::new();
-        let id = sources.add("test.ore", main_body(stmts)).unwrap();
-        match emit_llvm(sources.file(id).unwrap()) {
-            Err(BuildError::Diagnostics(diagnostics)) => {
-                assert!(
-                    diagnostics.iter().any(|d| d.message().contains(message)),
-                    "{diagnostics:?}"
-                );
-            }
-            other => panic!("expected diagnostics, got {other:?}"),
+    let mut sources = SourceMap::new();
+    let id = sources.add("test.ore", main_body("println(1.5)")).unwrap();
+    match emit_llvm(sources.file(id).unwrap()) {
+        Err(BuildError::Diagnostics(diagnostics)) => {
+            assert!(
+                diagnostics.iter().any(|d| d
+                    .message()
+                    .contains("printing floating-point values is not supported")),
+                "{diagnostics:?}"
+            );
         }
+        other => panic!("expected diagnostics, got {other:?}"),
     }
-    // Constant concatenation is folded by the checker and works.
-    prints(&main_body("println(\"con\" + \"cat\")"), "concat\n");
+    prints(
+        &main_body("var s = \"a\"\ns += \"b\"\nprintln(s + \"c\")\nprintln(\"con\" + \"cat\")"),
+        "abc\nconcat\n",
+    );
 }
 
 #[test]
@@ -2283,4 +2276,83 @@ func main() {
 ",
         "1\n2\n1\n15\n1\n1\n2\n30\n1003\n3\n0\n4\n2\n",
     );
+}
+
+#[test]
+fn strings_measure_index_slice_loop_and_concatenate_by_bytes() {
+    prints(
+        "package main
+
+func repeat(piece string, count int) string {
+    var out = \"\"
+    for var i = 0; i < count; i += 1 {
+        out += piece
+    }
+    return out
+}
+
+func main() {
+    let word = \"héllo\"
+    println(word.len())
+    println(word[0])
+    println(word[1:3])
+    println(word[:1] + word[3:])
+    println(word[1:1] == \"\")
+    for i, ch in word {
+        println(i)
+        println(ch)
+    }
+    var letters = 0
+    for _ in word {
+        letters += 1
+    }
+    println(letters)
+    println(string('é') + string('x'))
+    let built = repeat(\"ab\", 3) + \"!\"
+    println(built)
+    println(built == \"ababab!\")
+    println(built < \"b\")
+    println(repeat(\"é\", 4)[2:6])
+    var counts = map[string]int{}
+    counts[repeat(\"k\", 2)] = 5
+    let found, value = counts[\"kk\"]
+    println(found)
+    println(value)
+    println(repeat(\"\", 5).len())
+}
+",
+        "6\n104\né\nhllo\ntrue\n0\nh\n1\né\n3\nl\n4\nl\n5\no\n5\néx\nababab!\ntrue\ntrue\néé\ntrue\n5\n0\n",
+    );
+}
+
+#[test]
+fn string_operations_panic_on_bad_indexes_and_bounds() {
+    for (body, message) in [
+        (
+            "let s = \"ab\"\n    let n = 2\n    println(s[n])",
+            "index out of range",
+        ),
+        (
+            "let s = \"ab\"\n    var n = 3\n    println(s[n:])",
+            "slice bounds out of range",
+        ),
+        (
+            "let s = \"ab\"\n    var n = 1\n    println(s[n:0])",
+            "slice bounds out of range",
+        ),
+        (
+            "let s = \"é\"\n    var n = 1\n    println(s[n:])",
+            "string slice not on a character boundary",
+        ),
+        (
+            "let s = \"aé\"\n    var n = 2\n    println(s[:n])",
+            "string slice not on a character boundary",
+        ),
+    ] {
+        panics(
+            &format!("package main\n\nfunc main() {{\n    println(1)\n    {body}\n}}\n"),
+            message,
+            "1\n",
+        );
+    }
 }

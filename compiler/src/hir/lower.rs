@@ -1836,6 +1836,7 @@ impl<'a> Checker<'a> {
                 | TypeKind::Slice { .. }
                 | TypeKind::DynArray { .. }
                 | TypeKind::Map { .. }
+                | TypeKind::String
         );
         if is_collection && name.text == "len" {
             return self.collection_len(receiver, args, span);
@@ -2262,6 +2263,17 @@ impl<'a> Checker<'a> {
                 false
             }
             ExprKind::Index { base, .. } => match self.types.kind(base.ty()) {
+                TypeKind::String => {
+                    let message = match usage {
+                        MutableUse::Argument => "cannot pass a string index as a `mut` argument",
+                        MutableUse::Slice => "cannot take a mutable slice of a string index",
+                    };
+                    self.diagnostics.push(
+                        Diagnostic::new(Severity::Error, message, expr.span)
+                            .note("a string is immutable"),
+                    );
+                    false
+                }
                 TypeKind::Slice { mutable: true, .. } => true,
                 TypeKind::Slice { .. } => {
                     let name = self.source_text(base.span).to_owned();
@@ -2463,12 +2475,45 @@ impl<'a> Checker<'a> {
         )))
     }
 
+    fn string_conversion(&mut self, arg: &ast::Expr, span: Span) -> Option<Value> {
+        let value = match self.expr(arg, None)? {
+            Value::Untyped(_, span) => {
+                self.diagnostics.push(
+                    Diagnostic::new(
+                        Severity::Error,
+                        "cannot convert an untyped constant to `string`",
+                        span,
+                    )
+                    .note("only a `rune` converts to `string`; write `string('a')`"),
+                );
+                return None;
+            }
+            Value::Typed(expr) => self.single_value(expr)?,
+        };
+        if value.ty() != TypeStore::RUNE {
+            let message = format!("cannot convert `{}` to `string`", self.name(value.ty()));
+            self.diagnostics.push(
+                Diagnostic::new(Severity::Error, message, span)
+                    .note("only a `rune` converts to `string`; use `strconv.Itoa` for numbers"),
+            );
+            return None;
+        }
+        Some(Value::Typed(typed(
+            ExprKind::Convert(Box::new(value)),
+            TypeStore::STRING,
+            span,
+        )))
+    }
+
     fn conversion(&mut self, target: TypeId, args: &[ast::Expr], span: Span) -> Option<Value> {
         let [arg] = args else {
             self.error("a conversion takes exactly one argument", span);
             self.report_arg_errors(args);
             return None;
         };
+        if target == TypeStore::STRING {
+            return self.string_conversion(arg, span);
+        }
         if !self.types.is_numeric(target) {
             self.report_arg_errors(args);
             if target == TypeStore::RUNE {
@@ -2622,6 +2667,7 @@ impl<'a> Checker<'a> {
             TypeKind::Array { element, size } => (element, Some(size), "array"),
             TypeKind::DynArray { element } => (element, None, "array"),
             TypeKind::Slice { element, .. } => (element, None, "slice"),
+            TypeKind::String => (TypeStore::UINT8, None, "string"),
             _ => {
                 let message = format!("type `{}` cannot be indexed", self.name(base_ty));
                 self.error(message, base_span);
@@ -2665,6 +2711,7 @@ impl<'a> Checker<'a> {
         let (element, length) = match self.types.kind(base.ty()) {
             TypeKind::Array { element, size } => (element, Some(size)),
             TypeKind::Slice { element, .. } | TypeKind::DynArray { element } => (element, None),
+            TypeKind::String => (TypeStore::UINT8, None),
             _ => {
                 let message = format!("type `{}` cannot be sliced", self.name(base.ty()));
                 self.error(message, base.span);
@@ -2696,6 +2743,29 @@ impl<'a> Checker<'a> {
             return None;
         }
         let mutable = expected.is_some_and(|ty| self.is_mut_slice(ty));
+        if base.ty() == TypeStore::STRING {
+            if mutable {
+                self.diagnostics.push(
+                    Diagnostic::new(
+                        Severity::Error,
+                        "cannot take a mutable slice of a string",
+                        span,
+                    )
+                    .note("a string is immutable, and slicing it gives a `string`"),
+                );
+                return None;
+            }
+            return Some(Value::Typed(typed(
+                ExprKind::Slice {
+                    base: Box::new(base),
+                    low: low.map(Box::new),
+                    high: high.map(Box::new),
+                    mutable: false,
+                },
+                TypeStore::STRING,
+                span,
+            )));
+        }
         if mutable && !self.mutable_slice_source(&base) {
             return None;
         }
@@ -3103,6 +3173,7 @@ impl<'a> Checker<'a> {
                 TypeKind::Array { element, .. }
                 | TypeKind::Slice { element, .. }
                 | TypeKind::DynArray { element } => Some((TypeStore::INT, element)),
+                TypeKind::String => Some((TypeStore::INT, TypeStore::RUNE)),
                 TypeKind::Map { key: key_ty, value } if key.is_some() => Some((key_ty, value)),
                 TypeKind::Map { .. } => {
                     self.diagnostics.push(
@@ -3119,7 +3190,7 @@ impl<'a> Checker<'a> {
                     let message = format!("type `{}` cannot be looped over", self.name(ty));
                     self.diagnostics.push(
                         Diagnostic::new(Severity::Error, message, collection.span)
-                            .note("a loop visits a fixed array, slice, `Array<T>`, or map"),
+                            .note("a loop visits a fixed array, slice, `Array<T>`, map, or string"),
                     );
                     None
                 }
@@ -3418,6 +3489,18 @@ impl<'a> Checker<'a> {
                     self.error(
                         "map entries are not addressable places; assign `m[key] = value` on its own, or update a copy and assign it back",
                         expr.span,
+                    );
+                    return None;
+                }
+                if place.ty == TypeStore::STRING {
+                    self.expr(index, None);
+                    self.diagnostics.push(
+                        Diagnostic::new(
+                            Severity::Error,
+                            "cannot assign to a string index",
+                            expr.span,
+                        )
+                        .note("a string is immutable; build a new string instead"),
                     );
                     return None;
                 }

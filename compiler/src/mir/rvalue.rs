@@ -30,6 +30,17 @@ pub enum Rvalue {
     MapKeyAt(Place, Operand),
     /// The address of the value of the map entry at a position below its length.
     MapValueRef(Place, Operand),
+    /// A `string` between the bounds, which must fall on character boundaries;
+    /// panics otherwise or unless `0 <= low <= high <= length`.
+    StringSlice {
+        source: Operand,
+        low: Option<Operand>,
+        high: Option<Operand>,
+    },
+    /// The `rune` that starts at a byte position below the string's length.
+    StringChar(Operand, Operand),
+    /// The byte position after the character that starts at the given position.
+    StringAdvance(Operand, Operand),
     /// Panics unless `0 <= low <= high <= length`.
     Slice {
         place: Place,

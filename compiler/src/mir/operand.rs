@@ -47,6 +47,7 @@ pub fn projection_type(package: &hir::Package, ty: TypeId, projection: &Projecti
             TypeKind::Array { element, .. }
             | TypeKind::Slice { element, .. }
             | TypeKind::DynArray { element } => element,
+            TypeKind::String => crate::types::TypeStore::UINT8,
             _ => unreachable!("index projection on a non-array, non-slice"),
         },
     }

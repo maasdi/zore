@@ -15,7 +15,7 @@ pub struct Map {
 struct Entry {
     key: Vec<u8>,
     /// The key as the program passed it; a string key keeps its descriptor.
-    // Valid only while string data is never freed, which holds for literals.
+    // String storage is never freed before the program ends.
     raw: [u8; 16],
     value: *mut u8,
 }

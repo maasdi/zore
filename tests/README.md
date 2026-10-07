@@ -43,7 +43,8 @@ missing rustc diagnostics, and checking without either native tool.
 particular, `conformance/identifiers.md` covers the locked ASCII identifier rules,
 `conformance/comments.md` covers line and non-nesting block comments, and
 `conformance/statement-boundaries.md` covers automatic semicolon insertion.
-`conformance/strings.md` covers quoted and raw string literal forms.
+`conformance/strings.md` covers quoted and raw string literal forms and the
+string operations of §6.8.
 `conformance/runes.md` covers single-scalar rune literals and escapes.
 `conformance/integers.md` covers integer bases and prefix validation.
 `conformance/floats.md` covers decimal fractions and scientific notation.

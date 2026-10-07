@@ -120,9 +120,8 @@ gets a fresh transient scratch flags block (`drop_value`/`drop_contents`/
 per-slot storage, which a naive copy-paste extension of the existing
 struct-field GEP pattern would have corrupted.
 
-Other open items: rune conversions, the `println` float
-text format (§37.1, TBD), and runtime string concatenation, which needs a
-string-buffer ownership decision (§41.5). Runtime checks use MIR assert
+Other open items: integer-to-rune conversions and the `println` float
+text format (§37.1, TBD). Strings follow below. Runtime checks use MIR assert
 terminators with cleanup paths.
 
 Temporary limits that are not language rules: `check <file.ore>` treats the one
@@ -142,7 +141,7 @@ isolate the affected feature and continue unrelated supported work.
 | Type identity/layout gaps, numeric typing corner cases | Before the corresponding resolver/type-checker accepts those programs; not before lexing |
 | Minimal package/entry-point contract and `println` signature | Resolved in §3.19 and §37.1 (Q05a); `println` float text format stays open until native float printing |
 | Import discovery, project mapping, package initialization | Before supporting imports, project checking, or package variables; an explicitly limited single-file milestone need not resolve the whole package system |
-| String indexing/slicing/length | Before implementing those operations; literal decoding and immutable string values are already specified |
+| String indexing/slicing/length | Resolved in §6.8 (Q23); implemented |
 | Borrowed map-entry access, capacity APIs | Before implementing those operations; iteration, `len`, `push`, and `pop` are resolved in §5.10 and §12.7 |
 | Closure types/captures/invocation | Resolved (§16, Q02g, Q02i); closures with tasks before M25 |
 | Full go grammar, concurrency library APIs | Before affected M25–M31 work; preserve already locked ownership/runtime contracts |
@@ -2095,6 +2094,15 @@ and `pop` on `Array<T>`, and `for … in` loops over fixed arrays, slices,
 `Array<T>`, and maps. A loop is a counting loop over a shared borrow of the
 collection that stays live for the whole loop; the item is a by-reference
 local rebound on each iteration.
+
+Strings followed (§6.8, Q23). `len`, `s[i]` (a `byte`), `s[a:b]`, `for … in`
+over characters, runtime `+`, and `string(rune)` all work. A slice is a value
+of type `string` with no loan, because strings are immutable and Copy; its
+bounds and character boundaries are checked at run time by a MIR assert. Text
+built at run time is allocated by the runtime and released when the program
+ends, so a loop that keeps building strings grows memory; reference counting
+is the planned replacement. Loops decode characters from a held copy of the
+string with `StringChar` and `StringAdvance`.
 
 Owning and call-once closures followed (§16.4, §16.6, Q02i). After a body is
 checked, a pass marks closure literals in escaping positions owning, follows

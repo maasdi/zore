@@ -1,0 +1,39 @@
+package main
+
+func initials(name string) string {
+    var out = ""
+    var atStart = true
+    for _, ch in name {
+        if ch == ' ' {
+            atStart = true
+        } else if atStart {
+            out += string(ch)
+            atStart = false
+        }
+    }
+    return out
+}
+
+func main() {
+    let word = "héllo"
+
+    // Length, indexing, and slicing count bytes: `é` takes two.
+    println(word.len())
+    println(word[0])
+    println(word[1:3])
+
+    // A loop visits whole characters, with the byte index where each starts.
+    for index, ch in word {
+        println(index)
+        println(ch)
+    }
+
+    // `+` builds new text; the originals do not change.
+    let greeting = word + ", " + "wörld"
+    println(greeting)
+    println(greeting.len())
+
+    // `string(rune)` turns one character into text.
+    println(initials("Ada Lovelace King"))
+    println(string('é') == word[1:3])
+}

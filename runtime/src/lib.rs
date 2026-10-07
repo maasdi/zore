@@ -16,6 +16,7 @@ mod string;
 
 pub fn finish() {
     panic::finish();
+    string::release_all();
 }
 
 /// Borrows compiler-produced string storage for one runtime call.

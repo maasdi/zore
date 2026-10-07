@@ -141,6 +141,7 @@ impl Builder {
                 | Rvalue::Convert(..)
                 | Rvalue::BoundsCheck(..)
                 | Rvalue::Slice { .. }
+                | Rvalue::StringSlice { .. }
         ) {
             let target = self.new_block();
             self.terminate(Terminator::Assert {
@@ -479,6 +480,9 @@ impl Builder {
         body: &hir::Block,
         span: Span,
     ) {
+        if collection.ty() == TypeStore::STRING {
+            return self.for_each_string(package, key, item, collection, body, span);
+        }
         self.scopes.push(Vec::new());
         let collection_ty = collection.ty();
         let place = match self.argument_place_opt(package, collection) {
@@ -566,6 +570,92 @@ impl Builder {
                 position,
                 Operand::Const(Const::Int(1), TypeStore::INT),
             ),
+            span,
+        );
+        self.terminate(Terminator::Goto(header));
+        self.current = exit;
+        let locals = self.scopes.pop().expect("loop scope");
+        self.end_scope(locals);
+    }
+
+    /// Characters are visited by decoding from a held copy of the string.
+    fn for_each_string(
+        &mut self,
+        package: &hir::Package,
+        key: Option<LocalId>,
+        item: Option<LocalId>,
+        collection: &hir::Expr,
+        body: &hir::Block,
+        span: Span,
+    ) {
+        self.scopes.push(Vec::new());
+        let operand = self.operand(package, collection);
+        let held = self.temp(TypeStore::STRING);
+        self.push(Place::local(held), Rvalue::Use(operand), span);
+        let string = Operand::Copy(Place::local(held));
+        let length = self.assign_temp(
+            package,
+            TypeStore::INT,
+            Rvalue::Length(Place::local(held)),
+            span,
+        );
+        let counter = self.temp(TypeStore::INT);
+        self.push(
+            Place::local(counter),
+            Rvalue::Use(Operand::Const(Const::Int(0), TypeStore::INT)),
+            span,
+        );
+        let character = self.temp(TypeStore::RUNE);
+        let position = Operand::Copy(Place::local(counter));
+        let header = self.new_block();
+        let body_id = self.new_block();
+        let next = self.new_block();
+        let exit = self.new_block();
+        self.goto_new(header);
+        let more = self.assign_temp(
+            package,
+            TypeStore::BOOL,
+            Rvalue::Binary(BinaryOp::Lt, position.clone(), length),
+            span,
+        );
+        self.terminate(Terminator::Branch {
+            condition: more,
+            then_block: body_id,
+            else_block: exit,
+            span,
+        });
+        self.current = body_id;
+        self.push(
+            Place::local(character),
+            Rvalue::StringChar(string.clone(), position.clone()),
+            span,
+        );
+        if let Some(key) = key {
+            let key = Local(key.0);
+            self.scopes.last_mut().expect("loop scope").push(key);
+            self.push(Place::local(key), Rvalue::Use(position.clone()), span);
+        }
+        if let Some(item) = item {
+            let item = Local(item.0);
+            self.scopes.last_mut().expect("loop scope").push(item);
+            self.push(
+                Place::local(item),
+                Rvalue::Ref(Place::local(character)),
+                span,
+            );
+        }
+        self.loops.push(LoopTargets {
+            continue_to: next,
+            break_to: exit,
+            scope_depth: self.scopes.len(),
+        });
+        self.block(package, body);
+        self.loops.pop();
+        self.terminate(Terminator::Goto(next));
+        self.current = next;
+        self.push(
+            Place::local(counter),
+            Rvalue::StringAdvance(string, position),
             span,
         );
         self.terminate(Terminator::Goto(header));
@@ -857,6 +947,24 @@ impl Builder {
                 low,
                 high,
                 mutable,
+            } if base.ty() == TypeStore::STRING => {
+                let source = self.evaluate_to_temporary(package, base);
+                let low = low
+                    .as_deref()
+                    .map(|low| self.evaluate_to_temporary(package, low));
+                let high = high.as_deref().map(|high| self.operand(package, high));
+                self.assign_temp(
+                    package,
+                    TypeStore::STRING,
+                    Rvalue::StringSlice { source, low, high },
+                    span,
+                )
+            }
+            ExprKind::Slice {
+                base,
+                low,
+                high,
+                mutable,
             } => {
                 // Evaluate the base, then low, then high, once each.
                 let place = self.base_place(package, base);
@@ -1075,12 +1183,13 @@ impl Builder {
             TypeKind::Array { size, .. } => {
                 Operand::Const(Const::Int(size.into()), TypeStore::INT64)
             }
-            TypeKind::Slice { .. } | TypeKind::DynArray { .. } => self.assign_temp(
-                package,
-                TypeStore::INT64,
-                Rvalue::Length(base.clone()),
-                index.span,
-            ),
+            TypeKind::Slice { .. } | TypeKind::DynArray { .. } | TypeKind::String => self
+                .assign_temp(
+                    package,
+                    TypeStore::INT64,
+                    Rvalue::Length(base.clone()),
+                    index.span,
+                ),
             _ => unreachable!("index projection on a non-array, non-slice"),
         };
         self.assign_temp(

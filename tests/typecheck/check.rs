@@ -846,7 +846,11 @@ fn calls_arguments_and_results() {
         "declared functions used as values are not supported",
     );
     rejects(&body("let x = int"), "`int` is a type, not a value");
-    rejects(&body("let x = string(1)"), "only numeric conversions exist");
+    rejects(
+        &body("let x = string(1)"),
+        "cannot convert an untyped constant to `string`",
+    );
+    rejects(&body("let x = bool(1)"), "only numeric conversions exist");
     rejects(
         &body("let x = int64(\"1\")"),
         "cannot convert `string` to `int64`",
@@ -2690,8 +2694,8 @@ fn collections_have_len_push_and_pop() {
         "type `[int64; 2]` has no method `push`",
     );
     rejects(
-        &body("let s = \"ab\"\n_ = s.len()"),
-        "type `string` has no method `len`",
+        &body("let s = \"ab\"\n_ = s.size()"),
+        "type `string` has no method `size`",
     );
     rejects(
         &program(
@@ -2724,8 +2728,8 @@ fn collection_loops_bind_an_index_or_key_and_an_item() {
         "a constant cannot be looped over",
     );
     rejects(
-        &body("let s = \"ab\"\nfor c in s { _ = c }"),
-        "type `string` cannot be looped over",
+        &body("let n = 5\nfor c in n { _ = c }"),
+        "type `int64` cannot be looped over",
     );
     rejects(
         &body("var xs = Array<int>{}\nfor x in xs { x = 1 }"),
@@ -2748,4 +2752,79 @@ fn collection_loops_bind_an_index_or_key_and_an_item() {
         "`break` outside of a loop",
     );
     accepts(&body("var xs = Array<error>{}\nfor e in xs { }"));
+}
+
+#[test]
+fn strings_have_length_index_slice_loops_and_a_rune_conversion() {
+    accepts(&program(
+        "func f(s string, t string, r rune) int {
+            var n = s.len() + int(s[0])
+            let part string = s[1:]
+            let head = s[:n]
+            let mid = s[1:n]
+            var joined = s + t
+            joined += \"!\"
+            for ch in s { _ = ch }
+            for i, ch in t { n += i\n_ = ch }
+            _ = string(r) + string('x')
+            _ = part + head + mid + joined
+            return n
+        }",
+    ));
+    for (body, message) in [
+        (
+            "var s = \"ab\"\ns[0] = 1",
+            "cannot assign to a string index",
+        ),
+        (
+            "var s = \"ab\"\ns[0] += 1",
+            "cannot assign to a string index",
+        ),
+        (
+            "var s = \"ab\"\nedit(s[0])",
+            "cannot pass a string index as a `mut` argument",
+        ),
+        (
+            "let s = \"ab\"\nlet x mut []byte = s[:]",
+            "cannot take a mutable slice of a string",
+        ),
+        (
+            "let s = string(65)",
+            "cannot convert an untyped constant to `string`",
+        ),
+        (
+            "let s = string(\"a\")",
+            "cannot convert `string` to `string`",
+        ),
+        (
+            "let s = string(1.5)",
+            "cannot convert an untyped constant to `string`",
+        ),
+        (
+            "let n int32 = 1\nlet s = string(n)",
+            "cannot convert `int32` to `string`",
+        ),
+        (
+            "let s = \"ab\"\n_ = s.len(1)",
+            "`len` takes 0 arguments but 1 was given",
+        ),
+        ("let s = \"ab\"[-1:]", "is out of range for `string`"),
+        ("let s = \"ab\"[1:0]", "exceeds upper bound"),
+        (
+            "let s = \"ab\"\nfor c in s { c = 'x' }",
+            "cannot assign to loop item `c`",
+        ),
+        (
+            "let s = \"ab\"\n_ = s[1.5]",
+            "string index must be an integer",
+        ),
+        ("let s = \"ab\"\n_ = s[1:2:3]", "takes at most two bounds"),
+    ] {
+        rejects(
+            &program(&format!(
+                "func edit(b mut byte) {{}}\nfunc g() {{\n{body}\n}}"
+            )),
+            message,
+        );
+    }
 }
