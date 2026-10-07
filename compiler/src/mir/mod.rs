@@ -1,6 +1,5 @@
 mod block;
 mod body;
-pub mod error_use;
 pub mod lower;
 mod operand;
 mod rvalue;

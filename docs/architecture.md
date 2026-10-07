@@ -12,7 +12,7 @@ related locations. `lexer/` produces tokens; `parser/` produces the `ast/`
 syntax tree. `resolve/` binds names to IDs, `types/` interns types, and
 `hir/lower.rs` type-checks the resolved syntax while lowering it to the typed
 HIR defined in `hir/`. `mir/lower.rs` lowers HIR to the MIR in `mir/`;
-`ownership/` and `mir/error_use.rs` validate it, and `dropck/` inserts
+`ownership/` (including `ownership/error_use.rs`) validates it, and `dropck/` inserts
 deterministic drops before `codegen/` emits LLVM IR, which `driver/build.rs`
 compiles with clang and links with the Rust sources in `runtime/src/` using
 rustc (decision record 0001). Integration tests under `tests/<subsystem>/`
@@ -42,10 +42,10 @@ when existing code belongs in it (rule 11: no empty scaffolding):
   `ty.rs`, `type_store.rs`, plus `constant.rs` and `bignum.rs` for exact
   constant evaluation), `hir/` (`expr.rs`, `stmt.rs`, `function.rs`, `lower.rs`,
   and `lower/closure_kind.rs`, which decides which closures own their captures).
-- `ownership/` (`checker.rs`, `move_state.rs`, `borrow.rs`, `region.rs`),
+- `ownership/` (`checker.rs`, `move_state.rs`, `borrow.rs`, `region.rs`, and
+  `error_use.rs`, the check that every `error` value is read or discarded),
   `mir/` (`body.rs`, `block.rs`, `statement.rs`, `terminator.rs`,
-  `operand.rs`, `rvalue.rs`, `lower.rs`, and `error_use.rs`, the MIR
-  error-use check), `dropck/` (`insertion.rs`).
+  `operand.rs`, `rvalue.rs`, `lower.rs`), `dropck/` (`insertion.rs`).
 - `codegen/` (`llvm.rs`, `layout.rs`, `abi.rs`, plus `clone.rs`, `channel.rs`,
   `mutex.rs`, and `task.rs`, which lower `clone` and the channel, `Mutex`, and
   task operations, and `native.rs`, the shims that call the runtime for library

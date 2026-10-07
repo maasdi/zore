@@ -1,8 +1,8 @@
 use super::project::{Project, load_file};
 use crate::diagnostic::Diagnostic;
 use crate::hir;
-use crate::mir::{self, error_use};
-use crate::ownership;
+use crate::mir;
+use crate::ownership::{self, error_use};
 use crate::resolve::resolve;
 use crate::source::{Layered, SourceFile, Sources};
 
