@@ -152,11 +152,15 @@ A newly discovered semantic gap blocks its affected feature, not unrelated work.
   moved in. (c) A task cannot return a slice or function value, and a written
   `Task<...>` type with such a result is rejected. (d) `go f(args)` as a
   statement detaches the task, and so does dropping or overwriting a handle; a
-  detached task's results are destroyed when it finishes. (e) Each task runs on
-  its own operating-system thread (§36.2 leaves the scheduler open), so a
-  blocking `.wait()` never starves another task, and `await task` waits the
-  same way; an `async func` awaited with `await` runs on the awaiting task's
-  stack. The scheduler can change without changing the language. (f) A task
+  detached task's results are destroyed when it finishes. (e) Tasks are
+  fibers with private 256 KB stacks run by worker threads where stack switching
+  is available (x86-64 Linux and macOS), and operating-system threads elsewhere
+  (§36.2 leaves the scheduler open). A task that waits parks itself, so a wait
+  never starves another task, and `await task` waits the same way; an
+  `async func` awaited with `await` runs on the awaiting task's stack. Fiber
+  stacks do not grow, there is no preemption, and about 30,000 started,
+  unfinished fibers is the practical limit. The scheduler can change without
+  changing the language. (f) A task
   panic is reported on standard error as `panic in task N: message` when it
   happens, then raised again with the same message at `.wait()` or `await`.
   Waiting on a `nil` task panics with "wait on a nil task". (g) Runtime-built

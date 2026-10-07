@@ -2154,14 +2154,29 @@ closure environment, drop flags, and call-once handling), and spawns it. The
 code generator allocates a block holding the closure and room for the results,
 and emits an entry function per result list that runs the closure once, keeps
 its results unless it panicked, and then runs the environment destructor. The
-runtime starts a thread for the block and records completion and any panic;
-`.wait()` joins, takes the results, and re-raises a panic, and dropping a handle
-marks the task detached so whoever finishes second destroys its results and
+runtime runs the block as a fiber (a thread where fibers are not available)
+and records completion and any panic; `.wait()` waits, takes the results, and
+re-raises a panic, and dropping a handle marks the task detached so whoever finishes second destroys its results and
 frees the block. Waiting on a task moves its handle, so ownership analysis
 needs no new rules. The shared text table is a locked map rather than a
 per-thread one.
 
-The next steps are channels (M30+), then a scheduler with lightweight tasks. Do not accept a
+Fibers (`runtime/src/fiber.rs`). A fiber is a heap record plus a mapped stack
+that is allocated when the fiber first runs and pooled when it ends. A naked
+x86-64 routine saves the callee-saved registers, switches stack pointers, and
+restores the other side; a new stack first returns into a small start routine
+that calls the fiber's entry function. Workers pop ready fibers from one locked
+queue, and a fiber that must wait asks its worker to register it on the task it
+waits for only after the switch, so another worker cannot resume it while it is
+still running. The panic state follows the fiber: a worker swaps it in before
+resuming and out afterwards. The initial task is an ordinary thread and waits
+on a condition variable. Limits: stacks do not grow, so very deep recursion in a
+task overflows its guard page and the process dies; and each started fiber uses
+two memory mappings, so about 30,000 fibers can be started and unfinished at
+once under the default Linux limit, after which starting another reports
+"out of stack space".
+
+The next steps are channels (M30+). Do not accept a
 feature whose move/borrow checks and required cleanup are not yet
 implemented. Any newly discovered semantic gap follows specification §53 and
 `docs/spec-questions.md`.

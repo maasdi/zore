@@ -21,7 +21,8 @@ and awaited `?`; task cases cover `Task<...>` types and annotations, `go`
 typing and its input rules, Move classification, `nil`, `.wait()`, and
 `await task`. The native tests run tasks to completion, including results and
 errors, ownership transfer, panics (waited and detached), an endless detached
-task, `nil` waits, async functions awaiting tasks, and many tasks sharing text. `tests/ownership/ownership.rs` tests the MIR ownership pass through the
+task, `nil` waits, async functions awaiting tasks, many tasks sharing text, and tens of thousands
+of tasks running and waiting on each other. `tests/ownership/ownership.rs` tests the MIR ownership pass through the
 full frontend: whole-place and partial moves, reinitialization, call-local
 borrows, the custom-`drop`-ancestor restriction, array- and slice-element move
 rules, and region analysis of stored slice borrows (aliasing at the
