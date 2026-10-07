@@ -178,7 +178,7 @@ A newly discovered semantic gap blocks its affected feature, not unrelated work.
   receive that makes room moves the oldest blocked sender's value into the
   buffer. (g) Channel handles are counted with an atomic reference count; a
   handle cycle through buffers is never freed (§19.13). (h) A program whose
-  tasks all wait on channels forever hangs; there is no deadlock report. (i)
+  tasks all wait on channels or on each other, with nothing that could wake one (no timer, descriptor, or helper thread), stops with "fatal error: all tasks are asleep" and exit status 2; a deadlock among some tasks while others run is not detected. (i)
   `select` is not available. Pending cases: `tests/conformance/concurrency.md`.
 
 - **Q25 — Task implementation choices:** (a) `go` takes a call to a declared
@@ -192,7 +192,7 @@ A newly discovered semantic gap blocks its affected feature, not unrelated work.
   statement detaches the task, and so does dropping or overwriting a handle; a
   detached task's results are destroyed when it finishes. (e) Tasks are
   fibers with private 256 KB stacks run by worker threads where stack switching
-  is available (x86-64 Linux and macOS), and operating-system threads elsewhere
+  is available (x86-64 and AArch64 Linux and macOS), and operating-system threads elsewhere
   (§36.2 leaves the scheduler open). A task that waits parks itself, so a wait
   never starves another task, and `await task` waits the same way; an
   `async func` awaited with `await` runs on the awaiting task's stack. Fiber

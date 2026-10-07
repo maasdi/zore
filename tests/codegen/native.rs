@@ -3132,7 +3132,7 @@ func main() {
 fn tens_of_thousands_of_tasks_run_and_wait_on_each_other() {
     // Only targets with fibers can hold this many tasks; elsewhere each task is a thread.
     let fibers = cfg!(all(
-        target_arch = "x86_64",
+        any(target_arch = "x86_64", target_arch = "aarch64"),
         any(target_os = "linux", target_os = "macos")
     ));
     let (count, depth) = if fibers { (50_000, 5000) } else { (1000, 100) };
@@ -3927,4 +3927,147 @@ func main() {
     drop(pending)
 }";
     prints(source, "499500\n");
+}
+
+fn assert_deadlock(output: &Output) {
+    assert_eq!(output.status.code(), Some(2), "{}", stderr(output));
+    assert!(
+        stderr(output).contains("all tasks are asleep"),
+        "{}",
+        stderr(output)
+    );
+}
+
+#[test]
+fn a_receive_nobody_will_answer_is_reported_as_a_deadlock() {
+    let output = run(&main_body(
+        "let ch = channel<int>()\nprintln(\"waiting\")\nlet v, _ = ch.receive()\nprintln(v)",
+    ));
+    assert_deadlock(&output);
+    assert_eq!(stdout(&output), "waiting\n");
+}
+
+#[test]
+fn a_send_with_no_receiver_is_reported_as_a_deadlock() {
+    assert_deadlock(&run(&main_body("let ch = channel<int>()\nch.send(1)")));
+}
+
+#[test]
+fn tasks_waiting_on_each_other_are_reported_as_a_deadlock() {
+    let source = "package main
+func relay(a channel<int>, b channel<int>) {
+    let v, _ = a.receive()
+    b.send(v)
+}
+func main() {
+    let x = channel<int>()
+    let y = channel<int>()
+    let t = go relay(x, y)
+    go relay(y, x)
+    t.wait()
+    println(\"unreachable\")
+}";
+    assert_deadlock(&run(source));
+}
+
+#[test]
+fn waiting_for_a_task_that_waits_forever_is_reported_as_a_deadlock() {
+    let source = "package main
+func stuck(ch channel<int>) int {
+    let v, _ = ch.receive()
+    return v
+}
+func main() {
+    let ch = channel<int>()
+    let t = go stuck(ch)
+    println(t.wait())
+}";
+    assert_deadlock(&run(source));
+}
+
+#[test]
+fn the_last_running_task_finishing_leaves_a_deadlock() {
+    let source = "package main
+func finish(done channel<int>) {
+    var n = 0
+    for var i = 0; i < 100000; i += 1 { n += i }
+}
+func main() {
+    let never = channel<int>()
+    go finish(never)
+    let v, _ = never.receive()
+    println(v)
+}";
+    assert_deadlock(&run(source));
+}
+
+#[test]
+fn waiting_on_a_timer_a_helper_thread_or_a_busy_task_is_not_a_deadlock() {
+    let source = "package main
+import \"zore/time\"
+import \"zore/os\"
+func late(ch channel<int>) {
+    time.Sleep(200)
+    ch.send(5)
+}
+func reader(ch channel<string>) {
+    let text, _ = os.ReadFile(\"/dev/null\")
+    ch.send(\"read\" + text)
+}
+func busy(ch channel<int>) {
+    var n = 0
+    for var i = 0; i < 20000000; i += 1 { n += 1 }
+    ch.send(n)
+}
+func main() {
+    let timed = channel<int>()
+    go late(timed)
+    let a, _ = timed.receive()
+    println(a)
+    let files = channel<string>()
+    go reader(files)
+    let b, _ = files.receive()
+    println(b)
+    let work = channel<int>()
+    go busy(work)
+    let c, _ = work.receive()
+    println(c)
+}";
+    prints(source, "5\nread\n20000000\n");
+}
+
+#[test]
+fn a_waiting_accept_keeps_the_program_from_being_called_dead() {
+    let source = "package main
+import \"zore/net\"
+import \"zore/time\"
+func accept(listener own net.Listener, done channel<string>) {
+    let conn, err = listener.Accept()
+    if err != nil {
+        done.send(\"failed\")
+        return
+    }
+    done.send(\"accepted\")
+}
+func digits(n int) string {
+    var text = \"\"
+    var rest = n
+    for rest > 0 {
+        let d = rest % 10
+        text = \"0123456789\"[d:d + 1] + text
+        rest = rest / 10
+    }
+    return text
+}
+func main() {
+    let listener, _ = net.Listen(\"127.0.0.1:0\")
+    let port = listener.Port()
+    let done = channel<string>()
+    go accept(listener, done)
+    time.Sleep(150)
+    let conn, _ = net.Dial(\"127.0.0.1:\" + digits(port))
+    let result, _ = done.receive()
+    println(result)
+}";
+    prints(source, "accepted\n");
 }

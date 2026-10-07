@@ -20,6 +20,15 @@ pub(super) fn fail(message: &[u8]) -> ! {
     std::process::exit(2);
 }
 
+pub(super) fn deadlock() -> ! {
+    let mut stderr = std::io::stderr().lock();
+    let _ = stderr.write_all(
+        b"fatal error: all tasks are asleep, waiting on each other with nothing to wake them\n",
+    );
+    let _ = stderr.flush();
+    std::process::exit(2);
+}
+
 #[inline(never)]
 pub(super) fn raise(message: &[u8]) {
     STATE.with(|state| {
@@ -37,7 +46,10 @@ pub(super) fn take() -> Option<Vec<u8>> {
 }
 
 /// A task that moves between threads carries its panic state with it.
-#[cfg(all(target_arch = "x86_64", any(target_os = "linux", target_os = "macos")))]
+#[cfg(all(
+    any(target_arch = "x86_64", target_arch = "aarch64"),
+    any(target_os = "linux", target_os = "macos")
+))]
 #[inline(never)]
 pub(super) fn swap_state(other: &mut PanicState) {
     STATE.with(|state| std::mem::swap(&mut *state.borrow_mut(), other));

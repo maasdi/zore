@@ -76,7 +76,7 @@ struct Waiting {
 impl Waiting {
     fn new(message: Option<Message>) -> Arc<Self> {
         Arc::new(Self {
-            slot: Arc::new(Slot::default()),
+            slot: Arc::new(Slot::internal()),
             exchange: Mutex::new(Exchange {
                 message,
                 outcome: Outcome::Pending,
