@@ -3695,11 +3695,12 @@ func ticker(done channel<string>) {
     done.send(\"ticked\")
 }
 func main() {
-    let done = channel<string>(2)
-    go reader(done)
-    go ticker(done)
-    let first, _ = done.receive()
-    let second, _ = done.receive()
+    let typed = channel<string>(1)
+    let ticks = channel<string>(1)
+    go reader(typed)
+    go ticker(ticks)
+    let first, _ = ticks.receive()
+    let second, _ = typed.receive()
     println(first)
     println(second)
 }";
