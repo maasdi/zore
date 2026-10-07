@@ -21,3 +21,10 @@ for their rationale; the specification is authoritative.
 
 - [Arrays, indexing, and slicing](proposals/arrays-slices.md) (spec §12.6)
 - [Maps](proposals/maps.md) (spec §13.3)
+
+## Proposals under review
+
+These are not part of the specification. Nothing in them is implemented until the
+maintainer accepts them.
+
+- [Async functions as state machines, without fibers](proposals/async-state-machines.md) (Q32)
