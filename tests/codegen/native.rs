@@ -3107,3 +3107,55 @@ func main() {
 }";
     prints(source, "11\n");
 }
+
+#[test]
+fn tens_of_thousands_of_tasks_run_and_wait_on_each_other() {
+    let source = "package main
+func square(n int) int { return n * n }
+func chain(depth int) int {
+    if depth == 0 { return 0 }
+    let next = go chain(depth - 1)
+    return next.wait() + 1
+}
+func main() {
+    var tasks = Array<Task<int>>{}
+    for var i = 0; i < 50000; i += 1 {
+        tasks.push(go square(i % 10))
+    }
+    var total = 0
+    for tasks.len() > 0 {
+        let found, task = tasks.pop()
+        if found { total += task.wait() }
+    }
+    println(total)
+    let deep = go chain(5000)
+    println(deep.wait())
+}";
+    prints(source, "1425000\n5000\n");
+}
+
+#[test]
+fn a_panic_in_one_of_many_tasks_stays_in_that_task() {
+    let source = "package main
+func work(n int) int { return 100 / (n % 7) }
+func main() {
+    var good = 0
+    for var i = 1; i < 7; i += 1 {
+        let t = go work(i)
+        good += t.wait()
+    }
+    println(good)
+    let bad = go work(7)
+    let again = go work(2)
+    println(again.wait())
+    println(bad.wait())
+}";
+    let output = run(source);
+    assert_eq!(output.status.code(), Some(2), "{}", stderr(&output));
+    assert_eq!(stdout(&output), "244\n50\n");
+    assert!(
+        stderr(&output).contains("division by zero"),
+        "{}",
+        stderr(&output)
+    );
+}

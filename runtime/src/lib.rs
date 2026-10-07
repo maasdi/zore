@@ -5,6 +5,8 @@
 
 #[path = "alloc.rs"]
 mod alloc;
+#[path = "fiber.rs"]
+mod fiber;
 #[path = "io.rs"]
 mod io;
 #[path = "map.rs"]

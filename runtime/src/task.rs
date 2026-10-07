@@ -2,8 +2,7 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 
 use super::alloc::{zore_alloc, zore_free};
-
-const STACK_BYTES: usize = 16 << 20;
+use super::fiber::{self, Waiter};
 
 type Code = unsafe extern "C" fn(*mut u8);
 
@@ -11,20 +10,22 @@ static SPAWNED: AtomicU64 = AtomicU64::new(0);
 static RUNNING: AtomicUsize = AtomicUsize::new(0);
 
 #[derive(Default)]
-struct State {
-    finished: bool,
+pub(super) struct State {
+    pub(super) finished: bool,
     detached: bool,
     panic: Option<Vec<u8>>,
+    /// A parked fiber to resume when the task finishes.
+    pub(super) waiter: Option<Waiter>,
 }
 
 #[derive(Default)]
-struct Shared {
+pub(super) struct Shared {
     state: Mutex<State>,
-    finished: Condvar,
+    pub(super) finished: Condvar,
 }
 
 impl Shared {
-    fn lock(&self) -> MutexGuard<'_, State> {
+    pub(super) fn lock(&self) -> MutexGuard<'_, State> {
         self.state
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -64,7 +65,7 @@ pub(super) fn running() -> usize {
     RUNNING.load(Ordering::SeqCst)
 }
 
-/// Starts a thread that runs `entry` on the block.
+/// Starts a task that runs `entry` on the block.
 ///
 /// # Safety
 /// `block` must come from `zore_alloc(size)`, and `entry` and `drop_results` must accept it.
@@ -84,30 +85,29 @@ pub unsafe extern "C" fn zore_task_spawn(
     let id = SPAWNED.fetch_add(1, Ordering::SeqCst) + 1;
     RUNNING.fetch_add(1, Ordering::SeqCst);
     let task_shared = Arc::clone(&shared);
-    let spawned = std::thread::Builder::new()
-        .stack_size(STACK_BYTES)
-        .spawn(move || {
-            // SAFETY: the caller guarantees `entry` accepts the block.
-            unsafe { entry(block.data) };
-            let panic = super::panic::take();
-            if let Some(message) = &panic {
-                super::panic::report_task(id, message);
-            }
-            let panicked = panic.is_some();
-            let mut state = task_shared.lock();
-            state.finished = true;
-            state.panic = panic;
-            let detached = state.detached;
-            drop(state);
-            task_shared.finished.notify_all();
-            if detached {
-                block.discard(panicked);
-            }
-            RUNNING.fetch_sub(1, Ordering::SeqCst);
-        });
-    if spawned.is_err() {
-        super::panic::fail(b"cannot start a task");
-    }
+    fiber::spawn(Box::new(move || {
+        // SAFETY: the caller guarantees `entry` accepts the block.
+        unsafe { entry(block.data) };
+        let panic = super::panic::take();
+        if let Some(message) = &panic {
+            super::panic::report_task(id, message);
+        }
+        let panicked = panic.is_some();
+        let mut state = task_shared.lock();
+        state.finished = true;
+        state.panic = panic;
+        let detached = state.detached;
+        let waiter = state.waiter.take();
+        drop(state);
+        task_shared.finished.notify_all();
+        if let Some(waiter) = waiter {
+            fiber::wake(waiter);
+        }
+        if detached {
+            block.discard(panicked);
+        }
+        RUNNING.fetch_sub(1, Ordering::SeqCst);
+    }));
     Box::into_raw(Box::new(Handle { shared, block }))
 }
 
@@ -131,16 +131,8 @@ pub unsafe extern "C" fn zore_task_wait(handle: *mut Handle, size: i64) -> *mut 
     }
     // SAFETY: guaranteed by the caller.
     let handle = unsafe { Box::from_raw(handle) };
-    let mut state = handle.shared.lock();
-    while !state.finished {
-        state = handle
-            .shared
-            .finished
-            .wait(state)
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-    }
-    let panic = state.panic.take();
-    drop(state);
+    fiber::wait_for(&handle.shared);
+    let panic = handle.shared.lock().panic.take();
     match panic {
         Some(message) => {
             // SAFETY: the task panicked, so its block has no results to destroy.

@@ -2,7 +2,7 @@ use std::cell::RefCell;
 use std::io::Write;
 
 #[derive(Default)]
-struct PanicState {
+pub(super) struct PanicState {
     current: Option<Vec<u8>>,
     suspended: Vec<Option<Vec<u8>>>,
 }
@@ -20,6 +20,7 @@ pub(super) fn fail(message: &[u8]) -> ! {
     std::process::exit(2);
 }
 
+#[inline(never)]
 pub(super) fn raise(message: &[u8]) {
     STATE.with(|state| {
         let mut state = state.borrow_mut();
@@ -30,8 +31,16 @@ pub(super) fn raise(message: &[u8]) {
     });
 }
 
+#[inline(never)]
 pub(super) fn take() -> Option<Vec<u8>> {
     STATE.with(|state| state.borrow_mut().current.take())
+}
+
+/// A task that moves between threads carries its panic state with it.
+#[cfg(all(target_arch = "x86_64", any(target_os = "linux", target_os = "macos")))]
+#[inline(never)]
+pub(super) fn swap_state(other: &mut PanicState) {
+    STATE.with(|state| std::mem::swap(&mut *state.borrow_mut(), other));
 }
 
 pub(super) fn report_task(id: u64, message: &[u8]) {
