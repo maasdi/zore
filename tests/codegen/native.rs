@@ -12,6 +12,7 @@ fn run(source: &str) -> Output {
     let executable = dir.path().join("program");
     build_file(source, &executable).unwrap_or_else(|e| panic!("build failed: {e:?}"));
     Command::new(&executable)
+        .env("ZORE_CHECK_LEAKS", "1")
         .output()
         .expect("run built program")
 }
@@ -1587,7 +1588,9 @@ fn only_valid_executables_are_built() {
 }
 
 fn zore() -> Command {
-    Command::new(env!("CARGO_BIN_EXE_zore"))
+    let mut command = Command::new(env!("CARGO_BIN_EXE_zore"));
+    command.env("ZORE_CHECK_LEAKS", "1");
+    command
 }
 
 #[test]
@@ -2684,5 +2687,229 @@ func main() {
 }
 ",
         "400000\n33\nabab\nababzzyy\n400001\n",
+    );
+}
+
+#[test]
+fn discarded_text_is_freed_when_it_is_overwritten_or_goes_out_of_scope() {
+    prints(
+        "package main
+
+import \"zore/strconv\"
+
+func main() {
+    var kept = \"\"
+    for var i = 0; i < 2000; i += 1 {
+        let scratch = \"line \" + strconv.Itoa(i)
+        kept = scratch + \"!\"
+        kept = kept[1:]
+    }
+    println(kept)
+}
+",
+        "ine 1999!\n",
+    );
+}
+
+#[test]
+fn text_inside_structs_and_fixed_arrays_is_shared_by_copies() {
+    prints(
+        "package main
+
+type Person struct {
+    Name string
+    Tags [string; 2]
+}
+
+func describe(p Person) string {
+    return p.Name + \":\" + p.Tags[0] + p.Tags[1]
+}
+
+func rename(p mut Person, name string) {
+    p.Name = name + \"!\"
+}
+
+func main() {
+    var first = Person{Name: \"a\" + \"b\", Tags: [string; 2]{\"x\" + \"1\", \"y\" + \"2\"}}
+    let second = first
+    rename(first, \"z\" + \"z\")
+    println(describe(first))
+    println(describe(second))
+    first.Tags[1] = second.Tags[0] + second.Tags[1]
+    println(describe(first))
+}
+",
+        "zz!:x1y2\nab:x1y2\nzz!:x1x1y2\n",
+    );
+}
+
+#[test]
+fn text_in_dynamic_arrays_and_maps_is_released_with_its_owner() {
+    prints(
+        "package main
+
+import \"zore/strconv\"
+
+func main() {
+    var names = Array<string>{}
+    for var i = 0; i < 20; i += 1 {
+        names.push(\"n\" + strconv.Itoa(i))
+    }
+    let found, last = names.pop()
+    println(found)
+    println(last)
+    let grid = Array<Array<string>>{Array<string>{\"a\" + \"b\", \"c\"}, Array<string>{\"d\" + \"e\"}}
+    println(grid[0][0] + grid[1][0])
+    let twin = clone(grid)
+
+    var scores = map[string]string{}
+    for var i = 0; i < 30; i += 1 {
+        scores[\"k\" + strconv.Itoa(i % 4)] = \"v\" + strconv.Itoa(i)
+    }
+    let seen, value = scores[\"k1\"]
+    println(seen)
+    println(value)
+    let removed, old = scores.remove(\"k2\")
+    println(removed)
+    println(old)
+    let copy = clone(scores)
+    scores[\"k0\"] = \"changed\"
+    var total = 0
+    for key, text in copy {
+        total += key.len() + text.len()
+    }
+    println(total)
+    println(twin[0][1])
+}
+",
+        "true\nn19\nabde\ntrue\nv29\ntrue\nv26\n15\nc\n",
+    );
+}
+
+#[test]
+fn closures_keep_the_text_they_capture_until_they_are_dropped() {
+    prints(
+        "package main
+
+import \"zore/strconv\"
+
+func counter(prefix string) func() string {
+    var n = 0
+    return func() string {
+        n += 1
+        return prefix + strconv.Itoa(n)
+    }
+}
+
+func main() {
+    let next = counter(\"c\" + \"-\")
+    println(next())
+    println(next())
+    var message = \"hel\" + \"lo\"
+    let show = func() string { return message + \"!\" }
+    println(show())
+}
+",
+        "c-1\nc-2\nhello!\n",
+    );
+}
+
+#[test]
+fn error_messages_built_from_text_are_released() {
+    prints(
+        "package main
+
+import \"zore/strconv\"
+
+func parse(text string) (int, error) {
+    let value, err = strconv.Atoi(text)
+    if err != nil {
+        return 0, err
+    }
+    return value, nil
+}
+
+func check(n int) (int, error) {
+    if n > 2 {
+        return 0, error(\"too big: \" + strconv.Itoa(n))
+    }
+    return n, nil
+}
+
+func chain(n int) (int, error) {
+    let value = check(n)?
+    return value + 1, nil
+}
+
+func main() {
+    for var i = 0; i < 5; i += 1 {
+        let value, err = chain(i)
+        if err != nil {
+            println(err == error(\"too big: 3\"))
+        } else {
+            println(value)
+        }
+    }
+    let _, ignored = parse(\"x\" + \"y\")
+    _ = ignored
+    let _, other = check(9)
+    _ = other
+}
+",
+        "1\n2\n3\ntrue\nfalse\n",
+    );
+}
+
+#[test]
+fn text_from_the_standard_packages_outlives_the_text_it_came_from() {
+    prints(
+        "package main
+
+import \"zore/strings\"
+
+func pieces() Array<string> {
+    let line = \"one\" + \" \" + \"two\" + \" \" + \"three\"
+    return strings.Split(line, \" \")
+}
+
+func main() {
+    let words = pieces()
+    println(words[1])
+    println(strings.Join(words[:], \"-\"))
+    var trimmed = strings.TrimSpace(\"  \" + \"padded\" + \"  \")
+    trimmed = strings.Upper(trimmed)
+    println(trimmed)
+}
+",
+        "two\none-two-three\nPADDED\n",
+    );
+}
+
+#[test]
+fn text_is_released_when_a_panic_unwinds_the_stack() {
+    panics(
+        "package main
+
+import \"zore/strconv\"
+
+type Guard struct { Label string }
+
+func (g mut Guard) drop() { println(\"drop \" + g.Label) }
+
+func fail(items Array<int>, text string) int {
+    let more = text + strconv.Itoa(1)
+    println(more)
+    return items[9]
+}
+
+func main() {
+    let guard = Guard{Label: \"g\" + \"1\"}
+    var kept = Array<string>{\"a\" + \"b\"}
+    kept.push(\"c\" + \"d\")
+    println(fail(Array<int>{1}, \"t\" + \"x\"))
+}
+",
+        "index out of range",
+        "tx1\ndrop g1\n",
     );
 }

@@ -354,9 +354,14 @@ checks for numeric conversions; each failure calls `zore_panic` with the
 operation and source location. MIR assert terminators carry cleanup paths so a
 panic runs pending drops before the runtime reports it. Runtime strings are
 `{ ptr, len }` descriptors: concatenation and `string(rune)` call the runtime,
-which allocates the text in a buffer it keeps until the program ends, and
-slices share their source's storage after a bounds and character-boundary
-check. Concatenation extends the buffer in place when the left text ends where
+which allocates the text in a counted buffer, and slices share their source's
+storage after a bounds and character-boundary check. A copy that is kept adds an
+owner (`zore_string_retain`) and ending its life removes one
+(`zore_string_release`); the last owner frees the buffer. Text counts as a
+value that needs cleanup even though it is Copy: drop flags, scope-end drops,
+and the panic cleanup path cover it, and a value of a Copy type that holds text
+(a struct or fixed array with a `string` or `error` inside) is retained field by
+field when it is copied. Concatenation extends the buffer in place when the left text ends where
 the buffer's text ends, which is safe because no string reads past its own end. Float
 printing is reported as unsupported by the backend.
 The generated IR contains no target triple, so clang supplies the host's; it

@@ -49,6 +49,26 @@ impl Package {
         }
     }
 
+    /// Whether a value of `ty` owns a share of some runtime text.
+    pub fn holds_text(&self, ty: TypeId) -> bool {
+        match self.types.kind(ty) {
+            TypeKind::String | TypeKind::Error => true,
+            TypeKind::Struct(id) => self.strukt(id).fields.iter().any(|f| self.holds_text(f.ty)),
+            TypeKind::Array { element, .. } => self.holds_text(element),
+            _ => false,
+        }
+    }
+
+    /// Copy values that hold text are still copied freely, but each copy shares the text.
+    pub fn copies_text(&self, ty: TypeId) -> bool {
+        self.is_copy(ty) && self.holds_text(ty)
+    }
+
+    /// Destroying a value of `ty` does something: it runs cleanup or gives up shared text.
+    pub fn needs_drop(&self, ty: TypeId) -> bool {
+        !self.is_copy(ty) || self.holds_text(ty)
+    }
+
     /// Slices and closures hold borrows; a slice's own elements are not part of the value.
     pub fn contains_view(&self, ty: TypeId) -> bool {
         self.contains(ty, &|kind| {

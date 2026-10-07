@@ -46,6 +46,9 @@ impl FunctionBuilder<'_, '_> {
             let value = self.fresh();
             self.line(format!("{value} = load {ty_text}, ptr {source}"));
             self.line(format!("store {ty_text} {value}, ptr {target}"));
+            if package.holds_text(ty) {
+                self.retain_at(target, ty);
+            }
             return;
         }
         match package.types.kind(ty) {
@@ -244,7 +247,7 @@ impl FunctionBuilder<'_, '_> {
     }
 
     fn drop_map_values_before_counter(&mut self, map: &str, value: TypeId, counter: &str) {
-        if self.module.package.is_copy(value) {
+        if !self.module.package.needs_drop(value) {
             return;
         }
         let cloned = self.fresh();

@@ -2120,11 +2120,14 @@ Strings followed (§6.8, Q23). `len`, `s[i]` (a `byte`), `s[a:b]`, `for … in`
 over characters, runtime `+`, and `string(rune)` all work. A slice is a value
 of type `string` with no loan, because strings are immutable and Copy; its
 bounds and character boundaries are checked at run time by a MIR assert. Text
-built at run time is allocated by the runtime in buffers released when the
-program ends. `a + b` appends in place when `a` ends where its buffer's text
+built at run time is allocated by the runtime in reference-counted buffers: the
+compiler retains a `string` when a copy is kept and releases it when its owner
+is dropped, overwritten, or unwound by a panic, and the last release frees the
+buffer. `a + b` appends in place when `a` ends where its buffer's text
 ends, and doubles the buffer when it is full, so a loop that builds one text
-uses memory proportional to its length; discarded texts are still kept until
-the end, and reference counting is the planned replacement. Loops decode characters from a held copy of the
+uses memory proportional to its length. Setting `ZORE_CHECK_LEAKS` makes a
+program exit with code 70 if any text is still owned when it ends; the test
+suite sets it. Loops decode characters from a held copy of the
 string with `StringChar` and `StringAdvance`.
 
 Owning and call-once closures followed (§16.4, §16.6, Q02i). After a body is
