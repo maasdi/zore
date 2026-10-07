@@ -12,4 +12,4 @@ pub use body::{Body, Local, LocalDecl, Program};
 pub use operand::{Operand, Place, Projection, captured_operand, place_type, projection_type};
 pub use rvalue::{AggregateKind, Rvalue};
 pub use statement::Statement;
-pub use terminator::{Callee, Terminator};
+pub use terminator::{Callee, SelectKind, Terminator};

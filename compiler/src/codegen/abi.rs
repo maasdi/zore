@@ -43,6 +43,7 @@ declare void @zore_channel_release(ptr)
 declare void @zore_channel_send(ptr, ptr, ptr)
 declare zeroext i1 @zore_channel_receive(ptr, ptr, i64)
 declare void @zore_channel_close(ptr)
+declare i64 @zore_select(ptr, i64, i1 zeroext)
 declare ptr @zore_mutex_new(i64, ptr, ptr)
 declare void @zore_mutex_retain(ptr)
 declare void @zore_mutex_release(ptr)
@@ -243,6 +244,7 @@ impl FunctionBuilder<'_, '_> {
             | Callee::ChannelSend
             | Callee::ChannelReceive
             | Callee::ChannelClose
+            | Callee::Select { .. }
             | Callee::MutexNew(_)
             | Callee::MutexWithLock
             | Callee::MutexIsPoisoned => {

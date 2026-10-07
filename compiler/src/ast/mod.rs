@@ -9,6 +9,6 @@ pub use expr::{BinaryOp, Closure, Expr, ExprKind, FieldInit, MapEntry, UnaryOp};
 pub use node::Name;
 pub use stmt::{
     AssignOp, AssignTarget, Binding, BindingKind, BindingTarget, Block, Else, For, ForHeader, If,
-    Stmt, StmtKind,
+    Select, SelectArm, SelectComm, Stmt, StmtKind,
 };
 pub use types::{FuncTypeParam, Type};

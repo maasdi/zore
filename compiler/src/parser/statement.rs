@@ -190,6 +190,7 @@ impl Parser<'_> {
             }
             TokenKind::Keyword(Keyword::If) => StmtKind::If(self.if_stmt()?),
             TokenKind::Keyword(Keyword::For) => StmtKind::For(self.for_stmt()?),
+            TokenKind::Keyword(Keyword::Select) => StmtKind::Select(self.select_stmt()?),
             TokenKind::Punct(Punct::LBrace) => StmtKind::Block(self.block()?),
             TokenKind::Semicolon(Separator::Explicit) => {
                 return Err(self.error("empty statement", start));
@@ -310,6 +311,73 @@ impl Parser<'_> {
             then_block,
             else_branch,
             span: self.span_from(start),
+        })
+    }
+
+    pub(super) fn select_stmt(&mut self) -> PResult<Select> {
+        let start = self.bump().span;
+        let open = self.body_open("`select`")?;
+        let mut arms = Vec::new();
+        let mut default: Option<Block> = None;
+        loop {
+            while matches!(self.peek(), TokenKind::Semicolon(_)) {
+                self.bump();
+            }
+            match self.peek() {
+                TokenKind::Punct(Punct::RBrace) => {
+                    self.bump();
+                    break;
+                }
+                TokenKind::Eof => return Err(self.unclosed(open)),
+                _ => {}
+            }
+            let arm_start = self.current_span();
+            let word = if *self.peek() == TokenKind::Ident {
+                self.current_text().to_owned()
+            } else {
+                String::new()
+            };
+            match word.as_str() {
+                "case" => {
+                    self.bump();
+                    let comm = if self.at_keyword(Keyword::Let) {
+                        SelectComm::Bind(self.with_struct_literals(false, Self::binding)?)
+                    } else {
+                        SelectComm::Expr(self.header_expr()?)
+                    };
+                    let body = self.body_block("`case`", "expected `{` after `case`")?;
+                    arms.push(SelectArm {
+                        comm,
+                        body,
+                        span: self.span_from(arm_start),
+                    });
+                }
+                "default" => {
+                    self.bump();
+                    let body = self.body_block("`default`", "expected `{` after `default`")?;
+                    if default.is_some() {
+                        let span = self.span_from(arm_start);
+                        return Err(self.error("a `select` has at most one `default`", span));
+                    }
+                    default = Some(body);
+                }
+                _ => return Err(self.unexpected("`case`, `default`, or `}`")),
+            }
+            if !matches!(
+                self.peek(),
+                TokenKind::Semicolon(_) | TokenKind::Punct(Punct::RBrace)
+            ) {
+                return Err(self.unexpected("newline or `;` after the arm"));
+            }
+        }
+        let span = self.span_from(start);
+        if arms.is_empty() {
+            return Err(self.error("a `select` needs at least one `case`", span));
+        }
+        Ok(Select {
+            arms,
+            default,
+            span,
         })
     }
 

@@ -1959,6 +1959,9 @@ impl FunctionBuilder<'_, '_> {
                         self.channel_close(args);
                         None
                     }
+                    Callee::Select { cases, has_default } => {
+                        Some(self.channel_select(cases, *has_default, args))
+                    }
                     Callee::MutexNew(element) => Some(self.mutex_new(*element, &args[0])),
                     Callee::MutexWithLock => self.mutex_with_lock(args),
                     Callee::MutexIsPoisoned => Some(self.mutex_is_poisoned(&args[0])),

@@ -53,6 +53,7 @@ pub enum StmtKind {
     Continue,
     If(If),
     For(For),
+    Select(Select),
     Block(Block),
 }
 
@@ -103,4 +104,27 @@ pub enum ForHeader {
         second: Option<BindingTarget>,
         collection: Expr,
     },
+}
+
+/// `select { arms }`; a `default` arm may appear anywhere among the cases.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Select {
+    pub arms: Vec<SelectArm>,
+    pub default: Option<Block>,
+    pub span: Span,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct SelectArm {
+    pub comm: SelectComm,
+    pub body: Block,
+    pub span: Span,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum SelectComm {
+    /// `let targets = channel.receive()`.
+    Bind(Binding),
+    /// A send, or a receive whose results are discarded.
+    Expr(Expr),
 }

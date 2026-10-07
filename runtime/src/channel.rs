@@ -1,5 +1,5 @@
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use super::alloc::{zore_alloc, zore_free};
@@ -44,6 +44,12 @@ impl Message {
         }
     }
 
+    /// Frees the storage without touching the value, which another owner still holds.
+    fn free(self) {
+        // SAFETY: the storage came from `zore_alloc(size)`.
+        unsafe { zore_free(self.data, self.size as i64) };
+    }
+
     /// Destroys the value it holds, then frees the storage.
     fn discard(self, destroy: Option<Destroy>) {
         if let Some(destroy) = destroy {
@@ -65,21 +71,26 @@ enum Outcome {
 struct Exchange {
     message: Option<Message>,
     outcome: Outcome,
+    /// Which case of a `select` completed.
+    case: usize,
 }
 
-/// A task blocked in a send or a receive.
+/// A task blocked in a send, a receive, or a `select`; it sleeps until one entry completes.
 struct Waiting {
     slot: Arc<Slot>,
+    claimed: AtomicBool,
     exchange: Mutex<Exchange>,
 }
 
 impl Waiting {
-    fn new(message: Option<Message>) -> Arc<Self> {
+    fn new() -> Arc<Self> {
         Arc::new(Self {
             slot: Arc::new(Slot::internal()),
+            claimed: AtomicBool::new(false),
             exchange: Mutex::new(Exchange {
-                message,
+                message: None,
                 outcome: Outcome::Pending,
+                case: 0,
             }),
         })
     }
@@ -90,9 +101,15 @@ impl Waiting {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
-    fn finish(&self, outcome: Outcome, message: Option<Message>) {
+    /// Only the first caller may complete a waiting task, whichever of its channels acts first.
+    fn claim(&self) -> bool {
+        !self.claimed.swap(true, Ordering::SeqCst)
+    }
+
+    fn complete(&self, case: usize, outcome: Outcome, message: Option<Message>) {
         let mut exchange = self.exchange();
         exchange.outcome = outcome;
+        exchange.case = case;
         if message.is_some() {
             exchange.message = message;
         }
@@ -101,12 +118,89 @@ impl Waiting {
     }
 }
 
+/// One place in a channel's queue where a task waits; a sender's entry carries its value.
+struct Entry {
+    waiting: Arc<Waiting>,
+    case: usize,
+    message: Option<Message>,
+}
+
 #[derive(Default)]
 struct Queues {
     closed: bool,
     buffer: VecDeque<Message>,
-    receivers: VecDeque<Arc<Waiting>>,
-    senders: VecDeque<Arc<Waiting>>,
+    receivers: VecDeque<Entry>,
+    senders: VecDeque<Entry>,
+}
+
+/// The next entry whose task nobody else has completed.
+fn pop_live(queue: &mut VecDeque<Entry>) -> Option<Entry> {
+    while let Some(entry) = queue.pop_front() {
+        if entry.waiting.claim() {
+            return Some(entry);
+        }
+        if let Some(message) = entry.message {
+            message.free();
+        }
+    }
+    None
+}
+
+enum SendTry {
+    Done,
+    Closed,
+    NotReady,
+}
+
+enum ReceiveTry {
+    Got(Message),
+    Closed,
+    Empty,
+}
+
+fn try_send(queues: &mut Queues, capacity: usize, make: &dyn Fn() -> Message) -> SendTry {
+    if queues.closed {
+        return SendTry::Closed;
+    }
+    if let Some(receiver) = pop_live(&mut queues.receivers) {
+        receiver
+            .waiting
+            .complete(receiver.case, Outcome::Delivered, Some(make()));
+        return SendTry::Done;
+    }
+    if queues.buffer.len() < capacity {
+        queues.buffer.push_back(make());
+        return SendTry::Done;
+    }
+    SendTry::NotReady
+}
+
+fn try_receive(queues: &mut Queues) -> ReceiveTry {
+    if let Some(message) = queues.buffer.pop_front() {
+        if let Some(mut sender) = pop_live(&mut queues.senders) {
+            if let Some(moved) = sender.message.take() {
+                queues.buffer.push_back(moved);
+            }
+            sender
+                .waiting
+                .complete(sender.case, Outcome::Delivered, None);
+        }
+        return ReceiveTry::Got(message);
+    }
+    if let Some(mut sender) = pop_live(&mut queues.senders) {
+        let message = sender.message.take();
+        sender
+            .waiting
+            .complete(sender.case, Outcome::Delivered, None);
+        if let Some(message) = message {
+            return ReceiveTry::Got(message);
+        }
+    }
+    if queues.closed {
+        ReceiveTry::Closed
+    } else {
+        ReceiveTry::Empty
+    }
 }
 
 pub struct Channel {
@@ -184,6 +278,18 @@ pub unsafe extern "C" fn zore_channel_release(channel: *const Channel) {
     }
 }
 
+/// Destroys a value that could not be sent, then raises the panic for sending on a closed channel.
+///
+/// # Safety
+/// `value` must hold one live value that `destroy` can drop.
+unsafe fn fail_send(value: *mut u8, destroy: Option<Destroy>) {
+    if let Some(destroy) = destroy {
+        // SAFETY: guaranteed by the caller.
+        unsafe { destroy(value) };
+    }
+    super::panic::raise(SEND_CLOSED);
+}
+
 /// Moves the value at `value` into the channel, waiting for room or a receiver. A send on a
 /// closed channel destroys the value with `destroy` and raises a panic.
 ///
@@ -195,36 +301,31 @@ pub unsafe extern "C" fn zore_channel_send(
     value: *mut u8,
     destroy: Option<Destroy>,
 ) {
-    let discard_value = || {
-        if let Some(destroy) = destroy {
-            // SAFETY: the caller's value was not moved into the channel.
-            unsafe { destroy(value) };
-        }
-        super::panic::raise(SEND_CLOSED);
-    };
     // SAFETY: guaranteed by the caller.
     let Some(channel) = (unsafe { channel.as_ref() }) else {
-        discard_value();
+        // SAFETY: guaranteed by the caller.
+        unsafe { fail_send(value, destroy) };
         return;
     };
-    let mut queues = channel.lock();
-    if queues.closed {
-        drop(queues);
-        discard_value();
-        return;
-    }
     // SAFETY: `value` holds `size` bytes.
-    let message = unsafe { Message::copy_of(value, channel.size) };
-    if let Some(receiver) = queues.receivers.pop_front() {
-        receiver.finish(Outcome::Delivered, Some(message));
-        return;
+    let make = || unsafe { Message::copy_of(value, channel.size) };
+    let mut queues = channel.lock();
+    match try_send(&mut queues, channel.capacity, &make) {
+        SendTry::Done => return,
+        SendTry::Closed => {
+            drop(queues);
+            // SAFETY: guaranteed by the caller.
+            unsafe { fail_send(value, destroy) };
+            return;
+        }
+        SendTry::NotReady => {}
     }
-    if queues.buffer.len() < channel.capacity {
-        queues.buffer.push_back(message);
-        return;
-    }
-    let waiting = Waiting::new(Some(message));
-    queues.senders.push_back(Arc::clone(&waiting));
+    let waiting = Waiting::new();
+    queues.senders.push_back(Entry {
+        waiting: Arc::clone(&waiting),
+        case: 0,
+        message: Some(make()),
+    });
     drop(queues);
     waiting.slot.park();
     let mut exchange = waiting.exchange();
@@ -260,34 +361,22 @@ pub unsafe extern "C" fn zore_channel_receive(
         return zero();
     };
     let mut queues = channel.lock();
-    if let Some(message) = queues.buffer.pop_front() {
-        if let Some(sender) = queues.senders.pop_front() {
-            let moved = sender.exchange().message.take();
-            if let Some(moved) = moved {
-                queues.buffer.push_back(moved);
-            }
-            sender.finish(Outcome::Delivered, None);
-        }
-        drop(queues);
-        // SAFETY: `out` holds `size` bytes.
-        unsafe { message.move_to(out) };
-        return true;
-    }
-    if let Some(sender) = queues.senders.pop_front() {
-        drop(queues);
-        let message = sender.exchange().message.take();
-        sender.finish(Outcome::Delivered, None);
-        if let Some(message) = message {
+    match try_receive(&mut queues) {
+        ReceiveTry::Got(message) => {
+            drop(queues);
             // SAFETY: `out` holds `size` bytes.
             unsafe { message.move_to(out) };
+            return true;
         }
-        return true;
+        ReceiveTry::Closed => return zero(),
+        ReceiveTry::Empty => {}
     }
-    if queues.closed {
-        return zero();
-    }
-    let waiting = Waiting::new(None);
-    queues.receivers.push_back(Arc::clone(&waiting));
+    let waiting = Waiting::new();
+    queues.receivers.push_back(Entry {
+        waiting: Arc::clone(&waiting),
+        case: 0,
+        message: None,
+    });
     drop(queues);
     waiting.slot.park();
     let message = waiting.exchange().message.take();
@@ -322,10 +411,177 @@ pub unsafe extern "C" fn zore_channel_close(channel: *const Channel) {
     let receivers: Vec<_> = queues.receivers.drain(..).collect();
     let senders: Vec<_> = queues.senders.drain(..).collect();
     drop(queues);
-    for receiver in receivers {
-        receiver.finish(Outcome::Closed, None);
+    for entry in receivers.into_iter().chain(senders) {
+        if entry.waiting.claim() {
+            entry
+                .waiting
+                .complete(entry.case, Outcome::Closed, entry.message);
+        } else if let Some(message) = entry.message {
+            message.free();
+        }
     }
-    for sender in senders {
-        sender.finish(Outcome::Closed, None);
+}
+
+/// One case of a `select`, written by the compiler and completed by `zore_select`.
+#[repr(C)]
+pub struct SelectCase {
+    channel: *const Channel,
+    send: u8,
+    /// The value to send, or where a received value goes.
+    value: *mut u8,
+    size: i64,
+    destroy: Option<Destroy>,
+    /// Set for a receive: whether a value arrived.
+    received: u8,
+}
+
+static ROTATE: AtomicUsize = AtomicUsize::new(0);
+
+/// Finishes a case that could proceed: reports the result of a receive or fails a send.
+///
+/// # Safety
+/// The case's pointers must be valid, as `zore_select` requires.
+unsafe fn settle_receive(case: &mut SelectCase, message: Option<Message>) {
+    case.received = u8::from(message.is_some());
+    match message {
+        // SAFETY: `value` holds `size` bytes.
+        Some(message) => unsafe { message.move_to(case.value) },
+        // SAFETY: `value` holds `size` bytes.
+        None => unsafe {
+            case.value
+                .write_bytes(0, usize::try_from(case.size).unwrap_or(0))
+        },
     }
+}
+
+/// Performs one case that can proceed and returns its index, or waits for one; with a default and
+/// nothing ready it returns -1. A send case that is not chosen keeps its value with the caller.
+///
+/// # Safety
+/// `cases` must point to `count` cases whose channels are null or live handles, whose send values
+/// are live, and whose receive buffers hold `size` writable bytes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn zore_select(cases: *mut SelectCase, count: i64, has_default: bool) -> i64 {
+    let count = usize::try_from(count).unwrap_or(0);
+    // SAFETY: guaranteed by the caller.
+    let cases = unsafe { std::slice::from_raw_parts_mut(cases, count) };
+    let mut channels: Vec<&Channel> = cases
+        // SAFETY: guaranteed by the caller.
+        .iter()
+        .filter_map(|case| unsafe { case.channel.as_ref() })
+        .collect();
+    channels.sort_by_key(|channel| *channel as *const Channel as usize);
+    channels.dedup_by(|a, b| std::ptr::eq(*a, *b));
+    let position = |channel: &Channel| {
+        channels
+            .iter()
+            .position(|other| std::ptr::eq(*other, channel))
+            .expect("every case's channel was collected")
+    };
+    let mut guards: Vec<MutexGuard<'_, Queues>> =
+        channels.iter().map(|channel| channel.lock()).collect();
+
+    let start = ROTATE.fetch_add(1, Ordering::Relaxed) % count.max(1);
+    for step in 0..count {
+        let index = (start + step) % count;
+        let case = &mut cases[index];
+        // SAFETY: guaranteed by the caller.
+        let Some(channel) = (unsafe { case.channel.as_ref() }) else {
+            drop(guards);
+            if case.send == 0 {
+                // SAFETY: the buffer holds `size` bytes.
+                unsafe { settle_receive(case, None) };
+            } else {
+                // SAFETY: the case holds a live value.
+                unsafe { fail_send(case.value, case.destroy) };
+            }
+            return index as i64;
+        };
+        let queues = &mut guards[position(channel)];
+        if case.send == 0 {
+            let message = match try_receive(queues) {
+                ReceiveTry::Got(message) => Some(message),
+                ReceiveTry::Closed => None,
+                ReceiveTry::Empty => continue,
+            };
+            drop(guards);
+            // SAFETY: the buffer holds `size` bytes.
+            unsafe { settle_receive(case, message) };
+            return index as i64;
+        }
+        let (value, size) = (case.value, channel.size);
+        // SAFETY: `value` holds `size` bytes.
+        let make = || unsafe { Message::copy_of(value, size) };
+        match try_send(queues, channel.capacity, &make) {
+            SendTry::Done => return index as i64,
+            SendTry::Closed => {
+                drop(guards);
+                // SAFETY: the case holds a live value.
+                unsafe { fail_send(case.value, case.destroy) };
+                return index as i64;
+            }
+            SendTry::NotReady => {}
+        }
+    }
+    if has_default {
+        return -1;
+    }
+
+    let waiting = Waiting::new();
+    for (index, case) in cases.iter().enumerate() {
+        // SAFETY: guaranteed by the caller.
+        let Some(channel) = (unsafe { case.channel.as_ref() }) else {
+            continue;
+        };
+        let queues = &mut guards[position(channel)];
+        let entry = Entry {
+            waiting: Arc::clone(&waiting),
+            case: index,
+            // SAFETY: a send case holds `size` readable bytes.
+            message: (case.send != 0)
+                .then(|| unsafe { Message::copy_of(case.value, channel.size) }),
+        };
+        if case.send == 0 {
+            queues.receivers.push_back(entry);
+        } else {
+            queues.senders.push_back(entry);
+        }
+    }
+    drop(guards);
+    waiting.slot.park();
+
+    for channel in &channels {
+        let mut queues = channel.lock();
+        let queues = &mut *queues;
+        for queue in [&mut queues.receivers, &mut queues.senders] {
+            let mut kept = VecDeque::new();
+            for entry in queue.drain(..) {
+                if Arc::ptr_eq(&entry.waiting, &waiting) {
+                    if let Some(message) = entry.message {
+                        message.free();
+                    }
+                } else {
+                    kept.push_back(entry);
+                }
+            }
+            *queue = kept;
+        }
+    }
+
+    let (index, outcome, message) = {
+        let mut exchange = waiting.exchange();
+        (exchange.case, exchange.outcome, exchange.message.take())
+    };
+    let case = &mut cases[index];
+    if case.send == 0 {
+        // SAFETY: the buffer holds `size` bytes.
+        unsafe { settle_receive(case, message) };
+    } else if outcome == Outcome::Closed {
+        if let Some(message) = message {
+            message.free();
+        }
+        // SAFETY: the case holds a live value.
+        unsafe { fail_send(case.value, case.destroy) };
+    }
+    index as i64
 }

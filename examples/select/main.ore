@@ -1,0 +1,68 @@
+package main
+
+func produce(out channel<int>, count int) {
+    for var i = 1; i <= count; i += 1 {
+        out.send(i)
+    }
+    out.close()
+}
+
+func main() {
+    var a = channel<int>()
+    var b = channel<int>()
+    let words = channel<string>(1)
+    go produce(a, 3)
+    go produce(b, 3)
+    var total = 0
+    var open = 2
+    for open > 0 {
+        select {
+            case let n, ok = a.receive() {
+                if ok {
+                    total += n
+                } else {
+                    open -= 1
+                    a = channel<int>()
+                }
+            }
+            case let n, ok = b.receive() {
+                if ok {
+                    total += n
+                } else {
+                    open -= 1
+                    b = channel<int>()
+                }
+            }
+        }
+    }
+    println(total)
+    select {
+        case words.send("hello") {
+            println("sent")
+        }
+        default {
+            println("full")
+        }
+    }
+    select {
+        case words.send("again") {
+            println("sent")
+        }
+        default {
+            println("full")
+        }
+    }
+    select {
+        case let w, ok = words.receive() {
+            println(w)
+        }
+    }
+    select {
+        case let w, ok = words.receive() {
+            println(w)
+        }
+        default {
+            println("empty")
+        }
+    }
+}

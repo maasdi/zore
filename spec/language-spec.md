@@ -786,12 +786,13 @@ The MVP keyword list is:
 | Bindings | `let var const` |
 | Ownership | `mut own` |
 | Control flow | `if else for in break continue return` |
-| Concurrency | `async await go` |
+| Concurrency | `async await go select` |
 | Built-in type syntax | `map channel` |
 | Literal values | `true false nil` |
 
 Match these exact lowercase spellings as whole words. They cannot be used as
-identifiers in any name position. For example, `let func = 1` and a field named
+identifiers in any name position. (`case` and `default` are not keywords; they
+have a meaning only at the start of a `select` arm, §19.14.) For example, `let func = 1` and a field named
 `own` are invalid; `let functionName = 1` is valid with respect to reservation.
 Case variants such as `Func` and `True` are ordinary identifier spellings.
 There is no escaped-identifier syntax in the MVP.
@@ -4407,8 +4408,8 @@ the closed-channel rules:
 Whether the runtime shares one such channel per element type or creates one
 per zero value is an implementation detail; the behavior is identical. A
 channel value is therefore always a real channel, and channel values are not
-comparable (§6.6). Channels would be disabled in a future `select` construct
-by an explicit case guard, not by a `nil` channel.
+comparable (§6.6). Channels would be disabled in a `select` by an explicit case guard (not part
+of §19.14), not by a `nil` channel.
 
 Ownership, error, and async implications: the zero-value channel holds no
 buffered values and needs no cleanup.
@@ -4447,6 +4448,82 @@ values of every channel that is not part of a handle cycle.
 
 Compiler impact: none; runtime behavior. Pending conformance cases:
 `tests/conformance/concurrency.md`.
+
+## 19.14 `select` — LOCKED
+
+`select` waits on several channel operations at once and runs the body of one
+that can proceed.
+
+```ore
+select {
+    case let job, ok = jobs.receive() {
+        if !ok {
+            return
+        }
+        process(job)
+    }
+    case results.send(summary) {
+        println("sent")
+    }
+    default {
+        println("nothing ready")
+    }
+}
+```
+
+Grammar: `select` `{` arm... `}`, where an arm is one of
+
+- `case let targets = channel.receive() { body }`, which binds the received
+  value and whether one was received exactly as `let targets = channel.receive()`
+  does (§19.5, §5.4), including `_` targets;
+- `case channel.receive() { body }`, which discards both results;
+- `case channel.send(value) { body }`;
+- `default { body }`.
+
+`case` and `default` are special only at the start of an arm inside a `select`;
+elsewhere they are ordinary identifiers, so `select` is the only new keyword
+(§3.17). Each arm's body is an ordinary block with its own scope, written on the
+same line as the end of its header like an `if` body (§5.9), and struct literals
+in a header need parentheses for the same reason as in `if`. There is at least
+one `case`, and at most one `default`. A `select` is a statement.
+
+Semantics:
+
+- When the `select` begins, the channel operand of every `case` and the value
+  of every `send` case are evaluated once, in source order, before any case is
+  chosen. A Move value of a `send` case is moved into the `select` at that
+  point.
+- A `receive` case **can proceed** when the channel has a buffered value, when a
+  sender is waiting on it, or when it is closed or the zero-value channel
+  (§19.8, §19.12). A `send` case can proceed when a receiver is waiting, when
+  there is buffer space, or when the channel is closed or the zero-value
+  channel; choosing it then panics as a send on a closed channel does (§19.9).
+- If one or more cases can proceed, one of them is chosen and its operation is
+  performed; which one is unspecified, and the implementation must not always
+  prefer the same case. If none can proceed and there is a `default`, the
+  `default` body runs without waiting. If none can proceed and there is no
+  `default`, the task waits until one can, then performs it. Other tasks keep
+  running while it waits (§17.3), and a `select` whose cases can never proceed
+  is a deadlock when nothing else can run (§18.9).
+- Exactly one case's operation happens, then its body runs. The values of
+  `send` cases that were not chosen were never sent: they are dropped when the
+  `select` ends, in reverse source order, before the chosen body runs.
+- `break` and `continue` inside an arm refer to the innermost enclosing `for`
+  loop, as they do inside an `if`: a `select` is not a loop. `return` and `?`
+  inside an arm behave as anywhere else.
+- A `select` can be used in `async` functions and ordinary functions alike.
+
+Ownership, error, and async implications: a chosen `receive` transfers the
+value to the arm's binding under ordinary rules; its Move value is dropped when
+the arm's scope ends. A panic from a chosen send on a closed channel drops the
+sent value first, then unwinds (§19.9). A task waiting in a `select` counts as
+blocked for deadlock detection (§18.9).
+
+Compiler impact: parse the new statement, accept only channel `send` and
+`receive` calls as case operations, evaluate operands before the choice, bind
+the arm's results in the arm's scope, drop unchosen send values, and keep
+`break`/`continue` targeting the enclosing loop. Pending conformance cases:
+`tests/conformance/select.md`.
 
 ---
 

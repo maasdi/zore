@@ -51,6 +51,7 @@ A newly discovered semantic gap blocks its affected feature, not unrelated work.
 | Q26 | Channel implementation choices made while implementing §19 where the text is silent; each rejects rather than guesses and can be relaxed later. See Q26 below. | §19.2–19.13 | Parser, checker, codegen, and runtime changes |
 | Q27 | Async I/O choices made while implementing §37.3 where the text is silent; each rejects rather than guesses and can be relaxed later. See Q27 below. | §37.3, §36.2 | Library, checker, codegen, and runtime changes |
 | Q28 | Mutex choices made while implementing §20.2 where the text is silent; each rejects rather than guesses and can be relaxed later. See Q28 below. | §20.2, §10.3, §3.18, §41.4 | Parser, checker, codegen, and runtime changes |
+| Q29 | `select` choices made while implementing §19.14 where the text is silent. See Q29 below. | §19.14, §3.17 | Lexer, parser, checker, codegen, and runtime changes |
 
 ## Resolved decisions
 
@@ -166,6 +167,7 @@ A newly discovered semantic gap blocks its affected feature, not unrelated work.
   a task that needs to wait for a state change can use a channel. Pending
   cases: `tests/conformance/mutex.md`.
 
+- **Q29 — Select choices:** locked in §19.14 at the maintainer's direction. (a) `select` is the only new keyword; `case` and `default` are special only at the start of an arm, so they stay ordinary identifiers. (b) Every channel operand and send value is evaluated once, in order, before a case is chosen. (c) When several cases can proceed, the runtime starts from a rotating position so no case starves; the choice is otherwise unspecified. (d) A zero-value channel is always ready to receive and panics on send, like a closed one. (e) A `select` with no `default` and nothing that can ever proceed is reported by the deadlock detector. (f) A send case that is not chosen keeps its value, which is dropped at the end of the `select`.
 - **Q27 — Async I/O choices:** locked in §37.3 at the maintainer's direction
   (time, standard input, whole files, and TCP, waiting on an event loop). (a)
   Strings are well-formed UTF-8, so every function that returns text from

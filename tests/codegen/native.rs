@@ -4327,3 +4327,128 @@ func main() {
 }";
     prints(source, "45150\n");
 }
+
+#[test]
+fn select_takes_whichever_channel_has_a_value() {
+    prints(
+        &main_body(
+            "let a = channel<int>(1)
+let b = channel<string>(1)
+b.send(\"hi\")
+select {
+    case let n, ok = a.receive() { println(n) }
+    case let s, ok = b.receive() { println(s) }
+}
+a.send(7)
+select {
+    case let n, ok = a.receive() { println(n)\nprintln(ok) }
+    default { println(\"none\") }
+}
+select {
+    case let n, ok = a.receive() { println(n) }
+    default { println(\"none\") }
+}",
+        ),
+        "hi\n7\ntrue\nnone\n",
+    );
+}
+
+#[test]
+fn select_sends_to_a_free_buffer_and_skips_a_full_one() {
+    prints(
+        &main_body(
+            "let full = channel<string>(1)
+let free = channel<string>(1)
+full.send(\"old\")
+select {
+    case full.send(\"a\") { println(\"full\") }
+    case free.send(\"b\") { println(\"free\") }
+}
+let s, _ = free.receive()
+println(s)
+let t, _ = full.receive()
+println(t)",
+        ),
+        "free\nb\nold\n",
+    );
+}
+
+#[test]
+fn select_waits_for_a_task_and_merges_two_producers() {
+    prints(
+        "package main
+func produce(out channel<int>, base int) {
+    for var i = 1; i <= 100; i += 1 { out.send(base + i) }
+    out.close()
+}
+func main() {
+    var a = channel<int>()
+    var b = channel<int>()
+    go produce(a, 0)
+    go produce(b, 1000)
+    var total = 0
+    var open = 2
+    for open > 0 {
+        select {
+            case let n, ok = a.receive() {
+                if ok { total += n } else { open -= 1\na = channel<int>() }
+            }
+            case let n, ok = b.receive() {
+                if ok { total += n } else { open -= 1\nb = channel<int>() }
+            }
+        }
+    }
+    println(total)
+}",
+        "110100\n",
+    );
+}
+
+#[test]
+fn select_wakes_on_close_and_on_a_zero_value_channel() {
+    prints(
+        "package main
+func closer(gate channel<int>) { gate.close() }
+func main() {
+    let holder = channel<channel<int>>(1)
+    holder.close()
+    let none, _ = holder.receive()
+    let gate = channel<int>()
+    go closer(gate)
+    select {
+        case let n, ok = gate.receive() { println(ok) }
+    }
+    select {
+        case let n, ok = none.receive() { println(ok) }
+    }
+}",
+        "false\nfalse\n",
+    );
+}
+
+#[test]
+fn select_send_to_a_closed_channel_panics_and_drops_the_value() {
+    panics(
+        &main_body(
+            "let ch = channel<string>(1)
+ch.close()
+select {
+    case ch.send(\"x\") { println(\"sent\") }
+}",
+        ),
+        "send on a closed channel",
+        "",
+    );
+}
+
+#[test]
+fn select_with_nothing_ready_and_no_other_task_is_a_deadlock() {
+    assert_deadlock(&run(&main_body(
+        "let a = channel<int>()
+let b = channel<int>()
+select {
+    case let n, ok = a.receive() { println(n) }
+    case b.send(1) { }
+}",
+    )));
+}
