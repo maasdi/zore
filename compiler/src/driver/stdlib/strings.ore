@@ -1,0 +1,13 @@
+package strings
+
+func Contains(s string, sub string) bool
+func HasPrefix(s string, prefix string) bool
+func HasSuffix(s string, suffix string) bool
+func Index(s string, sub string) int
+func Upper(s string) string
+func Lower(s string) string
+func TrimSpace(s string) string
+func Repeat(s string, count int) string
+func Replace(s string, old string, new string) string
+func Split(s string, sep string) Array<string>
+func Join(parts []string, sep string) string

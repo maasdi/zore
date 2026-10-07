@@ -1,0 +1,7 @@
+ZORE STANDARD PACKAGES
+true
+a+b+c
+3
+one, two, three
+sum is 42
+true

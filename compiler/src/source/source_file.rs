@@ -114,7 +114,7 @@ impl SourceFile {
         self.contains(span).then_some(span)
     }
 
-    pub(super) fn contains(&self, span: Span) -> bool {
+    pub fn contains(&self, span: Span) -> bool {
         span.file == self.id
             && span.start <= span.end
             && span.end <= self.len()

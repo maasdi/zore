@@ -128,6 +128,6 @@ pub(crate) fn help(action: Option<Action>) -> String {
      Options:\n\
        -h, --help        Show help; also accepted after a command\n\
        -V, --version     Show compiler version\n\n\
-     Programs are compiled one file at a time.\n"
+     A program is the folder of the file you name, with the packages it imports.\n"
         .into()
 }

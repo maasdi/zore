@@ -8,16 +8,15 @@ use crate::ast::{
 use crate::diagnostic::{Diagnostic, Severity};
 use crate::hir::{self, Const, ExprKind};
 use crate::resolve::{ConstId, FieldId, FunctionId, LocalId, LocalKind, Res, Resolution};
-use crate::source::Span;
+use crate::source::{Sources, Span};
 use crate::types::bignum::BigInt;
 use crate::types::constant::{self, ConstError, Folded, Unrepresentable, Untyped};
 use crate::types::{FuncSignature, IntType, StructId, TypeId, TypeKind, TypeStore};
 
 /// HIR is returned only when there are no diagnostics.
 pub fn check(
-    file: &ast::File,
     mut resolution: Resolution<'_>,
-    text: &str,
+    sources: &dyn Sources,
 ) -> (Option<hir::Package>, Vec<Diagnostic>) {
     let diagnostics = std::mem::take(&mut resolution.diagnostics);
     let types = std::mem::take(&mut resolution.types);
@@ -28,7 +27,7 @@ pub fn check(
             .map(|_| ConstState::Pending)
             .collect(),
         res: resolution,
-        text,
+        sources,
         types,
         fields: Vec::new(),
         signatures: Vec::new(),
@@ -50,7 +49,7 @@ pub fn check(
     for index in 0..checker.res.consts.len() {
         checker.eval_const(ConstId(index as u32));
     }
-    let entry = checker.check_entry_point(file);
+    let entry = checker.check_entry_point();
     if checker.diagnostics.is_empty()
         && let Some(index) = checker.closures.iter().position(Option::is_none)
     {
@@ -70,7 +69,11 @@ pub fn check(
         .zip(&checker.fields)
         .enumerate()
         .map(|(index, (decl, fields))| hir::Struct {
-            name: decl.name.text.clone(),
+            name: format!(
+                "{}{}",
+                checker.symbol_prefix(checker.res.struct_package[index]),
+                decl.name.text
+            ),
             span: decl.name.span,
             drop: checker
                 .res
@@ -140,7 +143,7 @@ struct Signature {
 
 struct Checker<'a> {
     res: Resolution<'a>,
-    text: &'a str,
+    sources: &'a dyn Sources,
     types: TypeStore,
     fields: Vec<Vec<(String, Option<TypeId>, Span)>>,
     signatures: Vec<Option<Signature>>,
@@ -259,11 +262,13 @@ impl<'a> Checker<'a> {
 
     fn resolve_type(&mut self, ty: &ast::Type) -> Option<TypeId> {
         match ty {
-            ast::Type::Named(name) => match self.res.uses.get(&name.span)? {
-                Res::Primitive(ty) => Some(*ty),
-                Res::Struct(id) => Some(self.types.struct_type(*id)),
-                _ => None,
-            },
+            ast::Type::Named(name) | ast::Type::Qualified { name, .. } => {
+                match self.res.uses.get(&name.span)? {
+                    Res::Primitive(ty) => Some(*ty),
+                    Res::Struct(id) => Some(self.types.struct_type(*id)),
+                    _ => None,
+                }
+            }
             ast::Type::Array { element, size, .. } => {
                 let element_ty = self.resolve_type(element)?;
                 let value = self.expr(size, Some(TypeStore::INT))?;
@@ -668,7 +673,7 @@ impl<'a> Checker<'a> {
         self.loop_depth = 0;
         let mut body = self.block(&func.body);
         self.infer_closure_kinds(&mut body);
-        if !results.is_empty() && !block_always_exits(&func.body) {
+        if !results.is_empty() && !func.native && !block_always_exits(&func.body) {
             self.diagnostics.push(
                 Diagnostic::new(
                     Severity::Error,
@@ -706,22 +711,58 @@ impl<'a> Checker<'a> {
             body,
             captures: Vec::new(),
             is_closure: false,
+            native: func.native,
             call_once: false,
         })
     }
 
     /// Closures are named `enclosing$closureN`, numbered per declared function.
+    /// The package whose source contains the function or closure.
+    fn package_of(&self, function: usize) -> usize {
+        let declared = self.res.functions.len();
+        let mut function = function;
+        while function >= declared {
+            function = self.res.closures[function - declared].parent.0 as usize;
+        }
+        self.res.function_package[function]
+    }
+
+    /// Whether code in the function being checked may use a member of `owner`.
+    fn can_use_member(&self, owner: usize, name: &str) -> bool {
+        name.starts_with(|c: char| c.is_ascii_uppercase()) || owner == self.package_of(self.current)
+    }
+
+    fn unexported_member(&mut self, what: &str, name: &str, ty: TypeId, span: Span) {
+        let message = format!(
+            "{what} `{name}` of `{}` is not exported by its package",
+            self.name(ty)
+        );
+        self.diagnostics
+            .push(Diagnostic::new(Severity::Error, message, span).note(
+                "only names that start with an uppercase letter can be used from another package",
+            ));
+    }
+
+    fn symbol_prefix(&self, package: usize) -> String {
+        if package == self.res.entry_package {
+            String::new()
+        } else {
+            format!("{}.", self.res.packages[package].path)
+        }
+    }
+
     fn function_name(&self, id: FunctionId) -> String {
         let declared = self.res.functions.len();
         let index = id.0 as usize;
         if index < declared {
             let func = self.res.functions[index];
+            let prefix = self.symbol_prefix(self.res.function_package[index]);
             // Resolution already rejects any receiver that isn't a named struct type.
             return match func.receiver.as_ref().map(|receiver| &receiver.ty) {
                 Some(ast::Type::Named(type_name)) => {
-                    format!("{}.{}", type_name.text, func.name.text)
+                    format!("{prefix}{}.{}", type_name.text, func.name.text)
                 }
-                _ => func.name.text.clone(),
+                _ => format!("{prefix}{}", func.name.text),
             };
         }
         let root = |mut id: FunctionId| {
@@ -867,6 +908,7 @@ impl<'a> Checker<'a> {
             body,
             captures: capture_locals,
             is_closure: true,
+            native: false,
             call_once,
         });
         let captures = captures
@@ -887,23 +929,19 @@ impl<'a> Checker<'a> {
         )))
     }
 
-    fn check_entry_point(&mut self, file: &ast::File) -> Option<FunctionId> {
-        let package = file.package.as_ref()?;
-        if package.text != "main" {
+    fn check_entry_point(&mut self) -> Option<FunctionId> {
+        let entry = self.res.entry_package;
+        let package = self.res.packages.get(entry)?;
+        if package.name != "main" {
             return None;
         }
-        let main = file.items.iter().find_map(|item| match item {
-            ast::Item::Func(func) if func.receiver.is_none() && func.name.text == "main" => {
-                Some(func)
-            }
-            _ => None,
-        });
-        let Some(main) = main else {
+        let clause = package.clause?;
+        let Some(main) = self.res.entry_main else {
             self.diagnostics.push(
                 Diagnostic::new(
                     Severity::Error,
                     "package `main` has no `main` function",
-                    package.span,
+                    clause,
                 )
                 .note("an executable package declares `func main() { ... }`"),
             );
@@ -1134,14 +1172,14 @@ impl<'a> Checker<'a> {
             )))
         };
         match &expr.kind {
-            ast::ExprKind::Name(name) => self.name_expr(name, span),
+            ast::ExprKind::Name(name) => self.name_expr(name, span, span),
             ast::ExprKind::Int(base) => {
-                let text = &self.text[span.start() as usize..span.end() as usize];
-                self.literal(constant::parse_int(text, base.radix()), span)
+                let text = self.source_text(span).to_owned();
+                self.literal(constant::parse_int(&text, base.radix()), span)
             }
             ast::ExprKind::Float => {
-                let text = &self.text[span.start() as usize..span.end() as usize];
-                self.literal(constant::parse_float(text), span)
+                let text = self.source_text(span).to_owned();
+                self.literal(constant::parse_float(&text), span)
             }
             ast::ExprKind::String(value) => Some(Value::Typed(typed(
                 ExprKind::Const(Const::String(value.clone())),
@@ -1181,7 +1219,7 @@ impl<'a> Checker<'a> {
             ast::ExprKind::Slice { base, low, high } => {
                 self.slice(base, low.as_deref(), high.as_deref(), span, expected)
             }
-            ast::ExprKind::StructLit { ty, fields } => self.struct_lit(ty, fields, span),
+            ast::ExprKind::StructLit { ty, fields, .. } => self.struct_lit(ty, fields, span),
             ast::ExprKind::ArrayLit { ty, elements } => self.array_lit(ty, elements, span),
             ast::ExprKind::MapLit { ty, entries } => self.map_lit(ty, entries, span),
             ast::ExprKind::Closure(closure) => self.closure(closure, span),
@@ -1224,8 +1262,8 @@ impl<'a> Checker<'a> {
         }))
     }
 
-    fn name_expr(&mut self, name: &str, span: Span) -> Option<Value> {
-        match *self.res.uses.get(&span)? {
+    fn name_expr(&mut self, name: &str, use_span: Span, span: Span) -> Option<Value> {
+        match *self.res.uses.get(&use_span)? {
             Res::Local(id) => {
                 let ty = self.locals[id.0 as usize]?;
                 Some(Value::Typed(typed(ExprKind::Local(id), ty, span)))
@@ -1258,6 +1296,7 @@ impl<'a> Checker<'a> {
                 self.error("`clone` can only be called", span);
                 None
             }
+            Res::Package(_) => None,
             Res::Unsupported => None,
         }
     }
@@ -1651,6 +1690,9 @@ impl<'a> Checker<'a> {
     fn call(&mut self, callee: &ast::Expr, args: &[ast::Expr], span: Span) -> Option<Value> {
         let res = match &callee.kind {
             ast::ExprKind::Name(_) => self.res.uses.get(&callee.span).copied(),
+            ast::ExprKind::Field { base, name } if self.is_package(base) => {
+                self.res.uses.get(&name.span).copied()
+            }
             ast::ExprKind::Field { base, name } => {
                 return self.method_call(base, name, args, span);
             }
@@ -1679,6 +1721,7 @@ impl<'a> Checker<'a> {
         };
         let name = match &callee.kind {
             ast::ExprKind::Name(name) => name.as_str(),
+            ast::ExprKind::Field { name, .. } => name.text.as_str(),
             _ => unreachable!(),
         };
         match res {
@@ -1714,7 +1757,7 @@ impl<'a> Checker<'a> {
                 self.report_arg_errors(args);
                 None
             }
-            Some(Res::Unsupported) | None => {
+            Some(Res::Package(_) | Res::Unsupported) | None => {
                 self.report_arg_errors(args);
                 None
             }
@@ -1836,6 +1879,7 @@ impl<'a> Checker<'a> {
                 | TypeKind::Slice { .. }
                 | TypeKind::DynArray { .. }
                 | TypeKind::Map { .. }
+                | TypeKind::String
         );
         if is_collection && name.text == "len" {
             return self.collection_len(receiver, args, span);
@@ -1847,6 +1891,13 @@ impl<'a> Checker<'a> {
         }
         let strukt = self.types.struct_id(ty);
         let method = strukt.and_then(|s| self.res.methods.get(&(s, name.text.clone())).copied());
+        if let (Some(strukt), Some(_)) = (strukt, method)
+            && !self.can_use_member(self.res.struct_package[strukt.0 as usize], &name.text)
+        {
+            self.unexported_member("method", &name.text, ty, name.span);
+            self.report_arg_errors(args);
+            return None;
+        }
         let Some(id) = method else {
             let is_field = strukt.is_some_and(|s| {
                 self.fields[s.0 as usize]
@@ -2262,6 +2313,17 @@ impl<'a> Checker<'a> {
                 false
             }
             ExprKind::Index { base, .. } => match self.types.kind(base.ty()) {
+                TypeKind::String => {
+                    let message = match usage {
+                        MutableUse::Argument => "cannot pass a string index as a `mut` argument",
+                        MutableUse::Slice => "cannot take a mutable slice of a string index",
+                    };
+                    self.diagnostics.push(
+                        Diagnostic::new(Severity::Error, message, expr.span)
+                            .note("a string is immutable"),
+                    );
+                    false
+                }
                 TypeKind::Slice { mutable: true, .. } => true,
                 TypeKind::Slice { .. } => {
                     let name = self.source_text(base.span).to_owned();
@@ -2463,12 +2525,45 @@ impl<'a> Checker<'a> {
         )))
     }
 
+    fn string_conversion(&mut self, arg: &ast::Expr, span: Span) -> Option<Value> {
+        let value = match self.expr(arg, None)? {
+            Value::Untyped(_, span) => {
+                self.diagnostics.push(
+                    Diagnostic::new(
+                        Severity::Error,
+                        "cannot convert an untyped constant to `string`",
+                        span,
+                    )
+                    .note("only a `rune` converts to `string`; write `string('a')`"),
+                );
+                return None;
+            }
+            Value::Typed(expr) => self.single_value(expr)?,
+        };
+        if value.ty() != TypeStore::RUNE {
+            let message = format!("cannot convert `{}` to `string`", self.name(value.ty()));
+            self.diagnostics.push(
+                Diagnostic::new(Severity::Error, message, span)
+                    .note("only a `rune` converts to `string`; use `strconv.Itoa` for numbers"),
+            );
+            return None;
+        }
+        Some(Value::Typed(typed(
+            ExprKind::Convert(Box::new(value)),
+            TypeStore::STRING,
+            span,
+        )))
+    }
+
     fn conversion(&mut self, target: TypeId, args: &[ast::Expr], span: Span) -> Option<Value> {
         let [arg] = args else {
             self.error("a conversion takes exactly one argument", span);
             self.report_arg_errors(args);
             return None;
         };
+        if target == TypeStore::STRING {
+            return self.string_conversion(arg, span);
+        }
         if !self.types.is_numeric(target) {
             self.report_arg_errors(args);
             if target == TypeStore::RUNE {
@@ -2558,6 +2653,12 @@ impl<'a> Checker<'a> {
         };
         let fields = &self.fields[strukt.0 as usize];
         match fields.iter().position(|(n, _, _)| *n == name.text) {
+            Some(_)
+                if !self.can_use_member(self.res.struct_package[strukt.0 as usize], &name.text) =>
+            {
+                self.unexported_member("field", &name.text, ty, name.span);
+                None
+            }
             Some(index) => Some((FieldId(index as u32), fields[index].1?)),
             None => {
                 let message = format!("no field `{}` on type `{}`", name.text, self.name(ty));
@@ -2567,7 +2668,15 @@ impl<'a> Checker<'a> {
         }
     }
 
+    fn is_package(&self, expr: &ast::Expr) -> bool {
+        matches!(expr.kind, ast::ExprKind::Name(_))
+            && matches!(self.res.uses.get(&expr.span), Some(Res::Package(_)))
+    }
+
     fn field(&mut self, base: &ast::Expr, name: &ast::Name, span: Span) -> Option<Value> {
+        if self.is_package(base) {
+            return self.name_expr(&name.text, name.span, span);
+        }
         let base = match self.expr(base, None)? {
             Value::Untyped(_, span) => {
                 self.error("an integer constant has no fields", span);
@@ -2622,6 +2731,7 @@ impl<'a> Checker<'a> {
             TypeKind::Array { element, size } => (element, Some(size), "array"),
             TypeKind::DynArray { element } => (element, None, "array"),
             TypeKind::Slice { element, .. } => (element, None, "slice"),
+            TypeKind::String => (TypeStore::UINT8, None, "string"),
             _ => {
                 let message = format!("type `{}` cannot be indexed", self.name(base_ty));
                 self.error(message, base_span);
@@ -2665,6 +2775,7 @@ impl<'a> Checker<'a> {
         let (element, length) = match self.types.kind(base.ty()) {
             TypeKind::Array { element, size } => (element, Some(size)),
             TypeKind::Slice { element, .. } | TypeKind::DynArray { element } => (element, None),
+            TypeKind::String => (TypeStore::UINT8, None),
             _ => {
                 let message = format!("type `{}` cannot be sliced", self.name(base.ty()));
                 self.error(message, base.span);
@@ -2696,6 +2807,29 @@ impl<'a> Checker<'a> {
             return None;
         }
         let mutable = expected.is_some_and(|ty| self.is_mut_slice(ty));
+        if base.ty() == TypeStore::STRING {
+            if mutable {
+                self.diagnostics.push(
+                    Diagnostic::new(
+                        Severity::Error,
+                        "cannot take a mutable slice of a string",
+                        span,
+                    )
+                    .note("a string is immutable, and slicing it gives a `string`"),
+                );
+                return None;
+            }
+            return Some(Value::Typed(typed(
+                ExprKind::Slice {
+                    base: Box::new(base),
+                    low: low.map(Box::new),
+                    high: high.map(Box::new),
+                    mutable: false,
+                },
+                TypeStore::STRING,
+                span,
+            )));
+        }
         if mutable && !self.mutable_slice_source(&base) {
             return None;
         }
@@ -2767,7 +2901,7 @@ impl<'a> Checker<'a> {
     }
 
     fn source_text(&self, span: Span) -> &str {
-        &self.text[span.start() as usize..span.end() as usize]
+        self.sources.slice(span).unwrap_or("?")
     }
 
     /// Only Copy values can be copied out through the shared borrow.
@@ -2932,6 +3066,13 @@ impl<'a> Checker<'a> {
                 continue;
             };
             let field_ty = declared[index].1;
+            if !self.can_use_member(self.res.struct_package[strukt.0 as usize], &init.name.text) {
+                self.unexported_member("field", &init.name.text, struct_ty, init.name.span);
+                self.expr(&init.value, None);
+                seen.insert(index, init.name.span);
+                ok = false;
+                continue;
+            }
             if let Some(&first) = seen.get(&index) {
                 self.diagnostics.push(
                     Diagnostic::new(
@@ -3103,6 +3244,7 @@ impl<'a> Checker<'a> {
                 TypeKind::Array { element, .. }
                 | TypeKind::Slice { element, .. }
                 | TypeKind::DynArray { element } => Some((TypeStore::INT, element)),
+                TypeKind::String => Some((TypeStore::INT, TypeStore::RUNE)),
                 TypeKind::Map { key: key_ty, value } if key.is_some() => Some((key_ty, value)),
                 TypeKind::Map { .. } => {
                     self.diagnostics.push(
@@ -3119,7 +3261,7 @@ impl<'a> Checker<'a> {
                     let message = format!("type `{}` cannot be looped over", self.name(ty));
                     self.diagnostics.push(
                         Diagnostic::new(Severity::Error, message, collection.span)
-                            .note("a loop visits a fixed array, slice, `Array<T>`, or map"),
+                            .note("a loop visits a fixed array, slice, `Array<T>`, map, or string"),
                     );
                     None
                 }
@@ -3418,6 +3560,18 @@ impl<'a> Checker<'a> {
                     self.error(
                         "map entries are not addressable places; assign `m[key] = value` on its own, or update a copy and assign it back",
                         expr.span,
+                    );
+                    return None;
+                }
+                if place.ty == TypeStore::STRING {
+                    self.expr(index, None);
+                    self.diagnostics.push(
+                        Diagnostic::new(
+                            Severity::Error,
+                            "cannot assign to a string index",
+                            expr.span,
+                        )
+                        .note("a string is immutable; build a new string instead"),
                     );
                     return None;
                 }

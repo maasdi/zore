@@ -32,7 +32,10 @@ pub struct FuncDecl {
     pub name: Name,
     pub params: Vec<Param>,
     pub results: Vec<Type>,
+    /// Empty for a native function.
     pub body: Block,
+    /// Declared without a body; its code is provided by the runtime.
+    pub native: bool,
     pub span: Span,
 }
 

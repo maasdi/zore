@@ -1178,7 +1178,10 @@ impl<'a> Analysis<'a> {
             | Rvalue::Error(_)
             | Rvalue::BoundsCheck(..)
             | Rvalue::Length(_)
-            | Rvalue::MapKeyAt(..) => BTreeSet::new(),
+            | Rvalue::MapKeyAt(..)
+            | Rvalue::StringSlice { .. }
+            | Rvalue::StringChar(..)
+            | Rvalue::StringAdvance(..) => BTreeSet::new(),
         }
     }
 
@@ -1260,6 +1263,16 @@ impl<'a> Analysis<'a> {
                     span,
                     false,
                 ));
+                self.operand_accesses(position, None, span, out);
+            }
+            Rvalue::StringSlice { source, low, high } => {
+                self.operand_accesses(source, None, span, out);
+                for bound in [low, high].into_iter().flatten() {
+                    self.operand_accesses(bound, None, span, out);
+                }
+            }
+            Rvalue::StringChar(string, position) | Rvalue::StringAdvance(string, position) => {
+                self.operand_accesses(string, None, span, out);
                 self.operand_accesses(position, None, span, out);
             }
             Rvalue::Slice {
@@ -1747,6 +1760,16 @@ impl Liveness {
             Rvalue::Length(place) | Rvalue::Ref(place) => Self::use_place(place, live),
             Rvalue::MapKeyAt(place, position) | Rvalue::MapValueRef(place, position) => {
                 Self::use_place(place, live);
+                Self::use_operand(position, live);
+            }
+            Rvalue::StringSlice { source, low, high } => {
+                Self::use_operand(source, live);
+                for bound in [low, high].into_iter().flatten() {
+                    Self::use_operand(bound, live);
+                }
+            }
+            Rvalue::StringChar(string, position) | Rvalue::StringAdvance(string, position) => {
+                Self::use_operand(string, live);
                 Self::use_operand(position, live);
             }
             Rvalue::Slice {

@@ -1,0 +1,12 @@
+package report
+
+import "packages/shapes"
+
+func Describe(circle shapes.Circle) {
+    println("circle area:")
+    println(circle.Area())
+}
+
+func Label(text string) {
+    println("label: " + text)
+}

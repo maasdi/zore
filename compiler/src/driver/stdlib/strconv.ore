@@ -1,0 +1,6 @@
+package strconv
+
+func Itoa(value int) string
+func Atoi(text string) (int, error)
+func FormatBool(value bool) string
+func ParseBool(text string) (bool, error)

@@ -763,10 +763,13 @@ fn every_example_prints_its_expected_output() {
     let examples = examples();
     assert!(examples.len() >= 15, "{examples:?}");
     for (name, path) in examples {
-        let source = std::fs::read_to_string(path.join("main.ore")).unwrap();
         let expected = std::fs::read_to_string(path.join("expected-output.txt"))
             .unwrap_or_else(|_| panic!("examples/{name} needs expected-output.txt"));
-        let output = run(&source);
+        let output = zore()
+            .arg("run")
+            .arg(path.join("main.ore"))
+            .output()
+            .unwrap();
         assert_eq!(
             output.status.code(),
             Some(0),
@@ -775,6 +778,195 @@ fn every_example_prints_its_expected_output() {
         );
         assert_eq!(stdout(&output), expected, "examples/{name}");
     }
+}
+
+/// Writes a project into a fresh folder and runs `main.ore` through the command line.
+fn run_project(files: &[(&str, &str)]) -> Output {
+    let dir = TempDir::new().unwrap();
+    std::fs::write(dir.path().join("zore.toml"), "name = \"app\"\n").unwrap();
+    for (path, text) in files {
+        let full = dir.path().join(path);
+        std::fs::create_dir_all(full.parent().unwrap()).unwrap();
+        std::fs::write(full, text).unwrap();
+    }
+    zore()
+        .arg("run")
+        .arg(dir.path().join("main.ore"))
+        .output()
+        .unwrap()
+}
+
+#[test]
+fn packages_share_declarations_types_methods_and_cleanup() {
+    let output = run_project(&[
+        (
+            "main.ore",
+            "package main
+
+import \"app/store\"
+import \"app/store/audit\"
+
+func main() {
+    var items = store.New()
+    items.Add(\"first\")
+    items.Add(\"second\")
+    println(items.Count())
+    audit.Report(items)
+    let guard = audit.Guard{Name: \"guard\"}
+    println(guard.Name)
+}
+",
+        ),
+        (
+            "store/store.ore",
+            "package store
+
+type Items struct {
+    names Array<string>
+}
+
+func New() Items {
+    return Items{names: Array<string>{}}
+}
+
+func (i mut Items) Add(name string) {
+    i.names.push(name)
+}
+
+func (i Items) Count() int {
+    return i.names.len()
+}
+
+func (i Items) At(index int) string {
+    return i.names[index]
+}
+",
+        ),
+        (
+            "store/audit/audit.ore",
+            "package audit
+
+import \"app/store\"
+
+type Guard struct {
+    Name string
+}
+
+func (g mut Guard) drop() {
+    println(\"released \" + g.Name)
+}
+
+func Report(items store.Items) {
+    for var i = 0; i < items.Count(); i += 1 {
+        println(items.At(i))
+    }
+}
+",
+        ),
+    ]);
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    assert_eq!(stdout(&output), "2\nfirst\nsecond\nguard\nreleased guard\n");
+}
+
+#[test]
+fn packages_with_equal_names_do_not_collide() {
+    let output = run_project(&[
+        (
+            "main.ore",
+            "package main
+
+import \"app/a\"
+import \"app/b\"
+
+type T struct { N int }
+
+func helper() int { return 100 }
+
+func main() {
+    let x = a.Make()
+    let y = b.Make()
+    let z = T{N: helper()}
+    println(x.N + y.N + z.N)
+    println(a.Name() + b.Name())
+}
+",
+        ),
+        (
+            "a/a.ore",
+            "package a\ntype T struct { N int }\nfunc Make() T { return T{N: 1} }\nfunc helper() string { return \"a\" }\nfunc Name() string { return helper() }\n",
+        ),
+        (
+            "b/b.ore",
+            "package b\ntype T struct { N int }\nfunc Make() T { return T{N: 20} }\nfunc helper() string { return \"b\" }\nfunc Name() string { return helper() }\n",
+        ),
+    ]);
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    assert_eq!(stdout(&output), "121\nab\n");
+}
+
+#[test]
+fn a_panic_in_an_imported_package_names_its_file() {
+    let output = run_project(&[
+        (
+            "main.ore",
+            "package main\nimport \"app/lib\"\nfunc main() {\nprintln(1)\nlib.Fail(0)\n}\n",
+        ),
+        (
+            "lib/lib.ore",
+            "package lib\nfunc Fail(n int) int {\nreturn 1 / n\n}\n",
+        ),
+    ]);
+    assert_eq!(output.status.code(), Some(2));
+    assert_eq!(stdout(&output), "1\n");
+    let err = stderr(&output);
+    assert!(err.contains("division by zero"), "{err}");
+    assert!(err.contains("lib.ore:3:"), "{err}");
+}
+
+#[test]
+fn closures_and_collections_work_across_packages() {
+    let output = run_project(&[
+        (
+            "main.ore",
+            "package main
+
+import \"app/tools\"
+
+func main() {
+    let next = tools.Counter()
+    println(next())
+    println(next())
+    let parts = tools.Pairs(3)
+    for index, part in parts {
+        println(index + part)
+    }
+}
+",
+        ),
+        (
+            "tools/tools.ore",
+            "package tools
+
+func Counter() func() int {
+    var count = 0
+    return func() int {
+        count += 1
+        return count
+    }
+}
+
+func Pairs(n int) Array<int> {
+    var out = Array<int>{}
+    for var i = 0; i < n; i += 1 {
+        out.push(i * 10)
+    }
+    return out
+}
+",
+        ),
+    ]);
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    assert_eq!(stdout(&output), "1\n2\n0\n11\n22\n");
 }
 
 #[test]
@@ -1200,30 +1392,23 @@ fn closed_standard_output_panics() {
 
 #[test]
 fn unsupported_backend_features_are_diagnosed() {
-    for (stmts, message) in [
-        (
-            "var s = \"a\"\nprintln(s + \"b\")",
-            "runtime string concatenation is not supported",
-        ),
-        (
-            "println(1.5)",
-            "printing floating-point values is not supported",
-        ),
-    ] {
-        let mut sources = SourceMap::new();
-        let id = sources.add("test.ore", main_body(stmts)).unwrap();
-        match emit_llvm(sources.file(id).unwrap()) {
-            Err(BuildError::Diagnostics(diagnostics)) => {
-                assert!(
-                    diagnostics.iter().any(|d| d.message().contains(message)),
-                    "{diagnostics:?}"
-                );
-            }
-            other => panic!("expected diagnostics, got {other:?}"),
+    let mut sources = SourceMap::new();
+    let id = sources.add("test.ore", main_body("println(1.5)")).unwrap();
+    match emit_llvm(sources.file(id).unwrap()) {
+        Err(BuildError::Diagnostics(diagnostics)) => {
+            assert!(
+                diagnostics.iter().any(|d| d
+                    .message()
+                    .contains("printing floating-point values is not supported")),
+                "{diagnostics:?}"
+            );
         }
+        other => panic!("expected diagnostics, got {other:?}"),
     }
-    // Constant concatenation is folded by the checker and works.
-    prints(&main_body("println(\"con\" + \"cat\")"), "concat\n");
+    prints(
+        &main_body("var s = \"a\"\ns += \"b\"\nprintln(s + \"c\")\nprintln(\"con\" + \"cat\")"),
+        "abc\nconcat\n",
+    );
 }
 
 #[test]
@@ -1408,17 +1593,24 @@ fn zore() -> Command {
 #[test]
 fn cli_build_and_run() {
     let dir = TempDir::new().unwrap();
-    let source = dir.path().join("greet.ore");
-    std::fs::write(&source, main_body("println(\"hi\")")).unwrap();
+    // A program is its whole folder, so each one gets its own.
+    let program = |name: &str, text: String| {
+        let folder = dir.path().join(name);
+        std::fs::create_dir_all(&folder).unwrap();
+        let source = folder.join(format!("{name}.ore"));
+        std::fs::write(&source, text).unwrap();
+        (folder, source)
+    };
+    let (greet_dir, source) = program("greet", main_body("println(\"hi\")"));
     let output = zore()
         .arg("build")
         .arg(&source)
-        .current_dir(dir.path())
+        .current_dir(&greet_dir)
         .output()
         .unwrap();
     assert!(output.status.success(), "{}", stderr(&output));
     assert!(output.stdout.is_empty() && output.stderr.is_empty());
-    let built = Command::new(dir.path().join("greet")).output().unwrap();
+    let built = Command::new(greet_dir.join("greet")).output().unwrap();
     assert_eq!(stdout(&built), "hi\n");
 
     let output = zore().arg("run").arg(&source).output().unwrap();
@@ -1427,24 +1619,21 @@ fn cli_build_and_run() {
         (Some(0), "hi\n".into())
     );
 
-    let panicking = dir.path().join("boom.ore");
-    std::fs::write(
-        &panicking,
+    let (_, panicking) = program(
+        "boom",
         main_body("println(\"before\")\nvar d = 0\nprintln(1 / d)"),
-    )
-    .unwrap();
+    );
     let output = zore().arg("run").arg(&panicking).output().unwrap();
     assert_eq!(output.status.code(), Some(2));
     assert_eq!(stdout(&output), "before\n");
     assert!(stderr(&output).contains("division by zero"));
 
-    let invalid = dir.path().join("bad.ore");
-    std::fs::write(&invalid, main_body("println(missing)")).unwrap();
+    let (invalid_dir, invalid) = program("bad", main_body("println(missing)"));
     for command in ["build", "run"] {
         let output = zore()
             .arg(command)
             .arg(&invalid)
-            .current_dir(dir.path())
+            .current_dir(&invalid_dir)
             .output()
             .unwrap();
         assert_eq!(output.status.code(), Some(1));
@@ -1452,7 +1641,7 @@ fn cli_build_and_run() {
         assert!(err.contains("cannot find `missing`"), "{err}");
         assert!(err.contains("zore: build failed with 1 error"), "{err}");
     }
-    assert!(!dir.path().join("bad").exists());
+    assert!(!invalid_dir.join("bad").exists());
 }
 
 #[test]
@@ -2282,5 +2471,218 @@ func main() {
 }
 ",
         "1\n2\n1\n15\n1\n1\n2\n30\n1003\n3\n0\n4\n2\n",
+    );
+}
+
+#[test]
+fn strings_measure_index_slice_loop_and_concatenate_by_bytes() {
+    prints(
+        "package main
+
+func repeat(piece string, count int) string {
+    var out = \"\"
+    for var i = 0; i < count; i += 1 {
+        out += piece
+    }
+    return out
+}
+
+func main() {
+    let word = \"héllo\"
+    println(word.len())
+    println(word[0])
+    println(word[1:3])
+    println(word[:1] + word[3:])
+    println(word[1:1] == \"\")
+    for i, ch in word {
+        println(i)
+        println(ch)
+    }
+    var letters = 0
+    for _ in word {
+        letters += 1
+    }
+    println(letters)
+    println(string('é') + string('x'))
+    let built = repeat(\"ab\", 3) + \"!\"
+    println(built)
+    println(built == \"ababab!\")
+    println(built < \"b\")
+    println(repeat(\"é\", 4)[2:6])
+    var counts = map[string]int{}
+    counts[repeat(\"k\", 2)] = 5
+    let found, value = counts[\"kk\"]
+    println(found)
+    println(value)
+    println(repeat(\"\", 5).len())
+}
+",
+        "6\n104\né\nhllo\ntrue\n0\nh\n1\né\n3\nl\n4\nl\n5\no\n5\néx\nababab!\ntrue\ntrue\néé\ntrue\n5\n0\n",
+    );
+}
+
+#[test]
+fn string_operations_panic_on_bad_indexes_and_bounds() {
+    for (body, message) in [
+        (
+            "let s = \"ab\"\n    let n = 2\n    println(s[n])",
+            "index out of range",
+        ),
+        (
+            "let s = \"ab\"\n    var n = 3\n    println(s[n:])",
+            "slice bounds out of range",
+        ),
+        (
+            "let s = \"ab\"\n    var n = 1\n    println(s[n:0])",
+            "slice bounds out of range",
+        ),
+        (
+            "let s = \"é\"\n    var n = 1\n    println(s[n:])",
+            "string slice not on a character boundary",
+        ),
+        (
+            "let s = \"aé\"\n    var n = 2\n    println(s[:n])",
+            "string slice not on a character boundary",
+        ),
+    ] {
+        panics(
+            &format!("package main\n\nfunc main() {{\n    println(1)\n    {body}\n}}\n"),
+            message,
+            "1\n",
+        );
+    }
+}
+
+#[test]
+fn every_standard_function_computes_its_documented_result() {
+    prints(
+        "package main
+
+import \"zore/strconv\"
+import \"zore/strings\"
+
+func show(parts Array<string>) {
+    var joined = \"\"
+    for index, part in parts {
+        if index > 0 {
+            joined += \"|\"
+        }
+        joined += \"<\" + part + \">\"
+    }
+    println(joined)
+}
+
+func main() {
+    println(strings.Contains(\"hello\", \"ell\"))
+    println(strings.Contains(\"hello\", \"\"))
+    println(strings.Contains(\"hello\", \"xyz\"))
+    println(strings.HasPrefix(\"hello\", \"he\"))
+    println(strings.HasPrefix(\"hello\", \"lo\"))
+    println(strings.HasSuffix(\"hello\", \"lo\"))
+    println(strings.HasSuffix(\"hello\", \"he\"))
+    println(strings.Index(\"héllo\", \"l\"))
+    println(strings.Index(\"hello\", \"\"))
+    println(strings.Index(\"hello\", \"z\"))
+    println(strings.Upper(\"héllo ß\"))
+    println(strings.Lower(\"HÉLLO\"))
+    println(\"[\" + strings.TrimSpace(\"  \\t a b \\n\") + \"]\")
+    println(\"[\" + strings.TrimSpace(\"   \") + \"]\")
+    println(strings.Repeat(\"ab\", 3))
+    println(strings.Repeat(\"ab\", 0).len())
+    println(strings.Replace(\"banana\", \"an\", \"AN\"))
+    println(strings.Replace(\"ab\", \"\", \"-\"))
+    show(strings.Split(\"a,b,c\", \",\"))
+    show(strings.Split(\",a,\", \",\"))
+    show(strings.Split(\"\", \",\"))
+    show(strings.Split(\"héy\", \"\"))
+    show(strings.Split(\"\", \"\"))
+    show(strings.Split(\"a--b\", \"--\"))
+    let words = [string; 3]{\"x\", \"y\", \"z\"}
+    println(strings.Join(words[:], \", \"))
+    println(strings.Join(words[:1], \", \"))
+    println(strings.Join(words[:0], \", \").len())
+    println(strconv.Itoa(0))
+    println(strconv.Itoa(-9223372036854775807 - 1))
+    for text in Array<string>{\"42\", \"-7\", \"+5\", \"\", \"-\", \"4x\", \"9223372036854775808\"} {
+        let value, err = strconv.Atoi(text)
+        println(value)
+        println(err == nil)
+    }
+    println(strconv.FormatBool(true) + strconv.FormatBool(false))
+    for text in Array<string>{\"true\", \"false\", \"True\"} {
+        let flag, err = strconv.ParseBool(text)
+        println(flag)
+        println(err == nil)
+    }
+    let _, failed = strconv.Atoi(\"nope\")
+    println(failed == error(\"strconv.Atoi: invalid syntax\"))
+    let _, range = strconv.Atoi(\"99999999999999999999\")
+    println(range == error(\"strconv.Atoi: value out of range\"))
+}
+",
+        "true\ntrue\nfalse\ntrue\nfalse\ntrue\nfalse\n3\n0\n-1\nHÉLLO SS\nhéllo\n[a b]\n[]\nababab\n0\nbANANa\n-a-b-\n\
+<a>|<b>|<c>\n<>|<a>|<>\n<>\n<h>|<é>|<y>\n\n<a>|<b>\nx, y, z\nx\n0\n0\n-9223372036854775808\n\
+42\ntrue\n-7\ntrue\n5\ntrue\n0\nfalse\n0\nfalse\n0\nfalse\n0\nfalse\n\
+truefalse\ntrue\ntrue\nfalse\ntrue\nfalse\nfalse\ntrue\ntrue\n",
+    );
+}
+
+#[test]
+fn standard_functions_that_panic_clean_up_and_report() {
+    for (call, message) in [
+        (
+            "strings.Repeat(\"x\", -1)",
+            "strings.Repeat: negative count",
+        ),
+        (
+            "strings.Repeat(\"xx\", 9223372036854775807)",
+            "strings.Repeat: result too large",
+        ),
+    ] {
+        panics(
+            &format!(
+                "package main
+
+import \"zore/strings\"
+
+type Guard struct {{ Name string }}
+
+func (g mut Guard) drop() {{ println(g.Name) }}
+
+func main() {{
+    let guard = Guard{{Name: \"guard\"}}
+    println(\"before\")
+    println({call})
+}}
+"
+            ),
+            message,
+            "before\nguard\n",
+        );
+    }
+}
+
+#[test]
+fn building_text_in_a_loop_does_not_copy_it_every_round() {
+    prints(
+        "package main
+
+func main() {
+    var text = \"\"
+    for var i = 0; i < 200000; i += 1 {
+        text += \"ab\"
+    }
+    println(text.len())
+    let early = text[:4]
+    text += \"!\"
+    println(text[text.len() - 1])
+    println(early)
+    var other = early + \"zz\"
+    other += \"yy\"
+    println(other)
+    println(text.len())
+}
+",
+        "400000\n33\nabab\nababzzyy\n400001\n",
     );
 }

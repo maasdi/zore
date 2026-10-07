@@ -10,13 +10,13 @@ use crate::diagnostic::{Diagnostic, Severity};
 use crate::hir::{self, Const};
 use crate::mir::{self, AggregateKind, Callee, Local, Operand, Place, Rvalue, Terminator};
 use crate::resolve::{FieldId, FunctionId};
-use crate::source::{SourceFile, Span};
+use crate::source::{Sources, Span};
 use crate::types::{IntType, TypeId, TypeKind};
 
 pub fn emit(
     package: &hir::Package,
     program: &mir::Program,
-    file: &SourceFile,
+    sources: &dyn Sources,
 ) -> Result<String, Vec<Diagnostic>> {
     let owning_closures = program
         .bodies
@@ -38,7 +38,7 @@ pub fn emit(
         .collect();
     let mut module = Module {
         package,
-        file,
+        sources,
         strings: HashMap::new(),
         intrinsics: BTreeSet::new(),
         globals: String::new(),
@@ -71,7 +71,7 @@ pub fn emit(
 
 pub(super) struct Module<'a> {
     pub(super) package: &'a hir::Package,
-    pub(super) file: &'a SourceFile,
+    pub(super) sources: &'a dyn Sources,
     pub(super) strings: HashMap<Vec<u8>, String>,
     pub(super) intrinsics: BTreeSet<String>,
     pub(super) globals: String,
@@ -151,8 +151,10 @@ impl Module<'_> {
     }
 
     pub(super) fn location(&self, span: Span) -> String {
-        let at = self.file.location(span.start()).expect("span in file");
-        format!("{}:{}:{}", self.file.path().display(), at.line, at.column)
+        match self.sources.locate(span) {
+            Some((path, at)) => format!("{path}:{}:{}", at.line, at.column),
+            None => "<unknown>".to_string(),
+        }
     }
 
     pub(super) fn overflow_intrinsic(&mut self, op: &str, ty: &str) -> String {
@@ -173,7 +175,14 @@ impl Module<'_> {
         );
     }
 
+    pub(super) fn types(&self) -> &crate::types::TypeStore {
+        &self.package.types
+    }
+
     pub(super) fn function(&mut self, body: &mir::Body) -> String {
+        if self.package.function(body.function).native {
+            return self.native_function(body);
+        }
         let mut f = FunctionBuilder {
             module: self,
             body,
@@ -502,9 +511,14 @@ impl FunctionBuilder<'_, '_> {
                 mir::Projection::Field(f) => write!(indices, ", i32 {}", f.0).unwrap(),
                 mir::Projection::Index(operand) => {
                     let value = self.value(operand);
-                    if let TypeKind::Slice { element, .. } | TypeKind::DynArray { element } =
-                        self.module.package.types.kind(ty)
-                    {
+                    let descriptor_element = match self.module.package.types.kind(ty) {
+                        TypeKind::Slice { element, .. } | TypeKind::DynArray { element } => {
+                            Some(element)
+                        }
+                        TypeKind::String => Some(crate::types::TypeStore::UINT8),
+                        _ => None,
+                    };
+                    if let Some(element) = descriptor_element {
                         base = self.element_pointer(&base, gep_root, &mut indices);
                         let data = self.slice_data(&base);
                         let element_address = self.fresh();
@@ -545,6 +559,90 @@ impl FunctionBuilder<'_, '_> {
             "{data} = extractvalue {{ ptr, i64 }} {descriptor}, 0"
         ));
         data
+    }
+
+    fn string_position(
+        &mut self,
+        string: &Operand,
+        position: &Operand,
+    ) -> (String, String, String) {
+        let value = self.value(string);
+        let (data, len) = self.string_parts(&value);
+        let position = self.widen_to_i64(position);
+        (data, len, position)
+    }
+
+    /// Bounds are checked first, then that both ends start characters.
+    fn string_slice(
+        &mut self,
+        source: &Operand,
+        low: Option<&Operand>,
+        high: Option<&Operand>,
+        span: Span,
+    ) -> String {
+        let value = self.value(source);
+        let (data, length) = self.string_parts(&value);
+        let low = low.map_or_else(|| "0".to_string(), |low| self.widen_to_i64(low));
+        let high = high.map_or_else(|| length.clone(), |high| self.widen_to_i64(high));
+        let high_past_end = self.fresh();
+        self.line(format!("{high_past_end} = icmp ugt i64 {high}, {length}"));
+        let reversed = self.fresh();
+        self.line(format!("{reversed} = icmp ugt i64 {low}, {high}"));
+        let invalid = self.fresh();
+        self.line(format!("{invalid} = or i1 {high_past_end}, {reversed}"));
+        self.panic_if(&invalid, "slice bounds out of range", span);
+        let (low_start, high_start) = (self.fresh(), self.fresh());
+        self.line(format!(
+            "{low_start} = call zeroext i1 @zore_string_is_boundary(ptr {data}, i64 {length}, i64 {low})"
+        ));
+        self.line(format!(
+            "{high_start} = call zeroext i1 @zore_string_is_boundary(ptr {data}, i64 {length}, i64 {high})"
+        ));
+        let both = self.fresh();
+        self.line(format!("{both} = and i1 {low_start}, {high_start}"));
+        let split = self.fresh();
+        self.line(format!("{split} = xor i1 {both}, true"));
+        self.panic_if(&split, "string slice not on a character boundary", span);
+        let start = self.fresh();
+        self.line(format!(
+            "{start} = getelementptr inbounds i8, ptr {data}, i64 {low}"
+        ));
+        let count = self.fresh();
+        self.line(format!("{count} = sub i64 {high}, {low}"));
+        let with_data = self.fresh();
+        self.line(format!(
+            "{with_data} = insertvalue {{ ptr, i64 }} undef, ptr {start}, 0"
+        ));
+        let text = self.fresh();
+        self.line(format!(
+            "{text} = insertvalue {{ ptr, i64 }} {with_data}, i64 {count}, 1"
+        ));
+        text
+    }
+
+    /// Joined text is built by the runtime, which keeps it until the program ends.
+    pub(super) fn string_concat(&mut self, left: &str, right: &str) -> String {
+        let (ap, al) = self.string_parts(left);
+        let (bp, bl) = self.string_parts(right);
+        let out = self.fresh();
+        self.hoist_alloca(&out, "{ ptr, i64 }");
+        self.line(format!(
+            "call void @zore_string_concat(ptr {out}, ptr {ap}, i64 {al}, ptr {bp}, i64 {bl})"
+        ));
+        let joined = self.fresh();
+        self.line(format!("{joined} = load {{ ptr, i64 }}, ptr {out}"));
+        joined
+    }
+
+    fn string_from_rune(&mut self, rune: &str) -> String {
+        let out = self.fresh();
+        self.hoist_alloca(&out, "{ ptr, i64 }");
+        self.line(format!(
+            "call void @zore_string_from_rune(ptr {out}, i32 {rune})"
+        ));
+        let text = self.fresh();
+        self.line(format!("{text} = load {{ ptr, i64 }}, ptr {out}"));
+        text
     }
 
     fn length(&mut self, place: &Place) -> String {
@@ -911,6 +1009,27 @@ impl FunctionBuilder<'_, '_> {
             Rvalue::Error(operand) => self.error_value(operand),
             Rvalue::BoundsCheck(index, length) => self.bounds_check(index, length, span),
             Rvalue::Length(place) => self.length(place),
+            Rvalue::StringSlice { source, low, high } => {
+                self.string_slice(source, low.as_ref(), high.as_ref(), span)
+            }
+            Rvalue::StringChar(string, position) => {
+                let (data, len, position) = self.string_position(string, position);
+                let rune = self.fresh();
+                self.line(format!(
+                    "{rune} = call i32 @zore_string_rune_at(ptr {data}, i64 {len}, i64 {position})"
+                ));
+                rune
+            }
+            Rvalue::StringAdvance(string, position) => {
+                let (data, len, position) = self.string_position(string, position);
+                let width = self.fresh();
+                self.line(format!(
+                    "{width} = call i64 @zore_string_char_width(ptr {data}, i64 {len}, i64 {position})"
+                ));
+                let next = self.fresh();
+                self.line(format!("{next} = add i64 {position}, {width}"));
+                next
+            }
             Rvalue::MapKeyAt(map, position) => self.map_key_at(map, position),
             Rvalue::Ref(_) | Rvalue::MapValueRef(..) => unreachable!("bound above"),
             Rvalue::Slice {
@@ -1352,12 +1471,7 @@ impl FunctionBuilder<'_, '_> {
             }
             TypeKind::String => {
                 if op == BinaryOp::Add {
-                    self.module.unsupported(
-                        "runtime string concatenation is",
-                        span,
-                        "string buffer allocation is not designed yet; constant concatenation works",
-                    );
-                    return "undef".into();
+                    return self.string_concat(&a, &b);
                 }
                 let (ap, al) = self.string_parts(&a);
                 let (bp, bl) = self.string_parts(&b);
@@ -1535,6 +1649,9 @@ impl FunctionBuilder<'_, '_> {
         let value = self.value(operand);
         if from == to {
             return value;
+        }
+        if from == crate::types::TypeStore::RUNE && to == crate::types::TypeStore::STRING {
+            return self.string_from_rune(&value);
         }
         let types = &self.module.package.types;
         let (from_kind, to_kind) = (types.kind(from), types.kind(to));

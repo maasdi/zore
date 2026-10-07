@@ -36,12 +36,11 @@ impl Resolver<'_> {
         if self.shadows_predeclared(name) {
             return;
         }
-        if let Some(&(_, first)) = self.package_scope.get(&name.text) {
+        if let Some(&(_, first)) = self.package_scopes[self.current_package].get(&name.text) {
             self.duplicate(name, first, "declaration");
             return;
         }
-        self.package_scope
-            .insert(name.text.clone(), (res, name.span));
+        self.package_scopes[self.current_package].insert(name.text.clone(), (res, name.span));
     }
 
     pub(super) fn declare_local(&mut self, name: &ast::Name, res: Res) {
@@ -77,9 +76,16 @@ impl Resolver<'_> {
             .iter()
             .rev()
             .find_map(|scope| scope.get(name))
-            .or_else(|| self.package_scope.get(name))
+            .or_else(|| self.package_scopes[self.current_package].get(name))
             .map(|&(res, _)| res)
+            .or_else(|| self.import_named(name))
             .or_else(|| predeclared(name))
+    }
+
+    fn import_named(&self, name: &str) -> Option<Res> {
+        let table = &self.imports[self.current_package][self.current_file];
+        let entry = &table.entries[*table.by_name.get(name)?];
+        Some(Res::Package(entry.package))
     }
 
     /// A local of an enclosing body resolves to this closure's capture of it.

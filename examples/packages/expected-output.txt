@@ -1,0 +1,7 @@
+27
+16
+4
+circle area:
+27
+label: tracker
+closing tracker

@@ -228,6 +228,16 @@ fn check_rvalue(
             check_operand(package, body, &base, span, state, diagnostics);
             check_operand(package, body, position, span, state, diagnostics);
         }
+        Rvalue::StringSlice { source, low, high } => {
+            check_operand(package, body, source, span, state, diagnostics);
+            for bound in [low, high].into_iter().flatten() {
+                check_operand(package, body, bound, span, state, diagnostics);
+            }
+        }
+        Rvalue::StringChar(string, position) | Rvalue::StringAdvance(string, position) => {
+            check_operand(package, body, string, span, state, diagnostics);
+            check_operand(package, body, position, span, state, diagnostics);
+        }
         Rvalue::Slice {
             place, low, high, ..
         } => {

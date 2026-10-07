@@ -1,6 +1,6 @@
 # Implementation roadmap
 
-The implementation covers an initial synchronous, single-file subset:
+The implementation covers an initial synchronous subset:
 bool, integers, floats, rune, string, `error`, and structs, including Move structs with
 custom `drop` methods and exact untyped constants (§6.7). `zore check` runs lex → parse → resolve → type-check and MIR ownership analysis;
 `zore build` and `zore run` lower to MIR, emit LLVM IR, and invoke clang and
@@ -120,14 +120,14 @@ gets a fresh transient scratch flags block (`drop_value`/`drop_contents`/
 per-slot storage, which a naive copy-paste extension of the existing
 struct-field GEP pattern would have corrupted.
 
-Other open items: rune conversions, the `println` float
-text format (§37.1, TBD), and runtime string concatenation, which needs a
-string-buffer ownership decision (§41.5). Runtime checks use MIR assert
+Other open items: integer-to-rune conversions and the `println` float
+text format (§37.1, TBD). Strings follow below. Runtime checks use MIR assert
 terminators with cleanup paths.
 
-Temporary limits that are not language rules: `check <file.ore>` treats the one
-file as the whole package and diagnoses `import` until package discovery (Q05,
-M23); package-level `let`/`var` await Q05.
+Temporary limits that are not language rules: package-level `let`/`var` await
+Q05, a project can import only its own packages and the standard ones, and the
+standard library is only `zore/strings` and `zore/strconv` (floats and I/O are
+not covered).
 
 Routine driver, diagnostic presentation, and internal representation decisions
 can be made during implementation and documented with tests. They do not require
@@ -141,8 +141,8 @@ isolate the affected feature and continue unrelated supported work.
 | Remaining primary/postfix grammar | Before implementing the affected parser form; the M3–M4 subset is parsed and later forms are diagnosed as unsupported |
 | Type identity/layout gaps, numeric typing corner cases | Before the corresponding resolver/type-checker accepts those programs; not before lexing |
 | Minimal package/entry-point contract and `println` signature | Resolved in §3.19 and §37.1 (Q05a); `println` float text format stays open until native float printing |
-| Import discovery, project mapping, package initialization | Before supporting imports, project checking, or package variables; an explicitly limited single-file milestone need not resolve the whole package system |
-| String indexing/slicing/length | Before implementing those operations; literal decoding and immutable string values are already specified |
+| Import discovery, project mapping | Resolved in §3.20 (Q24); implemented. Package variables and initialization order remain open |
+| String indexing/slicing/length | Resolved in §6.8 (Q23); implemented |
 | Borrowed map-entry access, capacity APIs | Before implementing those operations; iteration, `len`, `push`, and `pop` are resolved in §5.10 and §12.7 |
 | Closure types/captures/invocation | Resolved (§16, Q02g, Q02i); closures with tasks before M25 |
 | Full go grammar, concurrency library APIs | Before affected M25–M31 work; preserve already locked ownership/runtime contracts |
@@ -241,7 +241,7 @@ is complete beyond the subset it covers.
 | M0–M1 | Workspace, CLI, source manager, spans, labels, notes, and rendering exist. File-load errors are plain CLI messages; diagnostic codes are absent. |
 | M2–M4 | Lexer and AST/parser implement the current subset. Async declarations have syntax representation but are rejected semantically; collections, indexing, and closures remain unsupported. |
 | M5–M8 | Hello, variables, functions, structs, control flow, and multiple returns have implementations and native tests for the synchronous all-Copy subset. Methods with shared or `own` receivers resolve, type-check, and run natively; `mut` parameters and receivers require mutable places (§11.6) and are passed by reference. |
-| M9–M10 | Single-file resolution, stable IDs, primitive/struct types, type checking, and exact constant evaluation exist. Function types/values, error, imports, and package variables remain unsupported. |
+| M9–M10 | Resolution across packages, stable IDs, primitive/struct types, type checking, and exact constant evaluation exist. Package variables remain unsupported. |
 | M11–M12 | Typed HIR, CFG MIR, and local/field places exist. MIR distinguishes Copy/Move operands; indexed places are absent. |
 | M13–M17 | Recursive Copy classification, mutable-place checks, call-local exclusivity, and validated user-defined `drop` methods exist. The test-only entry point runs whole-place MIR move analysis and supports builtin `drop(value)`; field moves are rejected conservatively. Move values remain rejected by `zore check` and `zore build` until cleanup lands. Stored borrows and region analysis remain absent. Slice C passed Ubuntu and macOS CI on PR #6. |
 | M18–M19 | No destruction/drop insertion or explicit error/propagation implementation. Multiple returns alone do not complete error handling. |
@@ -2095,6 +2095,37 @@ and `pop` on `Array<T>`, and `for … in` loops over fixed arrays, slices,
 `Array<T>`, and maps. A loop is a counting loop over a shared borrow of the
 collection that stays live for the whole loop; the item is a by-reference
 local rebound on each iteration.
+
+Packages and imports followed (§3.20, Q24). A loader (`driver/project.rs`)
+reads the entry file's folder, finds `zore.toml`, parses every file, and
+follows imports depth first: `"project/dir"` maps to a folder below the root and
+`"zore/name"` to a bundled package. It rejects bad paths, cycles, mismatched
+package clauses, and importing `main`, and returns packages dependencies first.
+The resolver then declares every package into one set of IDs, with a scope per
+package and an import table per file, and checks each qualified use against the
+export rule; unused and clashing imports are reported there. The checker
+applies the same rule to fields and methods, and symbol names carry the
+package path so equal names in different packages never collide.
+
+The standard packages followed (§37.2). `zore/strings` and `zore/strconv` are
+Zore source bundled in the compiler, with each function declared without a
+body; the parser accepts that form only for bundled sources. Their code lives
+in the runtime: for each bodyless function the code generator emits a shim that
+unpacks strings and slices into pointer-and-length arguments, passes an out
+pointer for strings, `Array<string>` results, and `(T, error)` results, and
+calls `zore_native_<package>_<function>`. Split pieces and trimmed or joined
+single parts share their source's storage.
+
+Strings followed (§6.8, Q23). `len`, `s[i]` (a `byte`), `s[a:b]`, `for … in`
+over characters, runtime `+`, and `string(rune)` all work. A slice is a value
+of type `string` with no loan, because strings are immutable and Copy; its
+bounds and character boundaries are checked at run time by a MIR assert. Text
+built at run time is allocated by the runtime in buffers released when the
+program ends. `a + b` appends in place when `a` ends where its buffer's text
+ends, and doubles the buffer when it is full, so a loop that builds one text
+uses memory proportional to its length; discarded texts are still kept until
+the end, and reference counting is the planned replacement. Loops decode characters from a held copy of the
+string with `StringChar` and `StringAdvance`.
 
 Owning and call-once closures followed (§16.4, §16.6, Q02i). After a body is
 checked, a pass marks closure literals in escaping positions owning, follows

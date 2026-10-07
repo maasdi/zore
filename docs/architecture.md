@@ -158,7 +158,7 @@ round to nearest, ties to even, without overflow. Typed float constants hold
 the exact value of their `float32`/`float64` and fold by exact arithmetic
 followed by one rounding, which equals the correctly rounded IEEE result.
 
-The checker accepts a deliberately small, single-file subset: primitive values,
+The checker accepts a deliberately small subset: primitive values,
 `error`, structs including Move structs with custom `drop` methods, fixed
 arrays, literal-sized dynamic arrays (`Array<T>`), maps (`map[K]V`), borrowed slices (`[]T`,
 `mut []T`, `base[low:high]`), functions, methods, non-escaping closures with
@@ -166,10 +166,23 @@ function types (§16), and `println`. Ownership analysis (`ownership/`) checks w
 and field-level partial moves, reinitialization, and call-local borrows over
 MIR (`checker.rs`), then runs region analysis (`region.rs`) over the loans
 described in `borrow.rs`; error-use analysis checks named `error` bindings
-and parameters on normal control-flow paths. Awaited `?`, `async`/`await`, imports, package variables,
-rune conversions, declared functions used as values, and escaping or call-once
-closures remain unsupported. `println` of a float
+and parameters on normal control-flow paths. Awaited `?`, `async`/`await`, package variables,
+integer-to-rune conversions, and declared functions used as values remain
+unsupported. `println` of a float
 type-checks, but its text format is still TBD (§37.1).
+
+A program is more than one file. `driver/project.rs` loads the entry file's
+folder and every package it imports, through a `FileSystem` trait so tests can
+use memory instead of disk, and hands the resolver a list of packages with
+dependencies first. Spans carry their file, so diagnostics point into any
+package; the source text of the bundled standard packages lives in a separate
+map that the checker and code generator read through `Sources`.
+
+The bundled standard packages (`driver/stdlib/*.ore`) declare functions
+without bodies. The checker lowers them like any function but marks them
+native; MIR gives them no blocks, and code generation emits a shim that calls
+the runtime symbol `zore_native_<package>_<function>` (`HasPrefix` in
+`strings` is `zore_native_strings_has_prefix`).
 
 AST preserves written structure; HIR records resolved meaning; MIR describes
 execution. Source identity and spans survive transformations. Use typed IDs for
@@ -339,8 +352,13 @@ there: overflow intrinsics for `+ - *` and negation, zero and `MIN / -1`
 checks for `/` and `%`, unsigned range checks for shift counts, and range
 checks for numeric conversions; each failure calls `zore_panic` with the
 operation and source location. MIR assert terminators carry cleanup paths so a
-panic runs pending drops before the runtime reports it. Runtime string
-concatenation and float printing are reported as unsupported by the backend.
+panic runs pending drops before the runtime reports it. Runtime strings are
+`{ ptr, len }` descriptors: concatenation and `string(rune)` call the runtime,
+which allocates the text in a buffer it keeps until the program ends, and
+slices share their source's storage after a bounds and character-boundary
+check. Concatenation extends the buffer in place when the left text ends where
+the buffer's text ends, which is safe because no string reads past its own end. Float
+printing is reported as unsupported by the backend.
 The generated IR contains no target triple, so clang supplies the host's; it
 requires LLVM 15 or newer for opaque pointers.
 

@@ -1,0 +1,37 @@
+package main
+
+import "zore/strconv"
+import "zore/strings"
+
+func total(line string) (int, error) {
+    var sum = 0
+    for _, field in strings.Split(line, ",") {
+        let value, err = strconv.Atoi(strings.TrimSpace(field))
+        if err != nil {
+            return 0, err
+        }
+        sum += value
+    }
+    return sum, nil
+}
+
+func main() {
+    // Text helpers come from `zore/strings`.
+    let title = "  Zore standard packages  "
+    println(strings.Upper(strings.TrimSpace(title)))
+    println(strings.Contains(title, "standard"))
+    println(strings.Replace("a-b-c", "-", "+"))
+
+    // `Split` gives an `Array<string>`, and `Join` puts one back together.
+    let words = strings.Split("one two three", " ")
+    println(words.len())
+    println(strings.Join(words[:], ", "))
+
+    // `zore/strconv` converts between numbers and text; `Atoi` can fail.
+    let sum, err = total("10, 20, 12")
+    if err == nil {
+        println("sum is " + strconv.Itoa(sum))
+    }
+    let _, failure = total("10, x")
+    println(failure == error("strconv.Atoi: invalid syntax"))
+}

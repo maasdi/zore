@@ -1,0 +1,20 @@
+package main
+
+import "packages/report"
+import "packages/shapes"
+
+func main() {
+    // Exported names are used with the package name in front.
+    let circle = shapes.NewCircle(3)
+    let square = shapes.NewSquare(4)
+    println(circle.Area())
+    println(square.Area())
+    println(shapes.Sides)
+
+    // Another package can take a type from `shapes` as a parameter.
+    report.Describe(circle)
+
+    // An imported type with a custom `drop` is cleaned up like any other.
+    let tracker = shapes.Tracker{Name: "tracker"}
+    report.Label(tracker.Name)
+}

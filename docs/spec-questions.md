@@ -27,7 +27,7 @@ A newly discovered semantic gap blocks its affected feature, not unrelated work.
 | Q02 | Remaining grammar for strings and full `go` expressions; collection loops are resolved in §5.10 (Q02h); closures and function types are resolved in Q02g, with owning and call-once closures in Q02i. Map borrowed entry APIs remain Q05. Arrays/indexing/slicing are resolved in Q02e and map construction/lookup/assignment/removal in Q02f; assignment, operators, calls, and struct construction are also locked. | §5.6, §7.5–7.8, §8.4, §41.1 | Expression parser/lowering |
 | Q03 | Core bindings, blocks, conditionals, loops, scope-entry points, returns, result forwarding, and expression-statement policy are resolved. Detailed `?` typing is resolved (Q06b); task retrieval forms are resolved (Q09a); collection forms remain in Q02. | §5.4–5.10, §7.7–7.8, §41.2–3 | Statement parser/typing |
 | Q04 | Zero/resource interaction resolved in Q04e; see Q04a–d for earlier decisions. Shift contradiction resolved in Q11. This does not imply a complete collection/task expression grammar (Q02) or predeclared conversion API (Q05). | §5.3–5.4, §6.5–6.6, §7.6, §10.2, §19.8, §41.4–5 | Type checking and runtime semantics |
-| Q05 | Local package discovery/import mapping, complete predeclared API inventory, initial standard-library signatures beyond `println`, float text formatting for `println`, package variable initialization order, and remaining type-layout validity rules. The entry-point contract and `println` are resolved in Q05a. Functions/types support forward references and method conflicts are defined (§7.8). Registry/solver remain out of MVP. | §3, §5.7, §7.8, §37, §42, §45 | Resolution/package checking and first native example |
+| Q05 | Local package discovery/import mapping (resolved in Q24), complete predeclared API inventory, initial standard-library signatures beyond `println` (strings and strconv resolved in Q24), float text formatting for `println`, package variable initialization order, and remaining type-layout validity rules. The entry-point contract and `println` are resolved in Q05a. Functions/types support forward references and method conflicts are defined (§7.8). Registry/solver remain out of MVP. | §3, §5.7, §7.8, §37, §42, §45 | Resolution/package checking and first native example |
 | Q06 | Resolved; see Q06a–b below. Error wrapping/cause chains, sentinel error declarations, structured error payloads, and the full predeclared API remain open under Q05. | §5.5, §7.2, §15, §22.2 | Error checking/lowering |
 | Q07 | Refined by Q07b: destructor-safe partial moves and recursive borrow contracts; see Q07a for earlier decisions. Array/slice syntax is locked in Q02e; map operations are locked in Q02f; string access and borrowed map-entry APIs remain Q02/Q05. | §5.6, §11.6–11.7, §12.5, §31.2 | Affected ownership analysis |
 | Q08 | Drop/zero and partial-move interactions refined by Q04e/Q07b; clone precedence corrected in Q12. See Q08a for earlier decisions. Panics inside spawned tasks are resolved in Q09a. | §8.3, §10.7, §14.3–14.4, §15.4 | Destruction and runtime |
@@ -45,6 +45,8 @@ A newly discovered semantic gap blocks its affected feature, not unrelated work.
 | Q20 | Choices for `mut []T` held in struct fields and fixed arrays (§11.7, §12.3); each rejects rather than guesses. See Q20 below. | §11.7, §12.3, §12.5, §10.7 | Checker and ownership changes only |
 | Q21 | Choices for types whose custom `drop` can read a borrowed view (§11.7, §14.3); each rejects rather than guesses. See Q21 below. | §11.7, §14.3, §14.5 | Ownership changes only |
 | Q22 | Output provenance: views stored through `mut` parameters and closure captures, and views returned through function values (§11.7, §16). See Q22 below. | §11.7, §16.3–16.4 | Ownership changes only |
+| Q23 | Strings: byte length and indexing, boundary-checked slicing, loops by character, `string(rune)`, and when runtime-built strings are released (§6.8, §41.5). See Q23 below. | §6.8, §41.5 | Checker, codegen, and runtime changes |
+| Q24 | Projects, packages, and imports: folders as packages, import paths, export checks, and the first standard packages (§3.20, §37.2). See Q24 below. | §3.20, §4.1, §37.2 | Loader, resolver, checker, and codegen changes |
 
 ## Resolved decisions
 
@@ -139,6 +141,37 @@ A newly discovered semantic gap blocks its affected feature, not unrelated work.
   already cloned are dropped (in reverse order, map values in entry order), the
   new storage is freed, and unwinding continues. (g) Allocation failure aborts,
   as for `Array<T>` (Q17g). Pending cases: `tests/conformance/destruction.md`.
+
+- **Q24 — Projects, packages, and imports:** locked in §3.20 and §37.2 at the
+  maintainer's direction: a folder is a package, import paths start with the
+  project name (or `zore` for standard packages), and `zore run file.ore` builds
+  the file's whole folder. Filled conservatively: (a) a non-`main` package's
+  name must equal its folder name, so the qualifier is the last path segment;
+  (b) unused or duplicate imports are errors, as in Go; (c) import aliases,
+  dot and blank imports, dependencies on other projects, package-level
+  `let`/`var`, and `init` functions are rejected; (d) a struct with an
+  unexported field cannot be constructed outside its package, because a struct
+  literal must name every field; (e) the entry folder without `zore.toml` has no
+  project name and imports only standard packages; (f) a method may be declared
+  only on a type of its own package; (g) `Split`, `Join`, and the other standard
+  functions are the first slice of Q05's library inventory, with float text and
+  Unicode-aware helpers beyond case mapping left open. Pending cases:
+  `tests/conformance/packages.md`.
+
+- **Q23 — Strings:** locked in §6.8 at the maintainer's direction. Length,
+  indexing, and slicing count bytes; `for ch in s` visits characters with byte
+  indexes; `+` concatenates at run time; `string(rune)` is the only string
+  conversion. Filled conservatively: (a) a slice must start and end on character
+  boundaries or it panics, so strings stay well-formed; (b) `s[i]` is a
+  read-only `byte`; (c) runtime-built string storage, including slices that
+  share it, is freed only when the program ends, because `string` is Copy and
+  cannot carry a destructor; appending to the newest text in a buffer grows
+  the buffer in place (doubling), which is safe because no string reads past
+  its own end, so building one text in a loop costs memory proportional to its
+  final length; texts that are simply discarded still wait for the end, and
+  reference counting is the planned replacement; (d) number
+  formatting stays out of the language and lives in `zore/strconv`. Pending
+  cases: `tests/conformance/strings.md`.
 
 - **Q02i — Owning and call-once closures:** locked in §16.4 and §16.6 at the
   maintainer's direction. Ownership is inferred: a literal is owning when it, or

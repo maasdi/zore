@@ -189,7 +189,16 @@ impl Parser<'_> {
             TokenKind::Ident => {
                 let name = self.name("an expression")?;
                 if self.struct_literals_allowed && self.at(Punct::LBrace) {
-                    return self.struct_literal(name);
+                    return self.struct_literal(None, name);
+                }
+                if self.struct_literals_allowed
+                    && self.at(Punct::Dot)
+                    && *self.peek_at(1) == TokenKind::Ident
+                    && *self.peek_at(2) == TokenKind::Punct(Punct::LBrace)
+                {
+                    self.bump();
+                    let member = self.name("a type name")?;
+                    return self.struct_literal(Some(name), member);
                 }
                 return Ok(Expr {
                     kind: ExprKind::Name(name.text),
@@ -274,14 +283,19 @@ impl Parser<'_> {
         })
     }
 
-    pub(super) fn struct_literal(&mut self, ty: Name) -> PResult<Expr> {
+    pub(super) fn struct_literal(&mut self, package: Option<Name>, ty: Name) -> PResult<Expr> {
+        let start = package.as_ref().map_or(ty.span, |package| package.span);
         self.bump();
         let fields = self.with_struct_literals(true, |p| {
             p.comma_list(Punct::RBrace, "field", true, Self::field_init)
         })?;
         Ok(Expr {
-            span: self.span_from(ty.span),
-            kind: ExprKind::StructLit { ty, fields },
+            span: self.span_from(start),
+            kind: ExprKind::StructLit {
+                package,
+                ty,
+                fields,
+            },
         })
     }
 

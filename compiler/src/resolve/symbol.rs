@@ -10,6 +10,8 @@ pub enum Res {
     Function(FunctionId),
     Struct(StructId),
     Primitive(TypeId),
+    /// An import's name; valid only as the qualifier of `package.Name`.
+    Package(usize),
     Println,
     Drop,
     Clone,

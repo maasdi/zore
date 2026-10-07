@@ -171,6 +171,16 @@ fn read_rvalue(rvalue: &Rvalue, state: &mut [UseState]) {
                 read_operand(bound, state);
             }
         }
+        Rvalue::StringSlice { source, low, high } => {
+            read_operand(source, state);
+            for bound in [low, high].into_iter().flatten() {
+                read_operand(bound, state);
+            }
+        }
+        Rvalue::StringChar(string, position) | Rvalue::StringAdvance(string, position) => {
+            read_operand(string, state);
+            read_operand(position, state);
+        }
         // A closure may read what it captures whenever it is called.
         Rvalue::Closure { captures, .. } => {
             for (place, _) in captures {
