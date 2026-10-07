@@ -29,7 +29,9 @@ at the repository root. The layout follows
 when existing code belongs in it (rule 11: no empty scaffolding):
 
 - `driver/`: `command.rs`, `session.rs`, plus `check.rs` and `build.rs`, the
-  frontend and native pass orchestration.
+  frontend and native pass orchestration, and `stdlib.rs`, which embeds the
+  standard packages. Their Zore source lives in the top-level `std/` folder, one
+  folder per package (`std/strings/strings.ore`, `std/net/net.ore`, and so on).
 - `source/` (`span.rs`, `source_file.rs`, `source_map.rs`), `diagnostic/`
   (`diagnostic.rs`, `label.rs`, `renderer.rs`).
 - `lexer/` (`lexer.rs`, `token.rs`, `token_kind.rs`), `parser/` (`parser.rs`,
@@ -178,7 +180,7 @@ dependencies first. Spans carry their file, so diagnostics point into any
 package; the source text of the bundled standard packages lives in a separate
 map that the checker and code generator read through `Sources`.
 
-The bundled standard packages (`driver/stdlib/*.ore`) declare functions
+The bundled standard packages (`std/<package>/<package>.ore`) declare functions
 without bodies. The checker lowers them like any function but marks them
 native; MIR gives them no blocks, and code generation emits a shim that calls
 the runtime symbol `zore_native_<package>_<function>` (`HasPrefix` in
