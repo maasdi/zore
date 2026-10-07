@@ -4,44 +4,53 @@ Status: PROPOSED. Nothing here is authorized for implementation until the
 maintainer accepts it. On acceptance the spec sections named below are updated
 first (§53), then the work lands in the slices at the end.
 
-## Decision this proposal carries out
+## Decisions this proposal carries out
 
-The maintainer chose pure state machines and the removal of fibers. The spec
-already points that way: §35.1 says async functions lower to compiler-generated
-state machines, and §17.7 says they are expected to. Today's code uses stackful
-fibers instead (`runtime/src/fiber.rs`), which `docs/architecture.md` and
-`compiler-structure.md` §17 list as an approved deviation. This proposal ends
-that deviation: the guide's `async_lowering/` stage gets built and fibers go.
+The maintainer made three decisions:
+
+1. **Pure state machines; fibers are removed.** The spec already points that way:
+   §35.1 says async functions lower to compiler-generated state machines, and
+   §17.7 says they are expected to. Today's code uses stackful fibers instead
+   (`runtime/src/fiber.rs`), which `docs/architecture.md` and
+   `compiler-structure.md` §17 list as an approved deviation. This proposal ends
+   that deviation: the guide's `async_lowering/` stage gets built and fibers go.
+2. **Every pause is written with `await`.** Waiting operations are awaited inside
+   an `async func`, so each place a task can pause is visible in the source.
+3. **`go` is stricter.** It accepts only a call to an `async func`.
 
 ## What a Zore programmer sees
 
-Almost nothing changes in how programs are written.
-
 1. **An `async func` becomes a state machine.** It owns a heap frame holding its
    locals, and it can pause and resume without a stack of its own.
-2. **Waiting operations pause an async function without `await`.** Channel send and
-   receive, `select`, `Mutex.withLock`, and the `zore/time`, `zore/io`,
-   `zore/os`, `zore/net`, and `zore/cancel` functions are still ordinary calls
-   (§19, §37.3). Inside an `async func` such a call pauses the task and frees its
-   worker thread. `await` stays for calls to `async func`s and for `Task` values,
-   as it is now.
-3. **Inside a plain `func`, the same calls block the calling thread.** This is
-   what `task.wait()` already does, and what `main` already relies on (§37.3:
-   "in the initial task a wait blocks the entry point's thread"). One spelling
-   works in both kinds of function.
-4. **`go` still accepts any declared function.** `go asyncFn(x)` creates a polled
-   task. `go plainFn(x)` runs the function on a pool thread, and the pool adds a
-   thread whenever one of its threads blocks, so a blocked plain function cannot
-   starve the others. A program with tens of thousands of tasks should write them
-   as `async func`; plain-function tasks cost about a thread each.
-5. **Existing programs keep compiling.** Task functions that are plain `func`s
-   still work and run on pool threads. Rewriting them as `async func` is how to
-   get the small-task scaling.
+2. **Waiting operations are awaited inside an `async func`.** These are channel
+   `send` and `receive`, `select`, `Mutex.withLock`, `Task` results, and the
+   waiting functions of `zore/time`, `zore/io`, `zore/os`, `zore/net`, and
+   `zore/cancel`. They are written `await ch.receive()`, `await ch.send(v)`,
+   `await time.Sleep(10)`, `await m.withLock(f)`, and `await select { ... }`.
+   Leaving out the `await` in an async function is a compile error, the same way
+   `.wait()` is already rejected there.
+3. **Inside a plain `func` (including `main`) the same operations block the
+   thread and are written without `await`,** exactly as `.wait()` does today.
+   `await` stays invalid in a plain function (§17). The operations that do not
+   wait, such as `close`, `isPoisoned`, `Cancel`, and `Done()`, are written the
+   same everywhere.
+4. **`go` takes only a call to an `async func` or `async` method.** `go plainFn(x)`
+   is a compile error that says to make the function `async`. There are no hidden
+   threads: a plain function runs on its caller's thread. Background CPU work is
+   written as an `async func` that never awaits. `go` still returns a `Task`, and
+   `await task` or `task.wait()` still retrieves the result.
+5. **Existing programs need rewriting.** Task functions become `async func`, and
+   waiting calls inside them gain `await`. The bundled packages written in Zore
+   change too: `time.After`, `cancel.WithTimeout`, and `Token.Child` start their
+   helper work with `go` on `async` helper functions. The compiler's messages
+   point at each place. Slice 5 converts every example, test, and bundled package.
 
-Spec text this changes: §17.7 and §35.1 (from "expected" to the locked design),
-§18.3 and §18.8 (what `go` runs), §19 and §37.3 (the sentence that a waiting
-call "suspends only the calling task" becomes "in an async function; in a plain
-function it blocks the thread"), and §36.1 (the scheduler is a poller).
+Spec text this changes: §17.2 and §17.3 (what `await` accepts), §17.7 and §35.1
+(from "expected" to the locked design), §18.3 and §18.8 (what `go` runs), §19
+(channel operations, and the `select` statement's `await` form in §19.14), §20.2
+(`withLock`), §37.3 (the sentence that a waiting call "suspends only the calling
+task" becomes: awaited in an async function, blocking in a plain function), and
+§36.1 (the scheduler is a poller).
 
 ## Execution model
 
@@ -53,9 +62,10 @@ function it blocks the thread"), and §36.1 (the scheduler is a poller).
   thread pool, or another task. The waker puts the task back on the run queue.
   A scheduling flag (idle, running, notified) closes the window between "poll
   returned" and "wake arrived".
-- A thread that blocks inside a plain function, parked in `Slot`, tells the pool
-  so it can start a replacement worker. This keeps the pool's capacity constant
-  even when plain functions wait.
+- Blocking calls from plain code still park a `Slot`. When that happens on a pool
+  worker (an async function called a plain function that waits), the pool starts a
+  replacement worker so the other tasks keep running. This is a safety net; the
+  awaited form is the way to wait in a task.
 - The blocked counter behind deadlock detection counts a suspended task as blocked
   from the moment it returns `Pending` on an internal wait until its waker fires,
   exactly as it counts a parked fiber today. Timers, descriptors, and helper
@@ -75,10 +85,11 @@ code generation.
   liveness; that is a later optimization. Because the frame is pinned, the
   conservative borrow rule of §17.6 is already met for locals, and the ownership
   checker needs no new rule for them.
-- **Suspension points.** MIR gets an explicit flag on a call that may pause: an
-  awaited async call, `await task`, or a waiting operation (above) in an async
-  body. Ownership, region, and drop analysis treat it like any other call, so
-  the existing checks, drop elaboration, and unwind edges apply unchanged.
+- **Suspension points.** Every pause is an `await`, so the rule is one line: MIR
+  marks each awaited call (an async function, a `Task`, or a waiting operation)
+  as a suspension point. Ownership, region, and drop analysis treat it like any
+  other call, so the existing checks, drop elaboration, and unwind edges apply
+  unchanged.
 - **Generated code.** For each async function: a frame type, a `poll(frame)`
   function whose first instruction dispatches on a stored state number to the
   resume point, and a constructor that moves the arguments into a new frame. At a
@@ -90,8 +101,10 @@ code generation.
   its result, and frees the frame. Recursion works because each call has its own
   frame.
 - **`go`.** `go asyncFn(x)` builds the frame and a task block around it and
-  enqueues it. `go plainFn(x)` keeps today's owning-closure path and runs it as
-  a pool job.
+  enqueues it. The owning-closure spawn path used today is removed with fibers.
+- **Checks.** The HIR checker already knows whether it is inside an `async func`.
+  It adds two errors: a waiting operation without `await` inside an async
+  function, and `go` on a plain function.
 
 ## Runtime design
 
@@ -112,26 +125,43 @@ blocking form, and both share the same queues:
 ## Slices
 
 Each slice is its own PR, keeps every test passing, and leaves the language
-usable.
+usable. While the new forms are being added, the old ones stay accepted so each
+PR can be tested against the whole existing suite; slice 5 turns the new rules
+into errors.
 
 1. **Spec and docs.** Update the sections above and record Q32. No code.
 2. **Scheduler and wakers.** A poll-based task type and run queue beside fibers;
    the waiter abstraction in the runtime primitives; worker compensation for
    blocked threads. Nothing uses it yet.
-3. **State machines for simple async functions.** `async_lowering/`, frames,
-   `poll`, `await` of async calls and tasks, `go` of async functions. Fibers
-   still run everything else.
-4. **Waiting operations in async functions**, in this order: channels and
-   `select`, time and the reactor, `Mutex`, then I/O and the helper pool. One PR
-   each, with tests that run the same program as plain and as async code.
-5. **Plain-function tasks on pool threads; remove fibers.** `go plainFn` moves to
-   the pool, `fiber.rs` goes, tests that rely on tens of thousands of tasks become
-   async, and the fallback thread-per-task path is retired.
+3. **State machines for async functions.** `async_lowering/`, frames, `poll`,
+   `await` of async calls and tasks, and `go` of async functions as polled tasks.
+   Fibers still run plain-function tasks.
+4. **`await` on waiting operations**, in this order: channels and `select`
+   (including the `await select` form), time and the reactor, `Mutex`, then I/O
+   and the helper pool. One PR each, adding the syntax, the check, and the poll
+   form together, with tests that run the same program in plain and async code.
+   Un-awaited waiting inside an async function is still accepted for now.
+5. **Strict rules and migration; remove fibers.** Rewrite the bundled packages,
+   examples, and tests to the new rules, turn on the two errors (un-awaited wait
+   in an async function; `go` on a plain function), delete `fiber.rs` and the
+   thread-per-task fallback, and make the tests that run tens of thousands of
+   tasks async.
 6. **Docs and guide.** Remove the approved deviation, update `architecture.md`,
    and add `async_lowering/` to the layout.
 
 ## Risks and open questions
 
+- **Migration size.** About 300 lines of the native tests and seven of the
+  examples use tasks or waiting calls. Most edits are mechanical (`async` on the
+  function, `await` on the call), and the compiler points at each one.
+- **No background work for plain functions.** With the stricter `go`, a plain
+  function cannot be started in the background. An `async func` that never awaits
+  does the same job, and a blocking-task form can be added later if a real need
+  appears.
+- **`await select`.** `select` is a statement, so this adds a small grammar form,
+  `await` followed by a `select` block. The alternative is to make an async
+  `select` implicitly suspend, which this proposal rejects to keep every pause
+  visible.
 - **Frame size.** All locals in one frame can be large for functions with big
   fixed arrays. Liveness-based layout is the planned follow-up.
 - **Abandoned frames.** A task that never finishes (a deadlock, or exit while
@@ -144,13 +174,10 @@ usable.
   lint could flag it later.
 - **Size of the change.** Slices 3 and 4 touch the code generator, the MIR, and
   every waiting primitive in the runtime. Slice 2 exists to keep slice 3 small.
-- **Targets without the pool.** The pool needs only threads, so the Windows
-  fallback no longer needs a separate thread-per-task design.
 
 ## Defaults chosen here, for the maintainer to veto
 
-- Waiting operations pause without `await` (smallest language change, keeps
-  §37.3 almost as written).
-- `go` keeps accepting plain functions.
 - Frames are not shrunk by liveness in the first version.
 - Suspended frames are not destroyed when a program ends.
+- A pool thread that blocks in plain code is replaced so the pool keeps its
+  capacity.
