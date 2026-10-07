@@ -4,7 +4,7 @@ use crate::types::{TypeId, TypeKind};
 
 impl Module<'_> {
     /// The function that destroys one queued value of the type, or `null` when there is nothing to do.
-    fn channel_destroyer(&mut self, element: TypeId, body: &Body) -> String {
+    pub(super) fn channel_destroyer(&mut self, element: TypeId, body: &Body) -> String {
         if !self.package.needs_drop(element) {
             return "null".into();
         }

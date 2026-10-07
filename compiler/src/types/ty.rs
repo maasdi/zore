@@ -89,6 +89,10 @@ pub enum TypeKind {
     Channel {
         element: TypeId,
     },
+    /// A Copy handle to one shared lock and the value it guards.
+    Mutex {
+        element: TypeId,
+    },
 }
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]

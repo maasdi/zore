@@ -46,7 +46,8 @@ fn by_value_named_type(ty: &ast::Type) -> Option<&ast::Name> {
         | ast::Type::Map { .. }
         | ast::Type::Func { .. }
         | ast::Type::Task { .. }
-        | ast::Type::Channel { .. } => None,
+        | ast::Type::Channel { .. }
+        | ast::Type::Mutex { .. } => None,
     }
 }
 
@@ -60,7 +61,8 @@ fn owned_named_type(ty: &ast::Type) -> Option<&ast::Name> {
         ast::Type::Slice { .. }
         | ast::Type::Func { .. }
         | ast::Type::Task { .. }
-        | ast::Type::Channel { .. } => None,
+        | ast::Type::Channel { .. }
+        | ast::Type::Mutex { .. } => None,
     }
 }
 
@@ -143,17 +145,6 @@ impl<'a> Resolver<'a> {
         self.out
             .diagnostics
             .push(Diagnostic::new(Severity::Error, message, span));
-    }
-
-    pub(super) fn unsupported(&mut self, what: &str, span: Span) {
-        self.out.diagnostics.push(
-            Diagnostic::new(
-                Severity::Error,
-                format!("{what} not supported by the checker yet"),
-                span,
-            )
-            .note("planned for a later milestone"),
-        );
     }
 
     fn all(&mut self, units: &'a [PackageUnit<'a>]) {
@@ -579,7 +570,9 @@ impl<'a> Resolver<'a> {
                 self.ty(key);
                 self.ty(value);
             }
-            ast::Type::Channel { element, .. } => self.ty(element),
+            ast::Type::Channel { element, .. } | ast::Type::Mutex { element, .. } => {
+                self.ty(element)
+            }
             ast::Type::Task { results, .. } => {
                 for result in results {
                     self.ty(result);

@@ -20,6 +20,7 @@ pub struct TypeStore {
     task_results: Vec<Vec<TypeId>>,
     task_types: HashMap<Vec<TypeId>, TypeId>,
     channel_types: HashMap<TypeId, TypeId>,
+    mutex_types: HashMap<TypeId, TypeId>,
 }
 
 impl Default for TypeStore {
@@ -69,6 +70,7 @@ impl TypeStore {
             task_results: Vec::new(),
             task_types: HashMap::new(),
             channel_types: HashMap::new(),
+            mutex_types: HashMap::new(),
         }
     }
 
@@ -145,6 +147,16 @@ impl TypeStore {
         let ty = TypeId(self.kinds.len() as u32);
         self.kinds.push(TypeKind::Channel { element });
         self.channel_types.insert(element, ty);
+        ty
+    }
+
+    pub fn mutex_type(&mut self, element: TypeId) -> TypeId {
+        if let Some(&ty) = self.mutex_types.get(&element) {
+            return ty;
+        }
+        let ty = TypeId(self.kinds.len() as u32);
+        self.kinds.push(TypeKind::Mutex { element });
+        self.mutex_types.insert(element, ty);
         ty
     }
 
@@ -268,6 +280,9 @@ impl fmt::Display for TypeName<'_> {
             ),
             TypeKind::Channel { element } => {
                 write!(f, "channel<{}>", self.store.display(element))
+            }
+            TypeKind::Mutex { element } => {
+                write!(f, "Mutex<{}>", self.store.display(element))
             }
             TypeKind::Task(id) => {
                 let results = &self.store.task_results[id.0 as usize];

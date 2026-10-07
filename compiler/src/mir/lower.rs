@@ -318,6 +318,7 @@ impl Builder {
                 | ExprKind::ChannelSend { .. }
                 | ExprKind::ChannelReceive(_)
                 | ExprKind::ChannelClose(_)
+                | ExprKind::MutexWithLock { .. }
                 | ExprKind::ArrayPush { .. }
                 | ExprKind::ArrayPop(_) => {
                     let discard = vec![None; expr.types.len()];
@@ -736,6 +737,7 @@ impl Builder {
             ExprKind::Call { .. }
                 | ExprKind::CallValue { .. }
                 | ExprKind::TaskWait(_)
+                | ExprKind::MutexWithLock { .. }
                 | ExprKind::MapLookup { .. }
                 | ExprKind::MapRemove { .. }
                 | ExprKind::ArrayPop(_)
@@ -848,6 +850,16 @@ impl Builder {
             ExprKind::ChannelReceive(channel) => {
                 (Callee::ChannelReceive, std::slice::from_ref(&**channel))
             }
+            ExprKind::MakeMutex(value) => {
+                (Callee::MutexNew(value.ty()), std::slice::from_ref(&**value))
+            }
+            ExprKind::MutexWithLock { mutex, callback } => {
+                map_args = vec![(**mutex).clone(), (**callback).clone()];
+                (Callee::MutexWithLock, &map_args[..])
+            }
+            ExprKind::MutexIsPoisoned(mutex) => {
+                (Callee::MutexIsPoisoned, std::slice::from_ref(&**mutex))
+            }
             ExprKind::ChannelClose(channel) => {
                 (Callee::ChannelClose, std::slice::from_ref(&**channel))
             }
@@ -902,6 +914,9 @@ impl Builder {
                 Callee::ChannelMake(_) => (false, false),
                 Callee::ChannelSend => (index == 0, index == 1),
                 Callee::ChannelReceive | Callee::ChannelClose => (true, false),
+                Callee::MutexNew(_) => (false, true),
+                Callee::MutexWithLock => (true, true),
+                Callee::MutexIsPoisoned => (true, false),
             };
             operands.push(if by_reference {
                 match self.argument_place_opt(package, arg) {
@@ -1057,7 +1072,10 @@ impl Builder {
             | ExprKind::CallValue { .. }
             | ExprKind::Clone(_)
             | ExprKind::TaskWait(_)
-            | ExprKind::MakeChannel { .. } => {
+            | ExprKind::MakeChannel { .. }
+            | ExprKind::MakeMutex(_)
+            | ExprKind::MutexWithLock { .. }
+            | ExprKind::MutexIsPoisoned(_) => {
                 let temp = self.temp(expr.ty());
                 self.call(package, expr, vec![Some(Place::local(temp))]);
                 value_operand(package, Place::local(temp), expr.ty())

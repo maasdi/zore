@@ -35,6 +35,12 @@ pub enum Callee {
     ChannelReceive,
     /// `[Ref(channel)]`; panics on a closed channel.
     ChannelClose,
+    /// `[value]` to a mutex that owns the value.
+    MutexNew(TypeId),
+    /// `[Ref(mutex), Ref(callback)]` to the callback's results.
+    MutexWithLock,
+    /// `[Ref(mutex)]` to whether the mutex is poisoned.
+    MutexIsPoisoned,
 }
 
 impl Callee {
@@ -56,7 +62,10 @@ impl Callee {
             | Callee::ChannelMake(_)
             | Callee::ChannelSend
             | Callee::ChannelReceive
-            | Callee::ChannelClose => None,
+            | Callee::ChannelClose
+            | Callee::MutexNew(_)
+            | Callee::MutexWithLock
+            | Callee::MutexIsPoisoned => None,
         }
     }
 }

@@ -805,8 +805,8 @@ This locks lexical classification, not unspecified grammar. In particular,
 The type/zero-value rules for `nil` are locked in §41.4. Do not infer
 Go's complete statement or type grammar from this keyword list.
 
-Built-in primitive type names (§6.1), `Array`, `Task`, `error`, `println`, `clone`,
-and `drop` are predeclared names, not keywords. They are lexed as identifiers
+Built-in primitive type names (§6.1), `Array`, `Task`, `Mutex`, `mutex`, `error`, `println`,
+`clone`, and `drop` are predeclared names, not keywords. They are lexed as identifiers
 and resolved semantically; their built-in meaning may still require special
 compiler handling. Declarations may not shadow them (§3.18). This distinction
 does not imply user-defined generics, interfaces, or additional built-in APIs.
@@ -832,7 +832,7 @@ constants, and user-defined type or function names. If an import introduces a
 name into unqualified lookup, that name must obey the same restriction.
 
 The protected names currently established in §3.17 are all primitive type names
-from §6.1, plus `Array`, `Task`, `error`, `println`, `clone`, and `drop`.
+from §6.1, plus `Array`, `Task`, `Mutex`, `mutex`, `error`, `println`, `clone`, and `drop`.
 Any additional predeclared names must be explicitly specified; implementations
 must not protect speculative library names. The full built-in API inventory
 and signatures remain separate decisions.
@@ -2505,10 +2505,12 @@ Examples include:
 - `File`
 - `Socket`
 - `Connection`
-- `Mutex`
 - `Array<T>`
 - `map[K]V`
 - other resource-owning values
+
+A `Mutex<T>` handle is not Move: like a channel handle it is Copy and shares
+one guarded cell (§20.2).
 
 ## 10.4 Fixed arrays — LOCKED
 
@@ -4454,30 +4456,77 @@ Compiler impact: none; runtime behavior. Pending conformance cases:
 
 Zore should not permit ordinary data to become freely shared mutable state across tasks without an explicit synchronization mechanism.
 
-## 20.2 Mutex — LOCKED AS STANDARD-LIBRARY CONCEPT
+## 20.2 Mutex — LOCKED
 
-Mutex support belongs in the standard library/runtime rather than as special core syntax.
-
-Conceptual usage:
+A `Mutex<T>` guards one value of type `T` that several tasks may use. It is a
+built-in type form like `Array<T>` and `Task<...>` (§18.8): it introduces no
+user-defined generics (§22.1), and `Mutex` and `mutex` are predeclared names
+(§3.18).
 
 ```ore
-let counter = mutex(0)
+let counter = mutex(0)                  // Mutex<int>
 
 counter.withLock(func(value mut int) {
-    *value += 1
+    value += 1
+})
+
+let total = counter.withLock(func(value mut int) int {
+    return value
 })
 ```
 
-The exact final pointer/dereference syntax shown in conceptual mutex examples is **not independently locked** by this specification because raw user-facing pointers are not part of the MVP.
+- `mutex(value)` creates a mutex holding `value`, whose type `T` the argument
+  gives (an untyped constant takes its default type, §6.5). The value is
+  moved into the mutex if it is a Move value.
+- `m.withLock(f)` waits until no other task holds the lock, then calls `f` with
+  a `mut T` borrow of the guarded value and releases the lock when `f` returns.
+  `f` must be a function value of type `func(mut T) R1, ..., Rn`; the call has
+  the type of `f`'s result list and returns its results. The borrow ends when
+  `f` returns: `f` cannot keep or return a view of the value, and its results
+  cannot contain a slice or a function value (§11.7).
+- `m.isPoisoned() bool` tells whether a task panicked while holding the lock.
+- A `Mutex<T>` handle is Copy and refers to one shared lock and value, as a
+  channel handle does (§19.3); copying it copies no value. This revises the
+  listing of `Mutex` among the Move types in §10.3: the resource is the shared
+  cell, and handles are counted like channel handles (§19.13), so the guarded
+  value is dropped once, when the last handle is gone. Handle cycles through
+  guarded values leak, as for channels. `T` cannot contain a slice or a function
+  value, so the guarded value never borrows from a task's locals.
+- A task that waits for the lock suspends only itself (§17.3), and waiters are
+  served in order of arrival. The lock is not reentrant: calling `withLock` on a
+  mutex from inside its own `f` waits forever, which is a deadlock (§18.9). `f`
+  may suspend, for example on a channel, while it holds the lock.
+- If a task panics while `f` runs, the unwind releases the lock and marks the
+  mutex **poisoned** (§18.10). Every later `withLock` on a poisoned mutex
+  panics instead of handing out a value that may have been left half-updated;
+  `isPoisoned` is the way to check first. Poison cannot be cleared.
+- The zero value of `Mutex<T>` (§41.4) has no lock: `withLock` on it panics, and
+  `isPoisoned` returns `false`. `nil` is not a mutex, and mutexes are not
+  comparable.
+- Accessing guarded state otherwise than through `withLock` is not possible, so
+  ordinary data never becomes freely shared mutable state (§20.1) and no
+  user-facing pointer or dereference syntax is needed.
 
-Implementers must preserve the concept—explicit synchronized mutable access—without introducing raw-pointer semantics.
+```ore
+func worker(counter Mutex<int>, done channel<bool>) {
+    for var i = 0; i < 1000; i += 1 {
+        counter.withLock(func(value mut int) { value += 1 })
+    }
+    done.send(true)
+}
+```
 
-If a task panics while holding a mutex's lock, the unwind releases the lock and
-marks the mutex **poisoned**, so later users learn that the protected value may
-have been left half-updated (§18.10). How a poisoned mutex is reported to later
-lockers belongs to the mutex API, which remains part of the standard-library
-inventory (Q05); silently handing out a poisoned value as if nothing happened is
-not permitted.
+Ownership, error, and async implications: handles pass between tasks by copy
+(§18.4), so `go worker(counter, done)` shares the mutex. The closure runs while
+the lock is held and follows the ordinary closure rules (§16): it may borrow the
+caller's locals for the call, but cannot move a captured Move value out, and may
+use `?` only if it returns a trailing `error`. A panic inside `f` follows §15.4.
+
+Compiler impact: type `Mutex<T>` and `mutex(value)`, check that `f` has the type
+`func(mut T) R...` and that `T` and `R...` hold no views, lower `withLock` to a
+lock, a call, and an unlock that marks the mutex poisoned when the call raises a
+panic, and release a handle's share when it is dropped. Pending conformance
+cases: `tests/conformance/mutex.md`.
 
 ---
 
@@ -5562,11 +5611,12 @@ The zero value per type:
 | `error` | `nil` |
 | `Task<...>` | `nil` |
 | `channel<T>` | an always-closed, empty channel (§19.12) |
+| `Mutex<T>` | a mutex with no lock and no value: `withLock` panics and `isPoisoned` is `false` (§20.2) |
 
 `nil` is a literal denoting the absent state of exactly two built-in types:
 `error` (no error) and `Task<...>` (no associated work). No other type —
 including `bool`, numeric types, `rune`, `string`, struct types, `[T; N]`,
-`[]T`, `Array<T>`, `map[K]V`, and `channel<T>` — admits `nil` as a value or
+`[]T`, `Array<T>`, `map[K]V`, `channel<T>`, and `Mutex<T>` — admits `nil` as a value or
 literal target. Those types are always valid to use once produced; there is no
 separate "nil" state distinct from "empty" for slices, `Array<T>`, or `map[K]V`,
 and a channel value is always a real channel whose zero value is already

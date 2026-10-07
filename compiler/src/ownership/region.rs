@@ -722,7 +722,11 @@ impl<'a> Analysis<'a> {
             | Callee::ChannelMake(_)
             | Callee::ChannelSend
             | Callee::ChannelReceive
-            | Callee::ChannelClose => vec![None; args.len()],
+            | Callee::ChannelClose
+            | Callee::MutexNew(_)
+            | Callee::MutexIsPoisoned => vec![None; args.len()],
+            // The callback is called, so it is used exclusively.
+            Callee::MutexWithLock => vec![None, Some(ParamMode::Mut)],
             Callee::MapInsertNew | Callee::MapAssign | Callee::MapLookup | Callee::MapRemove => {
                 let mut modes = vec![None; args.len()];
                 modes[0] = callee.map_access();

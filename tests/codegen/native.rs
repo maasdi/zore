@@ -4071,3 +4071,259 @@ func main() {
 }";
     prints(source, "accepted\n");
 }
+
+#[test]
+fn many_tasks_update_one_mutex_without_losing_a_write() {
+    let source = "package main
+func worker(counter Mutex<int>, done channel<bool>) {
+    for var i = 0; i < 1000; i += 1 {
+        counter.withLock(func(value mut int) { value += 1 })
+    }
+    done.send(true)
+}
+func main() {
+    let counter = mutex(0)
+    let done = channel<bool>(100)
+    for var i = 0; i < 100; i += 1 { go worker(counter, done) }
+    for var i = 0; i < 100; i += 1 {
+        let _, _ = done.receive()
+    }
+    println(counter.withLock(func(value mut int) int { return value }))
+    println(counter.isPoisoned())
+}";
+    prints(source, "100000\nfalse\n");
+}
+
+#[test]
+fn a_mutex_guards_a_move_value_and_drops_it_once_with_the_last_handle() {
+    let source = "package main
+type Ledger struct {
+    Name string
+    Log Array<string>
+}
+func (l mut Ledger) drop() { println(\"drop \" + l.Name) }
+func record(shared Mutex<Ledger>, entry string) {
+    shared.withLock(func(l mut Ledger) { l.Log.push(entry) })
+}
+func main() {
+    let ledger = mutex(Ledger{Name: \"books\", Log: Array<string>{}})
+    let other = ledger
+    record(ledger, \"a\")
+    record(other, \"b\")
+    let count, name = ledger.withLock(func(l mut Ledger) (int, string) {
+        return l.Log.len(), l.Name
+    })
+    println(count)
+    println(name)
+    println(\"end\")
+}";
+    prints(source, "2\nbooks\nend\ndrop books\n");
+}
+
+#[test]
+fn results_of_the_function_come_back_from_with_lock() {
+    let source = "package main
+func parse(m Mutex<string>) (int, error) {
+    return m.withLock(func(text mut string) (int, error) {
+        if text.len() == 0 { return 0, error(\"empty\") }
+        return text.len(), nil
+    })
+}
+func main() {
+    let good = mutex(\"abc\")
+    let n, err = parse(good)
+    println(n)
+    println(err == nil)
+    let empty = mutex(\"\")
+    let _, bad = parse(empty)
+    println(bad == error(\"empty\"))
+}";
+    prints(source, "3\ntrue\ntrue\n");
+}
+
+#[test]
+fn a_task_waiting_for_the_lock_does_not_block_the_others() {
+    let source = "package main
+import \"zore/time\"
+func holder(m Mutex<int>, events channel<string>) {
+    m.withLock(func(value mut int) {
+        events.send(\"holder locked\")
+        time.Sleep(400)
+        value = 7
+        events.send(\"holder done\")
+    })
+}
+func waiter(m Mutex<int>, events channel<string>) {
+    let seen = m.withLock(func(value mut int) int { return value })
+    if seen == 7 {
+        events.send(\"waiter saw seven\")
+    }
+}
+func other(events channel<string>) {
+    events.send(\"other ran\")
+}
+func main() {
+    let m = mutex(0)
+    let events = channel<string>(8)
+    go holder(m, events)
+    let first, _ = events.receive()
+    println(first)
+    go waiter(m, events)
+    go other(events)
+    let second, _ = events.receive()
+    println(second)
+    let third, _ = events.receive()
+    println(third)
+    let fourth, _ = events.receive()
+    println(fourth)
+}";
+    prints(
+        source,
+        "holder locked\nother ran\nholder done\nwaiter saw seven\n",
+    );
+}
+
+#[test]
+fn waiters_get_the_lock_in_the_order_they_arrived() {
+    let source = "package main
+import \"zore/time\"
+func take(m Mutex<Array<int>>, id int, ready channel<bool>) {
+    ready.send(true)
+    m.withLock(func(order mut Array<int>) { order.push(id) })
+}
+func main() {
+    let m = mutex(Array<int>{})
+    let ready = channel<bool>(8)
+    m.withLock(func(order mut Array<int>) {
+        for var id = 1; id <= 4; id += 1 {
+            go take(m, id, ready)
+            let _, _ = ready.receive()
+            time.Sleep(200)
+        }
+    })
+    time.Sleep(500)
+    let result = m.withLock(func(order mut Array<int>) int {
+        var code = 0
+        for var i = 0; i < order.len(); i += 1 {
+            code = code * 10 + order[i]
+        }
+        return code
+    })
+    println(result)
+}";
+    prints(source, "1234\n");
+}
+
+#[test]
+fn a_panic_while_holding_the_lock_poisons_the_mutex() {
+    let source = "package main
+import \"zore/time\"
+type Marker struct { Name string }
+func (m mut Marker) drop() { println(\"drop \" + m.Name) }
+func breaker(m Mutex<int>) {
+    let marker = Marker{Name: \"inside\"}
+    m.withLock(func(value mut int) {
+        value += 1
+        let boom = 1 / (value - 1)
+        println(boom)
+    })
+}
+func main() {
+    let m = mutex(0)
+    println(m.isPoisoned())
+    let t = go breaker(m)
+    time.Sleep(200)
+    println(m.isPoisoned())
+    m.withLock(func(value mut int) { println(\"unreachable\") })
+}";
+    let output = run(source);
+    assert_eq!(output.status.code(), Some(2), "{}", stderr(&output));
+    assert_eq!(stdout(&output), "false\ndrop inside\ntrue\n");
+    let report = stderr(&output);
+    assert!(report.contains("division by zero"), "{report}");
+    assert!(report.contains("withLock on a poisoned mutex"), "{report}");
+}
+
+#[test]
+fn the_zero_value_mutex_has_no_lock() {
+    let source = "package main
+func main() {
+    let holder = channel<Mutex<int>>(1)
+    holder.close()
+    let zero, _ = holder.receive()
+    println(zero.isPoisoned())
+    zero.withLock(func(value mut int) { println(\"unreachable\") })
+}";
+    let output = run(source);
+    assert_eq!(output.status.code(), Some(2), "{}", stderr(&output));
+    assert_eq!(stdout(&output), "false\n");
+    assert!(
+        stderr(&output).contains("withLock on a zero-value mutex"),
+        "{}",
+        stderr(&output)
+    );
+}
+
+#[test]
+fn locking_a_mutex_inside_its_own_function_is_a_deadlock() {
+    let source = "package main
+func main() {
+    let m = mutex(0)
+    m.withLock(func(value mut int) {
+        m.withLock(func(inner mut int) { inner += 1 })
+    })
+}";
+    assert_deadlock(&run(source));
+}
+
+#[test]
+fn two_tasks_locking_in_opposite_order_are_a_deadlock() {
+    let source = "package main
+import \"zore/time\"
+func lockBoth(first Mutex<int>, second Mutex<int>, done channel<bool>) {
+    first.withLock(func(a mut int) {
+        time.Sleep(100)
+        second.withLock(func(b mut int) { b += a })
+    })
+    done.send(true)
+}
+func main() {
+    let a = mutex(1)
+    let b = mutex(2)
+    let done = channel<bool>(2)
+    go lockBoth(a, b, done)
+    go lockBoth(b, a, done)
+    let _, _ = done.receive()
+    let _, _ = done.receive()
+}";
+    assert_deadlock(&run(source));
+}
+
+#[test]
+fn a_mutex_works_from_async_functions_and_hundreds_of_waiters() {
+    let source = "package main
+import \"zore/time\"
+async func add(m Mutex<int>, amount int) {
+    m.withLock(func(value mut int) {
+        time.Sleep(1)
+        value += amount
+    })
+}
+func run(m Mutex<int>, amount int) {
+    let t = go add(m, amount)
+    t.wait()
+}
+func main() {
+    let m = mutex(0)
+    var tasks = Array<Task>{}
+    for var i = 1; i <= 300; i += 1 {
+        tasks.push(go add(m, i))
+    }
+    for tasks.len() > 0 {
+        let found, task = tasks.pop()
+        if found { task.wait() }
+    }
+    println(m.withLock(func(value mut int) int { return value }))
+}";
+    prints(source, "45150\n");
+}

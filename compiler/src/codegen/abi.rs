@@ -43,6 +43,12 @@ declare void @zore_channel_release(ptr)
 declare void @zore_channel_send(ptr, ptr, ptr)
 declare zeroext i1 @zore_channel_receive(ptr, ptr, i64)
 declare void @zore_channel_close(ptr)
+declare ptr @zore_mutex_new(i64, ptr, ptr)
+declare void @zore_mutex_retain(ptr)
+declare void @zore_mutex_release(ptr)
+declare ptr @zore_mutex_lock(ptr)
+declare void @zore_mutex_unlock(ptr, i1 zeroext)
+declare zeroext i1 @zore_mutex_is_poisoned(ptr)
 declare double @llvm.trunc.f64(double)
 declare double @llvm.fabs.f64(double)
 ";
@@ -236,7 +242,10 @@ impl FunctionBuilder<'_, '_> {
             | Callee::ChannelMake(_)
             | Callee::ChannelSend
             | Callee::ChannelReceive
-            | Callee::ChannelClose => {
+            | Callee::ChannelClose
+            | Callee::MutexNew(_)
+            | Callee::MutexWithLock
+            | Callee::MutexIsPoisoned => {
                 unreachable!("not a map operation")
             }
         }
@@ -477,7 +486,8 @@ impl FunctionBuilder<'_, '_> {
             | TypeKind::Map { .. }
             | TypeKind::Func(_)
             | TypeKind::Task(_)
-            | TypeKind::Channel { .. } => unreachable!("checked printable type"),
+            | TypeKind::Channel { .. }
+            | TypeKind::Mutex { .. } => unreachable!("checked printable type"),
         }
     }
 }

@@ -3446,3 +3446,189 @@ fn channels_work_with_tasks_and_async_functions() {
         }",
     );
 }
+
+const MUTEX_PRELUDE: &str = "
+type Job struct { Name string }
+func (j mut Job) drop() {}
+type Bank struct {
+    Balance int
+    Log Array<string>
+}
+";
+
+fn mutex_body(stmts: &str) -> String {
+    program(&format!("{MUTEX_PRELUDE}\nfunc entry() {{\n{stmts}\n}}"))
+}
+
+#[test]
+fn mutexes_hold_a_value_and_lend_it_to_a_function() {
+    let case = accepts(&mutex_body(
+        "let counter = mutex(0)
+        counter.withLock(func(value mut int) { value += 1 })
+        let total = counter.withLock(func(value mut int) int { return value })
+        let both, name = mutex(Bank{Balance: 1, Log: Array<string>{}}).withLock(
+            func(bank mut Bank) (int, string) {
+                bank.Log.push(\"seen\")
+                return bank.Balance, \"bank\"
+            })
+        let job = mutex(Job{Name: \"x\"})
+        let flag = job.isPoisoned()
+        let typed Mutex<string> = mutex(\"text\")
+        let sized = [Mutex<int>; 2]{counter, counter}
+        let list = Array<Mutex<int>>{counter}
+        _ = total
+        _ = both
+        _ = name
+        _ = flag
+        _ = typed
+        _ = sized
+        _ = list",
+    ));
+    let entry = case.function("entry");
+    let types: Vec<String> = entry
+        .locals
+        .iter()
+        .take(2)
+        .map(|local| case.package().types.display(local.ty).to_string())
+        .collect();
+    assert_eq!(types, ["Mutex<int64>", "int64"]);
+}
+
+#[test]
+fn the_function_given_to_with_lock_must_take_a_mutable_borrow() {
+    let wrong = "`withLock` needs a function that takes `mut int64`";
+    rejects(
+        &mutex_body("let m = mutex(0)\nm.withLock(func(v int) {})"),
+        wrong,
+    );
+    rejects(
+        &mutex_body("let m = mutex(0)\nm.withLock(func(v mut string) {})"),
+        wrong,
+    );
+    rejects(
+        &mutex_body("let m = mutex(0)\nm.withLock(func() {})"),
+        wrong,
+    );
+    rejects(
+        &mutex_body("let m = mutex(0)\nm.withLock(func(v own int) {})"),
+        wrong,
+    );
+    rejects(
+        &mutex_body("let m = mutex(0)\nm.withLock(5)"),
+        "needs a function",
+    );
+    rejects(
+        &mutex_body("let m = mutex(0)\nm.withLock()"),
+        "`withLock` takes 1 argument",
+    );
+    rejects(
+        &mutex_body("let m = mutex(0)\nm.withLock(func(v mut int) {}, 1)"),
+        "`withLock` takes 1 argument",
+    );
+}
+
+#[test]
+fn nothing_borrowed_can_leave_the_lock() {
+    let views = "cannot return slices or function values";
+    rejects(
+        &mutex_body(
+            "let m = mutex(Array<int>{1})\nlet s = m.withLock(func(v mut Array<int>) []int { return v[:] })",
+        ),
+        views,
+    );
+    rejects(
+        &mutex_body(
+            "let m = mutex(0)\nlet f = m.withLock(func(v mut int) func() { return func() {} })",
+        ),
+        views,
+    );
+    let guards = "a mutex cannot guard slices or function values";
+    rejects(
+        &mutex_body("let a = Array<int>{1}\nlet m = mutex(a[:])"),
+        guards,
+    );
+    rejects(&mutex_body("let m = mutex(func() {})"), guards);
+    rejects(&program("func f(m Mutex<[]int>) {}"), guards);
+    rejects(
+        &program("type Holder struct { Items []int }\nfunc f(m Mutex<Holder>) {}"),
+        guards,
+    );
+}
+
+#[test]
+fn mutex_handles_are_copy_values_that_cannot_be_compared_or_printed() {
+    accepts(&mutex_body(
+        "let a = mutex(1)
+        let b = a
+        let c = a
+        let list = Array<Mutex<int>>{a, b}
+        _ = c
+        _ = list",
+    ));
+    rejects(
+        &mutex_body("let a = mutex(1)\nlet b = a\n_ = a == b"),
+        "cannot be applied",
+    );
+    rejects(&mutex_body("var m Mutex<int> = nil"), "`nil` needs an");
+    rejects(&mutex_body("let m = mutex(1)\nprintln(m)"), "cannot print");
+    rejects(
+        &mutex_body("let m = mutex(1)\nlet c = clone(m)"),
+        "cannot clone",
+    );
+    rejects(
+        &mutex_body("let m = mutex(1)\nm.lock()"),
+        "has no method `lock`",
+    );
+}
+
+#[test]
+fn a_mutex_takes_a_move_value_and_gives_it_up_once() {
+    rejects(
+        &mutex_body("let job = Job{Name: \"a\"}\nlet m = mutex(job)\nprintln(job.Name)"),
+        "use of moved value",
+    );
+    accepts(&mutex_body(
+        "let m = mutex(Job{Name: \"a\"})\nlet n = m\n_ = n",
+    ));
+}
+
+#[test]
+fn mutex_and_mutex_type_names_are_predeclared() {
+    rejects(&mutex_body("let mutex = 1"), "shadows a predeclared name");
+    rejects(&mutex_body("let Mutex = 1"), "shadows a predeclared name");
+    rejects(
+        &program("type Mutex struct { x int }"),
+        "shadows a predeclared name",
+    );
+    rejects(&program("func f(m Mutex) {}"), "needs a type argument");
+    rejects(
+        &mutex_body("let m = mutex()"),
+        "`mutex` takes exactly 1 argument",
+    );
+    rejects(
+        &mutex_body("let m = mutex(1, 2)"),
+        "`mutex` takes exactly 1 argument",
+    );
+    rejects(&mutex_body("let f = mutex"), "can only be called");
+}
+
+#[test]
+fn tasks_share_a_mutex_through_copied_handles() {
+    accepts(&program(
+        "func worker(counter Mutex<int>, done channel<bool>) {
+            counter.withLock(func(value mut int) { value += 1 })
+            done.send(true)
+        }
+        async func async_worker(counter Mutex<int>) int {
+            return counter.withLock(func(value mut int) int { return value })
+        }
+        func start() {
+            let counter = mutex(0)
+            let done = channel<bool>(2)
+            go worker(counter, done)
+            go worker(counter, done)
+            let t = go async_worker(counter)
+            _ = t.wait()
+        }",
+    ));
+}

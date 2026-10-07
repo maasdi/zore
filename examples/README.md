@@ -37,3 +37,4 @@ progress have no example until they work.
 | [`tasks`](tasks) | `go`, `Task<...>` handles, `.wait()`, `async func` and `await`, owned inputs and results, errors from tasks, and a collection of tasks | §17, §18 |
 | [`channels`](channels) | `channel<T>` with and without a buffer, `send`, `receive`, and `close`, a pipeline of tasks, a worker over a buffered channel, a request that carries its reply channel, and a closed channel's zero value | §19 |
 | [`io`](io) | `zore/time` and `zore/net`: tasks that sleep, a TCP server that accepts clients, and a reply read back over a loopback connection, with the answers ordered by their delays | §37.3 |
+| [`mutex`](mutex) | `Mutex<T>`: forty tasks updating one shared counter, a guarded struct with a custom `drop`, results from `withLock`, and `isPoisoned` | §20.2 |

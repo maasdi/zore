@@ -40,6 +40,10 @@ pub enum Type {
         element: Box<Type>,
         span: Span,
     },
+    Mutex {
+        element: Box<Type>,
+        span: Span,
+    },
     /// `Task<R1, ..., Rn>`, or plain `Task` with no results.
     Task {
         results: Vec<Type>,
@@ -64,7 +68,8 @@ impl Type {
             | Self::Map { span, .. }
             | Self::Func { span, .. }
             | Self::Task { span, .. }
-            | Self::Channel { span, .. } => *span,
+            | Self::Channel { span, .. }
+            | Self::Mutex { span, .. } => *span,
         }
     }
 }

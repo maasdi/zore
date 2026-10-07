@@ -40,7 +40,7 @@ impl Package {
             | TypeKind::Slice { .. } => true,
             // A closure may hold exclusive borrows, so it is never duplicated.
             TypeKind::Func(_) | TypeKind::Task(_) => false,
-            TypeKind::Channel { .. } => true,
+            TypeKind::Channel { .. } | TypeKind::Mutex { .. } => true,
             TypeKind::Struct(id) => {
                 let strukt = self.strukt(id);
                 strukt.drop.is_none() && strukt.fields.iter().all(|f| self.is_copy(f.ty))
@@ -50,10 +50,13 @@ impl Package {
         }
     }
 
-    /// Whether a value of `ty` owns a share of some runtime text or channel.
+    /// Whether a value of `ty` owns a share of some runtime text, channel, or mutex.
     pub fn holds_shared(&self, ty: TypeId) -> bool {
         match self.types.kind(ty) {
-            TypeKind::String | TypeKind::Error | TypeKind::Channel { .. } => true,
+            TypeKind::String
+            | TypeKind::Error
+            | TypeKind::Channel { .. }
+            | TypeKind::Mutex { .. } => true,
             TypeKind::Struct(id) => self
                 .strukt(id)
                 .fields

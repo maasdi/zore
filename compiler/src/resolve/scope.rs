@@ -1,6 +1,6 @@
 use super::ids::{FunctionId, LocalId};
 use super::resolver::Resolver;
-use super::symbol::{LocalDecl, LocalKind, Res, predeclared, unsupported_predeclared};
+use super::symbol::{LocalDecl, LocalKind, Res, predeclared};
 use crate::ast;
 use crate::diagnostic::{Diagnostic, Severity};
 use crate::source::Span;
@@ -145,7 +145,8 @@ impl Resolver<'_> {
         if res == Res::Unsupported && name == "Array" {
             self.error("`Array` needs an element type, as in `Array<int>`", span);
         } else if res == Res::Unsupported {
-            self.unsupported(unsupported_predeclared(name), span);
+            let message = format!("`{name}` needs a type argument, as in `{name}<int>`");
+            self.error(message, span);
         }
         self.out.uses.insert(span, res);
         Some(res)

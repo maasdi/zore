@@ -68,6 +68,7 @@ fn type_name(t: &Type) -> &str {
         | Type::Map { .. }
         | Type::Func { .. }
         | Type::Channel { .. }
+        | Type::Mutex { .. }
         | Type::Task { .. } => panic!("expected a named type, found a composite type"),
     }
 }
@@ -89,6 +90,7 @@ fn ty(case: &Case, t: &Type) -> String {
             ty(case, element)
         ),
         Type::Channel { element, .. } => format!("channel<{}>", ty(case, element)),
+        Type::Mutex { element, .. } => format!("Mutex<{}>", ty(case, element)),
         Type::Task { results, .. } => {
             let results: Vec<String> = results.iter().map(|r| ty(case, r)).collect();
             format!("Task<{}>", results.join(", "))
@@ -953,6 +955,40 @@ fn channel_types_and_creation() {
             "(let e (lit [channel<int> ; 2] a b))",
         ]
     );
+}
+
+#[test]
+fn mutex_types_and_calls() {
+    let case = Case::body(
+        "let a = mutex(0)
+        let b Mutex<int> = a
+        let c Mutex<Array<string>> = c
+        let d Array<Mutex<int>> = d
+        let e channel<Mutex<int>> = e
+        a.withLock(func(value mut int) { value += 1 })
+        let f = a.isPoisoned()",
+    );
+    case.assert_clean();
+    assert_eq!(
+        case.shape()[..5],
+        [
+            "(let a (call mutex 0))",
+            "(let b Mutex<int> a)",
+            "(let c Mutex<Array<string>> c)",
+            "(let d Array<Mutex<int>> d)",
+            "(let e channel<Mutex<int>> e)",
+        ]
+    );
+}
+
+#[test]
+fn invalid_mutex_syntax_is_rejected() {
+    for (body, message) in [
+        ("let m Mutex<> = m", "expected a type"),
+        ("let m Mutex<int = m", "expected `>`"),
+    ] {
+        rejects(body, message);
+    }
 }
 
 #[test]

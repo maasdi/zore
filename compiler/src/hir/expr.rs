@@ -100,6 +100,14 @@ pub enum ExprKind {
     /// The value, then whether one arrived.
     ChannelReceive(Box<Expr>),
     ChannelClose(Box<Expr>),
+    /// A mutex that owns the value.
+    MakeMutex(Box<Expr>),
+    /// Calls the callback with a mutable borrow of the guarded value while holding the lock.
+    MutexWithLock {
+        mutex: Box<Expr>,
+        callback: Box<Expr>,
+    },
+    MutexIsPoisoned(Box<Expr>),
     Println(Box<Expr>),
     Drop(Box<Expr>),
     Clone(Box<Expr>),

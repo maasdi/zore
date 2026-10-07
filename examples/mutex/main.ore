@@ -1,0 +1,57 @@
+package main
+
+type Ledger struct {
+    Name    string
+    Balance int
+    History Array<string>
+}
+
+func (l mut Ledger) drop() {
+    println("closing " + l.Name)
+}
+
+func deposit(counter Mutex<int>, done channel<bool>) {
+    for var i = 0; i < 500; i += 1 {
+        counter.withLock(func(value mut int) {
+            value += 1
+        })
+    }
+    done.send(true)
+}
+
+func record(ledger Mutex<Ledger>, amount int, done channel<bool>) {
+    ledger.withLock(func(l mut Ledger) {
+        l.Balance += amount
+        l.History.push("deposit")
+    })
+    done.send(true)
+}
+
+func main() {
+    let counter = mutex(0)
+    let done = channel<bool>(50)
+    for var i = 0; i < 40; i += 1 {
+        go deposit(counter, done)
+    }
+    for var i = 0; i < 40; i += 1 {
+        let _, _ = done.receive()
+    }
+    let total = counter.withLock(func(value mut int) int {
+        return value
+    })
+    println(total)
+
+    let ledger = mutex(Ledger{Name: "savings", Balance: 100, History: Array<string>{}})
+    for var i = 1; i <= 10; i += 1 {
+        go record(ledger, i, done)
+    }
+    for var i = 0; i < 10; i += 1 {
+        let _, _ = done.receive()
+    }
+    let balance, entries = ledger.withLock(func(l mut Ledger) (int, int) {
+        return l.Balance, l.History.len()
+    })
+    println(balance)
+    println(entries)
+    println(ledger.isPoisoned())
+}

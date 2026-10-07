@@ -76,6 +76,15 @@ impl Parser<'_> {
                     span: self.span_from(name.span),
                 })
             }
+            "Mutex" => {
+                self.bump();
+                let element = self.ty()?;
+                self.close_type_arguments()?;
+                Ok(Type::Mutex {
+                    element: Box::new(element),
+                    span: self.span_from(name.span),
+                })
+            }
             "Task" => {
                 self.bump();
                 let mut results = vec![self.ty()?];

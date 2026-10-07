@@ -5,7 +5,7 @@ input rows are covered by executable tests in `tests/typecheck/check.rs` and
 `tests/codegen/native.rs`; the channel rows for close repetition, blocked operations, the zero value, and
 buffered-value cleanup are covered by executable tests in the same files; the
 message escape proof is covered by the element-type rule, and mutex poisoning
-remains pending.
+is covered by `conformance/mutex.md`.
 
 Authority: spec §6.3, §7.6, §11.7, §15.2, §15.4, §17.8, §18.4,
 §18.8–18.11, §19.4, §19.8–19.13,
