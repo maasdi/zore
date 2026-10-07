@@ -4758,3 +4758,55 @@ func main() {
         "true\ntrue\ntrue\n",
     );
 }
+
+fn build_in(dir: &TempDir, name: &str, body: &str, cache: &std::path::Path) -> Output {
+    let folder = dir.path().join(name);
+    std::fs::create_dir_all(&folder).unwrap();
+    let source = folder.join("main.ore");
+    std::fs::write(&source, main_body(body)).unwrap();
+    zore()
+        .arg("build")
+        .arg(&source)
+        .current_dir(&folder)
+        .env("ZORE_CACHE_DIR", cache)
+        .output()
+        .unwrap()
+}
+
+#[test]
+fn the_compiled_runtime_is_cached_and_shared_between_builds() {
+    let dir = TempDir::new().unwrap();
+    let cache = dir.path().join("cache");
+    for (name, body) in [("first", "println(1)"), ("second", "println(2)")] {
+        let output = build_in(&dir, name, body, &cache);
+        assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    }
+    let entries: Vec<_> = std::fs::read_dir(cache.join("zore"))
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .collect();
+    assert_eq!(entries.len(), 1, "{entries:?}");
+    let library = entries[0].join("libzore_runtime.rlib");
+    assert!(library.is_file(), "{library:?}");
+    let staged: Vec<_> = std::fs::read_dir(&entries[0]).unwrap().collect();
+    assert_eq!(staged.len(), 1, "{staged:?}");
+    for name in ["first", "second"] {
+        let run = Command::new(dir.path().join(name).join("main"))
+            .output()
+            .unwrap();
+        assert_eq!(stdout(&run), if name == "first" { "1\n" } else { "2\n" });
+    }
+}
+
+#[test]
+fn a_cache_folder_that_cannot_be_used_does_not_stop_a_build() {
+    let dir = TempDir::new().unwrap();
+    let blocked = dir.path().join("blocked");
+    std::fs::write(&blocked, "a file, not a folder").unwrap();
+    let output = build_in(&dir, "plain", "println(3)", &blocked);
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    let run = Command::new(dir.path().join("plain").join("main"))
+        .output()
+        .unwrap();
+    assert_eq!(stdout(&run), "3\n");
+}
