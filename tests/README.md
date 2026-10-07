@@ -46,7 +46,8 @@ particular, `conformance/identifiers.md` covers the locked ASCII identifier rule
 `conformance/strings.md` covers quoted and raw string literal forms and the
 string operations of §6.8. `conformance/packages.md` covers projects, packages,
 and imports (§3.20); its executable cases are in `tests/packages/packages.rs`
-(in-memory projects), the driver tests, and the native tests.
+(in-memory projects), the driver tests, and the native tests. The runtime
+crate's unit tests cover the native string functions directly.
 `conformance/runes.md` covers single-scalar rune literals and escapes.
 `conformance/integers.md` covers integer bases and prefix validation.
 `conformance/floats.md` covers decimal fractions and scientific notation.

@@ -29,6 +29,7 @@ example until they work.
 | [`slices`](slices) | `[]T` and `mut []T` views, slicing, returned views, views in structs | §11.7, §12 |
 | [`dynamic-arrays`](dynamic-arrays) | Owned `Array<T>`: literals, indexing, slicing, `mut` passing, element cleanup | §10.5, §12.6 |
 | [`packages`](packages) | A project with several packages: folders as packages, `import`, exported names, and cleanup of an imported type | §3.20 |
+| [`standard-packages`](standard-packages) | `zore/strings` and `zore/strconv`: case, search, split, join, and number conversion | §37.2 |
 | [`strings`](strings) | Byte length, indexing, and slicing, loops over characters, `+`, and `string(rune)` | §6.8 |
 | [`collections`](collections) | `len`, `push`, and `pop`, and `for … in` loops over slices, `Array<T>`, and maps | §5.10, §12.7 |
 | [`maps`](maps) | `map[K]V` literals, two-result lookup, assignment, ownership-transferring `remove` | §13.3 |

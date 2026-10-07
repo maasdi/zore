@@ -2552,3 +2552,112 @@ fn string_operations_panic_on_bad_indexes_and_bounds() {
         );
     }
 }
+
+#[test]
+fn every_standard_function_computes_its_documented_result() {
+    prints(
+        "package main
+
+import \"zore/strconv\"
+import \"zore/strings\"
+
+func show(parts Array<string>) {
+    var joined = \"\"
+    for index, part in parts {
+        if index > 0 {
+            joined += \"|\"
+        }
+        joined += \"<\" + part + \">\"
+    }
+    println(joined)
+}
+
+func main() {
+    println(strings.Contains(\"hello\", \"ell\"))
+    println(strings.Contains(\"hello\", \"\"))
+    println(strings.Contains(\"hello\", \"xyz\"))
+    println(strings.HasPrefix(\"hello\", \"he\"))
+    println(strings.HasPrefix(\"hello\", \"lo\"))
+    println(strings.HasSuffix(\"hello\", \"lo\"))
+    println(strings.HasSuffix(\"hello\", \"he\"))
+    println(strings.Index(\"héllo\", \"l\"))
+    println(strings.Index(\"hello\", \"\"))
+    println(strings.Index(\"hello\", \"z\"))
+    println(strings.Upper(\"héllo ß\"))
+    println(strings.Lower(\"HÉLLO\"))
+    println(\"[\" + strings.TrimSpace(\"  \\t a b \\n\") + \"]\")
+    println(\"[\" + strings.TrimSpace(\"   \") + \"]\")
+    println(strings.Repeat(\"ab\", 3))
+    println(strings.Repeat(\"ab\", 0).len())
+    println(strings.Replace(\"banana\", \"an\", \"AN\"))
+    println(strings.Replace(\"ab\", \"\", \"-\"))
+    show(strings.Split(\"a,b,c\", \",\"))
+    show(strings.Split(\",a,\", \",\"))
+    show(strings.Split(\"\", \",\"))
+    show(strings.Split(\"héy\", \"\"))
+    show(strings.Split(\"\", \"\"))
+    show(strings.Split(\"a--b\", \"--\"))
+    let words = [string; 3]{\"x\", \"y\", \"z\"}
+    println(strings.Join(words[:], \", \"))
+    println(strings.Join(words[:1], \", \"))
+    println(strings.Join(words[:0], \", \").len())
+    println(strconv.Itoa(0))
+    println(strconv.Itoa(-9223372036854775807 - 1))
+    for text in Array<string>{\"42\", \"-7\", \"+5\", \"\", \"-\", \"4x\", \"9223372036854775808\"} {
+        let value, err = strconv.Atoi(text)
+        println(value)
+        println(err == nil)
+    }
+    println(strconv.FormatBool(true) + strconv.FormatBool(false))
+    for text in Array<string>{\"true\", \"false\", \"True\"} {
+        let flag, err = strconv.ParseBool(text)
+        println(flag)
+        println(err == nil)
+    }
+    let _, failed = strconv.Atoi(\"nope\")
+    println(failed == error(\"strconv.Atoi: invalid syntax\"))
+    let _, range = strconv.Atoi(\"99999999999999999999\")
+    println(range == error(\"strconv.Atoi: value out of range\"))
+}
+",
+        "true\ntrue\nfalse\ntrue\nfalse\ntrue\nfalse\n3\n0\n-1\nHÉLLO SS\nhéllo\n[a b]\n[]\nababab\n0\nbANANa\n-a-b-\n\
+<a>|<b>|<c>\n<>|<a>|<>\n<>\n<h>|<é>|<y>\n\n<a>|<b>\nx, y, z\nx\n0\n0\n-9223372036854775808\n\
+42\ntrue\n-7\ntrue\n5\ntrue\n0\nfalse\n0\nfalse\n0\nfalse\n0\nfalse\n\
+truefalse\ntrue\ntrue\nfalse\ntrue\nfalse\nfalse\ntrue\ntrue\n",
+    );
+}
+
+#[test]
+fn standard_functions_that_panic_clean_up_and_report() {
+    for (call, message) in [
+        (
+            "strings.Repeat(\"x\", -1)",
+            "strings.Repeat: negative count",
+        ),
+        (
+            "strings.Repeat(\"xx\", 9223372036854775807)",
+            "strings.Repeat: result too large",
+        ),
+    ] {
+        panics(
+            &format!(
+                "package main
+
+import \"zore/strings\"
+
+type Guard struct {{ Name string }}
+
+func (g mut Guard) drop() {{ println(g.Name) }}
+
+func main() {{
+    let guard = Guard{{Name: \"guard\"}}
+    println(\"before\")
+    println({call})
+}}
+"
+            ),
+            message,
+            "before\nguard\n",
+        );
+    }
+}

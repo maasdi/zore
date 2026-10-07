@@ -20,6 +20,14 @@ const RUNTIME_SOURCES: &[(&str, &str)] = &[
     ("map.rs", include_str!("../../../runtime/src/map.rs")),
     ("panic.rs", include_str!("../../../runtime/src/panic.rs")),
     ("string.rs", include_str!("../../../runtime/src/string.rs")),
+    (
+        "strconv.rs",
+        include_str!("../../../runtime/src/strconv.rs"),
+    ),
+    (
+        "strings.rs",
+        include_str!("../../../runtime/src/strings.rs"),
+    ),
 ];
 
 #[derive(Debug)]

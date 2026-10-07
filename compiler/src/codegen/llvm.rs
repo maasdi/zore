@@ -175,7 +175,14 @@ impl Module<'_> {
         );
     }
 
+    pub(super) fn types(&self) -> &crate::types::TypeStore {
+        &self.package.types
+    }
+
     pub(super) fn function(&mut self, body: &mir::Body) -> String {
+        if self.package.function(body.function).native {
+            return self.native_function(body);
+        }
         let mut f = FunctionBuilder {
             module: self,
             body,

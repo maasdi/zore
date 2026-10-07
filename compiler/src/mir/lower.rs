@@ -72,6 +72,18 @@ fn lower_function(package: &hir::Package, id: FunctionId, function: &hir::Functi
         .map(|&ty| builder.temp(ty))
         .collect();
     builder.current = builder.new_block();
+    if function.native {
+        return Body {
+            function: id,
+            name: function.name.clone(),
+            params: function.params.iter().map(|p| Local(p.0)).collect(),
+            captures: Vec::new(),
+            returns: Vec::new(),
+            locals: builder.locals,
+            blocks: Vec::new(),
+            unwind: None,
+        };
+    }
     builder.block(package, &function.body);
     let fallthrough = if function.results.is_empty() {
         Terminator::Return

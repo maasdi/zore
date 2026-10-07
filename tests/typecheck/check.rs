@@ -2828,3 +2828,71 @@ fn strings_have_length_index_slice_loops_and_a_rune_conversion() {
         );
     }
 }
+
+#[test]
+fn standard_packages_have_typed_signatures() {
+    let head = "package main\nimport \"zore/strings\"\nimport \"zore/strconv\"\n";
+    let accepts_main = |stmts: &str| {
+        accepts(&format!("{head}\nfunc main() {{\n{stmts}\n}}\n"));
+    };
+    accepts_main(
+        "let has bool = strings.Contains(\"abc\", \"b\")
+        let index int = strings.Index(\"abc\", \"c\")
+        let text string = strings.Upper(\"a\") + strings.Lower(\"B\") + strings.TrimSpace(\" c \")
+        let again = strings.Repeat(text, 2) + strings.Replace(text, \"a\", \"b\")
+        let parts Array<string> = strings.Split(again, \",\")
+        let joined string = strings.Join(parts[:], \", \")
+        let pieces = [string; 2]{\"x\", \"y\"}
+        println(strings.Join(pieces[:], \"\"))
+        println(strings.HasPrefix(joined, \"a\"))
+        println(strings.HasSuffix(joined, \"b\"))
+        let digits string = strconv.Itoa(index)
+        let number, err = strconv.Atoi(digits)
+        println(number)
+        println(err == nil)
+        let truth, failure = strconv.ParseBool(strconv.FormatBool(true))
+        println(truth)
+        _ = failure",
+    );
+    for (stmts, message) in [
+        ("_ = strings.Contains(1, \"a\")", "mismatched types"),
+        (
+            "_ = strings.Contains(\"a\")",
+            "takes 2 arguments but 1 was given",
+        ),
+        ("let n int = strings.Upper(\"a\")", "mismatched types"),
+        (
+            "let n, err = strconv.Atoi(5)\n_ = n\n_ = err",
+            "mismatched types",
+        ),
+        ("let n = strconv.Atoi(\"5\")", "bind them first"),
+        (
+            "let n, err = strconv.Atoi(\"5\")\n_ = n",
+            "may be unused before scope exit",
+        ),
+        (
+            "let parts = strings.Split(\"a\", \",\")\n_ = strings.Join(parts, \",\")",
+            "mismatched types",
+        ),
+        ("_ = strings.Repeat(\"a\", \"b\")", "mismatched types"),
+        (
+            "_ = strings.Nope(\"a\")",
+            "package `strings` does not declare `Nope`",
+        ),
+        (
+            "_ = strings.upper(\"a\")",
+            "package `strings` does not declare `upper`",
+        ),
+        (
+            "let f = strings.Upper\n_ = f",
+            "declared functions used as values",
+        ),
+    ] {
+        rejects(
+            &format!(
+                "{head}\nfunc main() {{\n_ = strings.Upper(\"\") + strconv.Itoa(1)\n{stmts}\n}}\n"
+            ),
+            message,
+        );
+    }
+}

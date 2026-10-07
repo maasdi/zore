@@ -54,7 +54,7 @@ John
 | Strings | Length, indexing, slicing, loops by character, `+`, and `string(rune)` work |
 | Collections | `[T; N]`, `Array<T>`, `map[K]V`, and `[]T` work; `clone` works for structs and collections; `len`, `push`, `pop`, and `for … in` loops work; borrowed map entries are planned |
 | Closures and function types | Implemented, including closures that are returned or stored and call-once closures; closures with tasks are planned |
-| Packages and imports | Folders are packages; `import "project/folder"` and qualified names work, with exported (capitalized) names, import checks, and cycle detection; the standard packages are planned |
+| Packages and imports | Folders are packages; `import "project/folder"` and qualified names work, with exported (capitalized) names, import checks, and cycle detection; the standard packages `zore/strings` and `zore/strconv` work |
 | `async`/`await`, tasks, channels | Planned (part of the MVP) |
 | Self-hosting | Long-term goal |
 

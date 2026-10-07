@@ -10,19 +10,30 @@ thread_local! {
 /// Where a compiler-produced `string` descriptor is written.
 #[repr(C)]
 pub struct StringOut {
-    data: *const u8,
-    len: i64,
+    pub(super) data: *const u8,
+    pub(super) len: i64,
 }
 
 impl StringOut {
-    fn empty() -> Self {
+    pub(super) fn empty() -> Self {
         Self {
             data: std::ptr::null(),
             len: 0,
         }
     }
 
-    fn built(bytes: &[u8]) -> Self {
+    /// A string that reads `len` bytes of storage that already lives until the program ends.
+    pub(super) fn shared(data: *const u8, len: usize) -> Self {
+        if len == 0 {
+            return Self::empty();
+        }
+        Self {
+            data,
+            len: len as i64,
+        }
+    }
+
+    pub(super) fn built(bytes: &[u8]) -> Self {
         if bytes.is_empty() {
             return Self::empty();
         }
@@ -102,7 +113,7 @@ pub unsafe extern "C" fn zore_string_is_boundary(data: *const u8, len: i64, posi
     position == text.len() || text.get(position).is_some_and(|byte| byte & 0xC0 != 0x80)
 }
 
-fn character_at(text: &[u8], position: usize) -> (char, usize) {
+pub(super) fn character_at(text: &[u8], position: usize) -> (char, usize) {
     let width = match text.get(position) {
         Some(lead) if lead & 0x80 == 0 => 1,
         Some(lead) if lead & 0xE0 == 0xC0 => 2,

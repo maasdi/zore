@@ -673,7 +673,7 @@ impl<'a> Checker<'a> {
         self.loop_depth = 0;
         let mut body = self.block(&func.body);
         self.infer_closure_kinds(&mut body);
-        if !results.is_empty() && !block_always_exits(&func.body) {
+        if !results.is_empty() && !func.native && !block_always_exits(&func.body) {
             self.diagnostics.push(
                 Diagnostic::new(
                     Severity::Error,
@@ -711,6 +711,7 @@ impl<'a> Checker<'a> {
             body,
             captures: Vec::new(),
             is_closure: false,
+            native: func.native,
             call_once: false,
         })
     }
@@ -907,6 +908,7 @@ impl<'a> Checker<'a> {
             body,
             captures: capture_locals,
             is_closure: true,
+            native: false,
             call_once,
         });
         let captures = captures

@@ -125,7 +125,9 @@ text format (§37.1, TBD). Strings follow below. Runtime checks use MIR assert
 terminators with cleanup paths.
 
 Temporary limits that are not language rules: package-level `let`/`var` await
-Q05, and a project can import only its own packages and the standard ones.
+Q05, a project can import only its own packages and the standard ones, and the
+standard library is only `zore/strings` and `zore/strconv` (floats and I/O are
+not covered).
 
 Routine driver, diagnostic presentation, and internal representation decisions
 can be made during implementation and documented with tests. They do not require
@@ -2104,6 +2106,15 @@ package and an import table per file, and checks each qualified use against the
 export rule; unused and clashing imports are reported there. The checker
 applies the same rule to fields and methods, and symbol names carry the
 package path so equal names in different packages never collide.
+
+The standard packages followed (§37.2). `zore/strings` and `zore/strconv` are
+Zore source bundled in the compiler, with each function declared without a
+body; the parser accepts that form only for bundled sources. Their code lives
+in the runtime: for each bodyless function the code generator emits a shim that
+unpacks strings and slices into pointer-and-length arguments, passes an out
+pointer for strings, `Array<string>` results, and `(T, error)` results, and
+calls `zore_native_<package>_<function>`. Split pieces and trimmed or joined
+single parts share their source's storage.
 
 Strings followed (§6.8, Q23). `len`, `s[i]` (a `byte`), `s[a:b]`, `for … in`
 over characters, runtime `+`, and `string(rune)` all work. A slice is a value

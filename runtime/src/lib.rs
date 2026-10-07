@@ -11,8 +11,12 @@ mod io;
 mod map;
 #[path = "panic.rs"]
 mod panic;
+#[path = "strconv.rs"]
+mod strconv;
 #[path = "string.rs"]
 mod string;
+#[path = "strings.rs"]
+mod strings;
 
 pub fn finish() {
     panic::finish();

@@ -178,6 +178,12 @@ dependencies first. Spans carry their file, so diagnostics point into any
 package; the source text of the bundled standard packages lives in a separate
 map that the checker and code generator read through `Sources`.
 
+The bundled standard packages (`driver/stdlib/*.ore`) declare functions
+without bodies. The checker lowers them like any function but marks them
+native; MIR gives them no blocks, and code generation emits a shim that calls
+the runtime symbol `zore_native_<package>_<function>` (`HasPrefix` in
+`strings` is `zore_native_strings_has_prefix`).
+
 AST preserves written structure; HIR records resolved meaning; MIR describes
 execution. Source identity and spans survive transformations. Use typed IDs for
 semantic entities and place projections for fields/indexes. Ownership data-flow
