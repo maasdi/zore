@@ -17,6 +17,26 @@ fn run(source: &str) -> Output {
         .expect("run built program")
 }
 
+fn run_with_input(source: &str, input: &[u8]) -> Output {
+    let dir = TempDir::new().unwrap();
+    let executable = dir.path().join("program");
+    build_file(source, &executable).unwrap_or_else(|e| panic!("build failed: {e:?}"));
+    let mut child = Command::new(&executable)
+        .env("ZORE_CHECK_LEAKS", "1")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("start built program");
+    child
+        .stdin
+        .take()
+        .expect("piped stdin")
+        .write_all(input)
+        .expect("write stdin");
+    child.wait_with_output().expect("run built program")
+}
+
 fn build_file(source: &str, output: &Path) -> Result<(), BuildError> {
     let mut sources = SourceMap::new();
     let id = sources.add("test.ore", source.into()).unwrap();
@@ -2975,8 +2995,8 @@ func fail(r own Resource, zero int) int {
     return 1 / zero
 }
 func main() {
-    let t = go fail(Resource{Name: \"held\"}, 0)
     println(\"before\")
+    let t = go fail(Resource{Name: \"held\"}, 0)
     let v = t.wait()
     println(\"unreachable\")
 }";
@@ -3504,4 +3524,399 @@ func main() {
     println(found)
 }";
     prints(source, "7\n9\ntrue\n");
+}
+
+#[test]
+fn many_sleeping_tasks_wait_together() {
+    let source = "package main
+import \"zore/time\"
+func nap(ms int) int {
+    time.Sleep(ms)
+    return ms
+}
+func main() {
+    let start = time.Millis()
+    var tasks = Array<Task<int>>{}
+    for var i = 0; i < 300; i += 1 { tasks.push(go nap(250)) }
+    var total = 0
+    for tasks.len() > 0 {
+        let found, task = tasks.pop()
+        if found { total += task.wait() }
+    }
+    let elapsed = time.Millis() - start
+    println(total)
+    println(elapsed >= 250)
+    println(elapsed < 2000)
+    time.Sleep(0)
+    time.Sleep(-5)
+    println(time.Millis() >= start)
+}";
+    prints(source, "75000\ntrue\ntrue\ntrue\n");
+}
+
+#[test]
+fn a_sleeping_task_does_not_hold_up_a_busy_one() {
+    let source = "package main
+import \"zore/time\"
+func sleeper(done channel<string>) {
+    time.Sleep(150)
+    done.send(\"slept\")
+}
+func counter(done channel<string>) {
+    var n = 0
+    for var i = 0; i < 100000; i += 1 { n += 1 }
+    done.send(\"counted\")
+}
+func main() {
+    let done = channel<string>(2)
+    go sleeper(done)
+    go counter(done)
+    let first, _ = done.receive()
+    let second, _ = done.receive()
+    println(first)
+    println(second)
+}";
+    prints(source, "counted\nslept\n");
+}
+
+#[test]
+fn files_are_written_and_read_whole() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("note.txt");
+    let missing = dir.path().join("absent.txt");
+    let source = format!(
+        "package main
+import \"zore/os\"
+func main() {{
+    let wrote = os.WriteFile(\"{path}\", \"héllo\\nfile\")
+    println(wrote == nil)
+    let text, err = os.ReadFile(\"{path}\")
+    println(err == nil)
+    println(text)
+    let rewrote = os.WriteFile(\"{path}\", \"short\")
+    println(rewrote == nil)
+    let again, err2 = os.ReadFile(\"{path}\")
+    println(again)
+    println(err2 == nil)
+    let _, failure = os.ReadFile(\"{missing}\")
+    println(failure != nil)
+}}",
+        path = path.display(),
+        missing = missing.display()
+    );
+    prints(
+        &source,
+        "true\ntrue\nhéllo\nfile\ntrue\nshort\ntrue\ntrue\n",
+    );
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "short");
+}
+
+#[test]
+fn file_errors_name_the_operation_and_reject_bad_text() {
+    let dir = TempDir::new().unwrap();
+    let binary = dir.path().join("binary.dat");
+    std::fs::write(&binary, [0x66, 0xff, 0xfe]).unwrap();
+    let nowhere = dir.path().join("no-folder").join("file.txt");
+    let source = format!(
+        "package main
+import \"zore/os\"
+func main() {{
+    let _, bad = os.ReadFile(\"{binary}\")
+    println(bad == error(\"os.ReadFile: invalid UTF-8\"))
+    let write = os.WriteFile(\"{nowhere}\", \"x\")
+    println(write != nil)
+}}",
+        binary = binary.display(),
+        nowhere = nowhere.display()
+    );
+    prints(&source, "true\ntrue\n");
+}
+
+#[test]
+fn standard_input_is_read_line_by_line() {
+    let source = "package main
+import \"zore/io\"
+func main() {
+    var lines = 0
+    var length = 0
+    for {
+        let line, err = io.ReadLine()
+        if err != nil {
+            println(err == error(\"EOF\"))
+            break
+        }
+        lines += 1
+        length += line.len()
+        println(\"[\" + line + \"]\")
+    }
+    println(lines)
+    println(length)
+}";
+    let output = run_with_input(source, b"one\r\n\ntwo words\nlast");
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    assert_eq!(
+        stdout(&output),
+        "[one]\n[]\n[two words]\n[last]\ntrue\n4\n16\n"
+    );
+    let bad = run_with_input(
+        "package main
+import \"zore/io\"
+func main() {
+    let _, err = io.ReadLine()
+    println(err == error(\"io.ReadLine: invalid UTF-8\"))
+    let line, _ = io.ReadLine()
+    println(line)
+}",
+        b"\xff\xfe\nok\n",
+    );
+    assert_eq!(bad.status.code(), Some(0), "{}", stderr(&bad));
+    assert_eq!(stdout(&bad), "true\nok\n");
+}
+
+#[test]
+fn a_task_waiting_for_input_does_not_stop_the_others() {
+    let source = "package main
+import \"zore/io\"
+func reader(done channel<string>) {
+    let line, _ = io.ReadLine()
+    done.send(line)
+}
+func ticker(done channel<string>) {
+    var n = 0
+    for var i = 0; i < 1000; i += 1 { n += i }
+    done.send(\"ticked\")
+}
+func main() {
+    let done = channel<string>(2)
+    go reader(done)
+    go ticker(done)
+    let first, _ = done.receive()
+    let second, _ = done.receive()
+    println(first)
+    println(second)
+}";
+    let output = run_with_input(source, b"typed\n");
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    assert_eq!(stdout(&output), "ticked\ntyped\n");
+}
+
+const ECHO_PRELUDE: &str = "
+import \"zore/net\"
+func digits(n int) string {
+    if n == 0 { return \"0\" }
+    var text = \"\"
+    var rest = n
+    for rest > 0 {
+        let d = rest % 10
+        text = \"0123456789\"[d:d + 1] + text
+        rest = rest / 10
+    }
+    return text
+}
+func echo(conn own net.Conn) int {
+    var total = 0
+    for {
+        let text, err = conn.Read(64)
+        if err != nil { return total }
+        total += text.len()
+        if conn.Write(text) != nil { return total }
+    }
+}
+func serve(listener own net.Listener, clients int) int {
+    var tasks = Array<Task<int>>{}
+    for var i = 0; i < clients; i += 1 {
+        let conn, err = listener.Accept()
+        if err != nil { return -1 }
+        tasks.push(go echo(conn))
+    }
+    var total = 0
+    for tasks.len() > 0 {
+        let found, task = tasks.pop()
+        if found { total += task.wait() }
+    }
+    return total
+}
+func client(port int, message string, chunk int) string {
+    let conn, err = net.Dial(\"127.0.0.1:\" + digits(port))
+    if err != nil { return \"dial failed\" }
+    if conn.Write(message) != nil { return \"write failed\" }
+    _ = conn.CloseWrite()
+    var reply = \"\"
+    for {
+        let text, readErr = conn.Read(chunk)
+        if readErr != nil { return reply }
+        reply += text
+    }
+}
+";
+
+#[test]
+fn a_server_echoes_text_to_several_clients_without_splitting_characters() {
+    let source = format!(
+        "package main
+{ECHO_PRELUDE}
+func main() {{
+    let listener, err = net.Listen(\"127.0.0.1:0\")
+    if err != nil {{ println(\"listen failed\"); return }}
+    let port = listener.Port()
+    let server = go serve(listener, 3)
+    let a = go client(port, \"hello\", 64)
+    let b = go client(port, \"héllo wörld ✓\", 1)
+    let c = go client(port, \"x\", 5)
+    println(a.wait())
+    println(b.wait())
+    println(c.wait())
+    println(server.wait())
+}}"
+    );
+    prints(&source, "hello\nhéllo wörld ✓\nx\n23\n");
+}
+
+#[test]
+fn hundreds_of_connections_share_the_event_loop() {
+    let source = format!(
+        "package main
+{ECHO_PRELUDE}
+func main() {{
+    let listener, err = net.Listen(\"127.0.0.1:0\")
+    if err != nil {{ println(\"listen failed\"); return }}
+    let port = listener.Port()
+    let server = go serve(listener, 200)
+    var clients = Array<Task<string>>{{}}
+    for var i = 0; i < 200; i += 1 {{
+        clients.push(go client(port, \"message \" + digits(i), 7))
+    }}
+    var bytes = 0
+    for clients.len() > 0 {{
+        let found, task = clients.pop()
+        if found {{ bytes += task.wait().len() }}
+    }}
+    println(bytes)
+    println(server.wait())
+}}"
+    );
+    let expected: usize = (0..200)
+        .map(|i| "message ".len() + i.to_string().len())
+        .sum();
+    prints(&source, &format!("{expected}\n{expected}\n"));
+}
+
+#[test]
+fn dropping_a_connection_ends_the_peers_stream() {
+    let source = "package main
+import \"zore/net\"
+func greet(listener own net.Listener) {
+    let conn, err = listener.Accept()
+    if err != nil { return }
+    _ = conn.Write(\"hi\")
+    drop(conn)
+}
+func digits(n int) string {
+    var text = \"\"
+    var rest = n
+    for rest > 0 {
+        let d = rest % 10
+        text = \"0123456789\"[d:d + 1] + text
+        rest = rest / 10
+    }
+    return text
+}
+func main() {
+    let listener, err = net.Listen(\"127.0.0.1:0\")
+    if err != nil { return }
+    let port = listener.Port()
+    go greet(listener)
+    let conn, derr = net.Dial(\"127.0.0.1:\" + digits(port))
+    if derr != nil { println(\"dial failed\"); return }
+    let first, _ = conn.Read(10)
+    println(first)
+    let _, end = conn.Read(10)
+    println(end == error(\"EOF\"))
+}";
+    prints(source, "hi\ntrue\n");
+}
+
+#[test]
+fn network_errors_are_reported_and_closed_handles_fail() {
+    let source = "package main
+import \"zore/net\"
+func main() {
+    let conns = channel<net.Conn>(1)
+    conns.close()
+    let zero, _ = conns.receive()
+    let text, err = zero.Read(10)
+    println(text.len())
+    println(err != nil)
+    println(zero.Write(\"x\") != nil)
+    println(zero.CloseWrite() != nil)
+    let listeners = channel<net.Listener>(1)
+    listeners.close()
+    let closed, _ = listeners.receive()
+    let _, accept = closed.Accept()
+    println(accept != nil)
+    println(closed.Port())
+    let _, refused = net.Dial(\"127.0.0.1:1\")
+    println(refused != nil)
+    let _, malformed = net.Listen(\"not an address\")
+    println(malformed != nil)
+    let open, _ = net.Listen(\"127.0.0.1:0\")
+    println(open.Port() > 0)
+}";
+    prints(source, "0\ntrue\ntrue\ntrue\ntrue\n-1\ntrue\ntrue\ntrue\n");
+}
+
+#[test]
+fn a_peer_that_sends_bytes_that_are_not_text_gives_an_error() {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let peer = std::thread::spawn(move || {
+        for bytes in [&[b'o', b'k', 0xC3][..], &[0xFF, b'x'][..]] {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream.write_all(bytes).unwrap();
+        }
+    });
+    let source = format!(
+        "package main
+import \"zore/net\"
+func main() {{
+    let first, _ = net.Dial(\"127.0.0.1:{port}\")
+    let a, errA = first.Read(16)
+    println(a)
+    println(errA == nil)
+    let b, errB = first.Read(16)
+    println(errB == error(\"net.Read: invalid UTF-8\"))
+    let second, _ = net.Dial(\"127.0.0.1:{port}\")
+    let c, errC = second.Read(16)
+    println(errC == error(\"net.Read: invalid UTF-8\"))
+}}"
+    );
+    prints(&source, "ok\ntrue\ntrue\ntrue\n");
+    peer.join().unwrap();
+}
+
+#[test]
+fn a_listener_waiting_in_accept_does_not_stop_other_tasks() {
+    let source = "package main
+import \"zore/net\"
+func wait(listener own net.Listener) string {
+    let conn, err = listener.Accept()
+    if err != nil { return \"failed\" }
+    return \"accepted\"
+}
+func work(done channel<int>) {
+    var n = 0
+    for var i = 0; i < 1000; i += 1 { n += i }
+    done.send(n)
+}
+func main() {
+    let listener, err = net.Listen(\"127.0.0.1:0\")
+    if err != nil { return }
+    let pending = go wait(listener)
+    let done = channel<int>()
+    go work(done)
+    let n, _ = done.receive()
+    println(n)
+    drop(pending)
+}";
+    prints(source, "499500\n");
 }

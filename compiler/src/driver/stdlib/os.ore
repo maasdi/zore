@@ -1,0 +1,4 @@
+package os
+
+func ReadFile(path string) (string, error)
+func WriteFile(path string, text string) error

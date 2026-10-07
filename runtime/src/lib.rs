@@ -5,6 +5,8 @@
 
 #[path = "alloc.rs"]
 mod alloc;
+#[path = "blocking.rs"]
+mod blocking;
 #[path = "channel.rs"]
 mod channel;
 #[path = "fiber.rs"]
@@ -13,14 +15,20 @@ mod fiber;
 mod io;
 #[path = "map.rs"]
 mod map;
+#[path = "net.rs"]
+mod net;
 #[path = "panic.rs"]
 mod panic;
+#[path = "reactor.rs"]
+mod reactor;
 #[path = "strconv.rs"]
 mod strconv;
 #[path = "string.rs"]
 mod string;
 #[path = "strings.rs"]
 mod strings;
+#[path = "sys.rs"]
+mod sys;
 #[path = "task.rs"]
 mod task;
 

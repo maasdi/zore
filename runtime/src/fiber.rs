@@ -63,6 +63,7 @@ impl Slot {
     }
 
     /// Called by a worker after the fiber has left: true when it was woken meanwhile.
+    #[cfg(all(target_arch = "x86_64", any(target_os = "linux", target_os = "macos")))]
     fn settle(&self, waiter: Waiter) -> bool {
         let mut state = self.lock();
         if state.woken {
@@ -72,6 +73,7 @@ impl Slot {
         false
     }
 
+    #[cfg(all(target_arch = "x86_64", any(target_os = "linux", target_os = "macos")))]
     fn is_woken(&self) -> bool {
         self.lock().woken
     }
@@ -391,6 +393,10 @@ mod imp {
     }
 
     pub(crate) fn wake(_: Waiter) {}
+
+    pub(crate) fn park(_: &Arc<Slot>) -> bool {
+        false
+    }
 
     pub(crate) fn wait_for(shared: &Arc<Shared>) {
         wait_on_condvar(shared);

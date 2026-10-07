@@ -49,6 +49,7 @@ A newly discovered semantic gap blocks its affected feature, not unrelated work.
 | Q24 | Projects, packages, and imports: folders as packages, import paths, export checks, and the first standard packages (§3.20, §37.2). See Q24 below. | §3.20, §4.1, §37.2 | Loader, resolver, checker, and codegen changes |
 | Q25 | Task implementation choices made while implementing §17–18 where the text is silent; each rejects rather than guesses and can be relaxed later. See Q25 below. | §17.8, §18.4, §18.8–18.11 | Parser, checker, codegen, and runtime changes |
 | Q26 | Channel implementation choices made while implementing §19 where the text is silent; each rejects rather than guesses and can be relaxed later. See Q26 below. | §19.2–19.13 | Parser, checker, codegen, and runtime changes |
+| Q27 | Async I/O choices made while implementing §37.3 where the text is silent; each rejects rather than guesses and can be relaxed later. See Q27 below. | §37.3, §36.2 | Library, checker, codegen, and runtime changes |
 
 ## Resolved decisions
 
@@ -143,6 +144,24 @@ A newly discovered semantic gap blocks its affected feature, not unrelated work.
   already cloned are dropped (in reverse order, map values in entry order), the
   new storage is freed, and unwinding continues. (g) Allocation failure aborts,
   as for `Array<T>` (Q17g). Pending cases: `tests/conformance/destruction.md`.
+
+- **Q27 — Async I/O choices:** locked in §37.3 at the maintainer's direction
+  (time, standard input, whole files, and TCP, waiting on an event loop). (a)
+  Strings are well-formed UTF-8, so every function that returns text from
+  outside reports an error for other bytes; there is no byte-array API yet.
+  (b) `net.Read` keeps an unfinished trailing character with the connection, so
+  a result can exceed `max` by up to three bytes. (c) A `Conn` or `Listener`
+  holds a runtime handle number that is never reused, so a closed or zero
+  handle can only fail; user code cannot build one because its field is not
+  exported and struct literals must name every field. (d) A connection is a Move
+  value used by one task at a time, so one task cannot read while another
+  writes; sharing one connection between tasks waits for a shared-state
+  feature. (e) Files, standard input, name lookup, and connecting use helper
+  threads because regular files cannot be polled; socket reads, writes, and
+  accepts and all timers use the event loop. (f) The messages after the fixed
+  prefixes come from the operating system and are not specified. (g) Waiting in
+  the initial task blocks its thread. (h) Operations have no timeout or
+  cancellation. Pending cases: `tests/conformance/io.md`.
 
 - **Q26 — Channel implementation choices:** (a) `channel<T>(n)` takes an `int`
   capacity; a constant negative capacity is rejected and a negative runtime one

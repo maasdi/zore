@@ -459,3 +459,85 @@ fn diagnostics_in_imported_files_name_that_file() {
     let rendered = checked.diagnostics[0].render(&sources).unwrap();
     assert!(rendered.contains("/p/a/a.ore:2:"), "{rendered}");
 }
+
+#[test]
+fn the_time_io_os_and_net_packages_type_check_their_uses() {
+    accepts(&[(
+        "main.ore",
+        &main_with(
+            "import \"zore/time\"\nimport \"zore/io\"\nimport \"zore/os\"\nimport \"zore/net\"",
+            "time.Sleep(10)
+            let started = time.Millis()
+            let line, lineErr = io.ReadLine()
+            _ = lineErr
+            let text, readErr = os.ReadFile(\"a.txt\")
+            _ = readErr
+            let wrote = os.WriteFile(\"b.txt\", line + text)
+            _ = wrote
+            let listener, listenErr = net.Listen(\"127.0.0.1:0\")
+            _ = listenErr
+            let conn, acceptErr = listener.Accept()
+            _ = acceptErr
+            let chunk, chunkErr = conn.Read(64)
+            _ = chunkErr
+            let sent = conn.Write(chunk)
+            _ = sent
+            let closed = conn.CloseWrite()
+            _ = closed
+            let port = listener.Port()
+            println(port + started)
+            drop(conn)",
+        ),
+    )]);
+}
+
+#[test]
+fn the_io_packages_reject_misuse() {
+    let net = "import \"zore/net\"";
+    rejects(
+        &[(
+            "main.ore",
+            &main_with("import \"zore/time\"", "time.Sleep(\"soon\")"),
+        )],
+        "mismatched types",
+    );
+    rejects(
+        &[(
+            "main.ore",
+            &main_with("import \"zore/time\"", "time.Sleep()"),
+        )],
+        "takes 1 argument",
+    );
+    rejects(
+        &[(
+            "main.ore",
+            &main_with("import \"zore/io\"", "let line = io.ReadLine()"),
+        )],
+        "returns 2 values",
+    );
+    rejects(
+        &[(
+            "main.ore",
+            &main_with("import \"zore/os\"", "os.WriteFile(\"a\", \"b\")"),
+        )],
+        "must be used or explicitly discarded",
+    );
+    rejects(
+        &[("main.ore", &main_with(net, "let conn = net.Conn{id: 1}"))],
+        "not exported",
+    );
+    rejects(
+        &[("main.ore", &main_with(net, "let id = net.listen(\"x\")"))],
+        "not exported",
+    );
+    rejects(
+        &[(
+            "main.ore",
+            &main_with(
+                net,
+                "let conn, err = net.Dial(\"x\")\n_ = err\nlet other = conn\nlet again = conn",
+            ),
+        )],
+        "use of moved value",
+    );
+}

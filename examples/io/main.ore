@@ -1,0 +1,83 @@
+package main
+
+import "zore/net"
+import "zore/time"
+
+func digits(n int) string {
+    if n == 0 {
+        return "0"
+    }
+    var text = ""
+    var rest = n
+    for rest > 0 {
+        let d = rest % 10
+        text = "0123456789"[d:d + 1] + text
+        rest = rest / 10
+    }
+    return text
+}
+
+func shout(conn own net.Conn) {
+    for {
+        let text, err = conn.Read(32)
+        if err != nil {
+            return
+        }
+        if conn.Write(text + "!") != nil {
+            return
+        }
+    }
+}
+
+func serve(listener own net.Listener, clients int) {
+    for var i = 0; i < clients; i += 1 {
+        let conn, err = listener.Accept()
+        if err != nil {
+            return
+        }
+        go shout(conn)
+    }
+}
+
+func ask(port int, message string, delay int, answers channel<string>) {
+    time.Sleep(delay)
+    let conn, err = net.Dial("127.0.0.1:" + digits(port))
+    if err != nil {
+        answers.send("dial failed")
+        return
+    }
+    if conn.Write(message) != nil {
+        answers.send("write failed")
+        return
+    }
+    let reply, readErr = conn.Read(32)
+    if readErr != nil {
+        answers.send("read failed")
+        return
+    }
+    answers.send(reply)
+}
+
+func main() {
+    let listener, err = net.Listen("127.0.0.1:0")
+    if err != nil {
+        println("listen failed")
+        return
+    }
+    let port = listener.Port()
+    go serve(listener, 3)
+
+    let answers = channel<string>(3)
+    go ask(port, "slow", 300, answers)
+    go ask(port, "medium", 150, answers)
+    go ask(port, "fast", 0, answers)
+
+    for var i = 0; i < 3; i += 1 {
+        let reply, _ = answers.receive()
+        println(reply)
+    }
+
+    let before = time.Millis()
+    time.Sleep(20)
+    println(time.Millis() - before >= 20)
+}

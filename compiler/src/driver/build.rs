@@ -17,13 +17,22 @@ const RUNTIME_SOURCES: &[(&str, &str)] = &[
     ("lib.rs", include_str!("../../../runtime/src/lib.rs")),
     ("alloc.rs", include_str!("../../../runtime/src/alloc.rs")),
     (
+        "blocking.rs",
+        include_str!("../../../runtime/src/blocking.rs"),
+    ),
+    (
         "channel.rs",
         include_str!("../../../runtime/src/channel.rs"),
     ),
     ("fiber.rs", include_str!("../../../runtime/src/fiber.rs")),
     ("io.rs", include_str!("../../../runtime/src/io.rs")),
     ("map.rs", include_str!("../../../runtime/src/map.rs")),
+    ("net.rs", include_str!("../../../runtime/src/net.rs")),
     ("panic.rs", include_str!("../../../runtime/src/panic.rs")),
+    (
+        "reactor.rs",
+        include_str!("../../../runtime/src/reactor.rs"),
+    ),
     ("string.rs", include_str!("../../../runtime/src/string.rs")),
     (
         "strconv.rs",
@@ -33,6 +42,7 @@ const RUNTIME_SOURCES: &[(&str, &str)] = &[
         "strings.rs",
         include_str!("../../../runtime/src/strings.rs"),
     ),
+    ("sys.rs", include_str!("../../../runtime/src/sys.rs")),
     ("task.rs", include_str!("../../../runtime/src/task.rs")),
 ];
 

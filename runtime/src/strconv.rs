@@ -12,12 +12,23 @@ pub struct ValueError {
 }
 
 impl ValueError {
-    fn ok(value: i64) -> Self {
+    pub(super) fn ok(value: i64) -> Self {
         Self {
             value,
             failed: 0,
             message: std::ptr::null(),
             message_len: 0,
+        }
+    }
+
+    /// The error owns a share of its own copy of the text.
+    pub(super) fn failed_text(message: &str) -> Self {
+        let text = StringOut::built(message.as_bytes());
+        Self {
+            value: 0,
+            failed: 1,
+            message: text.data,
+            message_len: text.len,
         }
     }
 

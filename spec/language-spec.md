@@ -5099,7 +5099,8 @@ At minimum, the architecture must leave room for:
 - async I/O
 
 Packages and imports are specified in §3.20; the first standard packages are
-specified in §37.2. The organization of the remaining library is TBD.
+specified in §37.2, and time, input, files, and TCP in §37.3. The organization
+of the remaining library is TBD.
 
 ## 37.1 `println` — LOCKED
 
@@ -5220,6 +5221,92 @@ function value; check exactly one argument of a printable type, applying
 default types to untyped constants; reject non-call uses; give the call no
 results. The runtime provides the text conversions above, serializes each
 line's write, and keeps other tasks running while a write blocks. Pending conformance cases are in `tests/conformance/println.md`.
+
+## 37.3 Standard packages `zore/time`, `zore/io`, `zore/os`, and `zore/net` — LOCKED
+
+These four bundled packages (§3.20, §37.2) give tasks a way to wait for the
+clock, standard input, files, and TCP connections without blocking other tasks.
+Functions are ordinary calls: they are written without `await`, may be called
+from synchronous and `async` functions alike, and suspend only the calling task
+(§17.3). While one task waits, every other task keeps making progress, in the
+same sense as the progress guarantee of §18.9. In the initial task a wait blocks
+the entry point's thread but not the other tasks.
+
+Text read from outside the program must be well-formed UTF-8 (§6.8). Every
+function that returns text reports `error` for input that is not.
+
+**`zore/time`**
+
+| Function | Behavior |
+| --- | --- |
+| `Sleep(milliseconds int)` | Suspends the calling task for at least that many milliseconds; a value of zero or less returns at once |
+| `Millis() int` | Milliseconds on a monotonic clock whose starting point is unspecified; the value never decreases |
+
+**`zore/io`**
+
+| Function | Behavior |
+| --- | --- |
+| `ReadLine() (string, error)` | Reads the next line from standard input, without its line terminator (`\n` or `\r\n`); a final line with no terminator is returned normally; at end of input with nothing read, `""` and an error whose message is `EOF`; a line that is not well-formed UTF-8 is consumed and gives `""` and an error whose message is `io.ReadLine: invalid UTF-8` |
+
+**`zore/os`**
+
+| Function | Behavior |
+| --- | --- |
+| `ReadFile(path string) (string, error)` | The whole contents of the file; on failure `""` and an error whose message begins `os.ReadFile: ` followed by system-defined text, or is `os.ReadFile: invalid UTF-8` |
+| `WriteFile(path string, text string) error` | Creates or truncates the file and writes `text`; on failure an error whose message begins `os.WriteFile: ` |
+
+**`zore/net`** (TCP over IPv4 and IPv6)
+
+`Listener` and `Conn` are struct types with a custom `drop` (§8.3), so they are
+Move values: dropping one closes it, and `drop(conn)` closes it explicitly. Their
+fields are not exported. The zero value of either is closed and every operation
+on it fails with an error.
+
+| Function | Behavior |
+| --- | --- |
+| `Listen(address string) (Listener, error)` | Listens on `host:port`; port `0` picks a free port |
+| `Dial(address string) (Conn, error)` | Connects to `host:port`, waiting for the connection |
+| `(l Listener) Accept() (Conn, error)` | Waits for and returns the next incoming connection |
+| `(l Listener) Port() int` | The port the listener is bound to, or `-1` for a closed listener |
+| `(c Conn) Read(max int) (string, error)` | Waits until at least one character is available and returns whole characters read from at most `max` bytes of the stream; a character cut by the end of a read is kept by the connection and joined with the next bytes, so a result can be up to three bytes longer than `max`; at end of stream, `""` and an error whose message is `EOF`; `max` of zero or less is an error |
+| `(c Conn) Write(text string) error` | Waits until all of `text` is sent |
+| `(c Conn) CloseWrite() error` | Ends the sending side so the peer reads `EOF`; reading continues to work |
+
+Error messages begin `net.Listen: `, `net.Dial: `, `net.Accept: `, `net.Read: `,
+`net.Write: `, or `net.CloseWrite: ` and continue with system-defined text,
+except the fixed messages above.
+
+```ore
+import "zore/net"
+
+func serve(conn own net.Conn) {
+    for {
+        let text, err = conn.Read(1024)
+        if err != nil { return }
+        if conn.Write(text) != nil { return }
+    }
+}
+
+func main() {
+    let listener, err = net.Listen("127.0.0.1:0")
+    if err != nil { return }
+    println(listener.Port())
+    let conn, _ = listener.Accept()
+    let done = go serve(conn)
+    done.wait()
+}
+```
+
+Ownership, error, and async implications: a connection is owned by one task at a
+time and moves to another with `own` (§18.4); no two tasks use it at once, so
+reads and writes need no locking by the program. Errors follow §15; a `Conn`
+returned with a non-nil error is the zero value. Dropping a connection while
+another task still waits on it cannot happen, since waiting borrows it.
+
+Compiler impact: the packages are bundled sources whose function bodies call the
+runtime (§37.2). The runtime parks the waiting task and wakes it from a timer,
+a readiness event, or a helper thread (§36.2); the mechanism is not specified.
+Pending conformance cases: `tests/conformance/io.md`.
 
 ---
 

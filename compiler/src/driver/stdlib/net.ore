@@ -1,0 +1,66 @@
+package net
+
+type Listener struct {
+    id int
+}
+
+type Conn struct {
+    id int
+}
+
+func (l mut Listener) drop() {
+    closeHandle(l.id)
+}
+
+func (c mut Conn) drop() {
+    closeHandle(c.id)
+}
+
+func Listen(address string) (Listener, error) {
+    let id, err = listen(address)
+    if err != nil {
+        return Listener{id: 0}, err
+    }
+    return Listener{id: id}, nil
+}
+
+func (l Listener) Port() int {
+    return port(l.id)
+}
+
+func (l Listener) Accept() (Conn, error) {
+    let id, err = accept(l.id)
+    if err != nil {
+        return Conn{id: 0}, err
+    }
+    return Conn{id: id}, nil
+}
+
+func Dial(address string) (Conn, error) {
+    let id, err = dial(address)
+    if err != nil {
+        return Conn{id: 0}, err
+    }
+    return Conn{id: id}, nil
+}
+
+func (c Conn) Read(max int) (string, error) {
+    return read(c.id, max)
+}
+
+func (c Conn) Write(text string) error {
+    return write(c.id, text)
+}
+
+func (c Conn) CloseWrite() error {
+    return closeWrite(c.id)
+}
+
+func listen(address string) (int, error)
+func port(id int) int
+func accept(id int) (int, error)
+func dial(address string) (int, error)
+func read(id int, max int) (string, error)
+func write(id int, text string) error
+func closeWrite(id int) error
+func closeHandle(id int)
