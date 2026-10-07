@@ -86,3 +86,33 @@ bytes-to-string conversion API (open under Q05) — a future such API must
 validate and reject invalid UTF-8 rather than accept it, but no conversion
 syntax exists yet to test. Internal buffer representation and concatenation's
 allocation strategy are implementation details, not conformance targets.
+
+## String operations (§6.8)
+
+Executable counterparts: `tests/typecheck/check.rs` and `tests/codegen/native.rs`;
+`examples/strings` runs natively.
+
+| Scenario | Expected result |
+| --- | --- |
+| `"héllo".len()` | `6`; length counts bytes |
+| `s.len()` with arguments | Reject |
+| `s[0]` | The first byte as a `byte`; prints as an integer |
+| Index below zero or at or past the length | Runtime panic "index out of range" |
+| `s[0] = 1`, `s[0] += 1`, or `s[0]` passed to a `mut` parameter | Reject; strings are immutable |
+| `s[1:3]` on `"héllo"` | `"é"` |
+| `s[:]`, `s[2:]`, `s[:2]`, `s[1:1]` | Whole, tail, head, empty string |
+| Bound past the length, or `low` above `high` | Runtime panic "slice bounds out of range" |
+| Bound inside a character (`"é"[1:]`) | Runtime panic "string slice not on a character boundary" |
+| Constant negative or reversed bounds | Reject at compile time |
+| `for ch in s` | Visits each character as a `rune` |
+| `for i, ch in s` | `i` is the byte index where the character starts |
+| Loop over an empty string | Zero iterations |
+| Assigning the loop `ch` | Reject; loop names are not assignable |
+| `a + b` where either is built at run time | Concatenation; operands unchanged |
+| `s += t` on a `var` | Appends; the old value is unchanged for other copies |
+| `string('é')` | `"é"`; a rune converts to its UTF-8 text |
+| `string(65)`, `string(s)`, `string(byte)` | Reject; only a `rune` converts to `string` |
+| Comparing built and literal strings with `==` and `<` | Compares bytes, not identity |
+| Slice or concatenation result kept after its source variable goes out of scope | Valid; strings are Copy and never dangle |
+| Map keyed by a built string | Lookup by content finds a literal key |
+

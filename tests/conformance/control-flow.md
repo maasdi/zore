@@ -68,6 +68,7 @@ Executable counterparts: `tests/parser/parser.rs`, `tests/typecheck/check.rs`,
 | `for item in c` over a fixed array, slice, or `Array<T>` | Visits elements in index order |
 | `for i, item in c` | `i` is the `int` index |
 | `for key, value in m` | Visits each entry once, in a stable unspecified order |
+| `for ch in s` or `for i, ch in s` over a string | Visits characters; `ch` is a `rune` copy, `i` the byte index (§6.8) |
 | `for value in m` | Reject; a map loop names both parts |
 | `_` for either name | Valid; that part is not bound |
 | Loop over a string, number, or constant | Reject |

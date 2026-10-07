@@ -143,6 +143,7 @@ package main
 ```
 
 Files in the same package share declarations according to package visibility rules.
+Which files form a package, and how packages are found, is specified in §3.20.
 
 Example:
 
@@ -162,7 +163,9 @@ Import syntax is Go-like:
 import "zore/fmt"
 ```
 
-The full package-resolution, registry, version-selection, and dependency-solver model is outside the MVP.
+The meaning of an import path, and how imported names are used, is specified in
+§3.20. The full package-resolution, registry, version-selection, and
+dependency-solver model is outside the MVP.
 
 ## 3.4 Project file — LOCKED
 
@@ -921,6 +924,101 @@ process entry that runs `main` in the initial task, then exits with status 0,
 and makes initial-task panics exit nonzero. Pending conformance cases are in
 `tests/conformance/entry-point.md`.
 
+
+## 3.20 Projects, packages, and imports — LOCKED
+
+**Packages are folders.** A package is the set of `.ore` files directly inside
+one folder (subfolders are separate packages). Every file declares the same
+package name, and the files share one package scope: a declaration in one file
+is visible in the others (§3.2), and a name declared twice anywhere in the
+package is a duplicate (§7.8). Files are processed in file-name order, so
+diagnostics are deterministic. Test files and other file kinds are not part of
+this decision.
+
+**Projects.** A project is a folder tree whose root holds `zore.toml` (§3.4).
+The `name` in that file is the project name. A project name is one or more
+ASCII letters, digits, `_`, or `-`, and must not be `zore`, which is reserved
+for standard packages.
+
+**Building a program.** `zore check`, `zore build`, and `zore run` take a file
+(§45). The file's folder is the entry package, which must be named `main`; the
+project root is found by walking up from that folder to the first folder that
+holds `zore.toml`. When there is none, the entry folder is a project with no
+name, which can import only standard packages.
+
+**Import paths.** An import declaration names exactly one package by a
+double-quoted path of segments separated by `/` (§3.3):
+
+| Path | Package |
+| --- | --- |
+| `"zore/<name>"` | The standard package `<name>` shipped with the compiler (§37.2) |
+| `"<project>/<dir>/..."` | The folder `<dir>/...` below the project root, where `<project>` is the project's name |
+
+Anything else is an error that names the path. A project imports only its own
+packages and the standard packages; dependencies on other projects are outside
+the MVP. A path segment, other than the project name, is an ASCII identifier
+(§3.5), and the last segment of the path is the imported package's name: a
+non-`main` package's package clause must be exactly that name. The `main`
+package cannot be imported.
+
+**Using imports.** An import is visible only in the file that declares it, and
+its name is the last path segment. Members are used with a qualifier:
+
+```ore
+import "myapp/shapes"
+import "zore/strings"
+
+func main() {
+    let circle = shapes.Circle{Radius: 2}
+    println(shapes.Area(circle))
+    println(strings.Upper("ok"))
+}
+```
+
+`shapes.Name` names an exported package-level function, type, or constant of
+the imported package. A qualified type name is written the same way in every
+type position (`var c shapes.Circle`). The rules are:
+
+- *Export rule (§4.1).* Only names beginning with ASCII `A`–`Z` can be used
+  across packages. Using an unexported or missing name is an error naming the
+  package. An exported struct field or method is usable anywhere. An
+  unexported field or method is usable only inside its own package: it cannot be
+  read, written, or called, and, because a struct literal must name every field
+  exactly once (§8.4), a struct with an unexported field can be constructed
+  only inside its package, which offers constructor functions instead.
+- *Types are nominal.* A struct type is identified by its package and name;
+  `a.T` and `b.T` are different types.
+- *Methods.* A method may be declared only on a struct type defined in the same
+  package, so imported types cannot be extended. Calling an exported method on a
+  value of an imported type is allowed. Custom `drop` and `clone` methods are
+  honored wherever such a value is created, copied, or destroyed.
+- *Unused or conflicting imports are errors.* An import that is never used in
+  its file, a second import of the same path in a file, two imports in one file
+  with the same name, and an import whose name matches a package-level
+  declaration or a predeclared name are all errors.
+- *No cycles.* A package that imports itself, directly or through other
+  packages, is an error that lists the chain.
+- *Not in the MVP.* Import aliases, dot imports, blank imports, grouped
+  imports, package-level `let`/`var`, `init` functions, and imports of other
+  projects.
+
+Each package is checked once, however many files import it. Package-level
+constants are evaluated as in §5.3 and may be used across packages when
+exported. Resource cleanup, borrowing, and `async` rules do not depend on which
+package a function or type came from.
+
+Ownership, error, and async implications: none beyond the rules above; imports
+add names, not new kinds of values.
+
+Compiler impact: load the entry package, parse every file, discover imports,
+and load imported packages (folder or standard) before resolving names;
+resolve each package's declarations into a shared set of IDs and give every
+file its own import table; check visibility at each qualified use and field or
+method access; report cycles during loading; give each declaration a symbol
+that includes its package path so equal names in different packages never
+collide in generated code. Pending conformance cases:
+`tests/conformance/packages.md`.
+
 ---
 
 # 4. Visibility
@@ -949,6 +1047,7 @@ type User struct {
 `age` is package-private.
 
 No additional `public`, `private`, `pub`, or visibility modifier syntax is part of the MVP.
+How imports apply this rule across packages is specified in §3.20.
 
 ---
 
@@ -1375,7 +1474,8 @@ for _, value in scores { total += value }
 
 `for item in c` and `for index, item in c` visit the elements of a fixed array,
 slice (shared or `mut`), or `Array<T>` in increasing index order from 0;
-`index` is an `int`. `for key, value in m` visits each entry of a map once;
+`index` is an `int`. A `string` is also a collection here, visited by character
+as specified in §6.8: `item` is a `rune` copy and `index` the byte index. `for key, value in m` visits each entry of a map once;
 both names are required for a map. Map visiting order is unspecified, but two
 loops over the same unchanged map visit entries in the same order. `in` is a
 keyword. Either name may be `_`, and there is no `:=`, `range`, or
@@ -1400,7 +1500,7 @@ iteration, scoped to the loop, as for a counting loop's initializer.
 `continue` proceeds to the next element; `break` ends the loop. Both obey the
 cleanup rules below; a loop-held collection value is destroyed after `break`.
 
-The MVP has no `range` loops over integers, channels, or strings, labelled
+The MVP has no `range` loops over integers or channels, labelled
 jumps, or `goto`. This syntax does not import additional Go loop forms or
 permit `:=`, `++`, or `--`.
 
@@ -1770,6 +1870,63 @@ kind-specific operator errors and division by zero with source spans. Keep
 constant evaluation separate from runtime arithmetic, which still follows
 §6.6. Pending cases are in `tests/conformance/constant-expressions.md` and
 `tests/conformance/numerics.md`.
+
+## 6.8 String operations — LOCKED
+
+A `string` is immutable well-formed UTF-8 (§41.5). Its length, indexing, and
+slicing are measured in **bytes**, as in Go; looping visits whole characters.
+
+```ore
+let word = "héllo"
+println(word.len())        // 6: `é` takes two bytes
+println(word[0])           // 104, a `byte`
+println(word[1:3])         // é
+for i, ch in word {        // i is a byte index, ch is a rune
+    println(i)
+}
+let joined = word + "!"    // runtime concatenation
+println(string('é'))       // é
+```
+
+- `s.len()` returns the number of bytes as an `int` (§12.7).
+- `s[i]` returns the byte at index `i` as a `byte` (`uint8`). The index follows
+  the array indexing rules (§12.6): any integer type or untyped constant, with
+  a runtime panic for an index below zero or at or above the length. A string
+  is immutable, so `s[i]` cannot be assigned to, compound-assigned, or passed to
+  a `mut` parameter.
+- `s[low:high]` returns a `string`. Omitted bounds default to `0` and the
+  length, and the bounds follow the slicing rules of §12.6 (`0 <= low <= high
+  <= len`). In addition, `low` and `high` must each fall on a character
+  boundary, that is, equal the length or index the first byte of a UTF-8
+  sequence; otherwise the operation panics, so a slice never splits a
+  character and is always well-formed UTF-8. Constant bounds that are negative
+  or reversed are compile-time errors. Because strings are immutable Copy
+  values, the result is an ordinary string value: it creates no borrow, is
+  never `mut`, and may share storage with its source.
+- `for ch in s` and `for i, ch in s` visit each character in order (§5.10).
+  `ch` is a `rune` copy, never a borrow; `i` is the byte index at which that
+  character starts, an `int`. The string is evaluated once before the loop.
+  The one-name form binds the character, not its index.
+- `+` concatenates two strings at run time as well as in constant expressions
+  (§7.6), producing a new string. `+=` applies the same rule. Neither operand
+  changes. An implementation may share storage between values and defines when
+  runtime-built storage is released (§41.5); no source-level observation
+  depends on it.
+- `string(r)` converts a `rune` to the one-character string holding its UTF-8
+  encoding. It is the only string conversion: no other type converts to
+  `string`, `string(s)` of a string is rejected, and there is no implicit
+  number-to-string conversion. Converting numbers to text, and text to
+  numbers, is the job of `zore/strconv` (§37.2).
+- `==`, `!=`, `<`, `<=`, `>`, `>=` compare by bytes (§6.6).
+
+Ownership, error, and async implications: `string` stays Copy and no operation
+here consumes or borrows its operands. Indexing and slicing panics are ordinary
+runtime panics (§15.4) with the usual cleanup. Nothing suspends.
+
+Compiler impact: type `len`, index, slice, loop, and `string(rune)` as above;
+lower slices to a checked operation that validates bounds and character
+boundaries; lower concatenation and rune-to-string conversion to runtime
+calls. Pending conformance cases: `tests/conformance/strings.md`.
 
 ---
 
@@ -2893,7 +3050,8 @@ let none, zero = empty.pop()  // rejected: `empty` is a `let` binding
 ```
 
 `c.len()` returns the number of elements of a fixed array, slice (shared or
-`mut`), or `Array<T>`, or the number of entries of a map, as an `int`. It takes
+`mut`), or `Array<T>`, the number of entries of a map, or the number of bytes
+of a `string` (§6.8), as an `int`. It takes
 no arguments and shared-borrows its receiver only while it runs. A fixed
 array's length is its declared size; the receiver is still evaluated once.
 
@@ -2902,7 +3060,7 @@ last element and returns `(bool, T)`: presence first, then the removed value,
 like map removal (§13.3). An empty array yields false and T's zero value
 (§41.4). Both require `a` to be a mutable place (a `var` binding, a `mut`
 parameter, or a field or element of one), as for assignment. Neither has a
-method form on fixed arrays, slices, or maps.
+method form on fixed arrays, slices, maps, or strings.
 
 Evaluation order: the array place first, then the pushed value, then the
 change. The pushed value is copied if Copy and transferred if Move; `pop`
@@ -4939,7 +5097,8 @@ At minimum, the architecture must leave room for:
 - mutex/synchronization
 - async I/O
 
-The exact module/package organization is TBD.
+Packages and imports are specified in §3.20; the first standard packages are
+specified in §37.2. The organization of the remaining library is TBD.
 
 ## 37.1 `println` — LOCKED
 
@@ -4971,6 +5130,66 @@ println(true)             // true
 println('é')              // é
 println(user.Name)        // the string field's contents
 ```
+
+## 37.2 Standard packages `zore/strings` and `zore/strconv` — LOCKED
+
+The compiler ships two standard packages, imported as `"zore/strings"` and
+`"zore/strconv"` (§3.20). They are ordinary packages as far as users can tell:
+names are used with the qualifier and every function below is exported. Their
+functions never mutate their arguments; `string` results may share storage with
+their arguments (§6.8, §41.5).
+
+**`zore/strings`**
+
+| Function | Behavior |
+| --- | --- |
+| `Contains(s string, sub string) bool` | Whether `sub` occurs in `s`; an empty `sub` is always found |
+| `HasPrefix(s string, prefix string) bool` | Whether `s` starts with `prefix` |
+| `HasSuffix(s string, suffix string) bool` | Whether `s` ends with `suffix` |
+| `Index(s string, sub string) int` | Byte index of the first occurrence of `sub`, or `-1`; an empty `sub` gives `0` |
+| `Upper(s string) string` | `s` with Unicode default upper-case mapping applied |
+| `Lower(s string) string` | `s` with Unicode default lower-case mapping applied |
+| `TrimSpace(s string) string` | `s` without leading and trailing Unicode white space |
+| `Repeat(s string, count int) string` | `count` copies of `s` joined; panics when `count` is negative or the result length overflows `int` |
+| `Replace(s string, old string, new string) string` | `s` with every non-overlapping occurrence of `old` replaced; an empty `old` matches before each character and at the end |
+| `Split(s string, sep string) Array<string>` | The pieces of `s` between occurrences of `sep`; an empty `sep` splits into characters; an empty `s` gives one empty piece, except for an empty `sep`, which gives no pieces |
+| `Join(parts []string, sep string) string` | The elements of `parts` joined with `sep` between them; no elements give `""` |
+
+**`zore/strconv`**
+
+| Function | Behavior |
+| --- | --- |
+| `Itoa(value int) string` | Decimal digits of `value`, with a leading `-` when negative |
+| `Atoi(text string) (int, error)` | Parses an optional `+` or `-` followed by one or more decimal digits, with nothing else; on success the value and `nil`, otherwise `0` and an error whose message is `strconv.Atoi: invalid syntax` or `strconv.Atoi: value out of range` |
+| `FormatBool(value bool) string` | `"true"` or `"false"` |
+| `ParseBool(text string) (bool, error)` | `true` for `"true"`, `false` for `"false"`, otherwise `false` and an error with the message `strconv.ParseBool: invalid syntax` |
+
+Floating-point formatting and parsing are not included: the text format of
+floats is still open (§37.1).
+
+```ore
+import "zore/strings"
+import "zore/strconv"
+
+func main() {
+    let parts = strings.Split("a,b,c", ",")
+    println(strings.Join(parts[:], "-"))     // a-b-c
+    let n, err = strconv.Atoi("42")
+    if err == nil { println(strconv.Itoa(n + 1)) }   // 43
+}
+```
+
+Ownership, error, and async implications: all functions are synchronous.
+`Split` returns an owned `Array<string>` whose elements are Copy strings;
+`Atoi` and `ParseBool` follow the trailing-`error` rule (§7.2) and the
+error-use rules (§15). Argument validation panics (`Repeat`) are ordinary
+runtime panics.
+
+Compiler impact: standard package sources are bundled with the compiler and
+loaded like folders. Their function bodies are provided by the runtime; a
+function declaration without a body is accepted only in bundled sources and is
+rejected everywhere else. Pending conformance cases:
+`tests/conformance/packages.md` and `tests/conformance/strings.md`.
 
 ```ore
 println()                 // invalid: needs exactly one argument
@@ -5387,10 +5606,10 @@ construction time, never re-verified afterward, and why an implementation may
 safely share an underlying byte buffer across logical copies without a copy
 ever observing another copy's mutation.
 
-Indexing, slicing, byte-vs-scalar length, and range/iteration over a string's
-contents remain open under Q02 and are not decided here. Any future
-`string`/`[]byte`/`rune` conversion API remains a Q05 decision, constrained by
-this section's validity guarantee but not designed by it.
+Indexing, slicing, byte length, and iteration over a string's contents are
+specified in §6.8, and the first conversion API in §6.8 (`string(rune)`) and
+§37.2. Any future `string`/`[]byte` conversion API remains a Q05 decision,
+constrained by this section's validity guarantee but not designed by it.
 
 Ownership, error, and async implications: `string` remains Copy from the
 programmer's perspective (§10.2); the encoding guarantee does not change
@@ -5406,7 +5625,9 @@ or concatenation, since both are constructive from already-valid inputs.
 counted sharing, small-string optimization, etc.) and concatenation's
 allocation strategy remain unstandardized implementation details — they may
 change without a language-level specification revision, as long as the value
-guarantees above hold. Pending conformance cases are in
+guarantees above hold. The bootstrap compiler releases storage built at run
+time only when the program ends, so a loop that keeps building new strings
+grows memory until then (Q23). Pending conformance cases are in
 `tests/conformance/strings.md`.
 
 ## 41.6 Async lowering order — IMPLEMENTATION DETAIL
@@ -5590,7 +5811,9 @@ The first implementation should prioritize:
 zore check main.ore
 ```
 
-before implementing full code generation.
+before implementing full code generation. Today's commands take a `.ore` file;
+the file's folder is the entry package and its project is found as specified in
+§3.20. Passing a folder instead of a file is a later addition.
 
 Semantic analysis and diagnostics should work independently of LLVM code generation.
 
