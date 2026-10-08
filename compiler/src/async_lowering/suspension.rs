@@ -6,12 +6,12 @@ pub enum Suspension {
     Task,
     Channel,
     Sleep,
+    Mutex,
 }
 
 pub(super) fn needs_fiber(package: &crate::hir::Package, callee: &crate::mir::Callee) -> bool {
     use crate::mir::Callee;
     match callee {
-        Callee::MutexWithLock => true,
         Callee::Function(id) => {
             let function = package.function(*id);
             function.native

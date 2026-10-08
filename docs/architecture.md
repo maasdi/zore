@@ -113,8 +113,8 @@ frames are abandoned at process exit, as fibers are today (spec §18.11).
 `waiter.rs` holds either an `Arc<Slot>` or a task `Waker`. Channel and select
 entries, mutex queues, task joins, reactor registrations, and helper completions
 now use this common wake target. Their blocking forms still create slots; channels,
-task joins, and timers now have poll forms. Mutex and I/O poll forms belong to
-later Slice 4 PRs. Fiber joins install a slot only after switching back to their
+task joins, timers, and mutex acquisition now have poll forms. I/O poll forms belong to
+the remaining Slice 4 PR. Fiber joins install a slot only after switching back to their
 worker, retaining the existing wake-before-park protocol. A slot blocks an OS thread only when no fiber is running.
 
 When a poll worker blocks in a slot, task join, output operation, or a fallback
@@ -142,9 +142,9 @@ and an internal deadlock still reports "all tasks are asleep" with exit status 2
 HIR retains each function's async property, including the synthetic owning thunk
 for `go asyncFn(...)`. After ordinary ownership checking and drop insertion,
 `async_lowering::lower` identifies eligible async bodies and records each awaited
-call, task join, or channel/select/timer wait by MIR block, preserving the call's
+call, task join, or channel/select/timer/mutex wait by MIR block, preserving the call's
 source span, result places, and cleanup edges. The frontend still works without
-LLVM. Native async functions, direct mutex waits, and native I/O waits retain fiber
+LLVM. Native async functions and native I/O waits retain fiber
 execution; fallback propagates through awaited async calls to a fixed point. A
 polled function can spawn and await a fiber task. Calls to plain helpers remain ordinary calls and
 can block with worker compensation.
@@ -174,7 +174,7 @@ inside fiber fallback bodies. This temporary compatibility path is removed as th
 remaining waiting operations gain poll forms. Neither this path nor the persistent
 frame plan changes source-language syntax or ownership semantics. Frames are not
 shrunk by liveness, and suspended frames are abandoned at process exit; operation
-poll variants for mutexes and I/O, and fiber removal remain for later Q32 slices.
+poll variants for I/O, and fiber removal remain for later Q32 slices.
 
 ### Channel and select polls (Q32 slice 4, first PR)
 
@@ -541,3 +541,20 @@ safe. Rust startup
 provides SIGPIPE handling; output is locked and explicitly flushed before
 returning, so write failures become Zore panics. The unsafe Rust boundary is
 limited to the internal ABI and does not introduce source-level unsafe syntax.
+
+### Mutex acquisition polls (Q32 slice 4, third PR)
+
+`mutex.rs` shares one FIFO queue between fiber slots and task wakers. Each
+acquisition owns a readiness flag; unlocking reserves the lock for the first
+waiter, publishes its grant, then wakes it. New arrivals cannot overtake a grant,
+and repeated polls do not register extra waiters. A pending operation retains the
+cell until completion and contributes an internal scheduler wait. Poisoning
+completes every queued acquisition; zero and poisoned handles raise the existing
+panic without invoking the callback.
+
+`async_lowering` records `withLock` acquisition as a suspension. Its operation
+pointer and output slot live in the persistent frame. After Ready, code generation
+invokes the ordinary callback once, then unlocks or poisons before following the
+original result and cleanup edges. Callbacks remain synchronous; blocking inside
+them uses worker compensation. Fiber execution and the blocking mutex ABI remain
+available. I/O and helper completion polling are the next Slice 4 sub-PR.
