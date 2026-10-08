@@ -19,6 +19,11 @@ impl Operation {
         })
     }
 
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    pub(super) fn is_ready(&self) -> bool {
+        self.ready.load(Ordering::Acquire)
+    }
+
     fn complete(&self) {
         if !self.ready.swap(true, Ordering::AcqRel) {
             self.waiter.wake();
@@ -536,6 +541,7 @@ pub(super) fn sleep(milliseconds: u64) {
 }
 
 /// Waits until `fd` is ready or `deadline` passes; the caller tries again to find out which.
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 pub(super) fn wait_fd(fd: Descriptor, write: bool, deadline: Option<std::time::Instant>) {
     let slot = Arc::new(super::fiber::Slot::default());
     let _operation = start_wait_fd(fd, write, deadline, Arc::clone(&slot).into());

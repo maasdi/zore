@@ -5,10 +5,10 @@ use super::string::StringOut;
 /// A value and an `error`, written by results of the shape `(T, error)`.
 #[repr(C)]
 pub struct ValueError {
-    value: i64,
-    failed: u8,
-    message: *const u8,
-    message_len: i64,
+    pub(super) value: i64,
+    pub(super) failed: u8,
+    pub(super) message: *const u8,
+    pub(super) message_len: i64,
 }
 
 impl ValueError {

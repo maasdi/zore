@@ -46,6 +46,9 @@ func main() { let t = go parent(go plain()); println(t.wait()) }",
                 Suspension::Sleep => assert!(
                     matches!(callee, mir::Callee::Function(id) if package.function(*id).name == "zore/time.Sleep")
                 ),
+                Suspension::Io(id) => {
+                    assert!(matches!(callee, mir::Callee::Function(callee) if id == callee))
+                }
                 Suspension::Mutex => assert!(matches!(callee, mir::Callee::MutexWithLock)),
                 Suspension::Task => assert!(matches!(callee, mir::Callee::TaskWait)),
                 Suspension::Channel => assert!(matches!(
@@ -69,7 +72,7 @@ func main() { let t = go parent(go plain()); println(t.wait()) }",
 }
 
 #[test]
-fn fallback_propagates_through_awaits_but_not_spawned_or_plain_calls() {
+fn io_calls_and_their_awaited_callers_are_polled_but_plain_helpers_stay_ordinary() {
     let (package, _, plan) = plan(
         "package main
 import \"zore/io\"
@@ -85,8 +88,8 @@ func main() {}",
         .keys()
         .map(|id| package.function(*id).name.as_str())
         .collect();
-    assert!(!names.contains(&"ioWait"));
-    assert!(!names.contains(&"fallback"));
+    assert!(names.contains(&"ioWait"));
+    assert!(names.contains(&"fallback"));
     assert!(names.contains(&"simple"));
     assert!(names.contains(&"blockingHelper"));
 }
@@ -207,4 +210,61 @@ func main() {}",
     };
     assert!(unwind.is_some());
     assert!(span.end() > span.start());
+}
+
+#[test]
+fn io_and_waiting_library_wrappers_keep_spans_cleanup_and_plain_helpers() {
+    let (package, program, plan) = plan(
+        "package main
+import \"zore/net\"
+import \"zore/os\"
+func helper(path string) string { let text, _ = os.ReadFile(path); return text }
+async func run(path string, listener own net.Listener) string {
+    let _, _ = listener.Accept()
+    let text, _ = os.ReadFile(path)
+    return text + helper(path)
+}
+func main() {}",
+    );
+    let (_, machine) = plan
+        .machines
+        .iter()
+        .find(|(id, _)| package.function(**id).name == "run")
+        .unwrap();
+    assert_eq!(machine.suspensions.len(), 2);
+    assert!(
+        machine
+            .suspensions
+            .iter()
+            .any(|(_, kind)| matches!(kind, Suspension::Io(_)))
+    );
+    assert!(
+        machine
+            .suspensions
+            .iter()
+            .any(|(_, kind)| matches!(kind, Suspension::Call(_)))
+    );
+    for (id, machine) in &plan.machines {
+        for (block, _) in &machine.suspensions {
+            let mir::Terminator::Call { span, unwind, .. } =
+                &program.bodies[id.0 as usize].blocks[block.0 as usize].terminator
+            else {
+                panic!()
+            };
+            assert!(unwind.is_some());
+            assert!(span.end() > span.start());
+        }
+    }
+    assert!(
+        !plan
+            .machines
+            .keys()
+            .any(|id| package.function(*id).name == "helper")
+    );
+    assert!(
+        !plan
+            .machines
+            .keys()
+            .any(|id| package.function(*id).name.ends_with(".Port"))
+    );
 }

@@ -5156,15 +5156,27 @@ fn channel_poll_parity(source: &str, expected: &str) {
 }
 
 fn run_channel_poll_bounded(source: &str) -> Output {
+    run_poll_bounded(source, None)
+}
+
+fn run_poll_bounded(source: &str, input: Option<&[u8]>) -> Output {
     let dir = TempDir::new().unwrap();
     let executable = dir.path().join("program");
     build_file(source, &executable).unwrap_or_else(|e| panic!("build failed: {e:?}"));
     let mut child = Command::new(&executable)
         .env("ZORE_CHECK_LEAKS", "1")
+        .stdin(if input.is_some() {
+            Stdio::piped()
+        } else {
+            Stdio::inherit()
+        })
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
         .unwrap();
+    if let Some(input) = input {
+        child.stdin.take().unwrap().write_all(input).unwrap();
+    }
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
     loop {
         if child.try_wait().unwrap().is_some() {
@@ -5173,7 +5185,7 @@ fn run_channel_poll_bounded(source: &str) -> Output {
         if std::time::Instant::now() >= deadline {
             child.kill().unwrap();
             let output = child.wait_with_output().unwrap();
-            panic!("channel poll program timed out: {}", stderr(&output));
+            panic!("poll program timed out: {}", stderr(&output));
         }
         std::thread::sleep(std::time::Duration::from_millis(5));
     }
@@ -5732,4 +5744,254 @@ func main() {
 "#,
         "drop frame\n12\ntrue\n",
     );
+}
+
+fn io_poll_parity(source: &str, expected: &str) {
+    for mode in ["", "async "] {
+        let source = source
+            .replace("MODE ", mode)
+            .replace("JOIN ", if mode.is_empty() { "" } else { "await " });
+        let source = if mode.is_empty() {
+            source.replace("taskJoin", "t.wait()")
+        } else {
+            source.replace("taskJoin", "t")
+        };
+        let mut sources = SourceMap::new();
+        let id = sources.add("io.ore", source.clone()).unwrap();
+        let ir = emit_llvm(sources.file(id).unwrap()).unwrap();
+        if !mode.is_empty() {
+            assert!(ir.contains("run$async$poll"));
+            let mut found_run = false;
+            for function in ir.split("define private i8 ").skip(1) {
+                let function = function.split("\n}\n").next().unwrap();
+                if function.lines().next().unwrap().contains("$async$poll") {
+                    assert!(!function.contains("alloca"));
+                    if function.lines().next().unwrap().contains("run$async$poll") {
+                        found_run = true;
+                        assert!(function.contains("ret i8 0"));
+                    }
+                }
+            }
+            assert!(found_run);
+        }
+        let output = run_channel_poll_bounded(&source);
+        assert!(output.status.success(), "{}", stderr(&output));
+        assert_eq!(stdout(&output), expected);
+    }
+}
+
+#[test]
+fn io_poll_files_and_byte_views_preserve_results_and_cleanup() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("poll.dat").display().to_string();
+    let source = r#"package main
+import "zore/os"
+import "zore/strings"
+MODE func run(path string) Array<byte> {
+    let first = os.WriteFile(path, "héllo")
+    println(first == nil)
+    let text, err = os.ReadFile(path)
+    println(err == nil)
+    println(text)
+    let data = strings.Bytes(text)
+    println(os.WriteBytes(path, data[:]) == nil)
+    let read, readErr = os.ReadBytes(path)
+    println(readErr == nil)
+    return read
+}
+func main() { let t = go run("PATH"); let bytes = t.wait(); println(bytes.len()) }
+"#
+    .replace("PATH", &path);
+    io_poll_parity(&source, "true\ntrue\nhéllo\ntrue\ntrue\n6\n");
+}
+
+#[test]
+fn io_poll_socket_wrappers_suspend_and_echo_split_characters() {
+    io_poll_parity(
+        r#"package main
+import "zore/net"
+import "zore/strconv"
+MODE func run(conn own net.Conn) int {
+    var count = 0
+    for {
+        let text, err = conn.Read(1)
+        if err != nil { return count }
+        if conn.Write(text) != nil { return -1 }
+        count += text.len()
+    }
+}
+MODE func serve(listener own net.Listener) int {
+    let conn, err = listener.Accept()
+    if err != nil { return -1 }
+    let t = go run(conn)
+    return JOIN taskJoin
+}
+MODE func client(port int) string {
+    let conn, err = net.Dial("127.0.0.1:" + strconv.Itoa(port))
+    if err != nil { return "dial failed" }
+    if conn.Write("héllo ✓") != nil { return "write failed" }
+    _ = conn.CloseWrite()
+    var result = ""
+    for { let text, failure = conn.Read(1); if failure != nil { return result }; result += text }
+}
+func main() {
+    let listener, err = net.Listen("127.0.0.1:0")
+    if err != nil { return }
+    let port = listener.Port()
+    let server = go serve(listener)
+    let t = go client(port)
+    println(t.wait())
+    println(server.wait())
+}
+"#,
+        "héllo ✓\n10\n",
+    );
+}
+
+#[test]
+fn io_poll_stdin_preserves_line_errors_and_eof() {
+    for mode in ["", "async "] {
+        let source = r#"package main
+import "zore/io"
+MODE func run() int {
+    let _, bad = io.ReadLine()
+    println(bad == error("io.ReadLine: invalid UTF-8"))
+    let text, ok = io.ReadLine()
+    println(text)
+    println(ok == nil)
+    let last, _ = io.ReadLine()
+    println(last)
+    let _, end = io.ReadLine()
+    println(end == error("EOF"))
+    return 1
+}
+func main() { let t = go run(); println(t.wait()) }
+"#
+        .replace("MODE ", mode);
+        let output = run_poll_bounded(&source, Some(b"\xff\nok\r\nlast"));
+        assert!(output.status.success(), "{}", stderr(&output));
+        assert_eq!(stdout(&output), "true\nok\ntrue\nlast\ntrue\n1\n");
+    }
+}
+
+#[test]
+fn io_poll_file_errors_and_question_mark_run_frame_cleanup_once() {
+    let dir = TempDir::new().unwrap();
+    let good = dir.path().join("good.txt");
+    let bad = dir.path().join("bad.txt");
+    std::fs::write(&good, "abc").unwrap();
+    std::fs::write(&bad, [0xff]).unwrap();
+    let source = r#"package main
+import "zore/os"
+type Marker struct { Name string }
+func (m mut Marker) drop() { println("drop " + m.Name) }
+MODE func run(path string) (int, error) {
+    let marker = Marker{Name: "frame"}
+    let text = os.ReadFile(path)?
+    return text.len(), nil
+}
+func main() {
+    let good = go run("GOOD")
+    let n, ok = good.wait()
+    println(n)
+    println(ok == nil)
+    let bad = go run("BAD")
+    let zero, err = bad.wait()
+    println(zero)
+    println(err == error("os.ReadFile: invalid UTF-8"))
+}
+"#
+    .replace("GOOD", &good.display().to_string())
+    .replace("BAD", &bad.display().to_string());
+    io_poll_parity(&source, "drop frame\n3\ntrue\ndrop frame\n0\ntrue\n");
+}
+
+#[test]
+fn io_poll_socket_timeouts_and_byte_results_match_plain_execution() {
+    io_poll_parity(
+        r#"package main
+import "zore/net"
+import "zore/strconv"
+MODE func run(listener own net.Listener) int {
+    _ = listener.SetTimeout(10)
+    let _, timed = listener.Accept()
+    println(timed == error("net.Accept: timed out"))
+    return 1
+}
+MODE func echo(conn own net.Conn) int {
+    let data, err = conn.ReadBytes(1)
+    if err == nil { _ = conn.WriteBytes(data[:]) }
+    return 0
+}
+MODE func serve(listener own net.Listener) int {
+    let conn, err = listener.Accept()
+    if err == nil { let t = go echo(conn); return JOIN taskJoin }
+    return -1
+}
+MODE func client(port int) int {
+    let conn, err = net.DialTimeout("127.0.0.1:" + strconv.Itoa(port), 1000)
+    if err != nil { return -1 }
+    let data = Array<byte>{255}
+    println(conn.WriteBytes(data[:]) == nil)
+    let reply, ok = conn.ReadBytes(1)
+    println(ok == nil)
+    return int(reply[0])
+}
+func main() {
+    let timer, _ = net.Listen("127.0.0.1:0")
+    let wait = go run(timer)
+    println(wait.wait())
+    let listener, err = net.Listen("127.0.0.1:0")
+    if err != nil { return }
+    let port = listener.Port()
+    let server = go serve(listener)
+    let t = go client(port)
+    println(t.wait())
+    server.wait()
+}
+"#,
+        "true\n1\ntrue\ntrue\n255\n",
+    );
+}
+
+#[test]
+fn io_poll_cancel_library_wrappers_suspend_without_changing_their_api() {
+    io_poll_parity(
+        r#"package main
+import "zore/cancel"
+MODE func run() bool {
+    let token = cancel.WithTimeout(10)
+    let completed = token.Sleep(1000)
+    println(completed)
+    return token.Cancelled()
+}
+func main() { let t = go run(); println(t.wait()) }
+"#,
+        "false\ntrue\n",
+    );
+}
+
+#[test]
+fn io_poll_panic_after_helper_completion_drops_live_frame_values_once() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("panic.txt");
+    std::fs::write(&path, "owned text").unwrap();
+    let source = r#"package main
+import "zore/os"
+type Marker struct { Name string }
+func (m mut Marker) drop() { println("drop " + m.Name) }
+async func run(path string) int {
+    let marker = Marker{Name: "frame"}
+    let text, _ = os.ReadFile(path)
+    let zero = text.len() - text.len()
+    return 1 / zero
+}
+func main() { let t = go run("PATH"); println(t.wait()) }
+"#
+    .replace("PATH", &path.display().to_string());
+    let output = run_channel_poll_bounded(&source);
+    assert_eq!(output.status.code(), Some(2), "{}", stderr(&output));
+    assert_eq!(stdout(&output), "drop frame\n");
+    assert!(stderr(&output).contains("division by zero"));
+    assert!(!stderr(&output).contains("leak:"));
 }
