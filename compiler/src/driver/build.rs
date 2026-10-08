@@ -50,6 +50,11 @@ const RUNTIME_SOURCES: &[(&str, &str)] = &[
     ),
     ("sys.rs", include_str!("../../../runtime/src/sys.rs")),
     ("task.rs", include_str!("../../../runtime/src/task.rs")),
+    (
+        "scheduler.rs",
+        include_str!("../../../runtime/src/scheduler.rs"),
+    ),
+    ("waiter.rs", include_str!("../../../runtime/src/waiter.rs")),
 ];
 
 #[derive(Debug)]

@@ -46,10 +46,6 @@ pub(super) fn take() -> Option<Vec<u8>> {
 }
 
 /// A task that moves between threads carries its panic state with it.
-#[cfg(all(
-    any(target_arch = "x86_64", target_arch = "aarch64"),
-    any(target_os = "linux", target_os = "macos")
-))]
 #[inline(never)]
 pub(super) fn swap_state(other: &mut PanicState) {
     STATE.with(|state| std::mem::swap(&mut *state.borrow_mut(), other));

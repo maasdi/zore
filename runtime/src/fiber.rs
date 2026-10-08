@@ -15,6 +15,7 @@ fn wait_on_condvar(shared: &Shared) {
 }
 
 fn block<'a, T>(condvar: &Condvar, guard: MutexGuard<'a, T>) -> MutexGuard<'a, T> {
+    let _blocking = super::scheduler::BlockingGuard::enter();
     condvar
         .wait(guard)
         .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -468,7 +469,11 @@ mod imp {
                         drop(state);
                         enqueue(Ptr(fiber));
                     } else {
-                        state.waiter = Some(Waiter(Ptr(fiber)));
+                        let slot = Arc::new(Slot::internal());
+                        // The join is already counted by wait_for. settle only installs the
+                        // parked fiber; task completion owns removing the blocked count.
+                        slot.settle(Waiter(Ptr(fiber)));
+                        state.waiter = Some(slot.into());
                     }
                 }
                 Request::Park(slot) => {

@@ -4,6 +4,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 use super::alloc::{zore_alloc, zore_free};
 use super::fiber::Slot;
+use super::waiter::Waiter;
 
 type Destroy = unsafe extern "C" fn(*mut u8);
 
@@ -75,17 +76,17 @@ struct Exchange {
     case: usize,
 }
 
-/// A task blocked in a send, a receive, or a `select`; it sleeps until one entry completes.
+/// A task blocked in a send, a receive, or a `select`; its waiter wakes when one entry completes.
 struct Waiting {
-    slot: Arc<Slot>,
+    waiter: Waiter,
     claimed: AtomicBool,
     exchange: Mutex<Exchange>,
 }
 
 impl Waiting {
-    fn new() -> Arc<Self> {
+    fn new(waiter: Waiter) -> Arc<Self> {
         Arc::new(Self {
-            slot: Arc::new(Slot::internal()),
+            waiter,
             claimed: AtomicBool::new(false),
             exchange: Mutex::new(Exchange {
                 message: None,
@@ -114,7 +115,7 @@ impl Waiting {
             exchange.message = message;
         }
         drop(exchange);
-        self.slot.wake();
+        self.waiter.wake();
     }
 }
 
@@ -320,14 +321,15 @@ pub unsafe extern "C" fn zore_channel_send(
         }
         SendTry::NotReady => {}
     }
-    let waiting = Waiting::new();
+    let slot = Arc::new(Slot::internal());
+    let waiting = Waiting::new(Arc::clone(&slot).into());
     queues.senders.push_back(Entry {
         waiting: Arc::clone(&waiting),
         case: 0,
         message: Some(make()),
     });
     drop(queues);
-    waiting.slot.park();
+    slot.park();
     let mut exchange = waiting.exchange();
     if exchange.outcome == Outcome::Closed {
         let message = exchange.message.take();
@@ -371,14 +373,15 @@ pub unsafe extern "C" fn zore_channel_receive(
         ReceiveTry::Closed => return zero(),
         ReceiveTry::Empty => {}
     }
-    let waiting = Waiting::new();
+    let slot = Arc::new(Slot::internal());
+    let waiting = Waiting::new(Arc::clone(&slot).into());
     queues.receivers.push_back(Entry {
         waiting: Arc::clone(&waiting),
         case: 0,
         message: None,
     });
     drop(queues);
-    waiting.slot.park();
+    slot.park();
     let message = waiting.exchange().message.take();
     match message {
         Some(message) => {
@@ -527,7 +530,8 @@ pub unsafe extern "C" fn zore_select(cases: *mut SelectCase, count: i64, has_def
         return -1;
     }
 
-    let waiting = Waiting::new();
+    let slot = Arc::new(Slot::internal());
+    let waiting = Waiting::new(Arc::clone(&slot).into());
     for (index, case) in cases.iter().enumerate() {
         // SAFETY: guaranteed by the caller.
         let Some(channel) = (unsafe { case.channel.as_ref() }) else {
@@ -548,7 +552,7 @@ pub unsafe extern "C" fn zore_select(cases: *mut SelectCase, count: i64, has_def
         }
     }
     drop(guards);
-    waiting.slot.park();
+    slot.park();
 
     for channel in &channels {
         let mut queues = channel.lock();
@@ -584,4 +588,105 @@ pub unsafe extern "C" fn zore_select(cases: *mut SelectCase, count: i64, has_def
         unsafe { fail_send(case.value, case.destroy) };
     }
     index as i64
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    use super::*;
+    use crate::scheduler::{Poll, TestPool};
+
+    #[test]
+    fn receive_queue_wakes_both_slot_and_task_waiters_in_order() {
+        let pool = TestPool::new(1);
+        let queues = Arc::new(Mutex::new(Queues::default()));
+        let slot = Arc::new(Slot::default());
+        let fiber_waiting = Waiting::new(Arc::clone(&slot).into());
+        queues.lock().unwrap().receivers.push_back(Entry {
+            waiting: Arc::clone(&fiber_waiting),
+            case: 0,
+            message: None,
+        });
+        let task_queues = Arc::clone(&queues);
+        let (registered, rx) = mpsc::channel();
+        let (done, completed) = mpsc::channel();
+        let mut waiting: Option<Arc<Waiting>> = None;
+        pool.spawn(move |context| {
+            if let Some(waiting) = &waiting {
+                let message = waiting.exchange().message.take().unwrap();
+                let mut value = 0i64;
+                // SAFETY: this test queues one i64 message and supplies one i64 destination.
+                unsafe { message.move_to((&mut value as *mut i64).cast()) };
+                done.send(value).unwrap();
+                return Poll::Ready;
+            }
+            let entry_waiting = Waiting::new(context.waker().clone().into());
+            task_queues.lock().unwrap().receivers.push_back(Entry {
+                waiting: Arc::clone(&entry_waiting),
+                case: 0,
+                message: None,
+            });
+            waiting = Some(entry_waiting);
+            registered.send(()).unwrap();
+            context.pending_internal()
+        });
+        rx.recv_timeout(Duration::from_secs(10)).unwrap();
+        for value in [10i64, 20] {
+            // SAFETY: the copied value lives through the call and holds eight readable bytes.
+            let make = || unsafe { Message::copy_of((&value as *const i64).cast(), 8) };
+            assert!(matches!(
+                try_send(&mut queues.lock().unwrap(), 0, &make),
+                SendTry::Done
+            ));
+        }
+        slot.park();
+        let mut value = 0i64;
+        // SAFETY: as above; the first receiver owns the first i64 message.
+        unsafe {
+            fiber_waiting
+                .exchange()
+                .message
+                .take()
+                .unwrap()
+                .move_to((&mut value as *mut i64).cast());
+        }
+        assert_eq!(value, 10);
+        assert_eq!(completed.recv_timeout(Duration::from_secs(10)).unwrap(), 20);
+        pool.idle();
+    }
+
+    #[test]
+    fn concurrent_select_completions_claim_one_task_waiter() {
+        let pool = TestPool::new(2);
+        let (registered, rx) = mpsc::channel();
+        let (done, completed) = mpsc::channel();
+        let mut waiting: Option<Arc<Waiting>> = None;
+        pool.spawn(move |context| {
+            if let Some(waiting) = &waiting {
+                let exchange = waiting.exchange();
+                assert!(exchange.outcome == Outcome::Closed);
+                done.send(exchange.case).unwrap();
+                return Poll::Ready;
+            }
+            let entry_waiting = Waiting::new(context.waker().clone().into());
+            registered.send(Arc::clone(&entry_waiting)).unwrap();
+            waiting = Some(entry_waiting);
+            context.pending_internal()
+        });
+        let waiting = rx.recv_timeout(Duration::from_secs(10)).unwrap();
+        std::thread::scope(|scope| {
+            for case in 0..8 {
+                let waiting = Arc::clone(&waiting);
+                scope.spawn(move || {
+                    if waiting.claim() {
+                        waiting.complete(case, Outcome::Closed, None);
+                    }
+                });
+            }
+        });
+        assert!(completed.recv_timeout(Duration::from_secs(10)).unwrap() < 8);
+        pool.idle();
+    }
 }

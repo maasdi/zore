@@ -61,8 +61,10 @@ purposes), `dropck/analysis.rs`, `types/{function_type,classify}.rs`,
 `async_lowering/` stays uncreated for a different reason: tasks are stackful
 fibers in the runtime, so an async function is an ordinary function that runs on
 a fiber's stack and nothing lowers it to a state machine. The guide's
-`runtime/scheduler.rs` is likewise `fiber.rs` and `task.rs`. The structure guide
-lists these choices as approved deviations.
+`runtime/src/scheduler.rs` now provides the Q32 slice 2 poll scheduler alongside
+`fiber.rs` and `task.rs`; compiler-generated tasks still use fibers until the
+later Q32 slices. The structure guide lists the current fiber execution as an
+approved deviation.
 
 Dependencies point only from later stages to earlier ones, with no cycles,
 apart from three deliberate choices. `resolve` depends on `types` because
@@ -92,6 +94,48 @@ natives behind `zore/time`, `zore/io`, `zore/os`, and `zore/net` (`sys.rs`,
 `net.rs`). The driver compiles it once into a cached library, and `main.rs` is
 the native entry shim compiled with each program; the Cargo library target
 enables runtime unit tests without a generated entry.
+
+### Poll scheduler foundation (Q32 slice 2)
+
+`scheduler.rs` owns heap-backed poll tasks and a locked FIFO run queue, served by
+at least two workers (one per available core). Its Rust `spawn` entry accepts a
+frame-owning poll body returning `Ready` or `Pending`. These are internal runtime
+APIs; no compiler lowering or new generated-code ABI is introduced in this slice.
+The existing task ABI and all source-language execution continue through fibers.
+
+Each task serializes scheduling through a mutex. A queued task runs on one worker;
+wakes while running set a notification, and returning `Pending` either requeues
+that notification or makes the task idle. An idle wake transitions to queued once,
+so concurrent wakes coalesce and a wake between registration and suspension cannot
+be lost. Wakes of finished tasks do nothing. The pool retains pending frames even
+if all caller-held wakers are dropped: detachment never cancels work. Pending
+frames are abandoned at process exit, as fibers are today (spec §18.11).
+
+`waiter.rs` holds either an `Arc<Slot>` or a task `Waker`. Channel and select
+entries, mutex queues, task joins, reactor registrations, and helper completions
+now use this common wake target. Their blocking forms still create slots; poll
+forms of the operations belong to later slices. Fiber joins install a slot only
+after switching back to their worker, retaining the existing wake-before-park
+protocol. A slot blocks an OS thread only when no fiber is running.
+
+When a poll worker blocks in a slot, task join, or output operation, a thread-local
+guard tells the pool to start a replacement. Nested guards count the worker once.
+Replacement workers retire when workers resume and surplus capacity becomes idle;
+ordinary threads and the separate fiber pool are unaffected. Uninstrumented foreign
+blocking calls are not detected automatically.
+
+The panic state is swapped into each polling worker for the duration of the poll
+and completed-frame destruction, then restored. A completed detached poll task
+reports its panic without contaminating another task. Existing fiber result
+retrieval, panic propagation, and mutex poisoning remain unchanged. Rust unwinding
+from an internal poll body is a fatal runtime error, not a Zore exception.
+
+Both task kinds share task IDs and live-task accounting. `Context::pending_internal`
+counts an idle task as blocked until its waker queues it; ordinary `Pending` is for
+external events (timers, descriptors, helpers) and does not count. Live and blocked
+counts share one lock so concurrent wakeup and completion cannot produce a mixed
+snapshot that falsely reports deadlock. The initial task still counts as live,
+and an internal deadlock still reports "all tasks are asleep" with exit status 2.
 
 | Area | Responsibility | Spec |
 | --- | --- | --- |
@@ -334,8 +378,8 @@ The LLVM backend decision, supported toolchain, host target, and runtime ABI
 are recorded in decision record 0001. M32 is backend hardening, not the first
 backend implementation.
 
-No scheduler has been chosen. Further internal choices are constrained by the
-observable language guarantees. Record
+The current fiber scheduler and Q32 poll scheduler are described above. Further
+internal choices are constrained by the observable language guarantees. Record
 substantial decisions with context, alternatives, consequences, and validation
 under `docs/decisions/` when they are made.
 
