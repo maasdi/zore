@@ -324,6 +324,53 @@ mod imp {
         timers: BinaryHeap<Reverse<(Instant, u64)>>,
     }
 
+    impl State {
+        fn settle(
+            &mut self,
+            ready: &[u64],
+            now: Instant,
+            completed: &mut Vec<Arc<Operation>>,
+        ) -> bool {
+            let nudged = self.collect_ready(ready, completed);
+            self.collect_expired(now, completed);
+            self.compact_timers();
+            nudged
+        }
+
+        fn collect_ready(&mut self, ready: &[u64], completed: &mut Vec<Arc<Operation>>) -> bool {
+            let mut nudged = false;
+            for &token in ready {
+                if token == WAKE_TOKEN {
+                    nudged = true;
+                } else if let Some(operation) = self.waiters.remove(&token) {
+                    completed.push(operation);
+                }
+            }
+            nudged
+        }
+
+        fn collect_expired(&mut self, now: Instant, completed: &mut Vec<Arc<Operation>>) {
+            while let Some(&Reverse((when, token))) = self.timers.peek() {
+                if when > now {
+                    break;
+                }
+                self.timers.pop();
+                if let Some(operation) = self.waiters.remove(&token) {
+                    completed.push(operation);
+                }
+            }
+        }
+
+        fn compact_timers(&mut self) {
+            let limit = self.waiters.len().saturating_mul(2).max(64);
+            if self.timers.len() > limit {
+                self.timers
+                    .retain(|Reverse((_, token))| self.waiters.contains_key(token));
+                self.timers.shrink_to(limit);
+            }
+        }
+    }
+
     struct Reactor {
         poller: poller::Poller,
         state: Mutex<State>,
@@ -398,27 +445,10 @@ mod imp {
             ready.clear();
             reactor.poller.wait(timeout, &mut ready);
             let mut woken = Vec::new();
-            let mut nudged = false;
-            {
+            let nudged = {
                 let mut state = reactor.lock();
-                for &token in &ready {
-                    if token == WAKE_TOKEN {
-                        nudged = true;
-                    } else if let Some(operation) = state.waiters.remove(&token) {
-                        woken.push(operation);
-                    }
-                }
-                let now = Instant::now();
-                while let Some(&Reverse((when, token))) = state.timers.peek() {
-                    if when > now {
-                        break;
-                    }
-                    state.timers.pop();
-                    if let Some(operation) = state.waiters.remove(&token) {
-                        woken.push(operation);
-                    }
-                }
-            }
+                state.settle(&ready, Instant::now(), &mut woken)
+            };
             if nudged {
                 let mut buffer = [0u8; 64];
                 let _ = reader.read(&mut buffer);
@@ -493,6 +523,86 @@ mod imp {
             reactor.nudge();
         }
         operation
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use std::cmp::Reverse;
+        use std::io::{Read, Write};
+        use std::os::fd::AsRawFd;
+        use std::sync::Arc;
+        use std::time::{Duration, Instant};
+
+        use super::{Operation, Slot, State, poller};
+
+        #[test]
+        fn completed_descriptor_deadlines_do_not_accumulate_behind_live_timers() {
+            let poller = poller::Poller::new();
+            let (mut reader, mut writer) = std::io::pipe().unwrap();
+            let mut state = State::default();
+            let now = Instant::now();
+            let first = now + Duration::from_secs(3600);
+            let second = now + Duration::from_secs(7200);
+            for (token, when) in [(1, first), (2, second)] {
+                state
+                    .waiters
+                    .insert(token, Operation::new(Arc::new(Slot::default()).into()));
+                state.timers.push(Reverse((when, token)));
+            }
+
+            for token in 3..1003 {
+                let deadline = if token % 2 == 0 {
+                    now + Duration::from_secs(5400)
+                } else {
+                    now + Duration::from_secs(10800)
+                };
+                state
+                    .waiters
+                    .insert(token, Operation::new(Arc::new(Slot::default()).into()));
+                state.timers.push(Reverse((deadline, token)));
+                poller.arm(reader.as_raw_fd(), false, token).unwrap();
+                writer.write_all(&[1]).unwrap();
+
+                let mut ready = Vec::new();
+                poller.wait(Some(Duration::from_secs(5)), &mut ready);
+                assert_eq!(ready, [token]);
+                let mut completed = Vec::new();
+                assert!(!state.settle(&ready, Instant::now(), &mut completed));
+                assert_eq!(completed.len(), 1);
+                for operation in completed {
+                    operation.complete();
+                }
+                reader.read_exact(&mut [0]).unwrap();
+                assert!(state.timers.len() <= 64);
+                if token == 65 {
+                    assert_eq!(state.timers.len(), 2);
+                }
+            }
+
+            assert_eq!(state.waiters.len(), 2);
+            assert!(
+                state
+                    .timers
+                    .iter()
+                    .any(|entry| *entry == Reverse((first, 1)))
+            );
+            assert!(
+                state
+                    .timers
+                    .iter()
+                    .any(|entry| *entry == Reverse((second, 2)))
+            );
+
+            let mut completed = Vec::new();
+            state.collect_expired(first, &mut completed);
+            assert_eq!(completed.len(), 1);
+            completed.pop().unwrap().complete();
+            assert_eq!(state.waiters.len(), 1);
+            state.collect_expired(second, &mut completed);
+            assert_eq!(completed.len(), 1);
+            completed.pop().unwrap().complete();
+            assert!(state.waiters.is_empty());
+        }
     }
 }
 
