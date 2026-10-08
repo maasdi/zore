@@ -63,11 +63,13 @@ Rules:
 - Evaluating the name has no effect and happens once, where the name is written.
 - Calling the value uses the ordinary call rules of §16.2: callee first, then
   arguments, exclusive use of the callee for the call.
-- A package-qualified name (`pkg.F`) converts the same way when `F` is a
-  function declared in Zore source. Functions the compiler implements natively
-  are an open point below. Built-in operations (`println`, `len`,
-  `push`, `clone`, channel and mutex operations, and `error` construction) are
-  not functions and stay rejected, with the existing diagnostic.
+- A package-qualified name (`pkg.F`) converts the same way for every function
+  the package exports, whether it is written in Zore or implemented by the
+  compiler: a caller cannot and should not tell the difference. The compiler
+  supplies a forwarding wrapper for a native function. Built-in operations
+  (`println`, `len`, `push`, `clone`, channel and mutex operations, and `error`
+  construction) are not functions and stay rejected, with the existing
+  diagnostic.
 - A declared function is not a local, so converting it never borrows or moves
   anything.
 
@@ -182,9 +184,21 @@ Alternatives considered:
   function type.
 
 A spawned closure is therefore always owning: captured Copy values are copied
-at creation, captured Move values are moved in, and a captured Copy value the
-body assigns is treated as moved (§16.4, unchanged). The outer locals follow
-the normal rules afterward.
+at creation and captured Move values are moved in. The outer locals follow the
+normal rules afterward.
+
+**A spawned closure may not change a captured Copy value.** Assigning,
+compound-updating, or passing a captured Copy local to a `mut` parameter inside
+a closure that is spawned is rejected. The task would change only its own copy,
+which the spawner never sees, and a change that goes nowhere is the opposite of
+the visible mutation the language wants. The error is reported at the
+assignment. This is stricter than §16.4 for closures in general, where a
+returned counter legitimately keeps and changes its own copy over many calls; a
+spawned closure runs once, so no such need exists. A task that wants a mutable
+local starts from a copy (`var local = n`) inside the body, and a task that
+wants to share a change uses a channel or a `mutex`. A captured Move value may
+still be changed inside the task, because the spawner gave it away and cannot
+use it afterward.
 
 Capture of anything the task could not own independently is rejected, by the
 rules that already apply to owning closures and task inputs:
@@ -194,6 +208,7 @@ rules that already apply to owning closures and task inputs:
 | Copy local (`int`, `string`, a channel handle) | Accepted | copied into the environment |
 | Move local, owned by the spawner | Accepted | moved into the task; unusable afterward |
 | Borrowed parameter that is a Move value | Rejected | cannot move out of a borrowed parameter; the diagnostic names the capture |
+| Copy local that the closure assigns, compound-updates, or passes to `mut` | Rejected | the change would be invisible outside the task |
 | Local that holds a view (slice, wrapper containing a slice) | Rejected | a view is not independent storage (§11.7, §18.4) |
 | `mut` parameter or exclusively captured value | Rejected | exclusive access cannot be proven to end with the spawner (§18.4 rule 4) |
 | Another closure that is borrowing | Rejected | it would capture the borrowed place |
@@ -228,14 +243,24 @@ func view(values own Array<int>) {
 
 func counting() {
     var n = 0
-    let t = go func() { n += 1 }()   // accepted: n is copied; the closure's copy is independent
+    let t = go func() { n += 1 }()   // rejected: a task changes only its own copy of `n`
     t.wait()
-    println(n)                       // rejected: `n` is treated as moved (§16.4)
+}
+
+func countingLocal() {
+    let start = 0
+    let t = go func() {
+        var local = start             // accepted: the task starts from its own copy
+        local += 1
+        println(local)
+    }()
+    t.wait()
 }
 ```
 
-The last example follows §16.4: a captured Copy value that the closure assigns
-is treated as moved, so nobody mistakes the closure's copy for the original.
+The diagnostic reads, in spirit: a task gets its own copy of `n`, so changing it
+here does not change it outside; use a channel or a `mutex` to share a change,
+or start from a local copy inside the task.
 
 ## 6. Arguments to a spawned callable
 
@@ -248,7 +273,8 @@ modes**:
 - a view, or a Move value for a shared parameter, is rejected.
 
 A function value stored in an argument is rejected today because it may borrow.
-This proposal relaxes that for one case: an `own` argument of function type is
+This proposal relaxes that for one case, delivered in the same stage as callee
+spawning (`go runWorker(handler)`): an `own` argument of function type is
 accepted when the closure it holds is owning and no captured value, recursively,
 holds a view. Such a closure is a Move value that owns everything it uses, so it
 is independently valid. A function-typed argument for a shared parameter stays
@@ -349,7 +375,7 @@ Function values (stage 2):
 | Scenario | Expected result |
 | --- | --- |
 | `let f = add` then `f(1, 2)` | Valid; `func(int, int) int` |
-| A package-qualified function declared in Zore, converted, then called | Valid |
+| A package-qualified function, written in Zore or native, converted, then called | Valid |
 | Function value passed to a `func(...)` parameter | Valid; identity by signature |
 | Function value stored in a struct field, `Array<T>`, or map value | Valid (§16.4) |
 | `add == add`, printing a function value, using one as a map key | Rejected (§16.2) |
@@ -365,6 +391,10 @@ Spawned callables (stage 3):
 | --- | --- |
 | `go func() { ... }()` capturing Copy values | Valid; values copied |
 | Captured Move value | Valid; unusable in the spawner afterward |
+| Closure assigns, compound-updates, or passes a captured Copy local to `mut` | Rejected, at the change |
+| Closure copies a captured Copy local into its own `var` and changes that | Valid |
+| `go runWorker(handler)` with an owning function-typed `own` argument | Valid; the closure moves into the task |
+| The same with a function-typed shared parameter, or a closure that holds a view | Rejected |
 | Captured borrowed parameter that is a Move value | Rejected |
 | Captured view, `mut` parameter, or exclusive capture | Rejected |
 | Spawning a closure that captures another borrowing closure | Rejected |
@@ -387,7 +417,8 @@ Spawned callables (stage 3):
 
 - §16.2: replace the sentence that rejects declared function names with the
   conversion rule of section 1.
-- §16.4: add the `go` callee/argument position to the owning list and remove
+- §16.4: add a note that a closure spawned by `go` may not change a captured
+  Copy value; add the `go` callee/argument position to the owning list and remove
   "use with tasks (`go`) … remain unsupported" for the synchronous case.
 - §16.6: state that `go` of a call-once binding consumes it.
 - §18.3: `go` accepts a declared function or method, a function-typed local,
@@ -399,16 +430,18 @@ Spawned callables (stage 3):
 - `docs/roadmap.md`: replace "`go` on function values and closures" under
   remaining work.
 
-## Open points for the maintainer
+## Choices already made
 
-1. Should a package-qualified standard-library function that the compiler
-   implements natively be convertible, or only functions declared in Zore?
-   The proposal says declared Zore functions only; native ones would need
-   wrapper thunks.
-2. Is moving a closure out of a field or element at `go` wanted soon? The
-   proposal defers it as a partial-move question.
-3. Should an `own` function-typed argument to a spawned call (section 6) be in
-   the first slice, or wait until after callee spawning lands?
-4. Is the outer `n` in the `counting` example, which becomes unusable after the
-   spawn, acceptable, or should assigning a captured Copy value in a spawned
-   closure be rejected outright? The proposal keeps §16.4 as it is.
+These were open in the first draft and are settled in this draft, subject to
+the maintainer's acceptance of the whole proposal.
+
+1. Native standard-library functions are convertible exactly like functions
+   written in Zore, through a compiler-supplied wrapper (section 1).
+2. A closure is not moved out of a field or element at `go` in this change. A
+   whole local or a literal is the only callee form, so no partial-move rule is
+   needed. Moving out of a container can be added later without changing
+   anything above (section 3).
+3. An `own` function-typed argument to a spawned call is part of stage 3
+   (section 6).
+4. A spawned closure may not change a captured Copy value; the error is
+   reported at the change (section 5).
