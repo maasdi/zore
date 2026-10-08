@@ -24,6 +24,7 @@ fn symbol(name: &str) -> String {
     format!("zore_native_{package}_{snake}")
 }
 
+#[derive(Clone, Copy)]
 enum Result {
     None,
     Scalar(TypeId),
@@ -99,13 +100,14 @@ impl Module<'_> {
             _ => unreachable!("bundled functions have a supported result shape"),
         };
         let returns = self.results_ty(&function.results);
-        let (call, declaration) = match result {
+        let (call, declaration, adapter) = match result {
             Result::None => (
                 format!(
                     "  call void @{symbol}({})\n{release}  ret void\n",
                     args.join(", ")
                 ),
                 format!("declare void @{symbol}({})", declared.join(", ")),
+                None,
             ),
             Result::Scalar(ty) => {
                 let (ret, marker) = if ty == TypeStore::BOOL {
@@ -119,88 +121,124 @@ impl Module<'_> {
                         args.join(", ")
                     ),
                     format!("declare {marker}{ret} @{symbol}({})", declared.join(", ")),
+                    None,
                 )
             }
-            Result::Aggregate(ty) => {
-                let layout = self.ty(ty);
+            other => {
+                let (layout, conversion, value) = self.native_result(other, &returns);
                 let mut rendered = vec!["ptr %out".to_string()];
-                rendered.extend(args);
+                rendered.extend(args.clone());
                 let mut parameters = vec!["ptr".to_string()];
-                parameters.extend(declared);
+                parameters.extend(declared.clone());
                 (
                     format!(
-                        "  %out = alloca {layout}\n  call void @{symbol}({})\n  %r = load {layout}, ptr %out\n{release}  ret {layout} %r\n",
+                        "  %out = alloca {layout}\n  call void @{symbol}({})\n{conversion}{release}  ret {returns} {value}\n",
                         rendered.join(", ")
                     ),
                     format!("declare void @{symbol}({})", parameters.join(", ")),
-                )
-            }
-            Result::ErrorOnly => {
-                let mut rendered = vec!["ptr %out".to_string()];
-                rendered.extend(args);
-                let mut parameters = vec!["ptr".to_string()];
-                parameters.extend(declared);
-                (
-                    format!(
-                        "  %out = alloca {{ i8, ptr, i64 }}\n  call void @{symbol}({})\n  %r = load {{ i8, ptr, i64 }}, ptr %out\n  %failed = extractvalue {{ i8, ptr, i64 }} %r, 0\n  %message = extractvalue {{ i8, ptr, i64 }} %r, 1\n  %length = extractvalue {{ i8, ptr, i64 }} %r, 2\n  %present = icmp ne i8 %failed, 0\n  %e0 = insertvalue {{ i1, ptr, i64 }} undef, i1 %present, 0\n  %e1 = insertvalue {{ i1, ptr, i64 }} %e0, ptr %message, 1\n  %e2 = insertvalue {{ i1, ptr, i64 }} %e1, i64 %length, 2\n{release}  ret {{ i1, ptr, i64 }} %e2\n",
-                        rendered.join(", ")
-                    ),
-                    format!("declare void @{symbol}({})", parameters.join(", ")),
-                )
-            }
-            Result::StringError => {
-                let mut rendered = vec!["ptr %out".to_string()];
-                rendered.extend(args);
-                let mut parameters = vec!["ptr".to_string()];
-                parameters.extend(declared);
-                (
-                    format!(
-                        "  %out = alloca {{ ptr, i64, i8, ptr, i64 }}\n  call void @{symbol}({})\n  %r = load {{ ptr, i64, i8, ptr, i64 }}, ptr %out\n  %data = extractvalue {{ ptr, i64, i8, ptr, i64 }} %r, 0\n  %size = extractvalue {{ ptr, i64, i8, ptr, i64 }} %r, 1\n  %failed = extractvalue {{ ptr, i64, i8, ptr, i64 }} %r, 2\n  %message = extractvalue {{ ptr, i64, i8, ptr, i64 }} %r, 3\n  %length = extractvalue {{ ptr, i64, i8, ptr, i64 }} %r, 4\n  %present = icmp ne i8 %failed, 0\n  %s0 = insertvalue {{ ptr, i64 }} undef, ptr %data, 0\n  %s1 = insertvalue {{ ptr, i64 }} %s0, i64 %size, 1\n  %e0 = insertvalue {{ i1, ptr, i64 }} undef, i1 %present, 0\n  %e1 = insertvalue {{ i1, ptr, i64 }} %e0, ptr %message, 1\n  %e2 = insertvalue {{ i1, ptr, i64 }} %e1, i64 %length, 2\n  %t0 = insertvalue {returns} undef, {{ ptr, i64 }} %s1, 0\n  %t1 = insertvalue {returns} %t0, {{ i1, ptr, i64 }} %e2, 1\n{release}  ret {returns} %t1\n",
-                        rendered.join(", ")
-                    ),
-                    format!("declare void @{symbol}({})", parameters.join(", ")),
-                )
-            }
-            Result::ArrayError(array) => {
-                let mut rendered = vec!["ptr %out".to_string()];
-                rendered.extend(args);
-                let mut parameters = vec!["ptr".to_string()];
-                parameters.extend(declared);
-                let array_ty = self.ty(array);
-                (
-                    format!(
-                        "  %out = alloca {{ ptr, i64, i64, i8, ptr, i64 }}\n  call void @{symbol}({})\n  %r = load {{ ptr, i64, i64, i8, ptr, i64 }}, ptr %out\n  %data = extractvalue {{ ptr, i64, i64, i8, ptr, i64 }} %r, 0\n  %size = extractvalue {{ ptr, i64, i64, i8, ptr, i64 }} %r, 1\n  %capacity = extractvalue {{ ptr, i64, i64, i8, ptr, i64 }} %r, 2\n  %failed = extractvalue {{ ptr, i64, i64, i8, ptr, i64 }} %r, 3\n  %message = extractvalue {{ ptr, i64, i64, i8, ptr, i64 }} %r, 4\n  %length = extractvalue {{ ptr, i64, i64, i8, ptr, i64 }} %r, 5\n  %present = icmp ne i8 %failed, 0\n  %a0 = insertvalue {array_ty} undef, ptr %data, 0\n  %a1 = insertvalue {array_ty} %a0, i64 %size, 1\n  %a2 = insertvalue {array_ty} %a1, i64 %capacity, 2\n  %e0 = insertvalue {{ i1, ptr, i64 }} undef, i1 %present, 0\n  %e1 = insertvalue {{ i1, ptr, i64 }} %e0, ptr %message, 1\n  %e2 = insertvalue {{ i1, ptr, i64 }} %e1, i64 %length, 2\n  %t0 = insertvalue {returns} undef, {array_ty} %a2, 0\n  %t1 = insertvalue {returns} %t0, {{ i1, ptr, i64 }} %e2, 1\n{release}  ret {returns} %t1\n",
-                        rendered.join(", ")
-                    ),
-                    format!("declare void @{symbol}({})", parameters.join(", ")),
-                )
-            }
-            Result::ValueError(value) => {
-                let mut rendered = vec!["ptr %out".to_string()];
-                rendered.extend(args);
-                let mut parameters = vec!["ptr".to_string()];
-                parameters.extend(declared);
-                let value_ty = self.ty(value);
-                let narrow = if value == TypeStore::BOOL {
-                    "  %v = trunc i64 %value to i1\n".to_string()
-                } else {
-                    "  %v = add i64 %value, 0\n".to_string()
-                };
-                (
-                    format!(
-                        "  %out = alloca {{ i64, i8, ptr, i64 }}\n  call void @{symbol}({})\n  %r = load {{ i64, i8, ptr, i64 }}, ptr %out\n  %value = extractvalue {{ i64, i8, ptr, i64 }} %r, 0\n  %failed = extractvalue {{ i64, i8, ptr, i64 }} %r, 1\n  %message = extractvalue {{ i64, i8, ptr, i64 }} %r, 2\n  %length = extractvalue {{ i64, i8, ptr, i64 }} %r, 3\n{narrow}  %present = icmp ne i8 %failed, 0\n  %e0 = insertvalue {{ i1, ptr, i64 }} undef, i1 %present, 0\n  %e1 = insertvalue {{ i1, ptr, i64 }} %e0, ptr %message, 1\n  %e2 = insertvalue {{ i1, ptr, i64 }} %e1, i64 %length, 2\n  %s0 = insertvalue {returns} undef, {value_ty} %v, 0\n  %s1 = insertvalue {returns} %s0, {{ i1, ptr, i64 }} %e2, 1\n{release}  ret {returns} %s1\n",
-                        rendered.join(", ")
-                    ),
-                    format!("declare void @{symbol}({})", parameters.join(", ")),
+                    Some((layout, conversion, value)),
                 )
             }
         };
         self.intrinsics.insert(declaration);
-        format!(
+        let plain = format!(
             "define {returns} @\"{}.{}\"({}) {{\nentry:\n{prologue}{call}}}\n\n",
             self.package.name,
             function.name,
             header.join(", ")
-        )
+        );
+        let name = format!("@\"{}.{}$io", self.package.name, function.name);
+        match crate::async_lowering::native_wait(&function.name) {
+            Some(crate::async_lowering::NativeWait::Helper) => {
+                let mut types: Vec<_> = function
+                    .params
+                    .iter()
+                    .map(|param| self.ty(function.locals[param.0 as usize].ty))
+                    .collect();
+                types.push("ptr".into());
+                let layout = format!("{{ {} }}", types.join(", "));
+                let mut job =
+                    format!("define private void {name}$job\"(ptr %storage) {{\nentry:\n");
+                let mut loaded = Vec::new();
+                for (index, ty) in types.iter().enumerate() {
+                    writeln!(job, "  %s{index} = getelementptr inbounds {layout}, ptr %storage, i32 0, i32 {index}\n  %a{index} = load {ty}, ptr %s{index}").unwrap();
+                    if index + 1 < types.len() {
+                        loaded.push(format!("{ty} %a{index}"));
+                    }
+                }
+                writeln!(job, "  %result = call {returns} @\"{}.{}\"({})\n  store {returns} %result, ptr %a{}\n  ret void\n}}\n", self.package.name, function.name, loaded.join(", "), types.len() - 1).unwrap();
+                plain + &job
+            }
+            Some(crate::async_lowering::NativeWait::Socket) => {
+                let start = format!(
+                    "define private ptr {name}$start\"({}, ptr %context) {{\nentry:\n{prologue}  %operation = call ptr @{symbol}_start({}, ptr %context)\n{release}  ret ptr %operation\n}}\n\n",
+                    header.join(", "),
+                    args.join(", ")
+                );
+                self.intrinsics.insert(format!(
+                    "declare ptr @{symbol}_start({}, ptr)",
+                    declared.join(", ")
+                ));
+                self.intrinsics
+                    .insert("declare i8 @zore_native_net_poll(ptr, ptr, ptr)".into());
+                let (layout, conversion, value) =
+                    adapter.expect("socket results use an out pointer");
+                let poll = format!(
+                    "define private i8 {name}$poll\"(ptr %operation, ptr %context, ptr %result) {{\nentry:\n  %out = alloca {layout}\n  %ready = call i8 @zore_native_net_poll(ptr %operation, ptr %context, ptr %out)\n  %finished = icmp ne i8 %ready, 0\n  br i1 %finished, label %done, label %pending\npending:\n  ret i8 0\ndone:\n{conversion}  store {returns} {value}, ptr %result\n  ret i8 1\n}}\n\n"
+                );
+                plain + &start + &poll
+            }
+            None => plain,
+        }
+    }
+    fn native_result(&self, result: Result, returns: &str) -> (String, String, String) {
+        if let Result::Aggregate(ty) = result {
+            let layout = self.ty(ty);
+            return (
+                layout.clone(),
+                format!("  %r = load {layout}, ptr %out\n"),
+                "%r".into(),
+            );
+        }
+        let (layout, error_index) = match result {
+            Result::ErrorOnly => ("{ i8, ptr, i64 }", 0),
+            Result::ValueError(_) => ("{ i64, i8, ptr, i64 }", 1),
+            Result::StringError => ("{ ptr, i64, i8, ptr, i64 }", 2),
+            Result::ArrayError(_) => ("{ ptr, i64, i64, i8, ptr, i64 }", 3),
+            _ => unreachable!(),
+        };
+        let mut conversion = format!(
+            "  %r = load {layout}, ptr %out\n  %failed = extractvalue {layout} %r, {error_index}\n  %message = extractvalue {layout} %r, {}\n  %length = extractvalue {layout} %r, {}\n  %present = icmp ne i8 %failed, 0\n  %e0 = insertvalue {{ i1, ptr, i64 }} undef, i1 %present, 0\n  %e1 = insertvalue {{ i1, ptr, i64 }} %e0, ptr %message, 1\n  %e2 = insertvalue {{ i1, ptr, i64 }} %e1, i64 %length, 2\n",
+            error_index + 1,
+            error_index + 2
+        );
+        let (value_ty, value) = match result {
+            Result::ErrorOnly => return (layout.into(), conversion, "%e2".into()),
+            Result::ValueError(ty) => {
+                writeln!(conversion, "  %value = extractvalue {layout} %r, 0").unwrap();
+                if ty == TypeStore::BOOL {
+                    conversion.push_str("  %v = trunc i64 %value to i1\n");
+                } else {
+                    conversion.push_str("  %v = add i64 %value, 0\n");
+                }
+                (self.ty(ty), "%v")
+            }
+            Result::StringError | Result::ArrayError(_) => {
+                let value_ty = match result {
+                    Result::ArrayError(ty) => self.ty(ty),
+                    _ => "{ ptr, i64 }".into(),
+                };
+                writeln!(conversion, "  %data = extractvalue {layout} %r, 0\n  %size = extractvalue {layout} %r, 1\n  %v0 = insertvalue {value_ty} undef, ptr %data, 0\n  %v1 = insertvalue {value_ty} %v0, i64 %size, 1").unwrap();
+                if matches!(result, Result::ArrayError(_)) {
+                    writeln!(conversion, "  %capacity = extractvalue {layout} %r, 2\n  %v2 = insertvalue {value_ty} %v1, i64 %capacity, 2").unwrap();
+                    (value_ty, "%v2")
+                } else {
+                    (value_ty, "%v1")
+                }
+            }
+            _ => unreachable!(),
+        };
+        writeln!(conversion, "  %t0 = insertvalue {returns} undef, {value_ty} {value}, 0\n  %t1 = insertvalue {returns} %t0, {{ i1, ptr, i64 }} %e2, 1").unwrap();
+        (layout.into(), conversion, "%t1".into())
     }
 }

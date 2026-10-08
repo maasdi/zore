@@ -6,19 +6,54 @@ use crate::mir::{self, Callee, Terminator};
 use super::{Plan, StateMachine, Suspension};
 
 pub fn lower(package: &hir::Package, program: &mir::Program) -> Plan {
+    let mut waiting_library = HashSet::new();
+    loop {
+        let before = waiting_library.len();
+        for body in &program.bodies {
+            let function = package.function(body.function);
+            if function.native
+                || function.is_closure
+                || ![
+                    "zore/net.",
+                    "zore/cancel.",
+                    "zore/time.",
+                    "zore/io.",
+                    "zore/os.",
+                ]
+                .iter()
+                .any(|prefix| function.name.starts_with(prefix))
+            {
+                continue;
+            }
+            if body.blocks.iter().any(|block| match &block.terminator {
+                Terminator::Call { callee, .. } => match callee {
+                    Callee::Function(id) => {
+                        waiting_library.contains(id)
+                            || super::native_wait(&package.function(*id).name).is_some()
+                            || package.function(*id).name == "zore/time.Sleep"
+                    }
+                    Callee::ChannelSend
+                    | Callee::ChannelReceive
+                    | Callee::Select { .. }
+                    | Callee::MutexWithLock
+                    | Callee::TaskWait => true,
+                    _ => false,
+                },
+                _ => false,
+            }) {
+                waiting_library.insert(body.function);
+            }
+        }
+        if waiting_library.len() == before {
+            break;
+        }
+    }
     let mut eligible: HashSet<_> = program
         .bodies
         .iter()
         .filter(|body| {
             let function = package.function(body.function);
-            function.is_async
-                && !function.native
-                && !body.blocks.iter().any(|block| match &block.terminator {
-                    Terminator::Call { callee, .. } => {
-                        super::suspension::needs_fiber(package, callee)
-                    }
-                    _ => false,
-                })
+            !function.native && (function.is_async || waiting_library.contains(&body.function))
         })
         .map(|body| body.function)
         .collect();
@@ -68,6 +103,12 @@ pub fn lower(package: &hir::Package, program: &mir::Program) -> Plan {
                                 && package.function(*id).name == "zore/time.Sleep" =>
                         {
                             Suspension::Sleep
+                        }
+                        Callee::Function(id)
+                            if package.function(*id).native
+                                && super::native_wait(&package.function(*id).name).is_some() =>
+                        {
+                            Suspension::Io(*id)
                         }
                         Callee::MutexWithLock => Suspension::Mutex,
                         Callee::TaskWait => Suspension::Task,

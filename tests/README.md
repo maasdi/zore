@@ -187,3 +187,12 @@ Mutex poll regressions cover FIFO grants across slots and task wakers, repeated
 polls, wake-before-Pending, poisoning, zero handles, and concurrent exclusive
 access. Native parity cases compare fiber and poll execution with blocking
 callbacks, Move results, contention, panic cleanup, and heap-only poll storage.
+
+I/O poll regressions compare plain and async file, stdin, networking, and
+cancellation APIs. They cover byte views and Move results, UTF-8 framing, EOF and
+invalid input, timeout recovery, error propagation and cleanup, shared socket
+registration, partial writes, and heap-only async storage. Runtime helper tests
+use a single poll worker to check progress while work is pending, completion
+before Pending, nested helper calls, and task-local panic transfer. Socket tests
+use loopback peers and bounded waits, including backpressure and incomplete text
+recovery after a timeout.

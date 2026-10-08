@@ -11,9 +11,9 @@ use super::{blocking, reactor};
 /// An `error` result, written by functions whose only result is an `error`.
 #[repr(C)]
 pub struct ErrorOut {
-    failed: u8,
-    message: *const u8,
-    message_len: i64,
+    pub(super) failed: u8,
+    pub(super) message: *const u8,
+    pub(super) message_len: i64,
 }
 
 impl ErrorOut {
@@ -38,11 +38,11 @@ impl ErrorOut {
 /// A `string` and an `error`, written by results of the shape `(string, error)`.
 #[repr(C)]
 pub struct StringError {
-    data: *const u8,
-    len: i64,
-    failed: u8,
-    message: *const u8,
-    message_len: i64,
+    pub(super) data: *const u8,
+    pub(super) len: i64,
+    pub(super) failed: u8,
+    pub(super) message: *const u8,
+    pub(super) message_len: i64,
 }
 
 impl StringError {
@@ -72,9 +72,9 @@ impl StringError {
 /// Where an `Array<byte>` descriptor is written.
 #[repr(C)]
 pub struct ByteArray {
-    data: *mut u8,
-    len: i64,
-    cap: i64,
+    pub(super) data: *mut u8,
+    pub(super) len: i64,
+    pub(super) cap: i64,
 }
 
 impl ByteArray {
@@ -100,10 +100,10 @@ impl ByteArray {
 /// An `Array<byte>` and an `error`, written by results of the shape `(Array<byte>, error)`.
 #[repr(C)]
 pub struct ByteArrayError {
-    array: ByteArray,
-    failed: u8,
-    message: *const u8,
-    message_len: i64,
+    pub(super) array: ByteArray,
+    pub(super) failed: u8,
+    pub(super) message: *const u8,
+    pub(super) message_len: i64,
 }
 
 impl ByteArrayError {

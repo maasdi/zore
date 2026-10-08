@@ -132,6 +132,8 @@ impl Task {
             if let Some(pool) = self.pool.upgrade() {
                 lock(&pool.state).tasks.remove(&self.id);
                 pool.ready.notify_all();
+                #[cfg(test)]
+                pool.finished.notify_all();
             }
             super::task::finished();
         } else if state.notified {
@@ -165,6 +167,8 @@ struct Pool {
     capacity: usize,
     state: Mutex<PoolState>,
     ready: Condvar,
+    #[cfg(test)]
+    finished: Condvar,
 }
 
 thread_local! {
@@ -182,6 +186,8 @@ impl Pool {
             capacity,
             state: Mutex::new(PoolState::default()),
             ready: Condvar::new(),
+            #[cfg(test)]
+            finished: Condvar::new(),
         });
         lock(&pool.state).workers = capacity;
         for _ in 0..capacity {
@@ -341,7 +347,7 @@ impl TestPool {
         while !state.tasks.is_empty() {
             let remaining = deadline.saturating_duration_since(std::time::Instant::now());
             assert!(!remaining.is_zero(), "poll tasks did not finish");
-            state = self.0.ready.wait_timeout(state, remaining).unwrap().0;
+            state = self.0.finished.wait_timeout(state, remaining).unwrap().0;
         }
     }
 }

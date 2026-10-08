@@ -75,6 +75,7 @@ fn prepare(stream: &TcpStream) -> std::io::Result<()> {
 /// Runs `attempt` until it stops reporting that it would block, waiting for the descriptor in
 /// between; with a positive `limit` in milliseconds, gives up with a timeout error once the
 /// descriptor has stayed unready that long.
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 fn until_ready<T>(
     descriptor: &impl Pollable,
     write: bool,
@@ -141,6 +142,9 @@ pub extern "C" fn zore_native_net_port(id: i64) -> i64 {
 /// `out` must be writable.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn zore_native_net_accept(out: *mut ValueError, id: i64) {
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    let value = poll::accept(id);
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     let value = match lookup(id).as_deref() {
         Some(Handle::Listener(listener)) => {
             let accepted = until_ready(&listener.socket, false, &listener.timeout, || {
@@ -220,6 +224,7 @@ pub unsafe extern "C" fn zore_native_net_set_timeout(
 }
 
 /// Reads more bytes into `pending` until it starts with a whole character.
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 fn read_text(connection: &Connection, max: usize) -> StringError {
     let mut pending = std::mem::take(
         &mut *connection
@@ -271,6 +276,9 @@ fn read_text(connection: &Connection, max: usize) -> StringError {
 /// `out` must be writable.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn zore_native_net_read(out: *mut StringError, id: i64, max: i64) {
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    let result = poll::read(id, max);
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     let result = match (lookup(id).as_deref(), usize::try_from(max)) {
         (_, Ok(0) | Err(_)) => StringError::failed("net.Read: max must be positive"),
         (Some(Handle::Connection(connection)), Ok(max)) => read_text(connection, max),
@@ -281,6 +289,11 @@ pub unsafe extern "C" fn zore_native_net_read(out: *mut StringError, id: i64, ma
 }
 
 fn send_all(id: i64, bytes: &[u8], name: &str) -> ErrorOut {
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    {
+        poll::write(id, bytes, name == "net.WriteBytes")
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     match lookup(id).as_deref() {
         Some(Handle::Connection(connection)) => {
             let mut stream = &connection.stream;
@@ -338,6 +351,7 @@ pub unsafe extern "C" fn zore_native_net_write_bytes(
 
 /// Waits for at least one byte, then returns up to `max` of them; bytes of a character that
 /// `Read` kept back come first.
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 fn read_raw(connection: &Connection, max: usize) -> ByteArrayError {
     let mut pending = std::mem::take(
         &mut *connection
@@ -371,6 +385,9 @@ fn read_raw(connection: &Connection, max: usize) -> ByteArrayError {
 /// `out` must be writable.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn zore_native_net_read_bytes(out: *mut ByteArrayError, id: i64, max: i64) {
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    let result = poll::read_bytes(id, max);
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     let result = match (lookup(id).as_deref(), usize::try_from(max)) {
         (_, Ok(0) | Err(_)) => ByteArrayError::failed("net.ReadBytes: max must be positive"),
         (Some(Handle::Connection(connection)), Ok(max)) => read_raw(connection, max),
@@ -403,3 +420,7 @@ pub extern "C" fn zore_native_net_close_handle(id: i64) {
     let closed = table().as_mut().and_then(|handles| handles.remove(&id));
     drop(closed);
 }
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[path = "net_poll.rs"]
+mod poll;

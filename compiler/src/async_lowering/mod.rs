@@ -4,4 +4,4 @@ mod suspension;
 
 pub use lower::lower;
 pub use state_machine::{Plan, StateMachine};
-pub use suspension::Suspension;
+pub use suspension::{NativeWait, Suspension, native_wait};
