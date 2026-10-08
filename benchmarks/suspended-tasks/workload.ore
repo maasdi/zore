@@ -1,0 +1,42 @@
+package main
+
+import "zore/io"
+import "zore/strconv"
+
+async func wait(ready channel<bool>, release channel<bool>) int {
+    ready.send(true)
+    let _, ok = release.receive()
+    if !ok { return 0 }
+    return 1
+}
+
+func main() {
+    let countText, readError = io.ReadLine()
+    if readError != nil { return }
+    let count, parseError = strconv.Atoi(countText)
+    if parseError != nil || count < 1 { return }
+
+    let ready = channel<bool>()
+    let release = channel<bool>()
+    var tasks = Array<Task<int>>{}
+    for var i = 0; i < count; i += 1 {
+        tasks.push(go wait(ready, release))
+    }
+    for var i = 0; i < count; i += 1 {
+        let _, _ = ready.receive()
+    }
+    println("READY " + strconv.Itoa(count))
+
+    let command, commandError = io.ReadLine()
+    if commandError != nil || command != "release" { return }
+    for var i = 0; i < count; i += 1 {
+        release.send(true)
+    }
+
+    var completed = 0
+    for tasks.len() > 0 {
+        let found, task = tasks.pop()
+        if found { completed += task.wait() }
+    }
+    println("DONE " + strconv.Itoa(completed))
+}
