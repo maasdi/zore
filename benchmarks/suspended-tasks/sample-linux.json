@@ -1,0 +1,122 @@
+{
+  "schema_version": 1,
+  "commit": "aae7169c2ebe5f466938ff98aaac80ff887e6821",
+  "working_tree_dirty": false,
+  "toolchain": {
+    "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)",
+    "clang": "Debian clang version 19.1.7 (3+b1)",
+    "zore": "zore 0.1.0"
+  },
+  "host": {
+    "platform": "Linux-6.18.44-x86_64-with-glibc2.41",
+    "machine": "x86_64",
+    "cpu_model": "AMD EPYC 9V74 80-Core Processor",
+    "logical_core_count": 3
+  },
+  "configuration": {
+    "task_counts": [
+      100,
+      1000
+    ],
+    "repetitions": 1,
+    "sample_interval_seconds": 0.05,
+    "timeout_seconds_per_run": 60.0,
+    "stability": {
+      "requested_samples": 6,
+      "effective_samples": 6,
+      "minimum_seconds": 0.25,
+      "rss_tolerance_percent": 1.0,
+      "rss_tolerance_floor_kib": 64,
+      "thread_count_must_be_constant": true
+    },
+    "measurement": "Linux /proc/<pid>/status sampled after READY and before release"
+  },
+  "runs": [
+    {
+      "task_count": 100,
+      "repetition": 1,
+      "pid": 499211,
+      "ready_line": "READY 100",
+      "done_line": "DONE 100",
+      "sampled_peak_rss_kib": 1444,
+      "sampled_peak_threads": 4,
+      "settled_rss_kib": 1444.0,
+      "settled_threads": 4,
+      "raw_waiting_samples": [
+        {
+          "elapsed_ms": 0.077,
+          "rss_kib": 1444,
+          "threads": 4
+        },
+        {
+          "elapsed_ms": 50.403,
+          "rss_kib": 1444,
+          "threads": 4
+        },
+        {
+          "elapsed_ms": 100.781,
+          "rss_kib": 1444,
+          "threads": 4
+        },
+        {
+          "elapsed_ms": 151.104,
+          "rss_kib": 1444,
+          "threads": 4
+        },
+        {
+          "elapsed_ms": 201.457,
+          "rss_kib": 1444,
+          "threads": 4
+        },
+        {
+          "elapsed_ms": 251.87,
+          "rss_kib": 1444,
+          "threads": 4
+        }
+      ]
+    },
+    {
+      "task_count": 1000,
+      "repetition": 1,
+      "pid": 499215,
+      "ready_line": "READY 1000",
+      "done_line": "DONE 1000",
+      "sampled_peak_rss_kib": 2544,
+      "sampled_peak_threads": 4,
+      "settled_rss_kib": 2544.0,
+      "settled_threads": 4,
+      "raw_waiting_samples": [
+        {
+          "elapsed_ms": 0.118,
+          "rss_kib": 2544,
+          "threads": 4
+        },
+        {
+          "elapsed_ms": 50.422,
+          "rss_kib": 2544,
+          "threads": 4
+        },
+        {
+          "elapsed_ms": 100.834,
+          "rss_kib": 2544,
+          "threads": 4
+        },
+        {
+          "elapsed_ms": 151.173,
+          "rss_kib": 2544,
+          "threads": 4
+        },
+        {
+          "elapsed_ms": 201.521,
+          "rss_kib": 2544,
+          "threads": 4
+        },
+        {
+          "elapsed_ms": 251.823,
+          "rss_kib": 2544,
+          "threads": 4
+        }
+      ]
+    }
+  ]
+}
