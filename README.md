@@ -47,19 +47,22 @@ John
 | --- | --- |
 | Language specification | MVP decisions locked in [`spec/language-spec.md`](spec/language-spec.md) |
 | Lexer, parser, diagnostics | Implemented, with error recovery |
-| Name resolution and type checking | Implemented for a synchronous subset: primitives, `error`, structs, fixed arrays, `Array<T>`, maps, slices, functions and methods, closures, control flow, and Go-style untyped constants |
-| Native code generation | Implemented for that subset: LLVM IR with runtime checks for overflow, division by zero, shifts, conversions, and bounds, linked with a Rust runtime |
-| Ownership, borrowing, and cleanup | Implemented: Copy/Move classification, moves and partial moves, shared and `mut` borrows, borrowed slices with region analysis, deterministic drops, and panic cleanup |
-| Errors and `?` | Implemented for synchronous code; awaited `?` waits for async |
+| Name resolution and type checking | Implemented for the supported synchronous and async subset: primitives, `error`, structs, collections, slices, functions and methods, closures, tasks, channels, mutexes, control flow, and Go-style untyped constants |
+| Native code generation | Implemented for that subset: LLVM IR with checked arithmetic and bounds, persistent async state machines, and a linked Rust runtime |
+| Ownership, borrowing, and cleanup | Implemented: Copy/Move classification, partial moves, shared and `mut` borrows, inferred regions for stored views, and cleanup on normal, error, and panic paths; task inputs use conservative borrow restrictions |
+| Errors and `?` | Implemented for synchronous and async code, including propagation after awaiting async calls or task results |
 | Strings | Length, indexing, slicing, loops by character, `+`, and `string(rune)` work |
 | Collections | `[T; N]`, `Array<T>`, `map[K]V`, and `[]T` work; `clone` works for structs and collections; `len`, `push`, `pop`, and `for … in` loops work; borrowed map entries are planned |
-| Closures and function types | Implemented, including closures that are returned or stored and call-once closures; closures with tasks are planned |
-| Packages and imports | Folders are packages; `import "project/folder"` and qualified names work, with exported (capitalized) names, import checks, and cycle detection; the standard packages `zore/strings` and `zore/strconv` work |
-| `async`/`await`, tasks, channels | Planned (part of the MVP) |
+| Closures and function types | Implemented, including closures that are returned or stored and call-once closures; spawning function values or closures is not supported |
+| Packages and imports | Folders are packages; `import "project/folder"` and qualified names work, with exports, import checks, and cycle detection; bundled packages include `zore/strings`, `zore/strconv`, `zore/time`, `zore/io`, `zore/os`, `zore/net`, and `zore/cancel` |
+| `async`/`await`, tasks, channels, mutexes | Implemented for the supported operations: polled async tasks, channel send/receive and `select`, mutex acquisition, timers, TCP I/O, files, standard input, and cooperative cancellation. A waiting plain function occupies an OS worker; the runtime starts replacement workers |
 | Self-hosting | Long-term goal |
 
 Features outside the implemented subset are reported as errors, never silently
-accepted. The [roadmap](docs/roadmap.md) has the details.
+accepted. The compiler does not yet support spawning function values, recursive
+owned structs through arrays or maps, or package-level variables. Async frames
+are not shrunk by liveness, and scheduling has no preemption. Full MVP coverage
+still needs an audit; see the [roadmap](docs/roadmap.md).
 
 ## Getting started
 
