@@ -5,7 +5,7 @@ use crate::mir::{self, Callee, Terminator};
 
 use super::{Plan, StateMachine, Suspension};
 
-/// Lowers async call/task and channel waits. Remaining waiting primitives and native async functions
+/// Lowers async call/task, channel, and timer waits. Remaining waiting primitives and native async functions
 /// retain fiber execution until their poll variants land. Propagate that fallback through
 /// awaited calls, including recursion, so a state machine never synchronously awaits a fiber.
 pub fn lower(package: &hir::Package, program: &mir::Program) -> Plan {
@@ -66,6 +66,12 @@ pub fn lower(package: &hir::Package, program: &mir::Program) -> Plan {
                     };
                     let suspension = match callee {
                         Callee::Function(id) if eligible.contains(id) => Suspension::Call(*id),
+                        Callee::Function(id)
+                            if package.function(*id).native
+                                && package.function(*id).name == "zore/time.Sleep" =>
+                        {
+                            Suspension::Sleep
+                        }
                         Callee::TaskWait => Suspension::Task,
                         Callee::ChannelSend | Callee::ChannelReceive | Callee::Select { .. } => {
                             Suspension::Channel

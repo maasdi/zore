@@ -9,7 +9,7 @@ func After(milliseconds int) channel<bool> {
     return ready
 }
 
-func fire(ready channel<bool>, milliseconds int) {
+async func fire(ready channel<bool>, milliseconds int) {
     Sleep(milliseconds)
     ready.send(true)
     ready.close()

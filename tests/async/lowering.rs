@@ -43,6 +43,9 @@ func main() { let t = go parent(go plain()); println(t.wait()) }",
                 Suspension::Call(id) => {
                     assert!(matches!(callee, mir::Callee::Function(callee) if id == callee))
                 }
+                Suspension::Sleep => assert!(
+                    matches!(callee, mir::Callee::Function(id) if package.function(*id).name == "zore/time.Sleep")
+                ),
                 Suspension::Task => assert!(matches!(callee, mir::Callee::TaskWait)),
                 Suspension::Channel => assert!(matches!(
                     callee,
@@ -138,5 +141,41 @@ func main() {}",
         plan.machines
             .keys()
             .any(|id| package.function(*id).name == "parent")
+    );
+}
+
+#[test]
+fn native_sleep_is_a_suspension_and_nonwaiting_time_calls_stay_ordinary() {
+    let (package, program, plan) = plan("package main
+import \"zore/time\"
+async func sleeper(ms int) int { let start = time.Millis(); time.Sleep(ms); return time.Millis() - start }
+async func parent() int { return await sleeper(1) }
+func plain() { time.Sleep(1) }
+func main() {}");
+    let (&id, machine) = plan
+        .machines
+        .iter()
+        .find(|(id, _)| package.function(**id).name == "sleeper")
+        .unwrap();
+    assert_eq!(machine.suspensions.len(), 1);
+    let (block, kind) = machine.suspensions[0];
+    assert_eq!(kind, Suspension::Sleep);
+    let mir::Terminator::Call { unwind, span, .. } =
+        &program.bodies[id.0 as usize].blocks[block.0 as usize].terminator
+    else {
+        panic!("expected call")
+    };
+    assert!(unwind.is_some());
+    assert!(span.end() > span.start());
+    assert!(
+        plan.machines
+            .keys()
+            .any(|id| package.function(*id).name == "parent")
+    );
+    assert!(
+        !plan
+            .machines
+            .keys()
+            .any(|id| package.function(*id).name == "plain")
     );
 }

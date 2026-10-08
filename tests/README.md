@@ -64,8 +64,14 @@ tasks, including buffered/unbuffered loops, mixed waiters, select/default/zero
 channels, duplicate cases, single operand evaluation, reverse send cleanup,
 mutable borrows, partial moves, close panics, deadlocks, and 5,000 channel waiters.
 Runtime ABI regressions force repeated polls, wake-before-Pending, pending close,
-and concurrent select winners with duplicate registrations. Time/reactor, mutex,
-and I/O poll forms remain for later slice 4 PRs.
+and concurrent select winners with duplicate registrations. Timer tests also
+compare plain and async execution for positive/nonpositive sleeps, live views and mutable borrows, Move cleanup, one-time loop arguments,
+After/select, panic unwinding, detached results, transitions back to internal
+deadlock detection, and 2,000 sleepers with plain blocking helpers.
+Runtime reactor tests cover the start/poll ABI, actual timer completion,
+wake-before-Pending descriptor readiness, deadline/registration errors, concurrent
+completion, readiness/timeout races, and released completion storage. Mutex and
+I/O poll forms remain for later slice 4 PRs.
 
 `conformance/` records spec-level cases awaiting executable coverage. In
 particular, `conformance/identifiers.md` covers the locked ASCII identifier rules,

@@ -5408,3 +5408,194 @@ func main() {
     assert_eq!(stdout(&output), "5000\n");
     assert!(output.stderr.is_empty(), "{}", stderr(&output));
 }
+
+fn timer_poll_parity(source: &str, expected: &str) {
+    for mode in ["", "async "] {
+        let source = source
+            .replace("MODE ", mode)
+            .replace("AWAIT ", if mode.is_empty() { "" } else { "await " });
+        let mut sources = SourceMap::new();
+        let id = sources.add("timers.ore", source.clone()).unwrap();
+        let ir = emit_llvm(sources.file(id).unwrap()).unwrap();
+        if source.contains("time.After") {
+            assert!(ir.contains("zore/time.fire$async$poll"));
+        }
+        if !mode.is_empty() {
+            assert!(ir.contains("run$async$poll"));
+            assert!(ir.contains("call ptr @zore_native_time_sleep_start"));
+            assert!(ir.contains("call i8 @zore_reactor_poll"));
+            for function in ir.split("define private i8 ").skip(1) {
+                let function = function.split("\n}\n").next().unwrap();
+                if function.contains("$async$poll") {
+                    assert!(!function.contains("alloca"));
+                    assert!(!function.contains("call void @\"main.zore/time.Sleep\""));
+                    assert!(!function.contains("call void @zore_native_time_sleep("));
+                }
+            }
+        }
+        let output = run_channel_poll_bounded(&source);
+        assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+        assert_eq!(stdout(&output), expected);
+        assert!(output.stderr.is_empty(), "{}", stderr(&output));
+    }
+}
+
+#[test]
+fn timer_poll_positive_zero_and_negative_durations_match_plain_execution() {
+    timer_poll_parity(
+        r#"package main
+import "zore/time"
+MODE func run() {
+    let start = time.Millis()
+    time.Sleep(25)
+    println(time.Millis() - start >= 25)
+    time.Sleep(0)
+    time.Sleep(-5)
+    time.Sleep(-9223372036854775808)
+    println(time.Millis() >= start)
+}
+func main() { let t = go run(); t.wait() }
+"#,
+        "true\ntrue\n",
+    );
+}
+
+#[test]
+fn timer_poll_nested_calls_preserve_views_mutable_borrows_and_move_cleanup() {
+    timer_poll_parity(
+        r#"package main
+import "zore/time"
+type Job struct { Name string }
+func (j mut Job) drop() { println("drop " + j.Name) }
+MODE func change(data mut [int; 2], job own Job) {
+    let view = data[:]
+    time.Sleep(5)
+    println(view[0])
+    data[1] += 3
+}
+MODE func run() {
+    var data = [int; 2]{4, 2}
+    let job = Job{Name: "child"}
+    AWAIT change(data, job)
+    println(data[1])
+}
+func main() { let t = go run(); t.wait() }
+"#,
+        "4\ndrop child\n5\n",
+    );
+}
+
+#[test]
+fn timer_poll_evaluates_sleep_arguments_once_across_loop_resumptions() {
+    timer_poll_parity(
+        r#"package main
+import "zore/time"
+func next(counter Mutex<int>) int { return counter.withLock(func(n mut int) int { n += 1; return 1 }) }
+func count(counter Mutex<int>) int { return counter.withLock(func(n mut int) int { return n }) }
+MODE func run(counter Mutex<int>) int {
+    var total = 0
+    for var i = 0; i < 30; i += 1 { time.Sleep(next(counter)); total += i }
+    return total
+}
+func main() { let counter = mutex(0); let t = go run(counter); println(t.wait()); println(count(counter)) }
+"#,
+        "435\n30\n",
+    );
+}
+
+#[test]
+fn timer_poll_after_select_and_internal_waits_are_not_false_deadlocks() {
+    timer_poll_parity(
+        r#"package main
+import "zore/time"
+MODE func produce(ch channel<int>, ms int) { time.Sleep(ms); ch.send(7); ch.close() }
+MODE func run() {
+    let ch = channel<int>()
+    let t = go produce(ch, 10)
+    let n, ok = ch.receive()
+    println(n)
+    println(ok)
+    let _, more = ch.receive()
+    println(more)
+    let timer = time.After(10)
+    select { case let fired, open = timer.receive() { println(fired); println(open) } }
+    let _, stillOpen = timer.receive()
+    println(stillOpen)
+    select { case let fired, open = time.After(0).receive() { println(fired) } }
+}
+func main() { let t = go run(); t.wait() }
+"#,
+        "7\ntrue\nfalse\ntrue\ntrue\nfalse\ntrue\n",
+    );
+}
+
+#[test]
+fn timer_poll_panic_after_resumption_unwinds_owned_values_once() {
+    for mode in ["", "async "] {
+        let source = format!(
+            r#"package main
+import "zore/time"
+type Job struct {{ Name string }}
+func (j mut Job) drop() {{ println("drop " + j.Name) }}
+{mode}func run() int {{ let job = Job{{Name: "live"}}; time.Sleep(5); var zero = 0; return 1 / zero }}
+func main() {{ let t = go run(); println(t.wait()) }}
+"#
+        );
+        let output = run_channel_poll_bounded(&source);
+        assert_eq!(output.status.code(), Some(2));
+        assert_eq!(stdout(&output), "drop live\n");
+        assert!(stderr(&output).contains("division by zero"));
+    }
+}
+
+#[test]
+fn timer_poll_many_sleeping_tasks_and_plain_helpers_preserve_progress() {
+    timer_poll_parity(
+        r#"package main
+import "zore/time"
+func helper() { time.Sleep(1) }
+MODE func run() int { time.Sleep(10); helper(); return 1 }
+func main() {
+    var tasks = Array<Task<int>>{}
+    for var i = 0; i < 2000; i += 1 { tasks.push(go run()) }
+    var total = 0
+    for tasks.len() > 0 { let ok, t = tasks.pop(); if ok { total += t.wait() } }
+    println(total)
+}
+"#,
+        "2000\n",
+    );
+}
+
+#[test]
+fn timer_poll_then_internal_wait_still_detects_deadlock() {
+    let output = run_channel_poll_bounded(
+        r#"package main
+import "zore/time"
+async func run() { time.Sleep(1); let ch = channel<int>(); ch.send(1) }
+func main() { let t = go run(); t.wait() }
+"#,
+    );
+    assert_deadlock(&output);
+}
+
+#[test]
+fn timer_poll_detached_result_is_destroyed_after_sleep_completion() {
+    let output = run_channel_poll_bounded(
+        r#"package main
+import "zore/time"
+type Job struct { Done channel<bool> }
+func (j mut Job) drop() { j.Done.send(true) }
+async func run(done channel<bool>) Job { time.Sleep(1); return Job{Done: done} }
+func main() {
+    let done = channel<bool>()
+    go run(done)
+    let dropped, _ = done.receive()
+    println(dropped)
+}
+"#,
+    );
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    assert_eq!(stdout(&output), "true\n");
+    assert!(output.stderr.is_empty(), "{}", stderr(&output));
+}

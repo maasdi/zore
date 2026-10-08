@@ -150,6 +150,26 @@ pub extern "C" fn zore_native_time_sleep(milliseconds: i64) {
     }
 }
 
+/// Starts the nonblocking form of Sleep; nonpositive durations are immediately Ready.
+///
+/// # Safety
+/// `context` must be the current live poll context for this call.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn zore_native_time_sleep_start(
+    milliseconds: i64,
+    context: *mut super::scheduler::Context,
+) -> *const reactor::Operation {
+    let Ok(milliseconds) = u64::try_from(milliseconds) else {
+        return std::ptr::null();
+    };
+    if milliseconds == 0 {
+        return std::ptr::null();
+    }
+    // SAFETY: guaranteed by the caller; only the cloned waker survives this call.
+    let waiter = unsafe { &*context }.waker().clone().into();
+    std::sync::Arc::into_raw(reactor::start_sleep(milliseconds, waiter))
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn zore_native_time_millis() -> i64 {
     static START: OnceLock<Instant> = OnceLock::new();
