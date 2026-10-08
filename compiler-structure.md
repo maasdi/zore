@@ -779,11 +779,13 @@ layout in detail.
    in the HIR package; a `types/` home would recreate the same cycle.
 3. **`Place` and `Projection` live in `mir/`, not `ownership/`.** The ownership
    checker reads them, and moving them would make `mir` depend on `ownership`.
-4. **There is no `async_lowering/` and no `runtime/scheduler.rs`.** Tasks are
-   stackful fibers (`runtime/fiber.rs`, `runtime/task.rs`), so an async function
-   is an ordinary function that runs on a fiber's stack and needs no state-machine
-   lowering. Async still reuses the ordinary ownership model (rule 7). Q32 plans to
-   end this deviation by building `async_lowering/` and removing fibers.
+4. **Fibers remain during Q32's staged migration.** `async_lowering/` and
+   `runtime/src/scheduler.rs` now exist. Slice 3 lowers simple async bodies to
+   persistent frames and polls; plain tasks and async waits without poll forms
+   still run on fibers (`runtime/src/fiber.rs`). Synchronous compatibility bodies
+   keep awaited calls from the remaining fiber paths usable until slice 4 adds
+   operation poll forms. Slice 5 removes fibers. Async reuses ordinary ownership
+   throughout (rule 7).
 5. **There is no `context/` and no `diagnostic/code.rs`.** Nothing needs shared
    compiler context yet, and diagnostics have no codes yet (rule 11).
 6. **The runtime has more modules than section 6 lists.** It also holds

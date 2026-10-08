@@ -1,4 +1,5 @@
 pub mod ast;
+pub mod async_lowering;
 pub mod codegen;
 pub mod diagnostic;
 pub mod driver;

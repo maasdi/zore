@@ -12,6 +12,7 @@ pub struct Function {
     /// Capture locals, in the order the closure expression lists them.
     pub captures: Vec<LocalId>,
     pub is_closure: bool,
+    pub is_async: bool,
     /// Declared without a body; the runtime provides its code.
     pub native: bool,
     /// The body consumes a captured value, so the closure runs at most once.

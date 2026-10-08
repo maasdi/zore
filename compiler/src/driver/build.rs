@@ -97,8 +97,9 @@ pub fn emit_project_llvm(project: &Project, sources: &dyn Sources) -> Result<Str
     }
     let mut program = lower(&package);
     dropck::insert(&package, &mut program);
+    let machines = crate::async_lowering::lower(&package, &program);
     let layered = Layered(sources, project.std_sources());
-    codegen::emit(&package, &program, &layered).map_err(BuildError::Diagnostics)
+    codegen::emit(&package, &program, &machines, &layered).map_err(BuildError::Diagnostics)
 }
 
 static NEXT_DIR: AtomicU64 = AtomicU64::new(0);
