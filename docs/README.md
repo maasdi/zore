@@ -23,3 +23,9 @@ for their rationale; the specification is authoritative.
 - [Maps](proposals/maps.md) (spec §13.3)
 - [Async functions as state machines, without fibers](proposals/async-state-machines.md) (spec §17.3, §17.7, §18.3, §20.2, §35.1, §37.3; all six slices implemented)
 - [Declared function values and `go` on owning callables](proposals/function-values-and-spawned-closures.md) (spec §16.2, §16.4, §16.6, §18.3, §18.4; issue #52)
+
+## Proposals under review
+
+These proposals are not accepted. They lock nothing, and the specification does not change until the maintainer accepts them.
+
+- [Method values](proposals/method-values.md) (Q34; follow-up to issue #52)
