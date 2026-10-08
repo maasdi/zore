@@ -4810,3 +4810,307 @@ fn a_cache_folder_that_cannot_be_used_does_not_stop_a_build() {
         .unwrap();
     assert_eq!(stdout(&run), "3\n");
 }
+
+#[test]
+fn async_state_machine_ir_uses_heap_storage_and_explicit_resume_states() {
+    let source = "package main
+async func leaf(t own Task<int>) int { let view = [int; 2]{3, 4}; return view[0] + await t }
+async func parent(t own Task<int>) int { return await leaf(t) }
+async func fallback(ch channel<int>) int { let n, _ = ch.receive(); return n }
+func main() {}";
+    let mut sources = SourceMap::new();
+    let id = sources.add("async.ore", source.into()).unwrap();
+    let ir = emit_llvm(sources.file(id).unwrap()).unwrap();
+    assert!(ir.contains("AsyncFrame"));
+    assert!(ir.contains("leaf$async$new"));
+    assert!(!ir.contains("fallback$async$poll"));
+    for function in ir.split("define private i8 ").skip(1) {
+        let function = function.split("\n}\n").next().unwrap();
+        if !function.contains("$async$poll") {
+            continue;
+        }
+        assert!(function.contains("switch i32 %state"));
+        assert!(function.contains("ret i8 0"));
+        assert!(function.contains("ret i8 1"));
+        assert!(
+            !function.contains("alloca"),
+            "poll-local storage can escape across suspension: {function}"
+        );
+        assert!(!function.contains("call ptr @zore_task_wait"));
+    }
+    assert!(ir.contains("call i8 @zore_task_poll"));
+}
+
+#[test]
+fn async_state_machines_preserve_mutable_borrows_and_views_across_pending_children() {
+    prints(
+        r#"package main
+import "zore/time"
+func delayed(n int) int { time.Sleep(20); return n }
+async func change(data mut [int; 2], t own Task<int>) {
+    let n = await t
+    data[1] += n
+}
+async func read(data []int, t own Task<int>) int {
+    let n = await t
+    return data[0] + n
+}
+async func process() int {
+    var values = [int; 2]{10, 2}
+    await change(values, go delayed(3))
+    let view = values[:]
+    let answer = await read(view, go delayed(6))
+    return answer + values[1]
+}
+func main() { let t = go process(); println(t.wait()) }
+"#,
+        "21\n",
+    );
+}
+
+#[test]
+fn async_state_machines_evaluate_arguments_once_and_keep_loop_closures_alive() {
+    prints(
+        r#"package main
+import "zore/time"
+func delayed(n int) int { time.Sleep(2); return n }
+func next(counter Mutex<int>) int {
+    return counter.withLock(func(n mut int) int { n += 1; return n })
+}
+async func leaf(n int, t own Task<int>) int { return n + await t }
+async func run(counter Mutex<int>) (int, string) {
+    var total = 0
+    var text = ""
+    let append = func() { text = text + "x" }
+    for var i = 0; i < 20; i += 1 {
+        total += await leaf(next(counter), go delayed(1))
+        append()
+    }
+    return total, text
+}
+func main() {
+    let counter = mutex(0)
+    let t = go run(counter)
+    let total, text = t.wait()
+    println(total)
+    println(text.len())
+    println(counter.withLock(func(n mut int) int { return n }))
+}
+"#,
+        "230\n20\n20\n",
+    );
+}
+
+#[test]
+fn async_state_machines_drop_moved_and_partially_moved_resources_once() {
+    prints(
+        r#"package main
+import "zore/time"
+type Resource struct { Name string }
+func (r mut Resource) drop() { println("drop " + r.Name) }
+type Pair struct { First Resource; Second Resource }
+func delayed() int { time.Sleep(20); return 7 }
+async func consume(r own Resource, t own Task<int>) int { return await t }
+async func run() int {
+    let pair = Pair{First: Resource{Name: "first"}, Second: Resource{Name: "second"}}
+    let value = await consume(pair.First, go delayed())
+    println(pair.Second.Name)
+    return value
+}
+func main() { let t = go run(); println(t.wait()) }
+"#,
+        "drop first\nsecond\ndrop second\n7\n",
+    );
+}
+
+#[test]
+fn async_state_machine_panic_runs_nested_cleanup_and_propagates_through_join() {
+    let output = run(r#"package main
+import "zore/time"
+type Resource struct { Name string }
+func (r mut Resource) drop() { println("drop " + r.Name) }
+func delayed() int { time.Sleep(20); return 0 }
+async func inner(r own Resource) int {
+    let t = go delayed()
+    let zero = await t
+    return 1 / zero
+}
+async func outer() int {
+    let guard = Resource{Name: "outer"}
+    return await inner(Resource{Name: "inner"})
+}
+func main() {
+    let guard = Resource{Name: "main"}
+    let t = go outer()
+    println(t.wait())
+}
+"#);
+    assert_eq!(output.status.code(), Some(2), "{}", stderr(&output));
+    assert_eq!(stdout(&output), "drop inner\ndrop outer\ndrop main\n");
+    assert!(stderr(&output).contains("panic in task 1: division by zero"));
+    assert!(stderr(&output).contains("panic in the main task: division by zero"));
+}
+
+#[test]
+fn async_state_machines_propagate_errors_and_return_move_values() {
+    prints(
+        r#"package main
+import "zore/time"
+func delayed(ok bool) (int, error) {
+    time.Sleep(10)
+    if !ok { return 0, error("failed") }
+    return 5, nil
+}
+async func values(ok bool) (Array<string>, error) {
+    let guard = "kept" + " across await"
+    let t = go delayed(ok)
+    let n = await t?
+    return Array<string>{guard, "result"}, nil
+}
+func main() {
+    let a = go values(true)
+    let result, err = a.wait()
+    println(err == nil)
+    println(result[0])
+    let b = go values(false)
+    let empty, failure = b.wait()
+    println(empty.len())
+    println(failure != nil)
+}
+"#,
+        "true\nkept across await\n0\ntrue\n",
+    );
+}
+
+#[test]
+fn async_state_machines_handle_recursion_and_nil_task_panics() {
+    prints(
+        r#"package main
+async func recurse(n int) int {
+    if n == 0 { return 1 }
+    return n + await recurse(n - 1)
+}
+func main() { let t = go recurse(100); println(t.wait()) }
+"#,
+        "5051\n",
+    );
+    let output = run(r#"package main
+async func fail() int { var t Task<int> = nil; return await t }
+func main() { let t = go fail(); println(t.wait()) }
+"#);
+    assert_eq!(output.status.code(), Some(2));
+    assert!(stderr(&output).contains("wait on a nil task"));
+}
+
+#[test]
+fn async_state_machines_can_await_fiber_tasks_and_fiber_functions_can_await_polled_calls() {
+    prints(
+        r#"package main
+import "zore/time"
+func delayed() string { time.Sleep(10); return "ready" }
+async func polled() string { let t = go delayed(); return await t }
+async func fallback(ch channel<bool>) string {
+    let _, _ = ch.receive()
+    return await polled()
+}
+func main() {
+    let ch = channel<bool>(1)
+    ch.send(true)
+    let t = go fallback(ch)
+    println(t.wait())
+}
+"#,
+        "ready\n",
+    );
+}
+
+#[test]
+fn async_state_machine_task_panics_are_reported_at_both_task_boundaries() {
+    let output = run(r#"package main
+import "zore/time"
+type Resource struct { Name string }
+func (r mut Resource) drop() { println("drop " + r.Name) }
+func delayed() int { time.Sleep(20); return 0 }
+async func fail(r own Resource) int {
+    let t = go delayed()
+    let zero = await t
+    return 1 / zero
+}
+async func outer() int {
+    let guard = Resource{Name: "outer"}
+    let t = go fail(Resource{Name: "inner"})
+    return await t
+}
+func main() {
+    let guard = Resource{Name: "main"}
+    let t = go outer()
+    println(t.wait())
+}
+"#);
+    assert_eq!(output.status.code(), Some(2), "{}", stderr(&output));
+    assert_eq!(stdout(&output), "drop inner\ndrop outer\ndrop main\n");
+    let report = stderr(&output);
+    assert!(
+        report.contains("panic in task 2: division by zero"),
+        "{report}"
+    );
+    assert!(
+        report.contains("panic in task 1: division by zero"),
+        "{report}"
+    );
+    assert!(
+        report.contains("panic in the main task: division by zero"),
+        "{report}"
+    );
+}
+
+#[test]
+fn async_state_machines_drop_detached_results_and_keep_work_running() {
+    prints(
+        r#"package main
+import "zore/time"
+type Resource struct { Name string; Done channel<bool> }
+func (r mut Resource) drop() { println("drop " + r.Name); r.Done.send(true) }
+func delayed() int { time.Sleep(10); return 7 }
+async func produce(done channel<bool>) Resource {
+    let t = go delayed()
+    let value = await t
+    return Resource{Name: "detached", Done: done}
+}
+func main() {
+    let done = channel<bool>()
+    go produce(done)
+    let _, _ = done.receive()
+    println("finished")
+}
+"#,
+        "drop detached\nfinished\n",
+    );
+}
+
+#[test]
+fn thousands_of_polled_tasks_can_suspend_on_each_other_without_fiber_stacks() {
+    prints(
+        r#"package main
+async func seed() int { return 1 }
+async func add(t own Task<int>) int { return 1 + await t }
+func main() {
+    var t = go seed()
+    for var i = 0; i < 5000; i += 1 { t = go add(t) }
+    println(t.wait())
+}
+"#,
+        "5001\n",
+    );
+}
+
+#[test]
+fn async_state_machine_join_deadlocks_are_still_reported() {
+    let output = run(r#"package main
+func blocked(ch channel<int>) int { let n, _ = ch.receive(); return n }
+async func wait() int { let t = go blocked(channel<int>()); return await t }
+func main() { let t = go wait(); println(t.wait()) }
+"#);
+    assert_eq!(output.status.code(), Some(2), "{}", stderr(&output));
+    assert!(stderr(&output).contains("all tasks are asleep"));
+}

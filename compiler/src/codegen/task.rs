@@ -6,6 +6,7 @@ use crate::types::TypeId;
 pub(super) struct TaskShape {
     pub(super) block_ty: String,
     pub(super) entry: String,
+    pub(super) poll_entry: String,
     pub(super) drop_results: String,
 }
 
@@ -29,6 +30,8 @@ impl Module<'_> {
                 let entry = self.task_entry(index, results, &block_ty, &slot_ty);
                 let destructor = self.task_drop_results(index, results, &block_ty, &slot_ty, body);
                 self.task_code.push_str(&entry);
+                let poll = self.task_poll_entry(index, &block_ty);
+                self.task_code.push_str(&poll);
                 self.task_code.push_str(&destructor);
                 index
             }
@@ -36,8 +39,26 @@ impl Module<'_> {
         TaskShape {
             block_ty,
             entry: format!("@zore_task_entry.{index}"),
+            poll_entry: format!("@zore_task_poll_entry.{index}"),
             drop_results: format!("@zore_task_drop_results.{index}"),
         }
+    }
+
+    fn task_poll_entry(&self, index: usize, block_ty: &str) -> String {
+        format!(
+            "define private i8 @zore_task_poll_entry.{index}(ptr %block, ptr %context) {{\nentry:\n\
+             \x20 %closure = load {{ ptr, ptr, ptr }}, ptr %block\n\
+             \x20 %code = extractvalue {{ ptr, ptr, ptr }} %closure, 0\n\
+             \x20 %frame = extractvalue {{ ptr, ptr, ptr }} %closure, 1\n\
+             \x20 %destroy = extractvalue {{ ptr, ptr, ptr }} %closure, 2\n\
+             \x20 %out = getelementptr inbounds {block_ty}, ptr %block, i32 0, i32 1\n\
+             \x20 %status = call i8 %code(ptr %frame, ptr %context, ptr %out)\n\
+             \x20 %ready = icmp ne i8 %status, 0\n\
+             \x20 br i1 %ready, label %done, label %pending\npending:\n\
+             \x20 ret i8 0\ndone:\n\
+             \x20 call void %destroy(ptr %frame)\n\
+             \x20 ret i8 1\n}}\n\n"
+        )
     }
 
     /// Runs the closure once, keeps its results unless it panicked, then destroys what it still owns.
@@ -91,6 +112,7 @@ impl Module<'_> {
             emitting_unwind: false,
             drop_check_after_store: false,
             hoisted: String::new(),
+            polling: false,
         };
         let owned: Vec<(usize, TypeId)> = results
             .iter()
@@ -137,7 +159,41 @@ impl FunctionBuilder<'_, '_> {
             .results
             .clone();
         let shape = self.module.task_shape(&results, self.body);
-        let value = self.value(closure);
+        let thunk = match closure {
+            Operand::Copy(place) | Operand::Move(place) => self
+                .body
+                .blocks
+                .iter()
+                .flat_map(|block| &block.statements)
+                .find_map(|statement| match statement {
+                    crate::mir::Statement::Assign {
+                        place: destination,
+                        rvalue: crate::mir::Rvalue::Closure { function, .. },
+                        ..
+                    } if destination == place
+                        && self.module.machines.machines.contains_key(function) =>
+                    {
+                        Some(*function)
+                    }
+                    _ => None,
+                }),
+            _ => None,
+        };
+        let mut value = self.value(closure);
+        if let Some(thunk) = thunk {
+            let env = self.fresh();
+            self.line(format!(
+                "{env} = extractvalue {{ ptr, ptr, ptr }} {value}, 1"
+            ));
+            let frame = self.fresh();
+            let constructor = self.module.async_name(thunk, "new");
+            self.line(format!("{frame} = call ptr {constructor}(ptr {env})"));
+            value = self.closure_triple(
+                &self.module.async_name(thunk, "poll"),
+                &frame,
+                &self.module.async_name(thunk, "destroy"),
+            );
+        }
         let size = self.byte_size(&shape.block_ty, "1");
         let block = self.fresh();
         self.line(format!("{block} = call ptr @zore_alloc(i64 {size})"));
@@ -152,9 +208,14 @@ impl FunctionBuilder<'_, '_> {
             self.line(format!("store {slot_ty} zeroinitializer, ptr {slot}"));
         }
         let handle = self.fresh();
+        let (spawn, entry) = if thunk.is_some() {
+            ("zore_task_spawn_poll", &shape.poll_entry)
+        } else {
+            ("zore_task_spawn", &shape.entry)
+        };
         self.line(format!(
-            "{handle} = call ptr @zore_task_spawn(ptr {}, ptr {}, ptr {block}, i64 {size})",
-            shape.entry, shape.drop_results
+            "{handle} = call ptr @{spawn}(ptr {entry}, ptr {}, ptr {block}, i64 {size})",
+            shape.drop_results
         ));
         handle
     }

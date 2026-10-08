@@ -51,6 +51,16 @@ boundaries. Root-level Cargo checks include this crate. The native suite also
 covers empty and long strings, embedded NUL bytes, output paths with spaces,
 missing rustc diagnostics, and checking without either native tool.
 
+`tests/async/lowering.rs` tests Q32 slice 3's backend-independent suspension plan,
+cleanup edges, retained source spans, recursive calls, and propagation of fiber
+fallback. The native suite verifies heap-frame IR and real suspensions through
+nested calls and task joins, mutable borrows and views, closure environments,
+loops and one-time argument evaluation, Move/partial-move cleanup, returned
+collections, errors, nil tasks, panic containment, detached results, and a chain
+of 5,000 polled tasks. The runtime poll-entry test exercises repeated
+wake-before-Pending through the generated-code ABI and existing blocking handle
+retrieval. Direct waiting-operation poll forms remain for Q32 slice 4.
+
 `conformance/` records spec-level cases awaiting executable coverage. In
 particular, `conformance/identifiers.md` covers the locked ASCII identifier rules,
 `conformance/comments.md` covers line and non-nesting block comments, and

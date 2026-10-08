@@ -6,6 +6,7 @@ use super::fiber;
 use super::waiter::Waiter;
 
 type Code = unsafe extern "C" fn(*mut u8);
+type PollCode = unsafe extern "C" fn(*mut u8, *mut super::scheduler::Context) -> u8;
 
 static SPAWNED: AtomicU64 = AtomicU64::new(0);
 
@@ -76,6 +77,90 @@ pub(super) fn finished() {
     super::deadlock::finished();
 }
 
+fn complete(shared: &Shared, block: Block, id: u64) {
+    let panic = super::panic::take();
+    if let Some(message) = &panic {
+        super::panic::report_task(id, message);
+    }
+    let panicked = panic.is_some();
+    let mut state = shared.lock();
+    state.finished = true;
+    state.panic = panic;
+    let detached = state.detached;
+    let waiter = state.waiter.take();
+    if std::mem::take(&mut state.counted) {
+        super::deadlock::remove_blocked();
+    }
+    drop(state);
+    shared.finished.notify_all();
+    if let Some(waiter) = waiter {
+        waiter.wake();
+    }
+    if detached {
+        block.discard(panicked);
+    }
+}
+
+/// Starts a compiler-generated poll entry on its result block. The entry owns its frame,
+/// registers waits through `context`, and destroys the frame when it returns Ready (1).
+///
+/// # Safety
+/// The block must come from zore_alloc(size); entry and drop_results must accept it. The
+/// entry must return 0 (Pending) or 1 (Ready), and may borrow context only during this call.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn zore_task_spawn_poll(
+    entry: PollCode,
+    drop_results: Code,
+    data: *mut u8,
+    size: i64,
+) -> *mut Handle {
+    let shared = Arc::new(Shared::default());
+    let block = Block {
+        data,
+        size,
+        drop_results,
+    };
+    let task_shared = Arc::clone(&shared);
+    super::scheduler::spawn(move |context| {
+        // SAFETY: guaranteed by the caller; the block remains task-owned until Ready.
+        if unsafe { entry(block.data, context) } == 0 {
+            return super::scheduler::Poll::Pending;
+        }
+        complete(&task_shared, block, context.task_id());
+        super::scheduler::Poll::Ready
+    });
+    Box::into_raw(Box::new(Handle { shared, block }))
+}
+
+/// Polls a consumed task handle, registering the current task's waker if it is unfinished.
+/// Ready (1) consumes the handle and writes its result block; Pending (0) retains it.
+///
+/// # Safety
+/// handle is null or a live uniquely owned task handle; context is the current poll context;
+/// out is writable. On Pending the caller retains the handle for its next poll.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn zore_task_poll(
+    handle: *mut Handle,
+    context: *mut super::scheduler::Context,
+    size: i64,
+    out: *mut *mut u8,
+) -> u8 {
+    // SAFETY: guaranteed by the caller.
+    if let Some(handle_ref) = unsafe { handle.as_ref() } {
+        let mut state = handle_ref.shared.lock();
+        if !state.finished {
+            // SAFETY: this context is live only for the current poll; its waker is cloned.
+            let context = unsafe { &mut *context };
+            state.waiter = Some(context.waker().clone().into());
+            context.pending_internal();
+            return 0;
+        }
+    }
+    // SAFETY: Ready transfers the uniquely owned handle to the ordinary result retrieval path.
+    unsafe { out.write(zore_task_wait(handle, size)) };
+    1
+}
+
 /// Starts a task that runs `entry` on the block.
 ///
 /// # Safety
@@ -98,27 +183,7 @@ pub unsafe extern "C" fn zore_task_spawn(
     fiber::spawn(Box::new(move || {
         // SAFETY: the caller guarantees `entry` accepts the block.
         unsafe { entry(block.data) };
-        let panic = super::panic::take();
-        if let Some(message) = &panic {
-            super::panic::report_task(id, message);
-        }
-        let panicked = panic.is_some();
-        let mut state = task_shared.lock();
-        state.finished = true;
-        state.panic = panic;
-        let detached = state.detached;
-        let waiter = state.waiter.take();
-        if std::mem::take(&mut state.counted) {
-            super::deadlock::remove_blocked();
-        }
-        drop(state);
-        task_shared.finished.notify_all();
-        if let Some(waiter) = waiter {
-            waiter.wake();
-        }
-        if detached {
-            block.discard(panicked);
-        }
+        complete(&task_shared, block, id);
         finished();
         super::deadlock::check();
     }));
@@ -197,6 +262,37 @@ mod tests {
     }
 
     unsafe extern "C" fn drop_results(_: *mut u8) {}
+
+    unsafe extern "C" fn poll_entry(block: *mut u8, context: *mut crate::scheduler::Context) -> u8 {
+        // SAFETY: this test supplies an initialized i64 block and the scheduler's live context.
+        let count = unsafe { block.cast::<i64>().read() };
+        if count == 100 {
+            return 1;
+        }
+        // SAFETY: this poll owns the block, and context is valid until it returns.
+        unsafe {
+            block.cast::<i64>().write(count + 1);
+            (*context).waker().wake_by_ref();
+            (*context).pending_internal();
+        }
+        0
+    }
+
+    #[test]
+    fn generated_poll_entry_can_wake_before_pending_and_use_the_existing_handle_api() {
+        let block = zore_alloc(8);
+        // SAFETY: initialize the poll entry's eight-byte frame/result block.
+        unsafe { block.cast::<i64>().write(0) };
+        // SAFETY: both callbacks accept the allocated block, and the poll entry obeys its ABI.
+        let handle = unsafe { zore_task_spawn_poll(poll_entry, drop_results, block, 8) };
+        // SAFETY: the uniquely owned handle is consumed once.
+        let result = unsafe { zore_task_wait(handle, 8) };
+        // SAFETY: Ready leaves an initialized i64 in the block and transfers it to this caller.
+        unsafe {
+            assert_eq!(result.cast::<i64>().read(), 100);
+            zore_free(result, 8);
+        }
+    }
 
     #[test]
     fn blocking_join_from_poll_worker_compensates_and_retrieves_fiber_results() {

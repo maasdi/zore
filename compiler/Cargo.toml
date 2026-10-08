@@ -48,3 +48,7 @@ path = "../tests/packages/packages.rs"
 [[test]]
 name = "native"
 path = "../tests/codegen/native.rs"
+
+[[test]]
+name = "async_lowering"
+path = "../tests/async/lowering.rs"

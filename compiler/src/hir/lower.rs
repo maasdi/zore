@@ -800,6 +800,7 @@ impl<'a> Checker<'a> {
             body,
             captures: Vec::new(),
             is_closure: false,
+            is_async: func.is_async,
             native: func.native,
             call_once: false,
         })
@@ -997,6 +998,7 @@ impl<'a> Checker<'a> {
             body,
             captures: capture_locals,
             is_closure: true,
+            is_async: false,
             native: false,
             call_once,
         });
@@ -1438,6 +1440,7 @@ impl<'a> Checker<'a> {
             results,
             captures,
             is_closure: true,
+            is_async: self.is_async_function(function),
             native: false,
             call_once,
             locals,

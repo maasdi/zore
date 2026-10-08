@@ -23,9 +23,13 @@ pub enum Poll {
 pub struct Context {
     waker: Waker,
     internal: bool,
+    task_id: u64,
 }
 
 impl Context {
+    pub(super) fn task_id(&self) -> u64 {
+        self.task_id
+    }
     /// Clone this into the operation's waiter before returning `Pending`.
     pub fn waker(&self) -> &Waker {
         &self.waker
@@ -110,6 +114,7 @@ impl Task {
         let mut context = Context {
             waker: Waker::from(Arc::clone(self)),
             internal: false,
+            task_id: self.id,
         };
         panic::swap_state(&mut frame.panic);
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {

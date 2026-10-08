@@ -58,13 +58,12 @@ The files the structure guide names but that have nothing to hold yet stay
 uncreated: `ownership/{place,projection}.rs` (MIR places serve both
 purposes), `dropck/analysis.rs`, `types/{function_type,classify}.rs`,
 `diagnostic/code.rs` (no diagnostic codes yet), and `context/`.
-`async_lowering/` stays uncreated for a different reason: tasks are stackful
-fibers in the runtime, so an async function is an ordinary function that runs on
-a fiber's stack and nothing lowers it to a state machine. The guide's
-`runtime/src/scheduler.rs` now provides the Q32 slice 2 poll scheduler alongside
-`fiber.rs` and `task.rs`; compiler-generated tasks still use fibers until the
-later Q32 slices. The structure guide lists the current fiber execution as an
-approved deviation.
+`async_lowering/` now holds Q32 slice 3's persistent-frame and suspension planning
+(`lower.rs`, `state_machine.rs`, `suspension.rs`), after drop insertion. The
+backend's `codegen/state_machine.rs` emits its constructors, polls, and frame
+destructors. The runtime's `scheduler.rs` serves lowered async tasks alongside
+`fiber.rs` and `task.rs`; plain tasks and async functions awaiting operations
+without poll forms still use fibers during the migration.
 
 Dependencies point only from later stages to earlier ones, with no cycles,
 apart from three deliberate choices. `resolve` depends on `types` because
@@ -100,8 +99,8 @@ enables runtime unit tests without a generated entry.
 `scheduler.rs` owns heap-backed poll tasks and a locked FIFO run queue, served by
 at least two workers (one per available core). Its Rust `spawn` entry accepts a
 frame-owning poll body returning `Ready` or `Pending`. These are internal runtime
-APIs; no compiler lowering or new generated-code ABI is introduced in this slice.
-The existing task ABI and all source-language execution continue through fibers.
+APIs. Slice 3's generated poll entries now use this foundation; the existing
+blocking task API remains compatible with both execution paths.
 
 Each task serializes scheduling through a mutex. A queued task runs on one worker;
 wakes while running set a notification, and returning `Pending` either requeues
@@ -137,6 +136,45 @@ external events (timers, descriptors, helpers) and does not count. Live and bloc
 counts share one lock so concurrent wakeup and completion cannot produce a mixed
 snapshot that falsely reports deadlock. The initial task still counts as live,
 and an internal deadlock still reports "all tasks are asleep" with exit status 2.
+
+### Simple async state machines (Q32 slice 3)
+
+HIR retains each function's async property, including the synthetic owning thunk
+for `go asyncFn(...)`. After ordinary ownership checking and drop insertion,
+`async_lowering::lower` identifies eligible async bodies and records each awaited
+call or task join by MIR block, preserving the call's source span, result places,
+and cleanup edges. The frontend still works without LLVM. Native async functions,
+direct channel/select/mutex waits, and native time/I/O waits retain fiber execution;
+fallback propagates through awaited async calls to a fixed point. A polled function
+can spawn and await a fiber task. Calls to plain helpers remain ordinary calls and
+can block with worker compensation.
+
+Each lowered function has a named heap frame, constructor, `poll(frame, context,
+out)` function, and destructor. All MIR locals, temporaries, drop flags, and any
+hoisted scratch storage live in the frame; pointers to locals, borrowed parameters,
+and non-owning closure environments therefore survive suspension. A state switch
+dispatches to the start block or a saved call-poll label. Argument evaluation,
+ownership transfer, and child-frame construction occur only on the first visit;
+resuming a pending call repeats only its poll. Calls have one active child frame
+at a time. On Ready the caller retrieves its results, frees its child frame, and
+follows the original success or panic-cleanup edge. Frame destruction does not
+repeat drops already placed by MIR.
+
+The poll ABI returns `0` for Pending and `1` for Ready, including completion through
+panic cleanup. The context pointer is opaque to generated code and borrowed only
+for a poll invocation; runtime waiters clone its waker. `zore_task_spawn_poll` shares
+the existing handle/result block layout, completion, detachment, and panic-reporting
+logic with fiber tasks. `zore_task_poll` retains an unfinished handle and registers
+the current waker under the completion lock, then consumes it on Ready through the
+same retrieval path as blocking waits. The enclosing poll task, rather than each
+nested frame or join entry, contributes one internal blocked count.
+
+Synchronous versions of eligible async bodies remain available for awaited calls
+inside fiber fallback bodies. This temporary compatibility path is removed as the
+remaining waiting operations gain poll forms. Neither this path nor the persistent
+frame plan changes source-language syntax or ownership semantics. Frames are not
+shrunk by liveness, and suspended frames are abandoned at process exit; operation
+poll variants and fiber removal remain for later Q32 slices.
 
 | Area | Responsibility | Spec |
 | --- | --- | --- |
@@ -371,7 +409,7 @@ cap }`; `push` grows the storage through the runtime, doubling from 4.
 The pass order in §25 is conceptual. The frontend lowers checked HIR to MIR,
 runs ownership and error-use analysis, then returns diagnostics or a package.
 Native builds lower the accepted package again and insert drops before code
-generation. Async lowering remains future work. Ownership validation and
+generation. Async lowering follows drop insertion for eligible bodies. Ownership validation and
 destruction placement are separate responsibilities.
 
 `check` must work without a backend, linker, runtime, or LLVM installation.

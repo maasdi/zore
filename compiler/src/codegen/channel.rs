@@ -22,6 +22,7 @@ impl Module<'_> {
                     emitting_unwind: false,
                     drop_check_after_store: false,
                     hoisted: String::new(),
+                    polling: false,
                 };
                 f.line("call void @zore_enter_drop()");
                 f.drop_unconditional("%value", element);
