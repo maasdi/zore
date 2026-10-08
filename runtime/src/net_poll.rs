@@ -532,12 +532,10 @@ mod tests {
     fn timed_out_text_preserves_incomplete_bytes_for_a_later_raw_read() {
         let _serial = crate::string::serial();
         let (id, mut peer) = pair();
-        peer.write_all(b"\xe2").unwrap();
         let handle = lookup(id).unwrap();
         let Handle::Connection(connection) = handle.as_ref() else {
             panic!()
         };
-        connection.timeout.store(100, Ordering::SeqCst);
         let mut operation = Operation::new(
             id,
             Kind::Read {
@@ -547,7 +545,14 @@ mod tests {
         );
         let (waiter, rx) = signal();
         assert!(operation.poll(waiter.clone()).is_none());
+        assert!(operation.pending.is_empty());
+        assert!(operation.deadline.is_none());
+        peer.write_all(b"\xe2").unwrap();
+        rx.recv_timeout(Duration::from_secs(10)).unwrap();
+        connection.timeout.store(100, Ordering::SeqCst);
+        assert!(operation.poll(waiter.clone()).is_none());
         let deadline = operation.deadline;
+        assert!(deadline.is_some());
         assert_eq!(operation.pending, b"\xe2");
         for _ in 0..20 {
             assert!(operation.poll(waiter.clone()).is_none());
