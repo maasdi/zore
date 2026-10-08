@@ -436,6 +436,7 @@ mod imp {
     use std::time::Duration;
 
     pub fn sleep(milliseconds: u64) {
+        let _blocking = super::super::scheduler::BlockingGuard::enter();
         std::thread::sleep(Duration::from_millis(milliseconds));
     }
 

@@ -118,7 +118,8 @@ forms of the operations belong to later slices. Fiber joins install a slot only
 after switching back to their worker, retaining the existing wake-before-park
 protocol. A slot blocks an OS thread only when no fiber is running.
 
-When a poll worker blocks in a slot, task join, or output operation, a thread-local
+When a poll worker blocks in a slot, task join, output operation, or a fallback
+timer/socket call on a target without a reactor, a thread-local
 guard tells the pool to start a replacement. Nested guards count the worker once.
 Replacement workers retire when workers resume and surplus capacity becomes idle;
 ordinary threads and the separate fiber pool are unaffected. Uninstrumented foreign
