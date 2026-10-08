@@ -3,6 +3,8 @@ mod function;
 pub mod lower;
 mod stmt;
 
+use std::collections::HashSet;
+
 pub use expr::{Const, Expr, ExprKind, Place, Projection};
 pub use function::{Function, Local};
 pub use stmt::{Block, SelectArm, SelectComm, Stmt, StmtKind};
@@ -118,22 +120,28 @@ impl Package {
     }
 
     fn contains(&self, ty: TypeId, matches: &dyn Fn(TypeKind) -> bool) -> bool {
-        let kind = self.types.kind(ty);
-        if matches(kind) {
-            return true;
-        }
-        match kind {
-            TypeKind::Struct(id) => self
-                .strukt(id)
-                .fields
-                .iter()
-                .any(|field| self.contains(field.ty, matches)),
-            TypeKind::Array { element, .. } | TypeKind::DynArray { element } => {
-                self.contains(element, matches)
+        let mut pending = vec![ty];
+        let mut seen = HashSet::new();
+        while let Some(ty) = pending.pop() {
+            if !seen.insert(ty) {
+                continue;
             }
-            TypeKind::Map { value, .. } => self.contains(value, matches),
-            _ => false,
+            let kind = self.types.kind(ty);
+            if matches(kind) {
+                return true;
+            }
+            match kind {
+                TypeKind::Struct(id) => {
+                    pending.extend(self.strukt(id).fields.iter().map(|field| field.ty));
+                }
+                TypeKind::Array { element, .. } | TypeKind::DynArray { element } => {
+                    pending.push(element);
+                }
+                TypeKind::Map { value, .. } => pending.push(value),
+                _ => {}
+            }
         }
+        false
     }
 }
 
