@@ -1,11 +1,12 @@
 # Q34 proposal: method values
 
-Status: PROPOSED. Nothing here is locked, and no implementation may rely on it
-until the maintainer accepts it and the decisions are written into the
-specification and locked (§53). The specification stays authoritative. This is
-the follow-up that issue #52 and Q33 left open: Q33 allows only the names of
-declared functions as function values and says methods and bound receivers need
-their own rules.
+Status: ACCEPTED and incorporated into spec §9.1 and §16.2. The specification is
+authoritative; this document preserves the accepted proposal and its rationale.
+It is the follow-up that issue #52 and Q33 left open: Q33 allows only the names
+of declared functions as function values and says methods and bound receivers
+need their own rules. The maintainer approved it with the proposal's own
+choices: a receiver that is a field path of a local is allowed, and method
+expressions on the type are not part of this decision.
 
 Scope: using `value.Method` as a function value. Out of scope: method
 expressions written on the type (`Counter.read`), `async` methods as values,
@@ -171,10 +172,3 @@ let f = client.fetch                     // `fetch` is declared `async`
 - §16.4 and §18.4: no change; they already cover escaping and spawning.
 - `docs/spec-questions.md`: record Q34 as resolved.
 - `docs/roadmap.md`: remove method values from the remaining list.
-
-## Open points for the maintainer
-
-1. Should a field path receiver (`s.inner.read`) be allowed, or only a plain
-   local? The proposal allows field paths because capture of the whole root local
-   already works that way; a plain-local-only rule is simpler to explain.
-2. Should method expressions (`Counter.read`) be a separate follow-up, or never?

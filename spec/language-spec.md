@@ -2463,6 +2463,9 @@ Receiver semantics follow the same ownership model as function parameters:
 
 There is no separate method ownership model.
 
+A method used as a value, `value.Method` without a call, is a function value
+defined in §16.2.
+
 ---
 
 # 10. Copy and Move Semantics
@@ -3663,10 +3666,10 @@ declaration's signature with the names removed. A package-qualified name
 (`pkg.F`) converts the same way for every function the package exports, whether
 it is written in Zore or implemented by the compiler. The value is a closure
 with no captures: evaluating the name has no effect, borrows nothing, and moves
-nothing. Like every function-typed value it is Move. The name of an `async func`,
-a method, and a built-in operation (`println`, `len`, `push`, `clone`, channel
-and mutex operations, error construction) is not a function value and is
-rejected.
+nothing. Like every function-typed value it is Move. The name of an `async func`
+and a built-in operation (`println`, `len`, `push`, `clone`, channel and mutex
+operations, error construction) is not a function value and is rejected.
+A method used as a value is described below.
 
 ```ore
 func add(a int, b int) int { return a + b }
@@ -3675,6 +3678,49 @@ let f = add                        // func(int, int) int
 let apply = func(op func(int, int) int, x int, y int) int { return op(x, y) }
 println(apply(add, 2, 3))          // 5
 ```
+
+**Method values.** `value.Method`, written where a value is expected and not
+called, is a function value and means exactly the closure literal that calls
+the method:
+
+```ore
+func(params) results { return value.Method(params) }
+```
+
+with the method's parameters and results (the receiver is not a parameter). No
+rule is added: the receiver is captured by the ordinary capture rules (§16.3,
+§16.4), and the receiver's mode decides the capture. A shared receiver is
+captured by a shared borrow. A `mut` receiver is captured by an exclusive borrow
+and must be a mutable place (§11.6). An `own` receiver is moved into the
+closure, which is call-once (§16.6). When the value escapes, including being
+spawned by `go`, it is owning (§16.4): a Copy receiver is copied and a Move
+receiver is moved when the value is created, and a spawned method value follows
+§18.3 and §18.4.
+
+```ore
+type Counter struct { N int }
+
+func (c Counter) read() int { return c.N }
+func (c mut Counter) bump() { c.N += 1 }
+func (c own Counter) finish() int { return c.N }
+
+var counter = Counter{N: 1}
+let read = counter.read           // func() int; shared capture of `counter`
+println(read())                   // 1
+let bump = counter.bump           // func(); exclusive capture of `counter`
+bump()
+let done = counter.finish         // call-once; consumes `counter`
+println(done())
+```
+
+The receiver must be a local or a field path rooted at a local, because capture
+is per whole local (§16.3). A call result, an index expression, or a map lookup
+is rejected as the receiver of a method value; bind it to a local first.
+Creating a method value evaluates nothing but the capture. A method declared
+`async` is rejected as a value, for the reason an `async func` name is. A method
+of another package is usable as a value exactly where a call is allowed
+(§3.20). The `drop` method cannot be used as a value. Method expressions written
+on the type (`Counter.read`) are not part of this decision.
 
 Calling a value of function type uses ordinary call syntax and ordinary
 parameter rules (§7.3–7.4): arguments are borrowed unless the parameter is

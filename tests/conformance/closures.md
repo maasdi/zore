@@ -165,3 +165,24 @@ Executable counterparts are in `tests/typecheck/check.rs`
 | Closure inside an `async func` spawned with `go` | Valid; runs as a plain task, body not async |
 | `await` inside a spawned closure | Rejected |
 | Existing `go declaredFunc(args)` and closure calls | Unchanged |
+
+## Method values (§16.2)
+
+Executable counterparts land with the implementation of Q34; until then these
+rows are pending and do not count as passing tests.
+
+| Scenario | Expected result |
+| --- | --- |
+| `let read = c.read` then `read()` | Valid; shared capture; `c` readable meanwhile, not writable while `read` is live |
+| `let bump = c.bump` then `bump()` | Valid; exclusive capture of a mutable place; `c` unusable meanwhile |
+| `mut` receiver on an immutable binding | Rejected |
+| `own` receiver method value | Valid; call-once; `c` unusable afterward; a second call is rejected |
+| Method value returned, stored, or passed to `own` | Owning; receiver copied or moved at creation |
+| `go` on a method value held in a local | Valid; moves into the task; `mut` receiver on a Copy local and a borrowed Move receiver are rejected |
+| Method value passed to a function-typed parameter | Valid |
+| Receiver that is a field path of a local | Valid; the whole local is captured |
+| Receiver that is a call result, an index expression, or a map lookup | Rejected |
+| Method of another package, exported / not exported | Valid / rejected |
+| Method declared `async`, and `drop` | Rejected |
+| Type, parameter modes, and results | Those of the method without the receiver |
+| Owning receiver destroyed exactly once on return, error, panic, and when unused | Counting destructor tests |
