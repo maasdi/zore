@@ -182,3 +182,8 @@ without LLVM. Explain any backend-specific prerequisites and how CI invokes them
 
 The examples are future acceptance inputs. §46 defines the required coverage for
 the full MVP; expand this plan and the executable suites as features arrive.
+
+Mutex poll regressions cover FIFO grants across slots and task wakers, repeated
+polls, wake-before-Pending, poisoning, zero handles, and concurrent exclusive
+access. Native parity cases compare fiber and poll execution with blocking
+callbacks, Move results, contention, panic cleanup, and heap-only poll storage.

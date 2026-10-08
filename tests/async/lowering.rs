@@ -46,6 +46,7 @@ func main() { let t = go parent(go plain()); println(t.wait()) }",
                 Suspension::Sleep => assert!(
                     matches!(callee, mir::Callee::Function(id) if package.function(*id).name == "zore/time.Sleep")
                 ),
+                Suspension::Mutex => assert!(matches!(callee, mir::Callee::MutexWithLock)),
                 Suspension::Task => assert!(matches!(callee, mir::Callee::TaskWait)),
                 Suspension::Channel => assert!(matches!(
                     callee,
@@ -71,9 +72,10 @@ func main() { let t = go parent(go plain()); println(t.wait()) }",
 fn fallback_propagates_through_awaits_but_not_spawned_or_plain_calls() {
     let (package, _, plan) = plan(
         "package main
-async func mutexWait(ch Mutex<int>) int { return ch.withLock(func(n mut int) int { return n }) }
-async func fallback(ch Mutex<int>) int { return await mutexWait(ch) }
-async func simple(ch Mutex<int>) int { let task = go mutexWait(ch); return await task }
+import \"zore/io\"
+async func ioWait() int { let _, _ = io.ReadLine(); return 1 }
+async func fallback() int { return await ioWait() }
+async func simple() int { let task = go ioWait(); return await task }
 func helper(ch channel<int>) int { let n, _ = ch.receive(); return n }
 async func blockingHelper(ch channel<int>) int { return helper(ch) }
 func main() {}",
@@ -83,7 +85,7 @@ func main() {}",
         .keys()
         .map(|id| package.function(*id).name.as_str())
         .collect();
-    assert!(!names.contains(&"mutexWait"));
+    assert!(!names.contains(&"ioWait"));
     assert!(!names.contains(&"fallback"));
     assert!(names.contains(&"simple"));
     assert!(names.contains(&"blockingHelper"));
@@ -178,4 +180,31 @@ func main() {}");
             .keys()
             .any(|id| package.function(*id).name == "plain")
     );
+}
+
+#[test]
+fn mutex_acquisition_suspends_but_callbacks_and_poison_queries_stay_ordinary() {
+    let (package, program, plan) = plan(
+        "package main
+async func run(m Mutex<int>, ch channel<int>) int {
+    println(m.isPoisoned())
+    return m.withLock(func(n mut int) int { let value, _ = ch.receive(); n += value; return n })
+}
+func main() {}",
+    );
+    let (id, machine) = plan
+        .machines
+        .iter()
+        .find(|(id, _)| package.function(**id).name == "run")
+        .unwrap();
+    assert_eq!(machine.suspensions.len(), 1);
+    let (block, kind) = machine.suspensions[0];
+    assert_eq!(kind, Suspension::Mutex);
+    let mir::Terminator::Call { unwind, span, .. } =
+        &program.bodies[id.0 as usize].blocks[block.0 as usize].terminator
+    else {
+        panic!()
+    };
+    assert!(unwind.is_some());
+    assert!(span.end() > span.start());
 }

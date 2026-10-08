@@ -69,6 +69,7 @@ pub fn lower(package: &hir::Package, program: &mir::Program) -> Plan {
                         {
                             Suspension::Sleep
                         }
+                        Callee::MutexWithLock => Suspension::Mutex,
                         Callee::TaskWait => Suspension::Task,
                         Callee::ChannelSend | Callee::ChannelReceive | Callee::Select { .. } => {
                             Suspension::Channel

@@ -4823,7 +4823,7 @@ func main() {}";
     let ir = emit_llvm(sources.file(id).unwrap()).unwrap();
     assert!(ir.contains("AsyncFrame"));
     assert!(ir.contains("leaf$async$new"));
-    assert!(!ir.contains("fallback$async$poll"));
+    assert!(ir.contains("fallback$async$poll"));
     for function in ir.split("define private i8 ").skip(1) {
         let function = function.split("\n}\n").next().unwrap();
         if !function.contains("$async$poll") {
@@ -5597,4 +5597,139 @@ func main() {
     assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
     assert_eq!(stdout(&output), "true\n");
     assert!(output.stderr.is_empty(), "{}", stderr(&output));
+}
+
+fn mutex_poll_parity(source: &str, expected: &str) {
+    for mode in ["", "async "] {
+        let source = source.replace("MODE ", mode);
+        let mut sources = SourceMap::new();
+        let id = sources.add("mutex.ore", source.clone()).unwrap();
+        let ir = emit_llvm(sources.file(id).unwrap()).unwrap();
+        if !mode.is_empty() {
+            assert!(ir.contains("run$async$poll"));
+            let mut found = false;
+            for function in ir.split("define private i8 ").skip(1) {
+                let function = function.split("\n}\n").next().unwrap();
+                if function.lines().next().unwrap().contains("run$async$poll") {
+                    found = true;
+                    assert!(function.contains("call ptr @zore_mutex_start"));
+                    assert!(function.contains("call i8 @zore_mutex_poll"));
+                    assert!(!function.contains("alloca"));
+                    assert!(!function.contains("call ptr @zore_mutex_lock("));
+                }
+            }
+            assert!(found);
+        }
+        let output = run_channel_poll_bounded(&source);
+        assert!(output.status.success(), "{}", stderr(&output));
+        assert_eq!(stdout(&output), expected);
+    }
+}
+
+#[test]
+fn mutex_poll_callbacks_block_with_compensation_and_return_move_results() {
+    mutex_poll_parity(
+        r#"package main
+MODE func run(m Mutex<Array<int>>, started channel<bool>, values channel<int>) Array<int> {
+    return m.withLock(func(items mut Array<int>) Array<int> {
+        started.send(true)
+        let n, _ = values.receive()
+        items.push(n)
+        return clone(items)
+    })
+}
+func produce(started channel<bool>, values channel<int>) { let _, _ = started.receive(); values.send(9) }
+func main() {
+    let m = mutex(Array<int>{1})
+    let started = channel<bool>()
+    let values = channel<int>()
+    let producer = go produce(started, values)
+    let t = go run(m, started, values)
+    let result = t.wait()
+    producer.wait()
+    println(result.len())
+    println(result[1])
+}
+"#,
+        "2\n9\n",
+    );
+}
+
+#[test]
+fn mutex_poll_repeated_contention_preserves_callback_results_and_cleanup() {
+    mutex_poll_parity(
+        r#"package main
+import "zore/time"
+MODE func run(m Mutex<int>) int {
+    var result = 0
+    for var i = 0; i < 20; i += 1 {
+        result = m.withLock(func(n mut int) int { time.Sleep(1); n += 1; return n })
+    }
+    return result
+}
+func main() {
+    let m = mutex(0)
+    var tasks = Array<Task<int>>{}
+    for var i = 0; i < 8; i += 1 { tasks.push(go run(m)) }
+    for tasks.len() > 0 { let ok, t = tasks.pop(); if ok { let _ = t.wait() } }
+    println(m.withLock(func(n mut int) int { return n }))
+}
+"#,
+        "160\n",
+    );
+}
+
+#[test]
+fn mutex_poll_zero_and_callback_panic_preserve_unwind_cleanup() {
+    for source in [
+        r#"package main
+async func run() int { let holder = channel<Mutex<int>>(); holder.close(); let m, _ = holder.receive(); return m.withLock(func(n mut int) int { println("unreachable"); return n }) }
+func main() { let t = go run(); println(t.wait()) }"#,
+        r#"package main
+async func run(m Mutex<int>) int { return m.withLock(func(n mut int) int { return 1 / n }) }
+func main() { let m = mutex(0); let t = go run(m); println(t.wait()) }"#,
+    ] {
+        let output = run_channel_poll_bounded(source);
+        assert_eq!(output.status.code(), Some(2), "{}", stderr(&output));
+        assert!(!stdout(&output).contains("unreachable"));
+        assert!(stderr(&output).contains("panic"));
+    }
+}
+
+#[test]
+fn mutex_poll_nonreentrant_callback_still_detects_deadlock() {
+    let output = run_channel_poll_bounded(
+        r#"package main
+async func run(m Mutex<int>) {
+    m.withLock(func(n mut int) { m.withLock(func(inner mut int) { inner += n }) })
+}
+func main() { let t = go run(mutex(1)); t.wait() }
+"#,
+    );
+    assert_deadlock(&output);
+}
+
+#[test]
+fn mutex_poll_callback_error_results_preserve_captures_and_drop_once() {
+    mutex_poll_parity(
+        r#"package main
+type Marker struct { Name string }
+func (m mut Marker) drop() { println("drop " + m.Name) }
+MODE func run(m Mutex<string>) (int, error) {
+    let marker = Marker{Name: "frame"}
+    let offset = 5
+    return m.withLock(func(text mut string) (int, error) {
+        if text.len() == 0 { return 0, error("empty") }
+        return text.len() + offset, nil
+    })
+}
+func main() {
+    let t = go run(mutex("1234567"))
+    let number, err = t.wait()
+    println(number)
+    println(err == nil)
+}
+"#,
+        "drop frame\n12\ntrue\n",
+    );
 }
