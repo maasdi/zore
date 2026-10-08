@@ -49,6 +49,9 @@ pub fn emit(
         machines,
         frames: HashMap::new(),
         frame_types: String::new(),
+        drop_helpers: HashMap::new(),
+        clone_helpers: HashMap::new(),
+        type_helper_code: String::new(),
     };
     let mut functions = String::new();
     for body in &program.bodies {
@@ -73,6 +76,7 @@ pub fn emit(
     out.push('\n');
     out.push_str(&functions);
     out.push_str(&module.task_code);
+    out.push_str(&module.type_helper_code);
     if let Some(entry) = program.entry {
         out.push_str(&module.entry_shim(entry));
     }
@@ -80,6 +84,9 @@ pub fn emit(
 }
 
 pub(super) struct Module<'a> {
+    drop_helpers: HashMap<TypeId, usize>,
+    pub(super) clone_helpers: HashMap<TypeId, usize>,
+    pub(super) type_helper_code: String,
     pub(super) machines: &'a crate::async_lowering::Plan,
     pub(super) frames: HashMap<FunctionId, super::state_machine::Frame>,
     pub(super) frame_types: String,
@@ -105,6 +112,34 @@ pub(super) struct Environment {
 }
 
 impl Module<'_> {
+    fn drop_helper(&mut self, ty: TypeId, body: &mir::Body) -> String {
+        if let Some(index) = self.drop_helpers.get(&ty) {
+            return format!("@zore_drop.{index}");
+        }
+        let index = self.drop_helpers.len();
+        self.drop_helpers.insert(ty, index);
+        let name = format!("@zore_drop.{index}");
+        let mut f = FunctionBuilder {
+            module: self,
+            body,
+            out: String::new(),
+            next: 0,
+            active_unwind: None,
+            emitting_unwind: false,
+            drop_check_after_store: false,
+            hoisted: String::new(),
+            polling: false,
+        };
+        f.emit_drop_contents("%value", ty, "%flags");
+        f.line("ret void");
+        let code = format!(
+            "define private void {name}(ptr %value, ptr %flags) {{\nentry:\n{}{}}}\n\n",
+            f.hoisted, f.out
+        );
+        self.type_helper_code.push_str(&code);
+        name
+    }
+
     pub(super) fn environment(&self, closure: FunctionId) -> Environment {
         let function = self.package.function(closure);
         let mut parts = Vec::new();
@@ -1467,6 +1502,11 @@ impl FunctionBuilder<'_, '_> {
 
     /// The value must be live and `flags` must point at its flag block.
     pub(super) fn drop_contents(&mut self, address: &str, ty: TypeId, flags: &str) {
+        let helper = self.module.drop_helper(ty, self.body);
+        self.line(format!("call void {helper}(ptr {address}, ptr {flags})"));
+    }
+
+    fn emit_drop_contents(&mut self, address: &str, ty: TypeId, flags: &str) {
         match self.module.package.types.kind(ty) {
             TypeKind::Struct(id) => {
                 let strukt = self.module.package.strukt(id);

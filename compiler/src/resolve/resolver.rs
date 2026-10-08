@@ -51,21 +51,6 @@ fn by_value_named_type(ty: &ast::Type) -> Option<&ast::Name> {
     }
 }
 
-fn owned_named_type(ty: &ast::Type) -> Option<&ast::Name> {
-    match ty {
-        ast::Type::Named(name) | ast::Type::Qualified { name, .. } => Some(name),
-        ast::Type::Array { element, .. } | ast::Type::DynArray { element, .. } => {
-            owned_named_type(element)
-        }
-        ast::Type::Map { value, .. } => owned_named_type(value),
-        ast::Type::Slice { .. }
-        | ast::Type::Func { .. }
-        | ast::Type::Task { .. }
-        | ast::Type::Channel { .. }
-        | ast::Type::Mutex { .. } => None,
-    }
-}
-
 pub fn resolve<'a>(units: &'a [PackageUnit<'a>]) -> Resolution<'a> {
     let mut resolver = Resolver {
         out: Resolution {
@@ -596,13 +581,6 @@ impl<'a> Resolver<'a> {
         let by_value = self.struct_edges(by_value_named_type);
         self.report_struct_cycles(&by_value, &mut reported, |name| {
             format!("struct `{name}` contains itself by value and has no finite size")
-        });
-        // Drops are emitted inline per type, so self-ownership needs out-of-line drop functions.
-        let owned = self.struct_edges(owned_named_type);
-        self.report_struct_cycles(&owned, &mut reported, |name| {
-            format!(
-                "struct `{name}` contains itself through `Array<T>` or a map, which is not supported by this compiler yet"
-            )
         });
     }
 

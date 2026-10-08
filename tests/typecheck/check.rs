@@ -1911,16 +1911,96 @@ fn unsupported_dynamic_array_forms_are_rejected() {
         &program("func f(a Array<int>, b Array<int>) bool { return a == b }"),
         "operator `==` cannot be applied to `Array<int64>`",
     );
-    rejects(
-        &program("type Node struct { Kids Array<Node> }"),
-        "struct `Node` contains itself through `Array<T>`",
-    );
+    accepts(&program("type Node struct { Kids Array<Node> }"));
     accepts(&program(
         "type Bag struct { Views Array<[]int> }\nfunc (b mut Bag) drop() {}",
     ));
 }
 
 const MAP_GUARD: &str = "type Guard struct { id int }\nfunc (g mut Guard) drop() {}";
+
+#[test]
+fn recursive_owned_types_have_finite_layout_and_move_classification() {
+    let case = accepts(&program(
+        "type Node struct { Children Array<Node>; Named map[string]Node }
+         type Left struct { Right Right }
+         type Right struct { Back [Array<Left>; 2] }
+         func inspect(n Node, l Left) { let a = clone(n); let b = clone(l) }",
+    ));
+    let package = case.package();
+    for local in &case.function("inspect").locals {
+        assert!(!package.is_copy(local.ty));
+        assert!(package.needs_drop(local.ty));
+        assert!(!package.contains_view(local.ty));
+        assert!(!package.contains_mut_view(local.ty));
+        assert!(!package.drop_observes_view(local.ty));
+    }
+    let case = rejects(
+        &program(
+            "type Bad struct { Next Bad; Children Array<Bad> }\nfunc f(n Bad) { let c = clone(n) }",
+        ),
+        "contains itself by value",
+    );
+    assert!(case.errors().iter().any(|(_, at)| *at == "Bad"));
+    let case = rejects(
+        &program(
+            "type A struct { Next B }\ntype B struct { Next [A; 1] }\nfunc f(n A) { let c = clone(n) }",
+        ),
+        "contains itself by value",
+    );
+    assert!(case.errors().iter().any(|(_, at)| *at == "A" || *at == "B"));
+}
+
+#[test]
+fn recursive_clone_eligibility_checks_every_reachable_field() {
+    for fields in [
+        "Children Array<Node>; Guard Guard",
+        "Guard Guard; Children Array<Node>",
+    ] {
+        rejects(
+            &program(&format!(
+                "{MAP_GUARD}\ntype Node struct {{ {fields} }}\nfunc f(n Node) {{ let copy = clone(n) }}"
+            )),
+            "type `Guard` cannot be cloned",
+        );
+    }
+    accepts(&program(&format!(
+        "{MAP_GUARD}
+         func (g Guard) clone() Guard {{ return Guard{{id: g.id}} }}
+         type A struct {{ Children Array<B> }}
+         type B struct {{ Children map[int]A; Guard Guard }}
+         func f(a A) {{ let copy = clone(a) }}"
+    )));
+}
+
+#[test]
+fn recursive_field_validation_waits_for_complete_types() {
+    accepts(&program(
+        "type Node struct { Children Array<Node>; Queue channel<Node>; Job Task<Node>; Cell Mutex<Node> }
+         func f(n Node) {}",
+    ));
+    for container in ["channel<Node>", "Task<Node>", "Mutex<Node>"] {
+        rejects(
+            &program(&format!(
+                "type Envelope struct {{ Value {container} }}
+                 type Node struct {{ Children Array<Node>; View []int }}"
+            )),
+            "slices or function values",
+        );
+    }
+    rejects(
+        &program(
+            "type Node struct { Children Array<Node>; View mut []int }
+             func f(n Node) {}",
+        ),
+        "cannot hold a `mut []T` view",
+    );
+    let case = rejects(
+        &program("type Node struct { Children map[float64]Node }"),
+        "cannot be a map key",
+    );
+    assert_eq!(case.checked.diagnostics.len(), 1);
+}
 
 #[test]
 fn map_keys_are_bool_integer_rune_or_string() {
@@ -2086,10 +2166,7 @@ fn maps_are_move_values_without_operators() {
         &program("func f(a map[string]int, b map[string]int) bool { return a == b }"),
         "operator `==` cannot be applied to `map[string]int64`",
     );
-    rejects(
-        &program("type Node struct { Kids map[string]Node }"),
-        "struct `Node` contains itself through `Array<T>` or a map",
-    );
+    accepts(&program("type Node struct { Kids map[string]Node }"));
 }
 
 fn let_value<'a>(function: &'a hir::Function, name: &str) -> &'a hir::Expr {

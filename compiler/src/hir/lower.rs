@@ -483,88 +483,11 @@ impl<'a> Checker<'a> {
         );
     }
 
-    fn holds_slice_of_func(&self, ty: TypeId) -> bool {
-        self.type_contains(ty, &|kind| matches!(kind, TypeKind::Slice { .. }))
-            && self
-                .slices_within(ty)
-                .into_iter()
-                .any(|element| self.holds_func(element))
-    }
-
-    fn slices_within(&self, ty: TypeId) -> Vec<TypeId> {
-        let mut pending = vec![ty];
-        let mut seen = Vec::new();
-        let mut elements = Vec::new();
-        while let Some(ty) = pending.pop() {
-            if seen.contains(&ty) {
-                continue;
-            }
-            seen.push(ty);
-            match self.types.kind(ty) {
-                TypeKind::Slice { element, .. } => {
-                    elements.push(element);
-                    pending.push(element);
-                }
-                TypeKind::DynArray { element } | TypeKind::Array { element, .. } => {
-                    pending.push(element)
-                }
-                TypeKind::Map { value, .. } => pending.push(value),
-                TypeKind::Struct(id) => pending.extend(
-                    self.fields[id.0 as usize]
-                        .iter()
-                        .filter_map(|(_, field_ty, _)| *field_ty),
-                ),
-                _ => {}
-            }
-        }
-        elements
-    }
-
-    fn holds_shared_slice_of_mut_view(&self, ty: TypeId) -> bool {
-        let mut pending = vec![ty];
-        let mut seen = Vec::new();
-        while let Some(ty) = pending.pop() {
-            if seen.contains(&ty) {
-                continue;
-            }
-            seen.push(ty);
-            match self.types.kind(ty) {
-                TypeKind::Slice { element, mutable } => {
-                    if !mutable && self.contains_mut_view(element) {
-                        return true;
-                    }
-                    pending.push(element);
-                }
-                TypeKind::DynArray { element } | TypeKind::Array { element, .. } => {
-                    pending.push(element)
-                }
-                TypeKind::Map { value, .. } => pending.push(value),
-                TypeKind::Struct(id) => pending.extend(
-                    self.fields[id.0 as usize]
-                        .iter()
-                        .filter_map(|(_, field_ty, _)| *field_ty),
-                ),
-                _ => {}
-            }
-        }
-        false
-    }
-
-    fn reject_shared_slices_of_mut_views_in_fields(&mut self, structs: &[&ast::StructDecl]) {
-        for (index, decl) in structs.iter().enumerate() {
-            for (field, (_, ty, _)) in decl.fields.iter().zip(self.fields[index].clone()) {
-                if ty.is_some_and(|ty| self.holds_shared_slice_of_mut_view(ty)) {
-                    self.shared_slice_of_mut_view_error(field.ty.span());
-                }
-                if ty.is_some_and(|ty| self.holds_slice_of_func(ty)) {
-                    self.func_in_slice_error(field.ty.span());
-                }
-            }
-        }
-    }
-
     /// Looks through fields and array elements, not slice elements.
     fn type_contains(&self, ty: TypeId, matches: &dyn Fn(TypeKind) -> bool) -> bool {
+        if self.resolving_fields {
+            return false;
+        }
         let mut pending = vec![ty];
         let mut seen = Vec::new();
         while let Some(ty) = pending.pop() {
@@ -601,27 +524,32 @@ impl<'a> Checker<'a> {
 
     /// Must agree with `hir::Package::is_copy`.
     fn type_is_copy(&self, ty: TypeId) -> bool {
-        match self.types.kind(ty) {
-            TypeKind::Bool
-            | TypeKind::Int(_)
-            | TypeKind::Float(_)
-            | TypeKind::Rune
-            | TypeKind::String
-            | TypeKind::Error
-            | TypeKind::Slice { .. } => true,
-            TypeKind::Struct(id) => {
-                !self.res.methods.contains_key(&(id, "drop".to_string()))
-                    && self.fields[id.0 as usize]
-                        .iter()
-                        .all(|(_, field_ty, _)| field_ty.is_none_or(|ty| self.type_is_copy(ty)))
+        let mut pending = vec![ty];
+        let mut seen = HashSet::new();
+        while let Some(ty) = pending.pop() {
+            if !seen.insert(ty) {
+                continue;
             }
-            TypeKind::Array { element, .. } => self.type_is_copy(element),
-            TypeKind::Channel { .. } | TypeKind::Mutex { .. } => true,
-            TypeKind::DynArray { .. }
-            | TypeKind::Map { .. }
-            | TypeKind::Func(_)
-            | TypeKind::Task(_) => false,
+            match self.types.kind(ty) {
+                TypeKind::Struct(id) => {
+                    if self.res.methods.contains_key(&(id, "drop".to_string())) {
+                        return false;
+                    }
+                    pending.extend(
+                        self.fields[id.0 as usize]
+                            .iter()
+                            .filter_map(|(_, field_ty, _)| *field_ty),
+                    );
+                }
+                TypeKind::Array { element, .. } => pending.push(element),
+                TypeKind::DynArray { .. }
+                | TypeKind::Map { .. }
+                | TypeKind::Func(_)
+                | TypeKind::Task(_) => return false,
+                _ => {}
+            }
         }
+        true
     }
 
     fn is_func(&self, ty: TypeId) -> bool {
@@ -647,7 +575,13 @@ impl<'a> Checker<'a> {
             })
             .collect();
         self.resolving_fields = false;
-        self.reject_shared_slices_of_mut_views_in_fields(&structs);
+        for (index, decl) in structs.iter().enumerate() {
+            for (field_index, field) in decl.fields.iter().enumerate() {
+                if self.fields[index][field_index].1.is_some() {
+                    self.resolve_type(&field.ty);
+                }
+            }
+        }
         let functions: Vec<&'a ast::FuncDecl> = self.res.functions.clone();
         self.signatures = functions
             .iter()
@@ -2981,32 +2915,35 @@ impl<'a> Checker<'a> {
 
     /// The field or element type that stops `ty` from being cloned.
     fn clone_blocker(&self, ty: TypeId) -> Option<TypeId> {
-        let element_blocker = |element: TypeId| {
-            if self.type_is_copy(element) {
-                None
-            } else {
-                self.clone_blocker(element)
+        let mut pending = vec![ty];
+        let mut seen = HashSet::new();
+        while let Some(ty) = pending.pop() {
+            if !seen.insert(ty) || self.type_is_copy(ty) {
+                continue;
             }
-        };
-        match self.types.kind(ty) {
-            TypeKind::Struct(id) => {
-                if self.custom_clone(ty).is_some() {
-                    return None;
+            match self.types.kind(ty) {
+                TypeKind::Struct(id) => {
+                    if self.custom_clone(ty).is_some() {
+                        continue;
+                    }
+                    if self.res.methods.contains_key(&(id, "drop".to_string())) {
+                        return Some(ty);
+                    }
+                    pending.extend(
+                        self.fields[id.0 as usize]
+                            .iter()
+                            .rev()
+                            .filter_map(|(_, field_ty, _)| *field_ty),
+                    );
                 }
-                if self.res.methods.contains_key(&(id, "drop".to_string())) {
-                    return Some(ty);
+                TypeKind::Array { element, .. } | TypeKind::DynArray { element } => {
+                    pending.push(element);
                 }
-                self.fields[id.0 as usize]
-                    .iter()
-                    .filter_map(|(_, field_ty, _)| *field_ty)
-                    .find_map(element_blocker)
+                TypeKind::Map { value, .. } => pending.push(value),
+                _ => return Some(ty),
             }
-            TypeKind::Array { element, .. } | TypeKind::DynArray { element } => {
-                element_blocker(element)
-            }
-            TypeKind::Map { value, .. } => element_blocker(value),
-            _ => Some(ty),
         }
+        None
     }
 
     fn clone_call(&mut self, args: &[ast::Expr], span: Span) -> Option<Value> {

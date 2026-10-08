@@ -59,9 +59,11 @@ John
 | Self-hosting | Long-term goal |
 
 Features outside the implemented subset are reported as errors, never silently
-accepted. The compiler does not yet support spawning function values, recursive
-owned structs through arrays or maps, or package-level variables. Async frames
-are not shrunk by liveness, and scheduling has no preemption. Full MVP coverage
+accepted. Recursive owned structs through `Array<T>` and maps are supported,
+including cloning and deterministic cleanup; infinite-size by-value cycles are
+rejected. The compiler does not yet support spawning function values or
+package-level variables. Async frames are not shrunk by liveness, and scheduling
+has no preemption. Full MVP coverage
 still needs an audit; see the [roadmap](docs/roadmap.md).
 
 ## Getting started

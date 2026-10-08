@@ -1,6 +1,38 @@
-use super::llvm::FunctionBuilder;
+use super::llvm::{FunctionBuilder, Module};
 use crate::mir::Operand;
 use crate::types::{TypeId, TypeKind};
+
+impl Module<'_> {
+    fn clone_helper(&mut self, ty: TypeId, body: &crate::mir::Body) -> String {
+        if let Some(index) = self.clone_helpers.get(&ty) {
+            return format!("@zore_clone.{index}");
+        }
+        let index = self.clone_helpers.len();
+        self.clone_helpers.insert(ty, index);
+        let name = format!("@zore_clone.{index}");
+        let mut f = FunctionBuilder {
+            module: self,
+            body,
+            out: String::new(),
+            next: 0,
+            active_unwind: None,
+            emitting_unwind: false,
+            drop_check_after_store: false,
+            hoisted: String::new(),
+            polling: false,
+        };
+        f.emit_clone_value("%source", "%target", ty, "done");
+        f.line("br label %done");
+        f.out.push_str("done:\n");
+        f.line("ret void");
+        let code = format!(
+            "define private void {name}(ptr %source, ptr %target) {{\nentry:\n{}{}}}\n\n",
+            f.hoisted, f.out
+        );
+        self.type_helper_code.push_str(&code);
+        name
+    }
+}
 
 impl FunctionBuilder<'_, '_> {
     pub(super) fn clone_call(&mut self, ty: TypeId, args: &[Operand]) -> (String, String) {
@@ -11,6 +43,7 @@ impl FunctionBuilder<'_, '_> {
         let ty_text = self.ty(ty);
         let slot = self.fresh();
         self.hoist_alloca(&slot, &ty_text);
+        self.line(format!("store {ty_text} zeroinitializer, ptr {slot}"));
         let (failed, done) = (self.label(), self.label());
         self.clone_value(&source, &slot, ty, &failed);
         self.line(format!("br label %{done}"));
@@ -40,6 +73,16 @@ impl FunctionBuilder<'_, '_> {
 
     /// A panic in a custom clone drops what was already cloned, then branches to `failed`.
     fn clone_value(&mut self, source: &str, target: &str, ty: TypeId, failed: &str) {
+        if self.module.package.is_copy(ty) {
+            self.emit_clone_value(source, target, ty, failed);
+        } else {
+            let helper = self.module.clone_helper(ty, self.body);
+            self.line(format!("call void {helper}(ptr {source}, ptr {target})"));
+            self.branch_if_panicking(failed);
+        }
+    }
+
+    fn emit_clone_value(&mut self, source: &str, target: &str, ty: TypeId, failed: &str) {
         let package = self.module.package;
         let ty_text = self.ty(ty);
         if package.is_copy(ty) {
