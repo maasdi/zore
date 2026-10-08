@@ -3130,19 +3130,14 @@ func main() {
 
 #[test]
 fn tens_of_thousands_of_tasks_run_and_wait_on_each_other() {
-    // Only targets with fibers can hold this many tasks; elsewhere each task is a thread.
-    let fibers = cfg!(all(
-        any(target_arch = "x86_64", target_arch = "aarch64"),
-        any(target_os = "linux", target_os = "macos")
-    ));
-    let (count, depth) = if fibers { (50_000, 5000) } else { (1000, 100) };
+    let (count, depth) = (50_000, 5000);
     let source = format!(
         "package main
 func square(n int) int {{ return n * n }}
-func chain(depth int) int {{
+async func chain(depth int) int {{
     if depth == 0 {{ return 0 }}
     let next = go chain(depth - 1)
-    return next.wait() + 1
+    return await next + 1
 }}
 func main() {{
     var tasks = Array<Task<int>>{{}}
@@ -3466,7 +3461,7 @@ func main() {
 #[test]
 fn a_thousand_tasks_pass_a_value_along_a_chain_of_channels() {
     let source = "package main
-func link(from channel<int>, to channel<int>) {
+async func link(from channel<int>, to channel<int>) {
     let value, _ = from.receive()
     to.send(value + 1)
 }
@@ -3538,7 +3533,7 @@ func main() {
 fn many_sleeping_tasks_wait_together() {
     let source = "package main
 import \"zore/time\"
-func nap(ms int) int {
+async func nap(ms int) int {
     time.Sleep(ms)
     return ms
 }
@@ -5003,7 +4998,7 @@ func main() { let t = go fail(); println(t.wait()) }
 }
 
 #[test]
-fn async_state_machines_can_await_fiber_tasks_and_fiber_functions_can_await_polled_calls() {
+fn async_state_machines_can_await_plain_tasks_after_channel_suspension() {
     prints(
         r#"package main
 import "zore/time"
@@ -5022,6 +5017,47 @@ func main() {
 "#,
         "ready\n",
     );
+}
+
+#[test]
+fn plain_tasks_join_polled_children_and_mix_with_async_channel_waiters() {
+    let output = run_channel_poll_bounded(
+        r#"package main
+import "zore/time"
+async func child(value int) int { time.Sleep(1); return value }
+func parent(value int) int { let task = go child(value); return task.wait() }
+func plain(ch channel<int>, ready channel<bool>) int {
+    ready.send(true)
+    let n, _ = ch.receive()
+    return parent(n)
+}
+async func polled(ch channel<int>, ready channel<bool>) int {
+    ready.send(true)
+    let n, _ = ch.receive()
+    let task = go parent(n)
+    return await task
+}
+func main() {
+    let ch = channel<int>()
+    let ready = channel<bool>()
+    var tasks = Array<Task<int>>{}
+    for var i = 0; i < 32; i += 1 {
+        if i % 2 == 0 { tasks.push(go plain(ch, ready)) } else { tasks.push(go polled(ch, ready)) }
+    }
+    for var i = 0; i < 32; i += 1 { let _, _ = ready.receive() }
+    for var i = 1; i <= 32; i += 1 { ch.send(i) }
+    var total = 0
+    for tasks.len() > 0 {
+        let found, task = tasks.pop()
+        if found { total += task.wait() }
+    }
+    println(total)
+}
+"#,
+    );
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    assert_eq!(stdout(&output), "528\n");
+    assert!(output.stderr.is_empty(), "{}", stderr(&output));
 }
 
 #[test]
@@ -5089,7 +5125,7 @@ func main() {
 }
 
 #[test]
-fn thousands_of_polled_tasks_can_suspend_on_each_other_without_fiber_stacks() {
+fn thousands_of_polled_tasks_can_suspend_on_each_other_without_private_stacks() {
     prints(
         r#"package main
 async func seed() int { return 1 }
@@ -5400,7 +5436,7 @@ func main() {
 }
 
 #[test]
-fn channel_poll_thousands_of_tasks_wait_without_fiber_stacks() {
+fn channel_poll_thousands_of_tasks_wait_without_private_stacks() {
     let output = run_channel_poll_bounded(
         r#"package main
 async func run(ch channel<int>) int { let n, _ = ch.receive(); return n }
@@ -5994,4 +6030,31 @@ func main() { let t = go run("PATH"); println(t.wait()) }
     assert_eq!(stdout(&output), "drop frame\n");
     assert!(stderr(&output).contains("division by zero"));
     assert!(!stderr(&output).contains("leak:"));
+}
+
+#[test]
+fn cancellation_background_tasks_scale_as_async_frames() {
+    let output = run_channel_poll_bounded(
+        r#"package main
+import "zore/cancel"
+func main() {
+    let parent = cancel.WithTimeout(200)
+    var children = Array<cancel.Token>{}
+    for var i = 0; i < 1000; i += 1 { children.push(parent.Child()) }
+    var total = 0
+    for children.len() > 0 {
+        let found, child = children.pop()
+        if found {
+            let _, _ = child.Done().receive()
+            if child.Cancelled() { total += 1 }
+        }
+    }
+    println(total)
+    println(parent.Cancelled())
+}
+"#,
+    );
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    assert_eq!(stdout(&output), "1000\ntrue\n");
+    assert!(output.stderr.is_empty(), "{}", stderr(&output));
 }

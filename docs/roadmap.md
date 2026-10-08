@@ -38,8 +38,8 @@ is guidance, not a language contract.
 | M18–M19 — synchronous subset implemented; validation pending | Drop insertion and panic cleanup cover the synchronous subset. The concrete Copy `error` type, `nil` in an error context, `error(message)`, content equality, explicit discards, rejection of silently ignored error results, and path-sensitive checks for named errors are implemented. Synchronous `?` propagates call errors, zero-fills other return values, and runs cleanup. Awaited propagation remains for M25–M29. |
 | M20–M23 — partial | Fixed-array types, typed literals, and indexing (read, mutable-place write/replacement, conservative-aliasing, and rejection of moving an element out through an index) are implemented end to end: `zore check`, and now `zore build`/`zore run` — LLVM `[N x T]` type emission, GEP-based indexed addressing, runtime bounds-check panics, and element cleanup without per-element drop flags (sound because element extraction stays rejected). Borrowed slices (`[]T`, `mut []T`, `base[low:high]`, contextual exclusive views, indexing and element writes through views) are implemented end to end: `zore check` with region analysis, and `zore build`/`zore run` with `{ ptr, i64 }` descriptors, slice-aware addressing, and runtime "slice bounds out of range" panics. Dynamic `Array<T>` is implemented end to end for literal-sized arrays: typed literals, indexing, element writes, slicing, borrow/`mut`/`own` passing, returns, the zero value, and heap storage freed after dropping elements in reverse order (Q17). `len`, `push`, and `pop` (§12.7) work, and `Array<T>` storage keeps a capacity so pushes are amortized. Structs that contain themselves through `Array<T>` or a map (rejected until out-of-line drop functions exist), and packages/imports remain; validate ownership and package visibility. Maps (`map[K]V`, §13.3) are implemented end to end: typed literals with static and runtime duplicate-key rejection, the two-result lookup for Copy values, `m[k] = v` insert/replace, and `m.remove(k)` transferring ownership (Q18). `m.len()` and `for key, value in m` loops work (§5.10, §12.7); borrowed entry access remains Q02/Q05. |
 | M24 — implemented except tasks | Closures (§16, Q02g, Q02i) work end to end in `zore check`, `zore build`, and `zore run`: closure literals, `func(T) R` types, calls through values, function-typed parameters, captures inferred per whole local as shared or exclusive loans checked by region analysis, nested captures, `?` and panic cleanup inside closures. Paired acceptance/rejection tests cover each rule. Owning closures (returned or stored, with heap environments and destructors) and call-once closures are inferred automatically. Remaining, each diagnosed as unsupported or rejected: declared functions as values, storing a view of a closure's own parameter into a capture, and closures with tasks or `await` (M25+). |
-| M25–M29 — tasks implemented; state machines with all supported waiting operations implemented | `async func`, `await`, `go`, `Task<...>`, `.wait()`, and `await task` work end to end in `zore check`, `zore build`, and `zore run` (§17–18, Q25). An async call must be awaited or spawned, `await` is valid only in an `async func` body, and `main` cannot be `async`. `go` takes a call to a declared function or method; its inputs are copied or moved into an owning closure that the runtime executes once, and spawned `mut`, view, and unmoved-Move inputs are rejected. `Task<...>` is a Move handle: dropping it detaches the task, `.wait()` and `await task` consume it, a task panic is raised again at retrieval, and a nil task panics. Text counts are shared across threads under one lock. Q32 slices 2–3 and the waiting-operation slice 4 PRs add a poll scheduler, persistent heap frames, async-call/task, channel/select, timer, mutex acquisition, and I/O/helper suspension, and polled `go` for eligible async functions. Waiting standard-library wrappers gain internal poll frames; plain user helpers remain synchronous. Plain-function tasks retain fiber execution until slice 5. On x86-64 and AArch64 Linux and macOS those remaining tasks are lightweight fibers: each has a private 256 KB stack with a guard page, and a few worker threads (at least two, one per core) run them, so `.wait()` and `await task` park the task instead of blocking a thread and 100,000 tasks run at once; an awaited async call runs on the awaiter's stack. Other targets give each task its own OS thread. Remaining: Q32 plain-task pool execution and fiber removal (`docs/proposals/async-state-machines.md`), preemption, `go` on function values and closures, and the lifetime proof for borrows that cross a task boundary beyond the current rejections. Channels are M30–M31. |
-| M30–M31 — channels and async I/O implemented | `channel<T>()` and `channel<T>(n)` with `send`, `receive`, and `close` work end to end (§19, Q26): handles are Copy and share one queue, a Move message is moved in and out, an unbuffered send waits for a receiver, a buffered send waits only when full, `receive` returns the value and whether one arrived, closing wakes every blocked task, a send on a closed channel panics (the runtime drops the unsent value first), closing twice panics, and the zero value is an always-closed empty channel. Buffered values are dropped when the last handle goes. Elements cannot hold slices or function values. A task that blocks on a channel parks, so fibers keep running. Async I/O (§37.3, Q27): `zore/time` (`Sleep`, `Millis`), `zore/io` (`ReadLine`), `zore/os` (`ReadFile`, `WriteFile`), and `zore/net` (TCP `Listen`, `Dial`, `Accept`, `Read`, `Write`, `CloseWrite`, `Port`) park only the calling task. Timers and socket readiness use an event loop (epoll on Linux, kqueue on macOS); files, standard input, connects, and name lookups run on a pool of helper threads. A program in which every task waits on a channel or another task, with no timer, descriptor, or helper thread that could wake one, stops with "all tasks are asleep" and exit status 2. `select` (§19.14, Q29) waits on several `receive` and `send` cases and runs the body of one that can proceed, with an optional `default`; ready cases are tried from a rotating start so none starves, and a task waiting in a `select` sits in the queue of every channel it names until one case completes. Byte arrays (§37.2–37.3, Q30): `strings.Bytes` and `strings.FromBytes` (checked UTF-8), `os.ReadBytes` and `os.WriteBytes`, and `Conn.ReadBytes` and `Conn.WriteBytes` read and write any bytes as an `Array<byte>`. Time limits and cancellation (§37.3–37.4, Q31): `time.After` is a channel that fires once, `net.DialTimeout` and `SetTimeout` on a `Listener` or `Conn` make accepts, reads, and writes give up with a `timed out` error (the event loop waits on the descriptor and a timer together), and the new `zore/cancel` package gives cooperative tokens (`New`, `WithTimeout`, `Cancel`, `Cancelled`, `Done`, `Child`, `Sleep`) written in Zore itself. Remaining: UDP, TLS, other file operations, and sharing one connection between tasks. The kqueue path runs in CI on macOS. |
+| M25–M29 — tasks implemented; state machines with all supported waiting operations implemented | `async func`, `await`, `go`, `Task<...>`, `.wait()`, and `await task` work end to end in `zore check`, `zore build`, and `zore run` (§17–18, Q25). An async call must be awaited or spawned, `await` is valid only in an `async func` body, and `main` cannot be `async`. `go` takes a call to a declared function or method; its inputs are copied or moved into an owning closure that the runtime executes once, and spawned `mut`, view, and unmoved-Move inputs are rejected. `Task<...>` is a Move handle: dropping it detaches the task, `.wait()` and `await task` consume it, a task panic is raised again at retrieval, and a nil task panics. Text counts are shared across threads under one lock. Q32 slices 2–3 and the waiting-operation slice 4 PRs add a poll scheduler, persistent heap frames, async-call/task, channel/select, timer, mutex acquisition, and I/O/helper suspension, and polled `go` for eligible async functions. Waiting standard-library wrappers gain internal poll frames; plain user helpers remain synchronous. Plain-function tasks run once on the same worker pool as polled tasks on every host; blocking runtime calls start replacement workers. Async tasks need heap frames rather than private stacks, while plain functions hold an OS worker during a wait. Fibers, stack-switching assembly, and the per-task thread fallback are removed. Remaining: preemption, `go` on function values and closures, and the lifetime proof for borrows that cross a task boundary beyond the current rejections. Channels are M30–M31. |
+| M30–M31 — channels and async I/O implemented | `channel<T>()` and `channel<T>(n)` with `send`, `receive`, and `close` work end to end (§19, Q26): handles are Copy and share one queue, a Move message is moved in and out, an unbuffered send waits for a receiver, a buffered send waits only when full, `receive` returns the value and whether one arrived, closing wakes every blocked task, a send on a closed channel panics (the runtime drops the unsent value first), closing twice panics, and the zero value is an always-closed empty channel. Buffered values are dropped when the last handle goes. Elements cannot hold slices or function values. An async task suspends on a channel; a plain task blocks its worker with compensation. Async I/O (§37.3, Q27): `zore/time` (`Sleep`, `Millis`), `zore/io` (`ReadLine`), `zore/os` (`ReadFile`, `WriteFile`), and `zore/net` (TCP `Listen`, `Dial`, `Accept`, `Read`, `Write`, `CloseWrite`, `Port`) suspend an async task or block a plain caller with compensation. Timers and socket readiness use an event loop (epoll on Linux, kqueue on macOS); files, standard input, connects, and name lookups run on a pool of helper threads. A program in which every task waits on a channel or another task, with no timer, descriptor, or helper thread that could wake one, stops with "all tasks are asleep" and exit status 2. `select` (§19.14, Q29) waits on several `receive` and `send` cases and runs the body of one that can proceed, with an optional `default`; ready cases are tried from a rotating start so none starves, and a task waiting in a `select` sits in the queue of every channel it names until one case completes. Byte arrays (§37.2–37.3, Q30): `strings.Bytes` and `strings.FromBytes` (checked UTF-8), `os.ReadBytes` and `os.WriteBytes`, and `Conn.ReadBytes` and `Conn.WriteBytes` read and write any bytes as an `Array<byte>`. Time limits and cancellation (§37.3–37.4, Q31): `time.After` is a channel that fires once, `net.DialTimeout` and `SetTimeout` on a `Listener` or `Conn` make accepts, reads, and writes give up with a `timed out` error (the event loop waits on the descriptor and a timer together), and the new `zore/cancel` package gives cooperative tokens (`New`, `WithTimeout`, `Cancel`, `Cancelled`, `Done`, `Child`, `Sleep`) written in Zore itself. Remaining: UDP, TLS, other file operations, and sharing one connection between tasks. The kqueue path runs in CI on macOS. |
 | M32–M34 | LLVM/native toolchain hardening and library growth; native execution tests and full MVP coverage audit against §39/§46/§52. |
 | M35+ | Self-hosting work after bootstrap and library capabilities are sufficient. |
 
@@ -56,22 +56,20 @@ the migration is pending on a host with Rust and clang installed.
 
 ## Next implementation session
 
-Q32 slice 2 adds the poll scheduler and common slot/task waiter foundation beside
-fibers, including worker compensation for blocking runtime calls, task-local panic
-state, coherent deadlock counts, and focused wakeup/concurrency regression tests.
-Slice 3 adds `async_lowering/`, persistent heap frames, constructors and poll
-functions for simple async bodies, async-call and task awaits, and polled `go` of
-eligible async functions. Direct waiting operations without poll forms retain
-fiber execution, including their awaited callers; plain helper calls can block
-with worker compensation. Slice 4 channel/select, timer/reactor, mutex acquisition,
-and I/O/helper completion poll forms are implemented. Waiting bundled-library
-wrappers have internal poll frames, including networking and cancellation methods.
-Standard input, files, DNS, listen, and dial use helper completions; Linux/macOS
-accept/read/write operations use the shared reactor engine. Other hosts offload
-blocking socket natives to helpers. Each wait preserves argument evaluation,
-results, ownership, panic cleanup, and external/internal deadlock accounting.
-Next is slice 5: plain-function tasks on pool threads and removal of fibers
-(`docs/proposals/async-state-machines.md`).
+Q32 slices 1–6 are implemented. The final slices move plain-function tasks onto
+the shared pool, remove fibers and stack switching, and update the architecture,
+structure guide, and test documentation. Async-call/task, channel/select, timer,
+mutex acquisition, and I/O/helper waits use persistent frames and task wakers.
+Plain helpers and callbacks remain synchronous; blocking runtime calls compensate
+workers. Internal waits retain deadlock detection; external waits do not count.
+Cancellation's private timer and parent-following tasks use async frames.
+
+The large task tests use async task functions: 50,000 computations, a 5,000-task
+join chain, and thousands of channel and timer waiters. Plain tasks that wait hold
+OS workers, so large sets of them can exhaust host thread limits; use `async func`
+for those workloads. Preemption, frame shrinking, scoped tasks, and `go` on
+function values remain follow-ups, outside the accepted Q32 slices. The next
+milestone is M32–M34's backend/toolchain hardening and MVP coverage audit.
 
 The refactor/runtime migration baseline is validated (see above). Its first CI
 run failed on rustfmt drift and on a native test that declared `var` without
@@ -2159,9 +2157,8 @@ Async functions followed (§17.2, §17.8). The resolver declares an `async func`
 like any other function. The checker allows an async call only as the operand
 of `await`, requires `await` to sit in an `async func` body, and gives an
 awaited call the callee's result list, so `await f()?` and discards behave as
-for a synchronous call. Code generation treats an async function as an
-ordinary function and `await` as its call; a suspension-capable state machine
-arrives with tasks.
+for a synchronous call. Q32 now lowers async functions to persistent frames after drop insertion;
+awaited calls poll child frames and preserve the original cleanup edges.
 
 Tasks followed (§18, Q25). The checker turns `go f(args)` into a spawn node
 that carries the argument expressions and a synthetic closure whose captures
@@ -2171,27 +2168,20 @@ closure environment, drop flags, and call-once handling), and spawns it. The
 code generator allocates a block holding the closure and room for the results,
 and emits an entry function per result list that runs the closure once, keeps
 its results unless it panicked, and then runs the environment destructor. The
-runtime runs the block as a fiber (a thread where fibers are not available)
-and records completion and any panic; `.wait()` waits, takes the results, and
+runtime runs plain entries once on shared pool workers and async entries as
+polled persistent frames, then records completion and any panic; `.wait()` waits, takes the results, and
 re-raises a panic, and dropping a handle marks the task detached so whoever finishes second destroys its results and
 frees the block. Waiting on a task moves its handle, so ownership analysis
 needs no new rules. The shared text table is a locked map rather than a
 per-thread one.
 
-Fibers (`runtime/src/fiber.rs`). A fiber is a heap record plus a mapped stack
-that is allocated when the fiber first runs and pooled when it ends. A naked
-x86-64 or AArch64 routine saves the callee-saved registers, switches stack pointers, and
-restores the other side; a new stack first returns into a small start routine
-that calls the fiber's entry function. Workers pop ready fibers from one locked
-queue, and a fiber that must wait asks its worker to register it on the task it
-waits for only after the switch, so another worker cannot resume it while it is
-still running. The panic state follows the fiber: a worker swaps it in before
-resuming and out afterwards. The initial task is an ordinary thread and waits
-on a condition variable. Limits: stacks do not grow, so very deep recursion in a
-task overflows its guard page and the process dies; and each started fiber uses
-two memory mappings, so about 30,000 fibers can be started and unfinished at
-once under the default Linux limit, after which starting another reports
-"out of stack space".
+Q32 replaces the former fiber scheduler with `runtime/src/scheduler.rs`.
+The shared FIFO queue retains runnable and suspended tasks, coalesces concurrent
+wakes, and installs task-local panic state on each worker. Plain calls block in
+`slot.rs` or a task join; a thread-local guard starts replacement workers and
+surplus workers retire after calls resume. Async tasks keep all locals and wait
+operation records in pinned heap frames. There is no stack-switching assembly or
+per-task OS-thread fallback. See `architecture.md` for the completed design.
 
 Channels followed (§19, Q26). `channel<T>` is a pointer to a runtime object
 holding a lock, a queue of buffered messages, and lists of blocked senders and
@@ -2201,9 +2191,8 @@ the same places the compiler already retains and releases strings, and the
 last release destroys the buffered messages through a per-type function the
 compiler generates. A message is copied into runtime storage on send and out on
 receive; the sender's local is marked moved, so no value is dropped twice. A
-blocked sender or receiver sleeps on a `Slot` shared with the fiber scheduler:
-a fiber parks and its worker runs another task, any other thread blocks, and a
-wake that arrives before the fiber has finished leaving is not lost. The four
+plain sender or receiver blocks on a `Slot` with worker compensation; an async
+caller registers a task waker in the same queue. Wake-before-park is latched. The four
 operations are MIR calls with their own `Callee` entries; the channel argument
 is passed by reference so no extra handle is made. Setting `ZORE_CHECK_LEAKS`
 also fails a program that ends with a live channel while no task runs.
@@ -2214,13 +2203,15 @@ generated shims; two new shim shapes carry `error` and `(string, error)`
 results. `Conn` and `Listener` are structs holding a number, with a custom
 `drop` that closes the handle, so they are Move and close when dropped. The
 runtime keeps a table of handles that are never reused. A task that must wait
-registers a one-shot interest with the event thread and parks on a `Slot`; a
+registers a one-shot interest with the event thread and waits through a slot or
+task waker; a
 nonblocking operation that reports "would block" waits and tries again. The
 event thread owns one epoll or kqueue queue plus a wake-up pipe and a heap of
 timers. Blocking calls run on helper threads that grow to 512 and exit after
 five idle seconds. A connection keeps up to three bytes of an unfinished
 character between reads so text is never split. On targets without an event
-queue sockets stay in blocking mode and each task already has a thread.
+queue socket waits run on helpers for async callers, with compensated blocking
+for plain callers.
 
 Deadlock detection (`runtime/src/deadlock.rs`). A task that waits on a channel
 or on another task is counted as blocked when it goes to sleep and uncounted by
@@ -2232,10 +2223,6 @@ number of live tasks (unfinished tasks plus the initial one); when they are
 equal nothing can run again and the process exits with status 2. A deadlock
 among some tasks while others still run is not reported.
 
-AArch64 fibers follow the x86-64 design: a 160-byte frame holds `x19`–`x30` and
-`d8`–`d15`, a new stack first returns into a start routine that calls the entry
-function, and the guard is one system page, which is 16 KB on Apple silicon.
-
 Mutexes followed (§20.2, Q28). `Mutex<T>` is a pointer to a runtime cell holding
 the lock, a queue of waiters, and the guarded value, with the same counted
 handle as a channel, so copying a handle retains it and the last release drops
@@ -2244,7 +2231,7 @@ one MIR call whose code generation locks, calls the callback with the
 value's address (and a scratch drop-flag block for a Move value), checks the
 panic flag, and unlocks, passing the flag so a panicking callback poisons the
 mutex before the unwind continues. The lock is handed directly to the
-first waiter, which sleeps on a deadlock-counted `Slot`.
+first waiter, which uses a deadlock-counted slot or task waker.
 
 The limits list is now empty. Do not accept a
 feature whose move/borrow checks and required cleanup are not yet

@@ -375,7 +375,7 @@ mod tests {
     use std::time::{Duration, Instant};
 
     use super::*;
-    use crate::fiber::Slot;
+    use crate::slot::Slot;
 
     fn receive<T>(rx: &mpsc::Receiver<T>) -> T {
         rx.recv_timeout(Duration::from_secs(10))

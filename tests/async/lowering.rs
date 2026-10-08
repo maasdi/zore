@@ -95,7 +95,7 @@ func main() {}",
 }
 
 #[test]
-fn recursive_calls_are_planned_and_nonblocking_natives_do_not_force_fibers() {
+fn recursive_calls_are_planned_and_nonblocking_natives_preserve_poll_lowering() {
     let (package, _, plan) = plan("package main
 import \"zore/strings\"
 async func recurse(n int) string { if n == 0 { return strings.Upper(\"done\") }; return await recurse(n - 1) }

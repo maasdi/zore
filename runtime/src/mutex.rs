@@ -3,7 +3,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex as Lock, MutexGuard};
 
 use super::alloc::{zore_alloc, zore_free};
-use super::fiber::Slot;
+use super::slot::Slot;
 use super::waiter::Waiter;
 
 type Destroy = unsafe extern "C" fn(*mut u8);

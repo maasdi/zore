@@ -141,6 +141,7 @@ zore/
 │       │   ├── mod.rs
 │       │   ├── llvm.rs
 │       │   ├── layout.rs
+│       │   ├── state_machine.rs
 │       │   └── abi.rs
 │       │
 │       └── context/
@@ -353,7 +354,16 @@ Constant(...)
 Responsible for determining where destruction is required and inserting explicit drop operations, including early returns, `?`, branches, and async states.
 
 ## `async_lowering/`
-Responsible for suspension points, locals live across `await`, state-machine lowering, and ownership-safe async transformation.
+Implemented after MIR ownership checking and drop insertion:
+
+- `lower.rs` plans eligible async bodies and waiting bundled-library wrappers.
+- `suspension.rs` classifies awaited calls/tasks and channel, timer, mutex, and I/O waits.
+- `state_machine.rs` holds the plan keyed by typed function and MIR block IDs.
+- `codegen/state_machine.rs` emits heap-frame constructors, polls, and destruction.
+
+All locals, temporaries, drop flags, and persistent wait storage live in pinned
+frames. Suspension retains source spans and MIR cleanup edges. Plain user helpers
+and callbacks keep ordinary synchronous calls with runtime worker compensation.
 
 Do not implement a separate async ownership model.
 
@@ -381,6 +391,8 @@ runtime/
 ├── alloc.rs
 ├── task.rs
 ├── scheduler.rs
+├── slot.rs
+├── waiter.rs
 ├── channel.rs
 ├── panic.rs
 └── io.rs
@@ -390,7 +402,9 @@ Responsibilities:
 
 - `alloc.rs` — owned runtime allocation primitives
 - `task.rs` — task representation and lifecycle
-- `scheduler.rs` — task scheduling
+- `scheduler.rs` — shared poll/plain task pool, wakeups, and worker compensation
+- `slot.rs` — condition-variable waits for plain callers
+- `waiter.rs` — common slot or task-waker wake targets
 - `channel.rs` — channel buffering, synchronization, close semantics
 - `panic.rs` — runtime panic support
 - `io.rs` — runtime I/O and async I/O support
@@ -779,19 +793,12 @@ layout in detail.
    in the HIR package; a `types/` home would recreate the same cycle.
 3. **`Place` and `Projection` live in `mir/`, not `ownership/`.** The ownership
    checker reads them, and moving them would make `mir` depend on `ownership`.
-4. **Fibers remain during Q32's staged migration.** `async_lowering/` and
-   `runtime/src/scheduler.rs` now exist. Slice 3 lowers simple async bodies to
-   persistent frames and polls; plain tasks and async waits without poll forms
-   still run on fibers (`runtime/src/fiber.rs`). Synchronous compatibility bodies
-   keep awaited calls from the remaining fiber paths usable until slice 4 adds
-   operation poll forms. Slice 5 removes fibers. Async reuses ordinary ownership
-   throughout (rule 7).
-5. **There is no `context/` and no `diagnostic/code.rs`.** Nothing needs shared
+4. **There is no `context/` and no `diagnostic/code.rs`.** Nothing needs shared
    compiler context yet, and diagnostics have no codes yet (rule 11).
-6. **The runtime has more modules than section 6 lists.** It also holds
-   `fiber.rs`, `mutex.rs`, `deadlock.rs`, `reactor.rs`, `blocking.rs`, `sys.rs`,
-   `net.rs`, `map.rs`, and the text modules, one per implemented feature.
-7. **Integration tests are Rust files grouped by subsystem**, not `.ore` fixture
+5. **The runtime has more modules than section 6 lists.** It also holds
+   `mutex.rs`, `deadlock.rs`, `reactor.rs`, `blocking.rs`, `sys.rs`,
+   `net.rs`, `net_poll.rs`, `map.rs`, and the text modules, one per implemented feature.
+6. **Integration tests are Rust files grouped by subsystem**, not `.ore` fixture
    files per folder. Async and channel behavior is tested end to end in
    `tests/codegen/native.rs`.
 

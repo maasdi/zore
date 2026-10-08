@@ -29,7 +29,7 @@ const RUNTIME_SOURCES: &[(&str, &str)] = &[
         "deadlock.rs",
         include_str!("../../../runtime/src/deadlock.rs"),
     ),
-    ("fiber.rs", include_str!("../../../runtime/src/fiber.rs")),
+    ("slot.rs", include_str!("../../../runtime/src/slot.rs")),
     ("io.rs", include_str!("../../../runtime/src/io.rs")),
     ("map.rs", include_str!("../../../runtime/src/map.rs")),
     ("mutex.rs", include_str!("../../../runtime/src/mutex.rs")),

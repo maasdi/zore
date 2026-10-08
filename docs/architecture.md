@@ -1,6 +1,6 @@
 # Bootstrap architecture
 
-Status: The compiler supports a synchronous subset through parts of M18–M20,
+Status: The compiler supports tasks and stackless async state machines alongside the synchronous subset,
 including Move structs, deterministic drops, concrete error values, fixed
 arrays, dynamic `Array<T>`, maps, borrowed slices with region analysis, and
 non-escaping closures. Paths below are relative to `compiler/src/`. `main.rs` delegates to
@@ -62,7 +62,7 @@ purposes), `dropck/analysis.rs`, `types/{function_type,classify}.rs`,
 (`lower.rs`, `state_machine.rs`, `suspension.rs`), after drop insertion. The
 backend's `codegen/state_machine.rs` emits its constructors, polls, and frame
 destructors. The runtime's `scheduler.rs` serves lowered async tasks alongside
-`fiber.rs` and `task.rs`; plain tasks still use fibers during the migration; async I/O uses polls.
+`task.rs` and the blocking slots in `slot.rs`; plain tasks run once on the same pool and async I/O uses polls.
 
 Dependencies point only from later stages to earlier ones, with no cycles,
 apart from three deliberate choices. `resolve` depends on `types` because
@@ -84,8 +84,9 @@ either the workspace root or the compiler directory.
 The authoritative specification stays at `spec/language-spec.md`. The Rust
 runtime in `runtime/src/` holds allocation (`alloc.rs`), text (`string.rs`,
 `strings.rs`, `strconv.rs`), maps (`map.rs`), panics (`panic.rs`), and output
-(`io.rs`). It also holds tasks and their stack-switching fibers (`task.rs`,
-`fiber.rs`), channels and `select` (`channel.rs`), `Mutex` (`mutex.rs`),
+(`io.rs`). It also holds task handles and completion (`task.rs`), the shared worker pool
+(`scheduler.rs`), blocking wait slots (`slot.rs`) and common wake targets
+(`waiter.rs`), channels and `select` (`channel.rs`), `Mutex` (`mutex.rs`),
 deadlock detection (`deadlock.rs`), and async I/O: the event loop and timers
 (`reactor.rs`), helper threads for blocking calls (`blocking.rs`), and the
 natives behind `zore/time`, `zore/io`, `zore/os`, and `zore/net` (`sys.rs`,
@@ -93,13 +94,16 @@ natives behind `zore/time`, `zore/io`, `zore/os`, and `zore/net` (`sys.rs`,
 the native entry shim compiled with each program; the Cargo library target
 enables runtime unit tests without a generated entry.
 
-### Poll scheduler foundation (Q32 slice 2)
+### Shared task scheduler (Q32 slices 2 and 5)
 
 `scheduler.rs` owns heap-backed poll tasks and a locked FIFO run queue, served by
 at least two workers (one per available core). Its Rust `spawn` entry accepts a
 frame-owning poll body returning `Ready` or `Pending`. These are internal runtime
-APIs. Slice 3's generated poll entries now use this foundation; the existing
-blocking task API remains compatible with both execution paths.
+APIs. Generated async entries return Pending after registering a waker. Plain
+owning-closure entries run once and return Ready after completion; they use the
+same task IDs, queue, panic state, and worker pool. There is no per-task stack,
+stack-switching assembly, or thread-per-task platform fallback. The existing
+blocking task API remains compatible with both task kinds.
 
 Each task serializes scheduling through a mutex. A queued task runs on one worker;
 wakes while running set a notification, and returning `Pending` either requeues
@@ -107,25 +111,29 @@ that notification or makes the task idle. An idle wake transitions to queued onc
 so concurrent wakes coalesce and a wake between registration and suspension cannot
 be lost. Wakes of finished tasks do nothing. The pool retains pending frames even
 if all caller-held wakers are dropped: detachment never cancels work. Pending
-frames are abandoned at process exit, as fibers are today (spec §18.11).
+frames are abandoned at process exit (spec §18.11).
 
 `waiter.rs` holds either an `Arc<Slot>` or a task `Waker`. Channel and select
 entries, mutex queues, task joins, reactor registrations, and helper completions
 now use this common wake target. Their blocking forms still create slots; channels,
-task joins, timers, mutex acquisition, and I/O now have poll forms. Fiber joins install a slot only after switching back to their
-worker, retaining the existing wake-before-park protocol. A slot blocks an OS thread only when no fiber is running.
+task joins, timers, mutex acquisition, and I/O have poll forms. A slot blocks the
+calling OS thread on a condition variable. Its wake flag is latched under the
+same lock used by parking, so wake-before-park and concurrent wakes are retained.
+Blocking task joins likewise publish completion and register their internal
+blocked count under the task completion lock.
 
-When a poll worker blocks in a slot, task join, output operation, or a fallback
+When a worker blocks in a slot, task join, output operation, or a fallback
 timer/socket call on a target without a reactor, a thread-local
 guard tells the pool to start a replacement. Nested guards count the worker once.
 Replacement workers retire when workers resume and surplus capacity becomes idle;
-ordinary threads and the separate fiber pool are unaffected. Uninstrumented foreign
+ordinary threads do not trigger pool compensation. Uninstrumented foreign
 blocking calls are not detected automatically.
 
 The panic state is swapped into each polling worker for the duration of the poll
 and completed-frame destruction, then restored. A completed detached poll task
-reports its panic without contaminating another task. Existing fiber result
-retrieval, panic propagation, and mutex poisoning remain unchanged. Rust unwinding
+reports its panic without contaminating another task. Plain task entries install
+the same task-local state until they complete. Result retrieval, panic propagation,
+and mutex poisoning use their existing APIs. Rust unwinding
 from an internal poll body is a fatal runtime error, not a Zore exception.
 
 Both task kinds share task IDs and live-task accounting. `Context::pending_internal`
@@ -142,10 +150,10 @@ for `go asyncFn(...)`. After ordinary ownership checking and drop insertion,
 `async_lowering::lower` identifies eligible async bodies and records each awaited
 call, task join, or channel/select/timer/mutex wait by MIR block, preserving the call's
 source span, result places, and cleanup edges. The frontend still works without
-LLVM. Bodyless async functions retain fiber fallback; ordinary native I/O waits
+LLVM. Bodyless native functions keep synchronous shims; ordinary native I/O waits
 have poll forms. Waiting standard-library wrappers have internal frame/poll
 versions when called by a polled body, while plain user helpers remain ordinary. A
-polled function can spawn and await a fiber task. Calls to plain helpers remain ordinary calls and
+polled function can spawn and await a plain task. Calls to plain helpers remain ordinary calls and
 can block with worker compensation.
 
 Each lowered function has a named heap frame, constructor, `poll(frame, context,
@@ -163,16 +171,18 @@ The poll ABI returns `0` for Pending and `1` for Ready, including completion thr
 panic cleanup. The context pointer is opaque to generated code and borrowed only
 for a poll invocation; runtime waiters clone its waker. `zore_task_spawn_poll` shares
 the existing handle/result block layout, completion, detachment, and panic-reporting
-logic with fiber tasks. `zore_task_poll` retains an unfinished handle and registers
+logic with plain tasks. `zore_task_poll` retains an unfinished handle and registers
 the current waker under the completion lock, then consumes it on Ready through the
 same retrieval path as blocking waits. The enclosing poll task, rather than each
 nested frame or join entry, contributes one internal blocked count.
 
-Synchronous versions of eligible async bodies remain available for compatibility
-with fiber execution until slice 5. Neither this path nor the persistent
-frame plan changes source-language syntax or ownership semantics. Frames are not
-shrunk by liveness, and suspended frames are abandoned at process exit; operation
-fiber removal remains for Q32 slice 5.
+Synchronous shims remain available for plain callers of waiting library APIs.
+Neither these shims nor the persistent-frame plan changes source-language syntax
+or ownership semantics. Frames are not shrunk by liveness, and suspended frames
+are abandoned at process exit. Very large sets of waiting tasks should use
+`async func`: a plain function holds an OS worker while it waits, and compensation
+may need one replacement thread per blocked worker. The private cancellation
+`expire` and `follow` tasks are async, as is the timer package's `fire` task.
 
 ### Channel and select polls (Q32 slice 4, first PR)
 
@@ -185,7 +195,7 @@ values are dropped in reverse source order (§19.14), and the original MIR succe
 or panic edge resumes. Plain calls still use the blocking runtime APIs.
 
 `zore_channel_start` and `zore_channel_poll` share `start_select`/`finish_select`
-with blocking select, and the existing channel queues with fiber send/receive.
+with blocking select, and the existing channel queues with plain send/receive.
 Starting checks readiness under sorted, deduplicated channel locks, or registers
 one shared `Waiting` with the current task waker. Its atomic claim chooses exactly
 one winner; the exchange lock publishes the outcome before waking. Polling Pending
@@ -475,7 +485,7 @@ The LLVM backend decision, supported toolchain, host target, and runtime ABI
 are recorded in decision record 0001. M32 is backend hardening, not the first
 backend implementation.
 
-The current fiber scheduler and Q32 poll scheduler are described above. Further
+The shared Q32 task scheduler is described above. Further
 internal choices are constrained by the observable language guarantees. Record
 substantial decisions with context, alternatives, consequences, and validation
 under `docs/decisions/` when they are made.
@@ -542,7 +552,7 @@ limited to the internal ABI and does not introduce source-level unsafe syntax.
 
 ### Mutex acquisition polls (Q32 slice 4, third PR)
 
-`mutex.rs` shares one FIFO queue between fiber slots and task wakers. Each
+`mutex.rs` shares one FIFO queue between blocking slots and task wakers. Each
 acquisition owns a readiness flag; unlocking reserves the lock for the first
 waiter, publishes its grant, then wakes it. New arrivals cannot overtake a grant,
 and repeated polls do not register extra waiters. A pending operation retains the
@@ -554,8 +564,7 @@ panic without invoking the callback.
 pointer and output slot live in the persistent frame. After Ready, code generation
 invokes the ordinary callback once, then unlocks or poisons before following the
 original result and cleanup edges. Callbacks remain synchronous; blocking inside
-them uses worker compensation. Fiber execution and the blocking mutex ABI remain
-available. Slice 4 I/O and helper completion polling are described below.
+them uses worker compensation. The blocking mutex ABI remains available to plain callers. Slice 4 I/O and helper completion polling are described below.
 
 ### I/O and helper completion polls (Q32 slice 4, fourth PR)
 
@@ -564,7 +573,7 @@ available. Slice 4 I/O and helper completion polling are described below.
 call-graph propagation, including public networking methods and cancellation
 methods. Their internal persistent frames let an async caller suspend through
 ordinary library APIs. Plain user helpers and callbacks keep synchronous calls;
-plain-function tasks keep fiber execution until slice 5.
+plain-function tasks run once on pool workers.
 
 Standard input, file operations, listen, DNS, and dial run through
 `blocking.rs`'s existing helper pool. Generated native jobs hold arguments and
@@ -575,8 +584,8 @@ worker. Native shims preserve string ownership and the existing result ABI.
 Nested helper calls execute inline, avoiding helper jobs waiting on their own
 pool. Helpers are external waits for deadlock detection.
 
-On Linux and macOS, `net_poll.rs` shares one operation engine between blocking
-fiber slots and task wakers. Accept, text/byte reads, and text/byte writes try
+On Linux and macOS, `net_poll.rs` shares one operation engine between
+blocking slots and task wakers. Accept, text/byte reads, and text/byte writes try
 nonblocking sockets and arm the reactor only on WouldBlock. Repeated polls keep
 the same registration until readiness or the deadline; successful progress resets
 the next wait's deadline. Operations retain handles, partial write offsets, and
@@ -590,5 +599,4 @@ as synchronous shims. Their temporary raw output storage never survives a poll;
 persistent output and argument storage belongs to the enclosing frame. Worker
 compensation, panic cleanup, detachment, and deadlock detection remain available.
 The test pool uses a separate completion condition variable so test waiters cannot
-consume worker queue notifications. Slice 5 moves plain tasks onto pool workers
-and removes fibers; it is not part of this change.
+consume worker queue notifications.

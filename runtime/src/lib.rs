@@ -11,8 +11,6 @@ mod blocking;
 mod channel;
 #[path = "deadlock.rs"]
 mod deadlock;
-#[path = "fiber.rs"]
-mod fiber;
 #[path = "io.rs"]
 mod io;
 #[path = "map.rs"]
@@ -27,6 +25,8 @@ mod panic;
 mod reactor;
 #[path = "scheduler.rs"]
 pub mod scheduler;
+#[path = "slot.rs"]
+mod slot;
 #[path = "strconv.rs"]
 mod strconv;
 #[path = "string.rs"]
