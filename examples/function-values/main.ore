@@ -1,0 +1,61 @@
+package main
+
+type Resource struct {
+    Name string
+}
+
+func (r mut Resource) drop() {
+    println("drop " + r.Name)
+}
+
+func add(a int, b int) int {
+    return a + b
+}
+
+func multiply(a int, b int) int {
+    return a * b
+}
+
+func apply(op func(int, int) int, x int, y int) int {
+    return op(x, y)
+}
+
+func consume(r own Resource) {
+    println("consume " + r.Name)
+}
+
+func runWorker(handler own func() int) int {
+    return handler() + 1
+}
+
+func main() {
+    // A declared function's name is a function value.
+    println(apply(add, 2, 3))
+    let op = multiply
+    println(apply(op, 4, 5))
+
+    // A spawned closure owns copies of what it reads.
+    let id = 7
+    let label = "report"
+    let first = go func() int {
+        println("task " + label)
+        return id * 2
+    }()
+    println(first.wait())
+
+    // A spawned closure takes over a value it consumes.
+    let job = Resource{Name: "job"}
+    let second = go func() { consume(job) }()
+    second.wait()
+
+    // A closure or function value in a local moves into the task.
+    let double = func(n int) int { return n * 2 }
+    let third = go double(21)
+    println(third.wait())
+
+    // A closure that owns what it uses can be handed to a spawned call.
+    let owned = Resource{Name: "owned"}
+    let handler = func() int { return owned.Name.len() }
+    let fourth = go runWorker(handler)
+    println(fourth.wait())
+}
