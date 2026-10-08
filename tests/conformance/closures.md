@@ -88,7 +88,8 @@ tests. Every other row has an executable counterpart in
 | Shared parameter whose struct or collection type holds a function value | Rejected; declare it `mut` or `own` |
 | Collection loop over function values | Rejected |
 | Borrowing closure assigned to an outer `var` that outlives a captured local | Rejected |
-| Closure used in `go`, or live across `await` | Pending: tasks and `await` are not implemented |
+| Closure used in `go` | See "Spawned closures" below |
+| Closure live across `await` | Pending: `await` with closures is not implemented |
 
 ## Call-once closures
 
@@ -113,3 +114,48 @@ tests. Every other row has an executable counterpart in
 | `own` parameter of a closure | Dropped when the closure body ends |
 | Closure body panics | Runs cleanup for body locals, then unwinds through the caller and its frames |
 | Closure body `?`-returns an error | Closure returns the error; body cleanup runs; caller sees the error result |
+
+## Declared functions as values (§16.2)
+
+| Scenario | Expected result |
+| --- | --- |
+| `let f = add` then `f(1, 2)` | Valid; type `func(int, int) int` |
+| Function value passed to a `func(...)` parameter | Valid; identity is by signature |
+| Package-qualified function, written in Zore or native, converted then called | Valid |
+| Function value stored in a struct field, `Array<T>`, or map value | Valid |
+| Converted function value is Move | Binding it to another name moves it |
+| Function value compared, printed, or used as a map key | Rejected |
+| Name of an `async func` as a value | Rejected |
+| A method as a value | Rejected |
+| `println`, `len`, `push` as values | Rejected |
+| Parameter type or mode mismatch on assignment | Rejected |
+| Callee and arguments of a call through the value | Evaluated once, callee first |
+
+## Spawned closures (§16.4, §16.6, §18.3, §18.4)
+
+Executable counterparts land with stage 3 of issue #52; until then these rows
+are pending and do not count as passing tests.
+
+| Scenario | Expected result |
+| --- | --- |
+| `go func() { ... }()` capturing Copy values | Valid; values copied |
+| Captured Move value | Valid; unusable in the spawner afterward |
+| Captured borrowed parameter that is a Move value | Rejected |
+| Captured view, `mut` parameter, or exclusive capture | Rejected |
+| Spawned closure capturing a borrowing closure | Rejected |
+| Closure assigns, compound-updates, or passes a captured Copy local to `mut` | Rejected, at the change |
+| Closure copies a captured Copy local into its own `var` and changes that | Valid |
+| `go job()` then `job()` or a second `go job()` | Rejected: use of a moved value |
+| `go finish()` of a call-once closure | Valid; consumes it |
+| `go runWorker(handler)` with an owning function-typed `own` argument | Valid; the closure moves into the task |
+| Function-typed argument for a shared parameter, or a closure that holds a view | Rejected |
+| Callee or argument expression | Evaluated exactly once, callee first |
+| Environment destroyed on normal return, on an `error` result, and on panic | Exactly once each |
+| Closure never spawned, then dropped or out of scope | Environment destroyed once |
+| Argument expression panics after the callee was evaluated | Callable destroyed once; no task created |
+| Detached task with an owning closure | Environment and results destroyed when it finishes |
+| Result that is a slice, a view, or a function value | Rejected |
+| Callee that is a field, element, map value, or a call result | Rejected |
+| Closure inside an `async func` spawned with `go` | Valid; runs as a plain task, body not async |
+| `await` inside a spawned closure | Rejected |
+| Existing `go declaredFunc(args)` and closure calls | Unchanged |

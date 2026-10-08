@@ -3655,8 +3655,26 @@ func()
 Two function types are identical when their parameter types, modes, and result
 types are identical, in order. Function types are not comparable, have no zero
 value (a binding must be initialized, §5.4), cannot be printed, and cannot be
-map keys (§13.3). Using a declared function's name as a value is not locked by
-this section and is rejected as unsupported.
+map keys (§13.3).
+
+**Declared functions as values.** The name of a declared synchronous function,
+written where a value is expected, is a function value whose type is the
+declaration's signature with the names removed. A package-qualified name
+(`pkg.F`) converts the same way for every function the package exports, whether
+it is written in Zore or implemented by the compiler. The value is a closure
+with no captures: evaluating the name has no effect, borrows nothing, and moves
+nothing. Like every function-typed value it is Move. The name of an `async func`,
+a method, and a built-in operation (`println`, `len`, `push`, `clone`, channel
+and mutex operations, error construction) is not a function value and is
+rejected.
+
+```ore
+func add(a int, b int) int { return a + b }
+
+let f = add                        // func(int, int) int
+let apply = func(op func(int, int) int, x int, y int) int { return op(x, y) }
+println(apply(add, 2, 3))          // 5
+```
 
 Calling a value of function type uses ordinary call syntax and ordinary
 parameter rules (§7.3–7.4): arguments are borrowed unless the parameter is
@@ -3736,7 +3754,9 @@ rebinding), is:
 - stored in a struct field, fixed-array or `Array<T>` element, or map value,
   whether by a literal, an assignment to a field or element, a map assignment,
   or `push`;
-- passed to an `own` parameter.
+- passed to an `own` parameter;
+- the callee of `go`, or a `go` argument passed to an `own` parameter of
+  function type (§18.3).
 
 A call-once closure (§16.6) is also owning.
 
@@ -3780,8 +3800,8 @@ be usable exclusively, as for any call (§16.2).
 Every closure value, borrowing or owning, is checked by the same region
 analysis: a borrowing closure that would outlive a local it captures (by being
 returned, stored, or assigned to an outer place) is rejected, and the
-diagnostic names the captured local. Use with tasks (`go`) and liveness across
-`await` remain unsupported (Q02g).
+diagnostic names the captured local. Liveness across `await` remains
+unsupported (Q02g). Use with `go` is defined in §18.3 and §18.4.
 
 A panic or `?` inside a closure runs the closure's own cleanup and then
 continues in its caller as for any call.
@@ -3822,6 +3842,9 @@ consumed at most once, by the ordinary move rules (§31). Captured values the
 call does not consume are destroyed when the call returns. A call-once closure
 that is never called is destroyed at the end of its scope with every captured
 value.
+
+`go finish()` is the single permitted call of a call-once binding, deferred: it
+consumes the binding as a call does (§18.3).
 
 Ownership, error, and async implications: no new ownership category; an owning
 closure is a Move value that owns its captures, and a call-once call is a move
@@ -4001,9 +4024,21 @@ let task = go fetchUser(123)
 let user = task.wait()?
 ```
 
-`go` accepts a call to any declared function or method, async or not. A call to
-an `async func` becomes a task that the runtime resumes as it becomes ready. A
-call to a plain function runs to completion on a runtime thread as one task. A
+`go` accepts a call to any declared function or method, async or not. The
+callee may also be a closure literal written in place or a local of function
+type; the callable is evaluated first, then the arguments left to right, each
+exactly once in the spawner, and only then is the task created. The callable is
+moved into the task: a local used as the callee is unusable afterward, and a
+call-once closure may be spawned. The task owns the closure from creation, calls
+it once, and then destroys it, so every captured value is destroyed exactly once
+on a normal return, an error result, or a panic. A callee that is a field,
+element, map value, or the result of a call is rejected. A closure body is never
+async (§16.1), so a spawned closure runs as one plain-function task even when it
+is written inside an `async func`; the name of an `async func` is not a
+function value (§16.2), and `go asyncFn(x)` on the declared name is unchanged.
+A call to an `async func` becomes a task that the runtime resumes as it becomes
+ready. A call to a plain function runs to completion on a runtime thread as one
+task. A
 plain-function task that waits holds a thread while it waits (§17.3, §18.9), so
 programs that create very many tasks should make the task functions `async`;
 the calls inside them stay as they are.
@@ -4017,6 +4052,21 @@ When values enter a spawned task:
 3. Borrowed values are allowed only if the compiler can prove the borrow remains valid for the task lifetime.
 4. Mutable borrows require exclusive access until the borrow ends / task completes.
 5. Closure captures follow the same rules.
+
+**Spawned closures.** A closure that is spawned is owning (§16.4), so its
+captures are values: a Copy capture is copied, and a Move capture is moved in
+and unusable in the spawner afterward. These captures are rejected: a borrowed
+parameter that is a Move value, a local that holds a view, a `mut` parameter or
+exclusively captured value, and a borrowing closure. Assigning, compound
+updating, or passing to a `mut` parameter a captured Copy local inside a
+spawned closure is rejected at the change, because the task would change only
+its own copy; a task starts from a copy inside its body (`var local = n`) or
+shares a change through a channel or a `mutex`. A captured Move value may be
+changed in the task. An argument of function type for an `own` parameter of the
+spawned callee is accepted when it is an owning closure none of whose captured
+values holds a view; a function-typed argument for a shared parameter, and a
+closure that holds a view, are rejected. A task result still cannot be a slice,
+hold a view, or be a function value (Q25).
 
 **Lifetime proof across all exits.** A planned `.wait()` or `await task` is not
 proof that a spawned borrow is valid: normal early return, `?`, panic, handle
