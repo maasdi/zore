@@ -2082,6 +2082,272 @@ type Trio struct {
 }
 ";
 
+const RECURSIVE_NODE: &str = r#"
+type Tag struct { Id int }
+func (t mut Tag) drop() { if t.Id != 0 { println(t.Id) } }
+func (t Tag) clone() Tag { return Tag{Id: t.Id + 100} }
+type Node struct { Tag Tag; Children Array<Node>; Named map[int]Node }
+func leaf(id int) Node {
+    return Node{Tag: Tag{Id: id}, Children: Array<Node>{}, Named: map[int]Node{}}
+}
+func tree() Node {
+    return Node{Tag: Tag{Id: 1}, Children: Array<Node>{leaf(2), leaf(3)}, Named: map[int]Node{4: leaf(4)}}
+}
+"#;
+
+#[test]
+fn recursive_owned_values_move_replace_and_drop_only_live_fields() {
+    prints(
+        &format!(
+            "package main\n{RECURSIVE_NODE}
+func main() {{
+    var root = tree()
+    root.Children[0] = leaf(5)
+    root.Named[4] = leaf(6)
+    let children = root.Children
+    let tag = root.Tag
+    root.Children = Array<Node>{{leaf(7)}}
+    root.Tag = Tag{{Id: 8}}
+    let moved = root
+    println(99)
+}}"
+        ),
+        "2\n4\n99\n6\n7\n8\n1\n3\n5\n",
+    );
+    prints(
+        &format!(
+            "package main\n{RECURSIVE_NODE}
+func main() {{ let root = tree(); let tag = root.Tag; let children = root.Children }}"
+        ),
+        "3\n2\n1\n4\n",
+    );
+}
+
+#[test]
+fn recursive_clone_is_independent_and_preserves_custom_leaf_clone() {
+    prints(
+        &format!(
+            "package main\n{RECURSIVE_NODE}
+func main() {{
+    let original = tree()
+    var copy = clone(original)
+    copy.Children[0].Tag.Id = 202
+    println(original.Children[0].Tag.Id)
+    drop(copy)
+    println(99)
+}}"
+        ),
+        "2\n104\n103\n202\n101\n99\n4\n3\n2\n1\n",
+    );
+}
+
+#[test]
+fn recursive_mutual_array_map_and_by_value_fields_have_finite_helpers() {
+    let source = r#"package main
+type A struct { Id int; B B }
+type B struct { Array Array<C> }
+type C struct { Map map[int]A }
+func (a mut A) drop() { if a.Id != 0 { println(a.Id) } }
+func (a A) clone() A { return A{Id: a.Id + 10, B: clone(a.B)} }
+func main() {
+    let a = A{Id: 1, B: B{Array: Array<C>{C{Map: map[int]A{
+        2: A{Id: 2, B: B{Array: Array<C>{}}},
+    }}}}}
+    let b = clone(a)
+}
+"#;
+    prints(source, "11\n12\n1\n2\n");
+    let mut sources = SourceMap::new();
+    let id = sources.add("recursive.ore", source.into()).unwrap();
+    let ir = emit_llvm(sources.file(id).unwrap()).unwrap();
+    assert_eq!(ir.matches("define private void @zore_drop.").count(), 5);
+    assert_eq!(ir.matches("define private void @zore_clone.").count(), 5);
+    assert!(
+        ir.len() < 100_000,
+        "recursive types must not expand indefinitely"
+    );
+}
+
+#[test]
+fn recursive_zero_values_are_empty_and_destructible() {
+    prints(
+        &format!(
+            "package main\n{RECURSIVE_NODE}
+func failed() (Node, error) {{ return leaf(0), error(\"failed\") }}
+func propagate() (Node, error) {{ let n = failed()?; return n, nil }}
+func main() {{
+    var nodes = Array<Node>{{}}
+    let present, popped = nodes.pop()
+    println(present)
+    println(popped.Children.len())
+    var named = map[int]Node{{}}
+    let found, removed = named.remove(0)
+    println(found)
+    println(removed.Named.len())
+    let ch = channel<Node>()
+    ch.close()
+    let received, ok = ch.receive()
+    println(ok)
+    println(received.Tag.Id)
+    let result, err = propagate()
+    println(err != nil)
+    println(result.Children.len())
+}}"
+        ),
+        "false\n0\nfalse\n0\nfalse\n0\ntrue\n0\n",
+    );
+}
+
+#[test]
+fn recursive_values_clean_up_on_error_and_partial_construction() {
+    prints(
+        &format!(
+            "package main\n{RECURSIVE_NODE}
+func failed() (Node, error) {{ return leaf(0), error(\"failed\") }}
+func work() error {{
+    let root = tree()
+    let partial = Array<Node>{{leaf(8), failed()?}}
+    return nil
+}}
+func main() {{ println(work() != nil) }}"
+        ),
+        "8\n4\n3\n2\n1\ntrue\n",
+    );
+    panics(
+        &format!(
+            "package main\n{RECURSIVE_NODE}
+func fail() Node {{ var zero = 0; println(1 / zero); return leaf(0) }}
+func main() {{ let root = tree(); let partial = Array<Node>{{leaf(8), fail()}} }}"
+        ),
+        "division by zero",
+        "8\n4\n3\n2\n1\n",
+    );
+}
+
+#[test]
+fn recursive_custom_drop_precedes_children_and_cleans_up_after_panic() {
+    let declarations = r#"
+type Node struct { Id int; Children Array<Node> }
+func (n mut Node) drop() {
+    if n.Id != 0 { println(n.Id) }
+    if n.Id == 2 { var zero = 0; println(1 / zero) }
+}
+func leaf(id int) Node { return Node{Id: id, Children: Array<Node>{}} }
+"#;
+    panics(
+        &format!(
+            "package main\n{declarations}
+func main() {{ let n = Node{{Id: 1, Children: Array<Node>{{leaf(3), leaf(2)}}}} }}"
+        ),
+        "division by zero",
+        "1\n2\n3\n",
+    );
+    let output = run_poll_bounded(
+        &format!(
+            "package main\n{declarations}
+func main() {{ let n = leaf(2); var zero = 0; println(1 / zero) }}"
+        ),
+        None,
+    );
+    assert!(!output.status.success());
+    assert_ne!(
+        output.status.code(),
+        Some(2),
+        "must abort on a second panic"
+    );
+    assert_eq!(stdout(&output), "2\n");
+    let output = run_poll_bounded(
+        &format!(
+            "package main\n{declarations}
+func main() {{
+    var n = Node{{Id: 1, Children: Array<Node>{{leaf(2)}}}}
+    n.Children[0] = leaf(3)
+}}"
+        ),
+        None,
+    );
+    assert!(!output.status.success());
+    assert_ne!(output.status.code(), Some(2));
+    assert_eq!(stdout(&output), "2\n");
+}
+
+#[test]
+fn recursive_panicking_clone_destroys_each_completed_prefix_once() {
+    let declarations = RECURSIVE_NODE.replace(
+        "return Tag{Id: t.Id + 100}",
+        "if t.Id == 3 { var zero = 0; println(1 / zero) }; return Tag{Id: t.Id + 100}",
+    );
+    panics(
+        &format!(
+            "package main\n{declarations}
+func main() {{ let root = tree(); let copy = clone(root) }}"
+        ),
+        "division by zero",
+        "102\n101\n4\n3\n2\n1\n",
+    );
+    panics(
+        &format!(
+            "package main\n{declarations}
+func main() {{
+    let root = Node{{Tag: Tag{{Id: 1}}, Children: Array<Node>{{}}, Named: map[int]Node{{2: leaf(2), 3: leaf(3)}}}}
+    let copy = clone(root)
+}}"
+        ),
+        "division by zero",
+        "102\n101\n2\n3\n1\n",
+    );
+}
+
+#[test]
+fn recursive_async_frames_and_channel_buffers_destroy_owned_trees() {
+    let source = format!(
+        "package main\n{RECURSIVE_NODE}
+async func send(ch channel<Node>, ready channel<int>, resume channel<int>, n own Node) {{
+    ready.send(1)
+    let _, _ = resume.receive()
+    ch.send(n)
+}}
+func main() {{
+    let ch = channel<Node>(2)
+    let ready = channel<int>()
+    let resume = channel<int>()
+    let task = go send(ch, ready, resume, tree())
+    let _, _ = ready.receive()
+    println(99)
+    resume.send(1)
+    task.wait()
+    ch.send(leaf(5))
+}}"
+    );
+    let output = run_poll_bounded(&source, None);
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    assert_eq!(stdout(&output), "99\n4\n3\n2\n1\n5\n");
+    assert!(output.stderr.is_empty(), "{}", stderr(&output));
+}
+
+#[test]
+fn recursive_deep_and_wide_trees_clone_and_drop_with_bounded_execution() {
+    let source = r#"package main
+type Node struct { Text string; Children Array<Node> }
+func leaf() Node { return Node{Text: "node" + " text", Children: Array<Node>{}} }
+func main() {
+    var root = leaf()
+    for var depth = 0; depth < 256; depth += 1 {
+        let parent = Node{Text: "branch", Children: Array<Node>{root}}
+        root = parent
+    }
+    for var width = 0; width < 1024; width += 1 { root.Children.push(leaf()) }
+    let copy = clone(root)
+    println(copy.Children.len())
+    println(root.Children.len())
+}
+"#;
+    let output = run_poll_bounded(source, None);
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    assert_eq!(stdout(&output), "1025\n1025\n");
+    assert!(output.stderr.is_empty(), "{}", stderr(&output));
+}
+
 fn failing_clone(body: &str, stdout_before: &str) {
     panics(
         &format!(

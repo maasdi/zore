@@ -213,6 +213,84 @@ fn moving_an_array_element_out_through_an_index_is_rejected() {
 }
 
 #[test]
+fn recursive_owners_preserve_moves_and_custom_drop_boundaries() {
+    let node = "type Node struct { Children Array<Node>; Id int }";
+    accepts(&program(&format!(
+        "{node}\nfunc f(n own Node) {{ let children = n.Children; println(n.Id) }}"
+    )));
+    rejects(
+        &program(&format!(
+            "{node}\nfunc f(n own Node) {{ let moved = n; println(n.Id) }}"
+        )),
+        "use of moved value `n.Id`",
+    );
+    rejects(
+        &program(&format!(
+            "{node}\nfunc inspect(n Node) {{}}\nfunc f(n own Node) {{ let children = n.Children; inspect(n) }}"
+        )),
+        "cannot use `n` as a whole value while a field is moved out",
+    );
+    rejects(
+        &program(&format!(
+            "{node}\nfunc (n mut Node) drop() {{}}\nfunc f(n own Node) {{ let children = n.Children }}"
+        )),
+        "cannot move `n.Children` out of a value with a custom `drop` method",
+    );
+    rejects(
+        &program(&format!(
+            "{node}\nfunc (n mut Node) drop() {{ let children = n.Children }}"
+        )),
+        "cannot move",
+    );
+    rejects(
+        &program(&format!(
+            "{node}\nfunc f(n own Node) {{ let child = n.Children[0] }}"
+        )),
+        "cannot move",
+    );
+}
+
+#[test]
+fn recursive_owned_views_keep_return_and_clone_provenance() {
+    let declarations = "type Node struct { Children Array<Node>; View []int }
+        func leaf(view []int) Node { return Node{Children: Array<Node>{}, View: view} }
+        func wrap(view []int) Node { return Node{Children: Array<Node>{leaf(view)}, View: view} }
+        func forward(n own Node) Node { return n }";
+    accepts(&program(&format!(
+        "{declarations}\nfunc f(view []int) Node {{ return forward(wrap(view)) }}"
+    )));
+    rejects(
+        &program(&format!(
+            "{declarations}\nfunc f() Node {{ let data = [int; 1]{{1}}; return wrap(data[:]) }}"
+        )),
+        "cannot return a view of local `data`",
+    );
+    rejects(
+        &program(&format!(
+            "{declarations}\nfunc f() {{ var data = [int; 1]{{1}}; let n = wrap(data[:]); let c = clone(n); data[0] = 2; println(c.Children[0].View[0]) }}"
+        )),
+        "cannot assign to `data[_]` while it is borrowed",
+    );
+}
+
+#[test]
+fn recursive_destructors_keep_nested_views_alive() {
+    let declarations = "type A struct { Children Array<B> }
+        type B struct { Children map[int]A; View []int }
+        func (b mut B) drop() { println(b.View.len()) }
+        func wrap(view []int) A { return A{Children: Array<B>{B{Children: map[int]A{}, View: view}}} }";
+    accepts(&program(&format!(
+        "{declarations}\nfunc f() {{ var data = [int; 1]{{1}}; {{ let a = wrap(data[:]) }}; data[0] = 2 }}"
+    )));
+    rejects(
+        &program(&format!(
+            "{declarations}\nfunc f() {{ var data = [int; 1]{{1}}; let a = wrap(data[:]); data[0] = 2 }}"
+        )),
+        "cannot assign to `data[_]` while it is borrowed",
+    );
+}
+
+#[test]
 fn assigning_through_an_index_of_a_moved_array_is_rejected() {
     let resource = "type Resource struct { id int }
         func (r mut Resource) drop() {}";
