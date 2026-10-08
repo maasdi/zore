@@ -6386,3 +6386,195 @@ func main() {
         "3\n5\npick\nleft\nright\n3\n12\nOK\n30\n2\n",
     );
 }
+
+#[test]
+fn spawned_closures_own_their_captures_and_destroy_them_once() {
+    prints(
+        "package main
+
+type Res struct { Name string }
+
+func (r mut Res) drop() { println(\"drop \" + r.Name) }
+
+func use(r own Res) { println(\"use \" + r.Name) }
+
+func left() int {
+    println(\"left\")
+    return 1
+}
+
+func right() int {
+    println(\"right\")
+    return 2
+}
+
+func main() {
+    let kept = Res{Name: \"kept\"}
+    let a = go func() int {
+        println(\"run \" + kept.Name)
+        return 1
+    }()
+    println(a.wait())
+
+    let moved = Res{Name: \"moved\"}
+    let b = go func() { use(moved) }()
+    b.wait()
+
+    let failing = Res{Name: \"failing\"}
+    let c = go func() error {
+        println(\"run \" + failing.Name)
+        return error(\"failed\")
+    }()
+    println(c.wait() != nil)
+
+    let add = func(x int, y int) int { return x + y }
+    let d = go add(left(), right())
+    println(d.wait())
+
+    let idle = Res{Name: \"idle\"}
+    let never = func() { println(idle.Name) }
+    println(\"scope end\")
+}
+",
+        "run kept\ndrop kept\n1\nuse moved\ndrop moved\nrun failing\ndrop failing\ntrue\nleft\nright\n3\nscope end\ndrop idle\n",
+    );
+}
+
+#[test]
+fn a_panic_in_a_spawned_closure_destroys_its_environment_once() {
+    let source = "package main
+
+type Res struct { Name string }
+
+func (r mut Res) drop() { println(\"drop \" + r.Name) }
+
+func main() {
+    let held = Res{Name: \"held\"}
+    let zero = 0
+    println(\"before\")
+    let t = go func() int {
+        println(\"working \" + held.Name)
+        return 1 / zero
+    }()
+    let v = t.wait()
+    println(\"unreachable\")
+}";
+    let output = run(source);
+    assert_eq!(output.status.code(), Some(2), "{}", stderr(&output));
+    assert_eq!(stdout(&output), "before\nworking held\ndrop held\n");
+    assert!(
+        stderr(&output).contains("panic in task 1: division by zero"),
+        "{}",
+        stderr(&output)
+    );
+}
+
+#[test]
+fn a_panic_in_an_argument_destroys_the_evaluated_callable_and_spawns_nothing() {
+    let source = "package main
+
+type Res struct { Name string }
+
+func (r mut Res) drop() { println(\"drop \" + r.Name) }
+
+func boom() int {
+    let zero = 0
+    return 1 / zero
+}
+
+func main() {
+    let held = Res{Name: \"callee\"}
+    let job = func(n int) int {
+        println(\"never runs \" + held.Name)
+        return n
+    }
+    println(\"before\")
+    let t = go job(boom())
+    println(\"unreachable\")
+}";
+    let output = run(source);
+    assert_eq!(output.status.code(), Some(2), "{}", stderr(&output));
+    assert_eq!(stdout(&output), "before\ndrop callee\n");
+}
+
+#[test]
+fn go_runs_function_values_call_once_closures_and_owning_arguments() {
+    prints(
+        "package main
+
+type Job struct { Id int }
+
+func (j mut Job) drop() { println(\"drop \" + str(j.Id)) }
+
+func str(n int) string {
+    if n == 1 { return \"1\" }
+    if n == 2 { return \"2\" }
+    return \"3\"
+}
+
+func consume(j own Job) { println(\"consume \" + str(j.Id)) }
+
+func twice(n int) int { return n * 2 }
+
+func runWorker(handler own func() int) int { return handler() + 1 }
+
+func main() {
+    let f = twice
+    let first = go f(21)
+    println(first.wait())
+
+    let job = Job{Id: 1}
+    let finish = func() { consume(job) }
+    let t = go finish()
+    t.wait()
+
+    let owned = Job{Id: 2}
+    let handler = func() int { return owned.Id * 10 }
+    let u = go runWorker(handler)
+    println(u.wait())
+}
+",
+        "42\nconsume 1\ndrop 1\ndrop 2\n21\n",
+    );
+}
+
+#[test]
+fn spawned_closures_run_as_plain_tasks_even_inside_async_functions() {
+    prints(
+        "package main
+
+async func parent(id int, ch channel<int>) int {
+    let doubled = go func() int { return id * 2 }()
+    let blocking = go func() int {
+        let v, ok = ch.receive()
+        return v
+    }()
+    ch.send(4)
+    return await doubled + await blocking
+}
+
+func main() {
+    let ch = channel<int>(1)
+    let p = go parent(5, ch)
+    println(p.wait())
+}
+",
+        "14\n",
+    );
+}
+
+#[test]
+fn a_detached_spawned_closure_runs_without_a_handle() {
+    prints(
+        "package main
+
+func main() {
+    let done = channel<int>(1)
+    go func() { done.send(5) }()
+    let v, ok = done.receive()
+    println(v)
+}
+",
+        "5\n",
+    );
+}

@@ -425,6 +425,9 @@ impl<'a> Analysis<'a> {
                 self.check_access(access, live, state, findings);
             }
             self.check_view_store(place, state, site.span, findings);
+            if let Rvalue::Spawn(operand) = rvalue {
+                self.check_spawned_callable_is_independent(operand, site.span, state, findings);
+            }
         }
         let loans = self.rvalue_loans(rvalue, site, state);
         let captured = self.owned_captures(rvalue);
@@ -455,6 +458,35 @@ impl<'a> Analysis<'a> {
         if let Some(findings) = findings {
             self.check_drop_order(state, site.span, findings);
         }
+    }
+
+    fn check_spawned_callable_is_independent(
+        &self,
+        operand: &Operand,
+        span: Span,
+        state: &Holdings,
+        findings: &mut Findings,
+    ) {
+        let (Operand::Copy(place) | Operand::Move(place)) = operand else {
+            return;
+        };
+        let borrowed = state[place.local.0 as usize]
+            .iter()
+            .map(|&id| &self.loans[id])
+            .find(|loan| !loan.binding);
+        let Some(loan) = borrowed else {
+            return;
+        };
+        findings.report_once(
+            span,
+            Diagnostic::new(
+                Severity::Error,
+                format!("a spawned task cannot hold a borrow of `{}`", loan.name),
+                span,
+            )
+            .related(loan.span, "borrowed here")
+            .note("a task must own everything it uses; a borrow could outlive the storage it points to"),
+        );
     }
 
     fn inputs(&self) -> Vec<Local> {

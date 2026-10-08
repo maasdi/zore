@@ -1161,6 +1161,7 @@ impl Builder {
                 thunk,
                 closure_ty,
                 args,
+                ..
             } => {
                 let captures = args
                     .iter()

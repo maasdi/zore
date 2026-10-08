@@ -3278,10 +3278,6 @@ fn go_needs_a_call_to_a_declared_function() {
     rejects(&task_body("let t = go 5"), "`go` needs a call");
     rejects(&task_body("let n = 1\nlet t = go n"), "`go` needs a call");
     rejects(
-        &task_body("let f = func() int { return 1 }\nlet t = go f()"),
-        "`go` needs a call to a declared function or method",
-    );
-    rejects(
         &task_body("let t = go println(\"x\")"),
         "`go` needs a call to a declared function or method",
     );
@@ -3300,11 +3296,11 @@ fn spawned_inputs_must_not_borrow_the_spawner() {
     );
     rejects(
         &task_program("func f(values []int) { let t = go view(values) }"),
-        "cannot take a view or a function value",
+        "cannot take a view",
     );
     rejects(
         &task_program("func f() { var values = [int; 3]{1, 2, 3}\nlet t = go view(values[0:2]) }"),
-        "cannot take a view or a function value",
+        "cannot take a view",
     );
     rejects(
         &task_body("let f = func(n int) int { return n }\nlet t = go inspect(f)"),
@@ -3779,5 +3775,86 @@ func g() {
         ),
     ] {
         rejects(&program(decls), message);
+    }
+}
+
+#[test]
+fn go_takes_closures_and_function_values() {
+    accepts(&task_program(
+        "func twice(n int) int { return n * 2 }
+func run(handler own func() int) int { return handler() }
+func start(id int, name string, work own Array<int>) {
+    let literal = go func() int { return id + 1 }()
+    let named = twice
+    let value = go named(4)
+    let finish = func() { eat(work) }
+    let once = go finish()
+    let handler = func() int { return id }
+    let passed = go run(handler)
+    go func(message string) { log(message) }(name)
+    println(literal.wait() + value.wait() + passed.wait())
+    once.wait()
+}
+func inside() {
+    var total = 0
+    let t = go func() {
+        var local = total
+        local += 1
+        println(local)
+    }()
+    t.wait()
+}
+async func parent(id int) {
+    let t = go func() int { return id }()
+    println(await t)
+}",
+    ));
+    for (decls, message) in [
+        (
+            "func f() { let job = func() {}\nlet a = go job()\nlet b = go job()\na.wait()\nb.wait() }",
+            "use of moved value `job`",
+        ),
+        (
+            "func f() { var n = 0\nlet t = go func() { n += 1 }()\nt.wait() }",
+            "a spawned closure cannot change `n`",
+        ),
+        (
+            "func f() { var n = 0\nlet job = func() { bump(n) }\nlet t = go job()\nt.wait() }",
+            "a spawned closure cannot change `n`",
+        ),
+        (
+            "func f() { var values = Array<int>{1}\nlet part = values[:]\nlet t = go func() { view(part) }()\nt.wait() }",
+            "which holds a view",
+        ),
+        (
+            "func f(values Array<int>) { let t = go func() { look(values) }()\nt.wait() }",
+            "cannot move borrowed value `values`",
+        ),
+        (
+            "func f(n mut int) { let t = go func() { println(n) }()\nt.wait() }",
+            "cannot capture `mut` parameter `n`",
+        ),
+        (
+            "type S struct { op func() }\nfunc f(s own S) { let t = go (s.op)()\nt.wait() }",
+            "`go` needs a call to a declared function or method, a function-typed local, or a closure literal",
+        ),
+        (
+            "func f() { var n = 1\nlet inner = func() { println(n) }\nlet t = go func() { inner() }()\nt.wait() }",
+            "a spawned task cannot hold a borrow of `n`",
+        ),
+        (
+            "func run(f func()) { f() }\nfunc f() { let g = func() {}\nlet t = go run(g)\nt.wait() }",
+            "can take a function value only for an `own` parameter",
+        ),
+        (
+            "func f() { let t = go func() []int { return Array<int>{1}[:] }()\nt.wait() }",
+            "a task cannot return slices or function values",
+        ),
+        (
+            "async func f() { let t = go func() { await fetch(1) }()\nt.wait() }",
+            "`await`",
+        ),
+    ] {
+        rejects(&task_program(decls), message);
     }
 }

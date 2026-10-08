@@ -213,10 +213,11 @@ A newly discovered semantic gap blocks its affected feature, not unrelated work.
   `select` is not available. Pending cases: `tests/conformance/concurrency.md`.
 
 - **Q25 — Task implementation choices:** (a) `go` takes a call to a declared
-  function or method, including an `async func`; a call through a function value,
-  a closure literal, and the built-in operations are rejected. (b) Inputs follow
-  §18.4 conservatively: a `mut` parameter, any argument whose type holds a slice
-  or function value, and a Move argument for a shared parameter are rejected;
+  function or method, including an `async func`; Q33 adds a closure literal and a
+  function-typed local as the callee, and the built-in operations stay rejected.
+  (b) Inputs follow §18.4 conservatively: a `mut` parameter, any argument whose
+  type holds a slice, a function value for any parameter but an `own` one (Q33),
+  and a Move argument for a shared parameter are rejected;
   Copy values, including text, are copied into the task, and `own` arguments are
   moved in. (c) A task cannot return a slice or function value, and a written
   `Task<...>` type with such a result is rejected. (d) `go f(args)` as a

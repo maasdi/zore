@@ -2,7 +2,7 @@
 
 Authority: spec §16, with §5.7–5.8, §7.3–7.5, §7.7, §11.6, §12, §15.3, §17.2,
 and §31. Rows marked "pending" have no executable counterpart yet: they depend
-on features that do not exist (tasks, `await`) and do not count as passing
+on features that do not exist (`await` with closures) and do not count as passing
 tests. Every other row has an executable counterpart in
 `tests/parser/parser.rs`, `tests/typecheck/check.rs`,
 `tests/ownership/ownership.rs`, or `tests/codegen/native.rs`, and
@@ -133,8 +133,14 @@ tests. Every other row has an executable counterpart in
 
 ## Spawned closures (§16.4, §16.6, §18.3, §18.4)
 
-Executable counterparts land with stage 3 of issue #52; until then these rows
-are pending and do not count as passing tests.
+Executable counterparts are in `tests/typecheck/check.rs`
+(`go_takes_closures_and_function_values`) and `tests/codegen/native.rs`
+(`spawned_closures_own_their_captures_and_destroy_them_once`,
+`a_panic_in_a_spawned_closure_destroys_its_environment_once`,
+`a_panic_in_an_argument_destroys_the_evaluated_callable_and_spawns_nothing`,
+`go_runs_function_values_call_once_closures_and_owning_arguments`,
+`spawned_closures_run_as_plain_tasks_even_inside_async_functions`, and
+`a_detached_spawned_closure_runs_without_a_handle`).
 
 | Scenario | Expected result |
 | --- | --- |

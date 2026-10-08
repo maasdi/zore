@@ -3,7 +3,8 @@
 Status: ACCEPTED and incorporated into spec §16.2, §16.4, §16.6, §18.3, and
 §18.4. The specification is authoritative; this document preserves the accepted
 proposal and its rationale. Stage 2 (declared function values) and stage 3
-(`go` on owning callables) of issue #52 implement it.
+(`go` on owning callables) of issue #52 are implemented. Async callables, method
+values, and callees stored in fields or elements remain separate decisions.
 
 Scope: a declared synchronous function's name used as a value; `go` applied to
 a function value, a closure literal, or a closure variable; and how those
