@@ -1,5 +1,5 @@
-//! Q32's poll scheduler, beside the existing fiber scheduler. Compiler lowering does not
-//! use it yet. These Rust APIs are internal runtime machinery, not Zore language APIs.
+//! Q32's poll scheduler, beside the existing fiber scheduler. Generated async state
+//! machines use these internal runtime APIs; they are not Zore language APIs.
 //!
 //! A task's scheduling lock serializes wakeups and the transition out of a poll. A wake
 //! while running records a notification; a wake while idle queues exactly one poll.

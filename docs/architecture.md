@@ -58,7 +58,7 @@ The files the structure guide names but that have nothing to hold yet stay
 uncreated: `ownership/{place,projection}.rs` (MIR places serve both
 purposes), `dropck/analysis.rs`, `types/{function_type,classify}.rs`,
 `diagnostic/code.rs` (no diagnostic codes yet), and `context/`.
-`async_lowering/` now holds Q32 slice 3's persistent-frame and suspension planning
+`async_lowering/` now holds Q32's persistent-frame and suspension planning
 (`lower.rs`, `state_machine.rs`, `suspension.rs`), after drop insertion. The
 backend's `codegen/state_machine.rs` emits its constructors, polls, and frame
 destructors. The runtime's `scheduler.rs` serves lowered async tasks alongside
@@ -142,9 +142,9 @@ and an internal deadlock still reports "all tasks are asleep" with exit status 2
 HIR retains each function's async property, including the synthetic owning thunk
 for `go asyncFn(...)`. After ordinary ownership checking and drop insertion,
 `async_lowering::lower` identifies eligible async bodies and records each awaited
-call or task join by MIR block, preserving the call's source span, result places,
-and cleanup edges. The frontend still works without LLVM. Native async functions,
-direct channel/select/mutex waits, and native time/I/O waits retain fiber execution;
+call, task join, or channel/select wait by MIR block, preserving the call's source
+span, result places, and cleanup edges. The frontend still works without LLVM. Native async functions,
+direct mutex waits and native time/I/O waits retain fiber execution;
 fallback propagates through awaited async calls to a fixed point. A polled function
 can spawn and await a fiber task. Calls to plain helpers remain ordinary calls and
 can block with worker compensation.
@@ -174,7 +174,37 @@ inside fiber fallback bodies. This temporary compatibility path is removed as th
 remaining waiting operations gain poll forms. Neither this path nor the persistent
 frame plan changes source-language syntax or ownership semantics. Frames are not
 shrunk by liveness, and suspended frames are abandoned at process exit; operation
-poll variants and fiber removal remain for later Q32 slices.
+poll variants for time, mutexes, and I/O, and fiber removal remain for later Q32
+slices.
+
+### Channel and select polls (Q32 slice 4, first PR)
+
+Channel send, receive, and `select` in eligible async bodies suspend without
+`await`. `codegen/channel.rs` prepares runtime case records and send storage once
+in the persistent frame. Ordinary send/receive use one case; select uses one per
+source arm. A resume label polls the saved operation instead of evaluating operands
+or registering again. On Ready, receive results and flags are read, unchosen send
+values are dropped in reverse source order (§19.14), and the original MIR success
+or panic edge resumes. Plain calls still use the blocking runtime APIs.
+
+`zore_channel_start` and `zore_channel_poll` share `start_select`/`finish_select`
+with blocking select, and the existing channel queues with fiber send/receive.
+Starting checks readiness under sorted, deduplicated channel locks, or registers
+one shared `Waiting` with the current task waker. Its atomic claim chooses exactly
+one winner; the exchange lock publishes the outcome before waking. Polling Pending
+marks the enclosing task as internally blocked. Scheduler notification handles a
+wake between registration, the Pending check, and parking. Ready removes every
+leftover registration before consuming the operation and settling its winning
+message. Queue copies of unchosen messages are freed without dropping their value;
+the caller's persistent send storage owns those values until compiler cleanup.
+
+The frame keeps case records, receive destinations, send buffers, and borrowed
+channel handles live and pinned until Ready. The runtime operation borrows that
+storage; it neither retains a context pointer nor accesses a poll's native stack.
+Close, zero-value channels, default arms, rotating ready-case selection, panic
+cleanup, and deadlock detection use the same rules as blocking execution. Detached
+tasks continue; pending operation records, like pending frames, are abandoned at
+process exit under the existing task-exit semantics.
 
 | Area | Responsibility | Spec |
 | --- | --- | --- |

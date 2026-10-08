@@ -4816,7 +4816,7 @@ fn async_state_machine_ir_uses_heap_storage_and_explicit_resume_states() {
     let source = "package main
 async func leaf(t own Task<int>) int { let view = [int; 2]{3, 4}; return view[0] + await t }
 async func parent(t own Task<int>) int { return await leaf(t) }
-async func fallback(ch channel<int>) int { let n, _ = ch.receive(); return n }
+async func fallback(m Mutex<int>) int { return m.withLock(func(n mut int) int { return n }) }
 func main() {}";
     let mut sources = SourceMap::new();
     let id = sources.add("async.ore", source.into()).unwrap();
@@ -5113,4 +5113,298 @@ func main() { let t = go wait(); println(t.wait()) }
 "#);
     assert_eq!(output.status.code(), Some(2), "{}", stderr(&output));
     assert!(stderr(&output).contains("all tasks are asleep"));
+}
+
+/// Run the same waiting program as plain fibers and as polled async tasks.
+fn channel_poll_parity(source: &str, expected: &str) {
+    for mode in ["", "async "] {
+        let source = source
+            .replace("MODE ", mode)
+            .replace("AWAIT ", if mode.is_empty() { "" } else { "await " });
+        let mut source = source;
+        for name in ["writer", "task", "t"] {
+            source = source.replace(
+                &format!("JOIN {name}"),
+                &if mode.is_empty() {
+                    format!("{name}.wait()")
+                } else {
+                    format!("await {name}")
+                },
+            );
+        }
+        let mut sources = SourceMap::new();
+        let id = sources.add("channels.ore", source.clone()).unwrap();
+        let ir = emit_llvm(sources.file(id).unwrap()).unwrap();
+        if !mode.is_empty() {
+            assert!(ir.contains("run$async$poll"));
+            assert!(ir.contains("call ptr @zore_channel_start"));
+            assert!(ir.contains("call i8 @zore_channel_poll"));
+            for function in ir.split("define private i8 ").skip(1) {
+                let function = function.split("\n}\n").next().unwrap();
+                if function.contains("$async$poll") {
+                    assert!(!function.contains("alloca"));
+                    assert!(!function.contains("call void @zore_channel_send("));
+                    assert!(!function.contains("call zeroext i1 @zore_channel_receive("));
+                    assert!(!function.contains("call i64 @zore_select("));
+                }
+            }
+        }
+        let output = run_channel_poll_bounded(&source);
+        assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+        assert_eq!(stdout(&output), expected);
+        assert!(output.stderr.is_empty(), "{}", stderr(&output));
+    }
+}
+
+fn run_channel_poll_bounded(source: &str) -> Output {
+    let dir = TempDir::new().unwrap();
+    let executable = dir.path().join("program");
+    build_file(source, &executable).unwrap_or_else(|e| panic!("build failed: {e:?}"));
+    let mut child = Command::new(&executable)
+        .env("ZORE_CHECK_LEAKS", "1")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    loop {
+        if child.try_wait().unwrap().is_some() {
+            return child.wait_with_output().unwrap();
+        }
+        if std::time::Instant::now() >= deadline {
+            child.kill().unwrap();
+            let output = child.wait_with_output().unwrap();
+            panic!("channel poll program timed out: {}", stderr(&output));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+}
+
+#[test]
+fn channel_poll_unbuffered_and_buffered_loops_match_plain_execution() {
+    channel_poll_parity(
+        r#"package main
+MODE func produce(ch channel<int>, count int) int {
+    for var i = 1; i <= count; i += 1 { ch.send(i) }
+    ch.close()
+    return 0
+}
+MODE func total(ch channel<int>) int {
+    var sum = 0
+    for { let value, ok = ch.receive(); if !ok { return sum }; sum += value }
+}
+MODE func run() int {
+    var answer = 0
+    for var capacity = 0; capacity < 4; capacity += 1 {
+        let ch = channel<int>(capacity)
+        let reader = go total(ch)
+        let writer = go produce(ch, 500)
+        _ = JOIN writer
+        answer += AWAIT totalTask(reader)
+    }
+    return answer
+}
+MODE func totalTask(t own Task<int>) int { return JOIN t }
+func main() { let t = go run(); println(t.wait()) }
+"#,
+        "501000\n",
+    );
+}
+
+#[test]
+fn channel_poll_select_ready_default_zero_and_move_cleanup_match_plain_execution() {
+    channel_poll_parity(
+        r#"package main
+type Job struct { Name string }
+func (j mut Job) drop() { println("drop " + j.Name) }
+MODE func run() {
+    let full = channel<Job>(1)
+    let free = channel<Job>(1)
+    full.send(Job{Name: "old"})
+    select {
+        case full.send(Job{Name: "skip"}) { println("wrong") }
+        case free.send(Job{Name: "chosen"}) { println("sent") }
+    }
+    { let job, ok = free.receive(); println(job.Name); println(ok) }
+    { let job, _ = full.receive(); println(job.Name) }
+    select { case let job, ok = free.receive() {}; default { println("default") } }
+    free.close()
+    select { case let job, ok = free.receive() { println(ok) } }
+    let holder = channel<channel<int>>(1)
+    holder.close()
+    let zero, _ = holder.receive()
+    select { case let n, ok = zero.receive() { println(n); println(ok) } }
+}
+func main() { let t = go run(); t.wait() }
+"#,
+        "drop skip\nsent\nchosen\ntrue\ndrop chosen\nold\ndrop old\ndefault\nfalse\ndrop \n0\nfalse\n",
+    );
+}
+
+#[test]
+fn channel_poll_select_pending_duplicate_channels_and_single_evaluation_match_plain() {
+    channel_poll_parity(
+        r#"package main
+type Job struct { Name string; Count Mutex<int> }
+func (j mut Job) drop() { j.Count.withLock(func(n mut int) { n += 1 }) }
+func make(counter Mutex<int>, name string) Job {
+    counter.withLock(func(n mut int) { n += 1 })
+    return Job{Name: name, Count: counter}
+}
+func count(counter Mutex<int>) int { return counter.withLock(func(n mut int) int { return n }) }
+MODE func receive(ch channel<Job>) int {
+    let job, ok = ch.receive()
+    println((job.Name == "first") || (job.Name == "second"))
+    println(ok)
+    return 0
+}
+MODE func run() {
+    let counter = mutex(0)
+    let ch = channel<Job>()
+    let task = go receive(ch)
+    select {
+        case ch.send(make(counter, "first")) {}
+        case ch.send(make(counter, "second")) {}
+    }
+    _ = JOIN task
+    println(count(counter))
+    select { case let job, ok = ch.receive() {}; default { println("clear") } }
+}
+func main() { let t = go run(); t.wait() }
+"#,
+        "true\ntrue\n4\nclear\n",
+    );
+}
+#[test]
+fn channel_poll_nested_calls_keep_mutable_borrows_and_partial_moves_alive() {
+    channel_poll_parity(
+        r#"package main
+type Parts struct { A Array<int>; B Array<int> }
+MODE func change(ch channel<int>, data mut [int; 2]) {
+    let n, _ = ch.receive()
+    data[1] += n
+}
+MODE func push(ch channel<int>) int { ch.send(9); return 0 }
+MODE func run() int {
+    var parts = Parts{A: Array<int>{2}, B: Array<int>{3}}
+    let moved = parts.A
+    let ch = channel<int>()
+    let task = go push(ch)
+    var values = [int; 2]{moved[0], parts.B[0]}
+    AWAIT change(ch, values)
+    _ = JOIN task
+    return values[0] + values[1]
+}
+func main() { let t = go run(); println(t.wait()) }
+"#,
+        "14\n",
+    );
+}
+
+#[test]
+fn channel_poll_internal_waits_preserve_deadlock_detection() {
+    for body in [
+        "ch.send(1)",
+        "let _, _ = ch.receive()",
+        "select { case let n, ok = ch.receive() {}; case ch.send(1) {} }",
+    ] {
+        let source = format!(
+            "package main\nasync func run() {{ let ch = channel<int>(); {body} }}\nfunc main() {{ let t = go run(); t.wait() }}"
+        );
+        assert_deadlock(&run_channel_poll_bounded(&source));
+    }
+}
+
+#[test]
+fn channel_poll_send_panic_drops_unsent_values_and_unwinds_parent_frames() {
+    for send in [
+        "ch.send(Job{Name: \"lost\"})",
+        "select { case ch.send(Job{Name: \"lost\"}) {}; case other.send(Job{Name: \"skip\"}) {} }",
+    ] {
+        let source = format!(
+            "package main\ntype Job struct {{ Name string }}\nfunc (j mut Job) drop() {{ println(\"drop \" + j.Name) }}\nasync func run(ch channel<Job>) {{ let local = Job{{Name: \"local\"}}; let other = channel<Job>(); {send} }}\nfunc main() {{ let ch = channel<Job>(); let t = go run(ch); ch.close(); t.wait() }}"
+        );
+        let output = run_channel_poll_bounded(&source);
+        assert_eq!(output.status.code(), Some(2));
+        assert!(stderr(&output).contains("send on a closed channel"));
+        let text = stdout(&output);
+        assert_eq!(text.matches("drop lost\n").count(), 1);
+        assert_eq!(text.matches("drop local\n").count(), 1);
+        assert_eq!(
+            text.matches("drop skip\n").count(),
+            usize::from(send.starts_with("select"))
+        );
+    }
+}
+
+#[test]
+fn channel_poll_select_drops_unchosen_values_in_reverse_source_order() {
+    channel_poll_parity(
+        r#"package main
+type Job struct { Name string }
+func (j mut Job) drop() { println("drop " + j.Name) }
+MODE func run() {
+    let ready = channel<Job>(1)
+    let blocked = channel<Job>()
+    select {
+        case ready.send(Job{Name: "chosen"}) { println("body") }
+        case blocked.send(Job{Name: "second"}) {}
+        case blocked.send(Job{Name: "third"}) {}
+    }
+}
+func main() { let t = go run(); t.wait() }
+"#,
+        "drop third\ndrop second\nbody\ndrop chosen\n",
+    );
+}
+
+#[test]
+fn channel_poll_mixes_plain_and_async_waiters_in_both_directions() {
+    channel_poll_parity(
+        r#"package main
+func plain(ch channel<int>) { for var i = 1; i <= 200; i += 1 { ch.send(i) }; ch.close() }
+MODE func produce(ch channel<int>) { for var i = 1; i <= 200; i += 1 { ch.send(i) }; ch.close() }
+MODE func run(ch channel<int>) int {
+    var sum = 0
+    for {
+        select { case let n, ok = ch.receive() { if !ok { return sum }; sum += n } }
+    }
+}
+func main() {
+    let a = channel<int>()
+    let reader = go run(a)
+    let writer = go plain(a)
+    println(reader.wait())
+    writer.wait()
+    let b = channel<int>()
+    let producer = go produce(b)
+    var sum = 0
+    for { let n, ok = b.receive(); if !ok { break }; sum += n }
+    producer.wait()
+    println(sum)
+}
+"#,
+        "20100\n20100\n",
+    );
+}
+
+#[test]
+fn channel_poll_thousands_of_tasks_wait_without_fiber_stacks() {
+    let output = run_channel_poll_bounded(
+        r#"package main
+async func run(ch channel<int>) int { let n, _ = ch.receive(); return n }
+func main() {
+    let ch = channel<int>()
+    var tasks = Array<Task<int>>{}
+    for var i = 0; i < 5000; i += 1 { tasks.push(go run(ch)) }
+    for var i = 0; i < 5000; i += 1 { ch.send(1) }
+    var total = 0
+    for tasks.len() > 0 { let ok, t = tasks.pop(); if ok { total += t.wait() } }
+    println(total)
+}
+"#,
+    );
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    assert_eq!(stdout(&output), "5000\n");
+    assert!(output.stderr.is_empty(), "{}", stderr(&output));
 }

@@ -44,6 +44,12 @@ func main() { let t = go parent(go plain()); println(t.wait()) }",
                     assert!(matches!(callee, mir::Callee::Function(callee) if id == callee))
                 }
                 Suspension::Task => assert!(matches!(callee, mir::Callee::TaskWait)),
+                Suspension::Channel => assert!(matches!(
+                    callee,
+                    mir::Callee::ChannelSend
+                        | mir::Callee::ChannelReceive
+                        | mir::Callee::Select { .. }
+                )),
             }
         }
     }
@@ -62,9 +68,9 @@ func main() { let t = go parent(go plain()); println(t.wait()) }",
 fn fallback_propagates_through_awaits_but_not_spawned_or_plain_calls() {
     let (package, _, plan) = plan(
         "package main
-async func channelWait(ch channel<int>) int { let n, _ = ch.receive(); return n }
-async func fallback(ch channel<int>) int { return await channelWait(ch) }
-async func simple(ch channel<int>) int { let task = go channelWait(ch); return await task }
+async func mutexWait(ch Mutex<int>) int { return ch.withLock(func(n mut int) int { return n }) }
+async func fallback(ch Mutex<int>) int { return await mutexWait(ch) }
+async func simple(ch Mutex<int>) int { let task = go mutexWait(ch); return await task }
 func helper(ch channel<int>) int { let n, _ = ch.receive(); return n }
 async func blockingHelper(ch channel<int>) int { return helper(ch) }
 func main() {}",
@@ -74,7 +80,7 @@ func main() {}",
         .keys()
         .map(|id| package.function(*id).name.as_str())
         .collect();
-    assert!(!names.contains(&"channelWait"));
+    assert!(!names.contains(&"mutexWait"));
     assert!(!names.contains(&"fallback"));
     assert!(names.contains(&"simple"));
     assert!(names.contains(&"blockingHelper"));
@@ -96,5 +102,41 @@ func main() { let t = go recurse(5); println(t.wait()) }");
             .suspensions
             .iter()
             .any(|(_, kind)| *kind == Suspension::Call(id))
+    );
+}
+
+#[test]
+fn channel_operations_are_suspensions_without_await_and_keep_cleanup_edges() {
+    let (package, program, plan) = plan(
+        "package main
+async func exchange(ch channel<int>) int {
+    ch.send(3)
+    let n, _ = ch.receive()
+    select { case ch.send(n) {}; case let value, ok = ch.receive() {}; default {} }
+    return n
+}
+async func parent(ch channel<int>) int { return await exchange(ch) }
+func main() {}",
+    );
+    let (&id, machine) = plan
+        .machines
+        .iter()
+        .find(|(id, _)| package.function(**id).name == "exchange")
+        .unwrap();
+    assert_eq!(machine.suspensions.len(), 3);
+    for (block, kind) in &machine.suspensions {
+        assert_eq!(*kind, Suspension::Channel);
+        let mir::Terminator::Call { unwind, span, .. } =
+            &program.bodies[id.0 as usize].blocks[block.0 as usize].terminator
+        else {
+            panic!("expected call")
+        };
+        assert!(unwind.is_some());
+        assert!(span.end() > span.start());
+    }
+    assert!(
+        plan.machines
+            .keys()
+            .any(|id| package.function(*id).name == "parent")
     );
 }
