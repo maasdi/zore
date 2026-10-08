@@ -61,3 +61,9 @@
   without LLVM. Do not introduce a runtime/backend dependency for convenience.
 - Report what changed, what was verified, and any unresolved blockers. Never
   describe unrun tests or pending conformance examples as passing.
+
+## Code style
+
+- Apply `.agents/skills/code-style/SKILL.md` when writing or reviewing code.
+- Prefer descriptive names over comments; keep necessary comments to one short line.
+- Do not reference specification sections or Markdown documents in code comments.

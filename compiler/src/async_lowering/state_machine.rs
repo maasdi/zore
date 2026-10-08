@@ -10,8 +10,6 @@ pub struct Plan {
     pub machines: HashMap<FunctionId, StateMachine>,
 }
 
-/// All MIR locals and drop flags belong to the frame. States resume the poll part of a
-/// call, skipping its argument evaluation and constructor so ownership transfers only once.
 #[derive(Debug)]
 pub struct StateMachine {
     pub suspensions: Vec<(BlockId, Suspension)>,

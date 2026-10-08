@@ -5115,7 +5115,6 @@ func main() { let t = go wait(); println(t.wait()) }
     assert!(stderr(&output).contains("all tasks are asleep"));
 }
 
-/// Run the same waiting program as plain fibers and as polled async tasks.
 fn channel_poll_parity(source: &str, expected: &str) {
     for mode in ["", "async "] {
         let source = source

@@ -1,6 +1,3 @@
-//! Native representation of the async-lowering plan. All storage whose address can survive
-//! Pending (locals, flags, closure environments, and scratch slots) lives in the heap frame.
-
 use std::fmt::Write;
 
 use super::llvm::{FunctionBuilder, Module};
@@ -65,7 +62,7 @@ impl Module<'_> {
         };
         f.emit_poll();
         let poll = std::mem::take(&mut f.out);
-        // Poll emission discovers scratch storage; the constructor initializes the final frame.
+        // Emit poll first to discover scratch fields before initializing the frame.
         f.polling = false;
         f.emit_constructor();
         let constructor = std::mem::take(&mut f.out);
@@ -311,7 +308,6 @@ impl FunctionBuilder<'_, '_> {
                 self.line(format!(
                     "{slot} = getelementptr inbounds {block_ty}, ptr {block}, i32 0, i32 1"
                 ));
-                // Extract before freeing the result block.
                 let loaded = self.fresh();
                 self.line(format!("{loaded} = load {result_ty}, ptr {slot}"));
                 let size = self.byte_size(&block_ty, "1");

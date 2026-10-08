@@ -81,7 +81,6 @@ fn until_ready<T>(
     limit: &AtomicI64,
     mut attempt: impl FnMut() -> std::io::Result<T>,
 ) -> std::io::Result<T> {
-    // Without a reactor the socket operation itself blocks instead of parking a slot.
     let _blocking = (!reactor::POLLED).then(super::scheduler::BlockingGuard::enter);
     let deadline = u64::try_from(limit.load(Ordering::SeqCst))
         .ok()

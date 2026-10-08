@@ -1,10 +1,3 @@
-//! Q32's poll scheduler, beside the existing fiber scheduler. Generated async state
-//! machines use these internal runtime APIs; they are not Zore language APIs.
-//!
-//! A task's scheduling lock serializes wakeups and the transition out of a poll. A wake
-//! while running records a notification; a wake while idle queues exactly one poll.
-//! The pool retains pending tasks even if their callers drop all wakers (detachment).
-
 use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock, Weak};
@@ -12,14 +5,12 @@ use std::task::{Wake, Waker};
 
 use super::panic::{self, PanicState};
 
-/// Whether one invocation finished the state machine or registered a wait.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Poll {
     Ready,
     Pending,
 }
 
-/// The current task's wake target and classification of its next suspension.
 pub struct Context {
     waker: Waker,
     internal: bool,
@@ -30,13 +21,11 @@ impl Context {
     pub(super) fn task_id(&self) -> u64 {
         self.task_id
     }
-    /// Clone this into the operation's waiter before returning `Pending`.
     pub fn waker(&self) -> &Waker {
         &self.waker
     }
 
-    /// Suspend on another task, a channel, or a mutex, which can participate in deadlock.
-    /// Ordinary `Poll::Pending` is for timers, descriptors, and helper completions.
+    /// Use only for internal waits; external events must return ordinary Pending.
     pub fn pending_internal(&mut self) -> Poll {
         self.internal = true;
         Poll::Pending
@@ -91,8 +80,7 @@ impl Wake for Task {
                     super::deadlock::remove_blocked();
                 }
                 state.status = Status::Queued;
-                // Queue under the scheduling lock so a worker cannot publish Idle before
-                // this wake finishes. Lock order is scheduling -> pool, never the reverse.
+                // Lock order is scheduling then pool; enqueue before releasing the scheduling lock.
                 if let Some(pool) = self.pool.upgrade() {
                     pool.enqueue(Arc::clone(self));
                 }
@@ -123,14 +111,13 @@ impl Task {
         let result = match result {
             Ok(result) => result,
             Err(_) => {
-                // Generated Zore code uses explicit panic cleanup, not Rust unwinding. An
-                // unwinding Rust poll body is an internal runtime error; restore TLS first.
+                // Restore task-local panic state before reporting an internal Rust unwind.
                 panic::swap_state(&mut frame.panic);
                 panic::fail(b"runtime task poll unwound");
             }
         };
         if result == Poll::Ready {
-            // Drop the completed frame while this task's panic state is installed.
+            // Destroy the frame with its task's panic state installed.
             frame.body.take();
             if let Some(message) = panic::take() {
                 panic::report_task(self.id, &message);
@@ -260,8 +247,6 @@ impl Pool {
                 state = lock(&self.state);
                 continue;
             }
-            // Retire replacements when the original workers resume, keeping the pool bounded
-            // by its capacity plus the number of threads currently blocking in plain code.
             if state.workers - state.blocked > self.capacity {
                 state.workers -= 1;
                 self.ready.notify_all();
@@ -275,8 +260,7 @@ impl Pool {
     }
 }
 
-/// Starts a detached poll task. The body owns its frame and must register a waker before
-/// returning `Pending`. Dropping the returned waker never cancels the task.
+/// Register a waker before Pending; dropping the returned waker does not cancel the task.
 pub fn spawn(body: impl FnMut(&mut Context) -> Poll + Send + 'static) -> Waker {
     static POOL: OnceLock<Arc<Pool>> = OnceLock::new();
     POOL.get_or_init(|| {
@@ -285,8 +269,7 @@ pub fn spawn(body: impl FnMut(&mut Context) -> Poll + Send + 'static) -> Waker {
     .spawn(Box::new(body))
 }
 
-/// Compensates a scheduler worker during a blocking runtime call. Other threads are unaffected.
-/// The guard stays on the blocking thread and must be dropped when that call resumes.
+/// Keep this guard on the blocked worker until the call resumes.
 pub(super) struct BlockingGuard {
     pool: Option<Arc<Pool>>,
     _thread: std::marker::PhantomData<std::rc::Rc<()>>,
@@ -475,7 +458,7 @@ mod tests {
         let calls = Arc::new(AtomicUsize::new(0));
         let count = Arc::clone(&calls);
         let (registered, rx) = mpsc::channel();
-        // Drop the caller's handle immediately: the pending frame remains owned by the pool.
+        // Dropping a waker must not cancel a pending task.
         drop(pool.spawn(move |context| {
             if count.fetch_add(1, Ordering::SeqCst) == 0 {
                 registered.send(context.waker().clone()).unwrap();
@@ -718,7 +701,6 @@ mod tests {
     fn internal_pending_participates_in_process_deadlock_detection() {
         const CHILD: &str = "ZORE_TEST_POLL_DEADLOCK";
         if std::env::var_os(CHILD).is_some() {
-            // Bound the child even if a regression loses its deadlock check.
             std::thread::spawn(|| {
                 std::thread::sleep(Duration::from_secs(10));
                 std::process::exit(71);

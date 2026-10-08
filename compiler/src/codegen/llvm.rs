@@ -1,6 +1,3 @@
-//! MIR storage and calls for synchronous/fiber functions; state_machine.rs emits persistent
-//! frame storage and suspension points for lowered async functions.
-
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fmt::Write;
 

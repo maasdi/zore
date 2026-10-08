@@ -6,8 +6,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use super::waiter::Waiter;
 
-/// One externally driven wait. Both slots and task wakers use the same completion
-/// publication; the owning operation stays live until its caller observes Ready.
 pub struct Operation {
     ready: AtomicBool,
     waiter: Waiter,
@@ -28,13 +26,8 @@ impl Operation {
     }
 }
 
-/// Polls a timer/readiness operation without blocking or registering again. Pending
-/// preserves the operation; Ready consumes the caller's reference. These external
-/// waits do not contribute an internal blocked count for deadlock detection.
-///
 /// # Safety
-/// `operation` is null or an owned raw Arc reference to an Operation. One task polls
-/// it serially, and must not access that raw reference after Ready consumes it.
+/// Own a raw Arc<Operation> or null, poll it serially, and never use it after Ready.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn zore_reactor_poll(operation: *const Operation) -> u8 {
     if operation.is_null() {
@@ -434,7 +427,7 @@ mod imp {
     pub fn start_sleep(milliseconds: u64, waiter: Waiter) -> Arc<Operation> {
         let reactor = started();
         let operation = Operation::new(waiter);
-        // A duration beyond the host Instant range must never finish early.
+        // An unrepresentable deadline must not expire early.
         let when = Instant::now().checked_add(Duration::from_millis(milliseconds));
         let earliest = {
             let mut state = reactor.lock();
@@ -462,8 +455,6 @@ mod imp {
         slot.park();
     }
 
-    /// Registers one external wait for readiness or a deadline. Failed registration
-    /// completes immediately so the caller's next system call reports the problem.
     pub fn start_wait_fd(
         fd: RawFd,
         write: bool,
@@ -477,8 +468,7 @@ mod imp {
             let token = state.next;
             state.next += 1;
             state.waiters.insert(token, Arc::clone(&operation));
-            // Keep registration and arming under the same lock so a due deadline
-            // cannot consume the waiter before its descriptor has been armed.
+            // Arm under the reactor lock so a deadline cannot consume an unarmed waiter.
             if reactor.poller.arm(fd, write, token).is_err() {
                 state.waiters.remove(&token);
                 drop(state);
@@ -552,12 +542,10 @@ pub(super) fn wait_fd(fd: Descriptor, write: bool, deadline: Option<std::time::I
     slot.park();
 }
 
-/// Starts a timer with either a fiber slot or the current poll task's waker.
 pub(super) fn start_sleep(milliseconds: u64, waiter: Waiter) -> Arc<Operation> {
     imp::start_sleep(milliseconds, waiter)
 }
 
-/// Starts descriptor readiness/deadline registration without blocking a poll worker.
 pub(super) fn start_wait_fd(
     fd: Descriptor,
     write: bool,

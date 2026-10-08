@@ -150,8 +150,6 @@ pub extern "C" fn zore_native_time_sleep(milliseconds: i64) {
     }
 }
 
-/// Starts the nonblocking form of Sleep; nonpositive durations are immediately Ready.
-///
 /// # Safety
 /// `context` must be the current live poll context for this call.
 #[unsafe(no_mangle)]
