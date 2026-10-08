@@ -28,8 +28,8 @@ bounded execution and explicit synchronization, not timing sleeps
 
 ## Waiting in async and plain functions (§17.3, §18.3)
 
-Pending until the state-machine slices land; the same programs also run with
-fibers today.
+The supported waiting forms are covered by executable native and runtime tests
+using shared pool workers and persistent async frames.
 
 | Scenario | Expected result |
 | --- | --- |

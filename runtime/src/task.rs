@@ -2,7 +2,6 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 
 use super::alloc::{zore_alloc, zore_free};
-use super::fiber;
 use super::waiter::Waiter;
 
 type Code = unsafe extern "C" fn(*mut u8);
@@ -168,16 +167,31 @@ pub unsafe extern "C" fn zore_task_spawn(
         size,
         drop_results,
     };
-    let id = started();
     let task_shared = Arc::clone(&shared);
-    fiber::spawn(Box::new(move || {
+    super::scheduler::spawn(move |context| {
         // SAFETY: the caller guarantees `entry` accepts the block.
         unsafe { entry(block.data) };
-        complete(&task_shared, block, id);
-        finished();
-        super::deadlock::check();
-    }));
+        complete(&task_shared, block, context.task_id());
+        super::scheduler::Poll::Ready
+    });
     Box::into_raw(Box::new(Handle { shared, block }))
+}
+
+fn wait_for(shared: &Shared) {
+    let mut state = shared.lock();
+    if state.finished {
+        return;
+    }
+    state.counted = true;
+    super::deadlock::add_blocked();
+    super::deadlock::check();
+    let _blocking = super::scheduler::BlockingGuard::enter();
+    while !state.finished {
+        state = shared
+            .finished
+            .wait(state)
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+    }
 }
 
 fn zeroed_block(size: i64) -> *mut u8 {
@@ -200,7 +214,7 @@ pub unsafe extern "C" fn zore_task_wait(handle: *mut Handle, size: i64) -> *mut 
     }
     // SAFETY: guaranteed by the caller.
     let handle = unsafe { Box::from_raw(handle) };
-    fiber::wait_for(&handle.shared);
+    wait_for(&handle.shared);
     let panic = handle.shared.lock().panic.take();
     match panic {
         Some(message) => {
@@ -240,8 +254,8 @@ mod tests {
     use std::time::Duration;
 
     use super::*;
-    use crate::fiber::Slot;
     use crate::scheduler::{Poll, TestPool};
+    use crate::slot::Slot;
 
     unsafe extern "C" fn entry(block: *mut u8) {
         // SAFETY: the test places one Arc<Slot> in the block and transfers it to this entry.
@@ -252,6 +266,40 @@ mod tests {
     }
 
     unsafe extern "C" fn drop_results(_: *mut u8) {}
+
+    unsafe extern "C" fn worker_entry(block: *mut u8) {
+        assert_eq!(std::thread::current().name(), Some("zore-poll-worker"));
+        assert!(!crate::panic::zore_panic_pending());
+        // SAFETY: the test supplies one initialized i64 input/result allocation.
+        unsafe { block.cast::<i64>().write(block.cast::<i64>().read() + 1) };
+    }
+
+    #[test]
+    fn plain_entries_run_once_on_pool_workers_and_join_after_completion() {
+        for input in 0..100 {
+            let block = zore_alloc(8);
+            // SAFETY: initialize the unique allocation before transferring it to the task.
+            unsafe { block.cast::<i64>().write(input) };
+            // SAFETY: both callbacks accept this allocation and initialize its result.
+            let handle = unsafe { zore_task_spawn(worker_entry, drop_results, block, 8) };
+            // SAFETY: the handle remains uniquely owned throughout completion and retrieval.
+            let shared = unsafe { Arc::clone(&(*handle).shared) };
+            let deadline = std::time::Instant::now() + Duration::from_secs(10);
+            let mut state = shared.lock();
+            while !state.finished {
+                let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+                assert!(!remaining.is_zero(), "plain task did not finish");
+                state = shared.finished.wait_timeout(state, remaining).unwrap().0;
+            }
+            drop(state);
+            // SAFETY: consume the finished handle and free its initialized Copy result once.
+            unsafe {
+                let result = zore_task_wait(handle, 8);
+                assert_eq!(result.cast::<i64>().read(), input + 1);
+                zore_free(result, 8);
+            }
+        }
+    }
 
     unsafe extern "C" fn poll_entry(block: *mut u8, context: *mut crate::scheduler::Context) -> u8 {
         // SAFETY: this test supplies an initialized i64 block and the scheduler's live context.
@@ -285,7 +333,7 @@ mod tests {
     }
 
     #[test]
-    fn blocking_join_from_poll_worker_compensates_and_retrieves_fiber_results() {
+    fn blocking_join_from_poll_worker_compensates_and_retrieves_plain_results() {
         let pool = TestPool::new(1);
         let gate = Arc::new(Slot::default());
         let size = std::mem::size_of::<Arc<Slot>>().max(8) as i64;

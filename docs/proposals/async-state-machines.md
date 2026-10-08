@@ -2,8 +2,10 @@
 
 Status: ACCEPTED and incorporated into spec §17.3, §17.7, §18.3, §20.2, §35.1,
 and §37.3, with a small edit to §18.9. The specification is authoritative; this
-document preserves the accepted proposal. The work lands in the slices at the
-end, one pull request each; the runtime keeps using fibers until slice 5.
+document preserves the accepted proposal and its original migration plan. All
+six slices are implemented. The maintainer requested slices 5 and 6 together in
+one PR; the earlier slices landed separately. References below to the former
+fiber runtime describe the baseline when this proposal was accepted.
 
 ## Decisions this proposal carries out
 

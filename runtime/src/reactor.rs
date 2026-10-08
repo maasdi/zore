@@ -92,7 +92,7 @@ mod imp {
     use std::sync::{Arc, Mutex, MutexGuard, Once, OnceLock};
     use std::time::{Duration, Instant};
 
-    use super::super::fiber::Slot;
+    use super::super::slot::Slot;
     use super::{Operation, Waiter};
 
     const WAKE_TOKEN: u64 = 0;
@@ -543,7 +543,7 @@ pub(super) fn sleep(milliseconds: u64) {
 /// Waits until `fd` is ready or `deadline` passes; the caller tries again to find out which.
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
 pub(super) fn wait_fd(fd: Descriptor, write: bool, deadline: Option<std::time::Instant>) {
-    let slot = Arc::new(super::fiber::Slot::default());
+    let slot = Arc::new(super::slot::Slot::default());
     let _operation = start_wait_fd(fd, write, deadline, Arc::clone(&slot).into());
     slot.park();
 }

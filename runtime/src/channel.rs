@@ -3,8 +3,8 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use super::alloc::{zore_alloc, zore_free};
-use super::fiber::Slot;
 use super::scheduler::Context;
+use super::slot::Slot;
 use super::waiter::Waiter;
 
 type Destroy = unsafe extern "C" fn(*mut u8);
@@ -692,9 +692,9 @@ mod tests {
         let pool = TestPool::new(1);
         let queues = Arc::new(Mutex::new(Queues::default()));
         let slot = Arc::new(Slot::default());
-        let fiber_waiting = Waiting::new(Arc::clone(&slot).into());
+        let slot_waiting = Waiting::new(Arc::clone(&slot).into());
         queues.lock().unwrap().receivers.push_back(Entry {
-            waiting: Arc::clone(&fiber_waiting),
+            waiting: Arc::clone(&slot_waiting),
             case: 0,
             message: None,
         });
@@ -734,7 +734,7 @@ mod tests {
         let mut value = 0i64;
         // SAFETY: as above; the first receiver owns the first i64 message.
         unsafe {
-            fiber_waiting
+            slot_waiting
                 .exchange()
                 .message
                 .take()

@@ -5,7 +5,7 @@ use std::collections::VecDeque;
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::time::Duration;
 
-use super::fiber::Slot;
+use super::slot::Slot;
 use super::waiter::Waiter;
 
 type Job = Box<dyn FnOnce() + Send>;

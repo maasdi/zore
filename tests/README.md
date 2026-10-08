@@ -52,14 +52,14 @@ covers empty and long strings, embedded NUL bytes, output paths with spaces,
 missing rustc diagnostics, and checking without either native tool.
 
 `tests/async/lowering.rs` tests Q32 slice 3's backend-independent suspension plan,
-cleanup edges, retained source spans, recursive calls, and propagation of fiber
-fallback. The native suite verifies heap-frame IR and real suspensions through
+cleanup edges, retained source spans, recursive calls, and synchronous native
+compatibility. The native suite verifies heap-frame IR and real suspensions through
 nested calls and task joins, mutable borrows and views, closure environments,
 loops and one-time argument evaluation, Move/partial-move cleanup, returned
 collections, errors, nil tasks, panic containment, detached results, and a chain
 of 5,000 polled tasks. The runtime poll-entry test exercises repeated
 wake-before-Pending through the generated-code ABI and existing blocking handle
-retrieval. Q32 slice 4 channel tests run the same programs as plain fibers and polled async
+retrieval. Q32 slice 4 channel tests run the same programs as plain pool jobs and polled async
 tasks, including buffered/unbuffered loops, mixed waiters, select/default/zero
 channels, duplicate cases, single operand evaluation, reverse send cleanup,
 mutable borrows, partial moves, close panics, deadlocks, and 5,000 channel waiters.
@@ -71,7 +71,7 @@ deadlock detection, and 2,000 sleepers with plain blocking helpers.
 Runtime reactor tests cover the start/poll ABI, actual timer completion,
 wake-before-Pending descriptor readiness, deadline/registration errors, concurrent
 completion, readiness/timeout races, and released completion storage. Mutex and
-I/O poll forms remain for later slice 4 PRs.
+I/O poll forms are implemented and covered below.
 
 `conformance/` records spec-level cases awaiting executable coverage. In
 particular, `conformance/identifiers.md` covers the locked ASCII identifier rules,
@@ -185,7 +185,7 @@ the full MVP; expand this plan and the executable suites as features arrive.
 
 Mutex poll regressions cover FIFO grants across slots and task wakers, repeated
 polls, wake-before-Pending, poisoning, zero handles, and concurrent exclusive
-access. Native parity cases compare fiber and poll execution with blocking
+access. Native parity cases compare plain and poll execution with blocking
 callbacks, Move results, contention, panic cleanup, and heap-only poll storage.
 
 I/O poll regressions compare plain and async file, stdin, networking, and
@@ -196,3 +196,19 @@ use a single poll worker to check progress while work is pending, completion
 before Pending, nested helper calls, and task-local panic transfer. Socket tests
 use loopback peers and bounded waits, including backpressure and incomplete text
 recovery after a timeout.
+
+Q32's final runtime uses one pool for plain entries and async polls on every host.
+The plain-entry ABI test verifies pool worker execution, one-time result retrieval,
+and completion before joining. Mixed native tests combine plain channel waits,
+polled children, and nested blocking joins; existing panic, detach, mutex,
+deadlock, and I/O parity tests now exercise the shared pool. Slot regressions race
+parking with simultaneous wakes and verify latched completion and balanced internal
+wait accounting. Compensation tests saturate a small pool and verify replacement
+worker progress, nested guards, and retirement back to its original capacity.
+
+Large waiting workloads use `async func` task functions, including the 5,000-task
+join chain, the 1,000-link channel chain, and timer waiters. The 50,000 computation
+tasks do not wait and remain plain functions. A waiting plain function holds an OS
+worker; replacement threads maintain progress but remain subject to host thread
+limits. A 1,000-child cancellation regression checks the private async expiry
+and parent-following tasks.

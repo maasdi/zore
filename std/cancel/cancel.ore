@@ -17,7 +17,7 @@ func WithTimeout(milliseconds int) Token {
     return token
 }
 
-func expire(token Token, milliseconds int) {
+async func expire(token Token, milliseconds int) {
     time.Sleep(milliseconds)
     token.Cancel()
 }
@@ -51,7 +51,7 @@ func (t Token) Child() Token {
     return child
 }
 
-func follow(parent Token, child Token) {
+async func follow(parent Token, child Token) {
     select {
         case parent.done.receive() {
             child.Cancel()

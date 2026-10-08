@@ -244,7 +244,7 @@ impl Operation {
 fn blocking(id: i64, kind: Kind) -> Output {
     let mut operation = Operation::new(id, kind);
     loop {
-        let slot = Arc::new(crate::fiber::Slot::default());
+        let slot = Arc::new(crate::slot::Slot::default());
         if let Some(output) = operation.poll(Arc::clone(&slot).into()) {
             operation.restore_pending();
             return output;

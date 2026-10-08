@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use std::task::Waker;
 
-use super::fiber::Slot;
+use super::slot::Slot;
 
 #[derive(Clone)]
 pub(super) enum Waiter {
@@ -47,7 +47,7 @@ mod tests {
     }
 
     #[test]
-    fn cloned_waiters_wake_a_fiber_or_a_poll_task() {
+    fn cloned_waiters_wake_a_blocked_worker_or_a_poll_task() {
         let pool = TestPool::new(1);
         let (registered, rx) = mpsc::channel();
         let (done, finished) = mpsc::channel();
@@ -66,16 +66,17 @@ mod tests {
         let poll_waiter = rx.recv_timeout(Duration::from_secs(10)).unwrap();
         let slot = Arc::new(Slot::default());
         let slot_waiter = Waiter::from(Arc::clone(&slot));
-        let (done, finished_fiber) = mpsc::channel();
-        crate::fiber::spawn(Box::new(move || {
+        let (done, finished_worker) = mpsc::channel();
+        pool.spawn(move |_| {
             slot.park();
             done.send(()).unwrap();
-        }));
+            Poll::Ready
+        });
         for waiter in [slot_waiter, poll_waiter] {
             waiter.clone().wake();
         }
         finished.recv_timeout(Duration::from_secs(10)).unwrap();
-        finished_fiber
+        finished_worker
             .recv_timeout(Duration::from_secs(10))
             .unwrap();
         pool.idle();
