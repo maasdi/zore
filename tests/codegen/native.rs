@@ -6324,3 +6324,65 @@ func main() {
     assert_eq!(stdout(&output), "1000\ntrue\n");
     assert!(output.stderr.is_empty(), "{}", stderr(&output));
 }
+
+#[test]
+fn declared_functions_run_as_function_values() {
+    prints(
+        "package main
+
+import \"zore/strings\"
+
+func add(a int, b int) int { return a + b }
+
+func double(values mut []int) {
+    for var i = 0; i < values.len(); i += 1 {
+        values[i] = values[i] * 2
+    }
+}
+
+func apply(op func(int, int) int, x int, y int) int {
+    return op(x, y)
+}
+
+func pick() func(int, int) int {
+    println(\"pick\")
+    return add
+}
+
+func left() int {
+    println(\"left\")
+    return 1
+}
+
+func right() int {
+    println(\"right\")
+    return 2
+}
+
+type Table struct {
+    op func(int, int) int
+}
+
+func main() {
+    let f = add
+    println(f(1, 2))
+    println(apply(add, 2, 3))
+    println(pick()(left(), right()))
+    var data = Array<int>{1, 2, 3}
+    let d = double
+    d(data[:])
+    println(data[0] + data[1] + data[2])
+    let up = strings.Upper
+    println(up(\"ok\"))
+    let table = Table{op: add}
+    let stored = table.op
+    println(stored(10, 20))
+    var ops = Array<func(int, int) int>{}
+    ops.push(add)
+    ops.push(add)
+    println(ops.len())
+}
+",
+        "3\n5\npick\nleft\nright\n3\n12\nOK\n30\n2\n",
+    );
+}

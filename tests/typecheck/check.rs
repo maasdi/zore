@@ -841,10 +841,7 @@ fn calls_arguments_and_results() {
         &program("type U struct {}\nfunc g() { U() }"),
         "constructed with `U{...}`",
     );
-    rejects(
-        &program("func greet() {}\nfunc g() { let f = greet }"),
-        "declared functions used as values are not supported",
-    );
+    accepts(&program("func greet() {}\nfunc g() { let f = greet\nf() }"));
     rejects(&body("let x = int"), "`int` is a type, not a value");
     rejects(
         &body("let x = string(1)"),
@@ -2400,8 +2397,8 @@ fn function_values_can_be_returned_and_stored_but_not_sliced() {
     );
     accepts(&program("func g(f func([]int) []int) {}"));
     rejects(
-        &program("func greet() {}\nfunc g() { let f = greet }"),
-        "declared functions used as values are not supported",
+        &program("async func greet() {}\nfunc g() { let f = greet }"),
+        "is an `async func` and cannot be used as a value",
     );
     rejects(
         &program("const c = func() {}"),
@@ -2954,10 +2951,6 @@ fn standard_packages_have_typed_signatures() {
         (
             "_ = strings.upper(\"a\")",
             "package `strings` does not declare `upper`",
-        ),
-        (
-            "let f = strings.Upper\n_ = f",
-            "declared functions used as values",
         ),
     ] {
         rejects(
@@ -3737,4 +3730,54 @@ fn select_cases_must_be_channel_operations() {
         &channel_body("let a = channel<int>()\nselect { case consume(a) { } }"),
         "a `select` case must be a channel `send` or `receive`",
     );
+}
+
+#[test]
+fn declared_functions_are_capture_free_function_values() {
+    accepts(&program(
+        "func add(a int, b int) int { return a + b }
+func edit(values mut []int, factor int) {}
+func take(f func(int, int) int) int { return f(1, 2) }
+func pick() func(int, int) int { return add }
+type Box struct { op func(int, int) int }
+func g() {
+    let f = add
+    let h func(mut []int, int) = edit
+    var data = Array<int>{1}
+    h(data[:], 2)
+    println(f(1, 2) + take(add) + pick()(3, 4))
+    let boxed = Box{op: add}
+    var all = Array<func(int, int) int>{}
+    all.push(add)
+    _ = boxed
+}",
+    ));
+    for (decls, message) in [
+        (
+            "async func fetch(id int) int { return id }\nfunc g() { let f = fetch\n_ = f }",
+            "is an `async func` and cannot be used as a value",
+        ),
+        (
+            "func add(a int, b int) int { return a + b }\nfunc g() { let f func(int) int = add\n_ = f }",
+            "mismatched types",
+        ),
+        (
+            "func add(a int, b int) int { return a + b }\nfunc g() { let f = add\nlet h = add\n_ = f == h }",
+            "operator `==` cannot be applied",
+        ),
+        (
+            "func add(a int, b int) int { return a + b }\nfunc g() { let f = add\nlet h = f\n_ = f\n_ = h }",
+            "use of moved value `f`",
+        ),
+        (
+            "func edit(values mut []int) {}\nfunc g(values []int) { let f = edit\nf(values) }",
+            "expected `mut []int64`, found `[]int64`",
+        ),
+        (
+            "func g() { let f = println\n_ = f }",
+            "`println` can only be called",
+        ),
+    ] {
+        rejects(&program(decls), message);
+    }
 }

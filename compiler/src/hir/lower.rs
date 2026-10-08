@@ -39,7 +39,8 @@ pub fn check(
         closures: Vec::new(),
         exclusive_captures: HashSet::new(),
         awaited_call: None,
-        spawn_thunks: Vec::new(),
+        generated_functions: Vec::new(),
+        function_values: HashMap::new(),
         resolving_fields: false,
     };
     checker.closures = checker.res.closures.iter().map(|_| None).collect();
@@ -106,7 +107,7 @@ pub fn check(
             .into_iter()
             .chain(closures)
             .map(|f| f.expect("every function and closure was checked"))
-            .chain(std::mem::take(&mut checker.spawn_thunks))
+            .chain(std::mem::take(&mut checker.generated_functions))
             .collect(),
         entry,
     };
@@ -161,8 +162,9 @@ struct Checker<'a> {
     exclusive_captures: HashSet<(usize, LocalId)>,
     /// The span of the async call that the `await` being checked applies to.
     awaited_call: Option<Span>,
-    /// Entry points of spawned calls, with ids following every function and closure.
-    spawn_thunks: Vec<hir::Function>,
+    /// Forwarding closures for function values and entry points of spawned calls, with ids following every function and closure.
+    generated_functions: Vec<hir::Function>,
+    function_values: HashMap<FunctionId, FunctionId>,
     resolving_fields: bool,
 }
 
@@ -1249,6 +1251,113 @@ impl<'a> Checker<'a> {
         }
     }
 
+    fn function_value(&mut self, id: FunctionId, name: &str, span: Span) -> Option<Value> {
+        let declaration = self.res.functions[id.0 as usize];
+        if declaration.is_async {
+            self.diagnostics.push(
+                Diagnostic::new(
+                    Severity::Error,
+                    format!("`{name}` is an `async func` and cannot be used as a value"),
+                    span,
+                )
+                .note("a function type does not say whether calling it must be awaited; call it directly or wrap the call in a function literal"),
+            );
+            return None;
+        }
+        let signature = self.signatures[id.0 as usize].as_ref()?;
+        let (params, results) = (signature.params.clone(), signature.results.clone());
+        let modes: Vec<ast::ParamMode> = declaration.params.iter().map(|p| p.mode).collect();
+        let ty = self.types.func_type(FuncSignature {
+            params: modes.iter().copied().zip(params.iter().copied()).collect(),
+            results: results.clone(),
+        });
+        let function = match self.function_values.get(&id) {
+            Some(&function) => function,
+            None => {
+                let function = self.forwarding_closure(id, &params, &modes, results, span);
+                self.function_values.insert(id, function);
+                function
+            }
+        };
+        Some(Value::Typed(typed(
+            ExprKind::Closure {
+                function,
+                captures: Vec::new(),
+                owning: false,
+            },
+            ty,
+            span,
+        )))
+    }
+
+    /// A closure without captures that passes its parameters on to the declared function.
+    fn forwarding_closure(
+        &mut self,
+        target: FunctionId,
+        params: &[TypeId],
+        modes: &[ast::ParamMode],
+        results: Vec<TypeId>,
+        span: Span,
+    ) -> FunctionId {
+        let id = FunctionId(
+            (self.res.functions.len() + self.closures.len() + self.generated_functions.len())
+                as u32,
+        );
+        let locals = params
+            .iter()
+            .zip(modes)
+            .enumerate()
+            .map(|(index, (&ty, &mode))| hir::Local {
+                name: format!("arg{index}"),
+                ty,
+                kind: LocalKind::Param(mode),
+                span,
+            })
+            .collect();
+        let call = hir::Expr {
+            kind: ExprKind::Call {
+                function: target,
+                args: params
+                    .iter()
+                    .enumerate()
+                    .map(|(index, &ty)| typed(ExprKind::Local(LocalId(index as u32)), ty, span))
+                    .collect(),
+            },
+            types: results.clone(),
+            span,
+        };
+        let statement = if results.is_empty() {
+            StmtKind::Expr(call)
+        } else {
+            StmtKind::Return(vec![call])
+        };
+        let name = format!(
+            "{}$value{}",
+            self.function_name(target),
+            self.generated_functions.len()
+        );
+        self.generated_functions.push(hir::Function {
+            name,
+            span,
+            params: (0..params.len()).map(|i| LocalId(i as u32)).collect(),
+            results,
+            captures: Vec::new(),
+            is_closure: true,
+            is_async: false,
+            native: false,
+            call_once: false,
+            locals,
+            body: hir::Block {
+                stmts: vec![hir::Stmt {
+                    kind: statement,
+                    span,
+                }],
+                span,
+            },
+        });
+        id
+    }
+
     fn go_expr(&mut self, operand: &ast::Expr, span: Span) -> Option<Value> {
         let mut call = operand;
         while let ast::ExprKind::Paren(inner) = &call.kind {
@@ -1324,7 +1433,8 @@ impl<'a> Checker<'a> {
         span: Span,
     ) -> FunctionId {
         let id = FunctionId(
-            (self.res.functions.len() + self.closures.len() + self.spawn_thunks.len()) as u32,
+            (self.res.functions.len() + self.closures.len() + self.generated_functions.len())
+                as u32,
         );
         let captures: Vec<LocalId> = (0..args.len()).map(|i| LocalId(i as u32)).collect();
         let locals = args
@@ -1365,9 +1475,9 @@ impl<'a> Checker<'a> {
         let name = format!(
             "{}$go{}",
             self.function_name(FunctionId(self.current as u32)),
-            self.spawn_thunks.len()
+            self.generated_functions.len()
         );
-        self.spawn_thunks.push(hir::Function {
+        self.generated_functions.push(hir::Function {
             name,
             span,
             params: Vec::new(),
@@ -1702,14 +1812,7 @@ impl<'a> Checker<'a> {
                 ConstValue::Untyped(v) => Some(Value::Untyped(v, span)),
                 ConstValue::Typed(ty, c) => Some(Value::Typed(typed(ExprKind::Const(c), ty, span))),
             },
-            Res::Function(_) => {
-                self.unsupported(
-                    "declared functions used as values are",
-                    span,
-                    "wrap the call in a function literal, as in `func() { f() }`",
-                );
-                None
-            }
+            Res::Function(id) => self.function_value(id, name, span),
             Res::Struct(_) | Res::Primitive(_) => {
                 self.error(format!("`{name}` is a type, not a value"), span);
                 None

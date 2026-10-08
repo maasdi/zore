@@ -64,8 +64,9 @@ impl Checker<'_> {
 
     fn is_call_once(&self, function: FunctionId) -> bool {
         let index = function.0 as usize - self.res.functions.len();
-        self.closures[index]
-            .as_ref()
+        self.closures
+            .get(index)
+            .and_then(Option::as_ref)
             .is_some_and(|closure| closure.call_once)
     }
 
@@ -287,7 +288,10 @@ impl Checker<'_> {
                 if let ExprKind::Closure {
                     function, owning, ..
                 } = &mut expr.kind
-                    && call_once[function.0 as usize - declared]
+                    && call_once
+                        .get(function.0 as usize - declared)
+                        .copied()
+                        .unwrap_or(false)
                 {
                     *owning = true;
                     misplaced.push(expr.span);

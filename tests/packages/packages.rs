@@ -117,6 +117,17 @@ fn exported_functions_types_methods_and_constants_work_across_packages() {
 }
 
 #[test]
+fn package_functions_convert_to_function_values() {
+    let main = main_with(
+        IMPORT_SHAPES,
+        "let area = shapes.Area
+        let c = shapes.Circle{Radius: 2}
+        println(area(c))",
+    );
+    accepts(&with_shapes(&main));
+}
+
+#[test]
 fn files_in_one_folder_share_a_package_and_sibling_folders_do_not() {
     accepts(&[
         ("main.ore", "package main\nfunc main() { helper() }\n"),
@@ -183,10 +194,6 @@ fn qualified_names_must_name_a_package_and_the_right_kind_of_member() {
         (
             "let x = other.Thing\n_ = x",
             "cannot find `other` in this scope",
-        ),
-        (
-            "let c = shapes.Area\n_ = c",
-            "declared functions used as values",
         ),
         ("let c = shapes.Circle(1)", "is constructed with"),
         ("shapes.Pi()", "is not a function"),
