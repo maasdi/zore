@@ -59,7 +59,13 @@ loops and one-time argument evaluation, Move/partial-move cleanup, returned
 collections, errors, nil tasks, panic containment, detached results, and a chain
 of 5,000 polled tasks. The runtime poll-entry test exercises repeated
 wake-before-Pending through the generated-code ABI and existing blocking handle
-retrieval. Direct waiting-operation poll forms remain for Q32 slice 4.
+retrieval. Q32 slice 4 channel tests run the same programs as plain fibers and polled async
+tasks, including buffered/unbuffered loops, mixed waiters, select/default/zero
+channels, duplicate cases, single operand evaluation, reverse send cleanup,
+mutable borrows, partial moves, close panics, deadlocks, and 5,000 channel waiters.
+Runtime ABI regressions force repeated polls, wake-before-Pending, pending close,
+and concurrent select winners with duplicate registrations. Time/reactor, mutex,
+and I/O poll forms remain for later slice 4 PRs.
 
 `conformance/` records spec-level cases awaiting executable coverage. In
 particular, `conformance/identifiers.md` covers the locked ASCII identifier rules,

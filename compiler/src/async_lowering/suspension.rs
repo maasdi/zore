@@ -4,15 +4,13 @@ use crate::resolve::FunctionId;
 pub enum Suspension {
     Call(FunctionId),
     Task,
+    Channel,
 }
 
 pub(super) fn needs_fiber(package: &crate::hir::Package, callee: &crate::mir::Callee) -> bool {
     use crate::mir::Callee;
     match callee {
-        Callee::ChannelSend
-        | Callee::ChannelReceive
-        | Callee::Select { .. }
-        | Callee::MutexWithLock => true,
+        Callee::MutexWithLock => true,
         Callee::Function(id) => {
             let function = package.function(*id);
             function.native

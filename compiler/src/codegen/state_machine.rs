@@ -215,6 +215,10 @@ impl FunctionBuilder<'_, '_> {
     }
 
     fn suspend_call(&mut self, state: usize, kind: Suspension, terminator: &Terminator) {
+        if kind == Suspension::Channel {
+            self.suspend_channel(state, terminator);
+            return;
+        }
         let Terminator::Call {
             args,
             destinations,
@@ -234,6 +238,7 @@ impl FunctionBuilder<'_, '_> {
                 child
             }
             Suspension::Task => self.value(&args[0]),
+            Suspension::Channel => unreachable!(),
         };
         self.line(format!("store ptr {start}, ptr %pending.slot"));
         self.line(format!("br label %resume.{state}"));
@@ -249,6 +254,7 @@ impl FunctionBuilder<'_, '_> {
                 .task_results(self.operand_ty(&args[0]))
                 .unwrap()
                 .to_vec(),
+            Suspension::Channel => unreachable!(),
         };
         let result_ty = if results.is_empty() {
             "{}".to_string()
@@ -277,6 +283,7 @@ impl FunctionBuilder<'_, '_> {
                 let size = self.byte_size(&block_ty, "1");
                 self.line(format!("{ready} = call i8 @zore_task_poll(ptr {child}, ptr %context, i64 {size}, ptr {output})"));
             }
+            Suspension::Channel => unreachable!(),
         }
         let finished = self.fresh();
         self.line(format!("{finished} = icmp ne i8 {ready}, 0"));
@@ -310,6 +317,7 @@ impl FunctionBuilder<'_, '_> {
                 self.call_continuation(result, destinations, *target, *unwind);
                 return;
             }
+            Suspension::Channel => unreachable!(),
         };
         self.line("store ptr null, ptr %pending.slot");
         let result = (!results.is_empty()).then(|| {

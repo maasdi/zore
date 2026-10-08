@@ -4,6 +4,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 use super::alloc::{zore_alloc, zore_free};
 use super::fiber::Slot;
+use super::scheduler::Context;
 use super::waiter::Waiter;
 
 type Destroy = unsafe extern "C" fn(*mut u8);
@@ -468,6 +469,28 @@ pub unsafe extern "C" fn zore_select(cases: *mut SelectCase, count: i64, has_def
     let count = usize::try_from(count).unwrap_or(0);
     // SAFETY: guaranteed by the caller.
     let cases = unsafe { std::slice::from_raw_parts_mut(cases, count) };
+    let slot = Arc::new(Slot::internal());
+    // SAFETY: guaranteed by the caller.
+    match unsafe { start_select(cases, has_default, Arc::clone(&slot).into()) } {
+        Ok(index) => index,
+        Err(waiting) => {
+            slot.park();
+            // SAFETY: cases and their storage stay live throughout the blocking call.
+            unsafe { finish_select(cases, &waiting) }
+        }
+    }
+}
+
+/// Registers once under the channel locks, or completes an immediately ready case.
+///
+/// # Safety
+/// Case pointers and channel handles must remain valid through completion.
+unsafe fn start_select(
+    cases: &mut [SelectCase],
+    has_default: bool,
+    waiter: Waiter,
+) -> Result<i64, Arc<Waiting>> {
+    let count = cases.len();
     let mut channels: Vec<&Channel> = cases
         // SAFETY: guaranteed by the caller.
         .iter()
@@ -498,7 +521,7 @@ pub unsafe extern "C" fn zore_select(cases: *mut SelectCase, count: i64, has_def
                 // SAFETY: the case holds a live value.
                 unsafe { fail_send(case.value, case.destroy) };
             }
-            return index as i64;
+            return Ok(index as i64);
         };
         let queues = &mut guards[position(channel)];
         if case.send == 0 {
@@ -510,28 +533,27 @@ pub unsafe extern "C" fn zore_select(cases: *mut SelectCase, count: i64, has_def
             drop(guards);
             // SAFETY: the buffer holds `size` bytes.
             unsafe { settle_receive(case, message) };
-            return index as i64;
+            return Ok(index as i64);
         }
         let (value, size) = (case.value, channel.size);
         // SAFETY: `value` holds `size` bytes.
         let make = || unsafe { Message::copy_of(value, size) };
         match try_send(queues, channel.capacity, &make) {
-            SendTry::Done => return index as i64,
+            SendTry::Done => return Ok(index as i64),
             SendTry::Closed => {
                 drop(guards);
                 // SAFETY: the case holds a live value.
                 unsafe { fail_send(case.value, case.destroy) };
-                return index as i64;
+                return Ok(index as i64);
             }
             SendTry::NotReady => {}
         }
     }
     if has_default {
-        return -1;
+        return Ok(-1);
     }
 
-    let slot = Arc::new(Slot::internal());
-    let waiting = Waiting::new(Arc::clone(&slot).into());
+    let waiting = Waiting::new(waiter);
     for (index, case) in cases.iter().enumerate() {
         // SAFETY: guaranteed by the caller.
         let Some(channel) = (unsafe { case.channel.as_ref() }) else {
@@ -552,15 +574,24 @@ pub unsafe extern "C" fn zore_select(cases: *mut SelectCase, count: i64, has_def
         }
     }
     drop(guards);
-    slot.park();
+    Err(waiting)
+}
 
-    for channel in &channels {
+/// Removes all registrations before settling the winning case's ownership.
+///
+/// # Safety
+/// Cases must be the same live records supplied to `start_select`.
+unsafe fn finish_select(cases: &mut [SelectCase], waiting: &Arc<Waiting>) -> i64 {
+    for channel in cases.iter().filter_map(|case| {
+        // SAFETY: the caller keeps every channel handle live until completion.
+        unsafe { case.channel.as_ref() }
+    }) {
         let mut queues = channel.lock();
         let queues = &mut *queues;
         for queue in [&mut queues.receivers, &mut queues.senders] {
             let mut kept = VecDeque::new();
             for entry in queue.drain(..) {
-                if Arc::ptr_eq(&entry.waiting, &waiting) {
+                if Arc::ptr_eq(&entry.waiting, waiting) {
                     if let Some(message) = entry.message {
                         message.free();
                     }
@@ -588,6 +619,85 @@ pub unsafe extern "C" fn zore_select(cases: *mut SelectCase, count: i64, has_def
         unsafe { fail_send(case.value, case.destroy) };
     }
     index as i64
+}
+
+/// Persistent channel/select operation. The generated heap frame owns the records and
+/// their value storage; this record owns the one queue registration until Ready.
+pub struct Selection {
+    cases: *mut SelectCase,
+    count: usize,
+    waiting: Option<Arc<Waiting>>,
+    ready: Option<i64>,
+}
+
+/// Starts a send, receive, or select without parking a worker. A single-case record is
+/// used for ordinary sends and receives, so all poll forms share select's winner logic.
+///
+/// # Safety
+/// `cases` holds `count` valid records; their channels and buffers must remain live and
+/// unmoved until `zore_channel_poll` returns Ready. `context` is the current task context.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn zore_channel_start(
+    cases: *mut SelectCase,
+    count: i64,
+    has_default: bool,
+    context: *mut Context,
+) -> *mut Selection {
+    let count = usize::try_from(count).unwrap_or(0);
+    // SAFETY: guaranteed by the caller.
+    let records = unsafe { std::slice::from_raw_parts_mut(cases, count) };
+    // SAFETY: guaranteed by the caller.
+    let waiter = unsafe { &*context }.waker().clone().into();
+    // SAFETY: records and their storage stay pinned in the caller's frame.
+    let result = unsafe { start_select(records, has_default, waiter) };
+    let (ready, waiting) = match result {
+        Ok(index) => (Some(index), None),
+        Err(waiting) => (None, Some(waiting)),
+    };
+    Box::into_raw(Box::new(Selection {
+        cases,
+        count,
+        waiting,
+        ready,
+    }))
+}
+
+/// Polls an operation; Pending preserves it, Ready consumes it and writes the selected
+/// case index (or -1 for default). Completion removes stale registrations before return.
+///
+/// # Safety
+/// `operation` is a live operation from `zore_channel_start`, polled by one task at a
+/// time. Its records remain valid, `context` is current, and `out` holds one writable i64.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn zore_channel_poll(
+    operation: *mut Selection,
+    context: *mut Context,
+    out: *mut i64,
+) -> u8 {
+    // SAFETY: guaranteed by the caller.
+    let selection = unsafe { &*operation };
+    if let Some(waiting) = &selection.waiting
+        && waiting.exchange().outcome == Outcome::Pending
+    {
+        // SAFETY: guaranteed by the caller. Wake-before-Pending is latched by the scheduler.
+        unsafe { &mut *context }.pending_internal();
+        return 0;
+    }
+    // SAFETY: Ready consumes the operation exactly once.
+    let selection = unsafe { Box::from_raw(operation) };
+    let index = match selection.ready {
+        Some(index) => index,
+        None => {
+            // SAFETY: the caller keeps the original records and their storage live.
+            let records =
+                unsafe { std::slice::from_raw_parts_mut(selection.cases, selection.count) };
+            // SAFETY: these are the same records registered by start_select.
+            unsafe { finish_select(records, selection.waiting.as_ref().unwrap()) }
+        }
+    };
+    // SAFETY: guaranteed by the caller.
+    unsafe { out.write(index) };
+    1
 }
 
 #[cfg(test)]
@@ -688,5 +798,200 @@ mod tests {
         });
         assert!(completed.recv_timeout(Duration::from_secs(10)).unwrap() < 8);
         pool.idle();
+    }
+    /// The ABI requires records and value buffers to stay pinned until Ready.
+    struct TestSelection {
+        values: Box<[i64]>,
+        cases: Vec<SelectCase>,
+        operation: *mut Selection,
+    }
+
+    // SAFETY: storage is heap allocated and never resized; only its owning poll task
+    // accesses it. Channel handles remain live until the task completes.
+    unsafe impl Send for TestSelection {}
+
+    impl TestSelection {
+        fn new(channels: &[*const Channel], send: bool) -> Self {
+            let mut values = vec![0; channels.len()].into_boxed_slice();
+            let cases = channels
+                .iter()
+                .enumerate()
+                .map(|(index, &channel)| SelectCase {
+                    channel,
+                    send: u8::from(send),
+                    value: (&mut values[index] as *mut i64).cast(),
+                    size: 8,
+                    destroy: None,
+                    received: 0,
+                })
+                .collect();
+            Self {
+                values,
+                cases,
+                operation: std::ptr::null_mut(),
+            }
+        }
+
+        fn poll(&mut self, context: &mut Context) -> Option<usize> {
+            if self.operation.is_null() {
+                // SAFETY: records and values are stable for the lifetime of this test frame.
+                self.operation = unsafe {
+                    zore_channel_start(
+                        self.cases.as_mut_ptr(),
+                        self.cases.len() as i64,
+                        false,
+                        context,
+                    )
+                };
+            }
+            let mut chosen = -1;
+            // SAFETY: the frame is polled serially and all channels remain live.
+            if unsafe { zore_channel_poll(self.operation, context, &mut chosen) } == 0 {
+                None
+            } else {
+                self.operation = std::ptr::null_mut();
+                Some(usize::try_from(chosen).unwrap())
+            }
+        }
+    }
+
+    #[test]
+    fn channel_poll_registers_once_and_latches_wake_before_pending() {
+        let pool = TestPool::new(1);
+        let channel = zore_channel_make(8, 0, None);
+        let mut frame = TestSelection::new(&[channel], false);
+        let (registered, registration) = mpsc::channel();
+        let (released, release) = mpsc::channel();
+        let (done, completed) = mpsc::channel();
+        let mut first = true;
+        pool.spawn(move |context| {
+            if first {
+                first = false;
+                assert_eq!(frame.poll(context), None);
+                assert_eq!(frame.poll(context), None);
+                registered.send(()).unwrap();
+                // Force the wake after poll reports Pending, but before this poll returns.
+                release.recv_timeout(Duration::from_secs(10)).unwrap();
+                return Poll::Pending;
+            }
+            assert_eq!(frame.poll(context), Some(0));
+            assert_eq!(frame.cases[0].received, 1);
+            done.send(frame.values[0]).unwrap();
+            Poll::Ready
+        });
+        registration.recv_timeout(Duration::from_secs(10)).unwrap();
+        // SAFETY: channel remains live; the sender supplies one i64 value.
+        unsafe {
+            assert_eq!((*channel).lock().receivers.len(), 1);
+            let mut value = 42i64;
+            zore_channel_send(channel, (&mut value as *mut i64).cast(), None);
+        }
+        released.send(()).unwrap();
+        assert_eq!(completed.recv_timeout(Duration::from_secs(10)).unwrap(), 42);
+        pool.idle();
+        // SAFETY: the poll task has completed and no other handle uses this channel.
+        unsafe { zore_channel_release(channel) };
+    }
+
+    #[test]
+    fn channel_poll_concurrent_select_winners_remove_duplicate_registrations() {
+        for _ in 0..100 {
+            let pool = TestPool::new(2);
+            let a = zore_channel_make(8, 1, None);
+            let b = zore_channel_make(8, 1, None);
+            let mut frame = TestSelection::new(&[a, a, b], false);
+            let (registered, registration) = mpsc::channel();
+            let (done, completed) = mpsc::channel();
+            let mut first = true;
+            pool.spawn(move |context| {
+                if first {
+                    first = false;
+                    assert_eq!(frame.poll(context), None);
+                    registered.send(()).unwrap();
+                    return Poll::Pending;
+                }
+                let Some(index) = frame.poll(context) else {
+                    return Poll::Pending;
+                };
+                assert_eq!(
+                    frame.cases.iter().filter(|case| case.received != 0).count(),
+                    1
+                );
+                done.send(frame.values[index]).unwrap();
+                Poll::Ready
+            });
+            registration.recv_timeout(Duration::from_secs(10)).unwrap();
+            std::thread::scope(|scope| {
+                for (channel, value) in [(a as usize, 11i64), (b as usize, 29)] {
+                    scope.spawn(move || {
+                        let mut value = value;
+                        // SAFETY: the channel is live and holds i64 messages; capacity
+                        // allows the losing sender to buffer its value without blocking.
+                        unsafe {
+                            zore_channel_send(
+                                channel as *const Channel,
+                                (&mut value as *mut i64).cast(),
+                                None,
+                            )
+                        };
+                    });
+                }
+            });
+            let chosen = completed.recv_timeout(Duration::from_secs(10)).unwrap();
+            pool.idle();
+            let mut total = chosen;
+            // SAFETY: all tasks completed; queues contain at most the losing sender's i64.
+            unsafe {
+                for channel in [a, b] {
+                    let mut queues = (*channel).lock();
+                    assert!(queues.receivers.is_empty());
+                    assert!(queues.senders.is_empty());
+                    if let Some(message) = queues.buffer.pop_front() {
+                        let mut value = 0i64;
+                        message.move_to((&mut value as *mut i64).cast());
+                        total += value;
+                    }
+                    drop(queues);
+                    zore_channel_release(channel);
+                }
+            }
+            assert_eq!(total, 40);
+        }
+    }
+
+    #[test]
+    fn channel_poll_close_wakes_pending_send_and_receive() {
+        for send in [false, true] {
+            let pool = TestPool::new(1);
+            let channel = zore_channel_make(8, 0, None);
+            let mut frame = TestSelection::new(&[channel], send);
+            let (registered, registration) = mpsc::channel();
+            let (done, completed) = mpsc::channel();
+            let mut first = true;
+            pool.spawn(move |context| {
+                if first {
+                    first = false;
+                    assert_eq!(frame.poll(context), None);
+                    registered.send(()).unwrap();
+                    return Poll::Pending;
+                }
+                assert_eq!(frame.poll(context), Some(0));
+                assert_eq!(frame.cases[0].received, 0);
+                if send {
+                    assert_eq!(super::super::panic::take().as_deref(), Some(SEND_CLOSED));
+                } else {
+                    assert_eq!(frame.values[0], 0);
+                }
+                done.send(()).unwrap();
+                Poll::Ready
+            });
+            registration.recv_timeout(Duration::from_secs(10)).unwrap();
+            // SAFETY: the channel remains live until the task completes.
+            unsafe { zore_channel_close(channel) };
+            completed.recv_timeout(Duration::from_secs(10)).unwrap();
+            pool.idle();
+            // SAFETY: the poll task has completed and no other handle uses this channel.
+            unsafe { zore_channel_release(channel) };
+        }
     }
 }
