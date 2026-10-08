@@ -2,6 +2,10 @@ use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock, Weak};
 use std::task::{Wake, Waker};
+use std::time::{Duration, Instant};
+
+#[cfg(test)]
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use super::panic::{self, PanicState};
 
@@ -160,13 +164,18 @@ struct PoolState {
     workers: usize,
     blocked: usize,
     #[cfg(test)]
+    surplus_waits: usize,
+    #[cfg(test)]
     stopped: bool,
 }
 
 struct Pool {
     capacity: usize,
+    idle_grace: Duration,
     state: Mutex<PoolState>,
     ready: Condvar,
+    #[cfg(test)]
+    worker_starts: AtomicUsize,
     #[cfg(test)]
     finished: Condvar,
 }
@@ -182,10 +191,17 @@ struct Worker {
 
 impl Pool {
     fn new(capacity: usize) -> Arc<Self> {
+        Self::with_idle_grace(capacity, Duration::from_millis(250))
+    }
+
+    fn with_idle_grace(capacity: usize, idle_grace: Duration) -> Arc<Self> {
         let pool = Arc::new(Self {
             capacity,
+            idle_grace,
             state: Mutex::new(PoolState::default()),
             ready: Condvar::new(),
+            #[cfg(test)]
+            worker_starts: AtomicUsize::new(0),
             #[cfg(test)]
             finished: Condvar::new(),
         });
@@ -205,6 +221,8 @@ impl Pool {
         {
             panic::fail(b"cannot start a worker thread");
         }
+        #[cfg(test)]
+        self.worker_starts.fetch_add(1, Ordering::SeqCst);
     }
 
     fn enqueue(&self, task: Arc<Task>) {
@@ -240,6 +258,7 @@ impl Pool {
             });
         });
         let mut state = lock(&self.state);
+        let mut surplus_deadline = None;
         loop {
             #[cfg(test)]
             if state.stopped {
@@ -248,20 +267,38 @@ impl Pool {
                 return;
             }
             if let Some(task) = state.queue.pop_front() {
+                surplus_deadline = None;
                 drop(state);
                 task.run();
                 state = lock(&self.state);
                 continue;
             }
             if state.workers - state.blocked > self.capacity {
-                state.workers -= 1;
-                self.ready.notify_all();
-                return;
+                #[cfg(test)]
+                {
+                    state.surplus_waits += 1;
+                    self.finished.notify_all();
+                }
+                let deadline =
+                    *surplus_deadline.get_or_insert_with(|| Instant::now() + self.idle_grace);
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                if remaining.is_zero() {
+                    state.workers -= 1;
+                    self.ready.notify_all();
+                    return;
+                }
+                state = self
+                    .ready
+                    .wait_timeout(state, remaining)
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .0;
+            } else {
+                surplus_deadline = None;
+                state = self
+                    .ready
+                    .wait(state)
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
             }
-            state = self
-                .ready
-                .wait(state)
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
         }
     }
 }
@@ -335,6 +372,10 @@ pub(super) struct TestPool(Arc<Pool>);
 impl TestPool {
     pub(super) fn new(capacity: usize) -> Self {
         Self(Pool::new(capacity))
+    }
+
+    fn with_idle_grace(capacity: usize, idle_grace: Duration) -> Self {
+        Self(Pool::with_idle_grace(capacity, idle_grace))
     }
 
     pub(super) fn spawn(&self, body: impl FnMut(&mut Context) -> Poll + Send + 'static) -> Waker {
@@ -647,6 +688,45 @@ mod tests {
         pool.idle();
         until(|| lock(&pool.0.state).workers == 2);
         assert_eq!(lock(&pool.0.state).blocked, 0);
+        let (ran, rx) = mpsc::channel();
+        pool.spawn(move |_| {
+            ran.send(()).unwrap();
+            Poll::Ready
+        });
+        receive(&rx);
+        pool.idle();
+    }
+
+    #[test]
+    fn short_blocking_bursts_reuse_a_surplus_worker() {
+        let pool = TestPool::with_idle_grace(1, Duration::from_secs(3));
+        let scheduler = Arc::clone(&pool.0);
+        let (done, finished) = mpsc::channel();
+        pool.spawn(move |_| {
+            for _ in 0..64 {
+                let previous_waits = lock(&scheduler.state).surplus_waits;
+                let blocking = BlockingGuard::enter();
+                let (ran, completed) = mpsc::channel();
+                scheduler.spawn(Box::new(move |_| {
+                    ran.send(()).unwrap();
+                    Poll::Ready
+                }));
+                receive(&completed);
+                drop(blocking);
+                let deadline = Instant::now() + Duration::from_secs(10);
+                let mut state = lock(&scheduler.state);
+                while state.surplus_waits <= previous_waits {
+                    let remaining = deadline.saturating_duration_since(Instant::now());
+                    assert!(!remaining.is_zero(), "surplus worker did not become idle");
+                    state = scheduler.finished.wait_timeout(state, remaining).unwrap().0;
+                }
+            }
+            done.send(()).unwrap();
+            Poll::Ready
+        });
+        receive(&finished);
+        pool.idle();
+        assert_eq!(pool.0.worker_starts.load(Ordering::SeqCst), 2);
     }
 
     #[test]

@@ -125,9 +125,10 @@ blocked count under the task completion lock.
 When a worker blocks in a slot, task join, output operation, or a fallback
 timer/socket call on a target without a reactor, a thread-local
 guard tells the pool to start a replacement. Nested guards count the worker once.
-Replacement workers retire when workers resume and surplus capacity becomes idle;
-ordinary threads do not trigger pool compensation. Uninstrumented foreign
-blocking calls are not detected automatically.
+Surplus workers stay idle briefly so short blocking calls can reuse them, then
+retire if the pool still exceeds its base capacity. Ordinary threads do not
+trigger pool compensation. Uninstrumented foreign blocking calls are not
+detected automatically.
 
 The panic state is swapped into each polling worker for the duration of the poll
 and completed-frame destruction, then restored. A completed detached poll task
