@@ -41,7 +41,7 @@ not apply to that particular requirement, with the reason given in the cell.
 | §14.7 | A value being destroyed cannot be resurrected through `drop`. | unverified | [`Resolver::check_drop_signature`](../../compiler/src/resolve/resolver.rs#L471), [`ownership::checker`](../../compiler/src/ownership/checker.rs#L63) | N/A: prohibition has no valid resurrection case. | [moving out of custom-drop receiver is rejected](../../tests/ownership/ownership.rs#L134), but this is not a direct resurrection test. | Add a direct attempted escape from `drop` and assert its diagnostic. |
 | §14.8 | `defer` is undecided and is not required for resource safety. | blocked by an unresolved specification decision | N/A: no locked `defer` implementation requirement. | N/A: no accepted syntax to exercise. | N/A: no locked form to reject here. | Decide `defer` separately if proposed; automatic cleanup already has tests above. |
 
-## Implementation note: recursive owned types
+## Review-baseline note: recursive owned types
 
 [`Resolver::reject_self_containing_structs`](../../compiler/src/resolve/resolver.rs#L594)
 rejects `type Node struct { Children Array<Node> }` because drops are emitted
@@ -52,6 +52,14 @@ This is distinct from direct by-value recursion, which has no finite size and
 is rejected by [`name_errors_are_reported`](../../tests/typecheck/check.rs#L205)
 and [`self_containing_array_structs_are_rejected`](../../tests/typecheck/check.rs#L1545).
 This inventory neither relaxes the rejection nor proposes new syntax.
+
+Issue #51 follow-up: the implementation now accepts finite recursive ownership
+through `Array<T>` and maps, using cached out-of-line destruction and clone
+helpers. The paragraph above records the audit baseline, not the current
+restriction. Current invariants and limits are in
+[the architecture's recursive-type audit](../architecture.md#recursive-owned-types);
+the `recursive_*` tests in the type-check, ownership, and native suites cover
+the new support. The original validation counts below remain historical.
 
 ## Validation
 

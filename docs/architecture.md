@@ -383,7 +383,7 @@ are passed by reference so such views can be returned. Temporary
 `Array<T>` indexing takes no `Deref` step: its elements are the owning
 local's storage, so replacing the array conflicts with live views of it.
 
-Native code represents `Array<T>` as a `{ ptr, i64 }` descriptor over heap
+Native code represents `Array<T>` as a `{ ptr, i64, i64 }` descriptor over heap
 storage from the runtime's `zore_alloc`. Dropping it drops the elements in
 reverse index order with an IR loop, then calls `zore_free`. The drop helpers
 take addresses rather than MIR places so that loop can address elements by a
@@ -420,9 +420,10 @@ Clone (§10.7) has two forms. A declared custom `clone` is an ordinary method,
 validated at its declaration (shared receiver, no parameters, own type as the
 only result) and selected before any structural clone. Every other clone is
 `Callee::Clone`, one MIR call that borrows its argument and writes an owned
-value into its destination. Codegen (`codegen/clone.rs`) expands it inline per
-type: a Copy value is copied, a struct clones field by field, a fixed array or
-`Array<T>` clones element by element into fresh storage, and a map clones its
+value into its destination. Codegen (`codegen/clone.rs`) caches out-of-line
+helpers for non-Copy types: a Copy value is copied, a struct clones field by
+field, a fixed array or `Array<T>` clones element by element into fresh storage,
+and a map clones its
 values into a copy made by the runtime's `zore_map_clone_shape`. A custom clone
 of a non-Copy part is called with the part's address and scratch drop flags,
 then the pending-panic flag is checked; on a panic the parts already cloned are
@@ -501,6 +502,54 @@ The renderer shows the first line of a multi-line span and reports its extent.
 Terminal-cell width for wide Unicode glyphs is not yet measured; source offsets
 and reported scalar columns remain exact. This display choice may improve later
 without changing language semantics. No LLVM or runtime dependency is involved.
+
+### Recursive owned types
+
+Finite ownership recursion through `Array<T>` and map values is supported,
+including mutual recursion and fixed arrays or by-value fields between heap
+edges. The resolver rejects cycles made entirely of struct and fixed-array
+storage: these still have no finite layout. No source syntax or ownership
+rule changes are involved.
+
+The recursive-walker audit has the following boundaries:
+
+| Operation | Termination and ownership invariant |
+| --- | --- |
+| Type identity, names, LLVM layout | Named structs terminate type spelling; dynamic arrays/maps and handles have finite descriptors. Only by-value edges contribute to layout cycles. |
+| Copy/Move, shared retention, `needs_drop` | Arrays/maps are Move without traversing their contents; handles and views stop classification. HIR classification and inline retention traverse the acyclic by-value graph. The checker also uses a visited set while reporting invalid layouts. |
+| Field validity | Resolve every field type before checking contained views, function values, or independent task/channel/mutex storage. Rechecking the field syntax against complete types avoids declaration-order dependence. |
+| View, mutable-view, fixed-array, observing-drop predicates | Visited-type graph searches find any reachable witness, the least fixed point of these existential predicates. A cycle alone is not a witness; sibling fields remain explored. Slices and handles stop owned-content traversal. |
+| Region/provenance analysis | Loans and return/output contracts retain the existing finite, per-local may-sets and function fixpoint. Mutable-view paths expand only Copy structs/fixed arrays; dynamic owners move their existing loans rather than duplicating borrowed capabilities. |
+| Clone eligibility | Search every reachable non-Copy part for a blocker, stopping at a valid custom clone. Revisited types add no new obligation: recursive structural clonability is the greatest fixed point, with custom-drop-without-clone, tasks, and closures still blocking it. |
+| Drop flags, moves, zero values | Flags expand only by-value struct fields; each array/map has one live bit. Collection elements remain whole-value owners, and indexed extraction remains rejected. Empty descriptors terminate recursive zero construction. |
+| Destruction and clone generation | Cache one helper per needed type and register its identity before emitting its body; recursive edges become calls, not repeated compiler expansion. |
+
+`codegen/llvm.rs`'s drop helper receives the value and its existing flag block.
+For a flagged value, the caller clears its live bit before destruction. The helper
+runs custom `drop` first, then drops still-live fields in reverse order using
+their own flags. Collection elements receive fully initialized scratch flags,
+and collection storage is freed after its elements. Partial moves therefore
+retain the same field-level skipping; partially constructed values remain
+covered by the existing MIR temporaries and cleanup edges. Replacements keep
+their existing post-store panic checks and custom-destructor abort boundary.
+
+Clone helpers receive source and destination addresses. On failure, each helper
+destroys only its successfully initialized prefix and returns with panic status
+pending; its caller then cleans its own prefix. The destination becomes owned
+only after success. Custom clone precedence and Copy-field retention are
+unchanged. Helpers use ordinary stack scratch storage and do not suspend;
+async frames, task results, closure captures, and channel/mutex payloads reuse
+the same destruction machinery. No runtime ABI or dependency changes are needed.
+
+Runtime destruction and structural cloning still recurse on the native stack
+in proportion to value depth. They do **not** guarantee stack safety for
+arbitrarily deep trees. The native regression uses depth 256 and width 1,024
+with a 30-second execution deadline and leak checking. Type-check, ownership,
+and native regressions named `recursive_*` cover cycles, view provenance,
+custom-drop restrictions, zeros, moves/replacements, normal/error/panic cleanup,
+failed clones, and async/channel transfer. Existing restrictions on borrowed
+task/channel payloads, mutable-view cloning, map lookup of Move values, and
+indexed partial moves remain in force.
 
 ## MIR and native code generation
 
