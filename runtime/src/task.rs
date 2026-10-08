@@ -15,7 +15,6 @@ pub(super) struct State {
     pub(super) finished: bool,
     detached: bool,
     panic: Option<Vec<u8>>,
-    /// A fiber slot or polled task to resume when the task finishes.
     pub(super) waiter: Option<Waiter>,
     /// A task is waiting and counted as blocked for deadlock detection.
     pub(super) counted: bool,
@@ -101,12 +100,8 @@ fn complete(shared: &Shared, block: Block, id: u64) {
     }
 }
 
-/// Starts a compiler-generated poll entry on its result block. The entry owns its frame,
-/// registers waits through `context`, and destroys the frame when it returns Ready (1).
-///
 /// # Safety
-/// The block must come from zore_alloc(size); entry and drop_results must accept it. The
-/// entry must return 0 (Pending) or 1 (Ready), and may borrow context only during this call.
+/// Own a zore_alloc(size) block; callbacks accept it; entry returns 0/1 and borrows context only during polls.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn zore_task_spawn_poll(
     entry: PollCode,
@@ -132,12 +127,8 @@ pub unsafe extern "C" fn zore_task_spawn_poll(
     Box::into_raw(Box::new(Handle { shared, block }))
 }
 
-/// Polls a consumed task handle, registering the current task's waker if it is unfinished.
-/// Ready (1) consumes the handle and writes its result block; Pending (0) retains it.
-///
 /// # Safety
-/// handle is null or a live uniquely owned task handle; context is the current poll context;
-/// out is writable. On Pending the caller retains the handle for its next poll.
+/// Use a unique live or null handle, current context, and writable out; retain Pending handles until Ready.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn zore_task_poll(
     handle: *mut Handle,
@@ -145,7 +136,6 @@ pub unsafe extern "C" fn zore_task_poll(
     size: i64,
     out: *mut *mut u8,
 ) -> u8 {
-    // SAFETY: guaranteed by the caller.
     if let Some(handle_ref) = unsafe { handle.as_ref() } {
         let mut state = handle_ref.shared.lock();
         if !state.finished {
@@ -318,7 +308,7 @@ mod tests {
             Poll::Ready
         });
         rx.recv_timeout(Duration::from_secs(10)).unwrap();
-        // Only a replacement can run this job if the sole original worker is blocked in wait.
+        // Only a replacement can run while the sole original worker blocks.
         pool.spawn(move |_| {
             gate.wake();
             Poll::Ready

@@ -214,9 +214,8 @@ impl FunctionBuilder<'_, '_> {
         args: &[Operand],
         chosen: &str,
     ) {
-        // §19.14 requires unchosen send values to drop in reverse source order.
         for (position, kind, value, element, cursor) in settle.into_iter().rev() {
-            // Recompute on Ready; preparation temporaries do not dominate a resumed poll.
+            // Preparation values do not dominate resumed polls.
             let record = self.fresh();
             self.line(format!("{record} = getelementptr inbounds [{count} x {RECORD}], ptr {records}, i64 0, i64 {position}"));
             let was_chosen = self.fresh();
@@ -259,7 +258,6 @@ impl FunctionBuilder<'_, '_> {
         }
     }
 
-    /// Constructs channel records once, then resumes only the poll/settlement part.
     pub(super) fn suspend_channel(&mut self, state: usize, terminator: &Terminator) {
         let Terminator::Call {
             callee,

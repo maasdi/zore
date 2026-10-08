@@ -112,10 +112,10 @@ frames are abandoned at process exit, as fibers are today (spec §18.11).
 
 `waiter.rs` holds either an `Arc<Slot>` or a task `Waker`. Channel and select
 entries, mutex queues, task joins, reactor registrations, and helper completions
-now use this common wake target. Their blocking forms still create slots; poll
-forms of the operations belong to later slices. Fiber joins install a slot only
-after switching back to their worker, retaining the existing wake-before-park
-protocol. A slot blocks an OS thread only when no fiber is running.
+now use this common wake target. Their blocking forms still create slots; channels,
+task joins, and timers now have poll forms. Mutex and I/O poll forms belong to
+later Slice 4 PRs. Fiber joins install a slot only after switching back to their
+worker, retaining the existing wake-before-park protocol. A slot blocks an OS thread only when no fiber is running.
 
 When a poll worker blocks in a slot, task join, output operation, or a fallback
 timer/socket call on a target without a reactor, a thread-local
@@ -142,11 +142,11 @@ and an internal deadlock still reports "all tasks are asleep" with exit status 2
 HIR retains each function's async property, including the synthetic owning thunk
 for `go asyncFn(...)`. After ordinary ownership checking and drop insertion,
 `async_lowering::lower` identifies eligible async bodies and records each awaited
-call, task join, or channel/select wait by MIR block, preserving the call's source
-span, result places, and cleanup edges. The frontend still works without LLVM. Native async functions,
-direct mutex waits and native time/I/O waits retain fiber execution;
-fallback propagates through awaited async calls to a fixed point. A polled function
-can spawn and await a fiber task. Calls to plain helpers remain ordinary calls and
+call, task join, or channel/select/timer wait by MIR block, preserving the call's
+source span, result places, and cleanup edges. The frontend still works without
+LLVM. Native async functions, direct mutex waits, and native I/O waits retain fiber
+execution; fallback propagates through awaited async calls to a fixed point. A
+polled function can spawn and await a fiber task. Calls to plain helpers remain ordinary calls and
 can block with worker compensation.
 
 Each lowered function has a named heap frame, constructor, `poll(frame, context,
@@ -174,8 +174,7 @@ inside fiber fallback bodies. This temporary compatibility path is removed as th
 remaining waiting operations gain poll forms. Neither this path nor the persistent
 frame plan changes source-language syntax or ownership semantics. Frames are not
 shrunk by liveness, and suspended frames are abandoned at process exit; operation
-poll variants for time, mutexes, and I/O, and fiber removal remain for later Q32
-slices.
+poll variants for mutexes and I/O, and fiber removal remain for later Q32 slices.
 
 ### Channel and select polls (Q32 slice 4, first PR)
 
@@ -205,6 +204,37 @@ Close, zero-value channels, default arms, rotating ready-case selection, panic
 cleanup, and deadlock detection use the same rules as blocking execution. Detached
 tasks continue; pending operation records, like pending frames, are abandoned at
 process exit under the existing task-exit semantics.
+
+### Timer and reactor polls (Q32 slice 4, second PR)
+
+Native `time.Sleep` calls in eligible async bodies are explicit suspension points,
+without `await`. The compiler evaluates milliseconds once, saves the operation in
+the frame, and resumes only `zore_reactor_poll`. Nonpositive values use a null,
+immediately Ready operation. Positive values register a timer; Ready consumes the
+caller's operation reference before following the original MIR continuation and
+panic edge. Native synchronous shims remain available for plain and fallback
+functions. `time.After` keeps its public API and channel behavior, while its private
+`fire` task is async and uses the timer poll path.
+
+The reactor's timer and descriptor registrations hold `Arc<Operation>` completion
+records with an atomic Ready flag and a slot or task waker. Event delivery removes
+the registration under the reactor lock, then publishes Ready before waking,
+outside that lock. Readiness and timeout events compete for the same token, so one
+wins; the operation also coalesces duplicate completions. A Pending poll registers
+nothing and does not retain a context pointer. The scheduler latches a wake before
+Pending returns, and external waits contribute no internal blocked count. Once
+Ready, the caller releases its owned reference. Stale deadline heap entries carry
+only timestamps/tokens, and are pruned when they reach the heap's head.
+
+Blocking timers and descriptor waits share these completion records. Descriptor
+registration and arming occur under the reactor lock so a due deadline cannot
+consume a waiter before arming. An arming error publishes Ready immediately;
+the next socket attempt reports the error as before. Rust `start_wait_fd` provides
+the poll registration foundation for the later I/O PR; socket operations still
+use their blocking forms here. Linux uses epoll, macOS uses kqueue. Other targets
+keep blocking socket operations and start a helper timer thread for each polled
+sleep, with the existing compensation guard for plain sleeps. No dependencies or
+source-language contracts change.
 
 | Area | Responsibility | Spec |
 | --- | --- | --- |

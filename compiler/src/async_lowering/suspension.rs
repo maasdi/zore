@@ -5,6 +5,7 @@ pub enum Suspension {
     Call(FunctionId),
     Task,
     Channel,
+    Sleep,
 }
 
 pub(super) fn needs_fiber(package: &crate::hir::Package, callee: &crate::mir::Callee) -> bool {
@@ -14,10 +15,9 @@ pub(super) fn needs_fiber(package: &crate::hir::Package, callee: &crate::mir::Ca
         Callee::Function(id) => {
             let function = package.function(*id);
             function.native
-                && (function.name == "zore/time.Sleep"
-                    || ["zore/io.", "zore/os.", "zore/net."]
-                        .iter()
-                        .any(|prefix| function.name.starts_with(prefix)))
+                && ["zore/io.", "zore/os.", "zore/net."]
+                    .iter()
+                    .any(|prefix| function.name.starts_with(prefix))
         }
         _ => false,
     }

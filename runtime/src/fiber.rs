@@ -470,8 +470,7 @@ mod imp {
                         enqueue(Ptr(fiber));
                     } else {
                         let slot = Arc::new(Slot::internal());
-                        // The join is already counted by wait_for. settle only installs the
-                        // parked fiber; task completion owns removing the blocked count.
+                        // Task completion removes the join count; slot settlement must not count it twice.
                         slot.settle(Waiter(Ptr(fiber)));
                         state.waiter = Some(slot.into());
                     }

@@ -1,5 +1,3 @@
-//! The wake target shared by blocking and (future) poll forms of runtime operations.
-
 use std::sync::Arc;
 use std::task::Waker;
 

@@ -1,6 +1,3 @@
-//! Native representation of the async-lowering plan. All storage whose address can survive
-//! Pending (locals, flags, closure environments, and scratch slots) lives in the heap frame.
-
 use std::fmt::Write;
 
 use super::llvm::{FunctionBuilder, Module};
@@ -65,7 +62,7 @@ impl Module<'_> {
         };
         f.emit_poll();
         let poll = std::mem::take(&mut f.out);
-        // Poll emission discovers scratch storage; the constructor initializes the final frame.
+        // Emit poll first to discover scratch fields before initializing the frame.
         f.polling = false;
         f.emit_constructor();
         let constructor = std::mem::take(&mut f.out);
@@ -229,6 +226,10 @@ impl FunctionBuilder<'_, '_> {
         else {
             unreachable!()
         };
+        if kind == Suspension::Sleep {
+            self.suspend_sleep(state, args, destinations, *target, *unwind);
+            return;
+        }
         let start = match kind {
             Suspension::Call(id) => {
                 let args = self.arguments(args);
@@ -238,7 +239,7 @@ impl FunctionBuilder<'_, '_> {
                 child
             }
             Suspension::Task => self.value(&args[0]),
-            Suspension::Channel => unreachable!(),
+            Suspension::Channel | Suspension::Sleep => unreachable!(),
         };
         self.line(format!("store ptr {start}, ptr %pending.slot"));
         self.line(format!("br label %resume.{state}"));
@@ -254,7 +255,7 @@ impl FunctionBuilder<'_, '_> {
                 .task_results(self.operand_ty(&args[0]))
                 .unwrap()
                 .to_vec(),
-            Suspension::Channel => unreachable!(),
+            Suspension::Channel | Suspension::Sleep => unreachable!(),
         };
         let result_ty = if results.is_empty() {
             "{}".to_string()
@@ -283,7 +284,7 @@ impl FunctionBuilder<'_, '_> {
                 let size = self.byte_size(&block_ty, "1");
                 self.line(format!("{ready} = call i8 @zore_task_poll(ptr {child}, ptr %context, i64 {size}, ptr {output})"));
             }
-            Suspension::Channel => unreachable!(),
+            Suspension::Channel | Suspension::Sleep => unreachable!(),
         }
         let finished = self.fresh();
         self.line(format!("{finished} = icmp ne i8 {ready}, 0"));
@@ -307,7 +308,6 @@ impl FunctionBuilder<'_, '_> {
                 self.line(format!(
                     "{slot} = getelementptr inbounds {block_ty}, ptr {block}, i32 0, i32 1"
                 ));
-                // Extract before freeing the result block.
                 let loaded = self.fresh();
                 self.line(format!("{loaded} = load {result_ty}, ptr {slot}"));
                 let size = self.byte_size(&block_ty, "1");
@@ -317,7 +317,7 @@ impl FunctionBuilder<'_, '_> {
                 self.call_continuation(result, destinations, *target, *unwind);
                 return;
             }
-            Suspension::Channel => unreachable!(),
+            Suspension::Channel | Suspension::Sleep => unreachable!(),
         };
         self.line("store ptr null, ptr %pending.slot");
         let result = (!results.is_empty()).then(|| {
@@ -326,6 +326,40 @@ impl FunctionBuilder<'_, '_> {
             (result_ty, loaded)
         });
         self.call_continuation(result, destinations, *target, *unwind);
+    }
+
+    fn suspend_sleep(
+        &mut self,
+        state: usize,
+        args: &[Operand],
+        destinations: &[Option<Place>],
+        target: mir::BlockId,
+        unwind: Option<mir::BlockId>,
+    ) {
+        let milliseconds = self.value(&args[0]);
+        let operation = self.fresh();
+        self.line(format!(
+            "{operation} = call ptr @zore_native_time_sleep_start(i64 {milliseconds}, ptr %context)"
+        ));
+        self.line(format!("store ptr {operation}, ptr %pending.slot"));
+        self.line(format!("br label %resume.{state}"));
+        self.out.push_str(&format!("resume.{state}:\n"));
+        let operation = self.fresh();
+        self.line(format!("{operation} = load ptr, ptr %pending.slot"));
+        let ready = self.fresh();
+        self.line(format!(
+            "{ready} = call i8 @zore_reactor_poll(ptr {operation})"
+        ));
+        let finished = self.fresh();
+        self.line(format!("{finished} = icmp ne i8 {ready}, 0"));
+        let (done, pending) = (self.label(), self.label());
+        self.line(format!("br i1 {finished}, label %{done}, label %{pending}"));
+        self.out.push_str(&format!("{pending}:\n"));
+        self.line(format!("store i32 {}, ptr %frame", state + 1));
+        self.line("ret i8 0");
+        self.out.push_str(&format!("{done}:\n"));
+        self.line("store ptr null, ptr %pending.slot");
+        self.call_continuation(None, destinations, target, unwind);
     }
 
     pub(super) fn async_terminator(&mut self, terminator: &Terminator) -> bool {

@@ -77,7 +77,6 @@ struct Exchange {
     case: usize,
 }
 
-/// A task blocked in a send, a receive, or a `select`; its waiter wakes when one entry completes.
 struct Waiting {
     waiter: Waiter,
     claimed: AtomicBool,
@@ -470,7 +469,6 @@ pub unsafe extern "C" fn zore_select(cases: *mut SelectCase, count: i64, has_def
     // SAFETY: guaranteed by the caller.
     let cases = unsafe { std::slice::from_raw_parts_mut(cases, count) };
     let slot = Arc::new(Slot::internal());
-    // SAFETY: guaranteed by the caller.
     match unsafe { start_select(cases, has_default, Arc::clone(&slot).into()) } {
         Ok(index) => index,
         Err(waiting) => {
@@ -481,8 +479,6 @@ pub unsafe extern "C" fn zore_select(cases: *mut SelectCase, count: i64, has_def
     }
 }
 
-/// Registers once under the channel locks, or completes an immediately ready case.
-///
 /// # Safety
 /// Case pointers and channel handles must remain valid through completion.
 unsafe fn start_select(
@@ -577,8 +573,6 @@ unsafe fn start_select(
     Err(waiting)
 }
 
-/// Removes all registrations before settling the winning case's ownership.
-///
 /// # Safety
 /// Cases must be the same live records supplied to `start_select`.
 unsafe fn finish_select(cases: &mut [SelectCase], waiting: &Arc<Waiting>) -> i64 {
@@ -621,8 +615,6 @@ unsafe fn finish_select(cases: &mut [SelectCase], waiting: &Arc<Waiting>) -> i64
     index as i64
 }
 
-/// Persistent channel/select operation. The generated heap frame owns the records and
-/// their value storage; this record owns the one queue registration until Ready.
 pub struct Selection {
     cases: *mut SelectCase,
     count: usize,
@@ -630,12 +622,8 @@ pub struct Selection {
     ready: Option<i64>,
 }
 
-/// Starts a send, receive, or select without parking a worker. A single-case record is
-/// used for ordinary sends and receives, so all poll forms share select's winner logic.
-///
 /// # Safety
-/// `cases` holds `count` valid records; their channels and buffers must remain live and
-/// unmoved until `zore_channel_poll` returns Ready. `context` is the current task context.
+/// Keep count valid cases and their channel/value storage pinned through Ready; context must be current.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn zore_channel_start(
     cases: *mut SelectCase,
@@ -644,9 +632,7 @@ pub unsafe extern "C" fn zore_channel_start(
     context: *mut Context,
 ) -> *mut Selection {
     let count = usize::try_from(count).unwrap_or(0);
-    // SAFETY: guaranteed by the caller.
     let records = unsafe { std::slice::from_raw_parts_mut(cases, count) };
-    // SAFETY: guaranteed by the caller.
     let waiter = unsafe { &*context }.waker().clone().into();
     // SAFETY: records and their storage stay pinned in the caller's frame.
     let result = unsafe { start_select(records, has_default, waiter) };
@@ -662,24 +648,18 @@ pub unsafe extern "C" fn zore_channel_start(
     }))
 }
 
-/// Polls an operation; Pending preserves it, Ready consumes it and writes the selected
-/// case index (or -1 for default). Completion removes stale registrations before return.
-///
 /// # Safety
-/// `operation` is a live operation from `zore_channel_start`, polled by one task at a
-/// time. Its records remain valid, `context` is current, and `out` holds one writable i64.
+/// Poll one live operation serially with pinned cases, current context, and writable i64 out; Ready consumes it.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn zore_channel_poll(
     operation: *mut Selection,
     context: *mut Context,
     out: *mut i64,
 ) -> u8 {
-    // SAFETY: guaranteed by the caller.
     let selection = unsafe { &*operation };
     if let Some(waiting) = &selection.waiting
         && waiting.exchange().outcome == Outcome::Pending
     {
-        // SAFETY: guaranteed by the caller. Wake-before-Pending is latched by the scheduler.
         unsafe { &mut *context }.pending_internal();
         return 0;
     }
@@ -695,7 +675,6 @@ pub unsafe extern "C" fn zore_channel_poll(
             unsafe { finish_select(records, selection.waiting.as_ref().unwrap()) }
         }
     };
-    // SAFETY: guaranteed by the caller.
     unsafe { out.write(index) };
     1
 }
@@ -799,15 +778,13 @@ mod tests {
         assert!(completed.recv_timeout(Duration::from_secs(10)).unwrap() < 8);
         pool.idle();
     }
-    /// The ABI requires records and value buffers to stay pinned until Ready.
     struct TestSelection {
         values: Box<[i64]>,
         cases: Vec<SelectCase>,
         operation: *mut Selection,
     }
 
-    // SAFETY: storage is heap allocated and never resized; only its owning poll task
-    // accesses it. Channel handles remain live until the task completes.
+    // SAFETY: storage stays pinned with one poll owner; channel handles outlive it.
     unsafe impl Send for TestSelection {}
 
     impl TestSelection {
@@ -870,7 +847,7 @@ mod tests {
                 assert_eq!(frame.poll(context), None);
                 assert_eq!(frame.poll(context), None);
                 registered.send(()).unwrap();
-                // Force the wake after poll reports Pending, but before this poll returns.
+                // Force the wake before Pending returns.
                 release.recv_timeout(Duration::from_secs(10)).unwrap();
                 return Poll::Pending;
             }
@@ -925,8 +902,7 @@ mod tests {
                 for (channel, value) in [(a as usize, 11i64), (b as usize, 29)] {
                     scope.spawn(move || {
                         let mut value = value;
-                        // SAFETY: the channel is live and holds i64 messages; capacity
-                        // allows the losing sender to buffer its value without blocking.
+                        // SAFETY: the live channel stores i64; capacity lets a losing send buffer without blocking.
                         unsafe {
                             zore_channel_send(
                                 channel as *const Channel,

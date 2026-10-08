@@ -12,8 +12,7 @@ struct Counts {
     blocked: usize,
 }
 
-// Read both counts under one lock: combining independent atomic snapshots can report a
-// deadlock while a task is waking and another finishes on a different worker.
+// Keep live and blocked counts coherent to avoid false deadlocks.
 static COUNTS: Mutex<Counts> = Mutex::new(Counts {
     running: 0,
     blocked: 0,
