@@ -15,6 +15,7 @@ fn write_line(text: &[u8]) {
     line.extend_from_slice(text);
     line.push(b'\n');
     // Hold the lock for the whole line and flush, so write failures are observed.
+    let _blocking = super::scheduler::BlockingGuard::enter();
     let mut stdout = std::io::stdout().lock();
     if stdout
         .write_all(&line)

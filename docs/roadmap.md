@@ -56,6 +56,13 @@ the migration is pending on a host with Rust and clang installed.
 
 ## Next implementation session
 
+Q32 slice 2 adds the poll scheduler and common slot/task waiter foundation beside
+fibers, including worker compensation for blocking runtime calls, task-local panic
+state, coherent deadlock counts, and focused wakeup/concurrency regression tests.
+No compiler state-machine lowering or poll variants of waiting operations are
+implemented yet. Slice 3 is next; generated Zore tasks continue using fibers until
+the later migration slices (`docs/proposals/async-state-machines.md`).
+
 The refactor/runtime migration baseline is validated (see above). Its first CI
 run failed on rustfmt drift and on a native test that declared `var` without
 the initializer that the specification requires; both were fixed. The

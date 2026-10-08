@@ -5,6 +5,7 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::time::Duration;
 
 use super::fiber::Slot;
+use super::waiter::Waiter;
 
 type Job = Box<dyn FnOnce() + Send>;
 
@@ -70,7 +71,7 @@ fn submit(job: Job) {
 pub(super) fn run<R: Send + 'static>(work: impl FnOnce() -> R + Send + 'static) -> R {
     let slot = Arc::new(Slot::default());
     let result = Arc::new(Mutex::new(None));
-    let (finished, output) = (Arc::clone(&slot), Arc::clone(&result));
+    let (finished, output) = (Waiter::from(Arc::clone(&slot)), Arc::clone(&result));
     submit(Box::new(move || {
         let value = work();
         *output

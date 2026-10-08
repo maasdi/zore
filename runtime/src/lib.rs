@@ -25,6 +25,8 @@ mod net;
 mod panic;
 #[path = "reactor.rs"]
 mod reactor;
+#[path = "scheduler.rs"]
+pub mod scheduler;
 #[path = "strconv.rs"]
 mod strconv;
 #[path = "string.rs"]
@@ -35,6 +37,8 @@ mod strings;
 mod sys;
 #[path = "task.rs"]
 mod task;
+#[path = "waiter.rs"]
+mod waiter;
 
 pub fn finish() {
     let tasks_running = task::running() > 0;

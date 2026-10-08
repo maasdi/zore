@@ -47,6 +47,7 @@ mod imp {
     use std::time::{Duration, Instant};
 
     use super::super::fiber::Slot;
+    use super::super::waiter::Waiter;
 
     const WAKE_TOKEN: u64 = 0;
     const BATCH: usize = 64;
@@ -273,7 +274,7 @@ mod imp {
     #[derive(Default)]
     struct State {
         next: u64,
-        waiters: HashMap<u64, Arc<Slot>>,
+        waiters: HashMap<u64, Waiter>,
         timers: BinaryHeap<Reverse<(Instant, u64)>>,
     }
 
@@ -384,7 +385,7 @@ mod imp {
             let mut state = reactor.lock();
             let token = state.next;
             state.next += 1;
-            state.waiters.insert(token, Arc::clone(&slot));
+            state.waiters.insert(token, Arc::clone(&slot).into());
             let earliest = state
                 .timers
                 .peek()
@@ -407,7 +408,7 @@ mod imp {
             let mut state = reactor.lock();
             let token = state.next;
             state.next += 1;
-            state.waiters.insert(token, Arc::clone(&slot));
+            state.waiters.insert(token, Arc::clone(&slot).into());
             let earliest = deadline.is_some_and(|when| {
                 let first = state
                     .timers
@@ -435,6 +436,7 @@ mod imp {
     use std::time::Duration;
 
     pub fn sleep(milliseconds: u64) {
+        let _blocking = super::super::scheduler::BlockingGuard::enter();
         std::thread::sleep(Duration::from_millis(milliseconds));
     }
 

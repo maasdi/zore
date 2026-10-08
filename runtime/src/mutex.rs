@@ -4,6 +4,7 @@ use std::sync::{Arc, Mutex as Lock, MutexGuard};
 
 use super::alloc::{zore_alloc, zore_free};
 use super::fiber::Slot;
+use super::waiter::Waiter;
 
 type Destroy = unsafe extern "C" fn(*mut u8);
 
@@ -17,7 +18,7 @@ pub(super) fn live_mutexes() -> usize {
 struct State {
     locked: bool,
     poisoned: bool,
-    waiters: VecDeque<Arc<Slot>>,
+    waiters: VecDeque<Waiter>,
 }
 
 /// The shared cell behind every `Mutex<T>` handle: one value and the lock that guards it.
@@ -126,7 +127,7 @@ pub unsafe extern "C" fn zore_mutex_lock(cell: *const Cell) -> *mut u8 {
         return cell.value;
     }
     let slot = Arc::new(Slot::internal());
-    state.waiters.push_back(Arc::clone(&slot));
+    state.waiters.push_back(Arc::clone(&slot).into());
     drop(state);
     slot.park();
     // The lock was handed to this task, unless the mutex was poisoned meanwhile.
