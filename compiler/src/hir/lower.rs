@@ -1,4 +1,5 @@
 mod closure_kind;
+mod method_value;
 mod spawn;
 
 use std::collections::{HashMap, HashSet};
@@ -3148,6 +3149,11 @@ impl<'a> Checker<'a> {
             }
             Value::Typed(expr) => self.single_value(expr)?,
         };
+        if let Some(strukt) = self.types.struct_id(base.ty())
+            && let Some(&method) = self.res.methods.get(&(strukt, name.text.clone()))
+        {
+            return self.method_value(base, method, name, span);
+        }
         let (field, ty) = self.field_of(base.ty(), name)?;
         Some(Value::Typed(typed(
             ExprKind::Field {

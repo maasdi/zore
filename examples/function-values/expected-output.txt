@@ -7,3 +7,5 @@ drop job
 42
 drop owned
 6
+3
+3

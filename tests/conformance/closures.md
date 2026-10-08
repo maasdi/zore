@@ -168,8 +168,13 @@ Executable counterparts are in `tests/typecheck/check.rs`
 
 ## Method values (§16.2)
 
-Executable counterparts land with the implementation of Q34; until then these
-rows are pending and do not count as passing tests.
+Executable counterparts are in `tests/typecheck/check.rs`
+(`method_values_close_over_their_receivers`), `tests/ownership/ownership.rs`
+(`method_values_hold_their_receivers_like_closures`), `tests/packages/packages.rs`
+(`exported_methods_become_function_values_across_packages` and the unexported
+case in `unexported_names_cannot_be_used_from_another_package`), and
+`tests/codegen/native.rs` (`method_values_call_the_method_on_the_captured_receiver`
+and `method_values_destroy_an_owned_receiver_exactly_once`).
 
 | Scenario | Expected result |
 | --- | --- |

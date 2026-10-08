@@ -69,10 +69,13 @@ impl Checker<'_> {
 
     fn is_call_once(&self, function: FunctionId) -> bool {
         let index = function.0 as usize - self.res.functions.len();
-        self.closures
-            .get(index)
-            .and_then(Option::as_ref)
-            .is_some_and(|closure| closure.call_once)
+        match self.closures.get(index) {
+            Some(closure) => closure.as_ref().is_some_and(|closure| closure.call_once),
+            None => self
+                .generated_functions
+                .get(index - self.closures.len())
+                .is_some_and(|generated| generated.call_once),
+        }
     }
 
     fn block_escapes(&self, block: &mut hir::Block, escapes: &mut Escapes) {
@@ -304,6 +307,11 @@ impl Checker<'_> {
             .closures
             .iter()
             .map(|closure| closure.as_ref().is_some_and(|closure| closure.call_once))
+            .chain(
+                self.generated_functions
+                    .iter()
+                    .map(|generated| generated.call_once),
+            )
             .collect();
         let declared = self.res.functions.len();
         for root in stmt_exprs(stmt) {

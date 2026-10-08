@@ -117,6 +117,20 @@ fn exported_functions_types_methods_and_constants_work_across_packages() {
 }
 
 #[test]
+fn exported_methods_become_function_values_across_packages() {
+    let main = main_with(
+        IMPORT_SHAPES,
+        "let c = shapes.Circle{Radius: 2}
+        let name = c.Name
+        println(name())
+        let rect = shapes.NewRect(2, 3)
+        let size = rect.Size
+        println(size())",
+    );
+    accepts(&with_shapes(&main));
+}
+
+#[test]
 fn package_functions_convert_to_function_values() {
     let main = main_with(
         IMPORT_SHAPES,
@@ -177,6 +191,10 @@ fn unexported_names_cannot_be_used_from_another_package() {
         ),
         (
             "let c = shapes.Circle{Radius: 1}\nprintln(c.secret())",
+            "method `secret` of `shapes.Circle` is not exported",
+        ),
+        (
+            "let c = shapes.Circle{Radius: 1}\nlet f = c.secret\n_ = f",
             "method `secret` of `shapes.Circle` is not exported",
         ),
     ] {

@@ -1771,3 +1771,57 @@ fn a_borrowing_closure_still_cannot_outlive_its_captures() {
         "`n` does not live long enough",
     );
 }
+
+#[test]
+fn method_values_hold_their_receivers_like_closures() {
+    let declarations = "type Counter struct { N int }
+        func (c Counter) read() int { return c.N }
+        func (c mut Counter) bump() { c.N += 1 }
+        func (c own Counter) finish() int { return c.N }
+        type Res struct { Name string }
+        func (r mut Res) drop() {}
+        func (r Res) name() string { return r.Name }
+        func (r own Res) finish() string { return r.Name }
+        func apply(f func() int) int { return f() }
+        func made() func() string {
+            let r = Res{Name: \"made\"}
+            return r.name
+        }";
+    let with = |stmts: &str| program(&format!("{declarations}\nfunc entry() {{\n{stmts}\n}}"));
+    accepts(&with(
+        "var counter = Counter{N: 1}
+        let read = counter.read
+        println(read())
+        let bump = counter.bump
+        bump()
+        println(apply(counter.read))
+        let done = counter.finish
+        println(done())
+        let f = made()
+        println(f())",
+    ));
+    for (stmts, message) in [
+        (
+            "var c = Counter{N: 1}\nlet b = c.bump\nprintln(c.N)\nb()",
+            "while it is mutably borrowed",
+        ),
+        (
+            "var c = Counter{N: 1}\nlet r = c.read\nc.N = 2\nprintln(r())",
+            "while it is borrowed",
+        ),
+        (
+            "let r = Res{Name: \"a\"}\nlet d = r.finish\nprintln(d())\nprintln(d())",
+            "use of moved value `d`",
+        ),
+        (
+            "let r = Res{Name: \"a\"}\nlet d = r.finish\nprintln(r.Name)\nprintln(d())",
+            "use of moved value",
+        ),
+        (
+            "let r = Res{Name: \"a\"}\nlet n = r.name\nlet moved = r\nprintln(n())",
+            "borrowed",
+        ),
+    ] {
+        rejects(&with(stmts), message);
+    }
+}

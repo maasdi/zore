@@ -3858,3 +3858,68 @@ async func parent(id int) {
         rejects(&task_program(decls), message);
     }
 }
+
+#[test]
+fn method_values_close_over_their_receivers() {
+    let prelude = "type Counter struct { N int }
+func (c Counter) read() int { return c.N }
+func (c Counter) add(k int) int { return c.N + k }
+func (c mut Counter) bump() { c.N += 1 }
+func (c own Counter) finish() int { return c.N }
+type Holder struct { Inner Counter }
+type Res struct { Name string }
+func (r mut Res) drop() {}
+func (r Res) name() string { return r.Name }
+func (r mut Res) rename() { r.Name = \"x\" }
+async func (c Counter) load() int { return c.N }
+func make() Counter { return Counter{N: 1} }
+func apply(f func() int) int { return f() }
+";
+    let with = |body: &str| program(&format!("{prelude}\nfunc entry() {{\n{body}\n}}"));
+    accepts(&with(
+        "var counter = Counter{N: 1}
+let read = counter.read
+let add = counter.add
+println(read() + add(1))
+let bump = counter.bump
+bump()
+println(apply(counter.read))
+let holder = Holder{Inner: counter}
+let inner = holder.Inner.read
+println(inner())
+let done = counter.finish
+println(done())
+let again = Counter{N: 2}
+let spawned = again.read
+let task = go spawned()
+_ = task",
+    ));
+    for (body, message) in [
+        (
+            "let c = Counter{N: 1}\nlet b = c.bump\nb()",
+            "cannot pass immutable binding `c` as a `mut` argument",
+        ),
+        (
+            "let f = make().read\n_ = f",
+            "the receiver of a method value must be a local or a field of a local",
+        ),
+        (
+            "let c = Counter{N: 1}\nlet f = c.load\n_ = f",
+            "an `async` method cannot be used as a value",
+        ),
+        (
+            "let r = Res{Name: \"a\"}\nlet f = r.drop\n_ = f",
+            "the `drop` method cannot be used as a value",
+        ),
+        (
+            "var c = Counter{N: 1}\nlet b = c.bump\nlet t = go b()\nt.wait()",
+            "a spawned closure cannot change `c`",
+        ),
+        (
+            "let r = Res{Name: \"a\"}\nlet n = r.nme\n_ = n",
+            "no field `nme`",
+        ),
+    ] {
+        rejects(&with(body), message);
+    }
+}

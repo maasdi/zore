@@ -4,6 +4,18 @@ type Resource struct {
     Name string
 }
 
+type Counter struct {
+    N int
+}
+
+func (c Counter) read() int {
+    return c.N
+}
+
+func (c mut Counter) bump() {
+    c.N += 1
+}
+
 func (r mut Resource) drop() {
     println("drop " + r.Name)
 }
@@ -18,6 +30,10 @@ func multiply(a int, b int) int {
 
 func apply(op func(int, int) int, x int, y int) int {
     return op(x, y)
+}
+
+func call(f func() int) int {
+    return f()
 }
 
 func consume(r own Resource) {
@@ -58,4 +74,13 @@ func main() {
     let handler = func() int { return owned.Name.len() }
     let fourth = go runWorker(handler)
     println(fourth.wait())
+
+    // A method used as a value is a closure over its receiver.
+    var counter = Counter{N: 1}
+    let bump = counter.bump
+    bump()
+    bump()
+    let read = counter.read
+    println(read())
+    println(call(counter.read))
 }

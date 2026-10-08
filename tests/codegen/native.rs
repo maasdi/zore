@@ -6578,3 +6578,89 @@ func main() {
         "5\n",
     );
 }
+
+#[test]
+fn method_values_call_the_method_on_the_captured_receiver() {
+    prints(
+        "package main
+
+type Counter struct { N int }
+
+func (c Counter) read() int { return c.N }
+func (c mut Counter) bump() { c.N += 1 }
+func (c own Counter) finish() int { return c.N * 100 }
+func (c Counter) add(k int) int { return c.N + k }
+
+type Holder struct { Inner Counter }
+
+func apply(f func() int) int { return f() }
+
+func main() {
+    var counter = Counter{N: 1}
+    let read = counter.read
+    println(read())
+    let bump = counter.bump
+    bump()
+    bump()
+    println(counter.read())
+    let add = counter.add
+    println(add(10))
+    println(apply(counter.read))
+    let holder = Holder{Inner: Counter{N: 5}}
+    let inner = holder.Inner.read
+    println(inner())
+    let done = counter.finish
+    println(done())
+    let again = Counter{N: 9}
+    let read9 = again.read
+    let task = go read9()
+    println(task.wait())
+}
+",
+        "1\n3\n13\n3\n5\n300\n9\n",
+    );
+}
+
+#[test]
+fn method_values_destroy_an_owned_receiver_exactly_once() {
+    prints(
+        "package main
+
+type Res struct { Name string }
+
+func (r mut Res) drop() { println(\"drop \" + r.Name) }
+
+func (r Res) name() string { return r.Name }
+
+func (r own Res) finish() string {
+    println(\"finish \" + r.Name)
+    return r.Name
+}
+
+func made() func() string {
+    let r = Res{Name: \"made\"}
+    return r.name
+}
+
+func main() {
+    let one = Res{Name: \"one\"}
+    let done = one.finish
+    println(done())
+
+    let two = Res{Name: \"two\"}
+    let unused = two.finish
+
+    let f = made()
+    println(f())
+    println(f())
+
+    let three = Res{Name: \"three\"}
+    let n = three.name
+    let t = go n()
+    println(t.wait())
+    println(\"end\")
+}
+",
+        "finish one\ndrop one\none\nmade\nmade\ndrop three\nthree\nend\ndrop made\ndrop two\n",
+    );
+}
