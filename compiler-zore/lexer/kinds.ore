@@ -18,12 +18,14 @@ const SeparatorExplicit = 1
 const SeparatorNewline = 2
 const SeparatorEof = 3
 
+// Detail is the base of an integer, the kind of a separator, or the code point of a rune.
+// Text is the decoded value of a string or rune literal.
 type Token struct {
     Kind   int
     Start  int
     End    int
     Detail int
-    Values Array<int>
+    Text   string
 }
 
 type Problem struct {

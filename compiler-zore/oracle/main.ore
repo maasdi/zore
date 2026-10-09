@@ -5,8 +5,8 @@ import "zore/os"
 import "zore/strconv"
 import "zore/strings"
 
-// Reads `cases.bin` (a decimal byte count, a newline, then that many bytes, repeated)
-// and prints each case's records followed by `done`.
+// Reads `cases.bin` (a decimal byte count, a space, a mode letter, a newline, then that
+// many bytes, repeated) and prints each case's records followed by `done`.
 func main() {
     let data, err = os.ReadBytes("cases.bin")
     if err != nil {
@@ -16,11 +16,11 @@ func main() {
     var pos = 0
     for pos < data.len() {
         var length = 0
-        for data[pos] != 10 {
+        for data[pos] != 32 {
             length = length * 10 + int(data[pos]) - 48
             pos += 1
         }
-        pos += 1
+        pos += 3
         let text, invalid = strings.FromBytes(data[pos:pos + length])
         if invalid != nil {
             println("invalid-utf8\ndone")
@@ -65,10 +65,10 @@ func tokenRecord(token lexer.Token, text string) string {
         return "float"
     }
     if kind == lexer.KindString {
-        return "string:" + codePoints(token.Values[:])
+        return "string:" + byteList(token.Text)
     }
     if kind == lexer.KindRune {
-        return "rune:" + strconv.Itoa(token.Values[0])
+        return "rune:" + strconv.Itoa(token.Detail)
     }
     if kind == lexer.KindMalformed {
         return "malformed"
@@ -91,10 +91,10 @@ func tokenRecord(token lexer.Token, text string) string {
     return "eof"
 }
 
-func codePoints(values []int) string {
+func byteList(text string) string {
     var parts = Array<string>{}
-    for value in values {
-        parts.push(strconv.Itoa(value))
+    for var i = 0; i < text.len(); i += 1 {
+        parts.push(strconv.Itoa(int(text[i])))
     }
     return strings.Join(parts[:], ".")
 }

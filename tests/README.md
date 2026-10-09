@@ -10,7 +10,13 @@ rows of the conformance documents below. `tests/selfhost/lexer.rs` builds the
 Zore lexer in `compiler-zore/` and compares its tokens, byte spans, decoded
 literals, and error codes with the Rust lexer. The inputs are targeted cases,
 each line of the lexer tests, the lexical conformance documents, every `.ore`
-file in the repository, and seeded generated text and bytes. `tests/parser/parser.rs` tests M3–M4 AST
+file in the repository, and seeded generated text and bytes.
+`tests/selfhost/parser.rs` does the same for the Zore parser, source manager,
+and diagnostics. It compares complete syntax trees with byte spans, every
+parser diagnostic with its labels, notes, and rendered text, and line and
+column lookups. The inputs are the string literals of the parser, lexer, and
+source tests, conformance code spans, specification code blocks, repository
+sources, and seeded token sequences, expressions, and edits of the examples. `tests/parser/parser.rs` tests M3–M4 AST
 shape (via an S-expression rendering), spans, syntax rejection, unsupported
 later-milestone syntax, recovery, and termination on generated input.
 `tests/typecheck/check.rs` tests resolution, type checking,

@@ -1,0 +1,105 @@
+package source
+
+type File struct {
+    Path       string
+    Text       string
+    lineStarts Array<int>
+}
+
+// Files are identified by their position, in the order they were added.
+type Manager struct {
+    files Array<File>
+}
+
+func NewManager() Manager {
+    return Manager{files: Array<File>{}}
+}
+
+// Add expects text that has already passed UTF-8 validation.
+func (m mut Manager) Add(path string, text string) int {
+    var lineStarts = Array<int>{0}
+    for var i = 0; i < text.len(); i += 1 {
+        if text[i] == 10 {
+            lineStarts.push(i + 1)
+        }
+    }
+    m.files.push(File{Path: path, Text: text, lineStarts: lineStarts})
+    return m.files.len() - 1
+}
+
+func (m Manager) Has(file int) bool {
+    return file >= 0 && file < m.files.len()
+}
+
+func (m Manager) Path(file int) string {
+    return m.files[file].Path
+}
+
+func (m Manager) Text(file int) string {
+    return m.files[file].Text
+}
+
+func (m Manager) LineCount(file int) int {
+    return m.files[file].lineStarts.len()
+}
+
+// Whether `offset` is the start of a character or the end of the text.
+func (m Manager) IsBoundary(file int, offset int) bool {
+    let text = m.files[file].Text
+    if offset < 0 || offset > text.len() {
+        return false
+    }
+    return offset == text.len() || text[offset] & 0xC0 != 0x80
+}
+
+func (m Manager) Contains(file int, start int, end int) bool {
+    return m.Has(file) && start <= end && m.IsBoundary(file, start) && m.IsBoundary(file, end)
+}
+
+// The line without its terminator, or false past the last line.
+func (m Manager) Line(file int, zeroBased int) (string, bool) {
+    let starts = m.files[file].lineStarts[:]
+    if zeroBased < 0 || zeroBased >= starts.len() {
+        return "", false
+    }
+    let text = m.files[file].Text
+    var end = text.len()
+    if zeroBased + 1 < starts.len() {
+        end = starts[zeroBased + 1]
+    }
+    let start = starts[zeroBased]
+    if end > start && text[end - 1] == 10 {
+        end -= 1
+        if end > start && text[end - 1] == 13 {
+            end -= 1
+        }
+    }
+    return text[start:end], true
+}
+
+// The one-based line and column, counting characters, or false when `offset` splits a character.
+func (m Manager) Location(file int, offset int) (int, int, bool) {
+    if !m.IsBoundary(file, offset) {
+        return 0, 0, false
+    }
+    let starts = m.files[file].lineStarts[:]
+    var low = 0
+    var high = starts.len()
+    for low < high {
+        let middle = (low + high) / 2
+        if starts[middle] <= offset {
+            low = middle + 1
+        } else {
+            high = middle
+        }
+    }
+    let line = low - 1
+    let text = m.files[file].Text
+    var column = 1
+    for var i = starts[line]; i < offset; i += 1 {
+        if text[i] & 0xC0 != 0x80 {
+            column += 1
+        }
+    }
+    return line + 1, column, true
+}

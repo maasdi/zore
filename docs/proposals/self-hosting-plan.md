@@ -4,15 +4,30 @@ Status: planning proposal for issue #56. No new source syntax, library API, or
 compiler behavior is accepted by this document. The Rust compiler remains the
 reference and bootstrap compiler throughout the stages below.
 
-Progress: stage 1 (lexer oracle) is done (issue #79). `compiler-zore/lexer`
-implements every token form of the Rust lexer, and the `selfhost_lexer` test
-compares their records exactly. The comparison covers the lexer test lines, the
-lexical conformance documents, every `.ore` file in the repository, seeded
-generated inputs, and UTF-8 rejection at the loading boundary.
-`compiler-zore/README.md` lists the commands, the record format, and what is
-not compared: diagnostic display text and notes. Stage 2 still needs the
-parser representation check, a SourceManager and diagnostic records in Zore,
-and a stable tree serialization for comparison.
+Progress: stages 1 and 2 are done.
+
+- Stage 1 (issue #79): `compiler-zore/lexer` implements every token form of the
+  Rust lexer, and the `selfhost_lexer` test compares their records exactly.
+- Stage 2: `compiler-zore/{source,diagnostic,ast,parser}` add a source manager,
+  diagnostic records with rendering, an indexed syntax tree, and a parser that
+  ports `compiler/src/parser` with its recovery. The `selfhost_parser` test
+  compares the complete tree with byte spans, every parser diagnostic with its
+  labels, notes, and rendered text, and the source manager's line and column
+  answers.
+- The inputs include the parser, lexer, and source-diagnostic test literals,
+  the conformance documents, the specification's code blocks, every `.ore`
+  file, and seeded generated and edited programs.
+
+`compiler-zore/README.md` lists the commands, the record formats, and the one
+thing not compared: lexer diagnostic display text.
+
+Stage 3 still needs:
+
+- name resolution and type checking in Zore
+- a decision on how the Zore frontend loads a multi-file project; this requires
+  the directory and path APIs listed below
+- a comparison of accepted and rejected programs and their structured
+  diagnostics
 
 Specification §38 sets a long-term goal, not an MVP requirement. The smallest
 useful first deliverable is a Zore lexer that processes in-memory source bytes

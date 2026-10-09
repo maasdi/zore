@@ -1,0 +1,191 @@
+package diagnostic
+
+import "compiler-zore/source"
+import "zore/strconv"
+import "zore/strings"
+
+const SeverityError = 1
+const SeverityWarning = 2
+
+type Label struct {
+    File    int
+    Start   int
+    End     int
+    Message string
+}
+
+type Diagnostic struct {
+    Severity int
+    Message  string
+    Primary  Label
+    Related  Array<Label>
+    Notes    Array<string>
+}
+
+func Error(message string, file int, start int, end int) Diagnostic {
+    return Diagnostic{
+        Severity: SeverityError,
+        Message: message,
+        Primary: Label{File: file, Start: start, End: end, Message: ""},
+        Related: Array<Label>{},
+        Notes: Array<string>{},
+    }
+}
+
+func (d mut Diagnostic) SetPrimaryMessage(message string) {
+    d.Primary.Message = message
+}
+
+func (d mut Diagnostic) AddRelated(file int, start int, end int, message string) {
+    d.Related.push(Label{File: file, Start: start, End: end, Message: message})
+}
+
+func (d mut Diagnostic) AddNote(note string) {
+    d.Notes.push(note)
+}
+
+func severityName(severity int) string {
+    if severity == SeverityWarning {
+        return "warning"
+    }
+    return "error"
+}
+
+// The text a terminal shows, or false when a label is not a span of a file in `sources`.
+func Render(d Diagnostic, sources source.Manager) (string, bool) {
+    var output = severityName(d.Severity) + ": " + d.Message + "\n"
+    let primary, ok = renderLabel(sources, d.Primary, "-->")
+    if !ok {
+        return "", false
+    }
+    output += primary
+    for label in d.Related {
+        let related, found = renderLabel(sources, label, ":::")
+        if !found {
+            return "", false
+        }
+        output += related
+    }
+    for note in d.Notes {
+        output += "  = note: " + note + "\n"
+    }
+    return output, true
+}
+
+func renderLabel(sources source.Manager, label Label, arrow string) (string, bool) {
+    if !sources.Contains(label.File, label.Start, label.End) {
+        return "", false
+    }
+    let startLine, startColumn, _ = sources.Location(label.File, label.Start)
+    let endLine, endColumn, _ = sources.Location(label.File, label.End)
+    let line, _ = sources.Line(label.File, startLine - 1)
+    let display = displayLine(line)
+    let last = display.Boundaries.len() - 1
+    let startScalar = smaller(startColumn - 1, last)
+    var visibleEnd = last
+    if startLine == endLine {
+        visibleEnd = smaller(endColumn - 1, last)
+    }
+    let markerStart = display.Boundaries[startScalar]
+    let markerEnd = larger(display.Boundaries[visibleEnd], markerStart + 1)
+    let lineNumber = strconv.Itoa(startLine)
+    let gutter = spaces(lineNumber.len())
+    var output = " " + arrow + " " + sources.Path(label.File) + ":" + lineNumber + ":" +
+        strconv.Itoa(startColumn) + "\n"
+    output += gutter + " |\n"
+    output += lineNumber + " | " + display.Text + "\n"
+    output += gutter + " | " + spaces(markerStart) + strings.Repeat("^", markerEnd - markerStart)
+    if label.Message != "" {
+        output += " " + label.Message
+    }
+    output += "\n"
+    if endLine > startLine {
+        output += gutter + " = span continues through line " + strconv.Itoa(endLine) + "\n"
+    }
+    return output, true
+}
+
+type DisplayLine struct {
+    Text       string
+    Boundaries Array<int>
+}
+
+// Tabs expand to four-column stops and control characters are escaped, so markers line up.
+func displayLine(line string) DisplayLine {
+    var text = ""
+    var boundaries = Array<int>{0}
+    var columns = 0
+    var at = 0
+    for at < line.len() {
+        let width = charWidth(int(line[at]))
+        let code = decode(line, at, width)
+        var piece = line[at:at + width]
+        var pieceColumns = 1
+        if code == 9 {
+            pieceColumns = 4 - columns % 4
+            piece = spaces(pieceColumns)
+        } else if code == 13 {
+            piece = "\\r"
+            pieceColumns = 2
+        } else if code < 0x20 || (code >= 0x7F && code <= 0x9F) {
+            piece = "\\u{" + hex(code) + "}"
+            pieceColumns = piece.len()
+        }
+        columns += pieceColumns
+        text += piece
+        boundaries.push(columns)
+        at += width
+    }
+    return DisplayLine{Text: text, Boundaries: boundaries}
+}
+
+func charWidth(first int) int {
+    if first < 0x80 {
+        return 1
+    }
+    if first < 0xE0 {
+        return 2
+    }
+    if first < 0xF0 {
+        return 3
+    }
+    return 4
+}
+
+func decode(text string, at int, width int) int {
+    let first = int(text[at])
+    if width == 1 {
+        return first
+    }
+    var code = first & (0x7F >> width)
+    for var i = 1; i < width; i += 1 {
+        code = code << 6 | int(text[at + i]) & 0x3F
+    }
+    return code
+}
+
+func hex(value int) string {
+    let digits = "0123456789abcdef"
+    if value < 16 {
+        return digits[value:value + 1]
+    }
+    return hex(value / 16) + digits[value % 16:value % 16 + 1]
+}
+
+func spaces(count int) string {
+    return strings.Repeat(" ", count)
+}
+
+func smaller(a int, b int) int {
+    if a < b {
+        return a
+    }
+    return b
+}
+
+func larger(a int, b int) int {
+    if a > b {
+        return a
+    }
+    return b
+}

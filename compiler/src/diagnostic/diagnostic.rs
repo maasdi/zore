@@ -72,4 +72,14 @@ impl Diagnostic {
     pub fn notes(&self) -> &[String] {
         &self.notes
     }
+
+    pub fn primary_label(&self) -> &str {
+        &self.primary.message
+    }
+
+    pub fn related_labels(&self) -> impl Iterator<Item = (Span, &str)> {
+        self.related
+            .iter()
+            .map(|label| (label.span, label.message.as_str()))
+    }
 }

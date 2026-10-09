@@ -1,0 +1,428 @@
+package parser
+
+import "compiler-zore/ast"
+import "compiler-zore/diagnostic"
+import "compiler-zore/lexer"
+
+// Returned in place of a node after a diagnostic has been reported.
+const failed = -2
+
+const itemParam = 1
+const itemType = 2
+const itemExpr = 3
+const itemFieldInit = 4
+const itemMapEntry = 5
+const itemFuncTypeParam = 6
+
+// LexProblems are the lexer's errors; Diagnostics are the parser's, in reporting order.
+type Parsed struct {
+    Tree        ast.Tree
+    Root        int
+    LexProblems Array<lexer.Problem>
+    Diagnostics Array<diagnostic.Diagnostic>
+}
+
+type Parser struct {
+    text            string
+    file            int
+    tokens          Array<lexer.Token>
+    pos             int
+    lastTokenEnd    int
+    openDelimiters  int
+    structLiterals  bool
+    nativeFunctions bool
+    diagnostics     Array<diagnostic.Diagnostic>
+    tree            ast.Tree
+}
+
+// Parse expects text that has already passed UTF-8 validation. With `native`, function
+// declarations may omit their bodies, as in the bundled standard packages.
+func Parse(text string, file int, native bool) Parsed {
+    var lexed = lexer.Lex(text)
+    var p = Parser{
+        text: text,
+        file: file,
+        tokens: lexed.Tokens,
+        pos: 0,
+        lastTokenEnd: 0,
+        openDelimiters: 0,
+        structLiterals: true,
+        nativeFunctions: native,
+        diagnostics: Array<diagnostic.Diagnostic>{},
+        tree: ast.NewTree(),
+    }
+    let root = p.fileAst()
+    return Parsed{Tree: p.tree, Root: root, LexProblems: lexed.Problems, Diagnostics: p.diagnostics}
+}
+
+func (p Parser) index(ahead int) int {
+    let index = p.pos + ahead
+    if index >= p.tokens.len() {
+        return p.tokens.len() - 1
+    }
+    return index
+}
+
+func (p Parser) kind() int {
+    return p.tokens[p.pos].Kind
+}
+
+func (p Parser) kindAt(ahead int) int {
+    return p.tokens[p.index(ahead)].Kind
+}
+
+func (p Parser) spellingAt(ahead int) string {
+    let token = p.tokens[p.index(ahead)]
+    return p.text[token.Start:token.End]
+}
+
+func (p Parser) currentText() string {
+    return p.spellingAt(0)
+}
+
+func (p Parser) currentStart() int {
+    return p.tokens[p.pos].Start
+}
+
+func (p Parser) currentEnd() int {
+    return p.tokens[p.pos].End
+}
+
+func (p Parser) matchesAt(ahead int, kind int, spelling string) bool {
+    if p.kindAt(ahead) != kind {
+        return false
+    }
+    if kind == lexer.KindPunct || kind == lexer.KindKeyword {
+        return p.spellingAt(ahead) == spelling
+    }
+    return true
+}
+
+func (p Parser) at(punct string) bool {
+    return p.matchesAt(0, lexer.KindPunct, punct)
+}
+
+func (p Parser) atPunctAt(ahead int, punct string) bool {
+    return p.matchesAt(ahead, lexer.KindPunct, punct)
+}
+
+func (p Parser) atKeyword(keyword string) bool {
+    return p.matchesAt(0, lexer.KindKeyword, keyword)
+}
+
+func (p Parser) atKeywordAt(ahead int, keyword string) bool {
+    return p.matchesAt(ahead, lexer.KindKeyword, keyword)
+}
+
+func (p Parser) atKind(kind int) bool {
+    return p.kind() == kind
+}
+
+func (p Parser) atEof() bool {
+    return p.kind() == lexer.KindEof
+}
+
+func (p Parser) atSeparator() bool {
+    return p.kind() == lexer.KindSemicolon
+}
+
+func (p Parser) atExplicitSemicolon() bool {
+    return p.kind() == lexer.KindSemicolon && p.tokens[p.pos].Detail == lexer.SeparatorExplicit
+}
+
+func (p Parser) atNewlineBefore(kind int, spelling string) bool {
+    return p.kind() == lexer.KindSemicolon && p.tokens[p.pos].Detail == lexer.SeparatorNewline &&
+        p.matchesAt(1, kind, spelling)
+}
+
+func (p Parser) atNewlineBeforePunct(punct string) bool {
+    return p.atNewlineBefore(lexer.KindPunct, punct)
+}
+
+func isOpening(spelling string) bool {
+    return spelling == "(" || spelling == "[" || spelling == "{"
+}
+
+func isClosing(spelling string) bool {
+    return spelling == ")" || spelling == "]" || spelling == "}"
+}
+
+func (p mut Parser) bump() lexer.Token {
+    let token = p.tokens[p.pos]
+    if token.Kind == lexer.KindEof {
+        return token
+    }
+    if token.Kind == lexer.KindPunct {
+        let spelling = p.text[token.Start:token.End]
+        if isOpening(spelling) {
+            p.openDelimiters += 1
+        } else if isClosing(spelling) && p.openDelimiters > 0 {
+            p.openDelimiters -= 1
+        }
+    }
+    if token.End > token.Start {
+        p.lastTokenEnd = token.End
+    }
+    p.pos += 1
+    return token
+}
+
+func (p mut Parser) eat(punct string) bool {
+    if p.at(punct) {
+        _ = p.bump()
+        return true
+    }
+    return false
+}
+
+func (p Parser) spanEnd(startEnd int) int {
+    if p.lastTokenEnd > startEnd {
+        return p.lastTokenEnd
+    }
+    return startEnd
+}
+
+func (p mut Parser) addNode(tag string, start int, startEnd int, attr string) int {
+    let end = p.spanEnd(startEnd)
+    return p.tree.Add(tag, start, end, attr)
+}
+
+// A node spanning from the start of `first` through the last consumed token.
+func (p mut Parser) wrap(tag string, first int, attr string) int {
+    let start = p.tree.Start(first)
+    let end = p.tree.End(first)
+    return p.addNode(tag, start, end, attr)
+}
+
+func (p mut Parser) leaf(tag string, start int, end int, attr string) int {
+    return p.tree.Add(tag, start, end, attr)
+}
+
+func (p mut Parser) spanless(tag string, attr string) int {
+    return p.tree.Add(tag, -1, -1, attr)
+}
+
+func (p mut Parser) append(parent int, child int) {
+    p.tree.Append(parent, child)
+}
+
+func (p mut Parser) node2(tag string, start int, startEnd int, attr string, a int, b int) int {
+    let node = p.addNode(tag, start, startEnd, attr)
+    p.tree.Append(node, a)
+    p.tree.Append(node, b)
+    return node
+}
+
+func (p mut Parser) report(d own diagnostic.Diagnostic) int {
+    p.diagnostics.push(d)
+    return failed
+}
+
+func (p mut Parser) error(message string, start int, end int) int {
+    let file = p.file
+    return p.report(diagnostic.Error(message, file, start, end))
+}
+
+func (p mut Parser) errorWithNote(message string, start int, end int, note string) int {
+    var d = diagnostic.Error(message, p.file, start, end)
+    d.AddNote(note)
+    return p.report(d)
+}
+
+func (p mut Parser) errorAtCurrent(message string) int {
+    let start = p.currentStart()
+    let end = p.currentEnd()
+    return p.error(message, start, end)
+}
+
+func (p mut Parser) unexpected(expected string) int {
+    // The lexer has already reported these tokens.
+    if p.atKind(lexer.KindUnknown) || p.atKind(lexer.KindMalformed) {
+        return failed
+    }
+    let found = p.describeCurrent()
+    return p.errorAtCurrent("expected " + expected + ", found " + found)
+}
+
+func (p Parser) describeCurrent() string {
+    let kind = p.kind()
+    let source = p.currentText()
+    if kind == lexer.KindIdent {
+        return "identifier `" + source + "`"
+    }
+    if kind == lexer.KindUnderscore {
+        return "`_`"
+    }
+    if kind == lexer.KindKeyword {
+        return "keyword `" + source + "`"
+    }
+    if kind == lexer.KindReserved {
+        return "reserved word `" + source + "`"
+    }
+    if kind == lexer.KindInt || kind == lexer.KindFloat {
+        return "number `" + source + "`"
+    }
+    if kind == lexer.KindString {
+        return "string literal"
+    }
+    if kind == lexer.KindRune {
+        return "rune literal"
+    }
+    if kind == lexer.KindMalformed {
+        return "malformed literal"
+    }
+    if kind == lexer.KindUnknown || kind == lexer.KindPunct {
+        return "`" + source + "`"
+    }
+    if kind == lexer.KindSemicolon {
+        let separator = p.tokens[p.pos].Detail
+        if separator == lexer.SeparatorExplicit {
+            return "`;`"
+        }
+        if separator == lexer.SeparatorNewline {
+            return "newline"
+        }
+    }
+    return "end of file"
+}
+
+// The start offset of the consumed token, or `failed`.
+func (p mut Parser) expect(punct string) int {
+    if p.at(punct) {
+        return p.bump().Start
+    }
+    return p.unexpected("`" + punct + "`")
+}
+
+func (p mut Parser) name(what string) int {
+    let start = p.currentStart()
+    let end = p.currentEnd()
+    let kind = p.kind()
+    let source = p.currentText()
+    if kind == lexer.KindIdent {
+        _ = p.bump()
+        return p.leaf("name", start, end, source)
+    }
+    if kind == lexer.KindKeyword {
+        return p.error("`" + source + "` is a keyword and cannot be used as " + what, start, end)
+    }
+    if kind == lexer.KindReserved {
+        return p.error(
+            "`" + source + "` is reserved for possible future use and cannot be used as " + what,
+            start,
+            end,
+        )
+    }
+    if kind == lexer.KindUnderscore {
+        return p.error("`_` cannot be used as " + what, start, end)
+    }
+    return p.unexpected(what)
+}
+
+func (p mut Parser) synchronize(depth int, stopAtBrace bool) {
+    var local = p.openDelimiters - depth
+    if local < 0 {
+        local = 0
+    }
+    let start = p.pos
+    for {
+        let lineStart = p.pos > start && p.tokens[p.pos - 1].Kind == lexer.KindSemicolon
+        let kind = p.kind()
+        if kind == lexer.KindEof {
+            break
+        }
+        // An unclosed delimiter must not hide later declarations.
+        if kind == lexer.KindKeyword && !stopAtBrace && lineStart {
+            let word = p.currentText()
+            if word == "func" || word == "async" || word == "type" || word == "import" {
+                break
+            }
+        }
+        if kind == lexer.KindSemicolon && local == 0 {
+            _ = p.bump()
+            break
+        }
+        if kind == lexer.KindPunct {
+            let spelling = p.currentText()
+            if isOpening(spelling) {
+                local += 1
+            } else if isClosing(spelling) {
+                if local > 0 {
+                    local -= 1
+                } else if stopAtBrace && spelling == "}" {
+                    break
+                }
+            }
+        }
+        _ = p.bump()
+    }
+    p.openDelimiters = depth
+}
+
+func (p mut Parser) item(kind int) int {
+    if kind == itemParam {
+        return p.param("a parameter name")
+    }
+    if kind == itemType {
+        return p.ty()
+    }
+    if kind == itemExpr {
+        return p.expr()
+    }
+    if kind == itemFieldInit {
+        return p.fieldInit()
+    }
+    if kind == itemMapEntry {
+        return p.mapEntry()
+    }
+    return p.funcTypeParam()
+}
+
+func (p mut Parser) commaList(close string, what string, trailing bool, kind int) int {
+    let list = p.tree.List()
+    for {
+        if p.eat(close) {
+            return list
+        }
+        let element = p.item(kind)
+        if element == failed {
+            return failed
+        }
+        p.append(list, element)
+        if p.at(",") {
+            let comma = p.bump()
+            if !trailing && p.at(close) {
+                return p.error("a trailing comma is not allowed after the last " + what, comma.Start, comma.End)
+            }
+        } else if p.atNewlineBeforePunct(close) {
+            // The newline ended the list, so the trailing comma is required.
+            var d = diagnostic.Error(
+                "missing trailing comma after the last " + what,
+                p.file,
+                p.currentStart(),
+                p.currentEnd(),
+            )
+            d.AddNote("add `,` when the closing `" + close + "` is on the next line")
+            return p.report(d)
+        } else if !p.at(close) {
+            return p.unexpected("`,` or `" + close + "`")
+        }
+    }
+}
+
+// Runs a comma list with struct literals allowed, restoring the previous setting.
+func (p mut Parser) commaListWithLiterals(close string, what string, trailing bool, kind int) int {
+    let saved = p.structLiterals
+    p.structLiterals = true
+    let list = p.commaList(close, what, trailing, kind)
+    p.structLiterals = saved
+    return list
+}
+
+func (p mut Parser) exprWithLiterals(allowed bool) int {
+    let saved = p.structLiterals
+    p.structLiterals = allowed
+    let value = p.expr()
+    p.structLiterals = saved
+    return value
+}
