@@ -76,3 +76,41 @@ To reproduce, build each compiler from its revision and run
 `../suspended-tasks/run.py` with `--source` set to
 `benchmarks/frame-storage/reuse/workload.ore`, `--compiler` set to the binary,
 `--counts 4000`, and `--repetitions 3`.
+
+## Slot reuse analysis scaling
+
+`scaling/main.rs` is a Cargo example that builds an async function with `n`
+integer locals, all live across one channel send, and times only
+`async_lowering::lower`. Checking, MIR lowering, and drop insertion run before the
+clock starts. It prints the MIR size, the deterministic `frame_reuse_work` count,
+and the median time over the requested repetitions:
+
+```sh
+cargo run --release --locked --example async_frame_scaling -- 5 100 200 400 800
+```
+
+On Linux 6.18 x86-64 (Intel Xeon at 2.80 GHz, rustc 1.98.1, release build), the
+median `lower` time was:
+
+| Declared locals | MIR locals / blocks | `main` at `faa99bb` | Bitset analysis | Work count |
+| ---: | ---: | ---: | ---: | ---: |
+| 100 | 203 / 104 | 49.2 ms | 0.3 ms | 44,821 |
+| 200 | 403 / 204 | 412.1 ms | 0.7 ms | 174,436 |
+| 400 | 803 / 404 | 3,999.0 ms | 2.4 ms | 688,066 |
+| 800 | 1,603 / 804 | 79,417.4 ms | 9.1 ms | 2,739,331 |
+
+The `faa99bb` medians use three repetitions, except 800 locals, which was timed
+once. The new timings use five repetitions. The previous analysis marked every
+pair of live locals at every program point and rescanned group members for each
+candidate, roughly `O(n³)`. The bitset analysis pairs each instruction's
+mentioned locals with the live set, and keeps per-local group conflicts, so its
+work count grows about four times per doubling. Every local in this fixture is
+live at once, so the interference graph itself has about `n²` edges and the
+analysis cannot be cheaper than that here.
+
+Both analyses produce the same slot assignment: a unit test in
+`compiler/src/async_lowering/storage.rs` compares them on every example and
+benchmark program plus targeted loop, branch, view, and unreachable-code cases.
+`tests/async/lowering.rs` checks the work count's growth from 100 to 800 locals
+instead of a wall-clock threshold. These timings are host-specific observations,
+not performance thresholds.

@@ -16,6 +16,8 @@ pub struct StateMachine {
     pub budget_blocks: Vec<BlockId>,
     pub storage: Vec<LocalStorage>,
     pub frame_reuse: Vec<usize>,
+    /// Bitset words and bits the slot reuse analysis read or wrote; deterministic, unlike its run time.
+    pub frame_reuse_work: usize,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
