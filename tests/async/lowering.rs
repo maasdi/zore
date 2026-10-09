@@ -39,6 +39,152 @@ fn named_storage(body: &mir::Body, storage: &[LocalStorage], name: &str) -> Loca
 }
 
 #[test]
+fn sequential_persistent_arrays_share_a_frame_field_but_overlapping_arrays_do_not() {
+    let source = "package main
+async func pause(ch channel<int>) { ch.send(1) }
+async func sequential(ch channel<int>) int {
+    var total = 0
+    {
+        let first = [int; 4]{1, 2, 3, 4}
+        await pause(ch)
+        total += first[0]
+    }
+    {
+        let second = [int; 4]{5, 6, 7, 8}
+        await pause(ch)
+        total += second[0]
+    }
+    return total
+}
+
+async func overlapping(ch channel<int>) int {
+    let first = [int; 4]{1, 2, 3, 4}
+    let second = [int; 4]{5, 6, 7, 8}
+    await pause(ch)
+    return first[0] + second[0]
+}
+func main() {}";
+    let (package, program, mut plan) = plan(source);
+    for (name, same_slot) in [("sequential", true), ("overlapping", false)] {
+        let (body, storage) = storage_for(&package, &program, &plan, name);
+        let first = body
+            .locals
+            .iter()
+            .position(|local| local.name.as_deref() == Some("first"))
+            .unwrap();
+        let second = body
+            .locals
+            .iter()
+            .position(|local| local.name.as_deref() == Some("second"))
+            .unwrap();
+        assert_eq!(storage[first], LocalStorage::Frame);
+        assert_eq!(storage[second], LocalStorage::Frame);
+        let reuse = &plan.machines[&body.function].frame_reuse;
+        assert_eq!(reuse[first] == reuse[second], same_slot, "{name}");
+    }
+    let mut sources = SourceMap::new();
+    sources.add("async.ore", source.to_owned()).unwrap();
+    let ir = codegen::emit(&package, &program, &plan, &sources).unwrap();
+    for machine in plan.machines.values_mut() {
+        machine.frame_reuse = (0..machine.storage.len()).collect();
+    }
+    let baseline = codegen::emit(&package, &program, &plan, &sources).unwrap();
+    for name in ["sequential", "overlapping"] {
+        let (body, _) = storage_for(&package, &program, &plan, name);
+        let frame_name = format!("AsyncFrame.{}\" = type", body.function.0);
+        let frame = ir.lines().find(|line| line.contains(&frame_name)).unwrap();
+        let original = baseline
+            .lines()
+            .find(|line| line.contains(&frame_name))
+            .unwrap();
+        let fields = frame.matches("[4 x i64]").count();
+        let original_fields = original.matches("[4 x i64]").count();
+        if name == "sequential" {
+            assert!(fields < original_fields, "{frame}\n{original}");
+        } else {
+            assert!(fields >= 2, "{frame}");
+        }
+    }
+}
+
+#[test]
+fn borrowed_persistent_arrays_keep_distinct_addresses() {
+    let (package, program, plan) = plan(
+        "package main
+async func pause(ch channel<int>) { ch.send(1) }
+async func run(ch channel<int>) int {
+    var total = 0
+    {
+        let first = [int; 4]{1, 2, 3, 4}
+        let view = first[:]
+        await pause(ch)
+        total += view[0]
+    }
+    {
+        let second = [int; 4]{5, 6, 7, 8}
+        let view = second[:]
+        await pause(ch)
+        total += view[0]
+    }
+    return total
+}
+
+func main() {}",
+    );
+    let (body, storage) = storage_for(&package, &program, &plan, "run");
+    let first = body
+        .locals
+        .iter()
+        .position(|local| local.name.as_deref() == Some("first"))
+        .unwrap();
+    let second = body
+        .locals
+        .iter()
+        .position(|local| local.name.as_deref() == Some("second"))
+        .unwrap();
+    assert_eq!(storage[first], LocalStorage::Frame);
+    assert_eq!(storage[second], LocalStorage::Frame);
+    let reuse = &plan.machines[&body.function].frame_reuse;
+    assert_ne!(reuse[first], reuse[second]);
+}
+
+#[test]
+fn budget_resume_paths_keep_sequential_array_lifetimes_separate() {
+    let (package, program, plan) = plan(
+        "package main
+async func run() int {
+    var total = 0
+    {
+        let first = [int; 4]{1, 2, 3, 4}
+        for var i = 0; i < 300; i += 1 { total += first[0] }
+    }
+    {
+        let second = [int; 4]{5, 6, 7, 8}
+        for var i = 0; i < 300; i += 1 { total += second[0] }
+    }
+    return total
+}
+func main() {}",
+    );
+    let (body, storage) = storage_for(&package, &program, &plan, "run");
+    let first = body
+        .locals
+        .iter()
+        .position(|local| local.name.as_deref() == Some("first"))
+        .unwrap();
+    let second = body
+        .locals
+        .iter()
+        .position(|local| local.name.as_deref() == Some("second"))
+        .unwrap();
+    assert!(!plan.machines[&body.function].budget_blocks.is_empty());
+    assert_eq!(storage[first], LocalStorage::Frame);
+    assert_eq!(storage[second], LocalStorage::Frame);
+    let reuse = &plan.machines[&body.function].frame_reuse;
+    assert_eq!(reuse[first], reuse[second]);
+}
+
+#[test]
 fn storage_distinguishes_poll_local_and_resume_values() {
     let source = "package main
 async func run(ch channel<int>) int {

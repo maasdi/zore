@@ -165,8 +165,12 @@ call destinations, and locals accessed on any path reachable after a suspension
 drop flags use fresh poll-stack slots, with flags initialized to zero on every
 poll. The analysis treats address-taking, views, and closure captures
 conservatively; no pointer into poll-stack storage may survive `Pending`.
-Hoisted code-generation scratch storage remains in the frame, and frame slots
-are not yet reused. A state switch dispatches to the start block or a saved
+Hoisted code-generation scratch storage remains in the frame. Same-type Copy
+frame locals without cleanup, embedded views, or address-taking may share a field when
+backward MIR liveness proves no overlap across normal, unwind, implicit wait,
+child-call, and budget-resume edges. Parameters, captures, results, and
+ambiguous cases retain separate fields. Drop flags and hoisted scratch fields
+are not shared. A state switch dispatches to the start block or a saved
 call-poll label. Argument evaluation,
 ownership transfer, and child-frame construction occur only on the first visit;
 resuming a pending call repeats only its poll. Calls have one active child frame

@@ -15,6 +15,7 @@ pub struct StateMachine {
     pub suspensions: Vec<(BlockId, Suspension)>,
     pub budget_blocks: Vec<BlockId>,
     pub storage: Vec<LocalStorage>,
+    pub frame_reuse: Vec<usize>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

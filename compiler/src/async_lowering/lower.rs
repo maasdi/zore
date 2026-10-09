@@ -130,12 +130,14 @@ pub fn lower(package: &hir::Package, program: &mir::Program) -> Plan {
                 .collect();
             let budget_blocks = budget_blocks(body);
             let storage = super::storage::classify(body, &suspensions, &budget_blocks);
+            let frame_reuse = super::storage::reuse(body, package, &storage);
             (
                 body.function,
                 StateMachine {
                     suspensions,
                     budget_blocks,
                     storage,
+                    frame_reuse,
                 },
             )
         })
