@@ -4078,7 +4078,9 @@ moved into the task: a local used as the callee is unusable afterward, and a
 call-once closure may be spawned. The task owns the closure from creation, calls
 it once, and then destroys it, so every captured value is destroyed exactly once
 on a normal return, an error result, or a panic. A callee that is a field,
-element, map value, or the result of a call is rejected. A closure body is never
+element, map value, or the result of a call is rejected: move a closure stored
+in a field of a local struct into a local first, and take one out of an
+`Array<T>` or a map with `pop` or `remove`. A closure body is never
 async (§16.1), so a spawned closure runs as one plain-function task even when it
 is written inside an `async func`; the name of an `async func` is not a
 function value (§16.2), and `go asyncFn(x)` on the declared name is unchanged.

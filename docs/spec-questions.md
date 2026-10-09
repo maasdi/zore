@@ -57,7 +57,7 @@ A newly discovered semantic gap blocks its affected feature, not unrelated work.
 | Q32 | Async functions as state machines without fibers, and what that does and does not change in the source language. See Q32 below. | §17.3, §17.7, §18.3, §20.2, §35.1, §37.3 | Compiler and runtime changes |
 | Q33 | Declared function values and `go` on owning callables: locked in §16.2, §16.4, §16.6, §18.3, and §18.4. See Q33 below. | §16.2, §16.4, §16.6, §18.3, §18.4 | Parser, checker, ownership, and codegen changes |
 | Q34 | Method values: locked in §16.2 and §9.1. See Q34 below. | §9.1, §16.2, §16.3 | Checker |
-| Q35 | `go` on a callee stored in a struct field. OPEN: proposed in `docs/proposals/spawn-field-callee.md`; nothing is locked. Until accepted, a field, element, map value, or call result stays rejected as a `go` callee. | §18.3, §31.2 | Checker |
+| Q35 | `go` on a callee stored in a struct field: withdrawn; the two-line form works. See Q35 below. | §18.3, §31.2 | None |
 
 ## Resolved decisions
 
@@ -182,7 +182,7 @@ A newly discovered semantic gap blocks its affected feature, not unrelated work.
 
 - **Q34 — Method values:** locked in §16.2 and §9.1 at the maintainer's direction; the proposal is `docs/proposals/method-values.md`. `value.Method` without a call is the closure literal that calls the method, so the receiver is captured by the existing rules: shared borrow, exclusive borrow of a mutable place, or moved in as a call-once closure for an `own` receiver; an escaping or spawned method value is owning. The receiver is a local or a field path rooted at one. `async` methods, `drop`, and method expressions on a type are not method values. Pending cases: `tests/conformance/closures.md`.
 
-- **Q35 — `go` on a callee stored in a field (OPEN):** proposed in `docs/proposals/spawn-field-callee.md`; not accepted and not locked. The proposal would let the callee of `go` be a function-typed field path rooted at a local, moved into the task by the existing partial-move rule (§31.2) and refused where that rule refuses. Array elements, map values, and call results stay rejected; `pop` and `remove` take a closure out into a local first. Until the maintainer accepts it, Q33's rejection stands.
+- **Q35 — `go` on a callee stored in a field (WITHDRAWN):** proposed in `docs/proposals/spawn-field-callee.md` and withdrawn by the maintainer; nothing was locked or implemented. A closure in a field of a local struct is started by moving it into a local first (`let run = w.run`, then `go run(...)`); a closure in an array or map comes out with `pop` or `remove`. A function value that came in through a parameter cannot be spawned in either form (§18.4). Q33's rejection of a field, element, map value, or call result as a `go` callee stands.
 - **Q27 — Async I/O choices:** locked in §37.3 at the maintainer's direction
   (time, standard input, whole files, and TCP, waiting on an event loop). (a)
   Strings are well-formed UTF-8, so every function that returns text from

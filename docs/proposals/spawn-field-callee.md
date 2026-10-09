@@ -1,10 +1,23 @@
 # Q35 proposal: `go` on a callee stored in a struct field
 
-Status: PROPOSED. Nothing here is locked, and no implementation may rely on it
-until the maintainer accepts it and the decisions are written into the
-specification and locked (§53). The specification stays authoritative. This is
-the follow-up that Q33 deferred: §18.3 says a callee that is a field, element,
-map value, or call result is rejected.
+Status: WITHDRAWN by the maintainer. Nothing here was accepted, locked, or
+implemented, and the specification is unchanged. The proposal is kept so the
+reasoning is on record. The reasons:
+
+- A closure stored in a local struct can already be started in two lines, with
+  `let run = w.run` and then `go run(...)`. Moving a field out of a struct is
+  already allowed, and the explicit `let` shows when the closure leaves the
+  struct. The one-line form would hide that move.
+- The proposal would not help where it matters most. A function value that
+  arrived through a parameter, including one inside a struct parameter, cannot
+  be spawned in either form, because the caller's closure may borrow the
+  caller's storage (§18.4).
+- It adds rules and test cases to the specification for a saving of one line.
+
+To start a task from a closure in a field, move it into a local first. For an
+array element or a map value, take it out with `pop` or `remove` first.
+
+Original proposal follows.
 
 Scope: letting the callee of `go` be a function-typed **field path rooted at a
 local**, such as `(w.run)(5)`. Out of scope: array and map elements, call

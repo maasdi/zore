@@ -25,8 +25,8 @@ for their rationale; the specification is authoritative.
 - [Declared function values and `go` on owning callables](proposals/function-values-and-spawned-closures.md) (spec §16.2, §16.4, §16.6, §18.3, §18.4; issue #52)
 - [Method values](proposals/method-values.md) (spec §9.1, §16.2; Q34)
 
-## Proposals under review
+## Withdrawn proposals
 
-These proposals are not accepted. They lock nothing, and the specification does not change until the maintainer accepts them.
+These proposals were not accepted and changed nothing. They are kept for their reasoning.
 
-- [`go` on a callee stored in a struct field](proposals/spawn-field-callee.md) (Q35; follow-up to issue #52)
+- [`go` on a callee stored in a struct field](proposals/spawn-field-callee.md) (Q35)
