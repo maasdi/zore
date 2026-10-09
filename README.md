@@ -53,7 +53,7 @@ John
 | Errors and `?` | Implemented for synchronous and async code, including propagation after awaiting async calls or task results |
 | Strings | Length, indexing, slicing, loops by character, `+`, and `string(rune)` work |
 | Collections | `[T; N]`, `Array<T>`, `map[K]V`, and `[]T` work; `clone` works for structs and collections; `len`, `push`, `pop`, and `for … in` loops work; borrowed map entries are planned |
-| Closures and function types | Implemented, including closures that are returned or stored and call-once closures; spawning function values or closures is not supported |
+| Closures and function types | Implemented, including closures that are returned or stored, call-once closures, declared functions and methods as values, and `go` on closures and function-typed locals; async function values are awaited or spawned; a callee stored in a field, element, or map value cannot be spawned directly |
 | Packages and imports | Folders are packages; `import "project/folder"` and qualified names work, with exports, import checks, and cycle detection; bundled packages include `zore/strings`, `zore/strconv`, `zore/time`, `zore/io`, `zore/os`, `zore/net`, and `zore/cancel` |
 | `async`/`await`, tasks, channels, mutexes | Implemented for the supported operations: polled async tasks, channel send/receive and `select`, mutex acquisition, timers, TCP I/O, files, standard input, and cooperative cancellation. A waiting plain function occupies an OS worker; the runtime starts replacement workers |
 | Self-hosting | Long-term goal |
@@ -61,10 +61,12 @@ John
 Features outside the implemented subset are reported as errors, never silently
 accepted. Recursive owned structs through `Array<T>` and maps are supported,
 including cloning and deterministic cleanup; infinite-size by-value cycles are
-rejected. The compiler does not yet support spawning function values or
-package-level variables. Async frames are not shrunk by liveness, and scheduling
-has no preemption. Full MVP coverage
-still needs an audit; see the [roadmap](docs/roadmap.md).
+rejected. Package-level variables are not yet supported. Async frames keep values needed
+across a suspension in the pinned heap frame; other locals use poll-local storage,
+and some same-type locals share a frame field, but frames are not shrunk by
+general liveness. Cooperative budgets yield long-running async loops, but scheduling
+has no forced preemption. Full MVP coverage still needs an audit; see the
+[roadmap](docs/roadmap.md).
 
 ## Getting started
 
