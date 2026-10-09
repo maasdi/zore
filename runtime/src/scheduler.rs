@@ -165,7 +165,7 @@ impl Task {
         } else if state.notified {
             state.status = Status::Queued;
             if let Some(pool) = self.pool.upgrade() {
-                pool.enqueue(Arc::clone(self));
+                pool.requeue_after_poll(Arc::clone(self));
             }
         } else {
             state.status = Status::Idle;
@@ -250,6 +250,15 @@ impl Pool {
     fn enqueue(&self, task: Arc<Task>) {
         lock(&self.state).queue.push_back(task);
         self.ready.notify_one();
+    }
+
+    /// The polling worker takes the queue's next task itself, so only further tasks need a waiter.
+    fn requeue_after_poll(&self, task: Arc<Task>) {
+        let mut state = lock(&self.state);
+        state.queue.push_back(task);
+        if state.queue.len() > 1 {
+            self.ready.notify_one();
+        }
     }
 
     fn spawn(self: &Arc<Self>, body: Body) -> Waker {
@@ -468,6 +477,34 @@ mod tests {
         }
         assert_eq!(calls.load(Ordering::SeqCst), 1);
         assert!(lock(&pool.0.state).queue.is_empty());
+    }
+
+    #[test]
+    fn budget_requeues_let_every_runnable_task_progress_with_more_tasks_than_workers() {
+        const TASKS: usize = 5;
+        let pool = TestPool::new(2);
+        let started = Arc::new(AtomicUsize::new(0));
+        let finished = Arc::new(AtomicUsize::new(0));
+        for _ in 0..TASKS {
+            let started = Arc::clone(&started);
+            let finished = Arc::clone(&finished);
+            let mut counted = false;
+            pool.spawn(move |context| {
+                if !counted {
+                    counted = true;
+                    started.fetch_add(1, Ordering::SeqCst);
+                }
+                while context.budget_step() {
+                    if started.load(Ordering::SeqCst) == TASKS {
+                        finished.fetch_add(1, Ordering::SeqCst);
+                        return Poll::Ready;
+                    }
+                }
+                Poll::Pending
+            });
+        }
+        pool.idle();
+        assert_eq!(finished.load(Ordering::SeqCst), TASKS);
     }
 
     #[test]

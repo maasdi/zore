@@ -695,7 +695,9 @@ branches do not add budget checks. Backedge targets are also resume states:
 if the budget is exhausted, the poll records
 the block's state before executing its statements, wakes its own task, and
 returns Pending. The scheduler coalesces that wake with concurrent wakes and
-puts the task at the back of the runnable queue once. This yield never counts
+puts the task at the back of the runnable queue once. A task requeued by the
+worker that just polled it wakes another worker only when the queue holds other
+work, because that worker takes the queue's next task itself. This yield never counts
 as an internal wait for deadlock detection. A new worker poll refills the
 budget.
 

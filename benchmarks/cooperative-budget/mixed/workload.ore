@@ -1,0 +1,30 @@
+package main
+
+import "zore/time"
+
+async func compute(rounds int) int {
+    var sum = 0
+    for var i = 0; i < rounds; i += 1 {
+        sum += i % 7
+    }
+    return sum
+}
+
+async func wait(rounds int) int {
+    var completed = 0
+    for completed < rounds {
+        time.Sleep(1)
+        completed += 1
+    }
+    return completed
+}
+
+func main() {
+    let first = go compute(2000000)
+    let second = go compute(2000000)
+    let third = go compute(2000000)
+    let fourth = go compute(2000000)
+    let sleeper = go wait(100)
+    println(first.wait() + second.wait() + third.wait() + fourth.wait())
+    println(sleeper.wait())
+}
