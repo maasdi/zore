@@ -31,6 +31,11 @@ impl Parser<'_> {
             TokenKind::Keyword(Keyword::Map) => self.map_type(),
             TokenKind::Keyword(Keyword::Channel) => self.channel_type(),
             TokenKind::Keyword(Keyword::Func) => self.func_type(),
+            TokenKind::Keyword(Keyword::Async)
+                if *self.peek_at(1) == TokenKind::Keyword(Keyword::Func) =>
+            {
+                self.func_type()
+            }
             TokenKind::Keyword(Keyword::Mut) => {
                 let start = self.current_span();
                 if !self.at_slice_type_after(1) {
@@ -163,7 +168,12 @@ impl Parser<'_> {
     }
 
     fn func_type(&mut self) -> PResult<Type> {
-        let start = self.bump().span;
+        let start = self.current_span();
+        let is_async = *self.peek() == TokenKind::Keyword(Keyword::Async);
+        if is_async {
+            self.bump();
+        }
+        self.bump();
         self.expect(Punct::LParen)?;
         let params =
             self.comma_list(Punct::RParen, "parameter type", true, Self::func_type_param)?;
@@ -173,6 +183,7 @@ impl Parser<'_> {
             Vec::new()
         };
         Ok(Type::Func {
+            is_async,
             params,
             results,
             span: self.span_from(start),
@@ -186,7 +197,7 @@ impl Parser<'_> {
                 TokenKind::Ident
                     | TokenKind::Punct(Punct::LBracket)
                     | TokenKind::Keyword(
-                        Keyword::Mut | Keyword::Own | Keyword::Func | Keyword::Map
+                        Keyword::Mut | Keyword::Own | Keyword::Func | Keyword::Map | Keyword::Async
                     )
             )
         {
@@ -217,7 +228,8 @@ impl Parser<'_> {
                 | TokenKind::Keyword(
                     Keyword::Map | Keyword::Func | Keyword::Channel | Keyword::Mut
                 )
-        )
+        ) || (*self.peek() == TokenKind::Keyword(Keyword::Async)
+            && *self.peek_at(1) == TokenKind::Keyword(Keyword::Func))
     }
 
     pub(super) fn map_type(&mut self) -> PResult<Type> {

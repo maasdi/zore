@@ -168,6 +168,13 @@ at a time. On Ready the caller retrieves its results, frees its child frame, and
 follows the original success or panic-cleanup edge. Frame destruction does not
 repeat drops already placed by MIR.
 
+Every frame starts with a header of the state number, the pending child, the
+closure environment, and the frame's own `poll` and `destroy` function pointers.
+A value of async function type (Q36) is a closure whose code pointer is the
+callee's frame constructor, so an awaited call through the value builds the child
+frame from the value, then polls and destroys it through the child's header
+pointers. This is an internal representation, not a source contract.
+
 The poll ABI returns `0` for Pending and `1` for Ready, including completion through
 panic cleanup. The context pointer is opaque to generated code and borrowed only
 for a poll invocation; runtime waiters clone its waker. `zore_task_spawn_poll` shares

@@ -2,7 +2,7 @@ use std::fmt::Write;
 
 use super::llvm::{FunctionBuilder, Module};
 use crate::async_lowering::Suspension;
-use crate::mir::{self, Operand, Place, Terminator};
+use crate::mir::{self, Callee, Operand, Place, Terminator};
 use crate::resolve::FunctionId;
 
 pub(super) struct Frame {
@@ -21,7 +21,13 @@ impl Module<'_> {
     }
 
     pub(super) fn async_function(&mut self, body: &mir::Body) -> String {
-        let mut fields = vec!["i32".into(), "ptr".into(), "ptr".into()];
+        let mut fields = vec![
+            "i32".into(),
+            "ptr".into(),
+            "ptr".into(),
+            "ptr".into(),
+            "ptr".into(),
+        ];
         let mut locals = Vec::new();
         for local in &body.locals {
             let slot = fields.len();
@@ -120,6 +126,13 @@ impl FunctionBuilder<'_, '_> {
         let size = self.byte_size(&frame_ty, "1");
         self.line(format!("%frame = call ptr @zore_alloc(i64 {size})"));
         self.line(format!("store {frame_ty} zeroinitializer, ptr %frame"));
+        for (field, suffix) in [(3, "poll"), (4, "destroy")] {
+            self.line(format!(
+                "%header.{suffix} = getelementptr inbounds {frame_ty}, ptr %frame, i32 0, i32 {field}"
+            ));
+            let function = self.module.async_name(self.body.function, suffix);
+            self.line(format!("store ptr {function}, ptr %header.{suffix}"));
+        }
         self.frame_slots();
         for &param in &self.body.params {
             self.line(format!(
@@ -211,6 +224,17 @@ impl FunctionBuilder<'_, '_> {
         self.out.push_str("}\n\n");
     }
 
+    /// The poll (3) or destroy (4) function that every frame records at its start.
+    fn frame_header_pointer(&mut self, frame: &str, field: usize) -> String {
+        let slot = self.fresh();
+        self.line(format!(
+            "{slot} = getelementptr inbounds {{ i32, ptr, ptr, ptr, ptr }}, ptr {frame}, i32 0, i32 {field}"
+        ));
+        let function = self.fresh();
+        self.line(format!("{function} = load ptr, ptr {slot}"));
+        function
+    }
+
     fn suspend_call(&mut self, state: usize, kind: Suspension, terminator: &Terminator) {
         if let Suspension::Io(id) = kind {
             self.suspend_io(state, id, terminator);
@@ -247,6 +271,36 @@ impl FunctionBuilder<'_, '_> {
                 child
             }
             Suspension::Task => self.value(&args[0]),
+            Suspension::Value => {
+                let Terminator::Call {
+                    callee: Callee::Value(place),
+                    ..
+                } = terminator
+                else {
+                    unreachable!()
+                };
+                let address = self.address(place);
+                let closure = self.fresh();
+                self.line(format!(
+                    "{closure} = load {{ ptr, ptr, ptr }}, ptr {address}"
+                ));
+                let code = self.fresh();
+                self.line(format!(
+                    "{code} = extractvalue {{ ptr, ptr, ptr }} {closure}, 0"
+                ));
+                let environment = self.fresh();
+                self.line(format!(
+                    "{environment} = extractvalue {{ ptr, ptr, ptr }} {closure}, 1"
+                ));
+                let mut rendered = vec![format!("ptr {environment}")];
+                rendered.extend(self.arguments(args));
+                let child = self.fresh();
+                self.line(format!(
+                    "{child} = call ptr {code}({})",
+                    rendered.join(", ")
+                ));
+                child
+            }
             Suspension::Channel | Suspension::Sleep | Suspension::Mutex | Suspension::Io(_) => {
                 unreachable!()
             }
@@ -258,6 +312,22 @@ impl FunctionBuilder<'_, '_> {
         self.line(format!("{child} = load ptr, ptr %pending.slot"));
         let results = match kind {
             Suspension::Call(id) => self.module.package.function(id).results.clone(),
+            Suspension::Value => {
+                let Terminator::Call {
+                    callee: Callee::Value(place),
+                    ..
+                } = terminator
+                else {
+                    unreachable!()
+                };
+                self.module
+                    .package
+                    .types
+                    .func_signature(self.place_ty(place))
+                    .expect("a function-typed callee")
+                    .results
+                    .clone()
+            }
             Suspension::Task => self
                 .module
                 .package
@@ -292,6 +362,12 @@ impl FunctionBuilder<'_, '_> {
                     "{ready} = call i8 {poll}(ptr {child}, ptr %context, ptr {output})"
                 ));
             }
+            Suspension::Value => {
+                let poll = self.frame_header_pointer(&child, 3);
+                self.line(format!(
+                    "{ready} = call i8 {poll}(ptr {child}, ptr %context, ptr {output})"
+                ));
+            }
             Suspension::Task => {
                 let size = self.byte_size(&block_ty, "1");
                 self.line(format!("{ready} = call i8 @zore_task_poll(ptr {child}, ptr %context, i64 {size}, ptr {output})"));
@@ -312,6 +388,11 @@ impl FunctionBuilder<'_, '_> {
         let slot = match kind {
             Suspension::Call(id) => {
                 let destroy = self.module.async_name(id, "destroy");
+                self.line(format!("call void {destroy}(ptr {child})"));
+                output
+            }
+            Suspension::Value => {
+                let destroy = self.frame_header_pointer(&child, 4);
                 self.line(format!("call void {destroy}(ptr {child})"));
                 output
             }

@@ -2,7 +2,7 @@
 
 Authority: spec §16, with §5.7–5.8, §7.3–7.5, §7.7, §11.6, §12, §15.3, §17.2,
 and §31. Rows marked "pending" have no executable counterpart yet: they depend
-on features that do not exist (tasks, `await`) and do not count as passing
+on features that do not exist (`await` with closures) and do not count as passing
 tests. Every other row has an executable counterpart in
 `tests/parser/parser.rs`, `tests/typecheck/check.rs`,
 `tests/ownership/ownership.rs`, or `tests/codegen/native.rs`, and
@@ -88,7 +88,8 @@ tests. Every other row has an executable counterpart in
 | Shared parameter whose struct or collection type holds a function value | Rejected; declare it `mut` or `own` |
 | Collection loop over function values | Rejected |
 | Borrowing closure assigned to an outer `var` that outlives a captured local | Rejected |
-| Closure used in `go`, or live across `await` | Pending: tasks and `await` are not implemented |
+| Closure used in `go` | See "Spawned closures" below |
+| Closure live across `await` | Pending: `await` with closures is not implemented |
 
 ## Call-once closures
 
@@ -113,3 +114,115 @@ tests. Every other row has an executable counterpart in
 | `own` parameter of a closure | Dropped when the closure body ends |
 | Closure body panics | Runs cleanup for body locals, then unwinds through the caller and its frames |
 | Closure body `?`-returns an error | Closure returns the error; body cleanup runs; caller sees the error result |
+
+## Declared functions as values (§16.2)
+
+| Scenario | Expected result |
+| --- | --- |
+| `let f = add` then `f(1, 2)` | Valid; type `func(int, int) int` |
+| Function value passed to a `func(...)` parameter | Valid; identity is by signature |
+| Package-qualified function, written in Zore or native, converted then called | Valid |
+| Function value stored in a struct field, `Array<T>`, or map value | Valid |
+| Converted function value is Move | Binding it to another name moves it |
+| Function value compared, printed, or used as a map key | Rejected |
+| Name of an `async func` as a value | Rejected |
+| A method as a value | Rejected |
+| `println`, `len`, `push` as values | Rejected |
+| Parameter type or mode mismatch on assignment | Rejected |
+| Callee and arguments of a call through the value | Evaluated once, callee first |
+
+## Spawned closures (§16.4, §16.6, §18.3, §18.4)
+
+Executable counterparts are in `tests/typecheck/check.rs`
+(`go_takes_closures_and_function_values`) and `tests/codegen/native.rs`
+(`spawned_closures_own_their_captures_and_destroy_them_once`,
+`a_panic_in_a_spawned_closure_destroys_its_environment_once`,
+`a_panic_in_an_argument_destroys_the_evaluated_callable_and_spawns_nothing`,
+`go_runs_function_values_call_once_closures_and_owning_arguments`,
+`spawned_closures_run_as_plain_tasks_even_inside_async_functions`, and
+`a_detached_spawned_closure_runs_without_a_handle`).
+
+| Scenario | Expected result |
+| --- | --- |
+| `go func() { ... }()` capturing Copy values | Valid; values copied |
+| Captured Move value | Valid; unusable in the spawner afterward |
+| Captured borrowed parameter that is a Move value | Rejected |
+| Captured view, `mut` parameter, or exclusive capture | Rejected |
+| Spawned closure capturing a borrowing closure | Rejected |
+| Closure assigns, compound-updates, or passes a captured Copy local to `mut` | Rejected, at the change |
+| Closure copies a captured Copy local into its own `var` and changes that | Valid |
+| `go job()` then `job()` or a second `go job()` | Rejected: use of a moved value |
+| `go finish()` of a call-once closure | Valid; consumes it |
+| `go runWorker(handler)` with an owning function-typed `own` argument | Valid; the closure moves into the task |
+| Function-typed argument for a shared parameter, or a closure that holds a view | Rejected |
+| Callee or argument expression | Evaluated exactly once, callee first |
+| Environment destroyed on normal return, on an `error` result, and on panic | Exactly once each |
+| Closure never spawned, then dropped or out of scope | Environment destroyed once |
+| Argument expression panics after the callee was evaluated | Callable destroyed once; no task created |
+| Detached task with an owning closure | Environment and results destroyed when it finishes |
+| Result that is a slice, a view, or a function value | Rejected |
+| Callee that is a field, element, map value, or a call result | Rejected |
+| Closure inside an `async func` spawned with `go` | Valid; runs as a plain task, body not async |
+| `await` inside a spawned closure | Rejected |
+| Existing `go declaredFunc(args)` and closure calls | Unchanged |
+
+## Method values (§16.2)
+
+Executable counterparts are in `tests/typecheck/check.rs`
+(`method_values_close_over_their_receivers`), `tests/ownership/ownership.rs`
+(`method_values_hold_their_receivers_like_closures`), `tests/packages/packages.rs`
+(`exported_methods_become_function_values_across_packages` and the unexported
+case in `unexported_names_cannot_be_used_from_another_package`), and
+`tests/codegen/native.rs` (`method_values_call_the_method_on_the_captured_receiver`
+and `method_values_destroy_an_owned_receiver_exactly_once`).
+
+| Scenario | Expected result |
+| --- | --- |
+| `let read = c.read` then `read()` | Valid; shared capture; `c` readable meanwhile, not writable while `read` is live |
+| `let bump = c.bump` then `bump()` | Valid; exclusive capture of a mutable place; `c` unusable meanwhile |
+| `mut` receiver on an immutable binding | Rejected |
+| `own` receiver method value | Valid; call-once; `c` unusable afterward; a second call is rejected |
+| Method value returned, stored, or passed to `own` | Owning; receiver copied or moved at creation |
+| `go` on a method value held in a local | Valid; moves into the task; `mut` receiver on a Copy local and a borrowed Move receiver are rejected |
+| Method value passed to a function-typed parameter | Valid |
+| Receiver that is a field path of a local | Valid; the whole local is captured |
+| Receiver that is a call result, an index expression, or a map lookup | Rejected |
+| Method of another package, exported / not exported | Valid / rejected |
+| Method declared `async`, and `drop` | Rejected |
+| Type, parameter modes, and results | Those of the method without the receiver |
+| Owning receiver destroyed exactly once on return, error, panic, and when unused | Counting destructor tests |
+
+## Async function values (§16.2, §17.8)
+
+Executable counterparts are in `tests/parser/parser.rs`
+(`async_function_types_parse_in_type_positions`), `tests/typecheck/check.rs`
+(`async_function_values_follow_the_async_call_contract`),
+`tests/ownership/ownership.rs`
+(`async_function_values_are_used_exclusively_and_cannot_be_spawned_from_a_parameter`),
+`tests/packages/packages.rs`
+(`exported_async_functions_become_async_function_values_across_packages`), and
+`tests/codegen/native.rs` (`async_function_values_are_awaited_passed_and_spawned`,
+`async_function_values_pass_borrowed_and_owned_arguments_and_destroy_them_once`,
+`a_panic_in_an_awaited_async_function_value_unwinds_its_callers_once`,
+`async_function_values_live_in_struct_fields_and_arrays`, and
+`many_tasks_awaiting_through_an_async_function_value_do_not_hold_threads`).
+
+| Scenario | Expected result |
+| --- | --- |
+| `let h = fetchUser` for an `async func` | Type `async func(int) (User, error)` |
+| `await h(7)` inside an `async func` | Valid |
+| `go h(7)` in a plain function and in an async function | Valid; `Task<User, error>` |
+| `h(7)` as a statement, bound, or passed as an argument | Rejected: neither awaited nor spawned |
+| `await h(7)` in a plain function or a plain closure | Rejected |
+| `async func(T) R` assigned to `func(T) R`, and the reverse | Rejected |
+| Async function value in a struct field, `Array<T>`, map value, or `own` parameter | Valid |
+| Async function value as a slice element or map key | Rejected |
+| Parameter of async function type awaited twice | Valid |
+| `go op(x)` where `op` is a parameter | Rejected: came in through a parameter |
+| Package-qualified `async func` as a value | Valid |
+| Async method, built-in, or closure literal as an async value | Rejected |
+| Callee and arguments of a call through the value | Evaluated once, callee first |
+| Environment destroyed once on return, error, panic, and when unused | Counting destructor tests |
+| Callee used while an awaited call through it is suspended | Rejected |
+| Existing plain function values and `go` forms | Unchanged |
+

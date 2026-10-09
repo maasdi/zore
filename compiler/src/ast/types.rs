@@ -32,6 +32,7 @@ pub enum Type {
         span: Span,
     },
     Func {
+        is_async: bool,
         params: Vec<FuncTypeParam>,
         results: Vec<Type>,
         span: Span,

@@ -84,6 +84,8 @@ pub enum ExprKind {
         thunk: FunctionId,
         /// The thunk's type, `func() R1, ..., Rn`.
         closure_ty: TypeId,
+        /// The first argument is a function value that the task calls with the others.
+        callable: bool,
         args: Vec<Expr>,
     },
     /// Consumes the task handle and gives its results, raising its panic if it had one.

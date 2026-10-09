@@ -2463,6 +2463,9 @@ Receiver semantics follow the same ownership model as function parameters:
 
 There is no separate method ownership model.
 
+A method used as a value, `value.Method` without a call, is a function value
+defined in §16.2.
+
 ---
 
 # 10. Copy and Move Semantics
@@ -3655,8 +3658,100 @@ func()
 Two function types are identical when their parameter types, modes, and result
 types are identical, in order. Function types are not comparable, have no zero
 value (a binding must be initialized, §5.4), cannot be printed, and cannot be
-map keys (§13.3). Using a declared function's name as a value is not locked by
-this section and is rejected as unsupported.
+map keys (§13.3).
+
+**Declared functions as values.** The name of a declared synchronous function,
+written where a value is expected, is a function value whose type is the
+declaration's signature with the names removed. A package-qualified name
+(`pkg.F`) converts the same way for every function the package exports, whether
+it is written in Zore or implemented by the compiler. The value is a closure
+with no captures: evaluating the name has no effect, borrows nothing, and moves
+nothing. Like every function-typed value it is Move. A built-in operation
+(`println`, `len`, `push`, `clone`, channel and mutex operations, error
+construction) is not a function value and is rejected. The name of an `async func`
+is a value of an async function type, described below. A method used as a value
+is described below.
+
+```ore
+func add(a int, b int) int { return a + b }
+
+let f = add                        // func(int, int) int
+let apply = func(op func(int, int) int, x int, y int) int { return op(x, y) }
+println(apply(add, 2, 3))          // 5
+```
+
+**Async function types and values.** A function type may begin with `async`:
+`async func(int) (string, error)`. The `async` property is part of the type, so
+two function types are identical only when they agree on it as well as on the
+parameter types, modes, and results. There is no conversion between `func(T) R`
+and `async func(T) R` in either direction. The name of a declared `async func`,
+including a package-qualified one, is a capture-free Move value of the async
+function type with its signature; evaluating the name has no effect. An `async`
+method, a built-in operation, and a closure literal are not async function
+values (a closure body is never async, §16.1).
+
+A call through a value of async function type is an async call (§17.8): it must
+be the operand of `await` or of `go`. The callee is evaluated first and the
+arguments left to right, each once. An awaited call uses the callee exclusively
+for the whole call, including while the task is suspended. Async function types
+may appear wherever other function types may (§16.4), and never as a slice
+element or a map key.
+
+```ore
+async func fetchUser(id int) (User, error) { /* ... */ }
+
+type Route struct {
+    Path    string
+    handler async func(int) (User, error)
+}
+
+let h = fetchUser                // async func(int) (User, error)
+let user, err = await h(7)       // inside an async func
+let task = go h(7)               // anywhere; Task<User, error>
+```
+
+**Method values.** `value.Method`, written where a value is expected and not
+called, is a function value and means exactly the closure literal that calls
+the method:
+
+```ore
+func(params) results { return value.Method(params) }
+```
+
+with the method's parameters and results (the receiver is not a parameter). No
+rule is added: the receiver is captured by the ordinary capture rules (§16.3,
+§16.4), and the receiver's mode decides the capture. A shared receiver is
+captured by a shared borrow. A `mut` receiver is captured by an exclusive borrow
+and must be a mutable place (§11.6). An `own` receiver is moved into the
+closure, which is call-once (§16.6). When the value escapes, including being
+spawned by `go`, it is owning (§16.4): a Copy receiver is copied and a Move
+receiver is moved when the value is created, and a spawned method value follows
+§18.3 and §18.4.
+
+```ore
+type Counter struct { N int }
+
+func (c Counter) read() int { return c.N }
+func (c mut Counter) bump() { c.N += 1 }
+func (c own Counter) finish() int { return c.N }
+
+var counter = Counter{N: 1}
+let read = counter.read           // func() int; shared capture of `counter`
+println(read())                   // 1
+let bump = counter.bump           // func(); exclusive capture of `counter`
+bump()
+let done = counter.finish         // call-once; consumes `counter`
+println(done())
+```
+
+The receiver must be a local or a field path rooted at a local, because capture
+is per whole local (§16.3). A call result, an index expression, or a map lookup
+is rejected as the receiver of a method value; bind it to a local first.
+Creating a method value evaluates nothing but the capture. A method declared
+`async` is rejected as a value, for the reason an `async func` name is. A method
+of another package is usable as a value exactly where a call is allowed
+(§3.20). The `drop` method cannot be used as a value. Method expressions written
+on the type (`Counter.read`) are not part of this decision.
 
 Calling a value of function type uses ordinary call syntax and ordinary
 parameter rules (§7.3–7.4): arguments are borrowed unless the parameter is
@@ -3736,7 +3831,9 @@ rebinding), is:
 - stored in a struct field, fixed-array or `Array<T>` element, or map value,
   whether by a literal, an assignment to a field or element, a map assignment,
   or `push`;
-- passed to an `own` parameter.
+- passed to an `own` parameter;
+- the callee of `go`, or a `go` argument passed to an `own` parameter of
+  function type (§18.3).
 
 A call-once closure (§16.6) is also owning.
 
@@ -3780,8 +3877,8 @@ be usable exclusively, as for any call (§16.2).
 Every closure value, borrowing or owning, is checked by the same region
 analysis: a borrowing closure that would outlive a local it captures (by being
 returned, stored, or assigned to an outer place) is rejected, and the
-diagnostic names the captured local. Use with tasks (`go`) and liveness across
-`await` remain unsupported (Q02g).
+diagnostic names the captured local. Liveness across `await` remains
+unsupported (Q02g). Use with `go` is defined in §18.3 and §18.4.
 
 A panic or `?` inside a closure runs the closure's own cleanup and then
 continues in its caller as for any call.
@@ -3823,6 +3920,9 @@ call does not consume are destroyed when the call returns. A call-once closure
 that is never called is destroyed at the end of its scope with every captured
 value.
 
+`go finish()` is the single permitted call of a call-once binding, deferred: it
+consumes the binding as a call does (§18.3).
+
 Ownership, error, and async implications: no new ownership category; an owning
 closure is a Move value that owns its captures, and a call-once call is a move
 of the closure. Panics and `?` inside the body follow §16.4. Async interaction
@@ -3846,6 +3946,10 @@ async func fetchUser(id int) (User, error) {
     return parseUser(response)?
 }
 ```
+
+An async function type is written with `async` before `func`, as in
+`async func(int) (User, error)`, and a declared `async func` name is a value of
+that type (§16.2).
 
 ## 17.3 `await` semantics — LOCKED
 
@@ -3934,14 +4038,16 @@ Compiler implementers must preserve the locked observable behavior while being f
 
 ## 17.8 Async call contract — LOCKED
 
-A call to an `async func` must be the operand of `await` or of `go`. Any other
+A call to an `async func`, or through a value of async function type, must be
+the operand of `await` or of `go`. Any other
 use — a bare call statement, binding the call's result, or passing it as an
 argument — is a compile-time error. There is no user-visible future or promise
 type; an async call's result can only be obtained by awaiting it or by
 spawning it and later retrieving it from the task (§18.9).
 
 `await` is valid only inside the body of an `async func`. Its operand is
-either a call to an `async func` or a `Task<...>` value (§18.9). Using `await`
+either a call to an `async func` or to a value of async function type (§16.2),
+or a `Task<...>` value (§18.9). Using `await`
 anywhere else — including in a synchronous function or a non-async closure —
 is a compile-time error. A synchronous function reaches async work only by
 spawning it with `go`.
@@ -4001,9 +4107,25 @@ let task = go fetchUser(123)
 let user = task.wait()?
 ```
 
-`go` accepts a call to any declared function or method, async or not. A call to
-an `async func` becomes a task that the runtime resumes as it becomes ready. A
-call to a plain function runs to completion on a runtime thread as one task. A
+`go` accepts a call to any declared function or method, async or not. The
+callee may also be a closure literal written in place or a local of function
+type; the callable is evaluated first, then the arguments left to right, each
+exactly once in the spawner, and only then is the task created. The callable is
+moved into the task: a local used as the callee is unusable afterward, and a
+call-once closure may be spawned. The task owns the closure from creation, calls
+it once, and then destroys it, so every captured value is destroyed exactly once
+on a normal return, an error result, or a panic. A callee that is a field,
+element, map value, or the result of a call is rejected: move a closure stored
+in a field of a local struct into a local first, and take one out of an
+`Array<T>` or a map with `pop` or `remove`. A closure body is never
+async (§16.1), so a spawned closure runs as one plain-function task even when it
+is written inside an `async func`. `go` also accepts a call through a value of
+async function type (§16.2): the callable is moved into the task, and the task
+resumes as for a declared `async func`. `go asyncFn(x)` on the declared name is
+unchanged.
+A call to an `async func` becomes a task that the runtime resumes as it becomes
+ready. A call to a plain function runs to completion on a runtime thread as one
+task. A
 plain-function task that waits holds a thread while it waits (§17.3, §18.9), so
 programs that create very many tasks should make the task functions `async`;
 the calls inside them stay as they are.
@@ -4017,6 +4139,21 @@ When values enter a spawned task:
 3. Borrowed values are allowed only if the compiler can prove the borrow remains valid for the task lifetime.
 4. Mutable borrows require exclusive access until the borrow ends / task completes.
 5. Closure captures follow the same rules.
+
+**Spawned closures.** A closure that is spawned is owning (§16.4), so its
+captures are values: a Copy capture is copied, and a Move capture is moved in
+and unusable in the spawner afterward. These captures are rejected: a borrowed
+parameter that is a Move value, a local that holds a view, a `mut` parameter or
+exclusively captured value, and a borrowing closure. Assigning, compound
+updating, or passing to a `mut` parameter a captured Copy local inside a
+spawned closure is rejected at the change, because the task would change only
+its own copy; a task starts from a copy inside its body (`var local = n`) or
+shares a change through a channel or a `mutex`. A captured Move value may be
+changed in the task. An argument of function type for an `own` parameter of the
+spawned callee is accepted when it is an owning closure none of whose captured
+values holds a view; a function-typed argument for a shared parameter, and a
+closure that holds a view, are rejected. A function value that this function received through a parameter is rejected as a spawned callable or as a spawned `own` argument, because its captures are unknown here; spawn it in the function that creates the closure. A task result still cannot be a slice,
+hold a view, or be a function value (Q25).
 
 **Lifetime proof across all exits.** A planned `.wait()` or `await task` is not
 proof that a spawned borrow is valid: normal early return, `?`, panic, handle

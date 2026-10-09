@@ -9,6 +9,8 @@ use crate::resolve::{FunctionId, LocalId, LocalKind};
 #[derive(Default)]
 struct Escapes {
     locals: HashSet<LocalId>,
+    /// Locals moved into a task as the callable of a `go`.
+    spawned: HashSet<LocalId>,
     /// `(to, from)`: `to` was bound or assigned from the whole local `from`.
     aliases: Vec<(LocalId, LocalId)>,
 }
@@ -19,18 +21,21 @@ impl Checker<'_> {
         let mut escapes = Escapes::default();
         self.block_escapes(body, &mut escapes);
         loop {
-            let before = escapes.locals.len();
+            let before = escapes.locals.len() + escapes.spawned.len();
             for &(to, from) in &escapes.aliases {
                 if escapes.locals.contains(&to) {
                     escapes.locals.insert(from);
                 }
+                if escapes.spawned.contains(&to) {
+                    escapes.spawned.insert(from);
+                }
             }
-            if escapes.locals.len() == before {
+            if escapes.locals.len() + escapes.spawned.len() == before {
                 break;
             }
         }
         let mut once_locals = HashSet::new();
-        self.bind_closures(body, &escapes.locals, &mut once_locals);
+        self.bind_closures(body, &escapes.locals, &escapes.spawned, &mut once_locals);
         if !once_locals.is_empty() {
             self.block_once_uses(body, &once_locals);
         }
@@ -64,9 +69,13 @@ impl Checker<'_> {
 
     fn is_call_once(&self, function: FunctionId) -> bool {
         let index = function.0 as usize - self.res.functions.len();
-        self.closures[index]
-            .as_ref()
-            .is_some_and(|closure| closure.call_once)
+        match self.closures.get(index) {
+            Some(closure) => closure.as_ref().is_some_and(|closure| closure.call_once),
+            None => self
+                .generated_functions
+                .get(index - self.closures.len())
+                .is_some_and(|generated| generated.call_once),
+        }
     }
 
     fn block_escapes(&self, block: &mut hir::Block, escapes: &mut Escapes) {
@@ -216,6 +225,15 @@ impl Checker<'_> {
                     self.expr_escapes(arg, mode == ParamMode::Own, escapes);
                 }
             }
+            ExprKind::Spawn { args, callable, .. } => {
+                if *callable && let Some(ExprKind::Local(local)) = args.first().map(|arg| &arg.kind)
+                {
+                    escapes.spawned.insert(*local);
+                }
+                for arg in args {
+                    self.expr_escapes(arg, true, escapes);
+                }
+            }
             _ => {
                 for child in children_mut(expr) {
                     self.expr_escapes(child, false, escapes);
@@ -228,6 +246,7 @@ impl Checker<'_> {
         &mut self,
         block: &mut hir::Block,
         escaping: &HashSet<LocalId>,
+        spawned: &HashSet<LocalId>,
         once_locals: &mut HashSet<LocalId>,
     ) {
         for stmt in &mut block.stmts {
@@ -240,12 +259,17 @@ impl Checker<'_> {
             };
             if let StmtKind::Let { value, .. } = &mut stmt.kind
                 && let ExprKind::Closure {
-                    function, owning, ..
+                    function,
+                    captures,
+                    owning,
                 } = &mut value.kind
                 && let Some((local, is_let)) = bound
             {
                 if escaping.contains(&local) {
                     *owning = true;
+                }
+                if spawned.contains(&local) {
+                    self.check_spawned_captures(*function, captures, value.span);
                 }
                 if self.is_call_once(*function) && is_let {
                     *owning = true;
@@ -264,7 +288,7 @@ impl Checker<'_> {
                     }
                 }
             }
-            self.stmt_closures(stmt, escaping, once_locals);
+            self.stmt_closures(stmt, escaping, spawned, once_locals);
         }
     }
 
@@ -273,26 +297,54 @@ impl Checker<'_> {
         &mut self,
         stmt: &mut hir::Stmt,
         escaping: &HashSet<LocalId>,
+        spawned: &HashSet<LocalId>,
         once_locals: &mut HashSet<LocalId>,
     ) {
         let mut misplaced = Vec::new();
+        let mut spawned_literals = Vec::new();
+        let mut spawn_callees = HashSet::new();
         let call_once: Vec<bool> = self
             .closures
             .iter()
             .map(|closure| closure.as_ref().is_some_and(|closure| closure.call_once))
+            .chain(
+                self.generated_functions
+                    .iter()
+                    .map(|generated| generated.call_once),
+            )
             .collect();
         let declared = self.res.functions.len();
         for root in stmt_exprs(stmt) {
             visit_expr(root, &mut |expr| {
+                if let ExprKind::Spawn {
+                    args,
+                    callable: true,
+                    ..
+                } = &expr.kind
+                    && let Some(first) = args.first()
+                    && let ExprKind::Closure {
+                        function, captures, ..
+                    } = &first.kind
+                {
+                    spawn_callees.insert(first.span);
+                    spawned_literals.push((*function, captures.clone(), first.span));
+                }
                 if let ExprKind::Closure {
                     function, owning, ..
                 } = &mut expr.kind
-                    && call_once[function.0 as usize - declared]
+                    && call_once
+                        .get(function.0 as usize - declared)
+                        .copied()
+                        .unwrap_or(false)
+                    && !spawn_callees.contains(&expr.span)
                 {
                     *owning = true;
                     misplaced.push(expr.span);
                 }
             });
+        }
+        for (function, captures, span) in spawned_literals {
+            self.check_spawned_captures(function, &captures, span);
         }
         for span in misplaced {
             self.diagnostics.push(
@@ -310,32 +362,34 @@ impl Checker<'_> {
                 else_block,
                 ..
             } => {
-                self.bind_closures(then_block, escaping, once_locals);
+                self.bind_closures(then_block, escaping, spawned, once_locals);
                 if let Some(else_block) = else_block {
-                    self.bind_closures(else_block, escaping, once_locals);
+                    self.bind_closures(else_block, escaping, spawned, once_locals);
                 }
             }
             StmtKind::Loop {
                 init, update, body, ..
             } => {
                 if let Some(init) = init {
-                    self.stmt_closures(init, escaping, once_locals);
+                    self.stmt_closures(init, escaping, spawned, once_locals);
                 }
                 if let Some(update) = update {
-                    self.stmt_closures(update, escaping, once_locals);
+                    self.stmt_closures(update, escaping, spawned, once_locals);
                 }
-                self.bind_closures(body, escaping, once_locals);
+                self.bind_closures(body, escaping, spawned, once_locals);
             }
-            StmtKind::ForEach { body, .. } => self.bind_closures(body, escaping, once_locals),
+            StmtKind::ForEach { body, .. } => {
+                self.bind_closures(body, escaping, spawned, once_locals)
+            }
             StmtKind::Select { arms, default } => {
                 for arm in arms {
-                    self.bind_closures(&mut arm.body, escaping, once_locals);
+                    self.bind_closures(&mut arm.body, escaping, spawned, once_locals);
                 }
                 if let Some(default) = default {
-                    self.bind_closures(default, escaping, once_locals);
+                    self.bind_closures(default, escaping, spawned, once_locals);
                 }
             }
-            StmtKind::Block(block) => self.bind_closures(block, escaping, once_locals),
+            StmtKind::Block(block) => self.bind_closures(block, escaping, spawned, once_locals),
             _ => {}
         }
     }
@@ -601,6 +655,20 @@ fn once_uses(expr: &mut hir::Expr, once: &HashSet<LocalId>, misused: &mut Vec<Mi
             }
             return;
         }
+        ExprKind::Spawn {
+            args,
+            callable: true,
+            ..
+        } => {
+            let consumed = matches!(
+                args.first().map(|callee| &callee.kind),
+                Some(ExprKind::Local(local)) if once.contains(local)
+            );
+            for arg in args.iter_mut().skip(usize::from(consumed)) {
+                once_uses(arg, once, misused);
+            }
+            return;
+        }
         ExprKind::Local(local) if once.contains(local) => misused.push((*local, expr.span)),
         ExprKind::Closure { captures, .. } => {
             for (local, _) in captures.iter() {
@@ -631,7 +699,7 @@ fn stmt_place_roots(stmt: &hir::Stmt) -> Vec<(LocalId, crate::source::Span)> {
 }
 
 /// The expressions a statement evaluates directly, not those in nested blocks.
-fn stmt_exprs(stmt: &mut hir::Stmt) -> Vec<&mut hir::Expr> {
+pub(super) fn stmt_exprs(stmt: &mut hir::Stmt) -> Vec<&mut hir::Expr> {
     let mut roots: Vec<&mut hir::Expr> = Vec::new();
     match &mut stmt.kind {
         StmtKind::Let { value, .. }

@@ -117,6 +117,31 @@ fn exported_functions_types_methods_and_constants_work_across_packages() {
 }
 
 #[test]
+fn exported_methods_become_function_values_across_packages() {
+    let main = main_with(
+        IMPORT_SHAPES,
+        "let c = shapes.Circle{Radius: 2}
+        let name = c.Name
+        println(name())
+        let rect = shapes.NewRect(2, 3)
+        let size = rect.Size
+        println(size())",
+    );
+    accepts(&with_shapes(&main));
+}
+
+#[test]
+fn package_functions_convert_to_function_values() {
+    let main = main_with(
+        IMPORT_SHAPES,
+        "let area = shapes.Area
+        let c = shapes.Circle{Radius: 2}
+        println(area(c))",
+    );
+    accepts(&with_shapes(&main));
+}
+
+#[test]
 fn files_in_one_folder_share_a_package_and_sibling_folders_do_not() {
     accepts(&[
         ("main.ore", "package main\nfunc main() { helper() }\n"),
@@ -168,6 +193,10 @@ fn unexported_names_cannot_be_used_from_another_package() {
             "let c = shapes.Circle{Radius: 1}\nprintln(c.secret())",
             "method `secret` of `shapes.Circle` is not exported",
         ),
+        (
+            "let c = shapes.Circle{Radius: 1}\nlet f = c.secret\n_ = f",
+            "method `secret` of `shapes.Circle` is not exported",
+        ),
     ] {
         rejects(&with_shapes(&main_with(IMPORT_SHAPES, body)), message);
     }
@@ -183,10 +212,6 @@ fn qualified_names_must_name_a_package_and_the_right_kind_of_member() {
         (
             "let x = other.Thing\n_ = x",
             "cannot find `other` in this scope",
-        ),
-        (
-            "let c = shapes.Area\n_ = c",
-            "declared functions used as values",
         ),
         ("let c = shapes.Circle(1)", "is constructed with"),
         ("shapes.Pi()", "is not a function"),
@@ -540,4 +565,28 @@ fn the_io_packages_reject_misuse() {
         )],
         "use of moved value",
     );
+}
+
+#[test]
+fn exported_async_functions_become_async_function_values_across_packages() {
+    let shapes = "package shapes
+
+async func Load(id int) int { return id }
+
+func local() int { return 1 }
+";
+    let main = "package main
+import \"myapp/shapes\"
+
+async func run() int {
+    let load = shapes.Load
+    return await load(3)
+}
+
+func main() {
+    let t = go run()
+    println(t.wait())
+}
+";
+    accepts(&[("main.ore", main), ("shapes/shapes.ore", shapes)]);
 }

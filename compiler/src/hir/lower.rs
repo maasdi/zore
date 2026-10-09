@@ -1,4 +1,6 @@
 mod closure_kind;
+mod method_value;
+mod spawn;
 
 use std::collections::{HashMap, HashSet};
 
@@ -39,7 +41,8 @@ pub fn check(
         closures: Vec::new(),
         exclusive_captures: HashSet::new(),
         awaited_call: None,
-        spawn_thunks: Vec::new(),
+        generated_functions: Vec::new(),
+        function_values: HashMap::new(),
         resolving_fields: false,
     };
     checker.closures = checker.res.closures.iter().map(|_| None).collect();
@@ -106,7 +109,7 @@ pub fn check(
             .into_iter()
             .chain(closures)
             .map(|f| f.expect("every function and closure was checked"))
-            .chain(std::mem::take(&mut checker.spawn_thunks))
+            .chain(std::mem::take(&mut checker.generated_functions))
             .collect(),
         entry,
     };
@@ -161,8 +164,9 @@ struct Checker<'a> {
     exclusive_captures: HashSet<(usize, LocalId)>,
     /// The span of the async call that the `await` being checked applies to.
     awaited_call: Option<Span>,
-    /// Entry points of spawned calls, with ids following every function and closure.
-    spawn_thunks: Vec<hir::Function>,
+    /// Forwarding closures for function values and entry points of spawned calls, with ids following every function and closure.
+    generated_functions: Vec<hir::Function>,
+    function_values: HashMap<FunctionId, FunctionId>,
     resolving_fields: bool,
 }
 
@@ -336,7 +340,10 @@ impl<'a> Checker<'a> {
                 Some(self.types.slice_type(element_ty, *mutable))
             }
             ast::Type::Func {
-                params, results, ..
+                is_async,
+                params,
+                results,
+                ..
             } => {
                 let mut ok = true;
                 let mut checked_params = Vec::new();
@@ -352,6 +359,7 @@ impl<'a> Checker<'a> {
                 }
                 let results = checked_results?;
                 Some(self.types.func_type(FuncSignature {
+                    is_async: *is_async,
                     params: checked_params,
                     results,
                 }))
@@ -914,6 +922,7 @@ impl<'a> Checker<'a> {
         let params: Option<Vec<TypeId>> = params.into_iter().collect();
         let (params, results, locals) = (params?, results?, locals?);
         let signature = FuncSignature {
+            is_async: false,
             params: closure
                 .params
                 .iter()
@@ -1249,101 +1258,69 @@ impl<'a> Checker<'a> {
         }
     }
 
-    fn go_expr(&mut self, operand: &ast::Expr, span: Span) -> Option<Value> {
-        let mut call = operand;
-        while let ast::ExprKind::Paren(inner) = &call.kind {
-            call = inner;
-        }
-        if !matches!(call.kind, ast::ExprKind::Call { .. }) {
-            self.error("`go` needs a call", span);
-            return None;
-        }
-        let previous = self.awaited_call.replace(call.span);
-        let value = self.expr(operand, None);
-        self.awaited_call = previous;
-        let Value::Typed(expr) = value? else {
-            self.error("`go` needs a call", span);
-            return None;
-        };
-        let ExprKind::Call { function, args } = expr.kind else {
-            self.error("`go` needs a call to a declared function or method", span);
-            return None;
-        };
-        let results = expr.types;
-        if !self.spawn_inputs_are_independent(function, &args) {
-            return None;
-        }
-        let task = self.task_type(results.clone(), span)?;
-        let closure_ty = self.types.func_type(FuncSignature {
-            params: Vec::new(),
+    fn function_value(&mut self, id: FunctionId, span: Span) -> Option<Value> {
+        let declaration = self.res.functions[id.0 as usize];
+        let is_async = declaration.is_async;
+        let signature = self.signatures[id.0 as usize].as_ref()?;
+        let (params, results) = (signature.params.clone(), signature.results.clone());
+        let modes: Vec<ast::ParamMode> = declaration.params.iter().map(|p| p.mode).collect();
+        let ty = self.types.func_type(FuncSignature {
+            is_async,
+            params: modes.iter().copied().zip(params.iter().copied()).collect(),
             results: results.clone(),
         });
-        let thunk = self.spawn_thunk(function, &args, results, span);
+        let function = match self.function_values.get(&id) {
+            Some(&function) => function,
+            None => {
+                let function =
+                    self.forwarding_closure(id, &params, &modes, results, is_async, span);
+                self.function_values.insert(id, function);
+                function
+            }
+        };
         Some(Value::Typed(typed(
-            ExprKind::Spawn {
-                thunk,
-                closure_ty,
-                args,
+            ExprKind::Closure {
+                function,
+                captures: Vec::new(),
+                owning: false,
             },
-            task,
+            ty,
             span,
         )))
     }
 
-    /// Every input must be valid for the task's whole life, whatever the spawner does next.
-    fn spawn_inputs_are_independent(&mut self, function: FunctionId, args: &[hir::Expr]) -> bool {
-        let mut ok = true;
-        for (index, arg) in args.iter().enumerate() {
-            let LocalKind::Param(mode) = self.res.locals[function.0 as usize][index].kind else {
-                unreachable!("parameters come first among a function's locals")
-            };
-            let ty = arg.ty();
-            let message = if mode == ast::ParamMode::Mut {
-                "a spawned call cannot take a `mut` parameter, since copying the argument would change what the caller sees"
-            } else if self.type_contains(ty, &|kind| {
-                matches!(kind, TypeKind::Slice { .. } | TypeKind::Func(_))
-            }) {
-                "a spawned call cannot take a view or a function value, since it may borrow storage the task does not own"
-            } else if mode == ast::ParamMode::Borrow && !self.type_is_copy(ty) {
-                "a spawned call needs `own` to take a value that is moved, since the task cannot borrow the spawner's storage"
-            } else {
-                continue;
-            };
-            self.error(message, arg.span);
-            ok = false;
-        }
-        ok
-    }
-
-    /// An owning closure over the arguments that makes the call; the runtime runs it once.
-    fn spawn_thunk(
+    /// A closure without captures that passes its parameters on to the declared function.
+    fn forwarding_closure(
         &mut self,
-        function: FunctionId,
-        args: &[hir::Expr],
+        target: FunctionId,
+        params: &[TypeId],
+        modes: &[ast::ParamMode],
         results: Vec<TypeId>,
+        is_async: bool,
         span: Span,
     ) -> FunctionId {
         let id = FunctionId(
-            (self.res.functions.len() + self.closures.len() + self.spawn_thunks.len()) as u32,
+            (self.res.functions.len() + self.closures.len() + self.generated_functions.len())
+                as u32,
         );
-        let captures: Vec<LocalId> = (0..args.len()).map(|i| LocalId(i as u32)).collect();
-        let locals = args
+        let locals = params
             .iter()
+            .zip(modes)
             .enumerate()
-            .map(|(index, arg)| hir::Local {
+            .map(|(index, (&ty, &mode))| hir::Local {
                 name: format!("arg{index}"),
-                ty: arg.ty(),
-                kind: LocalKind::Capture(LocalId(index as u32)),
+                ty,
+                kind: LocalKind::Param(mode),
                 span,
             })
             .collect();
         let call = hir::Expr {
             kind: ExprKind::Call {
-                function,
-                args: captures
+                function: target,
+                args: params
                     .iter()
-                    .zip(args)
-                    .map(|(&capture, arg)| typed(ExprKind::Local(capture), arg.ty(), span))
+                    .enumerate()
+                    .map(|(index, &ty)| typed(ExprKind::Local(LocalId(index as u32)), ty, span))
                     .collect(),
             },
             types: results.clone(),
@@ -1354,31 +1331,29 @@ impl<'a> Checker<'a> {
         } else {
             StmtKind::Return(vec![call])
         };
-        let body = hir::Block {
-            stmts: vec![hir::Stmt {
-                kind: statement,
-                span,
-            }],
-            span,
-        };
-        let call_once = self.consumes_capture(&body, &captures);
         let name = format!(
-            "{}$go{}",
-            self.function_name(FunctionId(self.current as u32)),
-            self.spawn_thunks.len()
+            "{}$value{}",
+            self.function_name(target),
+            self.generated_functions.len()
         );
-        self.spawn_thunks.push(hir::Function {
+        self.generated_functions.push(hir::Function {
             name,
             span,
-            params: Vec::new(),
+            params: (0..params.len()).map(|i| LocalId(i as u32)).collect(),
             results,
-            captures,
+            captures: Vec::new(),
             is_closure: true,
-            is_async: self.is_async_function(function),
+            is_async,
             native: false,
-            call_once,
+            call_once: false,
             locals,
-            body,
+            body: hir::Block {
+                stmts: vec![hir::Stmt {
+                    kind: statement,
+                    span,
+                }],
+                span,
+            },
         });
         id
     }
@@ -1629,8 +1604,15 @@ impl<'a> Checker<'a> {
             self.error("`await` needs a call to an `async func`", span);
             return None;
         };
-        if matches!(&expr.kind, ExprKind::Call { function, .. } if self.is_async_function(*function))
-        {
+        let awaits_async_call = match &expr.kind {
+            ExprKind::Call { function, .. } => self.is_async_function(*function),
+            ExprKind::CallValue { callee, .. } => self
+                .types
+                .func_signature(callee.ty())
+                .is_some_and(|signature| signature.is_async),
+            _ => false,
+        };
+        if awaits_async_call {
             return Some(Value::Typed(expr));
         }
         if let [ty] = expr.types[..]
@@ -1702,14 +1684,7 @@ impl<'a> Checker<'a> {
                 ConstValue::Untyped(v) => Some(Value::Untyped(v, span)),
                 ConstValue::Typed(ty, c) => Some(Value::Typed(typed(ExprKind::Const(c), ty, span))),
             },
-            Res::Function(_) => {
-                self.unsupported(
-                    "declared functions used as values are",
-                    span,
-                    "wrap the call in a function literal, as in `func() { f() }`",
-                );
-                None
-            }
+            Res::Function(id) => self.function_value(id, span),
             Res::Struct(_) | Res::Primitive(_) => {
                 self.error(format!("`{name}` is a type, not a value"), span);
                 None
@@ -2221,6 +2196,19 @@ impl<'a> Checker<'a> {
                 if args.len() == 1 { "was" } else { "were" },
             );
             self.error(message, span);
+            self.report_arg_errors(args);
+            return None;
+        }
+        if signature.is_async && self.awaited_call != Some(span) {
+            let name = self.source_text(callee.span).to_owned();
+            self.diagnostics.push(
+                Diagnostic::new(
+                    Severity::Error,
+                    format!("call to async function value `{name}` is neither awaited nor spawned"),
+                    span,
+                )
+                .note("write `await` before the call, or spawn it with `go`"),
+            );
             self.report_arg_errors(args);
             return None;
         }
@@ -3179,6 +3167,11 @@ impl<'a> Checker<'a> {
             }
             Value::Typed(expr) => self.single_value(expr)?,
         };
+        if let Some(strukt) = self.types.struct_id(base.ty())
+            && let Some(&method) = self.res.methods.get(&(strukt, name.text.clone()))
+        {
+            return self.method_value(base, method, name, span);
+        }
         let (field, ty) = self.field_of(base.ty(), name)?;
         Some(Value::Typed(typed(
             ExprKind::Field {

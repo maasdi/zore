@@ -22,4 +22,12 @@ for their rationale; the specification is authoritative.
 - [Arrays, indexing, and slicing](proposals/arrays-slices.md) (spec §12.6)
 - [Maps](proposals/maps.md) (spec §13.3)
 - [Async functions as state machines, without fibers](proposals/async-state-machines.md) (spec §17.3, §17.7, §18.3, §20.2, §35.1, §37.3; all six slices implemented)
+- [Declared function values and `go` on owning callables](proposals/function-values-and-spawned-closures.md) (spec §16.2, §16.4, §16.6, §18.3, §18.4; issue #52)
+- [Method values](proposals/method-values.md) (spec §9.1, §16.2; Q34)
+- [`async` function values](proposals/async-function-values.md) (spec §16.2, §17.2, §17.8, §18.3; Q36)
 
+## Withdrawn proposals
+
+These proposals were not accepted and changed nothing. They are kept for their reasoning.
+
+- [`go` on a callee stored in a struct field](proposals/spawn-field-callee.md) (Q35)

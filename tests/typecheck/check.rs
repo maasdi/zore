@@ -841,10 +841,7 @@ fn calls_arguments_and_results() {
         &program("type U struct {}\nfunc g() { U() }"),
         "constructed with `U{...}`",
     );
-    rejects(
-        &program("func greet() {}\nfunc g() { let f = greet }"),
-        "declared functions used as values are not supported",
-    );
+    accepts(&program("func greet() {}\nfunc g() { let f = greet\nf() }"));
     rejects(&body("let x = int"), "`int` is a type, not a value");
     rejects(
         &body("let x = string(1)"),
@@ -2399,10 +2396,9 @@ fn function_values_can_be_returned_and_stored_but_not_sliced() {
         "a function-typed parameter cannot be `mut`",
     );
     accepts(&program("func g(f func([]int) []int) {}"));
-    rejects(
-        &program("func greet() {}\nfunc g() { let f = greet }"),
-        "declared functions used as values are not supported",
-    );
+    accepts(&program(
+        "async func greet() {}\nfunc g() { let f = greet\nlet t = go f()\nt.wait() }",
+    ));
     rejects(
         &program("const c = func() {}"),
         "a function literal can only appear inside a function body",
@@ -2955,10 +2951,6 @@ fn standard_packages_have_typed_signatures() {
             "_ = strings.upper(\"a\")",
             "package `strings` does not declare `upper`",
         ),
-        (
-            "let f = strings.Upper\n_ = f",
-            "declared functions used as values",
-        ),
     ] {
         rejects(
             &format!(
@@ -3285,10 +3277,6 @@ fn go_needs_a_call_to_a_declared_function() {
     rejects(&task_body("let t = go 5"), "`go` needs a call");
     rejects(&task_body("let n = 1\nlet t = go n"), "`go` needs a call");
     rejects(
-        &task_body("let f = func() int { return 1 }\nlet t = go f()"),
-        "`go` needs a call to a declared function or method",
-    );
-    rejects(
         &task_body("let t = go println(\"x\")"),
         "`go` needs a call to a declared function or method",
     );
@@ -3307,11 +3295,11 @@ fn spawned_inputs_must_not_borrow_the_spawner() {
     );
     rejects(
         &task_program("func f(values []int) { let t = go view(values) }"),
-        "cannot take a view or a function value",
+        "cannot take a view",
     );
     rejects(
         &task_program("func f() { var values = [int; 3]{1, 2, 3}\nlet t = go view(values[0:2]) }"),
-        "cannot take a view or a function value",
+        "cannot take a view",
     );
     rejects(
         &task_body("let f = func(n int) int { return n }\nlet t = go inspect(f)"),
@@ -3737,4 +3725,274 @@ fn select_cases_must_be_channel_operations() {
         &channel_body("let a = channel<int>()\nselect { case consume(a) { } }"),
         "a `select` case must be a channel `send` or `receive`",
     );
+}
+
+#[test]
+fn declared_functions_are_capture_free_function_values() {
+    accepts(&program(
+        "func add(a int, b int) int { return a + b }
+func edit(values mut []int, factor int) {}
+func take(f func(int, int) int) int { return f(1, 2) }
+func pick() func(int, int) int { return add }
+type Box struct { op func(int, int) int }
+func g() {
+    let f = add
+    let h func(mut []int, int) = edit
+    var data = Array<int>{1}
+    h(data[:], 2)
+    println(f(1, 2) + take(add) + pick()(3, 4))
+    let boxed = Box{op: add}
+    var all = Array<func(int, int) int>{}
+    all.push(add)
+    _ = boxed
+}",
+    ));
+    for (decls, message) in [
+        (
+            "func add(a int, b int) int { return a + b }\nfunc g() { let f func(int) int = add\n_ = f }",
+            "mismatched types",
+        ),
+        (
+            "func add(a int, b int) int { return a + b }\nfunc g() { let f = add\nlet h = add\n_ = f == h }",
+            "operator `==` cannot be applied",
+        ),
+        (
+            "func add(a int, b int) int { return a + b }\nfunc g() { let f = add\nlet h = f\n_ = f\n_ = h }",
+            "use of moved value `f`",
+        ),
+        (
+            "func edit(values mut []int) {}\nfunc g(values []int) { let f = edit\nf(values) }",
+            "expected `mut []int64`, found `[]int64`",
+        ),
+        (
+            "func g() { let f = println\n_ = f }",
+            "`println` can only be called",
+        ),
+    ] {
+        rejects(&program(decls), message);
+    }
+}
+
+#[test]
+fn go_takes_closures_and_function_values() {
+    accepts(&task_program(
+        "func twice(n int) int { return n * 2 }
+func run(handler own func() int) int { return handler() }
+func start(id int, name string, work own Array<int>) {
+    let literal = go func() int { return id + 1 }()
+    let named = twice
+    let value = go named(4)
+    let finish = func() { eat(work) }
+    let once = go finish()
+    let handler = func() int { return id }
+    let passed = go run(handler)
+    go func(message string) { log(message) }(name)
+    println(literal.wait() + value.wait() + passed.wait())
+    once.wait()
+}
+func inside() {
+    var total = 0
+    let t = go func() {
+        var local = total
+        local += 1
+        println(local)
+    }()
+    t.wait()
+}
+async func parent(id int) {
+    let t = go func() int { return id }()
+    println(await t)
+}",
+    ));
+    for (decls, message) in [
+        (
+            "func f() { let job = func() {}\nlet a = go job()\nlet b = go job()\na.wait()\nb.wait() }",
+            "use of moved value `job`",
+        ),
+        (
+            "func f() { var n = 0\nlet t = go func() { n += 1 }()\nt.wait() }",
+            "a spawned closure cannot change `n`",
+        ),
+        (
+            "func f() { var n = 0\nlet job = func() { bump(n) }\nlet t = go job()\nt.wait() }",
+            "a spawned closure cannot change `n`",
+        ),
+        (
+            "func f() { var values = Array<int>{1}\nlet part = values[:]\nlet t = go func() { view(part) }()\nt.wait() }",
+            "which holds a view",
+        ),
+        (
+            "func f(values Array<int>) { let t = go func() { look(values) }()\nt.wait() }",
+            "cannot move borrowed value `values`",
+        ),
+        (
+            "func f(n mut int) { let t = go func() { println(n) }()\nt.wait() }",
+            "cannot capture `mut` parameter `n`",
+        ),
+        (
+            "type S struct { op func() }\nfunc f(s own S) { let t = go (s.op)()\nt.wait() }",
+            "`go` needs a call to a declared function or method, a function-typed local, or a closure literal",
+        ),
+        (
+            "func f() { var n = 1\nlet inner = func() { println(n) }\nlet t = go func() { inner() }()\nt.wait() }",
+            "a spawned task cannot hold a borrow of `n`",
+        ),
+        (
+            "func run(f func()) { f() }\nfunc f() { let g = func() {}\nlet t = go run(g)\nt.wait() }",
+            "can take a function value only for an `own` parameter",
+        ),
+        (
+            "func f() { let t = go func() []int { return Array<int>{1}[:] }()\nt.wait() }",
+            "a task cannot return slices or function values",
+        ),
+        (
+            "async func f() { let t = go func() { await fetch(1) }()\nt.wait() }",
+            "`await`",
+        ),
+    ] {
+        rejects(&task_program(decls), message);
+    }
+}
+
+#[test]
+fn method_values_close_over_their_receivers() {
+    let prelude = "type Counter struct { N int }
+func (c Counter) read() int { return c.N }
+func (c Counter) add(k int) int { return c.N + k }
+func (c mut Counter) bump() { c.N += 1 }
+func (c own Counter) finish() int { return c.N }
+type Holder struct { Inner Counter }
+type Res struct { Name string }
+func (r mut Res) drop() {}
+func (r Res) name() string { return r.Name }
+func (r mut Res) rename() { r.Name = \"x\" }
+async func (c Counter) load() int { return c.N }
+func make() Counter { return Counter{N: 1} }
+func apply(f func() int) int { return f() }
+";
+    let with = |body: &str| program(&format!("{prelude}\nfunc entry() {{\n{body}\n}}"));
+    accepts(&with(
+        "var counter = Counter{N: 1}
+let read = counter.read
+let add = counter.add
+println(read() + add(1))
+let bump = counter.bump
+bump()
+println(apply(counter.read))
+let holder = Holder{Inner: counter}
+let inner = holder.Inner.read
+println(inner())
+let done = counter.finish
+println(done())
+let again = Counter{N: 2}
+let spawned = again.read
+let task = go spawned()
+_ = task",
+    ));
+    for (body, message) in [
+        (
+            "let c = Counter{N: 1}\nlet b = c.bump\nb()",
+            "cannot pass immutable binding `c` as a `mut` argument",
+        ),
+        (
+            "let f = make().read\n_ = f",
+            "the receiver of a method value must be a local or a field of a local",
+        ),
+        (
+            "let c = Counter{N: 1}\nlet f = c.load\n_ = f",
+            "an `async` method cannot be used as a value",
+        ),
+        (
+            "let r = Res{Name: \"a\"}\nlet f = r.drop\n_ = f",
+            "the `drop` method cannot be used as a value",
+        ),
+        (
+            "var c = Counter{N: 1}\nlet b = c.bump\nlet t = go b()\nt.wait()",
+            "a spawned closure cannot change `c`",
+        ),
+        (
+            "let r = Res{Name: \"a\"}\nlet n = r.nme\n_ = n",
+            "no field `nme`",
+        ),
+    ] {
+        rejects(&with(body), message);
+    }
+}
+
+#[test]
+fn async_function_values_follow_the_async_call_contract() {
+    let prelude = "async func fetch(id int) (string, error) { return \"x\", nil }
+async func ping() {}
+func lookup(id int) (string, error) { return \"y\", nil }
+type Route struct {
+    path string
+    handler async func(int) (string, error)
+}
+async func retry(op async func(int) (string, error), id int) (string, error) {
+    let first, err = await op(id)
+    if err == nil { return first, nil }
+    return await op(id)
+}
+";
+    let with = |decls: &str| program(&format!("{prelude}\n{decls}"));
+    let case = accepts(&with(
+        "async func serve(r own Route) {
+            let h = fetch
+            let a, e1 = await h(1)
+            let task = go h(2)
+            let b, e2 = await task
+            let c, e3 = await retry(fetch, 3)
+            let d, e4 = await (r.handler)(4)
+            _ = e1
+            _ = e2
+            _ = e3
+            _ = e4
+        }
+        func plain() {
+            let h = fetch
+            let t = go h(1)
+            let v, err = t.wait()
+            _ = err
+            let p = ping
+            go p()
+        }",
+    ));
+    drop(case);
+    for (decls, message) in [
+        (
+            "func f() { let h = fetch\nlet a = h(1)\n_ = a }",
+            "call to async function value `h` is neither awaited nor spawned",
+        ),
+        (
+            "async func f() { let h = ping\nh() }",
+            "call to async function value `h` is neither awaited nor spawned",
+        ),
+        (
+            "func f() { let h = fetch\nlet v, e = await h(1)\n_ = v\n_ = e }",
+            "`await` is only valid inside an `async func`",
+        ),
+        (
+            "async func f() { let g = func() { let h = fetch\nawait h(1) }\n_ = g }",
+            "`await` is only valid inside an `async func`",
+        ),
+        (
+            "func f() { let h func(int) (string, error) = fetch\n_ = h }",
+            "expected `func(int64) (string, error)`, found `async func(int64) (string, error)`",
+        ),
+        (
+            "func f() { let h async func(int) (string, error) = lookup\n_ = h }",
+            "expected `async func(int64) (string, error)`, found `func(int64) (string, error)`",
+        ),
+        ("func f() { var h = fetch\nh = lookup }", "mismatched types"),
+        (
+            "func f() { let h = fetch\nlet k = fetch\n_ = h == k }",
+            "operator `==` cannot be applied",
+        ),
+        (
+            "type Bag struct { items []async func() }\nfunc f() {}",
+            "slice",
+        ),
+    ] {
+        rejects(&with(decls), message);
+    }
 }

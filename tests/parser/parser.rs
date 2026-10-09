@@ -96,14 +96,22 @@ fn ty(case: &Case, t: &Type) -> String {
             format!("Task<{}>", results.join(", "))
         }
         Type::Func {
-            params, results, ..
+            is_async,
+            params,
+            results,
+            ..
         } => {
             let params: Vec<String> = params
                 .iter()
                 .map(|param| format!("{}{}", mode(param.mode), ty(case, &param.ty)))
                 .collect();
             let results: Vec<String> = results.iter().map(|r| ty(case, r)).collect();
-            format!("func({}) ({})", params.join(", "), results.join(", "))
+            format!(
+                "{}func({}) ({})",
+                if *is_async { "async " } else { "" },
+                params.join(", "),
+                results.join(", ")
+            )
         }
     }
 }
@@ -1523,6 +1531,49 @@ fn function_types_parse_in_type_positions() {
     assert_eq!(
         case.shape(),
         ["(let f func(int) (int) g)", "(var h func() () g)"]
+    );
+}
+
+#[test]
+fn async_function_types_parse_in_type_positions() {
+    let case = Case::new(
+        "package main\ntype Route struct {\n    path string\n    handler async func(int) (string, error)\n}\nfunc run(op async func(), more async func(int) async func() int) async func(int) int {}\n",
+    );
+    case.assert_clean();
+    let Some(Item::Struct(route)) = case.parsed.file.items.first() else {
+        panic!("expected a struct");
+    };
+    let fields: Vec<String> = route.fields.iter().map(|f| ty(&case, &f.ty)).collect();
+    assert_eq!(fields, ["string", "async func(int) (string, error)"]);
+    let Some(Item::Func(func)) = case.parsed.file.items.get(1) else {
+        panic!("expected a function");
+    };
+    let params: Vec<String> = func.params.iter().map(|p| ty(&case, &p.ty)).collect();
+    assert_eq!(
+        params,
+        ["async func() ()", "async func(int) (async func() (int))"]
+    );
+    assert_eq!(
+        func.results
+            .iter()
+            .map(|r| ty(&case, r))
+            .collect::<Vec<_>>(),
+        ["async func(int) (int)"]
+    );
+    let case = Case::body("let f async func(int) int = g");
+    case.assert_clean();
+    assert_eq!(case.shape(), ["(let f async func(int) (int) g)"]);
+}
+
+#[test]
+fn a_named_parameter_of_async_function_type_is_rejected() {
+    rejects_file(
+        "package main\nfunc run(f async func(x int)) {}\n",
+        "function type parameters have no names",
+    );
+    rejects_file(
+        "package main\nfunc run(f func(x async func())) {}\n",
+        "function type parameters have no names",
     );
 }
 

@@ -6324,3 +6324,567 @@ func main() {
     assert_eq!(stdout(&output), "1000\ntrue\n");
     assert!(output.stderr.is_empty(), "{}", stderr(&output));
 }
+
+#[test]
+fn declared_functions_run_as_function_values() {
+    prints(
+        "package main
+
+import \"zore/strings\"
+
+func add(a int, b int) int { return a + b }
+
+func double(values mut []int) {
+    for var i = 0; i < values.len(); i += 1 {
+        values[i] = values[i] * 2
+    }
+}
+
+func apply(op func(int, int) int, x int, y int) int {
+    return op(x, y)
+}
+
+func pick() func(int, int) int {
+    println(\"pick\")
+    return add
+}
+
+func left() int {
+    println(\"left\")
+    return 1
+}
+
+func right() int {
+    println(\"right\")
+    return 2
+}
+
+type Table struct {
+    op func(int, int) int
+}
+
+func main() {
+    let f = add
+    println(f(1, 2))
+    println(apply(add, 2, 3))
+    println(pick()(left(), right()))
+    var data = Array<int>{1, 2, 3}
+    let d = double
+    d(data[:])
+    println(data[0] + data[1] + data[2])
+    let up = strings.Upper
+    println(up(\"ok\"))
+    let table = Table{op: add}
+    let stored = table.op
+    println(stored(10, 20))
+    var ops = Array<func(int, int) int>{}
+    ops.push(add)
+    ops.push(add)
+    println(ops.len())
+}
+",
+        "3\n5\npick\nleft\nright\n3\n12\nOK\n30\n2\n",
+    );
+}
+
+#[test]
+fn spawned_closures_own_their_captures_and_destroy_them_once() {
+    prints(
+        "package main
+
+type Res struct { Name string }
+
+func (r mut Res) drop() { println(\"drop \" + r.Name) }
+
+func use(r own Res) { println(\"use \" + r.Name) }
+
+func left() int {
+    println(\"left\")
+    return 1
+}
+
+func right() int {
+    println(\"right\")
+    return 2
+}
+
+func main() {
+    let kept = Res{Name: \"kept\"}
+    let a = go func() int {
+        println(\"run \" + kept.Name)
+        return 1
+    }()
+    println(a.wait())
+
+    let moved = Res{Name: \"moved\"}
+    let b = go func() { use(moved) }()
+    b.wait()
+
+    let failing = Res{Name: \"failing\"}
+    let c = go func() error {
+        println(\"run \" + failing.Name)
+        return error(\"failed\")
+    }()
+    println(c.wait() != nil)
+
+    let add = func(x int, y int) int { return x + y }
+    let d = go add(left(), right())
+    println(d.wait())
+
+    let idle = Res{Name: \"idle\"}
+    let never = func() { println(idle.Name) }
+    println(\"scope end\")
+}
+",
+        "run kept\ndrop kept\n1\nuse moved\ndrop moved\nrun failing\ndrop failing\ntrue\nleft\nright\n3\nscope end\ndrop idle\n",
+    );
+}
+
+#[test]
+fn a_panic_in_a_spawned_closure_destroys_its_environment_once() {
+    let source = "package main
+
+type Res struct { Name string }
+
+func (r mut Res) drop() { println(\"drop \" + r.Name) }
+
+func main() {
+    let held = Res{Name: \"held\"}
+    let zero = 0
+    println(\"before\")
+    let t = go func() int {
+        println(\"working \" + held.Name)
+        return 1 / zero
+    }()
+    let v = t.wait()
+    println(\"unreachable\")
+}";
+    let output = run(source);
+    assert_eq!(output.status.code(), Some(2), "{}", stderr(&output));
+    assert_eq!(stdout(&output), "before\nworking held\ndrop held\n");
+    assert!(
+        stderr(&output).contains("panic in task 1: division by zero"),
+        "{}",
+        stderr(&output)
+    );
+}
+
+#[test]
+fn a_panic_in_an_argument_destroys_the_evaluated_callable_and_spawns_nothing() {
+    let source = "package main
+
+type Res struct { Name string }
+
+func (r mut Res) drop() { println(\"drop \" + r.Name) }
+
+func boom() int {
+    let zero = 0
+    return 1 / zero
+}
+
+func main() {
+    let held = Res{Name: \"callee\"}
+    let job = func(n int) int {
+        println(\"never runs \" + held.Name)
+        return n
+    }
+    println(\"before\")
+    let t = go job(boom())
+    println(\"unreachable\")
+}";
+    let output = run(source);
+    assert_eq!(output.status.code(), Some(2), "{}", stderr(&output));
+    assert_eq!(stdout(&output), "before\ndrop callee\n");
+}
+
+#[test]
+fn go_runs_function_values_call_once_closures_and_owning_arguments() {
+    prints(
+        "package main
+
+type Job struct { Id int }
+
+func (j mut Job) drop() { println(\"drop \" + str(j.Id)) }
+
+func str(n int) string {
+    if n == 1 { return \"1\" }
+    if n == 2 { return \"2\" }
+    return \"3\"
+}
+
+func consume(j own Job) { println(\"consume \" + str(j.Id)) }
+
+func twice(n int) int { return n * 2 }
+
+func runWorker(handler own func() int) int { return handler() + 1 }
+
+func main() {
+    let f = twice
+    let first = go f(21)
+    println(first.wait())
+
+    let job = Job{Id: 1}
+    let finish = func() { consume(job) }
+    let t = go finish()
+    t.wait()
+
+    let owned = Job{Id: 2}
+    let handler = func() int { return owned.Id * 10 }
+    let u = go runWorker(handler)
+    println(u.wait())
+}
+",
+        "42\nconsume 1\ndrop 1\ndrop 2\n21\n",
+    );
+}
+
+#[test]
+fn spawned_closures_run_as_plain_tasks_even_inside_async_functions() {
+    prints(
+        "package main
+
+async func parent(id int, ch channel<int>) int {
+    let doubled = go func() int { return id * 2 }()
+    let blocking = go func() int {
+        let v, ok = ch.receive()
+        return v
+    }()
+    ch.send(4)
+    return await doubled + await blocking
+}
+
+func main() {
+    let ch = channel<int>(1)
+    let p = go parent(5, ch)
+    println(p.wait())
+}
+",
+        "14\n",
+    );
+}
+
+#[test]
+fn a_detached_spawned_closure_runs_without_a_handle() {
+    prints(
+        "package main
+
+func main() {
+    let done = channel<int>(1)
+    go func() { done.send(5) }()
+    let v, ok = done.receive()
+    println(v)
+}
+",
+        "5\n",
+    );
+}
+
+#[test]
+fn method_values_call_the_method_on_the_captured_receiver() {
+    prints(
+        "package main
+
+type Counter struct { N int }
+
+func (c Counter) read() int { return c.N }
+func (c mut Counter) bump() { c.N += 1 }
+func (c own Counter) finish() int { return c.N * 100 }
+func (c Counter) add(k int) int { return c.N + k }
+
+type Holder struct { Inner Counter }
+
+func apply(f func() int) int { return f() }
+
+func main() {
+    var counter = Counter{N: 1}
+    let read = counter.read
+    println(read())
+    let bump = counter.bump
+    bump()
+    bump()
+    println(counter.read())
+    let add = counter.add
+    println(add(10))
+    println(apply(counter.read))
+    let holder = Holder{Inner: Counter{N: 5}}
+    let inner = holder.Inner.read
+    println(inner())
+    let done = counter.finish
+    println(done())
+    let again = Counter{N: 9}
+    let read9 = again.read
+    let task = go read9()
+    println(task.wait())
+}
+",
+        "1\n3\n13\n3\n5\n300\n9\n",
+    );
+}
+
+#[test]
+fn method_values_destroy_an_owned_receiver_exactly_once() {
+    prints(
+        "package main
+
+type Res struct { Name string }
+
+func (r mut Res) drop() { println(\"drop \" + r.Name) }
+
+func (r Res) name() string { return r.Name }
+
+func (r own Res) finish() string {
+    println(\"finish \" + r.Name)
+    return r.Name
+}
+
+func made() func() string {
+    let r = Res{Name: \"made\"}
+    return r.name
+}
+
+func main() {
+    let one = Res{Name: \"one\"}
+    let done = one.finish
+    println(done())
+
+    let two = Res{Name: \"two\"}
+    let unused = two.finish
+
+    let f = made()
+    println(f())
+    println(f())
+
+    let three = Res{Name: \"three\"}
+    let n = three.name
+    let t = go n()
+    println(t.wait())
+    println(\"end\")
+}
+",
+        "finish one\ndrop one\none\nmade\nmade\ndrop three\nthree\nend\ndrop made\ndrop two\n",
+    );
+}
+
+#[test]
+fn async_function_values_are_awaited_passed_and_spawned() {
+    prints(
+        "package main
+
+async func double(n int) int { return n * 2 }
+
+async func slow(n int) int {
+    let ch = channel<int>(1)
+    ch.send(n)
+    let v, ok = ch.receive()
+    return v + 1
+}
+
+async func twice(op async func(int) int, x int) int {
+    let a = await op(x)
+    let b = await op(a)
+    return b
+}
+
+async func run() int {
+    let h = double
+    let direct = await h(5)
+    let viaHelper = await twice(double, 3)
+    let viaSlow = await twice(slow, 10)
+    let spawned = go h(21)
+    let fromTask = await spawned
+    return direct + viaHelper + viaSlow + fromTask
+}
+
+func main() {
+    let t = go run()
+    println(t.wait())
+}
+",
+        "76\n",
+    );
+}
+
+#[test]
+fn async_function_values_pass_borrowed_and_owned_arguments_and_destroy_them_once() {
+    prints(
+        "package main
+
+type Res struct { Name string }
+
+func (r mut Res) drop() { println(\"drop \" + r.Name) }
+
+async func take(r own Res) int {
+    println(\"take \" + r.Name)
+    return r.Name.len()
+}
+
+async func peek(r Res) int {
+    return r.Name.len() * 10
+}
+
+async func run() int {
+    let t = take
+    let p = peek
+    let first = Res{Name: \"a\"}
+    let a = await t(first)
+    let second = Res{Name: \"bb\"}
+    let b = await p(second)
+    println(\"after peek\")
+    return a + b
+}
+
+func main() {
+    let task = go run()
+    println(task.wait())
+}
+",
+        "take a\ndrop a\nafter peek\ndrop bb\n21\n",
+    );
+}
+
+#[test]
+fn a_panic_in_an_awaited_async_function_value_unwinds_its_callers_once() {
+    let source = "package main
+
+type Res struct { Name string }
+
+func (r mut Res) drop() { println(\"drop \" + r.Name) }
+
+async func fail(r own Res, zero int) int {
+    println(\"failing\")
+    return 1 / zero
+}
+
+async func run() int {
+    let f = fail
+    let r = Res{Name: \"held\"}
+    return await f(r, 0)
+}
+
+func main() {
+    let task = go run()
+    println(task.wait())
+}";
+    let output = run(source);
+    assert_eq!(output.status.code(), Some(2), "{}", stderr(&output));
+    assert_eq!(stdout(&output), "failing\ndrop held\n");
+    assert!(
+        stderr(&output).contains("panic in task 1: division by zero"),
+        "{}",
+        stderr(&output)
+    );
+}
+
+#[test]
+fn async_function_values_live_in_struct_fields_and_arrays() {
+    prints(
+        "package main
+
+async func add1(n int) int { return n + 1 }
+async func add2(n int) int { return n + 2 }
+
+type Route struct {
+    Path string
+    handler async func(int) int
+}
+
+async func dispatch(r mut Route, n int) int {
+    return await (r.handler)(n)
+}
+
+async func run() int {
+    var routes = Array<Route>{}
+    routes.push(Route{Path: \"a\", handler: add1})
+    routes.push(Route{Path: \"b\", handler: add2})
+    var total = 0
+    for var i = 0; i < routes.len(); i += 1 {
+        total += await dispatch(routes[i], 10)
+    }
+    return total
+}
+
+func main() {
+    let task = go run()
+    println(task.wait())
+}
+",
+        "23\n",
+    );
+}
+
+#[test]
+fn many_tasks_awaiting_through_an_async_function_value_do_not_hold_threads() {
+    prints(
+        "package main
+
+async func waitFor(gate channel<int>) int {
+    let v, ok = gate.receive()
+    return v
+}
+
+async func through(op async func(channel<int>) int, gate channel<int>) int {
+    return await op(gate)
+}
+
+async func worker(gate channel<int>, done channel<int>) {
+    let op = waitFor
+    let v = await through(op, gate)
+    done.send(v)
+}
+
+func main() {
+    let count = 20000
+    let gate = channel<int>(count)
+    let done = channel<int>(count)
+    for var i = 0; i < count; i += 1 {
+        go worker(gate, done)
+    }
+    for var i = 0; i < count; i += 1 {
+        gate.send(1)
+    }
+    var total = 0
+    for var i = 0; i < count; i += 1 {
+        let v, ok = done.receive()
+        total += v
+    }
+    println(total)
+}
+",
+        "20000\n",
+    );
+}
+
+#[test]
+fn an_awaited_async_function_value_evaluates_its_callee_then_its_arguments_once() {
+    prints(
+        "package main
+
+async func add(a int, b int) int { return a + b }
+
+func pick() async func(int, int) int {
+    println(\"pick\")
+    return add
+}
+
+func left() int {
+    println(\"left\")
+    return 1
+}
+
+func right() int {
+    println(\"right\")
+    return 2
+}
+
+async func run() int {
+    return await pick()(left(), right())
+}
+
+func main() {
+    let t = go run()
+    println(t.wait())
+}
+",
+        "pick\nleft\nright\n3\n",
+    );
+}

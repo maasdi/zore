@@ -35,6 +35,29 @@ pub fn emit(
             _ => None,
         })
         .collect();
+    let async_values = program
+        .bodies
+        .iter()
+        .flat_map(|body| {
+            body.blocks
+                .iter()
+                .flat_map(|block| &block.statements)
+                .filter_map(|statement| match statement {
+                    mir::Statement::Assign {
+                        place,
+                        rvalue: Rvalue::Closure { function, .. },
+                        ..
+                    } if package
+                        .types
+                        .func_signature(mir::place_type(package, &body.locals, place))
+                        .is_some_and(|signature| signature.is_async) =>
+                    {
+                        Some(*function)
+                    }
+                    _ => None,
+                })
+        })
+        .collect();
     let mut module = Module {
         package,
         sources,
@@ -43,6 +66,7 @@ pub fn emit(
         globals: String::new(),
         diagnostics: Vec::new(),
         owning_closures,
+        async_values,
         task_shapes: HashMap::new(),
         task_code: String::new(),
         channel_destroyers: HashMap::new(),
@@ -97,6 +121,8 @@ pub(super) struct Module<'a> {
     pub(super) globals: String,
     pub(super) diagnostics: Vec<Diagnostic>,
     pub(super) owning_closures: HashSet<FunctionId>,
+    /// Closures that are values of async function type; their code pointer builds a frame.
+    pub(super) async_values: HashSet<FunctionId>,
     /// Result lists that already have a task entry function.
     pub(super) task_shapes: HashMap<Vec<TypeId>, usize>,
     pub(super) task_code: String,
@@ -163,6 +189,14 @@ impl Module<'_> {
         }
         ty.push_str(" }");
         Environment { ty, fields }
+    }
+
+    fn closure_code(&self, closure: FunctionId) -> String {
+        if self.async_values.contains(&closure) {
+            self.async_name(closure, "new")
+        } else {
+            self.closure_name(closure)
+        }
     }
 
     fn closure_name(&self, closure: FunctionId) -> String {
@@ -479,7 +513,7 @@ impl FunctionBuilder<'_, '_> {
             }
             environment
         };
-        let code = self.module.closure_name(function);
+        let code = self.module.closure_code(function);
         self.closure_triple(&code, &environment, "null")
     }
 
@@ -517,7 +551,7 @@ impl FunctionBuilder<'_, '_> {
                 pointer += 1;
             }
         }
-        let code = self.module.closure_name(function);
+        let code = self.module.closure_code(function);
         let drop = self.module.environment_drop_name(function);
         self.closure_triple(&code, &block, &drop)
     }

@@ -90,12 +90,33 @@ impl FunctionBuilder<'_, '_> {
         args: &[Operand],
     ) -> Option<(String, String)> {
         let package = self.module.package;
-        let results = package
+        let signature = package
             .types
             .func_signature(self.place_ty(place))
-            .expect("a function-typed callee")
-            .results
-            .clone();
+            .expect("a function-typed callee");
+        let results = signature.results.clone();
+        if signature.is_async {
+            if !self
+                .module
+                .machines
+                .machines
+                .contains_key(&self.body.function)
+            {
+                let span = package.function(self.body.function).span;
+                self.module.unsupported(
+                    "an async function value called outside an async state machine is",
+                    span,
+                    "an async function value can only be awaited in an `async func` or spawned with `go`",
+                );
+            }
+            // Only the unused plain copy of a state machine's body reaches here.
+            return (!results.is_empty()).then(|| {
+                (
+                    self.module.results_ty(&results),
+                    "zeroinitializer".to_string(),
+                )
+            });
+        }
         let address = self.address(place);
         let closure = self.fresh();
         self.line(format!(

@@ -1771,3 +1771,110 @@ fn a_borrowing_closure_still_cannot_outlive_its_captures() {
         "`n` does not live long enough",
     );
 }
+
+#[test]
+fn method_values_hold_their_receivers_like_closures() {
+    let declarations = "type Counter struct { N int }
+        func (c Counter) read() int { return c.N }
+        func (c mut Counter) bump() { c.N += 1 }
+        func (c own Counter) finish() int { return c.N }
+        type Res struct { Name string }
+        func (r mut Res) drop() {}
+        func (r Res) name() string { return r.Name }
+        func (r own Res) finish() string { return r.Name }
+        func apply(f func() int) int { return f() }
+        func made() func() string {
+            let r = Res{Name: \"made\"}
+            return r.name
+        }";
+    let with = |stmts: &str| program(&format!("{declarations}\nfunc entry() {{\n{stmts}\n}}"));
+    accepts(&with(
+        "var counter = Counter{N: 1}
+        let read = counter.read
+        println(read())
+        let bump = counter.bump
+        bump()
+        println(apply(counter.read))
+        let done = counter.finish
+        println(done())
+        let f = made()
+        println(f())",
+    ));
+    for (stmts, message) in [
+        (
+            "var c = Counter{N: 1}\nlet b = c.bump\nprintln(c.N)\nb()",
+            "while it is mutably borrowed",
+        ),
+        (
+            "var c = Counter{N: 1}\nlet r = c.read\nc.N = 2\nprintln(r())",
+            "while it is borrowed",
+        ),
+        (
+            "let r = Res{Name: \"a\"}\nlet d = r.finish\nprintln(d())\nprintln(d())",
+            "use of moved value `d`",
+        ),
+        (
+            "let r = Res{Name: \"a\"}\nlet d = r.finish\nprintln(r.Name)\nprintln(d())",
+            "use of moved value",
+        ),
+        (
+            "let r = Res{Name: \"a\"}\nlet n = r.name\nlet moved = r\nprintln(n())",
+            "borrowed",
+        ),
+    ] {
+        rejects(&with(stmts), message);
+    }
+}
+
+#[test]
+fn a_function_value_received_through_a_parameter_cannot_be_spawned() {
+    let declarations = "type Worker struct { Name string\n run func(int) int }
+        func double(n int) int { return n * 2 }
+        func run(f own func() int) int { return f() }";
+    let with = |decls: &str| program(&format!("{declarations}\n{decls}"));
+    accepts(&with(
+        "func local() {
+            let w = Worker{Name: \"w\", run: double}
+            let f = w.run
+            let t = go f(21)
+            println(t.wait())
+        }",
+    ));
+    for decls in [
+        "func start(f own func(int) int) { let t = go f(1)\nprintln(t.wait()) }",
+        "func start(w own Worker) { let f = w.run\nlet t = go f(1)\nprintln(t.wait()) }",
+        "func start(f own func() int) { let t = go run(f)\nprintln(t.wait()) }",
+    ] {
+        rejects(
+            &with(decls),
+            "cannot use a function value that came in through a parameter",
+        );
+    }
+}
+
+#[test]
+fn async_function_values_are_used_exclusively_and_cannot_be_spawned_from_a_parameter() {
+    let declarations = "async func double(n int) int { return n * 2 }
+        async func twice(op async func(int) int, x int) int {
+            let a = await op(x)
+            return await op(a)
+        }";
+    let with = |decls: &str| program(&format!("{declarations}\n{decls}"));
+    accepts(&with(
+        "async func run() int {
+            let h = double
+            let a = await h(1)
+            let b = await twice(double, 2)
+            let c = await twice(h, 3)
+            return a + b + c
+        }",
+    ));
+    rejects(
+        &with("async func relay(op async func(int) int) int { let t = go op(5)\nreturn await t }"),
+        "cannot use a function value that came in through a parameter",
+    );
+    rejects(
+        &with("async func run() int { let h = double\nlet t = go h(1)\nreturn await h(2) }"),
+        "use of moved value `h`",
+    );
+}
