@@ -8,10 +8,10 @@ measurement runner and its stabilization rules are documented in
 On Linux 6.18 x86-64 with clang 19, using the same workload, Rust toolchain,
 and three repetitions per count, the settled process RSS was:
 
-| Waiting tasks | `main` at `5d8afad` | Poll-local storage branch |
+| Waiting tasks | `main` at `5d8afad` | Poll-local storage at `7237ec5` |
 | ---: | ---: | ---: |
-| 1,000 | 6,436 KiB | 2,576 KiB |
-| 5,000 | 26,856 KiB | 7,384 KiB |
+| 1,000 | 6,440 KiB | 2,580 KiB |
+| 5,000 | 27,012 KiB | 7,364 KiB |
 
 The numbers are medians of the three settled-RSS readings. Each process had
 four threads at measurement time. The 256-element temporary and its MIR copy
