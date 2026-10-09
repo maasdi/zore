@@ -664,3 +664,33 @@ persistent output and argument storage belongs to the enclosing frame. Worker
 compensation, panic cleanup, detachment, and deadlock detection remain available.
 The test pool uses a separate completion condition variable so test waiters cannot
 consume worker queue notifications.
+
+### Cooperative async poll budgets
+
+Each task poll starts with a budget of 128 compiler safe-point visits. The budget
+is the first field of the internal C-layout poll context, so generated code can
+decrement it without a runtime call on every loop trip. The same mutable poll
+context passes through nested async calls, so newly started child polls consume
+the caller's budget rather than resetting it. Re-polling an already-suspended
+parent only forwards to its saved child and does not consume another entry unit;
+this lets deep call chains advance across yields. Generated polls check the
+budget at first entry and at MIR blocks targeted by a loop backedge. Those
+blocks are also resume states: if the budget is exhausted, the poll records
+the block's state before executing its statements, wakes its own task, and
+returns Pending. The scheduler coalesces that wake with concurrent wakes and
+puts the task at the back of the runnable queue once. This yield never counts
+as an internal wait for deadlock detection. A new worker poll refills the
+budget.
+
+Frame-storage planning includes every budget resume block and its reachable
+cleanup paths. Thus a value needed after a budget yield remains pinned, while
+argument evaluation and earlier side effects are not repeated. A nested child
+yield propagates through its ordinary awaited-call Pending path, which already
+retains the child frame and the parent's resume state. Ready, panic, and detached
+task handling use the existing completion paths.
+
+The budget counts safe-point visits, not elapsed time or machine instructions.
+The policy makes CPU-heavy async loops and nested async polls cooperative; it
+cannot interrupt a long straight-line block, arbitrary synchronous function,
+native call, or synchronous mutex callback. It uses no signals or stack
+preemption and adds no source-level `yield` syntax.

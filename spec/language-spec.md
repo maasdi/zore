@@ -4024,6 +4024,8 @@ how a waiting call wakes its task are implementation details. The bootstrap
 compiler keeps storage needed after a suspension or requiring a stable address
 in a pinned heap frame. Proven poll-local storage may instead use the poll stack.
 Tasks are polled on a pool of worker threads.
+The compiler may insert cooperative scheduling points into async state machines
+without changing source syntax or the ownership rules.
 
 The exact ordering between:
 

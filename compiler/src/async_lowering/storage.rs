@@ -5,6 +5,7 @@ use super::LocalStorage;
 pub(super) fn classify(
     body: &mir::Body,
     suspensions: &[(mir::BlockId, super::Suspension)],
+    budget_blocks: &[mir::BlockId],
 ) -> Vec<LocalStorage> {
     let mut frame = vec![false; body.locals.len()];
     for &local in body
@@ -36,7 +37,7 @@ pub(super) fn classify(
     }
 
     let mut reachable = vec![false; body.blocks.len()];
-    let mut pending = Vec::new();
+    let mut pending = budget_blocks.to_vec();
     for (block, _) in suspensions {
         if let Terminator::Call {
             target,

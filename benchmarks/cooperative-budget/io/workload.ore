@@ -1,0 +1,17 @@
+package main
+
+import "zore/time"
+
+async func wait(rounds int) int {
+    var completed = 0
+    for completed < rounds {
+        time.Sleep(1)
+        completed += 1
+    }
+    return completed
+}
+
+func main() {
+    let task = go wait(300)
+    println(task.wait())
+}

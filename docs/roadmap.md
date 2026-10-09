@@ -68,7 +68,8 @@ Cancellation's private timer and parent-following tasks use async frames.
 The large task tests run 50,000 nonblocking computations in plain functions;
 the 5,000-task join chain and thousands of channel and timer waiters use async
 functions. Plain tasks that wait hold OS workers, so large sets of them can
-exhaust host thread limits; use `async func` for those workloads. Preemption,
+exhaust host thread limits; use `async func` for those workloads. Compiler-inserted
+cooperative budgets now yield CPU-heavy async loops; forced preemption,
 further frame shrinking (including slot reuse), scoped tasks, and async closure
 literals remain follow-ups,
 outside the accepted Q32 slices. The next milestone is M32–M34's backend/toolchain

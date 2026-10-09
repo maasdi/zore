@@ -15,11 +15,15 @@ pub enum Poll {
     Pending,
 }
 
+#[repr(C)]
 pub struct Context {
+    budget: u16,
     waker: Waker,
     internal: bool,
     task_id: u64,
 }
+
+const POLL_BUDGET: u16 = 128;
 
 impl Context {
     pub(super) fn task_id(&self) -> u64 {
@@ -34,6 +38,23 @@ impl Context {
         self.internal = true;
         Poll::Pending
     }
+
+    pub fn budget_step(&mut self) -> bool {
+        if self.budget > 0 {
+            self.budget -= 1;
+            true
+        } else {
+            self.waker.wake_by_ref();
+            false
+        }
+    }
+}
+
+/// # Safety
+/// `context` must be the live mutable context for the current task poll.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn zore_budget_yield(context: *mut Context) {
+    unsafe { &mut *context }.waker.wake_by_ref();
 }
 
 type Body = Box<dyn FnMut(&mut Context) -> Poll + Send>;
@@ -104,6 +125,7 @@ impl Task {
         }
         let mut frame = lock(&self.frame);
         let mut context = Context {
+            budget: POLL_BUDGET,
             waker: Waker::from(Arc::clone(self)),
             internal: false,
             task_id: self.id,
@@ -449,6 +471,48 @@ mod tests {
     }
 
     #[test]
+    fn exhausted_budget_lets_a_queued_task_run_on_one_worker() {
+        let pool = TestPool::new(1);
+        let (started, started_rx) = mpsc::channel();
+        let (release, release_rx) = mpsc::channel();
+        let steps = Arc::new(AtomicUsize::new(0));
+        let work_steps = Arc::clone(&steps);
+        let completions = Arc::new(AtomicUsize::new(0));
+        let work_completions = Arc::clone(&completions);
+        let mut first = true;
+        let waker = pool.spawn(move |context| {
+            if first {
+                first = false;
+                started.send(()).unwrap();
+                release_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+            }
+            while context.budget_step() {
+                if work_steps.fetch_add(1, Ordering::SeqCst) == 4095 {
+                    work_completions.fetch_add(1, Ordering::SeqCst);
+                    return Poll::Ready;
+                }
+            }
+            Poll::Pending
+        });
+        receive(&started_rx);
+        let (observed, observed_rx) = mpsc::channel();
+        let observer_steps = Arc::clone(&steps);
+        pool.spawn(move |_| {
+            observed
+                .send(observer_steps.load(Ordering::SeqCst))
+                .unwrap();
+            Poll::Ready
+        });
+        release.send(()).unwrap();
+        assert!(receive(&observed_rx) < 4096);
+        pool.idle();
+        assert_eq!(steps.load(Ordering::SeqCst), 4096);
+        assert_eq!(completions.load(Ordering::SeqCst), 1);
+        waker.wake_by_ref();
+        assert!(lock(&pool.0.state).queue.is_empty());
+    }
+
+    #[test]
     fn wake_before_pending_is_retained_and_coalesced() {
         let pool = TestPool::new(2);
         let calls = Arc::new(AtomicUsize::new(0));
@@ -638,8 +702,14 @@ mod tests {
             let pool = TestPool::new(1);
             let dropped_with_panic = Arc::new(AtomicBool::new(false));
             let cleanup = Cleanup(Arc::clone(&dropped_with_panic));
-            drop(pool.spawn(move |_| {
+            let mut first = true;
+            drop(pool.spawn(move |context| {
                 let _keep_alive = &cleanup;
+                if first {
+                    first = false;
+                    while context.budget_step() {}
+                    return Poll::Pending;
+                }
                 panic::raise(b"detached poll panic");
                 Poll::Ready
             }));

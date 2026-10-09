@@ -1,7 +1,7 @@
 use super::statement::Statement;
 use super::terminator::Terminator;
 
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct BlockId(pub u32);
 
 #[derive(Debug)]

@@ -13,6 +13,7 @@ pub struct Plan {
 #[derive(Debug)]
 pub struct StateMachine {
     pub suspensions: Vec<(BlockId, Suspension)>,
+    pub budget_blocks: Vec<BlockId>,
     pub storage: Vec<LocalStorage>,
 }
 

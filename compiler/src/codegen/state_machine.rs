@@ -217,18 +217,40 @@ impl FunctionBuilder<'_, '_> {
         ));
         let entry_end = self.out.len();
         self.line("%state = load i32, ptr %frame");
+        self.line("%new.frame = icmp eq i32 %state, 0");
+        let (check_budget, dispatch) = (self.label(), self.label());
+        self.line(format!(
+            "br i1 %new.frame, label %{check_budget}, label %{dispatch}"
+        ));
+        self.out.push_str(&format!("{check_budget}:\n"));
+        self.budget_step(None);
+        self.line(format!("br label %{dispatch}"));
+        self.out.push_str(&format!("{dispatch}:\n"));
         self.line("switch i32 %state, label %invalid [ i32 0, label %bb0");
-        let suspensions = self.module.machines.machines[&self.body.function]
-            .suspensions
-            .clone();
+        let machine = &self.module.machines.machines[&self.body.function];
+        let suspensions = machine.suspensions.clone();
+        let budget_blocks = machine.budget_blocks.clone();
         for (index, _) in suspensions.iter().enumerate() {
             self.line(format!("i32 {}, label %resume.{index}", index + 1));
+        }
+        for (index, block) in budget_blocks.iter().enumerate() {
+            self.line(format!(
+                "i32 {}, label %bb{}",
+                suspensions.len() + index + 1,
+                block.0
+            ));
         }
         self.line("]");
         self.out.push_str("invalid:\n  unreachable\n");
         for (index, block) in self.body.blocks.iter().enumerate() {
             self.emitting_unwind = self.body.unwind == Some(mir::BlockId(index as u32));
             self.out.push_str(&format!("bb{index}:\n"));
+            if let Some(state) = budget_blocks
+                .iter()
+                .position(|block| block.0 as usize == index)
+            {
+                self.budget_step(Some(suspensions.len() + state + 1));
+            }
             for statement in &block.statements {
                 self.statement(statement);
             }
@@ -245,6 +267,27 @@ impl FunctionBuilder<'_, '_> {
         self.out
             .insert_str(entry_end, &std::mem::take(&mut self.hoisted));
         self.out.push_str("}\n\n");
+    }
+
+    fn budget_step(&mut self, state: Option<usize>) {
+        let remaining = self.fresh();
+        self.line(format!("{remaining} = load i16, ptr %context"));
+        let has_budget = self.fresh();
+        self.line(format!("{has_budget} = icmp ne i16 {remaining}, 0"));
+        let (proceed, exhausted) = (self.label(), self.label());
+        self.line(format!(
+            "br i1 {has_budget}, label %{proceed}, label %{exhausted}"
+        ));
+        self.out.push_str(&format!("{exhausted}:\n"));
+        self.line("call void @zore_budget_yield(ptr %context)");
+        if let Some(state) = state {
+            self.line(format!("store i32 {state}, ptr %frame"));
+        }
+        self.line("ret i8 0");
+        self.out.push_str(&format!("{proceed}:\n"));
+        let next = self.fresh();
+        self.line(format!("{next} = sub i16 {remaining}, 1"));
+        self.line(format!("store i16 {next}, ptr %context"));
     }
 
     /// The poll (3) or destroy (4) function that every frame records at its start.
