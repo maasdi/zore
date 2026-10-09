@@ -7128,3 +7128,76 @@ func main() {
         "pick\nleft\nright\n3\n",
     );
 }
+
+#[test]
+fn a_drop_that_reads_a_view_keeps_the_backing_owner_live_across_suspension() {
+    prints(
+        "package main
+
+type Watch struct {
+    items []int
+    id int
+}
+
+func (w mut Watch) drop() {
+    println(w.items[0])
+}
+
+async func observe(gate channel<int>) int {
+    var data = [int; 2]{5, 6}
+    var list = Array<int>{7, 8}
+    let w = Watch{items: data[:], id: 1}
+    let heap = Watch{items: list[:], id: 2}
+    println(\"before\")
+    let v, ok = gate.receive()
+    println(w.id + v)
+    println(heap.items[1])
+    return w.items[1]
+}
+
+func main() {
+    let gate = channel<int>()
+    let task = go observe(gate)
+    gate.send(10)
+    println(task.wait())
+}
+",
+        "before\n11\n8\n7\n5\n6\n",
+    );
+}
+
+#[test]
+fn a_drop_that_reads_a_view_still_runs_when_a_task_panics_after_suspension() {
+    let source = "package main
+
+type Watch struct {
+    items []int
+}
+
+func (w mut Watch) drop() {
+    println(w.items[0] + w.items[1])
+}
+
+async func observe(gate channel<int>, zero int) int {
+    var data = [int; 2]{30, 40}
+    let w = Watch{items: data[:]}
+    let v, ok = gate.receive()
+    println(v)
+    return 1 / zero
+}
+
+func main() {
+    let gate = channel<int>()
+    let task = go observe(gate, 0)
+    gate.send(5)
+    println(task.wait())
+}";
+    let output = run(source);
+    assert_eq!(output.status.code(), Some(2), "{}", stderr(&output));
+    assert_eq!(stdout(&output), "5\n70\n");
+    assert!(
+        stderr(&output).contains("panic in task 1: division by zero"),
+        "{}",
+        stderr(&output)
+    );
+}

@@ -61,6 +61,30 @@ restriction. Current invariants and limits are in
 the `recursive_*` tests in the type-check, ownership, and native suites cover
 the new support. The original validation counts below remain historical.
 
+## Follow-up coverage added by issue #76
+
+The five candidates below were added after the baseline. Each test passed on
+`main` at `f164889` without a compiler change, so none exposed a defect. The
+baseline rows above are kept as written; this section records what changed.
+
+| Candidate | Test | Asserts |
+| --- | --- | --- |
+| 1. Fixed-array Copy/Move assignment | [`fixed_arrays_copy_or_move_on_assignment_by_their_element_type`](../../tests/ownership/ownership.rs#L1889) | A `[int; 2]` source stays usable after `let copy = source`; a `[Resource; 1]` source is rejected with ``use of moved value `source[_].id` `` at `return source[0].id`, and the new owner is accepted. |
+| 2. Owner returned with its own view | [`an_owner_cannot_be_returned_alongside_its_own_view`](../../tests/ownership/ownership.rs#L1926) | `return values, view` is rejected with ``cannot return a view of local `values` `` at `values[:]` and ``cannot move `values` while it is borrowed`` at the return; returning the owner with a copied element is accepted. |
+| 3. Resurrection from `drop` | [`a_custom_drop_cannot_export_the_value_being_destroyed`](../../tests/ownership/ownership.rs#L1957) | `let escaped = r` and `r.sink.send(r)` inside a custom `drop` are rejected with ``cannot move borrowed value `r` `` at the escaping expression; a `drop` that only reads is accepted. |
+| 4. Destructor-observed view across suspension | [`a_drop_that_reads_a_view_keeps_the_backing_owner_live_across_suspension`](../../tests/codegen/native.rs#L7133) and [`a_drop_that_reads_a_view_still_runs_when_a_task_panics_after_suspension`](../../tests/codegen/native.rs#L7170) | A `Watch` whose `drop` reads a view of a fixed array and of an `Array<int>` keeps both owners live through a channel suspension. Output order shows the view readable after resume (`before`, `11`, `8`) and each `drop` reading its backing exactly once at cleanup (`7`, `5`, then the result `6`). On a panic after resume, the `drop` still reads its backing before the task panic is reported (`5`, `70`, exit status 2). |
+| 5. Unapproved `copy(value)` | [`an_unapproved_copy_call_is_an_unknown_name`](../../tests/typecheck/check.rs#L4001) | ``cannot find `copy` in this scope`` at `copy`; no new builtin or syntax; `clone(values)` stays accepted. |
+
+Retained gaps after this work:
+
+- The §14.7 rejection is tested for two escape routes (a local binding and a
+  channel send on a field). Other routes, such as storing into a collection field,
+  rely on the same borrowed-receiver rule and have no separate test.
+- The async case covers a channel suspension. Suspension through timers, mutexes,
+  and I/O is not separately asserted for destructor-observed views.
+- Row 5 asserts the diagnostic only; it does not decide whether `copy` should ever
+  exist.
+
 ## Validation
 
 Run on 2026-10-08 from base commit
