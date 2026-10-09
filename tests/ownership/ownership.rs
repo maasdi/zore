@@ -1825,3 +1825,29 @@ fn method_values_hold_their_receivers_like_closures() {
         rejects(&with(stmts), message);
     }
 }
+
+#[test]
+fn a_function_value_received_through_a_parameter_cannot_be_spawned() {
+    let declarations = "type Worker struct { Name string\n run func(int) int }
+        func double(n int) int { return n * 2 }
+        func run(f own func() int) int { return f() }";
+    let with = |decls: &str| program(&format!("{declarations}\n{decls}"));
+    accepts(&with(
+        "func local() {
+            let w = Worker{Name: \"w\", run: double}
+            let f = w.run
+            let t = go f(21)
+            println(t.wait())
+        }",
+    ));
+    for decls in [
+        "func start(f own func(int) int) { let t = go f(1)\nprintln(t.wait()) }",
+        "func start(w own Worker) { let f = w.run\nlet t = go f(1)\nprintln(t.wait()) }",
+        "func start(f own func() int) { let t = go run(f)\nprintln(t.wait()) }",
+    ] {
+        rejects(
+            &with(decls),
+            "cannot use a function value that came in through a parameter",
+        );
+    }
+}

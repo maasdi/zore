@@ -4111,7 +4111,7 @@ shares a change through a channel or a `mutex`. A captured Move value may be
 changed in the task. An argument of function type for an `own` parameter of the
 spawned callee is accepted when it is an owning closure none of whose captured
 values holds a view; a function-typed argument for a shared parameter, and a
-closure that holds a view, are rejected. A task result still cannot be a slice,
+closure that holds a view, are rejected. A function value that this function received through a parameter is rejected as a spawned callable or as a spawned `own` argument, because its captures are unknown here; spawn it in the function that creates the closure. A task result still cannot be a slice,
 hold a view, or be a function value (Q25).
 
 **Lifetime proof across all exits.** A planned `.wait()` or `await task` is not

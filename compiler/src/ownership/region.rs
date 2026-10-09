@@ -477,6 +477,18 @@ impl<'a> Analysis<'a> {
         let Some(loan) = borrowed else {
             return;
         };
+        if matches!(loan.target, LoanTarget::Param(_)) {
+            findings.report_once(
+                span,
+                Diagnostic::new(
+                    Severity::Error,
+                    "a spawned task cannot use a function value that came in through a parameter",
+                    span,
+                )
+                .note("the caller's closure may borrow the caller's storage, and this function cannot tell; spawn it in the function that creates the closure"),
+            );
+            return;
+        }
         findings.report_once(
             span,
             Diagnostic::new(
