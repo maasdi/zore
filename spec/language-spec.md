@@ -3666,10 +3666,11 @@ declaration's signature with the names removed. A package-qualified name
 (`pkg.F`) converts the same way for every function the package exports, whether
 it is written in Zore or implemented by the compiler. The value is a closure
 with no captures: evaluating the name has no effect, borrows nothing, and moves
-nothing. Like every function-typed value it is Move. The name of an `async func`
-and a built-in operation (`println`, `len`, `push`, `clone`, channel and mutex
-operations, error construction) is not a function value and is rejected.
-A method used as a value is described below.
+nothing. Like every function-typed value it is Move. A built-in operation
+(`println`, `len`, `push`, `clone`, channel and mutex operations, error
+construction) is not a function value and is rejected. The name of an `async func`
+is a value of an async function type, described below. A method used as a value
+is described below.
 
 ```ore
 func add(a int, b int) int { return a + b }
@@ -3677,6 +3678,36 @@ func add(a int, b int) int { return a + b }
 let f = add                        // func(int, int) int
 let apply = func(op func(int, int) int, x int, y int) int { return op(x, y) }
 println(apply(add, 2, 3))          // 5
+```
+
+**Async function types and values.** A function type may begin with `async`:
+`async func(int) (string, error)`. The `async` property is part of the type, so
+two function types are identical only when they agree on it as well as on the
+parameter types, modes, and results. There is no conversion between `func(T) R`
+and `async func(T) R` in either direction. The name of a declared `async func`,
+including a package-qualified one, is a capture-free Move value of the async
+function type with its signature; evaluating the name has no effect. An `async`
+method, a built-in operation, and a closure literal are not async function
+values (a closure body is never async, §16.1).
+
+A call through a value of async function type is an async call (§17.8): it must
+be the operand of `await` or of `go`. The callee is evaluated first and the
+arguments left to right, each once. An awaited call uses the callee exclusively
+for the whole call, including while the task is suspended. Async function types
+may appear wherever other function types may (§16.4), and never as a slice
+element or a map key.
+
+```ore
+async func fetchUser(id int) (User, error) { /* ... */ }
+
+type Route struct {
+    Path    string
+    handler async func(int) (User, error)
+}
+
+let h = fetchUser                // async func(int) (User, error)
+let user, err = await h(7)       // inside an async func
+let task = go h(7)               // anywhere; Task<User, error>
 ```
 
 **Method values.** `value.Method`, written where a value is expected and not
@@ -3916,6 +3947,10 @@ async func fetchUser(id int) (User, error) {
 }
 ```
 
+An async function type is written with `async` before `func`, as in
+`async func(int) (User, error)`, and a declared `async func` name is a value of
+that type (§16.2).
+
 ## 17.3 `await` semantics — LOCKED
 
 `await` suspends the current async computation until the awaited operation can make progress / completes according to the async runtime contract.
@@ -4003,14 +4038,16 @@ Compiler implementers must preserve the locked observable behavior while being f
 
 ## 17.8 Async call contract — LOCKED
 
-A call to an `async func` must be the operand of `await` or of `go`. Any other
+A call to an `async func`, or through a value of async function type, must be
+the operand of `await` or of `go`. Any other
 use — a bare call statement, binding the call's result, or passing it as an
 argument — is a compile-time error. There is no user-visible future or promise
 type; an async call's result can only be obtained by awaiting it or by
 spawning it and later retrieving it from the task (§18.9).
 
 `await` is valid only inside the body of an `async func`. Its operand is
-either a call to an `async func` or a `Task<...>` value (§18.9). Using `await`
+either a call to an `async func` or to a value of async function type (§16.2),
+or a `Task<...>` value (§18.9). Using `await`
 anywhere else — including in a synchronous function or a non-async closure —
 is a compile-time error. A synchronous function reaches async work only by
 spawning it with `go`.
@@ -4082,8 +4119,10 @@ element, map value, or the result of a call is rejected: move a closure stored
 in a field of a local struct into a local first, and take one out of an
 `Array<T>` or a map with `pop` or `remove`. A closure body is never
 async (§16.1), so a spawned closure runs as one plain-function task even when it
-is written inside an `async func`; the name of an `async func` is not a
-function value (§16.2), and `go asyncFn(x)` on the declared name is unchanged.
+is written inside an `async func`. `go` also accepts a call through a value of
+async function type (§16.2): the callable is moved into the task, and the task
+resumes as for a declared `async func`. `go asyncFn(x)` on the declared name is
+unchanged.
 A call to an `async func` becomes a task that the runtime resumes as it becomes
 ready. A call to a plain function runs to completion on a runtime thread as one
 task. A

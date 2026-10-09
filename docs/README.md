@@ -24,15 +24,10 @@ for their rationale; the specification is authoritative.
 - [Async functions as state machines, without fibers](proposals/async-state-machines.md) (spec §17.3, §17.7, §18.3, §20.2, §35.1, §37.3; all six slices implemented)
 - [Declared function values and `go` on owning callables](proposals/function-values-and-spawned-closures.md) (spec §16.2, §16.4, §16.6, §18.3, §18.4; issue #52)
 - [Method values](proposals/method-values.md) (spec §9.1, §16.2; Q34)
+- [`async` function values](proposals/async-function-values.md) (spec §16.2, §17.2, §17.8, §18.3; Q36)
 
 ## Withdrawn proposals
 
 These proposals were not accepted and changed nothing. They are kept for their reasoning.
 
 - [`go` on a callee stored in a struct field](proposals/spawn-field-callee.md) (Q35)
-
-## Proposals under review
-
-These proposals are not accepted. They lock nothing, and the specification does not change until the maintainer accepts them.
-
-- [`async` function values](proposals/async-function-values.md) (Q36; follow-up to issue #52)

@@ -191,3 +191,28 @@ and `method_values_destroy_an_owned_receiver_exactly_once`).
 | Method declared `async`, and `drop` | Rejected |
 | Type, parameter modes, and results | Those of the method without the receiver |
 | Owning receiver destroyed exactly once on return, error, panic, and when unused | Counting destructor tests |
+
+## Async function values (§16.2, §17.8)
+
+Executable counterparts land with the implementing stages of Q36; until then
+these rows are pending and do not count as passing tests.
+
+| Scenario | Expected result |
+| --- | --- |
+| `let h = fetchUser` for an `async func` | Type `async func(int) (User, error)` |
+| `await h(7)` inside an `async func` | Valid |
+| `go h(7)` in a plain function and in an async function | Valid; `Task<User, error>` |
+| `h(7)` as a statement, bound, or passed as an argument | Rejected: neither awaited nor spawned |
+| `await h(7)` in a plain function or a plain closure | Rejected |
+| `async func(T) R` assigned to `func(T) R`, and the reverse | Rejected |
+| Async function value in a struct field, `Array<T>`, map value, or `own` parameter | Valid |
+| Async function value as a slice element or map key | Rejected |
+| Parameter of async function type awaited twice | Valid |
+| `go op(x)` where `op` is a parameter | Rejected: came in through a parameter |
+| Package-qualified `async func` as a value | Valid |
+| Async method, built-in, or closure literal as an async value | Rejected |
+| Callee and arguments of a call through the value | Evaluated once, callee first |
+| Environment destroyed once on return, error, panic, and when unused | Counting destructor tests |
+| Callee used while an awaited call through it is suspended | Rejected |
+| Existing plain function values and `go` forms | Unchanged |
+

@@ -58,7 +58,7 @@ A newly discovered semantic gap blocks its affected feature, not unrelated work.
 | Q33 | Declared function values and `go` on owning callables: locked in §16.2, §16.4, §16.6, §18.3, and §18.4. See Q33 below. | §16.2, §16.4, §16.6, §18.3, §18.4 | Parser, checker, ownership, and codegen changes |
 | Q34 | Method values: locked in §16.2 and §9.1. See Q34 below. | §9.1, §16.2, §16.3 | Checker |
 | Q35 | `go` on a callee stored in a struct field: withdrawn; the two-line form works. See Q35 below. | §18.3, §31.2 | None |
-| Q36 | `async` function values: an `async func(...)` type and the names of declared `async func`s as values. OPEN: proposed in `docs/proposals/async-function-values.md`; nothing is locked. Until accepted, an `async func` name used as a value stays rejected. | §16.2, §17.2, §17.8, §18.3 | Parser, types, checker, codegen |
+| Q36 | `async` function values: locked in §16.2, §17.2, §17.8, and §18.3. See Q36 below. | §16.2, §17.2, §17.8, §18.3 | Parser, types, checker, codegen |
 
 ## Resolved decisions
 
@@ -185,7 +185,7 @@ A newly discovered semantic gap blocks its affected feature, not unrelated work.
 
 - **Q35 — `go` on a callee stored in a field (WITHDRAWN):** proposed in `docs/proposals/spawn-field-callee.md` and withdrawn by the maintainer; nothing was locked or implemented. A closure in a field of a local struct is started by moving it into a local first (`let run = w.run`, then `go run(...)`); a closure in an array or map comes out with `pop` or `remove`. A function value that came in through a parameter cannot be spawned in either form (§18.4). Q33's rejection of a field, element, map value, or call result as a `go` callee stands.
 
-- **Q36 — `async` function values (OPEN):** proposed in `docs/proposals/async-function-values.md`; not accepted and not locked. The proposal would add `async func(...)` as a function type whose identity includes the `async` property, let a declared `async func` name (including a package-qualified one) be a value of it, and apply the async call contract to a call through such a value: it must be the operand of `await` or `go`. Async closure literals and async method values are excluded. Until the maintainer accepts it, an `async func` name used as a value stays rejected.
+- **Q36 — `async` function values:** locked in §16.2, §17.2, §17.8, and §18.3 at the maintainer's direction; the proposal is `docs/proposals/async-function-values.md`. (a) `async func(...)` is a function type whose identity includes the `async` property, with no conversion either way. (b) A declared `async func` name, including a package-qualified one, is a capture-free Move value of it. (c) A call through such a value must be the operand of `await` or `go`; an awaited call uses the callee exclusively across suspension, and `go` follows Q33. (d) Async method values, built-in operations, and closure literals are not async function values; async closure literals remain a later decision. Pending cases: `tests/conformance/closures.md` and `tests/conformance/concurrency.md`.
 - **Q27 — Async I/O choices:** locked in §37.3 at the maintainer's direction
   (time, standard input, whole files, and TCP, waiting on an event loop). (a)
   Strings are well-formed UTF-8, so every function that returns text from

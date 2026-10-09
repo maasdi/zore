@@ -1,11 +1,10 @@
 # Q36 proposal: `async` function values
 
-Status: PROPOSED. Nothing here is locked, and no implementation may rely on it
-until the maintainer accepts it and the decisions are written into the
-specification and locked (§53). The specification stays authoritative. This is
-the follow-up that Q33 left open: Q33 allows the names of declared synchronous
-functions as values and rejects an `async func` name because the function type
-does not say whether a call must be awaited.
+Status: ACCEPTED and incorporated into spec §16.2, §17.2, §17.8, and §18.3. The
+specification is authoritative; this document preserves the accepted proposal and
+its rationale. The maintainer accepted it with the proposal's own choices: async
+method values are not included, async closure literals are a later decision, and
+the type is spelled `async func(...)`.
 
 Scope: a function type that says "calling this is async", and the name of a
 declared `async func` as a value of that type. Out of scope: async closure
@@ -187,12 +186,3 @@ behavior intact.
 - §18.3: `go` accepts an async function value as the callee.
 - `docs/spec-questions.md`: record Q36 as resolved.
 - `docs/roadmap.md`: remove async callables from the remaining list.
-
-## Open points for the maintainer
-
-1. Should async method values be included now? The proposal says no, because the
-   receiver would be captured by a closure that is live across a suspension, which
-   needs the conservative borrow rule of §17.6 spelled out for captures.
-2. Should async closure literals be specified next, or never? The type form here
-   leaves room for them without changing anything above.
-3. Is `async func(...)` the spelling you want for the type?
