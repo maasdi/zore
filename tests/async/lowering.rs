@@ -723,3 +723,42 @@ func main() { let t = go run(); println(t.wait()) }",
     assert!(matches!(callee, mir::Callee::Value(_)));
     assert!(unwind.is_some());
 }
+
+fn many_locals(count: usize) -> String {
+    let mut source = String::from(
+        "package main\nasync func run(ch channel<int>) int {\nch.send(0)\nvar sum = 0\n",
+    );
+    for i in 0..count {
+        source.push_str(&format!("let v{i} = {i}\n"));
+    }
+    for i in 0..count {
+        source.push_str(&format!("sum += v{i}\n"));
+    }
+    source.push_str("return sum\n}\nfunc main() {}\n");
+    source
+}
+
+#[test]
+fn frame_slot_reuse_work_grows_quadratically_with_the_local_count() {
+    let work: Vec<usize> = [100, 200, 400, 800]
+        .into_iter()
+        .map(|count| {
+            let (package, _, plan) = plan(&many_locals(count));
+            let (_, machine) = plan
+                .machines
+                .iter()
+                .find(|(id, _)| package.function(**id).name == "run")
+                .unwrap();
+            machine.frame_reuse_work
+        })
+        .collect();
+    for pair in work.windows(2) {
+        // Doubling the locals doubles both the live set and the instruction count.
+        assert!(
+            pair[1] <= pair[0] * 5,
+            "work grew from {} to {}",
+            pair[0],
+            pair[1]
+        );
+    }
+}

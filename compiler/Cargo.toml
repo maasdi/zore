@@ -17,6 +17,10 @@ autotests = false
 
 [dependencies]
 
+[[example]]
+name = "async_frame_scaling"
+path = "../benchmarks/frame-storage/scaling/main.rs"
+
 [[test]]
 name = "cli"
 path = "../tests/driver/cli.rs"

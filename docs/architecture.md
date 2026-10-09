@@ -170,7 +170,13 @@ frame locals without cleanup, embedded views, or address-taking may share a fiel
 backward MIR liveness proves no overlap across normal, unwind, implicit wait,
 child-call, and budget-resume edges. Parameters, captures, results, and
 ambiguous cases retain separate fields. Drop flags and hoisted scratch fields
-are not shared. A state switch dispatches to the start block or a saved
+are not shared. The interference relation is built from bitset liveness: each
+instruction pairs the locals it mentions with what is live after it, the entry
+block adds its live-in set, and code unreachable from the entry keeps the
+exhaustive per-point marking. Grouping keeps, per local, the set of groups that
+already hold a neighbor. For `n` frame locals and `b` blocks this is `O(n²)`
+plus `O(b · n / 64)` per liveness pass, where the previous all-points marking
+was roughly `O(n³)`. A state switch dispatches to the start block or a saved
 call-poll label. Argument evaluation,
 ownership transfer, and child-frame construction occur only on the first visit;
 resuming a pending call repeats only its poll. Calls have one active child frame
