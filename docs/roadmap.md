@@ -1848,6 +1848,10 @@ Required ecosystem capabilities include:
 
 Do not begin full compiler rewrite merely because the language can compile a few examples.
 
+`docs/proposals/self-hosting-plan.md` maps current compiler and library
+capabilities to bounded stages, beginning with a lexer oracle comparison. It
+is a planning proposal, not an implemented compiler or a locked API change.
+
 ---
 
 ### Phase 41 — Zore Compiler Skeleton Written in Zore
