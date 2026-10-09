@@ -674,8 +674,10 @@ context passes through nested async calls, so newly started child polls consume
 the caller's budget rather than resetting it. Re-polling an already-suspended
 parent only forwards to its saved child and does not consume another entry unit;
 this lets deep call chains advance across yields. Generated polls check the
-budget at first entry and at MIR blocks targeted by a loop backedge. Those
-blocks are also resume states: if the budget is exhausted, the poll records
+budget at first entry and at MIR blocks targeted by a loop backedge. A target
+counts as a backedge only when it dominates its predecessor, so ordinary
+branches do not add budget checks. Backedge targets are also resume states:
+if the budget is exhausted, the poll records
 the block's state before executing its statements, wakes its own task, and
 returns Pending. The scheduler coalesces that wake with concurrent wakes and
 puts the task at the back of the runnable queue once. This yield never counts

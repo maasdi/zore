@@ -14,19 +14,21 @@ fresh processes. It alternates execution order and verifies output. The compute
 fixture prints the exact sum from a two-million-trip async arithmetic loop.
 The I/O fixture awaits 300 one-millisecond sleeps.
 
-On this Linux x86-64 host, comparing `main` at `3b01b58` with the candidate
-branch, median process times over seven repetitions were:
+On this Linux x86-64 host, comparing the optimized branch against each
+reference in separate 11-repetition runs gave these median process times:
 
-| Workload | Without budgets | With budgets |
-| --- | ---: | ---: |
-| Computation | 3.7 ms | 46.4 ms |
-| I/O-heavy | 339.4 ms | 342.3 ms |
+| Reference | Compute reference | Compute optimized | I/O reference | I/O optimized |
+| --- | ---: | ---: | ---: | ---: |
+| Before budgets (`3b01b58`) | 3.3 ms | 15.2 ms | 341.8 ms | 341.6 ms |
+| Initial budgets (`865a23a`) | 45.6 ms | 17.7 ms | 337.1 ms | 336.1 ms |
 
-The arithmetic loop is deliberately tiny per trip. Budget checks and the
-resume path can inhibit loop optimization, and exhausted polls also requeue.
-This is a substantial cost for such highly optimizable loops, not a portable
-multiplier for general programs. The I/O-heavy difference is smaller than the
-run-to-run spread. Neither measurement is a test threshold.
+The initial implementation treated every edge to a lower-numbered MIR block
+as a loop backedge, adding four budget checks per arithmetic trip. Checking
+dominance identifies only the actual loop header and cuts this benchmark's
+compute time by about 61%. The arithmetic loop is deliberately tiny per trip;
+the remaining cost is substantial for such highly optimizable work, not a
+portable multiplier for general programs. The I/O-heavy differences are
+smaller than the run-to-run spread. Neither measurement is a test threshold.
 
 The internal 128-visit budget limits scheduling latency to roughly that many
 poll entries or loop trips before the task rejoins the queue. It does not bound
