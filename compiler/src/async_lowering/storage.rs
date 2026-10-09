@@ -37,7 +37,7 @@ pub(super) fn classify(
     }
 
     let mut reachable = vec![false; body.blocks.len()];
-    let mut pending = budget_blocks.to_vec();
+    let mut pending = Vec::new();
     for (block, _) in suspensions {
         if let Terminator::Call {
             target,
@@ -83,6 +83,15 @@ pub(super) fn classify(
         visit_terminator(&block.terminator, &mut |local| frame[local] = true);
     }
 
+    if !budget_blocks.is_empty() {
+        let live_at_entry = live_at_entry(body);
+        for block in budget_blocks {
+            for (index, live) in live_at_entry[block.0 as usize].iter().enumerate() {
+                frame[index] |= *live;
+            }
+        }
+    }
+
     frame
         .into_iter()
         .map(|needed| {
@@ -93,6 +102,88 @@ pub(super) fn classify(
             }
         })
         .collect()
+}
+
+fn live_at_entry(body: &mir::Body) -> Vec<Vec<bool>> {
+    let block_count = body.blocks.len();
+    let local_count = body.locals.len();
+    let mut used_before_definition = vec![vec![false; local_count]; block_count];
+    let mut defined = vec![vec![false; local_count]; block_count];
+    for (index, block) in body.blocks.iter().enumerate() {
+        for statement in &block.statements {
+            match statement {
+                Statement::Assign { place, rvalue, .. } => {
+                    visit_rvalue(rvalue, &mut |local| {
+                        if !defined[index][local] {
+                            used_before_definition[index][local] = true;
+                        }
+                    });
+                    if place.projections.is_empty() {
+                        defined[index][place.local.0 as usize] = true;
+                    } else {
+                        visit_place(place, &mut |local| {
+                            if !defined[index][local] {
+                                used_before_definition[index][local] = true;
+                            }
+                        });
+                    }
+                }
+                Statement::Drop { place, .. } => visit_place(place, &mut |local| {
+                    if !defined[index][local] {
+                        used_before_definition[index][local] = true;
+                    }
+                }),
+                Statement::EndScope(locals) => {
+                    for local in locals {
+                        let local = local.0 as usize;
+                        if !defined[index][local] {
+                            used_before_definition[index][local] = true;
+                        }
+                    }
+                }
+            }
+        }
+        visit_terminator(&block.terminator, &mut |local| {
+            if !defined[index][local] {
+                used_before_definition[index][local] = true;
+            }
+        });
+    }
+    let mut live = vec![vec![false; local_count]; block_count];
+    loop {
+        let mut changed = false;
+        for index in (0..block_count).rev() {
+            let mut next = used_before_definition[index].clone();
+            let terminator = &body.blocks[index].terminator;
+            let mut successors = terminator.successors();
+            match terminator {
+                Terminator::Call {
+                    unwind: Some(unwind),
+                    ..
+                }
+                | Terminator::Assert {
+                    unwind: Some(unwind),
+                    ..
+                } => successors.push(*unwind),
+                _ => {}
+            }
+            for successor in successors {
+                for (local, needed) in live[successor.0 as usize].iter().enumerate() {
+                    if !defined[index][local] {
+                        next[local] |= *needed;
+                    }
+                }
+            }
+            if next != live[index] {
+                live[index] = next;
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    live
 }
 
 fn stable_rvalue(rvalue: &Rvalue, stable: &mut [bool]) {
