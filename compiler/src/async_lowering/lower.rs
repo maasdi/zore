@@ -128,21 +128,7 @@ pub fn lower(package: &hir::Package, program: &mir::Program) -> Plan {
                     Some((mir::BlockId(index as u32), suspension))
                 })
                 .collect();
-            let budget_blocks: Vec<_> = body
-                .blocks
-                .iter()
-                .enumerate()
-                .flat_map(|(index, block)| {
-                    block
-                        .terminator
-                        .successors()
-                        .into_iter()
-                        .filter(move |target| target.0 as usize <= index)
-                })
-                .filter(|target| body.unwind != Some(*target))
-                .collect::<BTreeSet<_>>()
-                .into_iter()
-                .collect();
+            let budget_blocks = budget_blocks(body);
             let storage = super::storage::classify(body, &suspensions, &budget_blocks);
             (
                 body.function,
@@ -155,4 +141,68 @@ pub fn lower(package: &hir::Package, program: &mir::Program) -> Plan {
         })
         .collect();
     Plan { machines }
+}
+
+fn budget_blocks(body: &mir::Body) -> Vec<mir::BlockId> {
+    let count = body.blocks.len();
+    let mut predecessors = vec![Vec::new(); count];
+    for (index, block) in body.blocks.iter().enumerate() {
+        for target in block.terminator.successors() {
+            predecessors[target.0 as usize].push(index);
+        }
+    }
+    let mut reachable = vec![false; count];
+    let mut pending = vec![0];
+    while let Some(index) = pending.pop() {
+        if reachable[index] {
+            continue;
+        }
+        reachable[index] = true;
+        pending.extend(
+            body.blocks[index]
+                .terminator
+                .successors()
+                .into_iter()
+                .map(|target| target.0 as usize),
+        );
+    }
+    let mut dominators = vec![reachable.clone(); count];
+    dominators[0].fill(false);
+    dominators[0][0] = true;
+    loop {
+        let mut changed = false;
+        for index in 1..count {
+            if !reachable[index] {
+                continue;
+            }
+            let mut next = reachable.clone();
+            for &predecessor in &predecessors[index] {
+                if reachable[predecessor] {
+                    for (candidate, dominated) in next.iter_mut().enumerate() {
+                        *dominated &= dominators[predecessor][candidate];
+                    }
+                }
+            }
+            next[index] = true;
+            if next != dominators[index] {
+                dominators[index] = next;
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    let mut headers = BTreeSet::new();
+    for (index, block) in body.blocks.iter().enumerate() {
+        if !reachable[index] {
+            continue;
+        }
+        for target in block.terminator.successors() {
+            if dominators[index][target.0 as usize] {
+                headers.insert(target);
+            }
+        }
+    }
+    headers.into_iter().collect()
 }

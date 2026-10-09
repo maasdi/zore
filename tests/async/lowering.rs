@@ -205,7 +205,7 @@ async func count() int {
 func main() {}";
     let (package, program, plan) = plan(source);
     let (body, storage) = storage_for(&package, &program, &plan, "count");
-    assert!(!plan.machines[&body.function].budget_blocks.is_empty());
+    assert_eq!(plan.machines[&body.function].budget_blocks.len(), 1);
     assert_eq!(named_storage(body, storage, "seed"), LocalStorage::Poll);
     assert_eq!(named_storage(body, storage, "total"), LocalStorage::Frame);
 
@@ -224,6 +224,29 @@ func main() {}";
     for block in &plan.machines[&body.function].budget_blocks {
         assert!(poll.contains(&format!("label %bb{}", block.0)));
     }
+}
+
+#[test]
+fn budget_points_follow_loop_headers_instead_of_block_numbers() {
+    let (package, program, plan) = plan(
+        "package main
+async func branch(value int) int {
+    if value > 0 { return value + 1 }
+    return value - 1
+}
+async func nested() int {
+    var sum = 0
+    for var outer = 0; outer < 3; outer += 1 {
+        for var inner = 0; inner < 4; inner += 1 { sum += 1 }
+    }
+    return sum
+}
+func main() {}",
+    );
+    let (branch, _) = storage_for(&package, &program, &plan, "branch");
+    let (nested, _) = storage_for(&package, &program, &plan, "nested");
+    assert!(plan.machines[&branch.function].budget_blocks.is_empty());
+    assert_eq!(plan.machines[&nested.function].budget_blocks.len(), 2);
 }
 
 #[test]
