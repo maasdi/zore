@@ -1,16 +1,17 @@
 # Q10 proposal: opt-in scoped tasks
 
-Status: PROPOSED, not accepted or implemented. Every `taskScope` example below
-is proposed syntax and must be rejected by the current compiler. The locked
-rules in specification §§16.4, 18.4–18.6, and 18.11 remain authoritative:
+Status: Design accepted for future specification work; not locked or implemented.
+Every `taskScope` example below is proposed syntax and must be rejected by the
+current compiler. The locked rules in specification §§16.4, 18.4–18.6, and
+18.11 remain authoritative:
 ordinary `go` cannot borrow another task's local storage, dropping a `Task`
 detaches it, and the process abandons unfinished work when the initial task
 completes. Q09b already makes the current model memory-safe.
 
 ## Recommendation and decision table
 
-Recommend an opt-in lexical `taskScope { ... }` block. Its task creation,
-borrowing, and completion rules apply only to `go` expressions lexically inside
+The accepted design choice is an opt-in lexical `taskScope { ... }` block. Its
+task creation, borrowing, and completion rules apply only to `go` expressions lexically inside
 that block or its nested ordinary blocks. They do not propagate into a called
 function or a closure body. Every task registered with the scope finishes
 before the scope releases any storage that task might borrow. Ordinary `go`
@@ -18,9 +19,9 @@ elsewhere keeps its current independent-input and detach behavior.
 
 | Choice | Safety proof | Simplicity and runtime cost | Migration | Recommendation |
 | --- | --- | --- | --- | --- |
-| Opt-in lexical scope | Compiler bounds scoped loans by a mandatory join on every exit; handles cannot escape | New region and cleanup machinery; each scope tracks and joins its children | Existing programs keep their meaning | Recommend, pending maintainer decision |
+| Opt-in lexical scope | Compiler bounds scoped loans by a mandatory join on every exit; handles cannot escape | New region and cleanup machinery; each scope tracks and joins its children | Existing programs keep their meaning | Accepted design direction; specification pending |
 | Make all tasks scoped by default | Could prove borrows after changing all handle and process-exit paths | Simple default spelling, but dropping a handle could block or hang; background work needs a new detach operation | Breaks §§18.5–18.6 and 18.11 and programs relying on background tasks | Reject |
-| Keep current conservative rejection | Already safe through independent task inputs | No new compiler or runtime work; no local borrowing across tasks | None | Retain until an opt-in design is accepted |
+| Keep current conservative rejection | Already safe through independent task inputs | No new compiler or runtime work; no local borrowing across tasks | None | Retain until the opt-in design is specified and implemented |
 
 The recommendation is not a request to revise default `Task` semantics. A
 callback-only library API is also less suitable as the core facility: plain
@@ -142,7 +143,7 @@ without a parent panic, join every child and re-raise the earliest spawned
 unobserved child panic. All later failures have already been reported. This
 choice gives deterministic priority independent of completion order. It
 supersedes a pending `return` or `?` result, as a panic during cleanup can.
-The exact failure-priority rule requires maintainer acceptance.
+The exact failure-priority rule still requires a locked specification.
 
 No cancellation is required or implied. A cancellation request would not be
 a lifetime proof: cleanup still must wait for task completion. A child that
@@ -245,11 +246,11 @@ owning `go consume(values)` remains valid and independently lifetime-safe.
 
 ## Compiler and runtime work after acceptance
 
-1. **Decision and syntax checkpoint.** The maintainer accepts or revises the
-   block spelling, scoped-handle restrictions, panic priority, and staged
-   plain/async boundary. Only then amend §§16.4, 17.8, 18.4–18.11 and the
-   grammar under §53, with ownership, error, and async examples. Until that
-   checkpoint, keep rejecting the syntax and borrowed spawns.
+1. **Decision and syntax checkpoint.** The maintainer accepted the opt-in scope
+   direction. Amend §§16.4, 17.8, 18.4–18.11 and the grammar under §53, with
+   ownership, error, and async examples, then explicitly lock the exact rules
+   and add conformance cases. Until that checkpoint, keep rejecting the syntax
+   and borrowed spawns.
 2. **Plain-scope semantic checkpoint.** Give each lexical scope a stable ID;
    infer capture and argument loans against that region; reject handle or
    view escape, shorter-lived referents, and conflicting accesses. Lower all
@@ -295,12 +296,13 @@ cleanup. No new dependency is justified by this proposal alone.
 
 | Question | Proposed initial answer | Gate |
 | --- | --- | --- |
-| Exact block keyword and whether `go` inside it is always scoped | `taskScope`, always scoped in its lexical body | Maintainer acceptance before grammar change |
-| Can an unobserved child error be discarded after join? | Yes, like a dropped ordinary `Task`; explicit retrieval is required for propagation | Maintainer acceptance before error rules change |
-| Which panic wins if several children fail? | Earliest spawn among unobserved failures, after all children finish | Maintainer acceptance before runtime change |
+| Exact block keyword and whether `go` inside it is always scoped | `taskScope`, always scoped in its lexical body | Lock in specification before grammar change |
+| Can an unobserved child error be discarded after join? | Yes, like a dropped ordinary `Task`; explicit retrieval is required for propagation | Lock in specification before error rules change |
+| Which panic wins if several children fail? | Earliest spawn among unobserved failures, after all children finish | Lock in specification before runtime change |
 | Can short-lived inner-block locals be borrowed? | Reject initially | Optional later proof |
 | Can scoped handles or view results escape? | Reject initially | Optional later proof |
 | Can async functions contain direct scopes? | Reject until pollable unwind and join exist | Async-scope checkpoint |
 
-This proposal intentionally does not lock Q10, alter ordinary task behavior,
-or claim that scoped tasks are needed to make the current MVP safe.
+Design approval does not itself lock Q10, alter ordinary task behavior, or
+make scoped tasks necessary for current MVP safety. The specification and
+conformance update is the next gate before implementation.
