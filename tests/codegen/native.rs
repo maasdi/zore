@@ -5110,6 +5110,7 @@ async func leaf() {
     let local = Job{Name: "leaf"}
     println(local.Name)
 }
+
 async func run(ch channel<int>) int {
     await leaf()
     {
@@ -5142,6 +5143,134 @@ func main() {
     prints(
         source,
         "leaf\ndrop leaf\nearly\ndrop early\nlate\ndrop late\n2\n",
+    );
+}
+
+#[test]
+fn reused_async_frame_arrays_survive_child_and_implicit_waits_with_error_cleanup() {
+    prints(
+        r#"package main
+type Guard struct { Name string }
+func (g mut Guard) drop() { println("drop " + g.Name) }
+async func pause(ch channel<int>) { ch.send(1) }
+func fail() (int, error) { return 0, error("expected") }
+async func run(ch channel<int>) (int, error) {
+    var total = 0
+    {
+        let guard = Guard{Name: "first"}
+        let first = [int; 4]{1, 2, 3, 4}
+        await pause(ch)
+        total += first[0]
+    }
+    {
+        let guard = Guard{Name: "second"}
+        let second = [int; 4]{5, 6, 7, 8}
+        ch.send(2)
+        total += second[0]
+        let ignored = fail()?
+        total += ignored
+    }
+    return total, nil
+}
+func main() {
+    let ch = channel<int>()
+    let task = go run(ch)
+    let a, _ = ch.receive()
+    let b, _ = ch.receive()
+    let result, err = task.wait()
+    println(a + b)
+    println(result)
+    println(err == error("expected"))
+}"#,
+        "drop first\ndrop second\n3\n0\ntrue\n",
+    );
+}
+
+#[test]
+fn reused_async_frame_arrays_preserve_panic_cleanup() {
+    let output = run(r#"package main
+type Guard struct { Name string }
+func (g mut Guard) drop() { println("drop " + g.Name) }
+async func pause(ch channel<int>) { ch.send(1) }
+async func run(ch channel<int>) int {
+    {
+        let guard = Guard{Name: "first"}
+        let first = [int; 4]{1, 2, 3, 4}
+        await pause(ch)
+        println(first[0])
+    }
+    {
+        let guard = Guard{Name: "second"}
+        let second = [int; 4]{5, 6, 7, 8}
+        await pause(ch)
+        println(second[0])
+        let zero = second[0] - 5
+        return 1 / zero
+    }
+}
+func main() {
+    let ch = channel<int>()
+    let task = go run(ch)
+    let _, _ = ch.receive()
+    let _, _ = ch.receive()
+    println(task.wait())
+}"#);
+    assert_eq!(output.status.code(), Some(2), "{}", stderr(&output));
+    assert_eq!(stdout(&output), "1\ndrop first\n5\ndrop second\n");
+    assert!(stderr(&output).contains("panic in the main task: division by zero"));
+}
+
+#[test]
+fn borrowed_async_frame_arrays_keep_views_valid_across_resumes() {
+    prints(
+        r#"package main
+async func pause(ch channel<int>) { ch.send(1) }
+async func run(ch channel<int>) int {
+    var total = 0
+    {
+        let first = [int; 4]{1, 2, 3, 4}
+        let view = first[:]
+        await pause(ch)
+        total += view[0]
+    }
+    {
+        let second = [int; 4]{5, 6, 7, 8}
+        let view = second[:]
+        await pause(ch)
+        total += view[0]
+    }
+    return total
+}
+
+func main() {
+    let ch = channel<int>()
+    let task = go run(ch)
+    let _, _ = ch.receive()
+    let _, _ = ch.receive()
+    println(task.wait())
+}"#,
+        "6\n",
+    );
+}
+
+#[test]
+fn reused_async_frame_arrays_survive_budget_resumes() {
+    prints(
+        r#"package main
+async func run() int {
+    var total = 0
+    {
+        let first = [int; 4]{1, 2, 3, 4}
+        for var i = 0; i < 300; i += 1 { total += first[0] }
+    }
+    {
+        let second = [int; 4]{5, 6, 7, 8}
+        for var i = 0; i < 300; i += 1 { total += second[0] }
+    }
+    return total
+}
+func main() { let task = go run(); println(task.wait()) }"#,
+        "1800\n",
     );
 }
 

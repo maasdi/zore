@@ -29,16 +29,25 @@ impl Module<'_> {
             "ptr".into(),
         ];
         let mut locals = Vec::new();
-        let storage = &self.machines.machines[&body.function].storage;
+        let machine = &self.machines.machines[&body.function];
+        let storage = &machine.storage;
+        let frame_reuse = &machine.frame_reuse;
+        let mut shared_slots = vec![None; body.locals.len()];
         for (index, local) in body.locals.iter().enumerate() {
             let slot = (storage[index] == LocalStorage::Frame).then(|| {
-                let index = fields.len();
-                fields.push(if local.by_reference {
-                    "ptr".into()
+                let owner = frame_reuse[index];
+                if let Some(field) = shared_slots[owner] {
+                    field
                 } else {
-                    self.ty(local.ty)
-                });
-                index
+                    let field = fields.len();
+                    fields.push(if local.by_reference {
+                        "ptr".into()
+                    } else {
+                        self.ty(local.ty)
+                    });
+                    shared_slots[owner] = Some(field);
+                    field
+                }
             });
             let flags = if slot.is_some() && self.package.needs_drop(local.ty) {
                 let field = fields.len();

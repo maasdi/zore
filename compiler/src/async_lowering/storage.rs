@@ -1,3 +1,6 @@
+use std::collections::HashSet;
+
+use crate::hir;
 use crate::mir::{self, Operand, Place, Projection, Rvalue, Statement, Terminator};
 
 use super::LocalStorage;
@@ -184,6 +187,184 @@ fn live_at_entry(body: &mir::Body) -> Vec<Vec<bool>> {
         }
     }
     live
+}
+
+pub(super) fn reuse(
+    body: &mir::Body,
+    package: &hir::Package,
+    storage: &[LocalStorage],
+) -> Vec<usize> {
+    let count = body.locals.len();
+    let mut eligible: Vec<bool> = body
+        .locals
+        .iter()
+        .enumerate()
+        .map(|(index, local)| {
+            storage[index] == LocalStorage::Frame
+                && !local.by_reference
+                && !package.needs_drop(local.ty)
+                && !package.contains_view(local.ty)
+        })
+        .collect();
+    for local in body
+        .params
+        .iter()
+        .chain(&body.captures)
+        .chain(&body.returns)
+    {
+        eligible[local.0 as usize] = false;
+    }
+    let mut stable = vec![false; count];
+    for block in &body.blocks {
+        for statement in &block.statements {
+            if let Statement::Assign { rvalue, .. } = statement {
+                stable_rvalue(rvalue, &mut stable);
+            }
+        }
+        match &block.terminator {
+            Terminator::Call { args, .. } => {
+                for arg in args {
+                    stable_operand(arg, &mut stable);
+                }
+            }
+            Terminator::Assert { rvalue, .. } => stable_rvalue(rvalue, &mut stable),
+            _ => {}
+        }
+    }
+    for (index, is_stable) in stable.into_iter().enumerate() {
+        eligible[index] &= !is_stable;
+    }
+
+    let mut entry = vec![vec![false; count]; body.blocks.len()];
+    loop {
+        let mut changed = false;
+        for (index, block) in body.blocks.iter().enumerate().rev() {
+            let mut live = successor_liveness(body, &entry, &block.terminator);
+            transfer_terminator(&block.terminator, &mut live);
+            for statement in block.statements.iter().rev() {
+                transfer_statement(statement, &mut live);
+            }
+            if live != entry[index] {
+                entry[index] = live;
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+
+    let mut interference = vec![HashSet::new(); count];
+    for block in &body.blocks {
+        let mut live = successor_liveness(body, &entry, &block.terminator);
+        mark_overlap(&live, &eligible, &mut interference);
+        let mut touched = live.clone();
+        visit_terminator(&block.terminator, &mut |local| touched[local] = true);
+        mark_overlap(&touched, &eligible, &mut interference);
+        transfer_terminator(&block.terminator, &mut live);
+        mark_overlap(&live, &eligible, &mut interference);
+        for statement in block.statements.iter().rev() {
+            let mut touched = live.clone();
+            visit_statement(statement, &mut |local| touched[local] = true);
+            mark_overlap(&touched, &eligible, &mut interference);
+            transfer_statement(statement, &mut live);
+            mark_overlap(&live, &eligible, &mut interference);
+        }
+    }
+
+    let mut reuse: Vec<usize> = (0..count).collect();
+    for index in 0..count {
+        if !eligible[index] {
+            continue;
+        }
+        for owner in 0..index {
+            if !eligible[owner]
+                || reuse[owner] != owner
+                || body.locals[owner].ty != body.locals[index].ty
+            {
+                continue;
+            }
+            if (0..index)
+                .any(|member| reuse[member] == owner && interference[index].contains(&member))
+            {
+                continue;
+            }
+            reuse[index] = owner;
+            break;
+        }
+    }
+    reuse
+}
+
+fn successor_liveness(body: &mir::Body, entry: &[Vec<bool>], terminator: &Terminator) -> Vec<bool> {
+    let mut live = vec![false; body.locals.len()];
+    let mut successors = terminator.successors();
+    match terminator {
+        Terminator::Call {
+            unwind: Some(unwind),
+            ..
+        }
+        | Terminator::Assert {
+            unwind: Some(unwind),
+            ..
+        } => successors.push(*unwind),
+        _ => {}
+    }
+    for successor in successors {
+        for (index, used) in entry[successor.0 as usize].iter().enumerate() {
+            live[index] |= used;
+        }
+    }
+    live
+}
+
+fn transfer_terminator(terminator: &Terminator, live: &mut [bool]) {
+    match terminator {
+        Terminator::Call {
+            callee,
+            args,
+            destinations,
+            ..
+        } => {
+            for place in destinations.iter().flatten() {
+                visit_place(place, &mut |local| live[local] = true);
+            }
+            if let mir::Callee::Value(place) = callee {
+                visit_place(place, &mut |local| live[local] = true);
+            }
+            for arg in args {
+                visit_operand(arg, &mut |local| live[local] = true);
+            }
+        }
+        _ => visit_terminator(terminator, &mut |local| live[local] = true),
+    }
+}
+
+fn transfer_statement(statement: &Statement, live: &mut [bool]) {
+    if let Statement::Assign { place, rvalue, .. } = statement {
+        if place.projections.is_empty() {
+            live[place.local.0 as usize] = false;
+        } else {
+            visit_place(place, &mut |local| live[local] = true);
+        }
+        visit_rvalue(rvalue, &mut |local| live[local] = true);
+    } else {
+        visit_statement(statement, &mut |local| live[local] = true);
+    }
+}
+
+fn mark_overlap(live: &[bool], eligible: &[bool], interference: &mut [HashSet<usize>]) {
+    let active: Vec<_> = live
+        .iter()
+        .enumerate()
+        .filter_map(|(index, used)| (*used && eligible[index]).then_some(index))
+        .collect();
+    for (position, &left) in active.iter().enumerate() {
+        for &right in &active[position + 1..] {
+            interference[left].insert(right);
+            interference[right].insert(left);
+        }
+    }
 }
 
 fn stable_rvalue(rvalue: &Rvalue, stable: &mut [bool]) {

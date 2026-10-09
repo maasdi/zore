@@ -50,3 +50,29 @@ build release compilers from `de823db` and the candidate branch, then run
 `../suspended-tasks/run.py` with `--source` set to
 `benchmarks/frame-storage/loop/workload.ore`, each compiler supplied in turn
 with `--compiler`, `--counts 1000 5000`, and `--repetitions 3`.
+
+## Non-overlapping pinned frame slots
+
+`reuse/workload.ore` keeps two 512-element integer arrays live through separate
+waits. Their lifetimes do not overlap, but both require persistent storage.
+The `wait` frame has three array fields in `main` at `93caea1` and two after
+same-type slot reuse. On this 64-bit host, its LLVM field layout is 12,584
+versus 8,464 bytes, a 4,120-byte reduction including other reused scalar
+fields and alignment.
+
+On Linux 6.18.44 x86-64 (AMD EPYC 9V74, clang 19, rustc 1.98.1), three
+settled-RSS runs with 4,000 waiting tasks and five threads gave:
+
+| Compiler | Settled RSS, KiB | Median, KiB |
+| --- | --- | ---: |
+| `main` at `93caea1` | 54,084; 54,112; 54,088 | 54,088 |
+| Slot reuse branch | 38,064; 38,056; 38,084 | 38,064 |
+
+These runs used debug-built compilers to generate the same native workload.
+The Linux sampler reads `/proc` after all tasks report ready and before they
+are released; it requires stable RSS and thread counts. RSS includes allocator,
+runtime, and process overhead and is not a per-frame size or correctness test.
+To reproduce, build each compiler from its revision and run
+`../suspended-tasks/run.py` with `--source` set to
+`benchmarks/frame-storage/reuse/workload.ore`, `--compiler` set to the binary,
+`--counts 4000`, and `--repetitions 3`.
