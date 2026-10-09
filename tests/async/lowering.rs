@@ -250,6 +250,48 @@ func main() {}",
 }
 
 #[test]
+fn loop_temporaries_rebuilt_after_budget_resume_use_poll_storage() {
+    let values = vec!["0"; 512].join(", ");
+    let source = "package main
+async func run() int {
+    let anchor = [int; 512]{VALUES}
+    var total = 0
+    for var i = 0; i < 1000; i += 1 {
+        let scratch = [int; 512]{VALUES}
+        total += anchor[0] + scratch[0]
+    }
+    return total
+}
+func main() {}"
+        .replace("VALUES", &values);
+    let (package, program, mut plan) = plan(&source);
+    let (body, storage) = storage_for(&package, &program, &plan, "run");
+    assert_eq!(named_storage(body, storage, "anchor"), LocalStorage::Frame);
+    assert_eq!(named_storage(body, storage, "scratch"), LocalStorage::Poll);
+    assert_eq!(named_storage(body, storage, "total"), LocalStorage::Frame);
+
+    let mut sources = SourceMap::new();
+    sources.add("async.ore", source).unwrap();
+    let ir = codegen::emit(&package, &program, &plan, &sources).unwrap();
+    let frame = ir
+        .lines()
+        .find(|line| line.contains("AsyncFrame.0\" = type"))
+        .unwrap();
+    assert_eq!(frame.matches("[512 x i64]").count(), 1);
+    assert!(ir.contains("alloca [512 x i64]"));
+
+    for machine in plan.machines.values_mut() {
+        machine.storage.fill(LocalStorage::Frame);
+    }
+    let baseline = codegen::emit(&package, &program, &plan, &sources).unwrap();
+    let baseline_frame = baseline
+        .lines()
+        .find(|line| line.contains("AsyncFrame.0\" = type"))
+        .unwrap();
+    assert!(baseline_frame.matches("[512 x i64]").count() > frame.matches("[512 x i64]").count());
+}
+
+#[test]
 fn calls_and_task_awaits_keep_their_cleanup_edges_and_spans() {
     let (package, program, plan) = plan(
         "package main

@@ -193,11 +193,16 @@ nested frame or join entry, contributes one internal blocked count.
 Synchronous shims remain available for plain callers of waiting library APIs.
 Neither these shims nor the persistent-frame plan changes source-language syntax
 or ownership semantics. Frame shrinking is limited to proven poll-local MIR
-storage; suspended frames
-are abandoned at process exit. Very large sets of waiting tasks should use
-`async func`: a plain function holds an OS worker while it waits, and compensation
-may need one replacement thread per blocked worker. The private cancellation
-`expire` and `follow` tasks are async, as is the timer package's `fire` task.
+storage. The storage planner computes values live at each cooperative loop
+budget resume block. A temporary assigned after every resume and dropped before
+the next one can use the poll stack; values used on a resume path, cleanup
+values, and address-stable storage remain pinned. Ordinary waiting operations
+still use conservative reachability through their success and unwind paths.
+Suspended frames are abandoned at process exit. Very large sets of waiting
+tasks should use `async func`: a plain function holds an OS worker while it
+waits, and compensation may need one replacement thread per blocked worker.
+The private cancellation `expire` and `follow` tasks are async, as is the timer
+package's `fire` task.
 
 ### Channel and select polls (Q32 slice 4, first PR)
 

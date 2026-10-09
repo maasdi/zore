@@ -5146,6 +5146,35 @@ func main() {
 }
 
 #[test]
+fn loop_poll_locals_are_rebuilt_after_budget_yields() {
+    prints(
+        r#"package main
+async func count() int {
+    var sum = 0
+    for var i = 0; i < 1024; i += 1 {
+        let scratch = [int; 4]{i, i + 1, i + 2, i + 3}
+        sum += scratch[0]
+    }
+    return sum
+}
+func main() { let task = go count(); println(task.wait()) }
+"#,
+        "523776\n",
+    );
+    prints(
+        r#"package main
+type Guard struct { Value int }
+func (g mut Guard) drop() { println("drop") }
+async func run() {
+    for var i = 0; i < 260; i += 1 { let guard = Guard{Value: i} }
+}
+func main() { let task = go run(); task.wait() }
+"#,
+        &"drop\n".repeat(260),
+    );
+}
+
+#[test]
 fn async_budget_loops_with_ready_channels_stop_and_nested_calls_complete() {
     prints(
         r#"package main
