@@ -1878,3 +1878,115 @@ fn async_function_values_are_used_exclusively_and_cannot_be_spawned_from_a_param
         "use of moved value `h`",
     );
 }
+
+fn has_error(case: &Case, message: &str, span: &str) -> bool {
+    case.errors()
+        .iter()
+        .any(|(m, s)| m.contains(message) && *s == span)
+}
+
+#[test]
+fn fixed_arrays_copy_or_move_on_assignment_by_their_element_type() {
+    let resource = "type Resource struct { id int }
+        func (r mut Resource) drop() {}";
+    accepts(&program(
+        "func copies() int {
+            let source = [int; 2]{1, 2}
+            let copy = source
+            return source[0] + copy[1]
+        }",
+    ));
+    let case = rejects(
+        &program(&format!(
+            "{resource}
+            func moves() int {{
+                let source = [Resource; 1]{{Resource{{id: 1}}}}
+                let moved = source
+                return source[0].id
+            }}"
+        )),
+        "use of moved value `source[_].id`",
+    );
+    assert!(has_error(
+        &case,
+        "use of moved value `source[_].id`",
+        "return source[0].id"
+    ));
+    accepts(&program(&format!(
+        "{resource}
+        func moves() int {{
+            let source = [Resource; 1]{{Resource{{id: 1}}}}
+            let moved = source
+            return moved[0].id
+        }}"
+    )));
+}
+
+#[test]
+fn an_owner_cannot_be_returned_alongside_its_own_view() {
+    let case = rejects(
+        &program(
+            "func pair() (Array<int>, []int) {
+                var values = Array<int>{1, 2, 3}
+                let view = values[:]
+                return values, view
+            }",
+        ),
+        "cannot return a view of local `values`",
+    );
+    assert!(has_error(
+        &case,
+        "cannot return a view of local `values`",
+        "values[:]"
+    ));
+    assert!(has_error(
+        &case,
+        "cannot move `values` while it is borrowed",
+        "return values, view"
+    ));
+    accepts(&program(
+        "func pair() (Array<int>, int) {
+            var values = Array<int>{1, 2, 3}
+            let first = values[0]
+            return values, first
+        }",
+    ));
+}
+
+#[test]
+fn a_custom_drop_cannot_export_the_value_being_destroyed() {
+    let case = rejects(
+        &program(
+            "type Resource struct { name string }
+            func (r mut Resource) drop() {
+                let escaped = r
+                println(escaped.name)
+            }",
+        ),
+        "cannot move borrowed value `r`",
+    );
+    assert!(has_error(
+        &case,
+        "cannot move borrowed value `r`",
+        "let escaped = r"
+    ));
+    let case = rejects(
+        &program(
+            "type Resource struct {
+                name string
+                sink channel<Resource>
+            }
+            func (r mut Resource) drop() { r.sink.send(r) }",
+        ),
+        "cannot move borrowed value `r`",
+    );
+    assert!(has_error(
+        &case,
+        "cannot move borrowed value `r`",
+        "r.sink.send(r)"
+    ));
+    accepts(&program(
+        "type Resource struct { name string }
+        func (r mut Resource) drop() { println(r.name) }",
+    ));
+}

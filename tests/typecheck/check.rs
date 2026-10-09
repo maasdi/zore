@@ -3996,3 +3996,21 @@ async func retry(op async func(int) (string, error), id int) (string, error) {
         rejects(&with(decls), message);
     }
 }
+
+#[test]
+fn an_unapproved_copy_call_is_an_unknown_name() {
+    let case = rejects(
+        &body("let value = 3\nlet other = copy(value)\nprintln(other)"),
+        "cannot find `copy` in this scope",
+    );
+    assert!(
+        case.errors()
+            .iter()
+            .any(|(message, span)| message.contains("cannot find `copy`") && *span == "copy"),
+        "{:?}",
+        case.errors()
+    );
+    accepts(&body(
+        "let values = Array<int>{1}\nlet other = clone(values)\nprintln(other.len())",
+    ));
+}
