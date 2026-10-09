@@ -13,4 +13,11 @@ pub struct Plan {
 #[derive(Debug)]
 pub struct StateMachine {
     pub suspensions: Vec<(BlockId, Suspension)>,
+    pub storage: Vec<LocalStorage>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LocalStorage {
+    Frame,
+    Poll,
 }

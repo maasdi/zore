@@ -4021,8 +4021,9 @@ being polled: the runtime resumes the state machine at its saved state, and the
 state machine either finishes or suspends again. No task needs a stack of its
 own. How locals are laid out in the saved state, how tasks are scheduled, and
 how a waiting call wakes its task are implementation details. The bootstrap
-compiler keeps every local of an async function in one heap frame and polls
-tasks on a pool of worker threads.
+compiler keeps storage needed after a suspension or requiring a stable address
+in a pinned heap frame. Proven poll-local storage may instead use the poll stack.
+Tasks are polled on a pool of worker threads.
 
 The exact ordering between:
 

@@ -1,14 +1,14 @@
 use std::fmt::Write;
 
 use super::llvm::{FunctionBuilder, Module};
-use crate::async_lowering::Suspension;
+use crate::async_lowering::{LocalStorage, Suspension};
 use crate::mir::{self, Callee, Operand, Place, Terminator};
 use crate::resolve::FunctionId;
 
 pub(super) struct Frame {
     pub(super) name: String,
     pub(super) fields: Vec<String>,
-    locals: Vec<(usize, Option<usize>)>,
+    locals: Vec<(Option<usize>, Option<usize>)>,
 }
 
 impl Module<'_> {
@@ -29,22 +29,28 @@ impl Module<'_> {
             "ptr".into(),
         ];
         let mut locals = Vec::new();
-        for local in &body.locals {
-            let slot = fields.len();
-            fields.push(if local.by_reference {
-                "ptr".into()
-            } else {
-                self.ty(local.ty)
-            });
-            let flags = self.package.needs_drop(local.ty).then(|| {
+        let storage = &self.machines.machines[&body.function].storage;
+        for (index, local) in body.locals.iter().enumerate() {
+            let slot = (storage[index] == LocalStorage::Frame).then(|| {
                 let index = fields.len();
+                fields.push(if local.by_reference {
+                    "ptr".into()
+                } else {
+                    self.ty(local.ty)
+                });
+                index
+            });
+            let flags = if slot.is_some() && self.package.needs_drop(local.ty) {
+                let field = fields.len();
                 fields.push(if local.by_reference {
                     "ptr".into()
                 } else {
                     self.flag_ty(local.ty)
                 });
-                index
-            });
+                Some(field)
+            } else {
+                None
+            };
             locals.push((slot, flags));
         }
         self.frames.insert(
@@ -92,13 +98,30 @@ impl FunctionBuilder<'_, '_> {
         let name = frame.name.clone();
         let locals = frame.locals.clone();
         for (index, (slot, flags)) in locals.iter().enumerate() {
-            self.line(format!(
-                "%l{index} = getelementptr inbounds {name}, ptr %frame, i32 0, i32 {slot}"
-            ));
+            if let Some(slot) = slot {
+                self.line(format!(
+                    "%l{index} = getelementptr inbounds {name}, ptr %frame, i32 0, i32 {slot}"
+                ));
+            } else if self.polling {
+                let ty = if self.body.locals[index].by_reference {
+                    "ptr".into()
+                } else {
+                    self.module.ty(self.body.locals[index].ty)
+                };
+                self.line(format!("%l{index} = alloca {ty}"));
+            }
             if let Some(flags) = flags {
                 self.line(format!(
                     "%lf{index} = getelementptr inbounds {name}, ptr %frame, i32 0, i32 {flags}"
                 ));
+            } else if self.polling && self.module.package.needs_drop(self.body.locals[index].ty) {
+                let ty = if self.body.locals[index].by_reference {
+                    "ptr".into()
+                } else {
+                    self.module.flag_ty(self.body.locals[index].ty)
+                };
+                self.line(format!("%lf{index} = alloca {ty}"));
+                self.line(format!("store {ty} zeroinitializer, ptr %lf{index}"));
             }
         }
     }

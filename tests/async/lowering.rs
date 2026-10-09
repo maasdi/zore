@@ -1,6 +1,6 @@
-use zore::async_lowering::{self, Suspension};
+use zore::async_lowering::{self, LocalStorage, Suspension};
 use zore::source::SourceMap;
-use zore::{check, dropck, hir, mir};
+use zore::{check, codegen, dropck, hir, mir};
 
 fn plan(source: &str) -> (hir::Package, mir::Program, async_lowering::Plan) {
     let mut sources = SourceMap::new();
@@ -12,6 +12,185 @@ fn plan(source: &str) -> (hir::Package, mir::Program, async_lowering::Plan) {
     dropck::insert(&package, &mut program);
     let plan = async_lowering::lower(&package, &program);
     (package, program, plan)
+}
+
+fn storage_for<'a>(
+    package: &hir::Package,
+    program: &'a mir::Program,
+    plan: &'a async_lowering::Plan,
+    name: &str,
+) -> (&'a mir::Body, &'a [LocalStorage]) {
+    let (&id, machine) = plan
+        .machines
+        .iter()
+        .find(|(id, _)| package.function(**id).name == name)
+        .unwrap();
+    (&program.bodies[id.0 as usize], &machine.storage)
+}
+
+fn named_storage(body: &mir::Body, storage: &[LocalStorage], name: &str) -> LocalStorage {
+    body.locals
+        .iter()
+        .zip(storage)
+        .find(|(local, _)| local.name.as_deref() == Some(name))
+        .unwrap()
+        .1
+        .to_owned()
+}
+
+#[test]
+fn storage_distinguishes_poll_local_and_resume_values() {
+    let source = "package main
+async func run(ch channel<int>) int {
+    var early = [int; 512]{VALUES}
+    early[0] = 7
+    let before = early[0]
+    ch.send(before)
+    var late = [int; 512]{VALUES}
+    late[0] = 9
+    return late[0]
+}
+func main() {}"
+        .replace("VALUES", &vec!["0"; 512].join(", "));
+    let (package, program, plan) = plan(&source);
+    let (body, storage) = storage_for(&package, &program, &plan, "run");
+    assert_eq!(named_storage(body, storage, "early"), LocalStorage::Poll);
+    assert_eq!(named_storage(body, storage, "late"), LocalStorage::Frame);
+    assert_eq!(named_storage(body, storage, "ch"), LocalStorage::Frame);
+}
+
+#[test]
+fn storage_keeps_borrowed_and_cleanup_values_stable() {
+    let (package, program, plan) = plan(
+        "package main
+async func run(ch channel<int>) int {
+    var borrowed = [int; 4]{0, 0, 0, 0}
+    borrowed[0] = 3
+    let view = borrowed[:]
+    let value = view[0]
+    let owned = Array<int>{1, 2}
+    ch.send(value)
+    println(owned.len())
+    return 1
+}
+func main() {}",
+    );
+    let (body, storage) = storage_for(&package, &program, &plan, "run");
+    assert_eq!(
+        named_storage(body, storage, "borrowed"),
+        LocalStorage::Frame
+    );
+    assert_eq!(named_storage(body, storage, "owned"), LocalStorage::Frame);
+}
+
+#[test]
+fn implicit_mutex_and_io_waits_preserve_later_values() {
+    let (package, program, plan) = plan(
+        "package main
+import \"zore/os\"
+async func run(m Mutex<int>, path string) int {
+    let early = 7
+    println(early)
+    let held = 3
+    m.withLock(func(n mut int) { n += 1 })
+    let text, _ = os.ReadFile(path)
+    return held + text.len()
+}
+func main() {}",
+    );
+    let (body, storage) = storage_for(&package, &program, &plan, "run");
+    assert_eq!(named_storage(body, storage, "early"), LocalStorage::Poll);
+    assert_eq!(named_storage(body, storage, "held"), LocalStorage::Frame);
+    assert!(
+        plan.machines[&body.function]
+            .suspensions
+            .iter()
+            .any(|(_, kind)| *kind == Suspension::Mutex)
+    );
+    assert!(
+        plan.machines[&body.function]
+            .suspensions
+            .iter()
+            .any(|(_, kind)| matches!(kind, Suspension::Io(_)))
+    );
+}
+
+#[test]
+fn cleanup_paths_conservatively_retain_owned_values() {
+    let (package, program, plan) = plan(
+        "package main
+type Job struct { Name string }
+func (j mut Job) drop() {}
+async func run(ch channel<int>) {
+    { let short = Job{Name: \"short\"} }
+    let cleanup = Job{Name: \"cleanup\"}
+    ch.send(1)
+}
+func main() {}",
+    );
+    let (body, storage) = storage_for(&package, &program, &plan, "run");
+    assert_eq!(named_storage(body, storage, "short"), LocalStorage::Frame);
+    assert_eq!(named_storage(body, storage, "cleanup"), LocalStorage::Frame);
+}
+
+#[test]
+fn captured_local_keeps_address_stable_across_suspend() {
+    let (package, program, plan) = plan(
+        "package main
+async func run(ch channel<int>) {
+    let captured = [int; 2]{1, 2}
+    let callback = func() int { return captured[0] }
+    println(callback())
+    ch.send(1)
+}
+func main() {}",
+    );
+    let (body, storage) = storage_for(&package, &program, &plan, "run");
+    assert_eq!(
+        named_storage(body, storage, "captured"),
+        LocalStorage::Frame
+    );
+}
+
+#[test]
+fn poll_local_arrays_leave_the_frame_without_reusing_slots() {
+    let values = vec!["0"; 512].join(", ");
+    let source = "package main
+async func run(ch channel<int>) int {
+    let early = [int; 512]{VALUES}
+    let before = early[0]
+    ch.send(before)
+    let late = [int; 512]{VALUES}
+    return late[0]
+}
+func main() {}"
+        .replace("VALUES", &values);
+    let mut sources = SourceMap::new();
+    let id = sources.add("async.ore", source).unwrap();
+    let checked = check::check_file(sources.file(id).unwrap());
+    assert!(checked.diagnostics.is_empty(), "{:?}", checked.diagnostics);
+    let package = checked.package.unwrap();
+    let mut program = mir::lower::lower(&package);
+    dropck::insert(&package, &mut program);
+    let mut plan = async_lowering::lower(&package, &program);
+    let ir = codegen::emit(&package, &program, &plan, &sources).unwrap();
+    let frame = ir
+        .lines()
+        .find(|line| line.contains("AsyncFrame.0\" = type"))
+        .unwrap();
+    let retained_arrays = frame.matches("[512 x i64]").count();
+    assert_eq!(retained_arrays, 2);
+    assert!(ir.contains("alloca [512 x i64]"));
+
+    for machine in plan.machines.values_mut() {
+        machine.storage.fill(LocalStorage::Frame);
+    }
+    let baseline = codegen::emit(&package, &program, &plan, &sources).unwrap();
+    let baseline_frame = baseline
+        .lines()
+        .find(|line| line.contains("AsyncFrame.0\" = type"))
+        .unwrap();
+    assert_eq!(baseline_frame.matches("[512 x i64]").count(), 4);
 }
 
 #[test]
