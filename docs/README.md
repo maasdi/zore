@@ -30,3 +30,9 @@ for their rationale; the specification is authoritative.
 These proposals were not accepted and changed nothing. They are kept for their reasoning.
 
 - [`go` on a callee stored in a struct field](proposals/spawn-field-callee.md) (Q35)
+
+## Proposals under review
+
+These proposals are not accepted. They lock nothing, and the specification does not change until the maintainer accepts them.
+
+- [`async` function values](proposals/async-function-values.md) (Q36; follow-up to issue #52)
