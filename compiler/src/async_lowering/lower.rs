@@ -88,7 +88,7 @@ pub fn lower(package: &hir::Package, program: &mir::Program) -> Plan {
         .iter()
         .filter(|body| eligible.contains(&body.function))
         .map(|body| {
-            let suspensions = body
+            let suspensions: Vec<_> = body
                 .blocks
                 .iter()
                 .enumerate()
@@ -128,7 +128,14 @@ pub fn lower(package: &hir::Package, program: &mir::Program) -> Plan {
                     Some((mir::BlockId(index as u32), suspension))
                 })
                 .collect();
-            (body.function, StateMachine { suspensions })
+            let storage = super::storage::classify(body, &suspensions);
+            (
+                body.function,
+                StateMachine {
+                    suspensions,
+                    storage,
+                },
+            )
         })
         .collect();
     Plan { machines }

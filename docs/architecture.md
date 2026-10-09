@@ -158,10 +158,16 @@ polled function can spawn and await a plain task. Calls to plain helpers remain 
 can block with worker compensation.
 
 Each lowered function has a named heap frame, constructor, `poll(frame, context,
-out)` function, and destructor. All MIR locals, temporaries, drop flags, and any
-hoisted scratch storage live in the frame; pointers to locals, borrowed parameters,
-and non-owning closure environments therefore survive suspension. A state switch
-dispatches to the start block or a saved call-poll label. Argument evaluation,
+out)` function, and destructor. Storage planning runs after drop insertion and
+before code generation. Parameters, captures, results, address-stable places,
+call destinations, and locals accessed on any path reachable after a suspension
+(including cleanup paths) stay in the pinned heap frame. Other locals and their
+drop flags use fresh poll-stack slots, with flags initialized to zero on every
+poll. The analysis treats address-taking, views, and closure captures
+conservatively; no pointer into poll-stack storage may survive `Pending`.
+Hoisted code-generation scratch storage remains in the frame, and frame slots
+are not yet reused. A state switch dispatches to the start block or a saved
+call-poll label. Argument evaluation,
 ownership transfer, and child-frame construction occur only on the first visit;
 resuming a pending call repeats only its poll. Calls have one active child frame
 at a time. On Ready the caller retrieves its results, frees its child frame, and
@@ -186,7 +192,8 @@ nested frame or join entry, contributes one internal blocked count.
 
 Synchronous shims remain available for plain callers of waiting library APIs.
 Neither these shims nor the persistent-frame plan changes source-language syntax
-or ownership semantics. Frames are not shrunk by liveness, and suspended frames
+or ownership semantics. Frame shrinking is limited to proven poll-local MIR
+storage; suspended frames
 are abandoned at process exit. Very large sets of waiting tasks should use
 `async func`: a plain function holds an OS worker while it waits, and compensation
 may need one replacement thread per blocked worker. The private cancellation

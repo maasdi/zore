@@ -47,14 +47,17 @@ def run_build(command, cwd):
         ) from error
 
 
-def build_executable(directory, skip_compiler_build):
-    if not skip_compiler_build:
+def build_executable(directory, arguments):
+    if arguments.compiler is None and not arguments.skip_compiler_build:
         run_build(["cargo", "build", "--release", "--locked"], ROOT)
-    compiler = ROOT / "target" / "release" / "zore"
+    compiler = arguments.compiler or ROOT / "target" / "release" / "zore"
     if not compiler.is_file():
         raise BenchmarkError(f"compiler does not exist: {compiler}")
-    run_build([str(compiler), "build", str(SOURCE)], directory)
-    executable = directory / SOURCE.stem
+    source = arguments.source or SOURCE
+    if not source.is_file():
+        raise BenchmarkError(f"source does not exist: {source}")
+    run_build([str(compiler), "build", str(source)], directory)
+    executable = directory / source.stem
     if not executable.is_file():
         raise BenchmarkError(f"benchmark executable was not produced: {executable}")
     return executable
@@ -220,14 +223,18 @@ def metadata(arguments, effective_window):
     status = command_output(["git", "status", "--porcelain"])
     clang = os.environ.get("ZORE_CC", "clang")
     rustc = os.environ.get("ZORE_RUSTC", "rustc")
+    runner_commit = command_output(["git", "rev-parse", "HEAD"])
     return {
         "schema_version": 1,
-        "commit": command_output(["git", "rev-parse", "HEAD"]),
+        "commit": runner_commit,
+        "compiler_revision": arguments.compiler_revision or (
+            "unverified external compiler" if arguments.compiler else runner_commit
+        ),
         "working_tree_dirty": bool(status),
         "toolchain": {
             "rustc": command_output([rustc, "--version"]),
             "clang": command_output([clang, "--version"]).splitlines()[0],
-            "zore": command_output([str(ROOT / "target" / "release" / "zore"), "--version"]),
+            "zore": command_output([str(arguments.compiler or ROOT / "target" / "release" / "zore"), "--version"]),
         },
         "host": {
             "platform": platform.platform(),
@@ -237,6 +244,8 @@ def metadata(arguments, effective_window):
         },
         "configuration": {
             "task_counts": arguments.counts,
+            "source": str(arguments.source or SOURCE),
+            "compiler": str(arguments.compiler or ROOT / "target" / "release" / "zore"),
             "repetitions": arguments.repetitions,
             "sample_interval_seconds": arguments.interval,
             "timeout_seconds_per_run": arguments.timeout,
@@ -267,7 +276,14 @@ def parse_arguments():
     parser.add_argument("--timeout", type=float, default=60.0)
     parser.add_argument("--output", type=Path)
     parser.add_argument("--skip-compiler-build", action="store_true")
+    parser.add_argument("--compiler", type=Path)
+    parser.add_argument("--compiler-revision")
+    parser.add_argument("--source", type=Path)
     arguments = parser.parse_args()
+    if arguments.compiler is not None:
+        arguments.compiler = arguments.compiler.resolve()
+    if arguments.source is not None:
+        arguments.source = arguments.source.resolve()
     if (
         any(count < 1 for count in arguments.counts)
         or arguments.repetitions < 1
@@ -293,9 +309,7 @@ def main():
     )
     try:
         with tempfile.TemporaryDirectory(prefix="zore-suspended-tasks-") as temporary:
-            executable = build_executable(
-                Path(temporary), arguments.skip_compiler_build
-            )
+            executable = build_executable(Path(temporary), arguments)
             results = metadata(arguments, effective_window)
             results["runs"] = []
             for task_count in arguments.counts:

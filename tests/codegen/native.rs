@@ -5093,13 +5093,56 @@ func main() {}";
         assert!(function.contains("switch i32 %state"));
         assert!(function.contains("ret i8 0"));
         assert!(function.contains("ret i8 1"));
-        assert!(
-            !function.contains("alloca"),
-            "poll-local storage can escape across suspension: {function}"
-        );
+        if function.starts_with("@\"main.leaf$async$poll\"") {
+            assert!(function.contains("alloca [2 x i64]"));
+        }
         assert!(!function.contains("call ptr @zore_task_wait"));
     }
     assert!(ir.contains("call i8 @zore_task_poll"));
+}
+
+#[test]
+fn poll_local_drop_flags_are_initialized_and_cleanup_survives_pending() {
+    let source = r#"package main
+type Job struct { Name string }
+func (j mut Job) drop() { println("drop " + j.Name) }
+async func leaf() {
+    let local = Job{Name: "leaf"}
+    println(local.Name)
+}
+async func run(ch channel<int>) int {
+    await leaf()
+    {
+        let early = Job{Name: "early"}
+        println(early.Name)
+    }
+    ch.send(1)
+    let late = Job{Name: "late"}
+    println(late.Name)
+    return 2
+}
+func main() {
+    let ch = channel<int>()
+    let task = go run(ch)
+    let _, _ = ch.receive()
+    println(task.wait())
+}"#;
+    let mut sources = SourceMap::new();
+    let id = sources.add("async.ore", source.into()).unwrap();
+    let ir = emit_llvm(sources.file(id).unwrap()).unwrap();
+    let leaf = ir
+        .split("define private i8 @\"main.leaf$async$poll\"")
+        .nth(1)
+        .unwrap()
+        .split("\n}\n")
+        .next()
+        .unwrap();
+    assert!(leaf.contains("alloca i1"));
+    assert!(leaf.contains("store i1 zeroinitializer"));
+    prints(
+        source,
+        "leaf\ndrop leaf\nearly\ndrop early\nlate\ndrop late\n2\n",
+    );
 }
 
 #[test]
@@ -5443,7 +5486,6 @@ fn channel_poll_parity(source: &str, expected: &str) {
             for function in ir.split("define private i8 ").skip(1) {
                 let function = function.split("\n}\n").next().unwrap();
                 if function.contains("$async$poll") {
-                    assert!(!function.contains("alloca"));
                     assert!(!function.contains("call void @zore_channel_send("));
                     assert!(!function.contains("call zeroext i1 @zore_channel_receive("));
                     assert!(!function.contains("call i64 @zore_select("));
@@ -5740,7 +5782,6 @@ fn timer_poll_parity(source: &str, expected: &str) {
             for function in ir.split("define private i8 ").skip(1) {
                 let function = function.split("\n}\n").next().unwrap();
                 if function.contains("$async$poll") {
-                    assert!(!function.contains("alloca"));
                     assert!(!function.contains("call void @\"main.zore/time.Sleep\""));
                     assert!(!function.contains("call void @zore_native_time_sleep("));
                 }
@@ -5928,7 +5969,6 @@ fn mutex_poll_parity(source: &str, expected: &str) {
                     found = true;
                     assert!(function.contains("call ptr @zore_mutex_start"));
                     assert!(function.contains("call i8 @zore_mutex_poll"));
-                    assert!(!function.contains("alloca"));
                     assert!(!function.contains("call ptr @zore_mutex_lock("));
                 }
             }
@@ -6066,12 +6106,9 @@ fn io_poll_parity(source: &str, expected: &str) {
             let mut found_run = false;
             for function in ir.split("define private i8 ").skip(1) {
                 let function = function.split("\n}\n").next().unwrap();
-                if function.lines().next().unwrap().contains("$async$poll") {
-                    assert!(!function.contains("alloca"));
-                    if function.lines().next().unwrap().contains("run$async$poll") {
-                        found_run = true;
-                        assert!(function.contains("ret i8 0"));
-                    }
+                if function.lines().next().unwrap().contains("run$async$poll") {
+                    found_run = true;
+                    assert!(function.contains("ret i8 0"));
                 }
             }
             assert!(found_run);

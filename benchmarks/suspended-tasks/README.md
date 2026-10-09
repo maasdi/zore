@@ -59,3 +59,27 @@ hardware-independent per-task size or subtract a process baseline.
 `sample-linux.json` is one local one-repetition run at 100 and 1,000 tasks. It
 is evidence that the command and output schema work on the recorded host, not a
 portable performance expectation.
+
+For frame-storage comparisons, `../frame-storage/workload.ore` creates a 2 KiB fixed-array
+temporary before its first channel wait. The array is dead while the task is
+suspended. Run the same fixture with compilers built from the base and candidate
+commits, for example:
+
+```sh
+python3 benchmarks/suspended-tasks/run.py \
+  --source benchmarks/frame-storage/workload.ore \
+  --compiler /path/to/base/zore --compiler-revision BASE_SHA \
+  --counts 1000 5000 --repetitions 3 \
+  --output /tmp/zore-frame-base.json
+python3 benchmarks/suspended-tasks/run.py \
+  --source benchmarks/frame-storage/workload.ore \
+  --compiler /path/to/candidate/zore --compiler-revision CANDIDATE_SHA \
+  --counts 1000 5000 --repetitions 3 \
+  --output /tmp/zore-frame-candidate.json
+```
+
+`--compiler` uses the specified executable without rebuilding it. The
+`commit` field identifies the benchmark runner's checkout; `compiler_revision`
+identifies the external compiler only when supplied by the caller. These
+process-RSS readings include runtime overhead and allocator behavior; they are
+evidence for a particular host, not a portable test threshold.
