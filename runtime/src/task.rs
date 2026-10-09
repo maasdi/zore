@@ -108,6 +108,25 @@ pub unsafe extern "C" fn zore_task_spawn_poll(
     data: *mut u8,
     size: i64,
 ) -> *mut Handle {
+    // SAFETY: guaranteed by the caller.
+    let (handle, body) = unsafe { poll_task(entry, drop_results, data, size) };
+    super::scheduler::spawn(body);
+    Box::into_raw(handle)
+}
+
+/// The handle and the poll body that runs `entry` until Ready, then completes the task.
+///
+/// # Safety
+/// Same contract as `zore_task_spawn_poll`.
+unsafe fn poll_task(
+    entry: PollCode,
+    drop_results: Code,
+    data: *mut u8,
+    size: i64,
+) -> (
+    Box<Handle>,
+    impl FnMut(&mut super::scheduler::Context) -> super::scheduler::Poll + Send + 'static,
+) {
     let shared = Arc::new(Shared::default());
     let block = Block {
         data,
@@ -115,15 +134,15 @@ pub unsafe extern "C" fn zore_task_spawn_poll(
         drop_results,
     };
     let task_shared = Arc::clone(&shared);
-    super::scheduler::spawn(move |context| {
+    let body = move |context: &mut super::scheduler::Context| {
         // SAFETY: guaranteed by the caller; the block remains task-owned until Ready.
         if unsafe { entry(block.data, context) } == 0 {
             return super::scheduler::Poll::Pending;
         }
         complete(&task_shared, block, context.task_id());
         super::scheduler::Poll::Ready
-    });
-    Box::into_raw(Box::new(Handle { shared, block }))
+    };
+    (Box::new(Handle { shared, block }), body)
 }
 
 /// # Safety
@@ -250,7 +269,8 @@ pub unsafe extern "C" fn zore_task_detach(handle: *mut Handle) {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::mpsc;
+    use std::sync::atomic::{AtomicBool, AtomicUsize};
+    use std::sync::{Barrier, mpsc};
     use std::time::Duration;
 
     use super::*;
@@ -363,5 +383,138 @@ mod tests {
         });
         assert_eq!(completed.recv_timeout(Duration::from_secs(10)).unwrap(), 42);
         pool.idle();
+    }
+
+    struct Probe {
+        polls: AtomicUsize,
+        in_poll: AtomicUsize,
+        finished: AtomicBool,
+        cleanups: AtomicUsize,
+        violations: AtomicUsize,
+        waker: Mutex<Option<std::task::Waker>>,
+    }
+
+    impl Probe {
+        fn new() -> Arc<Self> {
+            Arc::new(Probe {
+                polls: AtomicUsize::new(0),
+                in_poll: AtomicUsize::new(0),
+                finished: AtomicBool::new(false),
+                cleanups: AtomicUsize::new(0),
+                violations: AtomicUsize::new(0),
+                waker: Mutex::new(None),
+            })
+        }
+    }
+
+    fn probe_of<'a>(block: *mut u8) -> &'a Probe {
+        // SAFETY: the race test stores a pointer to a Probe that outlives the task in the block.
+        unsafe { &*block.cast::<*const Probe>().read() }
+    }
+
+    /// Pending on the first poll after keeping its waker, Ready on the next.
+    unsafe extern "C" fn race_entry(block: *mut u8, context: *mut crate::scheduler::Context) -> u8 {
+        let probe = probe_of(block);
+        if probe.in_poll.fetch_add(1, Ordering::SeqCst) != 0 {
+            probe.violations.fetch_add(1, Ordering::SeqCst);
+        }
+        if probe.finished.load(Ordering::SeqCst) {
+            probe.violations.fetch_add(1, Ordering::SeqCst);
+        }
+        let ready = probe.polls.fetch_add(1, Ordering::SeqCst) > 0;
+        if ready {
+            probe.finished.store(true, Ordering::SeqCst);
+        } else {
+            // SAFETY: the context is live for this poll.
+            let waker = unsafe { (*context).waker().clone() };
+            *probe.waker.lock().unwrap() = Some(waker);
+        }
+        probe.in_poll.fetch_sub(1, Ordering::SeqCst);
+        u8::from(ready)
+    }
+
+    unsafe extern "C" fn race_drop_results(block: *mut u8) {
+        probe_of(block).cleanups.fetch_add(1, Ordering::SeqCst);
+    }
+
+    fn until(mut condition: impl FnMut() -> bool) {
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while !condition() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "task transition timed out"
+            );
+            std::thread::yield_now();
+        }
+    }
+
+    #[test]
+    fn detach_final_wake_and_completion_race_clean_up_once_and_never_poll_again() {
+        let pool = TestPool::new(2);
+        let size = std::mem::size_of::<*const Probe>() as i64;
+        for iteration in 0..600 {
+            let probe = Probe::new();
+            let block = zore_alloc(size);
+            // SAFETY: the block holds only a pointer to a Probe this test keeps alive.
+            unsafe { block.cast::<*const Probe>().write(Arc::as_ptr(&probe)) };
+            // SAFETY: both callbacks accept this block, and race_entry obeys the poll ABI.
+            let (handle, body) = unsafe { poll_task(race_entry, race_drop_results, block, size) };
+            pool.spawn(body);
+            until(|| probe.waker.lock().unwrap().is_some());
+            let waker = probe.waker.lock().unwrap().take().unwrap();
+            let handle = Box::into_raw(handle) as usize;
+            let detach = move || {
+                // SAFETY: the handle is detached exactly once, by this closure.
+                unsafe { zore_task_detach(handle as *mut Handle) }
+            };
+            match iteration % 3 {
+                0 => {
+                    detach();
+                    waker.wake_by_ref();
+                }
+                1 => {
+                    waker.wake_by_ref();
+                    until(|| probe.finished.load(Ordering::SeqCst));
+                    detach();
+                }
+                _ => {
+                    let barrier = Barrier::new(3);
+                    std::thread::scope(|scope| {
+                        scope.spawn(|| {
+                            barrier.wait();
+                            detach();
+                        });
+                        scope.spawn(|| {
+                            barrier.wait();
+                            for _ in 0..4 {
+                                waker.wake_by_ref();
+                            }
+                        });
+                        barrier.wait();
+                    });
+                }
+            }
+            until(|| probe.cleanups.load(Ordering::SeqCst) == 1);
+            pool.idle();
+            for _ in 0..4 {
+                waker.wake_by_ref();
+            }
+            pool.idle();
+            assert_eq!(
+                probe.polls.load(Ordering::SeqCst),
+                2,
+                "iteration {iteration}"
+            );
+            assert_eq!(
+                probe.cleanups.load(Ordering::SeqCst),
+                1,
+                "iteration {iteration}"
+            );
+            assert_eq!(
+                probe.violations.load(Ordering::SeqCst),
+                0,
+                "iteration {iteration}"
+            );
+        }
     }
 }
