@@ -13,6 +13,7 @@ ROOT = Path(__file__).resolve().parents[2]
 WORKLOADS = {
     "compute": (Path(__file__).with_name("compute") / "workload.ore", "5999995\n"),
     "io": (Path(__file__).with_name("io") / "workload.ore", "300\n"),
+    "mixed": (Path(__file__).with_name("mixed") / "workload.ore", "23999980\n100\n"),
 }
 
 

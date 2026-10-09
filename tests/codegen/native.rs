@@ -5304,6 +5304,38 @@ func main() { let task = go run(); task.wait() }
 }
 
 #[test]
+fn busy_async_loops_outnumbering_workers_still_let_a_late_task_run() {
+    prints(
+        r#"package main
+async func spin(stop channel<bool>) bool {
+    for {
+        select {
+        case let _, _ = stop.receive() {
+            stop.send(true)
+            return true
+        }
+        default {}
+        }
+    }
+}
+async func signal(stop channel<bool>) { stop.send(true) }
+func main() {
+    let stop = channel<bool>(1)
+    var spinners = Array<Task<bool>>{}
+    for var i = 0; i < 64; i += 1 { spinners.push(go spin(stop)) }
+    let controller = go signal(stop)
+    for spinners.len() > 0 {
+        let _, spinner = spinners.pop()
+        let _ = spinner.wait()
+    }
+    controller.wait()
+    println("all stopped")
+}"#,
+        "all stopped\n",
+    );
+}
+
+#[test]
 fn async_budget_loops_with_ready_channels_stop_and_nested_calls_complete() {
     prints(
         r#"package main
