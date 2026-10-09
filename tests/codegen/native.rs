@@ -7201,3 +7201,232 @@ func main() {
         stderr(&output)
     );
 }
+
+fn exits_cleanly_within_bound(source: &str, expected: &str) {
+    let output = run_poll_bounded(source, None);
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    assert_eq!(stdout(&output), expected);
+    assert!(output.stderr.is_empty(), "{}", stderr(&output));
+}
+
+#[test]
+fn pending_async_accepts_leave_workers_for_an_unrelated_task() {
+    // More pending accepts than any CI host has cores: a blocking accept would starve `unrelated`.
+    exits_cleanly_within_bound(
+        "package main
+
+import \"zore/net\"
+import \"zore/strconv\"
+
+async func acceptOne(listener own net.Listener, started channel<int>, done channel<int>) {
+    started.send(1)
+    let conn, err = listener.Accept()
+    if err != nil {
+        done.send(0)
+        return
+    }
+    done.send(1)
+}
+
+async func unrelated(ready channel<int>) {
+    ready.send(7)
+}
+
+func round(count int) int {
+    let started = channel<int>(count)
+    let done = channel<int>(count)
+    var ports = Array<int>{}
+    for var i = 0; i < count; i += 1 {
+        let listener, err = net.Listen(\"127.0.0.1:0\")
+        if err != nil {
+            return -1
+        }
+        ports.push(listener.Port())
+        go acceptOne(listener, started, done)
+    }
+    for var i = 0; i < count; i += 1 {
+        let one, ok = started.receive()
+    }
+    let ready = channel<int>(1)
+    go unrelated(ready)
+    let value, ok = ready.receive()
+    println(value)
+    var conns = Array<net.Conn>{}
+    for var i = 0; i < count; i += 1 {
+        let conn, err = net.Dial(\"127.0.0.1:\" + strconv.Itoa(ports[i]))
+        if err != nil {
+            return -2
+        }
+        conns.push(conn)
+    }
+    var accepted = 0
+    for var i = 0; i < count; i += 1 {
+        let one, received = done.receive()
+        accepted += one
+    }
+    return accepted
+}
+
+func main() {
+    for var i = 0; i < 2; i += 1 {
+        println(round(64))
+    }
+}
+",
+        "7\n64\n7\n64\n",
+    );
+}
+
+#[test]
+fn cancelling_from_another_task_wakes_a_pending_done_select_exactly_once() {
+    exits_cleanly_within_bound(
+        "package main
+
+import \"zore/cancel\"
+
+async func waiter(token cancel.Token, other channel<int>, ready channel<int>) int {
+    let done = token.Done()
+    ready.send(1)
+    select {
+        case done.receive() {
+            return 1
+        }
+        case other.receive() {
+            return 2
+        }
+    }
+}
+
+func plainWaiter(token cancel.Token, other channel<int>, ready channel<int>) int {
+    let done = token.Done()
+    ready.send(1)
+    select {
+        case done.receive() {
+            return 1
+        }
+        case other.receive() {
+            return 2
+        }
+    }
+}
+
+async func canceller(token cancel.Token, ready channel<int>) {
+    let one, ok = ready.receive()
+    token.Cancel()
+}
+
+func main() {
+    var asyncWins = 0
+    var plainWins = 0
+    for var round = 0; round < 200; round += 1 {
+        let token = cancel.New()
+        let other = channel<int>()
+        let ready = channel<int>(1)
+        let waiting = go waiter(token, other, ready)
+        let cancelling = go canceller(token, ready)
+        asyncWins += waiting.wait()
+        cancelling.wait()
+        if !token.Cancelled() {
+            println(\"not cancelled\")
+        }
+    }
+    for var round = 0; round < 200; round += 1 {
+        let token = cancel.New()
+        let other = channel<int>()
+        let ready = channel<int>(1)
+        let waiting = go plainWaiter(token, other, ready)
+        let cancelling = go canceller(token, ready)
+        plainWins += waiting.wait()
+        cancelling.wait()
+    }
+    println(asyncWins)
+    println(plainWins)
+}
+",
+        "200\n200\n",
+    );
+}
+
+#[test]
+fn async_tasks_blocked_in_a_plain_helper_get_compensation_workers_for_queued_senders() {
+    // More blocked helpers than any CI host has base workers: queued senders need replacements.
+    exits_cleanly_within_bound(
+        "package main
+
+func waitFor(ch channel<int>) int {
+    let value, ok = ch.receive()
+    return value
+}
+
+async func caller(ch channel<int>, started channel<int>) int {
+    started.send(1)
+    return waitFor(ch)
+}
+
+async func sender(ch channel<int>, value int) {
+    ch.send(value)
+}
+
+func round(count int) int {
+    let started = channel<int>(count)
+    var chans = Array<channel<int>>{}
+    var callers = Array<Task<int>>{}
+    for var i = 0; i < count; i += 1 {
+        let ch = channel<int>()
+        chans.push(ch)
+        callers.push(go caller(ch, started))
+    }
+    for var i = 0; i < count; i += 1 {
+        let one, ok = started.receive()
+    }
+    for var i = 0; i < count; i += 1 {
+        go sender(chans[i], i + 1)
+    }
+    var total = 0
+    for callers.len() > 0 {
+        let found, task = callers.pop()
+        if found {
+            total += task.wait()
+        }
+    }
+    return total
+}
+
+func main() {
+    for var i = 0; i < 3; i += 1 {
+        println(round(64))
+    }
+}
+",
+        "2080\n2080\n2080\n",
+    );
+}
+
+#[test]
+fn process_exit_abandons_a_pending_detached_task_and_its_buffered_value() {
+    exits_cleanly_within_bound(
+        "package main
+
+type Res struct { Name string }
+
+func (r mut Res) drop() { println(\"drop \" + r.Name) }
+
+async func hold(r own Res, buffered channel<Res>, gate channel<int>, ready channel<int>) {
+    ready.send(1)
+    let value, ok = gate.receive()
+    println(r.Name)
+}
+
+func main() {
+    let gate = channel<int>()
+    let ready = channel<int>(1)
+    let buffered = channel<Res>(1)
+    buffered.send(Res{Name: \"buffered\"})
+    go hold(Res{Name: \"pending\"}, buffered, gate, ready)
+    let one, ok = ready.receive()
+    println(\"main done\")
+}
+",
+        "main done\n",
+    );
+}
