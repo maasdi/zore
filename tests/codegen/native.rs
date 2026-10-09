@@ -6664,3 +6664,227 @@ func main() {
         "finish one\ndrop one\none\nmade\nmade\ndrop three\nthree\nend\ndrop made\ndrop two\n",
     );
 }
+
+#[test]
+fn async_function_values_are_awaited_passed_and_spawned() {
+    prints(
+        "package main
+
+async func double(n int) int { return n * 2 }
+
+async func slow(n int) int {
+    let ch = channel<int>(1)
+    ch.send(n)
+    let v, ok = ch.receive()
+    return v + 1
+}
+
+async func twice(op async func(int) int, x int) int {
+    let a = await op(x)
+    let b = await op(a)
+    return b
+}
+
+async func run() int {
+    let h = double
+    let direct = await h(5)
+    let viaHelper = await twice(double, 3)
+    let viaSlow = await twice(slow, 10)
+    let spawned = go h(21)
+    let fromTask = await spawned
+    return direct + viaHelper + viaSlow + fromTask
+}
+
+func main() {
+    let t = go run()
+    println(t.wait())
+}
+",
+        "76\n",
+    );
+}
+
+#[test]
+fn async_function_values_pass_borrowed_and_owned_arguments_and_destroy_them_once() {
+    prints(
+        "package main
+
+type Res struct { Name string }
+
+func (r mut Res) drop() { println(\"drop \" + r.Name) }
+
+async func take(r own Res) int {
+    println(\"take \" + r.Name)
+    return r.Name.len()
+}
+
+async func peek(r Res) int {
+    return r.Name.len() * 10
+}
+
+async func run() int {
+    let t = take
+    let p = peek
+    let first = Res{Name: \"a\"}
+    let a = await t(first)
+    let second = Res{Name: \"bb\"}
+    let b = await p(second)
+    println(\"after peek\")
+    return a + b
+}
+
+func main() {
+    let task = go run()
+    println(task.wait())
+}
+",
+        "take a\ndrop a\nafter peek\ndrop bb\n21\n",
+    );
+}
+
+#[test]
+fn a_panic_in_an_awaited_async_function_value_unwinds_its_callers_once() {
+    let source = "package main
+
+type Res struct { Name string }
+
+func (r mut Res) drop() { println(\"drop \" + r.Name) }
+
+async func fail(r own Res, zero int) int {
+    println(\"failing\")
+    return 1 / zero
+}
+
+async func run() int {
+    let f = fail
+    let r = Res{Name: \"held\"}
+    return await f(r, 0)
+}
+
+func main() {
+    let task = go run()
+    println(task.wait())
+}";
+    let output = run(source);
+    assert_eq!(output.status.code(), Some(2), "{}", stderr(&output));
+    assert_eq!(stdout(&output), "failing\ndrop held\n");
+    assert!(
+        stderr(&output).contains("panic in task 1: division by zero"),
+        "{}",
+        stderr(&output)
+    );
+}
+
+#[test]
+fn async_function_values_live_in_struct_fields_and_arrays() {
+    prints(
+        "package main
+
+async func add1(n int) int { return n + 1 }
+async func add2(n int) int { return n + 2 }
+
+type Route struct {
+    Path string
+    handler async func(int) int
+}
+
+async func dispatch(r mut Route, n int) int {
+    return await (r.handler)(n)
+}
+
+async func run() int {
+    var routes = Array<Route>{}
+    routes.push(Route{Path: \"a\", handler: add1})
+    routes.push(Route{Path: \"b\", handler: add2})
+    var total = 0
+    for var i = 0; i < routes.len(); i += 1 {
+        total += await dispatch(routes[i], 10)
+    }
+    return total
+}
+
+func main() {
+    let task = go run()
+    println(task.wait())
+}
+",
+        "23\n",
+    );
+}
+
+#[test]
+fn many_tasks_awaiting_through_an_async_function_value_do_not_hold_threads() {
+    prints(
+        "package main
+
+async func waitFor(gate channel<int>) int {
+    let v, ok = gate.receive()
+    return v
+}
+
+async func through(op async func(channel<int>) int, gate channel<int>) int {
+    return await op(gate)
+}
+
+async func worker(gate channel<int>, done channel<int>) {
+    let op = waitFor
+    let v = await through(op, gate)
+    done.send(v)
+}
+
+func main() {
+    let count = 20000
+    let gate = channel<int>(count)
+    let done = channel<int>(count)
+    for var i = 0; i < count; i += 1 {
+        go worker(gate, done)
+    }
+    for var i = 0; i < count; i += 1 {
+        gate.send(1)
+    }
+    var total = 0
+    for var i = 0; i < count; i += 1 {
+        let v, ok = done.receive()
+        total += v
+    }
+    println(total)
+}
+",
+        "20000\n",
+    );
+}
+
+#[test]
+fn an_awaited_async_function_value_evaluates_its_callee_then_its_arguments_once() {
+    prints(
+        "package main
+
+async func add(a int, b int) int { return a + b }
+
+func pick() async func(int, int) int {
+    println(\"pick\")
+    return add
+}
+
+func left() int {
+    println(\"left\")
+    return 1
+}
+
+func right() int {
+    println(\"right\")
+    return 2
+}
+
+async func run() int {
+    return await pick()(left(), right())
+}
+
+func main() {
+    let t = go run()
+    println(t.wait())
+}
+",
+        "pick\nleft\nright\n3\n",
+    );
+}

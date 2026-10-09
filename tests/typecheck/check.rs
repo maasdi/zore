@@ -2396,10 +2396,9 @@ fn function_values_can_be_returned_and_stored_but_not_sliced() {
         "a function-typed parameter cannot be `mut`",
     );
     accepts(&program("func g(f func([]int) []int) {}"));
-    rejects(
-        &program("async func greet() {}\nfunc g() { let f = greet }"),
-        "is an `async func` and cannot be used as a value",
-    );
+    accepts(&program(
+        "async func greet() {}\nfunc g() { let f = greet\nlet t = go f()\nt.wait() }",
+    ));
     rejects(
         &program("const c = func() {}"),
         "a function literal can only appear inside a function body",
@@ -3750,10 +3749,6 @@ func g() {
     ));
     for (decls, message) in [
         (
-            "async func fetch(id int) int { return id }\nfunc g() { let f = fetch\n_ = f }",
-            "is an `async func` and cannot be used as a value",
-        ),
-        (
             "func add(a int, b int) int { return a + b }\nfunc g() { let f func(int) int = add\n_ = f }",
             "mismatched types",
         ),
@@ -3921,5 +3916,83 @@ _ = task",
         ),
     ] {
         rejects(&with(body), message);
+    }
+}
+
+#[test]
+fn async_function_values_follow_the_async_call_contract() {
+    let prelude = "async func fetch(id int) (string, error) { return \"x\", nil }
+async func ping() {}
+func lookup(id int) (string, error) { return \"y\", nil }
+type Route struct {
+    path string
+    handler async func(int) (string, error)
+}
+async func retry(op async func(int) (string, error), id int) (string, error) {
+    let first, err = await op(id)
+    if err == nil { return first, nil }
+    return await op(id)
+}
+";
+    let with = |decls: &str| program(&format!("{prelude}\n{decls}"));
+    let case = accepts(&with(
+        "async func serve(r own Route) {
+            let h = fetch
+            let a, e1 = await h(1)
+            let task = go h(2)
+            let b, e2 = await task
+            let c, e3 = await retry(fetch, 3)
+            let d, e4 = await (r.handler)(4)
+            _ = e1
+            _ = e2
+            _ = e3
+            _ = e4
+        }
+        func plain() {
+            let h = fetch
+            let t = go h(1)
+            let v, err = t.wait()
+            _ = err
+            let p = ping
+            go p()
+        }",
+    ));
+    drop(case);
+    for (decls, message) in [
+        (
+            "func f() { let h = fetch\nlet a = h(1)\n_ = a }",
+            "call to async function value `h` is neither awaited nor spawned",
+        ),
+        (
+            "async func f() { let h = ping\nh() }",
+            "call to async function value `h` is neither awaited nor spawned",
+        ),
+        (
+            "func f() { let h = fetch\nlet v, e = await h(1)\n_ = v\n_ = e }",
+            "`await` is only valid inside an `async func`",
+        ),
+        (
+            "async func f() { let g = func() { let h = fetch\nawait h(1) }\n_ = g }",
+            "`await` is only valid inside an `async func`",
+        ),
+        (
+            "func f() { let h func(int) (string, error) = fetch\n_ = h }",
+            "expected `func(int64) (string, error)`, found `async func(int64) (string, error)`",
+        ),
+        (
+            "func f() { let h async func(int) (string, error) = lookup\n_ = h }",
+            "expected `async func(int64) (string, error)`, found `func(int64) (string, error)`",
+        ),
+        ("func f() { var h = fetch\nh = lookup }", "mismatched types"),
+        (
+            "func f() { let h = fetch\nlet k = fetch\n_ = h == k }",
+            "operator `==` cannot be applied",
+        ),
+        (
+            "type Bag struct { items []async func() }\nfunc f() {}",
+            "slice",
+        ),
+    ] {
+        rejects(&with(decls), message);
     }
 }

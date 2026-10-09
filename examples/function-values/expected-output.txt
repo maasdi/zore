@@ -9,3 +9,4 @@ drop owned
 6
 3
 3
+300

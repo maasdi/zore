@@ -98,6 +98,14 @@ pub fn lower(package: &hir::Package, program: &mir::Program) -> Plan {
                     };
                     let suspension = match callee {
                         Callee::Function(id) if eligible.contains(id) => Suspension::Call(*id),
+                        Callee::Value(place)
+                            if package
+                                .types
+                                .func_signature(mir::place_type(package, &body.locals, place))
+                                .is_some_and(|signature| signature.is_async) =>
+                        {
+                            Suspension::Value
+                        }
                         Callee::Function(id)
                             if package.function(*id).native
                                 && package.function(*id).name == "zore/time.Sleep" =>

@@ -97,6 +97,7 @@ pub enum TypeKind {
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct FuncSignature {
+    pub is_async: bool,
     pub params: Vec<(ParamMode, TypeId)>,
     pub results: Vec<TypeId>,
 }

@@ -66,6 +66,7 @@ impl Checker<'_> {
                 )
             });
         let ty = self.types.func_type(FuncSignature {
+            is_async: false,
             params: modes.iter().copied().zip(params.iter().copied()).collect(),
             results: results.clone(),
         });

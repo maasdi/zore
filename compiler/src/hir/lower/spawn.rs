@@ -60,6 +60,7 @@ impl Checker<'_> {
         }
         let task = self.task_type(results.clone(), span)?;
         let closure_ty = self.types.func_type(FuncSignature {
+            is_async: false,
             params: Vec::new(),
             results: results.clone(),
         });
@@ -103,11 +104,16 @@ impl Checker<'_> {
         }
         let task = self.task_type(results.clone(), span)?;
         let closure_ty = self.types.func_type(FuncSignature {
+            is_async: false,
             params: Vec::new(),
             results: results.clone(),
         });
         let callee_ty = callee.ty();
-        let thunk = self.spawn_callable_thunk(callee_ty, &args, results, span);
+        let is_async = self
+            .types
+            .func_signature(callee_ty)
+            .is_some_and(|signature| signature.is_async);
+        let thunk = self.spawn_callable_thunk(callee_ty, &args, results, is_async, span);
         let mut spawned = vec![callee];
         spawned.extend(args);
         Some(Value::Typed(typed(
@@ -172,6 +178,7 @@ impl Checker<'_> {
         callee_ty: TypeId,
         args: &[hir::Expr],
         results: Vec<TypeId>,
+        is_async: bool,
         span: Span,
     ) -> FunctionId {
         let mut types = vec![callee_ty];
@@ -186,7 +193,7 @@ impl Checker<'_> {
             types: results.clone(),
             span,
         };
-        self.generated_thunk(&types, captures, call, results, false, span)
+        self.generated_thunk(&types, captures, call, results, is_async, span)
     }
 
     fn generated_thunk(

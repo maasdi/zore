@@ -340,7 +340,10 @@ impl<'a> Checker<'a> {
                 Some(self.types.slice_type(element_ty, *mutable))
             }
             ast::Type::Func {
-                params, results, ..
+                is_async,
+                params,
+                results,
+                ..
             } => {
                 let mut ok = true;
                 let mut checked_params = Vec::new();
@@ -356,6 +359,7 @@ impl<'a> Checker<'a> {
                 }
                 let results = checked_results?;
                 Some(self.types.func_type(FuncSignature {
+                    is_async: *is_async,
                     params: checked_params,
                     results,
                 }))
@@ -918,6 +922,7 @@ impl<'a> Checker<'a> {
         let params: Option<Vec<TypeId>> = params.into_iter().collect();
         let (params, results, locals) = (params?, results?, locals?);
         let signature = FuncSignature {
+            is_async: false,
             params: closure
                 .params
                 .iter()
@@ -1253,30 +1258,22 @@ impl<'a> Checker<'a> {
         }
     }
 
-    fn function_value(&mut self, id: FunctionId, name: &str, span: Span) -> Option<Value> {
+    fn function_value(&mut self, id: FunctionId, span: Span) -> Option<Value> {
         let declaration = self.res.functions[id.0 as usize];
-        if declaration.is_async {
-            self.diagnostics.push(
-                Diagnostic::new(
-                    Severity::Error,
-                    format!("`{name}` is an `async func` and cannot be used as a value"),
-                    span,
-                )
-                .note("a function type does not say whether calling it must be awaited; call it directly or wrap the call in a function literal"),
-            );
-            return None;
-        }
+        let is_async = declaration.is_async;
         let signature = self.signatures[id.0 as usize].as_ref()?;
         let (params, results) = (signature.params.clone(), signature.results.clone());
         let modes: Vec<ast::ParamMode> = declaration.params.iter().map(|p| p.mode).collect();
         let ty = self.types.func_type(FuncSignature {
+            is_async,
             params: modes.iter().copied().zip(params.iter().copied()).collect(),
             results: results.clone(),
         });
         let function = match self.function_values.get(&id) {
             Some(&function) => function,
             None => {
-                let function = self.forwarding_closure(id, &params, &modes, results, span);
+                let function =
+                    self.forwarding_closure(id, &params, &modes, results, is_async, span);
                 self.function_values.insert(id, function);
                 function
             }
@@ -1299,6 +1296,7 @@ impl<'a> Checker<'a> {
         params: &[TypeId],
         modes: &[ast::ParamMode],
         results: Vec<TypeId>,
+        is_async: bool,
         span: Span,
     ) -> FunctionId {
         let id = FunctionId(
@@ -1345,7 +1343,7 @@ impl<'a> Checker<'a> {
             results,
             captures: Vec::new(),
             is_closure: true,
-            is_async: false,
+            is_async,
             native: false,
             call_once: false,
             locals,
@@ -1606,8 +1604,15 @@ impl<'a> Checker<'a> {
             self.error("`await` needs a call to an `async func`", span);
             return None;
         };
-        if matches!(&expr.kind, ExprKind::Call { function, .. } if self.is_async_function(*function))
-        {
+        let awaits_async_call = match &expr.kind {
+            ExprKind::Call { function, .. } => self.is_async_function(*function),
+            ExprKind::CallValue { callee, .. } => self
+                .types
+                .func_signature(callee.ty())
+                .is_some_and(|signature| signature.is_async),
+            _ => false,
+        };
+        if awaits_async_call {
             return Some(Value::Typed(expr));
         }
         if let [ty] = expr.types[..]
@@ -1679,7 +1684,7 @@ impl<'a> Checker<'a> {
                 ConstValue::Untyped(v) => Some(Value::Untyped(v, span)),
                 ConstValue::Typed(ty, c) => Some(Value::Typed(typed(ExprKind::Const(c), ty, span))),
             },
-            Res::Function(id) => self.function_value(id, name, span),
+            Res::Function(id) => self.function_value(id, span),
             Res::Struct(_) | Res::Primitive(_) => {
                 self.error(format!("`{name}` is a type, not a value"), span);
                 None
@@ -2191,6 +2196,19 @@ impl<'a> Checker<'a> {
                 if args.len() == 1 { "was" } else { "were" },
             );
             self.error(message, span);
+            self.report_arg_errors(args);
+            return None;
+        }
+        if signature.is_async && self.awaited_call != Some(span) {
+            let name = self.source_text(callee.span).to_owned();
+            self.diagnostics.push(
+                Diagnostic::new(
+                    Severity::Error,
+                    format!("call to async function value `{name}` is neither awaited nor spawned"),
+                    span,
+                )
+                .note("write `await` before the call, or spawn it with `go`"),
+            );
             self.report_arg_errors(args);
             return None;
         }

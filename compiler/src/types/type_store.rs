@@ -301,6 +301,9 @@ impl fmt::Display for TypeName<'_> {
             }
             TypeKind::Func(id) => {
                 let signature = self.store.signature(id);
+                if signature.is_async {
+                    f.write_str("async ")?;
+                }
                 f.write_str("func(")?;
                 for (index, &(mode, ty)) in signature.params.iter().enumerate() {
                     if index > 0 {

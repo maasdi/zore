@@ -1851,3 +1851,30 @@ fn a_function_value_received_through_a_parameter_cannot_be_spawned() {
         );
     }
 }
+
+#[test]
+fn async_function_values_are_used_exclusively_and_cannot_be_spawned_from_a_parameter() {
+    let declarations = "async func double(n int) int { return n * 2 }
+        async func twice(op async func(int) int, x int) int {
+            let a = await op(x)
+            return await op(a)
+        }";
+    let with = |decls: &str| program(&format!("{declarations}\n{decls}"));
+    accepts(&with(
+        "async func run() int {
+            let h = double
+            let a = await h(1)
+            let b = await twice(double, 2)
+            let c = await twice(h, 3)
+            return a + b + c
+        }",
+    ));
+    rejects(
+        &with("async func relay(op async func(int) int) int { let t = go op(5)\nreturn await t }"),
+        "cannot use a function value that came in through a parameter",
+    );
+    rejects(
+        &with("async func run() int { let h = double\nlet t = go h(1)\nreturn await h(2) }"),
+        "use of moved value `h`",
+    );
+}

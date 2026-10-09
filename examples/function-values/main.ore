@@ -36,6 +36,15 @@ func call(f func() int) int {
     return f()
 }
 
+async func fetch(id int) int {
+    return id * 100
+}
+
+async func retry(op own async func(int) int, id int) int {
+    let first = await op(id)
+    return first + await op(id + 1)
+}
+
 func consume(r own Resource) {
     println("consume " + r.Name)
 }
@@ -83,4 +92,8 @@ func main() {
     let read = counter.read
     println(read())
     println(call(counter.read))
+
+    // An async function is a value of an async function type; calling it is awaited or spawned.
+    let both = go retry(fetch, 1)
+    println(both.wait())
 }

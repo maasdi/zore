@@ -3,6 +3,8 @@ use crate::resolve::FunctionId;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Suspension {
     Call(FunctionId),
+    /// An awaited call through a value of async function type.
+    Value,
     Task,
     Channel,
     Sleep,

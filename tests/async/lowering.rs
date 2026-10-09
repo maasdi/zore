@@ -43,6 +43,7 @@ func main() { let t = go parent(go plain()); println(t.wait()) }",
                 Suspension::Call(id) => {
                     assert!(matches!(callee, mir::Callee::Function(callee) if id == callee))
                 }
+                Suspension::Value => assert!(matches!(callee, mir::Callee::Value(_))),
                 Suspension::Sleep => assert!(
                     matches!(callee, mir::Callee::Function(id) if package.function(*id).name == "zore/time.Sleep")
                 ),
@@ -267,4 +268,35 @@ func main() {}",
             .keys()
             .any(|id| package.function(*id).name.ends_with(".Port"))
     );
+}
+
+#[test]
+fn an_awaited_call_through_an_async_function_value_is_a_value_suspension_with_cleanup_edges() {
+    let (package, program, plan) = plan(
+        "package main
+async func leaf(n int) int { return n }
+async func relay(op async func(int) int, n int) int { return await op(n) }
+async func run() int { return await relay(leaf, 1) }
+func main() { let t = go run(); println(t.wait()) }",
+    );
+    let (id, machine) = plan
+        .machines
+        .iter()
+        .find(|(id, _)| package.function(**id).name == "relay")
+        .unwrap();
+    let body = &program.bodies[id.0 as usize];
+    assert!(body.unwind.is_some());
+    let values: Vec<_> = machine
+        .suspensions
+        .iter()
+        .filter(|(_, kind)| *kind == Suspension::Value)
+        .collect();
+    assert_eq!(values.len(), 1);
+    let mir::Terminator::Call { callee, unwind, .. } =
+        &body.blocks[values[0].0.0 as usize].terminator
+    else {
+        panic!("a suspension must be a call")
+    };
+    assert!(matches!(callee, mir::Callee::Value(_)));
+    assert!(unwind.is_some());
 }

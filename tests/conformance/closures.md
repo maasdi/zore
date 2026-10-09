@@ -194,8 +194,18 @@ and `method_values_destroy_an_owned_receiver_exactly_once`).
 
 ## Async function values (§16.2, §17.8)
 
-Executable counterparts land with the implementing stages of Q36; until then
-these rows are pending and do not count as passing tests.
+Executable counterparts are in `tests/parser/parser.rs`
+(`async_function_types_parse_in_type_positions`), `tests/typecheck/check.rs`
+(`async_function_values_follow_the_async_call_contract`),
+`tests/ownership/ownership.rs`
+(`async_function_values_are_used_exclusively_and_cannot_be_spawned_from_a_parameter`),
+`tests/packages/packages.rs`
+(`exported_async_functions_become_async_function_values_across_packages`), and
+`tests/codegen/native.rs` (`async_function_values_are_awaited_passed_and_spawned`,
+`async_function_values_pass_borrowed_and_owned_arguments_and_destroy_them_once`,
+`a_panic_in_an_awaited_async_function_value_unwinds_its_callers_once`,
+`async_function_values_live_in_struct_fields_and_arrays`, and
+`many_tasks_awaiting_through_an_async_function_value_do_not_hold_threads`).
 
 | Scenario | Expected result |
 | --- | --- |

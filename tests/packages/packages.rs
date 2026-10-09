@@ -566,3 +566,27 @@ fn the_io_packages_reject_misuse() {
         "use of moved value",
     );
 }
+
+#[test]
+fn exported_async_functions_become_async_function_values_across_packages() {
+    let shapes = "package shapes
+
+async func Load(id int) int { return id }
+
+func local() int { return 1 }
+";
+    let main = "package main
+import \"myapp/shapes\"
+
+async func run() int {
+    let load = shapes.Load
+    return await load(3)
+}
+
+func main() {
+    let t = go run()
+    println(t.wait())
+}
+";
+    accepts(&[("main.ore", main), ("shapes/shapes.ore", shapes)]);
+}
