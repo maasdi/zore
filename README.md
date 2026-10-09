@@ -56,7 +56,7 @@ John
 | Closures and function types | Implemented, including closures that are returned or stored, call-once closures, declared functions and methods as values, and `go` on closures and function-typed locals; async function values are awaited or spawned; a callee stored in a field, element, or map value cannot be spawned directly |
 | Packages and imports | Folders are packages; `import "project/folder"` and qualified names work, with exports, import checks, and cycle detection; bundled packages include `zore/strings`, `zore/strconv`, `zore/time`, `zore/io`, `zore/os`, `zore/net`, and `zore/cancel` |
 | `async`/`await`, tasks, channels, mutexes | Implemented for the supported operations: polled async tasks, channel send/receive and `select`, mutex acquisition, timers, TCP I/O, files, standard input, and cooperative cancellation. A waiting plain function occupies an OS worker; the runtime starts replacement workers |
-| Self-hosting | Long-term goal |
+| Self-hosting | Long-term goal; a lexer written in Zore (`compiler-zore/`) matches the Rust lexer in a differential test |
 
 Features outside the implemented subset are reported as errors, never silently
 accepted. Recursive owned structs through `Array<T>` and maps are supported,

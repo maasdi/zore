@@ -1,0 +1,476 @@
+package lexer
+
+type Lexer struct {
+    text     string
+    pos      int
+    tokens   Array<Token>
+    problems Array<Problem>
+    lastEnds bool
+    ranges   Array<int>
+}
+
+// Lex expects text that has already passed UTF-8 validation.
+func Lex(text string) Lexed {
+    var l = Lexer{
+        text: text,
+        pos: 0,
+        tokens: Array<Token>{},
+        problems: Array<Problem>{},
+        lastEnds: false,
+        ranges: alphanumericRanges(),
+    }
+    l.run()
+    return Lexed{Tokens: l.tokens, Problems: l.problems}
+}
+
+func (l mut Lexer) run() {
+    for l.pos < l.text.len() {
+        let start = l.pos
+        let c = int(l.text[l.pos])
+        if c == 32 || c == 9 || c == 13 {
+            l.pos += 1
+        } else if c == 10 {
+            l.lineEnd(start)
+            l.pos += 1
+        } else if c == 47 && l.byteAt(l.pos + 1) == 47 {
+            l.lineComment()
+        } else if c == 47 && l.byteAt(l.pos + 1) == 42 {
+            l.blockComment()
+        } else if c == 34 {
+            l.quoted(false)
+        } else if c == 39 {
+            l.quoted(true)
+        } else if c == 96 {
+            l.rawString()
+        } else if c == 59 {
+            l.pos += 1
+            l.push(KindSemicolon, SeparatorExplicit, start)
+        } else if isAsciiDigit(c) {
+            l.number()
+        } else if l.isIdentChar(l.charAt(l.pos)) {
+            l.identifier()
+        } else {
+            l.punct()
+        }
+    }
+    let end = l.text.len()
+    if l.lastEnds {
+        l.pushAt(KindSemicolon, SeparatorEof, end, end)
+    }
+    l.pushAt(KindEof, 0, end, end)
+}
+
+func (l Lexer) byteAt(at int) int {
+    if at < l.text.len() {
+        return int(l.text[at])
+    }
+    return -1
+}
+
+// The code point starting at `at`, or -1 at the end of the text.
+func (l Lexer) charAt(at int) int {
+    if at >= l.text.len() {
+        return -1
+    }
+    let first = int(l.text[at])
+    if first < 0x80 {
+        return first
+    }
+    if first < 0xE0 {
+        return (first & 0x1F) << 6 | l.continuation(at + 1)
+    }
+    if first < 0xF0 {
+        return (first & 0x0F) << 12 | l.continuation(at + 1) << 6 | l.continuation(at + 2)
+    }
+    return (first & 0x07) << 18 | l.continuation(at + 1) << 12 | l.continuation(at + 2) << 6 |
+        l.continuation(at + 3)
+}
+
+func (l Lexer) continuation(at int) int {
+    return int(l.text[at]) & 0x3F
+}
+
+func (l Lexer) charAfter(at int) int {
+    return l.charAt(at + charWidth(l.charAt(at)))
+}
+
+func charWidth(code int) int {
+    if code < 0x80 {
+        return 1
+    }
+    if code < 0x800 {
+        return 2
+    }
+    if code < 0x10000 {
+        return 3
+    }
+    return 4
+}
+
+func isAsciiDigit(code int) bool {
+    return code >= 48 && code <= 57
+}
+
+func isAsciiLetter(code int) bool {
+    return (code >= 65 && code <= 90) || (code >= 97 && code <= 122)
+}
+
+func (l Lexer) isAlphanumeric(code int) bool {
+    if code < 0x80 {
+        return isAsciiDigit(code) || isAsciiLetter(code)
+    }
+    var low = 0
+    var high = l.ranges.len() / 2
+    for low < high {
+        let middle = (low + high) / 2
+        if code < l.ranges[2 * middle] {
+            high = middle
+        } else if code > l.ranges[2 * middle + 1] {
+            low = middle + 1
+        } else {
+            return true
+        }
+    }
+    return false
+}
+
+// Non-ASCII letters are accepted only to diagnose them within one identifier.
+func (l Lexer) isIdentChar(code int) bool {
+    return code == 95 || isAsciiLetter(code) || (code >= 0x80 && l.isAlphanumeric(code))
+}
+
+func (l mut Lexer) report(code string, start int, end int) {
+    l.problems.push(Problem{Code: code, Start: start, End: end})
+}
+
+func (l mut Lexer) push(kind int, detail int, start int) {
+    let end = l.pos
+    l.pushAt(kind, detail, start, end)
+}
+
+func (l mut Lexer) pushAt(kind int, detail int, start int, end int) {
+    l.pushValues(kind, detail, start, end, Array<int>{})
+}
+
+func (l mut Lexer) pushValues(kind int, detail int, start int, end int, values own Array<int>) {
+    let spelling = l.text[start:end]
+    if kind == KindKeyword {
+        l.lastEnds = keywordEndsStatement(spelling)
+    } else if kind == KindPunct {
+        l.lastEnds = punctEndsStatement(spelling)
+    } else {
+        l.lastEnds = kind != KindReserved && kind != KindSemicolon && kind != KindEof
+    }
+    l.tokens.push(Token{Kind: kind, Start: start, End: end, Detail: detail, Values: values})
+}
+
+func (l mut Lexer) lineEnd(lineFeed int) {
+    if !l.lastEnds {
+        return
+    }
+    var at = lineFeed
+    if lineFeed > 0 && l.text[lineFeed - 1] == 13 {
+        at = lineFeed - 1
+    }
+    l.pushAt(KindSemicolon, SeparatorNewline, at, at)
+}
+
+func (l mut Lexer) lineComment() {
+    for l.pos < l.text.len() && l.text[l.pos] != 10 {
+        l.pos += 1
+    }
+}
+
+func (l mut Lexer) blockComment() {
+    let start = l.pos
+    let body = start + 2
+    var end = l.text.len()
+    var closed = false
+    for var i = body; i + 1 < l.text.len(); i += 1 {
+        if l.text[i] == 42 && l.text[i + 1] == 47 {
+            end = i + 2
+            closed = true
+            break
+        }
+    }
+    // A multiline block comment acts as one newline.
+    for var i = body; i < end; i += 1 {
+        if l.text[i] == 10 {
+            l.lineEnd(i)
+            break
+        }
+    }
+    if !closed {
+        l.report("unterminated-block-comment", start, body)
+    }
+    l.pos = end
+}
+
+func (l mut Lexer) identifier() {
+    let start = l.pos
+    var nonAscii = -1
+    var nonAsciiWidth = 0
+    for l.pos < l.text.len() {
+        let code = l.charAt(l.pos)
+        if !l.isIdentChar(code) && !isAsciiDigit(code) {
+            break
+        }
+        if code >= 0x80 && nonAscii < 0 {
+            nonAscii = l.pos
+            nonAsciiWidth = charWidth(code)
+        }
+        l.pos += charWidth(code)
+    }
+    if nonAscii >= 0 {
+        // One token keeps recovery from splitting the name.
+        l.report("non-ascii-identifier", nonAscii, nonAscii + nonAsciiWidth)
+        l.push(KindIdent, 0, start)
+        return
+    }
+    let word = l.text[start:l.pos]
+    if word == "_" {
+        l.push(KindUnderscore, 0, start)
+    } else if isKeyword(word) {
+        l.push(KindKeyword, 0, start)
+    } else if isReserved(word) {
+        l.push(KindReserved, 0, start)
+    } else {
+        l.push(KindIdent, 0, start)
+    }
+}
+
+func (l mut Lexer) number() {
+    let start = l.pos
+    let marker = l.byteAt(start + 1)
+    let prefixed = l.text[start] == 48 &&
+        (marker == 98 || marker == 66 || marker == 111 || marker == 79 || marker == 120 || marker == 88)
+    var seenPoint = false
+    var seenExponent = false
+    // Scan the whole run so suffixes are diagnosed rather than split off.
+    for l.pos < l.text.len() {
+        let code = l.charAt(l.pos)
+        if code == 95 || l.isAlphanumeric(code) {
+            l.pos += charWidth(code)
+            if !prefixed && (code == 101 || code == 69) {
+                seenExponent = true
+                let sign = l.charAt(l.pos)
+                let after = l.charAfter(l.pos)
+                if (sign == 43 || sign == 45) && (after == 95 || (after >= 0 && l.isAlphanumeric(after))) {
+                    l.pos += 1
+                }
+            }
+        } else if code == 46 && !prefixed && !seenPoint && !seenExponent &&
+            isAsciiDigit(l.charAfter(l.pos)) {
+            seenPoint = true
+            l.pos += 1
+        } else {
+            break
+        }
+    }
+    let literal = l.text[start:l.pos]
+    let result = validateNumber(literal)
+    if result.Code != "" {
+        l.report(result.Code, start + result.Start, start + result.End)
+        l.push(KindMalformed, 0, start)
+        return
+    }
+    l.push(result.Kind, result.Base, start)
+}
+
+func (l mut Lexer) quoted(isRune bool) {
+    let start = l.pos
+    var quote = 34
+    if isRune {
+        quote = 39
+    }
+    l.pos += 1
+    var values = Array<int>{}
+    var valid = true
+    var closed = false
+    for l.pos < l.text.len() {
+        let code = l.charAt(l.pos)
+        if code == quote {
+            l.pos += 1
+            closed = true
+            break
+        }
+        if code == 10 || (code == 13 && l.byteAt(l.pos + 1) == 10) {
+            break
+        }
+        if code != 92 {
+            values.push(code)
+            l.pos += charWidth(code)
+            continue
+        }
+        let backslash = l.pos
+        l.pos += 1
+        if l.pos >= l.text.len() {
+            break
+        }
+        let escaped = l.charAt(l.pos)
+        if escaped == 10 || (escaped == 13 && l.byteAt(l.pos + 1) == 10) {
+            break
+        }
+        let decoded = l.escape(escaped, isRune, backslash)
+        if decoded >= 0 {
+            values.push(decoded)
+        } else {
+            valid = false
+        }
+    }
+    if !closed {
+        if isRune {
+            l.report("unterminated-rune", start, start + 1)
+        } else {
+            l.report("unterminated-string", start, start + 1)
+        }
+        l.push(KindMalformed, 0, start)
+        return
+    }
+    if !valid {
+        l.push(KindMalformed, 0, start)
+        return
+    }
+    if !isRune {
+        let end = l.pos
+        l.pushValues(KindString, 0, start, end, values)
+        return
+    }
+    if values.len() == 1 {
+        let end = l.pos
+        l.pushValues(KindRune, 0, start, end, values)
+        return
+    }
+    if values.len() == 0 {
+        let end = l.pos
+        l.report("empty-rune", start, end)
+    } else {
+        let end = l.pos
+        l.report("long-rune", start, end)
+    }
+    l.push(KindMalformed, 0, start)
+}
+
+// The decoded code point, or -1 after reporting a malformed escape.
+func (l mut Lexer) escape(code int, isRune bool, backslash int) int {
+    l.pos += charWidth(code)
+    if code == 110 {
+        return 10
+    }
+    if code == 114 {
+        return 13
+    }
+    if code == 116 {
+        return 9
+    }
+    if code == 92 || code == 34 {
+        return code
+    }
+    if code == 39 && isRune {
+        return code
+    }
+    var digits = 0
+    if code == 117 {
+        digits = 4
+    } else if code == 85 {
+        digits = 8
+    } else {
+        let end = l.pos
+        l.report("unknown-escape", backslash, end)
+        return -1
+    }
+    var value = 0
+    var count = 0
+    for count < digits {
+        let digit = hexValue(l.byteAt(l.pos))
+        if digit < 0 {
+            break
+        }
+        value = value * 16 + digit
+        count += 1
+        l.pos += 1
+    }
+    if count < digits {
+        let end = l.pos
+        l.report("escape-digits", backslash, end)
+        return -1
+    }
+    if value > 0x10FFFF || (value >= 0xD800 && value <= 0xDFFF) {
+        let end = l.pos
+        l.report("not-scalar", backslash, end)
+        return -1
+    }
+    return value
+}
+
+func hexValue(code int) int {
+    if isAsciiDigit(code) {
+        return code - 48
+    }
+    if code >= 97 && code <= 102 {
+        return code - 87
+    }
+    if code >= 65 && code <= 70 {
+        return code - 55
+    }
+    return -1
+}
+
+func (l mut Lexer) rawString() {
+    let start = l.pos
+    let body = start + 1
+    var closing = body
+    for closing < l.text.len() && l.text[closing] != 96 {
+        closing += 1
+    }
+    if closing == l.text.len() {
+        l.pos = l.text.len()
+        l.report("unterminated-raw-string", start, body)
+        l.push(KindMalformed, 0, start)
+        return
+    }
+    var values = Array<int>{}
+    var at = body
+    for at < closing {
+        let code = l.charAt(at)
+        values.push(code)
+        at += charWidth(code)
+    }
+    l.pos = closing + 1
+    let end = l.pos
+    l.pushValues(KindString, 0, start, end, values)
+}
+
+func (l Lexer) startsWith(spelling string) bool {
+    if l.pos + spelling.len() > l.text.len() {
+        return false
+    }
+    for var i = 0; i < spelling.len(); i += 1 {
+        if l.text[l.pos + i] != spelling[i] {
+            return false
+        }
+    }
+    return true
+}
+
+func (l mut Lexer) punct() {
+    let start = l.pos
+    if l.startsWith("++") || l.startsWith("--") {
+        l.pos += 2
+        let end = l.pos
+        l.report("increment-decrement", start, end)
+        l.push(KindUnknown, 0, start)
+        return
+    }
+    for spelling in punctuation() {
+        if l.startsWith(spelling) {
+            l.pos += spelling.len()
+            l.push(KindPunct, 0, start)
+            return
+        }
+    }
+    l.pos += charWidth(l.charAt(l.pos))
+    let end = l.pos
+    l.report("unexpected-character", start, end)
+    l.push(KindUnknown, 0, start)
+}

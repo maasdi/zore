@@ -4,6 +4,16 @@ Status: planning proposal for issue #56. No new source syntax, library API, or
 compiler behavior is accepted by this document. The Rust compiler remains the
 reference and bootstrap compiler throughout the stages below.
 
+Progress: stage 1 (lexer oracle) is done (issue #79). `compiler-zore/lexer`
+implements every token form of the Rust lexer, and the `selfhost_lexer` test
+compares their records exactly. The comparison covers the lexer test lines, the
+lexical conformance documents, every `.ore` file in the repository, seeded
+generated inputs, and UTF-8 rejection at the loading boundary.
+`compiler-zore/README.md` lists the commands, the record format, and what is
+not compared: diagnostic display text and notes. Stage 2 still needs the
+parser representation check, a SourceManager and diagnostic records in Zore,
+and a stable tree serialization for comparison.
+
 Specification §38 sets a long-term goal, not an MVP requirement. The smallest
 useful first deliverable is a Zore lexer that processes in-memory source bytes
 and can be compared with the Rust lexer. A compiler executable and a

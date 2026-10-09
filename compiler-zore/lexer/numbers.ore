@@ -1,0 +1,143 @@
+package lexer
+
+// Offsets are relative to the start of the literal.
+type NumberResult struct {
+    Kind  int
+    Base  int
+    Code  string
+    Start int
+    End   int
+}
+
+type DigitScan struct {
+    Next  int
+    Code  string
+    Start int
+    End   int
+}
+
+func validateNumber(text string) NumberResult {
+    var base = 10
+    if text.len() >= 2 && text[0] == 48 {
+        let marker = text[1]
+        if marker == 98 || marker == 66 {
+            base = 2
+        } else if marker == 111 || marker == 79 {
+            base = 8
+        } else if marker == 120 || marker == 88 {
+            base = 16
+        }
+    }
+    var kind = KindInt
+    var i = 0
+    if base != 10 {
+        let scan = digitSequence(text, 2, base, "expected-prefixed-digits")
+        if scan.Code != "" {
+            return numberError(scan.Code, scan.Start, scan.End)
+        }
+        i = scan.Next
+    } else {
+        let whole = digitSequence(text, 0, base, "expected-digits")
+        if whole.Code != "" {
+            return numberError(whole.Code, whole.Start, whole.End)
+        }
+        i = whole.Next
+        if i < text.len() && text[i] == 46 {
+            kind = KindFloat
+            let fraction = digitSequence(text, i + 1, base, "expected-fraction-digits")
+            if fraction.Code != "" {
+                return numberError(fraction.Code, fraction.Start, fraction.End)
+            }
+            i = fraction.Next
+        }
+        if i < text.len() && (text[i] == 101 || text[i] == 69) {
+            kind = KindFloat
+            i += 1
+            if i < text.len() && (text[i] == 43 || text[i] == 45) {
+                i += 1
+            }
+            let exponent = digitSequence(text, i, base, "expected-exponent-digits")
+            if exponent.Code != "" {
+                return numberError(exponent.Code, exponent.Start, exponent.End)
+            }
+            i = exponent.Next
+        }
+    }
+    if i == text.len() {
+        return NumberResult{Kind: kind, Base: base, Code: "", Start: 0, End: 0}
+    }
+    if isAsciiDigit(int(text[i])) {
+        return numberError("invalid-digit", i, nextChar(text, i))
+    }
+    return numberError("suffix", i, text.len())
+}
+
+func numberError(code string, start int, end int) NumberResult {
+    return NumberResult{Kind: KindMalformed, Base: 0, Code: code, Start: start, End: end}
+}
+
+func scanError(at int, code string, start int, end int) DigitScan {
+    return DigitScan{Next: at, Code: code, Start: start, End: end}
+}
+
+func digitSequence(text string, from int, base int, missing string) DigitScan {
+    var i = from
+    if i >= text.len() {
+        // Point at the last character; the end of the run has no width.
+        return scanError(i, missing, text.len() - 1, text.len())
+    }
+    if isDigit(int(text[i]), base) {
+        i += 1
+    } else if text[i] == 95 {
+        return scanError(i, "separator", i, i + 1)
+    } else {
+        return scanError(i, missing, i, nextChar(text, i))
+    }
+    for {
+        if i < text.len() && isDigit(int(text[i]), base) {
+            i += 1
+            continue
+        }
+        if i >= text.len() || text[i] != 95 {
+            return DigitScan{Next: i, Code: "", Start: 0, End: 0}
+        }
+        if i + 1 < text.len() {
+            let following = int(text[i + 1])
+            if isDigit(following, base) {
+                i += 2
+                continue
+            }
+            if isAsciiDigit(following) {
+                return scanError(i, "invalid-digit", i + 1, nextChar(text, i + 1))
+            }
+            if isAsciiLetter(following) && following != 101 && following != 69 {
+                return scanError(i, "suffix", i, text.len())
+            }
+        }
+        return scanError(i, "separator", i, i + 1)
+    }
+}
+
+func isDigit(code int, base int) bool {
+    if base == 16 {
+        return hexValue(code) >= 0
+    }
+    return code >= 48 && code < 48 + base
+}
+
+func nextChar(text string, at int) int {
+    if at >= text.len() {
+        return text.len()
+    }
+    let first = int(text[at])
+    if first < 0x80 {
+        return at + 1
+    }
+    if first < 0xE0 {
+        return at + 2
+    }
+    if first < 0xF0 {
+        return at + 3
+    }
+    return at + 4
+}
