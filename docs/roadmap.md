@@ -69,10 +69,10 @@ The large task tests run 50,000 nonblocking computations in plain functions;
 the 5,000-task join chain and thousands of channel and timer waiters use async
 functions. Plain tasks that wait hold OS workers, so large sets of them can
 exhaust host thread limits; use `async func` for those workloads. Compiler-inserted
-cooperative budgets now yield CPU-heavy async loops; forced preemption,
-further frame shrinking (including broader slot reuse), scoped tasks, and async closure
-literals remain follow-ups,
-outside the accepted Q32 slices. The next milestone is M32–M34's backend/toolchain
+cooperative budgets now yield CPU-heavy async loops. Still open: forced
+preemption; frame shrinking by general liveness (poll-local storage and same-type
+slot reuse are implemented); scoped tasks (unresolved design work, Q10); and
+async closure literals. These are follow-ups outside the accepted Q32 slices. The next milestone is M32–M34's backend/toolchain
 hardening and MVP coverage audit.
 
 The supported baseline has native validation (see above). The detailed work

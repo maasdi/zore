@@ -1,6 +1,10 @@
 # Q32 async runtime coverage inventory
 
 Audit baseline: `main` at `0e640b4154e80eded053c227c46ef1521dfb3582`.
+Current status (issue #75): the limits below were updated after the baseline.
+Frames now place poll-local values outside the pinned frame and share
+same-type slots, and `go` accepts closures and function values. The baseline
+text is kept as the record it was, with notes where the status changed.
 Authority: specification §§17–20, 35–36, and 37.3–37.4; the accepted
 [Q32 proposal](../proposals/async-state-machines.md) explains the implementation
 choices. **Covered** means the linked assertions cover the named cases, not all
@@ -59,15 +63,23 @@ but not the blocking callback as a suspension.
 
 - **No preemption:** a running plain function or poll body runs until it yields
   or returns. Q32 adds cooperative suspension, not forced interruption.
-- **Unshrunk frames:** the bootstrap compiler retains every async local in one
-  pinned heap frame; [IR tests](../../tests/codegen/native.rs#L4810) assert
-  heap storage and resume states, not an optimized frame size.
+- **Frame storage (current status):** values needed across a suspension stay in
+  the pinned heap frame. Other locals and drop flags use poll-local storage, and
+  same-type Copy locals without cleanup, views, or address-taking may share one
+  frame field when liveness proves no overlap. Parameters, captures, results,
+  drop flags, and hoisted scratch fields are never shared. Frames are not shrunk
+  by general liveness. [Poll-local tests](../../tests/async/lowering.rs) and
+  [IR tests](../../tests/codegen/native.rs#L4810) assert these rules.
 - **Conservative task inputs:** borrowed or `mut` inputs whose backing may
   outlive the spawner are rejected. The [spawn-input test](../../tests/typecheck/check.rs#L3222)
   asserts these diagnostics; scoped tasks and a broader lifetime proof are
   outside current Q32 behavior.
-- **Unsupported `go` function values:** `go` requires a declared function or
-  method call; [type checking rejects function-value calls](../../tests/typecheck/check.rs#L3207).
+- **`go` function values (current status):** `go` accepts a declared function or
+  method, a closure literal, a function-typed local, and a function value
+  received through an `own` argument, with owning-closure rules. A callee stored
+  in a field, element, map value, or call result is still rejected, and a
+  function value received through a parameter cannot be spawned.
+  [Spawn tests](../../tests/typecheck/check.rs) cover these rules.
 - **Process-exit abandonment:** §18.11 allows the process to stop with running
   tasks. Suspended frames are not destroyed at exit, as stated by the accepted
   [Q32 proposal](../proposals/async-state-machines.md); cancellation tokens do
