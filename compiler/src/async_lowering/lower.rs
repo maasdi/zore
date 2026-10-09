@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{BTreeSet, HashSet};
 
 use crate::hir;
 use crate::mir::{self, Callee, Terminator};
@@ -128,11 +128,27 @@ pub fn lower(package: &hir::Package, program: &mir::Program) -> Plan {
                     Some((mir::BlockId(index as u32), suspension))
                 })
                 .collect();
-            let storage = super::storage::classify(body, &suspensions);
+            let budget_blocks: Vec<_> = body
+                .blocks
+                .iter()
+                .enumerate()
+                .flat_map(|(index, block)| {
+                    block
+                        .terminator
+                        .successors()
+                        .into_iter()
+                        .filter(move |target| target.0 as usize <= index)
+                })
+                .filter(|target| body.unwind != Some(*target))
+                .collect::<BTreeSet<_>>()
+                .into_iter()
+                .collect();
+            let storage = super::storage::classify(body, &suspensions, &budget_blocks);
             (
                 body.function,
                 StateMachine {
                     suspensions,
+                    budget_blocks,
                     storage,
                 },
             )

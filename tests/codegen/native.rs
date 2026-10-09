@@ -5146,6 +5146,41 @@ func main() {
 }
 
 #[test]
+fn async_budget_loops_with_ready_channels_stop_and_nested_calls_complete() {
+    prints(
+        r#"package main
+async func churn(stop channel<bool>) int {
+    let pulse = channel<int>(1)
+    var iterations = 0
+    for iterations < 1000000 {
+        select { case let _, _ = stop.receive() { return iterations }; default {} }
+        pulse.send(1)
+        let _, _ = pulse.receive()
+        iterations += 1
+    }
+    return iterations
+}
+async func signal(stop channel<bool>) { stop.send(true) }
+async func leaf(value int) int { return value + 1 }
+async func nested() int {
+    var value = 0
+    for value < 2048 { value = await leaf(value) }
+    return value
+}
+func main() {
+    let stop = channel<bool>(1)
+    let worker = go churn(stop)
+    let controller = go signal(stop)
+    println(worker.wait() < 1000000)
+    controller.wait()
+    let recursive = go nested()
+    println(recursive.wait())
+}"#,
+        "true\n2048\n",
+    );
+}
+
+#[test]
 fn async_state_machines_preserve_mutable_borrows_and_views_across_pending_children() {
     prints(
         r#"package main
@@ -5297,6 +5332,16 @@ async func recurse(n int) int {
 func main() { let t = go recurse(100); println(t.wait()) }
 "#,
         "5051\n",
+    );
+    prints(
+        r#"package main
+async func recurse(n int) int {
+    if n == 0 { return 0 }
+    return 1 + await recurse(n - 1)
+}
+func main() { let t = go recurse(300); println(t.wait()) }
+"#,
+        "300\n",
     );
     let output = run(r#"package main
 async func fail() int { var t Task<int> = nil; return await t }

@@ -1,0 +1,14 @@
+package main
+
+async func compute(rounds int) int {
+    var sum = 0
+    for var i = 0; i < rounds; i += 1 {
+        sum += i % 7
+    }
+    return sum
+}
+
+func main() {
+    let task = go compute(2000000)
+    println(task.wait())
+}

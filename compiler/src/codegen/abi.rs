@@ -37,6 +37,7 @@ declare void @zore_abort() noreturn
 declare ptr @zore_task_spawn(ptr, ptr, ptr, i64)
 declare ptr @zore_task_spawn_poll(ptr, ptr, ptr, i64)
 declare i8 @zore_task_poll(ptr, ptr, i64, ptr)
+declare void @zore_budget_yield(ptr)
 declare ptr @zore_task_wait(ptr, i64)
 declare void @zore_task_detach(ptr)
 declare ptr @zore_channel_make(i64, i64, ptr)

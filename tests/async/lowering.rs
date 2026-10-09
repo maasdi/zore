@@ -194,6 +194,39 @@ func main() {}"
 }
 
 #[test]
+fn loop_budget_points_preserve_live_storage_and_resume_at_block_entry() {
+    let source = "package main
+async func count() int {
+    let seed = 3
+    var total = seed
+    for total < 1000 { total += 1 }
+    return total
+}
+func main() {}";
+    let (package, program, plan) = plan(source);
+    let (body, storage) = storage_for(&package, &program, &plan, "count");
+    assert!(!plan.machines[&body.function].budget_blocks.is_empty());
+    assert_eq!(named_storage(body, storage, "seed"), LocalStorage::Poll);
+    assert_eq!(named_storage(body, storage, "total"), LocalStorage::Frame);
+
+    let mut sources = SourceMap::new();
+    sources.add("async.ore", source.to_owned()).unwrap();
+    let ir = codegen::emit(&package, &program, &plan, &sources).unwrap();
+    let poll = ir
+        .split("define private i8 @\"main.count$async$poll\"")
+        .nth(1)
+        .unwrap()
+        .split("\n}\n")
+        .next()
+        .unwrap();
+    assert!(poll.matches("load i16, ptr %context").count() >= 2);
+    assert!(poll.contains("call void @zore_budget_yield"));
+    for block in &plan.machines[&body.function].budget_blocks {
+        assert!(poll.contains(&format!("label %bb{}", block.0)));
+    }
+}
+
+#[test]
 fn calls_and_task_awaits_keep_their_cleanup_edges_and_spans() {
     let (package, program, plan) = plan(
         "package main
