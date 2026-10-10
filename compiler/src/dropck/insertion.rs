@@ -58,6 +58,7 @@ fn insert_body(package: &hir::Package, body: &mut Body) {
                     }
                 }
                 drop @ Statement::Drop { .. } => statements.push(drop),
+                set @ Statement::SetGlobal { .. } => statements.push(set),
             }
         }
         let old_terminator =

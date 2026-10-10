@@ -22,6 +22,7 @@ declare ptr @zore_map_key_at(ptr, i64)
 declare void @zore_string_concat(ptr, ptr, i64, ptr, i64)
 declare void @zore_string_retain(ptr, i64)
 declare void @zore_string_release(ptr, i64)
+declare void @zore_string_pin(ptr, i64)
 declare void @zore_string_from_rune(ptr, i32)
 declare zeroext i1 @zore_string_is_boundary(ptr, i64, i64)
 declare i32 @zore_string_rune_at(ptr, i64, i64)
@@ -67,10 +68,16 @@ declare double @llvm.fabs.f64(double)
 
 impl Module<'_> {
     pub(super) fn entry_shim(&self, entry: FunctionId) -> String {
+        let package = &self.package.name;
         let name = &self.package.function(entry).name;
+        let Some(init) = self.package.init else {
+            return format!(
+                "define void @zore_entry() {{\nentry:\n  call void @\"{package}.{name}\"()\n  ret void\n}}\n"
+            );
+        };
+        let init = &self.package.function(init).name;
         format!(
-            "define void @zore_entry() {{\nentry:\n  call void @\"{}.{name}\"()\n  ret void\n}}\n",
-            self.package.name
+            "define void @zore_entry() {{\nentry:\n  call void @\"{package}.{init}\"()\n  %failed = call zeroext i1 @zore_panic_pending()\n  br i1 %failed, label %done, label %run\nrun:\n  call void @\"{package}.{name}\"()\n  br label %done\ndone:\n  ret void\n}}\n"
         )
     }
 }

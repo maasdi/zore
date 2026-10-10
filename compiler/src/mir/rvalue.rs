@@ -1,6 +1,6 @@
 use super::operand::{Operand, Place};
 use crate::ast::{BinaryOp, UnaryOp};
-use crate::resolve::FunctionId;
+use crate::resolve::{FunctionId, GlobalId};
 use crate::types::{StructId, TypeId};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -15,6 +15,8 @@ pub enum AggregateKind {
 pub enum Rvalue {
     Use(Operand),
     Zero,
+    /// A copy of a package-level `let`, with its own share of any text it holds.
+    Global(GlobalId),
     /// `&&` and `||` are lowered to branches.
     Binary(BinaryOp, Operand, Operand),
     Unary(UnaryOp, Operand),

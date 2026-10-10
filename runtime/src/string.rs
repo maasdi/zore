@@ -11,6 +11,8 @@ struct Buffer {
     capacity: usize,
     used: usize,
     owners: usize,
+    /// Held by a package-level value until the program ends, so it is not a leak.
+    pinned: bool,
 }
 
 struct Registry(BTreeMap<usize, Buffer>);
@@ -66,6 +68,7 @@ fn new_buffer(pieces: &[&[u8]], capacity: usize) -> *mut u8 {
             capacity,
             used,
             owners: 1,
+            pinned: false,
         },
     );
     data
@@ -137,6 +140,14 @@ pub(super) fn release(data: *const u8, len: usize) {
     }
 }
 
+/// A package-level value holds this string for the rest of the program.
+#[unsafe(no_mangle)]
+pub extern "C" fn zore_string_pin(data: *const u8, len: i64) {
+    with_buffer(data, usize::try_from(len).unwrap_or(0), |buffer| {
+        buffer.pinned = true;
+    });
+}
+
 /// Another owner now reads this string.
 #[unsafe(no_mangle)]
 pub extern "C" fn zore_string_retain(data: *const u8, len: i64) {
@@ -150,7 +161,7 @@ pub extern "C" fn zore_string_release(data: *const u8, len: i64) {
 }
 
 pub(super) fn live_buffers() -> usize {
-    owned().len()
+    owned().values().filter(|buffer| !buffer.pinned).count()
 }
 
 pub(super) fn release_all() {

@@ -1,4 +1,5 @@
 mod closure_kind;
+mod globals;
 mod method_value;
 mod spawn;
 
@@ -44,12 +45,21 @@ pub fn check(
         generated_functions: Vec::new(),
         function_values: HashMap::new(),
         resolving_fields: false,
+        global_types: Vec::new(),
+        inferring_result: false,
     };
     checker.closures = checker.res.closures.iter().map(|_| None).collect();
     checker.signatures_and_fields();
+    let mut checked: Vec<Option<Option<hir::Function>>> =
+        (0..checker.res.functions.len()).map(|_| None).collect();
+    checker.global_types = vec![None; checker.res.globals.len()];
+    for index in 0..checker.res.globals.len() {
+        let function = checker.res.globals[index].function;
+        checked[function.0 as usize] = Some(checker.global_function(index));
+    }
     let mut functions = Vec::new();
-    for index in 0..checker.res.functions.len() {
-        functions.push(checker.function(FunctionId(index as u32)));
+    for (index, done) in checked.into_iter().enumerate() {
+        functions.push(done.unwrap_or_else(|| checker.function(FunctionId(index as u32))));
     }
     for index in 0..checker.res.consts.len() {
         checker.eval_const(ConstId(index as u32));
@@ -101,7 +111,19 @@ pub fn check(
         })
         .collect();
     let closures = std::mem::take(&mut checker.closures);
-    let package = hir::Package {
+    let globals: Vec<hir::Global> = checker
+        .res
+        .globals
+        .iter()
+        .zip(&checker.global_types)
+        .map(|(decl, ty)| hir::Global {
+            name: format!("{}{}", checker.symbol_prefix(decl.package), decl.name.text),
+            ty: ty.expect("no diagnostics means every global has a type"),
+            span: decl.name.span,
+        })
+        .collect();
+    let initializers: Vec<FunctionId> = checker.res.globals.iter().map(|g| g.function).collect();
+    let mut package = hir::Package {
         name: checker.res.package.clone(),
         types: std::mem::take(&mut checker.types),
         structs,
@@ -112,7 +134,13 @@ pub fn check(
             .chain(std::mem::take(&mut checker.generated_functions))
             .collect(),
         entry,
+        globals,
+        init: None,
     };
+    let diagnostics = globals::check(&mut package, &initializers);
+    if !diagnostics.is_empty() {
+        return (None, diagnostics);
+    }
     (Some(package), checker.diagnostics)
 }
 
@@ -168,6 +196,10 @@ struct Checker<'a> {
     generated_functions: Vec<hir::Function>,
     function_values: HashMap<FunctionId, FunctionId>,
     resolving_fields: bool,
+    /// Indexed like `res.globals`; set as each initializer is checked.
+    global_types: Vec<Option<TypeId>>,
+    /// The `return` of an initializer without a declared type sets its type.
+    inferring_result: bool,
 }
 
 struct BodyState {
@@ -686,6 +718,27 @@ impl<'a> Checker<'a> {
                 None
             }
         }
+    }
+
+    /// Checks the function that computes a package-level `let`, inferring its type if none is written.
+    fn global_function(&mut self, index: usize) -> Option<hir::Function> {
+        let decl = &self.res.globals[index];
+        let (id, declared) = (decl.function, decl.ty.is_some());
+        self.inferring_result = !declared;
+        let mut function = self.function(id);
+        self.inferring_result = false;
+        let ty = if declared {
+            self.signatures[id.0 as usize]
+                .as_ref()
+                .and_then(|s| s.results.first().copied())
+        } else {
+            self.results.first().copied()
+        };
+        if let Some(function) = &mut function {
+            function.results = ty.into_iter().collect();
+        }
+        self.global_types[index] = ty;
+        function
     }
 
     fn function(&mut self, id: FunctionId) -> Option<hir::Function> {
@@ -1685,6 +1738,17 @@ impl<'a> Checker<'a> {
                 ConstValue::Typed(ty, c) => Some(Value::Typed(typed(ExprKind::Const(c), ty, span))),
             },
             Res::Function(id) => self.function_value(id, span),
+            Res::Global(id) => {
+                let Some(ty) = self.global_types[id.0 as usize] else {
+                    let message = format!("`{name}` is used before it is initialized");
+                    self.diagnostics
+                        .push(Diagnostic::new(Severity::Error, message, span).note(
+                        "an initializer can use only package-level values initialized before it",
+                    ));
+                    return None;
+                };
+                Some(Value::Typed(typed(ExprKind::Global(id), ty, span)))
+            }
             Res::Struct(_) | Res::Primitive(_) => {
                 self.error(format!("`{name}` is a type, not a value"), span);
                 None
@@ -2162,7 +2226,7 @@ impl<'a> Checker<'a> {
                 self.report_arg_errors(args);
                 None
             }
-            Some(Res::Local(_) | Res::Const(_)) => {
+            Some(Res::Local(_) | Res::Const(_) | Res::Global(_)) => {
                 self.error(format!("`{name}` is not a function"), callee.span);
                 self.report_arg_errors(args);
                 None
@@ -4006,6 +4070,7 @@ impl<'a> Checker<'a> {
                     let what = match res {
                         Res::Const(_) => "a constant",
                         Res::Function(_) => "a function",
+                        Res::Global(_) => "a package-level `let` and cannot change",
                         _ => "this name",
                     };
                     self.error(
@@ -4335,6 +4400,16 @@ impl<'a> Checker<'a> {
     }
 
     fn return_stmt(&mut self, values: &[ast::Expr], span: Span) -> Option<hir::StmtKind> {
+        if self.inferring_result
+            && let [value] = values
+        {
+            self.inferring_result = false;
+            let value = self.expr(value, None)?;
+            let expr = self.with_default_type(value)?;
+            let expr = self.single_value(expr)?;
+            self.results = vec![expr.ty()];
+            return Some(hir::StmtKind::Return(vec![expr]));
+        }
         let results = self.results.clone();
         if values.is_empty() {
             if !results.is_empty() {
@@ -4423,7 +4498,10 @@ enum MutableUse {
 /// In evaluation order.
 fn subexpressions(expr: &hir::Expr) -> Vec<&hir::Expr> {
     match &expr.kind {
-        ExprKind::Const(_) | ExprKind::Local(_) | ExprKind::Closure { .. } => Vec::new(),
+        ExprKind::Const(_)
+        | ExprKind::Local(_)
+        | ExprKind::Global(_)
+        | ExprKind::Closure { .. } => Vec::new(),
         ExprKind::Field { base, .. } => vec![base],
         ExprKind::Index { base, index } => vec![base, index],
         ExprKind::Slice {

@@ -12,6 +12,9 @@ once it does.
 - Locked the program entry point: `package main` with exactly one
   `func main()`; exit status 0 on return, nonzero after a panic (§3.19).
 - Locked `println`: one printable argument, one line per call (§37.1).
+- Locked package-level `let`: immutable Copy values computed once before
+  `main`, in dependency and source order, with use of later values rejected
+  (§3.21, Q41).
 - Locked untyped constants following Go's model: integer and float kinds,
   exact arithmetic, representability rules, and at least 256-bit precision
   (§6.7).

@@ -77,6 +77,15 @@ pub fn emit(
         clone_helpers: HashMap::new(),
         type_helper_code: String::new(),
     };
+    for (index, global) in package.globals.iter().enumerate() {
+        let symbol = module.global_symbol(crate::resolve::GlobalId(index as u32));
+        let ty = module.ty(global.ty);
+        writeln!(
+            module.globals,
+            "{symbol} = internal global {ty} zeroinitializer"
+        )
+        .unwrap();
+    }
     let mut functions = String::new();
     for body in &program.bodies {
         functions.push_str(&module.function(body));
@@ -214,6 +223,11 @@ impl Module<'_> {
             self.package.function(closure).name
         )
     }
+    pub(super) fn global_symbol(&self, global: crate::resolve::GlobalId) -> String {
+        let name = &self.package.globals[global.0 as usize].name;
+        format!("@\"{}.let.{name}\"", self.package.name)
+    }
+
     pub(super) fn string_global(&mut self, bytes: &[u8]) -> String {
         if let Some(name) = self.strings.get(bytes) {
             return name.clone();
@@ -1040,21 +1054,27 @@ impl FunctionBuilder<'_, '_> {
 
     /// Every text inside the value at `address` gains an owner.
     pub(super) fn retain_at(&mut self, address: &str, ty: TypeId) {
+        self.share_at(address, ty, "zore_string_retain");
+    }
+
+    /// Every text inside the value at `address` is kept for the rest of the program.
+    fn pin_at(&mut self, address: &str, ty: TypeId) {
+        self.share_at(address, ty, "zore_string_pin");
+    }
+
+    /// Calls `text_call` on each string or error message inside the value at `address`.
+    fn share_at(&mut self, address: &str, ty: TypeId, text_call: &str) {
         if !self.module.package.holds_shared(ty) {
             return;
         }
         match self.module.package.types.kind(ty) {
             TypeKind::String => {
                 let (data, len) = self.load_text(address, ty);
-                self.line(format!(
-                    "call void @zore_string_retain(ptr {data}, i64 {len})"
-                ));
+                self.line(format!("call void @{text_call}(ptr {data}, i64 {len})"));
             }
             TypeKind::Error => {
                 let (data, len) = self.load_text(address, ty);
-                self.line(format!(
-                    "call void @zore_string_retain(ptr {data}, i64 {len})"
-                ));
+                self.line(format!("call void @{text_call}(ptr {data}, i64 {len})"));
             }
             TypeKind::Channel { .. } => self.call_on_channel("zore_channel_retain", address),
             TypeKind::Mutex { .. } => self.call_on_channel("zore_mutex_retain", address),
@@ -1076,7 +1096,7 @@ impl FunctionBuilder<'_, '_> {
                     self.line(format!(
                         "{child} = getelementptr inbounds {struct_ty}, ptr {address}, i32 0, i32 {index}"
                     ));
-                    self.retain_at(&child, field);
+                    self.share_at(&child, field, text_call);
                 }
             }
             TypeKind::Array { element, size } => {
@@ -1086,7 +1106,7 @@ impl FunctionBuilder<'_, '_> {
                     "{first} = getelementptr inbounds {array_ty}, ptr {address}, i64 0, i64 0"
                 ));
                 self.for_each_element(&first, element, &size.to_string(), |this, slot| {
-                    this.retain_at(slot, element);
+                    this.share_at(slot, element, text_call);
                 });
             }
             _ => unreachable!("only Copy values hold text"),
@@ -1235,6 +1255,14 @@ impl FunctionBuilder<'_, '_> {
                 }
             }
             mir::Statement::EndScope(_) => unreachable!("drop insertion replaces scope markers"),
+            mir::Statement::SetGlobal { global, value, .. } => {
+                let ty = self.module.package.globals[global.0 as usize].ty;
+                let symbol = self.module.global_symbol(*global);
+                let value = self.owned_value(value);
+                let ty_text = self.ty(ty);
+                self.line(format!("store {ty_text} {value}, ptr {symbol}"));
+                self.pin_at(&symbol, ty);
+            }
         }
     }
 
@@ -1245,6 +1273,15 @@ impl FunctionBuilder<'_, '_> {
         }
         let result_ty = self.place_ty(place);
         let value = match rvalue {
+            Rvalue::Global(global) => {
+                let ty = self.module.package.globals[global.0 as usize].ty;
+                let symbol = self.module.global_symbol(*global);
+                let ty_text = self.ty(ty);
+                let value = self.fresh();
+                self.line(format!("{value} = load {ty_text}, ptr {symbol}"));
+                self.retain_at(&symbol, ty);
+                value
+            }
             Rvalue::Use(operand) => self.owned_value(operand),
             Rvalue::Zero => "zeroinitializer".into(),
             Rvalue::Binary(op, lhs, rhs) => self.binary(*op, lhs, rhs, span),

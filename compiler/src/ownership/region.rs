@@ -347,7 +347,7 @@ impl<'a> Analysis<'a> {
                         state[local.0 as usize].clear();
                     }
                 }
-                Statement::Drop { .. } => {}
+                Statement::Drop { .. } | Statement::SetGlobal { .. } => {}
             }
         }
         let position = block.statements.len();
@@ -1230,6 +1230,7 @@ impl<'a> Analysis<'a> {
                 loans
             }
             Rvalue::Zero
+            | Rvalue::Global(_)
             | Rvalue::Binary(..)
             | Rvalue::Unary(..)
             | Rvalue::Convert(..)
@@ -1276,7 +1277,7 @@ impl<'a> Analysis<'a> {
 
     fn rvalue_accesses(&self, rvalue: &Rvalue, span: Span, out: &mut Vec<Access>) {
         match rvalue {
-            Rvalue::Zero => {}
+            Rvalue::Zero | Rvalue::Global(_) => {}
             Rvalue::Use(operand)
             | Rvalue::Spawn(operand)
             | Rvalue::Unary(_, operand)
@@ -1713,6 +1714,7 @@ impl Liveness {
                 }
             }
             Statement::Drop { .. } => {}
+            Statement::SetGlobal { value, .. } => Self::use_operand(value, live),
         }
     }
 
@@ -1802,7 +1804,7 @@ impl Liveness {
 
     fn use_rvalue(rvalue: &Rvalue, live: &mut LiveSet) {
         match rvalue {
-            Rvalue::Zero => {}
+            Rvalue::Zero | Rvalue::Global(_) => {}
             Rvalue::Use(operand)
             | Rvalue::Spawn(operand)
             | Rvalue::Unary(_, operand)

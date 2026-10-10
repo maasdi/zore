@@ -3,7 +3,7 @@ use crate::diagnostic::Diagnostic;
 use crate::hir;
 use crate::mir;
 use crate::ownership::{self, error_use};
-use crate::resolve::resolve;
+use crate::resolve::{initializers, resolve};
 use crate::source::{Layered, SourceFile, Sources};
 
 #[derive(Debug)]
@@ -27,7 +27,8 @@ pub fn check_file(file: &SourceFile) -> Checked {
 /// `sources` holds the text of the project's own files.
 pub fn check_project(project: &Project, sources: &dyn Sources) -> Checked {
     let units = project.units();
-    let resolution = resolve(&units);
+    let initializers = initializers(&units);
+    let resolution = resolve(&units, &initializers);
     let layered = Layered(sources, project.std_sources());
     let (mut package, mut diagnostics) = hir::lower::check(resolution, &layered);
     if let Some(checked) = &package {

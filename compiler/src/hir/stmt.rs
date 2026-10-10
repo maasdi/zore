@@ -1,6 +1,6 @@
 use super::expr::{Expr, Place};
 use crate::ast::BinaryOp;
-use crate::resolve::LocalId;
+use crate::resolve::{GlobalId, LocalId};
 use crate::source::Span;
 
 #[derive(Debug)]
@@ -40,6 +40,11 @@ pub enum StmtKind {
         value: Expr,
     },
     Expr(Expr),
+    /// Stores a package-level `let`'s initial value; only the generated initializer does this.
+    SetGlobal {
+        global: GlobalId,
+        value: Expr,
+    },
     Return(Vec<Expr>),
     Break,
     Continue,

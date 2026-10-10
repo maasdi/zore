@@ -1,5 +1,5 @@
 use crate::ast::{BinaryOp, UnaryOp};
-use crate::resolve::{FieldId, FunctionId, LocalId};
+use crate::resolve::{FieldId, FunctionId, GlobalId, LocalId};
 use crate::source::Span;
 use crate::types::{StructId, TypeId};
 
@@ -66,6 +66,8 @@ pub enum ExprKind {
         function: FunctionId,
         args: Vec<Expr>,
     },
+    /// Reads a copy of a package-level `let`.
+    Global(GlobalId),
     /// The callee is evaluated first and used exclusively; a call-once callee is consumed.
     CallValue {
         callee: Box<Expr>,

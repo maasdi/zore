@@ -1239,8 +1239,8 @@ fn unsupported_features_are_never_accepted() {
             "no standard package `zore/fmt`",
         ),
         (
-            program("let top = 1"),
-            "package-level `let` and `var` are not supported",
+            program("var top = 1"),
+            "package-level `var` is not supported",
         ),
         (
             program("func f(xs Array) {}"),
@@ -4013,4 +4013,73 @@ fn an_unapproved_copy_call_is_an_unknown_name() {
     accepts(&body(
         "let values = Array<int>{1}\nlet other = clone(values)\nprintln(other.len())",
     ));
+}
+
+#[test]
+fn package_level_lets_are_typed_ordered_and_immutable() {
+    accepts(&program(
+        "type Point struct { X int; Y string }
+let EOF = error(\"EOF\")
+let Limit int = 3
+let Label = \"limit \" + label(Limit)
+let Origin = Point{X: Limit, Y: Label}
+let Primes = [int; 3]{2, 3, 5}
+func label(n int) string { if n > 0 { return \"some\" }; return \"none\" }
+func use() int {
+    let err error = EOF
+    println(err == nil)
+    println(Origin.Y + Label)
+    return Limit + Primes[0]
+}",
+    ));
+    for (decls, message) in [
+        (
+            "let Early = Late + 1\nlet Late = 2",
+            "`Late` is used before it is initialized",
+        ),
+        (
+            "let Itself int = Itself + 1",
+            "`Itself` is used before it is initialized",
+        ),
+        (
+            "let Through = helper()\nlet After = 5\nfunc helper() int { return After }",
+            "`Through` is computed from `After`, which is initialized after it",
+        ),
+        (
+            "let Spawned = start()\nlet After = 5\nfunc start() int { let t = go read(); return t.wait() }\nfunc read() int { return After }",
+            "`Spawned` is computed from `After`",
+        ),
+        (
+            "let Loop = again()\nfunc again() int { return Loop }",
+            "`Loop` is used to compute itself",
+        ),
+        ("var Counter = 0", "package-level `var` is not supported"),
+        (
+            "func pair() (int, int) { return 1, 2 }\nlet a, b = pair()",
+            "a package-level `let` declares exactly one name",
+        ),
+        (
+            "let Ch = channel<int>(1)",
+            "a package-level `let` cannot hold a `channel<int64>`",
+        ),
+        (
+            "let Items = Array<int>{1}",
+            "a package-level `let` cannot hold a `Array<int64>`",
+        ),
+        (
+            "func f() int { return 1 }\nlet F = f",
+            "cannot hold a `func() int64`",
+        ),
+        ("let Lock = mutex(0)", "cannot hold a `Mutex<int64>`"),
+        (
+            "let Limit = 3\nfunc f() { Limit = 4 }",
+            "cannot assign to `Limit`, which is a package-level `let` and cannot change",
+        ),
+        (
+            "let Limit = 3\nfunc f() { Limit() }",
+            "`Limit` is not a function",
+        ),
+    ] {
+        rejects(&program(decls), message);
+    }
 }

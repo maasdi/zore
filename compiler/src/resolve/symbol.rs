@@ -1,4 +1,4 @@
-use super::ids::{ConstId, FunctionId, LocalId};
+use super::ids::{ConstId, FunctionId, GlobalId, LocalId};
 use crate::ast::{self, ParamMode};
 use crate::source::Span;
 use crate::types::{StructId, TypeId, TypeStore};
@@ -9,6 +9,8 @@ pub enum Res {
     Const(ConstId),
     Function(FunctionId),
     Struct(StructId),
+    /// A package-level `let`.
+    Global(GlobalId),
     Primitive(TypeId),
     /// An import's name; valid only as the qualifier of `package.Name`.
     Package(usize),
@@ -19,6 +21,14 @@ pub enum Res {
     NewMutex,
     /// A predeclared name whose feature is not supported yet; uses are diagnosed.
     Unsupported,
+}
+
+pub struct GlobalDecl<'a> {
+    pub name: &'a ast::Name,
+    pub ty: Option<&'a ast::Type>,
+    /// Returns the initial value.
+    pub function: FunctionId,
+    pub package: usize,
 }
 
 pub struct ConstDecl<'a> {

@@ -1001,8 +1001,8 @@ type position (`var c shapes.Circle`). The rules are:
 - *No cycles.* A package that imports itself, directly or through other
   packages, is an error that lists the chain.
 - *Not in the MVP.* Import aliases, dot imports, blank imports, grouped
-  imports, package-level `let`/`var`, `init` functions, and imports of other
-  projects.
+  imports, package-level `var`, `init` functions, and imports of other
+  projects. Package-level `let` is specified in §3.21.
 
 Each package is checked once, however many files import it. Package-level
 constants are evaluated as in §5.3 and may be used across packages when
@@ -1019,6 +1019,62 @@ file its own import table; check visibility at each qualified use and field or
 method access; report cycles during loading; give each declaration a symbol
 that includes its package path so equal names in different packages never
 collide in generated code. Pending conformance cases:
+`tests/conformance/packages.md`.
+
+## 3.21 Package-level values — LOCKED
+
+A package may declare values outside any function with `let`:
+
+```ore
+let EOF = error("EOF")
+let DefaultPort int = 8080
+let Banner = "zore " + version()
+```
+
+The rules are:
+
+- *One name, one value.* Each declaration names exactly one value and has an
+  initializer; the type may be written or inferred, as for a local `let`
+  (§5.4). Package-level `var` and multiple names are errors.
+- *Never changes.* A package-level value cannot be assigned, compound-assigned,
+  or passed to a `mut` parameter. Reading it gives a copy.
+- *Copy types only.* Its type must be Copy (§10.2) and must not contain a slice,
+  a function value, a `Task`, a `channel`, or a `Mutex`. Booleans, numbers,
+  runes, strings, `error`, named types (§8.5), and structs and fixed arrays of
+  those are allowed.
+- *Names.* A package-level value is in package scope with the package's
+  functions, types, and constants, and is exported by the usual rule (§4.1):
+  `config.Port` reads another package's exported value.
+- *Initialization order.* Before `main` runs, every value is computed once, in
+  order: the packages a package imports come first, and within a package the
+  declarations run in the order of the package's files and their text. An
+  initializer may call functions, start tasks, and use other values, but
+  everything it reaches, directly or through the functions it calls or starts,
+  may read only package-level values initialized before it. Anything else is a
+  compile-time error that names the later value.
+- *Failure.* A panic in an initializer ends the program the same way a panic in
+  `main` does (§3.19, §15.4); `main` does not run.
+
+```ore
+let Limit = 3
+let Squares = [int; 2]{Limit, Limit * Limit}   // uses an earlier value
+
+let Early = Late + 1   // invalid: Late is initialized after Early
+let Late = 2
+var Counter = 0        // invalid: package-level values cannot change
+let Ready = channel<bool>()   // invalid: channels are not allowed
+```
+
+Ownership, error, and async implications: package-level values are Copy and
+immutable once initialized, so any task may read them without locking. A task
+started by an initializer may read only values initialized before that
+initializer. Text held by a package-level value lives until the program ends.
+
+Compiler impact: give each value a function that computes it and a global
+storage slot; check each initializer like a function body with an inferred
+result; reject later values reached through the call graph, including closures
+and spawned tasks; run the initializers in order from the entry point before
+`main`, stopping on a panic. Pending conformance cases:
 `tests/conformance/packages.md`.
 
 ---

@@ -20,6 +20,17 @@ pub struct Package {
     pub structs: Vec<Struct>,
     pub functions: Vec<Function>,
     pub entry: Option<FunctionId>,
+    /// In initialization order.
+    pub globals: Vec<Global>,
+    /// Sets every global before the entry point runs.
+    pub init: Option<FunctionId>,
+}
+
+#[derive(Debug)]
+pub struct Global {
+    pub name: String,
+    pub ty: TypeId,
+    pub span: Span,
 }
 
 impl Package {
@@ -84,6 +95,21 @@ impl Package {
         self.contains(ty, &|kind| {
             matches!(kind, TypeKind::Slice { .. } | TypeKind::Func(_))
         })
+    }
+
+    /// Package-level `let` values hold no views, tasks, channels, or mutexes.
+    pub fn storable_globally(&self, ty: TypeId) -> bool {
+        self.is_copy(ty)
+            && !self.contains(ty, &|kind| {
+                matches!(
+                    kind,
+                    TypeKind::Slice { .. }
+                        | TypeKind::Func(_)
+                        | TypeKind::Task(_)
+                        | TypeKind::Channel { .. }
+                        | TypeKind::Mutex { .. }
+                )
+            })
     }
 
     pub fn contains_mut_slice_of_views(&self, ty: TypeId) -> bool {

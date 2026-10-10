@@ -7462,3 +7462,116 @@ func main() {
         "main done\n",
     );
 }
+
+#[test]
+fn package_level_lets_are_initialized_once_in_order_before_main() {
+    prints(
+        "package main
+
+import \"zore/strconv\"
+
+type Point struct {
+    X int
+    Label string
+}
+
+let EOF = error(\"EOF\")
+let Limit int = trace(\"Limit\", 3)
+let Greeting = \"hello \" + strconv.Itoa(Limit)
+let Origin = Point{X: trace(\"Origin\", Limit * Limit), Label: Greeting}
+
+func trace(name string, value int) int {
+    println(\"init \" + name)
+    return value
+}
+
+func read(n int) error {
+    if n >= Limit {
+        return EOF
+    }
+    return nil
+}
+
+async func later() string {
+    return Greeting + \"!\"
+}
+
+func main() {
+    println(\"main\")
+    var count = 0
+    for read(count) == nil {
+        count += 1
+    }
+    println(count)
+    println(read(9) == error(\"EOF\"))
+    println(Origin.X)
+    println(Origin.Label)
+    let t = go later()
+    println(t.wait())
+}
+",
+        "init Limit\ninit Origin\nmain\n3\ntrue\n9\nhello 3\nhello 3!\n",
+    );
+    panics(
+        "package main
+
+let First int = pick()
+
+func pick() int {
+    println(\"computing\")
+    let zero = 0
+    return 1 / zero
+}
+
+func main() {
+    println(\"main\")
+}
+",
+        "division by zero",
+        "computing\n",
+    );
+}
+
+#[test]
+fn imported_package_lets_are_initialized_before_the_importer() {
+    let dir = TempDir::new().unwrap();
+    std::fs::write(
+        dir.path().join("zore.toml"),
+        "name = \"myapp\"\nversion = \"0.1.0\"\n",
+    )
+    .unwrap();
+    std::fs::create_dir_all(dir.path().join("config")).unwrap();
+    std::fs::write(
+        dir.path().join("config/config.ore"),
+        "package config
+
+let Name = Announce(\"config\")
+let Size int = 4
+
+func Announce(name string) string {
+    println(\"init \" + name)
+    return name
+}
+",
+    )
+    .unwrap();
+    let main = dir.path().join("main.ore");
+    std::fs::write(
+        &main,
+        "package main
+
+import \"myapp/config\"
+
+let Title = config.Announce(\"main\") + \"/\" + config.Name
+
+func main() {
+    println(Title)
+    println(config.Size)
+}
+",
+    )
+    .unwrap();
+    let output = zore().arg("run").arg(&main).output().unwrap();
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    assert_eq!(stdout(&output), "init config\ninit main\nmain/config\n4\n");
+}
