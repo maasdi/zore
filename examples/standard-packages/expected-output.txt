@@ -1,7 +1,11 @@
 ZORE STANDARD PACKAGES
 true
 a+b+c
+lang is zore
 3
 one, two, three
+OTT
 sum is 42
+ff
 true
+"tab\there"

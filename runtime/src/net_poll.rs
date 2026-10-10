@@ -1,77 +1,51 @@
 use super::*;
+use crate::reactor::Pollable;
 use crate::waiter::Waiter;
+use std::io::{Read, Write};
 
 pub struct Operation {
     handle: Option<Arc<Handle>>,
     kind: Kind,
-    pending: Vec<u8>,
     buffer: Vec<u8>,
     waiting: Option<Arc<reactor::Operation>>,
-    deadline: Option<Instant>,
 }
 
 enum Kind {
     Accept,
-    Read {
-        max: Option<usize>,
-        bytes: bool,
-    },
-    Write {
-        data: Vec<u8>,
-        sent: usize,
-        bytes: bool,
-    },
+    Read,
+    Write { data: Vec<u8>, sent: usize },
 }
 
 enum Output {
     Value(ValueError),
-    Text(StringError),
     Bytes(ByteArrayError),
-    Error(ErrorOut),
 }
 
 impl Operation {
-    fn new(id: i64, kind: Kind) -> Self {
-        let handle = lookup(id);
-        let mut pending = Vec::new();
-        let mut buffer = Vec::new();
-        if let Kind::Read { max: Some(max), .. } = kind
-            && let Some(Handle::Connection(connection)) = handle.as_deref()
-        {
-            pending = std::mem::take(
-                &mut *connection
-                    .pending
-                    .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner()),
-            );
-            buffer.resize(max, 0);
-        }
+    fn new(id: i64, kind: Kind, max: usize) -> Self {
         Self {
-            handle,
+            handle: lookup(id),
             kind,
-            pending,
-            buffer,
+            buffer: vec![0; max],
             waiting: None,
-            deadline: None,
         }
     }
 
     fn name(&self) -> &'static str {
         match self.kind {
             Kind::Accept => "net.Accept",
-            Kind::Read { bytes: false, .. } => "net.Read",
-            Kind::Read { bytes: true, .. } => "net.ReadBytes",
-            Kind::Write { bytes: false, .. } => "net.Write",
-            Kind::Write { bytes: true, .. } => "net.WriteBytes",
+            Kind::Read => "net.Read",
+            Kind::Write { .. } => "net.Write",
         }
     }
 
     fn failed(&self, message: &str) -> Output {
         match self.kind {
             Kind::Accept => Output::Value(ValueError::failed_text(message)),
-            Kind::Read { bytes: false, .. } => Output::Text(StringError::failed(message)),
-            Kind::Read { bytes: true, .. } => Output::Bytes(ByteArrayError::failed(message)),
-            Kind::Write { .. } => Output::Error(ErrorOut::failed(message)),
+            Kind::Read => Output::Bytes(ByteArrayError::failed(message)),
+            Kind::Write { sent, .. } => {
+                Output::Value(ValueError::failed_with(sent as i64, message))
+            }
         }
     }
 
@@ -84,22 +58,11 @@ impl Operation {
             return None;
         }
         self.waiting = None;
-        if matches!(self.kind, Kind::Read { max: None, .. }) {
-            return Some(self.failed(&format!("{}: max must be positive", self.name())));
-        }
         let Some(handle) = self.handle.clone() else {
-            return Some(self.failed(&format!(
-                "{}: not an open {}",
-                self.name(),
-                if matches!(self.kind, Kind::Accept) {
-                    "listener"
-                } else {
-                    "connection"
-                }
-            )));
+            return Some(self.not_open());
         };
         loop {
-            let (fd, write, timeout, attempted) = match (&mut self.kind, handle.as_ref()) {
+            let (fd, write, deadline, attempted) = match (&mut self.kind, handle.as_ref()) {
                 (Kind::Accept, Handle::Listener(listener)) => {
                     let result = listener
                         .socket
@@ -111,67 +74,32 @@ impl Operation {
                     (
                         listener.socket.descriptor(),
                         false,
-                        &listener.timeout,
+                        &listener.deadline,
                         result,
                     )
                 }
-                (
-                    Kind::Read {
-                        max: Some(max),
-                        bytes,
-                    },
-                    Handle::Connection(connection),
-                ) => {
-                    if *bytes && !self.pending.is_empty() {
-                        let count = (*max).min(self.pending.len());
-                        let output = Output::Bytes(ByteArrayError::ok(&self.pending[..count]));
-                        self.pending.drain(..count);
-                        return Some(output);
+                (Kind::Read, Handle::Connection(connection)) => {
+                    if self.buffer.is_empty() {
+                        return Some(Output::Bytes(ByteArrayError::ok(&[])));
                     }
                     let mut stream = &connection.stream;
                     let result = match stream.read(&mut self.buffer) {
-                        Ok(0) if self.pending.is_empty() => return Some(self.failed("EOF")),
-                        Ok(0) => {
-                            self.pending.clear();
-                            return Some(self.failed("net.Read: invalid UTF-8"));
-                        }
-                        Ok(count) if *bytes => Ok(Some(Output::Bytes(ByteArrayError::ok(
+                        Ok(0) => return Some(self.failed("EOF")),
+                        Ok(count) => Ok(Some(Output::Bytes(ByteArrayError::ok(
                             &self.buffer[..count],
                         )))),
-                        Ok(count) => {
-                            self.pending.extend_from_slice(&self.buffer[..count]);
-                            match std::str::from_utf8(&self.pending) {
-                                Ok(text) => {
-                                    let output = Output::Text(StringError::ok(text));
-                                    self.pending.clear();
-                                    Ok(Some(output))
-                                }
-                                Err(error) if error.error_len().is_some() => {
-                                    self.pending.clear();
-                                    return Some(self.failed("net.Read: invalid UTF-8"));
-                                }
-                                Err(error) if error.valid_up_to() > 0 => {
-                                    let count = error.valid_up_to();
-                                    let text = std::str::from_utf8(&self.pending[..count]).unwrap();
-                                    let output = Output::Text(StringError::ok(text));
-                                    self.pending.drain(..count);
-                                    Ok(Some(output))
-                                }
-                                Err(_) => Ok(None),
-                            }
-                        }
                         Err(error) => Err(error),
                     };
                     (
                         connection.stream.descriptor(),
                         false,
-                        &connection.timeout,
+                        &connection.read_deadline,
                         result,
                     )
                 }
-                (Kind::Write { data, sent, .. }, Handle::Connection(connection)) => {
+                (Kind::Write { data, sent }, Handle::Connection(connection)) => {
                     if *sent == data.len() {
-                        return Some(Output::Error(ErrorOut::ok()));
+                        return Some(Output::Value(ValueError::ok(*sent as i64)));
                     }
                     let mut stream = &connection.stream;
                     let result = match stream.write(&data[*sent..]) {
@@ -185,42 +113,22 @@ impl Operation {
                     (
                         connection.stream.descriptor(),
                         true,
-                        &connection.timeout,
+                        &connection.write_deadline,
                         result,
                     )
                 }
-                _ => {
-                    return Some(self.failed(&format!(
-                        "{}: not an open {}",
-                        self.name(),
-                        if matches!(self.kind, Kind::Accept) {
-                            "listener"
-                        } else {
-                            "connection"
-                        }
-                    )));
-                }
+                _ => return Some(self.not_open()),
             };
             match attempted {
                 Ok(Some(output)) => return Some(output),
-                Ok(None) => {
-                    self.deadline = None;
-                }
+                Ok(None) => {}
                 Err(error) if error.kind() == ErrorKind::Interrupted => {}
                 Err(error) if error.kind() == ErrorKind::WouldBlock => {
-                    if self.deadline.is_none() {
-                        self.deadline = u64::try_from(timeout.load(Ordering::SeqCst))
-                            .ok()
-                            .filter(|&ms| ms > 0)
-                            .and_then(|ms| Instant::now().checked_add(Duration::from_millis(ms)));
-                    }
-                    if self
-                        .deadline
-                        .is_some_and(|deadline| Instant::now() >= deadline)
-                    {
+                    let deadline = deadline_of(deadline);
+                    if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
                         return Some(self.failed(&format!("{}: timed out", self.name())));
                     }
-                    self.waiting = Some(reactor::start_wait_fd(fd, write, self.deadline, waiter));
+                    self.waiting = Some(reactor::start_wait_fd(fd, write, deadline, waiter));
                     return None;
                 }
                 Err(error) => return Some(self.failed(&format!("{}: {error}", self.name()))),
@@ -228,73 +136,53 @@ impl Operation {
         }
     }
 
-    fn restore_pending(&mut self) {
-        if matches!(self.kind, Kind::Read { max: Some(_), .. })
-            && let Some(Handle::Connection(connection)) = self.handle.as_deref()
-        {
-            *connection
-                .pending
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner()) =
-                std::mem::take(&mut self.pending);
-        }
+    fn not_open(&self) -> Output {
+        self.failed(&format!(
+            "{}: not an open {}",
+            self.name(),
+            if matches!(self.kind, Kind::Accept) {
+                "listener"
+            } else {
+                "connection"
+            }
+        ))
     }
 }
 
-fn blocking(id: i64, kind: Kind) -> Output {
-    let mut operation = Operation::new(id, kind);
+fn blocking(mut operation: Operation) -> Output {
     loop {
         let slot = Arc::new(crate::slot::Slot::default());
         if let Some(output) = operation.poll(Arc::clone(&slot).into()) {
-            operation.restore_pending();
             return output;
         }
         slot.park();
     }
 }
 
+fn max_of(max: i64) -> usize {
+    usize::try_from(max).unwrap_or(0)
+}
+
 pub(super) fn accept(id: i64) -> ValueError {
-    let Output::Value(output) = blocking(id, Kind::Accept) else {
+    let Output::Value(output) = blocking(Operation::new(id, Kind::Accept, 0)) else {
         unreachable!()
     };
     output
 }
 
-pub(super) fn read(id: i64, max: i64) -> StringError {
-    let Output::Text(output) = blocking(
-        id,
-        Kind::Read {
-            max: usize::try_from(max).ok().filter(|&max| max > 0),
-            bytes: false,
-        },
-    ) else {
+pub(super) fn read(id: i64, max: i64) -> ByteArrayError {
+    let Output::Bytes(output) = blocking(Operation::new(id, Kind::Read, max_of(max))) else {
         unreachable!()
     };
     output
 }
 
-pub(super) fn read_bytes(id: i64, max: i64) -> ByteArrayError {
-    let Output::Bytes(output) = blocking(
-        id,
-        Kind::Read {
-            max: usize::try_from(max).ok().filter(|&max| max > 0),
-            bytes: true,
-        },
-    ) else {
-        unreachable!()
+pub(super) fn write(id: i64, data: &[u8]) -> ValueError {
+    let kind = Kind::Write {
+        data: data.to_vec(),
+        sent: 0,
     };
-    output
-}
-
-pub(super) fn write(id: i64, data: &[u8], bytes: bool) -> ErrorOut {
-    let Output::Error(output) = blocking(
-        id,
-        Kind::Write {
-            data: data.to_vec(),
-            sent: 0,
-            bytes,
-        },
-    ) else {
+    let Output::Value(output) = blocking(Operation::new(id, kind, 0)) else {
         unreachable!()
     };
     output
@@ -307,7 +195,7 @@ pub unsafe extern "C" fn zore_native_net_accept_start(
     id: i64,
     _context: *mut crate::scheduler::Context,
 ) -> *mut Operation {
-    Box::into_raw(Box::new(Operation::new(id, Kind::Accept)))
+    Box::into_raw(Box::new(Operation::new(id, Kind::Accept, 0)))
 }
 
 /// # Safety
@@ -318,30 +206,7 @@ pub unsafe extern "C" fn zore_native_net_read_start(
     max: i64,
     _context: *mut crate::scheduler::Context,
 ) -> *mut Operation {
-    Box::into_raw(Box::new(Operation::new(
-        id,
-        Kind::Read {
-            max: usize::try_from(max).ok().filter(|&max| max > 0),
-            bytes: false,
-        },
-    )))
-}
-
-/// # Safety
-/// `context` must be valid for this call; the returned operation has one serial poller.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn zore_native_net_read_bytes_start(
-    id: i64,
-    max: i64,
-    _context: *mut crate::scheduler::Context,
-) -> *mut Operation {
-    Box::into_raw(Box::new(Operation::new(
-        id,
-        Kind::Read {
-            max: usize::try_from(max).ok().filter(|&max| max > 0),
-            bytes: true,
-        },
-    )))
+    Box::into_raw(Box::new(Operation::new(id, Kind::Read, max_of(max))))
 }
 
 /// # Safety
@@ -356,31 +221,8 @@ pub unsafe extern "C" fn zore_native_net_write_start(
     let data = unsafe { crate::bytes(data, len) }.to_vec();
     Box::into_raw(Box::new(Operation::new(
         id,
-        Kind::Write {
-            data,
-            sent: 0,
-            bytes: false,
-        },
-    )))
-}
-
-/// # Safety
-/// `data` holds `len` readable bytes and context is live for this call.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn zore_native_net_write_bytes_start(
-    id: i64,
-    data: *const u8,
-    len: i64,
-    _context: *mut crate::scheduler::Context,
-) -> *mut Operation {
-    let data = unsafe { crate::bytes(data, len) }.to_vec();
-    Box::into_raw(Box::new(Operation::new(
-        id,
-        Kind::Write {
-            data,
-            sent: 0,
-            bytes: true,
-        },
+        Kind::Write { data, sent: 0 },
+        0,
     )))
 }
 
@@ -397,13 +239,10 @@ pub unsafe extern "C" fn zore_native_net_poll(
     let Some(result) = waiting.poll(waiter) else {
         return 0;
     };
-    waiting.restore_pending();
     unsafe {
         match result {
             Output::Value(value) => output.cast::<ValueError>().write(value),
-            Output::Text(value) => output.cast::<StringError>().write(value),
             Output::Bytes(value) => output.cast::<ByteArrayError>().write(value),
-            Output::Error(value) => output.cast::<ErrorOut>().write(value),
         }
         drop(Box::from_raw(operation));
     }
@@ -440,19 +279,11 @@ mod tests {
 
     fn error(output: Output) -> String {
         let (data, len) = match output {
-            Output::Text(value) => {
-                assert_eq!(value.len, 0);
-                (value.message, value.message_len)
-            }
             Output::Bytes(value) => {
                 assert_eq!(value.array.len, 0);
                 (value.message, value.message_len)
             }
-            Output::Value(value) => {
-                assert_eq!(value.value, 0);
-                (value.message, value.message_len)
-            }
-            Output::Error(value) => (value.message, value.message_len),
+            Output::Value(value) => (value.message, value.message_len),
         };
         let text = String::from_utf8_lossy(unsafe { crate::bytes(data, len) }).into_owned();
         crate::string::zore_string_release(data, len);
@@ -467,7 +298,7 @@ mod tests {
         let mut operation = 0usize;
         pool.spawn(move |context| unsafe {
             if operation == 0 {
-                operation = zore_native_net_read_bytes_start(id, 1, context) as usize;
+                operation = zore_native_net_read_start(id, 1, context) as usize;
                 let mut output = std::mem::MaybeUninit::<ByteArrayError>::uninit();
                 assert_eq!(
                     zore_native_net_poll(
@@ -529,58 +360,29 @@ mod tests {
     }
 
     #[test]
-    fn timed_out_text_preserves_incomplete_bytes_for_a_later_raw_read() {
+    fn a_passed_deadline_times_out_without_losing_later_bytes() {
         let _serial = crate::string::serial();
         let (id, mut peer) = pair();
         let handle = lookup(id).unwrap();
         let Handle::Connection(connection) = handle.as_ref() else {
             panic!()
         };
-        let mut operation = Operation::new(
-            id,
-            Kind::Read {
-                max: Some(1),
-                bytes: false,
-            },
-        );
-        let (waiter, rx) = signal();
-        assert!(operation.poll(waiter.clone()).is_none());
-        assert!(operation.pending.is_empty());
-        assert!(operation.deadline.is_none());
-        peer.write_all(b"\xe2").unwrap();
-        rx.recv_timeout(Duration::from_secs(10)).unwrap();
-        connection.timeout.store(100, Ordering::SeqCst);
-        assert!(operation.poll(waiter.clone()).is_none());
-        let deadline = operation.deadline;
-        assert!(deadline.is_some());
-        assert_eq!(operation.pending, b"\xe2");
-        for _ in 0..20 {
-            assert!(operation.poll(waiter.clone()).is_none());
-            assert_eq!(operation.deadline, deadline);
-        }
-        rx.recv_timeout(Duration::from_secs(10)).unwrap();
-        let output = operation.poll(waiter).unwrap();
-        operation.restore_pending();
-        assert_eq!(error(output), "net.Read: timed out");
-        let mut raw = Operation::new(
-            id,
-            Kind::Read {
-                max: Some(1),
-                bytes: true,
-            },
-        );
+        connection.read_deadline.store(1, Ordering::SeqCst);
+        let mut operation = Operation::new(id, Kind::Read, 4);
         let (waiter, _) = signal();
-        let Output::Bytes(output) = raw.poll(waiter).unwrap() else {
-            panic!()
-        };
-        raw.restore_pending();
+        assert_eq!(
+            error(operation.poll(waiter).unwrap()),
+            "net.Read: timed out"
+        );
+        connection.read_deadline.store(0, Ordering::SeqCst);
+        peer.write_all(b"ok").unwrap();
+        let output = read(id, 4);
+        assert_eq!(output.failed, 0);
         assert_eq!(
             unsafe { crate::bytes(output.array.data, output.array.len) },
-            b"\xe2"
+            b"ok"
         );
-        unsafe {
-            crate::alloc::zore_free(output.array.data, output.array.cap);
-        }
+        unsafe { crate::alloc::zore_free(output.array.data, output.array.cap) };
         zore_native_net_close_handle(id);
     }
 
@@ -604,13 +406,10 @@ mod tests {
         let mut operation = 0usize;
         pool.spawn(move |context| unsafe {
             if operation == 0 {
-                operation = zore_native_net_write_bytes_start(
-                    id,
-                    data.as_ptr(),
-                    data.len() as i64,
-                    context,
-                ) as usize;
-                let mut output = std::mem::MaybeUninit::<ErrorOut>::uninit();
+                operation =
+                    zore_native_net_write_start(id, data.as_ptr(), data.len() as i64, context)
+                        as usize;
+                let mut output = std::mem::MaybeUninit::<ValueError>::uninit();
                 assert_eq!(
                     zore_native_net_poll(
                         operation as *mut Operation,
@@ -636,7 +435,7 @@ mod tests {
                 started.send(()).unwrap();
                 Poll::Pending
             } else {
-                let mut output = std::mem::MaybeUninit::<ErrorOut>::uninit();
+                let mut output = std::mem::MaybeUninit::<ValueError>::uninit();
                 if zore_native_net_poll(
                     operation as *mut Operation,
                     context,
@@ -645,7 +444,8 @@ mod tests {
                 {
                     return Poll::Pending;
                 }
-                assert_eq!(output.assume_init().failed, 0);
+                let output = output.assume_init();
+                assert_eq!((output.failed, output.value), (0, bytes as i64));
                 zore_native_net_close_handle(id);
                 Poll::Ready
             }
@@ -655,36 +455,37 @@ mod tests {
     }
 
     #[test]
-    fn invalid_handles_and_invalid_sizes_complete_without_registration() {
+    fn invalid_handles_and_empty_reads_complete_without_registration() {
         let _serial = crate::string::serial();
         let (waiter, _) = signal();
-        let mut accept = Operation::new(0, Kind::Accept);
+        let mut accept = Operation::new(0, Kind::Accept, 0);
         assert_eq!(
             error(accept.poll(waiter.clone()).unwrap()),
             "net.Accept: not an open listener"
         );
-        let mut read = Operation::new(
-            0,
-            Kind::Read {
-                max: None,
-                bytes: false,
-            },
-        );
+        let mut read = Operation::new(0, Kind::Read, 1);
         assert_eq!(
             error(read.poll(waiter.clone()).unwrap()),
-            "net.Read: max must be positive"
+            "net.Read: not an open connection"
         );
         let mut write = Operation::new(
             0,
             Kind::Write {
                 data: Vec::new(),
                 sent: 0,
-                bytes: true,
             },
+            0,
         );
         assert_eq!(
-            error(write.poll(waiter).unwrap()),
-            "net.WriteBytes: not an open connection"
+            error(write.poll(waiter.clone()).unwrap()),
+            "net.Write: not an open connection"
         );
+        let (id, _peer) = pair();
+        let mut empty = Operation::new(id, Kind::Read, 0);
+        let Output::Bytes(output) = empty.poll(waiter).unwrap() else {
+            panic!()
+        };
+        assert_eq!((output.failed, output.array.len), (0, 0));
+        zore_native_net_close_handle(id);
     }
 }

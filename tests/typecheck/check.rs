@@ -2905,8 +2905,8 @@ fn standard_packages_have_typed_signatures() {
     accepts_main(
         "let has bool = strings.Contains(\"abc\", \"b\")
         let index int = strings.Index(\"abc\", \"c\")
-        let text string = strings.Upper(\"a\") + strings.Lower(\"B\") + strings.TrimSpace(\" c \")
-        let again = strings.Repeat(text, 2) + strings.Replace(text, \"a\", \"b\")
+        let text string = strings.ToUpper(\"a\") + strings.ToLower(\"B\") + strings.TrimSpace(\" c \")
+        let again = strings.Repeat(text, 2) + strings.ReplaceAll(text, \"a\", \"b\") + strings.Replace(text, \"a\", \"b\", 1)
         let parts Array<string> = strings.Split(again, \",\")
         let joined string = strings.Join(parts[:], \", \")
         let pieces = [string; 2]{\"x\", \"y\"}
@@ -2927,7 +2927,7 @@ fn standard_packages_have_typed_signatures() {
             "_ = strings.Contains(\"a\")",
             "takes 2 arguments but 1 was given",
         ),
-        ("let n int = strings.Upper(\"a\")", "mismatched types"),
+        ("let n int = strings.ToUpper(\"a\")", "mismatched types"),
         (
             "let n, err = strconv.Atoi(5)\n_ = n\n_ = err",
             "mismatched types",
@@ -2947,13 +2947,13 @@ fn standard_packages_have_typed_signatures() {
             "package `strings` does not declare `Nope`",
         ),
         (
-            "_ = strings.upper(\"a\")",
-            "package `strings` does not declare `upper`",
+            "_ = strings.Upper(\"a\")",
+            "package `strings` does not declare `Upper`",
         ),
     ] {
         rejects(
             &format!(
-                "{head}\nfunc main() {{\n_ = strings.Upper(\"\") + strconv.Itoa(1)\n{stmts}\n}}\n"
+                "{head}\nfunc main() {{\n_ = strings.ToUpper(\"\") + strconv.Itoa(1)\n{stmts}\n}}\n"
             ),
             message,
         );
@@ -4012,6 +4012,51 @@ fn an_unapproved_copy_call_is_an_unknown_name() {
     accepts(&body(
         "let values = Array<int>{1}\nlet other = clone(values)\nprintln(other.len())",
     ));
+}
+
+#[test]
+fn panic_takes_one_string_and_ends_a_path() {
+    accepts(&program(
+        "func pick(n int) int {
+    if n > 0 {
+        return n
+    }
+    panic(\"n must be positive\")
+}
+func choose(n int) string {
+    if n > 0 {
+        return \"yes\"
+    } else {
+        panic(\"no\" + \"!\")
+    }
+}
+func message() string { return \"late\" }
+func later() int {
+    let text = message()
+    panic(text)
+}",
+    ));
+    for (stmts, message) in [
+        ("panic(1)", "`panic` takes a `string` message"),
+        (
+            "panic()",
+            "`panic` takes exactly 1 argument but 0 were given",
+        ),
+        (
+            "panic(\"a\", \"b\")",
+            "`panic` takes exactly 1 argument but 2 were given",
+        ),
+        ("let p = panic", "`panic` can only be called"),
+        ("let x = panic(\"x\")", "this call has no value"),
+        ("let panic = 1", "shadows a predeclared name"),
+    ] {
+        rejects(&body(stmts), message);
+    }
+    rejects(&program("func panic() {}"), "shadows a predeclared name");
+    rejects(
+        &program("func pick(n int) int {\n    if n > 0 { panic(\"x\") }\n}"),
+        "can reach the end of its body without returning a value",
+    );
 }
 
 #[test]
