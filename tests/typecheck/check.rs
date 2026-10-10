@@ -847,7 +847,10 @@ fn calls_arguments_and_results() {
         &body("let x = string(1)"),
         "cannot convert an untyped constant to `string`",
     );
-    rejects(&body("let x = bool(1)"), "only numeric conversions exist");
+    rejects(
+        &body("let x = bool(1)"),
+        "only numeric and rune conversions exist",
+    );
     rejects(
         &body("let x = int64(\"1\")"),
         "cannot convert `string` to `int64`",
@@ -1247,10 +1250,6 @@ fn unsupported_features_are_never_accepted() {
             "`Array` needs an element type",
         ),
         (body("let x = clone(1)"), "cannot clone a value of type"),
-        (
-            body("let r = rune(65)"),
-            "rune conversions are not supported",
-        ),
     ] {
         rejects(&text, message);
     }
@@ -4013,4 +4012,65 @@ fn an_unapproved_copy_call_is_an_unknown_name() {
     accepts(&body(
         "let values = Array<int>{1}\nlet other = clone(values)\nprintln(other.len())",
     ));
+}
+
+#[test]
+fn runes_convert_to_and_from_integer_types() {
+    assert_eq!(folded("let x = int('A')"), (Const::Int(65), "int64".into()));
+    assert_eq!(
+        folded("let x = uint8('é')"),
+        (Const::Int(233), "uint8".into())
+    );
+    assert_eq!(
+        folded("let x = rune(955)"),
+        (Const::Rune('λ'), "rune".into())
+    );
+    assert_eq!(
+        folded("let x = rune(int32(65))"),
+        (Const::Rune('A'), "rune".into())
+    );
+    accepts(&body(
+        "let r = 'é'\nlet n int = int(r)\nlet back rune = rune(n)\nlet same rune = rune(back)\nprintln(uint32(same))",
+    ));
+    for (stmts, message) in [
+        (
+            "let x = rune(0xD800)",
+            "constant `55296` is not a Unicode scalar value",
+        ),
+        (
+            "let x = rune(-1)",
+            "constant `-1` is not a Unicode scalar value",
+        ),
+        ("let x = rune(0x110000)", "is not a Unicode scalar value"),
+        (
+            "let x = rune(int64(0xDFFF))",
+            "constant `57343` is not a Unicode scalar value",
+        ),
+        (
+            "let x = uint8('ł')",
+            "rune constant `U+0142` does not fit in `uint8`",
+        ),
+        (
+            "let x = rune(1.5)",
+            "a floating-point constant cannot be converted to `rune`",
+        ),
+        (
+            "let f = 2.5\nlet x = rune(f)",
+            "only integers and runes convert to `rune`",
+        ),
+        (
+            "let x = float64('a')",
+            "a rune converts only to integer types and `string`",
+        ),
+        (
+            "let x = rune(true)",
+            "only integers and runes convert to `rune`",
+        ),
+        (
+            "let x = rune(\"a\")",
+            "only integers and runes convert to `rune`",
+        ),
+    ] {
+        rejects(&body(stmts), message);
+    }
 }

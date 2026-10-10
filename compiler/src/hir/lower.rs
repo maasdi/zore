@@ -3047,21 +3047,16 @@ impl<'a> Checker<'a> {
         if target == TypeStore::STRING {
             return self.string_conversion(arg, span);
         }
+        if target == TypeStore::RUNE {
+            return self.rune_conversion(arg, span);
+        }
         if !self.types.is_numeric(target) {
             self.report_arg_errors(args);
-            if target == TypeStore::RUNE {
-                self.unsupported(
-                    "rune conversions are",
-                    span,
-                    "planned with numeric typing (M5–M8)",
-                );
-            } else {
-                let message = format!(
-                    "`{}` is not a conversion; only numeric conversions exist",
-                    self.name(target)
-                );
-                self.error(message, span);
-            }
+            let message = format!(
+                "`{}` is not a conversion; only numeric and rune conversions exist",
+                self.name(target)
+            );
+            self.error(message, span);
             return None;
         }
         let value = match self.expr(arg, None)? {
@@ -3073,6 +3068,9 @@ impl<'a> Checker<'a> {
             Value::Typed(expr) => self.single_value(expr)?,
         };
         let source = value.ty();
+        if source == TypeStore::RUNE {
+            return self.rune_to_number(value, target, span);
+        }
         if !self.types.is_numeric(source) {
             let message = format!(
                 "cannot convert `{}` to `{}`",
@@ -3126,6 +3124,101 @@ impl<'a> Checker<'a> {
                 None
             }
         }
+    }
+
+    fn rune_conversion(&mut self, arg: &ast::Expr, span: Span) -> Option<Value> {
+        let value = match self.expr(arg, None)? {
+            Value::Untyped(Untyped::Int(value), _) => {
+                let Some(scalar) = value
+                    .to_i128()
+                    .and_then(|v| u32::try_from(v).ok())
+                    .and_then(char::from_u32)
+                else {
+                    let message = format!(
+                        "constant `{}` is not a Unicode scalar value, so it is not a `rune`",
+                        Untyped::Int(value).describe()
+                    );
+                    self.error(message, span);
+                    return None;
+                };
+                return Some(Value::Typed(typed(
+                    ExprKind::Const(Const::Rune(scalar)),
+                    TypeStore::RUNE,
+                    span,
+                )));
+            }
+            Value::Untyped(Untyped::Float(_), _) => {
+                self.error(
+                    "a floating-point constant cannot be converted to `rune`",
+                    span,
+                );
+                return None;
+            }
+            Value::Typed(expr) => self.single_value(expr)?,
+        };
+        let source = value.ty();
+        if source == TypeStore::RUNE {
+            return Some(Value::Typed(value));
+        }
+        if self.types.int(source).is_none() {
+            let message = format!(
+                "cannot convert `{}` to `rune`; only integers and runes convert to `rune`",
+                self.name(source)
+            );
+            self.error(message, span);
+            return None;
+        }
+        if let Some(&Const::Int(v)) = constant(&value) {
+            let Some(scalar) = u32::try_from(v).ok().and_then(char::from_u32) else {
+                let message =
+                    format!("constant `{v}` is not a Unicode scalar value, so it is not a `rune`");
+                self.error(message, span);
+                return None;
+            };
+            return Some(Value::Typed(typed(
+                ExprKind::Const(Const::Rune(scalar)),
+                TypeStore::RUNE,
+                span,
+            )));
+        }
+        Some(Value::Typed(typed(
+            ExprKind::Convert(Box::new(value)),
+            TypeStore::RUNE,
+            span,
+        )))
+    }
+
+    fn rune_to_number(&mut self, value: hir::Expr, target: TypeId, span: Span) -> Option<Value> {
+        let Some(int) = self.types.int(target) else {
+            let message = format!(
+                "cannot convert `rune` to `{}`; a rune converts only to integer types and `string`",
+                self.name(target)
+            );
+            self.error(message, span);
+            return None;
+        };
+        if let Some(&Const::Rune(scalar)) = constant(&value) {
+            let code = i128::from(u32::from(scalar));
+            if !int.contains(code) {
+                let message = format!(
+                    "rune constant `U+{:04X}` does not fit in `{}`",
+                    u32::from(scalar),
+                    self.name(target)
+                );
+                self.error(message, span);
+                return None;
+            }
+            return Some(Value::Typed(typed(
+                ExprKind::Const(Const::Int(code)),
+                target,
+                span,
+            )));
+        }
+        Some(Value::Typed(typed(
+            ExprKind::Convert(Box::new(value)),
+            target,
+            span,
+        )))
     }
 
     fn field_of(&mut self, ty: TypeId, name: &ast::Name) -> Option<(FieldId, TypeId)> {

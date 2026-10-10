@@ -1653,6 +1653,25 @@ float's finite range is an error at compile time for constants and a runtime
 panic otherwise. Rounding a representable finite value to the nearest destination
 value is permitted, including rounding to a subnormal or signed zero.
 
+**Rune conversions — LOCKED.** A `rune` converts to and from integer types with
+the same conversion form. `T(r)` for an integer type `T` gives the rune's
+scalar value, checked like any integer conversion: `uint8('é')` is `233`, and a
+runtime value outside `T` panics. `rune(n)` for an integer `n` gives the rune
+with that scalar value; a runtime value that is negative, above `0x10FFFF`, or
+in the surrogate range `0xD800`–`0xDFFF` panics. With a constant operand,
+either conversion is evaluated at compile time, and a value that does not fit
+or is not a scalar is a compile-time error. `rune(r)` of a rune is that rune.
+A rune does not convert to or from a float type or `bool`, and the only other
+conversion involving a rune is `string(r)` (§6.8).
+
+```ore
+let code = int('A')          // 65
+let next = rune(code + 1)    // 'B'
+let byteValue = uint8('é')   // 233
+let bad = rune(0xD800)       // invalid: a surrogate is not a scalar value
+let wide = float64('a')      // invalid: convert through an integer type
+```
+
 An explicitly converted integer value and a float value may be combined only
 when their types match; there is no automatic common numeric type. Comparisons
 require matching types after aliases are resolved. `==` and `!=` are permitted

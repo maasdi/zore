@@ -12,6 +12,8 @@ once it does.
 - Locked the program entry point: `package main` with exactly one
   `func main()`; exit status 0 on return, nonzero after a panic (§3.19).
 - Locked `println`: one printable argument, one line per call (§37.1).
+- Locked rune conversions: `int(r)`, `rune(n)`, and the other integer types,
+  checked at run time and folded for constants (§6.6, Q39).
 - Locked untyped constants following Go's model: integer and float kinds,
   exact arithmetic, representability rules, and at least 256-bit precision
   (§6.7).
