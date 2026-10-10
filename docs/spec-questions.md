@@ -64,6 +64,7 @@ A newly discovered semantic gap blocks its affected feature, not unrelated work.
 | Q39 | Rune conversions: locked in §6.6. See Q39 below. | §6.5, §6.6, §6.8 | Checker and codegen |
 | Q40 | Named types: locked in §8.5, §3.20, §9.1, and §41.4. See Q40 below. | §3.20, §8.5, §9.1, §41.4 | Parser, resolver, checker, MIR, and codegen |
 | Q41 | Package-level `let`: locked in §3.20 and §3.21; resolves the package initialization order part of Q05. See Q41 below. | §3.20, §3.21 | Resolver, checker, MIR, codegen, and runtime |
+| Q42 | Interfaces and generics: open. Proposed in `docs/proposals/interfaces-and-generics.md` (issue #88); nothing is locked until the maintainer accepts it and the spec changes. | §22.1, §22.2, §15.1, §40, §41.9 | Parser, resolver, types, checker, MIR, ownership, codegen, and the standard library |
 
 ## Resolved decisions
 
