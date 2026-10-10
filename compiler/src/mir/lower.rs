@@ -325,6 +325,7 @@ impl Builder {
                 | ExprKind::CallValue { .. }
                 | ExprKind::Clone(_)
                 | ExprKind::Println(_)
+                | ExprKind::Panic(_)
                 | ExprKind::Drop(_)
                 | ExprKind::TaskWait(_)
                 | ExprKind::ChannelSend { .. }
@@ -623,7 +624,7 @@ impl Builder {
         body: &hir::Block,
         span: Span,
     ) {
-        if collection.ty() == TypeStore::STRING {
+        if package.types.kind(collection.ty()) == TypeKind::String {
             return self.for_each_string(package, key, item, collection, body, span);
         }
         self.scopes.push(Vec::new());
@@ -952,6 +953,7 @@ impl Builder {
                 (Callee::Value(place), &args[..])
             }
             ExprKind::Println(arg) => (Callee::Println, std::slice::from_ref(&**arg)),
+            ExprKind::Panic(arg) => (Callee::Panic, std::slice::from_ref(&**arg)),
             ExprKind::Drop(arg) => (Callee::Drop, std::slice::from_ref(&**arg)),
             ExprKind::Clone(arg) => (Callee::Clone(arg.ty()), std::slice::from_ref(&**arg)),
             ExprKind::MapLookup { map, key } | ExprKind::MapRemove { map, key } => {
@@ -1028,7 +1030,7 @@ impl Builder {
                         mode == ParamMode::Own,
                     )
                 }
-                Callee::Println => (false, false),
+                Callee::Println | Callee::Panic => (false, false),
                 Callee::Drop => (false, true),
                 Callee::Clone(_) => (true, false),
                 Callee::MapInsertNew
@@ -1132,7 +1134,7 @@ impl Builder {
                 low,
                 high,
                 mutable,
-            } if base.ty() == TypeStore::STRING => {
+            } if package.types.kind(base.ty()) == TypeKind::String => {
                 let source = self.evaluate_to_temporary(package, base);
                 let low = low
                     .as_deref()
@@ -1234,6 +1236,7 @@ impl Builder {
                 values.into_iter().next().expect("single propagated result")
             }
             ExprKind::Println(_) => unreachable!("println has no value"),
+            ExprKind::Panic(_) => unreachable!("panic has no value"),
             ExprKind::Drop(_) => unreachable!("drop has no value"),
             ExprKind::Convert(inner) => {
                 let inner = self.operand(package, inner);

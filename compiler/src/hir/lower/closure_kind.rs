@@ -782,6 +782,7 @@ fn children_mut(expr: &mut hir::Expr) -> Vec<&mut hir::Expr> {
         ExprKind::Len(inner)
         | ExprKind::ArrayPop(inner)
         | ExprKind::Println(inner)
+        | ExprKind::Panic(inner)
         | ExprKind::Drop(inner)
         | ExprKind::Convert(inner)
         | ExprKind::Clone(inner)

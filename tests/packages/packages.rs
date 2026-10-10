@@ -239,7 +239,7 @@ fn methods_cannot_be_declared_on_imported_types() {
     );
     rejects(
         &with_shapes(&main),
-        "methods can be declared only on struct types defined in this package",
+        "methods can be declared only on struct or named types defined in this package",
     );
 }
 
@@ -486,32 +486,38 @@ fn diagnostics_in_imported_files_name_that_file() {
 }
 
 #[test]
-fn the_time_io_os_and_net_packages_type_check_their_uses() {
+fn the_time_os_bufio_and_net_packages_type_check_their_uses() {
     accepts(&[(
         "main.ore",
         &main_with(
-            "import \"zore/time\"\nimport \"zore/io\"\nimport \"zore/os\"\nimport \"zore/net\"",
-            "time.Sleep(10)
-            let started = time.Millis()
-            let line, lineErr = io.ReadLine()
-            _ = lineErr
-            let text, readErr = os.ReadFile(\"a.txt\")
+            "import \"zore/time\"\nimport \"zore/bufio\"\nimport \"zore/os\"\nimport \"zore/net\"",
+            "time.Sleep(10 * time.Millisecond)
+            let started = time.Now()
+            var input = bufio.NewScanner(os.Stdin())
+            let more bool = input.Scan()
+            let line string = input.Text()
+            _ = input.Err()
+            let data, readErr = os.ReadFile(\"a.txt\")
             _ = readErr
-            let wrote = os.WriteFile(\"b.txt\", line + text)
+            let wrote = os.WriteFile(\"b.txt\", data[:], 0o644)
             _ = wrote
-            let listener, listenErr = net.Listen(\"127.0.0.1:0\")
+            let listener, listenErr = net.Listen(\"tcp\", \"127.0.0.1:0\")
             _ = listenErr
             let conn, acceptErr = listener.Accept()
             _ = acceptErr
-            let chunk, chunkErr = conn.Read(64)
+            var chunk = Array<byte>{0, 0, 0, 0}
+            let count, chunkErr = conn.Read(chunk[:])
             _ = chunkErr
-            let sent = conn.Write(chunk)
-            _ = sent
+            let sent, sendErr = conn.Write(chunk[:count])
+            _ = sendErr
             let closed = conn.CloseWrite()
             _ = closed
-            let port = listener.Port()
-            println(port + started)
-            drop(conn)",
+            _ = conn.SetReadDeadline(time.Now() + time.Second)
+            let address string = listener.Addr()
+            println(address + line)
+            println(more)
+            println(sent + time.Since(started))
+            _ = conn.Close()",
         ),
     )]);
 }
@@ -536,23 +542,34 @@ fn the_io_packages_reject_misuse() {
     rejects(
         &[(
             "main.ore",
-            &main_with("import \"zore/io\"", "let line = io.ReadLine()"),
+            &main_with("import \"zore/os\"", "let data = os.ReadFile(\"a\")"),
         )],
         "returns 2 values",
     );
     rejects(
         &[(
             "main.ore",
-            &main_with("import \"zore/os\"", "os.WriteFile(\"a\", \"b\")"),
+            &main_with(
+                "import \"zore/os\"",
+                "os.WriteFile(\"a\", Array<byte>{}[:], 0o644)",
+            ),
         )],
         "must be used or explicitly discarded",
+    );
+    rejects(
+        &[("main.ore", &main_with("import \"zore/io\"", ""))],
+        "no standard package `zore/io`",
+    );
+    rejects(
+        &[("main.ore", &main_with("import \"zore/cancel\"", ""))],
+        "no standard package `zore/cancel`",
     );
     rejects(
         &[("main.ore", &main_with(net, "let conn = net.Conn{id: 1}"))],
         "not exported",
     );
     rejects(
-        &[("main.ore", &main_with(net, "let id = net.listen(\"x\")"))],
+        &[("main.ore", &main_with(net, "let id = net.listen(0, \"x\")"))],
         "not exported",
     );
     rejects(
@@ -560,10 +577,38 @@ fn the_io_packages_reject_misuse() {
             "main.ore",
             &main_with(
                 net,
-                "let conn, err = net.Dial(\"x\")\n_ = err\nlet other = conn\nlet again = conn",
+                "let conn, err = net.Dial(\"tcp\", \"x\")\n_ = err\nlet other = conn\nlet again = conn",
             ),
         )],
         "use of moved value",
+    );
+    rejects(
+        &[(
+            "main.ore",
+            &main_with(
+                net,
+                "let conn, err = net.Dial(\"tcp\", \"x\")\n_ = err\n_ = conn.Close()\n_ = conn.Close()",
+            ),
+        )],
+        "use of moved value",
+    );
+}
+
+#[test]
+fn nested_standard_packages_are_named_by_their_last_segment() {
+    accepts(&[(
+        "main.ore",
+        &main_with(
+            "import \"zore/os/exec\"\nimport \"zore/path/filepath\"\nimport \"zore/unicode/utf8\"",
+            "let cmd = exec.Command(\"true\", Array<string>{}[:])
+            println(cmd.Path)
+            println(filepath.Base(\"/a/b.txt\"))
+            println(utf8.RuneLen('é'))",
+        ),
+    )]);
+    rejects(
+        &[("main.ore", &main_with("import \"zore/os/nope\"", ""))],
+        "no standard package `zore/os/nope`",
     );
 }
 
@@ -589,6 +634,59 @@ func main() {
 }
 ";
     accepts(&[("main.ore", main), ("shapes/shapes.ore", shapes)]);
+}
+
+#[test]
+fn named_types_cross_packages_with_their_methods() {
+    let units = "package units
+
+type Celsius float64
+
+type secret int
+
+const Freezing Celsius = 0
+
+func (c Celsius) Fahrenheit() Celsius {
+    return c * 9 / 5 + 32
+}
+
+func (c Celsius) hidden() int { return 1 }
+
+func Hide() secret { return secret(1) }
+";
+    accepts(&[
+        (
+            "main.ore",
+            &main_with(
+                "import \"myapp/units\"",
+                "let c = units.Celsius(100)
+            let f units.Celsius = c.Fahrenheit()
+            println(f > units.Freezing)
+            let raw float64 = float64(f)
+            println(raw > 0.0)",
+            ),
+        ),
+        ("units/units.ore", units),
+    ]);
+    for (body, message) in [
+        ("let s = units.secret(1)", "not exported"),
+        (
+            "let c = units.Celsius(1)\nprintln(c.hidden())",
+            "is not exported",
+        ),
+        (
+            "let c = units.Celsius(1)\nlet f float64 = c",
+            "mismatched types: expected `float64`, found `units.Celsius`",
+        ),
+    ] {
+        rejects(
+            &[
+                ("main.ore", &main_with("import \"myapp/units\"", body)),
+                ("units/units.ore", units),
+            ],
+            message,
+        );
+    }
 }
 
 #[test]

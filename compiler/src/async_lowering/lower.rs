@@ -11,18 +11,7 @@ pub fn lower(package: &hir::Package, program: &mir::Program) -> Plan {
         let before = waiting_library.len();
         for body in &program.bodies {
             let function = package.function(body.function);
-            if function.native
-                || function.is_closure
-                || ![
-                    "zore/net.",
-                    "zore/cancel.",
-                    "zore/time.",
-                    "zore/io.",
-                    "zore/os.",
-                ]
-                .iter()
-                .any(|prefix| function.name.starts_with(prefix))
-            {
+            if function.native || function.is_closure || !function.name.starts_with("zore/") {
                 continue;
             }
             if body.blocks.iter().any(|block| match &block.terminator {

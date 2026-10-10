@@ -1956,17 +1956,53 @@ impl FunctionBuilder<'_, '_> {
 
     pub(super) fn convert(&mut self, operand: &Operand, to: TypeId, span: Span) -> String {
         let from = self.operand_ty(operand);
-        if from == to {
+        let types = &self.module.package.types;
+        if from == to || types.kind(from) == types.kind(to) {
             return self.owned_value(operand);
         }
+        let rune_to_text = types.kind(from) == TypeKind::Rune && types.kind(to) == TypeKind::String;
         let value = self.value(operand);
-        if from == crate::types::TypeStore::RUNE && to == crate::types::TypeStore::STRING {
+        if rune_to_text {
             return self.string_from_rune(&value);
         }
         let types = &self.module.package.types;
         let (from_kind, to_kind) = (types.kind(from), types.kind(to));
         let (fty, tty) = (self.ty(from), self.ty(to));
         let name = self.fresh();
+        let scalar = IntType {
+            bits: 32,
+            signed: false,
+        };
+        let (from_kind, to_kind) = match (from_kind, to_kind) {
+            (TypeKind::Int(src), TypeKind::Rune) => {
+                let wide = self.fresh();
+                let extend = if src.signed { "sext" } else { "zext" };
+                self.line(format!("{wide} = {extend} {fty} {value} to i128"));
+                let (low, high, from_surrogate, to_surrogate, surrogate, outside, invalid) = (
+                    self.fresh(),
+                    self.fresh(),
+                    self.fresh(),
+                    self.fresh(),
+                    self.fresh(),
+                    self.fresh(),
+                    self.fresh(),
+                );
+                self.line(format!("{low} = icmp slt i128 {wide}, 0"));
+                self.line(format!("{high} = icmp sgt i128 {wide}, 1114111"));
+                self.line(format!("{from_surrogate} = icmp sge i128 {wide}, 55296"));
+                self.line(format!("{to_surrogate} = icmp sle i128 {wide}, 57343"));
+                self.line(format!(
+                    "{surrogate} = and i1 {from_surrogate}, {to_surrogate}"
+                ));
+                self.line(format!("{outside} = or i1 {low}, {high}"));
+                self.line(format!("{invalid} = or i1 {outside}, {surrogate}"));
+                self.panic_if(&invalid, "integer is not a valid rune", span);
+                self.line(format!("{name} = trunc i128 {wide} to i32"));
+                return name;
+            }
+            (TypeKind::Rune, to_kind) => (TypeKind::Int(scalar), to_kind),
+            kinds => kinds,
+        };
         match (from_kind, to_kind) {
             (TypeKind::Int(src), TypeKind::Int(dst)) => {
                 let wide = self.fresh();
@@ -2112,6 +2148,10 @@ impl FunctionBuilder<'_, '_> {
                     Callee::Clone(ty) => Some(self.clone_call(*ty, args)),
                     Callee::Println => {
                         self.println(&args[0], *span);
+                        None
+                    }
+                    Callee::Panic => {
+                        self.user_panic(&args[0], *span);
                         None
                     }
                     Callee::Drop => unreachable!("explicit drop is a MIR statement"),

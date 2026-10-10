@@ -760,6 +760,7 @@ impl<'a> Analysis<'a> {
                 .map(|&(mode, ty)| Some(exclusive_if_func(mode, ty)))
                 .collect(),
             Callee::Println
+            | Callee::Panic
             | Callee::Drop
             | Callee::Clone(_)
             | Callee::TaskWait

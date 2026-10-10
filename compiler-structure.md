@@ -420,17 +420,28 @@ package, named after the package as users import it:
 
 ```text
 std/
-├── cancel/
-├── io/
+├── bufio/
+├── bytes/
+├── context/
+├── errors/
 ├── net/
 ├── os/
+│   └── exec/
+├── path/
+│   └── filepath/
+├── sort/
 ├── strconv/
 ├── strings/
-└── time/
+├── sync/
+├── time/
+└── unicode/
+    └── utf8/
 ```
 
-Each folder holds the package's `.ore` files (`std/strings/strings.ore`). The
-compiler embeds them and serves them for `zore/<name>` imports. Functions
+Each folder holds the package's `.ore` files (`std/strings/strings.ore`,
+`std/strings/builder.ore`). The compiler embeds them and serves them for
+`zore/<path>` imports; a nested folder such as `std/os/exec/` is its own package,
+named by its last segment. Functions
 declared without a body call into the runtime.
 
 Approved deviation: the earlier plan for `core/`, `io/`, `collections/`, and

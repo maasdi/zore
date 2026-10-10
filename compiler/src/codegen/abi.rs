@@ -31,6 +31,7 @@ declare noalias ptr @zore_realloc(ptr, i64, i64)
 declare void @zore_map_free(ptr)
 declare ptr @zore_map_clone_shape(ptr)
 declare void @zore_raise_panic(ptr, i64)
+declare void @zore_raise_panic_at(ptr, i64, ptr, i64)
 declare zeroext i1 @zore_panic_pending()
 declare void @zore_enter_drop()
 declare void @zore_leave_drop()
@@ -274,6 +275,7 @@ impl FunctionBuilder<'_, '_> {
             Callee::Function(_)
             | Callee::Value(_)
             | Callee::Println
+            | Callee::Panic
             | Callee::Drop
             | Callee::Clone(_)
             | Callee::ArrayPush
@@ -479,6 +481,17 @@ impl FunctionBuilder<'_, '_> {
         ));
         let value = self.owned_value(value);
         self.line(format!("store {value_ty} {value}, ptr {storage}"));
+    }
+
+    pub(super) fn user_panic(&mut self, arg: &Operand, span: Span) {
+        let value = self.value(arg);
+        let (ptr, len) = self.string_parts(&value);
+        let location = self.module.location(span);
+        let global = self.module.string_global(location.as_bytes());
+        self.line(format!(
+            "call void @zore_raise_panic_at(ptr {ptr}, i64 {len}, ptr {global}, i64 {})",
+            location.len()
+        ));
     }
 
     pub(super) fn println(&mut self, arg: &Operand, span: Span) {

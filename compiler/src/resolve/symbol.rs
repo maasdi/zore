@@ -11,10 +11,13 @@ pub enum Res {
     Struct(StructId),
     /// A package-level `let`.
     Global(GlobalId),
+    /// A declared type built on a predeclared type (`type Duration int`).
+    Named(TypeId),
     Primitive(TypeId),
     /// An import's name; valid only as the qualifier of `package.Name`.
     Package(usize),
     Println,
+    Panic,
     Drop,
     Clone,
     /// `mutex(value)`.
@@ -68,6 +71,7 @@ pub(super) fn predeclared(name: &str) -> Option<Res> {
     }
     match name {
         "println" => Some(Res::Println),
+        "panic" => Some(Res::Panic),
         "drop" => Some(Res::Drop),
         "clone" => Some(Res::Clone),
         "mutex" => Some(Res::NewMutex),

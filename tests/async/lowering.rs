@@ -499,8 +499,8 @@ func main() { let t = go parent(go plain()); println(t.wait()) }",
 fn io_calls_and_their_awaited_callers_are_polled_but_plain_helpers_stay_ordinary() {
     let (package, _, plan) = plan(
         "package main
-import \"zore/io\"
-async func ioWait() int { let _, _ = io.ReadLine(); return 1 }
+import \"zore/os\"
+async func ioWait() int { let _, _ = os.ReadFile(\"x\"); return 1 }
 async func fallback() int { return await ioWait() }
 async func simple() int { let task = go ioWait(); return await task }
 func helper(ch channel<int>) int { let n, _ = ch.receive(); return n }
@@ -522,7 +522,7 @@ func main() {}",
 fn recursive_calls_are_planned_and_nonblocking_natives_preserve_poll_lowering() {
     let (package, _, plan) = plan("package main
 import \"zore/strings\"
-async func recurse(n int) string { if n == 0 { return strings.Upper(\"done\") }; return await recurse(n - 1) }
+async func recurse(n int) string { if n == 0 { return strings.ToUpper(\"done\") }; return await recurse(n - 1) }
 func main() { let t = go recurse(5); println(t.wait()) }");
     let (&id, machine) = plan
         .machines
@@ -575,12 +575,14 @@ func main() {}",
 
 #[test]
 fn native_sleep_is_a_suspension_and_nonwaiting_time_calls_stay_ordinary() {
-    let (package, program, plan) = plan("package main
+    let (package, program, plan) = plan(
+        "package main
 import \"zore/time\"
-async func sleeper(ms int) int { let start = time.Millis(); time.Sleep(ms); return time.Millis() - start }
+async func sleeper(d int) int { let start = time.Now(); time.Sleep(d); return time.Since(start) }
 async func parent() int { return await sleeper(1) }
 func plain() { time.Sleep(1) }
-func main() {}");
+func main() {}",
+    );
     let (&id, machine) = plan
         .machines
         .iter()
@@ -642,11 +644,11 @@ fn io_and_waiting_library_wrappers_keep_spans_cleanup_and_plain_helpers() {
         "package main
 import \"zore/net\"
 import \"zore/os\"
-func helper(path string) string { let text, _ = os.ReadFile(path); return text }
-async func run(path string, listener own net.Listener) string {
+func helper(path string) int { let data, _ = os.ReadFile(path); return data.len() }
+async func run(path string, listener own net.Listener) int {
     let _, _ = listener.Accept()
-    let text, _ = os.ReadFile(path)
-    return text + helper(path)
+    let data, _ = os.ReadFile(path)
+    return data.len() + helper(path)
 }
 func main() {}",
     );
@@ -689,7 +691,7 @@ func main() {}",
         !plan
             .machines
             .keys()
-            .any(|id| package.function(*id).name.ends_with(".Port"))
+            .any(|id| package.function(*id).name.ends_with(".Addr"))
     );
 }
 

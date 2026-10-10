@@ -1,6 +1,87 @@
 package os
 
-func ReadFile(path string) (string, error)
-func WriteFile(path string, text string) error
-func ReadBytes(path string) (Array<byte>, error)
-func WriteBytes(path string, data []byte) error
+func ReadFile(path string) (Array<byte>, error)
+func WriteFile(path string, data []byte, perm int) error
+func MkdirAll(path string, perm int) error
+func Remove(path string) error
+func RemoveAll(path string) error
+func Getenv(key string) string
+func Getwd() (string, error)
+func Args() Array<string>
+func Exit(code int)
+
+type DirEntry struct {
+    name string
+    dir  bool
+}
+
+func (e DirEntry) Name() string {
+    return e.name
+}
+
+func (e DirEntry) IsDir() bool {
+    return e.dir
+}
+
+func ReadDir(path string) (Array<DirEntry>, error) {
+    let names, err = dirNames(path)
+    var entries = Array<DirEntry>{}
+    if err != nil {
+        return entries, err
+    }
+    for name in names[:] {
+        let dir = name.len() > 0 && name[name.len() - 1] == 47
+        if dir {
+            entries.push(DirEntry{name: name[:name.len() - 1], dir: true})
+        } else {
+            entries.push(DirEntry{name: name, dir: false})
+        }
+    }
+    return entries, nil
+}
+
+type FileInfo struct {
+    name string
+    size int
+    mode int
+    dir  bool
+}
+
+func (i FileInfo) Name() string {
+    return i.name
+}
+
+func (i FileInfo) Size() int {
+    return i.size
+}
+
+func (i FileInfo) Mode() int {
+    return i.mode
+}
+
+func (i FileInfo) IsDir() bool {
+    return i.dir
+}
+
+func Stat(path string) (FileInfo, error) {
+    let fields, err = statFields(path)
+    if err != nil {
+        return FileInfo{name: "", size: 0, mode: 0, dir: false}, err
+    }
+    return FileInfo{name: baseName(path), size: fields[0], mode: fields[1], dir: fields[2] == 1}, nil
+}
+
+func baseName(path string) string {
+    var end = path.len()
+    for end > 1 && path[end - 1] == 47 {
+        end -= 1
+    }
+    var start = end
+    for start > 0 && path[start - 1] != 47 {
+        start -= 1
+    }
+    return path[start:end]
+}
+
+func dirNames(path string) (Array<string>, error)
+func statFields(path string) (Array<int>, error)

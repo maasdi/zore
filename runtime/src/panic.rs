@@ -72,6 +72,31 @@ pub unsafe extern "C" fn zore_raise_panic(message: *const u8, len: i64) {
     raise(unsafe { super::bytes(message, len) });
 }
 
+/// Raises `message at location`, the form of a `panic` call in source.
+///
+/// # Safety
+/// Both texts must satisfy the storage rule of `bytes`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn zore_raise_panic_at(
+    message: *const u8,
+    len: i64,
+    location: *const u8,
+    location_len: i64,
+) {
+    // SAFETY: guaranteed by the caller.
+    let (message, location) = unsafe {
+        (
+            super::bytes(message, len),
+            super::bytes(location, location_len),
+        )
+    };
+    let mut text = Vec::with_capacity(message.len() + location.len() + 4);
+    text.extend_from_slice(message);
+    text.extend_from_slice(b" at ");
+    text.extend_from_slice(location);
+    raise(&text);
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn zore_panic_pending() -> bool {
     STATE.with(|state| state.borrow().current.is_some())

@@ -44,3 +44,26 @@ Use observable field-evaluation logs and resource-drop counters for construction
 tests. Keep package variable initialization, built-in signatures, and recursive
 layout validity separate. Forwarded Move results must not be duplicated or
 destroyed before the caller receives ownership.
+
+## Named types (§8.5)
+
+Covered by `tests/typecheck/check.rs`, `tests/packages/packages.rs`, `tests/codegen/native.rs`, `tests/parser/parser.rs`, and the self-hosted parser comparison.
+
+| Input / scenario | Expected result |
+| --- | --- |
+| `type Duration int`, `type Name string`, `type Flag bool`, `type Letter rune`, `type Ratio float64` | Accept; each is a new type |
+| `type Seconds Duration` | Accept; the base type is `int` |
+| `5 * Second` with `const Second Duration = ...` | A `Duration` |
+| `d + x` for a `Duration` and an `int` | Reject: mismatched types |
+| `func f() Name { return "zore" }` | Reject: a string literal is a `string` |
+| `Duration(s)`, `int(d)`, `string(name)`, `Name(s)`, `rune(letter)`, `Letter(code)` | Convert without changing the value |
+| `Name(5)`, `Flag(1)` | Reject |
+| `Name` concatenation, `len()`, slicing, and a `for` loop over its characters | As for `string`; slicing gives a `Name` |
+| `if f && !f` for a `Flag` | Accept as a condition |
+| A `Name` as a map key and as an `Array` element | Works like `string` |
+| Methods on a named type, including from another package | Called like struct methods; unexported ones are rejected outside the package |
+| `func (d mut Duration) drop()` | Reject: `drop` and `clone` are only for struct types |
+| `func (i int) Double()` | Reject: methods need a type declared in the package |
+| `type A B` with `type B A` | Reject: built on itself |
+| `type P Point` for a struct, `type Items Array<int>`, `type E error` | Reject: unsupported base type |
+| `type Alias`, `type Alias = int` | Reject at parse time: expected a type |

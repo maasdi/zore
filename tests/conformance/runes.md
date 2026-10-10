@@ -33,3 +33,19 @@ awaiting lexer/literal-decoding implementation, not executable or passing tests.
 Assert source byte spans for Unicode and escaped contents and source-aware
 diagnostics for malformed input. Once typing exists, test that rune values are
 Copy and distinct from string values without presupposing an integer alias.
+
+## Conversions (§6.6)
+
+Covered by `tests/typecheck/check.rs` and `tests/codegen/native.rs`.
+
+| Input / scenario | Expected result |
+| --- | --- |
+| `int('A')`, `uint8('é')`, `uint32('😀')` | `65`, `233`, `128512`; constants fold |
+| `int(r)` for a runtime rune | Its scalar value |
+| `int8(r)` for a rune above 127 at run time | Panics: integer conversion out of range |
+| `uint8('ł')` | Reject: the constant does not fit |
+| `rune(65)`, `rune(int32(955))` | `'A'`, `'λ'` |
+| `rune(n)` for a runtime integer that is negative, above `0x10FFFF`, or in `0xD800`–`0xDFFF` | Panics: integer is not a valid rune |
+| `rune(-1)`, `rune(0x110000)`, `rune(0xD800)` | Reject: not a Unicode scalar value |
+| `rune(r)` of a rune | The same rune |
+| `rune(1.5)`, `rune(f)` for a float, `float64('a')`, `rune(true)`, `rune("a")` | Reject: only integers and runes convert to `rune`, and a rune converts only to integers and `string` |

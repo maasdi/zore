@@ -44,7 +44,7 @@ stage. These are implementation sketches, not required language types.
 
 | Rust subsystem and evidence | Candidate Zore representation | Dependency or risk |
 | --- | --- | --- |
-| `compiler/src/source/{source_file,source_map,span}.rs` | `FileId` as `int`; owned source text or bytes in an `Array<SourceFile>`; byte-offset spans with file ID | `std/os.ReadBytes` exists; preserve UTF-8 validation and stable IDs before diagnostics |
+| `compiler/src/source/{source_file,source_map,span}.rs` | `FileId` as `int`; owned source text or bytes in an `Array<SourceFile>`; byte-offset spans with file ID | `std/os.ReadFile` exists; preserve UTF-8 validation and stable IDs before diagnostics |
 | `compiler/src/diagnostic/{diagnostic,label,renderer}.rs` | Diagnostic records with severity tag, primary span, and `Array<Label>`; render after sorting | Structured comparison of severity, code/message, spans, and related labels is needed before comparing display text |
 | `compiler/src/lexer/` and `compiler/src/parser/`, `compiler/src/ast/` | Byte-indexed scanner; tokens with kind tag and span; AST node IDs in indexed arenas | Parser variants need explicit tags; lexer can avoid recursive data entirely |
 | `compiler/src/resolve/` and `compiler/src/types/` | Interned symbol/type IDs; scope stack and maps from names to IDs; concrete type records and indexed child arrays | Check map key/value support and borrow rules against actual code before porting; `types/bignum.rs` needs its own bounded milestone |
@@ -64,17 +64,17 @@ not a porting contract (`docs/architecture.md`).
 
 | Operation required by a stage | Available now | Gap and first need |
 | --- | --- | --- |
-| Preserve arbitrary source bytes, index them, validate or decode UTF-8 | `std/os.ReadBytes`; `std/strings.Bytes` and `FromBytes` in `std/os/os.ore` and `std/strings/strings.ore`; `Array<byte>` and slices | Enough for an in-memory lexer. Keep spans in bytes and compare invalid UTF-8 behavior with `compiler/src/source/` |
-| Build text, parse and format basic values | `std/strings` contains split, join, search, replace, case and byte conversion; `std/strconv` has integer/bool conversion | Check allocation and large-input throughput; add a builder only if measurements justify it |
-| Read and write a named file | `std/os.ReadFile`, `ReadBytes`, `WriteFile`, `WriteBytes`; explicit `error` results | Enough for a one-file driver; file errors and invalid UTF-8 must preserve useful path/context |
-| Discover `.ore` files, manifests and imports | `compiler/src/driver/project.rs` uses sorted `read_dir`, `is_file`, ancestor search and canonical paths | No corresponding Zore directory/path API. Required before multi-file packages; propose directory listing, file kind, path join/parent/extension and canonicalization or a verified equivalent. Sort entries in the compiler for determinism |
-| Read CLI arguments and selected environment | `compiler/src/driver/{command,session,build}.rs` uses `OsString` args, current directory, temp directory and `ZORE_CC`/cache settings | No Zore process API. Required for a standalone driver; define byte/UTF-8 policy for host paths and arguments rather than assuming every OS string is UTF-8 |
-| Invoke backend tools and run produced programs | `compiler/src/driver/build.rs` invokes clang and rustc with `std::process::Command` | No Zore child-process API. Required for native `build`/`run`, not for lexer or frontend equivalence. Need argument vector, exit status, stderr capture, no shell interpretation, and explicit spawn errors |
-| Manage temporary output and cleanup | Rust `TempDir` in `compiler/src/driver/build.rs` creates and removes a build directory | Directory creation/removal and failure-safe cleanup need a library design before native driver. Runtime `drop` may own cleanup after acquisition; no silent leaked output on errors |
+| Preserve arbitrary source bytes, index them, validate or decode UTF-8 | `os.ReadFile`; `strings.Bytes` and `FromBytes`; `zore/unicode/utf8`; `Array<byte>` and slices | Enough for an in-memory lexer. Keep spans in bytes and compare invalid UTF-8 behavior with `compiler/src/source/` |
+| Build text, parse and format basic values | `zore/strings` (search, split, trim, case, `Builder`), `zore/bytes`, `zore/strconv` (integers in any base, booleans, `Quote`/`Unquote`), `zore/unicode` | Check allocation and large-input throughput of `strings.Builder` |
+| Read and write a named file | `os.ReadFile`, `WriteFile`, `os.File`, `bufio.Reader`/`Writer`; explicit `error` results | Enough for a one-file driver; file errors and invalid UTF-8 must preserve useful path/context |
+| Discover `.ore` files, manifests and imports | `compiler/src/driver/project.rs` uses sorted `read_dir`, `is_file`, ancestor search and canonical paths | `os.ReadDir` (sorted), `os.Stat`, `path`/`filepath` (`Join`, `Dir`, `Base`, `Ext`, `Clean`, `Abs`). Missing: resolving symbolic links for canonical paths |
+| Read CLI arguments and selected environment | `compiler/src/driver/{command,session,build}.rs` uses `OsString` args, current directory, temp directory and `ZORE_CC`/cache settings | `os.Args`, `os.Getenv`, `os.Getwd`, `os.Exit`. Arguments and values that are not UTF-8 are replaced lossily; a byte policy is still open, and there is no temporary-folder lookup |
+| Invoke backend tools and run produced programs | `compiler/src/driver/build.rs` invokes clang and rustc with `std::process::Command` | `zore/os/exec`: argument vector without a shell, exit status in the error, captured output. Missing: separate stderr capture and inherited output |
+| Manage temporary output and cleanup | Rust `TempDir` in `compiler/src/driver/build.rs` creates and removes a build directory | `os.MkdirAll`, `Remove`, `RemoveAll`. Missing: a unique temporary folder and failure-safe cleanup |
 
 The standard package surface above is defined in `std/`; runtime backing lives
-in `runtime/src/sys.rs` and native bindings in `compiler/src/codegen/native.rs`.
-It does not expose directory traversal, process control, or CLI arguments.
+in `runtime/src/` (`os.rs`, `exec.rs`, `net.rs`, `strings.rs`, `strconv.rs`,
+`unicode.rs`, `sys.rs`) and native bindings in `compiler/src/codegen/native.rs`.
 The Rust driver has `fmt` and `test` command names, but
 `compiler/src/driver/command.rs` reports them as unimplemented. A formatter and
 Zore-native test runner are useful after the compiler works; neither blocks

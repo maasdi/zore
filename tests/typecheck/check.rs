@@ -608,7 +608,7 @@ fn methods_declare_and_call() {
     );
     rejects(
         &program("func (x int) m() {}"),
-        "methods can be declared only on struct types",
+        "methods can be declared only on struct or named types",
     );
     rejects(&program("func (x Missing) m() {}"), "cannot find `Missing`");
     rejects(
@@ -749,7 +749,7 @@ fn drop_methods_make_structs_move() {
     );
     rejects(
         &program("func (x int) drop() {}"),
-        "methods can be declared only on struct types",
+        "methods can be declared only on struct or named types",
     );
     accepts(&program(
         "type P struct { X int }
@@ -847,7 +847,10 @@ fn calls_arguments_and_results() {
         &body("let x = string(1)"),
         "cannot convert an untyped constant to `string`",
     );
-    rejects(&body("let x = bool(1)"), "only numeric conversions exist");
+    rejects(
+        &body("let x = bool(1)"),
+        "mismatched types: expected `bool`, found an integer constant",
+    );
     rejects(
         &body("let x = int64(\"1\")"),
         "cannot convert `string` to `int64`",
@@ -1247,10 +1250,6 @@ fn unsupported_features_are_never_accepted() {
             "`Array` needs an element type",
         ),
         (body("let x = clone(1)"), "cannot clone a value of type"),
-        (
-            body("let r = rune(65)"),
-            "rune conversions are not supported",
-        ),
     ] {
         rejects(&text, message);
     }
@@ -2906,8 +2905,8 @@ fn standard_packages_have_typed_signatures() {
     accepts_main(
         "let has bool = strings.Contains(\"abc\", \"b\")
         let index int = strings.Index(\"abc\", \"c\")
-        let text string = strings.Upper(\"a\") + strings.Lower(\"B\") + strings.TrimSpace(\" c \")
-        let again = strings.Repeat(text, 2) + strings.Replace(text, \"a\", \"b\")
+        let text string = strings.ToUpper(\"a\") + strings.ToLower(\"B\") + strings.TrimSpace(\" c \")
+        let again = strings.Repeat(text, 2) + strings.ReplaceAll(text, \"a\", \"b\") + strings.Replace(text, \"a\", \"b\", 1)
         let parts Array<string> = strings.Split(again, \",\")
         let joined string = strings.Join(parts[:], \", \")
         let pieces = [string; 2]{\"x\", \"y\"}
@@ -2928,7 +2927,7 @@ fn standard_packages_have_typed_signatures() {
             "_ = strings.Contains(\"a\")",
             "takes 2 arguments but 1 was given",
         ),
-        ("let n int = strings.Upper(\"a\")", "mismatched types"),
+        ("let n int = strings.ToUpper(\"a\")", "mismatched types"),
         (
             "let n, err = strconv.Atoi(5)\n_ = n\n_ = err",
             "mismatched types",
@@ -2948,13 +2947,13 @@ fn standard_packages_have_typed_signatures() {
             "package `strings` does not declare `Nope`",
         ),
         (
-            "_ = strings.upper(\"a\")",
-            "package `strings` does not declare `upper`",
+            "_ = strings.Upper(\"a\")",
+            "package `strings` does not declare `Upper`",
         ),
     ] {
         rejects(
             &format!(
-                "{head}\nfunc main() {{\n_ = strings.Upper(\"\") + strconv.Itoa(1)\n{stmts}\n}}\n"
+                "{head}\nfunc main() {{\n_ = strings.ToUpper(\"\") + strconv.Itoa(1)\n{stmts}\n}}\n"
             ),
             message,
         );
@@ -4013,6 +4012,195 @@ fn an_unapproved_copy_call_is_an_unknown_name() {
     accepts(&body(
         "let values = Array<int>{1}\nlet other = clone(values)\nprintln(other.len())",
     ));
+}
+
+#[test]
+fn panic_takes_one_string_and_ends_a_path() {
+    accepts(&program(
+        "func pick(n int) int {
+    if n > 0 {
+        return n
+    }
+    panic(\"n must be positive\")
+}
+func choose(n int) string {
+    if n > 0 {
+        return \"yes\"
+    } else {
+        panic(\"no\" + \"!\")
+    }
+}
+func message() string { return \"late\" }
+func later() int {
+    let text = message()
+    panic(text)
+}",
+    ));
+    for (stmts, message) in [
+        ("panic(1)", "`panic` takes a `string` message"),
+        (
+            "panic()",
+            "`panic` takes exactly 1 argument but 0 were given",
+        ),
+        (
+            "panic(\"a\", \"b\")",
+            "`panic` takes exactly 1 argument but 2 were given",
+        ),
+        ("let p = panic", "`panic` can only be called"),
+        ("let x = panic(\"x\")", "this call has no value"),
+        ("let panic = 1", "shadows a predeclared name"),
+    ] {
+        rejects(&body(stmts), message);
+    }
+    rejects(&program("func panic() {}"), "shadows a predeclared name");
+    rejects(
+        &program("func pick(n int) int {\n    if n > 0 { panic(\"x\") }\n}"),
+        "can reach the end of its body without returning a value",
+    );
+}
+
+#[test]
+fn runes_convert_to_and_from_integer_types() {
+    assert_eq!(folded("let x = int('A')"), (Const::Int(65), "int64".into()));
+    assert_eq!(
+        folded("let x = uint8('é')"),
+        (Const::Int(233), "uint8".into())
+    );
+    assert_eq!(
+        folded("let x = rune(955)"),
+        (Const::Rune('λ'), "rune".into())
+    );
+    assert_eq!(
+        folded("let x = rune(int32(65))"),
+        (Const::Rune('A'), "rune".into())
+    );
+    accepts(&body(
+        "let r = 'é'\nlet n int = int(r)\nlet back rune = rune(n)\nlet same rune = rune(back)\nprintln(uint32(same))",
+    ));
+    for (stmts, message) in [
+        (
+            "let x = rune(0xD800)",
+            "constant `55296` is not a Unicode scalar value",
+        ),
+        (
+            "let x = rune(-1)",
+            "constant `-1` is not a Unicode scalar value",
+        ),
+        ("let x = rune(0x110000)", "is not a Unicode scalar value"),
+        (
+            "let x = rune(int64(0xDFFF))",
+            "constant `57343` is not a Unicode scalar value",
+        ),
+        (
+            "let x = uint8('ł')",
+            "rune constant `U+0142` does not fit in `uint8`",
+        ),
+        (
+            "let x = rune(1.5)",
+            "a floating-point constant cannot be converted to `rune`",
+        ),
+        (
+            "let f = 2.5\nlet x = rune(f)",
+            "only integers and runes convert to `rune`",
+        ),
+        (
+            "let x = float64('a')",
+            "a rune converts only to integer types and `string`",
+        ),
+        (
+            "let x = rune(true)",
+            "only integers and runes convert to `rune`",
+        ),
+        (
+            "let x = rune(\"a\")",
+            "only integers and runes convert to `rune`",
+        ),
+    ] {
+        rejects(&body(stmts), message);
+    }
+}
+
+#[test]
+fn named_types_are_distinct_and_keep_their_base_operations() {
+    accepts(&program(
+        "type Duration int
+type Seconds Duration
+type Name string
+type Flag bool
+type Letter rune
+const Millisecond Duration = 1000000
+const Second = 1000 * Millisecond
+func (d Duration) Milliseconds() int { return int(d / Millisecond) }
+func (n Name) Upper() Name { return n }
+func use() {
+    let d = 5 * Second
+    let ms int = d.Milliseconds()
+    let s Seconds = 3
+    let back Duration = Duration(s)
+    let n = Name(\"zore\")
+    let text string = string(n)
+    let part Name = n[1:3]
+    let f = Flag(true)
+    if f && !f { println(1) }
+    let l = Letter('a')
+    let code int = int(l)
+    let again Letter = Letter(code)
+    let r = rune(l)
+    let word string = string(l)
+    println(ms + code)
+    println(d > back)
+    println(text + word)
+    println(part.len())
+    println(r)
+    println(again == l)
+}",
+    ));
+    for (decls, message) in [
+        (
+            "type Duration int\nfunc f(d Duration, x int) Duration { return d + x }",
+            "mismatched types: expected `Duration`, found `int64`",
+        ),
+        (
+            "type Name string\nfunc f() Name { return \"zore\" }",
+            "mismatched types: expected `Name`, found `string`",
+        ),
+        (
+            "type Name string\nfunc f() Name { return Name(5) }",
+            "mismatched types: expected `Name`, found an integer constant",
+        ),
+        (
+            "type Flag bool\nfunc f() Flag { return Flag(1) }",
+            "mismatched types: expected `Flag`, found an integer constant",
+        ),
+        ("type A B\ntype B A", "named type `A` is built on itself"),
+        (
+            "type Point struct { X int }\ntype P Point",
+            "a named type must be built on `bool`, a number type, `rune`, or `string`, not `Point`",
+        ),
+        (
+            "type Items Array<int>",
+            "a named type must be built on `bool`, a number type, `rune`, or `string`",
+        ),
+        ("type E error", "not `error`"),
+        (
+            "type Duration int\nfunc (d mut Duration) drop() {}",
+            "`drop` can be declared only on a struct type",
+        ),
+        (
+            "type Duration int\nfunc (d Duration) Twice() Duration { return d * 2 }\nfunc (d Duration) Twice() Duration { return d }",
+            "duplicate",
+        ),
+        (
+            "func (i int) Double() int { return i * 2 }",
+            "methods can be declared only on struct or named types defined in this package",
+        ),
+        (
+            "type Duration int\nfunc f() { let x = Duration }",
+            "`Duration` is a type, not a value",
+        ),
+    ] {
+        rejects(&program(decls), message);
+    }
 }
 
 #[test]

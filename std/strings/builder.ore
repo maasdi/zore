@@ -1,0 +1,34 @@
+package strings
+
+type Builder struct {
+    parts  Array<string>
+    length int
+}
+
+func NewBuilder() Builder {
+    return Builder{parts: Array<string>{}, length: 0}
+}
+
+func (b mut Builder) WriteString(s string) {
+    if s.len() > 0 {
+        b.parts.push(s)
+        b.length += s.len()
+    }
+}
+
+func (b mut Builder) WriteRune(r rune) {
+    b.WriteString(string(r))
+}
+
+func (b Builder) Len() int {
+    return b.length
+}
+
+func (b Builder) String() string {
+    return Join(b.parts[:], "")
+}
+
+func (b mut Builder) Reset() {
+    b.parts = Array<string>{}
+    b.length = 0
+}

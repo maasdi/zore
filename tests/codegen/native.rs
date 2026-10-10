@@ -2872,14 +2872,14 @@ func main() {
     println(strings.Index(\"héllo\", \"l\"))
     println(strings.Index(\"hello\", \"\"))
     println(strings.Index(\"hello\", \"z\"))
-    println(strings.Upper(\"héllo ß\"))
-    println(strings.Lower(\"HÉLLO\"))
+    println(strings.ToUpper(\"héllo ß\"))
+    println(strings.ToLower(\"HÉLLO\"))
     println(\"[\" + strings.TrimSpace(\"  \\t a b \\n\") + \"]\")
     println(\"[\" + strings.TrimSpace(\"   \") + \"]\")
     println(strings.Repeat(\"ab\", 3))
     println(strings.Repeat(\"ab\", 0).len())
-    println(strings.Replace(\"banana\", \"an\", \"AN\"))
-    println(strings.Replace(\"ab\", \"\", \"-\"))
+    println(strings.ReplaceAll(\"banana\", \"an\", \"AN\"))
+    println(strings.ReplaceAll(\"ab\", \"\", \"-\"))
     show(strings.Split(\"a,b,c\", \",\"))
     show(strings.Split(\",a,\", \",\"))
     show(strings.Split(\"\", \",\"))
@@ -2904,9 +2904,9 @@ func main() {
         println(err == nil)
     }
     let _, failed = strconv.Atoi(\"nope\")
-    println(failed == error(\"strconv.Atoi: invalid syntax\"))
+    println(failed == error(\"strconv.Atoi: parsing \\\"nope\\\": invalid syntax\"))
     let _, range = strconv.Atoi(\"99999999999999999999\")
-    println(range == error(\"strconv.Atoi: value out of range\"))
+    println(range == error(\"strconv.Atoi: parsing \\\"99999999999999999999\\\": value out of range\"))
 }
 ",
         "true\ntrue\nfalse\ntrue\nfalse\ntrue\nfalse\n3\n0\n-1\nHÉLLO SS\nhéllo\n[a b]\n[]\nababab\n0\nbANANa\n-a-b-\n\
@@ -3163,7 +3163,7 @@ func main() {
     println(words[1])
     println(strings.Join(words[:], \"-\"))
     var trimmed = strings.TrimSpace(\"  \" + \"padded\" + \"  \")
-    trimmed = strings.Upper(trimmed)
+    trimmed = strings.ToUpper(trimmed)
     println(trimmed)
 }
 ",
@@ -3800,11 +3800,11 @@ fn many_sleeping_tasks_wait_together() {
     let source = "package main
 import \"zore/time\"
 async func nap(ms int) int {
-    time.Sleep(ms)
+    time.Sleep(ms * time.Millisecond)
     return ms
 }
 func main() {
-    let start = time.Millis()
+    let start = time.Now()
     var tasks = Array<Task<int>>{}
     for var i = 0; i < 300; i += 1 { tasks.push(go nap(250)) }
     var total = 0
@@ -3812,13 +3812,13 @@ func main() {
         let found, task = tasks.pop()
         if found { total += task.wait() }
     }
-    let elapsed = time.Millis() - start
+    let elapsed = time.Since(start) / time.Millisecond
     println(total)
     println(elapsed >= 250)
     println(elapsed < 2000)
     time.Sleep(0)
     time.Sleep(-5)
-    println(time.Millis() >= start)
+    println(time.Now() >= start)
 }";
     prints(source, "75000\ntrue\ntrue\ntrue\n");
 }
@@ -3828,7 +3828,7 @@ fn a_sleeping_task_does_not_hold_up_a_busy_one() {
     let source = "package main
 import \"zore/time\"
 func sleeper(done channel<string>) {
-    time.Sleep(150)
+    time.Sleep(150 * time.Millisecond)
     done.send(\"slept\")
 }
 func counter(done channel<string>) {
@@ -3856,32 +3856,32 @@ fn files_are_written_and_read_whole() {
     let source = format!(
         "package main
 import \"zore/os\"
+import \"zore/strings\"
+func read(path string) string {{
+    let data, err = os.ReadFile(path)
+    if err != nil {{ return \"error\" }}
+    let text, _ = strings.FromBytes(data[:])
+    return text
+}}
 func main() {{
-    let wrote = os.WriteFile(\"{path}\", \"héllo\\nfile\")
+    let wrote = os.WriteFile(\"{path}\", strings.Bytes(\"héllo\\nfile\")[:], 0o644)
     println(wrote == nil)
-    let text, err = os.ReadFile(\"{path}\")
-    println(err == nil)
-    println(text)
-    let rewrote = os.WriteFile(\"{path}\", \"short\")
+    println(read(\"{path}\"))
+    let rewrote = os.WriteFile(\"{path}\", strings.Bytes(\"short\")[:], 0o600)
     println(rewrote == nil)
-    let again, err2 = os.ReadFile(\"{path}\")
-    println(again)
-    println(err2 == nil)
+    println(read(\"{path}\"))
     let _, failure = os.ReadFile(\"{missing}\")
     println(failure != nil)
 }}",
         path = path.display(),
         missing = missing.display()
     );
-    prints(
-        &source,
-        "true\ntrue\nhéllo\nfile\ntrue\nshort\ntrue\ntrue\n",
-    );
+    prints(&source, "true\nhéllo\nfile\ntrue\nshort\ntrue\n");
     assert_eq!(std::fs::read_to_string(&path).unwrap(), "short");
 }
 
 #[test]
-fn file_errors_name_the_operation_and_reject_bad_text() {
+fn file_reads_keep_any_bytes_and_errors_name_the_operation() {
     let dir = TempDir::new().unwrap();
     let binary = dir.path().join("binary.dat");
     std::fs::write(&binary, [0x66, 0xff, 0xfe]).unwrap();
@@ -3889,35 +3889,39 @@ fn file_errors_name_the_operation_and_reject_bad_text() {
     let source = format!(
         "package main
 import \"zore/os\"
+import \"zore/strings\"
 func main() {{
-    let _, bad = os.ReadFile(\"{binary}\")
-    println(bad == error(\"os.ReadFile: invalid UTF-8\"))
-    let write = os.WriteFile(\"{nowhere}\", \"x\")
+    let data, err = os.ReadFile(\"{binary}\")
+    println(err == nil)
+    println(data.len())
+    let _, bad = strings.FromBytes(data[:])
+    println(bad == error(\"strings.FromBytes: invalid UTF-8\"))
+    let write = os.WriteFile(\"{nowhere}\", Array<byte>{{120}}[:], 0o644)
     println(write != nil)
+    let _, missing = os.ReadFile(\"{nowhere}\")
+    println(missing != nil)
 }}",
         binary = binary.display(),
         nowhere = nowhere.display()
     );
-    prints(&source, "true\ntrue\n");
+    prints(&source, "true\n3\ntrue\ntrue\ntrue\n");
 }
 
 #[test]
 fn standard_input_is_read_line_by_line() {
     let source = "package main
-import \"zore/io\"
+import \"zore/bufio\"
+import \"zore/os\"
 func main() {
+    var input = bufio.NewScanner(os.Stdin())
     var lines = 0
     var length = 0
-    for {
-        let line, err = io.ReadLine()
-        if err != nil {
-            println(err == error(\"EOF\"))
-            break
-        }
+    for input.Scan() {
         lines += 1
-        length += line.len()
-        println(\"[\" + line + \"]\")
+        length += input.Text().len()
+        println(\"[\" + input.Text() + \"]\")
     }
+    println(input.Err() == nil)
     println(lines)
     println(length)
 }";
@@ -3929,26 +3933,29 @@ func main() {
     );
     let bad = run_with_input(
         "package main
-import \"zore/io\"
+import \"zore/bufio\"
+import \"zore/os\"
 func main() {
-    let _, err = io.ReadLine()
-    println(err == error(\"io.ReadLine: invalid UTF-8\"))
-    let line, _ = io.ReadLine()
-    println(line)
+    var input = bufio.NewScanner(os.Stdin())
+    println(input.Scan())
+    println(input.Err() == error(\"bufio.Scanner: invalid UTF-8\"))
+    println(input.Scan())
 }",
         b"\xff\xfe\nok\n",
     );
     assert_eq!(bad.status.code(), Some(0), "{}", stderr(&bad));
-    assert_eq!(stdout(&bad), "true\nok\n");
+    assert_eq!(stdout(&bad), "false\ntrue\nfalse\n");
 }
 
 #[test]
 fn a_task_waiting_for_input_does_not_stop_the_others() {
     let source = "package main
-import \"zore/io\"
+import \"zore/bufio\"
+import \"zore/os\"
 func reader(done channel<string>) {
-    let line, _ = io.ReadLine()
-    done.send(line)
+    var input = bufio.NewScanner(os.Stdin())
+    _ = input.Scan()
+    done.send(input.Text())
 }
 func ticker(done channel<string>) {
     var n = 0
@@ -3972,6 +3979,7 @@ func main() {
 
 const ECHO_PRELUDE: &str = "
 import \"zore/net\"
+import \"zore/strings\"
 func digits(n int) string {
     if n == 0 { return \"0\" }
     var text = \"\"
@@ -3983,13 +3991,20 @@ func digits(n int) string {
     }
     return text
 }
+func buffer(size int) Array<byte> {
+    var data = Array<byte>{}
+    for var i = 0; i < size; i += 1 { data.push(0) }
+    return data
+}
 func echo(conn own net.Conn) int {
     var total = 0
+    var buf = buffer(64)
     for {
-        let text, err = conn.Read(64)
+        let count, err = conn.Read(buf[:])
         if err != nil { return total }
-        total += text.len()
-        if conn.Write(text) != nil { return total }
+        total += count
+        let _, writeErr = conn.Write(buf[:count])
+        if writeErr != nil { return total }
     }
 }
 func serve(listener own net.Listener, clients int) int {
@@ -4006,33 +4021,39 @@ func serve(listener own net.Listener, clients int) int {
     }
     return total
 }
-func client(port int, message string, chunk int) string {
-    let conn, err = net.Dial(\"127.0.0.1:\" + digits(port))
+func client(address string, message string, chunk int) string {
+    let conn, err = net.Dial(\"tcp\", address)
     if err != nil { return \"dial failed\" }
-    if conn.Write(message) != nil { return \"write failed\" }
+    let data = strings.Bytes(message)
+    let _, writeErr = conn.Write(data[:])
+    if writeErr != nil { return \"write failed\" }
     _ = conn.CloseWrite()
-    var reply = \"\"
+    var reply = Array<byte>{}
+    var buf = buffer(chunk)
     for {
-        let text, readErr = conn.Read(chunk)
-        if readErr != nil { return reply }
-        reply += text
+        let count, readErr = conn.Read(buf[:])
+        if readErr != nil {
+            let text, _ = strings.FromBytes(reply[:])
+            return text
+        }
+        for var i = 0; i < count; i += 1 { reply.push(buf[i]) }
     }
 }
 ";
 
 #[test]
-fn a_server_echoes_text_to_several_clients_without_splitting_characters() {
+fn a_server_echoes_bytes_to_several_clients_in_any_chunk_size() {
     let source = format!(
         "package main
 {ECHO_PRELUDE}
 func main() {{
-    let listener, err = net.Listen(\"127.0.0.1:0\")
+    let listener, err = net.Listen(\"tcp\", \"127.0.0.1:0\")
     if err != nil {{ println(\"listen failed\"); return }}
-    let port = listener.Port()
+    let address = listener.Addr()
     let server = go serve(listener, 3)
-    let a = go client(port, \"hello\", 64)
-    let b = go client(port, \"héllo wörld ✓\", 1)
-    let c = go client(port, \"x\", 5)
+    let a = go client(address, \"hello\", 64)
+    let b = go client(address, \"héllo wörld ✓\", 1)
+    let c = go client(address, \"x\", 5)
     println(a.wait())
     println(b.wait())
     println(c.wait())
@@ -4048,13 +4069,13 @@ fn hundreds_of_connections_share_the_event_loop() {
         "package main
 {ECHO_PRELUDE}
 func main() {{
-    let listener, err = net.Listen(\"127.0.0.1:0\")
+    let listener, err = net.Listen(\"tcp\", \"127.0.0.1:0\")
     if err != nil {{ println(\"listen failed\"); return }}
-    let port = listener.Port()
+    let address = listener.Addr()
     let server = go serve(listener, 200)
     var clients = Array<Task<string>>{{}}
     for var i = 0; i < 200; i += 1 {{
-        clients.push(go client(port, \"message \" + digits(i), 7))
+        clients.push(go client(address, \"message \" + digits(i), 7))
     }}
     var bytes = 0
     for clients.len() > 0 {{
@@ -4075,32 +4096,25 @@ func main() {{
 fn dropping_a_connection_ends_the_peers_stream() {
     let source = "package main
 import \"zore/net\"
+import \"zore/strings\"
 func greet(listener own net.Listener) {
     let conn, err = listener.Accept()
     if err != nil { return }
-    _ = conn.Write(\"hi\")
+    let _, _ = conn.Write(strings.Bytes(\"hi\")[:])
     drop(conn)
 }
-func digits(n int) string {
-    var text = \"\"
-    var rest = n
-    for rest > 0 {
-        let d = rest % 10
-        text = \"0123456789\"[d:d + 1] + text
-        rest = rest / 10
-    }
-    return text
-}
 func main() {
-    let listener, err = net.Listen(\"127.0.0.1:0\")
+    let listener, err = net.Listen(\"tcp\", \"127.0.0.1:0\")
     if err != nil { return }
-    let port = listener.Port()
+    let address = listener.Addr()
     go greet(listener)
-    let conn, derr = net.Dial(\"127.0.0.1:\" + digits(port))
+    let conn, derr = net.Dial(\"tcp\", address)
     if derr != nil { println(\"dial failed\"); return }
-    let first, _ = conn.Read(10)
+    var buf = strings.Bytes(\"..........\")
+    let count, _ = conn.Read(buf[:])
+    let first, _ = strings.FromBytes(buf[:count])
     println(first)
-    let _, end = conn.Read(10)
+    let _, end = conn.Read(buf[:])
     println(end == error(\"EOF\"))
 }";
     prints(source, "hi\ntrue\n");
@@ -4110,57 +4124,79 @@ func main() {
 fn network_errors_are_reported_and_closed_handles_fail() {
     let source = "package main
 import \"zore/net\"
+import \"zore/strings\"
 func main() {
     let conns = channel<net.Conn>(1)
     conns.close()
     let zero, _ = conns.receive()
-    let text, err = zero.Read(10)
-    println(text.len())
-    println(err != nil)
-    println(zero.Write(\"x\") != nil)
+    var buf = Array<byte>{0, 0}
+    let count, err = zero.Read(buf[:])
+    println(count)
+    println(err == error(\"net.Read: not an open connection\"))
+    let _, writeErr = zero.Write(buf[:])
+    println(writeErr == error(\"net.Write: not an open connection\"))
     println(zero.CloseWrite() != nil)
+    println(zero.LocalAddr().len() + zero.RemoteAddr().len())
+    println(zero.SetDeadline(1) != nil)
     let listeners = channel<net.Listener>(1)
     listeners.close()
     let closed, _ = listeners.receive()
     let _, accept = closed.Accept()
-    println(accept != nil)
-    println(closed.Port())
-    let _, refused = net.Dial(\"127.0.0.1:1\")
+    println(accept == error(\"net.Accept: not an open listener\"))
+    println(closed.Addr().len())
+    let _, refused = net.Dial(\"tcp\", \"127.0.0.1:1\")
     println(refused != nil)
-    let _, malformed = net.Listen(\"not an address\")
+    let _, malformed = net.Listen(\"tcp\", \"not an address\")
     println(malformed != nil)
-    let open, _ = net.Listen(\"127.0.0.1:0\")
-    println(open.Port() > 0)
+    let _, unknown = net.Listen(\"udp\", \"127.0.0.1:0\")
+    println(unknown == error(\"net.Listen: unknown network udp\"))
+    let _, unknownDial = net.Dial(\"unix\", \"x\")
+    println(unknownDial == error(\"net.Dial: unknown network unix\"))
+    let _, wrongFamily = net.Listen(\"tcp6\", \"127.0.0.1:0\")
+    println(wrongFamily != nil)
+    let open, _ = net.Listen(\"tcp4\", \"127.0.0.1:0\")
+    println(strings.HasPrefix(open.Addr(), \"127.0.0.1:\"))
+    println(open.Close() == nil)
+    println(zero.Close() == error(\"net.Close: not an open connection or listener\"))
 }";
-    prints(source, "0\ntrue\ntrue\ntrue\ntrue\n-1\ntrue\ntrue\ntrue\n");
+    prints(
+        source,
+        "0\ntrue\ntrue\ntrue\n0\ntrue\ntrue\n0\ntrue\ntrue\ntrue\ntrue\ntrue\ntrue\ntrue\ntrue\n",
+    );
 }
 
 #[test]
-fn a_peer_that_sends_bytes_that_are_not_text_gives_an_error() {
+fn bytes_from_a_peer_that_are_not_text_arrive_unchanged() {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
     let peer = std::thread::spawn(move || {
-        for bytes in [&[b'o', b'k', 0xC3][..], &[0xFF, b'x'][..]] {
-            let (mut stream, _) = listener.accept().unwrap();
-            stream.write_all(bytes).unwrap();
-        }
+        let (mut stream, _) = listener.accept().unwrap();
+        stream.write_all(&[b'o', b'k', 0xC3, 0xFF]).unwrap();
     });
     let source = format!(
         "package main
 import \"zore/net\"
+import \"zore/strings\"
 func main() {{
-    let first, _ = net.Dial(\"127.0.0.1:{port}\")
-    let a, errA = first.Read(16)
-    println(a)
-    println(errA == nil)
-    let b, errB = first.Read(16)
-    println(errB == error(\"net.Read: invalid UTF-8\"))
-    let second, _ = net.Dial(\"127.0.0.1:{port}\")
-    let c, errC = second.Read(16)
-    println(errC == error(\"net.Read: invalid UTF-8\"))
+    let conn, _ = net.Dial(\"tcp\", \"127.0.0.1:{port}\")
+    var all = Array<byte>{{}}
+    var buf = Array<byte>{{0, 0, 0, 0, 0, 0, 0, 0}}
+    for {{
+        let count, err = conn.Read(buf[:])
+        if err != nil {{
+            println(err == error(\"EOF\"))
+            break
+        }}
+        for var i = 0; i < count; i += 1 {{ all.push(buf[i]) }}
+    }}
+    println(all.len())
+    println(all[2])
+    println(all[3])
+    let _, bad = strings.FromBytes(all[:])
+    println(bad != nil)
 }}"
     );
-    prints(&source, "ok\ntrue\ntrue\ntrue\n");
+    prints(&source, "true\n4\n195\n255\ntrue\n");
     peer.join().unwrap();
 }
 
@@ -4179,7 +4215,7 @@ func work(done channel<int>) {
     done.send(n)
 }
 func main() {
-    let listener, err = net.Listen(\"127.0.0.1:0\")
+    let listener, err = net.Listen(\"tcp\", \"127.0.0.1:0\")
     if err != nil { return }
     let pending = go wait(listener)
     let done = channel<int>()
@@ -4269,12 +4305,12 @@ fn waiting_on_a_timer_a_helper_thread_or_a_busy_task_is_not_a_deadlock() {
 import \"zore/time\"
 import \"zore/os\"
 func late(ch channel<int>) {
-    time.Sleep(200)
+    time.Sleep(200 * time.Millisecond)
     ch.send(5)
 }
 func reader(ch channel<string>) {
-    let text, _ = os.ReadFile(\"/dev/null\")
-    ch.send(\"read\" + text)
+    let data, _ = os.ReadFile(\"/dev/null\")
+    if data.len() == 0 { ch.send(\"read\") } else { ch.send(\"data\") }
 }
 func busy(ch channel<int>) {
     var n = 0
@@ -4322,12 +4358,12 @@ func digits(n int) string {
     return text
 }
 func main() {
-    let listener, _ = net.Listen(\"127.0.0.1:0\")
-    let port = listener.Port()
+    let listener, _ = net.Listen(\"tcp\", \"127.0.0.1:0\")
+    let address = listener.Addr()
     let done = channel<string>()
     go accept(listener, done)
-    time.Sleep(150)
-    let conn, _ = net.Dial(\"127.0.0.1:\" + digits(port))
+    time.Sleep(150 * time.Millisecond)
+    let conn, _ = net.Dial(\"tcp\", address)
     let result, _ = done.receive()
     println(result)
 }";
@@ -4410,7 +4446,7 @@ import \"zore/time\"
 func holder(m Mutex<int>, events channel<string>) {
     m.withLock(func(value mut int) {
         events.send(\"holder locked\")
-        time.Sleep(400)
+        time.Sleep(400 * time.Millisecond)
         value = 7
         events.send(\"holder done\")
     })
@@ -4460,10 +4496,10 @@ func main() {
         for var id = 1; id <= 4; id += 1 {
             go take(m, id, ready)
             let _, _ = ready.receive()
-            time.Sleep(200)
+            time.Sleep(200 * time.Millisecond)
         }
     })
-    time.Sleep(500)
+    time.Sleep(500 * time.Millisecond)
     let result = m.withLock(func(order mut Array<int>) int {
         var code = 0
         for var i = 0; i < order.len(); i += 1 {
@@ -4494,7 +4530,7 @@ func main() {
     let m = mutex(0)
     println(m.isPoisoned())
     let t = go breaker(m)
-    time.Sleep(200)
+    time.Sleep(200 * time.Millisecond)
     println(m.isPoisoned())
     m.withLock(func(value mut int) { println(\"unreachable\") })
 }";
@@ -4544,7 +4580,7 @@ fn two_tasks_locking_in_opposite_order_are_a_deadlock() {
 import \"zore/time\"
 func lockBoth(first Mutex<int>, second Mutex<int>, done channel<bool>) {
     first.withLock(func(a mut int) {
-        time.Sleep(100)
+        time.Sleep(100 * time.Millisecond)
         second.withLock(func(b mut int) { b += a })
     })
     done.send(true)
@@ -4567,7 +4603,7 @@ fn a_mutex_works_from_async_functions_and_hundreds_of_waiters() {
 import \"zore/time\"
 async func add(m Mutex<int>, amount int) {
     m.withLock(func(value mut int) {
-        time.Sleep(1)
+        time.Sleep(1 * time.Millisecond)
         value += amount
     })
 }
@@ -4749,7 +4785,7 @@ func main() {
 }
 
 #[test]
-fn files_hold_any_bytes_and_text_reads_still_check_utf8() {
+fn files_hold_any_bytes() {
     let dir = TempDir::new().unwrap();
     let path = dir.path().join("data.bin").display().to_string();
     let source = format!(
@@ -4757,22 +4793,17 @@ fn files_hold_any_bytes_and_text_reads_still_check_utf8() {
 import \"zore/os\"
 func main() {{
     let data = Array<byte>{{0, 255, 10, 0, 128}}
-    println(os.WriteBytes(\"{path}\", data[:]) == nil)
-    let back, err = os.ReadBytes(\"{path}\")
+    println(os.WriteFile(\"{path}\", data[:], 0o644) == nil)
+    let back, err = os.ReadFile(\"{path}\")
     println(err == nil)
     println(back.len())
     for i, b in back {{ println(b) }}
-    let _, textErr = os.ReadFile(\"{path}\")
-    println(textErr == error(\"os.ReadFile: invalid UTF-8\"))
-    let _, missing = os.ReadBytes(\"{path}.missing\")
+    let _, missing = os.ReadFile(\"{path}.missing\")
     println(missing != nil)
-    println(os.WriteBytes(\"{path}.dir/none\", data[0:0]) != nil)
+    println(os.WriteFile(\"{path}.dir/none\", data[0:0], 0o644) != nil)
 }}"
     );
-    prints(
-        &source,
-        "true\ntrue\n5\n0\n255\n10\n0\n128\ntrue\ntrue\ntrue\n",
-    );
+    prints(&source, "true\ntrue\n5\n0\n255\n10\n0\n128\ntrue\ntrue\n");
 }
 
 #[test]
@@ -4782,11 +4813,13 @@ fn a_connection_moves_raw_bytes_in_both_directions() {
 {ECHO_PRELUDE}
 func bounce(conn own net.Conn) int {{
     var total = 0
+    var buf = buffer(3)
     for {{
-        let data, err = conn.ReadBytes(3)
+        let count, err = conn.Read(buf[:])
         if err != nil {{ return total }}
-        total += data.len()
-        if conn.WriteBytes(data[:]) != nil {{ return total }}
+        total += count
+        let _, writeErr = conn.Write(buf[:count])
+        if writeErr != nil {{ return total }}
     }}
 }}
 func accept(listener own net.Listener) int {{
@@ -4795,20 +4828,24 @@ func accept(listener own net.Listener) int {{
     return bounce(conn)
 }}
 func main() {{
-    let listener, err = net.Listen(\"127.0.0.1:0\")
+    let listener, err = net.Listen(\"tcp\", \"127.0.0.1:0\")
     if err != nil {{ println(\"listen failed\"); return }}
-    let port = listener.Port()
+    let address = listener.Addr()
     let server = go accept(listener)
-    let conn, dialErr = net.Dial(\"127.0.0.1:\" + digits(port))
+    let conn, dialErr = net.Dial(\"tcp\", address)
     if dialErr != nil {{ println(\"dial failed\"); return }}
+    println(conn.RemoteAddr() == address)
     let sent = Array<byte>{{0, 255, 254, 1, 2, 3, 128, 0}}
-    println(conn.WriteBytes(sent[:]) == nil)
+    let count, writeErr = conn.Write(sent[:])
+    println(count)
+    println(writeErr == nil)
     _ = conn.CloseWrite()
     var seen = Array<byte>{{}}
+    var buf = buffer(64)
     for {{
-        let data, readErr = conn.ReadBytes(64)
+        let got, readErr = conn.Read(buf[:])
         if readErr != nil {{ break }}
-        for i, b in data {{ seen.push(b) }}
+        for var i = 0; i < got; i += 1 {{ seen.push(buf[i]) }}
     }}
     println(seen.len())
     var same = true
@@ -4816,12 +4853,13 @@ func main() {{
         if seen[i] != b {{ same = false }}
     }}
     println(same)
-    let _, zeroErr = conn.ReadBytes(0)
-    println(zeroErr != nil)
+    let empty, emptyErr = conn.Read(buf[:0])
+    println(empty)
+    println(emptyErr == nil)
     println(server.wait())
 }}"
     );
-    prints(&source, "true\n8\ntrue\ntrue\n8\n");
+    prints(&source, "true\n8\ntrue\n8\ntrue\n0\ntrue\n8\n");
 }
 
 #[test]
@@ -4830,25 +4868,25 @@ fn after_gives_a_channel_that_fires_once_and_closes() {
         "package main
 import \"zore/time\"
 func main() {
-    let started = time.Millis()
-    let timer = time.After(60)
+    let started = time.Now()
+    let timer = time.After(60 * time.Millisecond)
     let first, ok = timer.receive()
     println(first)
     println(ok)
-    println(time.Millis() - started >= 60)
+    println(time.Since(started) >= 60 * time.Millisecond)
     let again, more = timer.receive()
     println(again)
     println(more)
     let instant = time.After(0)
     let _, fired = instant.receive()
     println(fired)
-    let slow = time.After(5000)
-    let quick = time.After(20)
+    let slow = time.After(5000 * time.Millisecond)
+    let quick = time.After(20 * time.Millisecond)
     select {
         case slow.receive() { println(\"slow\") }
         case quick.receive() { println(\"quick\") }
     }
-    println(time.Millis() - started < 3000)
+    println(time.Since(started) < 3000 * time.Millisecond)
 }",
         "true\ntrue\ntrue\nfalse\nfalse\ntrue\nquick\ntrue\n",
     );
@@ -4863,7 +4901,7 @@ func main() {
     let never = channel<int>()
     select {
         case let v, ok = never.receive() { println(v) }
-        case time.After(40).receive() { println(\"timed out\") }
+        case time.After(40 * time.Millisecond).receive() { println(\"timed out\") }
     }
 }",
         "timed out\n",
@@ -4871,54 +4909,70 @@ func main() {
 }
 
 #[test]
-fn a_token_cancels_once_and_wakes_sleepers_and_children() {
+fn a_context_cancels_once_and_reaches_its_children() {
     prints(
         "package main
-import \"zore/cancel\"
+import \"zore/context\"
 import \"zore/time\"
-func worker(token cancel.Token, results channel<int>) {
+func worker(ctx context.Context, results channel<int>) {
     var steps = 0
     for {
-        if !token.Sleep(10) { break }
-        steps += 1
+        select {
+            case ctx.Done().receive() {
+                results.send(steps)
+                return
+            }
+            case time.After(10 * time.Millisecond).receive() {
+                steps += 1
+            }
+        }
     }
-    results.send(steps)
 }
 func main() {
-    let token = cancel.New()
-    println(token.Cancelled())
+    let ctx, cancel = context.WithCancel(context.Background())
+    println(ctx.Err() == nil)
     let results = channel<int>(1)
-    go worker(token, results)
-    time.Sleep(60)
-    token.Cancel()
-    token.Cancel()
-    println(token.Cancelled())
+    go worker(ctx, results)
+    time.Sleep(60 * time.Millisecond)
+    cancel()
+    cancel()
+    println(ctx.Err() == error(\"context canceled\"))
     let steps, _ = results.receive()
     println(steps >= 2)
-    println(token.Sleep(5000))
 
-    let limit = cancel.WithTimeout(30)
-    let child = limit.Child()
-    let grandchild = child.Child()
-    let other = cancel.New()
+    let limit, stop = context.WithTimeout(context.Background(), 30 * time.Millisecond)
+    let child, stopChild = context.WithCancel(limit)
+    let grandchild, stopGrandchild = context.WithCancel(child)
+    let other, stopOther = context.WithCancel(context.Background())
     let _, _ = grandchild.Done().receive()
-    println(limit.Cancelled())
-    println(child.Cancelled())
-    println(other.Cancelled())
-    println(other.Sleep(20))
+    println(limit.Err() == error(\"context deadline exceeded\"))
+    println(child.Err() == error(\"context deadline exceeded\"))
+    println(grandchild.Err() == error(\"context deadline exceeded\"))
+    println(other.Err() == nil)
+    let deadline, has = child.Deadline()
+    println(has)
+    println(deadline > 0)
+    stop()
+    println(limit.Err() == error(\"context deadline exceeded\"))
 
-    let quiet = cancel.New()
-    let kid = quiet.Child()
-    kid.Cancel()
-    println(quiet.Cancelled())
-    println(kid.Cancelled())
+    let quiet, stopQuiet = context.WithCancel(context.Background())
+    let kid, stopKid = context.WithCancel(quiet)
+    stopKid()
+    println(quiet.Err() == nil)
+    println(kid.Err() == error(\"context canceled\"))
+    let _, none = context.Background().Deadline()
+    println(none)
+    stopChild()
+    stopGrandchild()
+    stopOther()
+    stopQuiet()
 }",
-        "false\ntrue\ntrue\nfalse\ntrue\ntrue\nfalse\ntrue\nfalse\ntrue\n",
+        "true\ntrue\ntrue\ntrue\ntrue\ntrue\ntrue\ntrue\ntrue\ntrue\ntrue\ntrue\nfalse\n",
     );
 }
 
 #[test]
-fn reads_and_accepts_give_up_after_their_time_limit() {
+fn reads_and_accepts_give_up_at_their_deadline() {
     let source = format!(
         "package main
 import \"zore/time\"
@@ -4927,33 +4981,35 @@ func quiet(listener own net.Listener, release channel<bool>) {{
     let conn, err = listener.Accept()
     if err != nil {{ return }}
     let _, _ = release.receive()
-    _ = conn.Write(\"late\")
+    let _, _ = conn.Write(strings.Bytes(\"late\")[:])
 }}
 func main() {{
-    let listener, err = net.Listen(\"127.0.0.1:0\")
+    let listener, err = net.Listen(\"tcp\", \"127.0.0.1:0\")
     if err != nil {{ println(\"listen failed\"); return }}
-    let port = listener.Port()
-    println(listener.SetTimeout(40) == nil)
-    let started = time.Millis()
+    let address = listener.Addr()
+    let started = time.Now()
+    println(listener.SetDeadline(started + 40 * time.Millisecond) == nil)
     let _, acceptErr = listener.Accept()
     println(acceptErr == error(\"net.Accept: timed out\"))
-    println(time.Millis() - started >= 40)
-    println(listener.SetTimeout(0) == nil)
+    println(time.Since(started) >= 40 * time.Millisecond)
+    println(listener.SetDeadline(0) == nil)
 
     let release = channel<bool>(1)
     let server = go quiet(listener, release)
-    let conn, dialErr = net.DialTimeout(\"127.0.0.1:\" + digits(port), 2000)
+    let conn, dialErr = net.DialTimeout(\"tcp\", address, 2 * time.Second)
     if dialErr != nil {{ println(\"dial failed\"); return }}
-    println(conn.SetTimeout(50) == nil)
-    let first = time.Millis()
-    let _, readErr = conn.Read(16)
+    let first = time.Now()
+    println(conn.SetReadDeadline(first + 50 * time.Millisecond) == nil)
+    var buf = buffer(16)
+    let _, readErr = conn.Read(buf[:])
     println(readErr == error(\"net.Read: timed out\"))
-    println(time.Millis() - first >= 50)
-    let _, bytesErr = conn.ReadBytes(16)
-    println(bytesErr == error(\"net.ReadBytes: timed out\"))
+    println(time.Since(first) >= 50 * time.Millisecond)
+    let _, againErr = conn.Read(buf[:])
+    println(againErr == error(\"net.Read: timed out\"))
     release.send(true)
-    println(conn.SetTimeout(0) == nil)
-    let text, laterErr = conn.Read(16)
+    println(conn.SetDeadline(0) == nil)
+    let count, laterErr = conn.Read(buf[:])
+    let text, _ = strings.FromBytes(buf[:count])
     println(text)
     println(laterErr == nil)
     server.wait()
@@ -4969,51 +5025,57 @@ func main() {{
 fn a_write_to_a_peer_that_never_reads_gives_up() {
     let source = format!(
         "package main
+import \"zore/time\"
 {ECHO_PRELUDE}
 func hold(listener own net.Listener, release channel<bool>) {{
     let conn, err = listener.Accept()
     if err != nil {{ return }}
     let _, _ = release.receive()
 }}
-func flood(conn net.Conn) error {{
+func flood(conn net.Conn) (int, error) {{
     var chunk = Array<byte>{{}}
     for var i = 0; i < 65536; i += 1 {{ chunk.push(7) }}
+    var total = 0
     for var i = 0; i < 4000; i += 1 {{
-        let writeErr = conn.WriteBytes(chunk[:])
-        if writeErr != nil {{ return writeErr }}
+        let sent, writeErr = conn.Write(chunk[:])
+        total += sent
+        if writeErr != nil {{ return total, writeErr }}
     }}
-    return nil
+    return total, nil
 }}
 func main() {{
-    let listener, err = net.Listen(\"127.0.0.1:0\")
+    let listener, err = net.Listen(\"tcp\", \"127.0.0.1:0\")
     if err != nil {{ println(\"listen failed\"); return }}
-    let port = listener.Port()
+    let address = listener.Addr()
     let release = channel<bool>(1)
     let server = go hold(listener, release)
-    let conn, dialErr = net.Dial(\"127.0.0.1:\" + digits(port))
+    let conn, dialErr = net.Dial(\"tcp\", address)
     if dialErr != nil {{ println(\"dial failed\"); return }}
-    println(conn.SetTimeout(100) == nil)
-    println(flood(conn) == error(\"net.WriteBytes: timed out\"))
+    println(conn.SetWriteDeadline(time.Now() + 100 * time.Millisecond) == nil)
+    let total, floodErr = flood(conn)
+    println(floodErr == error(\"net.Write: timed out\"))
+    println(total > 0)
     release.send(true)
     server.wait()
 }}"
     );
-    prints(&source, "true\ntrue\n");
+    prints(&source, "true\ntrue\ntrue\n");
 }
 
 #[test]
-fn time_limits_reject_closed_handles_and_connects_that_fail() {
+fn deadlines_reject_closed_handles_and_connects_that_fail() {
     prints(
         "package main
 import \"zore/net\"
+import \"zore/time\"
 func main() {
     let holder = channel<net.Conn>(1)
     holder.close()
     let zero, _ = holder.receive()
-    println(zero.SetTimeout(10) == error(\"net.SetTimeout: not an open connection or listener\"))
-    let _, refused = net.DialTimeout(\"127.0.0.1:1\", 500)
+    println(zero.SetDeadline(time.Now()) == error(\"net.SetDeadline: not an open connection or listener\"))
+    let _, refused = net.DialTimeout(\"tcp\", \"127.0.0.1:1\", 500 * time.Millisecond)
     println(refused != nil)
-    let _, bad = net.DialTimeout(\"not an address\", 500)
+    let _, bad = net.DialTimeout(\"tcp\", \"not an address\", 500 * time.Millisecond)
     println(bad != nil)
 }",
         "true\ntrue\ntrue\n",
@@ -5375,7 +5437,7 @@ fn async_state_machines_preserve_mutable_borrows_and_views_across_pending_childr
     prints(
         r#"package main
 import "zore/time"
-func delayed(n int) int { time.Sleep(20); return n }
+func delayed(n int) int { time.Sleep(20 * time.Millisecond); return n }
 async func change(data mut [int; 2], t own Task<int>) {
     let n = await t
     data[1] += n
@@ -5402,7 +5464,7 @@ fn async_state_machines_evaluate_arguments_once_and_keep_loop_closures_alive() {
     prints(
         r#"package main
 import "zore/time"
-func delayed(n int) int { time.Sleep(2); return n }
+func delayed(n int) int { time.Sleep(2 * time.Millisecond); return n }
 func next(counter Mutex<int>) int {
     return counter.withLock(func(n mut int) int { n += 1; return n })
 }
@@ -5438,7 +5500,7 @@ import "zore/time"
 type Resource struct { Name string }
 func (r mut Resource) drop() { println("drop " + r.Name) }
 type Pair struct { First Resource; Second Resource }
-func delayed() int { time.Sleep(20); return 7 }
+func delayed() int { time.Sleep(20 * time.Millisecond); return 7 }
 async func consume(r own Resource, t own Task<int>) int { return await t }
 async func run() int {
     let pair = Pair{First: Resource{Name: "first"}, Second: Resource{Name: "second"}}
@@ -5458,7 +5520,7 @@ fn async_state_machine_panic_runs_nested_cleanup_and_propagates_through_join() {
 import "zore/time"
 type Resource struct { Name string }
 func (r mut Resource) drop() { println("drop " + r.Name) }
-func delayed() int { time.Sleep(20); return 0 }
+func delayed() int { time.Sleep(20 * time.Millisecond); return 0 }
 async func inner(r own Resource) int {
     let t = go delayed()
     let zero = await t
@@ -5486,7 +5548,7 @@ fn async_state_machines_propagate_errors_and_return_move_values() {
         r#"package main
 import "zore/time"
 func delayed(ok bool) (int, error) {
-    time.Sleep(10)
+    time.Sleep(10 * time.Millisecond)
     if !ok { return 0, error("failed") }
     return 5, nil
 }
@@ -5546,7 +5608,7 @@ fn async_state_machines_can_await_plain_tasks_after_channel_suspension() {
     prints(
         r#"package main
 import "zore/time"
-func delayed() string { time.Sleep(10); return "ready" }
+func delayed() string { time.Sleep(10 * time.Millisecond); return "ready" }
 async func polled() string { let t = go delayed(); return await t }
 async func fallback(ch channel<bool>) string {
     let _, _ = ch.receive()
@@ -5568,7 +5630,7 @@ fn plain_tasks_join_polled_children_and_mix_with_async_channel_waiters() {
     let output = run_channel_poll_bounded(
         r#"package main
 import "zore/time"
-async func child(value int) int { time.Sleep(1); return value }
+async func child(value int) int { time.Sleep(1 * time.Millisecond); return value }
 func parent(value int) int { let task = go child(value); return task.wait() }
 func plain(ch channel<int>, ready channel<bool>) int {
     ready.send(true)
@@ -5610,7 +5672,7 @@ fn async_state_machine_task_panics_are_reported_at_both_task_boundaries() {
 import "zore/time"
 type Resource struct { Name string }
 func (r mut Resource) drop() { println("drop " + r.Name) }
-func delayed() int { time.Sleep(20); return 0 }
+func delayed() int { time.Sleep(20 * time.Millisecond); return 0 }
 async func fail(r own Resource) int {
     let t = go delayed()
     let zero = await t
@@ -5651,7 +5713,7 @@ fn async_state_machines_drop_detached_results_and_keep_work_running() {
 import "zore/time"
 type Resource struct { Name string; Done channel<bool> }
 func (r mut Resource) drop() { println("drop " + r.Name); r.Done.send(true) }
-func delayed() int { time.Sleep(10); return 7 }
+func delayed() int { time.Sleep(10 * time.Millisecond); return 7 }
 async func produce(done channel<bool>) Resource {
     let t = go delayed()
     let value = await t
@@ -6035,13 +6097,13 @@ fn timer_poll_positive_zero_and_negative_durations_match_plain_execution() {
         r#"package main
 import "zore/time"
 MODE func run() {
-    let start = time.Millis()
-    time.Sleep(25)
-    println(time.Millis() - start >= 25)
+    let start = time.Now()
+    time.Sleep(25 * time.Millisecond)
+    println(time.Since(start) >= 25 * time.Millisecond)
     time.Sleep(0)
     time.Sleep(-5)
     time.Sleep(-9223372036854775808)
-    println(time.Millis() >= start)
+    println(time.Now() >= start)
 }
 func main() { let t = go run(); t.wait() }
 "#,
@@ -6058,7 +6120,7 @@ type Job struct { Name string }
 func (j mut Job) drop() { println("drop " + j.Name) }
 MODE func change(data mut [int; 2], job own Job) {
     let view = data[:]
-    time.Sleep(5)
+    time.Sleep(5 * time.Millisecond)
     println(view[0])
     data[1] += 3
 }
@@ -6097,7 +6159,7 @@ fn timer_poll_after_select_and_internal_waits_are_not_false_deadlocks() {
     timer_poll_parity(
         r#"package main
 import "zore/time"
-MODE func produce(ch channel<int>, ms int) { time.Sleep(ms); ch.send(7); ch.close() }
+MODE func produce(ch channel<int>, ms int) { time.Sleep(ms * time.Millisecond); ch.send(7); ch.close() }
 MODE func run() {
     let ch = channel<int>()
     let t = go produce(ch, 10)
@@ -6106,7 +6168,7 @@ MODE func run() {
     println(ok)
     let _, more = ch.receive()
     println(more)
-    let timer = time.After(10)
+    let timer = time.After(10 * time.Millisecond)
     select { case let fired, open = timer.receive() { println(fired); println(open) } }
     let _, stillOpen = timer.receive()
     println(stillOpen)
@@ -6126,7 +6188,7 @@ fn timer_poll_panic_after_resumption_unwinds_owned_values_once() {
 import "zore/time"
 type Job struct {{ Name string }}
 func (j mut Job) drop() {{ println("drop " + j.Name) }}
-{mode}func run() int {{ let job = Job{{Name: "live"}}; time.Sleep(5); var zero = 0; return 1 / zero }}
+{mode}func run() int {{ let job = Job{{Name: "live"}}; time.Sleep(5 * time.Millisecond); var zero = 0; return 1 / zero }}
 func main() {{ let t = go run(); println(t.wait()) }}
 "#
         );
@@ -6142,8 +6204,8 @@ fn timer_poll_many_sleeping_tasks_and_plain_helpers_preserve_progress() {
     timer_poll_parity(
         r#"package main
 import "zore/time"
-func helper() { time.Sleep(1) }
-MODE func run() int { time.Sleep(10); helper(); return 1 }
+func helper() { time.Sleep(1 * time.Millisecond) }
+MODE func run() int { time.Sleep(10 * time.Millisecond); helper(); return 1 }
 func main() {
     var tasks = Array<Task<int>>{}
     for var i = 0; i < 2000; i += 1 { tasks.push(go run()) }
@@ -6161,7 +6223,7 @@ fn timer_poll_then_internal_wait_still_detects_deadlock() {
     let output = run_channel_poll_bounded(
         r#"package main
 import "zore/time"
-async func run() { time.Sleep(1); let ch = channel<int>(); ch.send(1) }
+async func run() { time.Sleep(1 * time.Millisecond); let ch = channel<int>(); ch.send(1) }
 func main() { let t = go run(); t.wait() }
 "#,
     );
@@ -6175,7 +6237,7 @@ fn timer_poll_detached_result_is_destroyed_after_sleep_completion() {
 import "zore/time"
 type Job struct { Done channel<bool> }
 func (j mut Job) drop() { j.Done.send(true) }
-async func run(done channel<bool>) Job { time.Sleep(1); return Job{Done: done} }
+async func run(done channel<bool>) Job { time.Sleep(1 * time.Millisecond); return Job{Done: done} }
 func main() {
     let done = channel<bool>()
     go run(done)
@@ -6252,7 +6314,7 @@ import "zore/time"
 MODE func run(m Mutex<int>) int {
     var result = 0
     for var i = 0; i < 20; i += 1 {
-        result = m.withLock(func(n mut int) int { time.Sleep(1); n += 1; return n })
+        result = m.withLock(func(n mut int) int { time.Sleep(1 * time.Millisecond); n += 1; return n })
     }
     return result
 }
@@ -6362,36 +6424,43 @@ fn io_poll_files_and_byte_views_preserve_results_and_cleanup() {
 import "zore/os"
 import "zore/strings"
 MODE func run(path string) Array<byte> {
-    let first = os.WriteFile(path, "héllo")
+    let first = os.WriteFile(path, strings.Bytes("héllo")[:], 0o644)
     println(first == nil)
-    let text, err = os.ReadFile(path)
+    let data, err = os.ReadFile(path)
     println(err == nil)
+    let text, _ = strings.FromBytes(data[:])
     println(text)
-    let data = strings.Bytes(text)
-    println(os.WriteBytes(path, data[:]) == nil)
-    let read, readErr = os.ReadBytes(path)
+    let file, openErr = os.Create(path)
+    println(openErr == nil)
+    let wrote, writeErr = file.WriteString(text + "!")
+    println(wrote)
+    println(writeErr == nil)
+    println(file.Close() == nil)
+    let read, readErr = os.ReadFile(path)
     println(readErr == nil)
     return read
 }
 func main() { let t = go run("PATH"); let bytes = t.wait(); println(bytes.len()) }
 "#
     .replace("PATH", &path);
-    io_poll_parity(&source, "true\ntrue\nhéllo\ntrue\ntrue\n6\n");
+    io_poll_parity(&source, "true\ntrue\nhéllo\ntrue\n7\ntrue\ntrue\ntrue\n7\n");
 }
 
 #[test]
-fn io_poll_socket_wrappers_suspend_and_echo_split_characters() {
+fn io_poll_socket_wrappers_suspend_and_echo_one_byte_at_a_time() {
     io_poll_parity(
         r#"package main
 import "zore/net"
-import "zore/strconv"
+import "zore/strings"
 MODE func run(conn own net.Conn) int {
     var count = 0
+    var buf = Array<byte>{0}
     for {
-        let text, err = conn.Read(1)
+        let got, err = conn.Read(buf[:])
         if err != nil { return count }
-        if conn.Write(text) != nil { return -1 }
-        count += text.len()
+        let _, writeErr = conn.Write(buf[:got])
+        if writeErr != nil { return -1 }
+        count += got
     }
 }
 MODE func serve(listener own net.Listener) int {
@@ -6400,20 +6469,29 @@ MODE func serve(listener own net.Listener) int {
     let t = go run(conn)
     return JOIN taskJoin
 }
-MODE func client(port int) string {
-    let conn, err = net.Dial("127.0.0.1:" + strconv.Itoa(port))
+MODE func client(address string) string {
+    let conn, err = net.Dial("tcp", address)
     if err != nil { return "dial failed" }
-    if conn.Write("héllo ✓") != nil { return "write failed" }
+    let _, writeErr = conn.Write(strings.Bytes("héllo ✓")[:])
+    if writeErr != nil { return "write failed" }
     _ = conn.CloseWrite()
-    var result = ""
-    for { let text, failure = conn.Read(1); if failure != nil { return result }; result += text }
+    var result = Array<byte>{}
+    var buf = Array<byte>{0}
+    for {
+        let got, failure = conn.Read(buf[:])
+        if failure != nil {
+            let text, _ = strings.FromBytes(result[:])
+            return text
+        }
+        for var i = 0; i < got; i += 1 { result.push(buf[i]) }
+    }
 }
 func main() {
-    let listener, err = net.Listen("127.0.0.1:0")
+    let listener, err = net.Listen("tcp", "127.0.0.1:0")
     if err != nil { return }
-    let port = listener.Port()
+    let address = listener.Addr()
     let server = go serve(listener)
-    let t = go client(port)
+    let t = go client(address)
     println(t.wait())
     println(server.wait())
 }
@@ -6423,19 +6501,23 @@ func main() {
 }
 
 #[test]
-fn io_poll_stdin_preserves_line_errors_and_eof() {
+fn io_poll_stdin_reads_lines_bytes_and_eof() {
     for mode in ["", "async "] {
         let source = r#"package main
-import "zore/io"
+import "zore/bufio"
+import "zore/os"
 MODE func run() int {
-    let _, bad = io.ReadLine()
-    println(bad == error("io.ReadLine: invalid UTF-8"))
-    let text, ok = io.ReadLine()
-    println(text)
+    var input = bufio.NewReader(os.Stdin())
+    let raw, rawErr = input.ReadBytes(10)
+    println(raw.len())
+    println(rawErr == nil)
+    let text, ok = input.ReadString(10)
+    println(text.len())
     println(ok == nil)
-    let last, _ = io.ReadLine()
+    let last, lastErr = input.ReadString(10)
     println(last)
-    let _, end = io.ReadLine()
+    println(lastErr == error("EOF"))
+    let _, end = input.ReadString(10)
     println(end == error("EOF"))
     return 1
 }
@@ -6444,7 +6526,7 @@ func main() { let t = go run(); println(t.wait()) }
         .replace("MODE ", mode);
         let output = run_poll_bounded(&source, Some(b"\xff\nok\r\nlast"));
         assert!(output.status.success(), "{}", stderr(&output));
-        assert_eq!(stdout(&output), "true\nok\ntrue\nlast\ntrue\n1\n");
+        assert_eq!(stdout(&output), "2\ntrue\n4\ntrue\nlast\ntrue\ntrue\n1\n");
     }
 }
 
@@ -6452,49 +6534,49 @@ func main() { let t = go run(); println(t.wait()) }
 fn io_poll_file_errors_and_question_mark_run_frame_cleanup_once() {
     let dir = TempDir::new().unwrap();
     let good = dir.path().join("good.txt");
-    let bad = dir.path().join("bad.txt");
+    let missing = dir.path().join("missing.txt");
     std::fs::write(&good, "abc").unwrap();
-    std::fs::write(&bad, [0xff]).unwrap();
     let source = r#"package main
 import "zore/os"
 type Marker struct { Name string }
 func (m mut Marker) drop() { println("drop " + m.Name) }
 MODE func run(path string) (int, error) {
     let marker = Marker{Name: "frame"}
-    let text = os.ReadFile(path)?
-    return text.len(), nil
+    let data = os.ReadFile(path)?
+    return data.len(), nil
 }
 func main() {
     let good = go run("GOOD")
     let n, ok = good.wait()
     println(n)
     println(ok == nil)
-    let bad = go run("BAD")
+    let bad = go run("MISSING")
     let zero, err = bad.wait()
     println(zero)
-    println(err == error("os.ReadFile: invalid UTF-8"))
+    println(err != nil)
 }
 "#
     .replace("GOOD", &good.display().to_string())
-    .replace("BAD", &bad.display().to_string());
+    .replace("MISSING", &missing.display().to_string());
     io_poll_parity(&source, "drop frame\n3\ntrue\ndrop frame\n0\ntrue\n");
 }
 
 #[test]
-fn io_poll_socket_timeouts_and_byte_results_match_plain_execution() {
+fn io_poll_socket_deadlines_and_byte_results_match_plain_execution() {
     io_poll_parity(
         r#"package main
 import "zore/net"
-import "zore/strconv"
+import "zore/time"
 MODE func run(listener own net.Listener) int {
-    _ = listener.SetTimeout(10)
+    _ = listener.SetDeadline(time.Now() + 10 * time.Millisecond)
     let _, timed = listener.Accept()
     println(timed == error("net.Accept: timed out"))
     return 1
 }
 MODE func echo(conn own net.Conn) int {
-    let data, err = conn.ReadBytes(1)
-    if err == nil { _ = conn.WriteBytes(data[:]) }
+    var buf = Array<byte>{0}
+    let got, err = conn.Read(buf[:])
+    if err == nil { let _, _ = conn.Write(buf[:got]) }
     return 0
 }
 MODE func serve(listener own net.Listener) int {
@@ -6502,42 +6584,51 @@ MODE func serve(listener own net.Listener) int {
     if err == nil { let t = go echo(conn); return JOIN taskJoin }
     return -1
 }
-MODE func client(port int) int {
-    let conn, err = net.DialTimeout("127.0.0.1:" + strconv.Itoa(port), 1000)
+MODE func client(address string) int {
+    let conn, err = net.DialTimeout("tcp", address, time.Second)
     if err != nil { return -1 }
     let data = Array<byte>{255}
-    println(conn.WriteBytes(data[:]) == nil)
-    let reply, ok = conn.ReadBytes(1)
+    let sent, sendErr = conn.Write(data[:])
+    println(sendErr == nil)
+    println(sent)
+    var reply = Array<byte>{0}
+    let _, ok = conn.Read(reply[:])
     println(ok == nil)
     return int(reply[0])
 }
 func main() {
-    let timer, _ = net.Listen("127.0.0.1:0")
+    let timer, _ = net.Listen("tcp", "127.0.0.1:0")
     let wait = go run(timer)
     println(wait.wait())
-    let listener, err = net.Listen("127.0.0.1:0")
+    let listener, err = net.Listen("tcp", "127.0.0.1:0")
     if err != nil { return }
-    let port = listener.Port()
+    let address = listener.Addr()
     let server = go serve(listener)
-    let t = go client(port)
+    let t = go client(address)
     println(t.wait())
     server.wait()
 }
 "#,
-        "true\n1\ntrue\ntrue\n255\n",
+        "true\n1\ntrue\n1\ntrue\n255\n",
     );
 }
 
 #[test]
-fn io_poll_cancel_library_wrappers_suspend_without_changing_their_api() {
+fn io_poll_context_library_wrappers_suspend_without_changing_their_api() {
     io_poll_parity(
         r#"package main
-import "zore/cancel"
+import "zore/context"
+import "zore/time"
 MODE func run() bool {
-    let token = cancel.WithTimeout(10)
-    let completed = token.Sleep(1000)
+    let ctx, cancel = context.WithTimeout(context.Background(), 10 * time.Millisecond)
+    var completed = false
+    select {
+        case ctx.Done().receive() {}
+        case time.After(time.Second).receive() { completed = true }
+    }
     println(completed)
-    return token.Cancelled()
+    cancel()
+    return ctx.Err() == error("context deadline exceeded")
 }
 func main() { let t = go run(); println(t.wait()) }
 "#,
@@ -6574,21 +6665,26 @@ func main() { let t = go run("PATH"); println(t.wait()) }
 fn cancellation_background_tasks_scale_as_async_frames() {
     let output = run_channel_poll_bounded(
         r#"package main
-import "zore/cancel"
+import "zore/context"
+import "zore/time"
 func main() {
-    let parent = cancel.WithTimeout(200)
-    var children = Array<cancel.Token>{}
-    for var i = 0; i < 1000; i += 1 { children.push(parent.Child()) }
+    let parent, stop = context.WithTimeout(context.Background(), 200 * time.Millisecond)
+    var children = Array<context.Context>{}
+    for var i = 0; i < 1000; i += 1 {
+        let child, _ = context.WithCancel(parent)
+        children.push(child)
+    }
     var total = 0
     for children.len() > 0 {
         let found, child = children.pop()
         if found {
             let _, _ = child.Done().receive()
-            if child.Cancelled() { total += 1 }
+            if child.Err() != nil { total += 1 }
         }
     }
     println(total)
-    println(parent.Cancelled())
+    println(parent.Err() == error("context deadline exceeded"))
+    stop()
 }
 "#,
     );
@@ -6644,7 +6740,7 @@ func main() {
     let d = double
     d(data[:])
     println(data[0] + data[1] + data[2])
-    let up = strings.Upper
+    let up = strings.ToUpper
     println(up(\"ok\"))
     let table = Table{op: add}
     let stored = table.op
@@ -7248,7 +7344,6 @@ fn pending_async_accepts_leave_workers_for_an_unrelated_task() {
         "package main
 
 import \"zore/net\"
-import \"zore/strconv\"
 
 async func acceptOne(listener own net.Listener, started channel<int>, done channel<int>) {
     started.send(1)
@@ -7267,13 +7362,13 @@ async func unrelated(ready channel<int>) {
 func round(count int) int {
     let started = channel<int>(count)
     let done = channel<int>(count)
-    var ports = Array<int>{}
+    var addresses = Array<string>{}
     for var i = 0; i < count; i += 1 {
-        let listener, err = net.Listen(\"127.0.0.1:0\")
+        let listener, err = net.Listen(\"tcp\", \"127.0.0.1:0\")
         if err != nil {
             return -1
         }
-        ports.push(listener.Port())
+        addresses.push(listener.Addr())
         go acceptOne(listener, started, done)
     }
     for var i = 0; i < count; i += 1 {
@@ -7285,7 +7380,7 @@ func round(count int) int {
     println(value)
     var conns = Array<net.Conn>{}
     for var i = 0; i < count; i += 1 {
-        let conn, err = net.Dial(\"127.0.0.1:\" + strconv.Itoa(ports[i]))
+        let conn, err = net.Dial(\"tcp\", addresses[i])
         if err != nil {
             return -2
         }
@@ -7314,10 +7409,10 @@ fn cancelling_from_another_task_wakes_a_pending_done_select_exactly_once() {
     exits_cleanly_within_bound(
         "package main
 
-import \"zore/cancel\"
+import \"zore/context\"
 
-async func waiter(token cancel.Token, other channel<int>, ready channel<int>) int {
-    let done = token.Done()
+async func waiter(ctx context.Context, other channel<int>, ready channel<int>) int {
+    let done = ctx.Done()
     ready.send(1)
     select {
         case done.receive() {
@@ -7329,8 +7424,8 @@ async func waiter(token cancel.Token, other channel<int>, ready channel<int>) in
     }
 }
 
-func plainWaiter(token cancel.Token, other channel<int>, ready channel<int>) int {
-    let done = token.Done()
+func plainWaiter(ctx context.Context, other channel<int>, ready channel<int>) int {
+    let done = ctx.Done()
     ready.send(1)
     select {
         case done.receive() {
@@ -7342,32 +7437,32 @@ func plainWaiter(token cancel.Token, other channel<int>, ready channel<int>) int
     }
 }
 
-async func canceller(token cancel.Token, ready channel<int>) {
+async func canceller(stop own func(), ready channel<int>) {
     let one, ok = ready.receive()
-    token.Cancel()
+    stop()
 }
 
 func main() {
     var asyncWins = 0
     var plainWins = 0
     for var round = 0; round < 200; round += 1 {
-        let token = cancel.New()
+        let ctx, stop = context.WithCancel(context.Background())
         let other = channel<int>()
         let ready = channel<int>(1)
-        let waiting = go waiter(token, other, ready)
-        let cancelling = go canceller(token, ready)
+        let waiting = go waiter(ctx, other, ready)
+        let cancelling = go canceller(stop, ready)
         asyncWins += waiting.wait()
         cancelling.wait()
-        if !token.Cancelled() {
+        if ctx.Err() == nil {
             println(\"not cancelled\")
         }
     }
     for var round = 0; round < 200; round += 1 {
-        let token = cancel.New()
+        let ctx, stop = context.WithCancel(context.Background())
         let other = channel<int>()
         let ready = channel<int>(1)
-        let waiting = go plainWaiter(token, other, ready)
-        let cancelling = go canceller(token, ready)
+        let waiting = go plainWaiter(ctx, other, ready)
+        let cancelling = go canceller(stop, ready)
         plainWins += waiting.wait()
         cancelling.wait()
     }
@@ -7460,6 +7555,715 @@ func main() {
 }
 ",
         "main done\n",
+    );
+}
+
+#[test]
+fn panic_calls_report_their_message_and_location_after_cleanup() {
+    panics(
+        "package main
+
+type Guard struct { Name string }
+
+func (g mut Guard) drop() { println(\"drop \" + g.Name) }
+
+func pick(n int) int {
+    if n > 0 {
+        return n
+    }
+    panic(\"n must be \" + \"positive\")
+}
+
+func main() {
+    let guard = Guard{Name: \"main\"}
+    println(pick(3))
+    println(pick(-1))
+}
+",
+        "n must be positive at ",
+        "3\ndrop main\n",
+    );
+    for (task, message, dropped) in [
+        ("later(1)", "async failed", "drop async"),
+        ("work()", "plain failed", "drop plain"),
+    ] {
+        let output = run(&format!(
+            "package main
+
+type Guard struct {{ Name string }}
+
+func (g mut Guard) drop() {{ println(\"drop \" + g.Name) }}
+
+async func later(n int) int {{
+    let g = Guard{{Name: \"async\"}}
+    if n > 0 {{ panic(\"async failed\") }}
+    return n
+}}
+
+func work() int {{
+    let g = Guard{{Name: \"plain\"}}
+    panic(\"plain failed\")
+}}
+
+func main() {{
+    let t = go {task}
+    println(t.wait())
+}}
+"
+        ));
+        assert_eq!(output.status.code(), Some(2), "{}", stderr(&output));
+        let err = stderr(&output);
+        assert!(
+            err.contains(&format!("panic in the main task: {message} at ")),
+            "{err}"
+        );
+        assert_eq!(stdout(&output), format!("{dropped}\n"));
+    }
+}
+
+#[test]
+fn string_search_trimming_splitting_and_builders_follow_their_documented_results() {
+    prints(
+        r##"package main
+
+import "zore/strings"
+
+func show(parts Array<string>) {
+    var joined = ""
+    for index, part in parts {
+        if index > 0 {
+            joined += "|"
+        }
+        joined += "<" + part + ">"
+    }
+    println(joined)
+}
+
+func main() {
+    println(strings.LastIndex("zo zorro", "zo"))
+    println(strings.LastIndex("abc", ""))
+    println(strings.LastIndex("abc", "z"))
+    println(strings.IndexByte("héllo", 108))
+    println(strings.IndexRune("héllo", 'l'))
+    println(strings.ContainsRune("héllo", 'é'))
+    println(strings.Count("cheese", "e"))
+    println(strings.Count("five", ""))
+    println(strings.EqualFold("Straße", "STRAßE"))
+    println(strings.EqualFold("Zo", "ZO!"))
+    println("[" + strings.Trim("xxhixx", "x") + "]")
+    println("[" + strings.TrimLeft("¡¡hola!!", "!¡") + "]")
+    println("[" + strings.TrimRight("¡¡hola!!", "!¡") + "]")
+    println(strings.TrimPrefix("prefix-body", "prefix-"))
+    println(strings.TrimPrefix("body", "prefix-"))
+    println(strings.TrimSuffix("file.ore", ".ore"))
+    println(strings.Replace("oink oink oink", "k", "ky", 2))
+    println(strings.Replace("oink oink oink", "oink", "moo", -1))
+    println(strings.Replace("ab", "", "-", 2))
+    show(strings.SplitN("a,b,c,d", ",", 2))
+    show(strings.SplitN("a,b,c", ",", -1))
+    println(strings.SplitN("a,b", ",", 0).len())
+    show(strings.SplitN("héy", "", 2))
+    show(strings.Fields("  one two\tthree\n "))
+    println(strings.Fields("   ").len())
+    let before, after, found = strings.Cut("key=value=x", "=")
+    println(before + " " + after)
+    println(found)
+    let whole, empty, missing = strings.Cut("plain", "=")
+    println(whole + "[" + empty + "]")
+    println(missing)
+    var b = strings.NewBuilder()
+    println(b.Len())
+    b.WriteString("zo")
+    b.WriteString("")
+    b.WriteRune('ř')
+    b.WriteString("e")
+    println(b.String())
+    println(b.Len())
+    b.Reset()
+    println("[" + b.String() + "]")
+}
+"##,
+        r##"3
+3
+-1
+3
+3
+true
+3
+5
+true
+false
+[hi]
+[hola!!]
+[¡¡hola]
+body
+body
+file
+oinky oinky oink
+moo moo moo
+-a-b
+<a>|<b,c,d>
+<a>|<b>|<c>
+0
+<h>|<éy>
+<one>|<two>|<three>
+0
+key value=x
+true
+plain[]
+false
+0
+zoře
+5
+[]
+"##,
+    );
+}
+
+#[test]
+fn number_parsing_quoting_and_unicode_helpers_follow_their_documented_results() {
+    prints(
+        r##"package main
+
+import "zore/strconv"
+import "zore/unicode"
+import "zore/unicode/utf8"
+
+func main() {
+    println(strconv.FormatInt(255, 2))
+    println(strconv.FormatInt(-255, 16))
+    println(strconv.FormatInt(35, 36))
+    for text in Array<string>{"0x1F", "-0b101", "0o17", "1_000", "z"} {
+        let value, err = strconv.ParseInt(text, 0, 64)
+        println(value)
+        println(err == nil)
+    }
+    let small, smallErr = strconv.ParseInt("200", 10, 8)
+    println(small)
+    println(smallErr == error("strconv.ParseInt: parsing \"200\": value out of range"))
+    let _, baseErr = strconv.ParseInt("1", 1, 64)
+    println(baseErr == error("strconv.ParseInt: parsing \"1\": invalid base 1"))
+    let _, boolErr = strconv.ParseBool("yes")
+    println(boolErr == error("strconv.ParseBool: parsing \"yes\": invalid syntax"))
+    println(strconv.Quote("tab\tquote\" é \u0007"))
+    println(strconv.QuoteRune('\''))
+    println(strconv.QuoteRune('é'))
+    let plain, plainErr = strconv.Unquote("\"a\\u00e9\\n\"")
+    println(plain.len())
+    println(plainErr == nil)
+    let raw, _ = strconv.Unquote("`a\\n`")
+    println(raw)
+    let single, _ = strconv.Unquote("'x'")
+    println(single)
+    let _, bad = strconv.Unquote("\"open")
+    println(bad == error("strconv.Unquote: parsing \"\\\"open\": invalid syntax"))
+    println(unicode.IsLetter('ж'))
+    println(unicode.IsLetter('7'))
+    println(unicode.IsDigit('٣'))
+    println(unicode.IsDigit('½'))
+    println(unicode.IsNumber('½'))
+    println(unicode.IsSpace(' '))
+    println(unicode.IsUpper('Ж'))
+    println(unicode.IsLower('ж'))
+    println(unicode.IsControl('\n'))
+    println(unicode.ToUpper('ж'))
+    println(unicode.ToLower('Ж'))
+    println(unicode.ToUpper('1'))
+    println(utf8.RuneLen('a'))
+    println(utf8.RuneLen('€'))
+    println(utf8.RuneCountInString("héllo"))
+    let data = Array<byte>{104, 195, 169, 255, 226, 130}
+    println(utf8.RuneCount(data[:]))
+    println(utf8.Valid(data[:3]))
+    println(utf8.Valid(data[:]))
+    let first, width = utf8.DecodeRune(data[1:])
+    println(first)
+    println(width)
+    let broken, brokenWidth = utf8.DecodeRune(data[3:])
+    println(broken == utf8.RuneError)
+    println(brokenWidth)
+    println(utf8.FullRune(data[4:]))
+    println(utf8.FullRune(data[1:2]))
+    let last, lastWidth = utf8.DecodeLastRuneInString("añ")
+    println(last)
+    println(lastWidth)
+    let _, none = utf8.DecodeRuneInString("")
+    println(none)
+    var out = Array<byte>{0, 0, 0, 0}
+    println(utf8.EncodeRune(out[:], '€'))
+    println(out[0])
+    println(utf8.RuneStart(out[1]))
+}
+"##,
+        r##"11111111
+-ff
+z
+31
+true
+-5
+true
+15
+true
+1000
+true
+0
+false
+0
+true
+true
+true
+"tab\tquote\" é \u0007"
+'\''
+'é'
+4
+true
+a\n
+x
+true
+true
+false
+true
+false
+true
+true
+true
+true
+true
+Ж
+ж
+1
+1
+3
+5
+5
+true
+false
+é
+2
+true
+1
+false
+false
+ñ
+2
+0
+3
+226
+false
+"##,
+    );
+}
+
+#[test]
+fn paths_sorting_errors_and_byte_buffers_follow_their_documented_results() {
+    prints(
+        r##"package main
+
+import "zore/bytes"
+import "zore/errors"
+import "zore/path"
+import "zore/path/filepath"
+import "zore/sort"
+import "zore/strconv"
+
+func main() {
+    for p in Array<string>{"", "a/b/../c", "/../x/./y//", "a/../..", "./", "/", "a//b/"} {
+        println("[" + path.Clean(p) + "]")
+    }
+    println(path.Join(Array<string>{"a", "", "b/", "../c"}[:]))
+    println("[" + path.Join(Array<string>{"", ""}[:]) + "]")
+    let dir, file = path.Split("static/myfile.css")
+    println(dir + " " + file)
+    println(path.Base("/a/b/"))
+    println(path.Base("///"))
+    println(path.Base(""))
+    println(path.Dir("/a/b/c.txt"))
+    println(path.Dir("c.txt"))
+    println(path.Ext("archive.tar.gz"))
+    println("[" + path.Ext("dir.d/file") + "]")
+    println(path.IsAbs("/x"))
+    println(filepath.Join(Array<string>{"usr", "lib"}[:]))
+    println(filepath.Separator)
+    let abs, absErr = filepath.Abs("/tmp/../etc")
+    println(abs)
+    println(absErr == nil)
+    let relative, _ = filepath.Abs("x")
+    println(filepath.IsAbs(relative))
+
+    var nums = Array<int>{5, -2, 9, 1, 5, 0}
+    println(sort.IntsAreSorted(nums[:]))
+    sort.Ints(nums[:])
+    var line = ""
+    for n in nums {
+        line += strconv.Itoa(n) + " "
+    }
+    println(line)
+    println(sort.IntsAreSorted(nums[:]))
+    println(sort.SearchInts(nums[:], 5))
+    println(sort.SearchInts(nums[:], 100))
+    var words = Array<string>{"pear", "apple", "fig", "apple"}
+    sort.Strings(words[:])
+    println(words[0] + " " + words[1] + " " + words[2] + " " + words[3])
+    println(sort.StringsAreSorted(words[:]))
+    println(sort.SearchStrings(words[:], "banana"))
+
+    let missing = errors.New("missing")
+    println(errors.Is(missing, error("missing")))
+    println(errors.Is(nil, missing))
+
+    let a = Array<byte>{1, 2, 3, 2, 3}
+    let b = Array<byte>{2, 3}
+    println(bytes.Equal(a[1:3], b[:]))
+    println(bytes.Compare(a[:], b[:]))
+    println(bytes.Index(a[:], b[:]))
+    println(bytes.LastIndex(a[:], b[:]))
+    println(bytes.Count(a[:], b[:]))
+    println(bytes.HasPrefix(a[:], a[:2]))
+    println(bytes.HasSuffix(a[:], b[:]))
+    println(bytes.IndexByte(a[:], 3))
+    println(bytes.Contains(a[:], Array<byte>{9}[:]))
+    var buf = bytes.NewBufferString("hé")
+    let _, _ = buf.Write(Array<byte>{33}[:])
+    _ = buf.WriteByte(63)
+    let _, _ = buf.WriteRune('ü')
+    println(buf.Len())
+    let first, _ = buf.ReadByte()
+    println(first)
+    var chunk = Array<byte>{0, 0, 0}
+    let got, readErr = buf.Read(chunk[:])
+    println(got)
+    println(readErr == nil)
+    let rest = buf.Bytes()
+    println(rest.len())
+    buf.Truncate(1)
+    println(buf.Len())
+    let _, _ = buf.Read(chunk[:])
+    let empty, end = buf.Read(chunk[:])
+    println(empty)
+    println(end == error("EOF"))
+    let copied = bytes.Clone(a[:2])
+    println(copied.len())
+}
+"##,
+        r##"[.]
+[a/c]
+[/x/y]
+[..]
+[.]
+[/]
+[a/b]
+a/c
+[]
+static/ myfile.css
+b
+/
+.
+/a/b
+.
+.gz
+[]
+true
+usr/lib
+/
+/etc
+true
+true
+false
+-2 0 1 5 5 9 
+true
+3
+6
+apple apple fig pear
+true
+2
+true
+false
+true
+-1
+1
+3
+2
+true
+true
+2
+false
+7
+104
+3
+true
+3
+1
+0
+true
+2
+"##,
+    );
+}
+
+#[test]
+fn folders_files_environment_processes_and_wait_groups_work_together() {
+    let dir = TempDir::new().unwrap();
+    let source = r##"package main
+
+import "zore/bufio"
+import "zore/os"
+import "zore/os/exec"
+import "zore/strings"
+import "zore/sync"
+
+func count(wg sync.WaitGroup, total Mutex<int>) {
+    total.withLock(func(n mut int) { n += 1 })
+    wg.Done()
+}
+
+func main() {
+    let root = "/tmp/claude-0/-home-user-zore/355b2514-d804-551c-ad77-430871dd9f09/scratchpad/new/tree"
+    println(os.MkdirAll(root + "/sub/deeper", 0o755) == nil)
+    println(os.WriteFile(root + "/b.txt", strings.Bytes("bee")[:], 0o640) == nil)
+    println(os.WriteFile(root + "/a.txt", strings.Bytes("a")[:], 0o644) == nil)
+    let entries, listErr = os.ReadDir(root)
+    println(listErr == nil)
+    for entry in entries {
+        println(entry.Name())
+        println(entry.IsDir())
+    }
+    let info, statErr = os.Stat(root + "/b.txt")
+    println(statErr == nil)
+    println(info.Name())
+    println(info.Size())
+    println(info.Mode() == 0o640)
+    println(info.IsDir())
+    let _, missing = os.Stat(root + "/nope")
+    println(missing != nil)
+    println(os.Remove(root + "/a.txt") == nil)
+    println(os.Remove(root + "/a.txt") != nil)
+    println(os.Remove(root + "/sub") != nil)
+
+    let file, createErr = os.Create(root + "/out.txt")
+    println(createErr == nil)
+    var writer = bufio.NewWriter(file)
+    let _, _ = writer.WriteString("line one\n")
+    _ = writer.WriteByte(120)
+    let _, _ = writer.WriteRune('\n')
+    println(writer.Buffered())
+    println(writer.Flush() == nil)
+    println(writer.Buffered())
+    let back, _ = os.ReadFile(root + "/out.txt")
+    println(back.len())
+    let opened, _ = os.Open(root + "/out.txt")
+    var reader = bufio.NewReader(opened)
+    let firstLine, _ = reader.ReadString(10)
+    println(firstLine.len())
+    let letter, _ = reader.ReadByte()
+    println(letter)
+    println(os.RemoveAll(root) == nil)
+    println(os.RemoveAll(root) == nil)
+    let _, gone = os.Open(root + "/out.txt")
+    println(gone != nil)
+
+    println(os.Getenv("ZORE_TEST_VALUE"))
+    println("[" + os.Getenv("ZORE_UNSET_VALUE") + "]")
+    let args = os.Args()
+    println(args.len())
+    println(args[1])
+    let wd, wdErr = os.Getwd()
+    println(wd.len() > 0)
+    println(wdErr == nil)
+    let out = os.Stdout()
+    let wrote, writeErr = out.WriteString("to stdout\n")
+    println(wrote)
+    println(writeErr == nil)
+
+    let echo, echoErr = exec.Command("echo", Array<string>{"hi", "there"}[:]).Output()
+    println(echoErr == nil)
+    let text, _ = strings.FromBytes(echo[:])
+    println(strings.TrimSpace(text))
+    let fails = exec.Command("sh", Array<string>{"-c", "exit 3"}[:]).Run()
+    println(fails == error("exit status 3"))
+    let both, _ = exec.Command("sh", Array<string>{"-c", "echo out; echo err 1>&2"}[:]).CombinedOutput()
+    println(both.len())
+    var here = exec.Command("pwd", Array<string>{}[:])
+    here.Dir = "/"
+    let place, _ = here.Output()
+    println(place.len())
+    let _, absent = exec.Command("zore-no-such-program", Array<string>{}[:]).Output()
+    println(absent != nil)
+
+    let wg = sync.NewWaitGroup()
+    let total = mutex(0)
+    for var i = 0; i < 50; i += 1 {
+        wg.Add(1)
+        go count(wg, total)
+    }
+    wg.Wait()
+    println(total.withLock(func(n mut int) int { return n }))
+    wg.Wait()
+    let once = sync.NewOnce()
+    for var i = 0; i < 3; i += 1 {
+        once.Do(func() { println("once") })
+    }
+    os.Exit(4)
+    println("not reached")
+}
+"##
+    .replace("DIR", &dir.path().display().to_string());
+    let executable = dir.path().join("program");
+    build_file(&source, &executable).unwrap_or_else(|e| panic!("build failed: {e:?}"));
+    let output = Command::new(&executable)
+        .arg("extra")
+        .env("ZORE_CHECK_LEAKS", "1")
+        .env("ZORE_TEST_VALUE", "set")
+        .env_remove("ZORE_UNSET_VALUE")
+        .output()
+        .expect("run built program");
+    assert_eq!(output.status.code(), Some(4), "{}", stderr(&output));
+    assert_eq!(
+        stdout(&output),
+        "true\ntrue\ntrue\ntrue\na.txt\nfalse\nb.txt\nfalse\nsub\ntrue\n\
+true\nb.txt\n3\ntrue\nfalse\ntrue\ntrue\ntrue\ntrue\n\
+true\n11\ntrue\n0\n11\n9\n120\ntrue\ntrue\ntrue\n\
+set\n[]\n2\nextra\ntrue\ntrue\nto stdout\n10\ntrue\n\
+true\nhi there\ntrue\n8\n2\ntrue\n50\nonce\n"
+    );
+    assert!(!dir.path().join("tree").exists());
+}
+
+#[test]
+fn library_misuse_panics_with_its_message() {
+    for (imports, call, message) in [
+        (
+            "import \"zore/sync\"",
+            "sync.NewWaitGroup().Done()",
+            "sync: negative WaitGroup counter",
+        ),
+        (
+            "import \"zore/bytes\"",
+            "var buf = bytes.NewBufferString(\"ab\")\n    buf.Truncate(5)",
+            "bytes.Buffer: truncation out of range",
+        ),
+        (
+            "import \"zore/strconv\"",
+            "println(strconv.FormatInt(1, 99))",
+            "strconv.FormatInt: invalid base",
+        ),
+    ] {
+        panics(
+            &format!(
+                "package main
+
+{imports}
+
+func main() {{
+    println(\"before\")
+    {call}
+}}
+"
+            ),
+            message,
+            "before\n",
+        );
+    }
+}
+
+#[test]
+fn runes_and_integers_convert_with_checks() {
+    prints(
+        "package main
+
+func shift(r rune, by int) rune {
+    return rune(int(r) + by)
+}
+
+func main() {
+    let r = 'é'
+    println(int(r))
+    println(uint32(r))
+    println(uint8(r))
+    println(shift('a', 2))
+    println(int('😀'))
+    println(rune(int32(955)))
+    var code = 0
+    for ch in \"héllo\" {
+        code += int(ch)
+    }
+    println(code)
+    let top = 1114111
+    println(rune(top) == '\\U0010FFFF')
+    let low = 0
+    println(int(rune(low)))
+}
+",
+        "233\n233\n233\nc\n128512\nλ\n664\ntrue\n0\n",
+    );
+    for (setup, call, message) in [
+        ("let n = 55296", "rune(n)", "integer is not a valid rune"),
+        ("let n = -1", "rune(n)", "integer is not a valid rune"),
+        ("let n = 1114112", "rune(n)", "integer is not a valid rune"),
+        ("let r = 'ł'", "int8(r)", "integer conversion out of range"),
+    ] {
+        panics(
+            &format!(
+                "package main\n\nfunc main() {{\n    {setup}\n    println(\"before\")\n    println({call})\n}}\n"
+            ),
+            message,
+            "before\n",
+        );
+    }
+}
+
+#[test]
+fn named_types_compute_with_their_base_representation() {
+    prints(
+        "package main
+
+type Duration int
+type Name string
+type Flag bool
+type Letter rune
+type Ratio float64
+
+const Millisecond Duration = 1000000
+const Second = 1000 * Millisecond
+
+func (d Duration) Milliseconds() int {
+    return int(d / Millisecond)
+}
+
+func (n Name) Greeting() string {
+    return \"hello \" + string(n)
+}
+
+func main() {
+    let d = 5 * Second
+    println(d.Milliseconds())
+    let n = Name(\"zo\") + Name(\"re\")
+    println(n.Greeting())
+    println(n.len())
+    println(string(n[1:3]))
+    var total = 0
+    for _, ch in n {
+        total += int(ch)
+    }
+    println(total)
+    let f = Flag(false)
+    if !f {
+        println(\"off\")
+    }
+    let l = Letter('é')
+    println(string(l))
+    println(int(l))
+    let r Ratio = 0.5
+    println(int(r * 4))
+    var counts = map[Name]Duration{}
+    counts[n] = d
+    let found, value = counts[Name(\"zore\")]
+    println(found)
+    println(value.Milliseconds())
+    let names = Array<Name>{n, Name(\"x\")}
+    println(names.len())
+}
+",
+        "5000\nhello zore\n4\nor\n448\noff\né\n233\n2\ntrue\n5000\n2\n",
     );
 }
 

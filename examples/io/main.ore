@@ -1,29 +1,23 @@
 package main
 
 import "zore/net"
+import "zore/strings"
 import "zore/time"
 
-func digits(n int) string {
-    if n == 0 {
-        return "0"
-    }
-    var text = ""
-    var rest = n
-    for rest > 0 {
-        let d = rest % 10
-        text = "0123456789"[d:d + 1] + text
-        rest = rest / 10
-    }
-    return text
-}
-
 func shout(conn own net.Conn) {
+    var buf = strings.Bytes("................................")
     for {
-        let text, err = conn.Read(32)
+        let count, err = conn.Read(buf[:])
         if err != nil {
             return
         }
-        if conn.Write(text + "!") != nil {
+        let text, invalid = strings.FromBytes(buf[:count])
+        if invalid != nil {
+            return
+        }
+        let reply = strings.Bytes(text + "!")
+        let _, writeErr = conn.Write(reply[:])
+        if writeErr != nil {
             return
         }
     }
@@ -39,45 +33,49 @@ func serve(listener own net.Listener, clients int) {
     }
 }
 
-func ask(port int, message string, delay int, answers channel<string>) {
+func ask(address string, message string, delay int, answers channel<string>) {
     time.Sleep(delay)
-    let conn, err = net.Dial("127.0.0.1:" + digits(port))
+    let conn, err = net.Dial("tcp", address)
     if err != nil {
         answers.send("dial failed")
         return
     }
-    if conn.Write(message) != nil {
+    let data = strings.Bytes(message)
+    let _, writeErr = conn.Write(data[:])
+    if writeErr != nil {
         answers.send("write failed")
         return
     }
-    let reply, readErr = conn.Read(32)
+    var buf = strings.Bytes("................................")
+    let count, readErr = conn.Read(buf[:])
     if readErr != nil {
         answers.send("read failed")
         return
     }
+    let reply, _ = strings.FromBytes(buf[:count])
     answers.send(reply)
 }
 
 func main() {
-    let listener, err = net.Listen("127.0.0.1:0")
+    let listener, err = net.Listen("tcp", "127.0.0.1:0")
     if err != nil {
         println("listen failed")
         return
     }
-    let port = listener.Port()
+    let address = listener.Addr()
     go serve(listener, 3)
 
     let answers = channel<string>(3)
-    go ask(port, "slow", 300, answers)
-    go ask(port, "medium", 150, answers)
-    go ask(port, "fast", 0, answers)
+    go ask(address, "slow", 300 * time.Millisecond, answers)
+    go ask(address, "medium", 150 * time.Millisecond, answers)
+    go ask(address, "fast", 0, answers)
 
     for var i = 0; i < 3; i += 1 {
         let reply, _ = answers.receive()
         println(reply)
     }
 
-    let before = time.Millis()
-    time.Sleep(20)
-    println(time.Millis() - before >= 20)
+    let before = time.Now()
+    time.Sleep(20 * time.Millisecond)
+    println(time.Since(before) >= 20 * time.Millisecond)
 }

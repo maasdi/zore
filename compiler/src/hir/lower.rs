@@ -93,12 +93,18 @@ pub fn check(
             drop: checker
                 .res
                 .methods
-                .get(&(StructId(index as u32), "drop".to_string()))
+                .get(&(
+                    checker.types.struct_type(StructId(index as u32)),
+                    "drop".to_string(),
+                ))
                 .copied(),
             clone: checker
                 .res
                 .methods
-                .get(&(StructId(index as u32), "clone".to_string()))
+                .get(&(
+                    checker.types.struct_type(StructId(index as u32)),
+                    "clone".to_string(),
+                ))
                 .copied(),
             fields: fields
                 .iter()
@@ -309,6 +315,7 @@ impl<'a> Checker<'a> {
                 match self.res.uses.get(&name.span)? {
                     Res::Primitive(ty) => Some(*ty),
                     Res::Struct(id) => Some(self.types.struct_type(*id)),
+                    Res::Named(ty) => Some(*ty),
                     _ => None,
                 }
             }
@@ -572,7 +579,11 @@ impl<'a> Checker<'a> {
             }
             match self.types.kind(ty) {
                 TypeKind::Struct(id) => {
-                    if self.res.methods.contains_key(&(id, "drop".to_string())) {
+                    if self
+                        .res
+                        .methods
+                        .contains_key(&(self.types.struct_type(id), "drop".to_string()))
+                    {
                         return false;
                     }
                     pending.extend(
@@ -600,7 +611,59 @@ impl<'a> Checker<'a> {
         matches!(self.types.kind(ty), TypeKind::Slice { mutable: true, .. })
     }
 
+    fn named_bases(&mut self) {
+        let mut done = vec![None; self.res.named.len()];
+        for index in 0..done.len() {
+            self.named_base(index, &mut done);
+        }
+    }
+
+    /// `done[i]` is `Some(false)` while named type `i` is being resolved.
+    fn named_base(&mut self, index: usize, done: &mut [Option<bool>]) -> bool {
+        match done[index] {
+            Some(true) => return true,
+            Some(false) => {
+                let decl = self.res.named[index].0;
+                let message = format!("named type `{}` is built on itself", decl.name.text);
+                self.error(message, decl.name.span);
+                return false;
+            }
+            None => done[index] = Some(false),
+        }
+        let (decl, _, ty) = self.res.named[index];
+        if let ast::Type::Named(name) | ast::Type::Qualified { name, .. } = &decl.base
+            && let Some(&Res::Named(other)) = self.res.uses.get(&name.span)
+            && let Some(other) = self.res.named.iter().position(|(_, _, t)| *t == other)
+            && !self.named_base(other, done)
+        {
+            done[index] = Some(true);
+            return false;
+        }
+        done[index] = Some(true);
+        let Some(base) = self.resolve_type(&decl.base) else {
+            return false;
+        };
+        if !matches!(
+            self.types.kind(base),
+            TypeKind::Bool
+                | TypeKind::Int(_)
+                | TypeKind::Float(_)
+                | TypeKind::Rune
+                | TypeKind::String
+        ) {
+            let message = format!(
+                "a named type must be built on `bool`, a number type, `rune`, or `string`, not `{}`",
+                self.name(base)
+            );
+            self.error(message, decl.base.span());
+            return false;
+        }
+        self.types.set_named_base(ty, base);
+        true
+    }
+
     fn signatures_and_fields(&mut self) {
+        self.named_bases();
         // Cloned because `resolve_type` needs `&mut self`.
         let structs: Vec<&'a ast::StructDecl> = self.res.structs.clone();
         self.resolving_fields = true;
@@ -1749,12 +1812,16 @@ impl<'a> Checker<'a> {
                 };
                 Some(Value::Typed(typed(ExprKind::Global(id), ty, span)))
             }
-            Res::Struct(_) | Res::Primitive(_) => {
+            Res::Struct(_) | Res::Primitive(_) | Res::Named(_) => {
                 self.error(format!("`{name}` is a type, not a value"), span);
                 None
             }
             Res::Println => {
                 self.error("`println` can only be called", span);
+                None
+            }
+            Res::Panic => {
+                self.error("`panic` can only be called", span);
                 None
             }
             Res::Drop => {
@@ -1854,7 +1921,7 @@ impl<'a> Checker<'a> {
         };
         let ty = expr.ty();
         let valid = match op {
-            UnaryOp::Not => ty == TypeStore::BOOL,
+            UnaryOp::Not => self.types.kind(ty) == TypeKind::Bool,
             UnaryOp::Plus | UnaryOp::Neg => self.types.is_numeric(ty),
             UnaryOp::Complement => self.types.int(ty).is_some(),
         };
@@ -2200,13 +2267,14 @@ impl<'a> Checker<'a> {
         match res {
             Some(Res::Function(id)) => self.function_call(id, name, None, args, span),
             Some(Res::Println) => self.println(args, span),
+            Some(Res::Panic) => self.panic_call(args, span),
             Some(Res::Drop) => self.drop_call(args, span),
             Some(Res::Clone) => self.clone_call(args, span),
             Some(Res::NewMutex) => self.new_mutex(args, span),
             Some(Res::Primitive(ty)) if ty == TypeStore::ERROR => {
                 self.error_constructor(args, span)
             }
-            Some(Res::Primitive(ty)) => self.conversion(ty, args, span),
+            Some(Res::Primitive(ty) | Res::Named(ty)) => self.conversion(ty, args, span),
             Some(Res::Struct(_)) => {
                 self.error(
                     format!("struct `{name}` is constructed with `{name}{{...}}`, not called"),
@@ -2423,9 +2491,9 @@ impl<'a> Checker<'a> {
             return self.array_push_or_pop(receiver, element, &name.text, args, span);
         }
         let strukt = self.types.struct_id(ty);
-        let method = strukt.and_then(|s| self.res.methods.get(&(s, name.text.clone())).copied());
-        if let (Some(strukt), Some(_)) = (strukt, method)
-            && !self.can_use_member(self.res.struct_package[strukt.0 as usize], &name.text)
+        let method = self.res.methods.get(&(ty, name.text.clone())).copied();
+        if let (Some(package), Some(_)) = (self.declaring_package(ty), method)
+            && !self.can_use_member(package, &name.text)
         {
             self.unexported_member("method", &name.text, ty, name.span);
             self.report_arg_errors(args);
@@ -2945,6 +3013,34 @@ impl<'a> Checker<'a> {
         }))
     }
 
+    fn panic_call(&mut self, args: &[ast::Expr], span: Span) -> Option<Value> {
+        let [arg] = args else {
+            let message = format!(
+                "`panic` takes exactly 1 argument but {} were given",
+                args.len()
+            );
+            self.error(message, span);
+            self.report_arg_errors(args);
+            return None;
+        };
+        let value = self.expr(arg, Some(TypeStore::STRING))?;
+        let expr = self.with_default_type(value)?;
+        if expr.ty() != TypeStore::STRING {
+            let message = format!(
+                "`panic` takes a `string` message, not `{}`",
+                self.name(expr.ty())
+            );
+            self.diagnostics
+                .push(Diagnostic::new(Severity::Error, message, expr.span));
+            return None;
+        }
+        Some(Value::Typed(hir::Expr {
+            kind: ExprKind::Panic(Box::new(expr)),
+            types: Vec::new(),
+            span,
+        }))
+    }
+
     fn drop_call(&mut self, args: &[ast::Expr], span: Span) -> Option<Value> {
         let [arg] = args else {
             self.error("`drop` takes exactly 1 argument", span);
@@ -2961,8 +3057,20 @@ impl<'a> Checker<'a> {
     }
 
     fn custom_clone(&self, ty: TypeId) -> Option<FunctionId> {
-        let id = self.types.struct_id(ty)?;
-        self.res.methods.get(&(id, "clone".to_string())).copied()
+        self.types.struct_id(ty)?;
+        self.res.methods.get(&(ty, "clone".to_string())).copied()
+    }
+
+    /// The package that declares a struct or named type.
+    fn declaring_package(&self, ty: TypeId) -> Option<usize> {
+        if let Some(strukt) = self.types.struct_id(ty) {
+            return Some(self.res.struct_package[strukt.0 as usize]);
+        }
+        self.res
+            .named
+            .iter()
+            .find(|(_, _, named)| *named == ty)
+            .map(|&(_, package, _)| package)
     }
 
     /// The field or element type that stops `ty` from being cloned.
@@ -2978,7 +3086,11 @@ impl<'a> Checker<'a> {
                     if self.custom_clone(ty).is_some() {
                         continue;
                     }
-                    if self.res.methods.contains_key(&(id, "drop".to_string())) {
+                    if self
+                        .res
+                        .methods
+                        .contains_key(&(self.types.struct_type(id), "drop".to_string()))
+                    {
                         return Some(ty);
                     }
                     pending.extend(
@@ -3087,7 +3199,9 @@ impl<'a> Checker<'a> {
             }
             Value::Typed(expr) => self.single_value(expr)?,
         };
-        if value.ty() != TypeStore::RUNE {
+        let source = self.types.kind(value.ty());
+        let named_text = source == TypeKind::String && value.ty() != TypeStore::STRING;
+        if source != TypeKind::Rune && !named_text {
             let message = format!("cannot convert `{}` to `string`", self.name(value.ty()));
             self.diagnostics.push(
                 Diagnostic::new(Severity::Error, message, span)
@@ -3108,24 +3222,25 @@ impl<'a> Checker<'a> {
             self.report_arg_errors(args);
             return None;
         };
+        if self.types.is_named(target) {
+            return self.named_conversion(target, arg, args, span);
+        }
+        if target == TypeStore::BOOL {
+            return self.same_base_conversion(target, arg, span);
+        }
         if target == TypeStore::STRING {
             return self.string_conversion(arg, span);
         }
+        if target == TypeStore::RUNE {
+            return self.rune_conversion(arg, span);
+        }
         if !self.types.is_numeric(target) {
             self.report_arg_errors(args);
-            if target == TypeStore::RUNE {
-                self.unsupported(
-                    "rune conversions are",
-                    span,
-                    "planned with numeric typing (M5–M8)",
-                );
-            } else {
-                let message = format!(
-                    "`{}` is not a conversion; only numeric conversions exist",
-                    self.name(target)
-                );
-                self.error(message, span);
-            }
+            let message = format!(
+                "`{}` is not a conversion; only numeric and rune conversions exist",
+                self.name(target)
+            );
+            self.error(message, span);
             return None;
         }
         let value = match self.expr(arg, None)? {
@@ -3137,6 +3252,9 @@ impl<'a> Checker<'a> {
             Value::Typed(expr) => self.single_value(expr)?,
         };
         let source = value.ty();
+        if self.types.kind(source) == TypeKind::Rune {
+            return self.rune_to_number(value, target, span);
+        }
         if !self.types.is_numeric(source) {
             let message = format!(
                 "cannot convert `{}` to `{}`",
@@ -3192,6 +3310,164 @@ impl<'a> Checker<'a> {
         }
     }
 
+    /// Converts to the base type, then gives the result the named type.
+    fn named_conversion(
+        &mut self,
+        target: TypeId,
+        arg: &ast::Expr,
+        args: &[ast::Expr],
+        span: Span,
+    ) -> Option<Value> {
+        let base = self.types.base(target);
+        if base == TypeStore::STRING || base == TypeStore::BOOL {
+            return self.same_base_conversion(target, arg, span);
+        }
+        let Value::Typed(converted) = self.conversion(base, args, span)? else {
+            unreachable!("a conversion has a typed result")
+        };
+        let kind = match converted.kind {
+            ExprKind::Const(c) => ExprKind::Const(c),
+            _ => ExprKind::Convert(Box::new(converted)),
+        };
+        Some(Value::Typed(typed(kind, target, span)))
+    }
+
+    /// `bool` and `string` convert only between types with the same base.
+    fn same_base_conversion(
+        &mut self,
+        target: TypeId,
+        arg: &ast::Expr,
+        span: Span,
+    ) -> Option<Value> {
+        let base = self.types.base(target);
+        let value = match self.expr(arg, Some(base))? {
+            untyped @ Value::Untyped(..) => {
+                self.coerce(untyped, target)?;
+                return None;
+            }
+            Value::Typed(expr) => self.single_value(expr)?,
+        };
+        if self.types.base(value.ty()) != base {
+            let message = format!(
+                "cannot convert `{}` to `{}`",
+                self.name(value.ty()),
+                self.name(target)
+            );
+            self.error(message, span);
+            return None;
+        }
+        if value.ty() == target {
+            return Some(Value::Typed(value));
+        }
+        let kind = match value.kind {
+            ExprKind::Const(c) => ExprKind::Const(c),
+            _ => ExprKind::Convert(Box::new(value)),
+        };
+        Some(Value::Typed(typed(kind, target, span)))
+    }
+
+    fn rune_conversion(&mut self, arg: &ast::Expr, span: Span) -> Option<Value> {
+        let value = match self.expr(arg, None)? {
+            Value::Untyped(Untyped::Int(value), _) => {
+                let Some(scalar) = value
+                    .to_i128()
+                    .and_then(|v| u32::try_from(v).ok())
+                    .and_then(char::from_u32)
+                else {
+                    let message = format!(
+                        "constant `{}` is not a Unicode scalar value, so it is not a `rune`",
+                        Untyped::Int(value).describe()
+                    );
+                    self.error(message, span);
+                    return None;
+                };
+                return Some(Value::Typed(typed(
+                    ExprKind::Const(Const::Rune(scalar)),
+                    TypeStore::RUNE,
+                    span,
+                )));
+            }
+            Value::Untyped(Untyped::Float(_), _) => {
+                self.error(
+                    "a floating-point constant cannot be converted to `rune`",
+                    span,
+                );
+                return None;
+            }
+            Value::Typed(expr) => self.single_value(expr)?,
+        };
+        let source = value.ty();
+        if source == TypeStore::RUNE {
+            return Some(Value::Typed(value));
+        }
+        if self.types.kind(source) == TypeKind::Rune {
+            return Some(Value::Typed(typed(
+                ExprKind::Convert(Box::new(value)),
+                TypeStore::RUNE,
+                span,
+            )));
+        }
+        if self.types.int(source).is_none() {
+            let message = format!(
+                "cannot convert `{}` to `rune`; only integers and runes convert to `rune`",
+                self.name(source)
+            );
+            self.error(message, span);
+            return None;
+        }
+        if let Some(&Const::Int(v)) = constant(&value) {
+            let Some(scalar) = u32::try_from(v).ok().and_then(char::from_u32) else {
+                let message =
+                    format!("constant `{v}` is not a Unicode scalar value, so it is not a `rune`");
+                self.error(message, span);
+                return None;
+            };
+            return Some(Value::Typed(typed(
+                ExprKind::Const(Const::Rune(scalar)),
+                TypeStore::RUNE,
+                span,
+            )));
+        }
+        Some(Value::Typed(typed(
+            ExprKind::Convert(Box::new(value)),
+            TypeStore::RUNE,
+            span,
+        )))
+    }
+
+    fn rune_to_number(&mut self, value: hir::Expr, target: TypeId, span: Span) -> Option<Value> {
+        let Some(int) = self.types.int(target) else {
+            let message = format!(
+                "cannot convert `rune` to `{}`; a rune converts only to integer types and `string`",
+                self.name(target)
+            );
+            self.error(message, span);
+            return None;
+        };
+        if let Some(&Const::Rune(scalar)) = constant(&value) {
+            let code = i128::from(u32::from(scalar));
+            if !int.contains(code) {
+                let message = format!(
+                    "rune constant `U+{:04X}` does not fit in `{}`",
+                    u32::from(scalar),
+                    self.name(target)
+                );
+                self.error(message, span);
+                return None;
+            }
+            return Some(Value::Typed(typed(
+                ExprKind::Const(Const::Int(code)),
+                target,
+                span,
+            )));
+        }
+        Some(Value::Typed(typed(
+            ExprKind::Convert(Box::new(value)),
+            target,
+            span,
+        )))
+    }
+
     fn field_of(&mut self, ty: TypeId, name: &ast::Name) -> Option<(FieldId, TypeId)> {
         let Some(strukt) = self.types.struct_id(ty) else {
             let message = format!("type `{}` has no fields", self.name(ty));
@@ -3231,9 +3507,7 @@ impl<'a> Checker<'a> {
             }
             Value::Typed(expr) => self.single_value(expr)?,
         };
-        if let Some(strukt) = self.types.struct_id(base.ty())
-            && let Some(&method) = self.res.methods.get(&(strukt, name.text.clone()))
-        {
+        if let Some(&method) = self.res.methods.get(&(base.ty(), name.text.clone())) {
             return self.method_value(base, method, name, span);
         }
         let (field, ty) = self.field_of(base.ty(), name)?;
@@ -3359,7 +3633,7 @@ impl<'a> Checker<'a> {
             return None;
         }
         let mutable = expected.is_some_and(|ty| self.is_mut_slice(ty));
-        if base.ty() == TypeStore::STRING {
+        if self.types.kind(base.ty()) == TypeKind::String {
             if mutable {
                 self.diagnostics.push(
                     Diagnostic::new(
@@ -3371,6 +3645,7 @@ impl<'a> Checker<'a> {
                 );
                 return None;
             }
+            let text = base.ty();
             return Some(Value::Typed(typed(
                 ExprKind::Slice {
                     base: Box::new(base),
@@ -3378,7 +3653,7 @@ impl<'a> Checker<'a> {
                     high: high.map(Box::new),
                     mutable: false,
                 },
-                TypeStore::STRING,
+                text,
                 span,
             )));
         }
@@ -3870,6 +4145,15 @@ impl<'a> Checker<'a> {
 
     fn condition(&mut self, condition: &ast::Expr) -> Option<hir::Expr> {
         let value = self.expr(condition, Some(TypeStore::BOOL))?;
+        if let Value::Typed(expr) = &value
+            && expr.types.len() == 1
+            && self.types.base(expr.ty()) == TypeStore::BOOL
+        {
+            let Value::Typed(expr) = value else {
+                unreachable!()
+            };
+            return Some(expr);
+        }
         self.coerce(value, TypeStore::BOOL)
     }
 
@@ -4117,7 +4401,7 @@ impl<'a> Checker<'a> {
                     );
                     return None;
                 }
-                if place.ty == TypeStore::STRING {
+                if self.types.kind(place.ty) == TypeKind::String {
                     self.expr(index, None);
                     self.diagnostics.push(
                         Diagnostic::new(
@@ -4530,6 +4814,7 @@ fn subexpressions(expr: &hir::Expr) -> Vec<&hir::Expr> {
         ExprKind::Len(inner)
         | ExprKind::ArrayPop(inner)
         | ExprKind::Println(inner)
+        | ExprKind::Panic(inner)
         | ExprKind::Drop(inner)
         | ExprKind::Convert(inner)
         | ExprKind::Clone(inner)
@@ -4600,6 +4885,7 @@ fn block_always_exits(block: &ast::Block) -> bool {
 fn stmt_always_exits(stmt: &ast::Stmt) -> bool {
     match &stmt.kind {
         ast::StmtKind::Return(_) => true,
+        ast::StmtKind::Expr(expr) => is_panic_call(expr),
         ast::StmtKind::Block(block) => block_always_exits(block),
         ast::StmtKind::If(if_stmt) => if_always_exits(if_stmt),
         ast::StmtKind::For(for_stmt) => {
@@ -4611,6 +4897,15 @@ fn stmt_always_exits(stmt: &ast::Stmt) -> bool {
         }
         _ => false,
     }
+}
+
+/// Predeclared names cannot be shadowed, so a call of the bare name `panic` is the built-in.
+fn is_panic_call(expr: &ast::Expr) -> bool {
+    matches!(
+        &expr.kind,
+        ast::ExprKind::Call { callee, .. }
+            if matches!(&callee.kind, ast::ExprKind::Name(name) if name.as_str() == "panic")
+    )
 }
 
 fn if_always_exits(if_stmt: &ast::If) -> bool {

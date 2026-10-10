@@ -831,7 +831,8 @@ fn invalid_struct_syntax_is_rejected() {
             "expected newline or `;` after field",
         ),
         ("type User struct {\n Name\n}", "expected a type"),
-        ("type Alias int", "only struct type declarations"),
+        ("type Alias", "expected a type"),
+        ("type Alias = int", "expected a type"),
     ] {
         rejects_file(&format!("package main\n{text}\n"), message);
     }
@@ -1642,4 +1643,18 @@ fn malformed_select_is_rejected() {
         let case = Case::body(source);
         assert!(!case.errors().is_empty(), "{source} parsed");
     }
+}
+
+#[test]
+fn named_type_declarations_keep_their_base_type() {
+    let case = Case::new("package main\ntype Duration int\ntype Name pkg.Text\n");
+    case.assert_clean();
+    let [Item::Named(duration), Item::Named(name)] = &case.parsed.file.items[..] else {
+        panic!("two named types: {:?}", case.parsed.file.items);
+    };
+    assert_eq!(duration.name.text, "Duration");
+    assert!(matches!(&duration.base, Type::Named(base) if base.text == "int"));
+    assert!(
+        matches!(&name.base, Type::Qualified { package, name, .. } if package.text == "pkg" && name.text == "Text")
+    );
 }

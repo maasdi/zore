@@ -1,12 +1,11 @@
-//! The code behind `zore/time`, `zore/io`, and `zore/os`.
+//! The code behind `zore/time`, and the result layouts shared by the other runtime packages.
 
-use std::io::{BufRead, Write};
 use std::sync::OnceLock;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use super::alloc::zore_alloc;
+use super::reactor;
 use super::string::StringOut;
-use super::{blocking, reactor};
 
 /// An `error` result, written by functions whose only result is an `error`.
 #[repr(C)]
@@ -126,7 +125,7 @@ impl ByteArrayError {
         }
     }
 
-    fn from_bytes(result: Result<Vec<u8>, String>) -> Self {
+    pub(super) fn from_bytes(result: Result<Vec<u8>, String>) -> Self {
         match result {
             Ok(bytes) => Self::ok(&bytes),
             Err(message) => Self::failed(&message),
@@ -136,16 +135,20 @@ impl ByteArrayError {
 
 /// # Safety
 /// The string must satisfy the storage rule of `bytes`.
-unsafe fn text_of(data: *const u8, len: i64) -> String {
+pub(super) unsafe fn text_of(data: *const u8, len: i64) -> String {
     // SAFETY: guaranteed by the caller.
     String::from_utf8_lossy(unsafe { super::bytes(data, len) }).into_owned()
 }
 
+/// Whole milliseconds covering `nanoseconds`, or `None` when there is nothing to wait for.
+fn wait_milliseconds(nanoseconds: i64) -> Option<u64> {
+    let nanoseconds = u64::try_from(nanoseconds).ok().filter(|&n| n > 0)?;
+    Some(nanoseconds.div_ceil(1_000_000))
+}
+
 #[unsafe(no_mangle)]
-pub extern "C" fn zore_native_time_sleep(milliseconds: i64) {
-    if let Ok(milliseconds) = u64::try_from(milliseconds)
-        && milliseconds > 0
-    {
+pub extern "C" fn zore_native_time_sleep(nanoseconds: i64) {
+    if let Some(milliseconds) = wait_milliseconds(nanoseconds) {
         reactor::sleep(milliseconds);
     }
 }
@@ -154,29 +157,110 @@ pub extern "C" fn zore_native_time_sleep(milliseconds: i64) {
 /// `context` must be the current live poll context for this call.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn zore_native_time_sleep_start(
-    milliseconds: i64,
+    nanoseconds: i64,
     context: *mut super::scheduler::Context,
 ) -> *const reactor::Operation {
-    let Ok(milliseconds) = u64::try_from(milliseconds) else {
+    let Some(milliseconds) = wait_milliseconds(nanoseconds) else {
         return std::ptr::null();
     };
-    if milliseconds == 0 {
-        return std::ptr::null();
-    }
     // SAFETY: guaranteed by the caller; only the cloned waker survives this call.
     let waiter = unsafe { &*context }.waker().clone().into();
     std::sync::Arc::into_raw(reactor::start_sleep(milliseconds, waiter))
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn zore_native_time_millis() -> i64 {
+fn clock_start() -> Instant {
     static START: OnceLock<Instant> = OnceLock::new();
-    let start = START.get_or_init(Instant::now);
-    i64::try_from(start.elapsed().as_millis()).unwrap_or(i64::MAX)
+    *START.get_or_init(Instant::now)
+}
+
+/// The instant a `time.Now` reading names, or `None` for zero or less, which means no deadline.
+pub(super) fn instant_of(reading: i64) -> Option<Instant> {
+    let nanoseconds = u64::try_from(reading).ok().filter(|&n| n > 0)?;
+    Some(clock_start() + Duration::from_nanos(nanoseconds - 1))
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn zore_native_time_now() -> i64 {
+    let elapsed = clock_start().elapsed().as_nanos();
+    i64::try_from(elapsed).unwrap_or(i64::MAX - 1) + 1
+}
+
+/// Where an `Array<string>` or an `Array<int>` descriptor is written.
+#[repr(C)]
+pub struct WordArray {
+    pub(super) data: *mut u8,
+    pub(super) len: i64,
+    pub(super) cap: i64,
+}
+
+impl WordArray {
+    fn from_words<T>(words: Vec<T>) -> Self {
+        let len = words.len();
+        if len == 0 {
+            return Self {
+                data: std::ptr::null_mut(),
+                len: 0,
+                cap: 0,
+            };
+        }
+        let data = zore_alloc((len * std::mem::size_of::<T>()) as i64);
+        for (index, word) in words.into_iter().enumerate() {
+            // SAFETY: `data` has room for every element.
+            unsafe { data.cast::<T>().add(index).write(word) };
+        }
+        Self {
+            data,
+            len: len as i64,
+            cap: len as i64,
+        }
+    }
+
+    pub(super) fn strings(texts: &[String]) -> Self {
+        Self::from_words(
+            texts
+                .iter()
+                .map(|text| StringOut::built(text.as_bytes()))
+                .collect(),
+        )
+    }
+
+    pub(super) fn ints(values: &[i64]) -> Self {
+        Self::from_words(values.to_vec())
+    }
+}
+
+/// An `Array<string>` or `Array<int>` and an `error`.
+#[repr(C)]
+pub struct WordArrayError {
+    pub(super) array: WordArray,
+    pub(super) failed: u8,
+    pub(super) message: *const u8,
+    pub(super) message_len: i64,
+}
+
+impl WordArrayError {
+    pub(super) fn ok(array: WordArray) -> Self {
+        Self {
+            array,
+            failed: 0,
+            message: std::ptr::null(),
+            message_len: 0,
+        }
+    }
+
+    pub(super) fn failed(message: &str) -> Self {
+        let text = StringOut::built(message.as_bytes());
+        Self {
+            array: WordArray::ints(&[]),
+            failed: 1,
+            message: text.data,
+            message_len: text.len,
+        }
+    }
 }
 
 impl StringError {
-    fn from_text(result: Result<String, String>) -> Self {
+    pub(super) fn from_text(result: Result<String, String>) -> Self {
         match result {
             Ok(text) => Self::ok(&text),
             Err(message) => Self::failed(&message),
@@ -184,120 +268,44 @@ impl StringError {
     }
 }
 
-fn read_line() -> Result<String, String> {
-    let mut line = Vec::new();
-    match std::io::stdin().lock().read_until(b'\n', &mut line) {
-        Ok(0) => return Err("EOF".into()),
-        Ok(_) => {}
-        Err(error) => return Err(format!("io.ReadLine: {error}")),
-    }
-    if line.last() == Some(&b'\n') {
-        line.pop();
-        if line.last() == Some(&b'\r') {
-            line.pop();
+impl ErrorOut {
+    pub(super) fn from_failure(failure: Option<String>) -> Self {
+        match failure {
+            None => Self::ok(),
+            Some(message) => Self::failed(&message),
         }
     }
-    String::from_utf8(line).map_err(|_| "io.ReadLine: invalid UTF-8".to_string())
 }
 
+/// The strings of a `[]string` argument.
+///
 /// # Safety
-/// `out` must be writable.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn zore_native_io_read_line(out: *mut StringError) {
-    let result = StringError::from_text(blocking::run(read_line));
-    // SAFETY: guaranteed by the caller.
-    unsafe { out.write(result) };
-}
-
-/// # Safety
-/// `out` must be writable and the string must satisfy the storage rule of `bytes`.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn zore_native_os_read_file(
-    out: *mut StringError,
-    path: *const u8,
-    path_len: i64,
-) {
-    // SAFETY: guaranteed by the caller.
-    let path = unsafe { text_of(path, path_len) };
-    let result = blocking::run(move || match std::fs::read(&path) {
-        Ok(bytes) => String::from_utf8(bytes).map_err(|_| "os.ReadFile: invalid UTF-8".to_string()),
-        Err(error) => Err(format!("os.ReadFile: {error}")),
-    });
-    // SAFETY: guaranteed by the caller.
-    unsafe { out.write(StringError::from_text(result)) };
-}
-
-/// # Safety
-/// `out` must be writable and the path must satisfy the storage rule of `bytes`.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn zore_native_os_read_bytes(
-    out: *mut ByteArrayError,
-    path: *const u8,
-    path_len: i64,
-) {
-    // SAFETY: guaranteed by the caller.
-    let path = unsafe { text_of(path, path_len) };
-    let result = blocking::run(move || {
-        std::fs::read(&path).map_err(|error| format!("os.ReadBytes: {error}"))
-    });
-    // SAFETY: guaranteed by the caller.
-    unsafe { out.write(ByteArrayError::from_bytes(result)) };
-}
-
-fn write_to_file(name: &str, path: String, data: Vec<u8>) -> ErrorOut {
-    let name = name.to_string();
-    let failure = blocking::run(move || {
-        std::fs::File::create(&path)
-            .and_then(|mut file| file.write_all(&data))
-            .err()
-            .map(|error| format!("{name}: {error}"))
-    });
-    match failure {
-        None => ErrorOut::ok(),
-        Some(message) => ErrorOut::failed(&message),
+/// `parts` must address `count` strings, each satisfying the storage rule of `bytes`.
+pub(super) unsafe fn texts_of(parts: *const StringOut, count: i64) -> Vec<String> {
+    if count <= 0 {
+        return Vec::new();
     }
+    // SAFETY: guaranteed by the caller.
+    let parts = unsafe { std::slice::from_raw_parts(parts, count as usize) };
+    parts
+        .iter()
+        // SAFETY: guaranteed by the caller.
+        .map(|part| unsafe { text_of(part.data, part.len) })
+        .collect()
 }
 
 /// # Safety
-/// `out` must be writable and each string must satisfy the storage rule of `bytes`.
+/// The message must satisfy the storage rule of `bytes`.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn zore_native_os_write_file(
-    out: *mut ErrorOut,
-    path: *const u8,
-    path_len: i64,
-    text: *const u8,
-    text_len: i64,
-) {
+pub unsafe extern "C" fn zore_native_sync_fail(message: *const u8, message_len: i64) {
     // SAFETY: guaranteed by the caller.
-    let (path, text) = unsafe {
-        (
-            text_of(path, path_len),
-            super::bytes(text, text_len).to_vec(),
-        )
-    };
-    let result = write_to_file("os.WriteFile", path, text);
-    // SAFETY: guaranteed by the caller.
-    unsafe { out.write(result) };
+    super::panic::raise(unsafe { super::bytes(message, message_len) });
 }
 
 /// # Safety
-/// `out` must be writable; the path and the bytes must satisfy the storage rule of `bytes`.
+/// The message must satisfy the storage rule of `bytes`.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn zore_native_os_write_bytes(
-    out: *mut ErrorOut,
-    path: *const u8,
-    path_len: i64,
-    data: *const u8,
-    data_len: i64,
-) {
+pub unsafe extern "C" fn zore_native_bytes_fail(message: *const u8, message_len: i64) {
     // SAFETY: guaranteed by the caller.
-    let (path, data) = unsafe {
-        (
-            text_of(path, path_len),
-            super::bytes(data, data_len).to_vec(),
-        )
-    };
-    let result = write_to_file("os.WriteBytes", path, data);
-    // SAFETY: guaranteed by the caller.
-    unsafe { out.write(result) };
+    super::panic::raise(unsafe { super::bytes(message, message_len) });
 }

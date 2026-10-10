@@ -51,17 +51,31 @@ counterpart in `tests/driver/cli.rs`, `tests/typecheck/check.rs`, or
 
 ## Standard packages
 
+Authority: spec §3.20 and §37.2–§37.5.
+
 | Scenario | Expected result |
 | --- | --- |
-| `strings.Contains`, `HasPrefix`, `HasSuffix`, `Index` | As in §37.2 |
-| `strings.Upper`, `Lower`, `TrimSpace` | Unicode case mapping and white space trimming |
+| `strings.Contains`, `HasPrefix`, `HasSuffix`, `Index`, `LastIndex`, `IndexByte`, `IndexRune`, `Count` | As in §37.2, including empty patterns |
+| `strings.ToUpper`, `ToLower`, `EqualFold`, `TrimSpace` | Unicode case mapping, case-insensitive comparison, and white space trimming |
+| `strings.Trim`, `TrimLeft`, `TrimRight`, `TrimPrefix`, `TrimSuffix`, `Cut` | Cut sets, affixes, and a separator found or missing |
 | `strings.Repeat("ab", 3)` and with a negative count | `ababab`; the negative count panics |
-| `strings.Replace` with an empty `old` | Matches before each character and at the end |
-| `strings.Split` with `","`, with `""`, and on `""` | Pieces, characters, one empty piece |
+| `strings.ReplaceAll` and `Replace` with a count, with an empty `old` | Matches before each character and at the end, up to the count |
+| `strings.Split`, `SplitN`, `Fields` with `","`, with `""`, and on `""` | Pieces, characters, one empty piece; limits; runs of white space |
 | `strings.Join(parts[:], ", ")` | Elements joined; no elements give `""` |
-| `strconv.Itoa` of positive, negative, and the minimum `int` | Decimal text |
-| `strconv.Atoi` of valid text, text with a sign, junk, empty, and too large | Value and `nil`, or `0` and the documented error |
+| `strings.Builder` writes, `Len`, `String`, `Reset` | The text in order, its byte length, then empty |
+| `strconv.Itoa` and `FormatInt` of positive, negative, and the minimum `int` | Digits in the base; base 99 panics |
+| `strconv.Atoi` and `ParseInt` of valid text, a sign, prefixes, separators, junk, empty, and too large | Value and `nil`, or `0` and an error naming the quoted input |
 | `strconv.FormatBool` and `ParseBool` | `true`/`false` text and errors |
+| `strconv.Quote`, `QuoteRune`, and `Unquote` | Literals that decode back to their input; malformed literals are errors |
+| `unicode` classes and case mappings of letters, digits, `½`, white space, and controls | As in §37.2 |
+| `utf8` lengths, counts, validity, and decoding of valid, invalid, and cut sequences | As in §37.2 |
+| `bytes` comparisons and searches, `Buffer` writes and reads to `EOF`, `Truncate` out of range | As in §37.2; the truncation panics |
+| `errors.New` and `errors.Is` | Equal messages compare equal |
+| `path.Clean`, `Join`, `Split`, `Base`, `Dir`, `Ext`, `IsAbs`, and `filepath.Abs` | As in §37.5 |
+| `sort.Ints`, `Strings`, the `AreSorted` checks, and searches | Ascending order and insertion indices |
+| `import "zore/os/exec"`, `"zore/path/filepath"`, `"zore/unicode/utf8"` | Used as `exec.`, `filepath.`, and `utf8.` |
+| `import "zore/io"`, `"zore/cancel"`, `"zore/os/nope"` | Reject: no such standard package |
+| `strings.Upper` | Reject: the package does not declare it |
 | Unused `error` from `Atoi` | Reject, as for any error value |
 | A function declaration without a body in user code | Reject |
 
