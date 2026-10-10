@@ -244,11 +244,12 @@ func (p mut Parser) primary() int {
             return p.dynArrayLiteral()
         }
         _ = p.bump()
-        if p.structLiterals && p.at("{") {
+        if p.structLiterals && (p.at("{") || p.atTypeArgumentsBeforeBrace(0)) {
             let name = p.tree.Add("name", token.Start, token.End, text)
             return p.structLiteral(ast.Absent, name)
         }
-        if p.structLiterals && p.at(".") && p.kindAt(1) == lexer.KindIdent && p.atPunctAt(2, "{") {
+        if p.structLiterals && p.at(".") && p.kindAt(1) == lexer.KindIdent &&
+            (p.atPunctAt(2, "{") || p.atTypeArgumentsBeforeBrace(2)) {
             let pkg = p.tree.Add("name", token.Start, token.End, text)
             _ = p.bump()
             let member = p.name("a type name")
@@ -348,6 +349,13 @@ func (p mut Parser) structLiteral(pkg int, ty int) int {
     }
     let start = p.tree.Start(first)
     let startEnd = p.tree.End(first)
+    var typeArgs = p.tree.List()
+    if p.at("<") {
+        typeArgs = p.typeArgumentList()
+        if typeArgs == failed {
+            return failed
+        }
+    }
     _ = p.bump()
     let fields = p.commaListWithLiterals("}", "field", true, itemFieldInit)
     if fields == failed {
@@ -356,6 +364,7 @@ func (p mut Parser) structLiteral(pkg int, ty int) int {
     let node = p.addNode("structlit", start, startEnd, "")
     p.tree.Append(node, pkg)
     p.tree.Append(node, ty)
+    p.tree.Append(node, typeArgs)
     p.tree.Append(node, fields)
     return node
 }

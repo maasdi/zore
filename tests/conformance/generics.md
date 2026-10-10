@@ -1,4 +1,4 @@
-# Generic function conformance cases
+# Generic function and type conformance cases
 
 Authority: spec §22.1, with §3.17, §3.18, §40, and §41.9. Every row has an
 executable counterpart in `tests/typecheck/check.rs`, `tests/codegen/native.rs`,
@@ -41,6 +41,7 @@ executable counterpart in `tests/typecheck/check.rs`, `tests/codegen/native.rs`,
 | `copyable` or `ordered` passed on to `comparable`, or `any` to `copyable` | Reject: floats are `ordered` but not `comparable` |
 | A generic function used as a value | Reject: not supported yet |
 | A generic function called from another package | Valid |
+| `var s Stack<int> = NewStack()`, where no argument decides `T` | `T` comes from the expected type |
 
 ## Bodies
 
@@ -68,3 +69,29 @@ executable counterpart in `tests/typecheck/check.rs`, `tests/codegen/native.rs`,
 | A Move type argument with a custom `drop` | Destroyed exactly once |
 | A generic call inside a generic function | Gets a copy for the outer type arguments |
 | An ownership error found in several copies | Reported once |
+
+## Generic types
+
+| Scenario | Expected result |
+| --- | --- |
+| `type Stack<T any> struct { items Array<T> }` with methods on `Stack<T>` | Declares a generic struct type and its methods |
+| `Stack<int>{...}`, `Stack<Stack<int>>`, and `pkg.Stack<int>` | Distinct struct types, each with its own fields and method copies |
+| A generic struct with `map[T]bool` under `T comparable` | Valid |
+| `Stack` without type arguments, in a type or a literal | Reject: needs type arguments |
+| `Stack<int, int>` | Reject: wrong number of type arguments |
+| A type argument outside the constraint | Reject, naming the constraint |
+| `Point<int>` for a struct that is not generic | Reject |
+| `type Number<T any> int` or a generic interface | Reject: only struct types can declare type parameters |
+| `func (s Stack) M()` on a generic type | Reject: the receiver names the type parameters |
+| `func (s Stack<int>) M()` | Reject: the receiver lists parameter names, not type arguments |
+| A method of a generic type with its own type parameters | Reject |
+| Moving a `T` out of `s.items[0]` under `any` | Reject |
+| `type Node<T any> struct { next Node<T> }` | Reject: contains itself by value |
+| A generic struct whose fields nest it with growing type arguments | Reject |
+| A custom `drop` on a generic type | Runs once for each value of each instance |
+| A custom `clone` returning `Cell<T>` | Used by `clone(value)` for each instance |
+| `Cell<int>` with `Get() T` converted to an interface needing `Get() int` | Satisfies it; `Cell<string>` does not |
+| A method of a generic type used as a value | Reject: not supported yet |
+| Converting a `Cell<T>` to an interface inside generic code | Reject: not supported yet |
+| An `async` method of a generic type, awaited, and `go` on a method of an instance | Valid |
+| An unexported field of a generic type from another package | Reject |

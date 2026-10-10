@@ -34,7 +34,7 @@ progress have no example until they work.
 | [`maps`](maps) | `map[K]V` literals, two-result lookup, assignment, ownership-transferring `remove` | §13.3 |
 | [`clone`](clone) | `clone` of structs, `Array<T>`, and maps, and a custom `clone` for a resource | §10.7 |
 | [`closures`](closures) | Closure literals, function types and parameters, shared and exclusive captures, `?` in a closure, a returned counter, and a call-once closure | §16 |
-| [`generics`](generics) | Generic functions with `ordered`, `comparable`, `any`, and interface constraints, type arguments taken from the arguments, and a Move element returned from an owned array | §22.1 |
+| [`generics`](generics) | Generic functions with `ordered`, `comparable`, `any`, and interface constraints, type arguments taken from the arguments, a Move element returned from an owned array, and a generic `Stack<T>` with its methods | §22.1 |
 | [`function-values`](function-values) | Declared functions, methods, and `async` functions as values, and `go` on closure literals and function-typed locals that own what they use | §16.2, §17.8, §18.3, §18.4 |
 | [`tasks`](tasks) | `go`, `Task<...>` handles, `.wait()`, `async func` and `await`, owned inputs and results, errors from tasks, and a collection of tasks | §17, §18 |
 | [`channels`](channels) | `channel<T>` with and without a buffer, `send`, `receive`, and `close`, a pipeline of tasks, a worker over a buffered channel, a request that carries its reply channel, and a closed channel's zero value | §19 |

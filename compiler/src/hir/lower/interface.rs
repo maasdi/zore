@@ -110,7 +110,7 @@ impl Checker<'_> {
                         )
                     }
                     None => {
-                        let Some(&id) = self.res.methods.get(&(source, entry.name.clone())) else {
+                        let Some(id) = self.method_of(source, &entry.name) else {
                             return Err(Unsatisfied {
                                 reason: format!("it has no method `{}`", entry.name),
                                 note: None,
@@ -123,11 +123,19 @@ impl Checker<'_> {
                                 note: None,
                             });
                         };
+                        let (signature_params, signature_results) =
+                            (signature.params.clone(), signature.results.clone());
+                        let bound = self.receiver_type_arguments(id, &signature_params[0], source);
                         let params = declaration
                             .params
                             .iter()
                             .map(|param| param.mode)
-                            .zip(signature.params[1..].iter().copied())
+                            .zip(signature_params[1..].iter().copied())
+                            .map(|(mode, ty)| (mode, self.types.substitute(ty, &bound)))
+                            .collect();
+                        let results = signature_results
+                            .iter()
+                            .map(|&ty| self.types.substitute(ty, &bound))
                             .collect();
                         let receiver = declaration
                             .receiver
@@ -138,7 +146,7 @@ impl Checker<'_> {
                             receiver,
                             declaration.is_async,
                             params,
-                            signature.results.clone(),
+                            results,
                             self.package_of(id.0 as usize),
                         )
                     }
@@ -237,12 +245,12 @@ impl Checker<'_> {
     ) -> Result<Option<hir::Expr>, hir::Expr> {
         let source = expr.ty();
         let span = expr.span;
-        if self.types.interface_of(target).is_some() && self.types.constraint(source).is_some() {
+        if self.types.interface_of(target).is_some() && self.types.mentions_param(source) {
             self.diagnostics.push(
                 Diagnostic::new(
                     Severity::Error,
                     format!(
-                        "converting a value of type parameter `{}` to an interface type is not supported yet",
+                        "converting a value of type `{}`, which uses a type parameter, to an interface type is not supported yet",
                         self.name(source)
                     ),
                     span,

@@ -69,6 +69,7 @@ pub struct Param {
 #[derive(Clone, Debug, PartialEq)]
 pub struct StructDecl {
     pub name: Name,
+    pub type_params: Vec<TypeParam>,
     pub fields: Vec<FieldDecl>,
     pub span: Span,
 }

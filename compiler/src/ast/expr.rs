@@ -57,6 +57,8 @@ pub enum ExprKind {
         /// Present for `package.Type{...}`.
         package: Option<Name>,
         ty: Name,
+        /// `Stack<int>{...}`; empty for a type that is not generic.
+        type_args: Vec<Type>,
         fields: Vec<FieldInit>,
     },
     ArrayLit {

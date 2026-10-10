@@ -22,7 +22,11 @@ func (p mut Parser) ty() int {
             if member == failed {
                 return failed
             }
-            return p.node2("qualified", name.Start, name.End, "", pkg, member)
+            let qualified = p.node2("qualified", name.Start, name.End, "", pkg, member)
+            if p.at("<") {
+                return p.instanceType(qualified, name)
+            }
+            return qualified
         }
         return p.tree.Add("type", name.Start, name.End, text)
     }
@@ -71,7 +75,79 @@ func (p mut Parser) channelType() int {
     return node
 }
 
-// Only the predeclared `Array`, `Mutex`, and `Task` take type arguments.
+func (p mut Parser) instanceType(base int, name lexer.Token) int {
+    let args = p.typeArgumentList()
+    if args == failed {
+        return failed
+    }
+    return p.node2("instance", name.Start, name.End, "", base, args)
+}
+
+func (p mut Parser) typeArgumentList() int {
+    _ = p.bump()
+    if p.at(">") {
+        return p.errorAtCurrent("expected a type argument")
+    }
+    let args = p.tree.List()
+    let first = p.ty()
+    if first == failed {
+        return failed
+    }
+    p.tree.Append(args, first)
+    for p.at(",") {
+        _ = p.bump()
+        let next = p.ty()
+        if next == failed {
+            return failed
+        }
+        p.tree.Append(args, next)
+    }
+    if !p.closeTypeArguments() {
+        return failed
+    }
+    return args
+}
+
+// Whether `<...>{` starts here, so a name followed by it is a generic struct literal.
+func (p Parser) atTypeArgumentsBeforeBrace(ahead int) bool {
+    if !p.atPunctAt(ahead, "<") {
+        return false
+    }
+    var depth = 0
+    var index = ahead
+    for {
+        let kind = p.kindAt(index)
+        if p.atPunctAt(index, "<") {
+            depth += 1
+        } else if p.atPunctAt(index, ">") {
+            depth = clampedDepth(depth - 1)
+        } else if p.atPunctAt(index, ">>") {
+            depth = clampedDepth(depth - 2)
+        } else if kind == lexer.KindIdent || kind == lexer.KindInt || p.atPunctAt(index, ",") ||
+            p.atPunctAt(index, ".") || p.atPunctAt(index, "[") || p.atPunctAt(index, "]") ||
+            p.atPunctAt(index, "(") || p.atPunctAt(index, ")") ||
+            (kind == lexer.KindSemicolon && p.tokenAt(index).Detail == lexer.SeparatorExplicit) ||
+            p.atKeywordAt(index, "map") || p.atKeywordAt(index, "channel") ||
+            p.atKeywordAt(index, "func") || p.atKeywordAt(index, "mut") ||
+            p.atKeywordAt(index, "async") {
+        } else {
+            return false
+        }
+        index += 1
+        if depth == 0 {
+            return p.atPunctAt(index, "{")
+        }
+    }
+}
+
+func clampedDepth(depth int) int {
+    if depth < 0 {
+        return 0
+    }
+    return depth
+}
+
+// `Array`, `Mutex`, and `Task` are predeclared; any other name is a generic struct type.
 func (p mut Parser) typeArguments(text string, name lexer.Token) int {
     let nameStart = name.Start
     let nameEnd = name.End
@@ -112,11 +188,8 @@ func (p mut Parser) typeArguments(text string, name lexer.Token) int {
         p.tree.Append(node, results)
         return node
     }
-    return p.error(
-        "`" + text + "` does not take type arguments; user-defined generics are not part of the MVP",
-        nameStart,
-        nameEnd,
-    )
+    let base = p.tree.Add("type", nameStart, nameEnd, text)
+    return p.instanceType(base, name)
 }
 
 // Splits `>>`, `>=`, or `>>=` so `Array<Array<int>>` closes both lists.

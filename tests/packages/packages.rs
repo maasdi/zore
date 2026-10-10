@@ -838,3 +838,52 @@ func Total<T util.Sizer>(item T) int {
         "`keep` is not exported by package `util`",
     );
 }
+
+#[test]
+fn generic_types_are_used_across_packages() {
+    let box_package = "package box
+
+type Stack<T any> struct {
+    items Array<T>
+}
+
+func New<T any>() Stack<T> {
+    return Stack<T>{items: Array<T>{}}
+}
+
+func (s mut Stack<T>) Push(value own T) {
+    s.items.push(value)
+}
+
+func (s Stack<T>) Len() int {
+    return s.items.len()
+}
+
+type Pair<A any, B any> struct {
+    First A
+    Second B
+}
+";
+    let main = main_with(
+        "import \"myapp/box\"",
+        "var s box.Stack<int> = box.New()
+    s.Push(1)
+    println(s.Len())
+    let p = box.Pair<string, int>{First: \"a\", Second: 2}
+    println(p.First)",
+    );
+    accepts(&[("main.ore", &main), ("box/box.ore", box_package)]);
+    rejects(
+        &[
+            (
+                "main.ore",
+                &main_with(
+                    "import \"myapp/box\"",
+                    "let s = box.Stack<int>{items: Array<int>{}}",
+                ),
+            ),
+            ("box/box.ore", box_package),
+        ],
+        "field `items` of `box.Stack<int64>` is not exported by its package",
+    );
+}

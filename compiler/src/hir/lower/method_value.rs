@@ -16,7 +16,10 @@ impl Checker<'_> {
     ) -> Option<Value> {
         let ty = receiver.ty();
         let strukt = self.types.struct_id(ty)?;
-        if !self.can_use_member(self.res.struct_package[strukt.0 as usize], &name.text) {
+        if !self.can_use_member(
+            self.res.struct_package[self.types.struct_origin(strukt).0 as usize],
+            &name.text,
+        ) {
             self.unexported_member("method", &name.text, ty, name.span);
             return None;
         }
@@ -25,6 +28,8 @@ impl Checker<'_> {
             Some("the `drop` method cannot be used as a value")
         } else if declaration.is_async {
             Some("an `async` method cannot be used as a value")
+        } else if self.is_generic(method) {
+            Some("a method of a generic type cannot be used as a value yet")
         } else {
             None
         };

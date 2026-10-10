@@ -811,7 +811,7 @@ Built-in primitive type names (§6.1), `Array`, `Task`, `Mutex`, `mutex`, `error
 `ordered` (§22.1), are predeclared names, not keywords. They are lexed as identifiers
 and resolved semantically; their built-in meaning may still require special
 compiler handling. Declarations may not shadow them (§3.18). This distinction
-does not imply user-defined generic types or additional built-in APIs.
+does not imply additional built-in APIs.
 
 Ownership, error, and async implications: keyword classification preserves the
 locked meanings of `mut`, `own`, `async`, `await`, and `go`; it does not change
@@ -1629,7 +1629,7 @@ channel<T>
 Task<R1, ..., Rn>   (written plain `Task` when the spawned call has no results)
 ```
 
-The exact generic surface syntax for every runtime/library type does not imply general user-defined generics. General-purpose generics are outside the MVP.
+These are built-in type forms with their own rules; user-defined generic functions and struct types are a separate feature (§22.1).
 `Task`'s type arguments mirror the spawned call's result list (§18.8).
 
 ## 6.4 No source-level `void` requirement — LOCKED
@@ -4976,9 +4976,10 @@ Compiler/runtime internals may of course use low-level operations internally.
 
 # 22. Generics and Interfaces
 
-## 22.1 Generic functions — LOCKED
+## 22.1 Generic functions and types — LOCKED
 
-A generic function declares type parameters in angle brackets after its name.
+A generic function or struct type declares type parameters in angle brackets
+after its name.
 Each type parameter has exactly one constraint, which says which types it can
 stand for and what the body may do with its values:
 
@@ -5007,7 +5008,43 @@ predeclared names (§3.18). A type parameter can appear anywhere a type can,
 including inside `[]T`, `Array<T>`, `map[K]V`, `channel<T>`, `Mutex<T>`, and
 `[T; N]`. Methods cannot declare type parameters, a function declared without a
 body (§37) cannot be generic, and `main` cannot be generic. An `async func` can
-be generic. Generic types are not part of this decision; only functions are.
+be generic.
+
+**Generic types.** A struct type can declare type parameters the same way:
+
+```ore
+type Stack<T any> struct {
+    items Array<T>
+}
+
+func (s mut Stack<T>) Push(value own T) {
+    s.items.push(value)
+}
+
+func (s Stack<T>) Len() int {
+    return s.items.len()
+}
+
+func main() {
+    var numbers = Stack<int>{items: Array<int>{}}
+    numbers.Push(4)
+    println(numbers.Len())
+}
+```
+
+Only struct types can be generic: a named type (§8.5) or an interface type
+(§22.2) cannot declare type parameters. A generic type is always written with
+its type arguments, `Stack<int>` in a type and `Stack<int>{...}` in a literal,
+and `pkg.Stack<int>` from another package; each set of type arguments is a
+distinct struct type. A method of a generic type names the type with its type
+parameters, in order and by name (`Stack<T>`; the names may differ from the
+declaration's), uses them in its signature and body, and cannot declare type
+parameters of its own. Calling it on a `Stack<int>` uses `int` for `T`. Custom
+`drop` and `clone` methods (§14.3, §10.7) are declared the same way, and a
+`clone` returns exactly the receiver type, `Stack<T>`. An instance such as
+`Stack<int>` satisfies an interface when its methods, with the type arguments
+in place, match the interface's entries (§22.2). A generic type that would
+contain itself with ever-growing type arguments is an error.
 
 **Constraints.**
 
@@ -5028,9 +5065,12 @@ of these. Floats are not `comparable`, as they are not map keys.
 Each parameter type is matched against its argument's type, and a type
 parameter takes the type found in its place, from the first argument that
 decides it. An untyped constant decides a type parameter only when no typed
-argument does; the first such constant then gives its default type (§6.7). Arguments are then
-checked against the parameter types with the type arguments in place, as for
-any call. A call is an error when a type parameter is not decided or a type
+argument does; the first such constant then gives its default type (§6.7). When the arguments
+leave a type parameter undecided and the call is expected to have a single
+type, such as the declared type of a `let` or the parameter it is passed to,
+the result type decides it: `var s Stack<int> = NewStack()`. Arguments are
+then checked against the parameter types with the type arguments in place, as
+for any call. A call is an error when a type parameter is not decided or a type
 argument does not satisfy its constraint; the diagnostic names the type
 parameter.
 
@@ -5055,9 +5095,10 @@ then gets its own copy of the function, compiled like ordinary code. A generic
 function whose calls would need endless new sets of type arguments, such as one
 calling itself with `Array<T>`, is an error.
 
-**Not yet supported.** Inside a generic function: function literals, `go`,
-method values, converting a `T` value to an interface type, `clone` of a `T`,
-and printing a `T`. These produce diagnostics.
+**Not yet supported.** Inside a generic function or a method of a generic type:
+function literals, `go`, method values, converting a value whose type uses a
+type parameter to an interface type, `clone` of a `T`, and printing a `T`. A
+method of a generic type cannot be used as a value. These produce diagnostics.
 
 Ownership, error, and async implications: generic code follows the ordinary
 ownership, borrowing, view, and cleanup rules for each type parameter as its
@@ -5071,8 +5112,9 @@ must be awaited or spawned (§17.8) and suspends like any async call.
 Compiler impact: parse type parameter lists in both parsers; declare type
 parameters and the four predeclared constraints in the resolver; add a type
 parameter type kind classified by its constraint; infer type arguments at calls
-and check them against constraints; check generic bodies once; make one copy per
-set of type arguments before MIR, and check an extra copy with stand-in types
+and check them against constraints; give each generic struct instance its own
+struct with the field types substituted; check generic bodies once; make one copy
+of each function and method per set of type arguments before MIR, and check an extra copy with stand-in types
 for ownership so errors in uncalled functions are found; compile only the
 copies. Pending conformance cases: `tests/conformance/generics.md`.
 
@@ -6494,7 +6536,7 @@ The following features are part of the locked MVP.
 
 The following features must not be treated as part of the MVP unless this specification is changed:
 
-- generic types (generic functions are in §22.1)
+- generic interfaces and generic named types (generic functions and struct types are in §22.1)
 - macros
 - reflection
 - raw pointers
@@ -6759,10 +6801,11 @@ No specific scheduler algorithm is locked.
 
 Do not depend on it.
 
-## 41.9 Generic type syntax — OUT OF MVP
+## 41.9 Generic interface and named type syntax — OUT OF MVP
 
-Generic functions are locked in §22.1. Do not infer user-defined generic types
-from `Array<T>`, `channel<T>`, or generic functions.
+Generic functions and generic struct types are locked in §22.1. Do not infer
+generic interfaces, generic named types, or methods with their own type
+parameters from them or from `Array<T>` and `channel<T>`.
 
 ---
 

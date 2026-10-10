@@ -8999,7 +8999,10 @@ func main() {
     println(written)
 }
 ";
-    prints(source, "8\ntrue\nCOPY ME\n10\ntrue\n3\ntrue\n0\ntrue\ndone\n5\n");
+    prints(
+        source,
+        "8\ntrue\nCOPY ME\n10\ntrue\n3\ntrue\n0\ntrue\ndone\n5\n",
+    );
 }
 
 #[test]
@@ -9085,4 +9088,161 @@ func main() {
 }
 ";
     prints(source, "first\nsecond\n2\n");
+}
+
+#[test]
+fn generic_types_hold_and_destroy_values_of_each_type_argument() {
+    let source = "package main
+
+type Ticket struct {
+    id int
+}
+
+func (t mut Ticket) drop() {
+    println(\"drop ticket \" + string(rune(48 + t.id)))
+}
+
+type Stack<T any> struct {
+    items Array<T>
+}
+
+func NewStack<T any>() Stack<T> {
+    return Stack<T>{items: Array<T>{}}
+}
+
+func (s mut Stack<T>) Push(value own T) {
+    s.items.push(value)
+}
+
+func (s mut Stack<T>) Pop() (bool, T) {
+    return s.items.pop()
+}
+
+func (s Stack<T>) Len() int {
+    return s.items.len()
+}
+
+type Box<T any> struct {
+    label string
+    item T
+}
+
+func (b mut Box<T>) drop() {
+    println(\"drop box \" + b.label)
+}
+
+type Set<T comparable> struct {
+    seen map[T]bool
+}
+
+func (s mut Set<T>) Add(value T) {
+    s.seen[value] = true
+}
+
+func (s Set<T>) Has(value T) bool {
+    let found, _ = s.seen[value]
+    return found
+}
+
+func Sum(s Stack<int>) int {
+    var total = 0
+    for item in s.items {
+        total += item
+    }
+    return total
+}
+
+func main() {
+    var numbers Stack<int> = NewStack()
+    numbers.Push(4)
+    numbers.Push(5)
+    println(Sum(numbers))
+    var tickets = Stack<Ticket>{items: Array<Ticket>{}}
+    tickets.Push(Ticket{id: 1})
+    tickets.Push(Ticket{id: 2})
+    let found, top = tickets.Pop()
+    println(found)
+    println(top.id)
+    var nested = Stack<Stack<int>>{items: Array<Stack<int>>{}}
+    nested.Push(numbers)
+    println(nested.Len())
+    var words = Set<string>{seen: map[string]bool{}}
+    words.Add(\"go\")
+    println(words.Has(\"go\"))
+    println(words.Has(\"zore\"))
+    let box = Box<Ticket>{label: \"b\", item: Ticket{id: 3}}
+    println(box.item.id)
+    println(\"end\")
+}
+";
+    prints(
+        source,
+        "9\ntrue\n2\n1\ntrue\nfalse\n3\nend\ndrop box b\ndrop ticket 3\ndrop ticket 2\ndrop ticket 1\n",
+    );
+}
+
+#[test]
+fn generic_types_satisfy_interfaces_and_run_in_tasks() {
+    let source = "package main
+
+type Getter interface {
+    Get() int
+}
+
+type Cell<T copyable> struct {
+    value T
+}
+
+func (c Cell<T>) Get() T {
+    return c.value
+}
+
+func (c mut Cell<T>) Set(value T) {
+    c.value = value
+}
+
+func (c Cell<T>) clone() Cell<T> {
+    println(\"clone\")
+    return Cell<T>{value: c.value}
+}
+
+type Queue<T any> struct {
+    items Array<T>
+}
+
+async func (q mut Queue<T>) Drain() int {
+    var count = 0
+    for q.items.len() > 0 {
+        let _, _ = q.items.pop()
+        count += 1
+    }
+    return count
+}
+
+func show(g Getter) {
+    println(g.Get())
+}
+
+async func run() int {
+    var q = Queue<string>{items: Array<string>{\"a\", \"b\", \"c\"}}
+    return await q.Drain()
+}
+
+func main() {
+    var c = Cell<int>{value: 1}
+    show(c)
+    c.Set(7)
+    show(c)
+    let owned Getter = Cell<int>{value: 9}
+    show(owned)
+    let copy = clone(c)
+    println(copy.Get())
+    let t = go run()
+    println(t.wait())
+    let words = Cell<string>{value: \"w\"}
+    let task = go words.Get()
+    println(task.wait())
+}
+";
+    prints(source, "1\n7\n9\nclone\n7\n3\nw\n");
 }

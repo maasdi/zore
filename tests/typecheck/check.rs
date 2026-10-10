@@ -4872,7 +4872,7 @@ fn generic_bodies_are_checked_for_every_allowed_type() {
         ),
         (
             "func A<T Named>(item own T) Named { return item }",
-            "converting a value of type parameter `T` to an interface type is not supported yet",
+            "converting a value of type `T`, which uses a type parameter, to an interface type is not supported yet",
         ),
         (
             "func A<T any>(item own T, n int) int { return A(Array<T>{item}, n) }",
@@ -4912,4 +4912,195 @@ func use() {
         .filter(|(message, _)| message.contains("use of moved value"))
         .count();
     assert_eq!(moved, 1);
+}
+
+const GENERIC_TYPES: &str = "type Stack<T any> struct {
+    items Array<T>
+}
+
+func NewStack<T any>() Stack<T> {
+    return Stack<T>{items: Array<T>{}}
+}
+
+func (s mut Stack<T>) Push(value own T) {
+    s.items.push(value)
+}
+
+func (s mut Stack<T>) Pop() (bool, T) {
+    return s.items.pop()
+}
+
+func (s Stack<T>) Len() int {
+    return s.items.len()
+}
+
+type Set<T comparable> struct {
+    seen map[T]bool
+}
+
+func (s mut Set<T>) Add(value T) {
+    s.seen[value] = true
+}
+
+type Cell<T copyable> struct {
+    value T
+}
+
+func (c Cell<T>) Get() T {
+    return c.value
+}
+
+func (c Cell<T>) clone() Cell<T> {
+    return Cell<T>{value: c.value}
+}
+
+type Getter interface { Get() int }
+";
+
+fn with_generic_types(decls: &str) -> String {
+    program(&format!("{GENERIC_TYPES}\n{decls}"))
+}
+
+#[test]
+fn generic_types_get_one_struct_per_set_of_type_arguments() {
+    let case = accepts(&with_generic_types(
+        "func Total<T any>(s Stack<T>) int { return s.Len() }
+
+func use() {
+    var a = Stack<int>{items: Array<int>{}}
+    a.Push(1)
+    let ok, top = a.Pop()
+    var b Stack<string> = NewStack()
+    b.Push(\"x\")
+    var nested = Stack<Stack<int>>{items: Array<Stack<int>>{}}
+    nested.Push(a)
+    var s = Set<string>{seen: map[string]bool{}}
+    s.Add(\"k\")
+    let g Getter = Cell<int>{value: 4}
+    let c = clone(Cell<int>{value: 5})
+    let n = Total(b) + Total(nested) + g.Get() + c.Get()
+    _ = ok
+    _ = top
+    _ = n
+}",
+    ));
+    let package = case.package();
+    let structs: Vec<&str> = package
+        .structs
+        .iter()
+        .filter(|s| !s.generic)
+        .map(|s| s.name.as_str())
+        .collect();
+    for name in [
+        "Stack<int64>",
+        "Stack<string>",
+        "Stack<Stack<int64>>",
+        "Set<string>",
+        "Cell<int64>",
+    ] {
+        assert!(structs.contains(&name), "no struct {name} in {structs:?}");
+    }
+    let compiled: Vec<&str> = package
+        .functions
+        .iter()
+        .filter(|f| f.compiled())
+        .map(|f| f.name.as_str())
+        .collect();
+    for name in [
+        "Push<int64>",
+        "Push<string>",
+        "Push<Stack<int64>>",
+        "Len<Stack<int64>>",
+        "Get<int64>",
+        "clone<int64>",
+    ] {
+        assert!(compiled.contains(&name), "no copy {name} in {compiled:?}");
+    }
+    let cell = package
+        .structs
+        .iter()
+        .find(|s| s.name == "Cell<int64>")
+        .unwrap();
+    let clone = cell.clone.expect("the instance has its own clone");
+    assert!(package.function(clone).compiled());
+}
+
+#[test]
+fn generic_types_reject_missing_wrong_or_unsatisfying_type_arguments() {
+    for (decls, message) in [
+        (
+            "func use() { let s = Stack{items: Array<int>{}} }",
+            "`Stack` needs type arguments, as in `Stack<T>`",
+        ),
+        (
+            "func use(s Stack) {}",
+            "`Stack` needs type arguments, as in `Stack<T>`",
+        ),
+        (
+            "func use(s Stack<int, int>) {}",
+            "`Stack` takes 1 type argument but 2 were given",
+        ),
+        (
+            "func use(s Set<float64>) {}",
+            "`float64` does not satisfy `comparable`, the constraint of `T`",
+        ),
+        (
+            "func use(c Cell<Array<int>>) {}",
+            "`Array<int64>` does not satisfy `copyable`, the constraint of `T`",
+        ),
+        (
+            "type Point struct { x int }\nfunc use(p Point<int>) {}",
+            "`Point` does not take type arguments",
+        ),
+        (
+            "func (s Stack) Peek() int { return 0 }",
+            "a method on generic type `Stack` names its type parameters, as in `Stack<T>`",
+        ),
+        (
+            "func (s Stack<int>) Peek() int { return 0 }",
+            "`int` is a type; a method receiver lists its type's parameters by name, as in `Stack<T>`",
+        ),
+        (
+            "func (s Stack<T>) Peek<U any>() int { return 0 }",
+            "a method cannot declare type parameters",
+        ),
+        (
+            "func (s Stack<T>) First() T { return s.items[0] }",
+            "cannot move borrowed value `s.items[_]`",
+        ),
+        (
+            "type Node<T any> struct { next Node<T> }",
+            "struct `Node` contains itself by value and has no finite size",
+        ),
+        (
+            "type Grow<T any> struct { next Array<Grow<Array<T>>> }\nfunc use(g Grow<int>) {}",
+            "generic type `Grow` contains itself with new type arguments without end",
+        ),
+        (
+            "func use() { let g Getter = Cell<string>{value: \"x\"} }",
+            "`Cell<string>` does not satisfy `Getter`: method `Get` has a different signature",
+        ),
+        (
+            "func use() { let c = Cell<int>{value: 1}\nlet f = c.Get }",
+            "a method of a generic type cannot be used as a value yet",
+        ),
+        (
+            "func Wrap<T copyable>(c Cell<T>) Getter { return c }",
+            "converting a value of type `Cell<T>`, which uses a type parameter, to an interface type is not supported yet",
+        ),
+        (
+            "func use() { var s = NewStack() }",
+            "cannot infer `T` for this call of `NewStack`",
+        ),
+        (
+            "type Number<T any> int",
+            "only struct types can declare type parameters",
+        ),
+        (
+            "type Shape<T any> interface { Area() T }",
+            "only struct types can declare type parameters",
+        ),
+    ] {
+        rejects(&with_generic_types(decls), message);
+    }
 }

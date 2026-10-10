@@ -2,10 +2,9 @@
 
 Status: interfaces ACCEPTED and locked in spec §22.2, which is authoritative
 for them; an owned interface value cannot hold a view, a narrowing of section 1
-below. Generic functions are ACCEPTED and locked in spec §22.1, which is
-authoritative for them, with the narrowings recorded in Q42. Generic types are
-still PROPOSED: §40 and §41.9 keep them out of the language until a later
-specification change under §53. Issue #88.
+below. Generic functions and generic struct types are ACCEPTED and locked in
+spec §22.1, which is authoritative for them, with the narrowings recorded in
+Q42. The library follow-up of section 5 is in spec §37. Issue #88.
 
 Scope: structural interfaces, generic functions and types, whether `error`
 becomes an interface, their ownership, error, and async rules, compiler impact,

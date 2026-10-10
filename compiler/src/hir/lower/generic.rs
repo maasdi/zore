@@ -8,9 +8,130 @@ use crate::hir::{self, ExprKind, StmtKind};
 use crate::resolve::{FunctionId, LocalKind, Res};
 use crate::source::Span;
 use crate::types::constant::Untyped;
-use crate::types::{Constraint, TypeId, TypeKind, TypeStore};
+use crate::types::{Constraint, InterfaceId, StructId, TypeId, TypeKind, TypeStore};
 
 impl Checker<'_> {
+    /// An instance's fields are its generic struct's, with the type arguments in place.
+    pub(super) fn struct_fields(&self, id: StructId) -> Vec<(String, Option<TypeId>, Span)> {
+        let origin = self.types.struct_origin(id);
+        let Some(declared) = self.fields.get(origin.0 as usize) else {
+            return Vec::new();
+        };
+        if origin == id {
+            return declared.clone();
+        }
+        let types = self.types.instance_fields(id).unwrap_or(&[]);
+        declared
+            .iter()
+            .zip(types)
+            .map(|((name, _, span), &ty)| (name.clone(), ty, *span))
+            .collect()
+    }
+
+    /// `Stack<int>`: a generic struct with type arguments that satisfy its constraints.
+    pub(super) fn instance_type(
+        &mut self,
+        base: &ast::Type,
+        args: &[ast::Type],
+        span: Span,
+    ) -> Option<TypeId> {
+        let (ast::Type::Named(name) | ast::Type::Qualified { name, .. }) = base else {
+            return None;
+        };
+        let Some(Res::Struct(template)) = self.res.uses.get(&name.span).copied() else {
+            return None;
+        };
+        let Some(params) = self.res.struct_type_params.get(&template).cloned() else {
+            self.error(
+                format!("`{}` does not take type arguments", name.text),
+                name.span,
+            );
+            return None;
+        };
+        let mut resolved = Vec::new();
+        for arg in args {
+            resolved.push(self.resolve_type(arg));
+        }
+        let resolved: Vec<TypeId> = resolved.into_iter().collect::<Option<_>>()?;
+        if resolved.len() != params.len() {
+            let message = format!(
+                "`{}` takes {} type argument{} but {} {} given",
+                name.text,
+                params.len(),
+                if params.len() == 1 { "" } else { "s" },
+                resolved.len(),
+                if resolved.len() == 1 { "was" } else { "were" },
+            );
+            self.error(message, span);
+            return None;
+        }
+        if !self.resolving_fields {
+            let mut ok = true;
+            for ((&param, &argument), arg) in params.iter().zip(&resolved).zip(args) {
+                ok &= self.type_argument_allowed(param, argument, arg.span());
+            }
+            if !ok {
+                return None;
+            }
+        }
+        Some(self.types.struct_instance(template, resolved))
+    }
+
+    pub(super) fn hir_struct(
+        &self,
+        id: StructId,
+        struct_methods: &HashMap<(StructId, &'static str), FunctionId>,
+    ) -> hir::Struct {
+        let origin = self.types.struct_origin(id);
+        let decl = self.res.structs[origin.0 as usize];
+        let ty = self.types.struct_type(id);
+        let generic = self.types.is_template(id) || self.types.mentions_param(ty);
+        let method = |name: &'static str| match struct_methods.get(&(id, name)) {
+            Some(&copy) => Some(copy),
+            None => self.struct_method(id, name),
+        };
+        let arguments = match self.types.instance_of(id) {
+            Some((_, args)) => {
+                let names: Vec<String> = args.iter().map(|&arg| self.name(arg)).collect();
+                format!("<{}>", names.join(", "))
+            }
+            None => String::new(),
+        };
+        hir::Struct {
+            name: format!(
+                "{}{}{arguments}",
+                self.symbol_prefix(self.res.struct_package[origin.0 as usize]),
+                decl.name.text
+            ),
+            span: decl.name.span,
+            drop: method("drop"),
+            clone: method("clone"),
+            generic,
+            fields: self
+                .struct_fields(id)
+                .into_iter()
+                .map(|(name, ty, span)| hir::Field {
+                    name,
+                    ty: ty.expect("no diagnostics means every field type resolved"),
+                    span,
+                })
+                .collect(),
+        }
+    }
+
+    /// Methods of a generic struct's instances are the generic struct's.
+    pub(super) fn method_of(&self, ty: TypeId, name: &str) -> Option<FunctionId> {
+        let key = match self.types.struct_id(ty) {
+            Some(id) => self.types.struct_type(self.types.struct_origin(id)),
+            None => ty,
+        };
+        self.res.methods.get(&(key, name.to_string())).copied()
+    }
+
+    pub(super) fn struct_method(&self, id: StructId, name: &str) -> Option<FunctionId> {
+        self.method_of(self.types.struct_type(id), name)
+    }
+
     /// Sets each type parameter's constraint once interface types exist.
     pub(super) fn type_param_constraints(&mut self) {
         let generic: Vec<(FunctionId, Vec<TypeId>)> = self
@@ -36,6 +157,46 @@ impl Checker<'_> {
                 };
                 self.types.set_constraint(ty, constraint);
             }
+        }
+        let structs: Vec<(StructId, Vec<TypeId>)> = self
+            .res
+            .struct_type_params
+            .iter()
+            .map(|(&id, params)| (id, params.clone()))
+            .collect();
+        for (id, params) in structs {
+            let declaration = self.res.structs[id.0 as usize];
+            for (param, &ty) in declaration.type_params.iter().zip(&params) {
+                if let Some(constraint) = self.declared_constraint(&param.constraint) {
+                    self.types.set_constraint(ty, constraint);
+                }
+            }
+        }
+        let sources: Vec<(TypeId, TypeId)> = self
+            .res
+            .method_param_sources
+            .iter()
+            .map(|(&param, &source)| (param, source))
+            .collect();
+        for (param, source) in sources {
+            if let Some(constraint) = self.types.constraint(source) {
+                self.types.set_constraint(param, constraint);
+            }
+        }
+    }
+
+    fn declared_constraint(&self, constraint: &ast::Type) -> Option<Constraint> {
+        let name = match constraint {
+            ast::Type::Named(name) | ast::Type::Qualified { name, .. } => name,
+            _ => return None,
+        };
+        match self.res.uses.get(&name.span) {
+            Some(Res::Constraint(constraint)) => Some(*constraint),
+            Some(Res::Interface(interface)) => self
+                .types
+                .interface_of(*interface)
+                .map(Constraint::Interface),
+            _ => None,
         }
     }
 
@@ -96,6 +257,18 @@ impl Checker<'_> {
             (TypeKind::Map { key: a, value: v }, TypeKind::Map { key: b, value: w }) => {
                 self.unify(a, b, bound);
                 self.unify(v, w, bound);
+            }
+            (TypeKind::Struct(a), TypeKind::Struct(b)) => {
+                if let (Some((x, want)), Some((y, have))) =
+                    (self.types.instance_of(a), self.types.instance_of(b))
+                    && x == y
+                {
+                    let pairs: Vec<(TypeId, TypeId)> =
+                        want.iter().copied().zip(have.iter().copied()).collect();
+                    for (a, b) in pairs {
+                        self.unify(a, b, bound);
+                    }
+                }
             }
             (TypeKind::Func(_), TypeKind::Func(_)) => {
                 let (Some(want), Some(have)) = (
@@ -247,6 +420,7 @@ impl Checker<'_> {
         };
         let (params, results) = (signature.params.clone(), signature.results.clone());
         let type_params = self.res.type_params[&id].clone();
+        let expected = self.call_expected.take();
         if args.len() != params.len() {
             let message = format!(
                 "`{name}` takes {} argument{} but {} {} given",
@@ -273,6 +447,9 @@ impl Checker<'_> {
             if let Some(Value::Typed(expr)) = value {
                 self.unify(param, expr.ty(), &mut bound);
             }
+        }
+        if let (Some(expected), [result]) = (expected, &results[..]) {
+            self.unify(*result, expected, &mut bound);
         }
         for (value, &param) in values.iter().zip(&params) {
             if let (Some(Value::Untyped(untyped, _)), TypeKind::Param(_)) =
@@ -370,6 +547,113 @@ impl Checker<'_> {
         }))
     }
 
+    /// The method's type parameters bound to the receiver's type arguments; empty for other methods.
+    pub(super) fn receiver_type_arguments(
+        &self,
+        method: FunctionId,
+        receiver_param: &TypeId,
+        receiver: TypeId,
+    ) -> HashMap<TypeId, TypeId> {
+        let mut bound = HashMap::new();
+        if self.is_generic(method) {
+            self.unify(*receiver_param, receiver, &mut bound);
+        }
+        bound
+    }
+
+    /// A method of a generic struct: the receiver's type arguments are the method's.
+    pub(super) fn generic_method_call(
+        &mut self,
+        id: FunctionId,
+        name: &str,
+        receiver: hir::Expr,
+        args: &[ast::Expr],
+        span: Span,
+    ) -> Option<Value> {
+        let Some(signature) = &self.signatures[id.0 as usize] else {
+            self.report_arg_errors(args);
+            return None;
+        };
+        let (params, results) = (signature.params.clone(), signature.results.clone());
+        let type_params = self.res.type_params[&id].clone();
+        let mut bound = HashMap::new();
+        self.unify(params[0], receiver.ty(), &mut bound);
+        let type_args: Vec<TypeId> = type_params
+            .iter()
+            .map(|param| bound.get(param).copied())
+            .collect::<Option<_>>()?;
+        let params: Vec<TypeId> = params
+            .iter()
+            .map(|&param| self.types.substitute(param, &bound))
+            .collect();
+        if args.len() + 1 != params.len() {
+            let message = format!(
+                "`{name}` takes {} argument{} but {} {} given",
+                params.len() - 1,
+                if params.len() == 2 { "" } else { "s" },
+                args.len(),
+                if args.len() == 1 { "was" } else { "were" },
+            );
+            self.error(message, span);
+            self.report_arg_errors(args);
+            return None;
+        }
+        let mut checked = vec![receiver];
+        let mut ok = true;
+        for (arg, &param) in args.iter().zip(&params[1..]) {
+            match self
+                .expr(arg, Some(param))
+                .and_then(|value| self.coerce(value, param))
+            {
+                Some(expr) => checked.push(expr),
+                None => ok = false,
+            }
+        }
+        if !ok {
+            return None;
+        }
+        let modes: Vec<ParamMode> = self.res.locals[id.0 as usize]
+            .iter()
+            .take(params.len())
+            .map(|local| match local.kind {
+                LocalKind::Param(mode) => mode,
+                _ => ParamMode::Borrow,
+            })
+            .collect();
+        let accesses: Vec<_> = modes
+            .iter()
+            .zip(&params)
+            .map(|(&mode, &param)| self.argument_access(mode, param))
+            .collect();
+        if !self.check_argument_accesses(&accesses, &checked) {
+            return None;
+        }
+        if self.is_async_function(id) && self.awaited_call != Some(span) {
+            self.diagnostics.push(
+                Diagnostic::new(
+                    Severity::Error,
+                    format!("call to async function `{name}` is neither awaited nor spawned"),
+                    span,
+                )
+                .note("write `await` before the call, or spawn it with `go`"),
+            );
+            return None;
+        }
+        let results = results
+            .into_iter()
+            .map(|result| self.types.substitute(result, &bound))
+            .collect();
+        Some(Value::Typed(hir::Expr {
+            kind: ExprKind::CallGeneric {
+                function: id,
+                type_args,
+                args: checked,
+            },
+            types: results,
+            span,
+        }))
+    }
+
     /// A method of a type parameter's interface constraint, called on the value inside it.
     pub(super) fn type_param_method_call(
         &mut self,
@@ -432,13 +716,19 @@ impl Checker<'_> {
     }
 
     /// Replaces each generic call with a call of a copy made for its type arguments.
-    pub(super) fn instantiate(&mut self, functions: &mut Vec<hir::Function>) {
-        let mut copies: HashMap<(FunctionId, Vec<TypeId>, bool), FunctionId> = HashMap::new();
-        let mut depths = vec![0; functions.len()];
-        let mut runaway = HashSet::new();
-        let mut pending: Vec<usize> = (0..functions.len())
-            .filter(|&index| functions[index].type_params.is_empty())
-            .collect();
+    /// Returns the `drop` and `clone` copies of each generic struct instance.
+    pub(super) fn instantiate(
+        &mut self,
+        functions: &mut Vec<hir::Function>,
+    ) -> HashMap<(StructId, &'static str), FunctionId> {
+        let mut copies = Copies {
+            by_key: HashMap::new(),
+            depths: vec![0; functions.len()],
+            pending: (0..functions.len())
+                .filter(|&index| functions[index].type_params.is_empty())
+                .collect(),
+            runaway: HashSet::new(),
+        };
         for index in 0..functions.len() {
             if functions[index].type_params.is_empty() {
                 continue;
@@ -448,67 +738,177 @@ impl Checker<'_> {
                 .iter()
                 .map(|&param| self.placeholder(param))
                 .collect();
-            let key = (FunctionId(index as u32), placeholders, true);
-            let copy = self.copy(functions, key.0, &key.1, true);
-            copies.insert(key, copy);
-            depths.push(0);
-            pending.push(copy.0 as usize);
-        }
-        while let Some(index) = pending.pop() {
-            let probe = functions[index].probe;
-            let depth = depths[index];
-            let span = functions[index].span;
-            let mut body = std::mem::replace(
-                &mut functions[index].body,
-                hir::Block {
-                    stmts: Vec::new(),
-                    span,
-                },
+            let template = FunctionId(index as u32);
+            self.copy_once(
+                functions,
+                &mut copies,
+                template,
+                placeholders,
+                true,
+                0,
+                None,
             );
-            each_expr(&mut body, &mut |expr| {
-                let ExprKind::CallGeneric {
-                    function,
-                    type_args,
-                    args,
-                } = &mut expr.kind
-                else {
-                    return;
+        }
+        let mut struct_methods = HashMap::new();
+        loop {
+            while let Some(index) = copies.pending.pop() {
+                self.rewrite_generic_calls(functions, &mut copies, index);
+            }
+            let before = functions.len();
+            self.copy_struct_methods(functions, &mut copies, &mut struct_methods);
+            self.copy_generic_implementations(functions, &mut copies);
+            if functions.len() == before && copies.pending.is_empty() {
+                break;
+            }
+        }
+        struct_methods
+    }
+
+    fn rewrite_generic_calls(
+        &mut self,
+        functions: &mut Vec<hir::Function>,
+        copies: &mut Copies,
+        index: usize,
+    ) {
+        let probe = functions[index].probe;
+        let depth = copies.depths[index];
+        let span = functions[index].span;
+        let mut body = std::mem::replace(
+            &mut functions[index].body,
+            hir::Block {
+                stmts: Vec::new(),
+                span,
+            },
+        );
+        each_expr(&mut body, &mut |expr| {
+            let ExprKind::CallGeneric {
+                function,
+                type_args,
+                args,
+            } = &mut expr.kind
+            else {
+                return;
+            };
+            let Some(copy) = self.copy_once(
+                functions,
+                copies,
+                *function,
+                type_args.clone(),
+                probe,
+                depth + 1,
+                Some(expr.span),
+            ) else {
+                return;
+            };
+            expr.kind = ExprKind::Call {
+                function: copy,
+                args: std::mem::take(args),
+            };
+        });
+        functions[index].body = body;
+    }
+
+    /// The copy of `template` for these type arguments, made the first time it is needed.
+    #[allow(clippy::too_many_arguments)]
+    fn copy_once(
+        &mut self,
+        functions: &mut Vec<hir::Function>,
+        copies: &mut Copies,
+        template: FunctionId,
+        type_args: Vec<TypeId>,
+        probe: bool,
+        depth: usize,
+        call: Option<Span>,
+    ) -> Option<FunctionId> {
+        let key = (template, type_args, probe);
+        if let Some(&copy) = copies.by_key.get(&key) {
+            return Some(copy);
+        }
+        let span = call.unwrap_or(functions[template.0 as usize].span);
+        if depth > MAX_COPY_DEPTH {
+            if copies.runaway.insert(template) {
+                self.error(
+                    format!(
+                        "generic function `{}` keeps calling itself with new type arguments",
+                        functions[template.0 as usize].name
+                    ),
+                    span,
+                );
+            }
+            return None;
+        }
+        if !probe {
+            self.satisfy_interface_constraints(functions, &template, &key.1, span);
+        }
+        let copy = self.copy(functions, template, &key.1, probe);
+        copies.by_key.insert(key, copy);
+        copies.depths.push(depth);
+        copies.pending.push(copy.0 as usize);
+        Some(copy)
+    }
+
+    fn copy_struct_methods(
+        &mut self,
+        functions: &mut Vec<hir::Function>,
+        copies: &mut Copies,
+        struct_methods: &mut HashMap<(StructId, &'static str), FunctionId>,
+    ) {
+        for raw in 0..self.types.struct_count() {
+            let id = StructId(raw as u32);
+            let Some((_, args)) = self.types.instance_of(id) else {
+                continue;
+            };
+            let args = args.to_vec();
+            if args.iter().any(|&arg| self.types.mentions_param(arg)) {
+                continue;
+            }
+            for name in ["drop", "clone"] {
+                if struct_methods.contains_key(&(id, name)) {
+                    continue;
+                }
+                let Some(method) = self.struct_method(id, name) else {
+                    continue;
                 };
-                let key = (*function, type_args.clone(), probe);
-                let copy = match copies.get(&key) {
-                    Some(&copy) => copy,
-                    None if depth >= MAX_COPY_DEPTH => {
-                        if !runaway.insert(*function) {
-                            return;
-                        }
-                        self.error(
-                            format!(
-                                "generic function `{}` keeps calling itself with new type arguments",
-                                functions[function.0 as usize].name
-                            ),
-                            expr.span,
-                        );
-                        return;
-                    }
-                    None => {
-                        if !probe {
-                            self.satisfy_interface_constraints(
-                                functions, &key.0, &key.1, expr.span,
-                            );
-                        }
-                        let copy = self.copy(functions, key.0, &key.1, probe);
-                        copies.insert(key, copy);
-                        depths.push(depth + 1);
-                        pending.push(copy.0 as usize);
-                        copy
-                    }
+                if let Some(copy) =
+                    self.copy_once(functions, copies, method, args.clone(), false, 0, None)
+                {
+                    struct_methods.insert((id, name), copy);
+                }
+            }
+        }
+    }
+
+    /// An instance satisfies an interface through copies of its generic struct's methods.
+    fn copy_generic_implementations(
+        &mut self,
+        functions: &mut Vec<hir::Function>,
+        copies: &mut Copies,
+    ) {
+        let keys: Vec<(TypeId, InterfaceId)> = self.implementations.keys().copied().collect();
+        for key in keys {
+            let Some((_, args)) = self
+                .types
+                .struct_id(key.0)
+                .and_then(|id| self.types.instance_of(id))
+            else {
+                continue;
+            };
+            let args = args.to_vec();
+            let implementations = self.implementations[&key].clone();
+            for (index, implementation) in implementations.into_iter().enumerate() {
+                let hir::Implementation::Method(method) = implementation else {
+                    continue;
                 };
-                expr.kind = ExprKind::Call {
-                    function: copy,
-                    args: std::mem::take(args),
-                };
-            });
-            functions[index].body = body;
+                if functions[method.0 as usize].type_params.is_empty() {
+                    continue;
+                }
+                if let Some(copy) =
+                    self.copy_once(functions, copies, method, args.clone(), false, 0, None)
+                {
+                    self.implementations.get_mut(&key).expect("listed above")[index] =
+                        hir::Implementation::Method(copy);
+                }
+            }
         }
     }
 
@@ -516,7 +916,8 @@ impl Checker<'_> {
     fn placeholder(&mut self, param: TypeId) -> TypeId {
         match self.types.constraint(param).unwrap_or(Constraint::Any) {
             Constraint::Copyable | Constraint::Comparable | Constraint::Ordered => TypeStore::INT64,
-            Constraint::Any | Constraint::Interface(_) => self.types.dyn_array_type(TypeStore::INT),
+            Constraint::Any => self.types.dyn_array_type(TypeStore::INT),
+            Constraint::Interface(interface) => self.types.interface_type(interface),
         }
     }
 
@@ -592,6 +993,13 @@ impl Checker<'_> {
 }
 
 const MAX_COPY_DEPTH: usize = 64;
+
+struct Copies {
+    by_key: HashMap<(FunctionId, Vec<TypeId>, bool), FunctionId>,
+    depths: Vec<usize>,
+    pending: Vec<usize>,
+    runaway: HashSet<FunctionId>,
+}
 
 fn each_expr(block: &mut hir::Block, visit: &mut dyn FnMut(&mut hir::Expr)) {
     for stmt in &mut block.stmts {

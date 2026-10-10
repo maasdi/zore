@@ -244,6 +244,16 @@ impl Parser<'_> {
     pub(super) fn type_decl(&mut self) -> PResult<Item> {
         let start = self.bump().span;
         let name = self.name("a type name")?;
+        let type_params = if self.at(Punct::Lt) {
+            self.type_params()?
+        } else {
+            Vec::new()
+        };
+        if let Some(param) = type_params.first()
+            && !self.at_keyword(Keyword::Struct)
+        {
+            return Err(self.error("only struct types can declare type parameters", param.span));
+        }
         if self.at_keyword(Keyword::Interface) {
             return self.interface_decl(start, name).map(Item::Interface);
         }
@@ -255,10 +265,15 @@ impl Parser<'_> {
                 span: self.span_from(start),
             }));
         }
-        self.struct_decl(start, name).map(Item::Struct)
+        self.struct_decl(start, name, type_params).map(Item::Struct)
     }
 
-    fn struct_decl(&mut self, start: Span, name: Name) -> PResult<StructDecl> {
+    fn struct_decl(
+        &mut self,
+        start: Span,
+        name: Name,
+        type_params: Vec<TypeParam>,
+    ) -> PResult<StructDecl> {
         self.bump();
         let open = self.body_open("struct type name")?;
         let mut fields = Vec::new();
@@ -285,6 +300,7 @@ impl Parser<'_> {
         }
         Ok(StructDecl {
             name,
+            type_params,
             fields,
             span: self.span_from(start),
         })

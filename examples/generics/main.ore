@@ -20,6 +20,26 @@ func (t mut Ticket) drop() {
     println("drop ticket")
 }
 
+type Stack<T any> struct {
+    items Array<T>
+}
+
+func NewStack<T any>() Stack<T> {
+    return Stack<T>{items: Array<T>{}}
+}
+
+func (s mut Stack<T>) Push(value own T) {
+    s.items.push(value)
+}
+
+func (s mut Stack<T>) Pop() (bool, T) {
+    return s.items.pop()
+}
+
+func (s Stack<T>) Len() int {
+    return s.items.len()
+}
+
 func Max<T ordered>(a T, b T) T {
     if a > b {
         return a
@@ -69,4 +89,12 @@ func main() {
 
     let ticket = Last(Array<Ticket>{Ticket{Id: 1}, Ticket{Id: 2}})
     println(ticket.Id)
+
+    var cities Stack<string> = NewStack()
+    cities.Push("Oslo")
+    cities.Push("Rome")
+    let found, top = cities.Pop()
+    println(found)
+    println(top)
+    println(cities.Len())
 }

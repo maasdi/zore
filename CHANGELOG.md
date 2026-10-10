@@ -33,7 +33,12 @@ once it does.
   or an interface type; calls take their type arguments from the arguments,
   bodies are checked once for every allowed type, and each set of type
   arguments gets its own compiled copy (§22.1, Q42). The four constraint names
-  are now predeclared. Generic types are still out.
+  are now predeclared.
+- Locked generic struct types: `type Stack<T any> struct { ... }` with methods
+  on `Stack<T>`, used as `Stack<int>`; each set of type arguments is its own
+  struct with its own method copies, and instances satisfy interfaces. A call
+  whose arguments do not decide a type parameter takes it from the expected
+  type, as in `var s Stack<int> = NewStack()` (§22.1, Q42).
 - Locked untyped constants following Go's model: integer and float kinds,
   exact arithmetic, representability rules, and at least 256-bit precision
   (§6.7).

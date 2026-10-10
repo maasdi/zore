@@ -223,6 +223,8 @@ pub struct Struct {
     /// Makes the struct Move.
     pub drop: Option<FunctionId>,
     pub clone: Option<FunctionId>,
+    /// A generic struct, or an instance whose type arguments are type parameters; never laid out.
+    pub generic: bool,
 }
 
 #[derive(Debug)]

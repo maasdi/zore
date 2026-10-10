@@ -1,6 +1,7 @@
 use super::parser::{PResult, Parser, TokenEdit};
 use crate::ast::*;
 use crate::lexer::{Keyword, Punct, Separator, Token, TokenKind};
+use crate::source::Span;
 
 impl Parser<'_> {
     pub(super) fn ty(&mut self) -> PResult<Type> {
@@ -19,11 +20,16 @@ impl Parser<'_> {
                 if self.at(Punct::Dot) && *self.peek_at(1) == TokenKind::Ident {
                     self.bump();
                     let member = self.name("a type name")?;
-                    return Ok(Type::Qualified {
-                        span: self.span_from(name.span),
+                    let start = name.span;
+                    let base = Type::Qualified {
+                        span: self.span_from(start),
                         package: name,
                         name: member,
-                    });
+                    };
+                    if self.at(Punct::Lt) {
+                        return self.instance_type(base, start);
+                    }
+                    return Ok(base);
                 }
                 Ok(Type::Named(name))
             }
@@ -69,7 +75,66 @@ impl Parser<'_> {
         })
     }
 
-    /// Only the predeclared `Array` takes a type argument, and it cannot be shadowed.
+    fn instance_type(&mut self, base: Type, start: Span) -> PResult<Type> {
+        let args = self.type_argument_list()?;
+        Ok(Type::Instance {
+            base: Box::new(base),
+            args,
+            span: self.span_from(start),
+        })
+    }
+
+    pub(super) fn type_argument_list(&mut self) -> PResult<Vec<Type>> {
+        self.bump();
+        if self.at(Punct::Gt) {
+            let span = self.current_span();
+            return Err(self.error("expected a type argument", span));
+        }
+        let mut args = vec![self.ty()?];
+        while self.at(Punct::Comma) {
+            self.bump();
+            args.push(self.ty()?);
+        }
+        self.close_type_arguments()?;
+        Ok(args)
+    }
+
+    /// Whether `<...>{` starts here, so a name followed by it is a generic struct literal.
+    pub(super) fn at_type_arguments_before_brace(&self, ahead: usize) -> bool {
+        if *self.peek_at(ahead) != TokenKind::Punct(Punct::Lt) {
+            return false;
+        }
+        let mut depth = 0usize;
+        let mut index = ahead;
+        loop {
+            match self.peek_at(index) {
+                TokenKind::Punct(Punct::Lt) => depth += 1,
+                TokenKind::Punct(Punct::Gt) => depth = depth.saturating_sub(1),
+                TokenKind::Punct(Punct::Shr) => depth = depth.saturating_sub(2),
+                TokenKind::Ident
+                | TokenKind::Int(_)
+                | TokenKind::Punct(
+                    Punct::Comma
+                    | Punct::Dot
+                    | Punct::LBracket
+                    | Punct::RBracket
+                    | Punct::LParen
+                    | Punct::RParen,
+                )
+                | TokenKind::Semicolon(Separator::Explicit)
+                | TokenKind::Keyword(
+                    Keyword::Map | Keyword::Channel | Keyword::Func | Keyword::Mut | Keyword::Async,
+                ) => {}
+                _ => return false,
+            }
+            index += 1;
+            if depth == 0 {
+                return *self.peek_at(index) == TokenKind::Punct(Punct::LBrace);
+            }
+        }
+    }
+
+    /// `Array`, `Mutex`, and `Task` are predeclared; any other name is a generic struct type.
     fn type_arguments(&mut self, name: Name) -> PResult<Type> {
         match name.text.as_str() {
             "Array" => {
@@ -103,13 +168,10 @@ impl Parser<'_> {
                     span: self.span_from(name.span),
                 })
             }
-            _ => Err(self.error(
-                format!(
-                    "`{}` does not take type arguments; user-defined generics are not part of the MVP",
-                    name.text
-                ),
-                name.span,
-            )),
+            _ => {
+                let start = name.span;
+                self.instance_type(Type::Named(name), start)
+            }
         }
     }
 

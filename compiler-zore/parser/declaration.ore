@@ -289,6 +289,21 @@ func (p mut Parser) structDecl() int {
     if name == failed {
         return failed
     }
+    var typeParams = p.tree.List()
+    if p.at("<") {
+        typeParams = p.typeParams()
+        if typeParams == failed {
+            return failed
+        }
+        if !p.atKeyword("struct") {
+            let first = p.tree.Child(typeParams, 0)
+            return p.error(
+                "only struct types can declare type parameters",
+                p.tree.Start(first),
+                p.tree.End(first),
+            )
+        }
+    }
     if p.atKeyword("interface") {
         return p.interfaceDecl(start, name)
     }
@@ -324,7 +339,11 @@ func (p mut Parser) structDecl() int {
             p.synchronize(depth, true)
         }
     }
-    return p.node2("struct", start.Start, start.End, "", name, fields)
+    let node = p.addNode("struct", start.Start, start.End, "")
+    p.tree.Append(node, name)
+    p.tree.Append(node, typeParams)
+    p.tree.Append(node, fields)
+    return node
 }
 
 func (p mut Parser) interfaceDecl(start lexer.Token, name int) int {

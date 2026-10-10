@@ -308,14 +308,7 @@ impl Printer<'_> {
                             .as_ref()
                             .map_or_else(absent, |param| self.param(param)),
                         self.name(&func.name),
-                        list(func.type_params.iter().map(|param| {
-                            node(
-                                "typeparam",
-                                Some(param.span),
-                                "",
-                                &[self.name(&param.name), self.ty(&param.constraint)],
-                            )
-                        })),
+                        self.type_params(&func.type_params),
                         list(func.params.iter().map(|param| self.param(param))),
                         list(func.results.iter().map(|ty| self.ty(ty))),
                         self.block(&func.body),
@@ -328,6 +321,7 @@ impl Printer<'_> {
                 "",
                 &[
                     self.name(&decl.name),
+                    self.type_params(&decl.type_params),
                     list(decl.fields.iter().map(|field| {
                         node(
                             "field",
@@ -405,6 +399,17 @@ impl Printer<'_> {
         )
     }
 
+    fn type_params(&self, params: &[TypeParam]) -> String {
+        list(params.iter().map(|param| {
+            node(
+                "typeparam",
+                Some(param.span),
+                "",
+                &[self.name(&param.name), self.ty(&param.constraint)],
+            )
+        }))
+    }
+
     fn binding_target(&self, target: &BindingTarget) -> String {
         match target {
             BindingTarget::Name(name) => self.name(name),
@@ -424,6 +429,12 @@ impl Printer<'_> {
                 Some(*span),
                 "",
                 &[self.name(package), self.name(name)],
+            ),
+            Type::Instance { base, args, span } => node(
+                "instance",
+                Some(*span),
+                "",
+                &[self.ty(base), list(args.iter().map(|arg| self.ty(arg)))],
             ),
             Type::Array {
                 element,
@@ -545,6 +556,7 @@ impl Printer<'_> {
             ExprKind::StructLit {
                 package,
                 ty,
+                type_args,
                 fields,
             } => node(
                 "structlit",
@@ -553,6 +565,7 @@ impl Printer<'_> {
                 &[
                     package.as_ref().map_or_else(absent, |name| self.name(name)),
                     self.name(ty),
+                    list(type_args.iter().map(|arg| self.ty(arg))),
                     list(fields.iter().map(|field| {
                         node(
                             "init",
@@ -879,6 +892,8 @@ fn targeted_programs_and_errors_match() {
         "package main\ntype N interface\n{\n}\nfunc f(r Reader, w mut io.Writer, c own Closer) {}\n",
         "package main\nfunc Max<T ordered>(a T, b T) T { return a }\nfunc Pair<K comparable, V any>(k K, v own V) {}\nfunc Read<R io.Reader>(r mut R) {}\nasync func Get<T any>() {}\nfunc (s S) M<T any>() {}\n",
         "package main\nfunc A<T>() {}\nfunc B<>() {}\nfunc C<T any,>() {}\nfunc D<T any() {}\nfunc E<T Array<int>>() {}\nfunc main() { let x = Max<int>(1, 2) }\n",
+        "package main\ntype Stack<T any> struct {\n    items Array<T>\n}\ntype Pair<K comparable, V any> struct { k K; v V }\nfunc (s mut Stack<T>) Push(v own T) {}\nfunc f(p Pair<string, Array<int>>, q pkg.Box<int>, r Stack<Stack<int>>) {\n    let s = Stack<int>{items: Array<int>{}}\n    let t = pkg.Box<[int; 2]>{}\n    let u = Pair<string, map[string]int>{k: \"a\", v: map[string]int{}}\n    let w = a < b\n    if x < y { return }\n    g(a < b, c > d)\n}\n",
+        "package main\ntype Bad<T any> int\ntype Worse<T any> interface { M() }\nfunc f(x Foo<>) {}\nfunc g() { let x = Box<int{} }\n",
     ];
     let mut cases: Vec<Case> = inputs
         .iter()

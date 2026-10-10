@@ -36,4 +36,4 @@ These proposals were not accepted and changed nothing. They are kept for their r
 
 These proposals await a decision and change nothing yet.
 
-- [Interfaces and generics](proposals/interfaces-and-generics.md) (Q42; issue #88). Interfaces are accepted and in spec §22.2, and generic functions in §22.1; generic types are still open.
+- [Interfaces and generics](proposals/interfaces-and-generics.md) (Q42; issue #88). Accepted: interfaces are in spec §22.2, and generic functions and struct types in §22.1.

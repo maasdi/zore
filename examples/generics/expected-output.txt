@@ -6,4 +6,7 @@ false
 hello Oslo
 drop ticket
 2
+true
+Rome
+1
 drop ticket

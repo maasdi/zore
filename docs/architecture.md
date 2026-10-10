@@ -44,8 +44,10 @@ when existing code belongs in it (rule 11: no empty scaffolding):
   `lower/closure_kind.rs`, which decides which closures own their captures, and
   `lower/interface.rs`, which checks interface satisfaction, conversions, and
   calls through interfaces, and `lower/generic.rs`, which infers type arguments,
-  checks them against constraints, and makes one copy of a generic function per
-  set of type arguments plus a never-compiled copy that checks ownership).
+  checks them against constraints, and makes one copy of a generic function or
+  method per set of type arguments plus a never-compiled copy that checks
+  ownership; the type store gives each generic struct instance its own struct
+  with the field types substituted).
 - `ownership/` (`checker.rs`, `move_state.rs`, `borrow.rs`, `region.rs`, and
   `error_use.rs`, the check that every `error` value is read or discarded),
   `mir/` (`body.rs`, `block.rs`, `statement.rs`, `terminator.rs`,
