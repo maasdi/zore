@@ -1,6 +1,7 @@
 use super::parser::{PResult, Parser, Reported};
 use crate::ast::*;
 use crate::lexer::{Keyword, Punct, TokenKind};
+use crate::source::Span;
 
 impl Parser<'_> {
     pub(super) fn file_ast(&mut self) -> File {
@@ -85,7 +86,7 @@ impl Parser<'_> {
     pub(super) fn item(&mut self) -> PResult<Item> {
         match self.peek() {
             TokenKind::Keyword(Keyword::Func | Keyword::Async) => self.func().map(Item::Func),
-            TokenKind::Keyword(Keyword::Type) => self.struct_decl().map(Item::Struct),
+            TokenKind::Keyword(Keyword::Type) => self.type_decl(),
             TokenKind::Keyword(Keyword::Let | Keyword::Var | Keyword::Const) => {
                 self.binding().map(Item::Binding)
             }
@@ -206,12 +207,21 @@ impl Parser<'_> {
         Ok(vec![self.ty()?])
     }
 
-    pub(super) fn struct_decl(&mut self) -> PResult<StructDecl> {
+    pub(super) fn type_decl(&mut self) -> PResult<Item> {
         let start = self.bump().span;
         let name = self.name("a type name")?;
         if !self.at_keyword(Keyword::Struct) {
-            return Err(self.unexpected("`struct`; only struct type declarations are supported"));
+            let base = self.ty()?;
+            return Ok(Item::Named(NamedDecl {
+                name,
+                base,
+                span: self.span_from(start),
+            }));
         }
+        self.struct_decl(start, name).map(Item::Struct)
+    }
+
+    fn struct_decl(&mut self, start: Span, name: Name) -> PResult<StructDecl> {
         self.bump();
         let open = self.body_open("struct type name")?;
         let mut fields = Vec::new();

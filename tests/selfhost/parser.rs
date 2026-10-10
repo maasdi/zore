@@ -330,6 +330,12 @@ impl Printer<'_> {
                     })),
                 ],
             ),
+            Item::Named(decl) => node(
+                "named",
+                Some(decl.span),
+                "",
+                &[self.name(&decl.name), self.ty(&decl.base)],
+            ),
             Item::Binding(binding) => self.binding(binding),
         }
     }
@@ -823,6 +829,7 @@ fn targeted_programs_and_errors_match() {
         "package main\nfunc main() {\n    let x = Array<int>{1, 2\n    }\n    let unclosed = (1 +\n}\n",
         "package main\nfunc main() {\n    if a {\n",
         "package main\ntype S struct {\n    X int\n",
+        "package main\ntype Duration int\ntype Name pkg.Text\ntype Items Array<int>\ntype Alias\ntype Other = int\n",
         "package main\nfunc main() {\n    let x = 1 let y = 2\n    let t Array<int>\n    let u Array<int>   // comment\n    let v Task\n    var w map[string]Array<int> = nil\n}\n",
         "package main\nfunc main() {\n    let a = 0x1G + 1e\n    let b = \"unterminated\n    let c = 'ab'\n    x++\n    @\n}\n",
         "package main\nfunc main() {\n    a.b.c(d)[e](f)\n    go a.b()\n    go func() {}()\n    await x\n    f()?\n}\n",

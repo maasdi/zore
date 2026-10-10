@@ -1919,11 +1919,13 @@ impl FunctionBuilder<'_, '_> {
 
     pub(super) fn convert(&mut self, operand: &Operand, to: TypeId, span: Span) -> String {
         let from = self.operand_ty(operand);
-        if from == to {
+        let types = &self.module.package.types;
+        if from == to || types.kind(from) == types.kind(to) {
             return self.owned_value(operand);
         }
+        let rune_to_text = types.kind(from) == TypeKind::Rune && types.kind(to) == TypeKind::String;
         let value = self.value(operand);
-        if from == crate::types::TypeStore::RUNE && to == crate::types::TypeStore::STRING {
+        if rune_to_text {
             return self.string_from_rune(&value);
         }
         let types = &self.module.package.types;

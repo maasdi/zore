@@ -6,7 +6,7 @@ use super::units::{FileUnit, PackageInfo, PackageUnit};
 use crate::ast::{self, BindingKind, BindingTarget, ExprKind, ForHeader, Item, StmtKind};
 use crate::diagnostic::{Diagnostic, Severity};
 use crate::source::Span;
-use crate::types::{StructId, TypeStore};
+use crate::types::{TypeId, TypeStore};
 
 pub struct Resolution<'a> {
     /// The entry package's name.
@@ -21,9 +21,12 @@ pub struct Resolution<'a> {
     pub const_package: Vec<usize>,
     pub types: TypeStore,
     pub structs: Vec<&'a ast::StructDecl>,
+    /// Named types with their package, in declaration order.
+    pub named: Vec<(&'a ast::NamedDecl, usize, TypeId)>,
     /// A method's receiver is its first parameter.
     pub functions: Vec<&'a ast::FuncDecl>,
-    pub methods: HashMap<(StructId, String), FunctionId>,
+    /// Keyed by the receiver's type.
+    pub methods: HashMap<(TypeId, String), FunctionId>,
     pub consts: Vec<ConstDecl<'a>>,
     /// Keyed by the span of the name.
     pub uses: HashMap<Span, Res>,
@@ -63,6 +66,7 @@ pub fn resolve<'a>(units: &'a [PackageUnit<'a>]) -> Resolution<'a> {
             const_package: Vec::new(),
             types: TypeStore::new(),
             structs: Vec::new(),
+            named: Vec::new(),
             functions: Vec::new(),
             methods: HashMap::new(),
             consts: Vec::new(),
@@ -77,6 +81,7 @@ pub fn resolve<'a>(units: &'a [PackageUnit<'a>]) -> Resolution<'a> {
         current_package: 0,
         current_file: 0,
         file_of_struct: Vec::new(),
+        file_of_named: Vec::new(),
         file_of_function: Vec::new(),
         file_of_const: Vec::new(),
         scopes: Vec::new(),
@@ -111,6 +116,7 @@ pub(super) struct Resolver<'a> {
     pub(super) current_file: usize,
     /// The file each struct, function, and constant was declared in.
     pub(super) file_of_struct: Vec<usize>,
+    pub(super) file_of_named: Vec<usize>,
     pub(super) file_of_function: Vec<usize>,
     pub(super) file_of_const: Vec<usize>,
     pub(super) scopes: Vec<HashMap<String, (Res, Span)>>,
@@ -174,6 +180,11 @@ impl<'a> Resolver<'a> {
                 self.ty(&field.ty);
             }
         }
+        for index in 0..self.out.named.len() {
+            let (decl, package, _) = self.out.named[index];
+            self.enter(package, self.file_of_named[index]);
+            self.ty(&decl.base);
+        }
         for id in methods {
             self.enter(
                 self.out.function_package[id.0 as usize],
@@ -236,6 +247,17 @@ impl<'a> Resolver<'a> {
                     self.out.struct_package.push(package);
                     self.file_of_struct.push(file_index);
                     self.declare_package(&decl.name, Res::Struct(id));
+                }
+                Item::Named(decl) => {
+                    let display = if package == self.out.entry_package {
+                        decl.name.text.clone()
+                    } else {
+                        format!("{}.{}", unit.name, decl.name.text)
+                    };
+                    let ty = self.out.types.add_named(&display);
+                    self.out.named.push((decl, package, ty));
+                    self.file_of_named.push(file_index);
+                    self.declare_package(&decl.name, Res::Named(ty));
                 }
                 Item::Func(func) => {
                     self.note_entry_main(func);
@@ -416,16 +438,29 @@ impl<'a> Resolver<'a> {
             .expect("only methods are declared as methods");
         let ast::Type::Named(type_name) = &receiver.ty else {
             self.error(
-                "methods can be declared only on struct types defined in this package",
+                "methods can be declared only on struct or named types defined in this package",
                 receiver.ty.span(),
             );
             return;
         };
-        let strukt = match self.lookup(&type_name.text) {
-            Some(Res::Struct(strukt)) => strukt,
+        let (receiver_ty, strukt) = match self.lookup(&type_name.text) {
+            Some(Res::Struct(strukt)) => (self.out.types.struct_type(strukt), Some(strukt)),
+            Some(Res::Named(ty)) => {
+                if matches!(func.name.text.as_str(), "drop" | "clone") {
+                    self.error(
+                        format!(
+                            "`{}` can be declared only on a struct type; `{}` is a named type",
+                            func.name.text, type_name.text
+                        ),
+                        func.name.span,
+                    );
+                    return;
+                }
+                (ty, None)
+            }
             Some(Res::Primitive(_)) => {
                 self.error(
-                    "methods can be declared only on struct types defined in this package",
+                    "methods can be declared only on struct or named types defined in this package",
                     type_name.span,
                 );
                 return;
@@ -438,17 +473,19 @@ impl<'a> Resolver<'a> {
         if func.name.text == "clone" {
             self.check_clone_signature(func, receiver, type_name);
         }
-        let key = (strukt, func.name.text.clone());
+        let key = (receiver_ty, func.name.text.clone());
         if let Some(&first) = self.out.methods.get(&key) {
             let first = self.out.functions[first.0 as usize].name.span;
             self.duplicate(&func.name, first, "method");
             return;
         }
-        let decl = self.out.structs[strukt.0 as usize];
-        if let Some(field) = decl.fields.iter().find(|f| f.name.text == func.name.text) {
-            let first = field.name.span;
-            self.duplicate(&func.name, first, "member");
-            return;
+        if let Some(strukt) = strukt {
+            let decl = self.out.structs[strukt.0 as usize];
+            if let Some(field) = decl.fields.iter().find(|f| f.name.text == func.name.text) {
+                let first = field.name.span;
+                self.duplicate(&func.name, first, "member");
+                return;
+            }
         }
         self.out.methods.insert(key, id);
     }
@@ -526,7 +563,8 @@ impl<'a> Resolver<'a> {
     fn ty(&mut self, ty: &'a ast::Type) {
         match ty {
             ast::Type::Named(name) => match self.use_name(&name.text, name.span) {
-                Some(Res::Primitive(_) | Res::Struct(_) | Res::Unsupported) | None => {}
+                Some(Res::Primitive(_) | Res::Struct(_) | Res::Named(_) | Res::Unsupported)
+                | None => {}
                 Some(_) => {
                     self.out.uses.remove(&name.span);
                     self.error(format!("`{}` is not a type", name.text), name.span);
@@ -534,7 +572,7 @@ impl<'a> Resolver<'a> {
             },
             ast::Type::Qualified { package, name, .. } => {
                 match self.package_member(package, name) {
-                    Some(Res::Struct(_)) | None => {}
+                    Some(Res::Struct(_) | Res::Named(_)) | None => {}
                     Some(_) => {
                         self.out.uses.remove(&name.span);
                         self.error(

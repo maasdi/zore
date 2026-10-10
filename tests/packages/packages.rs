@@ -239,7 +239,7 @@ fn methods_cannot_be_declared_on_imported_types() {
     );
     rejects(
         &with_shapes(&main),
-        "methods can be declared only on struct types defined in this package",
+        "methods can be declared only on struct or named types defined in this package",
     );
 }
 
@@ -634,4 +634,57 @@ func main() {
 }
 ";
     accepts(&[("main.ore", main), ("shapes/shapes.ore", shapes)]);
+}
+
+#[test]
+fn named_types_cross_packages_with_their_methods() {
+    let units = "package units
+
+type Celsius float64
+
+type secret int
+
+const Freezing Celsius = 0
+
+func (c Celsius) Fahrenheit() Celsius {
+    return c * 9 / 5 + 32
+}
+
+func (c Celsius) hidden() int { return 1 }
+
+func Hide() secret { return secret(1) }
+";
+    accepts(&[
+        (
+            "main.ore",
+            &main_with(
+                "import \"myapp/units\"",
+                "let c = units.Celsius(100)
+            let f units.Celsius = c.Fahrenheit()
+            println(f > units.Freezing)
+            let raw float64 = float64(f)
+            println(raw > 0.0)",
+            ),
+        ),
+        ("units/units.ore", units),
+    ]);
+    for (body, message) in [
+        ("let s = units.secret(1)", "not exported"),
+        (
+            "let c = units.Celsius(1)\nprintln(c.hidden())",
+            "is not exported",
+        ),
+        (
+            "let c = units.Celsius(1)\nlet f float64 = c",
+            "mismatched types: expected `float64`, found `units.Celsius`",
+        ),
+    ] {
+        rejects(
+            &[
+                ("main.ore", &main_with("import \"myapp/units\"", body)),
+                ("units/units.ore", units),
+            ],
+            message,
+        );
+    }
 }

@@ -9,6 +9,8 @@ pub enum Res {
     Const(ConstId),
     Function(FunctionId),
     Struct(StructId),
+    /// A declared type built on a predeclared type (`type Duration int`).
+    Named(TypeId),
     Primitive(TypeId),
     /// An import's name; valid only as the qualifier of `package.Name`.
     Package(usize),

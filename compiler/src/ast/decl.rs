@@ -22,6 +22,7 @@ pub struct Import {
 pub enum Item {
     Func(FuncDecl),
     Struct(StructDecl),
+    Named(NamedDecl),
     Binding(Binding),
 }
 
@@ -59,6 +60,14 @@ pub struct Param {
 pub struct StructDecl {
     pub name: Name,
     pub fields: Vec<FieldDecl>,
+    pub span: Span,
+}
+
+/// `type Name Base`: a distinct type with the representation and operations of `Base`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct NamedDecl {
+    pub name: Name,
+    pub base: Type,
     pub span: Span,
 }
 
