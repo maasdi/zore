@@ -135,7 +135,12 @@ impl Checker<'_> {
             let ty = arg.ty();
             let message = if mode == ParamMode::Mut {
                 "a spawned call cannot take a `mut` parameter, since copying the argument would change what the caller sees"
-            } else if self.type_contains(ty, &|kind| matches!(kind, TypeKind::Slice { .. })) {
+            } else if self.type_contains(ty, &|kind| {
+                matches!(
+                    kind,
+                    TypeKind::Slice { .. } | TypeKind::InterfaceView { .. }
+                )
+            }) {
                 "a spawned call cannot take a view, since it may borrow storage the task does not own"
             } else if self.holds_func(ty) && mode != ParamMode::Own {
                 "a spawned call can take a function value only for an `own` parameter, since the task cannot borrow the spawner's storage"
@@ -281,7 +286,12 @@ impl Checker<'_> {
                     "the task could outlive the exclusive access the caller granted",
                     span,
                 )
-            } else if self.type_contains(ty, &|kind| matches!(kind, TypeKind::Slice { .. })) {
+            } else if self.type_contains(ty, &|kind| {
+                matches!(
+                    kind,
+                    TypeKind::Slice { .. } | TypeKind::InterfaceView { .. }
+                )
+            }) {
                 (
                     format!("a spawned closure cannot capture `{name}`, which holds a view"),
                     "a view borrows storage the task does not own",

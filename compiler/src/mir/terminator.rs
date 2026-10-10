@@ -16,6 +16,10 @@ pub enum Callee {
     Function(FunctionId),
     /// Uses the closure at the place exclusively.
     Value(Place),
+    /// `[receiver, args...]`; calls what serves entry `method` of the receiver's interface.
+    Interface {
+        method: usize,
+    },
     Println,
     /// `[message]`; raises a panic with the message and the call's location.
     Panic,
@@ -69,6 +73,7 @@ impl Callee {
             }
             Callee::Function(_)
             | Callee::Value(_)
+            | Callee::Interface { .. }
             | Callee::Println
             | Callee::Panic
             | Callee::Drop

@@ -41,16 +41,16 @@ type Lexed struct {
     Problems Array<Problem>
 }
 
-func keywords() [string; 26] {
-    return [string; 26]{
-        "package", "import", "func", "type", "struct", "let", "var", "const", "mut",
-        "own", "if", "else", "for", "in", "break", "continue", "return", "async",
-        "await", "go", "select", "map", "channel", "true", "false", "nil",
+func keywords() [string; 27] {
+    return [string; 27]{
+        "package", "import", "func", "type", "struct", "interface", "let", "var", "const",
+        "mut", "own", "if", "else", "for", "in", "break", "continue", "return",
+        "async", "await", "go", "select", "map", "channel", "true", "false", "nil",
     }
 }
 
-func reservedWords() [string; 8] {
-    return [string; 8]{"interface", "trait", "impl", "enum", "match", "unsafe", "macro", "defer"}
+func reservedWords() [string; 7] {
+    return [string; 7]{"trait", "impl", "enum", "match", "unsafe", "macro", "defer"}
 }
 
 const PunctCount = 40

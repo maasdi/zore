@@ -41,12 +41,15 @@ when existing code belongs in it (rule 11: no empty scaffolding):
   the package and file units handed to resolution), `types/` (`type_id.rs`,
   `ty.rs`, `type_store.rs`, plus `constant.rs` and `bignum.rs` for exact
   constant evaluation), `hir/` (`expr.rs`, `stmt.rs`, `function.rs`, `lower.rs`,
-  and `lower/closure_kind.rs`, which decides which closures own their captures).
+  `lower/closure_kind.rs`, which decides which closures own their captures, and
+  `lower/interface.rs`, which checks interface satisfaction, conversions, and
+  calls through interfaces).
 - `ownership/` (`checker.rs`, `move_state.rs`, `borrow.rs`, `region.rs`, and
   `error_use.rs`, the check that every `error` value is read or discarded),
   `mir/` (`body.rs`, `block.rs`, `statement.rs`, `terminator.rs`,
   `operand.rs`, `rvalue.rs`, `lower.rs`), `dropck/` (`insertion.rs`).
-- `codegen/` (`llvm.rs`, `layout.rs`, `abi.rs`, plus `clone.rs`, `channel.rs`,
+- `codegen/` (`llvm.rs`, `layout.rs`, `abi.rs`, plus `interface.rs`, which emits
+  method tables, adapters, and owned interface storage, and `clone.rs`, `channel.rs`,
   `mutex.rs`, `io.rs`, and `task.rs`, which lower `clone` and the channel, `Mutex`, and
   task operations, and `native.rs`, the shims that call the runtime for library
   functions declared without a body).

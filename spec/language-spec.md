@@ -745,16 +745,16 @@ requirements are in `tests/conformance/keywords.md`.
 
 ## 3.16 Future-reserved words — LOCKED
 
-The following eight words are reserved for possible future features:
+The following seven words are reserved for possible future features:
 
 ```text
-interface trait impl enum match unsafe macro defer
+trait impl enum match unsafe macro defer
 ```
 
 These exact lowercase spellings cannot be identifiers in any name position,
 including package, type, function, receiver/parameter, local, or field names.
 There is no escaped-identifier syntax to bypass reservation in the MVP.
-Reservation is case-sensitive and matches whole words: `Interface`, `matchValue`,
+Reservation is case-sensitive and matches whole words: `Trait`, `matchValue`,
 and `_unsafe` are ordinary identifier spellings, not future-reserved words.
 
 For example, `let match = 1` is invalid, while `let matchValue = 1` is valid
@@ -770,7 +770,7 @@ Ownership, error, and async implications: the words introduce no executable
 operations or new ownership, cleanup, error, or async behavior. Attempts to use
 them as names or unavailable syntax produce compile-time diagnostics.
 
-Compiler impact: recognize these eight exact spellings as future-reserved,
+Compiler impact: recognize these seven exact spellings as future-reserved,
 diagnose unsupported use with source spans, and keep their token classification
 distinct from ordinary identifiers and supported grammar roles. Do not implement
 the associated features. Pending conformance cases are in
@@ -782,7 +782,7 @@ The MVP keyword list is:
 
 | Purpose | Keywords |
 | --- | --- |
-| Structure | `package import func type struct` |
+| Structure | `package import func type struct interface` |
 | Bindings | `let var const` |
 | Ownership | `mut own` |
 | Control flow | `if else for in break continue return` |
@@ -810,7 +810,7 @@ Built-in primitive type names (§6.1), `Array`, `Task`, `Mutex`, `mutex`, `error
 `panic`, `clone`, and `drop` are predeclared names, not keywords. They are lexed as identifiers
 and resolved semantically; their built-in meaning may still require special
 compiler handling. Declarations may not shadow them (§3.18). This distinction
-does not imply user-defined generics, interfaces, or additional built-in APIs.
+does not imply user-defined generics or additional built-in APIs.
 
 Ownership, error, and async implications: keyword classification preserves the
 locked meanings of `mut`, `own`, `async`, `await`, and `go`; it does not change
@@ -2661,7 +2661,8 @@ Examples include:
 - other resource-owning values
 
 A `Mutex<T>` handle is not Move: like a channel handle it is Copy and shares
-one guarded cell (§20.2).
+one guarded cell (§20.2). An owned interface value is Move whatever it holds
+(§22.2).
 
 ## 10.4 Fixed arrays — LOCKED
 
@@ -3540,9 +3541,8 @@ func readFile(path string) (string, error)
 ```
 
 `error` is a normal built-in value type, not a hidden exception mechanism, and
-not a general user-satisfiable interface: general interfaces/traits are out of
-the MVP (§22.2), so `error` is exactly **one concrete predeclared type**, not
-an extensible contract. There is no user-defined custom error type, no
+not an interface type (§22.2): `error` is exactly **one concrete predeclared
+type**, not an extensible contract, and it stays Copy. There is no user-defined custom error type, no
 downcasting, and no type-assertion mechanism in the MVP.
 
 `error` is Copy (§10.2), consistent with `string`. It holds an immutable
@@ -4990,21 +4990,144 @@ does not imply that general user-defined generics are already available.
 
 These may initially be compiler-known/core-library parameterized types.
 
-## 22.2 Interfaces / traits — OUT OF MVP
+## 22.2 Interfaces — LOCKED
 
-General interfaces/traits are not part of the MVP.
-
-A possible future direction is Go-like structural interfaces:
+An interface type is a list of methods. A type that has those methods satisfies
+the interface without declaring it:
 
 ```ore
-interface Reader {
-    read() ([]byte, error)
+type Reader interface {
+    Read(buf mut []byte) (int, error)
+}
+
+type Closer interface {
+    own Close() error
+}
+
+type Counter interface {
+    Count() int
+    mut Add(n int)
 }
 ```
 
-This is non-normative and must not be implemented as a locked MVP feature.
-`error` (§15.1) is a single concrete predeclared type, not an interface, and is
-not an exception to this section.
+**Declaration.** `type Name interface { ... }` declares an interface type in
+package scope, exported by the usual rule (§4.1). Each entry is a method name,
+its parameters with their names, types, and modes (§7.3), and its results, as in
+a method declaration without a receiver. The receiver's mode comes before the
+name: nothing for a shared borrow, `mut` for a mutable borrow, and `own` for
+ownership transfer. An entry may start with `async` (§17.2). An interface
+declares at least one method, each name once. `drop` and `clone` cannot be
+entries, an interface does not list other interfaces, and methods cannot be
+declared on an interface type.
+
+**Satisfying an interface.** A type `T` satisfies interface `I` when, for every
+entry of `I`, `T` has a method with the same name, the same parameter types and
+modes in order, the same results, the same `async` property, and a receiver mode
+the entry allows:
+
+| Entry | Receiver modes of `T`'s method that satisfy it |
+| --- | --- |
+| shared | shared |
+| `mut` | shared or `mut` |
+| `own` | shared, `mut`, or `own` |
+
+Only struct and named types (§8.5) have methods, so only they satisfy an
+interface; predeclared types satisfy none. An entry whose name is not exported
+is satisfied only by a method declared in the interface's package. An interface
+type `J` satisfies `I` when `J` has an entry for every entry of `I` under the
+same rules, with `J`'s entry in place of the method.
+
+**Borrowed and owned values.** Where a value of interface type appears decides
+what it is:
+
+| Position | The value is | It can call |
+| --- | --- | --- |
+| A parameter `r Reader` | a shared borrow of the argument | shared entries |
+| A parameter `r mut Reader` | an exclusive borrow of the argument | shared and `mut` entries |
+| Anywhere else: an `own` parameter, a local initialized with a declared type, a field, a result, an element, a map value | an owned value | shared entries; `mut` entries through a mutable place (§11.6); `own` entries, which consume it |
+
+A shared or `mut` interface parameter borrows its argument exactly as a
+parameter of the argument's own type would: nothing is copied, moved, or
+allocated, and a `mut` parameter needs a mutable place (§11.6). Inside the
+function the parameter is a *borrowed interface value*, a view like a slice
+(§12.1): copying it, passing it on, and capturing it follow the rules for
+views, and it cannot be stored in a field, returned, or converted to an owned
+value.
+
+An owned interface value owns the value inside it. Converting a value to an
+owned interface value moves a Move value (§10.3) or copies a Copy value into
+storage the interface value owns. An owned interface value is always Move, even
+when the value inside is Copy. The value inside cannot hold a view: converting a
+value whose type contains a slice, a borrowed interface value, or a function
+value to an owned interface value is an error.
+
+**Conversion.** A value converts to an interface type implicitly wherever that
+type is expected and the value's type satisfies it: an argument, an initializer
+with a declared type, an assignment, a `return`, a field value, an element, a
+map value, `push`, and a channel send. The value can be of a concrete type or
+another interface type that satisfies the target. There is no conversion from an
+interface type back to a concrete type, and no `T(v)` form for interfaces.
+
+```ore
+type File struct { name string }
+
+func (f mut File) drop() {}         // a custom `drop` makes File a Move type
+func (f File) Read(buf mut []byte) (int, error) { return 0, nil }
+func (f own File) Close() error { return nil }
+
+func fill(r mut Reader, buf mut []byte) (int, error) {
+    return r.Read(buf)                 // calls File.Read through the interface
+}
+
+func main() {
+    var file = File{name: "notes.txt"}
+    var buf = [byte; 4]{0, 0, 0, 0}
+    let n, err = fill(file, buf[:])    // borrows `file` exclusively for the call
+    _ = n
+    _ = err
+    let closer Closer = file           // moves `file` into an owned value
+    let closeErr = closer.Close()      // consumes `closer`
+    _ = closeErr
+}
+```
+
+**Calls.** `value.Method(args)` on an interface value calls the method of the
+value inside. The receiver is used with the entry's mode, and the arguments
+follow ordinary parameter rules (§7.3–§7.4). Calling an `own` entry consumes the
+owned interface value: a method with an `own` receiver receives the value
+inside, and a method with a weaker receiver borrows it, after which the value is
+destroyed. A method value written on an interface value (`r.Read` without a
+call, §16.2) and `go` on a call through an interface value are not part of this
+decision.
+
+**Restrictions.** Interface types are not comparable (§6.6), cannot be map keys
+(§13.3), cannot be printed (§37.1), do not support `clone` (§10.7), and admit no
+`nil` (§41.4). Their zero value is an *empty* value: destroying it does nothing,
+and calling a method through it panics (§41.4).
+
+Ownership, error, and async implications: destroying an owned interface value
+destroys the value inside it exactly once, running its custom `drop` if it has
+one (§14.3). A method result that holds a view is treated, at a call through an
+interface value, as borrowing from the receiver and every borrowed argument
+(§11.7). An owned interface value holds no views, so it can be passed to `go` as
+an `own` argument, captured by a spawned closure, sent on a channel, and guarded
+by a `Mutex` (§18.4, §19.4, §20.2); a borrowed interface value cannot. A call
+through an interface adds no implicit error propagation or panic handling: `?`,
+panics, and cleanup work as for a direct call. An `async` entry is satisfied
+only by an `async` method, and a call through it must be awaited or spawned
+(§17.8). A call through any other entry behaves exactly like a direct call of
+the method inside: in an `async func` or a standard library function that
+waits, a call that reaches a method that waits suspends the task (§17.7, §37.3),
+and in a plain function it waits in place.
+
+Compiler impact: declare interface types with their entries; check satisfaction
+at each conversion and record which method serves each entry; represent a
+borrowed or owned interface value as a pointer to the value inside, a pointer to
+its drop flags, and a table of the methods that serve the entries, preceded by
+the destructor of the value inside; give owned values heap storage; treat
+borrowed values as views in the ownership and region analysis; generate the code
+that adapts each method to its entry, including interface-to-interface
+conversions. Pending conformance cases: `tests/conformance/interfaces.md`.
 
 ---
 
@@ -6248,7 +6371,6 @@ The following features are part of the locked MVP.
 The following features must not be treated as part of the MVP unless this specification is changed:
 
 - general-purpose generics
-- interfaces / traits
 - macros
 - reflection
 - raw pointers
@@ -6332,11 +6454,12 @@ The zero value per type:
 | `Task<...>` | `nil` |
 | `channel<T>` | an always-closed, empty channel (§19.12) |
 | `Mutex<T>` | a mutex with no lock and no value: `withLock` panics and `isPoisoned` is `false` (§20.2) |
+| interface type (§22.2) | an empty value that holds nothing: destroying it does nothing, and calling a method through it panics |
 
 `nil` is a literal denoting the absent state of exactly two built-in types:
 `error` (no error) and `Task<...>` (no associated work). No other type —
 including `bool`, numeric types, `rune`, `string`, struct types, `[T; N]`,
-`[]T`, `Array<T>`, `map[K]V`, `channel<T>`, and `Mutex<T>` — admits `nil` as a value or
+`[]T`, `Array<T>`, `map[K]V`, `channel<T>`, `Mutex<T>`, and interface types — admits `nil` as a value or
 literal target. Those types are always valid to use once produced; there is no
 separate "nil" state distinct from "empty" for slices, `Array<T>`, or `map[K]V`,
 and a channel value is always a real channel whose zero value is already

@@ -1,9 +1,10 @@
 # Q42 proposal: interfaces and generics
 
-Status: PROPOSED. Nothing here is locked or implemented. Spec §22.1, §22.2,
-§40, and §41.9 still keep general interfaces and user-defined generics out of
-the language until the maintainer accepts this proposal and the specification
-is changed under §53. Issue #88.
+Status: interfaces ACCEPTED and locked in spec §22.2, which is authoritative
+for them; an owned interface value cannot hold a view, a narrowing of section 1
+below. Generics are still PROPOSED: §22.1, §40, and §41.9 keep user-defined
+generics out of the language until a later specification change under §53.
+Issue #88.
 
 Scope: structural interfaces, generic functions and types, whether `error`
 becomes an interface, their ownership, error, and async rules, compiler impact,

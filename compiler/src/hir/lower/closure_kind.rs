@@ -63,8 +63,23 @@ impl Checker<'_> {
                 .func_signature(callee.ty())
                 .and_then(|signature| signature.params.get(index))
                 .map_or(ParamMode::Borrow, |&(mode, _)| mode),
+            ExprKind::InterfaceCall {
+                receiver, method, ..
+            } => self
+                .types
+                .interface_of(receiver.ty())
+                .and_then(|id| self.types.interface_methods(id).get(*method))
+                .and_then(|entry| entry.params.get(index))
+                .map_or(ParamMode::Borrow, |&(mode, _)| mode),
             _ => ParamMode::Borrow,
         }
+    }
+
+    fn receiver_mode(&self, receiver: &hir::Expr, method: usize) -> ParamMode {
+        self.types
+            .interface_of(receiver.ty())
+            .and_then(|id| self.types.interface_methods(id).get(method))
+            .map_or(ParamMode::Borrow, |entry| entry.receiver)
     }
 
     fn is_call_once(&self, function: FunctionId) -> bool {
@@ -188,7 +203,9 @@ impl Checker<'_> {
             }
         }
         let modes: Vec<ParamMode> = match &expr.kind {
-            ExprKind::Call { args, .. } | ExprKind::CallValue { args, .. } => (0..args.len())
+            ExprKind::Call { args, .. }
+            | ExprKind::CallValue { args, .. }
+            | ExprKind::InterfaceCall { args, .. } => (0..args.len())
                 .map(|index| self.param_mode(&expr.kind, index))
                 .collect(),
             _ => Vec::new(),
@@ -225,6 +242,13 @@ impl Checker<'_> {
                     self.expr_escapes(arg, mode == ParamMode::Own, escapes);
                 }
             }
+            ExprKind::InterfaceCall { receiver, args, .. } => {
+                self.expr_escapes(receiver, false, escapes);
+                for (arg, mode) in args.iter_mut().zip(modes) {
+                    self.expr_escapes(arg, mode == ParamMode::Own, escapes);
+                }
+            }
+            ExprKind::InterfaceBox(source) => self.expr_escapes(source, true, escapes),
             ExprKind::Spawn { args, callable, .. } => {
                 if *callable && let Some(ExprKind::Local(local)) = args.first().map(|arg| &arg.kind)
                 {
@@ -521,6 +545,25 @@ impl Checker<'_> {
                     }
                 }
             }
+            ExprKind::InterfaceCall {
+                receiver,
+                method,
+                args,
+            } => {
+                if self.receiver_mode(receiver, *method) == ParamMode::Own {
+                    self.value_moves(receiver, moved);
+                } else {
+                    self.place_moves(receiver, moved);
+                }
+                for (index, arg) in args.iter().enumerate() {
+                    if self.param_mode(&expr.kind, index) == ParamMode::Own {
+                        self.value_moves(arg, moved);
+                    } else {
+                        self.place_moves(arg, moved);
+                    }
+                }
+            }
+            ExprKind::InterfaceView { source, .. } => self.place_moves(source, moved),
             ExprKind::Closure {
                 captures, owning, ..
             } => {
@@ -765,6 +808,12 @@ fn children_mut(expr: &mut hir::Expr) -> Vec<&mut hir::Expr> {
         ExprKind::Call { args, .. } | ExprKind::Spawn { args, .. } => args.iter_mut().collect(),
         ExprKind::CallValue { callee, args, .. } => {
             std::iter::once(&mut **callee).chain(args).collect()
+        }
+        ExprKind::InterfaceCall { receiver, args, .. } => {
+            std::iter::once(&mut **receiver).chain(args).collect()
+        }
+        ExprKind::InterfaceView { source: inner, .. } | ExprKind::InterfaceBox(inner) => {
+            vec![inner]
         }
         ExprKind::StructLit { fields, .. } => fields.iter_mut().map(|(_, value)| value).collect(),
         ExprKind::ArrayLit { elements, .. } => elements.iter_mut().collect(),

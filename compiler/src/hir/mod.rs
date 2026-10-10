@@ -3,7 +3,7 @@ mod function;
 pub mod lower;
 mod stmt;
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 pub use expr::{Const, Expr, ExprKind, Place, Projection};
 pub use function::{Function, Local};
@@ -11,7 +11,7 @@ pub use stmt::{Block, SelectArm, SelectComm, Stmt, StmtKind};
 
 use crate::resolve::FunctionId;
 use crate::source::Span;
-use crate::types::{StructId, TypeId, TypeKind, TypeStore};
+use crate::types::{InterfaceId, StructId, TypeId, TypeKind, TypeStore};
 
 #[derive(Debug)]
 pub struct Package {
@@ -24,6 +24,16 @@ pub struct Package {
     pub globals: Vec<Global>,
     /// Sets every global before the entry point runs.
     pub init: Option<FunctionId>,
+    /// For each type converted to an interface, what serves each entry, in entry order.
+    pub implementations: HashMap<(TypeId, InterfaceId), Vec<Implementation>>,
+}
+
+/// What serves one interface entry for a type converted to the interface.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Implementation {
+    Method(FunctionId),
+    /// An entry of the source interface, for one interface converted to another.
+    Entry(usize),
 }
 
 #[derive(Debug)]
@@ -38,6 +48,30 @@ impl Package {
         &self.functions[id.0 as usize]
     }
 
+    /// A borrowed interface value is already a view, so it is passed as it is.
+    pub fn passes_by_reference(&self, mode: crate::ast::ParamMode, ty: TypeId) -> bool {
+        if matches!(self.types.kind(ty), TypeKind::InterfaceView { .. }) {
+            return false;
+        }
+        match mode {
+            crate::ast::ParamMode::Mut => true,
+            crate::ast::ParamMode::Borrow => !self.is_copy(ty) || self.contains_array(ty),
+            crate::ast::ParamMode::Own => false,
+        }
+    }
+
+    pub fn interface_entry(
+        &self,
+        receiver: TypeId,
+        method: usize,
+    ) -> &crate::types::InterfaceMethod {
+        let interface = self
+            .types
+            .interface_of(receiver)
+            .expect("an interface receiver");
+        &self.types.interface_methods(interface)[method]
+    }
+
     pub fn strukt(&self, id: StructId) -> &Struct {
         &self.structs[id.0 as usize]
     }
@@ -50,9 +84,10 @@ impl Package {
             | TypeKind::Rune
             | TypeKind::String
             | TypeKind::Error
-            | TypeKind::Slice { .. } => true,
+            | TypeKind::Slice { .. }
+            | TypeKind::InterfaceView { .. } => true,
             // A closure may hold exclusive borrows, so it is never duplicated.
-            TypeKind::Func(_) | TypeKind::Task(_) => false,
+            TypeKind::Func(_) | TypeKind::Task(_) | TypeKind::Interface(_) => false,
             TypeKind::Channel { .. } | TypeKind::Mutex { .. } => true,
             TypeKind::Struct(id) => {
                 let strukt = self.strukt(id);
@@ -90,10 +125,13 @@ impl Package {
         !self.is_copy(ty) || self.holds_shared(ty)
     }
 
-    /// Slices and closures hold borrows; a slice's own elements are not part of the value.
+    /// Slices, closures, and borrowed interface values hold borrows; a slice's own elements are not part of the value.
     pub fn contains_view(&self, ty: TypeId) -> bool {
         self.contains(ty, &|kind| {
-            matches!(kind, TypeKind::Slice { .. } | TypeKind::Func(_))
+            matches!(
+                kind,
+                TypeKind::Slice { .. } | TypeKind::Func(_) | TypeKind::InterfaceView { .. }
+            )
         })
     }
 
@@ -126,7 +164,9 @@ impl Package {
         self.contains(ty, &|kind| {
             matches!(
                 kind,
-                TypeKind::Slice { mutable: true, .. } | TypeKind::Func(_)
+                TypeKind::Slice { mutable: true, .. }
+                    | TypeKind::Func(_)
+                    | TypeKind::InterfaceView { mutable: true, .. }
             )
         })
     }

@@ -200,7 +200,7 @@ impl Parser<'_> {
         }
         if matches!(
             self.peek(),
-            TokenKind::Punct(Punct::LBrace) | TokenKind::Semicolon(_)
+            TokenKind::Punct(Punct::LBrace | Punct::RBrace) | TokenKind::Semicolon(_)
         ) {
             return Ok(Vec::new());
         }
@@ -210,6 +210,9 @@ impl Parser<'_> {
     pub(super) fn type_decl(&mut self) -> PResult<Item> {
         let start = self.bump().span;
         let name = self.name("a type name")?;
+        if self.at_keyword(Keyword::Interface) {
+            return self.interface_decl(start, name).map(Item::Interface);
+        }
         if !self.at_keyword(Keyword::Struct) {
             let base = self.ty()?;
             return Ok(Item::Named(NamedDecl {
@@ -249,6 +252,68 @@ impl Parser<'_> {
         Ok(StructDecl {
             name,
             fields,
+            span: self.span_from(start),
+        })
+    }
+
+    fn interface_decl(&mut self, start: Span, name: Name) -> PResult<InterfaceDecl> {
+        self.bump();
+        let open = self.body_open("interface type name")?;
+        let mut methods = Vec::new();
+        loop {
+            if self.at(Punct::RBrace) {
+                self.bump();
+                break;
+            }
+            if *self.peek() == TokenKind::Eof {
+                return Err(self.unclosed(open));
+            }
+            let depth = self.open_delimiters;
+            let ok = match self.interface_method() {
+                Ok(method) => {
+                    methods.push(method);
+                    self.statement_end("method")
+                }
+                Err(Reported) => false,
+            };
+            if !ok {
+                self.synchronize(depth, true);
+            }
+        }
+        Ok(InterfaceDecl {
+            name,
+            methods,
+            span: self.span_from(start),
+        })
+    }
+
+    fn interface_method(&mut self) -> PResult<InterfaceMethod> {
+        let start = self.current_span();
+        let is_async = self.at_keyword(Keyword::Async);
+        if is_async {
+            self.bump();
+        }
+        let receiver = if self.at_keyword(Keyword::Mut) {
+            self.bump();
+            ParamMode::Mut
+        } else if self.at_keyword(Keyword::Own) {
+            self.bump();
+            ParamMode::Own
+        } else {
+            ParamMode::Borrow
+        };
+        let name = self.name("a method name")?;
+        self.expect(Punct::LParen)?;
+        let params = self.comma_list(Punct::RParen, "parameter", true, |p| {
+            p.param("a parameter name")
+        })?;
+        let results = self.results()?;
+        Ok(InterfaceMethod {
+            is_async,
+            receiver,
+            name,
+            params,
+            results,
             span: self.span_from(start),
         })
     }

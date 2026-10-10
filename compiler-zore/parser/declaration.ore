@@ -226,7 +226,7 @@ func (p mut Parser) results() int {
         return results
     }
     let results = p.tree.List()
-    if p.at("{") || p.atSeparator() {
+    if p.at("{") || p.at("}") || p.atSeparator() {
         return results
     }
     let ty = p.ty()
@@ -242,6 +242,9 @@ func (p mut Parser) structDecl() int {
     let name = p.name("a type name")
     if name == failed {
         return failed
+    }
+    if p.atKeyword("interface") {
+        return p.interfaceDecl(start, name)
     }
     if !p.atKeyword("struct") {
         let base = p.ty()
@@ -276,6 +279,70 @@ func (p mut Parser) structDecl() int {
         }
     }
     return p.node2("struct", start.Start, start.End, "", name, fields)
+}
+
+func (p mut Parser) interfaceDecl(start lexer.Token, name int) int {
+    _ = p.bump()
+    let open = p.bodyOpen("interface type name")
+    if open == failed {
+        return failed
+    }
+    let methods = p.tree.List()
+    for {
+        if p.at("}") {
+            _ = p.bump()
+            break
+        }
+        if p.atEof() {
+            return p.unclosed(open)
+        }
+        let depth = p.openDelimiters
+        let method = p.interfaceMethod()
+        var ok = false
+        if method != failed {
+            p.tree.Append(methods, method)
+            ok = p.statementEnd("method")
+        }
+        if !ok {
+            p.synchronize(depth, true)
+        }
+    }
+    return p.node2("interface", start.Start, start.End, "", name, methods)
+}
+
+func (p mut Parser) interfaceMethod() int {
+    let start = p.current()
+    var attr = "sync"
+    if p.atKeyword("async") {
+        _ = p.bump()
+        attr = "async"
+    }
+    if p.atKeyword("mut") {
+        _ = p.bump()
+        attr += " mut"
+    } else if p.atKeyword("own") {
+        _ = p.bump()
+        attr += " own"
+    } else {
+        attr += " borrow"
+    }
+    let name = p.name("a method name")
+    if name == failed || p.expect("(") == failed {
+        return failed
+    }
+    let params = p.commaList(")", "parameter", true, itemParam)
+    if params == failed {
+        return failed
+    }
+    let results = p.results()
+    if results == failed {
+        return failed
+    }
+    let node = p.addNode("method", start.Start, start.End, attr)
+    p.tree.Append(node, name)
+    p.tree.Append(node, params)
+    p.tree.Append(node, results)
+    return node
 }
 
 func (p mut Parser) fieldDecl() int {

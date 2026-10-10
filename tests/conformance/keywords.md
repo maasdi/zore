@@ -22,16 +22,16 @@ feature is unavailable. Keep these separate from tests for supported keyword use
 
 ## Future-reserved word cases
 
-For each of `interface`, `trait`, `impl`, `enum`, `match`, `unsafe`, `macro`, and
-`defer`, test rejection in package, type, function, receiver/parameter, local, and
+For each of `trait`, `impl`, `enum`, `match`, `unsafe`, `macro`, and `defer`,
+test rejection in package, type, function, receiver/parameter, local, and
 field name positions. Assert that the diagnostic identifies the reserved word.
 
 | Input / scenario | Expected result |
 | --- | --- |
 | `let match = 1` | Reject future-reserved name |
 | `let matchValue = 1` | Valid with respect to reservation |
-| `Interface`, `TRAIT`, `_unsafe`, `deferred`, `myenum` | Ordinary identifier spellings |
-| `"interface match unsafe"` | String contents, not reserved-word tokens |
+| `Trait`, `TRAIT`, `_unsafe`, `deferred`, `myenum` | Ordinary identifier spellings |
+| `"trait match unsafe"` | String contents, not reserved-word tokens |
 | `// trait impl enum macro defer` | Comment contents, not reserved-word tokens |
 | Each future-reserved word followed by newline/EOF | No semicolon inserted after the word; source use remains unsupported |
 | `unsafe {}` or `defer cleanup()` | Reject unavailable syntax; do not enable features |

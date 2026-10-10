@@ -24,6 +24,8 @@ pub struct Resolution<'a> {
     pub structs: Vec<&'a ast::StructDecl>,
     /// Named types with their package, in declaration order.
     pub named: Vec<(&'a ast::NamedDecl, usize, TypeId)>,
+    /// Interface types with their package, in declaration order.
+    pub interfaces: Vec<(&'a ast::InterfaceDecl, usize, TypeId)>,
     /// A method's receiver is its first parameter.
     pub functions: Vec<&'a ast::FuncDecl>,
     /// Keyed by the receiver's type.
@@ -73,6 +75,7 @@ pub fn resolve<'a>(
             types: TypeStore::new(),
             structs: Vec::new(),
             named: Vec::new(),
+            interfaces: Vec::new(),
             functions: Vec::new(),
             methods: HashMap::new(),
             consts: Vec::new(),
@@ -89,6 +92,7 @@ pub fn resolve<'a>(
         current_file: 0,
         file_of_struct: Vec::new(),
         file_of_named: Vec::new(),
+        file_of_interface: Vec::new(),
         file_of_function: Vec::new(),
         file_of_const: Vec::new(),
         scopes: Vec::new(),
@@ -126,6 +130,7 @@ pub(super) struct Resolver<'a> {
     /// The file each struct, function, and constant was declared in.
     pub(super) file_of_struct: Vec<usize>,
     pub(super) file_of_named: Vec<usize>,
+    pub(super) file_of_interface: Vec<usize>,
     pub(super) file_of_function: Vec<usize>,
     pub(super) file_of_const: Vec<usize>,
     pub(super) scopes: Vec<HashMap<String, (Res, Span)>>,
@@ -193,6 +198,11 @@ impl<'a> Resolver<'a> {
             let (decl, package, _) = self.out.named[index];
             self.enter(package, self.file_of_named[index]);
             self.ty(&decl.base);
+        }
+        for index in 0..self.out.interfaces.len() {
+            let (decl, package, _) = self.out.interfaces[index];
+            self.enter(package, self.file_of_interface[index]);
+            self.interface_methods(decl);
         }
         for id in methods {
             self.enter(
@@ -267,6 +277,17 @@ impl<'a> Resolver<'a> {
                     self.out.named.push((decl, package, ty));
                     self.file_of_named.push(file_index);
                     self.declare_package(&decl.name, Res::Named(ty));
+                }
+                Item::Interface(decl) => {
+                    let display = if package == self.out.entry_package {
+                        decl.name.text.clone()
+                    } else {
+                        format!("{}.{}", unit.name, decl.name.text)
+                    };
+                    let (_, ty) = self.out.types.add_interface(&display);
+                    self.out.interfaces.push((decl, package, ty));
+                    self.file_of_interface.push(file_index);
+                    self.declare_package(&decl.name, Res::Interface(ty));
                 }
                 Item::Func(func) => {
                     self.note_entry_main(func);
@@ -500,6 +521,20 @@ impl<'a> Resolver<'a> {
                 );
                 return;
             }
+            Some(Res::Interface(_)) => {
+                self.out.diagnostics.push(
+                    Diagnostic::new(
+                        Severity::Error,
+                        format!(
+                            "methods cannot be declared on interface type `{}`",
+                            type_name.text
+                        ),
+                        type_name.span,
+                    )
+                    .note("an interface lists methods that other types declare"),
+                );
+                return;
+            }
             _ => return,
         };
         if func.name.text == "drop" {
@@ -523,6 +558,47 @@ impl<'a> Resolver<'a> {
             }
         }
         self.out.methods.insert(key, id);
+    }
+
+    fn interface_methods(&mut self, decl: &'a ast::InterfaceDecl) {
+        if decl.methods.is_empty() {
+            self.error(
+                format!(
+                    "interface `{}` declares no methods; an interface lists at least one",
+                    decl.name.text
+                ),
+                decl.name.span,
+            );
+        }
+        let mut names: HashMap<&str, Span> = HashMap::new();
+        for method in &decl.methods {
+            if matches!(method.name.text.as_str(), "drop" | "clone") {
+                self.error(
+                    format!(
+                        "`{}` cannot be an interface method; it belongs to a struct type",
+                        method.name.text
+                    ),
+                    method.name.span,
+                );
+            }
+            if let Some(&first) = names.get(method.name.text.as_str()) {
+                self.duplicate(&method.name, first, "method");
+            } else {
+                names.insert(&method.name.text, method.name.span);
+            }
+            let mut params: HashMap<&str, Span> = HashMap::new();
+            for param in &method.params {
+                if let Some(&first) = params.get(param.name.text.as_str()) {
+                    self.duplicate(&param.name, first, "parameter");
+                } else {
+                    params.insert(&param.name.text, param.name.span);
+                }
+                self.ty(&param.ty);
+            }
+            for result in &method.results {
+                self.ty(result);
+            }
+        }
     }
 
     fn check_drop_signature(&mut self, func: &ast::FuncDecl, receiver: &ast::Param) {
@@ -598,7 +674,13 @@ impl<'a> Resolver<'a> {
     fn ty(&mut self, ty: &'a ast::Type) {
         match ty {
             ast::Type::Named(name) => match self.use_name(&name.text, name.span) {
-                Some(Res::Primitive(_) | Res::Struct(_) | Res::Named(_) | Res::Unsupported)
+                Some(
+                    Res::Primitive(_)
+                    | Res::Struct(_)
+                    | Res::Named(_)
+                    | Res::Interface(_)
+                    | Res::Unsupported,
+                )
                 | None => {}
                 Some(_) => {
                     self.out.uses.remove(&name.span);
@@ -607,7 +689,7 @@ impl<'a> Resolver<'a> {
             },
             ast::Type::Qualified { package, name, .. } => {
                 match self.package_member(package, name) {
-                    Some(Res::Struct(_) | Res::Named(_)) | None => {}
+                    Some(Res::Struct(_) | Res::Named(_) | Res::Interface(_)) | None => {}
                     Some(_) => {
                         self.out.uses.remove(&name.span);
                         self.error(

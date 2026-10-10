@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 use std::fmt;
 
-use super::ty::{FloatType, FuncSignature, IntType, TypeKind};
-use super::type_id::{FuncTypeId, StructId, TaskTypeId, TypeId};
+use super::ty::{FloatType, FuncSignature, IntType, InterfaceMethod, TypeKind};
+use super::type_id::{FuncTypeId, InterfaceId, StructId, TaskTypeId, TypeId};
 use crate::ast::ParamMode;
 
 /// Aliases such as `int` and `int64` share one identity.
@@ -23,6 +23,10 @@ pub struct TypeStore {
     mutex_types: HashMap<TypeId, TypeId>,
     /// A named type's display name and the predeclared type it is built on.
     named: HashMap<TypeId, (String, TypeId)>,
+    interface_names: Vec<String>,
+    interface_types: Vec<TypeId>,
+    interface_methods: Vec<Vec<InterfaceMethod>>,
+    interface_views: HashMap<(InterfaceId, bool), TypeId>,
 }
 
 impl Default for TypeStore {
@@ -74,6 +78,10 @@ impl TypeStore {
             channel_types: HashMap::new(),
             mutex_types: HashMap::new(),
             named: HashMap::new(),
+            interface_names: Vec::new(),
+            interface_types: Vec::new(),
+            interface_methods: Vec::new(),
+            interface_views: HashMap::new(),
         }
     }
 
@@ -84,6 +92,47 @@ impl TypeStore {
         self.kinds.push(TypeKind::Struct(id));
         self.struct_types.push(ty);
         (id, ty)
+    }
+
+    /// The entries are set by `set_interface_methods` once their types are resolved.
+    pub fn add_interface(&mut self, name: &str) -> (InterfaceId, TypeId) {
+        let id = InterfaceId(self.interface_names.len() as u32);
+        self.interface_names.push(name.to_owned());
+        self.interface_methods.push(Vec::new());
+        let ty = TypeId(self.kinds.len() as u32);
+        self.kinds.push(TypeKind::Interface(id));
+        self.interface_types.push(ty);
+        (id, ty)
+    }
+
+    pub fn set_interface_methods(&mut self, id: InterfaceId, methods: Vec<InterfaceMethod>) {
+        self.interface_methods[id.0 as usize] = methods;
+    }
+
+    pub fn interface_methods(&self, id: InterfaceId) -> &[InterfaceMethod] {
+        &self.interface_methods[id.0 as usize]
+    }
+
+    pub fn interface_type(&self, id: InterfaceId) -> TypeId {
+        self.interface_types[id.0 as usize]
+    }
+
+    pub fn interface_view(&mut self, interface: InterfaceId, mutable: bool) -> TypeId {
+        if let Some(&ty) = self.interface_views.get(&(interface, mutable)) {
+            return ty;
+        }
+        let ty = TypeId(self.kinds.len() as u32);
+        self.kinds
+            .push(TypeKind::InterfaceView { interface, mutable });
+        self.interface_views.insert((interface, mutable), ty);
+        ty
+    }
+
+    pub fn interface_of(&self, ty: TypeId) -> Option<InterfaceId> {
+        match self.kind(ty) {
+            TypeKind::Interface(id) | TypeKind::InterfaceView { interface: id, .. } => Some(id),
+            _ => None,
+        }
     }
 
     /// The kind is set by `set_named_base` once the base type is resolved.
@@ -315,6 +364,15 @@ impl fmt::Display for TypeName<'_> {
             TypeKind::Mutex { element } => {
                 write!(f, "Mutex<{}>", self.store.display(element))
             }
+            TypeKind::Interface(id) => f.write_str(&self.store.interface_names[id.0 as usize]),
+            TypeKind::InterfaceView { interface, mutable } => {
+                let prefix = if mutable { "mut " } else { "" };
+                write!(
+                    f,
+                    "{prefix}{} (borrowed)",
+                    self.store.interface_names[interface.0 as usize]
+                )
+            }
             TypeKind::Task(id) => {
                 let results = &self.store.task_results[id.0 as usize];
                 f.write_str("Task")?;
@@ -345,7 +403,12 @@ impl fmt::Display for TypeName<'_> {
                         ParamMode::Mut => f.write_str("mut ")?,
                         ParamMode::Own => f.write_str("own ")?,
                     }
-                    write!(f, "{}", self.store.display(ty))?;
+                    match self.store.kind(ty) {
+                        TypeKind::InterfaceView { interface, .. } => {
+                            f.write_str(&self.store.interface_names[interface.0 as usize])?
+                        }
+                        _ => write!(f, "{}", self.store.display(ty))?,
+                    }
                 }
                 f.write_str(")")?;
                 match &signature.results[..] {

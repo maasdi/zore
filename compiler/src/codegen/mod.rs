@@ -1,6 +1,7 @@
 mod abi;
 mod channel;
 mod clone;
+mod interface;
 mod io;
 mod layout;
 mod llvm;

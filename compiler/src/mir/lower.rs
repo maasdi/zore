@@ -323,6 +323,7 @@ impl Builder {
             StmtKind::Expr(expr) => match &expr.kind {
                 ExprKind::Call { .. }
                 | ExprKind::CallValue { .. }
+                | ExprKind::InterfaceCall { .. }
                 | ExprKind::Clone(_)
                 | ExprKind::Println(_)
                 | ExprKind::Panic(_)
@@ -863,6 +864,7 @@ impl Builder {
             inner.kind,
             ExprKind::Call { .. }
                 | ExprKind::CallValue { .. }
+                | ExprKind::InterfaceCall { .. }
                 | ExprKind::TaskWait(_)
                 | ExprKind::MutexWithLock { .. }
                 | ExprKind::MapLookup { .. }
@@ -952,6 +954,16 @@ impl Builder {
                 }
                 (Callee::Value(place), &args[..])
             }
+            ExprKind::InterfaceCall {
+                receiver,
+                method,
+                args,
+            } => {
+                map_args = std::iter::once((**receiver).clone())
+                    .chain(args.iter().cloned())
+                    .collect();
+                (Callee::Interface { method: *method }, &map_args[..])
+            }
             ExprKind::Println(arg) => (Callee::Println, std::slice::from_ref(&**arg)),
             ExprKind::Panic(arg) => (Callee::Panic, std::slice::from_ref(&**arg)),
             ExprKind::Drop(arg) => (Callee::Drop, std::slice::from_ref(&**arg)),
@@ -1029,6 +1041,21 @@ impl Builder {
                         passes_by_reference(package, mode, ty),
                         mode == ParamMode::Own,
                     )
+                }
+                Callee::Interface { method } => {
+                    let receiver = args[0].ty();
+                    let entry = package.interface_entry(receiver, *method);
+                    if index == 0 {
+                        let owned = matches!(package.types.kind(receiver), TypeKind::Interface(_));
+                        let own = entry.receiver == ParamMode::Own;
+                        (owned && !own, own)
+                    } else {
+                        let (mode, ty) = entry.params[index - 1];
+                        (
+                            passes_by_reference(package, mode, ty),
+                            mode == ParamMode::Own,
+                        )
+                    }
                 }
                 Callee::Println | Callee::Panic => (false, false),
                 Callee::Drop => (false, true),
@@ -1200,6 +1227,7 @@ impl Builder {
             }
             ExprKind::Call { .. }
             | ExprKind::CallValue { .. }
+            | ExprKind::InterfaceCall { .. }
             | ExprKind::Clone(_)
             | ExprKind::TaskWait(_)
             | ExprKind::MakeChannel { .. }
@@ -1209,6 +1237,25 @@ impl Builder {
                 let temp = self.temp(expr.ty());
                 self.call(package, expr, vec![Some(Place::local(temp))]);
                 value_operand(package, Place::local(temp), expr.ty())
+            }
+            ExprKind::InterfaceView { source, mutable } => {
+                let place = match self.argument_place_opt(package, source) {
+                    Some(place) => place,
+                    None => self.base_place(package, source),
+                };
+                self.assign_temp(
+                    package,
+                    expr.ty(),
+                    Rvalue::InterfaceView {
+                        place,
+                        mutable: *mutable,
+                    },
+                    span,
+                )
+            }
+            ExprKind::InterfaceBox(source) => {
+                let source = self.operand(package, source);
+                self.assign_temp(package, expr.ty(), Rvalue::InterfaceBox(source), span)
             }
             ExprKind::Closure {
                 function,
@@ -1471,11 +1518,7 @@ fn channel_element(package: &hir::Package, ty: TypeId) -> TypeId {
 }
 
 fn passes_by_reference(package: &hir::Package, mode: ParamMode, ty: TypeId) -> bool {
-    match mode {
-        ParamMode::Mut => true,
-        ParamMode::Borrow => !package.is_copy(ty) || package.contains_array(ty),
-        ParamMode::Own => false,
-    }
+    package.passes_by_reference(mode, ty)
 }
 
 fn value_operand(package: &hir::Package, place: Place, ty: TypeId) -> Operand {

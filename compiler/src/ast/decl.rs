@@ -23,6 +23,7 @@ pub enum Item {
     Func(FuncDecl),
     Struct(StructDecl),
     Named(NamedDecl),
+    Interface(InterfaceDecl),
     Binding(Binding),
 }
 
@@ -68,6 +69,24 @@ pub struct StructDecl {
 pub struct NamedDecl {
     pub name: Name,
     pub base: Type,
+    pub span: Span,
+}
+
+/// `type Name interface { ... }`: the methods a type has to satisfy it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct InterfaceDecl {
+    pub name: Name,
+    pub methods: Vec<InterfaceMethod>,
+    pub span: Span,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct InterfaceMethod {
+    pub is_async: bool,
+    pub receiver: ParamMode,
+    pub name: Name,
+    pub params: Vec<Param>,
+    pub results: Vec<Type>,
     pub span: Span,
 }
 

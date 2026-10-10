@@ -144,7 +144,7 @@ impl FunctionBuilder<'_, '_> {
         self.emit_call(&code, &results, &rendered)
     }
 
-    fn emit_call(
+    pub(super) fn emit_call(
         &mut self,
         target: &str,
         results: &[TypeId],
@@ -274,6 +274,7 @@ impl FunctionBuilder<'_, '_> {
             }
             Callee::Function(_)
             | Callee::Value(_)
+            | Callee::Interface { .. }
             | Callee::Println
             | Callee::Panic
             | Callee::Drop
@@ -541,7 +542,9 @@ impl FunctionBuilder<'_, '_> {
             | TypeKind::Func(_)
             | TypeKind::Task(_)
             | TypeKind::Channel { .. }
-            | TypeKind::Mutex { .. } => unreachable!("checked printable type"),
+            | TypeKind::Mutex { .. }
+            | TypeKind::Interface(_)
+            | TypeKind::InterfaceView { .. } => unreachable!("checked printable type"),
         }
     }
 }

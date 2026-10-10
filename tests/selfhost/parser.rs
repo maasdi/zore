@@ -336,6 +336,31 @@ impl Printer<'_> {
                 "",
                 &[self.name(&decl.name), self.ty(&decl.base)],
             ),
+            Item::Interface(decl) => node(
+                "interface",
+                Some(decl.span),
+                "",
+                &[
+                    self.name(&decl.name),
+                    list(decl.methods.iter().map(|method| {
+                        let attr = format!(
+                            "{} {}",
+                            if method.is_async { "async" } else { "sync" },
+                            mode(method.receiver)
+                        );
+                        node(
+                            "method",
+                            Some(method.span),
+                            &attr,
+                            &[
+                                self.name(&method.name),
+                                list(method.params.iter().map(|param| self.param(param))),
+                                list(method.results.iter().map(|ty| self.ty(ty))),
+                            ],
+                        )
+                    })),
+                ],
+            ),
             Item::Binding(binding) => self.binding(binding),
         }
     }
@@ -840,6 +865,10 @@ fn targeted_programs_and_errors_match() {
         "package main\nfunc main() {\n    let v = x >= y\n    let w = Array<int>{}>=1\n    let r = Array<Array<int>>=1\n}\n",
         "package main\nvar a Array<int>\r\nvar b Task<int>\r\nvar c channel<Array<int>> // c\r\nvar d Mutex<int>",
         "package main\nfunc main() {\n    for p = Point{X: 1}; p.X < 3; p.X += 1 {}\n    for q.Y = Point{}; q.Y < 1; q.Y += 1 {\n    }\n}\n",
+        "package main\ntype R interface {\n    Read(buf mut []byte) (int, error)\n    mut Add(n int)\n    own Close() error\n    async Fetch(id int) (User, error)\n    async mut Push(x own T)\n}\ntype One interface { Count() int }\ntype Two interface { A(); B() }\n",
+        "package main\ntype E interface {\n    Read\n    mut (x int)\n    Close() error extra\n    func Bad()\n    Fine()\n}\n",
+        "package main\ntype U interface {\n    Read()\n",
+        "package main\ntype N interface\n{\n}\nfunc f(r Reader, w mut io.Writer, c own Closer) {}\n",
     ];
     let mut cases: Vec<Case> = inputs
         .iter()
