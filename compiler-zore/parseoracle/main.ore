@@ -1,0 +1,113 @@
+package main
+
+import "compiler-zore/diagnostic"
+import "compiler-zore/lexer"
+import "compiler-zore/parser"
+import "compiler-zore/source"
+import "zore/os"
+import "zore/strconv"
+import "zore/strings"
+
+// Case modes: `p` parses, `n` parses with native functions allowed, `s` probes the source manager.
+func main() {
+    let data, err = os.ReadBytes("cases.bin")
+    if err != nil {
+        println("cannot read cases.bin")
+        return
+    }
+    var sources = source.NewManager()
+    var pos = 0
+    var index = 0
+    for pos < data.len() {
+        var length = 0
+        for data[pos] != 32 {
+            length = length * 10 + int(data[pos]) - 48
+            pos += 1
+        }
+        let mode = data[pos + 1]
+        pos += 3
+        let text, invalid = strings.FromBytes(data[pos:pos + length])
+        if invalid != nil {
+            println("invalid-utf8\ndone")
+        } else {
+            let file = sources.Add("case-" + strconv.Itoa(index) + ".ore", text)
+            var lines = Array<string>{}
+            if mode == 115 {
+                probe(lines, sources, file)
+            } else {
+                parsed(lines, sources, file, mode == 110)
+            }
+            lines.push("done")
+            println(strings.Join(lines[:], "\n"))
+        }
+        pos += length
+        index += 1
+    }
+}
+
+func span(start int, end int) string {
+    return strconv.Itoa(start) + " " + strconv.Itoa(end)
+}
+
+func parsed(lines mut Array<string>, sources source.Manager, file int, native bool) {
+    let result = parser.Parse(sources.Text(file), file, native)
+    lines.push("tree " + result.Tree.Print(result.Root))
+    for problem in result.LexProblems {
+        lines.push("lexerror:" + problem.Code + " " + span(problem.Start, problem.End))
+    }
+    for d in result.Diagnostics {
+        describe(lines, sources, d)
+    }
+}
+
+func describe(lines mut Array<string>, sources source.Manager, d diagnostic.Diagnostic) {
+    lines.push("diag " + span(d.Primary.Start, d.Primary.End) + " " + d.Message)
+    if d.Primary.Message != "" {
+        lines.push("  primary " + d.Primary.Message)
+    }
+    for label in d.Related {
+        lines.push("  related " + span(label.Start, label.End) + " " + label.Message)
+    }
+    for note in d.Notes {
+        lines.push("  note " + note)
+    }
+    let rendered, ok = diagnostic.Render(d, sources)
+    if !ok {
+        lines.push("  render failed")
+        return
+    }
+    let pieces = strings.Split(rendered, "\n")
+    for i, piece in pieces {
+        if i + 1 < pieces.len() {
+            lines.push("  render " + piece)
+        }
+    }
+}
+
+func probe(lines mut Array<string>, sources source.Manager, file int) {
+    let count = sources.LineCount(file)
+    lines.push("lines " + strconv.Itoa(count))
+    for var i = 0; i < count; i += 1 {
+        let line, _ = sources.Line(file, i)
+        lines.push("line " + strconv.Itoa(i) + " " + lexer.ByteList(line))
+    }
+    let text = sources.Text(file)
+    var locations = Array<string>{}
+    var boundaries = Array<int>{}
+    for var offset = 0; offset <= text.len(); offset += 1 {
+        let line, column, ok = sources.Location(file, offset)
+        if ok {
+            locations.push(strconv.Itoa(line) + ":" + strconv.Itoa(column))
+            boundaries.push(offset)
+        } else {
+            locations.push("-")
+        }
+    }
+    lines.push("loc " + strings.Join(locations[:], " "))
+    let n = boundaries.len()
+    var d = diagnostic.Error("probe", file, boundaries[n / 3], boundaries[2 * n / 3])
+    d.SetPrimaryMessage("here")
+    d.AddRelated(file, boundaries[0], boundaries[n - 1], "there")
+    d.AddNote("probe note")
+    describe(lines, sources, d)
+}

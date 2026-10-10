@@ -464,11 +464,12 @@ impl Parser<'_> {
                 span: self.span_from(start),
             }));
         }
-        let (pos, open_delimiters, last_token_end, reported) = (
+        let (pos, open_delimiters, last_token_end, reported, edits) = (
             self.pos,
             self.open_delimiters,
             self.last_token_end,
             self.diagnostics.len(),
+            self.token_edits.len(),
         );
         // An initializer may contain struct literals; retry with them allowed.
         let first = self.with_struct_literals(false, |p| p.simple_statement());
@@ -476,6 +477,7 @@ impl Parser<'_> {
             (self.pos, self.open_delimiters, self.last_token_end) =
                 (pos, open_delimiters, last_token_end);
             self.diagnostics.truncate(reported);
+            self.undo_token_edits(edits);
             return self.simple_statement();
         }
         first

@@ -16,6 +16,8 @@ pub struct Parsed {
     pub file: File,
     /// Empty exactly when the file is valid.
     pub diagnostics: Vec<Diagnostic>,
+    /// How many of the first `diagnostics` came from the lexer.
+    pub lexer_diagnostics: usize,
 }
 
 pub fn parse(file: &SourceFile) -> Parsed {
@@ -29,6 +31,7 @@ pub fn parse_standard(file: &SourceFile) -> Parsed {
 
 fn parse_with(file: &SourceFile, native_functions: bool) -> Parsed {
     let lexed = lex(file);
+    let lexer_diagnostics = lexed.diagnostics.len();
     let mut parser = Parser {
         file,
         tokens: lexed.tokens,
@@ -38,10 +41,12 @@ fn parse_with(file: &SourceFile, native_functions: bool) -> Parsed {
         struct_literals_allowed: true,
         native_functions,
         diagnostics: lexed.diagnostics,
+        token_edits: Vec::new(),
     };
     let ast = parser.file_ast();
     Parsed {
         file: ast,
         diagnostics: parser.diagnostics,
+        lexer_diagnostics,
     }
 }

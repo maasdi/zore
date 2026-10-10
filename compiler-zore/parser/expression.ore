@@ -1,0 +1,478 @@
+package parser
+
+import "compiler-zore/ast"
+import "compiler-zore/lexer"
+import "zore/strconv"
+
+func (p mut Parser) exprList() int {
+    let list = p.tree.List()
+    let first = p.expr()
+    if first == failed {
+        return failed
+    }
+    p.tree.Append(list, first)
+    for p.eat(",") {
+        let next = p.expr()
+        if next == failed {
+            return failed
+        }
+        p.tree.Append(list, next)
+    }
+    return list
+}
+
+func (p mut Parser) expr() int {
+    return p.binary(1)
+}
+
+// The precedence of the binary operator at the current token, or 0 when there is none.
+func (p Parser) binaryPrecedence() int {
+    if !p.atKind(lexer.KindPunct) {
+        return 0
+    }
+    return p.precedences[p.detail()]
+}
+
+func (p mut Parser) binary(minimum int) int {
+    var lhs = p.unary()
+    if lhs == failed {
+        return failed
+    }
+    var compared = false
+    for {
+        let precedence = p.binaryPrecedence()
+        if precedence == 0 || precedence < minimum {
+            return lhs
+        }
+        if precedence == 3 && compared {
+            let start = p.currentStart()
+            let end = p.currentEnd()
+            return p.errorWithNote(
+                "comparison operators cannot be chained",
+                start,
+                end,
+                "combine comparisons with `&&`, or add parentheses",
+            )
+        }
+        compared = precedence == 3
+        let op = p.currentText()
+        _ = p.bump()
+        let rhs = p.binary(precedence + 1)
+        if rhs == failed {
+            return failed
+        }
+        let node = p.wrap("binary", lhs, op)
+        p.tree.Append(node, lhs)
+        p.tree.Append(node, rhs)
+        lhs = node
+    }
+}
+
+func (p mut Parser) unary() int {
+    let start = p.currentStart()
+    let startEnd = p.currentEnd()
+    if p.atKeyword("await") {
+        return p.awaitExpr()
+    }
+    if p.atKeyword("go") {
+        return p.goExpr()
+    }
+    if !(p.at("+") || p.at("-") || p.at("!") || p.at("^")) {
+        return p.postfix()
+    }
+    let op = p.currentText()
+    _ = p.bump()
+    let operand = p.unary()
+    if operand == failed {
+        return failed
+    }
+    let node = p.addNode("unary", start, startEnd, op)
+    p.tree.Append(node, operand)
+    return node
+}
+
+func (p Parser) atPrefix() bool {
+    return p.at("+") || p.at("-") || p.at("!") || p.at("^") || p.atKeyword("await")
+}
+
+func (p mut Parser) awaitExpr() int {
+    // `await x?` groups as `(await x)?`.
+    let start = p.bump()
+    var operand = failed
+    if p.atPrefix() {
+        operand = p.unary()
+    } else {
+        operand = p.access()
+    }
+    if operand == failed {
+        return failed
+    }
+    let node = p.addNode("await", start.Start, start.End, "")
+    p.tree.Append(node, operand)
+    return p.propagations(node)
+}
+
+func (p mut Parser) goExpr() int {
+    let start = p.bump()
+    let operand = p.access()
+    if operand == failed {
+        return failed
+    }
+    let node = p.addNode("go", start.Start, start.End, "")
+    p.tree.Append(node, operand)
+    return node
+}
+
+func (p mut Parser) postfix() int {
+    let operand = p.access()
+    if operand == failed {
+        return failed
+    }
+    return p.propagations(operand)
+}
+
+func (p mut Parser) propagations(operand int) int {
+    var value = operand
+    for p.at("?") {
+        _ = p.bump()
+        let node = p.wrap("try", value, "")
+        p.tree.Append(node, value)
+        value = node
+        if p.at(".") || p.at("(") {
+            let start = p.currentStart()
+            let end = p.currentEnd()
+            return p.errorWithNote(
+                "`?` binds more loosely than calls and field access",
+                start,
+                end,
+                "add parentheses, as in `(value?).field`",
+            )
+        }
+    }
+    return value
+}
+
+func (p mut Parser) access() int {
+    var value = p.primary()
+    if value == failed {
+        return failed
+    }
+    let first = value
+    for {
+        if p.at("(") {
+            _ = p.bump()
+            let args = p.commaListWithLiterals(")", "argument", true, itemExpr)
+            if args == failed {
+                return failed
+            }
+            let node = p.wrap("call", value, "")
+            p.tree.Append(node, value)
+            p.tree.Append(node, args)
+            value = node
+        } else if p.at(".") {
+            _ = p.bump()
+            let name = p.name("a field or method name")
+            if name == failed {
+                return failed
+            }
+            let node = p.wrap("member", value, "")
+            p.tree.Append(node, value)
+            p.tree.Append(node, name)
+            value = node
+        } else if p.at("[") {
+            _ = p.bump()
+            let saved = p.structLiterals
+            p.structLiterals = true
+            let node = p.indexOrSlice(value, first)
+            p.structLiterals = saved
+            if node == failed {
+                return failed
+            }
+            value = node
+        } else {
+            return value
+        }
+    }
+}
+
+func (p mut Parser) indexOrSlice(base int, first int) int {
+    var low = ast.Absent
+    if !p.at(":") {
+        let index = p.expr()
+        if index == failed {
+            return failed
+        }
+        if p.eat("]") {
+            let node = p.wrap("index", first, "")
+            p.tree.Append(node, base)
+            p.tree.Append(node, index)
+            return node
+        }
+        low = index
+    }
+    if p.expect(":") == failed {
+        return failed
+    }
+    var high = ast.Absent
+    if !p.at("]") && !p.at(":") {
+        high = p.expr()
+        if high == failed {
+            return failed
+        }
+    }
+    if p.at(":") {
+        return p.errorAtCurrent(
+            "a slice expression takes at most two bounds; Zore has no capacity bound or stride",
+        )
+    }
+    if p.expect("]") == failed {
+        return failed
+    }
+    let node = p.wrap("slicing", first, "")
+    p.tree.Append(node, base)
+    p.tree.Append(node, low)
+    p.tree.Append(node, high)
+    return node
+}
+
+func (p mut Parser) primary() int {
+    let token = p.current()
+    let kind = token.Kind
+    let text = p.currentText()
+    if kind == lexer.KindIdent {
+        if text == "Array" && p.atPunctAt(1, "<") {
+            return p.dynArrayLiteral()
+        }
+        _ = p.bump()
+        if p.structLiterals && p.at("{") {
+            let name = p.tree.Add("name", token.Start, token.End, text)
+            return p.structLiteral(ast.Absent, name)
+        }
+        if p.structLiterals && p.at(".") && p.kindAt(1) == lexer.KindIdent && p.atPunctAt(2, "{") {
+            let pkg = p.tree.Add("name", token.Start, token.End, text)
+            _ = p.bump()
+            let member = p.name("a type name")
+            if member == failed {
+                return failed
+            }
+            return p.structLiteral(pkg, member)
+        }
+        return p.tree.Add("ident", token.Start, token.End, text)
+    }
+    var tag = ""
+    var attr = ""
+    if kind == lexer.KindInt {
+        tag = "int"
+        attr = strconv.Itoa(token.Detail)
+    } else if kind == lexer.KindFloat {
+        tag = "float"
+    } else if kind == lexer.KindString {
+        tag = "string"
+        attr = quoteBytes(token.Text)
+    } else if kind == lexer.KindRune {
+        tag = "rune"
+        attr = strconv.Itoa(token.Detail)
+    } else if p.atKeyword("true") || p.atKeyword("false") {
+        tag = "bool"
+        attr = text
+    } else if p.atKeyword("nil") {
+        tag = "nil"
+    } else if kind == lexer.KindMalformed {
+        tag = "malformed"
+    } else if p.at("(") {
+        _ = p.bump()
+        let inner = p.exprWithLiterals(true)
+        if inner == failed || p.expect(")") == failed {
+            return failed
+        }
+        let node = p.addNode("paren", token.Start, token.End, "")
+        p.tree.Append(node, inner)
+        return node
+    } else if kind == lexer.KindUnderscore {
+        return p.error("`_` cannot be used as a value", token.Start, token.End)
+    } else if p.atKeyword("func") {
+        return p.closure()
+    } else if p.atKeyword("map") {
+        return p.mapLiteral()
+    } else if p.at("[") {
+        return p.arrayLiteral()
+    } else if p.atKeyword("channel") {
+        return p.channelExpr()
+    } else if kind == lexer.KindReserved {
+        return p.error(
+            "`" + text + "` is reserved for possible future use; the feature is not available",
+            token.Start,
+            token.End,
+        )
+    } else {
+        return p.unexpected("an expression")
+    }
+    _ = p.bump()
+    return p.tree.Add(tag, token.Start, token.End, attr)
+}
+
+func (p mut Parser) closure() int {
+    let start = p.bump()
+    if p.atKind(lexer.KindIdent) {
+        return p.errorAtCurrent("a function literal has no name; declare named functions at package level")
+    }
+    if p.expect("(") == failed {
+        return failed
+    }
+    let params = p.commaList(")", "parameter", true, itemParam)
+    if params == failed {
+        return failed
+    }
+    let results = p.results()
+    if results == failed {
+        return failed
+    }
+    let saved = p.structLiterals
+    p.structLiterals = true
+    let body = p.bodyBlock("function literal signature", "function literals require a body")
+    p.structLiterals = saved
+    if body == failed {
+        return failed
+    }
+    let node = p.addNode("closure", start.Start, start.End, "")
+    p.tree.Append(node, params)
+    p.tree.Append(node, results)
+    p.tree.Append(node, body)
+    return node
+}
+
+func (p mut Parser) structLiteral(pkg int, ty int) int {
+    var first = ty
+    if pkg != ast.Absent {
+        first = pkg
+    }
+    let start = p.tree.Start(first)
+    let startEnd = p.tree.End(first)
+    _ = p.bump()
+    let fields = p.commaListWithLiterals("}", "field", true, itemFieldInit)
+    if fields == failed {
+        return failed
+    }
+    let node = p.addNode("structlit", start, startEnd, "")
+    p.tree.Append(node, pkg)
+    p.tree.Append(node, ty)
+    p.tree.Append(node, fields)
+    return node
+}
+
+func (p mut Parser) arrayLiteral() int {
+    let start = p.current()
+    let ty = p.bracketType()
+    if ty == failed {
+        return failed
+    }
+    if p.tree.Tag(ty) == "slice" {
+        let sliceStart = p.tree.Start(ty)
+        let sliceEnd = p.tree.End(ty)
+        return p.error(
+            "slice literals are not part of Zore; slice existing storage instead, e.g. `data[:]`",
+            sliceStart,
+            sliceEnd,
+        )
+    }
+    if p.expect("{") == failed {
+        return failed
+    }
+    let elements = p.commaListWithLiterals("}", "element", true, itemExpr)
+    if elements == failed {
+        return failed
+    }
+    return p.node2("arraylit", start.Start, start.End, "", ty, elements)
+}
+
+func (p mut Parser) mapLiteral() int {
+    let start = p.current()
+    let ty = p.mapType()
+    if ty == failed || p.expect("{") == failed {
+        return failed
+    }
+    let entries = p.commaListWithLiterals("}", "map entry", true, itemMapEntry)
+    if entries == failed {
+        return failed
+    }
+    return p.node2("maplit", start.Start, start.End, "", ty, entries)
+}
+
+func (p mut Parser) channelExpr() int {
+    let start = p.current()
+    let channelType = p.channelType()
+    if channelType == failed {
+        return failed
+    }
+    let element = p.tree.Child(channelType, 0)
+    if p.expect("(") == failed {
+        return failed
+    }
+    var capacity = ast.Absent
+    if !p.at(")") {
+        capacity = p.exprWithLiterals(true)
+        if capacity == failed {
+            return failed
+        }
+    }
+    if p.expect(")") == failed {
+        return failed
+    }
+    return p.node2("makechannel", start.Start, start.End, "", element, capacity)
+}
+
+func (p mut Parser) mapEntry() int {
+    let key = p.expr()
+    if key == failed || p.expect(":") == failed {
+        return failed
+    }
+    let value = p.expr()
+    if value == failed {
+        return failed
+    }
+    let node = p.wrap("entry", key, "")
+    p.tree.Append(node, key)
+    p.tree.Append(node, value)
+    return node
+}
+
+// Recognized by the predeclared name `Array`.
+func (p mut Parser) dynArrayLiteral() int {
+    let start = p.current()
+    let ty = p.ty()
+    if ty == failed {
+        return failed
+    }
+    if !p.at("{") {
+        return p.errorAtCurrent(
+            "expected `{` after `Array<T>`; dynamic arrays are built with a typed literal such as `Array<int>{}`",
+        )
+    }
+    _ = p.bump()
+    let elements = p.commaListWithLiterals("}", "element", true, itemExpr)
+    if elements == failed {
+        return failed
+    }
+    return p.node2("arraylit", start.Start, start.End, "", ty, elements)
+}
+
+func (p mut Parser) fieldInit() int {
+    if !(p.atKind(lexer.KindIdent) && p.atPunctAt(1, ":")) {
+        if p.atKind(lexer.KindKeyword) || p.atKind(lexer.KindReserved) {
+            return p.name("a field name")
+        }
+        let start = p.currentStart()
+        let end = p.currentEnd()
+        return p.errorWithNote("struct literal fields must be named", start, end, "write each field as `Name: value`")
+    }
+    let name = p.name("a field name")
+    _ = p.bump()
+    let value = p.expr()
+    if value == failed {
+        return failed
+    }
+    let node = p.wrap("init", name, "")
+    p.tree.Append(node, name)
+    p.tree.Append(node, value)
+    return node
+}

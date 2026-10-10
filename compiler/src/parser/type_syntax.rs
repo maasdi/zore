@@ -1,4 +1,4 @@
-use super::parser::{PResult, Parser};
+use super::parser::{PResult, Parser, TokenEdit};
 use crate::ast::*;
 use crate::lexer::{Keyword, Punct, Separator, Token, TokenKind};
 
@@ -131,10 +131,15 @@ impl Parser<'_> {
             .file
             .span(span.start() + 1, span.end())
             .expect("a `>` token is one byte");
-        self.tokens[self.pos] = Token {
-            kind: TokenKind::Punct(rest),
-            span: split,
-        };
+        let replaced = std::mem::replace(
+            &mut self.tokens[self.pos],
+            Token {
+                kind: TokenKind::Punct(rest),
+                span: split,
+            },
+        );
+        self.token_edits
+            .push(TokenEdit::Replaced(self.pos, replaced));
         self.last_token_end = span.start() + 1;
         Ok(())
     }
@@ -165,6 +170,19 @@ impl Parser<'_> {
                 span,
             },
         );
+        self.token_edits.push(TokenEdit::Inserted(self.pos));
+    }
+
+    pub(super) fn undo_token_edits(&mut self, count: usize) {
+        while self.token_edits.len() > count {
+            match self.token_edits.pop() {
+                Some(TokenEdit::Replaced(index, token)) => self.tokens[index] = token,
+                Some(TokenEdit::Inserted(index)) => {
+                    self.tokens.remove(index);
+                }
+                None => break,
+            }
+        }
     }
 
     fn func_type(&mut self) -> PResult<Type> {

@@ -1,0 +1,277 @@
+package parser
+
+import "compiler-zore/lexer"
+
+func (p mut Parser) ty() int {
+    if p.atKind(lexer.KindIdent) {
+        let text = p.currentText()
+        let name = p.bump()
+        if p.at("<") {
+            return p.typeArguments(text, name)
+        }
+        if text == "Task" {
+            let task = p.tree.Add("task", name.Start, name.End, "")
+            let results = p.tree.List()
+            p.tree.Append(task, results)
+            return task
+        }
+        if p.at(".") && p.kindAt(1) == lexer.KindIdent {
+            let pkg = p.tree.Add("name", name.Start, name.End, text)
+            _ = p.bump()
+            let member = p.name("a type name")
+            if member == failed {
+                return failed
+            }
+            return p.node2("qualified", name.Start, name.End, "", pkg, member)
+        }
+        return p.tree.Add("type", name.Start, name.End, text)
+    }
+    if p.at("[") {
+        return p.bracketType()
+    }
+    if p.atKeyword("map") {
+        return p.mapType()
+    }
+    if p.atKeyword("channel") {
+        return p.channelType()
+    }
+    if p.atKeyword("func") || (p.atKeyword("async") && p.atKeywordAt(1, "func")) {
+        return p.funcType()
+    }
+    if p.atKeyword("mut") {
+        let start = p.currentStart()
+        let startEnd = p.currentEnd()
+        if !p.atSliceTypeAfter(1) {
+            return p.error("`mut` in a type only forms a mutable slice type `mut []T`", start, startEnd)
+        }
+        _ = p.bump()
+        let shared = p.bracketType()
+        if shared == failed {
+            return failed
+        }
+        let element = p.tree.Child(shared, 0)
+        let slice = p.addNode("slice", start, startEnd, "mut")
+        p.tree.Append(slice, element)
+        return slice
+    }
+    return p.unexpected("a type")
+}
+
+func (p mut Parser) channelType() int {
+    let start = p.bump()
+    if p.expect("<") == failed {
+        return failed
+    }
+    let element = p.ty()
+    if element == failed || !p.closeTypeArguments() {
+        return failed
+    }
+    let node = p.addNode("channeltype", start.Start, start.End, "")
+    p.tree.Append(node, element)
+    return node
+}
+
+// Only the predeclared `Array`, `Mutex`, and `Task` take type arguments.
+func (p mut Parser) typeArguments(text string, name lexer.Token) int {
+    let nameStart = name.Start
+    let nameEnd = name.End
+    if text == "Array" || text == "Mutex" {
+        _ = p.bump()
+        let element = p.ty()
+        if element == failed || !p.closeTypeArguments() {
+            return failed
+        }
+        var tag = "dynarray"
+        if text == "Mutex" {
+            tag = "mutex"
+        }
+        let node = p.addNode(tag, nameStart, nameEnd, "")
+        p.tree.Append(node, element)
+        return node
+    }
+    if text == "Task" {
+        _ = p.bump()
+        let results = p.tree.List()
+        let first = p.ty()
+        if first == failed {
+            return failed
+        }
+        p.tree.Append(results, first)
+        for p.at(",") {
+            _ = p.bump()
+            let next = p.ty()
+            if next == failed {
+                return failed
+            }
+            p.tree.Append(results, next)
+        }
+        if !p.closeTypeArguments() {
+            return failed
+        }
+        let node = p.addNode("task", nameStart, nameEnd, "")
+        p.tree.Append(node, results)
+        return node
+    }
+    return p.error(
+        "`" + text + "` does not take type arguments; user-defined generics are not part of the MVP",
+        nameStart,
+        nameEnd,
+    )
+}
+
+// Splits `>>`, `>=`, or `>>=` so `Array<Array<int>>` closes both lists.
+func (p mut Parser) closeTypeArguments() bool {
+    if p.at(">") {
+        _ = p.bump()
+        p.insertSemicolonAfterTypeArguments()
+        return true
+    }
+    if !p.at(">>") && !p.at(">=") && !p.at(">>=") {
+        _ = p.unexpected("`>`")
+        return false
+    }
+    let start = p.currentStart()
+    let end = p.currentEnd()
+    let rest = lexer.PunctIndex(p.text[start + 1:end])
+    p.replaceCurrent(lexer.Token{Kind: lexer.KindPunct, Start: start + 1, End: end, Detail: rest, Text: ""})
+    p.lastTokenEnd = start + 1
+    return true
+}
+
+// Only the parser can tell a closing `>` from a comparison, so it inserts the semicolon the lexer could not.
+func (p mut Parser) insertSemicolonAfterTypeArguments() {
+    if p.atSeparator() {
+        return
+    }
+    let gapStart = p.lastTokenEnd
+    var gapEnd = p.text.len()
+    if !p.atEof() {
+        gapEnd = p.currentStart()
+    }
+    var at = -1
+    for var i = gapStart; i < gapEnd; i += 1 {
+        if p.text[i] == 10 {
+            at = i
+            if i > gapStart && p.text[i - 1] == 13 {
+                at = i - 1
+            }
+            break
+        }
+    }
+    if at < 0 {
+        if !p.atEof() {
+            return
+        }
+        at = gapEnd
+    }
+    p.insertBeforeCurrent(lexer.Token{
+        Kind: lexer.KindSemicolon,
+        Start: at,
+        End: at,
+        Detail: lexer.SeparatorNewline,
+        Text: "",
+    })
+}
+
+func (p mut Parser) funcType() int {
+    let start = p.current()
+    let isAsync = p.atKeyword("async")
+    if isAsync {
+        _ = p.bump()
+    }
+    _ = p.bump()
+    if p.expect("(") == failed {
+        return failed
+    }
+    let params = p.commaList(")", "parameter type", true, itemFuncTypeParam)
+    if params == failed {
+        return failed
+    }
+    var results = failed
+    if p.atTypeStart() {
+        results = p.results()
+        if results == failed {
+            return failed
+        }
+    } else {
+        results = p.tree.List()
+    }
+    var attr = "sync"
+    if isAsync {
+        attr = "async"
+    }
+    return p.node2("functype", start.Start, start.End, attr, params, results)
+}
+
+func (p mut Parser) funcTypeParam() int {
+    if p.atKind(lexer.KindIdent) {
+        let next = p.kindAt(1)
+        if next == lexer.KindIdent || p.atPunctAt(1, "[") || p.atKeywordAt(1, "mut") ||
+            p.atKeywordAt(1, "own") || p.atKeywordAt(1, "func") || p.atKeywordAt(1, "map") ||
+            p.atKeywordAt(1, "async") {
+            return p.errorAtCurrent(
+                "function type parameters have no names; write only the type, as in `func(int)`",
+            )
+        }
+    }
+    let mode = p.mode()
+    let ty = p.ty()
+    if ty == failed {
+        return failed
+    }
+    let node = p.spanless("ftparam", mode)
+    p.tree.Append(node, ty)
+    return node
+}
+
+func (p Parser) atTypeStart() bool {
+    return p.atKind(lexer.KindIdent) || p.at("[") || p.at("(") || p.atKeyword("map") ||
+        p.atKeyword("func") || p.atKeyword("channel") || p.atKeyword("mut") ||
+        (p.atKeyword("async") && p.atKeywordAt(1, "func"))
+}
+
+func (p mut Parser) mapType() int {
+    let start = p.bump()
+    if p.expect("[") == failed {
+        return failed
+    }
+    let key = p.ty()
+    if key == failed || p.expect("]") == failed {
+        return failed
+    }
+    let value = p.ty()
+    if value == failed {
+        return failed
+    }
+    return p.node2("map", start.Start, start.End, "", key, value)
+}
+
+func (p Parser) atSliceTypeAfter(ahead int) bool {
+    return p.atPunctAt(ahead, "[") && p.atPunctAt(ahead + 1, "]")
+}
+
+func (p mut Parser) bracketType() int {
+    let start = p.bump()
+    if p.eat("]") {
+        let element = p.ty()
+        if element == failed {
+            return failed
+        }
+        let node = p.addNode("slice", start.Start, start.End, "shared")
+        p.tree.Append(node, element)
+        return node
+    }
+    let element = p.ty()
+    if element == failed {
+        return failed
+    }
+    if !p.atExplicitSemicolon() {
+        return p.unexpected("`;`")
+    }
+    _ = p.bump()
+    let size = p.exprWithLiterals(true)
+    if size == failed || p.expect("]") == failed {
+        return failed
+    }
+    return p.node2("array", start.Start, start.End, "", element, size)
+}

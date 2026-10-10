@@ -2,74 +2,42 @@
 //! Requires clang (LLVM 15+) and rustc 1.98+; a missing toolchain fails rather than skips.
 //! Set `ZORE_LEXER_SEED` to explore other generated inputs.
 
+#[path = "common.rs"]
+mod common;
+
 use std::fs;
-use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::path::Path;
 use std::sync::OnceLock;
 
-use zore::build::{TempDir, build_project};
-use zore::driver::project::{Disk, LoadError, load_project};
+use common::{
+    Case, Generator, Program, build_program, byte_list, code_blocks, ore_files, repository,
+};
 use zore::lexer::{IntBase, Separator, TokenKind, lex};
 use zore::source::{SourceError, SourceMap};
 
-const DEFAULT_SEED: u64 = 0x5EED_2026_1009;
 const GENERATED_CASES: usize = 4000;
 const GENERATED_BYTE_CASES: usize = 400;
-
-struct Case {
-    label: String,
-    bytes: Vec<u8>,
-}
-
-impl Case {
-    fn text(label: impl Into<String>, text: &str) -> Self {
-        Self {
-            label: label.into(),
-            bytes: text.as_bytes().to_vec(),
-        }
-    }
-}
-
-fn repository() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .expect("the compiler crate is inside the repository")
-        .to_path_buf()
-}
-
-struct Oracle {
-    _dir: TempDir,
-    executable: PathBuf,
-}
+const LEX: u8 = b'l';
 
 fn oracle() -> &'static Path {
-    static ORACLE: OnceLock<Oracle> = OnceLock::new();
+    static ORACLE: OnceLock<Program> = OnceLock::new();
     &ORACLE
-        .get_or_init(|| {
-            let entry = repository().join("compiler-zore/oracle/main.ore");
-            let mut sources = SourceMap::new();
-            let project = match load_project(&mut sources, &Disk, &entry) {
-                Ok(project) => project,
-                Err(LoadError::Source(error)) => panic!("cannot load the Zore lexer: {error}"),
-                Err(LoadError::Diagnostics(diagnostics)) => panic!(
-                    "the Zore lexer does not load:\n{}",
-                    diagnostics
-                        .iter()
-                        .map(|d| d.render(&sources).unwrap_or_else(|_| d.message().into()))
-                        .collect::<String>()
-                ),
-            };
-            let dir = TempDir::new().unwrap();
-            let executable = dir.path().join("lexer-oracle");
-            if let Err(error) = build_project(&project, &sources, &executable) {
-                panic!("the Zore lexer does not build: {error:?}");
-            }
-            Oracle {
-                _dir: dir,
-                executable,
-            }
-        })
+        .get_or_init(|| build_program("compiler-zore/oracle/main.ore"))
         .executable
+}
+
+fn compare(cases: &[Case]) {
+    common::compare(oracle(), cases, |dir, index, case| {
+        rust_records(dir, index, &case.bytes)
+    });
+}
+
+fn seed() -> u64 {
+    common::seed("ZORE_LEXER_SEED")
+}
+
+fn lex_case(label: impl Into<String>, text: &str) -> Case {
+    Case::text(label, LEX, text)
 }
 
 /// The Rust records for one case, read through the compiler's own source loading.
@@ -123,14 +91,7 @@ fn token_record(kind: &TokenKind, spelling: &str) -> String {
             }
         ),
         TokenKind::Float => "float".into(),
-        TokenKind::String(value) => format!(
-            "string:{}",
-            value
-                .chars()
-                .map(|c| (c as u32).to_string())
-                .collect::<Vec<_>>()
-                .join(".")
-        ),
+        TokenKind::String(value) => format!("string:{}", byte_list(value)),
         TokenKind::Rune(value) => format!("rune:{}", *value as u32),
         TokenKind::MalformedLiteral => "malformed".into(),
         TokenKind::Unknown => "unknown".into(),
@@ -191,79 +152,6 @@ fn error_code(message: &str) -> &'static str {
     } else {
         panic!("no comparison code for lexer diagnostic `{message}`")
     }
-}
-
-fn zore_records(dir: &Path, cases: &[Case]) -> Vec<Vec<String>> {
-    let mut input = Vec::new();
-    for case in cases {
-        input.extend_from_slice(format!("{}\n", case.bytes.len()).as_bytes());
-        input.extend_from_slice(&case.bytes);
-    }
-    fs::write(dir.join("cases.bin"), input).unwrap();
-    let output = Command::new(oracle())
-        .current_dir(dir)
-        .env("ZORE_CHECK_LEAKS", "1")
-        .output()
-        .expect("run the Zore lexer");
-    assert!(
-        output.status.success() && output.stderr.is_empty(),
-        "the Zore lexer failed ({}):\n{}",
-        output.status,
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let stdout = String::from_utf8(output.stdout).expect("records are text");
-    let mut blocks = vec![Vec::new()];
-    for line in stdout.lines() {
-        if line == "done" {
-            blocks.push(Vec::new());
-        } else {
-            blocks.last_mut().unwrap().push(line.to_string());
-        }
-    }
-    assert!(
-        blocks.pop().is_some_and(|rest| rest.is_empty()),
-        "output does not end with `done`"
-    );
-    assert_eq!(blocks.len(), cases.len(), "one record block per case");
-    blocks
-}
-
-/// Fails with every case whose records differ, showing the first differing record.
-fn compare(cases: &[Case]) {
-    assert!(!cases.is_empty());
-    let dir = TempDir::new().unwrap();
-    let actual = zore_records(dir.path(), cases);
-    let mut mismatches = Vec::new();
-    for (index, (case, zore)) in cases.iter().zip(&actual).enumerate() {
-        let rust = rust_records(dir.path(), index, &case.bytes);
-        if &rust == zore {
-            continue;
-        }
-        let at = rust
-            .iter()
-            .zip(zore)
-            .position(|(r, z)| r != z)
-            .unwrap_or(rust.len().min(zore.len()));
-        mismatches.push(format!(
-            "{}\n  input: {:?}\n  record {at}: rust {:?}, zore {:?}\n  rust: {rust:?}\n  zore: {zore:?}",
-            case.label,
-            String::from_utf8_lossy(&case.bytes),
-            rust.get(at),
-            zore.get(at),
-        ));
-    }
-    assert!(
-        mismatches.is_empty(),
-        "{} of {} cases differ:\n{}",
-        mismatches.len(),
-        cases.len(),
-        mismatches
-            .iter()
-            .take(8)
-            .cloned()
-            .collect::<Vec<_>>()
-            .join("\n")
-    );
 }
 
 #[test]
@@ -343,7 +231,7 @@ fn empty_input_whitespace_and_targeted_cases_match() {
     let cases: Vec<Case> = inputs
         .iter()
         .enumerate()
-        .map(|(index, text)| Case::text(format!("targeted case {index}"), text))
+        .map(|(index, text)| lex_case(format!("targeted case {index}"), text))
         .collect();
     compare(&cases);
 }
@@ -352,9 +240,9 @@ fn empty_input_whitespace_and_targeted_cases_match() {
 fn rust_lexer_test_lines_match() {
     let path = repository().join("tests/lexer/lexer.rs");
     let text = fs::read_to_string(&path).unwrap();
-    let mut cases = vec![Case::text("tests/lexer/lexer.rs (whole file)", &text)];
+    let mut cases = vec![lex_case("tests/lexer/lexer.rs (whole file)", &text)];
     for (number, line) in text.lines().enumerate() {
-        cases.push(Case::text(
+        cases.push(lex_case(
             format!("tests/lexer/lexer.rs line {}", number + 1),
             line,
         ));
@@ -377,45 +265,21 @@ fn lexical_conformance_documents_match() {
     ] {
         let file = format!("tests/conformance/{name}.md");
         let text = fs::read_to_string(repository().join(&file)).unwrap();
-        cases.push(Case::text(format!("{file} (whole file)"), &text));
-        let mut block: Option<(usize, String)> = None;
+        cases.push(lex_case(format!("{file} (whole file)"), &text));
         for (number, line) in text.lines().enumerate() {
             let number = number + 1;
-            cases.push(Case::text(format!("{file} line {number}"), line));
+            cases.push(lex_case(format!("{file} line {number}"), line));
             for (index, span) in line.split('`').enumerate() {
                 if index % 2 == 1 && !span.is_empty() {
-                    cases.push(Case::text(format!("{file} line {number} code span"), span));
+                    cases.push(lex_case(format!("{file} line {number} code span"), span));
                 }
             }
-            if line.trim_start().starts_with("```") {
-                match block.take() {
-                    Some((start, body)) => {
-                        cases.push(Case::text(format!("{file} block at line {start}"), &body));
-                    }
-                    None => block = Some((number, String::new())),
-                }
-            } else if let Some((_, body)) = &mut block {
-                body.push_str(line);
-                body.push('\n');
-            }
+        }
+        for (start, body) in code_blocks(&text) {
+            cases.push(lex_case(format!("{file} block at line {start}"), &body));
         }
     }
     compare(&cases);
-}
-
-fn ore_files(dir: &Path, found: &mut Vec<PathBuf>) {
-    let mut entries: Vec<PathBuf> = fs::read_dir(dir)
-        .unwrap()
-        .map(|entry| entry.unwrap().path())
-        .collect();
-    entries.sort();
-    for path in entries {
-        if path.is_dir() {
-            ore_files(&path, found);
-        } else if path.extension().is_some_and(|extension| extension == "ore") {
-            found.push(path);
-        }
-    }
 }
 
 #[test]
@@ -430,32 +294,11 @@ fn example_standard_and_self_hosted_sources_match() {
         .iter()
         .map(|path| Case {
             label: path.strip_prefix(&root).unwrap().display().to_string(),
+            mode: LEX,
             bytes: fs::read(path).unwrap(),
         })
         .collect();
     compare(&cases);
-}
-
-struct Generator(u64);
-
-impl Generator {
-    fn next(&mut self) -> u64 {
-        self.0 ^= self.0 << 13;
-        self.0 ^= self.0 >> 7;
-        self.0 ^= self.0 << 17;
-        self.0
-    }
-
-    fn below(&mut self, limit: usize) -> usize {
-        (self.next() % limit as u64) as usize
-    }
-}
-
-fn seed() -> u64 {
-    match std::env::var("ZORE_LEXER_SEED") {
-        Ok(text) => text.parse().expect("ZORE_LEXER_SEED is a decimal number"),
-        Err(_) => DEFAULT_SEED,
-    }
 }
 
 #[rustfmt::skip]
@@ -480,7 +323,7 @@ fn seeded_generated_inputs_match() {
             let text: String = (0..count)
                 .map(|_| FRAGMENTS[generator.below(FRAGMENTS.len())])
                 .collect();
-            Case::text(format!("seed {seed} generated case {index}"), &text)
+            lex_case(format!("seed {seed} generated case {index}"), &text)
         })
         .collect();
     compare(&cases);
@@ -504,6 +347,7 @@ fn invalid_utf8_is_rejected_before_lexing() {
         .enumerate()
         .map(|(index, bytes)| Case {
             label: format!("invalid byte case {index}"),
+            mode: LEX,
             bytes: bytes.to_vec(),
         })
         .collect();
@@ -517,6 +361,7 @@ fn invalid_utf8_is_rejected_before_lexing() {
             .collect();
         cases.push(Case {
             label: format!("seed {seed} generated byte case {index}"),
+            mode: LEX,
             bytes,
         });
     }

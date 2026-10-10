@@ -1,5 +1,8 @@
 package lexer
 
+import "zore/strconv"
+import "zore/strings"
+
 const KindIdent = 1
 const KindUnderscore = 2
 const KindKeyword = 3
@@ -18,12 +21,13 @@ const SeparatorExplicit = 1
 const SeparatorNewline = 2
 const SeparatorEof = 3
 
+// Detail is an integer's base, a separator's kind, a rune's code point, or a punctuation index.
 type Token struct {
     Kind   int
     Start  int
     End    int
     Detail int
-    Values Array<int>
+    Text   string
 }
 
 type Problem struct {
@@ -49,6 +53,8 @@ func reservedWords() [string; 8] {
     return [string; 8]{"interface", "trait", "impl", "enum", "match", "unsafe", "macro", "defer"}
 }
 
+const PunctCount = 40
+
 // Longest spellings first, so the first match is the longest one.
 func punctuation() [string; 40] {
     return [string; 40]{
@@ -57,6 +63,29 @@ func punctuation() [string; 40] {
         "*", "/", "%", "&", "|", "^", "!", "<", ">", "=",
         "?", ".", ",", ":", "(", ")", "[", "]", "{", "}",
     }
+}
+
+func PunctSpelling(index int) string {
+    return punctuation()[index]
+}
+
+// The index of a punctuation spelling, or -1.
+func PunctIndex(spelling string) int {
+    for i, candidate in punctuation() {
+        if candidate == spelling {
+            return i
+        }
+    }
+    return -1
+}
+
+// The bytes of `text` in decimal, joined by `.`.
+func ByteList(text string) string {
+    var parts = Array<string>{}
+    for var i = 0; i < text.len(); i += 1 {
+        parts.push(strconv.Itoa(int(text[i])))
+    }
+    return strings.Join(parts[:], ".")
 }
 
 func isKeyword(word string) bool {

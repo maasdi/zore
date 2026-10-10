@@ -1,0 +1,572 @@
+package parser
+
+import "compiler-zore/ast"
+import "compiler-zore/diagnostic"
+import "compiler-zore/lexer"
+
+func (p mut Parser) binding() int {
+    let start = p.bump()
+    let kind = p.text[start.Start:start.End]
+    let targets = p.tree.List()
+    let first = p.bindingTarget(kind)
+    if first == failed {
+        return failed
+    }
+    p.tree.Append(targets, first)
+    for p.eat(",") {
+        let next = p.bindingTarget(kind)
+        if next == failed {
+            return failed
+        }
+        p.tree.Append(targets, next)
+    }
+    let count = p.tree.Count(targets)
+    if kind == "const" && count > 1 {
+        let end = p.spanEnd(start.End)
+        return p.error("a constant declaration has exactly one name", start.Start, end)
+    }
+    if p.at(":") && p.atPunctAt(1, "=") {
+        let colon = p.current()
+        return p.errorWithNote(
+            "`:=` is not Zore syntax",
+            colon.Start,
+            colon.End,
+            "declare with `let name = value` or `var name = value`",
+        )
+    }
+    if p.at(":") {
+        let colon = p.current()
+        return p.errorWithNote(
+            "type annotations are not written with `:`",
+            colon.Start,
+            colon.End,
+            "write the type after the name, as in `let count int64 = 0`",
+        )
+    }
+    var ty = ast.Absent
+    if !p.at("=") && !p.atSeparator() {
+        if count > 1 {
+            return p.errorAtCurrent("typed multiple bindings are not supported; use separate declarations")
+        }
+        ty = p.ty()
+        if ty == failed {
+            return failed
+        }
+    }
+    if !p.at("=") {
+        if p.atSeparator() || p.at("}") || p.atEof() {
+            let end = p.spanEnd(start.End)
+            return p.error("declarations require an initializer (`= value`)", start.Start, end)
+        }
+        return p.unexpected("`=`")
+    }
+    _ = p.bump()
+    let value = p.expr()
+    if value == failed {
+        return failed
+    }
+    if p.at(",") {
+        return p.errorAtCurrent("a declaration takes exactly one initializer expression")
+    }
+    let node = p.addNode(kind, start.Start, start.End, "")
+    p.tree.Append(node, targets)
+    p.tree.Append(node, ty)
+    p.tree.Append(node, value)
+    return node
+}
+
+func (p mut Parser) bindingTarget(kind string) int {
+    if p.atKind(lexer.KindUnderscore) && kind != "const" {
+        let token = p.bump()
+        return p.tree.Add("discard", token.Start, token.End, "")
+    }
+    return p.name("a binding name")
+}
+
+// The start offset of the `{`, or `failed`.
+func (p mut Parser) bodyOpen(header string) int {
+    if p.atNewlineBeforePunct("{") {
+        let start = p.currentStart()
+        let end = p.currentEnd()
+        return p.errorWithNote(
+            "`{` must be on the same line as the " + header,
+            start,
+            end,
+            "a newline here ends the statement (automatic semicolon insertion)",
+        )
+    }
+    return p.expect("{")
+}
+
+func (p mut Parser) bodyBlock(header string, missing string) int {
+    if (p.atSeparator() && !p.atNewlineBeforePunct("{")) || p.atEof() {
+        return p.errorAtCurrent(missing)
+    }
+    let open = p.bodyOpen(header)
+    if open == failed {
+        return failed
+    }
+    return p.blockRest(open)
+}
+
+func (p mut Parser) block() int {
+    let open = p.expect("{")
+    if open == failed {
+        return failed
+    }
+    return p.blockRest(open)
+}
+
+func (p mut Parser) unclosed(open int) int {
+    var d = diagnostic.Error("unclosed `{`", p.file, p.currentStart(), p.currentEnd())
+    d.SetPrimaryMessage("file ends here")
+    d.AddRelated(p.file, open, open + 1, "opened here")
+    return p.report(d)
+}
+
+func (p mut Parser) blockRest(open int) int {
+    let statements = p.tree.List()
+    for {
+        if p.at("}") {
+            _ = p.bump()
+            break
+        }
+        if p.atEof() {
+            _ = p.unclosed(open)
+            break
+        }
+        let depth = p.openDelimiters
+        let statement = p.stmt()
+        var ok = false
+        if statement != failed {
+            p.tree.Append(statements, statement)
+            ok = p.statementEnd("statement")
+        }
+        if !ok {
+            p.synchronize(depth, true)
+        }
+    }
+    let node = p.addNode("block", open, open + 1, "")
+    p.tree.Append(node, statements)
+    return node
+}
+
+func (p mut Parser) statementEnd(what string) bool {
+    if p.atSeparator() {
+        _ = p.bump()
+        return true
+    }
+    if p.at("}") {
+        return true
+    }
+    _ = p.unexpected("newline or `;` after " + what)
+    return false
+}
+
+func (p mut Parser) stmt() int {
+    let start = p.current()
+    var inner = failed
+    if p.atKeyword("let") || p.atKeyword("var") || p.atKeyword("const") {
+        inner = p.binding()
+    } else if p.atKeyword("return") {
+        _ = p.bump()
+        var values = failed
+        if p.atSeparator() || p.at("}") || p.atEof() {
+            values = p.tree.List()
+        } else {
+            values = p.exprList()
+        }
+        if values != failed {
+            inner = p.spanless("return", "")
+            p.tree.Append(inner, values)
+        }
+    } else if p.atKeyword("break") || p.atKeyword("continue") {
+        let word = p.currentText()
+        _ = p.bump()
+        inner = p.spanless(word, "")
+    } else if p.atKeyword("if") {
+        inner = p.ifStmt()
+    } else if p.atKeyword("for") {
+        inner = p.forStmt()
+    } else if p.atKeyword("select") {
+        inner = p.selectStmt()
+    } else if p.at("{") {
+        inner = p.block()
+    } else if p.atExplicitSemicolon() {
+        return p.error("empty statement", start.Start, start.End)
+    } else {
+        let simple, isStatement = p.simpleStatement()
+        if simple == failed {
+            return failed
+        }
+        return p.statement(simple, isStatement)
+    }
+    if inner == failed {
+        return failed
+    }
+    let node = p.addNode("stmt", start.Start, start.End, "")
+    p.tree.Append(node, inner)
+    return node
+}
+
+func (p mut Parser) statement(simple int, isStatement bool) int {
+    if isStatement {
+        return simple
+    }
+    let start = p.tree.Start(simple)
+    let end = p.tree.End(simple)
+    if p.isCallBased(simple) {
+        let node = p.tree.Add("stmt", start, end, "")
+        p.tree.Append(node, simple)
+        return node
+    }
+    return p.errorWithNote(
+        "expression is not a statement",
+        start,
+        end,
+        "only calls can be statements; discard a value explicitly with `_ = value`",
+    )
+}
+
+func (p Parser) isCallBased(expr int) bool {
+    let tag = p.tree.Tag(expr)
+    if tag == "call" || tag == "go" {
+        return true
+    }
+    if tag == "await" || tag == "try" {
+        return p.isCallBased(p.tree.Child(expr, 0))
+    }
+    return false
+}
+
+func (p Parser) assignOp() string {
+    if !p.atKind(lexer.KindPunct) || !p.assignments[p.detail()] {
+        return ""
+    }
+    return p.currentText()
+}
+
+// Returns a statement node and true, or an expression node and false.
+func (p mut Parser) simpleStatement() (int, bool) {
+    let start = p.current()
+    let targets = p.tree.List()
+    let first = p.assignTarget()
+    if first == failed {
+        return failed, false
+    }
+    p.tree.Append(targets, first)
+    for p.eat(",") {
+        let next = p.assignTarget()
+        if next == failed {
+            return failed, false
+        }
+        p.tree.Append(targets, next)
+    }
+    let count = p.tree.Count(targets)
+    let op = p.assignOp()
+    if op == "" {
+        let last = p.tree.Child(targets, count - 1)
+        if count == 1 && p.tree.Tag(last) != "discard" {
+            return last, false
+        }
+        return p.unexpected("`=` after assignment targets"), false
+    }
+    let opToken = p.bump()
+    for var i = 0; i < count; i += 1 {
+        let target = p.tree.Child(targets, i)
+        let tag = p.tree.Tag(target)
+        if tag != "discard" && tag != "ident" && tag != "member" && tag != "index" {
+            let targetStart = p.tree.Start(target)
+            let targetEnd = p.tree.End(target)
+            return p.error("invalid assignment target", targetStart, targetEnd), false
+        }
+    }
+    let compound = op != "="
+    if compound {
+        if count > 1 {
+            return p.error("compound assignment takes exactly one target", opToken.Start, opToken.End), false
+        }
+        if p.tree.Tag(first) == "discard" {
+            let firstStart = p.tree.Start(first)
+            let firstEnd = p.tree.End(first)
+            return p.error("`_` cannot be a compound assignment target", firstStart, firstEnd), false
+        }
+    }
+    let values = p.exprList()
+    if values == failed {
+        return failed, false
+    }
+    if compound && p.tree.Count(values) > 1 {
+        let second = p.tree.Child(values, 1)
+        let secondStart = p.tree.Start(second)
+        let secondEnd = p.tree.End(second)
+        return p.error("compound assignment takes exactly one value", secondStart, secondEnd), false
+    }
+    let assign = p.spanless("assign", op)
+    p.tree.Append(assign, targets)
+    p.tree.Append(assign, values)
+    let node = p.addNode("stmt", start.Start, start.End, "")
+    p.tree.Append(node, assign)
+    return node, true
+}
+
+func (p mut Parser) assignTarget() int {
+    if p.atKind(lexer.KindUnderscore) {
+        let token = p.bump()
+        return p.tree.Add("discard", token.Start, token.End, "")
+    }
+    return p.expr()
+}
+
+func (p mut Parser) ifStmt() int {
+    let start = p.bump()
+    let condition = p.headerExpr()
+    if condition == failed {
+        return failed
+    }
+    let then = p.bodyBlock("`if` condition", "expected `{` after `if` condition")
+    if then == failed {
+        return failed
+    }
+    if p.atNewlineBefore(lexer.KindKeyword, "else") {
+        let newlineStart = p.currentStart()
+        let newlineEnd = p.currentEnd()
+        return p.errorWithNote(
+            "`else` must be on the same line as the preceding `}`",
+            newlineStart,
+            newlineEnd,
+            "a newline here ends the `if` statement (automatic semicolon insertion)",
+        )
+    }
+    var otherwise = ast.Absent
+    if p.atKeyword("else") {
+        _ = p.bump()
+        if p.atKeyword("if") {
+            otherwise = p.ifStmt()
+        } else {
+            otherwise = p.bodyBlock("`else`", "expected `{` after `else`")
+        }
+        if otherwise == failed {
+            return failed
+        }
+    }
+    let node = p.addNode("if", start.Start, start.End, "")
+    p.tree.Append(node, condition)
+    p.tree.Append(node, then)
+    p.tree.Append(node, otherwise)
+    return node
+}
+
+func (p mut Parser) selectStmt() int {
+    let start = p.bump()
+    let open = p.bodyOpen("`select`")
+    if open == failed {
+        return failed
+    }
+    let arms = p.tree.List()
+    var fallback = ast.Absent
+    for {
+        for p.atSeparator() {
+            _ = p.bump()
+        }
+        if p.at("}") {
+            _ = p.bump()
+            break
+        }
+        if p.atEof() {
+            return p.unclosed(open)
+        }
+        let armStart = p.current()
+        var word = ""
+        if p.atKind(lexer.KindIdent) {
+            word = p.currentText()
+        }
+        if word == "case" {
+            _ = p.bump()
+            var comm = failed
+            if p.atKeyword("let") {
+                let saved = p.structLiterals
+                p.structLiterals = false
+                comm = p.binding()
+                p.structLiterals = saved
+            } else {
+                comm = p.headerExpr()
+            }
+            if comm == failed {
+                return failed
+            }
+            let body = p.bodyBlock("`case`", "expected `{` after `case`")
+            if body == failed {
+                return failed
+            }
+            let arm = p.node2("arm", armStart.Start, armStart.End, "", comm, body)
+            p.tree.Append(arms, arm)
+        } else if word == "default" {
+            _ = p.bump()
+            let body = p.bodyBlock("`default`", "expected `{` after `default`")
+            if body == failed {
+                return failed
+            }
+            if fallback != ast.Absent {
+                let end = p.spanEnd(armStart.End)
+                return p.error("a `select` has at most one `default`", armStart.Start, end)
+            }
+            fallback = body
+        } else {
+            return p.unexpected("`case`, `default`, or `}`")
+        }
+        if !p.atSeparator() && !p.at("}") {
+            return p.unexpected("newline or `;` after the arm")
+        }
+    }
+    let end = p.spanEnd(start.End)
+    if p.tree.Count(arms) == 0 {
+        return p.error("a `select` needs at least one `case`", start.Start, end)
+    }
+    let node = p.tree.Add("selectstmt", start.Start, end, "")
+    p.tree.Append(node, arms)
+    p.tree.Append(node, fallback)
+    return node
+}
+
+func (p mut Parser) forNode(header int, body int) int {
+    let node = p.spanless("for", "")
+    p.tree.Append(node, header)
+    p.tree.Append(node, body)
+    return node
+}
+
+func (p mut Parser) forStmt() int {
+    _ = p.bump()
+    if p.at("{") {
+        let open = p.bump()
+        let body = p.blockRest(open.Start)
+        let header = p.spanless("infinite", "")
+        return p.forNode(header, body)
+    }
+    if p.atSeparator() {
+        return p.errorAtCurrent("counting loop clauses cannot be empty")
+    }
+    if p.atEachHeader() {
+        let first = p.bindingTarget("let")
+        if first == failed {
+            return failed
+        }
+        var second = ast.Absent
+        if p.eat(",") {
+            second = p.bindingTarget("let")
+            if second == failed {
+                return failed
+            }
+        }
+        _ = p.bump()
+        let collection = p.headerExpr()
+        if collection == failed {
+            return failed
+        }
+        let body = p.bodyBlock("`for` header", "expected `{` after `for` header")
+        if body == failed {
+            return failed
+        }
+        let header = p.spanless("each", "")
+        p.tree.Append(header, first)
+        p.tree.Append(header, second)
+        p.tree.Append(header, collection)
+        return p.forNode(header, body)
+    }
+    let first, firstIsStatement = p.forFirstClause()
+    if first == failed {
+        return failed
+    }
+    var header = failed
+    if p.atExplicitSemicolon() {
+        _ = p.bump()
+        let init = p.statement(first, firstIsStatement)
+        if init == failed {
+            return failed
+        }
+        let condition = p.headerExpr()
+        if condition == failed || !p.headerSeparator() {
+            return failed
+        }
+        if p.atKeyword("let") || p.atKeyword("var") || p.atKeyword("const") {
+            return p.errorAtCurrent("the counting loop update cannot be a declaration")
+        }
+        let saved = p.structLiterals
+        p.structLiterals = false
+        let simple, isStatement = p.simpleStatement()
+        p.structLiterals = saved
+        if simple == failed {
+            return failed
+        }
+        let update = p.statement(simple, isStatement)
+        if update == failed {
+            return failed
+        }
+        header = p.spanless("counting", "")
+        p.tree.Append(header, init)
+        p.tree.Append(header, condition)
+        p.tree.Append(header, update)
+    } else if firstIsStatement {
+        return p.unexpected("`;` after the loop initializer")
+    } else {
+        header = p.spanless("condition", "")
+        p.tree.Append(header, first)
+    }
+    let body = p.bodyBlock("`for` header", "expected `{` after `for` header")
+    if body == failed {
+        return failed
+    }
+    return p.forNode(header, body)
+}
+
+func (p Parser) isNameAt(ahead int) bool {
+    let kind = p.kindAt(ahead)
+    return kind == lexer.KindIdent || kind == lexer.KindUnderscore
+}
+
+func (p Parser) atEachHeader() bool {
+    return p.isNameAt(0) && (p.atKeywordAt(1, "in") ||
+        (p.atPunctAt(1, ",") && p.isNameAt(2) && p.atKeywordAt(3, "in")))
+}
+
+func (p mut Parser) forFirstClause() (int, bool) {
+    if p.atKeyword("let") || p.atKeyword("var") {
+        let start = p.current()
+        let binding = p.binding()
+        if binding == failed {
+            return failed, false
+        }
+        let node = p.addNode("stmt", start.Start, start.End, "")
+        p.tree.Append(node, binding)
+        return node, true
+    }
+    let state = p.save()
+    // An initializer may contain struct literals; retry with them allowed.
+    let saved = p.structLiterals
+    p.structLiterals = false
+    let first, isStatement = p.simpleStatement()
+    p.structLiterals = saved
+    if first != failed && isStatement && p.at("{") {
+        p.restore(state)
+        return p.simpleStatement()
+    }
+    return first, isStatement
+}
+
+func (p mut Parser) headerSeparator() bool {
+    if p.atExplicitSemicolon() {
+        _ = p.bump()
+        return true
+    }
+    if p.atSeparator() {
+        _ = p.errorAtCurrent("counting loop headers must be written on one line")
+        return false
+    }
+    _ = p.unexpected("`;` in counting loop header")
+    return false
+}
+
+func (p mut Parser) headerExpr() int {
+    return p.exprWithLiterals(false)
+}

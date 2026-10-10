@@ -1,0 +1,289 @@
+package parser
+
+import "compiler-zore/ast"
+import "compiler-zore/lexer"
+
+func (p mut Parser) fileAst() int {
+    let pkg = p.packageClause()
+    let imports = p.tree.List()
+    let items = p.tree.List()
+    var itemCount = 0
+    for !p.atEof() {
+        var result = failed
+        if p.atKeyword("import") && itemCount == 0 {
+            result = p.importDecl()
+            if result != failed {
+                p.tree.Append(imports, result)
+            }
+        } else if p.atKeyword("import") {
+            result = p.errorAtCurrent("imports must come before other declarations")
+        } else {
+            result = p.itemDecl()
+            if result != failed {
+                p.tree.Append(items, result)
+                itemCount += 1
+            }
+        }
+        if result == failed || !p.declarationEnd() {
+            p.synchronize(0, false)
+        }
+    }
+    let end = p.text.len()
+    let file = p.tree.Add("file", 0, end, "")
+    p.tree.Append(file, pkg)
+    p.tree.Append(file, imports)
+    p.tree.Append(file, items)
+    return file
+}
+
+func (p mut Parser) declarationEnd() bool {
+    if p.atSeparator() {
+        _ = p.bump()
+        return true
+    }
+    if p.atEof() {
+        return true
+    }
+    _ = p.unexpected("newline or `;` after declaration")
+    return false
+}
+
+func (p mut Parser) packageClause() int {
+    if !p.atKeyword("package") {
+        _ = p.errorAtCurrent("expected `package` clause at the start of the file")
+        return ast.Absent
+    }
+    _ = p.bump()
+    let name = p.name("a package name")
+    if name == failed || !p.declarationEnd() {
+        p.synchronize(0, false)
+    }
+    if name == failed {
+        return ast.Absent
+    }
+    return name
+}
+
+func quoteBytes(text string) string {
+    return "\"" + lexer.ByteList(text) + "\""
+}
+
+func (p mut Parser) importDecl() int {
+    let start = p.bump()
+    let token = p.current()
+    if token.Kind == lexer.KindString && p.text[token.Start] == 34 {
+        _ = p.bump()
+        let path = p.tree.Add("path", token.Start, token.End, quoteBytes(token.Text))
+        let node = p.addNode("import", start.Start, start.End, "")
+        p.tree.Append(node, path)
+        return node
+    }
+    if p.at("(") {
+        return p.errorAtCurrent("grouped imports are not supported; write one `import` per line")
+    }
+    return p.unexpected("a double-quoted import path")
+}
+
+func (p mut Parser) itemDecl() int {
+    if p.atKeyword("func") || p.atKeyword("async") {
+        return p.funcDecl()
+    }
+    if p.atKeyword("type") {
+        return p.structDecl()
+    }
+    if p.atKeyword("let") || p.atKeyword("var") || p.atKeyword("const") {
+        return p.binding()
+    }
+    if p.atKind(lexer.KindReserved) {
+        let word = p.currentText()
+        return p.errorAtCurrent("`" + word + "` is reserved for possible future use; the feature is not available")
+    }
+    return p.unexpected("a declaration")
+}
+
+func (p mut Parser) funcDecl() int {
+    let start = p.current()
+    let isAsync = p.atKeyword("async")
+    if isAsync {
+        _ = p.bump()
+        if !p.atKeyword("func") {
+            return p.unexpected("`func` after `async`")
+        }
+    }
+    _ = p.bump()
+    var receiver = ast.Absent
+    if p.at("(") {
+        _ = p.bump()
+        receiver = p.param("a receiver name")
+        if receiver == failed {
+            return failed
+        }
+        if p.at(",") {
+            return p.errorAtCurrent("a method has exactly one receiver")
+        }
+        if p.expect(")") == failed {
+            return failed
+        }
+    }
+    let name = p.name("a function name")
+    if name == failed || p.expect("(") == failed {
+        return failed
+    }
+    let params = p.commaList(")", "parameter", true, itemParam)
+    if params == failed {
+        return failed
+    }
+    let results = p.results()
+    if results == failed {
+        return failed
+    }
+    let native = p.nativeFunctions && (p.atSeparator() || p.atEof())
+    var body = failed
+    if native {
+        let blockStart = p.currentStart()
+        let blockEnd = p.currentEnd()
+        body = p.tree.Add("block", blockStart, blockEnd, "")
+        let statements = p.tree.List()
+        p.tree.Append(body, statements)
+    } else {
+        body = p.bodyBlock("function signature", "function declarations require a body")
+        if body == failed {
+            return failed
+        }
+    }
+    var attr = "sync"
+    if isAsync {
+        attr = "async"
+    }
+    if native {
+        attr += " native"
+    } else {
+        attr += " body"
+    }
+    let node = p.addNode("func", start.Start, start.End, attr)
+    p.tree.Append(node, receiver)
+    p.tree.Append(node, name)
+    p.tree.Append(node, params)
+    p.tree.Append(node, results)
+    p.tree.Append(node, body)
+    return node
+}
+
+// `mut` before `[]` belongs to a mutable slice type, not to the parameter.
+func (p mut Parser) mode() string {
+    if p.atKeyword("mut") && !p.atSliceTypeAfter(1) {
+        _ = p.bump()
+        return "mut"
+    }
+    if p.atKeyword("own") {
+        _ = p.bump()
+        return "own"
+    }
+    return "borrow"
+}
+
+func (p mut Parser) param(what string) int {
+    let name = p.name(what)
+    if name == failed {
+        return failed
+    }
+    let nameStart = p.tree.Start(name)
+    let nameEnd = p.tree.End(name)
+    if p.at(",") || p.at(")") {
+        let text = p.tree.Attr(name)
+        return p.error(
+            "`" + text + "` needs its own type; grouped `a, b T` parameters are not supported",
+            nameStart,
+            nameEnd,
+        )
+    }
+    let mode = p.mode()
+    let ty = p.ty()
+    if ty == failed {
+        return failed
+    }
+    if p.at("=") {
+        return p.errorAtCurrent("default parameter values are not supported")
+    }
+    return p.node2("param", nameStart, nameEnd, mode, name, ty)
+}
+
+func (p mut Parser) results() int {
+    if p.at("(") {
+        let open = p.bump()
+        let results = p.commaList(")", "result type", false, itemType)
+        if results == failed {
+            return failed
+        }
+        let count = p.tree.Count(results)
+        if count < 2 {
+            let end = p.spanEnd(open.End)
+            if count == 0 {
+                return p.error("an empty result list is written by omitting it", open.Start, end)
+            }
+            return p.error("a single result type is written without parentheses", open.Start, end)
+        }
+        return results
+    }
+    let results = p.tree.List()
+    if p.at("{") || p.atSeparator() {
+        return results
+    }
+    let ty = p.ty()
+    if ty == failed {
+        return failed
+    }
+    p.tree.Append(results, ty)
+    return results
+}
+
+func (p mut Parser) structDecl() int {
+    let start = p.bump()
+    let name = p.name("a type name")
+    if name == failed {
+        return failed
+    }
+    if !p.atKeyword("struct") {
+        return p.unexpected("`struct`; only struct type declarations are supported")
+    }
+    _ = p.bump()
+    let open = p.bodyOpen("struct type name")
+    if open == failed {
+        return failed
+    }
+    let fields = p.tree.List()
+    for {
+        if p.at("}") {
+            _ = p.bump()
+            break
+        }
+        if p.atEof() {
+            return p.unclosed(open)
+        }
+        let depth = p.openDelimiters
+        let field = p.fieldDecl()
+        var ok = false
+        if field != failed {
+            p.tree.Append(fields, field)
+            ok = p.statementEnd("field")
+        }
+        if !ok {
+            p.synchronize(depth, true)
+        }
+    }
+    return p.node2("struct", start.Start, start.End, "", name, fields)
+}
+
+func (p mut Parser) fieldDecl() int {
+    let name = p.name("a field name")
+    if name == failed {
+        return failed
+    }
+    let ty = p.ty()
+    if ty == failed {
+        return failed
+    }
+    let nameStart = p.tree.Start(name)
+    let nameEnd = p.tree.End(name)
+    return p.node2("field", nameStart, nameEnd, "", name, ty)
+}

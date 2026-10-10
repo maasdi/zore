@@ -1,0 +1,111 @@
+package ast
+
+import "zore/strconv"
+import "zore/strings"
+
+// A child slot that holds no node, such as a missing receiver.
+const Absent = -1
+
+// The tag of a node that only groups its children in order.
+const ListTag = "list"
+
+// Start is -1 for a node that has no span of its own.
+type Node struct {
+    Tag      string
+    Start    int
+    End      int
+    Attr     string
+    Children Array<int>
+}
+
+// Nodes refer to their children by index into the same tree.
+type Tree struct {
+    Nodes Array<Node>
+}
+
+func NewTree() Tree {
+    return Tree{Nodes: Array<Node>{}}
+}
+
+func (t mut Tree) Add(tag string, start int, end int, attr string) int {
+    t.Nodes.push(Node{Tag: tag, Start: start, End: end, Attr: attr, Children: Array<int>{}})
+    return t.Nodes.len() - 1
+}
+
+func (t mut Tree) List() int {
+    return t.Add(ListTag, -1, -1, "")
+}
+
+func (t mut Tree) Truncate(count int) {
+    for t.Nodes.len() > count {
+        let _, _ = t.Nodes.pop()
+    }
+}
+
+func (t mut Tree) Append(parent int, child int) {
+    t.Nodes[parent].Children.push(child)
+}
+
+func (t Tree) Tag(node int) string {
+    return t.Nodes[node].Tag
+}
+
+func (t Tree) Start(node int) int {
+    return t.Nodes[node].Start
+}
+
+func (t Tree) End(node int) int {
+    return t.Nodes[node].End
+}
+
+func (t Tree) Attr(node int) string {
+    return t.Nodes[node].Attr
+}
+
+func (t Tree) Count(node int) int {
+    return t.Nodes[node].Children.len()
+}
+
+func (t Tree) Child(node int, index int) int {
+    return t.Nodes[node].Children[index]
+}
+
+// `(tag start end attr children...)`, `[children...]` for a list, and `_` for an absent child.
+func (t Tree) Print(node int) string {
+    var pieces = Array<string>{}
+    t.printInto(pieces, node)
+    return strings.Join(pieces[:], "")
+}
+
+func (t Tree) printInto(pieces mut Array<string>, node int) {
+    if node == Absent {
+        pieces.push("_")
+        return
+    }
+    let tag = t.Nodes[node].Tag
+    if tag == ListTag {
+        pieces.push("[")
+        for i, child in t.Nodes[node].Children {
+            if i > 0 {
+                pieces.push(" ")
+            }
+            t.printInto(pieces, child)
+        }
+        pieces.push("]")
+        return
+    }
+    pieces.push("(" + tag)
+    let start = t.Nodes[node].Start
+    if start >= 0 {
+        pieces.push(" " + strconv.Itoa(start) + " " + strconv.Itoa(t.Nodes[node].End))
+    }
+    let attr = t.Nodes[node].Attr
+    if attr != "" {
+        pieces.push(" " + attr)
+    }
+    for child in t.Nodes[node].Children {
+        pieces.push(" ")
+        t.printInto(pieces, child)
+    }
+    pieces.push(")")
+}
