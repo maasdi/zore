@@ -1,0 +1,70 @@
+package sync
+
+type counter struct {
+    active  int
+    waiting int
+}
+
+type WaitGroup struct {
+    state   Mutex<counter>
+    release channel<bool>
+}
+
+func NewWaitGroup() WaitGroup {
+    return WaitGroup{state: mutex(counter{active: 0, waiting: 0}), release: channel<bool>()}
+}
+
+func (wg WaitGroup) Add(delta int) {
+    let wake = wg.state.withLock(func(c mut counter) int {
+        c.active += delta
+        if c.active < 0 {
+            fail("sync: negative WaitGroup counter")
+        }
+        if c.active > 0 {
+            return 0
+        }
+        let waiting = c.waiting
+        c.waiting = 0
+        return waiting
+    })
+    for var i = 0; i < wake; i += 1 {
+        wg.release.send(true)
+    }
+}
+
+func (wg WaitGroup) Done() {
+    wg.Add(-1)
+}
+
+func (wg WaitGroup) Wait() {
+    let blocked = wg.state.withLock(func(c mut counter) bool {
+        if c.active == 0 {
+            return false
+        }
+        c.waiting += 1
+        return true
+    })
+    if blocked {
+        let _, _ = wg.release.receive()
+    }
+}
+
+type Once struct {
+    done Mutex<bool>
+}
+
+func NewOnce() Once {
+    return Once{done: mutex(false)}
+}
+
+func (o Once) Do(f func()) {
+    o.done.withLock(func(done mut bool) bool {
+        if !done {
+            done = true
+            f()
+        }
+        return done
+    })
+}
+
+func fail(message string)

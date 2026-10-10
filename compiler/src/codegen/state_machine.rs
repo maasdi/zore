@@ -508,10 +508,10 @@ impl FunctionBuilder<'_, '_> {
         target: mir::BlockId,
         unwind: Option<mir::BlockId>,
     ) {
-        let milliseconds = self.value(&args[0]);
+        let nanoseconds = self.value(&args[0]);
         let operation = self.fresh();
         self.line(format!(
-            "{operation} = call ptr @zore_native_time_sleep_start(i64 {milliseconds}, ptr %context)"
+            "{operation} = call ptr @zore_native_time_sleep_start(i64 {nanoseconds}, ptr %context)"
         ));
         self.line(format!("store ptr {operation}, ptr %pending.slot"));
         self.line(format!("br label %resume.{state}"));

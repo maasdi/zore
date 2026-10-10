@@ -69,15 +69,18 @@ impl Module<'_> {
                     args.push(format!("ptr %d{index}, i64 %n{index}"));
                     declared.push("ptr, i64".to_string());
                 }
-                TypeKind::Int(_) => {
-                    args.push(format!("i64 %p{index}"));
-                    declared.push("i64".to_string());
+                TypeKind::Int(_) | TypeKind::Rune => {
+                    let llvm = self.ty(ty);
+                    args.push(format!("{llvm} %p{index}"));
+                    declared.push(llvm);
                 }
                 TypeKind::Bool => {
                     args.push(format!("i1 zeroext %p{index}"));
                     declared.push("i1 zeroext".to_string());
                 }
-                _ => unreachable!("bundled functions take strings, slices, integers, and booleans"),
+                _ => unreachable!(
+                    "bundled functions take strings, slices, integers, runes, and booleans"
+                ),
             }
         }
         let result = match &function.results[..] {
@@ -111,9 +114,9 @@ impl Module<'_> {
             ),
             Result::Scalar(ty) => {
                 let (ret, marker) = if ty == TypeStore::BOOL {
-                    ("i1", "zeroext ")
+                    ("i1".to_string(), "zeroext ")
                 } else {
-                    ("i64", "")
+                    (self.ty(ty), "")
                 };
                 (
                     format!(

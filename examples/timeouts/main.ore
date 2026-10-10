@@ -1,15 +1,22 @@
 package main
 
-import "zore/cancel"
+import "zore/context"
 import "zore/net"
 import "zore/time"
 
-func count(token cancel.Token, results channel<int>) {
+func count(ctx context.Context, results channel<int>) {
     var steps = 0
-    for token.Sleep(10) {
-        steps += 1
+    for {
+        select {
+            case ctx.Done().receive() {
+                results.send(steps)
+                return
+            }
+            case time.After(10 * time.Millisecond).receive() {
+                steps += 1
+            }
+        }
     }
-    results.send(steps)
 }
 
 func main() {
@@ -18,24 +25,25 @@ func main() {
         case let answer, ok = slow.receive() {
             println(answer)
         }
-        case time.After(50).receive() {
+        case time.After(50 * time.Millisecond).receive() {
             println("no answer in 50 ms")
         }
     }
 
-    let limit = cancel.WithTimeout(100)
+    let ctx, cancel = context.WithTimeout(context.Background(), 100 * time.Millisecond)
     let results = channel<int>(1)
-    go count(limit, results)
+    go count(ctx, results)
     let steps, _ = results.receive()
     println(steps > 0)
-    println(limit.Cancelled())
+    println(ctx.Err() == error("context deadline exceeded"))
+    cancel()
 
-    let listener, listenErr = net.Listen("127.0.0.1:0")
+    let listener, listenErr = net.Listen("tcp", "127.0.0.1:0")
     if listenErr != nil {
         println("listen failed")
         return
     }
-    _ = listener.SetTimeout(50)
+    _ = listener.SetDeadline(time.Now() + 50 * time.Millisecond)
     let _, acceptErr = listener.Accept()
     println(acceptErr == error("net.Accept: timed out"))
 }

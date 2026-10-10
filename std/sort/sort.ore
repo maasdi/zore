@@ -1,0 +1,111 @@
+package sort
+
+func Ints(x mut []int) {
+    for var start = x.len() / 2 - 1; start >= 0; start -= 1 {
+        siftInts(x, start, x.len())
+    }
+    for var end = x.len() - 1; end > 0; end -= 1 {
+        let top = x[0]
+        x[0] = x[end]
+        x[end] = top
+        siftInts(x, 0, end)
+    }
+}
+
+func siftInts(x mut []int, root int, end int) {
+    var parent = root
+    for {
+        var child = 2 * parent + 1
+        if child >= end {
+            return
+        }
+        if child + 1 < end && x[child] < x[child + 1] {
+            child += 1
+        }
+        if x[parent] >= x[child] {
+            return
+        }
+        let held = x[parent]
+        x[parent] = x[child]
+        x[child] = held
+        parent = child
+    }
+}
+
+func Strings(x mut []string) {
+    for var start = x.len() / 2 - 1; start >= 0; start -= 1 {
+        siftStrings(x, start, x.len())
+    }
+    for var end = x.len() - 1; end > 0; end -= 1 {
+        let top = x[0]
+        x[0] = x[end]
+        x[end] = top
+        siftStrings(x, 0, end)
+    }
+}
+
+func siftStrings(x mut []string, root int, end int) {
+    var parent = root
+    for {
+        var child = 2 * parent + 1
+        if child >= end {
+            return
+        }
+        if child + 1 < end && x[child] < x[child + 1] {
+            child += 1
+        }
+        if x[parent] >= x[child] {
+            return
+        }
+        let held = x[parent]
+        x[parent] = x[child]
+        x[child] = held
+        parent = child
+    }
+}
+
+func IntsAreSorted(x []int) bool {
+    for var i = 1; i < x.len(); i += 1 {
+        if x[i] < x[i - 1] {
+            return false
+        }
+    }
+    return true
+}
+
+func StringsAreSorted(x []string) bool {
+    for var i = 1; i < x.len(); i += 1 {
+        if x[i] < x[i - 1] {
+            return false
+        }
+    }
+    return true
+}
+
+func SearchInts(a []int, x int) int {
+    var low = 0
+    var high = a.len()
+    for low < high {
+        let middle = (low + high) / 2
+        if a[middle] < x {
+            low = middle + 1
+        } else {
+            high = middle
+        }
+    }
+    return low
+}
+
+func SearchStrings(a []string, x string) int {
+    var low = 0
+    var high = a.len()
+    for low < high {
+        let middle = (low + high) / 2
+        if a[middle] < x {
+            low = middle + 1
+        } else {
+            high = middle
+        }
+    }
+    return low
+}
