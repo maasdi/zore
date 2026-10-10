@@ -39,6 +39,9 @@ impl Module<'_> {
             TypeKind::Map { .. } => "ptr".into(),
             // The closure body's code, its captured environment, then the environment's destructor.
             TypeKind::Func(_) => "{ ptr, ptr, ptr }".into(),
+            TypeKind::Interface(_) | TypeKind::InterfaceView { .. } => {
+                super::interface::INTERFACE_TY.into()
+            }
             TypeKind::Task(_) | TypeKind::Channel { .. } | TypeKind::Mutex { .. } => "ptr".into(),
         }
     }

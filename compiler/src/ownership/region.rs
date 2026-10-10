@@ -432,7 +432,9 @@ impl<'a> Analysis<'a> {
         let loans = self.rvalue_loans(rvalue, site, state);
         let captured = self.owned_captures(rvalue);
         let moved: Vec<&Operand> = match rvalue {
-            Rvalue::Use(operand) | Rvalue::Spawn(operand) => vec![operand],
+            Rvalue::Use(operand) | Rvalue::Spawn(operand) | Rvalue::InterfaceBox(operand) => {
+                vec![operand]
+            }
             Rvalue::Aggregate(_, operands) => operands.iter().collect(),
             _ => captured.iter().collect(),
         };
@@ -759,6 +761,13 @@ impl<'a> Analysis<'a> {
                 .iter()
                 .map(|&(mode, ty)| Some(exclusive_if_func(mode, ty)))
                 .collect(),
+            Callee::Interface { method } => {
+                let (params, _) = self.interface_signature(args, *method);
+                params
+                    .iter()
+                    .map(|&(mode, ty)| Some(exclusive_if_func(mode, ty)))
+                    .collect()
+            }
             Callee::Println
             | Callee::Panic
             | Callee::Drop
@@ -817,6 +826,16 @@ impl<'a> Analysis<'a> {
                             let (mode, ty) = signature.params[index];
                             mode == ParamMode::Mut || self.stores_through_views(ty)
                         }),
+                    Callee::Interface { method } => {
+                        let (params, _) = self.interface_signature(args, *method);
+                        let (mode, ty) = params[index];
+                        mode == ParamMode::Mut
+                            || self.stores_through_views(ty)
+                            || matches!(
+                                self.package.types.kind(ty),
+                                TypeKind::InterfaceView { mutable: true, .. }
+                            )
+                    }
                     _ => false,
                 };
                 if receives_views {
@@ -883,7 +902,27 @@ impl<'a> Analysis<'a> {
             return;
         }
         if let Callee::Value(callee_place) = callee {
-            self.value_call_effects(callee_place, args, destinations, site, state);
+            let signature = self
+                .package
+                .types
+                .func_signature(self.place_ty(callee_place))
+                .expect("a function-typed callee")
+                .clone();
+            self.unknown_call_effects(
+                &signature.params,
+                &signature.results,
+                Some(callee_place),
+                args,
+                destinations,
+                site,
+                state,
+            );
+            clear(state);
+            return;
+        }
+        if let Callee::Interface { method } = callee {
+            let (params, results) = self.interface_signature(args, *method);
+            self.unknown_call_effects(&params, &results, None, args, destinations, site, state);
             clear(state);
             return;
         }
@@ -943,10 +982,36 @@ impl<'a> Analysis<'a> {
         }
     }
 
+    /// The receiver's mode and type, then the entry's parameters; and the entry's results.
+    fn interface_signature(
+        &self,
+        args: &[Operand],
+        method: usize,
+    ) -> (Vec<(ParamMode, TypeId)>, Vec<TypeId>) {
+        let receiver = match &args[0] {
+            Operand::Copy(place) | Operand::Move(place) | Operand::Ref(place) => {
+                self.place_ty(place)
+            }
+            Operand::Const(_, ty) => *ty,
+        };
+        let entry = self.package.interface_entry(receiver, method);
+        let mode = match self.package.types.kind(receiver) {
+            TypeKind::InterfaceView { .. } => ParamMode::Borrow,
+            _ => entry.receiver,
+        };
+        let params = std::iter::once((mode, receiver))
+            .chain(entry.params.iter().copied())
+            .collect();
+        (params, entry.results.clone())
+    }
+
     /// An unknown callee may pass any argument's or capture's views to its results and `mut` arguments.
-    fn value_call_effects(
+    #[allow(clippy::too_many_arguments)]
+    fn unknown_call_effects(
         &mut self,
-        callee: &Place,
+        params: &[(ParamMode, TypeId)],
+        results: &[TypeId],
+        callee: Option<&Place>,
         args: &[Operand],
         destinations: &[Option<Place>],
         site: &mut Site,
@@ -956,12 +1021,6 @@ impl<'a> Analysis<'a> {
             storage: true,
             contents: true,
         };
-        let signature = self
-            .package
-            .types
-            .func_signature(self.place_ty(callee))
-            .expect("a function-typed callee")
-            .clone();
         let mut sources: Vec<(Place, Origin, bool)> = args
             .iter()
             .filter_map(|arg| match arg {
@@ -976,13 +1035,15 @@ impl<'a> Analysis<'a> {
             storage: false,
             contents: true,
         };
-        sources.push((callee.clone(), closure_views, false));
+        if let Some(callee) = callee {
+            sources.push((callee.clone(), closure_views, false));
+        }
         let mut stores = Vec::new();
         for (index, destination) in destinations.iter().enumerate() {
             let Some(destination) = destination else {
                 continue;
             };
-            let ty = signature.results[index];
+            let ty = results[index];
             let loans = if self.package.contains_view(ty) {
                 let kind = self.loan_kind_for(ty);
                 self.origin_loans(
@@ -997,10 +1058,15 @@ impl<'a> Analysis<'a> {
             stores.push((destination, loans));
         }
         let mut outputs = Vec::new();
-        for (arg, &(mode, ty)) in args.iter().zip(&signature.params) {
+        for (arg, &(mode, ty)) in args.iter().zip(params) {
+            let through_mut_view = matches!(
+                self.package.types.kind(ty),
+                TypeKind::InterfaceView { mutable: true, .. }
+            );
             if let Operand::Ref(target) | Operand::Copy(target) | Operand::Move(target) = arg
                 && (mode == ParamMode::Mut && self.package.contains_view(ty)
-                    || self.stores_through_views(ty))
+                    || self.stores_through_views(ty)
+                    || through_mut_view)
             {
                 let kind = self.loan_kind_for(ty);
                 let loans = self.origin_loans(
@@ -1120,7 +1186,8 @@ impl<'a> Analysis<'a> {
                 .collect::<Vec<_>>()
         };
         match self.package.types.kind(ty) {
-            TypeKind::Slice { mutable: true, .. } => vec![Vec::new()],
+            TypeKind::Slice { mutable: true, .. }
+            | TypeKind::InterfaceView { mutable: true, .. } => vec![Vec::new()],
             TypeKind::Struct(id) => self
                 .package
                 .strukt(id)
@@ -1156,6 +1223,32 @@ impl<'a> Analysis<'a> {
                 for operand in operands {
                     loans.extend(self.operand_loans(operand, site, state));
                 }
+                loans
+            }
+            Rvalue::InterfaceBox(operand) => self.operand_loans(operand, site, state),
+            Rvalue::InterfaceView { place, mutable } => {
+                let base_is_view = matches!(
+                    self.package.types.kind(self.place_ty(place)),
+                    TypeKind::Slice { .. } | TypeKind::InterfaceView { .. }
+                );
+                let path = Path::of(self.package, self.body, place);
+                let path = if base_is_view { path.deref() } else { path };
+                let inherited = self.inherited_loans(place, &path, state);
+                let loan = Loan {
+                    kind: if *mutable {
+                        LoanKind::Exclusive
+                    } else {
+                        LoanKind::Shared
+                    },
+                    target: LoanTarget::Place(path),
+                    span: site.span,
+                    name: self.describe(place),
+                    from_slicing: false,
+                    captured: false,
+                    binding: false,
+                };
+                let mut loans = BTreeSet::from([self.intern(site.next_key(), loan)]);
+                loans.extend(inherited);
                 loans
             }
             Rvalue::Slice { place, mutable, .. } => {
@@ -1283,7 +1376,17 @@ impl<'a> Analysis<'a> {
             | Rvalue::Spawn(operand)
             | Rvalue::Unary(_, operand)
             | Rvalue::Convert(operand, _)
-            | Rvalue::Error(operand) => self.operand_accesses(operand, None, span, out),
+            | Rvalue::Error(operand)
+            | Rvalue::InterfaceBox(operand) => self.operand_accesses(operand, None, span, out),
+            Rvalue::InterfaceView { place, mutable } => {
+                self.index_accesses(place, span, out);
+                let (kind, action) = if *mutable {
+                    (AccessKind::Write, Action::MutBorrow)
+                } else {
+                    (AccessKind::Read, Action::Borrow)
+                };
+                out.push(self.access(place, kind, Depth::Deep, action, span, false));
+            }
             Rvalue::Binary(_, left, right) | Rvalue::BoundsCheck(left, right) => {
                 self.operand_accesses(left, None, span, out);
                 self.operand_accesses(right, None, span, out);
@@ -1810,7 +1913,9 @@ impl Liveness {
             | Rvalue::Spawn(operand)
             | Rvalue::Unary(_, operand)
             | Rvalue::Convert(operand, _)
-            | Rvalue::Error(operand) => Self::use_operand(operand, live),
+            | Rvalue::Error(operand)
+            | Rvalue::InterfaceBox(operand) => Self::use_operand(operand, live),
+            Rvalue::InterfaceView { place, .. } => Self::use_place(place, live),
             Rvalue::Binary(_, left, right) | Rvalue::BoundsCheck(left, right) => {
                 Self::use_operand(left, live);
                 Self::use_operand(right, live);

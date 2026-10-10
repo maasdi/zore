@@ -1,5 +1,6 @@
 mod closure_kind;
 mod globals;
+mod interface;
 mod method_value;
 mod spawn;
 
@@ -14,7 +15,7 @@ use crate::resolve::{ConstId, FieldId, FunctionId, LocalId, LocalKind, Res, Reso
 use crate::source::{Sources, Span};
 use crate::types::bignum::BigInt;
 use crate::types::constant::{self, ConstError, Folded, Unrepresentable, Untyped};
-use crate::types::{FuncSignature, IntType, StructId, TypeId, TypeKind, TypeStore};
+use crate::types::{FuncSignature, IntType, InterfaceId, StructId, TypeId, TypeKind, TypeStore};
 
 /// HIR is returned only when there are no diagnostics.
 pub fn check(
@@ -47,6 +48,7 @@ pub fn check(
         resolving_fields: false,
         global_types: Vec::new(),
         inferring_result: false,
+        implementations: HashMap::new(),
     };
     checker.closures = checker.res.closures.iter().map(|_| None).collect();
     checker.signatures_and_fields();
@@ -142,6 +144,7 @@ pub fn check(
         entry,
         globals,
         init: None,
+        implementations: std::mem::take(&mut checker.implementations),
     };
     let diagnostics = globals::check(&mut package, &initializers);
     if !diagnostics.is_empty() {
@@ -206,6 +209,8 @@ struct Checker<'a> {
     global_types: Vec<Option<TypeId>>,
     /// The `return` of an initializer without a declared type sets its type.
     inferring_result: bool,
+    /// The methods serving each interface for each type converted to it.
+    implementations: HashMap<(TypeId, InterfaceId), Vec<hir::Implementation>>,
 }
 
 struct BodyState {
@@ -315,7 +320,7 @@ impl<'a> Checker<'a> {
                 match self.res.uses.get(&name.span)? {
                     Res::Primitive(ty) => Some(*ty),
                     Res::Struct(id) => Some(self.types.struct_type(*id)),
-                    Res::Named(ty) => Some(*ty),
+                    Res::Named(ty) | Res::Interface(ty) => Some(*ty),
                     _ => None,
                 }
             }
@@ -421,7 +426,10 @@ impl<'a> Checker<'a> {
     /// A guarded value outlives every lock holder, so it cannot borrow anything.
     fn mutex_type(&mut self, element: TypeId, span: Span) -> Option<TypeId> {
         if self.type_contains(element, &|kind| {
-            matches!(kind, TypeKind::Slice { .. } | TypeKind::Func(_))
+            matches!(
+                kind,
+                TypeKind::Slice { .. } | TypeKind::Func(_) | TypeKind::InterfaceView { .. }
+            )
         }) {
             self.diagnostics.push(
                 Diagnostic::new(
@@ -439,7 +447,10 @@ impl<'a> Checker<'a> {
     /// A queued message outlives its sender, so it cannot borrow anything.
     fn channel_type(&mut self, element: TypeId, span: Span) -> Option<TypeId> {
         if self.type_contains(element, &|kind| {
-            matches!(kind, TypeKind::Slice { .. } | TypeKind::Func(_))
+            matches!(
+                kind,
+                TypeKind::Slice { .. } | TypeKind::Func(_) | TypeKind::InterfaceView { .. }
+            )
         }) {
             self.diagnostics.push(
                 Diagnostic::new(
@@ -468,7 +479,10 @@ impl<'a> Checker<'a> {
         }
         if results.iter().any(|&ty| {
             self.type_contains(ty, &|kind| {
-                matches!(kind, TypeKind::Slice { .. } | TypeKind::Func(_))
+                matches!(
+                    kind,
+                    TypeKind::Slice { .. } | TypeKind::Func(_) | TypeKind::InterfaceView { .. }
+                )
             })
         }) {
             self.diagnostics.push(
@@ -596,7 +610,8 @@ impl<'a> Checker<'a> {
                 TypeKind::DynArray { .. }
                 | TypeKind::Map { .. }
                 | TypeKind::Func(_)
-                | TypeKind::Task(_) => return false,
+                | TypeKind::Task(_)
+                | TypeKind::Interface(_) => return false,
                 _ => {}
             }
         }
@@ -678,6 +693,7 @@ impl<'a> Checker<'a> {
             })
             .collect();
         self.resolving_fields = false;
+        self.interface_entries();
         for (index, decl) in structs.iter().enumerate() {
             for (field_index, field) in decl.fields.iter().enumerate() {
                 if self.fields[index][field_index].1.is_some() {
@@ -717,6 +733,13 @@ impl<'a> Checker<'a> {
         span: Span,
     ) -> Option<TypeId> {
         let ty = self.resolve_type(ty)?;
+        if let TypeKind::Interface(interface) = self.types.kind(ty) {
+            return Some(match mode {
+                ast::ParamMode::Borrow => self.types.interface_view(interface, false),
+                ast::ParamMode::Mut => self.types.interface_view(interface, true),
+                ast::ParamMode::Own => ty,
+            });
+        }
         if self.is_func(ty) && mode == ast::ParamMode::Mut {
             self.diagnostics.push(
                 Diagnostic::new(
@@ -1188,6 +1211,10 @@ impl<'a> Checker<'a> {
                 if expr.ty() == target {
                     return Some(expr);
                 }
+                let expr = match self.interface_conversion(expr, target) {
+                    Ok(converted) => return converted,
+                    Err(expr) => expr,
+                };
                 self.mismatch(target, expr.ty(), expr.span);
                 return None;
             }
@@ -1518,7 +1545,11 @@ impl<'a> Checker<'a> {
             }
         };
         let signature = self.types.func_signature(callback.ty()).cloned();
-        let Some(signature) = signature.filter(|s| s.params == [(ast::ParamMode::Mut, element)])
+        let guarded = match self.types.kind(element) {
+            TypeKind::Interface(interface) => self.types.interface_view(interface, true),
+            _ => element,
+        };
+        let Some(signature) = signature.filter(|s| s.params == [(ast::ParamMode::Mut, guarded)])
         else {
             let message = format!(
                 "`withLock` needs a function that takes `mut {}`, not `{}`",
@@ -1530,7 +1561,10 @@ impl<'a> Checker<'a> {
         };
         if signature.results.iter().any(|&ty| {
             self.type_contains(ty, &|kind| {
-                matches!(kind, TypeKind::Slice { .. } | TypeKind::Func(_))
+                matches!(
+                    kind,
+                    TypeKind::Slice { .. } | TypeKind::Func(_) | TypeKind::InterfaceView { .. }
+                )
             })
         }) {
             self.diagnostics.push(
@@ -1812,7 +1846,7 @@ impl<'a> Checker<'a> {
                 };
                 Some(Value::Typed(typed(ExprKind::Global(id), ty, span)))
             }
-            Res::Struct(_) | Res::Primitive(_) | Res::Named(_) => {
+            Res::Struct(_) | Res::Primitive(_) | Res::Named(_) | Res::Interface(_) => {
                 self.error(format!("`{name}` is a type, not a value"), span);
                 None
             }
@@ -2283,6 +2317,18 @@ impl<'a> Checker<'a> {
                 self.report_arg_errors(args);
                 None
             }
+            Some(Res::Interface(_)) => {
+                self.diagnostics.push(
+                    Diagnostic::new(
+                        Severity::Error,
+                        format!("interface `{name}` cannot be called"),
+                        callee.span,
+                    )
+                    .note("a value converts to an interface type implicitly where that type is expected"),
+                );
+                self.report_arg_errors(args);
+                None
+            }
             Some(Res::Local(id))
                 if self.locals[id.0 as usize].is_some_and(|ty| self.is_func(ty)) =>
             {
@@ -2489,6 +2535,9 @@ impl<'a> Checker<'a> {
             && matches!(name.text.as_str(), "push" | "pop")
         {
             return self.array_push_or_pop(receiver, element, &name.text, args, span);
+        }
+        if self.types.interface_of(ty).is_some() {
+            return self.interface_call(receiver, name, args, span);
         }
         let strukt = self.types.struct_id(ty);
         let method = self.res.methods.get(&(ty, name.text.clone())).copied();
@@ -2866,6 +2915,32 @@ impl<'a> Checker<'a> {
                 mutable: true,
                 ..
             } => out.extend(argument_place(base)),
+            ExprKind::InterfaceView {
+                source,
+                mutable: true,
+            } => out.extend(argument_place(source)),
+            ExprKind::InterfaceCall {
+                receiver,
+                method,
+                args,
+            } => {
+                if let Some(entry) = self
+                    .types
+                    .interface_of(receiver.ty())
+                    .and_then(|id| self.types.interface_methods(id).get(*method))
+                {
+                    if entry.receiver != ast::ParamMode::Borrow {
+                        out.extend(argument_place(receiver));
+                    }
+                    for (arg, &(mode, ty)) in args.iter().zip(&entry.params) {
+                        if self.argument_access(mode, ty).exclusive
+                            && let Some(place) = argument_place(arg)
+                        {
+                            out.push(place);
+                        }
+                    }
+                }
+            }
             ExprKind::MapRemove { map, .. }
             | ExprKind::ArrayPush { array: map, .. }
             | ExprKind::ArrayPop(map) => out.extend(argument_place(map)),
@@ -2960,6 +3035,7 @@ impl<'a> Checker<'a> {
                 _ => self.mutable_place(base, usage),
             },
             ExprKind::Field { base, .. } => self.mutable_place(base, usage),
+            ExprKind::InterfaceView { source, .. } => self.mutable_place(source, usage),
             ExprKind::Slice { mutable: true, .. } if usage == MutableUse::Argument => true,
             _ => {
                 let message = match usage {
@@ -3509,6 +3585,15 @@ impl<'a> Checker<'a> {
         };
         if let Some(&method) = self.res.methods.get(&(base.ty(), name.text.clone())) {
             return self.method_value(base, method, name, span);
+        }
+        if let Some(interface) = self.types.interface_of(base.ty())
+            && self
+                .types
+                .interface_methods(interface)
+                .iter()
+                .any(|entry| entry.name == name.text)
+        {
+            return self.interface_method_value(name);
         }
         let (field, ty) = self.field_of(base.ty(), name)?;
         Some(Value::Typed(typed(
@@ -4798,6 +4883,12 @@ fn subexpressions(expr: &hir::Expr) -> Vec<&hir::Expr> {
         ExprKind::CallValue { callee, args, .. } => {
             std::iter::once(&**callee).chain(args).collect()
         }
+        ExprKind::InterfaceCall { receiver, args, .. } => {
+            std::iter::once(&**receiver).chain(args).collect()
+        }
+        ExprKind::InterfaceView { source: inner, .. } | ExprKind::InterfaceBox(inner) => {
+            vec![inner]
+        }
         ExprKind::StructLit { fields, .. } => fields.iter().map(|(_, value)| value).collect(),
         ExprKind::ArrayLit { elements, .. } => elements.iter().collect(),
         ExprKind::MapLit { entries, .. } => entries
@@ -4838,6 +4929,7 @@ type ArgumentPlace = (LocalId, Vec<ArgumentProjection>);
 fn argument_place(expr: &hir::Expr) -> Option<ArgumentPlace> {
     match &expr.kind {
         ExprKind::Local(id) => Some((*id, Vec::new())),
+        ExprKind::InterfaceView { source, .. } => argument_place(source),
         ExprKind::Field { base, field } => {
             let (root, mut path) = argument_place(base)?;
             path.push(ArgumentProjection::Field(*field));

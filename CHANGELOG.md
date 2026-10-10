@@ -22,6 +22,10 @@ once it does.
 - Locked package-level `let`: immutable Copy values computed once before
   `main`, in dependency and source order, with use of later values rejected
   (§3.21, Q41).
+- Locked interfaces: `type Reader interface { ... }` lists methods a type
+  satisfies by having them; shared and `mut` interface parameters borrow their
+  argument, and other interface values own the value inside (§22.2, Q42).
+  `interface` is now a keyword.
 - Locked untyped constants following Go's model: integer and float kinds,
   exact arithmetic, representability rules, and at least 256-bit precision
   (§6.7).

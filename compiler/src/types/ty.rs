@@ -1,4 +1,4 @@
-use super::type_id::{FuncTypeId, StructId, TaskTypeId, TypeId};
+use super::type_id::{FuncTypeId, InterfaceId, StructId, TaskTypeId, TypeId};
 use crate::ast::ParamMode;
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -93,10 +93,27 @@ pub enum TypeKind {
     Mutex {
         element: TypeId,
     },
+    /// Owns the value inside; always Move.
+    Interface(InterfaceId),
+    /// A borrowed interface parameter: a view of the argument, like a slice.
+    InterfaceView {
+        interface: InterfaceId,
+        mutable: bool,
+    },
 }
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct FuncSignature {
+    pub is_async: bool,
+    pub params: Vec<(ParamMode, TypeId)>,
+    pub results: Vec<TypeId>,
+}
+
+/// One entry of an interface: a method a satisfying type must have.
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+pub struct InterfaceMethod {
+    pub name: String,
+    pub receiver: ParamMode,
     pub is_async: bool,
     pub params: Vec<(ParamMode, TypeId)>,
     pub results: Vec<TypeId>,

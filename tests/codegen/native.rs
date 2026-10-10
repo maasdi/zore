@@ -8379,3 +8379,209 @@ func main() {
     assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
     assert_eq!(stdout(&output), "init config\ninit main\nmain/config\n4\n");
 }
+
+#[test]
+fn interface_calls_reach_the_value_inside_through_borrows_and_ownership() {
+    let source = "package main
+
+type Counter interface {
+    Count() int
+    mut Add(n int)
+}
+
+type Tally struct {
+    total int
+}
+
+func (t Tally) Count() int {
+    return t.total
+}
+
+func (t mut Tally) Add(n int) {
+    t.total += n
+}
+
+func show(c Counter) {
+    println(c.Count())
+}
+
+func bump(c mut Counter) {
+    c.Add(5)
+    show(c)
+}
+
+func main() {
+    var t = Tally{total: 1}
+    show(t)
+    bump(t)
+    println(t.total)
+    var owned Counter = Tally{total: 10}
+    owned.Add(1)
+    println(owned.Count())
+    show(owned)
+    bump(owned)
+}
+";
+    prints(source, "1\n6\n6\n11\n11\n16\n");
+}
+
+#[test]
+fn owned_interface_values_destroy_the_value_inside_exactly_once() {
+    let source = "package main
+
+type Named interface {
+    Name() string
+}
+
+type Closer interface {
+    Name() string
+    own Close() string
+}
+
+type File struct {
+    name string
+}
+
+func (f mut File) drop() {
+    println(\"drop \" + f.name)
+}
+
+func (f File) Name() string {
+    return f.name
+}
+
+func (f own File) Close() string {
+    return \"closed \" + f.name
+}
+
+type Label string
+
+func (l Label) Name() string {
+    return string(l)
+}
+
+type Holder struct {
+    item Named
+}
+
+func greet(n Named) {
+    println(\"hello \" + n.Name())
+}
+
+func finish(c own Closer) {
+    println(c.Close())
+}
+
+func pass(c Closer) {
+    greet(c)
+}
+
+func main() {
+    let a = File{name: \"a\"}
+    greet(a)
+    let named Named = a
+    greet(named)
+    let b Closer = File{name: \"b\"}
+    pass(b)
+    finish(b)
+    let h = Holder{item: Label(\"tag\")}
+    greet(h.item)
+    var items = Array<Named>{}
+    items.push(File{name: \"c\"})
+    items.push(Label(\"d\"))
+    for item in items {
+        greet(item)
+    }
+    let c Closer = File{name: \"e\"}
+    let asNamed Named = c
+    greet(asNamed)
+    println(\"end\")
+}
+";
+    prints(
+        source,
+        "hello a\nhello a\nhello b\ndrop b\nclosed b\nhello tag\nhello c\nhello d\nhello e\nend\ndrop e\ndrop c\ndrop a\n",
+    );
+}
+
+#[test]
+fn interface_values_move_through_tasks_channels_mutexes_maps_and_closures() {
+    let source = "package main
+
+type Adder interface {
+    mut Add(n int) int
+}
+
+type T struct {
+    n int
+    label string
+}
+
+func (t mut T) Add(n int) int {
+    t.n += n
+    return t.n
+}
+
+func work(a own Adder) int {
+    var held = a
+    return held.Add(10)
+}
+
+func main() {
+    let task = go work(T{n: 1, label: \"task\"})
+    println(task.wait())
+    let ch = channel<Adder>(2)
+    ch.send(T{n: 5, label: \"sent\"})
+    var got, ok = ch.receive()
+    println(ok)
+    println(got.Add(1))
+    let m = mutex(got)
+    let total = m.withLock(func(a mut Adder) int {
+        return a.Add(2)
+    })
+    println(total)
+    var byKey = map[string]Adder{}
+    byKey[\"k\"] = T{n: 20, label: \"mapped\"}
+    let found, value = byKey.remove(\"k\")
+    var taken = value
+    println(found)
+    let add = func() int {
+        return taken.Add(1)
+    }
+    println(add())
+}
+";
+    prints(source, "11\ntrue\n6\n8\ntrue\n21\n");
+}
+
+#[test]
+fn a_call_through_an_empty_interface_value_panics() {
+    let source = "package main
+
+type Adder interface {
+    mut Add(n int) int
+}
+
+type T struct {
+    n int
+}
+
+func (t mut T) Add(n int) int {
+    t.n += n
+    return t.n
+}
+
+func main() {
+    let ch = channel<Adder>(1)
+    ch.close()
+    var empty, ok = ch.receive()
+    println(ok)
+    println(empty.Add(1))
+}
+";
+    panics(
+        source,
+        "method call on an empty interface value at test.ore:21:13",
+        "false\n",
+    );
+}

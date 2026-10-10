@@ -68,6 +68,19 @@ pub enum ExprKind {
     },
     /// Reads a copy of a package-level `let`.
     Global(GlobalId),
+    /// Borrows the source for a shared or `mut` interface parameter; the type is the view.
+    InterfaceView {
+        source: Box<Expr>,
+        mutable: bool,
+    },
+    /// Moves or copies the source into storage the interface value owns.
+    InterfaceBox(Box<Expr>),
+    /// Calls the method serving entry `method` of the receiver's interface.
+    InterfaceCall {
+        receiver: Box<Expr>,
+        method: usize,
+        args: Vec<Expr>,
+    },
     /// The callee is evaluated first and used exclusively; a call-once callee is consumed.
     CallValue {
         callee: Box<Expr>,

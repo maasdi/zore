@@ -208,8 +208,13 @@ fn check_rvalue(
         | Rvalue::Spawn(operand)
         | Rvalue::Unary(_, operand)
         | Rvalue::Convert(operand, _)
-        | Rvalue::Error(operand) => {
+        | Rvalue::Error(operand)
+        | Rvalue::InterfaceBox(operand) => {
             check_operand(package, body, operand, span, state, diagnostics);
+        }
+        Rvalue::InterfaceView { place, .. } => {
+            let base = Operand::Ref(place.clone());
+            check_operand(package, body, &base, span, state, diagnostics);
         }
         Rvalue::Binary(_, left, right) | Rvalue::BoundsCheck(left, right) => {
             check_operand(package, body, left, span, state, diagnostics);

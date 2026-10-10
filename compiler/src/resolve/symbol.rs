@@ -13,6 +13,7 @@ pub enum Res {
     Global(GlobalId),
     /// A declared type built on a predeclared type (`type Duration int`).
     Named(TypeId),
+    Interface(TypeId),
     Primitive(TypeId),
     /// An import's name; valid only as the qualifier of `package.Name`.
     Package(usize),

@@ -541,7 +541,10 @@ fn ones(set: &[u64]) -> impl Iterator<Item = usize> + '_ {
 
 fn stable_rvalue(rvalue: &Rvalue, stable: &mut [bool]) {
     match rvalue {
-        Rvalue::Ref(place) | Rvalue::Slice { place, .. } | Rvalue::MapValueRef(place, _) => {
+        Rvalue::Ref(place)
+        | Rvalue::Slice { place, .. }
+        | Rvalue::MapValueRef(place, _)
+        | Rvalue::InterfaceView { place, .. } => {
             visit_place(place, &mut |local| stable[local] = true);
         }
         Rvalue::Closure { captures, .. } => {
@@ -580,7 +583,9 @@ fn visit_rvalue(rvalue: &Rvalue, visit: &mut impl FnMut(usize)) {
         | Rvalue::Unary(_, value)
         | Rvalue::Convert(value, _)
         | Rvalue::Error(value)
-        | Rvalue::Spawn(value) => visit_operand(value, visit),
+        | Rvalue::Spawn(value)
+        | Rvalue::InterfaceBox(value) => visit_operand(value, visit),
+        Rvalue::InterfaceView { place, .. } => visit_place(place, visit),
         Rvalue::Binary(_, left, right)
         | Rvalue::BoundsCheck(left, right)
         | Rvalue::StringChar(left, right)

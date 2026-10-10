@@ -141,10 +141,19 @@ impl FunctionBuilder<'_, '_> {
         let (run, done) = (self.label(), self.label());
         self.line(format!("br i1 {acquired}, label %{run}, label %{done}"));
         self.out.push_str(&format!("{run}:\n"));
-        let mut rendered = vec![format!("ptr {environment}"), format!("ptr {value}")];
-        if package.needs_drop(element) {
-            let flags = self.scratch_flags(element);
-            rendered.push(format!("ptr {flags}"));
+        let mut rendered = vec![format!("ptr {environment}")];
+        if let crate::types::TypeKind::Interface(_) = package.types.kind(element) {
+            // A borrowed interface value has the same parts as the owned one.
+            let ty = self.ty(element);
+            let parts = self.fresh();
+            self.line(format!("{parts} = load {ty}, ptr {value}"));
+            rendered.push(format!("{ty} {parts}"));
+        } else {
+            rendered.push(format!("ptr {value}"));
+            if package.needs_drop(element) {
+                let flags = self.scratch_flags(element);
+                rendered.push(format!("ptr {flags}"));
+            }
         }
         let call = format!("{code}({})", rendered.join(", "));
         match &slot {

@@ -36,4 +36,4 @@ These proposals were not accepted and changed nothing. They are kept for their r
 
 These proposals await a decision and change nothing yet.
 
-- [Interfaces and generics](proposals/interfaces-and-generics.md) (Q42; issue #88)
+- [Interfaces and generics](proposals/interfaces-and-generics.md) (Q42; issue #88). The interface part is accepted and in spec §22.2; generics are still open.

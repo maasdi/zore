@@ -154,7 +154,10 @@ fn read_rvalue(rvalue: &Rvalue, state: &mut [UseState]) {
         | Rvalue::Spawn(value)
         | Rvalue::Unary(_, value)
         | Rvalue::Convert(value, _)
-        | Rvalue::Error(value) => read_operand(value, state),
+        | Rvalue::Error(value)
+        | Rvalue::InterfaceBox(value) => read_operand(value, state),
+        // A method reached through the view may read the value.
+        Rvalue::InterfaceView { place, .. } => read_operand(&Operand::Copy(place.clone()), state),
         Rvalue::Binary(_, left, right) | Rvalue::BoundsCheck(left, right) => {
             read_operand(left, state);
             read_operand(right, state);

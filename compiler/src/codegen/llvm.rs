@@ -75,6 +75,7 @@ pub fn emit(
         frame_types: String::new(),
         drop_helpers: HashMap::new(),
         clone_helpers: HashMap::new(),
+        vtables: HashMap::new(),
         type_helper_code: String::new(),
     };
     for (index, global) in package.globals.iter().enumerate() {
@@ -118,6 +119,8 @@ pub fn emit(
 
 pub(super) struct Module<'a> {
     drop_helpers: HashMap<TypeId, usize>,
+    /// Method tables already emitted, by source type and interface.
+    pub(super) vtables: HashMap<(TypeId, crate::types::InterfaceId), usize>,
     pub(super) clone_helpers: HashMap<TypeId, usize>,
     pub(super) type_helper_code: String,
     pub(super) machines: &'a crate::async_lowering::Plan,
@@ -1325,6 +1328,8 @@ impl FunctionBuilder<'_, '_> {
                 owning,
             } => self.closure_value(*function, captures, *owning),
             Rvalue::Spawn(closure) => self.spawn(closure),
+            Rvalue::InterfaceView { place, .. } => self.interface_view(place, result_ty),
+            Rvalue::InterfaceBox(operand) => self.interface_box(operand, result_ty),
             Rvalue::Aggregate(_, operands) => {
                 let ty = self.ty(result_ty);
                 let mut current = "undef".to_string();
@@ -1624,6 +1629,7 @@ impl FunctionBuilder<'_, '_> {
             TypeKind::DynArray { element } => self.drop_dyn_array(address, element),
             TypeKind::Map { value, .. } => self.drop_map(address, value),
             TypeKind::Func(_) => self.drop_closure(address),
+            TypeKind::Interface(_) => self.drop_interface(address),
             TypeKind::Task(_) => {
                 let handle = self.fresh();
                 self.line(format!("{handle} = load ptr, ptr {address}"));
@@ -1821,6 +1827,9 @@ impl FunctionBuilder<'_, '_> {
             TypeKind::Task(_) => unreachable!("tasks have no operators"),
             TypeKind::Channel { .. } => unreachable!("channels have no operators"),
             TypeKind::Mutex { .. } => unreachable!("mutexes have no operators"),
+            TypeKind::Interface(_) | TypeKind::InterfaceView { .. } => {
+                unreachable!("interface values have no operators")
+            }
         }
     }
 
@@ -2145,6 +2154,7 @@ impl FunctionBuilder<'_, '_> {
                 let result = match callee {
                     Callee::Function(id) => self.call(*id, args),
                     Callee::Value(place) => self.call_value(place, args),
+                    Callee::Interface { method } => self.interface_call(*method, args, *span),
                     Callee::Clone(ty) => Some(self.clone_call(*ty, args)),
                     Callee::Println => {
                         self.println(&args[0], *span);

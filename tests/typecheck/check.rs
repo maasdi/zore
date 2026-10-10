@@ -4271,3 +4271,310 @@ func use() int {
         rejects(&program(decls), message);
     }
 }
+
+const INTERFACES: &str = "type Counter interface {
+    Count() int
+    mut Add(n int)
+}
+
+type Closer interface {
+    Count() int
+    own Close() int
+}
+
+type Tally struct { n int }
+
+func (t Tally) Count() int { return t.n }
+func (t mut Tally) Add(n int) { t.n += n }
+func (t own Tally) Close() int { return t.n }
+
+func show(c Counter) int { return c.Count() }
+func bump(c mut Counter) { c.Add(1) }
+func finish(c own Closer) int { return c.Close() }
+";
+
+fn with_interfaces(decls: &str) -> String {
+    program(&format!("{INTERFACES}\n{decls}"))
+}
+
+#[test]
+fn interfaces_are_satisfied_by_the_methods_a_type_has() {
+    accepts(&with_interfaces(
+        "func use() {
+    var t = Tally{n: 1}
+    let n = show(t)
+    bump(t)
+    let owned Counter = Tally{n: 2}
+    let m = show(owned)
+    var other Counter = t
+    other.Add(n + m)
+    bump(other)
+    let closer Closer = Tally{n: 3}
+    let k = finish(closer)
+    let viaCloser Closer = Tally{n: 4}
+    let named Counter2 = viaCloser
+    let total = named.Count() + k
+    _ = total
+}
+
+type Counter2 interface { Count() int }
+
+type Label string
+
+func (l Label) Count() int { return l.len() }
+
+func shared(c Counter2) int { return c.Count() }
+
+func label() int {
+    let l = Label(\"abc\")
+    return shared(l)
+}",
+    ));
+}
+
+#[test]
+fn interface_receiver_modes_follow_the_access_each_entry_gives() {
+    accepts(&program(
+        "type Reader interface { mut Read() int }
+type Taker interface { own Take() int }
+type R struct { n int }
+func (r R) Read() int { return r.n }
+func (r R) Take() int { return r.n }
+func use() {
+    let a Reader = R{n: 1}
+    let b Taker = R{n: 2}
+    _ = a
+    _ = b
+}",
+    ));
+    for (decls, message) in [
+        (
+            "type Reader interface { Read() int }
+type R struct { n int }
+func (r mut R) Read() int { return r.n }
+func use() { let a Reader = R{n: 1} }",
+            "`R` does not satisfy `Reader`: method `Read` has a `mut` receiver, but the interface calls it with a shared receiver",
+        ),
+        (
+            "type Reader interface { mut Read() int }
+type R struct { n int }
+func (r own R) Read() int { return r.n }
+func use() { let a Reader = R{n: 1} }",
+            "method `Read` has an `own` receiver, but the interface calls it with a `mut` receiver",
+        ),
+        (
+            "type Reader interface { Read(n int) int }
+type R struct { n int }
+func (r R) Read(n string) int { return r.n }
+func use() { let a Reader = R{n: 1} }",
+            "`R` does not satisfy `Reader`: method `Read` has a different signature",
+        ),
+        (
+            "type Reader interface { Read() int }
+type R struct { n int }
+func use() { let a Reader = R{n: 1} }",
+            "`R` does not satisfy `Reader`: it has no method `Read`",
+        ),
+        (
+            "type Reader interface { Read() int }
+func use() { let a Reader = 1 }",
+            "mismatched types: expected `Reader`, found an integer constant",
+        ),
+        (
+            "type Reader interface { Read() int }
+type Wider interface { Read() int\n Close() }
+func use(r own Reader) { let w Wider = r }",
+            "`Reader` does not satisfy `Wider`: it has no method `Close`",
+        ),
+    ] {
+        rejects(&program(decls), message);
+    }
+}
+
+#[test]
+fn borrowed_and_owned_interface_values_keep_their_access() {
+    for (decls, message) in [
+        (
+            "func f(c Counter) { c.Add(1) }",
+            "`Add` needs mutable access, but this borrowed interface value is shared",
+        ),
+        (
+            "func f(c Closer) int { return c.Close() }",
+            "`Close` consumes its receiver, but a borrowed interface value does not own the value inside",
+        ),
+        (
+            "func f(c Counter) Counter { return c }",
+            "a borrowed interface value cannot become an owned `Counter`",
+        ),
+        (
+            "func f(c Counter) { bump(c) }",
+            "a shared borrowed interface value cannot be passed as `mut`",
+        ),
+        (
+            "func f() { let c Counter = Tally{n: 1}\n c.Add(2) }",
+            "cannot pass immutable binding `c` as a `mut` argument",
+        ),
+        (
+            "func f() { let t = Tally{n: 1}\n bump(t) }",
+            "cannot pass immutable binding `t` as a `mut` argument",
+        ),
+        (
+            "func f() { let c Closer = Tally{n: 1}\n let a = c.Close()\n let b = c.Count() }",
+            "use of moved value `c`",
+        ),
+        (
+            "type Items struct { values []int }
+func (i Items) Count() int { return 0 }
+func (i mut Items) Add(n int) {}
+func f(values []int) { let c Counter = Items{values: values} }",
+            "`Items` holds a view, so it cannot become an owned `Counter`",
+        ),
+    ] {
+        rejects(&with_interfaces(decls), message);
+    }
+}
+
+#[test]
+fn interface_values_are_not_compared_printed_cloned_or_called_as_values() {
+    for (decls, message) in [
+        (
+            "func f(a own Counter, b own Counter) bool { return a == b }",
+            "operator `==` cannot be applied to `Counter`",
+        ),
+        (
+            "func f(a own Counter) { println(a) }",
+            "`println` cannot print values of type `Counter`",
+        ),
+        (
+            "func f(a own Counter) { let b = clone(a) }",
+            "cannot clone a value of type `Counter`",
+        ),
+        (
+            "func f() { let c Counter = nil }",
+            "`nil` needs an `error` or `Task<...>` context",
+        ),
+        (
+            "func f(m map[Counter]int) {}",
+            "type `Counter` cannot be a map key",
+        ),
+        (
+            "func f(c own Counter) { let read = c.Count }",
+            "method `Count` of an interface value cannot be used as a value",
+        ),
+        (
+            "func f() { let c = Counter(Tally{n: 1}) }",
+            "interface `Counter` cannot be called",
+        ),
+        (
+            "func f(c own Counter) { c.Missing() }",
+            "interface `Counter` has no method `Missing`",
+        ),
+        (
+            "async func f(c own Counter) int { return c.Count() }",
+            "a call through an interface value inside an `async func` is not supported by the checker yet",
+        ),
+        (
+            "func f(c Counter) Task<int> { return go show(c) }",
+            "a spawned call cannot take a view",
+        ),
+    ] {
+        rejects(&with_interfaces(decls), message);
+    }
+}
+
+#[test]
+fn interface_declarations_list_methods_only() {
+    for (decls, message) in [
+        (
+            "type Empty interface {}",
+            "interface `Empty` declares no methods",
+        ),
+        (
+            "type Twice interface { Read() int\n Read() int }",
+            "duplicate method `Read`",
+        ),
+        (
+            "type Bad interface { drop() }",
+            "`drop` cannot be an interface method",
+        ),
+        (
+            "type Reader interface { Read() int }\nfunc (r Reader) Other() {}",
+            "methods cannot be declared on interface type `Reader`",
+        ),
+        (
+            "type Later interface { async Fetch() int }",
+            "an `async` interface method is not supported by the checker yet",
+        ),
+        (
+            "type Reader interface { Read() int }\ntype Named Reader",
+            "a named type must be built on `bool`, a number type, `rune`, or `string`, not `Reader`",
+        ),
+        (
+            "func f() { let interface = 1 }",
+            "`interface` is a keyword and cannot be used as a binding name",
+        ),
+    ] {
+        rejects(&program(decls), message);
+    }
+}
+
+#[test]
+fn views_reached_through_interfaces_keep_their_storage_borrowed() {
+    let decls = "type Viewer interface {
+    View() []int
+    mut Push(n int)
+}
+
+type Store struct { items Array<int> }
+
+func (s Store) View() []int { return s.items[:] }
+func (s mut Store) Push(n int) { s.items.push(n) }
+";
+    let valid = "func first(v Viewer) []int { return v.View() }
+func use() {
+    var s = Store{items: Array<int>{1}}
+    let owned Viewer = s
+    let seen = owned.View()
+    println(seen[0])
+}";
+    accepts(&program(&format!("{decls}\n{valid}")));
+    for (body, message) in [
+        (
+            "func peek(v mut Viewer) {
+    let seen = v.View()
+    v.Push(1)
+    println(seen[0])
+}",
+            "cannot borrow `v` as mutable because it is already borrowed",
+        ),
+        (
+            "func use() {
+    var owned Viewer = Store{items: Array<int>{1}}
+    let seen = owned.View()
+    owned.Push(2)
+    println(seen[0])
+}",
+            "cannot borrow `owned` as mutable because it is already borrowed",
+        ),
+        (
+            "func keep(v mut Viewer) {}
+func use() {
+    var s = Store{items: Array<int>{1}}
+    let f = func() { keep(s) }
+    s.Push(3)
+    f()
+}",
+            "cannot borrow `s` as mutable because it is already borrowed",
+        ),
+        (
+            "func twice(a mut Viewer, b mut Viewer) {}
+func use() {
+    var s = Store{items: Array<int>{1}}
+    twice(s, s)
+}",
+            "`s` is also borrowed by another argument of this call",
+        ),
+    ] {
+        rejects(&program(&format!("{decls}\n{body}")), message);
+    }
+}

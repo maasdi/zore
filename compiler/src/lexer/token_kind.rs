@@ -100,6 +100,7 @@ words!(Keyword {
     Func = "func",
     Type = "type",
     Struct = "struct",
+    Interface = "interface",
     Let = "let",
     Var = "var",
     Const = "const",
@@ -133,7 +134,6 @@ impl Keyword {
 }
 
 words!(ReservedWord {
-    Interface = "interface",
     Trait = "trait",
     Impl = "impl",
     Enum = "enum",

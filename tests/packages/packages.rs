@@ -716,3 +716,68 @@ let secret = \"hidden\"
         );
     }
 }
+
+#[test]
+fn interfaces_are_satisfied_across_packages_by_exported_methods() {
+    let io = "package io
+
+type Writer interface {
+    mut Write(text string) int
+}
+
+type sealed interface {
+    hidden() int
+}
+
+func Send(w mut Writer, text string) int {
+    return w.Write(text)
+}
+";
+    let sink = "package sink
+
+type Buffer struct {
+    Count int
+}
+
+func (b mut Buffer) Write(text string) int {
+    b.Count += text.len()
+    return b.Count
+}
+
+func (b Buffer) hidden() int { return 0 }
+";
+    let main = main_with(
+        "import \"myapp/io\"\nimport \"myapp/sink\"",
+        "var b = sink.Buffer{Count: 0}
+    let n = io.Send(b, \"hello\")
+    var w io.Writer = sink.Buffer{Count: 1}
+    let m = w.Write(\"x\")
+    println(n + m)",
+    );
+    accepts(&[
+        ("main.ore", &main),
+        ("io/io.ore", io),
+        ("sink/sink.ore", sink),
+    ]);
+    let sealing = "package io
+
+import \"myapp/sink\"
+
+type sealed interface {
+    hidden() int
+}
+
+func Seal(b own sink.Buffer) int {
+    let s sealed = b
+    return s.hidden()
+}
+";
+    rejects(
+        &[
+            ("main.ore", &main_with("import \"myapp/io\"", "_ = io.Seal")),
+            ("io/io.ore", sealing),
+            ("sink/sink.ore", sink),
+        ],
+        "`sink.Buffer` does not satisfy `io.sealed`: its method `hidden` is unexported and declared outside the interface's package",
+    );
+}
