@@ -31,3 +31,9 @@ for their rationale; the specification is authoritative.
 These proposals were not accepted and changed nothing. They are kept for their reasoning.
 
 - [`go` on a callee stored in a struct field](proposals/spawn-field-callee.md) (Q35)
+
+## Open proposals
+
+These proposals await a decision and change nothing yet.
+
+- [Interfaces and generics](proposals/interfaces-and-generics.md) (Q42; issue #88)
