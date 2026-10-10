@@ -7462,3 +7462,66 @@ func main() {
         "main done\n",
     );
 }
+
+#[test]
+fn panic_calls_report_their_message_and_location_after_cleanup() {
+    panics(
+        "package main
+
+type Guard struct { Name string }
+
+func (g mut Guard) drop() { println(\"drop \" + g.Name) }
+
+func pick(n int) int {
+    if n > 0 {
+        return n
+    }
+    panic(\"n must be \" + \"positive\")
+}
+
+func main() {
+    let guard = Guard{Name: \"main\"}
+    println(pick(3))
+    println(pick(-1))
+}
+",
+        "n must be positive at ",
+        "3\ndrop main\n",
+    );
+    for (task, message, dropped) in [
+        ("later(1)", "async failed", "drop async"),
+        ("work()", "plain failed", "drop plain"),
+    ] {
+        let output = run(&format!(
+            "package main
+
+type Guard struct {{ Name string }}
+
+func (g mut Guard) drop() {{ println(\"drop \" + g.Name) }}
+
+async func later(n int) int {{
+    let g = Guard{{Name: \"async\"}}
+    if n > 0 {{ panic(\"async failed\") }}
+    return n
+}}
+
+func work() int {{
+    let g = Guard{{Name: \"plain\"}}
+    panic(\"plain failed\")
+}}
+
+func main() {{
+    let t = go {task}
+    println(t.wait())
+}}
+"
+        ));
+        assert_eq!(output.status.code(), Some(2), "{}", stderr(&output));
+        let err = stderr(&output);
+        assert!(
+            err.contains(&format!("panic in the main task: {message} at ")),
+            "{err}"
+        );
+        assert_eq!(stdout(&output), format!("{dropped}\n"));
+    }
+}

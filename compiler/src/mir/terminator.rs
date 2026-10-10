@@ -17,6 +17,8 @@ pub enum Callee {
     /// Uses the closure at the place exclusively.
     Value(Place),
     Println,
+    /// `[message]`; raises a panic with the message and the call's location.
+    Panic,
     Drop,
     Clone(TypeId),
     /// `[Ref(map), key, value]`; panics without consuming the value on a duplicate key.
@@ -68,6 +70,7 @@ impl Callee {
             Callee::Function(_)
             | Callee::Value(_)
             | Callee::Println
+            | Callee::Panic
             | Callee::Drop
             | Callee::Clone(_)
             | Callee::ArrayPush

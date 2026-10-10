@@ -59,6 +59,7 @@ A newly discovered semantic gap blocks its affected feature, not unrelated work.
 | Q34 | Method values: locked in §16.2 and §9.1. See Q34 below. | §9.1, §16.2, §16.3 | Checker |
 | Q35 | `go` on a callee stored in a struct field: withdrawn; the two-line form works. See Q35 below. | §18.3, §31.2 | None |
 | Q36 | `async` function values: locked in §16.2, §17.2, §17.8, and §18.3. See Q36 below. | §16.2, §17.2, §17.8, §18.3 | Parser, types, checker, codegen |
+| Q38 | The `panic` call: locked in §3.17, §7.7, and §15.4. See Q38 below. | §3.17, §7.7, §15.4 | Resolver, checker, MIR, codegen, and runtime |
 
 ## Resolved decisions
 
@@ -186,6 +187,8 @@ A newly discovered semantic gap blocks its affected feature, not unrelated work.
 - **Q35 — `go` on a callee stored in a field (WITHDRAWN):** proposed in `docs/proposals/spawn-field-callee.md` and withdrawn by the maintainer; nothing was locked or implemented. A closure in a field of a local struct is started by moving it into a local first (`let run = w.run`, then `go run(...)`); a closure in an array or map comes out with `pop` or `remove`. A function value that came in through a parameter cannot be spawned in either form (§18.4). Q33's rejection of a field, element, map value, or call result as a `go` callee stands.
 
 - **Q36 — `async` function values:** locked in §16.2, §17.2, §17.8, and §18.3 at the maintainer's direction; the proposal is `docs/proposals/async-function-values.md`. (a) `async func(...)` is a function type whose identity includes the `async` property, with no conversion either way. (b) A declared `async func` name, including a package-qualified one, is a capture-free Move value of it. (c) A call through such a value must be the operand of `await` or `go`; an awaited call uses the callee exclusively across suspension, and `go` follows Q33. (d) Async method values, built-in operations, and closure literals are not async function values; async closure literals remain a later decision. Pending cases: `tests/conformance/closures.md` and `tests/conformance/concurrency.md`.
+
+- **Q38 — The `panic` call:** locked in §3.17, §7.7, and §15.4 at the maintainer's direction. (a) `panic` is a predeclared name and takes exactly one `string`; it is not a value, like `println`. (b) A call statement of `panic` never completes, so it ends a path for the completion rule without a following `return`; since predeclared names cannot be shadowed, the checker recognizes the bare name. (c) The reported message is the argument, ` at `, and the call's location, matching the runtime's own panics. (d) An `error` argument was considered and left out; a program writes `panic("...")` with its own text. Pending cases: `tests/conformance/errors.md`.
 - **Q27 — Async I/O choices:** locked in §37.3 at the maintainer's direction
   (time, standard input, whole files, and TCP, waiting on an event loop). (a)
   Strings are well-formed UTF-8, so every function that returns text from
