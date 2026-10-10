@@ -1,6 +1,7 @@
 package main
 
-import "zore/io"
+import "zore/bufio"
+import "zore/os"
 import "zore/strconv"
 
 async func wait(ready channel<bool>, release channel<bool>) int {
@@ -16,9 +17,9 @@ async func wait(ready channel<bool>, release channel<bool>) int {
 }
 
 func main() {
-    let countText, readError = io.ReadLine()
-    if readError != nil { return }
-    let count, parseError = strconv.Atoi(countText)
+    var input = bufio.NewScanner(os.Stdin())
+    if !input.Scan() { return }
+    let count, parseError = strconv.Atoi(input.Text())
     if parseError != nil || count < 1 { return }
 
     let ready = channel<bool>()
@@ -32,8 +33,7 @@ func main() {
     }
     println("READY " + strconv.Itoa(count))
 
-    let command, commandError = io.ReadLine()
-    if commandError != nil || command != "release" { return }
+    if !input.Scan() || input.Text() != "release" { return }
     for var i = 0; i < count; i += 1 {
         release.send(true)
     }

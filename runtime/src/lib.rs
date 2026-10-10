@@ -11,6 +11,8 @@ mod blocking;
 mod channel;
 #[path = "deadlock.rs"]
 mod deadlock;
+#[path = "exec.rs"]
+mod exec;
 #[path = "io.rs"]
 mod io;
 #[path = "map.rs"]
@@ -19,6 +21,8 @@ mod map;
 mod mutex;
 #[path = "net.rs"]
 mod net;
+#[path = "os.rs"]
+mod os;
 #[path = "panic.rs"]
 mod panic;
 #[path = "reactor.rs"]
@@ -37,6 +41,8 @@ mod strings;
 mod sys;
 #[path = "task.rs"]
 mod task;
+#[path = "unicode.rs"]
+mod unicode;
 #[path = "waiter.rs"]
 mod waiter;
 

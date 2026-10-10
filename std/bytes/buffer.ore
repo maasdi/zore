@@ -1,0 +1,95 @@
+package bytes
+
+type Buffer struct {
+    data Array<byte>
+    read int
+}
+
+func NewBuffer(data []byte) Buffer {
+    return Buffer{data: Clone(data), read: 0}
+}
+
+func NewBufferString(s string) Buffer {
+    var data = Array<byte>{}
+    for var i = 0; i < s.len(); i += 1 {
+        data.push(s[i])
+    }
+    return Buffer{data: data, read: 0}
+}
+
+func (b mut Buffer) Write(p []byte) (int, error) {
+    for value in p {
+        b.data.push(value)
+    }
+    return p.len(), nil
+}
+
+func (b mut Buffer) WriteByte(c byte) error {
+    b.data.push(c)
+    return nil
+}
+
+func (b mut Buffer) WriteString(s string) (int, error) {
+    for var i = 0; i < s.len(); i += 1 {
+        b.data.push(s[i])
+    }
+    return s.len(), nil
+}
+
+func (b mut Buffer) WriteRune(r rune) (int, error) {
+    return b.WriteString(string(r))
+}
+
+func (b mut Buffer) Read(p mut []byte) (int, error) {
+    if b.read >= b.data.len() {
+        b.Reset()
+        if p.len() == 0 {
+            return 0, nil
+        }
+        return 0, error("EOF")
+    }
+    var count = 0
+    for count < p.len() && b.read < b.data.len() {
+        p[count] = b.data[b.read]
+        b.read += 1
+        count += 1
+    }
+    return count, nil
+}
+
+func (b mut Buffer) ReadByte() (byte, error) {
+    if b.read >= b.data.len() {
+        b.Reset()
+        return 0, error("EOF")
+    }
+    let value = b.data[b.read]
+    b.read += 1
+    return value, nil
+}
+
+func (b Buffer) Len() int {
+    return b.data.len() - b.read
+}
+
+func (b Buffer) Bytes() Array<byte> {
+    return Clone(b.data[b.read:])
+}
+
+func (b mut Buffer) Truncate(n int) {
+    if n < 0 || n > b.Len() {
+        fail("bytes.Buffer: truncation out of range")
+    }
+    var kept = Array<byte>{}
+    for var i = b.read; i < b.read + n; i += 1 {
+        kept.push(b.data[i])
+    }
+    b.data = kept
+    b.read = 0
+}
+
+func (b mut Buffer) Reset() {
+    b.data = Array<byte>{}
+    b.read = 0
+}
+
+func fail(message string)

@@ -2,5 +2,10 @@ package strconv
 
 func Itoa(value int) string
 func Atoi(text string) (int, error)
+func FormatInt(value int, base int) string
+func ParseInt(text string, base int, bitSize int) (int, error)
 func FormatBool(value bool) string
 func ParseBool(text string) (bool, error)
+func Quote(s string) string
+func QuoteRune(r rune) string
+func Unquote(s string) (string, error)

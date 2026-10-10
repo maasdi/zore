@@ -2113,6 +2113,10 @@ impl FunctionBuilder<'_, '_> {
                         self.println(&args[0], *span);
                         None
                     }
+                    Callee::Panic => {
+                        self.user_panic(&args[0], *span);
+                        None
+                    }
                     Callee::Drop => unreachable!("explicit drop is a MIR statement"),
                     Callee::MapInsertNew
                     | Callee::MapAssign

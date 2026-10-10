@@ -4,12 +4,60 @@ func Contains(s string, sub string) bool
 func HasPrefix(s string, prefix string) bool
 func HasSuffix(s string, suffix string) bool
 func Index(s string, sub string) int
-func Upper(s string) string
-func Lower(s string) string
+func LastIndex(s string, sub string) int
+func Count(s string, sub string) int
+func ToUpper(s string) string
+func ToLower(s string) string
+func EqualFold(s string, t string) bool
 func TrimSpace(s string) string
+func Trim(s string, cutset string) string
+func TrimLeft(s string, cutset string) string
+func TrimRight(s string, cutset string) string
 func Repeat(s string, count int) string
-func Replace(s string, old string, new string) string
+func Replace(s string, old string, new string, n int) string
+func ReplaceAll(s string, old string, new string) string
 func Split(s string, sep string) Array<string>
+func SplitN(s string, sep string, n int) Array<string>
+func Fields(s string) Array<string>
 func Join(parts []string, sep string) string
 func Bytes(s string) Array<byte>
 func FromBytes(data []byte) (string, error)
+
+func IndexByte(s string, c byte) int {
+    for var i = 0; i < s.len(); i += 1 {
+        if s[i] == c {
+            return i
+        }
+    }
+    return -1
+}
+
+func IndexRune(s string, r rune) int {
+    return Index(s, string(r))
+}
+
+func ContainsRune(s string, r rune) bool {
+    return IndexRune(s, r) >= 0
+}
+
+func TrimPrefix(s string, prefix string) string {
+    if HasPrefix(s, prefix) {
+        return s[prefix.len():]
+    }
+    return s
+}
+
+func TrimSuffix(s string, suffix string) string {
+    if HasSuffix(s, suffix) {
+        return s[:s.len() - suffix.len()]
+    }
+    return s
+}
+
+func Cut(s string, sep string) (string, string, bool) {
+    let at = Index(s, sep)
+    if at < 0 {
+        return s, "", false
+    }
+    return s[:at], s[at + sep.len():], true
+}

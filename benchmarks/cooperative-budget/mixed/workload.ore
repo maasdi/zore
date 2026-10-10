@@ -13,7 +13,7 @@ async func compute(rounds int) int {
 async func wait(rounds int) int {
     var completed = 0
     for completed < rounds {
-        time.Sleep(1)
+        time.Sleep(time.Millisecond)
         completed += 1
     }
     return completed

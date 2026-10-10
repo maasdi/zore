@@ -160,7 +160,7 @@ func main() {
 Import syntax is Go-like:
 
 ```ore
-import "zore/fmt"
+import "zore/strings"
 ```
 
 The meaning of an import path, and how imported names are used, is specified in
@@ -807,7 +807,7 @@ The type/zero-value rules for `nil` are locked in §41.4. Do not infer
 Go's complete statement or type grammar from this keyword list.
 
 Built-in primitive type names (§6.1), `Array`, `Task`, `Mutex`, `mutex`, `error`, `println`,
-`clone`, and `drop` are predeclared names, not keywords. They are lexed as identifiers
+`panic`, `clone`, and `drop` are predeclared names, not keywords. They are lexed as identifiers
 and resolved semantically; their built-in meaning may still require special
 compiler handling. Declarations may not shadow them (§3.18). This distinction
 does not imply user-defined generics, interfaces, or additional built-in APIs.
@@ -953,7 +953,7 @@ double-quoted path of segments separated by `/` (§3.3):
 
 | Path | Package |
 | --- | --- |
-| `"zore/<name>"` | The standard package `<name>` shipped with the compiler (§37.2) |
+| `"zore/<path>"` | The standard package at `<path>` shipped with the compiler, such as `"zore/os"` or `"zore/os/exec"` (§37.2–§37.5) |
 | `"<project>/<dir>/..."` | The folder `<dir>/...` below the project root, where `<project>` is the project's name |
 
 Anything else is an error that names the path. A project imports only its own
@@ -973,7 +973,7 @@ import "zore/strings"
 func main() {
     let circle = shapes.Circle{Radius: 2}
     println(shapes.Area(circle))
-    println(strings.Upper("ok"))
+    println(strings.ToUpper("ok"))
 }
 ```
 
@@ -2232,8 +2232,8 @@ Every reachable path in a result-returning function must return the required
 results or never complete. A provably non-completing path, such as an infinite
 loop without a reachable exit, does not require an artificial return. A loop
 that can exit does not by itself prove completeness. Reject possible fallthrough
-without required results. Do not assume that a call named `panic` is non-returning
-until its resolved built-in contract establishes that property.
+without required results. A statement that is a call of the predeclared `panic`
+(§15.4) never completes, so it ends a path the same way `return` does.
 
 A return exits the current function or closure, not an enclosing function. It
 performs required cleanup of still-owned values whose lifetimes end on that
@@ -3578,6 +3578,35 @@ return error
 
 Panic is not a replacement for ordinary error handling.
 
+### The `panic` call
+
+`panic` is a predeclared name (§3.17). A program raises a panic with
+
+```ore
+panic(message string)
+```
+
+It takes exactly one `string` argument; an untyped string constant takes the
+type `string`. It has no result and never completes: the code after it on the
+same path does not run, and a call statement of `panic` ends a path for the
+completion rule of §7.7. Like `println` (§37.1), it can be used only as the
+callee of a direct call; it cannot be bound, passed, returned, or stored. The
+reported message is the argument followed by ` at ` and the call's
+`file:line:column`, the same form as the runtime's own panics.
+
+```ore
+func pick(n int) int {
+    if n > 0 {
+        return n
+    }
+    panic("n must be positive")   // no return needed after it
+}
+
+panic(1)               // invalid: the message is a string
+let p = panic          // invalid: panic can only be called
+let x = panic("x")     // invalid: panic has no result
+```
+
 ### Unwinding and cleanup
 
 On `panic()`, the runtime unwinds the current task's call stack, running
@@ -4050,7 +4079,7 @@ Suspension must not violate ownership safety.
 
 **Waiting operations.** Channel `send` and `receive` and `select` (§19),
 `Mutex.withLock` (§20.2), and the waiting functions of the standard packages
-(§37.3) are ordinary calls, written without `await`. In an `async func` body such
+(§37.3–§37.4) are ordinary calls, written without `await`. In an `async func` body such
 a call suspends the task until it can proceed, exactly as an `await` does, so it
 is a suspension point for §17.5 and §17.6. In a function that is not async, the
 same call blocks the calling thread, as `task.wait()` does (§18.9). `await` still
@@ -5483,9 +5512,10 @@ At minimum, the architecture must leave room for:
 - mutex/synchronization
 - async I/O
 
-Packages and imports are specified in §3.20; the first standard packages are
-specified in §37.2, and time, input, files, and TCP in §37.3. The organization
-of the remaining library is TBD.
+Packages and imports are specified in §3.20. The standard packages are
+specified in §37.2 (text, bytes, and errors), §37.3 (time, the operating
+system, buffered I/O, and TCP), §37.4 (cancellation and task coordination), and
+§37.5 (paths and sorting). Further packages are TBD.
 
 ## 37.1 `println` — LOCKED
 
@@ -5518,244 +5548,477 @@ println('é')              // é
 println(user.Name)        // the string field's contents
 ```
 
-## 37.2 Standard packages `zore/strings` and `zore/strconv` — LOCKED
+## 37.2 Text, byte, and error packages — LOCKED
 
-The compiler ships two standard packages, imported as `"zore/strings"` and
-`"zore/strconv"` (§3.20). They are ordinary packages as far as users can tell:
-names are used with the qualifier and every function below is exported. Their
-functions never mutate their arguments; `string` results may share storage with
-their arguments (§6.8, §41.5).
+The compiler ships the standard packages of §37.2–§37.5, imported by their
+paths (§3.20): `"zore/strings"`, `"zore/strconv"`, `"zore/unicode"`,
+`"zore/unicode/utf8"`, `"zore/bytes"`, and `"zore/errors"` here. They are
+ordinary packages as far as users can tell: names are used with the qualifier
+(the last segment of the path) and every function, type, method, and constant
+listed is exported. A package whose path has several segments, such as
+`"zore/unicode/utf8"`, is used as `utf8.Name`; it is a separate package from
+`"zore/unicode"` and is imported on its own.
+
+The packages follow one set of conventions:
+
+- Exported functions start with an upper-case letter and use the same name for
+  the same job across packages (`Index`, `HasPrefix`, `Count`, `Equal`).
+- A function that can fail returns `error` last (§7.2). An error message begins
+  with the qualified function name, such as `strconv.Atoi: `, except the fixed
+  message `EOF`, which every reading function uses for the end of its input.
+- A function that parses text names the text it rejected, quoted by
+  `strconv.Quote`: `strconv.Atoi: parsing "x": invalid syntax`.
+- Durations and instants are `int` nanoseconds (§37.3).
+- A type whose fields are unexported is made with a constructor, `NewName`,
+  since a struct literal needs every field (§8.4).
+
+Their functions never mutate their arguments except a `mut` parameter; `string`
+results may share storage with their arguments (§6.8, §41.5).
 
 **`zore/strings`**
 
 | Function | Behavior |
 | --- | --- |
 | `Contains(s string, sub string) bool` | Whether `sub` occurs in `s`; an empty `sub` is always found |
+| `ContainsRune(s string, r rune) bool` | Whether `r` occurs in `s` |
 | `HasPrefix(s string, prefix string) bool` | Whether `s` starts with `prefix` |
 | `HasSuffix(s string, suffix string) bool` | Whether `s` ends with `suffix` |
 | `Index(s string, sub string) int` | Byte index of the first occurrence of `sub`, or `-1`; an empty `sub` gives `0` |
-| `Upper(s string) string` | `s` with Unicode default upper-case mapping applied |
-| `Lower(s string) string` | `s` with Unicode default lower-case mapping applied |
+| `LastIndex(s string, sub string) int` | Byte index of the last occurrence of `sub`, or `-1`; an empty `sub` gives `s.len()` |
+| `IndexByte(s string, c byte) int` | Byte index of the first byte equal to `c`, or `-1` |
+| `IndexRune(s string, r rune) int` | Byte index of the first occurrence of `r`, or `-1` |
+| `Count(s string, sub string) int` | The number of non-overlapping occurrences of `sub`; an empty `sub` gives the character count plus one |
+| `EqualFold(s string, t string) bool` | Whether the strings are equal character by character, where two characters also match when their Unicode lower-case mappings are equal |
+| `ToUpper(s string) string` | `s` with Unicode default upper-case mapping applied |
+| `ToLower(s string) string` | `s` with Unicode default lower-case mapping applied |
 | `TrimSpace(s string) string` | `s` without leading and trailing Unicode white space |
+| `Trim(s string, cutset string) string` | `s` without leading and trailing characters that occur in `cutset` |
+| `TrimLeft(s string, cutset string) string` | `s` without leading characters that occur in `cutset` |
+| `TrimRight(s string, cutset string) string` | `s` without trailing characters that occur in `cutset` |
+| `TrimPrefix(s string, prefix string) string` | `s` without `prefix` when it starts with it, otherwise `s` |
+| `TrimSuffix(s string, suffix string) string` | `s` without `suffix` when it ends with it, otherwise `s` |
+| `Cut(s string, sep string) (string, string, bool)` | The text before and after the first `sep`, and `true`; without one, `s`, `""`, and `false` |
 | `Repeat(s string, count int) string` | `count` copies of `s` joined; panics when `count` is negative or the result length overflows `int` |
-| `Replace(s string, old string, new string) string` | `s` with every non-overlapping occurrence of `old` replaced; an empty `old` matches before each character and at the end |
+| `Replace(s string, old string, new string, n int) string` | `s` with the first `n` non-overlapping occurrences of `old` replaced, or all of them when `n` is negative; an empty `old` matches before each character and at the end |
+| `ReplaceAll(s string, old string, new string) string` | `Replace` with `n` of `-1` |
 | `Split(s string, sep string) Array<string>` | The pieces of `s` between occurrences of `sep`; an empty `sep` splits into characters; an empty `s` gives one empty piece, except for an empty `sep`, which gives no pieces |
+| `SplitN(s string, sep string, n int) Array<string>` | Like `Split`, but with a positive `n` at most `n` pieces, the last holding the rest of `s`; `n` of zero gives no pieces and a negative `n` is `Split` |
+| `Fields(s string) Array<string>` | The pieces of `s` between runs of Unicode white space; no pieces when `s` holds only white space |
 | `Join(parts []string, sep string) string` | The elements of `parts` joined with `sep` between them; no elements give `""` |
 | `Bytes(s string) Array<byte>` | A new array holding the bytes of `s`; the empty string gives an empty array |
 | `FromBytes(data []byte) (string, error)` | The string made of the bytes of `data`, copied; when they are not well-formed UTF-8, `""` and an error whose message is `strings.FromBytes: invalid UTF-8` (§41.5) |
+
+`strings.Builder` collects text and joins it once:
+
+| Function or method | Behavior |
+| --- | --- |
+| `NewBuilder() Builder` | An empty builder |
+| `(b mut Builder) WriteString(s string)` | Appends `s` |
+| `(b mut Builder) WriteRune(r rune)` | Appends the encoding of `r` |
+| `(b Builder) Len() int` | The number of bytes written |
+| `(b Builder) String() string` | Everything written, in order |
+| `(b mut Builder) Reset()` | Empties the builder |
 
 **`zore/strconv`**
 
 | Function | Behavior |
 | --- | --- |
 | `Itoa(value int) string` | Decimal digits of `value`, with a leading `-` when negative |
-| `Atoi(text string) (int, error)` | Parses an optional `+` or `-` followed by one or more decimal digits, with nothing else; on success the value and `nil`, otherwise `0` and an error whose message is `strconv.Atoi: invalid syntax` or `strconv.Atoi: value out of range` |
+| `Atoi(text string) (int, error)` | Parses an optional `+` or `-` followed by one or more decimal digits, with nothing else |
+| `FormatInt(value int, base int) string` | The digits of `value` in `base` 2–36, with lower-case letters for digits above 9 and a leading `-` when negative; panics with `strconv.FormatInt: invalid base` for another base |
+| `ParseInt(text string, base int, bitSize int) (int, error)` | Parses an optional sign and digits in `base` 2–36, either letter case; `base` 0 reads the prefixes and digit separators of an integer literal (§3.11–§3.12). The value must fit a signed integer of `bitSize` bits, 1–64, where 0 means 64 |
 | `FormatBool(value bool) string` | `"true"` or `"false"` |
-| `ParseBool(text string) (bool, error)` | `true` for `"true"`, `false` for `"false"`, otherwise `false` and an error with the message `strconv.ParseBool: invalid syntax` |
+| `ParseBool(text string) (bool, error)` | `true` for `"true"`, `false` for `"false"` |
+| `Quote(s string) string` | `s` as a double-quoted literal (§3.8): `"`, `\`, line feed, carriage return, and tab use their escapes; other characters below U+0020, U+007F, and U+0080–U+009F use `\uXXXX`; everything else is kept |
+| `QuoteRune(r rune) string` | `r` as a rune literal (§3.10), escaped as `Quote` does, with `\'` for a single quote |
+| `Unquote(s string) (string, error)` | The value of a double-quoted string, raw string, or rune literal, decoded as §3.8–§3.10 specify |
+
+On failure the parsing functions return `0`, `false`, or `""` and an error whose
+message is `strconv.Name: parsing Q: problem`, where `Q` is the input quoted by
+`Quote` and `problem` is `invalid syntax`, `value out of range`, `invalid base
+B`, or `invalid bit size B`.
 
 Floating-point formatting and parsing are not included: the text format of
 floats is still open (§37.1).
 
+**`zore/unicode`**
+
+| Name | Behavior |
+| --- | --- |
+| `const MaxRune`, `ReplacementChar`, `MaxASCII` | `'\U0010FFFF'`, `'�'`, and `'\u007F'` |
+| `IsLetter(r rune) bool` | Whether `r` has the Unicode Alphabetic property |
+| `IsDigit(r rune) bool` | Whether `r` is a decimal digit, general category Nd |
+| `IsNumber(r rune) bool` | Whether `r` is in general category Nd, Nl, or No |
+| `IsSpace(r rune) bool` | Whether `r` has the Unicode White_Space property |
+| `IsUpper(r rune) bool`, `IsLower(r rune) bool` | Whether `r` has the Uppercase or Lowercase property |
+| `IsControl(r rune) bool` | Whether `r` is in general category Cc |
+| `ToUpper(r rune) rune`, `ToLower(r rune) rune` | The single-character case mapping of `r`, or `r` when the mapping is not one character |
+
+**`zore/unicode/utf8`**
+
+| Name | Behavior |
+| --- | --- |
+| `const RuneError`, `RuneSelf`, `MaxRune`, `UTFMax` | `'�'`, `0x80`, `'\U0010FFFF'`, and `4` |
+| `RuneLen(r rune) int` | The number of bytes in the encoding of `r` |
+| `EncodeRune(p mut []byte, r rune) int` | Writes the encoding of `r` at the start of `p` and returns its length; panics when `p` is too short |
+| `RuneCountInString(s string) int` | The number of characters in `s` |
+| `RuneCount(p []byte) int` | The number of characters in `p`, counting each byte of an invalid sequence as one |
+| `Valid(p []byte) bool` | Whether `p` is well-formed UTF-8 |
+| `RuneStart(b byte) bool` | Whether `b` can start an encoding, that is, is not a continuation byte |
+| `FullRune(p []byte) bool` | Whether `p` begins with a whole encoding or with bytes that can never become one |
+| `DecodeRune(p []byte) (rune, int)` | The first character of `p` and its length; `(RuneError, 1)` for an invalid sequence and `(RuneError, 0)` for an empty `p` |
+| `DecodeLastRune(p []byte) (rune, int)` | The same for the last character of `p` |
+| `DecodeRuneInString(s string) (rune, int)`, `DecodeLastRuneInString(s string) (rune, int)` | The same for a string, which is always well-formed |
+
+**`zore/bytes`** works on `[]byte` the way `zore/strings` works on text:
+
+| Function | Behavior |
+| --- | --- |
+| `Equal(a []byte, b []byte) bool` | Whether the two views hold the same bytes |
+| `Compare(a []byte, b []byte) int` | `-1`, `0`, or `1` as `a` sorts before, equal to, or after `b` byte by byte |
+| `HasPrefix`, `HasSuffix`, `Contains(s []byte, sub []byte) bool` | As in `zore/strings` |
+| `Index`, `LastIndex(s []byte, sep []byte) int`, `IndexByte(s []byte, c byte) int` | As in `zore/strings`, in bytes |
+| `Count(s []byte, sep []byte) int` | Non-overlapping occurrences of `sep`; an empty `sep` gives `s.len() + 1` |
+| `Clone(s []byte) Array<byte>` | A new array holding the bytes of `s` |
+
+`bytes.Buffer` is a growing byte queue: writes add at the end and reads take from
+the front.
+
+| Function or method | Behavior |
+| --- | --- |
+| `NewBuffer(data []byte) Buffer`, `NewBufferString(s string) Buffer` | A buffer holding a copy of `data` or the bytes of `s` |
+| `(b mut Buffer) Write(p []byte) (int, error)`, `WriteString(s string) (int, error)`, `WriteRune(r rune) (int, error)`, `WriteByte(c byte) error` | Append and report the bytes added; the error is always `nil` |
+| `(b mut Buffer) Read(p mut []byte) (int, error)` | Moves up to `p.len()` unread bytes into `p`; with nothing unread, `0` and `EOF` (`0` and `nil` for an empty `p`) |
+| `(b mut Buffer) ReadByte() (byte, error)` | The next unread byte, or `0` and `EOF` |
+| `(b Buffer) Len() int`, `(b Buffer) Bytes() Array<byte>` | The number of unread bytes, and a copy of them |
+| `(b mut Buffer) Truncate(n int)`, `(b mut Buffer) Reset()` | Keeps the first `n` unread bytes, panicking when `n` is negative or above `Len()`; or empties the buffer |
+
+**`zore/errors`**
+
+| Function | Behavior |
+| --- | --- |
+| `New(text string) error` | `error(text)` (§15.1) |
+| `Is(err error, target error) bool` | `err == target` |
+
+Wrapping and cause chains remain open (Q05); `Is` compares messages, as `==`
+does.
+
 ```ore
-import "zore/strings"
 import "zore/strconv"
+import "zore/strings"
 
 func main() {
     let parts = strings.Split("a,b,c", ",")
     println(strings.Join(parts[:], "-"))     // a-b-c
+    let key, value, found = strings.Cut("lang=zore", "=")
+    if found { println(key + ": " + value) } // lang: zore
     let n, err = strconv.Atoi("42")
-    if err == nil { println(strconv.Itoa(n + 1)) }   // 43
+    if err == nil { println(strconv.FormatInt(n, 16)) }   // 2a
 }
 ```
 
-Ownership, error, and async implications: all functions are synchronous.
-`Split` returns an owned `Array<string>` whose elements are Copy strings;
-`Atoi` and `ParseBool` follow the trailing-`error` rule (§7.2) and the
-error-use rules (§15). Argument validation panics (`Repeat`) are ordinary
-runtime panics.
+Ownership, error, and async implications: all functions here are synchronous.
+`Split`, `SplitN`, `Fields`, `Bytes`, and `Clone` return owned arrays; a
+`Builder` or `Buffer` owns its contents and is a Move value. Errors follow the
+trailing-`error` rule (§7.2) and the error-use rules (§15). Argument validation
+panics (`Repeat`, `FormatInt`, `EncodeRune`, `Truncate`) are ordinary runtime
+panics.
 
 Compiler impact: standard package sources are bundled with the compiler and
-loaded like folders. Their function bodies are provided by the runtime; a
-function declaration without a body is accepted only in bundled sources and is
-rejected everywhere else. Pending conformance cases:
-`tests/conformance/packages.md` and `tests/conformance/strings.md`.
+loaded like folders. Some function bodies are written in Zore and some are
+provided by the runtime; a function declaration without a body is accepted only
+in bundled sources and is rejected everywhere else. A runtime-provided function
+takes strings, slices, integers, runes, and booleans. Pending conformance
+cases: `tests/conformance/packages.md` and `tests/conformance/strings.md`.
 
-```ore
-println()                 // invalid: needs exactly one argument
-println("a", "b")         // invalid: more than one argument
-println(user)             // invalid: struct types are not printable
-let p = println           // invalid: println can only be called
-_ = println("x")          // invalid: println has no result
-```
+## 37.3 Time, operating system, buffered I/O, and network packages — LOCKED
 
-`println` can be used only as the callee of a direct call. It is not a value:
-it cannot be bound, passed, returned, or stored. It may be used as a call
-statement (§7.8).
-
-Ownership, error, and async implications: the argument is a shared borrow
-(§7.3) and is not moved or modified; all printable types are Copy. `println`
-has no `error` result. If writing to standard output fails, the calling task
-panics (§15.4). `println` does not suspend: it may be called in synchronous and
-`async` functions, and each call completes its write before returning. Each
-call writes its complete line as one unit, so lines from concurrently running
-tasks are not interleaved within a line; their relative order is unspecified. A
-`println` blocked on a slow or unavailable standard output is subject to the
-same progress guarantee as a blocking `task.wait()` (§18.9): other tasks must
-continue to make progress while it blocks.
-
-Compiler impact: resolve `println` as a predeclared callable, not an ordinary
-function value; check exactly one argument of a printable type, applying
-default types to untyped constants; reject non-call uses; give the call no
-results. The runtime provides the text conversions above, serializes each
-line's write, and keeps other tasks running while a write blocks. Pending conformance cases are in `tests/conformance/println.md`.
-
-## 37.3 Standard packages `zore/time`, `zore/io`, `zore/os`, and `zore/net` — LOCKED
-
-These four bundled packages (§3.20, §37.2) give tasks a way to wait for the
-clock, standard input, files, and TCP connections without blocking other tasks.
-Functions are ordinary calls: they are written without `await`, and may be called
-from synchronous and `async` functions alike. In an `async func` body a call that
-waits suspends only the calling task (§17.3); in a synchronous function it blocks
-the calling thread. While one task waits, every other task keeps making
+`"zore/time"`, `"zore/os"`, `"zore/os/exec"`, `"zore/bufio"`, and `"zore/net"`
+give tasks a way to wait for the clock, files, standard input and output, other
+programs, and TCP connections without blocking other tasks. Functions are
+ordinary calls: they are written without `await`, and may be called from
+synchronous and `async` functions alike. In an `async func` body a call that
+waits suspends only the calling task (§17.3); in a synchronous function it
+blocks the calling thread. While one task waits, every other task keeps making
 progress, in the same sense as the progress guarantee of §18.9. In the initial
 task a wait blocks the entry point's thread but not the other tasks.
 
-Text read from outside the program must be well-formed UTF-8 (§6.8). Every
-function that returns text reports `error` for input that is not. The byte
-functions (`os.ReadBytes`, `os.WriteBytes`, `Conn.ReadBytes`, `Conn.WriteBytes`)
-read and write any bytes, with no check and no change; turning bytes into text
-is `strings.FromBytes` (§37.2). An array argument is passed to a `[]byte`
-parameter as a view, `data[:]` (§12.1).
+Files, standard input, and connections carry bytes. Turning bytes into text is
+`strings.FromBytes` (§37.2), which checks UTF-8 (§6.8). An array argument is
+passed to a `[]byte` parameter as a view, `data[:]`, and to a `mut []byte`
+parameter the same way (§12.1–§12.2).
 
-**`zore/time`**
+**`zore/time`** measures time in `int` nanoseconds.
 
-| Function | Behavior |
+| Name | Behavior |
 | --- | --- |
-| `Sleep(milliseconds int)` | Suspends the calling task for at least that many milliseconds; a value of zero or less returns at once |
-| `Millis() int` | Milliseconds on a monotonic clock whose starting point is unspecified; the value never decreases |
-| `After(milliseconds int) channel<bool>` | A channel that receives `true` once after at least that many milliseconds and is then closed; a value of zero or less fires at once. The wait is a task that sleeps, so it is not a deadlock while it is pending. Use it as a `select` case to put a time limit on a channel operation |
+| `const Nanosecond`, `Microsecond`, `Millisecond`, `Second`, `Minute`, `Hour` | `1`, `1000`, `1000000`, `1000000000`, `60 * Second`, and `60 * Minute` |
+| `Sleep(d int)` | Suspends the calling task for at least `d` nanoseconds; zero or less returns at once |
+| `Now() int` | A reading of a monotonic clock in nanoseconds; its starting point is unspecified, but every reading is positive and none is smaller than an earlier one |
+| `Since(start int) int`, `Until(t int) int` | `Now() - start` and `t - Now()` |
+| `After(d int) channel<bool>` | A channel that receives `true` once after at least `d` and is then closed; zero or less fires at once. The wait is a task that sleeps, so it is not a deadlock while it is pending. Use it as a `select` case to put a time limit on a channel operation |
 
-**`zore/io`**
+A deadline is a `Now()` reading; zero means none.
 
-| Function | Behavior |
-| --- | --- |
-| `ReadLine() (string, error)` | Reads the next line from standard input, without its line terminator (`\n` or `\r\n`); a final line with no terminator is returned normally; at end of input with nothing read, `""` and an error whose message is `EOF`; a line that is not well-formed UTF-8 is consumed and gives `""` and an error whose message is `io.ReadLine: invalid UTF-8` |
+```ore
+time.Sleep(250 * time.Millisecond)
+let started = time.Now()
+println(time.Since(started) < time.Second)
+```
 
 **`zore/os`**
 
 | Function | Behavior |
 | --- | --- |
-| `ReadFile(path string) (string, error)` | The whole contents of the file; on failure `""` and an error whose message begins `os.ReadFile: ` followed by system-defined text, or is `os.ReadFile: invalid UTF-8` |
-| `WriteFile(path string, text string) error` | Creates or truncates the file and writes `text`; on failure an error whose message begins `os.WriteFile: ` |
-| `ReadBytes(path string) (Array<byte>, error)` | The whole contents of the file as bytes; on failure an empty array and an error whose message begins `os.ReadBytes: ` followed by system-defined text |
-| `WriteBytes(path string, data []byte) error` | Creates or truncates the file and writes `data`; on failure an error whose message begins `os.WriteBytes: ` |
+| `ReadFile(path string) (Array<byte>, error)` | The whole contents of the file |
+| `WriteFile(path string, data []byte, perm int) error` | Creates or truncates the file and writes `data`; a new file gets the permission bits `perm`, such as `0o644`, on systems that have them |
+| `ReadDir(path string) (Array<DirEntry>, error)` | The entries of a folder, sorted by name; `(e DirEntry) Name() string` and `(e DirEntry) IsDir() bool` describe each |
+| `Stat(path string) (FileInfo, error)` | Facts about a file or folder, following links: `(i FileInfo) Name() string` (the last element of `path`), `Size() int` in bytes, `Mode() int` (the permission bits), and `IsDir() bool` |
+| `MkdirAll(path string, perm int) error` | Creates the folder and any missing parents with the permission bits `perm`; nothing to do when it exists |
+| `Remove(path string) error` | Removes a file or an empty folder |
+| `RemoveAll(path string) error` | Removes a file or a folder and everything in it; a missing path is not an error |
+| `Getenv(key string) string` | The value of the environment variable, or `""` when it is not set |
+| `Getwd() (string, error)` | The current folder |
+| `Args() Array<string>` | The program's command-line arguments, starting with the program name |
+| `Exit(code int)` | Ends the process at once with the status `code`; other tasks are not waited for and nothing is dropped |
+
+`os.File` is an open file. It is a struct type with a custom `drop` (§8.3), so it
+is a Move value: dropping one closes it. Its field is not exported, and the zero
+value is closed, so every operation on it fails.
+
+| Function or method | Behavior |
+| --- | --- |
+| `Open(path string) (File, error)` | Opens a file for reading |
+| `Create(path string) (File, error)` | Creates or truncates a file and opens it for reading and writing |
+| `Stdin() File`, `Stdout() File`, `Stderr() File` | Standard input, output, and error; closing or dropping these does nothing |
+| `(f File) Read(buf mut []byte) (int, error)` | Waits for at least one byte and moves up to `buf.len()` bytes into `buf`; at end of input, `0` and `EOF`; an empty `buf` gives `0` and `nil` at once |
+| `(f File) Write(data []byte) (int, error)`, `(f File) WriteString(s string) (int, error)` | Writes everything and returns the byte count; on failure, the bytes written before it |
+| `(f own File) Close() error` | Closes the file |
+
+Error messages begin with the function name (`os.ReadFile: `, `os.Open: `,
+`os.Read: `, `os.Write: `, `os.Stat: `, `os.ReadDir: `, and so on) and continue
+with system-defined text.
+
+**`zore/os/exec`** runs other programs.
+
+| Name | Behavior |
+| --- | --- |
+| `type Cmd struct { Path string; Args Array<string>; Dir string }` | A program to run: `Path` is found through the `PATH` environment variable when it has no `/`; `Args` starts with the program name; a non-empty `Dir` is the folder it runs in |
+| `Command(name string, args []string) Cmd` | A `Cmd` with `Path` set to `name` and `Args` to `name` followed by `args` |
+| `(c Cmd) Run() error` | Runs the program and waits for it, with standard input, output, and error connected to nothing |
+| `(c Cmd) Output() (Array<byte>, error)` | Runs it and returns what it wrote to standard output |
+| `(c Cmd) CombinedOutput() (Array<byte>, error)` | Runs it and returns what it wrote to standard output and error, in the order written |
+
+A program that ends with a nonzero status gives the error `exit status N`, one
+ended by a signal gives `signal: N`, and one that cannot start gives an error
+beginning `exec: `. `Output` and `CombinedOutput` return what was captured
+together with the error.
+
+**`zore/bufio`** reads and writes an `os.File` in large pieces. Each type owns
+the file it was made from (`own` parameter), and the file closes when the
+reader, scanner, or writer is dropped.
+
+| Function or method | Behavior |
+| --- | --- |
+| `NewReader(file own os.File) Reader` | A reader over `file` |
+| `(r mut Reader) ReadBytes(delim byte) (Array<byte>, error)` | The bytes up to and including the next `delim`; at end of input, what is left and the error, `EOF` at the end |
+| `(r mut Reader) ReadString(delim byte) (string, error)` | `ReadBytes` as text; bytes that are not UTF-8 give `""` and `bufio.Reader: invalid UTF-8` |
+| `(r mut Reader) ReadByte() (byte, error)` | The next byte |
+| `NewScanner(file own os.File) Scanner` | A scanner that reads `file` line by line |
+| `(s mut Scanner) Scan() bool` | Reads the next line, without its terminator (`\n` or `\r\n`); a final line with no terminator counts. `false` at end of input or on an error, after which it stays `false` |
+| `(s Scanner) Text() string` | The line the last `Scan` read |
+| `(s Scanner) Err() error` | `nil` after end of input; otherwise the error that stopped the scanner, such as `bufio.Scanner: invalid UTF-8` for a line that is not text |
+| `NewWriter(file own os.File) Writer` | A writer that keeps up to 4096 bytes before writing them to `file` |
+| `(w mut Writer) Write(p []byte) (int, error)`, `WriteString(s string) (int, error)`, `WriteRune(r rune) (int, error)`, `WriteByte(c byte) error` | Add to the pending bytes, writing them when the limit is reached |
+| `(w mut Writer) Flush() error`, `(w Writer) Buffered() int` | Write the pending bytes now; the number pending. Bytes still pending when a writer is dropped are lost |
+
+```ore
+import "zore/bufio"
+import "zore/os"
+
+func main() {
+    var input = bufio.NewScanner(os.Stdin())
+    for input.Scan() {
+        println(input.Text())
+    }
+}
+```
 
 **`zore/net`** (TCP over IPv4 and IPv6)
 
 `Listener` and `Conn` are struct types with a custom `drop` (§8.3), so they are
-Move values: dropping one closes it, and `drop(conn)` closes it explicitly. Their
-fields are not exported. The zero value of either is closed and every operation
-on it fails with an error.
+Move values: dropping one closes it, as does `Close`. Their fields are not
+exported. The zero value of either is closed and every operation on it fails
+with an error. The `network` argument is `"tcp"` for any address, `"tcp4"` for
+IPv4 only, or `"tcp6"` for IPv6 only; anything else fails with `net.Listen:
+unknown network N` or `net.Dial: unknown network N`.
 
-| Function | Behavior |
+| Function or method | Behavior |
 | --- | --- |
-| `Listen(address string) (Listener, error)` | Listens on `host:port`; port `0` picks a free port |
-| `Dial(address string) (Conn, error)` | Connects to `host:port`, waiting for the connection |
-| `DialTimeout(address string, milliseconds int) (Conn, error)` | Like `Dial`, but gives up after that many milliseconds for each address tried, with an error whose message begins `net.Dial: `; zero or less means no limit |
-| `(l Listener) SetTimeout(milliseconds int) error` | Limits how long `Accept` waits; zero or less removes the limit, which is the default. The error is non-nil only for a closed listener |
-| `(c Conn) SetTimeout(milliseconds int) error` | Limits how long each `Read`, `ReadBytes`, `Write`, and `WriteBytes` waits for the connection to be ready; zero or less removes the limit, which is the default. The error is non-nil only for a closed connection |
+| `Listen(network string, address string) (Listener, error)` | Listens on `host:port`; port `0` picks a free port |
+| `Dial(network string, address string) (Conn, error)` | Connects to `host:port`, waiting for the connection |
+| `DialTimeout(network string, address string, timeout int) (Conn, error)` | Like `Dial`, but gives up after `timeout` nanoseconds for each address tried; zero or less means no limit |
 | `(l Listener) Accept() (Conn, error)` | Waits for and returns the next incoming connection |
-| `(l Listener) Port() int` | The port the listener is bound to, or `-1` for a closed listener |
-| `(c Conn) Read(max int) (string, error)` | Waits until at least one character is available and returns whole characters read from at most `max` bytes of the stream; a character cut by the end of a read is kept by the connection and joined with the next bytes, so a result can be up to three bytes longer than `max`; at end of stream, `""` and an error whose message is `EOF`; `max` of zero or less is an error |
-| `(c Conn) Write(text string) error` | Waits until all of `text` is sent |
-| `(c Conn) ReadBytes(max int) (Array<byte>, error)` | Waits until at least one byte is available and returns at most `max` bytes of the stream, first any bytes of a character that `Read` kept back; at end of stream, an empty array and an error whose message is `EOF`; `max` of zero or less is an error |
-| `(c Conn) WriteBytes(data []byte) error` | Waits until all of `data` is sent |
+| `(l Listener) Addr() string` | The address the listener is bound to, as `host:port` (`[host]:port` for IPv6), or `""` when closed |
+| `(l Listener) SetDeadline(t int) error` | Makes `Accept` give up at the deadline `t` (§37.3, `zore/time`); zero removes it |
+| `(c Conn) Read(buf mut []byte) (int, error)` | Waits until at least one byte is available and moves up to `buf.len()` bytes into `buf`; at end of stream, `0` and `EOF`; an empty `buf` gives `0` and `nil` at once |
+| `(c Conn) Write(data []byte) (int, error)` | Waits until all of `data` is sent and returns its length; on failure, the bytes sent before it |
+| `(c Conn) LocalAddr() string`, `(c Conn) RemoteAddr() string` | The two ends of the connection, or `""` when closed |
+| `(c Conn) SetDeadline(t int) error` | Sets the read and the write deadline |
+| `(c Conn) SetReadDeadline(t int) error`, `(c Conn) SetWriteDeadline(t int) error` | Makes `Read`, or `Write`, give up at the deadline `t`; zero removes it |
 | `(c Conn) CloseWrite() error` | Ends the sending side so the peer reads `EOF`; reading continues to work |
+| `(l own Listener) Close() error`, `(c own Conn) Close() error` | Closes the listener or connection |
 
-A call that waits longer than its limit fails with the error message
-`net.Accept: timed out`, `net.Read: timed out`, `net.ReadBytes: timed out`,
-`net.Write: timed out`, or `net.WriteBytes: timed out`. The connection stays
-usable: a timed-out read loses nothing, and a timed-out write may have sent part
-of its data. The limit applies to each wait, not to the whole call.
+Setting a deadline fails only for a closed handle. A wait that reaches its
+deadline fails with `net.Accept: timed out`, `net.Read: timed out`, or
+`net.Write: timed out`, and so does any later wait until the deadline is moved;
+a deadline in the past makes the next wait fail at once. The connection stays
+usable: a timed-out read loses nothing, and a timed-out write reports how much
+it sent. A deadline applies to waits that begin after it is set.
 
 Error messages begin `net.Listen: `, `net.Dial: `, `net.Accept: `, `net.Read: `,
-`net.Write: `, `net.ReadBytes: `, `net.WriteBytes: `, or `net.CloseWrite: ` and continue with system-defined text,
-except the fixed messages above.
+`net.Write: `, `net.SetDeadline: `, `net.CloseWrite: `, or `net.Close: ` and
+continue with system-defined text, except the fixed messages above.
 
 ```ore
 import "zore/net"
 
 func serve(conn own net.Conn) {
+    var buf = Array<byte>{0, 0, 0, 0, 0, 0, 0, 0}
     for {
-        let text, err = conn.Read(1024)
+        let count, err = conn.Read(buf[:])
         if err != nil { return }
-        if conn.Write(text) != nil { return }
+        let _, writeErr = conn.Write(buf[:count])
+        if writeErr != nil { return }
     }
 }
 
 func main() {
-    let listener, err = net.Listen("127.0.0.1:0")
+    let listener, err = net.Listen("tcp", "127.0.0.1:0")
     if err != nil { return }
-    println(listener.Port())
+    println(listener.Addr())
     let conn, _ = listener.Accept()
     let done = go serve(conn)
     done.wait()
 }
 ```
 
-Ownership, error, and async implications: a connection is owned by one task at a
-time and moves to another with `own` (§18.4); no two tasks use it at once, so
-reads and writes need no locking by the program. Errors follow §15; a `Conn`
-returned with a non-nil error is the zero value. Dropping a connection while
-another task still waits on it cannot happen, since waiting borrows it.
+Ownership, error, and async implications: a file, reader, scanner, writer, or
+connection is owned by one task at a time and moves to another with `own`
+(§18.4); no two tasks use it at once, so reads and writes need no locking by the
+program. Errors follow §15; a handle returned with a non-nil error is the zero
+value. Dropping a handle while another task still waits on it cannot happen,
+since waiting borrows it. `Close` takes its receiver with `own`, so a closed
+handle cannot be used again.
 
 Compiler impact: the packages are bundled sources whose function bodies call the
-runtime (§37.2). The runtime suspends the waiting task, or blocks the waiting thread in a
-synchronous function, and wakes it from a timer, a readiness event, or a helper
-thread (§36.2); the mechanism is not specified.
-Pending conformance cases: `tests/conformance/io.md`.
+runtime (§37.2). The runtime suspends the waiting task, or blocks the waiting
+thread in a synchronous function, and wakes it from a timer, a readiness event,
+or a helper thread (§36.2); the mechanism is not specified. A bundled function
+that calls a waiting function waits too, so it is lowered like any other
+waiting call. Pending conformance cases: `tests/conformance/io.md`.
 
-## 37.4 Standard package `zore/cancel` — LOCKED
+## 37.4 Standard packages `zore/context` and `zore/sync` — LOCKED
 
-`"zore/cancel"` gives tasks a way to ask each other to stop. Cancellation is
+`"zore/context"` gives tasks a way to ask each other to stop. Cancellation is
 cooperative: nothing is interrupted, and a task stops when it looks at its
-token. A token is a Copy value; every copy refers to the same token.
+context. A `Context` is a Copy value; every copy refers to the same context.
 
-| Function | Behavior |
+| Function or method | Behavior |
 | --- | --- |
-| `New() Token` | A token that is not cancelled |
-| `WithTimeout(milliseconds int) Token` | A token that cancels itself after at least that many milliseconds |
-| `(t Token) Cancel()` | Cancels the token and everything made from it with `Child`; cancelling again does nothing |
-| `(t Token) Cancelled() bool` | Whether the token has been cancelled |
-| `(t Token) Done() channel<bool>` | A channel that is closed when the token is cancelled, for use as a `select` case |
-| `(t Token) Child() Token` | A new token that is cancelled when `t` is; cancelling the child does not cancel `t` |
-| `(t Token) Sleep(milliseconds int) bool` | Waits that long, or until the token is cancelled; `true` when the full time passed, `false` when cancelled first or already |
+| `Background() Context`, `TODO() Context` | A context that is never cancelled and has no deadline |
+| `WithCancel(parent Context) (Context, func())` | A child of `parent` and a function that cancels it; calling the function again does nothing |
+| `WithDeadline(parent Context, deadline int) (Context, func())` | A child that is also cancelled at the deadline (a `time.Now` reading), or at the parent's deadline when that is earlier |
+| `WithTimeout(parent Context, timeout int) (Context, func())` | `WithDeadline(parent, time.Now() + timeout)` |
+| `(c Context) Done() channel<bool>` | A channel that is closed when the context is cancelled, for use as a `select` case |
+| `(c Context) Err() error` | `nil` while active; `context canceled` after its cancel function ran or its parent was cancelled that way; `context deadline exceeded` after its deadline passed |
+| `(c Context) Deadline() (int, bool)` | The deadline and `true`, or `0` and `false` when there is none |
+
+Cancelling a context cancels every context made from it, with the same error;
+cancelling a child does not affect its parent. A cancelled context stays
+cancelled, and its error does not change. Call the cancel function when the
+work is done, so the waiting described below can end early.
 
 ```ore
-import "zore/cancel"
+import "zore/context"
+import "zore/time"
 
-func worker(token cancel.Token, results channel<int>) {
+func worker(ctx context.Context, results channel<int>) {
     var steps = 0
-    for token.Sleep(10) {
-        steps += 1
+    for {
+        select {
+            case ctx.Done().receive() {
+                results.send(steps)
+                return
+            }
+            case time.After(10 * time.Millisecond).receive() {
+                steps += 1
+            }
+        }
     }
-    results.send(steps)
 }
 ```
 
-A cancelled token is cancelled for good. A task blocked in an operation with no
-time limit does not notice cancellation; put a limit on it (§37.3) or wait on
-`Done()` in a `select`. Cancelling a token has no effect on tasks that never
-look at it, and a task is never stopped or dropped because of a token.
+A task blocked in an operation with no deadline does not notice cancellation;
+give it a deadline (§37.3) or wait on `Done()` in a `select`. Cancelling has no
+effect on tasks that never look at the context, and a task is never stopped or
+dropped because of one.
 
-Ownership, error, and async implications: a token holds a channel and a mutex
-handle, so copies are free and safe to pass to any task. `Child` and
-`WithTimeout` each start a small task that waits for the parent or the clock.
+`"zore/sync"` coordinates tasks beyond what channels and `Mutex<T>` (§20.2) do
+directly. Both types are Copy handles that share their state.
 
-Compiler impact: the package is bundled Zore source built from channels,
-`Mutex<bool>`, `select`, and `time.After`; the only runtime additions in this
-slice are the time limits of §37.3. Pending conformance cases:
+| Function or method | Behavior |
+| --- | --- |
+| `NewWaitGroup() WaitGroup` | A counter at zero |
+| `(wg WaitGroup) Add(delta int)` | Adds `delta`; panics with `sync: negative WaitGroup counter` when the counter goes below zero |
+| `(wg WaitGroup) Done()` | `Add(-1)` |
+| `(wg WaitGroup) Wait()` | Waits until the counter is zero |
+| `NewOnce() Once` | A `Once` that has not run |
+| `(o Once) Do(f func())` | Calls `f` the first time `Do` is called on any copy; other calls wait until that call returns and then do nothing |
+
+Ownership, error, and async implications: a context or wait group holds
+channel and mutex handles, so copies are free and safe to pass to any task.
+Each `WithCancel`, `WithDeadline`, and `WithTimeout` on a cancellable parent
+starts a small task that waits for the parent or the child, and each deadline
+starts one that waits for the clock or the child. `Wait` and `Do` suspend like
+the channel and mutex operations they use.
+
+Compiler impact: both packages are bundled Zore source built from channels,
+`Mutex<T>`, `select`, and `time.After`. Pending conformance cases:
 `tests/conformance/io.md`.
+
+## 37.5 Standard packages `zore/path`, `zore/path/filepath`, and `zore/sort` — LOCKED
+
+`"zore/path"` works on slash-separated paths as text, without looking at any
+file. `"zore/path/filepath"` offers the same functions for paths of the host
+system, which use `/` on every supported system, plus `Abs`.
+
+| Function | Behavior |
+| --- | --- |
+| `Clean(p string) string` | The shortest equivalent path: repeated slashes become one, `.` elements are removed, an `..` element removes the element before it, `..` at the start of a rooted path is removed, and a trailing slash is dropped; the empty result is `"."` |
+| `Join(elems []string) string` | The non-empty elements joined with `/` and cleaned; `""` when every element is empty |
+| `Split(p string) (string, string)` | The text up to and including the last `/`, and the rest |
+| `Base(p string) string` | The last element, ignoring trailing slashes; `"."` for `""` and `"/"` for a path of only slashes |
+| `Dir(p string) string` | Everything but the last element, cleaned |
+| `Ext(p string) string` | The text from the last `.` in the last element, or `""` |
+| `IsAbs(p string) bool` | Whether `p` starts with `/` |
+| `filepath.Abs(p string) (string, error)` | `p` cleaned when absolute, otherwise joined to the current folder |
+| `const filepath.Separator`, `filepath.ListSeparator` | `'/'` and `':'` |
+
+`"zore/sort"` sorts and searches in place.
+
+| Function | Behavior |
+| --- | --- |
+| `Ints(x mut []int)`, `Strings(x mut []string)` | Sort ascending, strings by bytes (§6.6); equal elements may change order |
+| `IntsAreSorted(x []int) bool`, `StringsAreSorted(x []string) bool` | Whether `x` is ascending |
+| `SearchInts(a []int, x int) int`, `SearchStrings(a []string, x string) int` | The first index whose element is not less than `x` in sorted `a`, or `a.len()` |
+
+Ownership, error, and async implications: all functions are synchronous;
+`sort` writes only through its `mut` parameter, and `Abs` reports an error only
+when the current folder cannot be read.
+
+Compiler impact: the packages are bundled Zore source. Pending conformance
+cases: `tests/conformance/packages.md`.
 
 ---
 

@@ -1,16 +1,31 @@
 package time
 
-func Sleep(milliseconds int)
-func Millis() int
+const Nanosecond = 1
+const Microsecond = 1000 * Nanosecond
+const Millisecond = 1000 * Microsecond
+const Second = 1000 * Millisecond
+const Minute = 60 * Second
+const Hour = 60 * Minute
 
-func After(milliseconds int) channel<bool> {
+func Sleep(d int)
+func Now() int
+
+func Since(start int) int {
+    return Now() - start
+}
+
+func Until(t int) int {
+    return t - Now()
+}
+
+func After(d int) channel<bool> {
     let ready = channel<bool>(1)
-    go fire(ready, milliseconds)
+    go fire(ready, d)
     return ready
 }
 
-async func fire(ready channel<bool>, milliseconds int) {
-    Sleep(milliseconds)
+async func fire(ready channel<bool>, d int) {
+    Sleep(d)
     ready.send(true)
     ready.close()
 }
