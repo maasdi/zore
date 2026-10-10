@@ -41,12 +41,15 @@ word `interface` (§3.16).
    and `type Stack<T any> struct`, matching `Array<T>`.
 4. Type arguments of a call are always inferred. There is no `Max<int>(...)`
    call syntax.
-5. Three predeclared constraints, `any`, `comparable`, and `ordered`, plus any
-   interface type as a constraint.
+5. Four predeclared constraints, `any`, `copyable`, `comparable`, and
+   `ordered`, plus any interface type as a constraint.
 6. Generic bodies are checked once, at the declaration. The compiler then
    makes one copy per set of type arguments (monomorphization); there are no
    runtime dictionaries.
 7. `error` stays one concrete Copy type. Wrapping is a later library decision.
+8. A call through an interface behaves exactly like a direct call of the
+   concrete method, including pausing a task inside async code when the method
+   waits.
 
 ## 1. Interfaces
 
@@ -195,11 +198,24 @@ dynamic method unwinds through the caller with ordinary cleanup.
 
 An `async` entry is satisfied only by `async` methods, and a call through it
 must be awaited or spawned with `go` (§17.8), matching async function values
-(Q36). A non-`async` entry calls the method's ordinary form. In this step, a
-standard library method that waits, such as `os.File.Read`, runs in its
-blocking form when it is reached through an interface. Making dynamic calls
-into suspension points is a later implementation improvement and changes no
-source rule.
+(Q36).
+
+A call through a non-`async` entry behaves exactly like a direct call of the
+concrete method. Inside an `async func`, or in a standard library function that
+waits, a direct call of a method that waits, such as `os.File.Read` or
+`net.Conn.Read`, suspends the task and lets other tasks run (§17.7, §37.3). The
+same call through an `io.Reader` suspends the same way. In a plain function it
+waits on the spot, as the direct call does. A method that never waits completes
+without suspending through either path.
+
+```ore
+async func serve(conn own net.Conn) {
+    var lines = bufio.NewScanner(conn)  // conn is stored as an io.Reader
+    for lines.Scan() {                  // suspends while waiting; other tasks run
+        println(lines.Text())
+    }
+}
+```
 
 ## 2. Generics
 
@@ -269,22 +285,38 @@ have the problem, because a `{` cannot follow a comparison.
 | Constraint | Allowed type arguments | What the body may do with a `T` |
 | --- | --- | --- |
 | `any` | any type that can be a parameter type | pass, return, store, and move it |
+| `copyable` | every Copy type (§10.2, §8.3, §10.4) except `mut []T` and types holding one | the above, and copy it |
 | `comparable` | `bool`, integer types, `rune`, `string`, and named types built on them | the above, and `==`, `!=`, map keys |
 | `ordered` | integer and float types, `rune`, `string`, and named types built on them | the above, and `<`, `<=`, `>`, `>=` |
 | an interface type | types that satisfy it | the above, and call its methods |
 
 `comparable` is exactly the set of map key types (§13.3), so `map[K]V` with
 `K comparable` is always valid, and floats are left out for the same NaN reason.
-`any`, `comparable`, and `ordered` become predeclared names (§3.17), usable only
-as constraints. `any` is not a value type.
+Every `comparable` and `ordered` type is also `copyable`. A copied view keeps its
+provenance (§11.7). `any`, `copyable`, `comparable`, and `ordered` become
+predeclared names (§3.17), usable only as constraints. `any` is not a value
+type.
+
+```ore
+func First<T copyable>(items []T) T {
+    return items[0]                  // accepted: T values are copied
+}
+
+func Last<T any>(items []T) T {
+    return items[items.len() - 1]    // rejected: T may be a Move type
+}
+
+println(First(numbers[:]))           // T = int
+First(files[:])                      // rejected: `os.File` is not copyable
+```
 
 ### Ownership in generic code
 
 The body is checked once, without knowing `T`, so it must be correct for every
 allowed type argument:
 
-- Under `comparable` and `ordered`, every allowed type is Copy, so `T` values
-  are copied.
+- Under `copyable`, `comparable`, and `ordered`, every allowed type is Copy,
+  so `T` values are copied.
 - Under `any` or an interface, `T` is treated as Move. A value can be moved but
   not implicitly duplicated, so reading `items[0]` out of a `[]T` into a binding
   is rejected, as it is for any Move element. `clone(value)` on a `T` is not
@@ -342,8 +374,13 @@ can carry an optional cause. Structured payloads wait for type assertions.
   destructor, and a type identity reserved for future type assertions. Owned
   values store their data in heap storage freed by the destructor, as owning
   closure environments are.
-- **Async lowering.** `async` entries suspend like async function values. Other
-  dynamic calls do not suspend in this step.
+- **Async lowering.** `async` entries suspend like async function values. Every
+  other call through an interface is a possible suspension point in an async
+  body or a waiting standard library function. Each method placed behind an
+  interface gets two method-table entries: its ordinary form for plain callers,
+  and a resumable form for suspending callers. For a method that never waits,
+  the resumable form runs the ordinary one and completes in one step. Both are
+  generated only for methods actually converted to an interface.
 - **Runtime.** No new runtime services; storage uses the existing allocator.
 
 ## 5. Delivery plan
@@ -384,8 +421,10 @@ unexported methods; borrowed and owned conversions; `mut` interface parameters
 needing a mutable place; interface-to-interface conversion; consuming `own`
 methods; drop of the value inside exactly once on every exit path; views kept
 through interface values; rejected spawns and sends of values holding views;
-rejected `==`, `nil`, `clone`, and printing; generic functions with each
-constraint; inference failures; Move rules under `any`; generic types, their
-literals, and their methods; generic instances satisfying interfaces; and
-generic async functions. These are proposed cases, not executable or passing
-tests.
+rejected `==`, `nil`, `clone`, and printing; calls through an interface that
+suspend a task in async code, wait in plain code, and complete at once for
+methods that never wait; generic functions with each constraint, including
+`copyable` accepting copies and rejecting Move types; inference failures; Move
+rules under `any`; generic types, their literals, and their methods; generic
+instances satisfying interfaces; and generic async functions. These are proposed
+cases, not executable or passing tests.
