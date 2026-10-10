@@ -142,6 +142,11 @@ fn live_at_entry(body: &mir::Body) -> Vec<Vec<bool>> {
                         }
                     }
                 }
+                Statement::SetGlobal { value, .. } => visit_operand(value, &mut |local| {
+                    if !defined[index][local] {
+                        used_before_definition[index][local] = true;
+                    }
+                }),
             }
         }
         visit_terminator(&block.terminator, &mut |local| {
@@ -612,7 +617,7 @@ fn visit_rvalue(rvalue: &Rvalue, visit: &mut impl FnMut(usize)) {
                 visit_place(place, visit);
             }
         }
-        Rvalue::Zero => {}
+        Rvalue::Zero | Rvalue::Global(_) => {}
     }
 }
 
@@ -628,6 +633,7 @@ fn visit_statement(statement: &Statement, visit: &mut impl FnMut(usize)) {
                 visit(local.0 as usize);
             }
         }
+        Statement::SetGlobal { value, .. } => visit_operand(value, visit),
     }
 }
 

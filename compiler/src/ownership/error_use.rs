@@ -111,6 +111,7 @@ fn transfer(
                 }
             }
             Statement::Drop { .. } => {}
+            Statement::SetGlobal { value, .. } => read_operand(value, state),
         }
     }
     match &block.terminator {
@@ -148,7 +149,7 @@ fn transfer(
 
 fn read_rvalue(rvalue: &Rvalue, state: &mut [UseState]) {
     match rvalue {
-        Rvalue::Zero => {}
+        Rvalue::Zero | Rvalue::Global(_) => {}
         Rvalue::Use(value)
         | Rvalue::Spawn(value)
         | Rvalue::Unary(_, value)

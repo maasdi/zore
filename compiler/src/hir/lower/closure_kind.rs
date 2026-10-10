@@ -112,9 +112,9 @@ impl Checker<'_> {
                 self.expr_escapes(key, false, escapes);
                 self.expr_escapes(value, true, escapes);
             }
-            StmtKind::CompoundAssign { value, .. } | StmtKind::Expr(value) => {
-                self.expr_escapes(value, false, escapes)
-            }
+            StmtKind::CompoundAssign { value, .. }
+            | StmtKind::Expr(value)
+            | StmtKind::SetGlobal { value, .. } => self.expr_escapes(value, false, escapes),
             StmtKind::Return(values) => {
                 for value in values {
                     self.expr_escapes(value, true, escapes);
@@ -420,7 +420,8 @@ impl Checker<'_> {
         match &stmt.kind {
             StmtKind::Let { value, .. }
             | StmtKind::CompoundAssign { value, .. }
-            | StmtKind::Expr(value) => self.value_moves(value, moved),
+            | StmtKind::Expr(value)
+            | StmtKind::SetGlobal { value, .. } => self.value_moves(value, moved),
             StmtKind::Assign { targets, values } => {
                 for target in targets.iter().flatten() {
                     for projection in &target.projections {
@@ -704,7 +705,8 @@ pub(super) fn stmt_exprs(stmt: &mut hir::Stmt) -> Vec<&mut hir::Expr> {
     match &mut stmt.kind {
         StmtKind::Let { value, .. }
         | StmtKind::CompoundAssign { value, .. }
-        | StmtKind::Expr(value) => roots.push(value),
+        | StmtKind::Expr(value)
+        | StmtKind::SetGlobal { value, .. } => roots.push(value),
         StmtKind::Assign { targets, values } => {
             for target in targets.iter_mut().flatten() {
                 for projection in &mut target.projections {
@@ -748,7 +750,10 @@ fn visit_expr(expr: &mut hir::Expr, visit: &mut dyn FnMut(&mut hir::Expr)) {
 
 fn children_mut(expr: &mut hir::Expr) -> Vec<&mut hir::Expr> {
     match &mut expr.kind {
-        ExprKind::Const(_) | ExprKind::Local(_) | ExprKind::Closure { .. } => Vec::new(),
+        ExprKind::Const(_)
+        | ExprKind::Local(_)
+        | ExprKind::Global(_)
+        | ExprKind::Closure { .. } => Vec::new(),
         ExprKind::Field { base, .. } => vec![base],
         ExprKind::Index { base, index } => vec![base, index],
         ExprKind::Slice {

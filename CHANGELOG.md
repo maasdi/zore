@@ -19,6 +19,9 @@ once it does.
   checked at run time and folded for constants (§6.6, Q39).
 - Locked named types: `type Duration int` declares a distinct type with its
   base type's operations, explicit conversions, and methods (§8.5, Q40).
+- Locked package-level `let`: immutable Copy values computed once before
+  `main`, in dependency and source order, with use of later values rejected
+  (§3.21, Q41).
 - Locked untyped constants following Go's model: integer and float kinds,
   exact arithmetic, representability rules, and at least 256-bit precision
   (§6.7).

@@ -402,7 +402,7 @@ fn package_level_variables_and_native_functions_are_rejected_in_imports() {
             ),
             ("a/a.ore", "package a\nvar X = 1\nfunc F() {}\n"),
         ],
-        "package-level `let` and `var` are not supported",
+        "package-level `var` is not supported; declare the value with `let`",
     );
     rejects(
         &[(
@@ -683,6 +683,34 @@ func Hide() secret { return secret(1) }
             &[
                 ("main.ore", &main_with("import \"myapp/units\"", body)),
                 ("units/units.ore", units),
+            ],
+            message,
+        );
+    }
+}
+
+#[test]
+fn package_level_lets_are_exported_like_other_names() {
+    let settings = "package settings
+
+let Port int = 8080
+let secret = \"hidden\"
+";
+    accepts(&[
+        (
+            "main.ore",
+            &main_with("import \"myapp/settings\"", "println(settings.Port + 1)"),
+        ),
+        ("settings/settings.ore", settings),
+    ]);
+    for (body, message) in [
+        ("println(settings.secret)", "not exported"),
+        ("settings.Port = 1", "cannot assign"),
+    ] {
+        rejects(
+            &[
+                ("main.ore", &main_with("import \"myapp/settings\"", body)),
+                ("settings/settings.ore", settings),
             ],
             message,
         );

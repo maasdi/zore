@@ -78,3 +78,22 @@ Authority: spec §3.20 and §37.2–§37.5.
 | `strings.Upper` | Reject: the package does not declare it |
 | Unused `error` from `Atoi` | Reject, as for any error value |
 | A function declaration without a body in user code | Reject |
+
+## Package-level values (§3.21)
+
+Covered by `tests/typecheck/check.rs`, `tests/packages/packages.rs`, and `tests/codegen/native.rs`.
+
+| Scenario | Expected result |
+| --- | --- |
+| `let EOF = error("EOF")`, `let Limit int = 3`, a struct and a fixed array built from earlier values | Accept; read anywhere in the package, including in `async` functions and tasks |
+| Initializers that print as they run | Run once each, in source order, before `main` |
+| An imported package's values | Initialized before the importer's |
+| `config.Port` from another package; `config.secret` | Exported value readable; unexported one rejected |
+| `let Early = Late + 1` before `let Late = 2` | Reject: used before it is initialized |
+| An initializer that calls or spawns a function reading a later value | Reject, naming the later value |
+| An initializer that reaches its own value | Reject |
+| `Limit = 4`, `config.Port = 1` | Reject: cannot assign |
+| `var Counter = 0`, `let a, b = pair()` | Reject |
+| `channel<int>(1)`, `Array<int>{1}`, `mutex(0)`, a function value | Reject: not storable in a package-level value |
+| A panic in an initializer | The program ends with status 2; `main` does not run |
+| Text built at run time and held by a package-level value | Not reported as a leak |

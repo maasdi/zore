@@ -1,7 +1,8 @@
 use std::collections::HashMap;
 
-use super::ids::{ConstId, FunctionId};
-use super::symbol::{ClosureDecl, ConstDecl, LocalDecl, LocalKind, Res, predeclared};
+use super::ids::{ConstId, FunctionId, GlobalId};
+use super::initializers::Initializer;
+use super::symbol::{ClosureDecl, ConstDecl, GlobalDecl, LocalDecl, LocalKind, Res, predeclared};
 use super::units::{FileUnit, PackageInfo, PackageUnit};
 use crate::ast::{self, BindingKind, BindingTarget, ExprKind, ForHeader, Item, StmtKind};
 use crate::diagnostic::{Diagnostic, Severity};
@@ -28,6 +29,8 @@ pub struct Resolution<'a> {
     /// Keyed by the receiver's type.
     pub methods: HashMap<(TypeId, String), FunctionId>,
     pub consts: Vec<ConstDecl<'a>>,
+    /// Package-level `let` declarations in initialization order: dependencies first.
+    pub globals: Vec<GlobalDecl<'a>>,
     /// Keyed by the span of the name.
     pub uses: HashMap<Span, Res>,
     /// Indexed by `FunctionId`.
@@ -54,7 +57,10 @@ fn by_value_named_type(ty: &ast::Type) -> Option<&ast::Name> {
     }
 }
 
-pub fn resolve<'a>(units: &'a [PackageUnit<'a>]) -> Resolution<'a> {
+pub fn resolve<'a>(
+    units: &'a [PackageUnit<'a>],
+    initializers: &'a [Initializer<'a>],
+) -> Resolution<'a> {
     let mut resolver = Resolver {
         out: Resolution {
             package: String::new(),
@@ -70,6 +76,7 @@ pub fn resolve<'a>(units: &'a [PackageUnit<'a>]) -> Resolution<'a> {
             functions: Vec::new(),
             methods: HashMap::new(),
             consts: Vec::new(),
+            globals: Vec::new(),
             uses: HashMap::new(),
             locals: Vec::new(),
             closures: Vec::new(),
@@ -87,6 +94,7 @@ pub fn resolve<'a>(units: &'a [PackageUnit<'a>]) -> Resolution<'a> {
         scopes: Vec::new(),
         function: None,
         frames: Vec::new(),
+        initializers,
     };
     resolver.all(units);
     resolver.out
@@ -108,6 +116,7 @@ pub(super) struct ImportEntry {
 
 pub(super) struct Resolver<'a> {
     pub(super) out: Resolution<'a>,
+    pub(super) initializers: &'a [Initializer<'a>],
     /// Indexed by package.
     pub(super) package_scopes: Vec<HashMap<String, (Res, Span)>>,
     /// Indexed by package, then file.
@@ -280,15 +289,41 @@ impl<'a> Resolver<'a> {
                         self.declare_package(name, res);
                     }
                 }
-                Item::Binding(binding) => {
+                Item::Binding(binding) if binding.kind == BindingKind::Var => {
                     self.out.diagnostics.push(
                         Diagnostic::new(
                             Severity::Error,
-                            "package-level `let` and `var` are not supported by the checker yet",
+                            "package-level `var` is not supported; declare the value with `let`",
                             binding.span,
                         )
-                        .note("package variable initialization order is unresolved"),
+                        .note("a package-level value cannot change after it is initialized"),
                     );
+                }
+                Item::Binding(binding) => {
+                    let found = self
+                        .initializers
+                        .iter()
+                        .find(|init| std::ptr::eq(init.binding, binding));
+                    let (Some(init), [BindingTarget::Name(name)]) = (found, &binding.targets[..])
+                    else {
+                        self.error(
+                            "a package-level `let` declares exactly one name",
+                            binding.span,
+                        );
+                        continue;
+                    };
+                    let function = FunctionId(self.out.functions.len() as u32);
+                    self.out.functions.push(&init.function);
+                    self.out.function_package.push(package);
+                    self.file_of_function.push(file_index);
+                    let id = GlobalId(self.out.globals.len() as u32);
+                    self.out.globals.push(GlobalDecl {
+                        name,
+                        ty: binding.ty.as_ref(),
+                        function,
+                        package,
+                    });
+                    self.declare_package(name, Res::Global(id));
                 }
             }
         }

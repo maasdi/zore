@@ -203,7 +203,7 @@ fn check_rvalue(
     diagnostics: &mut Vec<Diagnostic>,
 ) {
     match rvalue {
-        Rvalue::Zero => {}
+        Rvalue::Zero | Rvalue::Global(_) => {}
         Rvalue::Use(operand)
         | Rvalue::Spawn(operand)
         | Rvalue::Unary(_, operand)

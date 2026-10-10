@@ -242,6 +242,18 @@ impl Builder {
             self.temp_scopes.push(Vec::new());
         }
         match &stmt.kind {
+            StmtKind::SetGlobal { global, value } => {
+                let value = self.operand(package, value);
+                if self.blocks[self.current.0 as usize].terminator.is_none() {
+                    self.blocks[self.current.0 as usize]
+                        .statements
+                        .push(Statement::SetGlobal {
+                            global: *global,
+                            value,
+                            span: stmt.span,
+                        });
+                }
+            }
             StmtKind::Let { targets, value } => {
                 for target in targets.iter().flatten() {
                     self.scopes
@@ -1233,6 +1245,9 @@ impl Builder {
             ExprKind::Error(inner) => {
                 let inner = self.operand(package, inner);
                 self.assign_temp(package, expr.ty(), Rvalue::Error(inner), span)
+            }
+            ExprKind::Global(global) => {
+                self.assign_temp(package, expr.ty(), Rvalue::Global(*global), span)
             }
             ExprKind::StructLit { strukt, fields } => {
                 // Evaluate in written order, then assemble in declaration order.
