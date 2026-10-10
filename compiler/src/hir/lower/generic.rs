@@ -435,7 +435,12 @@ impl Checker<'_> {
         }
         let mut values = Vec::new();
         for (arg, &param) in args.iter().zip(&params) {
-            let expected = (!self.types.mentions_param(param)).then_some(param);
+            let expected = (!self.types.mentions_param(param)
+                || matches!(
+                    self.types.kind(param),
+                    TypeKind::Slice { mutable: true, .. }
+                ))
+            .then_some(param);
             let value = match self.expr(arg, expected) {
                 Some(Value::Typed(expr)) => self.single_value(expr).map(Value::Typed),
                 other => other,

@@ -73,6 +73,13 @@ Authority: spec §3.20 and §37.2–§37.5.
 | `errors.New` and `errors.Is` | Equal messages compare equal |
 | `path.Clean`, `Join`, `Split`, `Base`, `Dir`, `Ext`, `IsAbs`, and `filepath.Abs` | As in §37.5 |
 | `sort.Ints`, `Strings`, the `AreSorted` checks, and searches | Ascending order and insertion indices |
+| `sort.Slice` and `SliceIsSorted` with a function literal comparing struct fields | Sorted by the comparison |
+| `sort.Slice` on elements that are not copyable | Reject: does not satisfy `copyable` |
+| `slices.Sort`, `IsSorted`, `Contains`, `Index`, `Equal`, `Reverse`, `Max`, `Min`, and `Clone` on integers and strings | The documented results |
+| `slices.Max` of an empty list | Panics with `slices.Max: empty list` |
+| `slices.Contains` on floats | Reject: does not satisfy `comparable` |
+| `slices.Sort` of a view of a `let` array | Reject: cannot take a mutable slice |
+| `maps.Keys`, `Values`, and `Clone` | Every key, every value, and an equal map; `Values` of non-copyable values is rejected |
 | `import "zore/os/exec"`, `"zore/path/filepath"`, `"zore/unicode/utf8"` | Used as `exec.`, `filepath.`, and `utf8.` |
 | `import "zore/io"`, `"zore/cancel"`, `"zore/os/nope"` | Reject: no such standard package |
 | `strings.Upper` | Reject: the package does not declare it |

@@ -9246,3 +9246,64 @@ func main() {
 ";
     prints(source, "1\n7\n9\nclone\n7\n3\nw\n");
 }
+
+#[test]
+fn slices_maps_and_sort_slice_work_on_any_allowed_element_type() {
+    let source = "package main
+
+import \"zore/maps\"
+import \"zore/slices\"
+import \"zore/sort\"
+
+type Person struct {
+    name string
+    age int
+}
+
+func main() {
+    var nums = Array<int>{5, 2, 9, 1}
+    slices.Sort(nums[:])
+    println(nums[0])
+    println(nums[3])
+    println(slices.IsSorted(nums[:]))
+    println(slices.Contains(nums[:], 9))
+    println(slices.Contains(nums[:], 7))
+    println(slices.Index(nums[:], 5))
+    println(slices.Max(nums[:]))
+    println(slices.Min(nums[:]))
+    slices.Reverse(nums[:])
+    println(nums[0])
+    let copied = slices.Clone(nums[:])
+    println(slices.Equal(copied[:], nums[:]))
+    var words = Array<string>{\"pear\", \"fig\", \"apple\"}
+    slices.Sort(words[:])
+    println(words[0])
+    var people = Array<Person>{Person{name: \"Ann\", age: 40}, Person{name: \"Bo\", age: 20}, Person{name: \"Cy\", age: 30}}
+    sort.Slice(people[:], func(a Person, b Person) bool {
+        return a.age < b.age
+    })
+    println(people[0].name + people[1].name + people[2].name)
+    println(sort.SliceIsSorted(people[:], func(a Person, b Person) bool {
+        return a.age < b.age
+    }))
+    let ages = map[string]int{\"a\": 1, \"b\": 2, \"c\": 3}
+    var keys = maps.Keys(ages)
+    slices.Sort(keys[:])
+    println(keys[0] + keys[1] + keys[2])
+    var values = maps.Values(ages)
+    slices.Sort(values[:])
+    println(values[2])
+    let again = maps.Clone(ages)
+    println(again.len())
+    let empty = Array<int>{}
+    println(slices.Max(empty[:]))
+}
+";
+    let output = run(source);
+    assert_eq!(output.status.code(), Some(2), "{}", stderr(&output));
+    assert_eq!(
+        stdout(&output),
+        "1\n9\ntrue\ntrue\nfalse\n2\n9\n1\n9\ntrue\napple\nBoCyAnn\ntrue\nabc\n3\n3\n"
+    );
+    assert!(stderr(&output).contains("slices.Max: empty list"));
+}

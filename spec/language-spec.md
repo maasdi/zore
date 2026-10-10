@@ -6332,7 +6332,7 @@ Compiler impact: both packages are bundled Zore source built from channels,
 `Mutex<T>`, `select`, and `time.After`. Pending conformance cases:
 `tests/conformance/io.md`.
 
-## 37.5 Standard packages `zore/path`, `zore/path/filepath`, and `zore/sort` — LOCKED
+## 37.5 Standard packages `zore/path`, `zore/path/filepath`, `zore/sort`, `zore/slices`, and `zore/maps` — LOCKED
 
 `"zore/path"` works on slash-separated paths as text, without looking at any
 file. `"zore/path/filepath"` offers the same functions for paths of the host
@@ -6357,9 +6357,48 @@ system, which use `/` on every supported system, plus `Abs`.
 | `Ints(x mut []int)`, `Strings(x mut []string)` | Sort ascending, strings by bytes (§6.6); equal elements may change order |
 | `IntsAreSorted(x []int) bool`, `StringsAreSorted(x []string) bool` | Whether `x` is ascending |
 | `SearchInts(a []int, x int) int`, `SearchStrings(a []string, x string) int` | The first index whose element is not less than `x` in sorted `a`, or `a.len()` |
+| `Slice<T copyable>(x mut []T, less func(T, T) bool)` | Sorts `x` so that `less` holds between no later element and an earlier one; equal elements may change order |
+| `SliceIsSorted<T copyable>(x []T, less func(T, T) bool) bool` | Whether no element is `less` than the one before it |
+
+`"zore/slices"` and `"zore/maps"` are generic helpers (§22.1) for slices of
+any element type their constraints allow, and for maps.
+
+| Function | Behavior |
+| --- | --- |
+| `slices.Contains<T comparable>(s []T, v T) bool`, `slices.Index<T comparable>(s []T, v T) int` | Whether `v` is in `s`; the first index of `v`, or `-1` |
+| `slices.Equal<T comparable>(a []T, b []T) bool` | Whether both have the same length and equal elements in order |
+| `slices.Sort<T ordered>(x mut []T)`, `slices.IsSorted<T ordered>(x []T) bool` | Sort ascending, strings by bytes (§6.6); whether `x` is ascending |
+| `slices.Reverse<T copyable>(x mut []T)` | Reverses the order of the elements |
+| `slices.Max<T ordered>(x []T) T`, `slices.Min<T ordered>(x []T) T` | The largest or smallest element; an empty `x` panics with `slices.Max: empty list` or `slices.Min: empty list` |
+| `slices.Clone<T copyable>(s []T) Array<T>` | A new array holding copies of the elements |
+| `maps.Keys<K comparable, V any>(m map[K]V) Array<K>` | The keys, in the order a `for` loop visits them |
+| `maps.Values<K comparable, V copyable>(m map[K]V) Array<V>` | Copies of the values, in the order a `for` loop visits them |
+| `maps.Clone<K comparable, V copyable>(m map[K]V) map[K]V` | A new map with the same entries |
+
+```ore
+import "zore/slices"
+import "zore/sort"
+
+type Person struct {
+    name string
+    age int
+}
+
+func main() {
+    var ages = Array<int>{40, 20, 30}
+    slices.Sort(ages[:])
+    var people = Array<Person>{Person{name: "Ann", age: 40}, Person{name: "Bo", age: 20}}
+    sort.Slice(people[:], func(a Person, b Person) bool {
+        return a.age < b.age
+    })
+    println(people[0].name)
+}
+```
 
 Ownership, error, and async implications: all functions are synchronous;
-`sort` writes only through its `mut` parameter, and `Abs` reports an error only
+`sort` and `slices` write only through their `mut` parameters, element types
+that are not copyable cannot be sorted, reversed, or copied out, and `less`
+is called with copies of elements, and `Abs` reports an error only
 when the current folder cannot be read.
 
 Compiler impact: the packages are bundled Zore source. Pending conformance

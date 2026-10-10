@@ -887,3 +887,47 @@ type Pair<A any, B any> struct {
         "field `items` of `box.Stack<int64>` is not exported by its package",
     );
 }
+
+#[test]
+fn slices_maps_and_sort_slice_check_their_element_types() {
+    accepts(&[(
+        "main.ore",
+        &main_with(
+            "import \"zore/maps\"\nimport \"zore/slices\"\nimport \"zore/sort\"",
+            "var xs = Array<int>{2, 1}
+    slices.Sort(xs[:])
+    sort.Slice(xs[:], func(a int, b int) bool { return a > b })
+    let keys = maps.Keys(map[string]Array<int>{})
+    println(slices.Contains(keys[:], \"k\"))",
+        ),
+    )]);
+    for (body, message) in [
+        (
+            "var xs = Array<Array<int>>{}\n    sort.Slice(xs[:], func(a Array<int>, b Array<int>) bool { return true })",
+            "`Array<int64>` does not satisfy `copyable`, the constraint of `T`",
+        ),
+        (
+            "var xs = Array<float64>{1.5}\n    println(slices.Contains(xs[:], 1.5))",
+            "`float64` does not satisfy `comparable`, the constraint of `T`",
+        ),
+        (
+            "let xs = Array<int>{1}\n    slices.Sort(xs[:])",
+            "cannot take a mutable slice",
+        ),
+        (
+            "let v = maps.Values(map[string]Array<int>{})",
+            "`Array<int64>` does not satisfy `copyable`, the constraint of `V`",
+        ),
+    ] {
+        rejects(
+            &[(
+                "main.ore",
+                &main_with(
+                    "import \"zore/maps\"\nimport \"zore/slices\"\nimport \"zore/sort\"",
+                    &format!("{body}\n    _ = maps.Keys\n    _ = sort.Ints\n    _ = slices.Max"),
+                ),
+            )],
+            message,
+        );
+    }
+}

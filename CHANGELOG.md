@@ -59,6 +59,9 @@ once it does.
   `ReadFull`, and `WriteString` (§37.3). `bufio` now reads and writes any
   `io.Reader` or `io.Writer`, so it works over connections and buffers as well
   as files, and `bufio.Reader` has `Read`.
+- Added `sort.Slice` and `sort.SliceIsSorted`, and the generic `zore/slices`
+  (`Contains`, `Index`, `Equal`, `Sort`, `IsSorted`, `Reverse`, `Max`, `Min`,
+  `Clone`) and `zore/maps` (`Keys`, `Values`, `Clone`) packages (§37.5).
 
 ### Compiler
 
