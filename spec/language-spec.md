@@ -5127,7 +5127,9 @@ its drop flags, and a table of the methods that serve the entries, preceded by
 the destructor of the value inside; give owned values heap storage; treat
 borrowed values as views in the ownership and region analysis; generate the code
 that adapts each method to its entry, including interface-to-interface
-conversions. Pending conformance cases: `tests/conformance/interfaces.md`.
+conversions, and for each entry a second adapter that starts the call for a
+suspending caller: it builds the method's own resumable frame when the method can
+wait, and a frame that is already finished otherwise. Pending conformance cases: `tests/conformance/interfaces.md`.
 
 ---
 

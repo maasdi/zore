@@ -300,7 +300,7 @@ impl FunctionBuilder<'_, '_> {
     }
 
     /// The poll (3) or destroy (4) function that every frame records at its start.
-    fn frame_header_pointer(&mut self, frame: &str, field: usize) -> String {
+    pub(super) fn frame_header_pointer(&mut self, frame: &str, field: usize) -> String {
         let slot = self.fresh();
         self.line(format!(
             "{slot} = getelementptr inbounds {{ i32, ptr, ptr, ptr, ptr }}, ptr {frame}, i32 0, i32 {field}"
@@ -328,6 +328,7 @@ impl FunctionBuilder<'_, '_> {
             destinations,
             target,
             unwind,
+            span,
             ..
         } = terminator
         else {
@@ -346,6 +347,9 @@ impl FunctionBuilder<'_, '_> {
                 child
             }
             Suspension::Task => self.value(&args[0]),
+            Suspension::Interface(method) => {
+                self.interface_start_call(method, args, destinations, *target, *unwind, *span)
+            }
             Suspension::Value => {
                 let Terminator::Call {
                     callee: Callee::Value(place),
@@ -387,6 +391,12 @@ impl FunctionBuilder<'_, '_> {
         self.line(format!("{child} = load ptr, ptr %pending.slot"));
         let results = match kind {
             Suspension::Call(id) => self.module.package.function(id).results.clone(),
+            Suspension::Interface(method) => self
+                .module
+                .package
+                .interface_entry(self.operand_ty(&args[0]), method)
+                .results
+                .clone(),
             Suspension::Value => {
                 let Terminator::Call {
                     callee: Callee::Value(place),
@@ -437,7 +447,7 @@ impl FunctionBuilder<'_, '_> {
                     "{ready} = call i8 {poll}(ptr {child}, ptr %context, ptr {output})"
                 ));
             }
-            Suspension::Value => {
+            Suspension::Value | Suspension::Interface(_) => {
                 let poll = self.frame_header_pointer(&child, 3);
                 self.line(format!(
                     "{ready} = call i8 {poll}(ptr {child}, ptr %context, ptr {output})"
@@ -466,7 +476,7 @@ impl FunctionBuilder<'_, '_> {
                 self.line(format!("call void {destroy}(ptr {child})"));
                 output
             }
-            Suspension::Value => {
+            Suspension::Value | Suspension::Interface(_) => {
                 let destroy = self.frame_header_pointer(&child, 4);
                 self.line(format!("call void {destroy}(ptr {child})"));
                 output

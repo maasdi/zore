@@ -467,6 +467,9 @@ func main() { let t = go parent(go plain()); println(t.wait()) }",
                     assert!(matches!(callee, mir::Callee::Function(callee) if id == callee))
                 }
                 Suspension::Value => assert!(matches!(callee, mir::Callee::Value(_))),
+                Suspension::Interface(method) => assert!(
+                    matches!(callee, mir::Callee::Interface { method: called } if called == method)
+                ),
                 Suspension::Sleep => assert!(
                     matches!(callee, mir::Callee::Function(id) if package.function(*id).name == "zore/time.Sleep")
                 ),

@@ -37,13 +37,6 @@ impl Checker<'_> {
             };
             let mut entries = Vec::new();
             for method in &decl.methods {
-                if method.is_async {
-                    self.unsupported(
-                        "an `async` interface method is",
-                        method.name.span,
-                        "declare the method without `async`; calls through interfaces cannot suspend yet",
-                    );
-                }
                 let params: Vec<Option<(ParamMode, TypeId)>> = method
                     .params
                     .iter()
@@ -360,11 +353,14 @@ impl Checker<'_> {
             self.report_arg_errors(args);
             return None;
         }
-        if self.in_async_body() {
-            self.unsupported(
-                "a call through an interface value inside an `async func` is",
-                span,
-                "calls through interfaces cannot suspend yet; make the call from a plain function",
+        if entry.is_async && self.awaited_call != Some(span) {
+            self.diagnostics.push(
+                Diagnostic::new(
+                    Severity::Error,
+                    format!("call to async method `{}` is not awaited", name.text),
+                    span,
+                )
+                .note("write `await` before the call inside an `async func`"),
             );
             self.report_arg_errors(args);
             return None;

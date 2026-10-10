@@ -4470,10 +4470,6 @@ fn interface_values_are_not_compared_printed_cloned_or_called_as_values() {
             "interface `Counter` has no method `Missing`",
         ),
         (
-            "async func f(c own Counter) int { return c.Count() }",
-            "a call through an interface value inside an `async func` is not supported by the checker yet",
-        ),
-        (
             "func f(c Counter) Task<int> { return go show(c) }",
             "a spawned call cannot take a view",
         ),
@@ -4500,10 +4496,6 @@ fn interface_declarations_list_methods_only() {
         (
             "type Reader interface { Read() int }\nfunc (r Reader) Other() {}",
             "methods cannot be declared on interface type `Reader`",
-        ),
-        (
-            "type Later interface { async Fetch() int }",
-            "an `async` interface method is not supported by the checker yet",
         ),
         (
             "type Reader interface { Read() int }\ntype Named Reader",
@@ -4573,6 +4565,51 @@ func use() {
     twice(s, s)
 }",
             "`s` is also borrowed by another argument of this call",
+        ),
+    ] {
+        rejects(&program(&format!("{decls}\n{body}")), message);
+    }
+}
+
+#[test]
+fn async_code_calls_through_interfaces_and_awaits_async_entries() {
+    let decls = "type Counter interface { Count() int }
+type Fetcher interface { async Fetch(n int) int }
+type T struct { n int }
+func (t T) Count() int { return t.n }
+type Remote struct { base int }
+async func (r Remote) Fetch(n int) int { return r.base + n }
+";
+    let valid = "async func count(c own Counter) int { return c.Count() }
+async func fetch(f own Fetcher) int { return await f.Fetch(1) }
+func use() {
+    let a = go count(T{n: 1})
+    let b = go fetch(Remote{base: 2})
+    println(a.wait() + b.wait())
+}";
+    accepts(&program(&format!("{decls}\n{valid}")));
+    for (body, message) in [
+        (
+            "async func fetch(f own Fetcher) int { return f.Fetch(1) }",
+            "call to async method `Fetch` is not awaited",
+        ),
+        (
+            "func fetch(f own Fetcher) int { return await f.Fetch(1) }",
+            "`await` is only valid inside an `async func`",
+        ),
+        (
+            "func use() { let f Fetcher = T{n: 1} }",
+            "`T` does not satisfy `Fetcher`: it has no method `Fetch`",
+        ),
+        (
+            "type Plain struct { n int }
+func (p Plain) Fetch(n int) int { return n }
+func use() { let f Fetcher = Plain{n: 1} }",
+            "`Plain` does not satisfy `Fetcher`: method `Fetch` is not `async`",
+        ),
+        (
+            "func use() { let c Counter = Remote{base: 1} }",
+            "`Remote` does not satisfy `Counter`: it has no method `Count`",
         ),
     ] {
         rejects(&program(&format!("{decls}\n{body}")), message);

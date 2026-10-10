@@ -5,6 +5,8 @@ pub enum Suspension {
     Call(FunctionId),
     /// An awaited call through a value of async function type.
     Value,
+    /// A call through an interface value, served by the entry's start adapter.
+    Interface(usize),
     Task,
     Channel,
     Sleep,

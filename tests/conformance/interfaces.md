@@ -1,10 +1,9 @@
 # Interface conformance cases
 
-Authority: spec §22.2, with §3.16, §3.17, §10.3, §15.1, and §41.4. Rows marked
-*pending* are specified behavior the compiler rejects for now with a "not
-supported yet" diagnostic; every other row has an executable counterpart in
-`tests/typecheck/check.rs`, `tests/codegen/native.rs`,
-`tests/packages/packages.rs`, or `tests/selfhost/parser.rs`.
+Authority: spec §22.2, with §3.16, §3.17, §10.3, §15.1, and §41.4. Every row
+has an executable counterpart in `tests/typecheck/check.rs`,
+`tests/codegen/native.rs`, `tests/packages/packages.rs`, or
+`tests/selfhost/parser.rs`.
 
 ## Declarations
 
@@ -19,7 +18,7 @@ supported yet" diagnostic; every other row has an executable counterpart in
 | A method declared on an interface type | Reject |
 | `type Named Reader` | Reject: a named type needs a predeclared base |
 | `let interface = 1` | Reject: `interface` is a keyword |
-| An `async` entry | *Pending:* rejected as not supported yet |
+| An `async` entry | Satisfied only by an `async` method |
 
 ## Satisfaction
 
@@ -66,4 +65,6 @@ supported yet" diagnostic; every other row has an executable counterpart in
 | `c.Count` without a call | Reject |
 | `Counter(value)` | Reject: an interface is not called |
 | A call through an empty interface value from a closed channel | Panics with the call's location |
-| A call through an interface value inside an `async func` | *Pending:* rejected as not supported yet |
+| A call through an interface value inside an `async func` | Suspends when the method behind it waits, such as a connection read; a method that never waits finishes at once |
+| A call through an `async` entry | Must be awaited; awaiting it outside an `async func` is rejected |
+| An `async` entry served by a method that is not `async` | Reject |
