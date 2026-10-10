@@ -61,6 +61,7 @@ A newly discovered semantic gap blocks its affected feature, not unrelated work.
 | Q36 | `async` function values: locked in §16.2, §17.2, §17.8, and §18.3. See Q36 below. | §16.2, §17.2, §17.8, §18.3 | Parser, types, checker, codegen |
 | Q37 | Standard library refactor: one set of package names, signatures, and conventions across §37.2–37.5. See Q37 below. | §3.20, §37.2–§37.5 | Loader, async lowering, codegen, runtime, and bundled-package changes |
 | Q38 | The `panic` call: locked in §3.17, §7.7, and §15.4. See Q38 below. | §3.17, §7.7, §15.4 | Resolver, checker, MIR, codegen, and runtime |
+| Q39 | Rune conversions: locked in §6.6. See Q39 below. | §6.5, §6.6, §6.8 | Checker and codegen |
 
 ## Resolved decisions
 
@@ -193,6 +194,7 @@ A newly discovered semantic gap blocks its affected feature, not unrelated work.
 
 - **Q38 — The `panic` call:** locked in §3.17, §7.7, and §15.4 at the maintainer's direction. (a) `panic` is a predeclared name and takes exactly one `string`; it is not a value, like `println`. (b) A call statement of `panic` never completes, so it ends a path for the completion rule without a following `return`; since predeclared names cannot be shadowed, the checker recognizes the bare name. (c) The reported message is the argument, ` at `, and the call's location, matching the runtime's own panics. (d) An `error` argument was considered and left out; a program writes `panic("...")` with its own text. Pending cases: `tests/conformance/errors.md`.
 
+- **Q39 — Rune conversions:** locked in §6.6 at the maintainer's direction. (a) Integer types and `rune` convert both ways with `T(r)` and `rune(n)`; `rune` stays a distinct type, not an alias. (b) Both directions are checked: a runtime value that does not fit, or that is not a Unicode scalar value, panics, and a constant one is a compile-time error. (c) Floats and `bool` do not convert to or from `rune`; a program converts through an integer type. Pending cases: `tests/conformance/runes.md`.
 - **Q27 — Async I/O choices:** locked in §37.3 at the maintainer's direction
   (time, standard input, whole files, and TCP, waiting on an event loop). (a)
   Strings are well-formed UTF-8, so every function that returns text from

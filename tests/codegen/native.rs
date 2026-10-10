@@ -8164,3 +8164,49 @@ func main() {{
         );
     }
 }
+
+#[test]
+fn runes_and_integers_convert_with_checks() {
+    prints(
+        "package main
+
+func shift(r rune, by int) rune {
+    return rune(int(r) + by)
+}
+
+func main() {
+    let r = 'é'
+    println(int(r))
+    println(uint32(r))
+    println(uint8(r))
+    println(shift('a', 2))
+    println(int('😀'))
+    println(rune(int32(955)))
+    var code = 0
+    for ch in \"héllo\" {
+        code += int(ch)
+    }
+    println(code)
+    let top = 1114111
+    println(rune(top) == '\\U0010FFFF')
+    let low = 0
+    println(int(rune(low)))
+}
+",
+        "233\n233\n233\nc\n128512\nλ\n664\ntrue\n0\n",
+    );
+    for (setup, call, message) in [
+        ("let n = 55296", "rune(n)", "integer is not a valid rune"),
+        ("let n = -1", "rune(n)", "integer is not a valid rune"),
+        ("let n = 1114112", "rune(n)", "integer is not a valid rune"),
+        ("let r = 'ł'", "int8(r)", "integer conversion out of range"),
+    ] {
+        panics(
+            &format!(
+                "package main\n\nfunc main() {{\n    {setup}\n    println(\"before\")\n    println({call})\n}}\n"
+            ),
+            message,
+            "before\n",
+        );
+    }
+}
