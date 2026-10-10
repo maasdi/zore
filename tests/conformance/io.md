@@ -56,6 +56,17 @@ Authority: spec §37.3–§37.4. The cases below are covered by executable tests
 | `Dir` set to `/` with `pwd` | The program ran there |
 | A program that does not exist | An error |
 
+## `zore/io`
+
+| Scenario | Expected result |
+| --- | --- |
+| `io.Copy` from a `bytes.Buffer` into a user type with a `mut Write` method | The byte count and `nil`; the writer received every byte |
+| `io.Copy` from a buffer into `os.Stdout()` | The bytes are printed |
+| `io.ReadAll` of a buffer | Every byte and `nil` |
+| `io.ReadFull` of a buffer shorter than the slice, and of an empty one | The count with `unexpected EOF`; `0` with `io.EOF` |
+| `io.WriteString` to a file | The byte count |
+| A `string` where an `io.Reader` is expected | Reject: `string` does not satisfy `io.Reader` |
+
 ## `zore/bufio`
 
 | Scenario | Expected result |
@@ -65,6 +76,9 @@ Authority: spec §37.3–§37.4. The cases below are covered by executable tests
 | A task waiting in `Scan` | Other tasks keep running |
 | `Reader.ReadBytes` and `ReadString` on bytes, a line, and a final line, in plain and async functions | The bytes, the text, then the rest with `EOF`, then `EOF` |
 | `Writer` with three writes, `Flush` | Nothing pending afterwards; the file holds every byte |
+| `Scanner` and `Reader` over a `bytes.Buffer` | Lines, text, single bytes, and `Read` work as over a file |
+| A `bufio.Reader` made over another `bufio.Reader`, read with `io.ReadAll` | Every byte |
+| An async task scanning lines from a `net.Conn` while a `bufio.Writer` over the other end writes them | Each line arrives; the scanner ends when the writer's connection is dropped |
 
 ## `zore/net`
 

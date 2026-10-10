@@ -557,8 +557,11 @@ fn the_io_packages_reject_misuse() {
         "must be used or explicitly discarded",
     );
     rejects(
-        &[("main.ore", &main_with("import \"zore/io\"", ""))],
-        "no standard package `zore/io`",
+        &[(
+            "main.ore",
+            &main_with("import \"zore/bufio\"", "let r = bufio.NewReader(\"text\")"),
+        )],
+        "`string` does not satisfy `io.Reader`",
     );
     rejects(
         &[("main.ore", &main_with("import \"zore/cancel\"", ""))],

@@ -6000,8 +6000,8 @@ cases: `tests/conformance/packages.md` and `tests/conformance/strings.md`.
 
 ## 37.3 Time, operating system, buffered I/O, and network packages — LOCKED
 
-`"zore/time"`, `"zore/os"`, `"zore/os/exec"`, `"zore/bufio"`, and `"zore/net"`
-give tasks a way to wait for the clock, files, standard input and output, other
+`"zore/time"`, `"zore/os"`, `"zore/os/exec"`, `"zore/io"`, `"zore/bufio"`, and
+`"zore/net"` give tasks a way to wait for the clock, files, standard input and output, other
 programs, and TCP connections without blocking other tasks. Functions are
 ordinary calls: they are written without `await`, and may be called from
 synchronous and `async` functions alike. In an `async func` body a call that
@@ -6081,21 +6081,57 @@ ended by a signal gives `signal: N`, and one that cannot start gives an error
 beginning `exec: `. `Output` and `CombinedOutput` return what was captured
 together with the error.
 
-**`zore/bufio`** reads and writes an `os.File` in large pieces. Each type owns
-the file it was made from (`own` parameter), and the file closes when the
-reader, scanner, or writer is dropped.
+**`zore/io`** names what files, connections, and buffers have in common, so
+one function can work with any of them. Its interface types (§22.2) are:
+
+| Interface | Entries |
+| --- | --- |
+| `Reader` | `mut Read(buf mut []byte) (int, error)` |
+| `Writer` | `mut Write(data []byte) (int, error)` |
+| `Closer` | `own Close() error` |
+| `ReadWriter` | the entries of `Reader` and `Writer` |
+| `ReadCloser` | the entries of `Reader` and `Closer` |
+| `WriteCloser` | the entries of `Writer` and `Closer` |
+
+`os.File`, `net.Conn`, `bytes.Buffer`, `bufio.Reader`, and `bufio.Writer`
+satisfy the ones whose methods they have. A `Read` gives at least one byte, or
+`0` and an error; the end of the input is the error `EOF`.
+
+| Name | Behavior |
+| --- | --- |
+| `let EOF = error("EOF")` | The error a `Read` gives at the end of the input |
+| `Copy(dst mut Writer, src mut Reader) (int, error)` | Writes everything `src` gives to `dst` until `EOF`, and returns the byte count; `EOF` itself is not an error, and the first other read or write error stops the copy |
+| `ReadAll(r mut Reader) (Array<byte>, error)` | Every byte up to `EOF`, with `nil`; on another error, the bytes read before it and the error |
+| `ReadFull(r mut Reader, buf mut []byte) (int, error)` | Reads until `buf` is full; `EOF` when nothing was read, `unexpected EOF` when the input ends part way |
+| `WriteString(w mut Writer, s string) (int, error)` | Writes the bytes of `s` |
+
+```ore
+import "zore/io"
+import "zore/os"
+
+func save(dst mut io.Writer, path string) (int, error) {
+    var src = os.Open(path)?
+    return io.Copy(dst, src)
+}
+```
+
+**`zore/bufio`** reads and writes any `io.Reader` or `io.Writer` in large
+pieces. Each type owns the reader or writer it was made from (an `own`
+parameter, so a file or connection moves into it), and that value is dropped,
+closing a file or connection, when the reader, scanner, or writer is dropped.
 
 | Function or method | Behavior |
 | --- | --- |
-| `NewReader(file own os.File) Reader` | A reader over `file` |
+| `NewReader(source own io.Reader) Reader` | A reader over `source` |
 | `(r mut Reader) ReadBytes(delim byte) (Array<byte>, error)` | The bytes up to and including the next `delim`; at end of input, what is left and the error, `EOF` at the end |
 | `(r mut Reader) ReadString(delim byte) (string, error)` | `ReadBytes` as text; bytes that are not UTF-8 give `""` and `bufio.Reader: invalid UTF-8` |
 | `(r mut Reader) ReadByte() (byte, error)` | The next byte |
-| `NewScanner(file own os.File) Scanner` | A scanner that reads `file` line by line |
+| `(r mut Reader) Read(buf mut []byte) (int, error)` | Up to `buf.len()` bytes, so a `Reader` is itself an `io.Reader` |
+| `NewScanner(source own io.Reader) Scanner` | A scanner that reads `source` line by line |
 | `(s mut Scanner) Scan() bool` | Reads the next line, without its terminator (`\n` or `\r\n`); a final line with no terminator counts. `false` at end of input or on an error, after which it stays `false` |
 | `(s Scanner) Text() string` | The line the last `Scan` read |
 | `(s Scanner) Err() error` | `nil` after end of input; otherwise the error that stopped the scanner, such as `bufio.Scanner: invalid UTF-8` for a line that is not text |
-| `NewWriter(file own os.File) Writer` | A writer that keeps up to 4096 bytes before writing them to `file` |
+| `NewWriter(sink own io.Writer) Writer` | A writer that keeps up to 4096 bytes before writing them to `sink` |
 | `(w mut Writer) Write(p []byte) (int, error)`, `WriteString(s string) (int, error)`, `WriteRune(r rune) (int, error)`, `WriteByte(c byte) error` | Add to the pending bytes, writing them when the limit is reached |
 | `(w mut Writer) Flush() error`, `(w Writer) Buffered() int` | Write the pending bytes now; the number pending. Bytes still pending when a writer is dropped are lost |
 

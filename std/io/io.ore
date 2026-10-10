@@ -1,0 +1,103 @@
+package io
+
+let EOF = error("EOF")
+
+const copySize = 32768
+
+type Reader interface {
+    mut Read(buf mut []byte) (int, error)
+}
+
+type Writer interface {
+    mut Write(data []byte) (int, error)
+}
+
+type Closer interface {
+    own Close() error
+}
+
+type ReadWriter interface {
+    mut Read(buf mut []byte) (int, error)
+    mut Write(data []byte) (int, error)
+}
+
+type ReadCloser interface {
+    mut Read(buf mut []byte) (int, error)
+    own Close() error
+}
+
+type WriteCloser interface {
+    mut Write(data []byte) (int, error)
+    own Close() error
+}
+
+func zeros(count int) Array<byte> {
+    var data = Array<byte>{}
+    for var i = 0; i < count; i += 1 {
+        data.push(0)
+    }
+    return data
+}
+
+func Copy(dst mut Writer, src mut Reader) (int, error) {
+    var buf = zeros(copySize)
+    var total = 0
+    for {
+        let count, err = src.Read(buf[:])
+        if count > 0 {
+            let written, writeErr = dst.Write(buf[:count])
+            total += written
+            if writeErr != nil {
+                _ = err
+                return total, writeErr
+            }
+        }
+        if err == EOF {
+            return total, nil
+        }
+        if err != nil {
+            return total, err
+        }
+    }
+}
+
+func ReadAll(r mut Reader) (Array<byte>, error) {
+    var data = Array<byte>{}
+    var buf = zeros(copySize)
+    for {
+        let count, err = r.Read(buf[:])
+        for var i = 0; i < count; i += 1 {
+            data.push(buf[i])
+        }
+        if err == EOF {
+            return data, nil
+        }
+        if err != nil {
+            return data, err
+        }
+    }
+}
+
+func ReadFull(r mut Reader, buf mut []byte) (int, error) {
+    var total = 0
+    let size = buf.len()
+    for total < size {
+        let count, err = r.Read(buf[total:])
+        total += count
+        if err == EOF && total > 0 && total < size {
+            return total, error("unexpected EOF")
+        }
+        if err != nil {
+            return total, err
+        }
+    }
+    return total, nil
+}
+
+func WriteString(w mut Writer, s string) (int, error) {
+    var data = Array<byte>{}
+    for var i = 0; i < s.len(); i += 1 {
+        data.push(s[i])
+    }
+    return w.Write(data[:])
+}

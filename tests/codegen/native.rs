@@ -8950,3 +8950,139 @@ func main() {
 ";
     prints(source, "later\n7\n3\n");
 }
+
+#[test]
+fn io_copies_and_reads_from_any_reader_into_any_writer() {
+    let source = "package main
+
+import \"zore/bytes\"
+import \"zore/io\"
+import \"zore/os\"
+
+type Upper struct {
+    out bytes.Buffer
+}
+
+func (u mut Upper) Write(data []byte) (int, error) {
+    for b in data {
+        if b >= 97 && b <= 122 {
+            _ = u.out.WriteByte(b - 32)
+        } else {
+            _ = u.out.WriteByte(b)
+        }
+    }
+    return data.len(), nil
+}
+
+func main() {
+    var src = bytes.NewBufferString(\"copy me\\n\")
+    var up = Upper{out: bytes.NewBufferString(\"\")}
+    let n, err = io.Copy(up, src)
+    println(n)
+    println(err == nil)
+    var out = os.Stdout()
+    let _, _ = io.Copy(out, up.out)
+    var all = bytes.NewBufferString(\"everything\")
+    let data, readErr = io.ReadAll(all)
+    println(data.len())
+    println(readErr == nil)
+    var short = bytes.NewBufferString(\"abc\")
+    var buf = [byte; 5]{0, 0, 0, 0, 0}
+    let got, fullErr = io.ReadFull(short, buf[:])
+    println(got)
+    println(fullErr == error(\"unexpected EOF\"))
+    var empty = bytes.NewBufferString(\"\")
+    let none, eofErr = io.ReadFull(empty, buf[:])
+    println(none)
+    println(eofErr == io.EOF)
+    let written, _ = io.WriteString(out, \"done\\n\")
+    println(written)
+}
+";
+    prints(source, "8\ntrue\nCOPY ME\n10\ntrue\n3\ntrue\n0\ntrue\ndone\n5\n");
+}
+
+#[test]
+fn bufio_reads_and_writes_through_any_reader_or_writer() {
+    let source = "package main
+
+import \"zore/bufio\"
+import \"zore/bytes\"
+import \"zore/io\"
+import \"zore/os\"
+
+func main() {
+    var lines = bufio.NewScanner(bytes.NewBufferString(\"one\\ntwo\\r\\nthree\"))
+    for lines.Scan() {
+        println(lines.Text())
+    }
+    println(lines.Err() == nil)
+    var r = bufio.NewReader(bytes.NewBufferString(\"a,bc\"))
+    let first, _ = r.ReadString(44)
+    println(first)
+    let b, _ = r.ReadByte()
+    println(b)
+    var buf = [byte; 4]{0, 0, 0, 0}
+    let count, _ = r.Read(buf[:])
+    println(count)
+    let rest, err = r.ReadString(44)
+    println(rest.len())
+    println(err == io.EOF)
+    var w = bufio.NewWriter(os.Stdout())
+    let _, _ = w.WriteString(\"buffered\\n\")
+    println(w.Buffered())
+    _ = w.Flush()
+    var layered = bufio.NewReader(bufio.NewReader(bytes.NewBufferString(\"two layers\")))
+    let all, _ = io.ReadAll(layered)
+    println(all.len())
+}
+";
+    prints(
+        source,
+        "one\ntwo\nthree\ntrue\na,\n98\n1\n0\ntrue\n9\nbuffered\n10\n",
+    );
+}
+
+#[test]
+fn bufio_reads_lines_from_a_connection_in_an_async_task() {
+    let source = "package main
+
+import \"zore/bufio\"
+import \"zore/net\"
+
+async func serve(listener own net.Listener) int {
+    let conn, err = listener.Accept()
+    if err != nil {
+        return -1
+    }
+    var lines = bufio.NewScanner(conn)
+    var count = 0
+    for lines.Scan() {
+        println(lines.Text())
+        count += 1
+    }
+    return count
+}
+
+func main() {
+    let listener, err = net.Listen(\"tcp\", \"127.0.0.1:0\")
+    if err != nil {
+        println(\"listen failed\")
+        return
+    }
+    let address = listener.Addr()
+    let server = go serve(listener)
+    let conn, dialErr = net.Dial(\"tcp\", address)
+    if dialErr != nil {
+        println(\"dial failed\")
+        return
+    }
+    var out = bufio.NewWriter(conn)
+    let _, _ = out.WriteString(\"first\\nsecond\\n\")
+    _ = out.Flush()
+    drop(out)
+    println(server.wait())
+}
+";
+    prints(source, "first\nsecond\n2\n");
+}

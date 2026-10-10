@@ -49,6 +49,11 @@ once it does.
 - Added `zore/bytes`, `zore/errors`, `zore/unicode`, `zore/unicode/utf8`,
   `zore/path`, `zore/path/filepath`, `zore/sort`, `zore/sync`, and
   `zore/os/exec`, and more functions in `strings`, `strconv`, and `os`.
+- Added `zore/io` with the `Reader`, `Writer`, `Closer`, `ReadWriter`,
+  `ReadCloser`, and `WriteCloser` interfaces, `EOF`, `Copy`, `ReadAll`,
+  `ReadFull`, and `WriteString` (§37.3). `bufio` now reads and writes any
+  `io.Reader` or `io.Writer`, so it works over connections and buffers as well
+  as files, and `bufio.Reader` has `Read`.
 
 ### Compiler
 
