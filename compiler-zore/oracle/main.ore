@@ -5,8 +5,7 @@ import "zore/os"
 import "zore/strconv"
 import "zore/strings"
 
-// Reads `cases.bin` (a decimal byte count, a space, a mode letter, a newline, then that
-// many bytes, repeated) and prints each case's records followed by `done`.
+// Each case in `cases.bin` is a byte count, a space, a mode letter, a newline, and the bytes.
 func main() {
     let data, err = os.ReadBytes("cases.bin")
     if err != nil {
@@ -65,7 +64,7 @@ func tokenRecord(token lexer.Token, text string) string {
         return "float"
     }
     if kind == lexer.KindString {
-        return "string:" + byteList(token.Text)
+        return "string:" + lexer.ByteList(token.Text)
     }
     if kind == lexer.KindRune {
         return "rune:" + strconv.Itoa(token.Detail)
@@ -89,12 +88,4 @@ func tokenRecord(token lexer.Token, text string) string {
         return "semi:eof"
     }
     return "eof"
-}
-
-func byteList(text string) string {
-    var parts = Array<string>{}
-    for var i = 0; i < text.len(); i += 1 {
-        parts.push(strconv.Itoa(int(text[i])))
-    }
-    return strings.Join(parts[:], ".")
 }

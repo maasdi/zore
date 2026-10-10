@@ -82,7 +82,8 @@ A parsed case starts with `tree`, followed by the whole tree:
 - A list prints as `[...]`.
 - A missing optional part prints as `_`.
 - A node with no span of its own omits `start end`. These are an assignment,
-  a `for` loop and its header, and a function-type parameter.
+  a `return`, `break`, or `continue` statement, a `for` loop and its header,
+  and a function-type parameter.
 
 Every node carries its exact byte span, and every string value is printed as its
 UTF-8 bytes.

@@ -1,5 +1,8 @@
 package ast
 
+import "zore/strconv"
+import "zore/strings"
+
 // A child slot that holds no node, such as a missing receiver.
 const Absent = -1
 
@@ -33,6 +36,12 @@ func (t mut Tree) List() int {
     return t.Add(ListTag, -1, -1, "")
 }
 
+func (t mut Tree) Truncate(count int) {
+    for t.Nodes.len() > count {
+        let _, _ = t.Nodes.pop()
+    }
+}
+
 func (t mut Tree) Append(parent int, child int) {
     t.Nodes[parent].Children.push(child)
 }
@@ -63,39 +72,40 @@ func (t Tree) Child(node int, index int) int {
 
 // `(tag start end attr children...)`, `[children...]` for a list, and `_` for an absent child.
 func (t Tree) Print(node int) string {
+    var pieces = Array<string>{}
+    t.printInto(pieces, node)
+    return strings.Join(pieces[:], "")
+}
+
+func (t Tree) printInto(pieces mut Array<string>, node int) {
     if node == Absent {
-        return "_"
+        pieces.push("_")
+        return
     }
     let tag = t.Nodes[node].Tag
     if tag == ListTag {
-        var text = "["
+        pieces.push("[")
         for i, child in t.Nodes[node].Children {
             if i > 0 {
-                text += " "
+                pieces.push(" ")
             }
-            text += t.Print(child)
+            t.printInto(pieces, child)
         }
-        return text + "]"
+        pieces.push("]")
+        return
     }
-    var text = "(" + tag
+    pieces.push("(" + tag)
     let start = t.Nodes[node].Start
     if start >= 0 {
-        text += " " + itoa(start) + " " + itoa(t.Nodes[node].End)
+        pieces.push(" " + strconv.Itoa(start) + " " + strconv.Itoa(t.Nodes[node].End))
     }
     let attr = t.Nodes[node].Attr
     if attr != "" {
-        text += " " + attr
+        pieces.push(" " + attr)
     }
     for child in t.Nodes[node].Children {
-        text += " " + t.Print(child)
+        pieces.push(" ")
+        t.printInto(pieces, child)
     }
-    return text + ")"
-}
-
-func itoa(value int) string {
-    let digits = "0123456789"
-    if value < 10 {
-        return digits[value:value + 1]
-    }
-    return itoa(value / 10) + digits[value % 10:value % 10 + 1]
+    pieces.push(")")
 }

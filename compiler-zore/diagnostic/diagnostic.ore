@@ -112,7 +112,7 @@ type DisplayLine struct {
 
 // Tabs expand to four-column stops and control characters are escaped, so markers line up.
 func displayLine(line string) DisplayLine {
-    var text = ""
+    var pieces = Array<string>{}
     var boundaries = Array<int>{0}
     var columns = 0
     var at = 0
@@ -132,11 +132,11 @@ func displayLine(line string) DisplayLine {
             pieceColumns = piece.len()
         }
         columns += pieceColumns
-        text += piece
+        pieces.push(piece)
         boundaries.push(columns)
         at += width
     }
-    return DisplayLine{Text: text, Boundaries: boundaries}
+    return DisplayLine{Text: strings.Join(pieces[:], ""), Boundaries: boundaries}
 }
 
 func charWidth(first int) int {

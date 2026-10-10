@@ -457,10 +457,10 @@ func (l mut Lexer) punct() {
         l.push(KindUnknown, 0, start)
         return
     }
-    for spelling in punctuation() {
+    for index, spelling in punctuation() {
         if l.startsWith(spelling) {
             l.pos += spelling.len()
-            l.push(KindPunct, 0, start)
+            l.push(KindPunct, index, start)
             return
         }
     }

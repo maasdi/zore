@@ -811,6 +811,18 @@ fn structs_and_struct_literals() {
 }
 
 #[test]
+fn retried_loop_initializer_reads_the_original_tokens() {
+    let case = Case::body("for a, b = Array<Array<int>>{}, Point{X: 1}; a.len() < 1; a = a {}");
+    case.assert_clean();
+    assert_eq!(
+        case.shape(),
+        [
+            "(for (= a,b (lit Array<Array<int>>),(lit Point X:1)); (< (call (. a len)) 1); (= a a) {})"
+        ]
+    );
+}
+
+#[test]
 fn invalid_struct_syntax_is_rejected() {
     for (text, message) in [
         ("type User struct {\n own string\n}", "`own` is a keyword"),

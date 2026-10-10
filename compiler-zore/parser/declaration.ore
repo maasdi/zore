@@ -1,7 +1,7 @@
 package parser
 
+import "compiler-zore/ast"
 import "compiler-zore/lexer"
-import "zore/strconv"
 
 func (p mut Parser) fileAst() int {
     let pkg = p.packageClause()
@@ -13,14 +13,14 @@ func (p mut Parser) fileAst() int {
         if p.atKeyword("import") && itemCount == 0 {
             result = p.importDecl()
             if result != failed {
-                p.append(imports, result)
+                p.tree.Append(imports, result)
             }
         } else if p.atKeyword("import") {
             result = p.errorAtCurrent("imports must come before other declarations")
         } else {
             result = p.itemDecl()
             if result != failed {
-                p.append(items, result)
+                p.tree.Append(items, result)
                 itemCount += 1
             }
         }
@@ -30,9 +30,9 @@ func (p mut Parser) fileAst() int {
     }
     let end = p.text.len()
     let file = p.tree.Add("file", 0, end, "")
-    p.append(file, pkg)
-    p.append(file, imports)
-    p.append(file, items)
+    p.tree.Append(file, pkg)
+    p.tree.Append(file, imports)
+    p.tree.Append(file, items)
     return file
 }
 
@@ -51,7 +51,7 @@ func (p mut Parser) declarationEnd() bool {
 func (p mut Parser) packageClause() int {
     if !p.atKeyword("package") {
         _ = p.errorAtCurrent("expected `package` clause at the start of the file")
-        return -1
+        return ast.Absent
     }
     _ = p.bump()
     let name = p.name("a package name")
@@ -59,30 +59,23 @@ func (p mut Parser) packageClause() int {
         p.synchronize(0, false)
     }
     if name == failed {
-        return -1
+        return ast.Absent
     }
     return name
 }
 
 func quoteBytes(text string) string {
-    var quoted = "\""
-    for var i = 0; i < text.len(); i += 1 {
-        if i > 0 {
-            quoted += "."
-        }
-        quoted += strconv.Itoa(int(text[i]))
-    }
-    return quoted + "\""
+    return "\"" + lexer.ByteList(text) + "\""
 }
 
 func (p mut Parser) importDecl() int {
     let start = p.bump()
-    let token = p.tokens[p.pos]
+    let token = p.current()
     if token.Kind == lexer.KindString && p.text[token.Start] == 34 {
         _ = p.bump()
-        let path = p.leaf("path", token.Start, token.End, quoteBytes(token.Text))
+        let path = p.tree.Add("path", token.Start, token.End, quoteBytes(token.Text))
         let node = p.addNode("import", start.Start, start.End, "")
-        p.append(node, path)
+        p.tree.Append(node, path)
         return node
     }
     if p.at("(") {
@@ -109,7 +102,7 @@ func (p mut Parser) itemDecl() int {
 }
 
 func (p mut Parser) funcDecl() int {
-    let start = p.tokens[p.pos]
+    let start = p.current()
     let isAsync = p.atKeyword("async")
     if isAsync {
         _ = p.bump()
@@ -118,7 +111,7 @@ func (p mut Parser) funcDecl() int {
         }
     }
     _ = p.bump()
-    var receiver = -1
+    var receiver = ast.Absent
     if p.at("(") {
         _ = p.bump()
         receiver = p.param("a receiver name")
@@ -149,9 +142,9 @@ func (p mut Parser) funcDecl() int {
     if native {
         let blockStart = p.currentStart()
         let blockEnd = p.currentEnd()
-        body = p.leaf("block", blockStart, blockEnd, "")
+        body = p.tree.Add("block", blockStart, blockEnd, "")
         let statements = p.tree.List()
-        p.append(body, statements)
+        p.tree.Append(body, statements)
     } else {
         body = p.bodyBlock("function signature", "function declarations require a body")
         if body == failed {
@@ -168,11 +161,11 @@ func (p mut Parser) funcDecl() int {
         attr += " body"
     }
     let node = p.addNode("func", start.Start, start.End, attr)
-    p.append(node, receiver)
-    p.append(node, name)
-    p.append(node, params)
-    p.append(node, results)
-    p.append(node, body)
+    p.tree.Append(node, receiver)
+    p.tree.Append(node, name)
+    p.tree.Append(node, params)
+    p.tree.Append(node, results)
+    p.tree.Append(node, body)
     return node
 }
 
@@ -240,7 +233,7 @@ func (p mut Parser) results() int {
     if ty == failed {
         return failed
     }
-    p.append(results, ty)
+    p.tree.Append(results, ty)
     return results
 }
 
@@ -271,7 +264,7 @@ func (p mut Parser) structDecl() int {
         let field = p.fieldDecl()
         var ok = false
         if field != failed {
-            p.append(fields, field)
+            p.tree.Append(fields, field)
             ok = p.statementEnd("field")
         }
         if !ok {

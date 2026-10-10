@@ -1,5 +1,6 @@
 package parser
 
+import "compiler-zore/ast"
 import "compiler-zore/diagnostic"
 import "compiler-zore/lexer"
 
@@ -11,41 +12,42 @@ func (p mut Parser) binding() int {
     if first == failed {
         return failed
     }
-    p.append(targets, first)
+    p.tree.Append(targets, first)
     for p.eat(",") {
         let next = p.bindingTarget(kind)
         if next == failed {
             return failed
         }
-        p.append(targets, next)
+        p.tree.Append(targets, next)
     }
     let count = p.tree.Count(targets)
     if kind == "const" && count > 1 {
         let end = p.spanEnd(start.End)
         return p.error("a constant declaration has exactly one name", start.Start, end)
     }
-    var ty = -1
-    if p.at("=") || p.atSeparator() {
-        ty = -1
-    } else if p.at(":") && p.atPunctAt(1, "=") {
-        let colon = p.tokens[p.pos]
+    if p.at(":") && p.atPunctAt(1, "=") {
+        let colon = p.current()
         return p.errorWithNote(
             "`:=` is not Zore syntax",
             colon.Start,
             colon.End,
             "declare with `let name = value` or `var name = value`",
         )
-    } else if p.at(":") {
-        let colon = p.tokens[p.pos]
+    }
+    if p.at(":") {
+        let colon = p.current()
         return p.errorWithNote(
             "type annotations are not written with `:`",
             colon.Start,
             colon.End,
             "write the type after the name, as in `let count int64 = 0`",
         )
-    } else if count > 1 {
-        return p.errorAtCurrent("typed multiple bindings are not supported; use separate declarations")
-    } else {
+    }
+    var ty = ast.Absent
+    if !p.at("=") && !p.atSeparator() {
+        if count > 1 {
+            return p.errorAtCurrent("typed multiple bindings are not supported; use separate declarations")
+        }
         ty = p.ty()
         if ty == failed {
             return failed
@@ -67,16 +69,16 @@ func (p mut Parser) binding() int {
         return p.errorAtCurrent("a declaration takes exactly one initializer expression")
     }
     let node = p.addNode(kind, start.Start, start.End, "")
-    p.append(node, targets)
-    p.append(node, ty)
-    p.append(node, value)
+    p.tree.Append(node, targets)
+    p.tree.Append(node, ty)
+    p.tree.Append(node, value)
     return node
 }
 
 func (p mut Parser) bindingTarget(kind string) int {
     if p.atKind(lexer.KindUnderscore) && kind != "const" {
         let token = p.bump()
-        return p.leaf("discard", token.Start, token.End, "")
+        return p.tree.Add("discard", token.Start, token.End, "")
     }
     return p.name("a binding name")
 }
@@ -137,7 +139,7 @@ func (p mut Parser) blockRest(open int) int {
         let statement = p.stmt()
         var ok = false
         if statement != failed {
-            p.append(statements, statement)
+            p.tree.Append(statements, statement)
             ok = p.statementEnd("statement")
         }
         if !ok {
@@ -145,7 +147,7 @@ func (p mut Parser) blockRest(open int) int {
         }
     }
     let node = p.addNode("block", open, open + 1, "")
-    p.append(node, statements)
+    p.tree.Append(node, statements)
     return node
 }
 
@@ -162,7 +164,7 @@ func (p mut Parser) statementEnd(what string) bool {
 }
 
 func (p mut Parser) stmt() int {
-    let start = p.tokens[p.pos]
+    let start = p.current()
     var inner = failed
     if p.atKeyword("let") || p.atKeyword("var") || p.atKeyword("const") {
         inner = p.binding()
@@ -176,7 +178,7 @@ func (p mut Parser) stmt() int {
         }
         if values != failed {
             inner = p.spanless("return", "")
-            p.append(inner, values)
+            p.tree.Append(inner, values)
         }
     } else if p.atKeyword("break") || p.atKeyword("continue") {
         let word = p.currentText()
@@ -203,7 +205,7 @@ func (p mut Parser) stmt() int {
         return failed
     }
     let node = p.addNode("stmt", start.Start, start.End, "")
-    p.append(node, inner)
+    p.tree.Append(node, inner)
     return node
 }
 
@@ -214,8 +216,8 @@ func (p mut Parser) statement(simple int, isStatement bool) int {
     let start = p.tree.Start(simple)
     let end = p.tree.End(simple)
     if p.isCallBased(simple) {
-        let node = p.leaf("stmt", start, end, "")
-        p.append(node, simple)
+        let node = p.tree.Add("stmt", start, end, "")
+        p.tree.Append(node, simple)
         return node
     }
     return p.errorWithNote(
@@ -238,32 +240,27 @@ func (p Parser) isCallBased(expr int) bool {
 }
 
 func (p Parser) assignOp() string {
-    if !p.atKind(lexer.KindPunct) {
+    if !p.atKind(lexer.KindPunct) || !p.assignments[p.detail()] {
         return ""
     }
-    let op = p.currentText()
-    if op == "=" || op == "+=" || op == "-=" || op == "*=" || op == "/=" || op == "%=" ||
-        op == "&=" || op == "|=" || op == "^=" || op == "<<=" || op == ">>=" {
-        return op
-    }
-    return ""
+    return p.currentText()
 }
 
 // Returns a statement node and true, or an expression node and false.
 func (p mut Parser) simpleStatement() (int, bool) {
-    let start = p.tokens[p.pos]
+    let start = p.current()
     let targets = p.tree.List()
     let first = p.assignTarget()
     if first == failed {
         return failed, false
     }
-    p.append(targets, first)
+    p.tree.Append(targets, first)
     for p.eat(",") {
         let next = p.assignTarget()
         if next == failed {
             return failed, false
         }
-        p.append(targets, next)
+        p.tree.Append(targets, next)
     }
     let count = p.tree.Count(targets)
     let op = p.assignOp()
@@ -306,17 +303,17 @@ func (p mut Parser) simpleStatement() (int, bool) {
         return p.error("compound assignment takes exactly one value", secondStart, secondEnd), false
     }
     let assign = p.spanless("assign", op)
-    p.append(assign, targets)
-    p.append(assign, values)
+    p.tree.Append(assign, targets)
+    p.tree.Append(assign, values)
     let node = p.addNode("stmt", start.Start, start.End, "")
-    p.append(node, assign)
+    p.tree.Append(node, assign)
     return node, true
 }
 
 func (p mut Parser) assignTarget() int {
     if p.atKind(lexer.KindUnderscore) {
         let token = p.bump()
-        return p.leaf("discard", token.Start, token.End, "")
+        return p.tree.Add("discard", token.Start, token.End, "")
     }
     return p.expr()
 }
@@ -341,7 +338,7 @@ func (p mut Parser) ifStmt() int {
             "a newline here ends the `if` statement (automatic semicolon insertion)",
         )
     }
-    var otherwise = -1
+    var otherwise = ast.Absent
     if p.atKeyword("else") {
         _ = p.bump()
         if p.atKeyword("if") {
@@ -354,9 +351,9 @@ func (p mut Parser) ifStmt() int {
         }
     }
     let node = p.addNode("if", start.Start, start.End, "")
-    p.append(node, condition)
-    p.append(node, then)
-    p.append(node, otherwise)
+    p.tree.Append(node, condition)
+    p.tree.Append(node, then)
+    p.tree.Append(node, otherwise)
     return node
 }
 
@@ -367,7 +364,7 @@ func (p mut Parser) selectStmt() int {
         return failed
     }
     let arms = p.tree.List()
-    var fallback = -1
+    var fallback = ast.Absent
     for {
         for p.atSeparator() {
             _ = p.bump()
@@ -379,7 +376,7 @@ func (p mut Parser) selectStmt() int {
         if p.atEof() {
             return p.unclosed(open)
         }
-        let armStart = p.tokens[p.pos]
+        let armStart = p.current()
         var word = ""
         if p.atKind(lexer.KindIdent) {
             word = p.currentText()
@@ -403,14 +400,14 @@ func (p mut Parser) selectStmt() int {
                 return failed
             }
             let arm = p.node2("arm", armStart.Start, armStart.End, "", comm, body)
-            p.append(arms, arm)
+            p.tree.Append(arms, arm)
         } else if word == "default" {
             _ = p.bump()
             let body = p.bodyBlock("`default`", "expected `{` after `default`")
             if body == failed {
                 return failed
             }
-            if fallback != -1 {
+            if fallback != ast.Absent {
                 let end = p.spanEnd(armStart.End)
                 return p.error("a `select` has at most one `default`", armStart.Start, end)
             }
@@ -426,16 +423,16 @@ func (p mut Parser) selectStmt() int {
     if p.tree.Count(arms) == 0 {
         return p.error("a `select` needs at least one `case`", start.Start, end)
     }
-    let node = p.leaf("selectstmt", start.Start, end, "")
-    p.append(node, arms)
-    p.append(node, fallback)
+    let node = p.tree.Add("selectstmt", start.Start, end, "")
+    p.tree.Append(node, arms)
+    p.tree.Append(node, fallback)
     return node
 }
 
 func (p mut Parser) forNode(header int, body int) int {
     let node = p.spanless("for", "")
-    p.append(node, header)
-    p.append(node, body)
+    p.tree.Append(node, header)
+    p.tree.Append(node, body)
     return node
 }
 
@@ -455,7 +452,7 @@ func (p mut Parser) forStmt() int {
         if first == failed {
             return failed
         }
-        var second = -1
+        var second = ast.Absent
         if p.eat(",") {
             second = p.bindingTarget("let")
             if second == failed {
@@ -472,9 +469,9 @@ func (p mut Parser) forStmt() int {
             return failed
         }
         let header = p.spanless("each", "")
-        p.append(header, first)
-        p.append(header, second)
-        p.append(header, collection)
+        p.tree.Append(header, first)
+        p.tree.Append(header, second)
+        p.tree.Append(header, collection)
         return p.forNode(header, body)
     }
     let first, firstIsStatement = p.forFirstClause()
@@ -507,14 +504,14 @@ func (p mut Parser) forStmt() int {
             return failed
         }
         header = p.spanless("counting", "")
-        p.append(header, init)
-        p.append(header, condition)
-        p.append(header, update)
+        p.tree.Append(header, init)
+        p.tree.Append(header, condition)
+        p.tree.Append(header, update)
     } else if firstIsStatement {
         return p.unexpected("`;` after the loop initializer")
     } else {
         header = p.spanless("condition", "")
-        p.append(header, first)
+        p.tree.Append(header, first)
     }
     let body = p.bodyBlock("`for` header", "expected `{` after `for` header")
     if body == failed {
@@ -535,31 +532,23 @@ func (p Parser) atEachHeader() bool {
 
 func (p mut Parser) forFirstClause() (int, bool) {
     if p.atKeyword("let") || p.atKeyword("var") {
-        let start = p.tokens[p.pos]
+        let start = p.current()
         let binding = p.binding()
         if binding == failed {
             return failed, false
         }
         let node = p.addNode("stmt", start.Start, start.End, "")
-        p.append(node, binding)
+        p.tree.Append(node, binding)
         return node, true
     }
-    let pos = p.pos
-    let openDelimiters = p.openDelimiters
-    let lastTokenEnd = p.lastTokenEnd
-    let reported = p.diagnostics.len()
+    let state = p.save()
     // An initializer may contain struct literals; retry with them allowed.
     let saved = p.structLiterals
     p.structLiterals = false
     let first, isStatement = p.simpleStatement()
     p.structLiterals = saved
     if first != failed && isStatement && p.at("{") {
-        p.pos = pos
-        p.openDelimiters = openDelimiters
-        p.lastTokenEnd = lastTokenEnd
-        for p.diagnostics.len() > reported {
-            let _, _ = p.diagnostics.pop()
-        }
+        p.restore(state)
         return p.simpleStatement()
     }
     return first, isStatement

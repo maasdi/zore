@@ -23,6 +23,13 @@ pub(super) struct Parser<'a> {
     /// Only the compiler's bundled sources may declare functions without bodies.
     pub(super) native_functions: bool,
     pub(super) diagnostics: Vec<Diagnostic>,
+    /// Changes to `tokens`, so a retried parse can undo them.
+    pub(super) token_edits: Vec<TokenEdit>,
+}
+
+pub(super) enum TokenEdit {
+    Replaced(usize, Token),
+    Inserted(usize),
 }
 
 impl Parser<'_> {

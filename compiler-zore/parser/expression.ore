@@ -1,5 +1,6 @@
 package parser
 
+import "compiler-zore/ast"
 import "compiler-zore/lexer"
 import "zore/strconv"
 
@@ -9,13 +10,13 @@ func (p mut Parser) exprList() int {
     if first == failed {
         return failed
     }
-    p.append(list, first)
+    p.tree.Append(list, first)
     for p.eat(",") {
         let next = p.expr()
         if next == failed {
             return failed
         }
-        p.append(list, next)
+        p.tree.Append(list, next)
     }
     return list
 }
@@ -29,23 +30,7 @@ func (p Parser) binaryPrecedence() int {
     if !p.atKind(lexer.KindPunct) {
         return 0
     }
-    let op = p.currentText()
-    if op == "*" || op == "/" || op == "%" || op == "<<" || op == ">>" || op == "&" {
-        return 5
-    }
-    if op == "+" || op == "-" || op == "|" || op == "^" {
-        return 4
-    }
-    if op == "==" || op == "!=" || op == "<" || op == "<=" || op == ">" || op == ">=" {
-        return 3
-    }
-    if op == "&&" {
-        return 2
-    }
-    if op == "||" {
-        return 1
-    }
-    return 0
+    return p.precedences[p.detail()]
 }
 
 func (p mut Parser) binary(minimum int) int {
@@ -77,8 +62,8 @@ func (p mut Parser) binary(minimum int) int {
             return failed
         }
         let node = p.wrap("binary", lhs, op)
-        p.append(node, lhs)
-        p.append(node, rhs)
+        p.tree.Append(node, lhs)
+        p.tree.Append(node, rhs)
         lhs = node
     }
 }
@@ -102,7 +87,7 @@ func (p mut Parser) unary() int {
         return failed
     }
     let node = p.addNode("unary", start, startEnd, op)
-    p.append(node, operand)
+    p.tree.Append(node, operand)
     return node
 }
 
@@ -123,7 +108,7 @@ func (p mut Parser) awaitExpr() int {
         return failed
     }
     let node = p.addNode("await", start.Start, start.End, "")
-    p.append(node, operand)
+    p.tree.Append(node, operand)
     return p.propagations(node)
 }
 
@@ -134,7 +119,7 @@ func (p mut Parser) goExpr() int {
         return failed
     }
     let node = p.addNode("go", start.Start, start.End, "")
-    p.append(node, operand)
+    p.tree.Append(node, operand)
     return node
 }
 
@@ -151,7 +136,7 @@ func (p mut Parser) propagations(operand int) int {
     for p.at("?") {
         _ = p.bump()
         let node = p.wrap("try", value, "")
-        p.append(node, value)
+        p.tree.Append(node, value)
         value = node
         if p.at(".") || p.at("(") {
             let start = p.currentStart()
@@ -181,8 +166,8 @@ func (p mut Parser) access() int {
                 return failed
             }
             let node = p.wrap("call", value, "")
-            p.append(node, value)
-            p.append(node, args)
+            p.tree.Append(node, value)
+            p.tree.Append(node, args)
             value = node
         } else if p.at(".") {
             _ = p.bump()
@@ -191,8 +176,8 @@ func (p mut Parser) access() int {
                 return failed
             }
             let node = p.wrap("member", value, "")
-            p.append(node, value)
-            p.append(node, name)
+            p.tree.Append(node, value)
+            p.tree.Append(node, name)
             value = node
         } else if p.at("[") {
             _ = p.bump()
@@ -211,7 +196,7 @@ func (p mut Parser) access() int {
 }
 
 func (p mut Parser) indexOrSlice(base int, first int) int {
-    var low = -1
+    var low = ast.Absent
     if !p.at(":") {
         let index = p.expr()
         if index == failed {
@@ -219,8 +204,8 @@ func (p mut Parser) indexOrSlice(base int, first int) int {
         }
         if p.eat("]") {
             let node = p.wrap("index", first, "")
-            p.append(node, base)
-            p.append(node, index)
+            p.tree.Append(node, base)
+            p.tree.Append(node, index)
             return node
         }
         low = index
@@ -228,7 +213,7 @@ func (p mut Parser) indexOrSlice(base int, first int) int {
     if p.expect(":") == failed {
         return failed
     }
-    var high = -1
+    var high = ast.Absent
     if !p.at("]") && !p.at(":") {
         high = p.expr()
         if high == failed {
@@ -244,33 +229,35 @@ func (p mut Parser) indexOrSlice(base int, first int) int {
         return failed
     }
     let node = p.wrap("slicing", first, "")
-    p.append(node, base)
-    p.append(node, low)
-    p.append(node, high)
+    p.tree.Append(node, base)
+    p.tree.Append(node, low)
+    p.tree.Append(node, high)
     return node
 }
 
 func (p mut Parser) primary() int {
-    let token = p.tokens[p.pos]
+    let token = p.current()
     let kind = token.Kind
     let text = p.currentText()
     if kind == lexer.KindIdent {
         if text == "Array" && p.atPunctAt(1, "<") {
             return p.dynArrayLiteral()
         }
-        let name = p.name("an expression")
+        _ = p.bump()
         if p.structLiterals && p.at("{") {
-            return p.structLiteral(-1, name)
+            let name = p.tree.Add("name", token.Start, token.End, text)
+            return p.structLiteral(ast.Absent, name)
         }
         if p.structLiterals && p.at(".") && p.kindAt(1) == lexer.KindIdent && p.atPunctAt(2, "{") {
+            let pkg = p.tree.Add("name", token.Start, token.End, text)
             _ = p.bump()
             let member = p.name("a type name")
             if member == failed {
                 return failed
             }
-            return p.structLiteral(name, member)
+            return p.structLiteral(pkg, member)
         }
-        return p.leaf("ident", token.Start, token.End, text)
+        return p.tree.Add("ident", token.Start, token.End, text)
     }
     var tag = ""
     var attr = ""
@@ -299,7 +286,7 @@ func (p mut Parser) primary() int {
             return failed
         }
         let node = p.addNode("paren", token.Start, token.End, "")
-        p.append(node, inner)
+        p.tree.Append(node, inner)
         return node
     } else if kind == lexer.KindUnderscore {
         return p.error("`_` cannot be used as a value", token.Start, token.End)
@@ -321,7 +308,7 @@ func (p mut Parser) primary() int {
         return p.unexpected("an expression")
     }
     _ = p.bump()
-    return p.leaf(tag, token.Start, token.End, attr)
+    return p.tree.Add(tag, token.Start, token.End, attr)
 }
 
 func (p mut Parser) closure() int {
@@ -348,15 +335,15 @@ func (p mut Parser) closure() int {
         return failed
     }
     let node = p.addNode("closure", start.Start, start.End, "")
-    p.append(node, params)
-    p.append(node, results)
-    p.append(node, body)
+    p.tree.Append(node, params)
+    p.tree.Append(node, results)
+    p.tree.Append(node, body)
     return node
 }
 
 func (p mut Parser) structLiteral(pkg int, ty int) int {
     var first = ty
-    if pkg != -1 {
+    if pkg != ast.Absent {
         first = pkg
     }
     let start = p.tree.Start(first)
@@ -367,14 +354,14 @@ func (p mut Parser) structLiteral(pkg int, ty int) int {
         return failed
     }
     let node = p.addNode("structlit", start, startEnd, "")
-    p.append(node, pkg)
-    p.append(node, ty)
-    p.append(node, fields)
+    p.tree.Append(node, pkg)
+    p.tree.Append(node, ty)
+    p.tree.Append(node, fields)
     return node
 }
 
 func (p mut Parser) arrayLiteral() int {
-    let start = p.tokens[p.pos]
+    let start = p.current()
     let ty = p.bracketType()
     if ty == failed {
         return failed
@@ -399,7 +386,7 @@ func (p mut Parser) arrayLiteral() int {
 }
 
 func (p mut Parser) mapLiteral() int {
-    let start = p.tokens[p.pos]
+    let start = p.current()
     let ty = p.mapType()
     if ty == failed || p.expect("{") == failed {
         return failed
@@ -412,7 +399,7 @@ func (p mut Parser) mapLiteral() int {
 }
 
 func (p mut Parser) channelExpr() int {
-    let start = p.tokens[p.pos]
+    let start = p.current()
     let channelType = p.channelType()
     if channelType == failed {
         return failed
@@ -421,7 +408,7 @@ func (p mut Parser) channelExpr() int {
     if p.expect("(") == failed {
         return failed
     }
-    var capacity = -1
+    var capacity = ast.Absent
     if !p.at(")") {
         capacity = p.exprWithLiterals(true)
         if capacity == failed {
@@ -444,14 +431,14 @@ func (p mut Parser) mapEntry() int {
         return failed
     }
     let node = p.wrap("entry", key, "")
-    p.append(node, key)
-    p.append(node, value)
+    p.tree.Append(node, key)
+    p.tree.Append(node, value)
     return node
 }
 
 // Recognized by the predeclared name `Array`.
 func (p mut Parser) dynArrayLiteral() int {
-    let start = p.tokens[p.pos]
+    let start = p.current()
     let ty = p.ty()
     if ty == failed {
         return failed
@@ -485,7 +472,7 @@ func (p mut Parser) fieldInit() int {
         return failed
     }
     let node = p.wrap("init", name, "")
-    p.append(node, name)
-    p.append(node, value)
+    p.tree.Append(node, name)
+    p.tree.Append(node, value)
     return node
 }

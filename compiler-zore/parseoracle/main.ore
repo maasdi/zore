@@ -1,16 +1,14 @@
 package main
 
 import "compiler-zore/diagnostic"
+import "compiler-zore/lexer"
 import "compiler-zore/parser"
 import "compiler-zore/source"
 import "zore/os"
 import "zore/strconv"
 import "zore/strings"
 
-// Reads `cases.bin` (a decimal byte count, a space, a mode letter, a newline, then that
-// many bytes, repeated) and prints each case's records followed by `done`. Mode `p`
-// parses, `n` parses with native function declarations allowed, and `s` probes the
-// source manager.
+// Case modes: `p` parses, `n` parses with native functions allowed, `s` probes the source manager.
 func main() {
     let data, err = os.ReadBytes("cases.bin")
     if err != nil {
@@ -86,20 +84,12 @@ func describe(lines mut Array<string>, sources source.Manager, d diagnostic.Diag
     }
 }
 
-func byteList(text string) string {
-    var parts = Array<string>{}
-    for var i = 0; i < text.len(); i += 1 {
-        parts.push(strconv.Itoa(int(text[i])))
-    }
-    return strings.Join(parts[:], ".")
-}
-
 func probe(lines mut Array<string>, sources source.Manager, file int) {
     let count = sources.LineCount(file)
     lines.push("lines " + strconv.Itoa(count))
     for var i = 0; i < count; i += 1 {
         let line, _ = sources.Line(file, i)
-        lines.push("line " + strconv.Itoa(i) + " " + byteList(line))
+        lines.push("line " + strconv.Itoa(i) + " " + lexer.ByteList(line))
     }
     let text = sources.Text(file)
     var locations = Array<string>{}

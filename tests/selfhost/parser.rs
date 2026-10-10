@@ -1,7 +1,4 @@
-//! Compares the Zore parser, source manager, and diagnostics in `compiler-zore` with the
-//! Rust frontend, record by record.
-//! Requires clang (LLVM 15+) and rustc 1.98+; a missing toolchain fails rather than skips.
-//! Set `ZORE_PARSER_SEED` to explore other generated inputs.
+//! Compares the Zore parser, source manager, and diagnostics in `compiler-zore` with the Rust frontend.
 
 #[path = "common.rs"]
 mod common;
@@ -17,7 +14,7 @@ use zore::ast::*;
 use zore::diagnostic::{Diagnostic, Severity};
 use zore::lexer::{IntBase, lex};
 use zore::parser::{parse, parse_standard};
-use zore::source::{SourceError, SourceFile, SourceMap};
+use zore::source::{SourceFile, SourceMap};
 
 const PARSE: u8 = b'p';
 const PARSE_NATIVE: u8 = b'n';
@@ -45,14 +42,9 @@ fn body(text: &str) -> String {
     format!("package main\n\nfunc main() {{\n{text}\n}}\n")
 }
 
-/// The Rust records for one case, read through the compiler's own source loading.
-fn rust_records(dir: &Path, index: usize, case: &Case) -> Vec<String> {
-    let path = dir.join(format!("case-{index}.ore"));
-    fs::write(&path, &case.bytes).unwrap();
-    let text = match SourceMap::new().load(&path) {
-        Ok(_) => String::from_utf8(case.bytes.clone()).unwrap(),
-        Err(SourceError::InvalidUtf8 { .. }) => return vec!["invalid-utf8".into()],
-        Err(error) => panic!("cannot load case {index}: {error}"),
+fn rust_records(_dir: &Path, index: usize, case: &Case) -> Vec<String> {
+    let Ok(text) = String::from_utf8(case.bytes.clone()) else {
+        return vec!["invalid-utf8".into()];
     };
     let mut sources = SourceMap::new();
     let id = sources.add(format!("case-{index}.ore"), text).unwrap();
@@ -69,10 +61,9 @@ fn rust_records(dir: &Path, index: usize, case: &Case) -> Vec<String> {
     };
     let printer = Printer { file };
     records.push(format!("tree {}", printer.file(&parsed.file)));
-    let lexer_errors = lex(file).diagnostics.len();
     for (position, diagnostic) in parsed.diagnostics.iter().enumerate() {
         let span = diagnostic.span();
-        if position < lexer_errors {
+        if position < parsed.lexer_diagnostics {
             records.push(format!(
                 "lexerror:{} {} {}",
                 lexer_error_code(diagnostic.message()),
@@ -783,7 +774,7 @@ fn rust_string_literals(source: &str) -> Vec<String> {
             // A char literal is skipped whole so a quote inside it does not start a string.
             match (bytes.get(i + 1), bytes.get(i + 2), bytes.get(i + 3)) {
                 (Some(b'\\'), _, _) => {
-                    i += 2;
+                    i += 3;
                     while i < bytes.len() && bytes[i] != b'\'' {
                         i += 1;
                     }
@@ -821,6 +812,7 @@ fn targeted_programs_and_errors_match() {
         "package main\nfunc main() {\n    x = 1\n    a, b = b, a\n    c += 1\n    a, b += 1\n    _ += 1\n    c -= 1, 2\n    f() = 3\n    1 + 2\n    ;\n}\n",
         "package main\nfunc main() {\n    for {}\n    for x < 3 {}\n    for var i = 0; i < 3; i += 1 {}\n    for i, v in list {}\n    for _ in list {}\n    for ; ; {}\n    for var i = 0; i < 3\n    {}\n}\n",
         "package main\nfunc main() {\n    for p := Point{X: 1}; p.X < 3; p.X += 1 {}\n    for let p = Point{X: 1}; p.X < 3; p.X += 1 {}\n}\n",
+        "package main\nfunc main() {\n    for a, b = Array<Array<int>>{}, Point{X: 1}; a.len() < 1; a = a {}\n    for c, d = channel<Array<int>>(1), Point{X: 1}; d.X < 1; d.X += 1 {}\n}\n",
         "package main\nfunc main() {\n    select {\n    case let v, ok = ch.receive() {\n    }\n    case ch.send(1) {\n    }\n    default {\n    }\n    default {}\n    }\n    select {}\n}\n",
         "package main\nfunc main() {\n    let a = [int; 3]{1, 2, 3}\n    let b = Array<Array<int>>{}\n    let c = map[string]int{\"a\": 1,\n    }\n    let d = []int{}\n    let e = channel<int>(4)\n    let f = Array<int>\n}\n",
         "package main\nfunc main() {\n    let g = func(x int) int { return x }(2)\n    let h = func named() {}\n    let t Task<int, error> = go work()\n    let m Mutex<int> = nil\n    let v = await (await f())?\n    let w = x?.y\n    let s = a[1:2]\n    let z = a[:]\n    let q = a[1:2:3]\n}\n",

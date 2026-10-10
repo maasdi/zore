@@ -32,19 +32,31 @@ func (m Manager) Has(file int) bool {
 }
 
 func (m Manager) Path(file int) string {
+    if !m.Has(file) {
+        return ""
+    }
     return m.files[file].Path
 }
 
 func (m Manager) Text(file int) string {
+    if !m.Has(file) {
+        return ""
+    }
     return m.files[file].Text
 }
 
 func (m Manager) LineCount(file int) int {
+    if !m.Has(file) {
+        return 0
+    }
     return m.files[file].lineStarts.len()
 }
 
 // Whether `offset` is the start of a character or the end of the text.
 func (m Manager) IsBoundary(file int, offset int) bool {
+    if !m.Has(file) {
+        return false
+    }
     let text = m.files[file].Text
     if offset < 0 || offset > text.len() {
         return false
@@ -53,11 +65,14 @@ func (m Manager) IsBoundary(file int, offset int) bool {
 }
 
 func (m Manager) Contains(file int, start int, end int) bool {
-    return m.Has(file) && start <= end && m.IsBoundary(file, start) && m.IsBoundary(file, end)
+    return start <= end && m.IsBoundary(file, start) && m.IsBoundary(file, end)
 }
 
-// The line without its terminator, or false past the last line.
+// The line without its terminator, or false for an unknown file or past the last line.
 func (m Manager) Line(file int, zeroBased int) (string, bool) {
+    if !m.Has(file) {
+        return "", false
+    }
     let starts = m.files[file].lineStarts[:]
     if zeroBased < 0 || zeroBased >= starts.len() {
         return "", false
@@ -77,7 +92,7 @@ func (m Manager) Line(file int, zeroBased int) (string, bool) {
     return text[start:end], true
 }
 
-// The one-based line and column, counting characters, or false when `offset` splits a character.
+// The one-based line and column, counting characters, or false for an unknown file or split character.
 func (m Manager) Location(file int, offset int) (int, int, bool) {
     if !m.IsBoundary(file, offset) {
         return 0, 0, false

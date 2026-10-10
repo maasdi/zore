@@ -4,28 +4,27 @@ import "compiler-zore/lexer"
 
 func (p mut Parser) ty() int {
     if p.atKind(lexer.KindIdent) {
-        let name = p.name("a type")
-        let text = p.tree.Attr(name)
-        let nameStart = p.tree.Start(name)
-        let nameEnd = p.tree.End(name)
+        let text = p.currentText()
+        let name = p.bump()
         if p.at("<") {
-            return p.typeArguments(name)
+            return p.typeArguments(text, name)
         }
         if text == "Task" {
-            let task = p.leaf("task", nameStart, nameEnd, "")
+            let task = p.tree.Add("task", name.Start, name.End, "")
             let results = p.tree.List()
-            p.append(task, results)
+            p.tree.Append(task, results)
             return task
         }
         if p.at(".") && p.kindAt(1) == lexer.KindIdent {
+            let pkg = p.tree.Add("name", name.Start, name.End, text)
             _ = p.bump()
             let member = p.name("a type name")
             if member == failed {
                 return failed
             }
-            return p.node2("qualified", nameStart, nameEnd, "", name, member)
+            return p.node2("qualified", name.Start, name.End, "", pkg, member)
         }
-        return p.leaf("type", nameStart, nameEnd, text)
+        return p.tree.Add("type", name.Start, name.End, text)
     }
     if p.at("[") {
         return p.bracketType()
@@ -52,7 +51,7 @@ func (p mut Parser) ty() int {
         }
         let element = p.tree.Child(shared, 0)
         let slice = p.addNode("slice", start, startEnd, "mut")
-        p.append(slice, element)
+        p.tree.Append(slice, element)
         return slice
     }
     return p.unexpected("a type")
@@ -68,15 +67,14 @@ func (p mut Parser) channelType() int {
         return failed
     }
     let node = p.addNode("channeltype", start.Start, start.End, "")
-    p.append(node, element)
+    p.tree.Append(node, element)
     return node
 }
 
 // Only the predeclared `Array`, `Mutex`, and `Task` take type arguments.
-func (p mut Parser) typeArguments(name int) int {
-    let text = p.tree.Attr(name)
-    let nameStart = p.tree.Start(name)
-    let nameEnd = p.tree.End(name)
+func (p mut Parser) typeArguments(text string, name lexer.Token) int {
+    let nameStart = name.Start
+    let nameEnd = name.End
     if text == "Array" || text == "Mutex" {
         _ = p.bump()
         let element = p.ty()
@@ -88,7 +86,7 @@ func (p mut Parser) typeArguments(name int) int {
             tag = "mutex"
         }
         let node = p.addNode(tag, nameStart, nameEnd, "")
-        p.append(node, element)
+        p.tree.Append(node, element)
         return node
     }
     if text == "Task" {
@@ -98,20 +96,20 @@ func (p mut Parser) typeArguments(name int) int {
         if first == failed {
             return failed
         }
-        p.append(results, first)
+        p.tree.Append(results, first)
         for p.at(",") {
             _ = p.bump()
             let next = p.ty()
             if next == failed {
                 return failed
             }
-            p.append(results, next)
+            p.tree.Append(results, next)
         }
         if !p.closeTypeArguments() {
             return failed
         }
         let node = p.addNode("task", nameStart, nameEnd, "")
-        p.append(node, results)
+        p.tree.Append(node, results)
         return node
     }
     return p.error(
@@ -134,7 +132,8 @@ func (p mut Parser) closeTypeArguments() bool {
     }
     let start = p.currentStart()
     let end = p.currentEnd()
-    p.tokens[p.pos] = lexer.Token{Kind: lexer.KindPunct, Start: start + 1, End: end, Detail: 0, Text: ""}
+    let rest = lexer.PunctIndex(p.text[start + 1:end])
+    p.replaceCurrent(lexer.Token{Kind: lexer.KindPunct, Start: start + 1, End: end, Detail: rest, Text: ""})
     p.lastTokenEnd = start + 1
     return true
 }
@@ -165,22 +164,17 @@ func (p mut Parser) insertSemicolonAfterTypeArguments() {
         }
         at = gapEnd
     }
-    let last = p.tokens[p.tokens.len() - 1]
-    p.tokens.push(last)
-    for var i = p.tokens.len() - 1; i > p.pos; i -= 1 {
-        p.tokens[i] = p.tokens[i - 1]
-    }
-    p.tokens[p.pos] = lexer.Token{
+    p.insertBeforeCurrent(lexer.Token{
         Kind: lexer.KindSemicolon,
         Start: at,
         End: at,
         Detail: lexer.SeparatorNewline,
         Text: "",
-    }
+    })
 }
 
 func (p mut Parser) funcType() int {
-    let start = p.tokens[p.pos]
+    let start = p.current()
     let isAsync = p.atKeyword("async")
     if isAsync {
         _ = p.bump()
@@ -226,7 +220,7 @@ func (p mut Parser) funcTypeParam() int {
         return failed
     }
     let node = p.spanless("ftparam", mode)
-    p.append(node, ty)
+    p.tree.Append(node, ty)
     return node
 }
 
@@ -264,7 +258,7 @@ func (p mut Parser) bracketType() int {
             return failed
         }
         let node = p.addNode("slice", start.Start, start.End, "shared")
-        p.append(node, element)
+        p.tree.Append(node, element)
         return node
     }
     let element = p.ty()
