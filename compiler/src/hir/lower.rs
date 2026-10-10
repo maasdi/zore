@@ -1760,6 +1760,12 @@ impl<'a> Checker<'a> {
                 .types
                 .func_signature(callee.ty())
                 .is_some_and(|signature| signature.is_async),
+            ExprKind::InterfaceCall {
+                receiver, method, ..
+            } => self
+                .types
+                .interface_of(receiver.ty())
+                .is_some_and(|id| self.types.interface_methods(id)[*method].is_async),
             _ => false,
         };
         if awaits_async_call {

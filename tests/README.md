@@ -45,7 +45,9 @@ whose native tests compare each function with its documented result.
 `conformance/interfaces.md` lists interface declarations, satisfaction,
 borrowed and owned values, and their restrictions; the checker, package, and
 native tests cover each row, and the native tests run with the leak checker to
-show each value inside an interface is destroyed exactly once. `tests/ownership/ownership.rs` tests the MIR ownership pass through the
+show each value inside an interface is destroyed exactly once, and that async
+code reaching a connection through an interface suspends on the connection's
+own reads and writes. `tests/ownership/ownership.rs` tests the MIR ownership pass through the
 full frontend: whole-place and partial moves, reinitialization, call-local
 borrows, the custom-`drop`-ancestor restriction, array- and slice-element move
 rules, and region analysis of stored slice borrows (aliasing at the

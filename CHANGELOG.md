@@ -25,7 +25,9 @@ once it does.
 - Locked interfaces: `type Reader interface { ... }` lists methods a type
   satisfies by having them; shared and `mut` interface parameters borrow their
   argument, and other interface values own the value inside (§22.2, Q42).
-  `interface` is now a keyword.
+  `interface` is now a keyword. In async code a call through an interface
+  suspends when the method behind it waits, and interfaces may list `async`
+  methods, which are awaited.
 - Locked untyped constants following Go's model: integer and float kinds,
   exact arithmetic, representability rules, and at least 256-bit precision
   (§6.7).

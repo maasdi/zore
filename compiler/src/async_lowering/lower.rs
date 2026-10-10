@@ -21,7 +21,9 @@ pub fn lower(package: &hir::Package, program: &mir::Program) -> Plan {
                             || super::native_wait(&package.function(*id).name).is_some()
                             || package.function(*id).name == "zore/time.Sleep"
                     }
-                    Callee::ChannelSend
+                    // What serves the entry may wait.
+                    Callee::Interface { .. }
+                    | Callee::ChannelSend
                     | Callee::ChannelReceive
                     | Callee::Select { .. }
                     | Callee::MutexWithLock
@@ -107,6 +109,7 @@ pub fn lower(package: &hir::Package, program: &mir::Program) -> Plan {
                         {
                             Suspension::Io(*id)
                         }
+                        Callee::Interface { method } => Suspension::Interface(*method),
                         Callee::MutexWithLock => Suspension::Mutex,
                         Callee::TaskWait => Suspension::Task,
                         Callee::ChannelSend | Callee::ChannelReceive | Callee::Select { .. } => {

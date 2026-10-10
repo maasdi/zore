@@ -8585,3 +8585,162 @@ func main() {
         "false\n",
     );
 }
+
+#[test]
+fn async_code_suspends_on_connections_reached_through_interfaces() {
+    let source = "package main
+
+import \"zore/net\"
+import \"zore/strings\"
+
+type ReadWriter interface {
+    Read(buf mut []byte) (int, error)
+    Write(data []byte) (int, error)
+}
+
+type Taker interface {
+    own Read(buf mut []byte) (int, error)
+}
+
+func buffer(size int) Array<byte> {
+    var data = Array<byte>{}
+    for var i = 0; i < size; i += 1 {
+        data.push(0)
+    }
+    return data
+}
+
+async func serve(listener own net.Listener, clients int) int {
+    var total = 0
+    for var i = 0; i < clients; i += 1 {
+        let conn, err = listener.Accept()
+        if err != nil {
+            return -1
+        }
+        var rw ReadWriter = conn
+        var buf = buffer(64)
+        let n, readErr = rw.Read(buf[:])
+        if readErr != nil {
+            return -2
+        }
+        total += n
+        let _, writeErr = rw.Write(buf[:n])
+        if writeErr != nil {
+            return -3
+        }
+    }
+    return total
+}
+
+async func client(address string, message string) string {
+    let conn, err = net.Dial(\"tcp\", address)
+    if err != nil {
+        return \"dial failed\"
+    }
+    var rw ReadWriter = conn
+    let data = strings.Bytes(message)
+    let _, writeErr = rw.Write(data[:])
+    if writeErr != nil {
+        return \"write failed\"
+    }
+    let taker Taker = rw
+    var buf = buffer(64)
+    let n, readErr = taker.Read(buf[:])
+    if readErr != nil {
+        return \"read failed\"
+    }
+    let text, bad = strings.FromBytes(buf[:n])
+    _ = bad
+    return text
+}
+
+func main() {
+    let listener, err = net.Listen(\"tcp\", \"127.0.0.1:0\")
+    if err != nil {
+        return
+    }
+    let address = listener.Addr()
+    let server = go serve(listener, 3)
+    for var i = 0; i < 3; i += 1 {
+        let reply = go client(address, \"ping\")
+        println(reply.wait())
+    }
+    println(server.wait())
+}
+";
+    prints(source, "ping\nping\nping\n12\n");
+    let mut sources = SourceMap::new();
+    let id = sources.add("test.ore", source.into()).unwrap();
+    let ir = emit_llvm(sources.file(id).unwrap()).unwrap();
+    let starts: Vec<&str> = ir
+        .split("define ")
+        .filter(|function| function.contains(".start("))
+        .collect();
+    assert!(
+        starts
+            .iter()
+            .any(|function| function.contains("Conn.Read$async$new")),
+        "no start adapter builds the connection read's frame"
+    );
+    assert!(
+        starts
+            .iter()
+            .any(|function| function.contains("Conn.Write$async$new")),
+        "no start adapter builds the connection write's frame"
+    );
+}
+
+#[test]
+fn async_code_calls_plain_and_async_methods_through_interfaces() {
+    let source = "package main
+
+type Counter interface {
+    mut Add(n int) int
+}
+
+type Fetcher interface {
+    async Fetch(n int) int
+}
+
+type Tally struct {
+    n int
+}
+
+func (t mut Tally) Add(n int) int {
+    t.n += n
+    return t.n
+}
+
+type Remote struct {
+    base int
+    label string
+}
+
+func (r mut Remote) drop() {
+    println(\"drop \" + r.label)
+}
+
+async func (r Remote) Fetch(n int) int {
+    return r.base + n
+}
+
+async func countUp(c own Counter) int {
+    var held = c
+    let first = held.Add(2)
+    return first + held.Add(3)
+}
+
+async func fetch(f own Fetcher) int {
+    let a = await f.Fetch(5)
+    return a + await f.Fetch(1)
+}
+
+func main() {
+    let a = go countUp(Tally{n: 1})
+    println(a.wait())
+    let b = go fetch(Remote{base: 10, label: \"remote\"})
+    println(b.wait())
+}
+";
+    prints(source, "9\ndrop remote\n26\n");
+}
