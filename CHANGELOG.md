@@ -12,6 +12,8 @@ once it does.
 - Locked the program entry point: `package main` with exactly one
   `func main()`; exit status 0 on return, nonzero after a panic (§3.19).
 - Locked `println`: one printable argument, one line per call (§37.1).
+- Locked named types: `type Duration int` declares a distinct type with its
+  base type's operations, explicit conversions, and methods (§8.5, Q40).
 - Locked rune conversions: `int(r)`, `rune(n)`, and the other integer types,
   checked at run time and folded for constants (§6.6, Q39).
 - Locked untyped constants following Go's model: integer and float kinds,

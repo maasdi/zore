@@ -7508,3 +7508,59 @@ func main() {
         );
     }
 }
+
+#[test]
+fn named_types_compute_with_their_base_representation() {
+    prints(
+        "package main
+
+type Duration int
+type Name string
+type Flag bool
+type Letter rune
+type Ratio float64
+
+const Millisecond Duration = 1000000
+const Second = 1000 * Millisecond
+
+func (d Duration) Milliseconds() int {
+    return int(d / Millisecond)
+}
+
+func (n Name) Greeting() string {
+    return \"hello \" + string(n)
+}
+
+func main() {
+    let d = 5 * Second
+    println(d.Milliseconds())
+    let n = Name(\"zo\") + Name(\"re\")
+    println(n.Greeting())
+    println(n.len())
+    println(string(n[1:3]))
+    var total = 0
+    for _, ch in n {
+        total += int(ch)
+    }
+    println(total)
+    let f = Flag(false)
+    if !f {
+        println(\"off\")
+    }
+    let l = Letter('é')
+    println(string(l))
+    println(int(l))
+    let r Ratio = 0.5
+    println(int(r * 4))
+    var counts = map[Name]Duration{}
+    counts[n] = d
+    let found, value = counts[Name(\"zore\")]
+    println(found)
+    println(value.Milliseconds())
+    let names = Array<Name>{n, Name(\"x\")}
+    println(names.len())
+}
+",
+        "5000\nhello zore\n4\nor\n448\noff\né\n233\n2\ntrue\n5000\n2\n",
+    );
+}

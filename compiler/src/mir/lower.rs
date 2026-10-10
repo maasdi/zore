@@ -611,7 +611,7 @@ impl Builder {
         body: &hir::Block,
         span: Span,
     ) {
-        if collection.ty() == TypeStore::STRING {
+        if package.types.kind(collection.ty()) == TypeKind::String {
             return self.for_each_string(package, key, item, collection, body, span);
         }
         self.scopes.push(Vec::new());
@@ -1120,7 +1120,7 @@ impl Builder {
                 low,
                 high,
                 mutable,
-            } if base.ty() == TypeStore::STRING => {
+            } if package.types.kind(base.ty()) == TypeKind::String => {
                 let source = self.evaluate_to_temporary(package, base);
                 let low = low
                     .as_deref()

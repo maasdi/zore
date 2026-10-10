@@ -988,10 +988,10 @@ type position (`var c shapes.Circle`). The rules are:
   read, written, or called, and, because a struct literal must name every field
   exactly once (§8.4), a struct with an unexported field can be constructed
   only inside its package, which offers constructor functions instead.
-- *Types are nominal.* A struct type is identified by its package and name;
-  `a.T` and `b.T` are different types.
-- *Methods.* A method may be declared only on a struct type defined in the same
-  package, so imported types cannot be extended. Calling an exported method on a
+- *Types are nominal.* A struct or named type (§8.5) is identified by its
+  package and name; `a.T` and `b.T` are different types.
+- *Methods.* A method may be declared only on a struct or named type (§8.5)
+  defined in the same package, so imported types cannot be extended. Calling an exported method on a
   value of an imported type is allowed. Custom `drop` and `clone` methods are
   honored wherever such a value is created, copied, or destroyed.
 - *Unused or conflicting imports are errors.* An import that is never used in
@@ -2448,6 +2448,74 @@ layout order, and represent initialization progress for ownership/drop lowering.
 Reject ambiguous unparenthesized condition literals. Pending cases are in
 `tests/conformance/functions-structs.md`.
 
+## 8.5 Named types — LOCKED
+
+A type declaration may name a predeclared type instead of declaring a struct:
+
+```ore
+type Duration int
+type Name string
+type Seconds Duration
+```
+
+`type Name Base` declares a new type, distinct from `Base` and from every other
+type, whose values, representation, and operations are those of `Base`. `Base`
+is `bool`, an integer or float type, `rune`, `string`, or another named type;
+the predeclared type at the end of that chain is the named type's *base type*.
+A declaration that names a struct, collection, function, task, channel, mutex,
+or `error` type, or a chain of named types that leads back to itself, is an
+error.
+
+- *Operations.* The operators, comparisons, indexing, slicing, `len()`, and
+  `for ... in` loops of the base type apply, and give the named type wherever the
+  base operation gives the operand type: `d * 2` is a `Duration`, `d > e` is a
+  `bool`, slicing a `Name` gives a `Name`, and looping over a `Name` gives
+  `rune` characters. A value whose base type is `bool` can be the condition of
+  `if` and `for`.
+- *No implicit conversion.* A named type never mixes with another type,
+  including its base: `d + x` for a `Duration d` and an `int x` is an error.
+  An untyped constant takes the named type the same way it takes its base type
+  (§6.7), so `5 * Second` is a `Duration`. Literals of `bool`, `rune`, and
+  `string` are typed (§3.8–§3.10) and need a conversion: `Name("zore")`.
+- *Conversions.* `T(v)` converts between a named type and any type with the
+  same base type, and between named and predeclared types wherever the base
+  types convert (§6.6): `Duration(n)` for any integer or float `n`, `int(d)`,
+  `string(name)`, `Name(s)`, and `rune(letter)`. A conversion between types with
+  the same base type never fails and does not change the value.
+- *Methods.* A named type may have methods (§9.1), declared in its package.
+  The base type's operations are not methods, and a named type does not get its
+  base type's methods or another named type's methods.
+- *Constants.* A typed constant may have a named type: `const Second Duration =
+  1000000000`.
+- *Zero value.* The zero value of a named type is that of its base type
+  (§41.4).
+
+```ore
+type Duration int
+
+const Millisecond Duration = 1000000
+
+func (d Duration) Milliseconds() int {
+    return int(d / Millisecond)
+}
+
+func main() {
+    let d = 250 * Millisecond
+    println(d.Milliseconds())       // 250
+    let raw int = int(d)            // conversion to the base type
+    let bad = d + raw               // invalid: Duration and int do not mix
+}
+```
+
+Ownership, error, and async implications: a named type is Copy, like every base
+type it can have, and has no custom `drop` or `clone`. It adds no runtime
+representation or cost.
+
+Compiler impact: give each named type its own type identity whose
+representation and operator rules come from its base type; resolve bases before
+other declarations and diagnose cycles; key methods by receiver type. Pending
+conformance cases: `tests/conformance/functions-structs.md`.
+
 ---
 
 # 9. Methods
@@ -2481,6 +2549,10 @@ Receiver semantics follow the same ownership model as function parameters:
 - `receiver own Type` -> ownership transfer
 
 There is no separate method ownership model.
+
+The receiver type is a struct type or a named type (§8.5) declared in the same
+package. Custom `drop` and `clone` methods (§14.3, §10.7) may be declared only
+on struct types.
 
 A method used as a value, `value.Method` without a call, is a function value
 defined in §16.2.
@@ -5932,6 +6004,7 @@ The zero value per type:
 | `rune` | `U+0000` |
 | `string` | `""` (valid, length zero) |
 | struct | each field set to that field's own zero value, recursively |
+| named type (§8.5) | the zero value of its base type |
 | `[T; N]` | `N` elements, each the zero value of `T` |
 | `[]T`, `mut []T` (slice) | an empty, valid view of length zero, with no backing-storage loan |
 | `Array<T>` | an empty, valid, owned array with zero elements |

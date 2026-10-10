@@ -608,7 +608,7 @@ fn methods_declare_and_call() {
     );
     rejects(
         &program("func (x int) m() {}"),
-        "methods can be declared only on struct types",
+        "methods can be declared only on struct or named types",
     );
     rejects(&program("func (x Missing) m() {}"), "cannot find `Missing`");
     rejects(
@@ -749,7 +749,7 @@ fn drop_methods_make_structs_move() {
     );
     rejects(
         &program("func (x int) drop() {}"),
-        "methods can be declared only on struct types",
+        "methods can be declared only on struct or named types",
     );
     accepts(&program(
         "type P struct { X int }
@@ -849,7 +849,7 @@ fn calls_arguments_and_results() {
     );
     rejects(
         &body("let x = bool(1)"),
-        "only numeric and rune conversions exist",
+        "mismatched types: expected `bool`, found an integer constant",
     );
     rejects(
         &body("let x = int64(\"1\")"),
@@ -4072,5 +4072,88 @@ fn runes_convert_to_and_from_integer_types() {
         ),
     ] {
         rejects(&body(stmts), message);
+    }
+}
+
+#[test]
+fn named_types_are_distinct_and_keep_their_base_operations() {
+    accepts(&program(
+        "type Duration int
+type Seconds Duration
+type Name string
+type Flag bool
+type Letter rune
+const Millisecond Duration = 1000000
+const Second = 1000 * Millisecond
+func (d Duration) Milliseconds() int { return int(d / Millisecond) }
+func (n Name) Upper() Name { return n }
+func use() {
+    let d = 5 * Second
+    let ms int = d.Milliseconds()
+    let s Seconds = 3
+    let back Duration = Duration(s)
+    let n = Name(\"zore\")
+    let text string = string(n)
+    let part Name = n[1:3]
+    let f = Flag(true)
+    if f && !f { println(1) }
+    let l = Letter('a')
+    let code int = int(l)
+    let again Letter = Letter(code)
+    let r = rune(l)
+    let word string = string(l)
+    println(ms + code)
+    println(d > back)
+    println(text + word)
+    println(part.len())
+    println(r)
+    println(again == l)
+}",
+    ));
+    for (decls, message) in [
+        (
+            "type Duration int\nfunc f(d Duration, x int) Duration { return d + x }",
+            "mismatched types: expected `Duration`, found `int64`",
+        ),
+        (
+            "type Name string\nfunc f() Name { return \"zore\" }",
+            "mismatched types: expected `Name`, found `string`",
+        ),
+        (
+            "type Name string\nfunc f() Name { return Name(5) }",
+            "mismatched types: expected `Name`, found an integer constant",
+        ),
+        (
+            "type Flag bool\nfunc f() Flag { return Flag(1) }",
+            "mismatched types: expected `Flag`, found an integer constant",
+        ),
+        ("type A B\ntype B A", "named type `A` is built on itself"),
+        (
+            "type Point struct { X int }\ntype P Point",
+            "a named type must be built on `bool`, a number type, `rune`, or `string`, not `Point`",
+        ),
+        (
+            "type Items Array<int>",
+            "a named type must be built on `bool`, a number type, `rune`, or `string`",
+        ),
+        ("type E error", "not `error`"),
+        (
+            "type Duration int\nfunc (d mut Duration) drop() {}",
+            "`drop` can be declared only on a struct type",
+        ),
+        (
+            "type Duration int\nfunc (d Duration) Twice() Duration { return d * 2 }\nfunc (d Duration) Twice() Duration { return d }",
+            "duplicate",
+        ),
+        (
+            "func (i int) Double() int { return i * 2 }",
+            "methods can be declared only on struct or named types defined in this package",
+        ),
+        (
+            "type Duration int\nfunc f() { let x = Duration }",
+            "`Duration` is a type, not a value",
+        ),
+    ] {
+        rejects(&program(decls), message);
     }
 }

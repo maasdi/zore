@@ -21,6 +21,8 @@ pub struct TypeStore {
     task_types: HashMap<Vec<TypeId>, TypeId>,
     channel_types: HashMap<TypeId, TypeId>,
     mutex_types: HashMap<TypeId, TypeId>,
+    /// A named type's display name and the predeclared type it is built on.
+    named: HashMap<TypeId, (String, TypeId)>,
 }
 
 impl Default for TypeStore {
@@ -71,6 +73,7 @@ impl TypeStore {
             task_types: HashMap::new(),
             channel_types: HashMap::new(),
             mutex_types: HashMap::new(),
+            named: HashMap::new(),
         }
     }
 
@@ -81,6 +84,31 @@ impl TypeStore {
         self.kinds.push(TypeKind::Struct(id));
         self.struct_types.push(ty);
         (id, ty)
+    }
+
+    /// The kind is set by `set_named_base` once the base type is resolved.
+    pub fn add_named(&mut self, name: &str) -> TypeId {
+        let ty = TypeId(self.kinds.len() as u32);
+        self.kinds.push(TypeKind::Bool);
+        self.named.insert(ty, (name.to_owned(), ty));
+        ty
+    }
+
+    pub fn set_named_base(&mut self, ty: TypeId, base: TypeId) {
+        self.kinds[ty.0 as usize] = self.kind(base);
+        let builtin = self.base(base);
+        if let Some(entry) = self.named.get_mut(&ty) {
+            entry.1 = builtin;
+        }
+    }
+
+    pub fn is_named(&self, ty: TypeId) -> bool {
+        self.named.contains_key(&ty)
+    }
+
+    /// The predeclared type a named type is built on; any other type is its own base.
+    pub fn base(&self, ty: TypeId) -> TypeId {
+        self.named.get(&ty).map_or(ty, |&(_, base)| base)
     }
 
     pub fn struct_type(&self, id: StructId) -> TypeId {
@@ -252,6 +280,9 @@ pub struct TypeName<'a> {
 
 impl fmt::Display for TypeName<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if let Some((name, _)) = self.store.named.get(&self.ty) {
+            return f.write_str(name);
+        }
         match self.store.kind(self.ty) {
             TypeKind::Bool => f.write_str("bool"),
             TypeKind::Rune => f.write_str("rune"),
