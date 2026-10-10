@@ -162,6 +162,8 @@ impl Checker<'_> {
             is_async: false,
             native: false,
             call_once,
+            type_params: Vec::new(),
+            probe: false,
             locals,
             body,
         });

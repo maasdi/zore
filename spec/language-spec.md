@@ -807,10 +807,11 @@ The type/zero-value rules for `nil` are locked in §41.4. Do not infer
 Go's complete statement or type grammar from this keyword list.
 
 Built-in primitive type names (§6.1), `Array`, `Task`, `Mutex`, `mutex`, `error`, `println`,
-`panic`, `clone`, and `drop` are predeclared names, not keywords. They are lexed as identifiers
+`panic`, `clone`, and `drop`, and the constraints `any`, `copyable`, `comparable`, and
+`ordered` (§22.1), are predeclared names, not keywords. They are lexed as identifiers
 and resolved semantically; their built-in meaning may still require special
 compiler handling. Declarations may not shadow them (§3.18). This distinction
-does not imply user-defined generics or additional built-in APIs.
+does not imply user-defined generic types or additional built-in APIs.
 
 Ownership, error, and async implications: keyword classification preserves the
 locked meanings of `mut`, `own`, `async`, `await`, and `go`; it does not change
@@ -833,7 +834,8 @@ constants, and user-defined type or function names. If an import introduces a
 name into unqualified lookup, that name must obey the same restriction.
 
 The protected names currently established in §3.17 are all primitive type names
-from §6.1, plus `Array`, `Task`, `Mutex`, `mutex`, `error`, `println`, `clone`, and `drop`.
+from §6.1, plus `Array`, `Task`, `Mutex`, `mutex`, `error`, `println`, `clone`, `drop`,
+`any`, `copyable`, `comparable`, and `ordered`.
 Any additional predeclared names must be explicitly specified; implementations
 must not protect speculative library names. The full built-in API inventory
 and signatures remain separate decisions.
@@ -4974,21 +4976,105 @@ Compiler/runtime internals may of course use low-level operations internally.
 
 # 22. Generics and Interfaces
 
-## 22.1 General-purpose generics — OUT OF MVP
+## 22.1 Generic functions — LOCKED
 
-User-defined generic functions/types are not part of the MVP.
+A generic function declares type parameters in angle brackets after its name.
+Each type parameter has exactly one constraint, which says which types it can
+stand for and what the body may do with its values:
 
-The presence of built-in/library forms such as:
+```ore
+func Max<T ordered>(a T, b T) T {
+    if a > b {
+        return a
+    }
+    return b
+}
 
-```text
-Array<T>
-channel<T>
-Task<T>
+func Contains<T comparable>(items []T, target T) bool {
+    for _, item in items {
+        if item == target {
+            return true
+        }
+    }
+    return false
+}
 ```
 
-does not imply that general user-defined generics are already available.
+**Declaration.** The list `<T C, U D, ...>` follows the function name and holds
+at least one parameter. Each parameter is a name followed by its constraint;
+the names are in scope in the signature and the body, and they cannot shadow
+predeclared names (§3.18). A type parameter can appear anywhere a type can,
+including inside `[]T`, `Array<T>`, `map[K]V`, `channel<T>`, `Mutex<T>`, and
+`[T; N]`. Methods cannot declare type parameters, a function declared without a
+body (§37) cannot be generic, and `main` cannot be generic. An `async func` can
+be generic. Generic types are not part of this decision; only functions are.
 
-These may initially be compiler-known/core-library parameterized types.
+**Constraints.**
+
+| Constraint | Allowed type arguments | What the body may do with a `T` value, besides passing, returning, storing, and moving it |
+| --- | --- | --- |
+| `any` | every type allowed below | nothing more |
+| `copyable` | every Copy type (§10.2) | copy it |
+| `comparable` | `bool`, integer types, `rune`, `string`, and named types built on one: exactly the map key types (§13.3) | copy it, compare it with `==` and `!=`, and use it as a map key |
+| `ordered` | integer and float types, `rune`, `string`, and named types built on one | copy it, and compare it with `==`, `!=`, `<`, `<=`, `>`, and `>=` |
+| an interface type (§22.2) | types that satisfy the interface, including interface types | call the interface's methods |
+
+`any`, `copyable`, `comparable`, and `ordered` are predeclared names (§3.17)
+usable only as constraints; none of them is a type. No type argument can be a
+function type, a `mut []T`, a borrowed interface value, or a type that holds one
+of these. Floats are not `comparable`, as they are not map keys.
+
+**Calls.** A call writes no type arguments; they come from the argument types.
+Each parameter type is matched against its argument's type, and a type
+parameter takes the type found in its place, from the first argument that
+decides it. An untyped constant decides a type parameter only when no typed
+argument does; the first such constant then gives its default type (§6.7). Arguments are then
+checked against the parameter types with the type arguments in place, as for
+any call. A call is an error when a type parameter is not decided or a type
+argument does not satisfy its constraint; the diagnostic names the type
+parameter.
+
+```ore
+let biggest = Max(3, 9)                 // T = int
+let found = Contains(names[:], "Ada")   // T = string
+Max(1.5, 2)                             // T = float64; 2 converts
+```
+
+`Max<int>(1, 2)` is not a call syntax: it parses as comparisons. A generic
+function cannot be used as a value. Inside a generic function, a type parameter
+can be passed on to another generic call when its own constraint promises as
+much as the callee needs; an interface constraint passes on to an interface it
+satisfies.
+
+**Checking.** The body is checked once, at the declaration, for every type its
+constraints allow, whether or not the function is called. Under `copyable`,
+`comparable`, and `ordered`, `T` values are copied; under `any` and an interface
+constraint, `T` is treated as a Move type, so a `T` cannot be moved out of a
+slice, field, or element, or used after it was moved. Each set of type arguments
+then gets its own copy of the function, compiled like ordinary code. A generic
+function whose calls would need endless new sets of type arguments, such as one
+calling itself with `Array<T>`, is an error.
+
+**Not yet supported.** Inside a generic function: function literals, `go`,
+method values, converting a `T` value to an interface type, `clone` of a `T`,
+and printing a `T`. These produce diagnostics.
+
+Ownership, error, and async implications: generic code follows the ordinary
+ownership, borrowing, view, and cleanup rules for each type parameter as its
+constraint describes, and a copy for particular type arguments behaves exactly
+like a function written for those types, including destroying values and running
+custom `drop` methods. Calling a method through an interface constraint uses
+the receiver with the entry's mode, as a call through an interface value does
+(§22.2). Errors propagate with `?` as usual. A call to a generic `async func`
+must be awaited or spawned (§17.8) and suspends like any async call.
+
+Compiler impact: parse type parameter lists in both parsers; declare type
+parameters and the four predeclared constraints in the resolver; add a type
+parameter type kind classified by its constraint; infer type arguments at calls
+and check them against constraints; check generic bodies once; make one copy per
+set of type arguments before MIR, and check an extra copy with stand-in types
+for ownership so errors in uncalled functions are found; compile only the
+copies. Pending conformance cases: `tests/conformance/generics.md`.
 
 ## 22.2 Interfaces — LOCKED
 
@@ -6372,7 +6458,7 @@ The following features are part of the locked MVP.
 
 The following features must not be treated as part of the MVP unless this specification is changed:
 
-- general-purpose generics
+- generic types (generic functions are in §22.1)
 - macros
 - reflection
 - raw pointers
@@ -6637,9 +6723,10 @@ No specific scheduler algorithm is locked.
 
 Do not depend on it.
 
-## 41.9 General generic syntax — OUT OF MVP
+## 41.9 Generic type syntax — OUT OF MVP
 
-Do not infer a user-facing generic language from `Array<T>` or `channel<T>`.
+Generic functions are locked in §22.1. Do not infer user-defined generic types
+from `Array<T>`, `channel<T>`, or generic functions.
 
 ---
 

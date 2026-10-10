@@ -72,7 +72,7 @@ fn lower_function(package: &hir::Package, id: FunctionId, function: &hir::Functi
         .map(|&ty| builder.temp(ty))
         .collect();
     builder.current = builder.new_block();
-    if function.native {
+    if function.native || !function.type_params.is_empty() {
         return Body {
             function: id,
             name: function.name.clone(),
@@ -1282,6 +1282,7 @@ impl Builder {
                 debug_assert_eq!(values.len(), 1);
                 values.into_iter().next().expect("single propagated result")
             }
+            ExprKind::CallGeneric { .. } => unreachable!("generic calls become calls of copies"),
             ExprKind::Println(_) => unreachable!("println has no value"),
             ExprKind::Panic(_) => unreachable!("panic has no value"),
             ExprKind::Drop(_) => unreachable!("drop has no value"),

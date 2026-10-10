@@ -126,7 +126,17 @@ func (p mut Parser) funcDecl() int {
         }
     }
     let name = p.name("a function name")
-    if name == failed || p.expect("(") == failed {
+    if name == failed {
+        return failed
+    }
+    var typeParams = p.tree.List()
+    if p.at("<") {
+        typeParams = p.typeParams()
+        if typeParams == failed {
+            return failed
+        }
+    }
+    if p.expect("(") == failed {
         return failed
     }
     let params = p.commaList(")", "parameter", true, itemParam)
@@ -163,10 +173,46 @@ func (p mut Parser) funcDecl() int {
     let node = p.addNode("func", start.Start, start.End, attr)
     p.tree.Append(node, receiver)
     p.tree.Append(node, name)
+    p.tree.Append(node, typeParams)
     p.tree.Append(node, params)
     p.tree.Append(node, results)
     p.tree.Append(node, body)
     return node
+}
+
+func (p mut Parser) typeParams() int {
+    _ = p.bump()
+    let params = p.tree.List()
+    for {
+        let name = p.name("a type parameter name")
+        if name == failed {
+            return failed
+        }
+        let nameStart = p.tree.Start(name)
+        let nameEnd = p.tree.End(name)
+        if p.at(",") || p.at(">") {
+            let text = p.tree.Attr(name)
+            return p.error(
+                "type parameter `" + text + "` needs a constraint, such as `any`",
+                nameStart,
+                nameEnd,
+            )
+        }
+        let constraint = p.ty()
+        if constraint == failed {
+            return failed
+        }
+        let param = p.node2("typeparam", nameStart, nameEnd, "", name, constraint)
+        p.tree.Append(params, param)
+        if p.at(",") {
+            _ = p.bump()
+            continue
+        }
+        if !p.closeTypeArguments() {
+            return failed
+        }
+        return params
+    }
 }
 
 // `mut` before `[]` belongs to a mutable slice type, not to the parameter.

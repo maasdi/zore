@@ -4615,3 +4615,301 @@ func use() { let f Fetcher = Plain{n: 1} }",
         rejects(&program(&format!("{decls}\n{body}")), message);
     }
 }
+
+const GENERICS: &str = "func Max<T ordered>(a T, b T) T {
+    if a > b {
+        return a
+    }
+    return b
+}
+
+func Contains<T comparable>(items []T, target T) bool {
+    for _, item in items {
+        if item == target {
+            return true
+        }
+    }
+    return false
+}
+
+func First<T copyable>(items []T) T {
+    return items[0]
+}
+
+func Keep<T any>(item own T) T {
+    return item
+}
+
+type Named interface { Name() string }
+
+type City struct { name string }
+
+func (c City) Name() string { return c.name }
+
+func Greet<T Named>(item T) string {
+    return item.Name()
+}
+";
+
+fn with_generics(decls: &str) -> String {
+    program(&format!("{GENERICS}\n{decls}"))
+}
+
+#[test]
+fn generic_functions_take_type_arguments_from_their_arguments() {
+    let case = accepts(&with_generics(
+        "func Count<K comparable, V any>(m map[K]V) int {
+    var n = 0
+    for _, _ in m {
+        n += 1
+    }
+    return n
+}
+
+func Pass<T ordered>(a T) T {
+    return Max(a, a)
+}
+
+func Relay<T Named>(item T) string {
+    return Greet(item)
+}
+
+func use() {
+    let a = Max(3, 9)
+    let b = Max(1.5, 2)
+    let c = Max(\"x\", \"y\")
+    let names = Array<string>{\"Ada\"}
+    let d = Contains(names[:], \"Ada\")
+    let e = First(names[:])
+    let f = Keep(Array<int>{1})
+    let g = Count(map[string]bool{\"k\": true})
+    let h = Pass(int32(4))
+    let i = Greet(City{name: \"Oslo\"})
+    let n Named = City{name: \"Rome\"}
+    let j = Greet(n)
+    let k = Relay(City{name: \"Kyiv\"})
+    _ = a
+    _ = b
+    _ = c
+    _ = d
+    _ = e
+    _ = f
+    _ = g
+    _ = h
+    _ = i
+    _ = j
+    _ = k
+}",
+    ));
+    let package = case.package();
+    let compiled: Vec<&str> = package
+        .functions
+        .iter()
+        .filter(|f| f.compiled())
+        .map(|f| f.name.as_str())
+        .collect();
+    for copy in [
+        "Max<int64>",
+        "Max<float64>",
+        "Max<string>",
+        "Max<int32>",
+        "Pass<int32>",
+        "Contains<string>",
+        "Greet<City>",
+        "Greet<Named>",
+        "Relay<City>",
+    ] {
+        assert!(compiled.contains(&copy), "no copy {copy} in {compiled:?}");
+    }
+    let max = case.function("Max");
+    assert_eq!(max.type_params.len(), 1);
+    assert!(!max.compiled());
+    let probes = package.functions.iter().filter(|f| f.probe).count();
+    assert!(probes >= 8, "one probe per generic function");
+}
+
+#[test]
+fn generic_declarations_reject_bad_parameters_and_constraints() {
+    for (decls, message) in [
+        (
+            "func F<T>() {}",
+            "type parameter `T` needs a constraint, such as `any`",
+        ),
+        (
+            "func F<T int>() {}",
+            "a constraint is `any`, `copyable`, `comparable`, `ordered`, or an interface type",
+        ),
+        (
+            "func F(x any) {}",
+            "`any` is a constraint, so it can only follow a type parameter",
+        ),
+        (
+            "type R struct {}\nfunc (r R) F<T any>() {}",
+            "a method cannot declare type parameters",
+        ),
+        (
+            "func use() { let ordered = 1 }",
+            "`ordered` shadows a predeclared name",
+        ),
+        ("func F<T any, T any>() {}", "duplicate declaration `T`"),
+    ] {
+        rejects(&program(decls), message);
+    }
+    rejects(
+        "package main\n\nfunc main<T any>() {}\n",
+        "the entry point `main` declares no type parameters",
+    );
+}
+
+#[test]
+fn generic_calls_reject_type_arguments_outside_the_constraint() {
+    for (stmts, message) in [
+        (
+            "let a = Max(Array<int>{}, Array<int>{})",
+            "`Array<int64>` does not satisfy `ordered`, the constraint of `T`",
+        ),
+        (
+            "let a = Contains(Array<float64>{}[:], 1.5)",
+            "`float64` does not satisfy `comparable`, the constraint of `T`",
+        ),
+        (
+            "let xs = Array<Array<int>>{}\nlet a = First(xs[:])",
+            "`Array<int64>` does not satisfy `copyable`, the constraint of `T`",
+        ),
+        ("let a = Greet(5)", "`int64` does not satisfy `Named`"),
+        (
+            "let a = Max(int32(1), int64(2))",
+            "mismatched types: expected `int32`, found `int64`",
+        ),
+        (
+            "let f = func() {}\nlet a = Keep(f)",
+            "cannot be the type argument for `T`",
+        ),
+        ("let a = Keep(Lookup)", "cannot be used as a value yet"),
+        (
+            "let g = Max",
+            "generic function `Max` cannot be used as a value yet",
+        ),
+    ] {
+        rejects(
+            &with_generics(&format!(
+                "func Lookup<T any>(item own T) T {{ return item }}\nfunc use() {{\n{stmts}\n_ = a\n}}"
+            )),
+            message,
+        );
+    }
+    rejects(
+        &with_generics("func Pick<T any>() int { return 1 }\nfunc use() { let a = Pick() }"),
+        "cannot infer `T` for this call of `Pick`",
+    );
+}
+
+#[test]
+fn generic_type_parameters_pass_on_only_what_their_constraint_promises() {
+    accepts(&with_generics(
+        "func A<T comparable>(a T) bool { return Contains(Array<T>{a}[:], a) }
+func D<T ordered>(a T) T { return First(Array<T>{Max(a, a)}[:]) }
+func B<T comparable>(a T) T { return First(Array<T>{a}[:]) }
+type Both interface { Name() string\n Size() int }
+func C<T Both>(item T) string { return Greet(item) }",
+    ));
+    for (decls, message) in [
+        (
+            "func A<T copyable>(a T) bool { return Contains(Array<T>{a}[:], a) }",
+            "`T` does not satisfy `comparable`, the constraint of `T`",
+        ),
+        (
+            "func A<T ordered>(a T) bool { return Contains(Array<T>{a}[:], a) }",
+            "`T` does not satisfy `comparable`, the constraint of `T`",
+        ),
+        (
+            "func A<T any>(items []T) T { return First(items) }",
+            "`T` does not satisfy `copyable`, the constraint of `T`",
+        ),
+        (
+            "type Sized interface { Size() int }\nfunc A<T Sized>(item T) string { return Greet(item) }",
+            "does not satisfy `Named`",
+        ),
+    ] {
+        rejects(&with_generics(decls), message);
+    }
+}
+
+#[test]
+fn generic_bodies_are_checked_for_every_allowed_type() {
+    for (decls, message) in [
+        (
+            "func A<T comparable>(a T, b T) bool { return a < b }",
+            "operator `<` cannot be applied to `T`",
+        ),
+        (
+            "func A<T any>(items []T) T { return items[0] }",
+            "cannot move `items[_]` out of a slice",
+        ),
+        (
+            "func A<T any>(item own T) (T, T) { return item, item }",
+            "use of moved value `item`",
+        ),
+        (
+            "func A<T any>(item T) string { return item.Name() }",
+            "type parameter `T` has no methods; its constraint `any` lists none",
+        ),
+        (
+            "func A<T Named>(item T) string { return item.Size() }",
+            "type parameter `T` has no method `Size`",
+        ),
+        (
+            "func A<T any>(item T) { println(item) }",
+            "`println` cannot print values of type `T`",
+        ),
+        (
+            "func A<T any>(item T) { let f = func() {}\n f() }",
+            "a function literal inside a generic function is not supported yet",
+        ),
+        (
+            "func B() {}\nfunc A<T any>(item T) { let t = go B() }",
+            "`go` inside a generic function is not supported yet",
+        ),
+        (
+            "func A<T Named>(item own T) Named { return item }",
+            "converting a value of type parameter `T` to an interface type is not supported yet",
+        ),
+        (
+            "func A<T any>(item own T, n int) int { return A(Array<T>{item}, n) }",
+            "generic function `A` keeps calling itself with new type arguments",
+        ),
+    ] {
+        rejects(&with_generics(decls), message);
+    }
+}
+
+#[test]
+fn generic_copies_keep_borrows_and_report_errors_once() {
+    rejects(
+        &with_generics(
+            "func use() {
+    var nums = Array<int>{1}
+    let view = First(Array<[]int>{nums[:]}[:])
+    nums.push(2)
+    _ = view
+}",
+        ),
+        "cannot borrow `nums` as mutable because it is already borrowed",
+    );
+    let case = rejects(
+        &with_generics(
+            "func Dup<T any>(item own T) (T, T) { return item, item }
+func use() {
+    let a, b = Dup(Array<int>{})
+    let c, d = Dup(\"s\")
+}",
+        ),
+        "use of moved value `item`",
+    );
+    let moved = case
+        .errors()
+        .iter()
+        .filter(|(message, _)| message.contains("use of moved value"))
+        .count();
+    assert_eq!(moved, 1);
+}

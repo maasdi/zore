@@ -193,7 +193,12 @@ impl Checker<'_> {
     }
 
     /// Records what serves each entry, or reports why nothing does.
-    fn require_satisfied(&mut self, source: TypeId, interface: InterfaceId, span: Span) -> bool {
+    pub(super) fn require_satisfied(
+        &mut self,
+        source: TypeId,
+        interface: InterfaceId,
+        span: Span,
+    ) -> bool {
         let key = match self.types.kind(source) {
             TypeKind::InterfaceView { interface, .. } => self.types.interface_type(interface),
             _ => source,
@@ -232,6 +237,20 @@ impl Checker<'_> {
     ) -> Result<Option<hir::Expr>, hir::Expr> {
         let source = expr.ty();
         let span = expr.span;
+        if self.types.interface_of(target).is_some() && self.types.constraint(source).is_some() {
+            self.diagnostics.push(
+                Diagnostic::new(
+                    Severity::Error,
+                    format!(
+                        "converting a value of type parameter `{}` to an interface type is not supported yet",
+                        self.name(source)
+                    ),
+                    span,
+                )
+                .note("call the constraint's methods on the value directly"),
+            );
+            return Ok(None);
+        }
         match self.types.kind(target) {
             TypeKind::Interface(interface) => {
                 if let TypeKind::InterfaceView { .. } = self.types.kind(source) {

@@ -43,7 +43,9 @@ when existing code belongs in it (rule 11: no empty scaffolding):
   constant evaluation), `hir/` (`expr.rs`, `stmt.rs`, `function.rs`, `lower.rs`,
   `lower/closure_kind.rs`, which decides which closures own their captures, and
   `lower/interface.rs`, which checks interface satisfaction, conversions, and
-  calls through interfaces).
+  calls through interfaces, and `lower/generic.rs`, which infers type arguments,
+  checks them against constraints, and makes one copy of a generic function per
+  set of type arguments plus a never-compiled copy that checks ownership).
 - `ownership/` (`checker.rs`, `move_state.rs`, `borrow.rs`, `region.rs`, and
   `error_use.rs`, the check that every `error` value is read or discarded),
   `mir/` (`body.rs`, `block.rs`, `statement.rs`, `terminator.rs`,

@@ -1,0 +1,72 @@
+package main
+
+type Named interface {
+    Name() string
+}
+
+type City struct {
+    name string
+}
+
+func (c City) Name() string {
+    return c.name
+}
+
+type Ticket struct {
+    Id int
+}
+
+func (t mut Ticket) drop() {
+    println("drop ticket")
+}
+
+func Max<T ordered>(a T, b T) T {
+    if a > b {
+        return a
+    }
+    return b
+}
+
+func Largest<T ordered>(items []T) T {
+    var best = items[0]
+    for _, item in items {
+        best = Max(best, item)
+    }
+    return best
+}
+
+func Contains<T comparable>(items []T, target T) bool {
+    for _, item in items {
+        if item == target {
+            return true
+        }
+    }
+    return false
+}
+
+func Greet<T Named>(item T) string {
+    return "hello " + item.Name()
+}
+
+func Last<T any>(items own Array<T>) T {
+    var rest = items
+    let _, last = rest.pop()
+    return last
+}
+
+func main() {
+    println(Max(3, 9))
+    println(Max("pear", "apple"))
+
+    let scores = Array<int>{4, 17, 9}
+    println(Largest(scores[:]))
+
+    let names = Array<string>{"Ada", "Lin"}
+    println(Contains(names[:], "Lin"))
+    println(Contains(names[:], "Bob"))
+
+    println(Greet(City{name: "Oslo"}))
+
+    let ticket = Last(Array<Ticket>{Ticket{Id: 1}, Ticket{Id: 2}})
+    println(ticket.Id)
+}

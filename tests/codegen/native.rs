@@ -8744,3 +8744,209 @@ func main() {
 ";
     prints(source, "9\ndrop remote\n26\n");
 }
+
+#[test]
+fn generic_functions_run_one_copy_per_set_of_type_arguments() {
+    let source = "package main
+
+type Score int
+
+func Max<T ordered>(a T, b T) T {
+    if a > b {
+        return a
+    }
+    return b
+}
+
+func Largest<T ordered>(items []T) T {
+    var best = items[0]
+    for _, item in items {
+        best = Max(best, item)
+    }
+    return best
+}
+
+func Index<T comparable>(items []T, target T) int {
+    for i, item in items {
+        if item == target {
+            return i
+        }
+    }
+    return -1
+}
+
+func Count<K comparable, V comparable>(m map[K]V, wanted V) int {
+    var n = 0
+    for _, v in m {
+        if v == wanted {
+            n += 1
+        }
+    }
+    return n
+}
+
+func main() {
+    println(Max(3, 9))
+    println(Max(\"pear\", \"apple\"))
+    println(Max('a', 'z'))
+    println(Max(Score(4), Score(2)) == Score(4))
+    println(Max(1.5, 2) > 1.9)
+    let words = Array<string>{\"b\", \"d\", \"c\"}
+    println(Largest(words[:]))
+    let bytes = Array<byte>{3, 250, 7}
+    println(Largest(bytes[:]))
+    println(Index(words[:], \"c\"))
+    println(Index(words[:], \"z\"))
+    println(Count(map[string]int{\"a\": 1, \"b\": 2, \"c\": 1}, 1))
+}
+";
+    prints(source, "9\npear\nz\ntrue\ntrue\nd\n250\n2\n-1\n2\n");
+}
+
+#[test]
+fn generic_functions_move_and_destroy_values_of_any_type_exactly_once() {
+    let source = "package main
+
+type Ticket struct {
+    id int
+}
+
+func (t mut Ticket) drop() {
+    println(\"drop \" + string(rune(48 + t.id)))
+}
+
+func Last<T any>(items own Array<T>) T {
+    var rest = items
+    let _, last = rest.pop()
+    return last
+}
+
+func Swap<T any>(a own T, b own T) (T, T) {
+    return b, a
+}
+
+func Pass<T any>(item own T) T {
+    return Keep(item)
+}
+
+func Keep<T any>(item own T) T {
+    return item
+}
+
+func Discard<T any>(item own T) {
+    println(\"discard\")
+}
+
+func main() {
+    let last = Last(Array<Ticket>{Ticket{id: 1}, Ticket{id: 2}})
+    println(last.id)
+    let x, y = Swap(Ticket{id: 3}, Ticket{id: 4})
+    println(x.id)
+    let kept = Pass(Ticket{id: 5})
+    Discard(Ticket{id: 6})
+    let words = Pass(Array<string>{\"w\"})
+    println(words[0])
+    println(\"end\")
+}
+";
+    prints(
+        source,
+        "drop 1\n2\n4\ndiscard\ndrop 6\nw\nend\ndrop 5\ndrop 3\ndrop 4\ndrop 2\n",
+    );
+}
+
+#[test]
+fn generic_functions_call_the_methods_of_interface_constraints() {
+    let source = "package main
+
+type Named interface {
+    Name() string
+}
+
+type Account interface {
+    Name() string
+    mut Deposit(n int)
+    own Close() int
+}
+
+type Wallet struct {
+    owner string
+    total int
+}
+
+func (w mut Wallet) drop() {
+    println(\"drop \" + w.owner)
+}
+
+func (w Wallet) Name() string {
+    return w.owner
+}
+
+func (w mut Wallet) Deposit(n int) {
+    w.total += n
+}
+
+func (w own Wallet) Close() int {
+    return w.total
+}
+
+type Tag string
+
+func (t Tag) Name() string {
+    return string(t)
+}
+
+func Greet<T Named>(item T) string {
+    return \"hello \" + item.Name()
+}
+
+func Settle<T Account>(account own T) int {
+    var held = account
+    held.Deposit(5)
+    println(Greet(held))
+    return held.Close()
+}
+
+func main() {
+    println(Greet(Tag(\"t\")))
+    var w = Wallet{owner: \"ann\", total: 1}
+    println(Greet(w))
+    let n Named = Tag(\"boxed\")
+    println(Greet(n))
+    println(Settle(Wallet{owner: \"bo\", total: 10}))
+}
+";
+    prints(
+        source,
+        "hello t\nhello ann\nhello boxed\nhello bo\ndrop bo\n15\ndrop ann\n",
+    );
+}
+
+#[test]
+fn generic_async_functions_are_awaited_and_spawned() {
+    let source = "package main
+
+import \"zore/time\"
+
+async func Later<T any>(item own T) T {
+    time.Sleep(time.Millisecond)
+    return item
+}
+
+async func run() int {
+    let word = await Later(\"later\")
+    println(word)
+    let task = go Later(Array<int>{7})
+    let items = await task
+    return items[0]
+}
+
+func main() {
+    let t = go run()
+    println(t.wait())
+    let n = go Later(3)
+    println(n.wait())
+}
+";
+    prints(source, "later\n7\n3\n");
+}

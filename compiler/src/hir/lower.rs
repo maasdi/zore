@@ -1,4 +1,5 @@
 mod closure_kind;
+mod generic;
 mod globals;
 mod interface;
 mod method_value;
@@ -131,16 +132,21 @@ pub fn check(
         })
         .collect();
     let initializers: Vec<FunctionId> = checker.res.globals.iter().map(|g| g.function).collect();
+    let mut functions: Vec<hir::Function> = functions
+        .into_iter()
+        .chain(closures)
+        .map(|f| f.expect("every function and closure was checked"))
+        .chain(std::mem::take(&mut checker.generated_functions))
+        .collect();
+    checker.instantiate(&mut functions);
+    if !checker.diagnostics.is_empty() {
+        return (None, checker.diagnostics);
+    }
     let mut package = hir::Package {
         name: checker.res.package.clone(),
         types: std::mem::take(&mut checker.types),
         structs,
-        functions: functions
-            .into_iter()
-            .chain(closures)
-            .map(|f| f.expect("every function and closure was checked"))
-            .chain(std::mem::take(&mut checker.generated_functions))
-            .collect(),
+        functions,
         entry,
         globals,
         init: None,
@@ -320,7 +326,7 @@ impl<'a> Checker<'a> {
                 match self.res.uses.get(&name.span)? {
                     Res::Primitive(ty) => Some(*ty),
                     Res::Struct(id) => Some(self.types.struct_type(*id)),
-                    Res::Named(ty) | Res::Interface(ty) => Some(*ty),
+                    Res::Named(ty) | Res::Interface(ty) | Res::TypeParam(ty) => Some(*ty),
                     _ => None,
                 }
             }
@@ -560,6 +566,19 @@ impl<'a> Checker<'a> {
             if matches(kind) {
                 return true;
             }
+            // Type arguments never hold functions or mutable views, but may be shared slices.
+            if let TypeKind::Param(_) = kind
+                && !matches!(
+                    self.types.constraint(ty),
+                    Some(crate::types::Constraint::Comparable | crate::types::Constraint::Ordered)
+                )
+                && matches(TypeKind::Slice {
+                    element: ty,
+                    mutable: false,
+                })
+            {
+                return true;
+            }
             match kind {
                 TypeKind::Struct(id) => pending.extend(
                     self.fields[id.0 as usize]
@@ -580,7 +599,7 @@ impl<'a> Checker<'a> {
         matches!(
             self.types.kind(ty),
             TypeKind::Bool | TypeKind::Int(_) | TypeKind::Rune | TypeKind::String
-        )
+        ) || self.types.constraint(ty) == Some(crate::types::Constraint::Comparable)
     }
 
     /// Must agree with `hir::Package::is_copy`.
@@ -612,6 +631,18 @@ impl<'a> Checker<'a> {
                 | TypeKind::Func(_)
                 | TypeKind::Task(_)
                 | TypeKind::Interface(_) => return false,
+                TypeKind::Param(_)
+                    if !matches!(
+                        self.types.constraint(ty),
+                        Some(
+                            crate::types::Constraint::Copyable
+                                | crate::types::Constraint::Comparable
+                                | crate::types::Constraint::Ordered
+                        )
+                    ) =>
+                {
+                    return false;
+                }
                 _ => {}
             }
         }
@@ -694,6 +725,7 @@ impl<'a> Checker<'a> {
             .collect();
         self.resolving_fields = false;
         self.interface_entries();
+        self.type_param_constraints();
         for (index, decl) in structs.iter().enumerate() {
             for (field_index, field) in decl.fields.iter().enumerate() {
                 if self.fields[index][field_index].1.is_some() {
@@ -884,6 +916,8 @@ impl<'a> Checker<'a> {
             is_async: func.is_async,
             native: func.native,
             call_once: false,
+            type_params: self.res.type_params.get(&id).cloned().unwrap_or_default(),
+            probe: false,
         })
     }
 
@@ -996,6 +1030,9 @@ impl<'a> Checker<'a> {
     }
 
     fn closure(&mut self, closure: &ast::Closure, span: Span) -> Option<Value> {
+        if self.reject_in_generic_body("a function literal", span) {
+            return None;
+        }
         // Resolution reports a literal it could not give a body.
         let index = self.res.closures.iter().position(|c| c.span == span)?;
         let id = self.res.closures[index].id;
@@ -1083,6 +1120,8 @@ impl<'a> Checker<'a> {
             is_async: false,
             native: false,
             call_once,
+            type_params: Vec::new(),
+            probe: false,
         });
         let captures = captures
             .iter()
@@ -1122,6 +1161,8 @@ impl<'a> Checker<'a> {
         };
         let problem = if main.is_async {
             Some("the entry point `main` cannot be `async`")
+        } else if !main.type_params.is_empty() {
+            Some("the entry point `main` declares no type parameters")
         } else if !main.params.is_empty() {
             Some("the entry point `main` takes no parameters")
         } else if !main.results.is_empty() {
@@ -1403,6 +1444,20 @@ impl<'a> Checker<'a> {
 
     fn function_value(&mut self, id: FunctionId, span: Span) -> Option<Value> {
         let declaration = self.res.functions[id.0 as usize];
+        if self.is_generic(id) {
+            self.diagnostics.push(
+                Diagnostic::new(
+                    Severity::Error,
+                    format!(
+                        "generic function `{}` cannot be used as a value yet",
+                        declaration.name.text
+                    ),
+                    span,
+                )
+                .note("call it, or wrap the call in a function literal in an ordinary function"),
+            );
+            return None;
+        }
         let is_async = declaration.is_async;
         let signature = self.signatures[id.0 as usize].as_ref()?;
         let (params, results) = (signature.params.clone(), signature.results.clone());
@@ -1489,6 +1544,8 @@ impl<'a> Checker<'a> {
             is_async,
             native: false,
             call_once: false,
+            type_params: Vec::new(),
+            probe: false,
             locals,
             body: hir::Block {
                 stmts: vec![hir::Stmt {
@@ -1755,7 +1812,9 @@ impl<'a> Checker<'a> {
             return None;
         };
         let awaits_async_call = match &expr.kind {
-            ExprKind::Call { function, .. } => self.is_async_function(*function),
+            ExprKind::Call { function, .. } | ExprKind::CallGeneric { function, .. } => {
+                self.is_async_function(*function)
+            }
             ExprKind::CallValue { callee, .. } => self
                 .types
                 .func_signature(callee.ty())
@@ -1852,7 +1911,12 @@ impl<'a> Checker<'a> {
                 };
                 Some(Value::Typed(typed(ExprKind::Global(id), ty, span)))
             }
-            Res::Struct(_) | Res::Primitive(_) | Res::Named(_) | Res::Interface(_) => {
+            Res::Struct(_)
+            | Res::Primitive(_)
+            | Res::Named(_)
+            | Res::Interface(_)
+            | Res::TypeParam(_)
+            | Res::Constraint(_) => {
                 self.error(format!("`{name}` is a type, not a value"), span);
                 None
             }
@@ -1900,6 +1964,18 @@ impl<'a> Checker<'a> {
     }
 
     fn operator_applies(&self, op: BinaryOp, ty: TypeId) -> bool {
+        if let Some(constraint) = self.types.constraint(ty) {
+            use crate::types::Constraint;
+            return match op {
+                BinaryOp::Eq | BinaryOp::NotEq => {
+                    matches!(constraint, Constraint::Comparable | Constraint::Ordered)
+                }
+                BinaryOp::Lt | BinaryOp::LtEq | BinaryOp::Gt | BinaryOp::GtEq => {
+                    constraint == Constraint::Ordered
+                }
+                _ => false,
+            };
+        }
         let kind = self.types.kind(ty);
         let int = matches!(kind, TypeKind::Int(_));
         let numeric = self.types.is_numeric(ty);
@@ -2323,6 +2399,18 @@ impl<'a> Checker<'a> {
                 self.report_arg_errors(args);
                 None
             }
+            Some(Res::TypeParam(_) | Res::Constraint(_)) => {
+                self.diagnostics.push(
+                    Diagnostic::new(
+                        Severity::Error,
+                        format!("`{name}` is a type parameter or constraint and cannot be called"),
+                        callee.span,
+                    )
+                    .note("a generic function cannot convert values to its type parameters"),
+                );
+                self.report_arg_errors(args);
+                None
+            }
             Some(Res::Interface(_)) => {
                 self.diagnostics.push(
                     Diagnostic::new(
@@ -2520,6 +2608,9 @@ impl<'a> Checker<'a> {
         {
             return self.mutex_method(receiver, element, &name.text, args, span);
         }
+        if let TypeKind::Param(_) = self.types.kind(ty) {
+            return self.type_param_method_call(receiver, name, args, span);
+        }
         if let Some(results) = self.types.task_results(ty)
             && name.text == "wait"
         {
@@ -2716,6 +2807,9 @@ impl<'a> Checker<'a> {
         args: &[ast::Expr],
         span: Span,
     ) -> Option<Value> {
+        if self.is_generic(id) && receiver.is_none() {
+            return self.generic_call(id, name, args, span);
+        }
         let Some(signature) = &self.signatures[id.0 as usize] else {
             self.report_arg_errors(args);
             return None;
@@ -2883,7 +2977,7 @@ impl<'a> Checker<'a> {
 
     fn mutated_places(&self, expr: &hir::Expr, out: &mut Vec<ArgumentPlace>) {
         match &expr.kind {
-            ExprKind::Call { function, args } => {
+            ExprKind::Call { function, args } | ExprKind::CallGeneric { function, args, .. } => {
                 let accesses = self.argument_accesses(*function, args.len());
                 for (arg, access) in args.iter().zip(accesses) {
                     if access.exclusive
@@ -4885,7 +4979,9 @@ fn subexpressions(expr: &hir::Expr) -> Vec<&hir::Expr> {
             .chain(low.as_deref())
             .chain(high.as_deref())
             .collect(),
-        ExprKind::Call { args, .. } | ExprKind::Spawn { args, .. } => args.iter().collect(),
+        ExprKind::Call { args, .. }
+        | ExprKind::CallGeneric { args, .. }
+        | ExprKind::Spawn { args, .. } => args.iter().collect(),
         ExprKind::CallValue { callee, args, .. } => {
             std::iter::once(&**callee).chain(args).collect()
         }

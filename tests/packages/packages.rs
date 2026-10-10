@@ -781,3 +781,57 @@ func Seal(b own sink.Buffer) int {
         "`sink.Buffer` does not satisfy `io.sealed`: its method `hidden` is unexported and declared outside the interface's package",
     );
 }
+
+#[test]
+fn generic_functions_are_called_across_packages() {
+    let util = "package util
+
+type Sizer interface {
+    Size() int
+}
+
+func Largest<T ordered>(items []T) T {
+    var best = items[0]
+    for _, item in items {
+        if item > best {
+            best = item
+        }
+    }
+    return best
+}
+
+func keep<T any>(item own T) T {
+    return item
+}
+
+func Pass<T any>(item own T) T {
+    return keep(item)
+}
+";
+    let main = main_with(
+        "import \"myapp/util\"",
+        "let nums = Array<int>{4, 9, 2}
+    println(util.Largest(nums[:]))
+    println(util.Pass(\"ok\"))
+    println(Total(Box{n: 3}))",
+    ) + "
+type Box struct { n int }
+
+func (b Box) Size() int { return b.n }
+
+func Total<T util.Sizer>(item T) int {
+    return item.Size()
+}
+";
+    accepts(&[("main.ore", &main), ("util/util.ore", util)]);
+    rejects(
+        &[
+            (
+                "main.ore",
+                &main_with("import \"myapp/util\"", "println(util.keep(1))"),
+            ),
+            ("util/util.ore", util),
+        ],
+        "`keep` is not exported by package `util`",
+    );
+}

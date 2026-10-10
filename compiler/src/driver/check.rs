@@ -33,8 +33,15 @@ pub fn check_project(project: &Project, sources: &dyn Sources) -> Checked {
     let (mut package, mut diagnostics) = hir::lower::check(resolution, &layered);
     if let Some(checked) = &package {
         let program = mir::lower::lower(checked);
-        diagnostics.extend(ownership::check(checked, &program));
-        diagnostics.extend(error_use::check(checked, &program));
+        // Copies of one generic function report the same mistake once.
+        for diagnostic in ownership::check(checked, &program)
+            .into_iter()
+            .chain(error_use::check(checked, &program))
+        {
+            if !diagnostics.contains(&diagnostic) {
+                diagnostics.push(diagnostic);
+            }
+        }
     }
     diagnostics.sort_by_key(|d| (d.span().file(), d.span().start(), d.span().end()));
     if !diagnostics.is_empty() {

@@ -43,8 +43,9 @@
   deterministic cleanup on normal and error exits and across async execution.
 - Tasks and async use ordinary ownership rules. Dropping a Task handle detaches
   it; it does not cancel work. Channels transfer Move messages and copy Copy ones.
-- Do not introduce `:=`, source lifetimes, raw pointers, `unsafe`, general
-  generics/interfaces, hidden ordinary exceptions, or tracing GC into the MVP.
+- Do not introduce `:=`, source lifetimes, raw pointers, `unsafe`, generic
+  types or interface and generic features beyond spec §22, hidden ordinary
+  exceptions, or tracing GC into the MVP.
 - Do not treat conceptual mutex dereference syntax, diagnostic examples, or
   incomplete sample declarations as additional normative language rules.
 

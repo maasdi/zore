@@ -47,7 +47,11 @@ borrowed and owned values, and their restrictions; the checker, package, and
 native tests cover each row, and the native tests run with the leak checker to
 show each value inside an interface is destroyed exactly once, and that async
 code reaching a connection through an interface suspends on the connection's
-own reads and writes. `tests/ownership/ownership.rs` tests the MIR ownership pass through the
+own reads and writes.
+`conformance/generics.md` lists generic function declarations, constraints,
+type argument inference, the checks on generic bodies, and the copies made per
+set of type arguments; the checker, package, parser, and native tests cover
+each row. `tests/ownership/ownership.rs` tests the MIR ownership pass through the
 full frontend: whole-place and partial moves, reinitialization, call-local
 borrows, the custom-`drop`-ancestor restriction, array- and slice-element move
 rules, and region analysis of stored slice borrows (aliasing at the

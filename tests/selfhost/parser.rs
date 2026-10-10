@@ -308,6 +308,14 @@ impl Printer<'_> {
                             .as_ref()
                             .map_or_else(absent, |param| self.param(param)),
                         self.name(&func.name),
+                        list(func.type_params.iter().map(|param| {
+                            node(
+                                "typeparam",
+                                Some(param.span),
+                                "",
+                                &[self.name(&param.name), self.ty(&param.constraint)],
+                            )
+                        })),
                         list(func.params.iter().map(|param| self.param(param))),
                         list(func.results.iter().map(|ty| self.ty(ty))),
                         self.block(&func.body),
@@ -869,6 +877,8 @@ fn targeted_programs_and_errors_match() {
         "package main\ntype E interface {\n    Read\n    mut (x int)\n    Close() error extra\n    func Bad()\n    Fine()\n}\n",
         "package main\ntype U interface {\n    Read()\n",
         "package main\ntype N interface\n{\n}\nfunc f(r Reader, w mut io.Writer, c own Closer) {}\n",
+        "package main\nfunc Max<T ordered>(a T, b T) T { return a }\nfunc Pair<K comparable, V any>(k K, v own V) {}\nfunc Read<R io.Reader>(r mut R) {}\nasync func Get<T any>() {}\nfunc (s S) M<T any>() {}\n",
+        "package main\nfunc A<T>() {}\nfunc B<>() {}\nfunc C<T any,>() {}\nfunc D<T any() {}\nfunc E<T Array<int>>() {}\nfunc main() { let x = Max<int>(1, 2) }\n",
     ];
     let mut cases: Vec<Case> = inputs
         .iter()

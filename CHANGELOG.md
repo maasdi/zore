@@ -28,6 +28,12 @@ once it does.
   `interface` is now a keyword. In async code a call through an interface
   suspends when the method behind it waits, and interfaces may list `async`
   methods, which are awaited.
+- Locked generic functions: `func Max<T ordered>(a T, b T) T` declares type
+  parameters with the constraints `any`, `copyable`, `comparable`, `ordered`,
+  or an interface type; calls take their type arguments from the arguments,
+  bodies are checked once for every allowed type, and each set of type
+  arguments gets its own compiled copy (§22.1, Q42). The four constraint names
+  are now predeclared. Generic types are still out.
 - Locked untyped constants following Go's model: integer and float kinds,
   exact arithmetic, representability rules, and at least 256-bit precision
   (§6.7).

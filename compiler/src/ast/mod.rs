@@ -6,7 +6,7 @@ mod types;
 
 pub use decl::{
     FieldDecl, File, FuncDecl, Import, InterfaceDecl, InterfaceMethod, Item, NamedDecl, Param,
-    ParamMode, StructDecl,
+    ParamMode, StructDecl, TypeParam,
 };
 pub use expr::{BinaryOp, Closure, Expr, ExprKind, FieldInit, MapEntry, UnaryOp};
 pub use node::Name;

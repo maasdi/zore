@@ -32,6 +32,7 @@ pub fn initializers<'a>(units: &[PackageUnit<'a>]) -> Vec<Initializer<'a>> {
                             text: format!("{}$init", name.text),
                             span: name.span,
                         },
+                        type_params: Vec::new(),
                         params: Vec::new(),
                         results: binding.ty.iter().cloned().collect(),
                         body: ast::Block {

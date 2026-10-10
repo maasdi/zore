@@ -1,0 +1,9 @@
+9
+pear
+17
+true
+false
+hello Oslo
+drop ticket
+2
+drop ticket

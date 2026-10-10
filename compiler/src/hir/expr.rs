@@ -66,6 +66,12 @@ pub enum ExprKind {
         function: FunctionId,
         args: Vec<Expr>,
     },
+    /// A call to a generic function; becomes a `Call` of the copy for these type arguments.
+    CallGeneric {
+        function: FunctionId,
+        type_args: Vec<TypeId>,
+        args: Vec<Expr>,
+    },
     /// Reads a copy of a package-level `let`.
     Global(GlobalId),
     /// Borrows the source for a shared or `mut` interface parameter; the type is the view.

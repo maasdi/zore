@@ -26,6 +26,7 @@ pub struct Resolution<'a> {
     pub named: Vec<(&'a ast::NamedDecl, usize, TypeId)>,
     /// Interface types with their package, in declaration order.
     pub interfaces: Vec<(&'a ast::InterfaceDecl, usize, TypeId)>,
+    pub type_params: HashMap<FunctionId, Vec<TypeId>>,
     /// A method's receiver is its first parameter.
     pub functions: Vec<&'a ast::FuncDecl>,
     /// Keyed by the receiver's type.
@@ -76,6 +77,7 @@ pub fn resolve<'a>(
             structs: Vec::new(),
             named: Vec::new(),
             interfaces: Vec::new(),
+            type_params: HashMap::new(),
             functions: Vec::new(),
             methods: HashMap::new(),
             consts: Vec::new(),
@@ -679,9 +681,20 @@ impl<'a> Resolver<'a> {
                     | Res::Struct(_)
                     | Res::Named(_)
                     | Res::Interface(_)
+                    | Res::TypeParam(_)
                     | Res::Unsupported,
                 )
                 | None => {}
+                Some(Res::Constraint(_)) => {
+                    self.out.uses.remove(&name.span);
+                    self.error(
+                        format!(
+                            "`{}` is a constraint, so it can only follow a type parameter",
+                            name.text
+                        ),
+                        name.span,
+                    );
+                }
                 Some(_) => {
                     self.out.uses.remove(&name.span);
                     self.error(format!("`{}` is not a type", name.text), name.span);
@@ -796,7 +809,55 @@ impl<'a> Resolver<'a> {
 
     fn function(&mut self, id: FunctionId, func: &'a ast::FuncDecl) {
         let params: Vec<&'a ast::Param> = func.receiver.iter().chain(&func.params).collect();
+        if func.type_params.is_empty() {
+            self.body(id, &params, &func.results, &func.body);
+            return;
+        }
+        if func.receiver.is_some() {
+            self.error(
+                "a method cannot declare type parameters",
+                func.type_params[0].span,
+            );
+        }
+        if func.native {
+            self.error(
+                "a function without a body cannot declare type parameters",
+                func.type_params[0].span,
+            );
+        }
+        self.scopes.push(HashMap::new());
+        let mut declared = Vec::new();
+        for param in &func.type_params {
+            self.constraint(&param.constraint);
+            let ty = self.out.types.add_param(&param.name.text);
+            self.declare_local(&param.name, Res::TypeParam(ty));
+            declared.push(ty);
+        }
+        self.out.type_params.insert(id, declared);
         self.body(id, &params, &func.results, &func.body);
+        self.scopes.pop();
+    }
+
+    fn constraint(&mut self, constraint: &'a ast::Type) {
+        let res = match constraint {
+            ast::Type::Named(name) => self.use_name(&name.text, name.span),
+            ast::Type::Qualified { package, name, .. } => self.package_member(package, name),
+            other => {
+                self.error(
+                    "a constraint is `any`, `copyable`, `comparable`, `ordered`, or an interface type",
+                    other.span(),
+                );
+                return;
+            }
+        };
+        if let Some(res) = res
+            && !matches!(res, Res::Constraint(_) | Res::Interface(_))
+        {
+            self.error(
+                "a constraint is `any`, `copyable`, `comparable`, `ordered`, or an interface type",
+                constraint.span(),
+            );
+        }
     }
 
     fn body(
