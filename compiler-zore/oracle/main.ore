@@ -7,7 +7,7 @@ import "zore/strings"
 
 // Each case in `cases.bin` is a byte count, a space, a mode letter, a newline, and the bytes.
 func main() {
-    let data, err = os.ReadBytes("cases.bin")
+    let data, err = os.ReadFile("cases.bin")
     if err != nil {
         println("cannot read cases.bin")
         return

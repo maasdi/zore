@@ -28,7 +28,7 @@ progress have no example until they work.
 | [`slices`](slices) | `[]T` and `mut []T` views, slicing, returned views, views in structs | §11.7, §12 |
 | [`dynamic-arrays`](dynamic-arrays) | Owned `Array<T>`: literals, indexing, slicing, `mut` passing, element cleanup | §10.5, §12.6 |
 | [`packages`](packages) | A project with several packages: folders as packages, `import`, exported names, and cleanup of an imported type | §3.20 |
-| [`standard-packages`](standard-packages) | `zore/strings` and `zore/strconv`: case, search, split, join, and number conversion | §37.2 |
+| [`standard-packages`](standard-packages) | `zore/strings` and `zore/strconv`: case, search, cut, split, join, a `Builder`, number conversion, and quoting | §37.2 |
 | [`strings`](strings) | Byte length, indexing, and slicing, loops over characters, `+`, and `string(rune)` | §6.8 |
 | [`collections`](collections) | `len`, `push`, and `pop`, and `for … in` loops over slices, `Array<T>`, and maps | §5.10, §12.7 |
 | [`maps`](maps) | `map[K]V` literals, two-result lookup, assignment, ownership-transferring `remove` | §13.3 |
@@ -38,7 +38,7 @@ progress have no example until they work.
 | [`tasks`](tasks) | `go`, `Task<...>` handles, `.wait()`, `async func` and `await`, owned inputs and results, errors from tasks, and a collection of tasks | §17, §18 |
 | [`channels`](channels) | `channel<T>` with and without a buffer, `send`, `receive`, and `close`, a pipeline of tasks, a worker over a buffered channel, a request that carries its reply channel, and a closed channel's zero value | §19 |
 | [`select`](select) | `select` over two producers, a `default` arm, a send that finds room or not, and a receive that finds nothing | §19.14 |
-| [`io`](io) | `zore/time` and `zore/net`: tasks that sleep, a TCP server that accepts clients, and a reply read back over a loopback connection, with the answers ordered by their delays | §37.3 |
+| [`io`](io) | `zore/time` and `zore/net`: tasks that sleep for `time.Millisecond` multiples, a TCP server that accepts clients, and a reply read into a byte buffer over a loopback connection, with the answers ordered by their delays | §37.3 |
 | [`bytes`](bytes) | `Array<byte>` made from a string and turned back with a UTF-8 check, a sum over a byte view, and raw bytes sent over a loopback connection and read back reversed | §37.2, §37.3 |
-| [`timeouts`](timeouts) | A `select` that gives up after `time.After`, a worker stopped by a `cancel.WithTimeout` token, and a `Listener` whose `Accept` times out | §37.3, §37.4 |
+| [`timeouts`](timeouts) | A `select` that gives up after `time.After`, a worker stopped by a `context.WithTimeout` context, and a `Listener` whose `Accept` reaches its deadline | §37.3, §37.4 |
 | [`mutex`](mutex) | `Mutex<T>`: forty tasks updating one shared counter, a guarded struct with a custom `drop`, results from `withLock`, and `isPoisoned` | §20.2 |

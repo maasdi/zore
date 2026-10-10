@@ -1,0 +1,58 @@
+package os
+
+type File struct {
+    id int
+}
+
+func (f mut File) drop() {
+    fileDrop(f.id)
+}
+
+func Open(path string) (File, error) {
+    let id, err = fileOpen(path, false)
+    return File{id: id}, err
+}
+
+func Create(path string) (File, error) {
+    let id, err = fileOpen(path, true)
+    return File{id: id}, err
+}
+
+func Stdin() File {
+    return File{id: 1}
+}
+
+func Stdout() File {
+    return File{id: 2}
+}
+
+func Stderr() File {
+    return File{id: 3}
+}
+
+func (f File) Read(buf mut []byte) (int, error) {
+    let data, err = fileRead(f.id, buf.len())
+    for var i = 0; i < data.len(); i += 1 {
+        buf[i] = data[i]
+    }
+    return data.len(), err
+}
+
+func (f File) Write(data []byte) (int, error) {
+    return fileWrite(f.id, data)
+}
+
+func (f File) WriteString(s string) (int, error) {
+    return fileWriteString(f.id, s)
+}
+
+func (f own File) Close() error {
+    return fileClose(f.id)
+}
+
+func fileOpen(path string, create bool) (int, error)
+func fileRead(id int, max int) (Array<byte>, error)
+func fileWrite(id int, data []byte) (int, error)
+func fileWriteString(id int, text string) (int, error)
+func fileClose(id int) error
+func fileDrop(id int)

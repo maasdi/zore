@@ -89,9 +89,174 @@ pub unsafe extern "C" fn zore_native_strings_index(
 }
 
 /// # Safety
+/// Each string must satisfy the storage rule of `bytes`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn zore_native_strings_last_index(
+    s: *const u8,
+    s_len: i64,
+    sub: *const u8,
+    sub_len: i64,
+) -> i64 {
+    // SAFETY: guaranteed by the caller.
+    let (s, sub) = unsafe { (text(s, s_len), text(sub, sub_len)) };
+    if sub.is_empty() {
+        return s.len() as i64;
+    }
+    s.windows(sub.len())
+        .rposition(|window| window == sub)
+        .map_or(-1, |position| position as i64)
+}
+
+/// # Safety
+/// Each string must satisfy the storage rule of `bytes`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn zore_native_strings_count(
+    s: *const u8,
+    s_len: i64,
+    sub: *const u8,
+    sub_len: i64,
+) -> i64 {
+    // SAFETY: guaranteed by the caller.
+    let (s, sub) = unsafe { (text(s, s_len), text(sub, sub_len)) };
+    if sub.is_empty() {
+        return lossy(s).chars().count() as i64 + 1;
+    }
+    let mut count = 0;
+    let mut start = 0;
+    while let Some(found) = find(&s[start..], sub) {
+        count += 1;
+        start += found + sub.len();
+    }
+    count
+}
+
+/// # Safety
+/// Each string must satisfy the storage rule of `bytes`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn zore_native_strings_equal_fold(
+    s: *const u8,
+    s_len: i64,
+    t: *const u8,
+    t_len: i64,
+) -> bool {
+    // SAFETY: guaranteed by the caller.
+    let (s, t) = unsafe { (lossy(text(s, s_len)), lossy(text(t, t_len))) };
+    let mut left = s.chars();
+    let mut right = t.chars();
+    loop {
+        match (left.next(), right.next()) {
+            (None, None) => return true,
+            (Some(a), Some(b)) if a == b || a.to_lowercase().eq(b.to_lowercase()) => {}
+            _ => return false,
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+enum Ends {
+    Both,
+    Left,
+    Right,
+}
+
+/// # Safety
+/// `out` must be writable and each string must satisfy the storage rule of `bytes`.
+unsafe fn trim_set(out: *mut StringOut, s: *const u8, s_len: i64, set: &[u8], ends: Ends) {
+    // SAFETY: guaranteed by the caller.
+    let bytes = unsafe { text(s, s_len) };
+    let set = lossy(set);
+    let result = match std::str::from_utf8(bytes) {
+        Ok(valid) => {
+            let cut = |c: char| set.contains(c);
+            let inner = match ends {
+                Ends::Both => valid.trim_matches(cut),
+                Ends::Left => valid.trim_start_matches(cut),
+                Ends::Right => valid.trim_end_matches(cut),
+            };
+            let start = inner.as_ptr() as usize - bytes.as_ptr() as usize;
+            // SAFETY: `inner` lies inside `bytes`.
+            StringOut::shared(unsafe { s.add(start) }, inner.len())
+        }
+        Err(_) => StringOut::shared(s, bytes.len()),
+    };
+    // SAFETY: guaranteed by the caller.
+    unsafe { out.write(result) };
+}
+
+/// # Safety
+/// `out` must be writable and each string must satisfy the storage rule of `bytes`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn zore_native_strings_trim(
+    out: *mut StringOut,
+    s: *const u8,
+    s_len: i64,
+    set: *const u8,
+    set_len: i64,
+) {
+    // SAFETY: guaranteed by the caller.
+    unsafe { trim_set(out, s, s_len, text(set, set_len), Ends::Both) };
+}
+
+/// # Safety
+/// `out` must be writable and each string must satisfy the storage rule of `bytes`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn zore_native_strings_trim_left(
+    out: *mut StringOut,
+    s: *const u8,
+    s_len: i64,
+    set: *const u8,
+    set_len: i64,
+) {
+    // SAFETY: guaranteed by the caller.
+    unsafe { trim_set(out, s, s_len, text(set, set_len), Ends::Left) };
+}
+
+/// # Safety
+/// `out` must be writable and each string must satisfy the storage rule of `bytes`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn zore_native_strings_trim_right(
+    out: *mut StringOut,
+    s: *const u8,
+    s_len: i64,
+    set: *const u8,
+    set_len: i64,
+) {
+    // SAFETY: guaranteed by the caller.
+    unsafe { trim_set(out, s, s_len, text(set, set_len), Ends::Right) };
+}
+
+/// # Safety
+/// `out` must be writable and each string must satisfy the storage rule of `bytes`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn zore_native_strings_replace(
+    out: *mut StringOut,
+    s: *const u8,
+    s_len: i64,
+    old: *const u8,
+    old_len: i64,
+    new: *const u8,
+    new_len: i64,
+    n: i64,
+) {
+    // SAFETY: guaranteed by the caller.
+    let (s, old, new) = unsafe { (text(s, s_len), text(old, old_len), text(new, new_len)) };
+    let (s, old, new) = (lossy(s), lossy(old), lossy(new));
+    let replaced = match usize::try_from(n) {
+        Ok(count) => s.replacen(old.as_ref(), new.as_ref(), count),
+        Err(_) => s.replace(old.as_ref(), new.as_ref()),
+    };
+    // SAFETY: guaranteed by the caller.
+    unsafe { out.write(StringOut::built(replaced.as_bytes())) };
+}
+
+/// # Safety
 /// `out` must be writable and the string must satisfy the storage rule of `bytes`.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn zore_native_strings_upper(out: *mut StringOut, s: *const u8, s_len: i64) {
+pub unsafe extern "C" fn zore_native_strings_to_upper(
+    out: *mut StringOut,
+    s: *const u8,
+    s_len: i64,
+) {
     // SAFETY: guaranteed by the caller.
     let upper = lossy(unsafe { text(s, s_len) }).to_uppercase();
     unsafe { out.write(StringOut::built(upper.as_bytes())) };
@@ -100,7 +265,11 @@ pub unsafe extern "C" fn zore_native_strings_upper(out: *mut StringOut, s: *cons
 /// # Safety
 /// `out` must be writable and the string must satisfy the storage rule of `bytes`.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn zore_native_strings_lower(out: *mut StringOut, s: *const u8, s_len: i64) {
+pub unsafe extern "C" fn zore_native_strings_to_lower(
+    out: *mut StringOut,
+    s: *const u8,
+    s_len: i64,
+) {
     // SAFETY: guaranteed by the caller.
     let lower = lossy(unsafe { text(s, s_len) }).to_lowercase();
     unsafe { out.write(StringOut::built(lower.as_bytes())) };
@@ -158,7 +327,7 @@ pub unsafe extern "C" fn zore_native_strings_repeat(
 /// # Safety
 /// `out` must be writable and each string must satisfy the storage rule of `bytes`.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn zore_native_strings_replace(
+pub unsafe extern "C" fn zore_native_strings_replace_all(
     out: *mut StringOut,
     s: *const u8,
     s_len: i64,
@@ -173,6 +342,58 @@ pub unsafe extern "C" fn zore_native_strings_replace(
     unsafe { out.write(StringOut::built(replaced.as_bytes())) };
 }
 
+/// The `(start, length)` pieces of `whole` between occurrences of `sep`; with a positive
+/// `limit`, at most that many, the last holding the rest.
+fn split_pieces(whole: &[u8], sep: &[u8], limit: Option<usize>) -> Vec<(usize, usize)> {
+    let mut pieces: Vec<(usize, usize)> = Vec::new();
+    let room = |pieces: &Vec<(usize, usize)>| limit.is_none_or(|limit| pieces.len() + 1 < limit);
+    if sep.is_empty() {
+        let mut position = 0;
+        while position < whole.len() {
+            if !room(&pieces) {
+                pieces.push((position, whole.len() - position));
+                break;
+            }
+            let width = character_at(whole, position).1;
+            pieces.push((position, width));
+            position += width;
+        }
+    } else {
+        let mut start = 0;
+        while room(&pieces)
+            && let Some(found) = find(&whole[start..], sep)
+        {
+            pieces.push((start, found));
+            start += found + sep.len();
+        }
+        pieces.push((start, whole.len() - start));
+    }
+    pieces
+}
+
+/// # Safety
+/// Each piece must lie inside the string at `s`, which must satisfy the storage rule of `bytes`.
+unsafe fn shared_pieces(s: *const u8, pieces: &[(usize, usize)]) -> ArrayOut {
+    if pieces.is_empty() {
+        return ArrayOut {
+            data: std::ptr::null_mut(),
+            len: 0,
+            cap: 0,
+        };
+    }
+    let data =
+        zore_alloc((pieces.len() * std::mem::size_of::<StringOut>()) as i64) as *mut StringOut;
+    for (index, &(start, len)) in pieces.iter().enumerate() {
+        // SAFETY: `data` has room for every piece, and each piece lies inside the string.
+        unsafe { data.add(index).write(StringOut::shared(s.add(start), len)) };
+    }
+    ArrayOut {
+        data,
+        len: pieces.len() as i64,
+        cap: pieces.len() as i64,
+    }
+}
+
 /// # Safety
 /// `out` must be writable and each string must satisfy the storage rule of `bytes`.
 #[unsafe(no_mangle)]
@@ -185,42 +406,52 @@ pub unsafe extern "C" fn zore_native_strings_split(
 ) {
     // SAFETY: guaranteed by the caller.
     let (whole, sep) = unsafe { (text(s, s_len), text(sep, sep_len)) };
-    let mut pieces: Vec<(usize, usize)> = Vec::new();
-    if sep.is_empty() {
-        let mut position = 0;
-        while position < whole.len() {
-            let width = character_at(whole, position).1;
-            pieces.push((position, width));
-            position += width;
-        }
-    } else {
-        let mut start = 0;
-        while let Some(found) = find(&whole[start..], sep) {
-            pieces.push((start, found));
-            start += found + sep.len();
-        }
-        pieces.push((start, whole.len() - start));
-    }
-    let result = if pieces.is_empty() {
-        ArrayOut {
-            data: std::ptr::null_mut(),
-            len: 0,
-            cap: 0,
-        }
-    } else {
-        let data =
-            zore_alloc((pieces.len() * std::mem::size_of::<StringOut>()) as i64) as *mut StringOut;
-        for (index, &(start, len)) in pieces.iter().enumerate() {
-            // SAFETY: `data` has room for every piece, and each piece lies inside `whole`.
-            unsafe { data.add(index).write(StringOut::shared(s.add(start), len)) };
-        }
-        ArrayOut {
-            data,
-            len: pieces.len() as i64,
-            cap: pieces.len() as i64,
-        }
+    let pieces = split_pieces(whole, sep, None);
+    // SAFETY: the pieces lie inside `s`, and `out` is writable.
+    unsafe { out.write(shared_pieces(s, &pieces)) };
+}
+
+/// # Safety
+/// `out` must be writable and each string must satisfy the storage rule of `bytes`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn zore_native_strings_split_n(
+    out: *mut ArrayOut,
+    s: *const u8,
+    s_len: i64,
+    sep: *const u8,
+    sep_len: i64,
+    n: i64,
+) {
+    // SAFETY: guaranteed by the caller.
+    let (whole, sep) = unsafe { (text(s, s_len), text(sep, sep_len)) };
+    let pieces = match usize::try_from(n) {
+        Ok(0) => Vec::new(),
+        Ok(limit) => split_pieces(whole, sep, Some(limit)),
+        Err(_) => split_pieces(whole, sep, None),
     };
-    unsafe { out.write(result) };
+    // SAFETY: the pieces lie inside `s`, and `out` is writable.
+    unsafe { out.write(shared_pieces(s, &pieces)) };
+}
+
+/// # Safety
+/// `out` must be writable and the string must satisfy the storage rule of `bytes`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn zore_native_strings_fields(out: *mut ArrayOut, s: *const u8, s_len: i64) {
+    // SAFETY: guaranteed by the caller.
+    let whole = unsafe { text(s, s_len) };
+    let valid = lossy(whole);
+    let pieces: Vec<(usize, usize)> = valid
+        .split(char::is_whitespace)
+        .filter(|piece| !piece.is_empty())
+        .map(|piece| {
+            (
+                piece.as_ptr() as usize - valid.as_ptr() as usize,
+                piece.len(),
+            )
+        })
+        .collect();
+    // SAFETY: valid UTF-8 is borrowed unchanged, so the pieces lie inside `s`.
+    unsafe { out.write(shared_pieces(s, &pieces)) };
 }
 
 /// # Safety
@@ -377,16 +608,16 @@ mod tests {
         let mut out = StringOut::empty();
         // SAFETY: every string is a live literal and `out` is writable.
         unsafe {
-            zore_native_strings_upper(&mut out, "héllo".as_ptr(), 6);
+            zore_native_strings_to_upper(&mut out, "héllo".as_ptr(), 6);
             assert_eq!(read(&out), "HÉLLO");
-            zore_native_strings_lower(&mut out, "HÉLLO".as_ptr(), 6);
+            zore_native_strings_to_lower(&mut out, "HÉLLO".as_ptr(), 6);
             assert_eq!(read(&out), "héllo");
             let padded = "  a b \n";
             zore_native_strings_trim_space(&mut out, padded.as_ptr(), padded.len() as i64);
             assert_eq!(read(&out), "a b");
             zore_native_strings_trim_space(&mut out, b"   ".as_ptr(), 3);
             assert_eq!(read(&out), "");
-            zore_native_strings_replace(
+            zore_native_strings_replace_all(
                 &mut out,
                 b"aaa".as_ptr(),
                 3,
@@ -396,7 +627,7 @@ mod tests {
                 2,
             );
             assert_eq!(read(&out), "bcbcbc");
-            zore_native_strings_replace(
+            zore_native_strings_replace_all(
                 &mut out,
                 b"ab".as_ptr(),
                 2,

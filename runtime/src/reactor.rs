@@ -728,7 +728,8 @@ mod tests {
                 }
                 started = Some(Instant::now());
                 // SAFETY: context is current; only the waker is retained.
-                raw = unsafe { crate::sys::zore_native_time_sleep_start(20, context) } as usize;
+                raw = unsafe { crate::sys::zore_native_time_sleep_start(20_000_000, context) }
+                    as usize;
             }
             // SAFETY: Pending preserves this raw reference; Ready consumes it once.
             if unsafe { zore_reactor_poll(raw as *const Operation) } == 0 {

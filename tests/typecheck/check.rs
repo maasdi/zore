@@ -2906,8 +2906,8 @@ fn standard_packages_have_typed_signatures() {
     accepts_main(
         "let has bool = strings.Contains(\"abc\", \"b\")
         let index int = strings.Index(\"abc\", \"c\")
-        let text string = strings.Upper(\"a\") + strings.Lower(\"B\") + strings.TrimSpace(\" c \")
-        let again = strings.Repeat(text, 2) + strings.Replace(text, \"a\", \"b\")
+        let text string = strings.ToUpper(\"a\") + strings.ToLower(\"B\") + strings.TrimSpace(\" c \")
+        let again = strings.Repeat(text, 2) + strings.ReplaceAll(text, \"a\", \"b\") + strings.Replace(text, \"a\", \"b\", 1)
         let parts Array<string> = strings.Split(again, \",\")
         let joined string = strings.Join(parts[:], \", \")
         let pieces = [string; 2]{\"x\", \"y\"}
@@ -2928,7 +2928,7 @@ fn standard_packages_have_typed_signatures() {
             "_ = strings.Contains(\"a\")",
             "takes 2 arguments but 1 was given",
         ),
-        ("let n int = strings.Upper(\"a\")", "mismatched types"),
+        ("let n int = strings.ToUpper(\"a\")", "mismatched types"),
         (
             "let n, err = strconv.Atoi(5)\n_ = n\n_ = err",
             "mismatched types",
@@ -2948,13 +2948,13 @@ fn standard_packages_have_typed_signatures() {
             "package `strings` does not declare `Nope`",
         ),
         (
-            "_ = strings.upper(\"a\")",
-            "package `strings` does not declare `upper`",
+            "_ = strings.Upper(\"a\")",
+            "package `strings` does not declare `Upper`",
         ),
     ] {
         rejects(
             &format!(
-                "{head}\nfunc main() {{\n_ = strings.Upper(\"\") + strconv.Itoa(1)\n{stmts}\n}}\n"
+                "{head}\nfunc main() {{\n_ = strings.ToUpper(\"\") + strconv.Itoa(1)\n{stmts}\n}}\n"
             ),
             message,
         );

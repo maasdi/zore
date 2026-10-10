@@ -1,0 +1,88 @@
+package path
+
+import "zore/strings"
+
+func Clean(p string) string {
+    if p.len() == 0 {
+        return "."
+    }
+    let rooted = p[0] == 47
+    var parts = Array<string>{}
+    var start = 0
+    for var i = 0; i <= p.len(); i += 1 {
+        if i < p.len() && p[i] != 47 {
+            continue
+        }
+        let part = p[start:i]
+        start = i + 1
+        if part.len() == 0 || part == "." {
+            continue
+        }
+        if part != ".." {
+            parts.push(part)
+        } else if parts.len() > 0 && parts[parts.len() - 1] != ".." {
+            parts.pop()
+        } else if !rooted {
+            parts.push(part)
+        }
+    }
+    let joined = strings.Join(parts[:], "/")
+    if rooted {
+        return "/" + joined
+    }
+    if joined.len() == 0 {
+        return "."
+    }
+    return joined
+}
+
+func Join(elems []string) string {
+    var parts = Array<string>{}
+    for elem in elems {
+        if elem.len() > 0 {
+            parts.push(elem)
+        }
+    }
+    if parts.len() == 0 {
+        return ""
+    }
+    return Clean(strings.Join(parts[:], "/"))
+}
+
+func Split(p string) (string, string) {
+    let slash = strings.LastIndex(p, "/")
+    return p[:slash + 1], p[slash + 1:]
+}
+
+func Base(p string) string {
+    if p.len() == 0 {
+        return "."
+    }
+    var end = p.len()
+    for end > 0 && p[end - 1] == 47 {
+        end -= 1
+    }
+    if end == 0 {
+        return "/"
+    }
+    let trimmed = p[:end]
+    return trimmed[strings.LastIndex(trimmed, "/") + 1:]
+}
+
+func Dir(p string) string {
+    let dir, _ = Split(p)
+    return Clean(dir)
+}
+
+func Ext(p string) string {
+    for var i = p.len() - 1; i >= 0 && p[i] != 47; i -= 1 {
+        if p[i] == 46 {
+            return p[i:]
+        }
+    }
+    return ""
+}
+
+func IsAbs(p string) bool {
+    return strings.HasPrefix(p, "/")
+}
