@@ -4014,3 +4014,48 @@ fn an_unapproved_copy_call_is_an_unknown_name() {
         "let values = Array<int>{1}\nlet other = clone(values)\nprintln(other.len())",
     ));
 }
+
+#[test]
+fn panic_takes_one_string_and_ends_a_path() {
+    accepts(&program(
+        "func pick(n int) int {
+    if n > 0 {
+        return n
+    }
+    panic(\"n must be positive\")
+}
+func choose(n int) string {
+    if n > 0 {
+        return \"yes\"
+    } else {
+        panic(\"no\" + \"!\")
+    }
+}
+func message() string { return \"late\" }
+func later() int {
+    let text = message()
+    panic(text)
+}",
+    ));
+    for (stmts, message) in [
+        ("panic(1)", "`panic` takes a `string` message"),
+        (
+            "panic()",
+            "`panic` takes exactly 1 argument but 0 were given",
+        ),
+        (
+            "panic(\"a\", \"b\")",
+            "`panic` takes exactly 1 argument but 2 were given",
+        ),
+        ("let p = panic", "`panic` can only be called"),
+        ("let x = panic(\"x\")", "this call has no value"),
+        ("let panic = 1", "shadows a predeclared name"),
+    ] {
+        rejects(&body(stmts), message);
+    }
+    rejects(&program("func panic() {}"), "shadows a predeclared name");
+    rejects(
+        &program("func pick(n int) int {\n    if n > 0 { panic(\"x\") }\n}"),
+        "can reach the end of its body without returning a value",
+    );
+}

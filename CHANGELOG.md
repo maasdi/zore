@@ -12,6 +12,9 @@ once it does.
 - Locked the program entry point: `package main` with exactly one
   `func main()`; exit status 0 on return, nonzero after a panic (§3.19).
 - Locked `println`: one printable argument, one line per call (§37.1).
+- Locked the `panic` call: one `string` message reported with its location;
+  a `panic` statement ends a path, so no `return` is needed after it (§15.4,
+  §7.7, Q38).
 - Locked untyped constants following Go's model: integer and float kinds,
   exact arithmetic, representability rules, and at least 256-bit precision
   (§6.7).

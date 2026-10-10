@@ -111,6 +111,7 @@ pub enum ExprKind {
     },
     MutexIsPoisoned(Box<Expr>),
     Println(Box<Expr>),
+    Panic(Box<Expr>),
     Drop(Box<Expr>),
     Clone(Box<Expr>),
     Convert(Box<Expr>),

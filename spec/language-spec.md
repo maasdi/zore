@@ -807,7 +807,7 @@ The type/zero-value rules for `nil` are locked in §41.4. Do not infer
 Go's complete statement or type grammar from this keyword list.
 
 Built-in primitive type names (§6.1), `Array`, `Task`, `Mutex`, `mutex`, `error`, `println`,
-`clone`, and `drop` are predeclared names, not keywords. They are lexed as identifiers
+`panic`, `clone`, and `drop` are predeclared names, not keywords. They are lexed as identifiers
 and resolved semantically; their built-in meaning may still require special
 compiler handling. Declarations may not shadow them (§3.18). This distinction
 does not imply user-defined generics, interfaces, or additional built-in APIs.
@@ -2213,8 +2213,8 @@ Every reachable path in a result-returning function must return the required
 results or never complete. A provably non-completing path, such as an infinite
 loop without a reachable exit, does not require an artificial return. A loop
 that can exit does not by itself prove completeness. Reject possible fallthrough
-without required results. Do not assume that a call named `panic` is non-returning
-until its resolved built-in contract establishes that property.
+without required results. A statement that is a call of the predeclared `panic`
+(§15.4) never completes, so it ends a path the same way `return` does.
 
 A return exits the current function or closure, not an enclosing function. It
 performs required cleanup of still-owned values whose lifetimes end on that
@@ -3486,6 +3486,35 @@ return error
 - unrecoverable runtime/system failures
 
 Panic is not a replacement for ordinary error handling.
+
+### The `panic` call
+
+`panic` is a predeclared name (§3.17). A program raises a panic with
+
+```ore
+panic(message string)
+```
+
+It takes exactly one `string` argument; an untyped string constant takes the
+type `string`. It has no result and never completes: the code after it on the
+same path does not run, and a call statement of `panic` ends a path for the
+completion rule of §7.7. Like `println` (§37.1), it can be used only as the
+callee of a direct call; it cannot be bound, passed, returned, or stored. The
+reported message is the argument followed by ` at ` and the call's
+`file:line:column`, the same form as the runtime's own panics.
+
+```ore
+func pick(n int) int {
+    if n > 0 {
+        return n
+    }
+    panic("n must be positive")   // no return needed after it
+}
+
+panic(1)               // invalid: the message is a string
+let p = panic          // invalid: panic can only be called
+let x = panic("x")     // invalid: panic has no result
+```
 
 ### Unwinding and cleanup
 

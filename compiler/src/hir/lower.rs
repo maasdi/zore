@@ -1693,6 +1693,10 @@ impl<'a> Checker<'a> {
                 self.error("`println` can only be called", span);
                 None
             }
+            Res::Panic => {
+                self.error("`panic` can only be called", span);
+                None
+            }
             Res::Drop => {
                 self.error("`drop` can only be called", span);
                 None
@@ -2136,6 +2140,7 @@ impl<'a> Checker<'a> {
         match res {
             Some(Res::Function(id)) => self.function_call(id, name, None, args, span),
             Some(Res::Println) => self.println(args, span),
+            Some(Res::Panic) => self.panic_call(args, span),
             Some(Res::Drop) => self.drop_call(args, span),
             Some(Res::Clone) => self.clone_call(args, span),
             Some(Res::NewMutex) => self.new_mutex(args, span),
@@ -2876,6 +2881,34 @@ impl<'a> Checker<'a> {
         }
         Some(Value::Typed(hir::Expr {
             kind: ExprKind::Println(Box::new(expr)),
+            types: Vec::new(),
+            span,
+        }))
+    }
+
+    fn panic_call(&mut self, args: &[ast::Expr], span: Span) -> Option<Value> {
+        let [arg] = args else {
+            let message = format!(
+                "`panic` takes exactly 1 argument but {} were given",
+                args.len()
+            );
+            self.error(message, span);
+            self.report_arg_errors(args);
+            return None;
+        };
+        let value = self.expr(arg, Some(TypeStore::STRING))?;
+        let expr = self.with_default_type(value)?;
+        if expr.ty() != TypeStore::STRING {
+            let message = format!(
+                "`panic` takes a `string` message, not `{}`",
+                self.name(expr.ty())
+            );
+            self.diagnostics
+                .push(Diagnostic::new(Severity::Error, message, expr.span));
+            return None;
+        }
+        Some(Value::Typed(hir::Expr {
+            kind: ExprKind::Panic(Box::new(expr)),
             types: Vec::new(),
             span,
         }))
@@ -4452,6 +4485,7 @@ fn subexpressions(expr: &hir::Expr) -> Vec<&hir::Expr> {
         ExprKind::Len(inner)
         | ExprKind::ArrayPop(inner)
         | ExprKind::Println(inner)
+        | ExprKind::Panic(inner)
         | ExprKind::Drop(inner)
         | ExprKind::Convert(inner)
         | ExprKind::Clone(inner)
@@ -4522,6 +4556,7 @@ fn block_always_exits(block: &ast::Block) -> bool {
 fn stmt_always_exits(stmt: &ast::Stmt) -> bool {
     match &stmt.kind {
         ast::StmtKind::Return(_) => true,
+        ast::StmtKind::Expr(expr) => is_panic_call(expr),
         ast::StmtKind::Block(block) => block_always_exits(block),
         ast::StmtKind::If(if_stmt) => if_always_exits(if_stmt),
         ast::StmtKind::For(for_stmt) => {
@@ -4533,6 +4568,15 @@ fn stmt_always_exits(stmt: &ast::Stmt) -> bool {
         }
         _ => false,
     }
+}
+
+/// Predeclared names cannot be shadowed, so a call of the bare name `panic` is the built-in.
+fn is_panic_call(expr: &ast::Expr) -> bool {
+    matches!(
+        &expr.kind,
+        ast::ExprKind::Call { callee, .. }
+            if matches!(&callee.kind, ast::ExprKind::Name(name) if name.as_str() == "panic")
+    )
 }
 
 fn if_always_exits(if_stmt: &ast::If) -> bool {

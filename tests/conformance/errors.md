@@ -83,3 +83,18 @@ status from a function name, or exempt calls known to return success. Verify
 side effects and required cleanup occur once even for explicitly discarded
 errors. Wrapping, sentinel error declarations, and structured error payloads
 remain open under Q05 and are not covered here.
+
+## The `panic` call (§15.4, §7.7)
+
+Covered by `tests/codegen/native.rs` and `tests/typecheck/check.rs`.
+
+| Input / scenario | Expected result |
+| --- | --- |
+| `panic("boom")` in `main` after creating a value with a custom `drop` | The value is dropped; stderr is `panic in the main task: boom at file:line:column`; exit status 2 |
+| `panic(text + "!")` with a runtime string | The built message is reported |
+| `panic` in a spawned plain or `async` task | That task ends with the message; `wait` raises it again in the waiter |
+| A result-returning function whose last statement is `panic(...)` | Accepted without a final `return` |
+| `if` and `else` that end in `return` and `panic` | Accepted as always exiting |
+| `panic(1)`, `panic()`, `panic("a", "b")` | Reject: one `string` argument |
+| `let p = panic`, `let x = panic("x")` | Reject: `panic` can only be called and has no result |
+| `let panic = 1`, `func panic()` | Reject: predeclared names cannot be shadowed |

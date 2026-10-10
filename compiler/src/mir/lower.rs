@@ -313,6 +313,7 @@ impl Builder {
                 | ExprKind::CallValue { .. }
                 | ExprKind::Clone(_)
                 | ExprKind::Println(_)
+                | ExprKind::Panic(_)
                 | ExprKind::Drop(_)
                 | ExprKind::TaskWait(_)
                 | ExprKind::ChannelSend { .. }
@@ -940,6 +941,7 @@ impl Builder {
                 (Callee::Value(place), &args[..])
             }
             ExprKind::Println(arg) => (Callee::Println, std::slice::from_ref(&**arg)),
+            ExprKind::Panic(arg) => (Callee::Panic, std::slice::from_ref(&**arg)),
             ExprKind::Drop(arg) => (Callee::Drop, std::slice::from_ref(&**arg)),
             ExprKind::Clone(arg) => (Callee::Clone(arg.ty()), std::slice::from_ref(&**arg)),
             ExprKind::MapLookup { map, key } | ExprKind::MapRemove { map, key } => {
@@ -1016,7 +1018,7 @@ impl Builder {
                         mode == ParamMode::Own,
                     )
                 }
-                Callee::Println => (false, false),
+                Callee::Println | Callee::Panic => (false, false),
                 Callee::Drop => (false, true),
                 Callee::Clone(_) => (true, false),
                 Callee::MapInsertNew
@@ -1222,6 +1224,7 @@ impl Builder {
                 values.into_iter().next().expect("single propagated result")
             }
             ExprKind::Println(_) => unreachable!("println has no value"),
+            ExprKind::Panic(_) => unreachable!("panic has no value"),
             ExprKind::Drop(_) => unreachable!("drop has no value"),
             ExprKind::Convert(inner) => {
                 let inner = self.operand(package, inner);
