@@ -1,0 +1,100 @@
+package main
+
+import "compiler-zore/lexer"
+import "zore/os"
+import "zore/strconv"
+import "zore/strings"
+
+// Reads `cases.bin` (a decimal byte count, a newline, then that many bytes, repeated)
+// and prints each case's records followed by `done`.
+func main() {
+    let data, err = os.ReadBytes("cases.bin")
+    if err != nil {
+        println("cannot read cases.bin")
+        return
+    }
+    var pos = 0
+    for pos < data.len() {
+        var length = 0
+        for data[pos] != 10 {
+            length = length * 10 + int(data[pos]) - 48
+            pos += 1
+        }
+        pos += 1
+        let text, invalid = strings.FromBytes(data[pos:pos + length])
+        if invalid != nil {
+            println("invalid-utf8\ndone")
+        } else {
+            println(render(lexer.Lex(text), text))
+        }
+        pos += length
+    }
+}
+
+func render(lexed lexer.Lexed, text string) string {
+    var lines = Array<string>{}
+    for token in lexed.Tokens {
+        lines.push(tokenRecord(token, text) + " " + strconv.Itoa(token.Start) + " " + strconv.Itoa(token.End))
+    }
+    for problem in lexed.Problems {
+        lines.push("error:" + problem.Code + " " + strconv.Itoa(problem.Start) + " " + strconv.Itoa(problem.End))
+    }
+    lines.push("done")
+    return strings.Join(lines[:], "\n")
+}
+
+func tokenRecord(token lexer.Token, text string) string {
+    let kind = token.Kind
+    let spelling = text[token.Start:token.End]
+    if kind == lexer.KindIdent {
+        return "ident"
+    }
+    if kind == lexer.KindUnderscore {
+        return "underscore"
+    }
+    if kind == lexer.KindKeyword {
+        return "keyword:" + spelling
+    }
+    if kind == lexer.KindReserved {
+        return "reserved:" + spelling
+    }
+    if kind == lexer.KindInt {
+        return "int:" + strconv.Itoa(token.Detail)
+    }
+    if kind == lexer.KindFloat {
+        return "float"
+    }
+    if kind == lexer.KindString {
+        return "string:" + codePoints(token.Values[:])
+    }
+    if kind == lexer.KindRune {
+        return "rune:" + strconv.Itoa(token.Values[0])
+    }
+    if kind == lexer.KindMalformed {
+        return "malformed"
+    }
+    if kind == lexer.KindUnknown {
+        return "unknown"
+    }
+    if kind == lexer.KindPunct {
+        return "punct:" + spelling
+    }
+    if kind == lexer.KindSemicolon {
+        if token.Detail == lexer.SeparatorExplicit {
+            return "semi:explicit"
+        }
+        if token.Detail == lexer.SeparatorNewline {
+            return "semi:newline"
+        }
+        return "semi:eof"
+    }
+    return "eof"
+}
+
+func codePoints(values []int) string {
+    var parts = Array<string>{}
+    for value in values {
+        parts.push(strconv.Itoa(value))
+    }
+    return strings.Join(parts[:], ".")
+}

@@ -1,0 +1,87 @@
+package lexer
+
+const KindIdent = 1
+const KindUnderscore = 2
+const KindKeyword = 3
+const KindReserved = 4
+const KindInt = 5
+const KindFloat = 6
+const KindString = 7
+const KindRune = 8
+const KindMalformed = 9
+const KindUnknown = 10
+const KindPunct = 11
+const KindSemicolon = 12
+const KindEof = 13
+
+const SeparatorExplicit = 1
+const SeparatorNewline = 2
+const SeparatorEof = 3
+
+type Token struct {
+    Kind   int
+    Start  int
+    End    int
+    Detail int
+    Values Array<int>
+}
+
+type Problem struct {
+    Code  string
+    Start int
+    End   int
+}
+
+type Lexed struct {
+    Tokens   Array<Token>
+    Problems Array<Problem>
+}
+
+func keywords() [string; 26] {
+    return [string; 26]{
+        "package", "import", "func", "type", "struct", "let", "var", "const", "mut",
+        "own", "if", "else", "for", "in", "break", "continue", "return", "async",
+        "await", "go", "select", "map", "channel", "true", "false", "nil",
+    }
+}
+
+func reservedWords() [string; 8] {
+    return [string; 8]{"interface", "trait", "impl", "enum", "match", "unsafe", "macro", "defer"}
+}
+
+// Longest spellings first, so the first match is the longest one.
+func punctuation() [string; 40] {
+    return [string; 40]{
+        "<<=", ">>=", "<<", ">>", "<=", ">=", "==", "!=", "&&", "||",
+        "+=", "-=", "*=", "/=", "%=", "&=", "|=", "^=", "+", "-",
+        "*", "/", "%", "&", "|", "^", "!", "<", ">", "=",
+        "?", ".", ",", ":", "(", ")", "[", "]", "{", "}",
+    }
+}
+
+func isKeyword(word string) bool {
+    for candidate in keywords() {
+        if candidate == word {
+            return true
+        }
+    }
+    return false
+}
+
+func isReserved(word string) bool {
+    for candidate in reservedWords() {
+        if candidate == word {
+            return true
+        }
+    }
+    return false
+}
+
+func keywordEndsStatement(word string) bool {
+    return word == "break" || word == "continue" || word == "return" || word == "true" ||
+        word == "false" || word == "nil"
+}
+
+func punctEndsStatement(spelling string) bool {
+    return spelling == ")" || spelling == "]" || spelling == "}" || spelling == "?"
+}

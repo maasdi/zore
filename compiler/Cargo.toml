@@ -34,6 +34,10 @@ name = "lexer"
 path = "../tests/lexer/lexer.rs"
 
 [[test]]
+name = "selfhost_lexer"
+path = "../tests/selfhost/lexer.rs"
+
+[[test]]
 name = "parser"
 path = "../tests/parser/parser.rs"
 

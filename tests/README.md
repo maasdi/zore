@@ -6,7 +6,11 @@ version, usage errors, unsupported commands, native paths, and option delimiters
 line/column lookup, EOF, and multi-file diagnostic rendering. `tests/lexer/lexer.rs`
 tests M2 token kinds, spans, literal validation and decoding, semicolon
 insertion, diagnostics, and recovery progress; its cases come from the lexical
-rows of the conformance documents below. `tests/parser/parser.rs` tests M3–M4 AST
+rows of the conformance documents below. `tests/selfhost/lexer.rs` builds the
+Zore lexer in `compiler-zore/` and compares its tokens, byte spans, decoded
+literals, and error codes with the Rust lexer. The inputs are targeted cases,
+each line of the lexer tests, the lexical conformance documents, every `.ore`
+file in the repository, and seeded generated text and bytes. `tests/parser/parser.rs` tests M3–M4 AST
 shape (via an S-expression rendering), spans, syntax rejection, unsupported
 later-milestone syntax, recovery, and termination on generated input.
 `tests/typecheck/check.rs` tests resolution, type checking,
