@@ -1,0 +1,111 @@
+package context
+
+import "zore/time"
+
+const active = 0
+const canceled = 1
+const expired = 2
+
+type Context struct {
+    done     channel<bool>
+    state    Mutex<int>
+    live     bool
+    deadline int
+}
+
+func Background() Context {
+    return Context{done: channel<bool>(), state: mutex(active), live: false, deadline: 0}
+}
+
+func TODO() Context {
+    return Background()
+}
+
+func WithCancel(parent Context) (Context, func()) {
+    let ctx = derive(parent, parent.deadline)
+    return ctx, func() {
+        ctx.cancel(canceled)
+    }
+}
+
+func WithTimeout(parent Context, timeout int) (Context, func()) {
+    return WithDeadline(parent, time.Now() + timeout)
+}
+
+func WithDeadline(parent Context, deadline int) (Context, func()) {
+    var at = deadline
+    if parent.deadline > 0 && parent.deadline < at {
+        at = parent.deadline
+    }
+    let ctx = derive(parent, at)
+    go expire(ctx, at)
+    return ctx, func() {
+        ctx.cancel(canceled)
+    }
+}
+
+func (c Context) Done() channel<bool> {
+    return c.done
+}
+
+func (c Context) Err() error {
+    let reason = c.reason()
+    if reason == canceled {
+        return error("context canceled")
+    }
+    if reason == expired {
+        return error("context deadline exceeded")
+    }
+    return nil
+}
+
+func (c Context) Deadline() (int, bool) {
+    return c.deadline, c.deadline > 0
+}
+
+func derive(parent Context, deadline int) Context {
+    let ctx = Context{done: channel<bool>(), state: mutex(active), live: true, deadline: deadline}
+    if parent.live {
+        go follow(parent, ctx)
+    }
+    return ctx
+}
+
+func (c Context) reason() int {
+    return c.state.withLock(func(state mut int) int {
+        return state
+    })
+}
+
+func (c Context) cancel(reason int) {
+    let first = c.state.withLock(func(state mut int) bool {
+        if state != active {
+            return false
+        }
+        state = reason
+        return true
+    })
+    if first {
+        c.done.close()
+    }
+}
+
+async func follow(parent Context, child Context) {
+    select {
+        case parent.done.receive() {
+            child.cancel(parent.reason())
+        }
+        case child.done.receive() {
+        }
+    }
+}
+
+async func expire(ctx Context, deadline int) {
+    select {
+        case ctx.done.receive() {
+        }
+        case time.After(time.Until(deadline)).receive() {
+            ctx.cancel(expired)
+        }
+    }
+}

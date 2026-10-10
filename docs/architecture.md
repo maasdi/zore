@@ -31,7 +31,7 @@ when existing code belongs in it (rule 11: no empty scaffolding):
 - `driver/`: `command.rs`, `session.rs`, plus `check.rs` and `build.rs`, the
   frontend and native pass orchestration, and `stdlib.rs`, which embeds the
   standard packages. Their Zore source lives in the top-level `std/` folder, one
-  folder per package (`std/strings/strings.ore`, `std/net/net.ore`, and so on).
+  folder per import path (`std/strings/`, `std/os/exec/`, and so on).
 - `source/` (`span.rs`, `source_file.rs`, `source_map.rs`), `diagnostic/`
   (`diagnostic.rs`, `label.rs`, `renderer.rs`).
 - `lexer/` (`lexer.rs`, `token.rs`, `token_kind.rs`), `parser/` (`parser.rs`,
@@ -89,8 +89,9 @@ runtime in `runtime/src/` holds allocation (`alloc.rs`), text (`string.rs`,
 (`waiter.rs`), channels and `select` (`channel.rs`), `Mutex` (`mutex.rs`),
 deadlock detection (`deadlock.rs`), and async I/O: the event loop and timers
 (`reactor.rs`), helper threads for blocking calls (`blocking.rs`), and the
-natives behind `zore/time`, `zore/io`, `zore/os`, and `zore/net` (`sys.rs`,
-`net.rs`, `net_poll.rs`). The driver compiles it once into a cached library, and `main.rs` is
+natives behind `zore/time` (`sys.rs`), `zore/os` (`os.rs`), `zore/os/exec`
+(`exec.rs`), `zore/net` (`net.rs`, `net_poll.rs`), and `zore/unicode`
+(`unicode.rs`). The driver compiles it once into a cached library, and `main.rs` is
 the native entry shim compiled with each program; the Cargo library target
 enables runtime unit tests without a generated entry.
 
@@ -211,7 +212,7 @@ still use conservative reachability through their success and unwind paths.
 Suspended frames are abandoned at process exit. Very large sets of waiting
 tasks should use `async func`: a plain function holds an OS worker while it
 waits, and compensation may need one replacement thread per blocked worker.
-The private cancellation `expire` and `follow` tasks are async, as is the timer
+The private `zore/context` `expire` and `follow` tasks are async, as is the timer
 package's `fire` task.
 
 ### Channel and select polls (Q32 slice 4, first PR)
@@ -375,11 +376,14 @@ dependencies first. Spans carry their file, so diagnostics point into any
 package; the source text of the bundled standard packages lives in a separate
 map that the checker and code generator read through `Sources`.
 
-The bundled standard packages (`std/<package>/<package>.ore`) declare functions
-without bodies. The checker lowers them like any function but marks them
-native; MIR gives them no blocks, and code generation emits a shim that calls
-the runtime symbol `zore_native_<package>_<function>` (`HasPrefix` in
-`strings` is `zore_native_strings_has_prefix`).
+The bundled standard packages (`std/<path>/*.ore`) are written in Zore, and some
+of their functions are declared without bodies. The checker lowers those like
+any function but marks them native; MIR gives them no blocks, and code
+generation emits a shim that calls the runtime symbol
+`zore_native_<name>_<function>`, where `<name>` is the last segment of the
+package path (`HasPrefix` in `strings` is `zore_native_strings_has_prefix`, and
+`run` in `os/exec` is `zore_native_exec_run`). Native parameters are strings,
+slices, integers of any width, runes, and booleans.
 
 AST preserves written structure; HIR records resolved meaning; MIR describes
 execution. Source identity and spans survive transformations. Use typed IDs for
@@ -649,8 +653,8 @@ them uses worker compensation. The blocking mutex ABI remains available to plain
 
 `codegen/io.rs` lowers waiting native calls in async bodies without adding source
 `await`. `async_lowering` also identifies waiting bundled-library wrappers by
-call-graph propagation, including public networking methods and cancellation
-methods. Their internal persistent frames let an async caller suspend through
+call-graph propagation: any bundled function that reaches a waiting call, such
+as the networking, `bufio`, `context`, and `sync` methods, is lowered as waiting. Their internal persistent frames let an async caller suspend through
 ordinary library APIs. Plain user helpers and callbacks keep synchronous calls;
 plain-function tasks run once on pool workers.
 

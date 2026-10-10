@@ -1,0 +1,89 @@
+package bytes
+
+func Equal(a []byte, b []byte) bool {
+    return Compare(a, b) == 0
+}
+
+func Compare(a []byte, b []byte) int {
+    var i = 0
+    for i < a.len() && i < b.len() {
+        if a[i] < b[i] {
+            return -1
+        }
+        if a[i] > b[i] {
+            return 1
+        }
+        i += 1
+    }
+    if a.len() < b.len() {
+        return -1
+    }
+    if a.len() > b.len() {
+        return 1
+    }
+    return 0
+}
+
+func HasPrefix(s []byte, prefix []byte) bool {
+    return s.len() >= prefix.len() && Equal(s[:prefix.len()], prefix)
+}
+
+func HasSuffix(s []byte, suffix []byte) bool {
+    return s.len() >= suffix.len() && Equal(s[s.len() - suffix.len():], suffix)
+}
+
+func Index(s []byte, sep []byte) int {
+    for var i = 0; i + sep.len() <= s.len(); i += 1 {
+        if Equal(s[i:i + sep.len()], sep) {
+            return i
+        }
+    }
+    return -1
+}
+
+func LastIndex(s []byte, sep []byte) int {
+    for var i = s.len() - sep.len(); i >= 0; i -= 1 {
+        if Equal(s[i:i + sep.len()], sep) {
+            return i
+        }
+    }
+    return -1
+}
+
+func IndexByte(s []byte, c byte) int {
+    for var i = 0; i < s.len(); i += 1 {
+        if s[i] == c {
+            return i
+        }
+    }
+    return -1
+}
+
+func Contains(s []byte, sub []byte) bool {
+    return Index(s, sub) >= 0
+}
+
+func Count(s []byte, sep []byte) int {
+    if sep.len() == 0 {
+        return s.len() + 1
+    }
+    var count = 0
+    var at = 0
+    for at + sep.len() <= s.len() {
+        if Equal(s[at:at + sep.len()], sep) {
+            count += 1
+            at += sep.len()
+        } else {
+            at += 1
+        }
+    }
+    return count
+}
+
+func Clone(s []byte) Array<byte> {
+    var copied = Array<byte>{}
+    for b in s {
+        copied.push(b)
+    }
+    return copied
+}

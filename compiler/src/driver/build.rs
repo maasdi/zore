@@ -30,6 +30,7 @@ const RUNTIME_SOURCES: &[(&str, &str)] = &[
         include_str!("../../../runtime/src/deadlock.rs"),
     ),
     ("slot.rs", include_str!("../../../runtime/src/slot.rs")),
+    ("exec.rs", include_str!("../../../runtime/src/exec.rs")),
     ("io.rs", include_str!("../../../runtime/src/io.rs")),
     ("map.rs", include_str!("../../../runtime/src/map.rs")),
     ("mutex.rs", include_str!("../../../runtime/src/mutex.rs")),
@@ -38,6 +39,7 @@ const RUNTIME_SOURCES: &[(&str, &str)] = &[
         "net_poll.rs",
         include_str!("../../../runtime/src/net_poll.rs"),
     ),
+    ("os.rs", include_str!("../../../runtime/src/os.rs")),
     ("panic.rs", include_str!("../../../runtime/src/panic.rs")),
     (
         "reactor.rs",
@@ -54,6 +56,10 @@ const RUNTIME_SOURCES: &[(&str, &str)] = &[
     ),
     ("sys.rs", include_str!("../../../runtime/src/sys.rs")),
     ("task.rs", include_str!("../../../runtime/src/task.rs")),
+    (
+        "unicode.rs",
+        include_str!("../../../runtime/src/unicode.rs"),
+    ),
     (
         "scheduler.rs",
         include_str!("../../../runtime/src/scheduler.rs"),

@@ -1,0 +1,156 @@
+package utf8
+
+import "zore/strings"
+
+const RuneError = '�'
+const RuneSelf = 0x80
+const MaxRune = '\U0010FFFF'
+const UTFMax = 4
+
+func RuneLen(r rune) int {
+    return string(r).len()
+}
+
+func EncodeRune(p mut []byte, r rune) int {
+    let encoded = string(r)
+    for var i = 0; i < encoded.len(); i += 1 {
+        p[i] = encoded[i]
+    }
+    return encoded.len()
+}
+
+func RuneCountInString(s string) int {
+    var count = 0
+    for _ in s {
+        count += 1
+    }
+    return count
+}
+
+func RuneCount(p []byte) int {
+    var count = 0
+    var at = 0
+    for at < p.len() {
+        let _, size = DecodeRune(p[at:])
+        at += size
+        count += 1
+    }
+    return count
+}
+
+func Valid(p []byte) bool {
+    let _, err = strings.FromBytes(p)
+    return err == nil
+}
+
+func RuneStart(b byte) bool {
+    return b & 0xC0 != 0x80
+}
+
+func FullRune(p []byte) bool {
+    if p.len() == 0 {
+        return false
+    }
+    let size = sequenceLength(p[0])
+    if size == 0 || size <= p.len() {
+        return true
+    }
+    for var i = 1; i < p.len(); i += 1 {
+        var low byte = 0x80
+        var high byte = 0xBF
+        if i == 1 {
+            low, high = secondByteRange(p[0])
+        }
+        if p[i] < low || p[i] > high {
+            return true
+        }
+    }
+    return false
+}
+
+func DecodeRune(p []byte) (rune, int) {
+    if p.len() == 0 {
+        return RuneError, 0
+    }
+    let size = sequenceLength(p[0])
+    if size == 0 || size > p.len() {
+        return RuneError, 1
+    }
+    let text, err = strings.FromBytes(p[:size])
+    if err != nil {
+        return RuneError, 1
+    }
+    for r in text {
+        return r, size
+    }
+    return RuneError, 1
+}
+
+func DecodeRuneInString(s string) (rune, int) {
+    for r in s {
+        return r, string(r).len()
+    }
+    return RuneError, 0
+}
+
+func DecodeLastRune(p []byte) (rune, int) {
+    if p.len() == 0 {
+        return RuneError, 0
+    }
+    var start = p.len() - 1
+    let limit = p.len() - UTFMax
+    for start > 0 && start > limit && p[start] & 0xC0 == 0x80 {
+        start -= 1
+    }
+    let r, size = DecodeRune(p[start:])
+    if start + size != p.len() {
+        return RuneError, 1
+    }
+    return r, size
+}
+
+func DecodeLastRuneInString(s string) (rune, int) {
+    if s.len() == 0 {
+        return RuneError, 0
+    }
+    var start = s.len() - 1
+    for start > 0 && s[start] & 0xC0 == 0x80 {
+        start -= 1
+    }
+    for r in s[start:] {
+        return r, s.len() - start
+    }
+    return RuneError, 0
+}
+
+func sequenceLength(first byte) int {
+    if first < 0x80 {
+        return 1
+    }
+    if first >= 0xC2 && first <= 0xDF {
+        return 2
+    }
+    if first >= 0xE0 && first <= 0xEF {
+        return 3
+    }
+    if first >= 0xF0 && first <= 0xF4 {
+        return 4
+    }
+    return 0
+}
+
+func secondByteRange(first byte) (byte, byte) {
+    if first == 0xE0 {
+        return 0xA0, 0xBF
+    }
+    if first == 0xED {
+        return 0x80, 0x9F
+    }
+    if first == 0xF0 {
+        return 0x90, 0xBF
+    }
+    if first == 0xF4 {
+        return 0x80, 0x8F
+    }
+    return 0x80, 0xBF
+}

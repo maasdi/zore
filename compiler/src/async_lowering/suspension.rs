@@ -20,17 +20,28 @@ pub enum NativeWait {
 
 pub fn native_wait(name: &str) -> Option<NativeWait> {
     match name {
-        "zore/io.ReadLine" | "zore/os.ReadFile" | "zore/os.ReadBytes" | "zore/os.WriteFile"
-        | "zore/os.WriteBytes" | "zore/net.listen" | "zore/net.dial" => Some(NativeWait::Helper),
-        "zore/net.accept"
-        | "zore/net.read"
-        | "zore/net.readBytes"
-        | "zore/net.write"
-        | "zore/net.writeBytes" => Some(if cfg!(any(target_os = "linux", target_os = "macos")) {
-            NativeWait::Socket
-        } else {
-            NativeWait::Helper
-        }),
+        "zore/os.ReadFile"
+        | "zore/os.WriteFile"
+        | "zore/os.MkdirAll"
+        | "zore/os.Remove"
+        | "zore/os.RemoveAll"
+        | "zore/os.dirNames"
+        | "zore/os.statFields"
+        | "zore/os.fileOpen"
+        | "zore/os.fileRead"
+        | "zore/os.fileWrite"
+        | "zore/os.fileWriteString"
+        | "zore/os.fileClose"
+        | "zore/os/exec.run"
+        | "zore/net.listen"
+        | "zore/net.dial" => Some(NativeWait::Helper),
+        "zore/net.accept" | "zore/net.read" | "zore/net.write" => {
+            Some(if cfg!(any(target_os = "linux", target_os = "macos")) {
+                NativeWait::Socket
+            } else {
+                NativeWait::Helper
+            })
+        }
         _ => None,
     }
 }

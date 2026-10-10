@@ -19,6 +19,18 @@ once it does.
   exact arithmetic, representability rules, and at least 256-bit precision
   (§6.7).
 
+### Standard library
+
+- Refactored the standard packages to one naming and signature pattern
+  (§37.2–§37.5): `strings.ToUpper`/`ToLower`/`ReplaceAll`, byte-based
+  `os.ReadFile`/`WriteFile`, `net.Conn.Read`/`Write` into byte buffers,
+  nanosecond durations with `time.Millisecond` and friends, network deadlines,
+  and error messages that name the rejected input.
+- Replaced `zore/io` with `zore/bufio` and `zore/cancel` with `zore/context`.
+- Added `zore/bytes`, `zore/errors`, `zore/unicode`, `zore/unicode/utf8`,
+  `zore/path`, `zore/path/filepath`, `zore/sort`, `zore/sync`, and
+  `zore/os/exec`, and more functions in `strings`, `strconv`, and `os`.
+
 ### Compiler
 
 - `zore` command-line driver with `check`, `build`, and `run`; `fmt` and

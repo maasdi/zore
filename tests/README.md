@@ -34,11 +34,14 @@ errors, ownership transfer, panics (waited and detached), an endless detached
 task, `nil` waits, async functions awaiting tasks, many tasks sharing text, and tens of thousands
 of tasks running and waiting on each other, and channels: ordering, ownership and
 drops of messages, close and drain, the zero-value channel, blocked operations
-woken by close, reply channels, worker pools, and a chain of a thousand tasks. Deadlock tests cover a receive or send nobody answers, tasks waiting on each other, and a wait on a task that waits forever, and check that timers, helper threads, a pending accept, and busy tasks are not mistaken for one. `conformance/io.md` also covers the byte functions: text and bytes converting both ways with the UTF-8 check, files holding any bytes, and a connection moving raw bytes. `conformance/io.md` also covers time limits and cancellation: `After` firing once, sockets giving up after their limit without losing data, and tokens cancelling sleepers and children. `conformance/select.md` covers `select`: native tests pick the ready case, skip a full buffer, wake on a producer or a close, treat a zero-value channel as ready, panic on a send to a closed channel, and report a `select` nobody can complete as a deadlock. `conformance/mutex.md` covers `Mutex<T>`: its native tests count 100,000 updates from 100 tasks, drop a guarded Move value once, return results from the callback, make waiters wait in arrival order without blocking other tasks, poison the mutex when the callback panics, and report a re-lock and an opposite-order pair as deadlocks. `conformance/io.md` covers `zore/time`, `zore/io`, `zore/os`,
-and `zore/net`; its native tests sleep, read piped standard input, round-trip
-files, echo text through a loopback TCP server (including a peer written in
-Rust that sends bytes that are not text), and check that a task waiting on
-input, a timer, or `Accept` never stops another task. `tests/ownership/ownership.rs` tests the MIR ownership pass through the
+woken by close, reply channels, worker pools, and a chain of a thousand tasks. Deadlock tests cover a receive or send nobody answers, tasks waiting on each other, and a wait on a task that waits forever, and check that timers, helper threads, a pending accept, and busy tasks are not mistaken for one. `conformance/io.md` also covers the byte functions: text and bytes converting both ways with the UTF-8 check, files holding any bytes, and a connection moving raw bytes. `conformance/io.md` also covers deadlines and cancellation: `After` firing once, sockets giving up at their deadline without losing data, contexts cancelling their children, and wait groups. `conformance/select.md` covers `select`: native tests pick the ready case, skip a full buffer, wake on a producer or a close, treat a zero-value channel as ready, panic on a send to a closed channel, and report a `select` nobody can complete as a deadlock. `conformance/mutex.md` covers `Mutex<T>`: its native tests count 100,000 updates from 100 tasks, drop a guarded Move value once, return results from the callback, make waiters wait in arrival order without blocking other tasks, poison the mutex when the callback panics, and report a re-lock and an opposite-order pair as deadlocks. `conformance/io.md` covers `zore/time`, `zore/os`, `zore/os/exec`,
+`zore/bufio`, `zore/net`, `zore/context`, and `zore/sync`; its native tests
+sleep, scan piped standard input, round-trip files, list and remove folders, run
+child processes, echo bytes through a loopback TCP server (including a peer
+written in Rust that sends bytes that are not text), and check that a task
+waiting on input, a timer, or `Accept` never stops another task.
+`conformance/packages.md` lists the text, byte, path, and sorting packages,
+whose native tests compare each function with its documented result. `tests/ownership/ownership.rs` tests the MIR ownership pass through the
 full frontend: whole-place and partial moves, reinitialization, call-local
 borrows, the custom-`drop`-ancestor restriction, array- and slice-element move
 rules, and region analysis of stored slice borrows (aliasing at the
@@ -199,13 +202,13 @@ access. Native parity cases compare plain and poll execution with blocking
 callbacks, Move results, contention, panic cleanup, and heap-only poll storage.
 
 I/O poll regressions compare plain and async file, stdin, networking, and
-cancellation APIs. They cover byte views and Move results, UTF-8 framing, EOF and
-invalid input, timeout recovery, error propagation and cleanup, shared socket
+context APIs. They cover byte views and Move results, buffered reads, EOF and
+invalid input, deadline recovery, error propagation and cleanup, shared socket
 registration, partial writes, and heap-only async storage. Runtime helper tests
 use a single poll worker to check progress while work is pending, completion
 before Pending, nested helper calls, and task-local panic transfer. Socket tests
-use loopback peers and bounded waits, including backpressure and incomplete text
-recovery after a timeout.
+use loopback peers and bounded waits, including backpressure and reads after a
+deadline has passed.
 
 Q32's final runtime uses one pool for plain entries and async polls on every host.
 The plain-entry ABI test verifies pool worker execution, one-time result retrieval,
@@ -220,5 +223,5 @@ Large waiting workloads use `async func` task functions, including the 5,000-tas
 join chain, the 1,000-link channel chain, and timer waiters. The 50,000 computation
 tasks do not wait and remain plain functions. A waiting plain function holds an OS
 worker; replacement threads maintain progress but remain subject to host thread
-limits. A 1,000-child cancellation regression checks the private async expiry
+limits. A 1,000-child context regression checks the private async expiry
 and parent-following tasks.

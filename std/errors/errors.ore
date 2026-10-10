@@ -1,0 +1,9 @@
+package errors
+
+func New(text string) error {
+    return error(text)
+}
+
+func Is(err error, target error) bool {
+    return err == target
+}
