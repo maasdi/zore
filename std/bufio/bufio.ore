@@ -1,20 +1,20 @@
 package bufio
 
-import "zore/os"
+import "zore/io"
 import "zore/strings"
 
 const defaultSize = 4096
 
 type Reader struct {
-    file    os.File
+    source  io.Reader
     chunk   Array<byte>
     pending Array<byte>
     start   int
     err     error
 }
 
-func NewReader(file own os.File) Reader {
-    return Reader{file: file, chunk: zeros(defaultSize), pending: Array<byte>{}, start: 0, err: nil}
+func NewReader(source own io.Reader) Reader {
+    return Reader{source: source, chunk: zeros(defaultSize), pending: Array<byte>{}, start: 0, err: nil}
 }
 
 func zeros(count int) Array<byte> {
@@ -29,7 +29,7 @@ func (r mut Reader) fill() bool {
     if r.err != nil {
         return false
     }
-    let count, err = r.file.Read(r.chunk[:])
+    let count, err = r.source.Read(r.chunk[:])
     if r.start > 0 {
         var rest = Array<byte>{}
         for var i = r.start; i < r.pending.len(); i += 1 {
@@ -84,6 +84,24 @@ func (r mut Reader) ReadString(delim byte) (string, error) {
     return text, err
 }
 
+func (r mut Reader) Read(buf mut []byte) (int, error) {
+    if buf.len() == 0 {
+        return 0, nil
+    }
+    for r.start >= r.pending.len() {
+        if !r.fill() && r.err != nil {
+            return 0, r.err
+        }
+    }
+    var count = 0
+    for count < buf.len() && r.start < r.pending.len() {
+        buf[count] = r.pending[r.start]
+        r.start += 1
+        count += 1
+    }
+    return count, nil
+}
+
 func (r mut Reader) ReadByte() (byte, error) {
     for r.start >= r.pending.len() {
         if !r.fill() && r.err != nil {
@@ -102,8 +120,8 @@ type Scanner struct {
     done   bool
 }
 
-func NewScanner(file own os.File) Scanner {
-    return Scanner{reader: NewReader(file), token: "", err: nil, done: false}
+func NewScanner(source own io.Reader) Scanner {
+    return Scanner{reader: NewReader(source), token: "", err: nil, done: false}
 }
 
 func (s mut Scanner) Scan() bool {
@@ -114,7 +132,7 @@ func (s mut Scanner) Scan() bool {
     if err != nil && line.len() == 0 {
         s.done = true
         s.token = ""
-        if err != error("EOF") {
+        if err != io.EOF {
             s.err = err
         }
         return false
@@ -146,13 +164,13 @@ func (s Scanner) Err() error {
 }
 
 type Writer struct {
-    file    os.File
+    sink    io.Writer
     pending Array<byte>
     err     error
 }
 
-func NewWriter(file own os.File) Writer {
-    return Writer{file: file, pending: Array<byte>{}, err: nil}
+func NewWriter(sink own io.Writer) Writer {
+    return Writer{sink: sink, pending: Array<byte>{}, err: nil}
 }
 
 func (w mut Writer) Write(p []byte) (int, error) {
@@ -196,7 +214,7 @@ func (w mut Writer) Flush() error {
     if w.pending.len() == 0 {
         return nil
     }
-    let _, err = w.file.Write(w.pending[:])
+    let _, err = w.sink.Write(w.pending[:])
     w.pending = Array<byte>{}
     if err != nil {
         w.err = err

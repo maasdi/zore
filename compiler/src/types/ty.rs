@@ -100,6 +100,18 @@ pub enum TypeKind {
         interface: InterfaceId,
         mutable: bool,
     },
+    /// A type parameter of a generic function; only its constraint is known.
+    Param(u32),
+}
+
+/// What a type argument must be, and what generic code may do with values of it.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum Constraint {
+    Any,
+    Copyable,
+    Comparable,
+    Ordered,
+    Interface(InterfaceId),
 }
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]

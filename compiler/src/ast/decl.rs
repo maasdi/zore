@@ -32,12 +32,21 @@ pub struct FuncDecl {
     pub is_async: bool,
     pub receiver: Option<Param>,
     pub name: Name,
+    /// `<T any, U ordered>`; empty for an ordinary function.
+    pub type_params: Vec<TypeParam>,
     pub params: Vec<Param>,
     pub results: Vec<Type>,
     /// Empty for a native function.
     pub body: Block,
     /// Declared without a body; its code is provided by the runtime.
     pub native: bool,
+    pub span: Span,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct TypeParam {
+    pub name: Name,
+    pub constraint: Type,
     pub span: Span,
 }
 
@@ -60,6 +69,7 @@ pub struct Param {
 #[derive(Clone, Debug, PartialEq)]
 pub struct StructDecl {
     pub name: Name,
+    pub type_params: Vec<TypeParam>,
     pub fields: Vec<FieldDecl>,
     pub span: Span,
 }

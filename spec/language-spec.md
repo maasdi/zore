@@ -807,10 +807,11 @@ The type/zero-value rules for `nil` are locked in §41.4. Do not infer
 Go's complete statement or type grammar from this keyword list.
 
 Built-in primitive type names (§6.1), `Array`, `Task`, `Mutex`, `mutex`, `error`, `println`,
-`panic`, `clone`, and `drop` are predeclared names, not keywords. They are lexed as identifiers
+`panic`, `clone`, and `drop`, and the constraints `any`, `copyable`, `comparable`, and
+`ordered` (§22.1), are predeclared names, not keywords. They are lexed as identifiers
 and resolved semantically; their built-in meaning may still require special
 compiler handling. Declarations may not shadow them (§3.18). This distinction
-does not imply user-defined generics or additional built-in APIs.
+does not imply additional built-in APIs.
 
 Ownership, error, and async implications: keyword classification preserves the
 locked meanings of `mut`, `own`, `async`, `await`, and `go`; it does not change
@@ -833,7 +834,8 @@ constants, and user-defined type or function names. If an import introduces a
 name into unqualified lookup, that name must obey the same restriction.
 
 The protected names currently established in §3.17 are all primitive type names
-from §6.1, plus `Array`, `Task`, `Mutex`, `mutex`, `error`, `println`, `clone`, and `drop`.
+from §6.1, plus `Array`, `Task`, `Mutex`, `mutex`, `error`, `println`, `clone`, `drop`,
+`any`, `copyable`, `comparable`, and `ordered`.
 Any additional predeclared names must be explicitly specified; implementations
 must not protect speculative library names. The full built-in API inventory
 and signatures remain separate decisions.
@@ -1627,7 +1629,7 @@ channel<T>
 Task<R1, ..., Rn>   (written plain `Task` when the spawned call has no results)
 ```
 
-The exact generic surface syntax for every runtime/library type does not imply general user-defined generics. General-purpose generics are outside the MVP.
+These are built-in type forms with their own rules; user-defined generic functions and struct types are a separate feature (§22.1).
 `Task`'s type arguments mirror the spawned call's result list (§18.8).
 
 ## 6.4 No source-level `void` requirement — LOCKED
@@ -4974,21 +4976,147 @@ Compiler/runtime internals may of course use low-level operations internally.
 
 # 22. Generics and Interfaces
 
-## 22.1 General-purpose generics — OUT OF MVP
+## 22.1 Generic functions and types — LOCKED
 
-User-defined generic functions/types are not part of the MVP.
+A generic function or struct type declares type parameters in angle brackets
+after its name.
+Each type parameter has exactly one constraint, which says which types it can
+stand for and what the body may do with its values:
 
-The presence of built-in/library forms such as:
+```ore
+func Max<T ordered>(a T, b T) T {
+    if a > b {
+        return a
+    }
+    return b
+}
 
-```text
-Array<T>
-channel<T>
-Task<T>
+func Contains<T comparable>(items []T, target T) bool {
+    for _, item in items {
+        if item == target {
+            return true
+        }
+    }
+    return false
+}
 ```
 
-does not imply that general user-defined generics are already available.
+**Declaration.** The list `<T C, U D, ...>` follows the function name and holds
+at least one parameter. Each parameter is a name followed by its constraint;
+the names are in scope in the signature and the body, and they cannot shadow
+predeclared names (§3.18). A type parameter can appear anywhere a type can,
+including inside `[]T`, `Array<T>`, `map[K]V`, `channel<T>`, `Mutex<T>`, and
+`[T; N]`. Methods cannot declare type parameters, a function declared without a
+body (§37) cannot be generic, and `main` cannot be generic. An `async func` can
+be generic.
 
-These may initially be compiler-known/core-library parameterized types.
+**Generic types.** A struct type can declare type parameters the same way:
+
+```ore
+type Stack<T any> struct {
+    items Array<T>
+}
+
+func (s mut Stack<T>) Push(value own T) {
+    s.items.push(value)
+}
+
+func (s Stack<T>) Len() int {
+    return s.items.len()
+}
+
+func main() {
+    var numbers = Stack<int>{items: Array<int>{}}
+    numbers.Push(4)
+    println(numbers.Len())
+}
+```
+
+Only struct types can be generic: a named type (§8.5) or an interface type
+(§22.2) cannot declare type parameters. A generic type is always written with
+its type arguments, `Stack<int>` in a type and `Stack<int>{...}` in a literal,
+and `pkg.Stack<int>` from another package; each set of type arguments is a
+distinct struct type. A method of a generic type names the type with its type
+parameters, in order and by name (`Stack<T>`; the names may differ from the
+declaration's), uses them in its signature and body, and cannot declare type
+parameters of its own. Calling it on a `Stack<int>` uses `int` for `T`. Custom
+`drop` and `clone` methods (§14.3, §10.7) are declared the same way, and a
+`clone` returns exactly the receiver type, `Stack<T>`. An instance such as
+`Stack<int>` satisfies an interface when its methods, with the type arguments
+in place, match the interface's entries (§22.2). A generic type that would
+contain itself with ever-growing type arguments is an error.
+
+**Constraints.**
+
+| Constraint | Allowed type arguments | What the body may do with a `T` value, besides passing, returning, storing, and moving it |
+| --- | --- | --- |
+| `any` | every type allowed below | nothing more |
+| `copyable` | every Copy type (§10.2) | copy it |
+| `comparable` | `bool`, integer types, `rune`, `string`, and named types built on one: exactly the map key types (§13.3) | copy it, compare it with `==` and `!=`, and use it as a map key |
+| `ordered` | integer and float types, `rune`, `string`, and named types built on one | copy it, and compare it with `==`, `!=`, `<`, `<=`, `>`, and `>=` |
+| an interface type (§22.2) | types that satisfy the interface, including interface types | call the interface's methods |
+
+`any`, `copyable`, `comparable`, and `ordered` are predeclared names (§3.17)
+usable only as constraints; none of them is a type. No type argument can be a
+function type, a `mut []T`, a borrowed interface value, or a type that holds one
+of these. Floats are not `comparable`, as they are not map keys.
+
+**Calls.** A call writes no type arguments; they come from the argument types.
+Each parameter type is matched against its argument's type, and a type
+parameter takes the type found in its place, from the first argument that
+decides it. An untyped constant decides a type parameter only when no typed
+argument does; the first such constant then gives its default type (§6.7). When the arguments
+leave a type parameter undecided and the call is expected to have a single
+type, such as the declared type of a `let` or the parameter it is passed to,
+the result type decides it: `var s Stack<int> = NewStack()`. Arguments are
+then checked against the parameter types with the type arguments in place, as
+for any call. A call is an error when a type parameter is not decided or a type
+argument does not satisfy its constraint; the diagnostic names the type
+parameter.
+
+```ore
+let biggest = Max(3, 9)                 // T = int
+let found = Contains(names[:], "Ada")   // T = string
+Max(1.5, 2)                             // T = float64; 2 converts
+```
+
+`Max<int>(1, 2)` is not a call syntax: it parses as comparisons. A generic
+function cannot be used as a value. Inside a generic function, a type parameter
+can be passed on to another generic call when its own constraint promises as
+much as the callee needs; an interface constraint passes on to an interface it
+satisfies.
+
+**Checking.** The body is checked once, at the declaration, for every type its
+constraints allow, whether or not the function is called. Under `copyable`,
+`comparable`, and `ordered`, `T` values are copied; under `any` and an interface
+constraint, `T` is treated as a Move type, so a `T` cannot be moved out of a
+slice, field, or element, or used after it was moved. Each set of type arguments
+then gets its own copy of the function, compiled like ordinary code. A generic
+function whose calls would need endless new sets of type arguments, such as one
+calling itself with `Array<T>`, is an error.
+
+**Not yet supported.** Inside a generic function or a method of a generic type:
+function literals, `go`, method values, converting a value whose type uses a
+type parameter to an interface type, `clone` of a `T`, and printing a `T`. A
+method of a generic type cannot be used as a value. These produce diagnostics.
+
+Ownership, error, and async implications: generic code follows the ordinary
+ownership, borrowing, view, and cleanup rules for each type parameter as its
+constraint describes, and a copy for particular type arguments behaves exactly
+like a function written for those types, including destroying values and running
+custom `drop` methods. Calling a method through an interface constraint uses
+the receiver with the entry's mode, as a call through an interface value does
+(§22.2). Errors propagate with `?` as usual. A call to a generic `async func`
+must be awaited or spawned (§17.8) and suspends like any async call.
+
+Compiler impact: parse type parameter lists in both parsers; declare type
+parameters and the four predeclared constraints in the resolver; add a type
+parameter type kind classified by its constraint; infer type arguments at calls
+and check them against constraints; give each generic struct instance its own
+struct with the field types substituted; check generic bodies once; make one copy
+of each function and method per set of type arguments before MIR, and check an extra copy with stand-in types
+for ownership so errors in uncalled functions are found; compile only the
+copies. Pending conformance cases: `tests/conformance/generics.md`.
 
 ## 22.2 Interfaces — LOCKED
 
@@ -5914,8 +6042,8 @@ cases: `tests/conformance/packages.md` and `tests/conformance/strings.md`.
 
 ## 37.3 Time, operating system, buffered I/O, and network packages — LOCKED
 
-`"zore/time"`, `"zore/os"`, `"zore/os/exec"`, `"zore/bufio"`, and `"zore/net"`
-give tasks a way to wait for the clock, files, standard input and output, other
+`"zore/time"`, `"zore/os"`, `"zore/os/exec"`, `"zore/io"`, `"zore/bufio"`, and
+`"zore/net"` give tasks a way to wait for the clock, files, standard input and output, other
 programs, and TCP connections without blocking other tasks. Functions are
 ordinary calls: they are written without `await`, and may be called from
 synchronous and `async` functions alike. In an `async func` body a call that
@@ -5995,21 +6123,57 @@ ended by a signal gives `signal: N`, and one that cannot start gives an error
 beginning `exec: `. `Output` and `CombinedOutput` return what was captured
 together with the error.
 
-**`zore/bufio`** reads and writes an `os.File` in large pieces. Each type owns
-the file it was made from (`own` parameter), and the file closes when the
-reader, scanner, or writer is dropped.
+**`zore/io`** names what files, connections, and buffers have in common, so
+one function can work with any of them. Its interface types (§22.2) are:
+
+| Interface | Entries |
+| --- | --- |
+| `Reader` | `mut Read(buf mut []byte) (int, error)` |
+| `Writer` | `mut Write(data []byte) (int, error)` |
+| `Closer` | `own Close() error` |
+| `ReadWriter` | the entries of `Reader` and `Writer` |
+| `ReadCloser` | the entries of `Reader` and `Closer` |
+| `WriteCloser` | the entries of `Writer` and `Closer` |
+
+`os.File`, `net.Conn`, `bytes.Buffer`, `bufio.Reader`, and `bufio.Writer`
+satisfy the ones whose methods they have. A `Read` gives at least one byte, or
+`0` and an error; the end of the input is the error `EOF`.
+
+| Name | Behavior |
+| --- | --- |
+| `let EOF = error("EOF")` | The error a `Read` gives at the end of the input |
+| `Copy(dst mut Writer, src mut Reader) (int, error)` | Writes everything `src` gives to `dst` until `EOF`, and returns the byte count; `EOF` itself is not an error, and the first other read or write error stops the copy |
+| `ReadAll(r mut Reader) (Array<byte>, error)` | Every byte up to `EOF`, with `nil`; on another error, the bytes read before it and the error |
+| `ReadFull(r mut Reader, buf mut []byte) (int, error)` | Reads until `buf` is full; `EOF` when nothing was read, `unexpected EOF` when the input ends part way |
+| `WriteString(w mut Writer, s string) (int, error)` | Writes the bytes of `s` |
+
+```ore
+import "zore/io"
+import "zore/os"
+
+func save(dst mut io.Writer, path string) (int, error) {
+    var src = os.Open(path)?
+    return io.Copy(dst, src)
+}
+```
+
+**`zore/bufio`** reads and writes any `io.Reader` or `io.Writer` in large
+pieces. Each type owns the reader or writer it was made from (an `own`
+parameter, so a file or connection moves into it), and that value is dropped,
+closing a file or connection, when the reader, scanner, or writer is dropped.
 
 | Function or method | Behavior |
 | --- | --- |
-| `NewReader(file own os.File) Reader` | A reader over `file` |
+| `NewReader(source own io.Reader) Reader` | A reader over `source` |
 | `(r mut Reader) ReadBytes(delim byte) (Array<byte>, error)` | The bytes up to and including the next `delim`; at end of input, what is left and the error, `EOF` at the end |
 | `(r mut Reader) ReadString(delim byte) (string, error)` | `ReadBytes` as text; bytes that are not UTF-8 give `""` and `bufio.Reader: invalid UTF-8` |
 | `(r mut Reader) ReadByte() (byte, error)` | The next byte |
-| `NewScanner(file own os.File) Scanner` | A scanner that reads `file` line by line |
+| `(r mut Reader) Read(buf mut []byte) (int, error)` | Up to `buf.len()` bytes, so a `Reader` is itself an `io.Reader` |
+| `NewScanner(source own io.Reader) Scanner` | A scanner that reads `source` line by line |
 | `(s mut Scanner) Scan() bool` | Reads the next line, without its terminator (`\n` or `\r\n`); a final line with no terminator counts. `false` at end of input or on an error, after which it stays `false` |
 | `(s Scanner) Text() string` | The line the last `Scan` read |
 | `(s Scanner) Err() error` | `nil` after end of input; otherwise the error that stopped the scanner, such as `bufio.Scanner: invalid UTF-8` for a line that is not text |
-| `NewWriter(file own os.File) Writer` | A writer that keeps up to 4096 bytes before writing them to `file` |
+| `NewWriter(sink own io.Writer) Writer` | A writer that keeps up to 4096 bytes before writing them to `sink` |
 | `(w mut Writer) Write(p []byte) (int, error)`, `WriteString(s string) (int, error)`, `WriteRune(r rune) (int, error)`, `WriteByte(c byte) error` | Add to the pending bytes, writing them when the limit is reached |
 | `(w mut Writer) Flush() error`, `(w Writer) Buffered() int` | Write the pending bytes now; the number pending. Bytes still pending when a writer is dropped are lost |
 
@@ -6168,7 +6332,7 @@ Compiler impact: both packages are bundled Zore source built from channels,
 `Mutex<T>`, `select`, and `time.After`. Pending conformance cases:
 `tests/conformance/io.md`.
 
-## 37.5 Standard packages `zore/path`, `zore/path/filepath`, and `zore/sort` — LOCKED
+## 37.5 Standard packages `zore/path`, `zore/path/filepath`, `zore/sort`, `zore/slices`, and `zore/maps` — LOCKED
 
 `"zore/path"` works on slash-separated paths as text, without looking at any
 file. `"zore/path/filepath"` offers the same functions for paths of the host
@@ -6193,9 +6357,48 @@ system, which use `/` on every supported system, plus `Abs`.
 | `Ints(x mut []int)`, `Strings(x mut []string)` | Sort ascending, strings by bytes (§6.6); equal elements may change order |
 | `IntsAreSorted(x []int) bool`, `StringsAreSorted(x []string) bool` | Whether `x` is ascending |
 | `SearchInts(a []int, x int) int`, `SearchStrings(a []string, x string) int` | The first index whose element is not less than `x` in sorted `a`, or `a.len()` |
+| `Slice<T copyable>(x mut []T, less func(T, T) bool)` | Sorts `x` so that `less` holds between no later element and an earlier one; equal elements may change order |
+| `SliceIsSorted<T copyable>(x []T, less func(T, T) bool) bool` | Whether no element is `less` than the one before it |
+
+`"zore/slices"` and `"zore/maps"` are generic helpers (§22.1) for slices of
+any element type their constraints allow, and for maps.
+
+| Function | Behavior |
+| --- | --- |
+| `slices.Contains<T comparable>(s []T, v T) bool`, `slices.Index<T comparable>(s []T, v T) int` | Whether `v` is in `s`; the first index of `v`, or `-1` |
+| `slices.Equal<T comparable>(a []T, b []T) bool` | Whether both have the same length and equal elements in order |
+| `slices.Sort<T ordered>(x mut []T)`, `slices.IsSorted<T ordered>(x []T) bool` | Sort ascending, strings by bytes (§6.6); whether `x` is ascending |
+| `slices.Reverse<T copyable>(x mut []T)` | Reverses the order of the elements |
+| `slices.Max<T ordered>(x []T) T`, `slices.Min<T ordered>(x []T) T` | The largest or smallest element; an empty `x` panics with `slices.Max: empty list` or `slices.Min: empty list` |
+| `slices.Clone<T copyable>(s []T) Array<T>` | A new array holding copies of the elements |
+| `maps.Keys<K comparable, V any>(m map[K]V) Array<K>` | The keys, in the order a `for` loop visits them |
+| `maps.Values<K comparable, V copyable>(m map[K]V) Array<V>` | Copies of the values, in the order a `for` loop visits them |
+| `maps.Clone<K comparable, V copyable>(m map[K]V) map[K]V` | A new map with the same entries |
+
+```ore
+import "zore/slices"
+import "zore/sort"
+
+type Person struct {
+    name string
+    age int
+}
+
+func main() {
+    var ages = Array<int>{40, 20, 30}
+    slices.Sort(ages[:])
+    var people = Array<Person>{Person{name: "Ann", age: 40}, Person{name: "Bo", age: 20}}
+    sort.Slice(people[:], func(a Person, b Person) bool {
+        return a.age < b.age
+    })
+    println(people[0].name)
+}
+```
 
 Ownership, error, and async implications: all functions are synchronous;
-`sort` writes only through its `mut` parameter, and `Abs` reports an error only
+`sort` and `slices` write only through their `mut` parameters, element types
+that are not copyable cannot be sorted, reversed, or copied out, and `less`
+is called with copies of elements, and `Abs` reports an error only
 when the current folder cannot be read.
 
 Compiler impact: the packages are bundled Zore source. Pending conformance
@@ -6372,7 +6575,7 @@ The following features are part of the locked MVP.
 
 The following features must not be treated as part of the MVP unless this specification is changed:
 
-- general-purpose generics
+- generic interfaces and generic named types (generic functions and struct types are in §22.1)
 - macros
 - reflection
 - raw pointers
@@ -6637,9 +6840,11 @@ No specific scheduler algorithm is locked.
 
 Do not depend on it.
 
-## 41.9 General generic syntax — OUT OF MVP
+## 41.9 Generic interface and named type syntax — OUT OF MVP
 
-Do not infer a user-facing generic language from `Array<T>` or `channel<T>`.
+Generic functions and generic struct types are locked in §22.1. Do not infer
+generic interfaces, generic named types, or methods with their own type
+parameters from them or from `Array<T>` and `channel<T>`.
 
 ---
 

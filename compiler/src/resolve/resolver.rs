@@ -7,7 +7,7 @@ use super::units::{FileUnit, PackageInfo, PackageUnit};
 use crate::ast::{self, BindingKind, BindingTarget, ExprKind, ForHeader, Item, StmtKind};
 use crate::diagnostic::{Diagnostic, Severity};
 use crate::source::Span;
-use crate::types::{TypeId, TypeStore};
+use crate::types::{StructId, TypeId, TypeStore};
 
 pub struct Resolution<'a> {
     /// The entry package's name.
@@ -26,6 +26,10 @@ pub struct Resolution<'a> {
     pub named: Vec<(&'a ast::NamedDecl, usize, TypeId)>,
     /// Interface types with their package, in declaration order.
     pub interfaces: Vec<(&'a ast::InterfaceDecl, usize, TypeId)>,
+    pub type_params: HashMap<FunctionId, Vec<TypeId>>,
+    pub struct_type_params: HashMap<StructId, Vec<TypeId>>,
+    /// A generic type's method gets its own type parameters, with the constraints of the type's.
+    pub method_param_sources: HashMap<TypeId, TypeId>,
     /// A method's receiver is its first parameter.
     pub functions: Vec<&'a ast::FuncDecl>,
     /// Keyed by the receiver's type.
@@ -44,10 +48,23 @@ pub struct Resolution<'a> {
     pub diagnostics: Vec<Diagnostic>,
 }
 
+/// A receiver type as written: a name, or a name with type parameter names.
+fn type_text(ty: &ast::Type) -> Option<String> {
+    match ty {
+        ast::Type::Named(name) => Some(name.text.clone()),
+        ast::Type::Instance { base, args, .. } => {
+            let args: Option<Vec<String>> = args.iter().map(type_text).collect();
+            Some(format!("{}<{}>", type_text(base)?, args?.join(", ")))
+        }
+        _ => None,
+    }
+}
+
 /// Slices borrow and `Array<T>` stores on the heap, so neither stores by value.
 fn by_value_named_type(ty: &ast::Type) -> Option<&ast::Name> {
     match ty {
         ast::Type::Named(name) | ast::Type::Qualified { name, .. } => Some(name),
+        ast::Type::Instance { base, .. } => by_value_named_type(base),
         ast::Type::Array { element, .. } => by_value_named_type(element),
         ast::Type::Slice { .. }
         | ast::Type::DynArray { .. }
@@ -76,6 +93,9 @@ pub fn resolve<'a>(
             structs: Vec::new(),
             named: Vec::new(),
             interfaces: Vec::new(),
+            type_params: HashMap::new(),
+            struct_type_params: HashMap::new(),
+            method_param_sources: HashMap::new(),
             functions: Vec::new(),
             methods: HashMap::new(),
             consts: Vec::new(),
@@ -184,6 +204,19 @@ impl<'a> Resolver<'a> {
         }
         for (index, decl) in self.out.structs.clone().into_iter().enumerate() {
             self.enter(self.out.struct_package[index], self.file_of_struct[index]);
+            self.scopes.push(HashMap::new());
+            if !decl.type_params.is_empty() {
+                let mut declared = Vec::new();
+                for param in &decl.type_params {
+                    self.constraint(&param.constraint);
+                    let ty = self.out.types.add_param(&param.name.text);
+                    self.declare_local(&param.name, Res::TypeParam(ty));
+                    declared.push(ty);
+                }
+                self.out
+                    .struct_type_params
+                    .insert(StructId(index as u32), declared);
+            }
             let mut fields: HashMap<&str, Span> = HashMap::new();
             for field in &decl.fields {
                 if let Some(&first) = fields.get(field.name.text.as_str()) {
@@ -193,6 +226,7 @@ impl<'a> Resolver<'a> {
                 }
                 self.ty(&field.ty);
             }
+            self.scopes.pop();
         }
         for index in 0..self.out.named.len() {
             let (decl, package, _) = self.out.named[index];
@@ -492,15 +526,36 @@ impl<'a> Resolver<'a> {
             .receiver
             .as_ref()
             .expect("only methods are declared as methods");
-        let ast::Type::Named(type_name) = &receiver.ty else {
-            self.error(
-                "methods can be declared only on struct or named types defined in this package",
-                receiver.ty.span(),
-            );
-            return;
+        let (type_name, receiver_args) = match &receiver.ty {
+            ast::Type::Named(name) => (name, None),
+            ast::Type::Instance { base, args, .. } if matches!(**base, ast::Type::Named(_)) => {
+                let ast::Type::Named(name) = &**base else {
+                    unreachable!("matched above")
+                };
+                (name, Some(args))
+            }
+            _ => {
+                self.error(
+                    "methods can be declared only on struct or named types defined in this package",
+                    receiver.ty.span(),
+                );
+                return;
+            }
         };
         let (receiver_ty, strukt) = match self.lookup(&type_name.text) {
-            Some(Res::Struct(strukt)) => (self.out.types.struct_type(strukt), Some(strukt)),
+            Some(Res::Struct(strukt)) => {
+                if !self.receiver_names_type_params(strukt, type_name, receiver_args) {
+                    return;
+                }
+                (self.out.types.struct_type(strukt), Some(strukt))
+            }
+            Some(Res::Named(_)) if receiver_args.is_some() => {
+                self.error(
+                    format!("`{}` does not take type arguments", type_name.text),
+                    receiver.ty.span(),
+                );
+                return;
+            }
             Some(Res::Named(ty)) => {
                 if matches!(func.name.text.as_str(), "drop" | "clone") {
                     self.error(
@@ -558,6 +613,84 @@ impl<'a> Resolver<'a> {
             }
         }
         self.out.methods.insert(key, id);
+    }
+
+    /// A method on a generic type names the type's parameters, as in `Stack<T>`.
+    fn receiver_names_type_params(
+        &mut self,
+        strukt: StructId,
+        type_name: &ast::Name,
+        args: Option<&Vec<ast::Type>>,
+    ) -> bool {
+        let expected = self.out.structs[strukt.0 as usize].type_params.len();
+        let Some(args) = args else {
+            if expected == 0 {
+                return true;
+            }
+            let names: Vec<&str> = self.out.structs[strukt.0 as usize]
+                .type_params
+                .iter()
+                .map(|p| p.name.text.as_str())
+                .collect();
+            self.error(
+                format!(
+                    "a method on generic type `{0}` names its type parameters, as in `{0}<{1}>`",
+                    type_name.text,
+                    names.join(", ")
+                ),
+                type_name.span,
+            );
+            return false;
+        };
+        if expected == 0 {
+            self.error(
+                format!("`{}` does not take type arguments", type_name.text),
+                type_name.span,
+            );
+            return false;
+        }
+        let mut seen = Vec::new();
+        for arg in args {
+            let ast::Type::Named(name) = arg else {
+                self.error(
+                    "a method receiver lists its type's parameters by name, not type arguments",
+                    arg.span(),
+                );
+                return false;
+            };
+            if self.names_a_type(&name.text) {
+                self.error(
+                    format!(
+                        "`{}` is a type; a method receiver lists its type's parameters by name, as in `{}<T>`",
+                        name.text, type_name.text
+                    ),
+                    name.span,
+                );
+                return false;
+            }
+            if seen.contains(&name.text.as_str()) {
+                self.error(
+                    format!("duplicate type parameter `{}`", name.text),
+                    name.span,
+                );
+                return false;
+            }
+            seen.push(name.text.as_str());
+        }
+        if args.len() != expected {
+            self.error(
+                format!(
+                    "`{}` takes {expected} type argument{} but {} {} given",
+                    type_name.text,
+                    if expected == 1 { "" } else { "s" },
+                    args.len(),
+                    if args.len() == 1 { "was" } else { "were" },
+                ),
+                type_name.span,
+            );
+            return false;
+        }
+        true
     }
 
     fn interface_methods(&mut self, decl: &'a ast::InterfaceDecl) {
@@ -641,16 +774,18 @@ impl<'a> Resolver<'a> {
         if let Some(param) = func.params.first() {
             self.error("`clone` takes no parameters", param.span);
         }
+        let receiver_text = type_text(&receiver.ty);
         let returns_receiver = matches!(
             &func.results[..],
-            [ast::Type::Named(result)] if result.text == type_name.text
+            [result] if type_text(result) == receiver_text
         );
         if !returns_receiver {
             let span = func.results.first().map_or(func.name.span, ast::Type::span);
+            let wanted = receiver_text.unwrap_or_else(|| type_name.text.clone());
             self.out.diagnostics.push(
                 Diagnostic::new(
                     Severity::Error,
-                    format!("`clone` must return exactly `{}`", type_name.text),
+                    format!("`clone` must return exactly `{wanted}`"),
                     span,
                 )
                 .note("a custom clone returns an independent value of its own receiver type"),
@@ -679,9 +814,20 @@ impl<'a> Resolver<'a> {
                     | Res::Struct(_)
                     | Res::Named(_)
                     | Res::Interface(_)
+                    | Res::TypeParam(_)
                     | Res::Unsupported,
                 )
                 | None => {}
+                Some(Res::Constraint(_)) => {
+                    self.out.uses.remove(&name.span);
+                    self.error(
+                        format!(
+                            "`{}` is a constraint, so it can only follow a type parameter",
+                            name.text
+                        ),
+                        name.span,
+                    );
+                }
                 Some(_) => {
                     self.out.uses.remove(&name.span);
                     self.error(format!("`{}` is not a type", name.text), name.span);
@@ -697,6 +843,30 @@ impl<'a> Resolver<'a> {
                             name.span,
                         );
                     }
+                }
+            }
+            ast::Type::Instance { base, args, .. } => {
+                let resolved = match &**base {
+                    ast::Type::Named(name) => {
+                        self.use_name(&name.text, name.span).map(|r| (r, name))
+                    }
+                    ast::Type::Qualified { package, name, .. } => {
+                        self.package_member(package, name).map(|r| (r, name))
+                    }
+                    _ => None,
+                };
+                match resolved {
+                    Some((Res::Struct(_), _)) | None => {}
+                    Some((_, name)) => {
+                        self.out.uses.remove(&name.span);
+                        self.error(
+                            format!("`{}` does not take type arguments", name.text),
+                            name.span,
+                        );
+                    }
+                }
+                for arg in args {
+                    self.ty(arg);
                 }
             }
             ast::Type::Array { element, size, .. } => {
@@ -796,7 +966,113 @@ impl<'a> Resolver<'a> {
 
     fn function(&mut self, id: FunctionId, func: &'a ast::FuncDecl) {
         let params: Vec<&'a ast::Param> = func.receiver.iter().chain(&func.params).collect();
+        if let Some(sources) = self.receiver_type_params(func) {
+            self.scopes.push(HashMap::new());
+            let mut declared = Vec::new();
+            for (name, source) in sources {
+                let ty = self.out.types.add_param(&name.text);
+                self.declare_local(name, Res::TypeParam(ty));
+                self.out.method_param_sources.insert(ty, source);
+                declared.push(ty);
+            }
+            self.out.type_params.insert(id, declared);
+            if let Some(param) = func.type_params.first() {
+                self.error("a method cannot declare type parameters", param.span);
+            }
+            self.body(id, &params, &func.results, &func.body);
+            self.scopes.pop();
+            return;
+        }
+        if func.type_params.is_empty() {
+            self.body(id, &params, &func.results, &func.body);
+            return;
+        }
+        if func.receiver.is_some() {
+            self.error(
+                "a method cannot declare type parameters",
+                func.type_params[0].span,
+            );
+        }
+        if func.native {
+            self.error(
+                "a function without a body cannot declare type parameters",
+                func.type_params[0].span,
+            );
+        }
+        self.scopes.push(HashMap::new());
+        let mut declared = Vec::new();
+        for param in &func.type_params {
+            self.constraint(&param.constraint);
+            let ty = self.out.types.add_param(&param.name.text);
+            self.declare_local(&param.name, Res::TypeParam(ty));
+            declared.push(ty);
+        }
+        self.out.type_params.insert(id, declared);
         self.body(id, &params, &func.results, &func.body);
+        self.scopes.pop();
+    }
+
+    /// The names a method on a generic type gives the type's parameters, with the parameters they stand for.
+    fn receiver_type_params(
+        &self,
+        func: &'a ast::FuncDecl,
+    ) -> Option<Vec<(&'a ast::Name, TypeId)>> {
+        let ast::Type::Instance { base, args, .. } = &func.receiver.as_ref()?.ty else {
+            return None;
+        };
+        let ast::Type::Named(type_name) = &**base else {
+            return None;
+        };
+        let Some(Res::Struct(strukt)) = self.lookup(&type_name.text) else {
+            return None;
+        };
+        let params = self.out.struct_type_params.get(&strukt)?;
+        if params.len() != args.len() {
+            return None;
+        }
+        args.iter()
+            .zip(params)
+            .map(|(arg, &param)| match arg {
+                ast::Type::Named(name) if !self.names_a_type(&name.text) => Some((name, param)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn names_a_type(&self, name: &str) -> bool {
+        matches!(
+            self.lookup(name),
+            Some(
+                Res::Primitive(_)
+                    | Res::Struct(_)
+                    | Res::Named(_)
+                    | Res::Interface(_)
+                    | Res::Constraint(_)
+                    | Res::Unsupported
+            )
+        )
+    }
+
+    fn constraint(&mut self, constraint: &'a ast::Type) {
+        let res = match constraint {
+            ast::Type::Named(name) => self.use_name(&name.text, name.span),
+            ast::Type::Qualified { package, name, .. } => self.package_member(package, name),
+            other => {
+                self.error(
+                    "a constraint is `any`, `copyable`, `comparable`, `ordered`, or an interface type",
+                    other.span(),
+                );
+                return;
+            }
+        };
+        if let Some(res) = res
+            && !matches!(res, Res::Constraint(_) | Res::Interface(_))
+        {
+            self.error(
+                "a constraint is `any`, `copyable`, `comparable`, `ordered`, or an interface type",
+                constraint.span(),
+            );
+        }
     }
 
     fn body(
@@ -1070,8 +1346,12 @@ impl<'a> Resolver<'a> {
             ExprKind::StructLit {
                 package,
                 ty,
+                type_args,
                 fields,
             } => {
+                for arg in type_args {
+                    self.ty(arg);
+                }
                 let resolved = match package {
                     Some(package) => self.package_member(package, ty),
                     None => self.use_name(&ty.text, ty.span),

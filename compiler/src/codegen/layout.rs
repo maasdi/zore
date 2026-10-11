@@ -42,6 +42,7 @@ impl Module<'_> {
             TypeKind::Interface(_) | TypeKind::InterfaceView { .. } => {
                 super::interface::INTERFACE_TY.into()
             }
+            TypeKind::Param(_) => unreachable!("generic functions are compiled per instance"),
             TypeKind::Task(_) | TypeKind::Channel { .. } | TypeKind::Mutex { .. } => "ptr".into(),
         }
     }
@@ -59,7 +60,7 @@ impl Module<'_> {
 
     pub(super) fn type_declarations(&self) -> String {
         let mut out = String::new();
-        for strukt in &self.package.structs {
+        for strukt in self.package.structs.iter().filter(|s| !s.generic) {
             let fields: Vec<String> = strukt.fields.iter().map(|f| self.ty(f.ty)).collect();
             writeln!(
                 out,

@@ -198,13 +198,16 @@ impl Parser<'_> {
             }
             TokenKind::Ident => {
                 let name = self.name("an expression")?;
-                if self.struct_literals_allowed && self.at(Punct::LBrace) {
+                if self.struct_literals_allowed
+                    && (self.at(Punct::LBrace) || self.at_type_arguments_before_brace(0))
+                {
                     return self.struct_literal(None, name);
                 }
                 if self.struct_literals_allowed
                     && self.at(Punct::Dot)
                     && *self.peek_at(1) == TokenKind::Ident
-                    && *self.peek_at(2) == TokenKind::Punct(Punct::LBrace)
+                    && (*self.peek_at(2) == TokenKind::Punct(Punct::LBrace)
+                        || self.at_type_arguments_before_brace(2))
                 {
                     self.bump();
                     let member = self.name("a type name")?;
@@ -290,6 +293,11 @@ impl Parser<'_> {
 
     pub(super) fn struct_literal(&mut self, package: Option<Name>, ty: Name) -> PResult<Expr> {
         let start = package.as_ref().map_or(ty.span, |package| package.span);
+        let type_args = if self.at(Punct::Lt) {
+            self.type_argument_list()?
+        } else {
+            Vec::new()
+        };
         self.bump();
         let fields = self.with_struct_literals(true, |p| {
             p.comma_list(Punct::RBrace, "field", true, Self::field_init)
@@ -299,6 +307,7 @@ impl Parser<'_> {
             kind: ExprKind::StructLit {
                 package,
                 ty,
+                type_args,
                 fields,
             },
         })

@@ -1,7 +1,7 @@
 use super::ids::{ConstId, FunctionId, GlobalId, LocalId};
 use crate::ast::{self, ParamMode};
 use crate::source::Span;
-use crate::types::{StructId, TypeId, TypeStore};
+use crate::types::{Constraint, StructId, TypeId, TypeStore};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Res {
@@ -14,6 +14,9 @@ pub enum Res {
     /// A declared type built on a predeclared type (`type Duration int`).
     Named(TypeId),
     Interface(TypeId),
+    TypeParam(TypeId),
+    /// `any`, `copyable`, `comparable`, or `ordered`; valid only as a constraint.
+    Constraint(Constraint),
     Primitive(TypeId),
     /// An import's name; valid only as the qualifier of `package.Name`.
     Package(usize),
@@ -76,6 +79,10 @@ pub(super) fn predeclared(name: &str) -> Option<Res> {
         "drop" => Some(Res::Drop),
         "clone" => Some(Res::Clone),
         "mutex" => Some(Res::NewMutex),
+        "any" => Some(Res::Constraint(Constraint::Any)),
+        "copyable" => Some(Res::Constraint(Constraint::Copyable)),
+        "comparable" => Some(Res::Constraint(Constraint::Comparable)),
+        "ordered" => Some(Res::Constraint(Constraint::Ordered)),
         "Array" | "Task" | "Mutex" => Some(Res::Unsupported),
         _ => None,
     }

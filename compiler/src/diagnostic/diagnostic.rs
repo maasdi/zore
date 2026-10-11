@@ -16,7 +16,7 @@ impl Severity {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub struct Diagnostic {
     pub(super) severity: Severity,
     pub(super) message: String,

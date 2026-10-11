@@ -44,7 +44,9 @@ pub fn lower(package: &hir::Package, program: &mir::Program) -> Plan {
         .iter()
         .filter(|body| {
             let function = package.function(body.function);
-            !function.native && (function.is_async || waiting_library.contains(&body.function))
+            !function.native
+                && function.compiled()
+                && (function.is_async || waiting_library.contains(&body.function))
         })
         .map(|body| body.function)
         .collect();

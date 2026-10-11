@@ -11,6 +11,9 @@ const CALLEE_MESSAGE: &str = "`go` needs a call to a declared function or method
 
 impl Checker<'_> {
     pub(super) fn go_expr(&mut self, operand: &ast::Expr, span: Span) -> Option<Value> {
+        if self.reject_in_generic_body("`go`", span) {
+            return None;
+        }
         let mut call = operand;
         while let ast::ExprKind::Paren(inner) = &call.kind {
             call = inner;
@@ -28,7 +31,14 @@ impl Checker<'_> {
         };
         let results = expr.types;
         match expr.kind {
-            ExprKind::Call { function, args } => self.spawn_declared(function, args, results, span),
+            ExprKind::Call { function, args } => {
+                self.spawn_declared(function, Vec::new(), args, results, span)
+            }
+            ExprKind::CallGeneric {
+                function,
+                type_args,
+                args,
+            } => self.spawn_declared(function, type_args, args, results, span),
             ExprKind::CallValue { callee, args, .. } => {
                 self.spawn_callable(*callee, args, results, span)
             }
@@ -42,6 +52,7 @@ impl Checker<'_> {
     fn spawn_declared(
         &mut self,
         function: FunctionId,
+        type_args: Vec<TypeId>,
         args: Vec<hir::Expr>,
         results: Vec<TypeId>,
         span: Span,
@@ -64,7 +75,7 @@ impl Checker<'_> {
             params: Vec::new(),
             results: results.clone(),
         });
-        let thunk = self.spawn_thunk(function, &args, results, span);
+        let thunk = self.spawn_thunk(function, type_args, &args, results, span);
         Some(Value::Typed(typed(
             ExprKind::Spawn {
                 thunk,
@@ -159,16 +170,27 @@ impl Checker<'_> {
     fn spawn_thunk(
         &mut self,
         function: FunctionId,
+        type_args: Vec<TypeId>,
         args: &[hir::Expr],
         results: Vec<TypeId>,
         span: Span,
     ) -> FunctionId {
         let captures: Vec<LocalId> = (0..args.len()).map(|i| LocalId(i as u32)).collect();
-        let call = hir::Expr {
-            kind: ExprKind::Call {
+        let arguments = captured_arguments(args.iter().map(hir::Expr::ty), 0, span);
+        let kind = if type_args.is_empty() {
+            ExprKind::Call {
                 function,
-                args: captured_arguments(args.iter().map(hir::Expr::ty), 0, span),
-            },
+                args: arguments,
+            }
+        } else {
+            ExprKind::CallGeneric {
+                function,
+                type_args,
+                args: arguments,
+            }
+        };
+        let call = hir::Expr {
+            kind,
             types: results.clone(),
             span,
         };
@@ -252,6 +274,8 @@ impl Checker<'_> {
             is_async,
             native: false,
             call_once,
+            type_params: Vec::new(),
+            probe: false,
             locals,
             body,
         });

@@ -85,6 +85,8 @@ pub(in crate::hir) fn check(
         is_async: false,
         native: false,
         call_once: false,
+        type_params: Vec::new(),
+        probe: false,
         locals: Vec::new(),
         body: hir::Block { stmts, span },
     });

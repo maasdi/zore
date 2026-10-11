@@ -69,7 +69,8 @@ fn type_name(t: &Type) -> &str {
         | Type::Func { .. }
         | Type::Channel { .. }
         | Type::Mutex { .. }
-        | Type::Task { .. } => panic!("expected a named type, found a composite type"),
+        | Type::Task { .. }
+        | Type::Instance { .. } => panic!("expected a named type, found a composite type"),
     }
 }
 
@@ -77,6 +78,10 @@ fn ty(case: &Case, t: &Type) -> String {
     match t {
         Type::Named(name) => name.text.clone(),
         Type::Qualified { package, name, .. } => format!("{}.{}", package.text, name.text),
+        Type::Instance { base, args, .. } => {
+            let args: Vec<String> = args.iter().map(|arg| ty(case, arg)).collect();
+            format!("{}<{}>", ty(case, base), args.join(", "))
+        }
         Type::Array { element, size, .. } => {
             format!("[{} ; {}]", ty(case, element), expr(case, size))
         }
@@ -181,12 +186,19 @@ fn expr(case: &Case, e: &Expr) -> String {
         ExprKind::StructLit {
             package,
             ty: struct_ty,
+            type_args,
             fields,
         } => {
             let qualifier = package
                 .as_ref()
                 .map_or(String::new(), |package| format!("{}.", package.text));
-            let mut out = format!("(lit {qualifier}{}", struct_ty.text);
+            let args: Vec<String> = type_args.iter().map(|arg| ty(case, arg)).collect();
+            let args = if args.is_empty() {
+                String::new()
+            } else {
+                format!("<{}>", args.join(", "))
+            };
+            let mut out = format!("(lit {qualifier}{}{args}", struct_ty.text);
             for field in fields {
                 out.push_str(&format!(
                     " {}:{}",
@@ -1055,7 +1067,7 @@ fn invalid_task_syntax_is_rejected() {
 fn invalid_dynamic_array_syntax_is_rejected() {
     for (body, message) in [
         ("let xs = Array<int>(1)", "expected `{` after `Array<T>`"),
-        ("let xs Foo<int> = xs", "`Foo` does not take type arguments"),
+        ("let xs Foo<> = xs", "expected a type argument"),
         ("let xs Array<int = xs", "expected `>`"),
         ("let xs = Array<int>{1,\n2\n}", "missing trailing comma"),
     ] {

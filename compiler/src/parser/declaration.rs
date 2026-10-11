@@ -125,6 +125,11 @@ impl Parser<'_> {
             None
         };
         let name = self.name("a function name")?;
+        let type_params = if self.at(Punct::Lt) {
+            self.type_params()?
+        } else {
+            Vec::new()
+        };
         self.expect(Punct::LParen)?;
         let params = self.comma_list(Punct::RParen, "parameter", true, |p| {
             p.param("a parameter name")
@@ -144,12 +149,41 @@ impl Parser<'_> {
             is_async,
             receiver,
             name,
+            type_params,
             params,
             results,
             body,
             native,
             span: self.span_from(start),
         })
+    }
+
+    /// `<T any, U ordered>`: each type parameter has exactly one constraint.
+    fn type_params(&mut self) -> PResult<Vec<TypeParam>> {
+        self.bump();
+        let mut params = Vec::new();
+        loop {
+            let name = self.name("a type parameter name")?;
+            if self.at(Punct::Comma) || self.at(Punct::Gt) {
+                let message = format!(
+                    "type parameter `{}` needs a constraint, such as `any`",
+                    name.text
+                );
+                return Err(self.error(message, name.span));
+            }
+            let constraint = self.ty()?;
+            params.push(TypeParam {
+                span: self.span_from(name.span),
+                name,
+                constraint,
+            });
+            if self.at(Punct::Comma) {
+                self.bump();
+                continue;
+            }
+            self.close_type_arguments()?;
+            return Ok(params);
+        }
     }
 
     pub(super) fn param(&mut self, what: &str) -> PResult<Param> {
@@ -210,6 +244,16 @@ impl Parser<'_> {
     pub(super) fn type_decl(&mut self) -> PResult<Item> {
         let start = self.bump().span;
         let name = self.name("a type name")?;
+        let type_params = if self.at(Punct::Lt) {
+            self.type_params()?
+        } else {
+            Vec::new()
+        };
+        if let Some(param) = type_params.first()
+            && !self.at_keyword(Keyword::Struct)
+        {
+            return Err(self.error("only struct types can declare type parameters", param.span));
+        }
         if self.at_keyword(Keyword::Interface) {
             return self.interface_decl(start, name).map(Item::Interface);
         }
@@ -221,10 +265,15 @@ impl Parser<'_> {
                 span: self.span_from(start),
             }));
         }
-        self.struct_decl(start, name).map(Item::Struct)
+        self.struct_decl(start, name, type_params).map(Item::Struct)
     }
 
-    fn struct_decl(&mut self, start: Span, name: Name) -> PResult<StructDecl> {
+    fn struct_decl(
+        &mut self,
+        start: Span,
+        name: Name,
+        type_params: Vec<TypeParam>,
+    ) -> PResult<StructDecl> {
         self.bump();
         let open = self.body_open("struct type name")?;
         let mut fields = Vec::new();
@@ -251,6 +300,7 @@ impl Parser<'_> {
         }
         Ok(StructDecl {
             name,
+            type_params,
             fields,
             span: self.span_from(start),
         })

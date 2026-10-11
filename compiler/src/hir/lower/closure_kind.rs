@@ -50,7 +50,7 @@ impl Checker<'_> {
 
     fn param_mode(&self, callee: &ExprKind, index: usize) -> ParamMode {
         match callee {
-            ExprKind::Call { function, .. } => {
+            ExprKind::Call { function, .. } | ExprKind::CallGeneric { function, .. } => {
                 let func = self.res.functions[function.0 as usize];
                 func.receiver
                     .iter()
@@ -204,6 +204,7 @@ impl Checker<'_> {
         }
         let modes: Vec<ParamMode> = match &expr.kind {
             ExprKind::Call { args, .. }
+            | ExprKind::CallGeneric { args, .. }
             | ExprKind::CallValue { args, .. }
             | ExprKind::InterfaceCall { args, .. } => (0..args.len())
                 .map(|index| self.param_mode(&expr.kind, index))
@@ -231,7 +232,7 @@ impl Checker<'_> {
                 self.expr_escapes(array, false, escapes);
                 self.expr_escapes(value, true, escapes);
             }
-            ExprKind::Call { args, .. } => {
+            ExprKind::Call { args, .. } | ExprKind::CallGeneric { args, .. } => {
                 for (arg, mode) in args.iter_mut().zip(modes) {
                     self.expr_escapes(arg, mode == ParamMode::Own, escapes);
                 }
@@ -533,7 +534,9 @@ impl Checker<'_> {
             return;
         }
         match &expr.kind {
-            ExprKind::Call { args, .. } | ExprKind::CallValue { args, .. } => {
+            ExprKind::Call { args, .. }
+            | ExprKind::CallGeneric { args, .. }
+            | ExprKind::CallValue { args, .. } => {
                 if let ExprKind::CallValue { callee, .. } = &expr.kind {
                     self.place_moves(callee, moved);
                 }
@@ -784,7 +787,7 @@ pub(super) fn stmt_exprs(stmt: &mut hir::Stmt) -> Vec<&mut hir::Expr> {
     roots
 }
 
-fn visit_expr(expr: &mut hir::Expr, visit: &mut dyn FnMut(&mut hir::Expr)) {
+pub(super) fn visit_expr(expr: &mut hir::Expr, visit: &mut dyn FnMut(&mut hir::Expr)) {
     visit(expr);
     for child in children_mut(expr) {
         visit_expr(child, visit);
@@ -805,7 +808,9 @@ fn children_mut(expr: &mut hir::Expr) -> Vec<&mut hir::Expr> {
             .chain(low.as_deref_mut())
             .chain(high.as_deref_mut())
             .collect(),
-        ExprKind::Call { args, .. } | ExprKind::Spawn { args, .. } => args.iter_mut().collect(),
+        ExprKind::Call { args, .. }
+        | ExprKind::CallGeneric { args, .. }
+        | ExprKind::Spawn { args, .. } => args.iter_mut().collect(),
         ExprKind::CallValue { callee, args, .. } => {
             std::iter::once(&mut **callee).chain(args).collect()
         }

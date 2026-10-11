@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::fmt;
 
-use super::ty::{FloatType, FuncSignature, IntType, InterfaceMethod, TypeKind};
+use super::ty::{Constraint, FloatType, FuncSignature, IntType, InterfaceMethod, TypeKind};
 use super::type_id::{FuncTypeId, InterfaceId, StructId, TaskTypeId, TypeId};
 use crate::ast::ParamMode;
 
@@ -27,6 +27,14 @@ pub struct TypeStore {
     interface_types: Vec<TypeId>,
     interface_methods: Vec<Vec<InterfaceMethod>>,
     interface_views: HashMap<(InterfaceId, bool), TypeId>,
+    params: Vec<(String, Constraint)>,
+    struct_instances: HashMap<(StructId, Vec<TypeId>), TypeId>,
+    instance_of: HashMap<StructId, (StructId, Vec<TypeId>)>,
+    /// A generic struct's type parameters and field types, which instances substitute.
+    templates: HashMap<StructId, (Vec<TypeId>, Vec<Option<TypeId>>)>,
+    instance_fields: HashMap<StructId, Vec<Option<TypeId>>>,
+    instance_depth: u32,
+    runaway: Option<StructId>,
 }
 
 impl Default for TypeStore {
@@ -82,6 +90,13 @@ impl TypeStore {
             interface_types: Vec::new(),
             interface_methods: Vec::new(),
             interface_views: HashMap::new(),
+            params: Vec::new(),
+            struct_instances: HashMap::new(),
+            instance_of: HashMap::new(),
+            templates: HashMap::new(),
+            instance_fields: HashMap::new(),
+            instance_depth: 0,
+            runaway: None,
         }
     }
 
@@ -92,6 +107,224 @@ impl TypeStore {
         self.kinds.push(TypeKind::Struct(id));
         self.struct_types.push(ty);
         (id, ty)
+    }
+
+    /// A generic struct with type arguments; each set of arguments is its own struct.
+    pub fn struct_instance(&mut self, template: StructId, args: Vec<TypeId>) -> TypeId {
+        if let Some(&ty) = self.struct_instances.get(&(template, args.clone())) {
+            return ty;
+        }
+        let names: Vec<String> = args
+            .iter()
+            .map(|&arg| self.display(arg).to_string())
+            .collect();
+        let name = format!(
+            "{}<{}>",
+            self.struct_names[template.0 as usize],
+            names.join(", ")
+        );
+        let (id, ty) = self.add_struct(&name);
+        self.struct_instances.insert((template, args.clone()), ty);
+        self.instance_of.insert(id, (template, args));
+        self.fill_instance(id);
+        ty
+    }
+
+    pub fn set_template(
+        &mut self,
+        template: StructId,
+        params: Vec<TypeId>,
+        fields: Vec<Option<TypeId>>,
+    ) {
+        self.templates.insert(template, (params, fields));
+        let instances: Vec<StructId> = self
+            .instance_of
+            .iter()
+            .filter(|(_, (origin, _))| *origin == template)
+            .map(|(&id, _)| id)
+            .collect();
+        for id in instances {
+            self.fill_instance(id);
+        }
+    }
+
+    pub fn is_template(&self, id: StructId) -> bool {
+        self.templates.contains_key(&id)
+    }
+
+    pub fn template_params(&self, id: StructId) -> Option<&[TypeId]> {
+        self.templates.get(&id).map(|(params, _)| params.as_slice())
+    }
+
+    fn fill_instance(&mut self, id: StructId) {
+        let Some((template, args)) = self.instance_of.get(&id).cloned() else {
+            return;
+        };
+        let Some((params, fields)) = self.templates.get(&template).cloned() else {
+            return;
+        };
+        if self.instance_depth >= 64 {
+            self.runaway.get_or_insert(template);
+            self.instance_fields.insert(id, Vec::new());
+            return;
+        }
+        self.instance_depth += 1;
+        let bound: HashMap<TypeId, TypeId> = params.into_iter().zip(args).collect();
+        let fields = fields
+            .into_iter()
+            .map(|field| field.map(|ty| self.substitute(ty, &bound)))
+            .collect();
+        self.instance_depth -= 1;
+        self.instance_fields.insert(id, fields);
+    }
+
+    pub fn instance_fields(&self, id: StructId) -> Option<&[Option<TypeId>]> {
+        self.instance_fields.get(&id).map(Vec::as_slice)
+    }
+
+    /// A generic struct whose instances would nest without end.
+    pub fn take_runaway(&mut self) -> Option<StructId> {
+        self.runaway.take()
+    }
+
+    pub fn instance_of(&self, id: StructId) -> Option<(StructId, &[TypeId])> {
+        self.instance_of
+            .get(&id)
+            .map(|(template, args)| (*template, args.as_slice()))
+    }
+
+    /// The declared struct an instance was made from, or the struct itself.
+    pub fn struct_origin(&self, id: StructId) -> StructId {
+        self.instance_of(id).map_or(id, |(template, _)| template)
+    }
+
+    pub fn struct_count(&self) -> usize {
+        self.struct_types.len()
+    }
+
+    /// The constraint is set by `set_constraint` once interface types are resolved.
+    pub fn add_param(&mut self, name: &str) -> TypeId {
+        let index = self.params.len() as u32;
+        self.params.push((name.to_owned(), Constraint::Any));
+        let ty = TypeId(self.kinds.len() as u32);
+        self.kinds.push(TypeKind::Param(index));
+        ty
+    }
+
+    pub fn set_constraint(&mut self, param: TypeId, constraint: Constraint) {
+        if let TypeKind::Param(index) = self.kind(param) {
+            self.params[index as usize].1 = constraint;
+        }
+    }
+
+    pub fn constraint(&self, ty: TypeId) -> Option<Constraint> {
+        match self.kind(ty) {
+            TypeKind::Param(index) => Some(self.params[index as usize].1),
+            _ => None,
+        }
+    }
+
+    /// Replaces each type parameter that `arguments` maps, inside any composite type.
+    pub fn substitute(&mut self, ty: TypeId, arguments: &HashMap<TypeId, TypeId>) -> TypeId {
+        if arguments.is_empty() {
+            return ty;
+        }
+        match self.kind(ty) {
+            TypeKind::Param(_) => arguments.get(&ty).copied().unwrap_or(ty),
+            TypeKind::Struct(id) => match self.instance_of.get(&id).cloned() {
+                Some((template, args)) => {
+                    let args = args
+                        .into_iter()
+                        .map(|arg| self.substitute(arg, arguments))
+                        .collect();
+                    self.struct_instance(template, args)
+                }
+                None => ty,
+            },
+            TypeKind::Array { element, size } => {
+                let element = self.substitute(element, arguments);
+                self.array_type(element, size)
+            }
+            TypeKind::Slice { element, mutable } => {
+                let element = self.substitute(element, arguments);
+                self.slice_type(element, mutable)
+            }
+            TypeKind::DynArray { element } => {
+                let element = self.substitute(element, arguments);
+                self.dyn_array_type(element)
+            }
+            TypeKind::Map { key, value } => {
+                let key = self.substitute(key, arguments);
+                let value = self.substitute(value, arguments);
+                self.map_type(key, value)
+            }
+            TypeKind::Channel { element } => {
+                let element = self.substitute(element, arguments);
+                self.channel_type(element)
+            }
+            TypeKind::Mutex { element } => {
+                let element = self.substitute(element, arguments);
+                self.mutex_type(element)
+            }
+            TypeKind::Task(id) => {
+                let results = self.task_results[id.0 as usize].clone();
+                let results = results
+                    .into_iter()
+                    .map(|result| self.substitute(result, arguments))
+                    .collect();
+                self.task_type(results)
+            }
+            TypeKind::Func(id) => {
+                let signature = self.signatures[id.0 as usize].clone();
+                let params = signature
+                    .params
+                    .into_iter()
+                    .map(|(mode, param)| (mode, self.substitute(param, arguments)))
+                    .collect();
+                let results = signature
+                    .results
+                    .into_iter()
+                    .map(|result| self.substitute(result, arguments))
+                    .collect();
+                self.func_type(FuncSignature {
+                    is_async: signature.is_async,
+                    params,
+                    results,
+                })
+            }
+            _ => ty,
+        }
+    }
+
+    pub fn mentions_param(&self, ty: TypeId) -> bool {
+        match self.kind(ty) {
+            TypeKind::Param(_) => true,
+            TypeKind::Struct(id) => self
+                .instance_of
+                .get(&id)
+                .is_some_and(|(_, args)| args.iter().any(|&arg| self.mentions_param(arg))),
+            TypeKind::Array { element, .. }
+            | TypeKind::Slice { element, .. }
+            | TypeKind::DynArray { element }
+            | TypeKind::Channel { element }
+            | TypeKind::Mutex { element } => self.mentions_param(element),
+            TypeKind::Map { key, value } => self.mentions_param(key) || self.mentions_param(value),
+            TypeKind::Task(id) => self.task_results[id.0 as usize]
+                .iter()
+                .any(|&result| self.mentions_param(result)),
+            TypeKind::Func(id) => {
+                let signature = &self.signatures[id.0 as usize];
+                signature
+                    .params
+                    .iter()
+                    .any(|&(_, param)| self.mentions_param(param))
+                    || signature
+                        .results
+                        .iter()
+                        .any(|&result| self.mentions_param(result))
+            }
+            _ => false,
+        }
     }
 
     /// The entries are set by `set_interface_methods` once their types are resolved.
@@ -365,6 +598,7 @@ impl fmt::Display for TypeName<'_> {
                 write!(f, "Mutex<{}>", self.store.display(element))
             }
             TypeKind::Interface(id) => f.write_str(&self.store.interface_names[id.0 as usize]),
+            TypeKind::Param(index) => f.write_str(&self.store.params[index as usize].0),
             TypeKind::InterfaceView { interface, mutable } => {
                 let prefix = if mutable { "mut " } else { "" };
                 write!(

@@ -557,8 +557,11 @@ fn the_io_packages_reject_misuse() {
         "must be used or explicitly discarded",
     );
     rejects(
-        &[("main.ore", &main_with("import \"zore/io\"", ""))],
-        "no standard package `zore/io`",
+        &[(
+            "main.ore",
+            &main_with("import \"zore/bufio\"", "let r = bufio.NewReader(\"text\")"),
+        )],
+        "`string` does not satisfy `io.Reader`",
     );
     rejects(
         &[("main.ore", &main_with("import \"zore/cancel\"", ""))],
@@ -780,4 +783,151 @@ func Seal(b own sink.Buffer) int {
         ],
         "`sink.Buffer` does not satisfy `io.sealed`: its method `hidden` is unexported and declared outside the interface's package",
     );
+}
+
+#[test]
+fn generic_functions_are_called_across_packages() {
+    let util = "package util
+
+type Sizer interface {
+    Size() int
+}
+
+func Largest<T ordered>(items []T) T {
+    var best = items[0]
+    for _, item in items {
+        if item > best {
+            best = item
+        }
+    }
+    return best
+}
+
+func keep<T any>(item own T) T {
+    return item
+}
+
+func Pass<T any>(item own T) T {
+    return keep(item)
+}
+";
+    let main = main_with(
+        "import \"myapp/util\"",
+        "let nums = Array<int>{4, 9, 2}
+    println(util.Largest(nums[:]))
+    println(util.Pass(\"ok\"))
+    println(Total(Box{n: 3}))",
+    ) + "
+type Box struct { n int }
+
+func (b Box) Size() int { return b.n }
+
+func Total<T util.Sizer>(item T) int {
+    return item.Size()
+}
+";
+    accepts(&[("main.ore", &main), ("util/util.ore", util)]);
+    rejects(
+        &[
+            (
+                "main.ore",
+                &main_with("import \"myapp/util\"", "println(util.keep(1))"),
+            ),
+            ("util/util.ore", util),
+        ],
+        "`keep` is not exported by package `util`",
+    );
+}
+
+#[test]
+fn generic_types_are_used_across_packages() {
+    let box_package = "package box
+
+type Stack<T any> struct {
+    items Array<T>
+}
+
+func New<T any>() Stack<T> {
+    return Stack<T>{items: Array<T>{}}
+}
+
+func (s mut Stack<T>) Push(value own T) {
+    s.items.push(value)
+}
+
+func (s Stack<T>) Len() int {
+    return s.items.len()
+}
+
+type Pair<A any, B any> struct {
+    First A
+    Second B
+}
+";
+    let main = main_with(
+        "import \"myapp/box\"",
+        "var s box.Stack<int> = box.New()
+    s.Push(1)
+    println(s.Len())
+    let p = box.Pair<string, int>{First: \"a\", Second: 2}
+    println(p.First)",
+    );
+    accepts(&[("main.ore", &main), ("box/box.ore", box_package)]);
+    rejects(
+        &[
+            (
+                "main.ore",
+                &main_with(
+                    "import \"myapp/box\"",
+                    "let s = box.Stack<int>{items: Array<int>{}}",
+                ),
+            ),
+            ("box/box.ore", box_package),
+        ],
+        "field `items` of `box.Stack<int64>` is not exported by its package",
+    );
+}
+
+#[test]
+fn slices_maps_and_sort_slice_check_their_element_types() {
+    accepts(&[(
+        "main.ore",
+        &main_with(
+            "import \"zore/maps\"\nimport \"zore/slices\"\nimport \"zore/sort\"",
+            "var xs = Array<int>{2, 1}
+    slices.Sort(xs[:])
+    sort.Slice(xs[:], func(a int, b int) bool { return a > b })
+    let keys = maps.Keys(map[string]Array<int>{})
+    println(slices.Contains(keys[:], \"k\"))",
+        ),
+    )]);
+    for (body, message) in [
+        (
+            "var xs = Array<Array<int>>{}\n    sort.Slice(xs[:], func(a Array<int>, b Array<int>) bool { return true })",
+            "`Array<int64>` does not satisfy `copyable`, the constraint of `T`",
+        ),
+        (
+            "var xs = Array<float64>{1.5}\n    println(slices.Contains(xs[:], 1.5))",
+            "`float64` does not satisfy `comparable`, the constraint of `T`",
+        ),
+        (
+            "let xs = Array<int>{1}\n    slices.Sort(xs[:])",
+            "cannot take a mutable slice",
+        ),
+        (
+            "let v = maps.Values(map[string]Array<int>{})",
+            "`Array<int64>` does not satisfy `copyable`, the constraint of `V`",
+        ),
+    ] {
+        rejects(
+            &[(
+                "main.ore",
+                &main_with(
+                    "import \"zore/maps\"\nimport \"zore/slices\"\nimport \"zore/sort\"",
+                    &format!("{body}\n    _ = maps.Keys\n    _ = sort.Ints\n    _ = slices.Max"),
+                ),
+            )],
+            message,
+        );
+    }
 }

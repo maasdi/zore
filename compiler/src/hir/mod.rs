@@ -11,7 +11,7 @@ pub use stmt::{Block, SelectArm, SelectComm, Stmt, StmtKind};
 
 use crate::resolve::FunctionId;
 use crate::source::Span;
-use crate::types::{InterfaceId, StructId, TypeId, TypeKind, TypeStore};
+use crate::types::{Constraint, InterfaceId, StructId, TypeId, TypeKind, TypeStore};
 
 #[derive(Debug)]
 pub struct Package {
@@ -95,6 +95,10 @@ impl Package {
             }
             TypeKind::Array { element, .. } => self.is_copy(element),
             TypeKind::DynArray { .. } | TypeKind::Map { .. } => false,
+            TypeKind::Param(_) => matches!(
+                self.types.constraint(ty),
+                Some(Constraint::Copyable | Constraint::Comparable | Constraint::Ordered)
+            ),
         }
     }
 
@@ -219,6 +223,8 @@ pub struct Struct {
     /// Makes the struct Move.
     pub drop: Option<FunctionId>,
     pub clone: Option<FunctionId>,
+    /// A generic struct, or an instance whose type arguments are type parameters; never laid out.
+    pub generic: bool,
 }
 
 #[derive(Debug)]

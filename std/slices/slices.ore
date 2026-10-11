@@ -1,0 +1,113 @@
+package slices
+
+func Contains<T comparable>(s []T, v T) bool {
+    return Index(s, v) >= 0
+}
+
+func Index<T comparable>(s []T, v T) int {
+    for i, item in s {
+        if item == v {
+            return i
+        }
+    }
+    return -1
+}
+
+func Equal<T comparable>(a []T, b []T) bool {
+    if a.len() != b.len() {
+        return false
+    }
+    for i, item in a {
+        if item != b[i] {
+            return false
+        }
+    }
+    return true
+}
+
+func Sort<T ordered>(x mut []T) {
+    for var start = x.len() / 2 - 1; start >= 0; start -= 1 {
+        sift(x, start, x.len())
+    }
+    for var end = x.len() - 1; end > 0; end -= 1 {
+        let top = x[0]
+        x[0] = x[end]
+        x[end] = top
+        sift(x, 0, end)
+    }
+}
+
+func sift<T ordered>(x mut []T, root int, end int) {
+    var parent = root
+    for {
+        var child = 2 * parent + 1
+        if child >= end {
+            return
+        }
+        if child + 1 < end && x[child] < x[child + 1] {
+            child += 1
+        }
+        if x[parent] >= x[child] {
+            return
+        }
+        let held = x[parent]
+        x[parent] = x[child]
+        x[child] = held
+        parent = child
+    }
+}
+
+func IsSorted<T ordered>(x []T) bool {
+    for var i = 1; i < x.len(); i += 1 {
+        if x[i] < x[i - 1] {
+            return false
+        }
+    }
+    return true
+}
+
+func Reverse<T copyable>(x mut []T) {
+    var low = 0
+    var high = x.len() - 1
+    for low < high {
+        let held = x[low]
+        x[low] = x[high]
+        x[high] = held
+        low += 1
+        high -= 1
+    }
+}
+
+func Max<T ordered>(x []T) T {
+    if x.len() == 0 {
+        panic("slices.Max: empty list")
+    }
+    var best = x[0]
+    for item in x {
+        if item > best {
+            best = item
+        }
+    }
+    return best
+}
+
+func Min<T ordered>(x []T) T {
+    if x.len() == 0 {
+        panic("slices.Min: empty list")
+    }
+    var best = x[0]
+    for item in x {
+        if item < best {
+            best = item
+        }
+    }
+    return best
+}
+
+func Clone<T copyable>(s []T) Array<T> {
+    var out = Array<T>{}
+    for item in s {
+        out.push(item)
+    }
+    return out
+}

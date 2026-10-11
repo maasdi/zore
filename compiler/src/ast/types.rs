@@ -45,6 +45,12 @@ pub enum Type {
         element: Box<Type>,
         span: Span,
     },
+    /// A generic struct type with its type arguments, `Stack<int>` or `pkg.Stack<int>`.
+    Instance {
+        base: Box<Type>,
+        args: Vec<Type>,
+        span: Span,
+    },
     /// `Task<R1, ..., Rn>`, or plain `Task` with no results.
     Task {
         results: Vec<Type>,
@@ -69,6 +75,7 @@ impl Type {
             | Self::Map { span, .. }
             | Self::Func { span, .. }
             | Self::Task { span, .. }
+            | Self::Instance { span, .. }
             | Self::Channel { span, .. }
             | Self::Mutex { span, .. } => *span,
         }

@@ -89,6 +89,9 @@ pub fn emit(
     }
     let mut functions = String::new();
     for body in &program.bodies {
+        if !package.function(body.function).compiled() {
+            continue;
+        }
         functions.push_str(&module.function(body));
         if machines.machines.contains_key(&body.function) {
             functions.push_str(&module.async_function(body));
@@ -1830,6 +1833,7 @@ impl FunctionBuilder<'_, '_> {
             TypeKind::Interface(_) | TypeKind::InterfaceView { .. } => {
                 unreachable!("interface values have no operators")
             }
+            TypeKind::Param(_) => unreachable!("generic functions are compiled per instance"),
         }
     }
 

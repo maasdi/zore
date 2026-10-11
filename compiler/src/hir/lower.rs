@@ -1,4 +1,5 @@
 mod closure_kind;
+mod generic;
 mod globals;
 mod interface;
 mod method_value;
@@ -49,6 +50,7 @@ pub fn check(
         global_types: Vec::new(),
         inferring_result: false,
         implementations: HashMap::new(),
+        call_expected: None,
     };
     checker.closures = checker.res.closures.iter().map(|_| None).collect();
     checker.signatures_and_fields();
@@ -79,45 +81,6 @@ pub fn check(
     if !checker.diagnostics.is_empty() {
         return (None, checker.diagnostics);
     }
-    let structs = checker
-        .res
-        .structs
-        .iter()
-        .zip(&checker.fields)
-        .enumerate()
-        .map(|(index, (decl, fields))| hir::Struct {
-            name: format!(
-                "{}{}",
-                checker.symbol_prefix(checker.res.struct_package[index]),
-                decl.name.text
-            ),
-            span: decl.name.span,
-            drop: checker
-                .res
-                .methods
-                .get(&(
-                    checker.types.struct_type(StructId(index as u32)),
-                    "drop".to_string(),
-                ))
-                .copied(),
-            clone: checker
-                .res
-                .methods
-                .get(&(
-                    checker.types.struct_type(StructId(index as u32)),
-                    "clone".to_string(),
-                ))
-                .copied(),
-            fields: fields
-                .iter()
-                .map(|(name, ty, span)| hir::Field {
-                    name: name.clone(),
-                    ty: ty.expect("no diagnostics means every field type resolved"),
-                    span: *span,
-                })
-                .collect(),
-        })
-        .collect();
     let closures = std::mem::take(&mut checker.closures);
     let globals: Vec<hir::Global> = checker
         .res
@@ -131,16 +94,34 @@ pub fn check(
         })
         .collect();
     let initializers: Vec<FunctionId> = checker.res.globals.iter().map(|g| g.function).collect();
+    let mut functions: Vec<hir::Function> = functions
+        .into_iter()
+        .chain(closures)
+        .map(|f| f.expect("every function and closure was checked"))
+        .chain(std::mem::take(&mut checker.generated_functions))
+        .collect();
+    let struct_methods = checker.instantiate(&mut functions);
+    if let Some(template) = checker.types.take_runaway() {
+        let decl = checker.res.structs[template.0 as usize];
+        checker.error(
+            format!(
+                "generic type `{}` contains itself with new type arguments without end",
+                decl.name.text
+            ),
+            decl.name.span,
+        );
+    }
+    if !checker.diagnostics.is_empty() {
+        return (None, checker.diagnostics);
+    }
+    let structs = (0..checker.types.struct_count())
+        .map(|index| checker.hir_struct(StructId(index as u32), &struct_methods))
+        .collect();
     let mut package = hir::Package {
         name: checker.res.package.clone(),
         types: std::mem::take(&mut checker.types),
         structs,
-        functions: functions
-            .into_iter()
-            .chain(closures)
-            .map(|f| f.expect("every function and closure was checked"))
-            .chain(std::mem::take(&mut checker.generated_functions))
-            .collect(),
+        functions,
         entry,
         globals,
         init: None,
@@ -211,6 +192,8 @@ struct Checker<'a> {
     inferring_result: bool,
     /// The methods serving each interface for each type converted to it.
     implementations: HashMap<(TypeId, InterfaceId), Vec<hir::Implementation>>,
+    /// The type the call being checked is expected to have, which a generic call can infer from.
+    call_expected: Option<TypeId>,
 }
 
 struct BodyState {
@@ -319,11 +302,26 @@ impl<'a> Checker<'a> {
             ast::Type::Named(name) | ast::Type::Qualified { name, .. } => {
                 match self.res.uses.get(&name.span)? {
                     Res::Primitive(ty) => Some(*ty),
+                    Res::Struct(id) if self.res.struct_type_params.contains_key(id) => {
+                        let params = self.res.struct_type_params[id].clone();
+                        let names: Vec<String> = params.iter().map(|&p| self.name(p)).collect();
+                        self.error(
+                            format!(
+                                "`{}` needs type arguments, as in `{}<{}>`",
+                                name.text,
+                                name.text,
+                                names.join(", ")
+                            ),
+                            name.span,
+                        );
+                        None
+                    }
                     Res::Struct(id) => Some(self.types.struct_type(*id)),
-                    Res::Named(ty) | Res::Interface(ty) => Some(*ty),
+                    Res::Named(ty) | Res::Interface(ty) | Res::TypeParam(ty) => Some(*ty),
                     _ => None,
                 }
             }
+            ast::Type::Instance { base, args, span } => self.instance_type(base, args, *span),
             ast::Type::Array { element, size, .. } => {
                 let element_ty = self.resolve_type(element)?;
                 let value = self.expr(size, Some(TypeStore::INT))?;
@@ -560,9 +558,22 @@ impl<'a> Checker<'a> {
             if matches(kind) {
                 return true;
             }
+            // Type arguments never hold functions or mutable views, but may be shared slices.
+            if let TypeKind::Param(_) = kind
+                && !matches!(
+                    self.types.constraint(ty),
+                    Some(crate::types::Constraint::Comparable | crate::types::Constraint::Ordered)
+                )
+                && matches(TypeKind::Slice {
+                    element: ty,
+                    mutable: false,
+                })
+            {
+                return true;
+            }
             match kind {
                 TypeKind::Struct(id) => pending.extend(
-                    self.fields[id.0 as usize]
+                    self.struct_fields(id)
                         .iter()
                         .filter_map(|(_, field_ty, _)| *field_ty),
                 ),
@@ -580,7 +591,7 @@ impl<'a> Checker<'a> {
         matches!(
             self.types.kind(ty),
             TypeKind::Bool | TypeKind::Int(_) | TypeKind::Rune | TypeKind::String
-        )
+        ) || self.types.constraint(ty) == Some(crate::types::Constraint::Comparable)
     }
 
     /// Must agree with `hir::Package::is_copy`.
@@ -593,15 +604,11 @@ impl<'a> Checker<'a> {
             }
             match self.types.kind(ty) {
                 TypeKind::Struct(id) => {
-                    if self
-                        .res
-                        .methods
-                        .contains_key(&(self.types.struct_type(id), "drop".to_string()))
-                    {
+                    if self.struct_method(id, "drop").is_some() {
                         return false;
                     }
                     pending.extend(
-                        self.fields[id.0 as usize]
+                        self.struct_fields(id)
                             .iter()
                             .filter_map(|(_, field_ty, _)| *field_ty),
                     );
@@ -612,6 +619,18 @@ impl<'a> Checker<'a> {
                 | TypeKind::Func(_)
                 | TypeKind::Task(_)
                 | TypeKind::Interface(_) => return false,
+                TypeKind::Param(_)
+                    if !matches!(
+                        self.types.constraint(ty),
+                        Some(
+                            crate::types::Constraint::Copyable
+                                | crate::types::Constraint::Comparable
+                                | crate::types::Constraint::Ordered
+                        )
+                    ) =>
+                {
+                    return false;
+                }
                 _ => {}
             }
         }
@@ -679,6 +698,7 @@ impl<'a> Checker<'a> {
 
     fn signatures_and_fields(&mut self) {
         self.named_bases();
+        self.type_param_constraints();
         // Cloned because `resolve_type` needs `&mut self`.
         let structs: Vec<&'a ast::StructDecl> = self.res.structs.clone();
         self.resolving_fields = true;
@@ -693,6 +713,13 @@ impl<'a> Checker<'a> {
             })
             .collect();
         self.resolving_fields = false;
+        for (&template, params) in &self.res.struct_type_params {
+            let fields = self.fields[template.0 as usize]
+                .iter()
+                .map(|(_, ty, _)| *ty)
+                .collect();
+            self.types.set_template(template, params.clone(), fields);
+        }
         self.interface_entries();
         for (index, decl) in structs.iter().enumerate() {
             for (field_index, field) in decl.fields.iter().enumerate() {
@@ -884,6 +911,8 @@ impl<'a> Checker<'a> {
             is_async: func.is_async,
             native: func.native,
             call_once: false,
+            type_params: self.res.type_params.get(&id).cloned().unwrap_or_default(),
+            probe: false,
         })
     }
 
@@ -996,6 +1025,9 @@ impl<'a> Checker<'a> {
     }
 
     fn closure(&mut self, closure: &ast::Closure, span: Span) -> Option<Value> {
+        if self.reject_in_generic_body("a function literal", span) {
+            return None;
+        }
         // Resolution reports a literal it could not give a body.
         let index = self.res.closures.iter().position(|c| c.span == span)?;
         let id = self.res.closures[index].id;
@@ -1083,6 +1115,8 @@ impl<'a> Checker<'a> {
             is_async: false,
             native: false,
             call_once,
+            type_params: Vec::new(),
+            probe: false,
         });
         let captures = captures
             .iter()
@@ -1122,6 +1156,8 @@ impl<'a> Checker<'a> {
         };
         let problem = if main.is_async {
             Some("the entry point `main` cannot be `async`")
+        } else if !main.type_params.is_empty() {
+            Some("the entry point `main` declares no type parameters")
         } else if !main.params.is_empty() {
             Some("the entry point `main` takes no parameters")
         } else if !main.results.is_empty() {
@@ -1388,13 +1424,21 @@ impl<'a> Checker<'a> {
                 self.make_channel(element, capacity.as_deref(), span)
             }
             ast::ExprKind::Try(inner) => self.try_expr(inner, span),
-            ast::ExprKind::Call { callee, args } => self.call(callee, args, span),
+            ast::ExprKind::Call { callee, args } => {
+                self.call_expected = expected;
+                self.call(callee, args, span)
+            }
             ast::ExprKind::Field { base, name } => self.field(base, name, span),
             ast::ExprKind::Index { base, index } => self.index(base, index, span),
             ast::ExprKind::Slice { base, low, high } => {
                 self.slice(base, low.as_deref(), high.as_deref(), span, expected)
             }
-            ast::ExprKind::StructLit { ty, fields, .. } => self.struct_lit(ty, fields, span),
+            ast::ExprKind::StructLit {
+                ty,
+                type_args,
+                fields,
+                ..
+            } => self.struct_lit(ty, type_args, fields, span),
             ast::ExprKind::ArrayLit { ty, elements } => self.array_lit(ty, elements, span),
             ast::ExprKind::MapLit { ty, entries } => self.map_lit(ty, entries, span),
             ast::ExprKind::Closure(closure) => self.closure(closure, span),
@@ -1403,6 +1447,20 @@ impl<'a> Checker<'a> {
 
     fn function_value(&mut self, id: FunctionId, span: Span) -> Option<Value> {
         let declaration = self.res.functions[id.0 as usize];
+        if self.is_generic(id) {
+            self.diagnostics.push(
+                Diagnostic::new(
+                    Severity::Error,
+                    format!(
+                        "generic function `{}` cannot be used as a value yet",
+                        declaration.name.text
+                    ),
+                    span,
+                )
+                .note("call it, or wrap the call in a function literal in an ordinary function"),
+            );
+            return None;
+        }
         let is_async = declaration.is_async;
         let signature = self.signatures[id.0 as usize].as_ref()?;
         let (params, results) = (signature.params.clone(), signature.results.clone());
@@ -1489,6 +1547,8 @@ impl<'a> Checker<'a> {
             is_async,
             native: false,
             call_once: false,
+            type_params: Vec::new(),
+            probe: false,
             locals,
             body: hir::Block {
                 stmts: vec![hir::Stmt {
@@ -1755,7 +1815,9 @@ impl<'a> Checker<'a> {
             return None;
         };
         let awaits_async_call = match &expr.kind {
-            ExprKind::Call { function, .. } => self.is_async_function(*function),
+            ExprKind::Call { function, .. } | ExprKind::CallGeneric { function, .. } => {
+                self.is_async_function(*function)
+            }
             ExprKind::CallValue { callee, .. } => self
                 .types
                 .func_signature(callee.ty())
@@ -1852,7 +1914,12 @@ impl<'a> Checker<'a> {
                 };
                 Some(Value::Typed(typed(ExprKind::Global(id), ty, span)))
             }
-            Res::Struct(_) | Res::Primitive(_) | Res::Named(_) | Res::Interface(_) => {
+            Res::Struct(_)
+            | Res::Primitive(_)
+            | Res::Named(_)
+            | Res::Interface(_)
+            | Res::TypeParam(_)
+            | Res::Constraint(_) => {
                 self.error(format!("`{name}` is a type, not a value"), span);
                 None
             }
@@ -1900,6 +1967,18 @@ impl<'a> Checker<'a> {
     }
 
     fn operator_applies(&self, op: BinaryOp, ty: TypeId) -> bool {
+        if let Some(constraint) = self.types.constraint(ty) {
+            use crate::types::Constraint;
+            return match op {
+                BinaryOp::Eq | BinaryOp::NotEq => {
+                    matches!(constraint, Constraint::Comparable | Constraint::Ordered)
+                }
+                BinaryOp::Lt | BinaryOp::LtEq | BinaryOp::Gt | BinaryOp::GtEq => {
+                    constraint == Constraint::Ordered
+                }
+                _ => false,
+            };
+        }
         let kind = self.types.kind(ty);
         let int = matches!(kind, TypeKind::Int(_));
         let numeric = self.types.is_numeric(ty);
@@ -2323,6 +2402,18 @@ impl<'a> Checker<'a> {
                 self.report_arg_errors(args);
                 None
             }
+            Some(Res::TypeParam(_) | Res::Constraint(_)) => {
+                self.diagnostics.push(
+                    Diagnostic::new(
+                        Severity::Error,
+                        format!("`{name}` is a type parameter or constraint and cannot be called"),
+                        callee.span,
+                    )
+                    .note("a generic function cannot convert values to its type parameters"),
+                );
+                self.report_arg_errors(args);
+                None
+            }
             Some(Res::Interface(_)) => {
                 self.diagnostics.push(
                     Diagnostic::new(
@@ -2520,6 +2611,9 @@ impl<'a> Checker<'a> {
         {
             return self.mutex_method(receiver, element, &name.text, args, span);
         }
+        if let TypeKind::Param(_) = self.types.kind(ty) {
+            return self.type_param_method_call(receiver, name, args, span);
+        }
         if let Some(results) = self.types.task_results(ty)
             && name.text == "wait"
         {
@@ -2546,7 +2640,7 @@ impl<'a> Checker<'a> {
             return self.interface_call(receiver, name, args, span);
         }
         let strukt = self.types.struct_id(ty);
-        let method = self.res.methods.get(&(ty, name.text.clone())).copied();
+        let method = self.method_of(ty, &name.text);
         if let (Some(package), Some(_)) = (self.declaring_package(ty), method)
             && !self.can_use_member(package, &name.text)
         {
@@ -2556,7 +2650,7 @@ impl<'a> Checker<'a> {
         }
         let Some(id) = method else {
             let is_field = strukt.is_some_and(|s| {
-                self.fields[s.0 as usize]
+                self.struct_fields(s)
                     .iter()
                     .any(|(field, _, _)| *field == name.text)
             });
@@ -2716,6 +2810,12 @@ impl<'a> Checker<'a> {
         args: &[ast::Expr],
         span: Span,
     ) -> Option<Value> {
+        if self.is_generic(id) {
+            return match receiver {
+                Some(receiver) => self.generic_method_call(id, name, receiver, args, span),
+                None => self.generic_call(id, name, args, span),
+            };
+        }
         let Some(signature) = &self.signatures[id.0 as usize] else {
             self.report_arg_errors(args);
             return None;
@@ -2883,7 +2983,7 @@ impl<'a> Checker<'a> {
 
     fn mutated_places(&self, expr: &hir::Expr, out: &mut Vec<ArgumentPlace>) {
         match &expr.kind {
-            ExprKind::Call { function, args } => {
+            ExprKind::Call { function, args } | ExprKind::CallGeneric { function, args, .. } => {
                 let accesses = self.argument_accesses(*function, args.len());
                 for (arg, access) in args.iter().zip(accesses) {
                     if access.exclusive
@@ -3140,13 +3240,13 @@ impl<'a> Checker<'a> {
 
     fn custom_clone(&self, ty: TypeId) -> Option<FunctionId> {
         self.types.struct_id(ty)?;
-        self.res.methods.get(&(ty, "clone".to_string())).copied()
+        self.method_of(ty, "clone")
     }
 
     /// The package that declares a struct or named type.
     fn declaring_package(&self, ty: TypeId) -> Option<usize> {
         if let Some(strukt) = self.types.struct_id(ty) {
-            return Some(self.res.struct_package[strukt.0 as usize]);
+            return Some(self.res.struct_package[self.types.struct_origin(strukt).0 as usize]);
         }
         self.res
             .named
@@ -3168,15 +3268,11 @@ impl<'a> Checker<'a> {
                     if self.custom_clone(ty).is_some() {
                         continue;
                     }
-                    if self
-                        .res
-                        .methods
-                        .contains_key(&(self.types.struct_type(id), "drop".to_string()))
-                    {
+                    if self.struct_method(id, "drop").is_some() {
                         return Some(ty);
                     }
                     pending.extend(
-                        self.fields[id.0 as usize]
+                        self.struct_fields(id)
                             .iter()
                             .rev()
                             .filter_map(|(_, field_ty, _)| *field_ty),
@@ -3556,10 +3652,13 @@ impl<'a> Checker<'a> {
             self.error(message, name.span);
             return None;
         };
-        let fields = &self.fields[strukt.0 as usize];
+        let fields = self.struct_fields(strukt);
         match fields.iter().position(|(n, _, _)| *n == name.text) {
             Some(_)
-                if !self.can_use_member(self.res.struct_package[strukt.0 as usize], &name.text) =>
+                if !self.can_use_member(
+                    self.res.struct_package[self.types.struct_origin(strukt).0 as usize],
+                    &name.text,
+                ) =>
             {
                 self.unexported_member("field", &name.text, ty, name.span);
                 None
@@ -3589,7 +3688,7 @@ impl<'a> Checker<'a> {
             }
             Value::Typed(expr) => self.single_value(expr)?,
         };
-        if let Some(&method) = self.res.methods.get(&(base.ty(), name.text.clone())) {
+        if let Some(method) = self.method_of(base.ty(), &name.text) {
             return self.method_value(base, method, name, span);
         }
         if let Some(interface) = self.types.interface_of(base.ty())
@@ -3961,6 +4060,7 @@ impl<'a> Checker<'a> {
     fn struct_lit(
         &mut self,
         ty: &ast::Name,
+        type_args: &[ast::Type],
         inits: &[ast::FieldInit],
         span: Span,
     ) -> Option<Value> {
@@ -3970,12 +4070,33 @@ impl<'a> Checker<'a> {
             }
             return None;
         };
-        let struct_ty = self.types.struct_type(strukt);
+        let generic = self.res.struct_type_params.contains_key(&strukt);
+        let struct_ty = if generic || !type_args.is_empty() {
+            let base = ast::Type::Named(ty.clone());
+            let resolved = if type_args.is_empty() {
+                self.resolve_type(&base)
+            } else {
+                self.instance_type(&base, type_args, span)
+            };
+            let Some(resolved) = resolved else {
+                for init in inits {
+                    self.expr(&init.value, None);
+                }
+                return None;
+            };
+            resolved
+        } else {
+            self.types.struct_type(strukt)
+        };
+        let strukt = self
+            .types
+            .struct_id(struct_ty)
+            .expect("a struct literal names a struct type");
         let mut seen: HashMap<usize, Span> = HashMap::new();
         let mut fields = Vec::new();
         let mut ok = true;
         for init in inits {
-            let declared = &self.fields[strukt.0 as usize];
+            let declared = self.struct_fields(strukt);
             let Some(index) = declared.iter().position(|(n, _, _)| *n == init.name.text) else {
                 let message = format!("struct `{}` has no field `{}`", ty.text, init.name.text);
                 self.error(message, init.name.span);
@@ -3984,7 +4105,10 @@ impl<'a> Checker<'a> {
                 continue;
             };
             let field_ty = declared[index].1;
-            if !self.can_use_member(self.res.struct_package[strukt.0 as usize], &init.name.text) {
+            if !self.can_use_member(
+                self.res.struct_package[self.types.struct_origin(strukt).0 as usize],
+                &init.name.text,
+            ) {
                 self.unexported_member("field", &init.name.text, struct_ty, init.name.span);
                 self.expr(&init.value, None);
                 seen.insert(index, init.name.span);
@@ -4012,7 +4136,8 @@ impl<'a> Checker<'a> {
                 _ => ok = false,
             }
         }
-        let missing: Vec<String> = self.fields[strukt.0 as usize]
+        let missing: Vec<String> = self
+            .struct_fields(strukt)
             .iter()
             .enumerate()
             .filter(|(index, _)| !seen.contains_key(index))
@@ -4885,7 +5010,9 @@ fn subexpressions(expr: &hir::Expr) -> Vec<&hir::Expr> {
             .chain(low.as_deref())
             .chain(high.as_deref())
             .collect(),
-        ExprKind::Call { args, .. } | ExprKind::Spawn { args, .. } => args.iter().collect(),
+        ExprKind::Call { args, .. }
+        | ExprKind::CallGeneric { args, .. }
+        | ExprKind::Spawn { args, .. } => args.iter().collect(),
         ExprKind::CallValue { callee, args, .. } => {
             std::iter::once(&**callee).chain(args).collect()
         }

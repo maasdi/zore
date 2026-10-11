@@ -28,6 +28,17 @@ once it does.
   `interface` is now a keyword. In async code a call through an interface
   suspends when the method behind it waits, and interfaces may list `async`
   methods, which are awaited.
+- Locked generic functions: `func Max<T ordered>(a T, b T) T` declares type
+  parameters with the constraints `any`, `copyable`, `comparable`, `ordered`,
+  or an interface type; calls take their type arguments from the arguments,
+  bodies are checked once for every allowed type, and each set of type
+  arguments gets its own compiled copy (§22.1, Q42). The four constraint names
+  are now predeclared.
+- Locked generic struct types: `type Stack<T any> struct { ... }` with methods
+  on `Stack<T>`, used as `Stack<int>`; each set of type arguments is its own
+  struct with its own method copies, and instances satisfy interfaces. A call
+  whose arguments do not decide a type parameter takes it from the expected
+  type, as in `var s Stack<int> = NewStack()` (§22.1, Q42).
 - Locked untyped constants following Go's model: integer and float kinds,
   exact arithmetic, representability rules, and at least 256-bit precision
   (§6.7).
@@ -43,6 +54,14 @@ once it does.
 - Added `zore/bytes`, `zore/errors`, `zore/unicode`, `zore/unicode/utf8`,
   `zore/path`, `zore/path/filepath`, `zore/sort`, `zore/sync`, and
   `zore/os/exec`, and more functions in `strings`, `strconv`, and `os`.
+- Added `zore/io` with the `Reader`, `Writer`, `Closer`, `ReadWriter`,
+  `ReadCloser`, and `WriteCloser` interfaces, `EOF`, `Copy`, `ReadAll`,
+  `ReadFull`, and `WriteString` (§37.3). `bufio` now reads and writes any
+  `io.Reader` or `io.Writer`, so it works over connections and buffers as well
+  as files, and `bufio.Reader` has `Read`.
+- Added `sort.Slice` and `sort.SliceIsSorted`, and the generic `zore/slices`
+  (`Contains`, `Index`, `Equal`, `Sort`, `IsSorted`, `Reverse`, `Max`, `Min`,
+  `Clone`) and `zore/maps` (`Keys`, `Values`, `Clone`) packages (§37.5).
 
 ### Compiler
 

@@ -8744,3 +8744,566 @@ func main() {
 ";
     prints(source, "9\ndrop remote\n26\n");
 }
+
+#[test]
+fn generic_functions_run_one_copy_per_set_of_type_arguments() {
+    let source = "package main
+
+type Score int
+
+func Max<T ordered>(a T, b T) T {
+    if a > b {
+        return a
+    }
+    return b
+}
+
+func Largest<T ordered>(items []T) T {
+    var best = items[0]
+    for _, item in items {
+        best = Max(best, item)
+    }
+    return best
+}
+
+func Index<T comparable>(items []T, target T) int {
+    for i, item in items {
+        if item == target {
+            return i
+        }
+    }
+    return -1
+}
+
+func Count<K comparable, V comparable>(m map[K]V, wanted V) int {
+    var n = 0
+    for _, v in m {
+        if v == wanted {
+            n += 1
+        }
+    }
+    return n
+}
+
+func main() {
+    println(Max(3, 9))
+    println(Max(\"pear\", \"apple\"))
+    println(Max('a', 'z'))
+    println(Max(Score(4), Score(2)) == Score(4))
+    println(Max(1.5, 2) > 1.9)
+    let words = Array<string>{\"b\", \"d\", \"c\"}
+    println(Largest(words[:]))
+    let bytes = Array<byte>{3, 250, 7}
+    println(Largest(bytes[:]))
+    println(Index(words[:], \"c\"))
+    println(Index(words[:], \"z\"))
+    println(Count(map[string]int{\"a\": 1, \"b\": 2, \"c\": 1}, 1))
+}
+";
+    prints(source, "9\npear\nz\ntrue\ntrue\nd\n250\n2\n-1\n2\n");
+}
+
+#[test]
+fn generic_functions_move_and_destroy_values_of_any_type_exactly_once() {
+    let source = "package main
+
+type Ticket struct {
+    id int
+}
+
+func (t mut Ticket) drop() {
+    println(\"drop \" + string(rune(48 + t.id)))
+}
+
+func Last<T any>(items own Array<T>) T {
+    var rest = items
+    let _, last = rest.pop()
+    return last
+}
+
+func Swap<T any>(a own T, b own T) (T, T) {
+    return b, a
+}
+
+func Pass<T any>(item own T) T {
+    return Keep(item)
+}
+
+func Keep<T any>(item own T) T {
+    return item
+}
+
+func Discard<T any>(item own T) {
+    println(\"discard\")
+}
+
+func main() {
+    let last = Last(Array<Ticket>{Ticket{id: 1}, Ticket{id: 2}})
+    println(last.id)
+    let x, y = Swap(Ticket{id: 3}, Ticket{id: 4})
+    println(x.id)
+    let kept = Pass(Ticket{id: 5})
+    Discard(Ticket{id: 6})
+    let words = Pass(Array<string>{\"w\"})
+    println(words[0])
+    println(\"end\")
+}
+";
+    prints(
+        source,
+        "drop 1\n2\n4\ndiscard\ndrop 6\nw\nend\ndrop 5\ndrop 3\ndrop 4\ndrop 2\n",
+    );
+}
+
+#[test]
+fn generic_functions_call_the_methods_of_interface_constraints() {
+    let source = "package main
+
+type Named interface {
+    Name() string
+}
+
+type Account interface {
+    Name() string
+    mut Deposit(n int)
+    own Close() int
+}
+
+type Wallet struct {
+    owner string
+    total int
+}
+
+func (w mut Wallet) drop() {
+    println(\"drop \" + w.owner)
+}
+
+func (w Wallet) Name() string {
+    return w.owner
+}
+
+func (w mut Wallet) Deposit(n int) {
+    w.total += n
+}
+
+func (w own Wallet) Close() int {
+    return w.total
+}
+
+type Tag string
+
+func (t Tag) Name() string {
+    return string(t)
+}
+
+func Greet<T Named>(item T) string {
+    return \"hello \" + item.Name()
+}
+
+func Settle<T Account>(account own T) int {
+    var held = account
+    held.Deposit(5)
+    println(Greet(held))
+    return held.Close()
+}
+
+func main() {
+    println(Greet(Tag(\"t\")))
+    var w = Wallet{owner: \"ann\", total: 1}
+    println(Greet(w))
+    let n Named = Tag(\"boxed\")
+    println(Greet(n))
+    println(Settle(Wallet{owner: \"bo\", total: 10}))
+}
+";
+    prints(
+        source,
+        "hello t\nhello ann\nhello boxed\nhello bo\ndrop bo\n15\ndrop ann\n",
+    );
+}
+
+#[test]
+fn generic_async_functions_are_awaited_and_spawned() {
+    let source = "package main
+
+import \"zore/time\"
+
+async func Later<T any>(item own T) T {
+    time.Sleep(time.Millisecond)
+    return item
+}
+
+async func run() int {
+    let word = await Later(\"later\")
+    println(word)
+    let task = go Later(Array<int>{7})
+    let items = await task
+    return items[0]
+}
+
+func main() {
+    let t = go run()
+    println(t.wait())
+    let n = go Later(3)
+    println(n.wait())
+}
+";
+    prints(source, "later\n7\n3\n");
+}
+
+#[test]
+fn io_copies_and_reads_from_any_reader_into_any_writer() {
+    let source = "package main
+
+import \"zore/bytes\"
+import \"zore/io\"
+import \"zore/os\"
+
+type Upper struct {
+    out bytes.Buffer
+}
+
+func (u mut Upper) Write(data []byte) (int, error) {
+    for b in data {
+        if b >= 97 && b <= 122 {
+            _ = u.out.WriteByte(b - 32)
+        } else {
+            _ = u.out.WriteByte(b)
+        }
+    }
+    return data.len(), nil
+}
+
+func main() {
+    var src = bytes.NewBufferString(\"copy me\\n\")
+    var up = Upper{out: bytes.NewBufferString(\"\")}
+    let n, err = io.Copy(up, src)
+    println(n)
+    println(err == nil)
+    var out = os.Stdout()
+    let _, _ = io.Copy(out, up.out)
+    var all = bytes.NewBufferString(\"everything\")
+    let data, readErr = io.ReadAll(all)
+    println(data.len())
+    println(readErr == nil)
+    var short = bytes.NewBufferString(\"abc\")
+    var buf = [byte; 5]{0, 0, 0, 0, 0}
+    let got, fullErr = io.ReadFull(short, buf[:])
+    println(got)
+    println(fullErr == error(\"unexpected EOF\"))
+    var empty = bytes.NewBufferString(\"\")
+    let none, eofErr = io.ReadFull(empty, buf[:])
+    println(none)
+    println(eofErr == io.EOF)
+    let written, _ = io.WriteString(out, \"done\\n\")
+    println(written)
+}
+";
+    prints(
+        source,
+        "8\ntrue\nCOPY ME\n10\ntrue\n3\ntrue\n0\ntrue\ndone\n5\n",
+    );
+}
+
+#[test]
+fn bufio_reads_and_writes_through_any_reader_or_writer() {
+    let source = "package main
+
+import \"zore/bufio\"
+import \"zore/bytes\"
+import \"zore/io\"
+import \"zore/os\"
+
+func main() {
+    var lines = bufio.NewScanner(bytes.NewBufferString(\"one\\ntwo\\r\\nthree\"))
+    for lines.Scan() {
+        println(lines.Text())
+    }
+    println(lines.Err() == nil)
+    var r = bufio.NewReader(bytes.NewBufferString(\"a,bc\"))
+    let first, _ = r.ReadString(44)
+    println(first)
+    let b, _ = r.ReadByte()
+    println(b)
+    var buf = [byte; 4]{0, 0, 0, 0}
+    let count, _ = r.Read(buf[:])
+    println(count)
+    let rest, err = r.ReadString(44)
+    println(rest.len())
+    println(err == io.EOF)
+    var w = bufio.NewWriter(os.Stdout())
+    let _, _ = w.WriteString(\"buffered\\n\")
+    println(w.Buffered())
+    _ = w.Flush()
+    var layered = bufio.NewReader(bufio.NewReader(bytes.NewBufferString(\"two layers\")))
+    let all, _ = io.ReadAll(layered)
+    println(all.len())
+}
+";
+    prints(
+        source,
+        "one\ntwo\nthree\ntrue\na,\n98\n1\n0\ntrue\n9\nbuffered\n10\n",
+    );
+}
+
+#[test]
+fn bufio_reads_lines_from_a_connection_in_an_async_task() {
+    let source = "package main
+
+import \"zore/bufio\"
+import \"zore/net\"
+
+async func serve(listener own net.Listener) int {
+    let conn, err = listener.Accept()
+    if err != nil {
+        return -1
+    }
+    var lines = bufio.NewScanner(conn)
+    var count = 0
+    for lines.Scan() {
+        println(lines.Text())
+        count += 1
+    }
+    return count
+}
+
+func main() {
+    let listener, err = net.Listen(\"tcp\", \"127.0.0.1:0\")
+    if err != nil {
+        println(\"listen failed\")
+        return
+    }
+    let address = listener.Addr()
+    let server = go serve(listener)
+    let conn, dialErr = net.Dial(\"tcp\", address)
+    if dialErr != nil {
+        println(\"dial failed\")
+        return
+    }
+    var out = bufio.NewWriter(conn)
+    let _, _ = out.WriteString(\"first\\nsecond\\n\")
+    _ = out.Flush()
+    drop(out)
+    println(server.wait())
+}
+";
+    prints(source, "first\nsecond\n2\n");
+}
+
+#[test]
+fn generic_types_hold_and_destroy_values_of_each_type_argument() {
+    let source = "package main
+
+type Ticket struct {
+    id int
+}
+
+func (t mut Ticket) drop() {
+    println(\"drop ticket \" + string(rune(48 + t.id)))
+}
+
+type Stack<T any> struct {
+    items Array<T>
+}
+
+func NewStack<T any>() Stack<T> {
+    return Stack<T>{items: Array<T>{}}
+}
+
+func (s mut Stack<T>) Push(value own T) {
+    s.items.push(value)
+}
+
+func (s mut Stack<T>) Pop() (bool, T) {
+    return s.items.pop()
+}
+
+func (s Stack<T>) Len() int {
+    return s.items.len()
+}
+
+type Box<T any> struct {
+    label string
+    item T
+}
+
+func (b mut Box<T>) drop() {
+    println(\"drop box \" + b.label)
+}
+
+type Set<T comparable> struct {
+    seen map[T]bool
+}
+
+func (s mut Set<T>) Add(value T) {
+    s.seen[value] = true
+}
+
+func (s Set<T>) Has(value T) bool {
+    let found, _ = s.seen[value]
+    return found
+}
+
+func Sum(s Stack<int>) int {
+    var total = 0
+    for item in s.items {
+        total += item
+    }
+    return total
+}
+
+func main() {
+    var numbers Stack<int> = NewStack()
+    numbers.Push(4)
+    numbers.Push(5)
+    println(Sum(numbers))
+    var tickets = Stack<Ticket>{items: Array<Ticket>{}}
+    tickets.Push(Ticket{id: 1})
+    tickets.Push(Ticket{id: 2})
+    let found, top = tickets.Pop()
+    println(found)
+    println(top.id)
+    var nested = Stack<Stack<int>>{items: Array<Stack<int>>{}}
+    nested.Push(numbers)
+    println(nested.Len())
+    var words = Set<string>{seen: map[string]bool{}}
+    words.Add(\"go\")
+    println(words.Has(\"go\"))
+    println(words.Has(\"zore\"))
+    let box = Box<Ticket>{label: \"b\", item: Ticket{id: 3}}
+    println(box.item.id)
+    println(\"end\")
+}
+";
+    prints(
+        source,
+        "9\ntrue\n2\n1\ntrue\nfalse\n3\nend\ndrop box b\ndrop ticket 3\ndrop ticket 2\ndrop ticket 1\n",
+    );
+}
+
+#[test]
+fn generic_types_satisfy_interfaces_and_run_in_tasks() {
+    let source = "package main
+
+type Getter interface {
+    Get() int
+}
+
+type Cell<T copyable> struct {
+    value T
+}
+
+func (c Cell<T>) Get() T {
+    return c.value
+}
+
+func (c mut Cell<T>) Set(value T) {
+    c.value = value
+}
+
+func (c Cell<T>) clone() Cell<T> {
+    println(\"clone\")
+    return Cell<T>{value: c.value}
+}
+
+type Queue<T any> struct {
+    items Array<T>
+}
+
+async func (q mut Queue<T>) Drain() int {
+    var count = 0
+    for q.items.len() > 0 {
+        let _, _ = q.items.pop()
+        count += 1
+    }
+    return count
+}
+
+func show(g Getter) {
+    println(g.Get())
+}
+
+async func run() int {
+    var q = Queue<string>{items: Array<string>{\"a\", \"b\", \"c\"}}
+    return await q.Drain()
+}
+
+func main() {
+    var c = Cell<int>{value: 1}
+    show(c)
+    c.Set(7)
+    show(c)
+    let owned Getter = Cell<int>{value: 9}
+    show(owned)
+    let copy = clone(c)
+    println(copy.Get())
+    let t = go run()
+    println(t.wait())
+    let words = Cell<string>{value: \"w\"}
+    let task = go words.Get()
+    println(task.wait())
+}
+";
+    prints(source, "1\n7\n9\nclone\n7\n3\nw\n");
+}
+
+#[test]
+fn slices_maps_and_sort_slice_work_on_any_allowed_element_type() {
+    let source = "package main
+
+import \"zore/maps\"
+import \"zore/slices\"
+import \"zore/sort\"
+
+type Person struct {
+    name string
+    age int
+}
+
+func main() {
+    var nums = Array<int>{5, 2, 9, 1}
+    slices.Sort(nums[:])
+    println(nums[0])
+    println(nums[3])
+    println(slices.IsSorted(nums[:]))
+    println(slices.Contains(nums[:], 9))
+    println(slices.Contains(nums[:], 7))
+    println(slices.Index(nums[:], 5))
+    println(slices.Max(nums[:]))
+    println(slices.Min(nums[:]))
+    slices.Reverse(nums[:])
+    println(nums[0])
+    let copied = slices.Clone(nums[:])
+    println(slices.Equal(copied[:], nums[:]))
+    var words = Array<string>{\"pear\", \"fig\", \"apple\"}
+    slices.Sort(words[:])
+    println(words[0])
+    var people = Array<Person>{Person{name: \"Ann\", age: 40}, Person{name: \"Bo\", age: 20}, Person{name: \"Cy\", age: 30}}
+    sort.Slice(people[:], func(a Person, b Person) bool {
+        return a.age < b.age
+    })
+    println(people[0].name + people[1].name + people[2].name)
+    println(sort.SliceIsSorted(people[:], func(a Person, b Person) bool {
+        return a.age < b.age
+    }))
+    let ages = map[string]int{\"a\": 1, \"b\": 2, \"c\": 3}
+    var keys = maps.Keys(ages)
+    slices.Sort(keys[:])
+    println(keys[0] + keys[1] + keys[2])
+    var values = maps.Values(ages)
+    slices.Sort(values[:])
+    println(values[2])
+    let again = maps.Clone(ages)
+    println(again.len())
+    let empty = Array<int>{}
+    println(slices.Max(empty[:]))
+}
+";
+    let output = run(source);
+    assert_eq!(output.status.code(), Some(2), "{}", stderr(&output));
+    assert_eq!(
+        stdout(&output),
+        "1\n9\ntrue\ntrue\nfalse\n2\n9\n1\n9\ntrue\napple\nBoCyAnn\ntrue\nabc\n3\n3\n"
+    );
+    assert!(stderr(&output).contains("slices.Max: empty list"));
+}

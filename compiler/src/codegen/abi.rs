@@ -544,7 +544,8 @@ impl FunctionBuilder<'_, '_> {
             | TypeKind::Channel { .. }
             | TypeKind::Mutex { .. }
             | TypeKind::Interface(_)
-            | TypeKind::InterfaceView { .. } => unreachable!("checked printable type"),
+            | TypeKind::InterfaceView { .. }
+            | TypeKind::Param(_) => unreachable!("checked printable type"),
         }
     }
 }

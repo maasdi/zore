@@ -3,19 +3,19 @@ use crate::ast::BinaryOp;
 use crate::resolve::{GlobalId, LocalId};
 use crate::source::Span;
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct Block {
     pub stmts: Vec<Stmt>,
     pub span: Span,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct Stmt {
     pub kind: StmtKind,
     pub span: Span,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub enum StmtKind {
     /// `None` targets discard their value.
     Let {
@@ -75,14 +75,14 @@ pub enum StmtKind {
     Block(Block),
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct SelectArm {
     pub comm: SelectComm,
     pub body: Block,
     pub span: Span,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub enum SelectComm {
     /// `targets` is empty when the results are discarded, else the value and the flag.
     Receive {
