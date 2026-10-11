@@ -5846,7 +5846,7 @@ or implicit conversion.
 | `bool` | `true` or `false` |
 | Integer types | Decimal digits of the value, with a leading `-` for negative values and no separators, prefixes, or leading zeros |
 | `rune` | The UTF-8 encoding of the scalar value, unquoted |
-| `float32`, `float64` | TBD: must be locked before float printing is implemented natively |
+| `float32`, `float64` | The float's default text form, described below |
 
 ```ore
 println("Hello, Zore!")   // Hello, Zore!
@@ -5855,13 +5855,33 @@ println(int8(-5))         // -5
 println(true)             // true
 println('é')              // é
 println(user.Name)        // the string field's contents
+println(3.0)              // 3.0
+println(1.0 / 3.0)        // 0.3333333333333333
+println(1e21)             // 1e+21
 ```
 
-## 37.2 Text, byte, and error packages — LOCKED
+**Float text.** A float's default text form is the shortest decimal that reads
+back to exactly the same value of its type, so a `float32` shows the digits a
+`float32` needs and a `float64` those a `float64` needs:
+
+- When the decimal exponent of the first digit is at least -4 and below 21,
+  the digits are written with a decimal point and no exponent, with at least
+  one digit after the point: `3.0`, `0.25`, `100000.0`, `0.0001`.
+- Otherwise the form is the first digit, a point and the remaining digits when
+  there are any, `e`, a sign, and at least two exponent digits: `1e+21`,
+  `1.5e-05`, `1.7976931348623157e+308`.
+- A negative value has a leading `-`, including negative zero, `-0.0`. A
+  constant has no negative zero (§6.7), so `println(-0.0)` prints `0.0`.
+- Not-a-number is `NaN`, and the infinities are `+Inf` and `-Inf`.
+
+`strconv.FormatFloat(value, 'g', -1, 64)` gives the same text for a `float64`
+(§37.2).
+
+## 37.2 Text, number, byte, and error packages — LOCKED
 
 The compiler ships the standard packages of §37.2–§37.5, imported by their
 paths (§3.20): `"zore/strings"`, `"zore/strconv"`, `"zore/unicode"`,
-`"zore/unicode/utf8"`, `"zore/bytes"`, and `"zore/errors"` here. They are
+`"zore/unicode/utf8"`, `"zore/bytes"`, `"zore/errors"`, and `"zore/math"` here. They are
 ordinary packages as far as users can tell: names are used with the qualifier
 (the last segment of the path) and every function, type, method, and constant
 listed is exported. A package whose path has several segments, such as
@@ -5941,14 +5961,30 @@ results may share storage with their arguments (§6.8, §41.5).
 | `Quote(s string) string` | `s` as a double-quoted literal (§3.8): `"`, `\`, line feed, carriage return, and tab use their escapes; other characters below U+0020, U+007F, and U+0080–U+009F use `\uXXXX`; everything else is kept |
 | `QuoteRune(r rune) string` | `r` as a rune literal (§3.10), escaped as `Quote` does, with `\'` for a single quote |
 | `Unquote(s string) (string, error)` | The value of a double-quoted string, raw string, or rune literal, decoded as §3.8–§3.10 specify |
+| `FormatFloat(value float64, format rune, precision int, bitSize int) string` | `value` as text, rounded as a `float32` when `bitSize` is 32 and a `float64` when it is 64. `format` is `'f'` for `ddd.ddd`, `'e'` or `'E'` for `d.ddde±dd`, or `'g'` or `'G'` for `e` form when the exponent is below -4 or at least `precision` and `f` form otherwise, with trailing zeros removed. `precision` is the number of digits after the point for `f`, `e`, and `E`, and of significant digits for `g` and `G`; -1 means the fewest digits that read back to the value, and `'g'` with -1 is the default text form of §37.1. `NaN`, `+Inf`, and `-Inf` are written for every format. Another `format` panics with `strconv.FormatFloat: invalid format`, and another `bitSize` with `strconv.FormatFloat: invalid bit size` |
+| `ParseFloat(text string, bitSize int) (float64, error)` | Parses an optional sign, decimal digits with an optional `.` and at least one digit, and an optional exponent of `e` or `E`, an optional sign, and digits; or `NaN`, `Inf`, or `Infinity` in any letter case, the last two with an optional sign. Digit separators and hexadecimal are not accepted. The result is the nearest value of a `float32` when `bitSize` is 32 or a `float64` when it is 64; a value too large for the type gives the infinity of its sign and `value out of range` |
 
-On failure the parsing functions return `0`, `false`, or `""` and an error whose
+On failure the parsing functions return `0`, `false`, or `""`, except as noted, and an error whose
 message is `strconv.Name: parsing Q: problem`, where `Q` is the input quoted by
 `Quote` and `problem` is `invalid syntax`, `value out of range`, `invalid base
 B`, or `invalid bit size B`.
 
-Floating-point formatting and parsing are not included: the text format of
-floats is still open (§37.1).
+**`zore/math`** gives float constants and functions. Its constants are untyped
+float constants (§6.7):
+
+| Name | Behavior |
+| --- | --- |
+| `const Pi`, `E`, `Sqrt2` | π, e, and the square root of 2 |
+| `const MaxFloat64`, `SmallestNonzeroFloat64`, `MaxFloat32`, `SmallestNonzeroFloat32` | The largest finite value and the smallest positive value of each float type |
+| `Inf(sign int) float64`, `NaN() float64` | Positive infinity when `sign >= 0` and negative infinity otherwise; a not-a-number value |
+| `IsNaN(f float64) bool`, `IsInf(f float64, sign int) bool` | Whether `f` is not a number; whether `f` is an infinity of the sign of `sign`, or of either sign when `sign` is 0 |
+| `Abs(x float64) float64` | `x` without its sign |
+| `Max(x float64, y float64) float64`, `Min(x float64, y float64) float64` | The larger or smaller value; `NaN` when either is `NaN` |
+| `Sqrt`, `Floor`, `Ceil`, `Trunc`, `Round`, `Exp`, `Log` (each `(x float64) float64`) | Square root; rounding down, up, and toward zero; rounding to the nearest integer, halfway cases away from zero; e to the power `x`; the natural logarithm |
+| `Pow(x float64, y float64) float64`, `Mod(x float64, y float64) float64` | `x` to the power `y`; the remainder of `x / y` with the sign of `x` |
+
+The functions follow IEEE 754: a result that is not a real number is `NaN`,
+such as `Sqrt(-1)`, and they never panic.
 
 **`zore/unicode`**
 

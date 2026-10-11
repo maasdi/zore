@@ -1412,20 +1412,8 @@ fn closed_standard_output_panics() {
 }
 
 #[test]
-fn unsupported_backend_features_are_diagnosed() {
-    let mut sources = SourceMap::new();
-    let id = sources.add("test.ore", main_body("println(1.5)")).unwrap();
-    match emit_llvm(sources.file(id).unwrap()) {
-        Err(BuildError::Diagnostics(diagnostics)) => {
-            assert!(
-                diagnostics.iter().any(|d| d
-                    .message()
-                    .contains("printing floating-point values is not supported")),
-                "{diagnostics:?}"
-            );
-        }
-        other => panic!("expected diagnostics, got {other:?}"),
-    }
+fn floats_and_concatenated_strings_print_natively() {
+    prints(&main_body("println(1.5)"), "1.5\n");
     prints(
         &main_body("var s = \"a\"\ns += \"b\"\nprintln(s + \"c\")\nprintln(\"con\" + \"cat\")"),
         "abc\nconcat\n",
@@ -9306,4 +9294,136 @@ func main() {
         "1\n9\ntrue\ntrue\nfalse\n2\n9\n1\n9\ntrue\napple\nBoCyAnn\ntrue\nabc\n3\n3\n"
     );
     assert!(stderr(&output).contains("slices.Max: empty list"));
+}
+
+#[test]
+fn println_writes_the_shortest_float_text_that_reads_back() {
+    let source = "package main
+
+import \"zore/math\"
+
+func main() {
+    let third = 1.0 / 3.0
+    let zero = 0.0
+    let negative = -zero
+    println(3.0)
+    println(0.25)
+    println(100000.0)
+    println(third)
+    println(1e20)
+    println(1e21)
+    println(0.0001)
+    println(0.00001)
+    println(negative)
+    println(-0.0)
+    println(math.NaN())
+    println(math.Inf(1))
+    println(math.Inf(-1))
+    println(float32(0.1))
+    println(float32(third))
+    println(math.MaxFloat64)
+    println(math.SmallestNonzeroFloat64)
+    println(float32(math.MaxFloat32))
+}
+";
+    prints(
+        source,
+        "3.0\n0.25\n100000.0\n0.3333333333333333\n100000000000000000000.0\n1e+21\n0.0001\n1e-05\n-0.0\n0.0\nNaN\n+Inf\n-Inf\n0.1\n0.33333334\n1.7976931348623157e+308\n5e-324\n3.4028235e+38\n",
+    );
+}
+
+#[test]
+fn strconv_formats_and_parses_floats() {
+    let source = "package main
+
+import \"zore/strconv\"
+
+func show(text string) {
+    let value, err = strconv.ParseFloat(text, 64)
+    if err != nil {
+        println(err == error(\"strconv.ParseFloat: parsing \" + strconv.Quote(text) + \": invalid syntax\"))
+        return
+    }
+    println(value)
+}
+
+func main() {
+    println(strconv.FormatFloat(3.14159, 'f', 2, 64))
+    println(strconv.FormatFloat(3.0, 'f', -1, 64))
+    println(strconv.FormatFloat(1234.5678, 'e', 3, 64))
+    println(strconv.FormatFloat(1234.5678, 'E', -1, 64))
+    println(strconv.FormatFloat(1234.5678, 'g', 3, 64))
+    println(strconv.FormatFloat(100.0, 'g', 5, 64))
+    println(strconv.FormatFloat(2.0, 'g', -1, 64))
+    println(strconv.FormatFloat(0.1, 'g', -1, 32))
+    show(\"2.5e3\")
+    show(\"-2\")
+    show(\".5\")
+    show(\"7.\")
+    show(\"-Inf\")
+    show(\"NaN\")
+    show(\"1_000\")
+    show(\"0x1p-2\")
+    show(\"\")
+    show(\"1e\")
+    let big, bigErr = strconv.ParseFloat(\"1e400\", 64)
+    println(big)
+    println(bigErr == error(\"strconv.ParseFloat: parsing \\\"1e400\\\": value out of range\"))
+    let narrow, narrowErr = strconv.ParseFloat(\"1e39\", 32)
+    println(narrow)
+    println(narrowErr != nil)
+    let small, _ = strconv.ParseFloat(\"0.1\", 32)
+    println(small)
+    let bits, bitsErr = strconv.ParseFloat(\"1\", 16)
+    println(bits)
+    println(bitsErr == error(\"strconv.ParseFloat: parsing \\\"1\\\": invalid bit size 16\"))
+    println(strconv.FormatFloat(1.0, 'x', -1, 64))
+}
+";
+    let output = run(source);
+    assert_eq!(output.status.code(), Some(2), "{}", stderr(&output));
+    assert_eq!(
+        stdout(&output),
+        "3.14\n3\n1.235e+03\n1.2345678E+03\n1.23e+03\n100\n2.0\n0.1\n2500.0\n-2.0\n0.5\n7.0\n-Inf\nNaN\ntrue\ntrue\ntrue\ntrue\n+Inf\ntrue\n+Inf\ntrue\n0.10000000149011612\n0.0\ntrue\n"
+    );
+    assert!(stderr(&output).contains("strconv.FormatFloat: invalid format"));
+}
+
+#[test]
+fn math_functions_follow_ieee_754_without_panics() {
+    let source = "package main
+
+import \"zore/math\"
+
+func main() {
+    let zero = 0.0
+    println(math.Sqrt(2))
+    println(math.Pi)
+    println(math.Floor(-2.5))
+    println(math.Ceil(-2.5))
+    println(math.Trunc(-2.5))
+    println(math.Round(-2.5))
+    println(math.Round(2.4))
+    println(math.Pow(2, 10))
+    println(math.Mod(7, 3))
+    println(math.Exp(0))
+    println(math.Log(1))
+    println(math.Sqrt(-1))
+    println(math.Log(-1))
+    println(math.IsInf(math.Inf(-1), -1))
+    println(math.IsInf(math.Inf(1), 0))
+    println(math.IsInf(math.Inf(1), -1))
+    println(math.IsNaN(math.NaN()))
+    println(math.IsNaN(1))
+    println(math.Max(1, math.NaN()))
+    println(math.Max(1, 2))
+    println(math.Min(1, 2))
+    println(math.Abs(-zero))
+    println(math.Abs(-3.5))
+}
+";
+    prints(
+        source,
+        "1.4142135623730951\n3.141592653589793\n-3.0\n-2.0\n-2.0\n-3.0\n2.0\n1024.0\n1.0\n1.0\n0.0\nNaN\nNaN\ntrue\ntrue\nfalse\ntrue\nfalse\nNaN\n2.0\n1.0\n0.0\n3.5\n",
+    );
 }

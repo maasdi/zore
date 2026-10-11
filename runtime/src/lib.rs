@@ -13,10 +13,14 @@ mod channel;
 mod deadlock;
 #[path = "exec.rs"]
 mod exec;
+#[path = "float.rs"]
+mod float;
 #[path = "io.rs"]
 mod io;
 #[path = "map.rs"]
 mod map;
+#[path = "math.rs"]
+mod math;
 #[path = "mutex.rs"]
 mod mutex;
 #[path = "net.rs"]

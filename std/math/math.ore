@@ -1,0 +1,57 @@
+package math
+
+const Pi = 3.14159265358979323846264338327950288419716939937510582097494459
+const E = 2.71828182845904523536028747135266249775724709369995957496696763
+const Sqrt2 = 1.41421356237309504880168872420969807856967187537694807317667974
+const MaxFloat64 = 1.79769313486231570814527423731704356798070e+308
+const SmallestNonzeroFloat64 = 4.9406564584124654417656879286822137236505980e-324
+const MaxFloat32 = 3.40282346638528859811704183484516925440e+38
+const SmallestNonzeroFloat32 = 1.401298464324817070923729583289916131280e-45
+
+func Inf(sign int) float64
+func NaN() float64
+
+func IsNaN(f float64) bool {
+    return f != f
+}
+
+func IsInf(f float64, sign int) bool {
+    return sign >= 0 && f > MaxFloat64 || sign <= 0 && f < -MaxFloat64
+}
+
+func Abs(x float64) float64 {
+    if x < 0 || x == 0 && 1 / x < 0 {
+        return -x
+    }
+    return x
+}
+
+func Max(x float64, y float64) float64 {
+    if IsNaN(x) || IsNaN(y) {
+        return NaN()
+    }
+    if x > y {
+        return x
+    }
+    return y
+}
+
+func Min(x float64, y float64) float64 {
+    if IsNaN(x) || IsNaN(y) {
+        return NaN()
+    }
+    if x < y {
+        return x
+    }
+    return y
+}
+
+func Sqrt(x float64) float64
+func Floor(x float64) float64
+func Ceil(x float64) float64
+func Trunc(x float64) float64
+func Round(x float64) float64
+func Pow(x float64, y float64) float64
+func Mod(x float64, y float64) float64
+func Exp(x float64) float64
+func Log(x float64) float64

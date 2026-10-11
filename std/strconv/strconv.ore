@@ -9,3 +9,5 @@ func ParseBool(text string) (bool, error)
 func Quote(s string) string
 func QuoteRune(r rune) string
 func Unquote(s string) (string, error)
+func FormatFloat(value float64, format rune, precision int, bitSize int) string
+func ParseFloat(text string, bitSize int) (float64, error)

@@ -62,6 +62,13 @@ once it does.
 - Added `sort.Slice` and `sort.SliceIsSorted`, and the generic `zore/slices`
   (`Contains`, `Index`, `Equal`, `Sort`, `IsSorted`, `Reverse`, `Max`, `Min`,
   `Clone`) and `zore/maps` (`Keys`, `Values`, `Clone`) packages (§37.5).
+- Locked the float text form (§37.1, Q43): `println` of a `float32` or
+  `float64` writes the shortest decimal that reads back to the same value,
+  always with a point (`3.0`), in exponent form below 1e-4 or from 1e21 up
+  (`1e+21`), with `NaN`, `+Inf`, `-Inf`, and `-0.0`. Added
+  `strconv.FormatFloat` and `strconv.ParseFloat`, and a `zore/math` package
+  with constants, `Sqrt`, `Floor`, `Ceil`, `Trunc`, `Round`, `Pow`, `Mod`,
+  `Exp`, `Log`, `Abs`, `Max`, `Min`, `Inf`, `NaN`, `IsNaN`, and `IsInf`.
 
 ### Compiler
 

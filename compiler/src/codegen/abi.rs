@@ -9,6 +9,8 @@ declare void @zore_println_str(ptr, i64)
 declare void @zore_println_i64(i64)
 declare void @zore_println_u64(i64)
 declare void @zore_println_bool(i1 zeroext)
+declare void @zore_println_f32(float)
+declare void @zore_println_f64(double)
 declare void @zore_println_rune(i32)
 declare i32 @zore_string_compare(ptr, i64, ptr, i64)
 declare noalias ptr @zore_alloc(i64)
@@ -495,19 +497,15 @@ impl FunctionBuilder<'_, '_> {
         ));
     }
 
-    pub(super) fn println(&mut self, arg: &Operand, span: Span) {
+    pub(super) fn println(&mut self, arg: &Operand) {
         let arg_ty = self.operand_ty(arg);
         let kind = self.module.package.types.kind(arg_ty);
-        if let TypeKind::Float(_) = kind {
-            self.module.unsupported(
-                "printing floating-point values is",
-                span,
-                "the float text format for `println` is still TBD",
-            );
-            return;
-        }
         let value = self.value(arg);
         match kind {
+            TypeKind::Float(float) if float.bits == 32 => {
+                self.line(format!("call void @zore_println_f32(float {value})"))
+            }
+            TypeKind::Float(_) => self.line(format!("call void @zore_println_f64(double {value})")),
             TypeKind::String => {
                 let (ptr, len) = self.string_parts(&value);
                 self.line(format!("call void @zore_println_str(ptr {ptr}, i64 {len})"));
@@ -532,8 +530,7 @@ impl FunctionBuilder<'_, '_> {
                 };
                 self.line(format!("call void @{function}(i64 {wide})"));
             }
-            TypeKind::Float(_)
-            | TypeKind::Error
+            TypeKind::Error
             | TypeKind::Struct(_)
             | TypeKind::Array { .. }
             | TypeKind::Slice { .. }
