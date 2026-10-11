@@ -6241,7 +6241,9 @@ satisfy the ones whose methods they have. A `Read` gives at least one byte, or
 `0` and an error; the end of the input is the error `EOF`.
 A read may deliver its last bytes together with an error. `ReadFull` succeeds
 with `nil` as soon as the requested buffer is filled, including when that read
-also reports an error.
+also reports an error. A read count below zero or past the buffer stops `Copy`
+with `io.Copy: invalid read count` and `ReadFull` with
+`io.ReadFull: invalid read count`.
 
 A `Write` reports the number of bytes accepted, between zero and the input
 length. A positive short write with `nil` is permitted. `Copy` and
@@ -6250,7 +6252,8 @@ with `nil` stops them with `io.Copy: no write progress` or
 `bufio.Writer: no write progress`; an out-of-range count stops them with
 `io.Copy: invalid write count` or `bufio.Writer: invalid write count`.
 `Flush` retains the unwritten suffix and its error, and later flushes return
-that error. For example, copying `abc` to a writer accepting one byte per call
+that error. `bufio.Writer.Write` keeps all of its input in the buffer, so when
+its own flush fails it reports the full input length with that error. For example, copying `abc` to a writer accepting one byte per call
 writes `a`, then `b`, then `c`, returning `(3, nil)`.
 
 These rules preserve ordinary borrowed buffer ownership and explicit errors;

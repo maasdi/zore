@@ -220,3 +220,51 @@ func main() {
         "1\ntrue\ntrue\n2\n0\ntrue\ntrue\n3\n0\ntrue\ntrue\n3\n",
     );
 }
+
+#[test]
+fn copying_and_full_reads_reject_out_of_range_read_counts() {
+    prints(
+        r#"package main
+import "zore/io"
+import "zore/bytes"
+type Reader struct { count int }
+func (r mut Reader) Read(p mut []byte) (int, error) { return r.count, nil }
+func main() {
+    for count in [int; 2]{-1, 40000} {
+        var src = Reader{count: count}
+        var dst = bytes.NewBufferString("")
+        let copied, err = io.Copy(dst, src)
+        println(copied)
+        println(err == error("io.Copy: invalid read count"))
+    }
+    for count in [int; 2]{-1, 3} {
+        var src = Reader{count: count}
+        var buf = [byte; 2]{0, 0}
+        let read, err = io.ReadFull(src, buf[:])
+        println(read)
+        println(err == error("io.ReadFull: invalid read count"))
+    }
+}"#,
+        "0\ntrue\n0\ntrue\n0\ntrue\n0\ntrue\n",
+    );
+}
+
+#[test]
+fn buffered_write_reports_accepted_bytes_when_its_flush_fails() {
+    prints(
+        r#"package main
+import "zore/bufio"
+type Writer struct {}
+func (w mut Writer) Write(p []byte) (int, error) { return 0, error("stopped") }
+func main() {
+    var buf = bufio.NewWriter(Writer{})
+    var data = Array<byte>{}
+    for var i = 0; i < 5000; i += 1 { data.push(97) }
+    let n, err = buf.Write(data[:])
+    println(n)
+    println(err == error("stopped"))
+    println(buf.Buffered())
+}"#,
+        "5000\ntrue\n5000\n",
+    );
+}

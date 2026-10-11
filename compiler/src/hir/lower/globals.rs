@@ -31,7 +31,11 @@ pub(in crate::hir) fn check(
     if package.globals.is_empty() {
         return diagnostics;
     }
-    let references: Vec<References> = package.functions.iter().map(references).collect();
+    let references: Vec<References> = package
+        .functions
+        .iter()
+        .map(|function| references(package, function))
+        .collect();
     for (index, &function) in initializers.iter().enumerate() {
         let used = reached_globals(package, &references, function);
         let mut later: Vec<&GlobalId> = used.iter().filter(|g| g.0 as usize >= index).collect();
@@ -54,7 +58,7 @@ pub(in crate::hir) fn check(
             );
         }
     }
-    if !diagnostics.is_empty() || package.globals.is_empty() {
+    if !diagnostics.is_empty() {
         return diagnostics;
     }
     let stmts = package
@@ -107,6 +111,7 @@ struct References {
     functions: HashSet<FunctionId>,
     interfaces: HashSet<(TypeId, usize)>,
     conversions: HashSet<(TypeId, TypeId)>,
+    types: HashSet<TypeId>,
 }
 
 fn reached_globals(
@@ -176,9 +181,15 @@ fn reached_globals(
     }
 }
 
-fn references(function: &hir::Function) -> References {
+fn references(package: &hir::Package, function: &hir::Function) -> References {
     let mut found = References::default();
+    found
+        .types
+        .extend(function.locals.iter().map(|local| local.ty));
     block(&function.body, &mut found);
+    for &ty in &found.types {
+        found.functions.extend(package.drops_within(ty));
+    }
     found
 }
 
@@ -282,6 +293,7 @@ fn statement(stmt: &hir::Stmt, found: &mut References) {
 }
 
 fn expr(expr_: &hir::Expr, found: &mut References) {
+    found.types.extend(expr_.types.iter().copied());
     match &expr_.kind {
         ExprKind::InterfaceBox(source) | ExprKind::InterfaceView { source, .. } => {
             found.conversions.insert((source.ty(), expr_.ty()));

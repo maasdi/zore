@@ -4238,6 +4238,10 @@ func use() int {
             "`Spawned` is computed from `After`",
         ),
         (
+            "type Guard struct { id int }\nfunc (g mut Guard) drop() { println(After) }\nlet Dropped = make()\nlet After = 5\nfunc make() int { let g = Guard{id: 1}; return g.id }",
+            "`Dropped` is computed from `After`",
+        ),
+        (
             "let Loop = again()\nfunc again() int { return Loop }",
             "`Loop` is used to compute itself",
         ),
