@@ -6,7 +6,7 @@ current compiler. The locked rules in specification §§16.4, 18.4–18.6, and
 18.11 remain authoritative:
 ordinary `go` cannot borrow another task's local storage, dropping a `Task`
 detaches it, and the process abandons unfinished work when the initial task
-completes. Q09b already makes the current model memory-safe.
+completes. The locked task rules already make the current model memory-safe.
 
 ## Recommendation and decision table
 

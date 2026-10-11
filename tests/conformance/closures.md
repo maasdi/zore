@@ -53,7 +53,7 @@ tests. Every other row has an executable counterpart in
 | Two closures that both only read the same local | Accepted |
 | Nested closure writes a local two levels out | Every capture in the chain is exclusive; rejected for a `let` binding |
 | Captured view whose backing is written while the closure is live | Rejected |
-| Body stores a view of another captured local into a captured local | Accepted; the outer local borrows it from the closure's creation (Q22) |
+| Body stores a view of another captured local into a captured local | Accepted; the outer local borrows it from the closure's creation |
 | Body stores a view of its own parameter or local into a captured local | Rejected (the first as unsupported) |
 | Body stores a plain value into a captured `var` | Accepted |
 

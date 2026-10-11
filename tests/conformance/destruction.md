@@ -54,10 +54,10 @@ leave a custom-`drop`-bearing value incomplete — has coverage in
 | `value.clone()` called directly via method-call syntax | Valid: no double-invocation hazard, unlike `.drop()` |
 | `[T; N]` array of a structurally clonable `T`, no custom `drop` on the array's element type | Valid: element-wise structural default |
 | `copy(value)` (generic copy builtin) | Reject: not part of the MVP |
-| `clone(1)`, `clone("s")`, `clone(err)`, a slice, or a closure | Reject: clone applies to structs, fixed arrays, `Array<T>`, and maps (Q19) |
+| `clone(1)`, `clone("s")`, `clone(err)`, a slice, or a closure | Reject: clone applies to structs, fixed arrays, `Array<T>`, and maps |
 | `clone()` or `clone(a, b)`, or `clone` used as a value | Reject |
 | Custom `clone` with a `mut` or `own` receiver, parameters, or a result other than its own type | Reject at the declaration |
-| `value.clone()` on a type without a custom `clone` | Reject, noting `clone(value)` (Q19) |
+| `value.clone()` on a type without a custom `clone` | Reject, noting `clone(value)` |
 | `clone(v)` of a value holding views, then writing the viewed owner while the clone is live | Reject: the clone keeps the backing borrowed |
 | A clone is independent: changing the source afterwards leaves the clone unchanged | Valid |
 | Clone of a struct, `Array<T>`, fixed array, or map of resources with a custom `clone` | Each part cloned once; the clone and the source are each dropped once |
@@ -91,7 +91,7 @@ containment, re-raising at retrieval, and reporting are covered in
 Detailed provenance and replacement cases are in `ownership.md`; resource
 acquisition/release accounting cases are in `zero-values.md`.
 
-## Custom clone precedence (§10.7, Q12)
+## Custom clone precedence (§10.7)
 
 | Scenario | Expected result |
 | --- | --- |

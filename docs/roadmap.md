@@ -10,7 +10,7 @@ cleanup edges for checked operations and calls. The runtime propagates panic
 status through synchronous frames and reports an initial-task panic after
 cleanup.
 
-The Q32 implementation and the subsequent socket-test fix passed
+The async state-machine implementation and the subsequent socket-test fix passed
 [main CI on 2026-10-08](https://github.com/maasdi/zore/actions/runs/37726483242)
 on Ubuntu and macOS: rustfmt, clippy with warnings denied, build, docs, and
 `cargo test --locked --all-targets`. This validates the tested subset at that
@@ -22,26 +22,25 @@ to those IDs are below, followed by the active validation work package.
 
 Broad specification preparation has ended: resolve further language questions
 only when they block the active implementation milestone. No currently
-recorded language question blocked M0–M4; Q13 and Q14 record the conservative
-lexer and parser choices made where the spec is silent. Q15 is resolved by
-§6.7 (Go's untyped-constant model), which the checker implements. Numbers refer to spec §43; the sequence
+recorded language question blocked M0–M4. Untyped constants follow §6.7
+(Go's untyped-constant model), which the checker implements. Numbers refer to spec §43; the sequence
 is guidance, not a language contract.
 
 | Milestone | Deliverable and acceptance criteria |
 | --- | --- |
 | M0 — implemented and tested | CLI/driver: help, version, argument validation, unsupported-command errors, and subprocess exit/output tests. `check <file.ore>` works. |
 | M1 — implemented and tested | Source manager, file IDs, byte spans, and diagnostic rendering, including UTF-8 and multiple-file cases. |
-| M2 — implemented and tested | Lexer and agreed token rules, with span, invalid-input, EOF, and recovery tests. Q01 lexical choices are resolved. |
+| M2 — implemented and tested | Lexer and agreed token rules, with span, invalid-input, EOF, and recovery tests. The lexical choices are resolved. |
 | M3–M4 — supported subset implemented and tested | AST and parser for the implemented language, including packages, functions, structs, collections, closures, and async syntax. Unsupported forms receive diagnostics. |
 | M5–M8 — supported subset implemented and tested | Native hello program, variables, functions, structs, and control flow. Backend and output support run native examples. |
 | M9–M12 — supported subset implemented and tested | Name resolution, types, HIR, MIR/CFG, semantic IDs, typed calls/fields, explicit control flow, and frontend-only checking. Package-level variables remain unsupported. |
-| M13–M17 — partial | Copy/Move classification, mutable borrowing, whole-place move analysis, field-level partial moves (with reinitialization and the custom-`drop`-ancestor restriction), and stored borrows with region analysis exist in CLI checking and builds. Region analysis tracks slice loans per local, frees them at the holder's last use (backward liveness), checks exclusivity at the originating place, suspends sources during mutable reborrows, rejects views that outlive a local or temporary owner, and infers return-borrow contracts by fixpoint. `mut []T` may be a struct field or fixed-array element; copying such a value reborrows each view inside it (Q20). `mut []T` may also be held in `Array<T>`, map, and `mut []T` elements, and views may be stored through mutable slices (Q20b, Q22b). Tasks reject every borrowed input (Q25), so no borrow crosses a task boundary. Views may be stored through `mut` parameters and closure captures (Q22). A custom `drop` may read a contained view; its borrows last until the value is destroyed (Q21). Complete the §42 semantic target with paired acceptance/rejection tests. |
+| M13–M17 — partial | Copy/Move classification, mutable borrowing, whole-place move analysis, field-level partial moves (with reinitialization and the custom-`drop`-ancestor restriction), and stored borrows with region analysis exist in CLI checking and builds. Region analysis tracks slice loans per local, frees them at the holder's last use (backward liveness), checks exclusivity at the originating place, suspends sources during mutable reborrows, rejects views that outlive a local or temporary owner, and infers return-borrow contracts by fixpoint. `mut []T` may be a struct field or fixed-array element; copying such a value reborrows each view inside it. `mut []T` may also be held in `Array<T>`, map, and `mut []T` elements, and views may be stored through mutable slices. Tasks reject every borrowed input, so no borrow crosses a task boundary. Views may be stored through `mut` parameters and closure captures. A custom `drop` may read a contained view; its borrows last until the value is destroyed. Complete the §42 semantic target with paired acceptance/rejection tests. |
 | M18–M19 — supported subset implemented and tested | Drop insertion and panic cleanup cover supported synchronous and async paths. The concrete Copy `error` type, `nil` in an error context, `error(message)`, content equality, explicit discards, rejection of silently ignored error results, and path-sensitive checks for named errors are implemented. `?` propagates call errors, zero-fills other return values, and runs cleanup, including after awaited async calls and task results. |
-| M20–M23 — partial | Fixed-array types, typed literals, and indexing (read, mutable-place write/replacement, conservative-aliasing, and rejection of moving an element out through an index) are implemented end to end: `zore check`, and now `zore build`/`zore run` — LLVM `[N x T]` type emission, GEP-based indexed addressing, runtime bounds-check panics, and element cleanup without per-element drop flags (sound because element extraction stays rejected). Borrowed slices (`[]T`, `mut []T`, `base[low:high]`, contextual exclusive views, indexing and element writes through views) are implemented end to end: `zore check` with region analysis, and `zore build`/`zore run` with `{ ptr, i64 }` descriptors, slice-aware addressing, and runtime "slice bounds out of range" panics. Dynamic `Array<T>` is implemented end to end for literal-sized arrays: typed literals, indexing, element writes, slicing, borrow/`mut`/`own` passing, returns, the zero value, and heap storage freed after dropping elements in reverse order (Q17). `len`, `push`, and `pop` (§12.7) work, and `Array<T>` storage keeps a capacity so pushes are amortized. Finite recursive owned structs through `Array<T>` and maps are supported, including mutual recursion, structural/custom cloning, and cached out-of-line destruction; by-value layout cycles remain rejected. Runtime clone/drop depth is native-stack-bounded, not unbounded-stack-safe. Packages and imports work; ownership and visibility still need broader conformance coverage. Maps (`map[K]V`, §13.3) are implemented end to end: typed literals with static and runtime duplicate-key rejection, the two-result lookup for Copy values, `m[k] = v` insert/replace, and `m.remove(k)` transferring ownership (Q18). `m.len()` and `for key, value in m` loops work (§5.10, §12.7); borrowed entry access remains Q02/Q05. |
-| M24 — partial | Closures (§16, Q02g, Q02i) work end to end in `zore check`, `zore build`, and `zore run`: closure literals, `func(T) R` types, calls through values, function-typed parameters, captures inferred per whole local as shared or exclusive loans checked by region analysis, nested captures, `?` and panic cleanup inside closures. Paired acceptance/rejection tests cover each rule. Owning closures (returned or stored, with heap environments and destructors) and call-once closures are inferred automatically. Declared synchronous functions, including package-qualified ones, are function values (Q33); async function values and receiver-capturing method values are also supported (Q34, Q36). Async method values remain unsupported. Remaining, each diagnosed as unsupported or rejected: storing a view of a closure's own parameter into a capture, and closures with tasks or `await`. |
-| M25–M29 — tasks implemented; state machines with all supported waiting operations implemented | `async func`, `await`, `go`, `Task<...>`, `.wait()`, and `await task` work end to end in `zore check`, `zore build`, and `zore run` (§17–18, Q25). An async call must be awaited or spawned, `await` is valid only in an `async func` body, and `main` cannot be `async`. `go` takes a call to a declared function or method; its inputs are copied or moved into an owning closure that the runtime executes once, and spawned `mut`, view, and unmoved-Move inputs are rejected. `Task<...>` is a Move handle: dropping it detaches the task, `.wait()` and `await task` consume it, a task panic is raised again at retrieval, and a nil task panics. Text counts are shared across threads under one lock. Q32 adds a poll scheduler, persistent heap frames, async-call/task, channel/select, timer, mutex acquisition, and I/O/helper suspension, and polled `go` for eligible async functions. Waiting standard-library wrappers gain internal poll frames; plain user helpers remain synchronous. Plain-function tasks run once on the same worker pool as polled tasks on every host; blocking runtime calls start replacement workers. Async tasks need heap frames rather than private stacks, while plain functions hold an OS worker during a wait. Fibers, stack-switching assembly, and the per-task thread fallback are removed. `go` also takes a closure literal or a function-typed local as its callee (Q33): the callable moves into the task, runs once as a plain task, and is destroyed exactly once on a normal return, an error, or a panic; borrowed parameters, views, `mut` captures, and changes to a captured Copy value are rejected. Method values (`value.Method`) are closures over the receiver (Q34). Declared `async func`s are values of an `async func(...)` type (Q36): a call through one is awaited or spawned, and an await suspends the task like a declared call. Remaining: forced preemption, async closure literals and async method values, and the lifetime proof for borrows that cross a task boundary beyond the current rejections. Channels are M30–M31. |
-| M30–M31 — channels and async I/O implemented | `channel<T>()` and `channel<T>(n)` with `send`, `receive`, and `close` work end to end (§19, Q26): handles are Copy and share one queue, a Move message is moved in and out, an unbuffered send waits for a receiver, a buffered send waits only when full, `receive` returns the value and whether one arrived, closing wakes every blocked task, a send on a closed channel panics (the runtime drops the unsent value first), closing twice panics, and the zero value is an always-closed empty channel. Buffered values are dropped when the last handle goes. Elements cannot hold slices or function values. An async task suspends on a channel; a plain task blocks its worker with compensation. Async I/O (§37.3, Q27): `std/time` (`Sleep`, `Millis`), `std/io` (`ReadLine`), `std/os` (`ReadFile`, `WriteFile`), and `std/net` (TCP `Listen`, `Dial`, `Accept`, `Read`, `Write`, `CloseWrite`, `Port`) suspend an async task or block a plain caller with compensation. Timers and socket readiness use an event loop (epoll on Linux, kqueue on macOS); files, standard input, connects, and name lookups run on a pool of helper threads. A program in which every task waits on a channel or another task, with no timer, descriptor, or helper thread that could wake one, stops with "all tasks are asleep" and exit status 2. `select` (§19.14, Q29) waits on several `receive` and `send` cases and runs the body of one that can proceed, with an optional `default`; ready cases are tried from a rotating start so none starves, and a task waiting in a `select` sits in the queue of every channel it names until one case completes. Byte arrays (§37.2–37.3, Q30): `strings.Bytes` and `strings.FromBytes` (checked UTF-8), `os.ReadBytes` and `os.WriteBytes`, and `Conn.ReadBytes` and `Conn.WriteBytes` read and write any bytes as an `Array<byte>`. Time limits and cancellation (§37.3–37.4, Q31): `time.After` is a channel that fires once, `net.DialTimeout` and `SetTimeout` on a `Listener` or `Conn` make accepts, reads, and writes give up with a `timed out` error (the event loop waits on the descriptor and a timer together), and the new `zore/cancel` package gives cooperative tokens (`New`, `WithTimeout`, `Cancel`, `Cancelled`, `Done`, `Child`, `Sleep`) written in Zore itself. Remaining: UDP, TLS, other file operations, and sharing one connection between tasks. The kqueue path runs in CI on macOS. |
-| M32–M34 — in progress | LLVM/native toolchain hardening and library growth; native execution tests exist, but a full MVP coverage audit against §39/§46/§52 is pending. Standard library refactor (§37.2–§37.5, Q37): one naming and signature pattern across packages, nested import paths, byte-based files, input, and connections, nanosecond durations, network deadlines, `std/context` in place of `zore/cancel`, `bufio` in place of `std/io`, and new `bytes`, `errors`, `unicode`, `unicode/utf8`, `path`, `path/filepath`, `sort`, `sync`, and `os/exec` packages. `panic(message)` is callable from source (§15.4, Q38). Runes convert to and from integer types (§6.6, Q39). Named types such as `type Duration int` declare distinct types with methods (§8.5, Q40). Package-level `let` values are computed once before `main` (§3.21, Q41). Interfaces: borrowed and owned interface values, implicit conversions, and calls through method tables that suspend in async code when the method behind them waits (§22.2, Q42). Generic functions with `any`, `copyable`, `comparable`, `ordered`, and interface constraints, inferred type arguments, and one compiled copy per set of type arguments; generic struct types such as `Stack<T>` with their methods (§22.1, Q42). `std/io` with `Reader`, `Writer`, `Copy`, and `ReadAll`, and `bufio` over any reader or writer (§37.3). `sort.Slice` and the generic `slices` and `maps` packages (§37.5). Float text for `println`, `strconv.FormatFloat` and `ParseFloat`, and `std/math` (§37.1–§37.2, Q43). Compiler-checked `std/fmt`, error causes with `errors.Wrap`, `Unwrap`, `Is`, and `fmt.Errorf` `%w`, and function literals in generic code (§15.1, §22.1, §37.2, Q44). Standard packages are imported as `std/<path>` instead of `zore/<path>` (§3.20, Q45). |
+| M20–M23 — partial | Fixed-array types, typed literals, and indexing (read, mutable-place write/replacement, conservative-aliasing, and rejection of moving an element out through an index) are implemented end to end: `zore check`, and now `zore build`/`zore run` — LLVM `[N x T]` type emission, GEP-based indexed addressing, runtime bounds-check panics, and element cleanup without per-element drop flags (sound because element extraction stays rejected). Borrowed slices (`[]T`, `mut []T`, `base[low:high]`, contextual exclusive views, indexing and element writes through views) are implemented end to end: `zore check` with region analysis, and `zore build`/`zore run` with `{ ptr, i64 }` descriptors, slice-aware addressing, and runtime "slice bounds out of range" panics. Dynamic `Array<T>` is implemented end to end for literal-sized arrays: typed literals, indexing, element writes, slicing, borrow/`mut`/`own` passing, returns, the zero value, and heap storage freed after dropping elements in reverse order. `len`, `push`, and `pop` (§12.7) work, and `Array<T>` storage keeps a capacity so pushes are amortized. Finite recursive owned structs through `Array<T>` and maps are supported, including mutual recursion, structural/custom cloning, and cached out-of-line destruction; by-value layout cycles remain rejected. Runtime clone/drop depth is native-stack-bounded, not unbounded-stack-safe. Packages and imports work; ownership and visibility still need broader conformance coverage. Maps (`map[K]V`, §13.3) are implemented end to end: typed literals with static and runtime duplicate-key rejection, the two-result lookup for Copy values, `m[k] = v` insert/replace, and `m.remove(k)` transferring ownership. `m.len()` and `for key, value in m` loops work (§5.10, §12.7); borrowed entry access remains Q02/Q05. |
+| M24 — partial | Closures (§16) work end to end in `zore check`, `zore build`, and `zore run`: closure literals, `func(T) R` types, calls through values, function-typed parameters, captures inferred per whole local as shared or exclusive loans checked by region analysis, nested captures, `?` and panic cleanup inside closures. Paired acceptance/rejection tests cover each rule. Owning closures (returned or stored, with heap environments and destructors) and call-once closures are inferred automatically. Declared synchronous functions, including package-qualified ones, are function values; async function values and receiver-capturing method values are also supported. Async method values remain unsupported. Remaining, each diagnosed as unsupported or rejected: storing a view of a closure's own parameter into a capture, and closures with tasks or `await`. |
+| M25–M29 — tasks implemented; state machines with all supported waiting operations implemented | `async func`, `await`, `go`, `Task<...>`, `.wait()`, and `await task` work end to end in `zore check`, `zore build`, and `zore run` (§17–18). An async call must be awaited or spawned, `await` is valid only in an `async func` body, and `main` cannot be `async`. `go` takes a call to a declared function or method; its inputs are copied or moved into an owning closure that the runtime executes once, and spawned `mut`, view, and unmoved-Move inputs are rejected. `Task<...>` is a Move handle: dropping it detaches the task, `.wait()` and `await task` consume it, a task panic is raised again at retrieval, and a nil task panics. Text counts are shared across threads under one lock. The async state-machine work adds a poll scheduler, persistent heap frames, async-call/task, channel/select, timer, mutex acquisition, and I/O/helper suspension, and polled `go` for eligible async functions. Waiting standard-library wrappers gain internal poll frames; plain user helpers remain synchronous. Plain-function tasks run once on the same worker pool as polled tasks on every host; blocking runtime calls start replacement workers. Async tasks need heap frames rather than private stacks, while plain functions hold an OS worker during a wait. Fibers, stack-switching assembly, and the per-task thread fallback are removed. `go` also takes a closure literal or a function-typed local as its callee: the callable moves into the task, runs once as a plain task, and is destroyed exactly once on a normal return, an error, or a panic; borrowed parameters, views, `mut` captures, and changes to a captured Copy value are rejected. Method values (`value.Method`) are closures over the receiver. Declared `async func`s are values of an `async func(...)` type: a call through one is awaited or spawned, and an await suspends the task like a declared call. Remaining: forced preemption, async closure literals and async method values, and the lifetime proof for borrows that cross a task boundary beyond the current rejections. Channels are M30–M31. |
+| M30–M31 — channels and async I/O implemented | `channel<T>()` and `channel<T>(n)` with `send`, `receive`, and `close` work end to end (§19): handles are Copy and share one queue, a Move message is moved in and out, an unbuffered send waits for a receiver, a buffered send waits only when full, `receive` returns the value and whether one arrived, closing wakes every blocked task, a send on a closed channel panics (the runtime drops the unsent value first), closing twice panics, and the zero value is an always-closed empty channel. Buffered values are dropped when the last handle goes. Elements cannot hold slices or function values. An async task suspends on a channel; a plain task blocks its worker with compensation. Async I/O (§37.3): `std/time` (`Sleep`, `Millis`), `std/io` (`ReadLine`), `std/os` (`ReadFile`, `WriteFile`), and `std/net` (TCP `Listen`, `Dial`, `Accept`, `Read`, `Write`, `CloseWrite`, `Port`) suspend an async task or block a plain caller with compensation. Timers and socket readiness use an event loop (epoll on Linux, kqueue on macOS); files, standard input, connects, and name lookups run on a pool of helper threads. A program in which every task waits on a channel or another task, with no timer, descriptor, or helper thread that could wake one, stops with "all tasks are asleep" and exit status 2. `select` (§19.14) waits on several `receive` and `send` cases and runs the body of one that can proceed, with an optional `default`; ready cases are tried from a rotating start so none starves, and a task waiting in a `select` sits in the queue of every channel it names until one case completes. Byte arrays (§37.2–37.3): `strings.Bytes` and `strings.FromBytes` (checked UTF-8), `os.ReadBytes` and `os.WriteBytes`, and `Conn.ReadBytes` and `Conn.WriteBytes` read and write any bytes as an `Array<byte>`. Time limits and cancellation (§37.3–37.4): `time.After` is a channel that fires once, `net.DialTimeout` and `SetTimeout` on a `Listener` or `Conn` make accepts, reads, and writes give up with a `timed out` error (the event loop waits on the descriptor and a timer together), and the new `zore/cancel` package gives cooperative tokens (`New`, `WithTimeout`, `Cancel`, `Cancelled`, `Done`, `Child`, `Sleep`) written in Zore itself. Remaining: UDP, TLS, other file operations, and sharing one connection between tasks. The kqueue path runs in CI on macOS. |
+| M32–M34 — in progress | LLVM/native toolchain hardening and library growth; native execution tests exist, but a full MVP coverage audit against §39/§46/§52 is pending. Standard library refactor (§37.2–§37.5): one naming and signature pattern across packages, nested import paths, byte-based files, input, and connections, nanosecond durations, network deadlines, `std/context` in place of `zore/cancel`, `bufio` in place of `std/io`, and new `bytes`, `errors`, `unicode`, `unicode/utf8`, `path`, `path/filepath`, `sort`, `sync`, and `os/exec` packages. `panic(message)` is callable from source (§15.4). Runes convert to and from integer types (§6.6). Named types such as `type Duration int` declare distinct types with methods (§8.5). Package-level `let` values are computed once before `main` (§3.21). Interfaces: borrowed and owned interface values, implicit conversions, and calls through method tables that suspend in async code when the method behind them waits (§22.2). Generic functions with `any`, `copyable`, `comparable`, `ordered`, and interface constraints, inferred type arguments, and one compiled copy per set of type arguments; generic struct types such as `Stack<T>` with their methods (§22.1). `std/io` with `Reader`, `Writer`, `Copy`, and `ReadAll`, and `bufio` over any reader or writer (§37.3). `sort.Slice` and the generic `slices` and `maps` packages (§37.5). Float text for `println`, `strconv.FormatFloat` and `ParseFloat`, and `std/math` (§37.1–§37.2). Compiler-checked `std/fmt`, error causes with `errors.Wrap`, `Unwrap`, `Is`, and `fmt.Errorf` `%w`, and function literals in generic code (§15.1, §22.1, §37.2). Standard packages are imported as `std/<path>` instead of `zore/<path>` (§3.20). |
 | M35+ | Self-hosting work after bootstrap and library capabilities are sufficient. Stages 1 and 2 of the self-hosting plan are done: a lexer and a parser written in Zore (`compiler-zore/`) match the Rust frontend in differential tests. |
 
 The early native milestones and semantic milestones overlap: integrate the
@@ -57,7 +56,7 @@ linked above.
 
 ## Current implementation and next work
 
-Q32 slices 1–6 are implemented. Plain-function tasks use the shared pool, fibers
+The async state-machine slices 1–6 are implemented. Plain-function tasks use the shared pool, fibers
 and stack switching are removed, and the architecture and test guides describe
 the current scheduler. Async-call/task, channel/select, timer, mutex acquisition,
 and I/O/helper waits use persistent frames and task wakers.
@@ -72,7 +71,7 @@ exhaust host thread limits; use `async func` for those workloads. Compiler-inser
 cooperative budgets now yield CPU-heavy async loops. Still open: forced
 preemption; frame shrinking by general liveness (poll-local storage and same-type
 slot reuse are implemented); scoped tasks (unresolved design work, Q10); and
-async closure literals. These are follow-ups outside the accepted Q32 slices. The next milestone is M32–M34's backend/toolchain
+async closure literals. These are follow-ups outside the accepted async slices. The next milestone is M32–M34's backend/toolchain
 hardening and MVP coverage audit.
 
 The supported baseline has native validation (see above). The detailed work
@@ -84,14 +83,14 @@ The first Move type is a struct with a user-defined `drop` method (§8.3,
 branch joins, and loop backedges, and tracks field-level partial moves: a
 moved field's siblings stay individually usable, the whole value is unusable
 until every moved field is reinitialized, and a move that would reach through
-a custom-`drop`-bearing container is rejected (§31.2, Q07a/Q07b). Drop
+a custom-`drop`-bearing container is rejected (§31.2). Drop
 insertion handles scope exits, replacements, owned parameters, and
 synchronous panic cleanup; codegen's existing per-field drop-flag tracking
 already drops only still-live fields with no further changes needed.
 Synchronous `?` under M18–M19 now uses the return cleanup path.
 
 Borrowed slices and region analysis now close the stored-borrows part of
-M13–M17 for `zore check` (§11.3–11.7, §12, Q16). A loan comes from slicing,
+M13–M17 for `zore check` (§11.3–11.7, §12). A loan comes from slicing,
 from copying a `mut []T` (an exclusive reborrow), or from a call whose
 inferred return contract says its result borrows from an argument; loans
 cover storage paths that distinguish a descriptor from the storage it views.
@@ -138,11 +137,11 @@ gets a fresh transient scratch flags block (`drop_value`/`drop_contents`/
 per-slot storage, which a naive copy-paste extension of the existing
 struct-field GEP pattern would have corrupted.
 
-Integer-to-rune conversions are done (§6.6, Q39). Strings follow below. Runtime checks use MIR assert
+Integer-to-rune conversions are done (§6.6). Strings follow below. Runtime checks use MIR assert
 terminators with cleanup paths.
 
 Temporary limits that are not language rules: package-level `var` is not yet
-supported (`let` is, Q41), and a project can import only its own packages and
+supported (`let` is), and a project can import only its own packages and
 the standard ones (§37).
 
 Routine driver, diagnostic presentation, and internal representation decisions
@@ -156,11 +155,11 @@ isolate the affected feature and continue unrelated supported work.
 | --- | --- |
 | Remaining primary/postfix grammar | Before implementing the affected parser form; the M3–M4 subset is parsed and later forms are diagnosed as unsupported |
 | Type identity/layout gaps, numeric typing corner cases | Before the corresponding resolver/type-checker accepts those programs; not before lexing |
-| Minimal package/entry-point contract and `println` signature | Resolved in §3.19 and §37.1 (Q05a); `println` float text format stays open until native float printing |
-| Import discovery, project mapping | Resolved in §3.20 (Q24); implemented. Package variables and initialization order remain open |
-| String indexing/slicing/length | Resolved in §6.8 (Q23); implemented |
+| Minimal package/entry-point contract and `println` signature | Resolved in §3.19 and §37.1; `println` float text format stays open until native float printing |
+| Import discovery, project mapping | Resolved in §3.20; implemented. Package variables and initialization order remain open |
+| String indexing/slicing/length | Resolved in §6.8; implemented |
 | Borrowed map-entry access, capacity APIs | Before implementing those operations; iteration, `len`, `push`, and `pop` are resolved in §5.10 and §12.7 |
-| Closure types/captures/invocation | Resolved (§16, Q02g, Q02i); closures with tasks resolved in Q33 |
+| Closure types/captures/invocation | Resolved (§16); closures with tasks resolved by §18.4 |
 | Full go grammar, concurrency library APIs | Before affected M25–M31 work; preserve already locked ownership/runtime contracts |
 | Scoped tasks (Q10) | Optional extension, not a current implementation prerequisite |
 | LLVM version/ABI, allocation, scheduler | Internal choices when the relevant backend/runtime stage begins; document and test then |
@@ -248,7 +247,7 @@ Do not mark a milestone complete based only on “code exists.”
 
 Inspected commit: `39dde45` (folder refactor and Rust runtime migration);
 CI-validated at `95110b1`. The table below records the implementation on that
-date, before Q32 and later language work. Use the current milestone table above
+date, before the async state-machine work and later language work. Use the current milestone table above
 for present status. CI passing establishes that existing tests pass, not that
 any milestone is complete beyond the subset it covers.
 
@@ -2056,7 +2055,7 @@ GEP-based indexed addressing, runtime bounds-check panics, and element
 cleanup without per-element drop flags — see above). Borrowed slices and
 the region analysis they require are implemented end to end (see above).
 
-Dynamic `Array<T>` followed (Q17). It is stored as a `{ ptr, i64 }`
+Dynamic `Array<T>` followed. It is stored as a `{ ptr, i64 }`
 descriptor whose elements live in runtime heap storage
 (`runtime/src/alloc.rs`) and are dropped by a reverse-order loop before the
 storage is freed. Before it landed, three existing soundness holes were
@@ -2066,7 +2065,7 @@ panic only after the store, which removes a double drop of indexed elements.
 Scratch drop-flag allocas now go in the entry block, so loops no longer grow
 the stack.
 
-Maps (M22) followed (Q18). A map is a pointer to a type-erased runtime hash
+Maps (M22) followed. A map is a pointer to a type-erased runtime hash
 table (`runtime/src/map.rs`); null is the empty zero map. Literal entries,
 lookup, assignment, and removal are compiler-provided call terminators, so
 they reuse argument evaluation order, move checking, unwind edges, and the
@@ -2074,7 +2073,7 @@ post-call panic check. Replacement detaches the old value and drops it before
 storing the new one. If that drop panics, the key stays absent and the new
 value is cleaned up by its temporary.
 
-Non-escaping closures (M24) followed (§16, Q02g). Each literal is a separate
+Non-escaping closures (M24) followed (§16). Each literal is a separate
 body whose captures are by-reference locals; creating a closure gives the
 closure value shared or exclusive loans on the captured locals, so region
 analysis enforces capture exclusivity and lifetimes without new machinery.
@@ -2084,7 +2083,7 @@ passes a `{ code, environment }` pair; the environment of captured addresses
 lives in the creating frame, which is sound because function-typed results,
 fields, and elements are rejected.
 
-`clone` (§10.7, Q19) followed for structs, fixed arrays, `Array<T>`, and maps.
+`clone` (§10.7) followed for structs, fixed arrays, `Array<T>`, and maps.
 A declared custom `clone` is validated at its declaration and called like any
 method. The structural and built-in clones are one MIR call, `Callee::Clone`,
 that borrows its argument and whose result is an owned value; code generation
@@ -2097,28 +2096,28 @@ outlive the owner. A new runtime function copies a map's keys and allocates
 uninitialized value slots for the clone to fill. Valgrind shows no leaks or
 invalid accesses for the success and panic paths.
 
-Mutable views in struct fields and fixed arrays followed (Q20). Copying a
+Mutable views in struct fields and fixed arrays followed. Copying a
 value now reborrows every `mut []T` inside it, at that view's field and index
 path, so the source's other fields stay usable. Assigning a container ends
 reborrows through its old views. A shared parameter cannot hold a nested
 mutable view, which keeps shared borrows of containers from granting mutable
 access without tracking it.
 
-Destructors that read views followed (Q21). Region liveness now treats the
+Destructors that read views followed. Region liveness now treats the
 destruction of such a value as a use of it: at scope end, at `return`, and when
 it is replaced. A scope's locals are checked in their real drop order, newest
 first, and a value moved out whole stops holding borrows. A value whose `drop`
 reads a view must be declared after the storage it views, which covers every
 exit, including panic cleanup.
 
-Output provenance followed (Q22). Contracts now record which inputs each
+Output provenance followed. Contracts now record which inputs each
 `mut` parameter or closure capture may receive views from, and calls apply them
 to their arguments. Calls through function values assume the worst, which also
 lets function types return views.
 
 The last region-analysis restrictions are lifted: views can be stored through
 mutable slices, and mutable views can live in `Array<T>`, map, and `mut []T`
-elements (Q20b, Q22b).
+elements.
 
 Collection basics followed (§5.10, §12.7): `len` on every collection, `push`
 and `pop` on `Array<T>`, and `for … in` loops over fixed arrays, slices,
@@ -2126,7 +2125,7 @@ and `pop` on `Array<T>`, and `for … in` loops over fixed arrays, slices,
 collection that stays live for the whole loop; the item is a by-reference
 local rebound on each iteration.
 
-Packages and imports followed (§3.20, Q24). A loader (`driver/project.rs`)
+Packages and imports followed (§3.20). A loader (`driver/project.rs`)
 reads the entry file's folder, finds `zore.toml`, parses every file, and
 follows imports depth first: `"project/dir"` maps to a folder below the root and
 `"std/name"` to a bundled package. It rejects bad paths, cycles, mismatched
@@ -2146,7 +2145,7 @@ pointer for strings, `Array<string>` results, and `(T, error)` results, and
 calls `zore_native_<package>_<function>`. Split pieces and trimmed or joined
 single parts share their source's storage.
 
-Strings followed (§6.8, Q23). `len`, `s[i]` (a `byte`), `s[a:b]`, `for … in`
+Strings followed (§6.8). `len`, `s[i]` (a `byte`), `s[a:b]`, `for … in`
 over characters, runtime `+`, and `string(rune)` all work. A slice is a value
 of type `string` with no loan, because strings are immutable and Copy; its
 bounds and character boundaries are checked at run time by a MIR assert. Text
@@ -2160,7 +2159,7 @@ program exit with code 70 if any text is still owned when it ends; the test
 suite sets it. Loops decode characters from a held copy of the
 string with `StringChar` and `StringAdvance`.
 
-Owning and call-once closures followed (§16.4, §16.6, Q02i). After a body is
+Owning and call-once closures followed (§16.4, §16.6). After a body is
 checked, a pass marks closure literals in escaping positions owning, follows
 `let g = f` rebinding, and checks that call-once closures are only called
 directly; a direct call consumes the closure through an explicit `drop`. A
@@ -2172,10 +2171,10 @@ Async functions followed (§17.2, §17.8). The resolver declares an `async func`
 like any other function. The checker allows an async call only as the operand
 of `await`, requires `await` to sit in an `async func` body, and gives an
 awaited call the callee's result list, so `await f()?` and discards behave as
-for a synchronous call. Q32 now lowers async functions to persistent frames after drop insertion;
+for a synchronous call. The async state-machine work now lowers async functions to persistent frames after drop insertion;
 awaited calls poll child frames and preserve the original cleanup edges.
 
-Tasks followed (§18, Q25). The checker turns `go f(args)` into a spawn node
+Tasks followed (§18). The checker turns `go f(args)` into a spawn node
 that carries the argument expressions and a synthetic closure whose captures
 are those arguments and whose body makes the call. MIR evaluates each argument
 into a temporary, builds an owning closure around the temporaries (reusing the
@@ -2190,7 +2189,7 @@ frees the block. Waiting on a task moves its handle, so ownership analysis
 needs no new rules. The shared text table is a locked map rather than a
 per-thread one.
 
-Q32 replaces the former fiber scheduler with `runtime/src/scheduler.rs`.
+The async state-machine work replaces the former fiber scheduler with `runtime/src/scheduler.rs`.
 The shared FIFO queue retains runnable and suspended tasks, coalesces concurrent
 wakes, and installs task-local panic state on each worker. Plain calls block in
 `slot.rs` or a task join; a thread-local guard starts replacement workers and
@@ -2198,7 +2197,7 @@ surplus workers retire after calls resume. Async tasks keep all locals and wait
 operation records in pinned heap frames. There is no stack-switching assembly or
 per-task OS-thread fallback. See `architecture.md` for the completed design.
 
-Channels followed (§19, Q26). `channel<T>` is a pointer to a runtime object
+Channels followed (§19). `channel<T>` is a pointer to a runtime object
 holding a lock, a queue of buffered messages, and lists of blocked senders and
 receivers; null is the zero channel, which acts as closed and empty. Handles
 are counted like text: copying one retains it and dropping one releases it, in
@@ -2212,7 +2211,7 @@ operations are MIR calls with their own `Callee` entries; the channel argument
 is passed by reference so no extra handle is made. Setting `ZORE_CHECK_LEAKS`
 also fails a program that ends with a live channel while no task runs.
 
-Async I/O followed (§37.3, Q27). The four packages are bundled Zore sources
+Async I/O followed (§37.3). The four packages are bundled Zore sources
 whose functions are declared without bodies and call into the runtime through
 generated shims; two new shim shapes carry `error` and `(string, error)`
 results. `Conn` and `Listener` are structs holding a number, with a custom
@@ -2238,7 +2237,7 @@ number of live tasks (unfinished tasks plus the initial one); when they are
 equal nothing can run again and the process exits with status 2. A deadlock
 among some tasks while others still run is not reported.
 
-Mutexes followed (§20.2, Q28). `Mutex<T>` is a pointer to a runtime cell holding
+Mutexes followed (§20.2). `Mutex<T>` is a pointer to a runtime cell holding
 the lock, a queue of waiters, and the guarded value, with the same counted
 handle as a channel, so copying a handle retains it and the last release drops
 the value through a per-type function the compiler generates. `withLock` is

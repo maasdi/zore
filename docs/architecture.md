@@ -66,7 +66,7 @@ The files the structure guide names but that have nothing to hold yet stay
 uncreated: `ownership/{place,projection}.rs` (MIR places serve both
 purposes), `dropck/analysis.rs`, `types/{function_type,classify}.rs`,
 `diagnostic/code.rs` (no diagnostic codes yet), and `context/`.
-`async_lowering/` now holds Q32's persistent-frame and suspension planning
+`async_lowering/` now holds the persistent-frame and suspension planning
 (`lower.rs`, `state_machine.rs`, `suspension.rs`), after drop insertion. The
 backend's `codegen/state_machine.rs` emits its constructors, polls, and frame
 destructors. The runtime's `scheduler.rs` serves lowered async tasks alongside
@@ -103,7 +103,7 @@ natives behind `std/time` (`sys.rs`), `std/os` (`os.rs`), `std/os/exec`
 the native entry shim compiled with each program; the Cargo library target
 enables runtime unit tests without a generated entry.
 
-### Shared task scheduler (Q32 slices 2 and 5)
+### Shared task scheduler
 
 `scheduler.rs` owns heap-backed poll tasks and a locked FIFO run queue, served by
 at least two workers (one per available core). Its Rust `spawn` entry accepts a
@@ -153,7 +153,7 @@ counts share one lock so concurrent wakeup and completion cannot produce a mixed
 snapshot that falsely reports deadlock. The initial task still counts as live,
 and an internal deadlock still reports "all tasks are asleep" with exit status 2.
 
-### Simple async state machines (Q32 slice 3)
+### Simple async state machines
 
 HIR retains each function's async property, including the synthetic owning thunk
 for `go asyncFn(...)`. After ordinary ownership checking and drop insertion,
@@ -195,7 +195,7 @@ repeat drops already placed by MIR.
 
 Every frame starts with a header of the state number, the pending child, the
 closure environment, and the frame's own `poll` and `destroy` function pointers.
-A value of async function type (Q36) is a closure whose code pointer is the
+A value of async function type is a closure whose code pointer is the
 callee's frame constructor, so an awaited call through the value builds the child
 frame from the value, then polls and destroys it through the child's header
 pointers. This is an internal representation, not a source contract.
@@ -223,7 +223,7 @@ waits, and compensation may need one replacement thread per blocked worker.
 The private `std/context` `expire` and `follow` tasks are async, as is the timer
 package's `fire` task.
 
-### Channel and select polls (Q32 slice 4, first PR)
+### Channel and select polls
 
 Channel send, receive, and `select` in eligible async bodies suspend without
 `await`. `codegen/channel.rs` prepares runtime case records and send storage once
@@ -252,7 +252,7 @@ cleanup, and deadlock detection use the same rules as blocking execution. Detach
 tasks continue; pending operation records, like pending frames, are abandoned at
 process exit under the existing task-exit semantics.
 
-### Timer and reactor polls (Q32 slice 4, second PR)
+### Timer and reactor polls
 
 Native `time.Sleep` calls in eligible async bodies are explicit suspension points,
 without `await`. The compiler evaluates milliseconds once, saves the operation in
@@ -473,9 +473,8 @@ unwind edge. Region analysis gives the destination the loans of a source that
 holds views.
 
 A view stored through a mutable slice is added to every owner that the slice
-exclusively borrows from, following reborrows back to the original storage
-(Q22b). `mut []T` may be held in `Array<T>`, map, and `mut []T` elements, but
-not in a shared slice element or copied out by a map lookup (Q20b).
+exclusively borrows from, following reborrows back to the original storage. `mut []T` may be held in `Array<T>`, map, and `mut []T` elements, but
+not in a shared slice element or copied out by a map lookup.
 
 Temporary
 restrictions, each diagnosed: a shared parameter cannot hold a `mut []T` inside
@@ -484,7 +483,7 @@ into a capture only views of other captures; a value whose custom `drop`
 reads a view must be declared after the storage it views; and a closure cannot
 consume a captured Move value.
 
-Return contracts also carry outputs (Q22): for each `mut` parameter or
+Return contracts also carry outputs: for each `mut` parameter or
 capture, which inputs' storage or views it may receive, read from its holdings
 at `Return` (such by-reference locals stay live until then). A call applies a
 function's outputs to its `mut` arguments, and a closure's capture outputs are
@@ -492,14 +491,14 @@ applied where it is created. A call through a function value assumes its
 results and `mut` arguments may borrow from every argument and from the
 callee's own holdings.
 
-A value whose destruction runs a custom `drop` that can read a view (Q21) is
+A value whose destruction runs a custom `drop` that can read a view is
 an "observing" local in region analysis. Its destruction is a use: liveness
 marks it live at its `EndScope`, at `Return`, and before a whole-value
 assignment replaces it. `EndScope` checks each local's storage death against
 only the observing locals of the same scope that drop after it, newest first.
 A whole-local move clears the moved local's holdings.
 
-An owning closure (Q02i) is decided after its enclosing body is checked:
+An owning closure is decided after its enclosing body is checked:
 literals in escaping positions, or bound to locals that escape, become owning,
 and a literal whose body moves a capture is call-once. MIR's
 `Rvalue::Closure { owning: true }` copies or moves each capture into the
@@ -528,7 +527,7 @@ The LLVM backend decision, supported toolchain, host target, and runtime ABI
 are recorded in decision record 0001. M32 is backend hardening, not the first
 backend implementation.
 
-The shared Q32 task scheduler is described above. Further
+The shared task scheduler is described above. Further
 internal choices are constrained by the observable language guarantees. Record
 substantial decisions with context, alternatives, consequences, and validation
 under `docs/decisions/` when they are made.
@@ -641,7 +640,7 @@ provides SIGPIPE handling; output is locked and explicitly flushed before
 returning, so write failures become Zore panics. The unsafe Rust boundary is
 limited to the internal ABI and does not introduce source-level unsafe syntax.
 
-### Mutex acquisition polls (Q32 slice 4, third PR)
+### Mutex acquisition polls
 
 `mutex.rs` shares one FIFO queue between blocking slots and task wakers. Each
 acquisition owns a readiness flag; unlocking reserves the lock for the first
@@ -657,7 +656,7 @@ invokes the ordinary callback once, then unlocks or poisons before following the
 original result and cleanup edges. Callbacks remain synchronous; blocking inside
 them uses worker compensation. The blocking mutex ABI remains available to plain callers. Slice 4 I/O and helper completion polling are described below.
 
-### I/O and helper completion polls (Q32 slice 4, fourth PR)
+### I/O and helper completion polls
 
 `codegen/io.rs` lowers waiting native calls in async bodies without adding source
 `await`. `async_lowering` also identifies waiting bundled-library wrappers by

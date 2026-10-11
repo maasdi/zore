@@ -265,7 +265,7 @@ At a newline or EOF, insert a semicolon if the last significant token is:
 - the keywords `break`, `continue`, `return`, `true`, `false`, or `nil`,
 - one of `)`, `]`, `}`, or the postfix error-propagation operator `?`, or
 - the `>` that closes a type argument list, such as the final `>` of
-  `Array<int>` (locked by Q17c).
+  `Array<int>`.
 
 A closing type-argument `>` ends a type exactly where an identifier type name
 would, so it is eligible for the same reason the identifier is. The `>`
@@ -3227,7 +3227,7 @@ result. Growth may move the elements to new storage, so `push` and `pop`
 mutably borrow the whole array: no view of its elements may be live across the
 call (§12.5). Growth reserves extra room so that repeated pushes take amortized
 constant time; capacity is not observable. Allocation failure aborts the
-process (Q17g).
+process.
 
 Ownership, error, and async implications: no new ownership category. `push`
 is a mutable use of the array and a use (copy or move) of the value; `pop` is a
@@ -4048,7 +4048,7 @@ captured views borrow.
 Function types may therefore be results, struct field types, and fixed-array,
 `Array<T>`, and map value types. They are never slice element types or map
 keys. A parameter of function type may be `own`, which lets the callee store or
-return it; it cannot be `mut`. As for mutable views (Q20), a shared parameter
+return it; it cannot be `mut`. As for mutable views, a shared parameter
 whose type holds a function value inside a struct, array, or collection is
 rejected: calling a closure uses it exclusively, which a shared borrow cannot
 grant. For the same reason a collection loop (§5.10) cannot visit function
@@ -4059,7 +4059,7 @@ Every closure value, borrowing or owning, is checked by the same region
 analysis: a borrowing closure that would outlive a local it captures (by being
 returned, stored, or assigned to an outer place) is rejected, and the
 diagnostic names the captured local. Liveness across `await` remains
-unsupported (Q02g). Use with `go` is defined in §18.3 and §18.4.
+unsupported. Use with `go` is defined in §18.3 and §18.4.
 
 A panic or `?` inside a closure runs the closure's own cleanup and then
 continues in its caller as for any call.
@@ -4337,7 +4337,7 @@ changed in the task. An argument of function type for an `own` parameter of the
 spawned callee is accepted when it is an owning closure none of whose captured
 values holds a view; a function-typed argument for a shared parameter, and a
 closure that holds a view, are rejected. A function value that this function received through a parameter is rejected as a spawned callable or as a spawned `own` argument, because its captures are unknown here; spawn it in the function that creates the closure. A task result still cannot be a slice,
-hold a view, or be a function value (Q25).
+hold a view, or be a function value.
 
 **Lifetime proof across all exits.** A planned `.wait()` or `await task` is not
 proof that a spawned borrow is valid: normal early return, `?`, panic, handle
@@ -6905,7 +6905,7 @@ Q05) must validate its input and reject invalid UTF-8 — a compile-time error
 for a constant, a runtime error or panic otherwise — rather than silently
 accepting or repairing invalid bytes, consistent with how numeric conversions
 are checked rather than lossy (§6.6). The conversion API is `strings.Bytes` and
-`strings.FromBytes` (§37.2, Q30); this section only constrains it.
+`strings.FromBytes` (§37.2); this section only constrains it.
 
 `string` values are immutable. No operation modifies a string's bytes in
 place; an operation that appears to change a string's contents produces a new
@@ -6940,7 +6940,7 @@ buffer is freed when the last owner goes, whether by leaving scope, being
 overwritten, or a panic unwinding. A slice shares its source's buffer and counts
 as an owner. Appending to the newest text in a buffer grows that buffer in
 place, so building one text in a loop uses memory proportional to its final
-length (Q23). Pending conformance cases are in
+length. Pending conformance cases are in
 `tests/conformance/strings.md`.
 
 ## 41.6 Async lowering order — IMPLEMENTATION DETAIL

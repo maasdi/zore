@@ -53,7 +53,7 @@ Use exact boundary values for each integer width. Run overflow tests in every
 build mode once runtime execution exists. Keep zero-value rules, string storage,
 and unlisted constant-expression operators separate from this suite.
 
-## Shift boundaries and constant/runtime agreement (§6.6, Q11)
+## Shift boundaries and constant/runtime agreement (§6.6)
 
 | Scenario | Expected result |
 | --- | --- |

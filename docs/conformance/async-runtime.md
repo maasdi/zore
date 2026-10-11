@@ -1,4 +1,4 @@
-# Q32 async runtime coverage inventory
+# Async runtime coverage inventory
 
 Audit baseline: `main` at `0e640b4154e80eded053c227c46ef1521dfb3582`.
 Current status (issue #75): the limits below were updated after the baseline.
@@ -6,7 +6,7 @@ Frames now place poll-local values outside the pinned frame and share
 same-type slots, and `go` accepts closures and function values. The baseline
 text is kept as the record it was, with notes where the status changed.
 Authority: specification §§17–20, 35–36, and 37.3–37.4; the accepted
-Q32 decision in `docs/spec-questions.md` explains the implementation choices. **Covered** means the linked assertions cover the named cases, not all
+the async design in the specification explains the implementation choices. **Covered** means the linked assertions cover the named cases, not all
 programs. **Partial** means a required aspect lacks a direct assertion.
 **Unsupported** is an accepted but unimplemented form. **Unverified** means
 the evidence found does not assert the behavior. Markdown scenario lists in
@@ -14,7 +14,7 @@ the evidence found does not assert the behavior. Markdown scenario lists in
 
 The native tests' [`prints`](../../tests/codegen/native.rs#L58) and
 [`panics`](../../tests/codegen/native.rs#L189) helpers assert exit status,
-stdout, and stderr. The Q32 parity helpers run the same source as a plain
+stdout, and stderr. The async parity helpers run the same source as a plain
 function and as an `async func`, compare exact output, and inspect generated
 IR: [channel/select](../../tests/codegen/native.rs#L5154),
 [timer](../../tests/codegen/native.rs#L5459),
@@ -61,7 +61,7 @@ but not the blocking callback as a suspension.
 ## Accepted limits and resource-gap history
 
 - **No preemption:** a running plain function or poll body runs until it yields
-  or returns. Q32 adds cooperative suspension, not forced interruption.
+  or returns. The async state machines add cooperative suspension, not forced interruption.
 - **Frame storage (current status):** values needed across a suspension stay in
   the pinned heap frame. Other locals and drop flags use poll-local storage, and
   same-type Copy locals without cleanup, views, or address-taking may share one
@@ -72,7 +72,7 @@ but not the blocking callback as a suspension.
 - **Conservative task inputs:** borrowed or `mut` inputs whose backing may
   outlive the spawner are rejected. The [spawn-input test](../../tests/typecheck/check.rs#L3222)
   asserts these diagnostics; scoped tasks and a broader lifetime proof are
-  outside current Q32 behavior.
+  outside current async behavior.
 - **`go` function values (current status):** `go` accepts a declared function or
   method, a closure literal, a function-typed local, and a function value
   received through an `own` argument, with owning-closure rules. A callee stored
@@ -81,7 +81,7 @@ but not the blocking callback as a suspension.
   [Spawn tests](../../tests/typecheck/check.rs) cover these rules.
 - **Process-exit abandonment:** §18.11 allows the process to stop with running
   tasks. Suspended frames are not destroyed at exit, as stated by the accepted
-  Q32 decision in `docs/spec-questions.md`; cancellation tokens do
+  async design in the specification; cancellation tokens do
   not implicitly stop tasks.
 - **#45 is fixed on this baseline:** [PR #58](https://github.com/maasdi/zore/pull/58)
   added `State::compact_timers` with a `max(64, 2 × live waiters)` trigger; the

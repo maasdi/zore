@@ -74,7 +74,7 @@ boundaries. Root-level Cargo checks include this crate. The native suite also
 covers empty and long strings, embedded NUL bytes, output paths with spaces,
 missing rustc diagnostics, and checking without either native tool.
 
-`tests/async/lowering.rs` tests Q32 slice 3's backend-independent suspension plan,
+`tests/async/lowering.rs` tests the backend-independent suspension plan for async functions,
 cleanup edges, retained source spans, recursive calls, and synchronous native
 compatibility. The native suite verifies heap-frame IR and real suspensions through
 nested calls and task joins, mutable borrows and views, closure environments,
@@ -82,7 +82,7 @@ loops and one-time argument evaluation, Move/partial-move cleanup, returned
 collections, errors, nil tasks, panic containment, detached results, and a chain
 of 5,000 polled tasks. The runtime poll-entry test exercises repeated
 wake-before-Pending through the generated-code ABI and existing blocking handle
-retrieval. Q32 slice 4 channel tests run the same programs as plain pool jobs and polled async
+retrieval. The channel tests run the same programs as plain pool jobs and polled async
 tasks, including buffered/unbuffered loops, mixed waiters, select/default/zero
 channels, duplicate cases, single operand evaluation, reverse send cleanup,
 mutable borrows, partial moves, close panics, deadlocks, and 5,000 channel waiters.
@@ -223,7 +223,7 @@ before Pending, nested helper calls, and task-local panic transfer. Socket tests
 use loopback peers and bounded waits, including backpressure and reads after a
 deadline has passed.
 
-Q32's final runtime uses one pool for plain entries and async polls on every host.
+The async runtime uses one pool for plain entries and async polls on every host.
 The plain-entry ABI test verifies pool worker execution, one-time result retrieval,
 and completion before joining. Mixed native tests combine plain channel waits,
 polled children, and nested blocking joins; existing panic, detach, mutex,
