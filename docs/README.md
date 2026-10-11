@@ -18,7 +18,7 @@
 
 These proposals were not accepted and changed nothing. They are kept for their reasoning.
 
-- [`go` on a callee stored in a struct field](proposals/spawn-field-callee.md) (Q35)
+- [`go` on a callee stored in a struct field](proposals/spawn-field-callee.md)
 
 ## Open proposals
 

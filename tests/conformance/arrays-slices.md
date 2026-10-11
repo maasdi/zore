@@ -19,7 +19,7 @@ element extraction rejected, and drops of Move elements are covered in
 `tests/parser/parser.rs`, `tests/typecheck/check.rs`,
 `tests/ownership/ownership.rs`, and `tests/codegen/native.rs`. Statically
 rejecting a constant index past an `Array<T>` literal's length is not
-implemented, because no length is known from the type (Q17h).
+implemented, because no length is known from the type.
 
 Borrowed slices are implemented end to end. Slice types,
 `base[low:high]` with omitted bounds, rejection of a third bound and of slice

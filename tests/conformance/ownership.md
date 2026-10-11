@@ -11,14 +11,13 @@ return-borrow contracts (including two-input precision, recursion, and zero
 slices from `?`), and recursive provenance through structs.
 `tests/codegen/native.rs` covers the runtime cleanup of partial moves.
 `mut []T` held in struct fields and fixed arrays has coverage in the check,
-ownership, and native suites (Q20).
-Destructor-observed views have coverage in the ownership and native suites
-(Q21).
+ownership, and native suites.
+Destructor-observed views have coverage in the ownership and native suites.
 Views stored through `mut` parameters and captures have coverage in the
-ownership and native suites (Q22).
+ownership and native suites.
 Mutable views inside `Array<T>`, map, and `mut []T` elements, and views stored
 through mutable slices, have coverage in the check, ownership, and native
-suites (Q20b, Q22b).
+suites.
 Pending: rows needing `await` or tasks.
 
 ## Mutable place requirements for callers (§11.6)
@@ -114,7 +113,7 @@ locked in §12.6; see `arrays-slices.md`. Map operations follow §13.3 and
 | Recursive functions have unresolved borrowed-result origins | Reject rather than erase provenance or assume ownership |
 | Destructor observes a contained view after its ordinary last read | Backing lifetime includes the destructor's use, at scope end, `return`, `?`, replacement, and panic cleanup |
 | Value whose destructor reads a view is moved or explicitly dropped | Its borrows end there; the new owner or the drop is the last use |
-| Value whose destructor reads a view is declared before the storage it views | Reject; locals drop in reverse declaration order (Q21) |
+| Value whose destructor reads a view is declared before the storage it views | Reject; locals drop in reverse declaration order |
 | Built-in zero shared/mutable slice returned by `?` | Empty result has no backing loan |
 | Arbitrary zero-length subslice of local storage escapes | Reject; zero length alone does not erase provenance |
 
@@ -127,15 +126,15 @@ locked in §12.6; see `arrays-slices.md`. Map operations follow §13.3 and
 | Access backing storage through s while next has a later use | Reject; source access is suspended during the reborrow |
 | Use s after next's last use | Valid; the derived loan has ended |
 | Copy a struct containing a mutable slice | Same reborrow restrictions apply recursively; the source's other fields stay usable |
-| Obtain mutable access through a shared borrow of such a struct or descriptor | Reject; a shared parameter cannot hold a nested `mut []T` at all (Q20) |
-| Structural clone of a shared-borrowed container would duplicate a mutable view | Reject; any clone of a value holding a `mut []T` is rejected (Q20) |
+| Obtain mutable access through a shared borrow of such a struct or descriptor | Reject; a shared parameter cannot hold a nested `mut []T` at all |
+| Structural clone of a shared-borrowed container would duplicate a mutable view | Reject; any clone of a value holding a `mut []T` is rejected |
 | Replace a struct holding a mutable view | Reborrows through its old views end; the old backing is usable again |
-| Read a `mut []T` out of an `Array<T>` or `mut []T` element twice, both live | Reject; each read is an exclusive reborrow (Q20b) |
-| Take a shared slice of storage holding `mut []T` views, or name such a slice type | Reject (Q20b) |
-| Look up a map value holding a `mut []T` | Reject; `remove` takes it instead (Q20b) |
-| Store a view through a mutable slice element, directly or in a callee | Valid; the slice's backing owner holds the stored borrow (Q22b) |
-| Backing owner used after the stored view's storage ends | Reject (Q22b) |
-| Callee stores a view of its own local through a `mut []T` parameter | Reject (Q22b) |
+| Read a `mut []T` out of an `Array<T>` or `mut []T` element twice, both live | Reject; each read is an exclusive reborrow |
+| Take a shared slice of storage holding `mut []T` views, or name such a slice type | Reject |
+| Look up a map value holding a `mut []T` | Reject; `remove` takes it instead |
+| Store a view through a mutable slice element, directly or in a callee | Valid; the slice's backing owner holds the stored borrow |
+| Backing owner used after the stored view's storage ends | Reject |
+| Callee stores a view of its own local through a `mut []T` parameter | Reject |
 | Reborrow remains live across await | Source remains suspended; backing validity must satisfy §17.6 |
 | Two derived mutable views remain independently usable | Reject, including through nested composites |
 

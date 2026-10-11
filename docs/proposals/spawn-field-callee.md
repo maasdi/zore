@@ -1,4 +1,4 @@
-# Q35 proposal: `go` on a callee stored in a struct field
+# Proposal: `go` on a callee stored in a struct field
 
 Status: WITHDRAWN by the maintainer. Nothing here was accepted, locked, or
 implemented, and the specification is unchanged. The proposal is kept so the
@@ -21,12 +21,12 @@ Original proposal follows.
 
 Scope: letting the callee of `go` be a function-typed **field path rooted at a
 local**, such as `(w.run)(5)`. Out of scope: array and map elements, call
-results, method values (decided in Q34), and any new syntax.
+results, method values (already implemented), and any new syntax.
 
 ## Baseline today
 
 - `go` takes a declared function or method, a closure literal, or a
-  function-typed local (Q33). The callable is moved into the task.
+  function-typed local. The callable is moved into the task.
 - A struct may hold a function value in a field, and `(w.run)(5)` calls it.
 - The language already allows moving one Move field out of a struct, leaving the
   struct partially moved, unless a containing value has a custom `drop` (§31.2).
@@ -65,7 +65,7 @@ Rules:
   containing value along the path has a custom `drop`; if the root is a borrowed
   parameter (a shared or `mut` parameter cannot give up what it does not own);
   or if the root is a loop item.
-- **Everything else is Q33.** The task owns the closure, calls it once, and
+- **Everything else follows the function-value rules.** The task owns the closure, calls it once, and
   destroys it exactly once on a normal return, an error result, or a panic.
   Arguments follow §18.4, and a closure stored in a field is already owning
   (storing it in a field is an escape position in §16.4), so it holds no borrow.
@@ -168,7 +168,7 @@ func h(g own Guarded) { go (g.run)() }           // `Guarded` has a custom drop
 - §18.3: replace "A callee that is a field, element, map value, or the result of
   a call is rejected" with the rule above: a field path rooted at a local is
   moved; an element, map value, or call result is rejected.
-- `docs/spec-questions.md`: record Q35 as resolved.
+- `docs/spec-questions.md`: record the withdrawal.
 - `docs/roadmap.md`: remove "`go` on callees stored in fields" from the
   remaining list.
 
