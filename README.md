@@ -47,21 +47,21 @@ John
 | --- | --- |
 | Language specification | MVP decisions locked in [`spec/language-spec.md`](spec/language-spec.md) |
 | Lexer, parser, diagnostics | Implemented, with error recovery |
-| Name resolution and type checking | Implemented for the supported synchronous and async subset: primitives, `error`, structs, collections, slices, functions and methods, closures, tasks, channels, mutexes, control flow, and Go-style untyped constants |
+| Name resolution and type checking | Implemented for the supported synchronous and async subset: primitives, `error`, structs, collections, slices, functions and methods, closures, interfaces, generic functions and struct types, tasks, channels, mutexes, control flow, and Go-style untyped constants |
 | Native code generation | Implemented for that subset: LLVM IR with checked arithmetic and bounds, persistent async state machines, and a linked Rust runtime |
 | Ownership, borrowing, and cleanup | Implemented: Copy/Move classification, partial moves, shared and `mut` borrows, inferred regions for stored views, and cleanup on normal, error, and panic paths; task inputs use conservative borrow restrictions |
 | Errors and `?` | Implemented for synchronous and async code, including propagation after awaiting async calls or task results |
 | Strings | Length, indexing, slicing, loops by character, `+`, and `string(rune)` work |
 | Collections | `[T; N]`, `Array<T>`, `map[K]V`, and `[]T` work; `clone` works for structs and collections; `len`, `push`, `pop`, and `for … in` loops work; borrowed map entries are planned |
 | Closures and function types | Implemented, including closures that are returned or stored, call-once closures, declared functions and methods as values, and `go` on closures and function-typed locals; async function values are awaited or spawned; a callee stored in a field, element, or map value cannot be spawned directly |
-| Packages and imports | Folders are packages; `import "project/folder"` and qualified names work, with exports, import checks, and cycle detection; bundled packages are `std/strings`, `std/strconv`, `std/bytes`, `std/errors`, `std/unicode`, `std/unicode/utf8`, `std/time`, `std/os`, `std/os/exec`, `std/bufio`, `std/net`, `std/context`, `std/sync`, `std/path`, `std/path/filepath`, and `std/sort` |
+| Packages and imports | Folders are packages; `import "project/folder"` and qualified names work, with exports, import checks, and cycle detection; bundled packages are `std/strings`, `std/strconv`, `std/bytes`, `std/errors`, `std/fmt`, `std/math`, `std/unicode`, `std/unicode/utf8`, `std/time`, `std/os`, `std/os/exec`, `std/io`, `std/bufio`, `std/net`, `std/context`, `std/sync`, `std/path`, `std/path/filepath`, `std/sort`, `std/slices`, and `std/maps` |
 | `async`/`await`, tasks, channels, mutexes | Implemented for the supported operations: polled async tasks, channel send/receive and `select`, mutex acquisition, timers, TCP I/O, files, standard input, child processes, and cooperative cancellation. A waiting plain function occupies an OS worker; the runtime starts replacement workers |
 | Self-hosting | Long-term goal; a lexer and a parser written in Zore (`compiler-zore/`) match the Rust frontend in differential tests |
 
 Features outside the implemented subset are reported as errors, never silently
 accepted. Recursive owned structs through `Array<T>` and maps are supported,
 including cloning and deterministic cleanup; infinite-size by-value cycles are
-rejected. Package-level variables are not yet supported. Async frames keep values needed
+rejected. Package-level `var` is not yet supported; package-level `let` values are. Async frames keep values needed
 across a suspension in the pinned heap frame; other locals use poll-local storage,
 and some same-type locals share a frame field, but frames are not shrunk by
 general liveness. Cooperative budgets yield long-running async loops, but scheduling
@@ -104,8 +104,8 @@ other packages as folders of the project (see `examples/packages`).
 Diagnostics are printed to standard error with source locations, and the
 command exits with status 1. A program that panics reports the panic on
 standard error and exits with status 2; `zore run` passes the program's exit
-status through. Invalid command-line arguments also exit with status 2. `fmt`
-and `test` are not implemented yet.
+status through. Invalid command-line arguments also exit with status 2. `zore fmt`
+and `zore test` are not implemented yet.
 
 ## Repository layout
 

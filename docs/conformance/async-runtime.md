@@ -6,8 +6,7 @@ Frames now place poll-local values outside the pinned frame and share
 same-type slots, and `go` accepts closures and function values. The baseline
 text is kept as the record it was, with notes where the status changed.
 Authority: specification §§17–20, 35–36, and 37.3–37.4; the accepted
-[Q32 proposal](../proposals/async-state-machines.md) explains the implementation
-choices. **Covered** means the linked assertions cover the named cases, not all
+Q32 decision in `docs/spec-questions.md` explains the implementation choices. **Covered** means the linked assertions cover the named cases, not all
 programs. **Partial** means a required aspect lacks a direct assertion.
 **Unsupported** is an accepted but unimplemented form. **Unverified** means
 the evidence found does not assert the behavior. Markdown scenario lists in
@@ -82,7 +81,7 @@ but not the blocking callback as a suspension.
   [Spawn tests](../../tests/typecheck/check.rs) cover these rules.
 - **Process-exit abandonment:** §18.11 allows the process to stop with running
   tasks. Suspended frames are not destroyed at exit, as stated by the accepted
-  [Q32 proposal](../proposals/async-state-machines.md); cancellation tokens do
+  Q32 decision in `docs/spec-questions.md`; cancellation tokens do
   not implicitly stop tasks.
 - **#45 is fixed on this baseline:** [PR #58](https://github.com/maasdi/zore/pull/58)
   added `State::compact_timers` with a `max(64, 2 × live waiters)` trigger; the
