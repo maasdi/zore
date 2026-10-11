@@ -10,7 +10,9 @@ new §37 sections with conformance cases; do not label them LOCKED beforehand.
 Add `std/net/http` for bounded HTTP/1.1 servers and `std/net/url` for request
 targets and query strings. Use ordinary waiting methods, as in §37.3, rather
 than requiring async handlers. One task owns each accepted connection and serves
-its requests sequentially. No handler owns or shares that connection.
+its requests sequentially. A handler accesses the connection through borrowed
+request/writer views in that same task; the connection never crosses into a
+second task while those views are live.
 
 Use a shared-receiver `Handler` interface, plus a borrowed function helper.
 Store owned handler factories in a sealed router, sharing its registry through
@@ -29,8 +31,10 @@ there is no automatic conversion between plain and async entries.
 
 All declarations below describe proposed signatures, not bundled sources or
 programs accepted today. Types with private fields have constructors. Their
-zero values are inert and safe to destroy; operations on an empty server,
-request, writer, router, or builder return a documented error.
+zero values are inert and safe to destroy. Fallible operations on an empty
+server, request, writer, router, or builder return a documented error; infallible
+request/writer getters return empty metadata, false, or a Background context.
+No empty-state method indexes an empty internal view.
 
 ```ore
 type Handler interface {
@@ -96,13 +100,66 @@ For example, `UsersFactory` and `UsersHandler` can each hold
 The body is the request's `io.Reader` behavior, not an owned `Body` interface
 field that secretly owns or duplicates the socket. Read bytes with
 `io.ReadAll(r)` or stream them; arbitrary body bytes need not be UTF-8.
-Request and writer are borrowed exclusively for the handler call. Neither
-facade may escape to a task or survive that call. Their representation and
-borrow provenance must be proven before implementation; a library-only
-implementation may use generic structs with private borrowed storage if
-supported, otherwise compiler-recognized request-scoped views are a separate
-acceptance dependency. Do not disguise borrowed socket access as an owned
-interface. These facades need not be public generic types.
+Request and writer are borrowed exclusively for the handler call. The handler
+cannot retain either borrow after returning or pass it to a task. The server
+retains both facades through response finalization, then drops them before
+reusing parser storage. The following concrete representation uses existing
+slice provenance (§11.7), shared slice aliasing (§12.3), and shared-receiver
+Conn operations (§37.3); it requires no new borrowed-reference syntax.
+
+### Ownership representation
+
+The connection task moves its Conn into a private one-element fixed array.
+It also owns separate one-element arrays for BodyState and ResponseState.
+BodyState owns the input buffer, framing counters, and parsed request metadata;
+ResponseState owns response headers, output buffer, and byte counters. They are
+separate owners, not two mutable slices into one aggregate. Each exchange
+constructs these private fields:
+
+| Facade field | Request | ResponseWriter |
+| --- | --- | --- |
+| Connection view | shared `[]net.Conn` of the task's connection slot | shared `[]net.Conn` of the same slot |
+| Protocol state view | exclusive `mut []BodyState` | exclusive `mut []ResponseState` |
+| Exchange control | Copy `Mutex<ExchangeControl>` handle | Copy handle to the same control value |
+
+ExchangeControl contains only owned/Copy state, such as the final-response-started
+flag, the automatic-100 flag, and a sticky protocol error. It contains no Conn,
+views, functions, or user callbacks. Its locks only read/update flags; release
+them before socket I/O. The two facades execute sequentially in one connection
+task, so no cross-task check/write atomicity is needed for their wire operations.
+The shared Conn views can both call Read, Write, and deadline setters because
+those methods already have shared receivers. They do not duplicate or own the
+socket. Facade methods enforce the body/response order described below.
+
+Both facade types define a harmless, non-I/O custom drop and no custom clone.
+This makes them Move and non-clonable (§§8.3, 10.7), preventing a second parser
+or writer capability through structural cloning. Their slice fields continue
+to carry the task-local backing provenance; private fields do not hide it.
+Constructors infer that provenance from their slice arguments, and zero facades
+contain empty views. No facade is stored with its owners in a self-referential
+aggregate or placed in the server/router's Mutex state.
+
+The lifetime sequence is:
+
+1. Create the connection/state owners, then build the two facades with shared
+   connection views and disjoint exclusive state views.
+2. Call the owned handler with `mut` borrows of both facades. A temporary
+   borrowed io.Reader/io.Writer conversion forwards those loans for the call.
+   Across a suspended call, owners and facades remain live in the same task.
+3. After the handler returns, finalize the response through the writer, then
+   explicitly drop both facades. Only then inspect/reset the state slots,
+   preserve prefetched input for the next request, or drop the connection slot.
+4. On error or panic, reverse-order cleanup drops facades before their backing
+   owners. Facade drop performs no protocol finalization and cannot close a
+   borrowed Conn; the owning connection slot closes it exactly once.
+
+Reject converting either facade into an owned io interface, placing it in a
+channel/Mutex, spawning with it (including an own argument), returning a facade
+backed by local slots, or dropping/replacing a backing slot while a view remains
+live. These follow existing no-view and lifetime rules rather than HTTP-specific
+compiler exemptions. The acceptance proof still needs compiler checks of this
+exact shape, including suspension and unwind paths; this document does not
+claim those checks have run.
 
 To process a body in another task, read a bounded owned `Array<byte>` first
 and pass it to an `own` worker parameter. Copy metadata strings separately.
@@ -119,21 +176,34 @@ satisfies `io.Writer`, plus these methods:
 | `mut AddHeader(name string, value string) error` | Append one value before commitment |
 | `mut WriteHeader(status int) error` | Commit a final status in 200–599 |
 | `mut Write(data []byte) (int, error)` | Implicitly commit 200, then write bytes |
-| `Committed() bool` | Whether final response headers have been emitted |
+| `Committed() bool` | Whether final-response emission has started; remains true after a partial-write failure |
 
 Repeated commitment and header mutation after commitment return errors. Invalid
 names, values, status, or framing headers fail before emitting bytes. The server
 owns `Connection` and `Transfer-Encoding`; the handler may set a single valid
-`Content-Length`. It must then write exactly that many bytes; overrun fails
-without emitting excess, underrun closes the connection. Without a declared
-length, body responses use chunked encoding, finalized after the handler returns.
+`Content-Length`. For responses that carry content, it must then write exactly
+that many bytes; overrun fails without emitting excess, underrun closes the
+connection. Without a declared length, body responses use chunked encoding,
+finalized after the handler returns. Mark the exchange committed immediately
+before attempting the first final-header byte; a partial-header failure is
+terminal and must never permit a second response or automatic 100.
 An empty uncommitted successful response is 200 with length zero.
 
-For HEAD the server counts and discards body writes and emits no chunks; an
-explicit content length describes the corresponding GET representation. For
-204 and 304 body writes fail; 204 omits content length, and 304 may carry the
-representation length. Response trailers, interim handler responses, upgrades,
-CONNECT, hijacking, and flush/streaming control are outside version one.
+Body eligibility is determined before choosing framing:
+
+| Response | Body writes | Wire framing and Content-Length |
+| --- | --- | --- |
+| HEAD | Count/discard writes; no content bytes | Never emit chunks; an explicit length describes the corresponding GET, and zero writes do not constitute an underrun |
+| 204 | Reject nonempty writes | No content, chunks, or Content-Length; reject a supplied length at commitment |
+| 205 | Reject nonempty writes | Emit Content-Length: 0, no chunks; reject a supplied nonzero length before commitment |
+| 304 | Reject nonempty writes | No content or chunks; an optional length describes the corresponding 200 representation and is not checked against bytes written |
+
+The 204/205/304 status restrictions take precedence over HEAD write suppression.
+Empty writes on an active writer are no-ops. Errors after commitment never
+append an error response. These rules follow [RFC 9110 §8.6](https://www.rfc-editor.org/rfc/rfc9110.html#section-8.6)
+and [§15.3.6](https://www.rfc-editor.org/rfc/rfc9110.html#section-15.3.6).
+Response trailers, interim handler responses, upgrades, CONNECT, hijacking,
+and flush/streaming control are outside version one.
 
 ## Headers and common names
 
@@ -151,7 +221,8 @@ space/tab on input, and rejects obs-text rather than creating invalid strings.
 This ASCII restriction must be documented as interoperability policy.
 
 Provide `StatusText(code int) string` and integer constants including `StatusOK`,
-`StatusCreated`, `StatusNoContent`, `StatusBadRequest`, `StatusNotFound`,
+`StatusCreated`, `StatusNoContent`, `StatusResetContent`, `StatusBadRequest`,
+`StatusNotFound`,
 `StatusMethodNotAllowed`, `StatusRequestTimeout`, `StatusContentTooLarge`,
 `StatusExpectationFailed`, `StatusRequestHeaderFieldsTooLarge`,
 `StatusInternalServerError`, `StatusNotImplemented`, and
@@ -214,9 +285,23 @@ limits for both framing modes. Chunk sizes are bounded unsigned hex; bound chunk
 metadata by the header limit. Accept syntactically valid bounded chunk extensions
 without interpreting them. Reject trailers in version one, except an empty
 trailer section. Premature EOF and malformed chunks invalidate the connection.
-Support `Expect: 100-continue` by sending 100 on the first body read after header
-validation; unsupported expectations receive 417 and close. An oversized known
-length receives 413 before dispatch or 100.
+Unsupported expectations receive 417 and close. An oversized known length
+receives 413 before dispatch or 100. For a validated `Expect: 100-continue`
+request with a body, the first nonempty-buffer Read sends at most one automatic
+100, before waiting for body bytes, only while no final response has started.
+Empty-buffer reads emit nothing. Final-response commitment permanently disables
+automatic 100, including when final-header transmission subsequently fails.
+
+Version one requires handlers to read the body before committing a final
+response. A subsequent Read returns `http.Request.Read: response already started`
+without reading the socket or emitting 100. The server does not drain the body
+through another path; if unread bytes remain, it closes after the response.
+For example, WriteHeader(403) followed by Read returns that error and never
+places an informational response after 403. Repeated reads before commitment
+cannot emit a second 100. Informational responses precede final responses
+([RFC 9110 §15.2](https://www.rfc-editor.org/rfc/rfc9110.html#section-15.2));
+this library restriction also avoids interleaving request reads with a partially
+written final response.
 
 Config has these exported integer fields; construct it with DefaultConfig.
 Zero selects the default; negative values are configuration errors. No unlimited
@@ -227,26 +312,42 @@ mode is part of this initial safety contract.
 | `MaxHeaderBytes` | 32768 | Request line, header lines and terminating CRLF combined |
 | `MaxBodyBytes` | 1048576 | Decoded body bytes per request |
 | `MaxConnections` | 1024 | Accepted active connections |
-| `ReadHeaderTimeout` | 5 seconds | Absolute budget from first request byte |
+| `ReadHeaderTimeout` | 5 seconds | First request: absolute budget from acceptance; subsequent requests: from first byte observed for that request |
 | `ReadBodyTimeout` | 30 seconds | Absolute budget after header validation |
 | `WriteTimeout` | 30 seconds | Absolute budget from handler entry through final write |
 | `IdleTimeout` | 60 seconds | Wait for first byte of the next request |
 | `AcceptPollInterval` | 100 milliseconds | Bounded shutdown/cancellation observation |
 
 Durations are nanoseconds; the constructor checks range and deadline overflow.
+For the first request, record the acceptance time and set the read deadline
+before any socket read or task scheduling delay. The entire header block must
+arrive by acceptance plus ReadHeaderTimeout; receiving the first byte does not
+restart that budget. A silent peer is closed at that deadline without a 408.
+Polling timeouts check control state but never extend the absolute deadline.
+
+After a completed response, IdleTimeout bounds the wait for the next request's
+first byte. Observing that byte starts a fresh ReadHeaderTimeout; when bytes
+were prefetched while serving the preceding request, start this header budget
+when the connection loop begins parsing the next request, without an idle wait.
+An expired idle wait also closes silently. Shutdown polling applies in all phases,
+including the first-byte wait immediately after acceptance.
+
 Header count and chunk metadata are bounded by MaxHeaderBytes; no unbounded
 allocation precedes validation. Exceeding connection capacity closes the newly
-accepted connection without parsing it. Header overflow is 431 and close;
-header/body timeout is 408 and close when no final response was committed and a
-bounded write is possible. Unknown methods may route if valid tokens.
+accepted connection without parsing it. Header overflow is 431 and close.
+Once header bytes have arrived, a header/body timeout is 408 and close when no
+final response was committed and a bounded write is possible. Unknown methods
+may route if valid tokens.
 
 The connection task owns the Conn, parser buffers, and response serialization.
 It serves one request at a time, including pipelined input; responses stay in
 request order. Keep-alive is default unless either side requests close or framing
 fails. If the handler leaves body bytes unread, send its response and close;
 do not start an unbounded drain. Once a streamed body exceeds the limit,
-Read returns a stable limit error and the connection is closed; emit 413 only
-if uncommitted. A handler cannot erase a parser/body error by returning nil.
+Read records a stable limit error and marks the connection for closure after a
+bounded error response; emit 413 only if uncommitted. A handler cannot erase a
+parser/body error by returning nil. Close immediately if a response cannot be
+sent safely.
 
 Set socket deadlines before the associated wait, using std/time's monotonic
 clock. Context cancellation alone does not interrupt a socket wait (§37.4).
@@ -255,13 +356,18 @@ the context after each timeout, and retry only polling timeouts within the phase
 budget. A write retry advances by the reported count and never repeats bytes.
 Do not promise interruption of arbitrary handler computation or external I/O.
 Request context expires at the handler/write budget and is cancelled on handler
-completion or shutdown expiry; graceful shutdown itself permits active requests
+completion or shutdown expiry. Successful handler completion does not cancel the
+server's response-finalization writes: they retain the original absolute write
+deadline and shutdown control. Graceful shutdown itself permits active requests
 to finish. There is no preemptive handler cancellation.
 
 ## Errors, panics, and shutdown
 
-A non-nil handler or factory error becomes a generic 500 if uncommitted;
-after commitment, close without appending another response. Never expose error
+A non-nil handler or factory error becomes a generic 500 if uncommitted,
+except that sticky body/framing failures take precedence: malformed framing is
+400, a body limit is 413, and an expired body-read budget is 408. This priority
+also applies when a handler propagates a Read error with `?` or returns nil.
+After commitment, close without appending another response. Never expose error
 messages to clients. I/O failure affects one connection. Serve returns listener
 or configuration failures; per-request failures do not stop the server.
 
@@ -272,8 +378,20 @@ A private per-connection completion guard must release the capacity permit and
 signal completion on normal exit, error, and panic. It must not panic during
 drop. An application mutex held during panic is poisoned; other handlers using
 that mutex may also fail. A factory panic while holding the registry lock poisons
-the router: reject later dispatch with 503 without entering the poisoned mutex.
-This is a deliberate distinction from a handler panic outside the registry lock.
+the router. Dispatch checks isPoisoned before acquisition: if it observes poison,
+return 503 without entering the mutex. That check is advisory, not atomic with
+withLock. A dispatch that checked before another factory panicked, including one
+already queued for the lock, may itself panic when acquiring the poisoned mutex
+under §20.2. Its connection closes without a promised response; there is no
+recovery or guaranteed 503 for these racing requests. Already-created handlers
+outside the registry lock may finish normally.
+
+The accept loop and completion guards never acquire the registry mutex. Their
+private accounting state contains no user callbacks and is separate from it,
+so router poison cannot cause a second panic during a connection's cleanup.
+After poisoning, the router remains unusable; replace the server/router to
+resume service. This differs from a handler panic outside the registry lock,
+which does not itself poison the router.
 
 Server is a Copy control handle with mutex/channel-backed internal state; Serve
 is allowed once. It consumes the listener and owns it in the accepting task.
@@ -307,8 +425,10 @@ currently builds. The target behavior is proposed for agreement here.
 
 Dependencies and acceptance checkpoints:
 
-1. Request/writer borrowed-facade representation must be proven against the
-   current region rules; any new view type requires an explicit spec decision.
+1. Validate the concrete slice-backed facade representation above with compiler
+   acceptance/rejection cases and suspension/unwind cleanup checks. It proposes
+   no new view type; an implementation gap must be resolved against the existing
+   rules rather than bypassing provenance.
 2. Maintainer accepts the factory router and restricted function form, or locks
    a callable-sharing extension before promising persistent HandleFunc.
 3. Add std/net/url contracts above with positive and negative conformance cases.
@@ -325,9 +445,10 @@ Dependencies and acceptance checkpoints:
 
 No changes to async matching, panic recovery, task borrowing, interface cloning,
 or shared socket ownership are authorized. Existing waiting-call lowering must
-work through ServeHTTP and io interfaces. Prove the private facade borrowing
-representation before claiming zero compiler impact. Library state must obey
-Mutex's no-view/no-function restriction and ordinary zero-resource cleanup.
+work through ServeHTTP and io interfaces. The proposed facade layout uses
+existing slice-containing structs and shared Conn methods; validate its inferred
+provenance and cleanup before claiming implementation support. Library state must
+obey Mutex's no-view/no-function restriction and ordinary zero-resource cleanup.
 
 After acceptance, add spec sections under §37 and conformance documents for:
 
@@ -340,14 +461,37 @@ After acceptance, add spec sections under §37 and conformance documents for:
 - Content-Length, chunked framing, empty bodies, TE/CL ambiguity, overflow,
   truncation, extensions, trailers, Expect, body limits and unread-body close.
 - Response framing, partial writes, zero progress, commitment errors, HEAD,
-  204/304, over/underwritten lengths and errors before/after commitment.
-- Header/body/write/idle deadlines, capacity, polling cancellation and pipelining.
+  204/205/304, over/underwritten lengths and errors before/after commitment.
+- Acceptance-to-header, body/write/idle deadlines, capacity, polling cancellation
+  and pipelining.
 - Shutdown racing admission, idle peers, active requests, deadline expiry,
   repeated calls, a noncooperative handler, and main completion ordering.
 - Handler panic closes only its connection, releases admission/completion state,
   and preserves the accept loop; factory/application mutex poison is explicit.
 - Inert zero values and deterministic normal/error/panic cleanup.
 
+The following regression scenarios are required before implementation is accepted;
+they are test specifications, not passing executable tests:
+
+| Scenario | Required observation |
+| --- | --- |
+| Admit MaxConnections silent peers | Each closes at its acceptance/header deadline; permits are released and a new client can be admitted |
+| Send the first byte just before the initial deadline | The original deadline still expires; the header does not receive a fresh budget |
+| Start shutdown during an initial or keep-alive first-byte wait | The connection observes draining within a control poll and releases its completion guard |
+| Queue dispatch B after a false poison check while factory A holds the lock, then panic A | A and B unwind only their connection tasks; permits/completion are released, the accept loop survives, and a later poison-observing dispatch receives 503 |
+| Read an Expect body in several pieces, including an initial empty-buffer read | Exactly one 100 precedes the final response; the empty read emits nothing |
+| Commit 403 before the first Expect body read | Read returns response-already-started; no 100 or socket read occurs and unread-body policy closes the connection |
+| Fail partway through final-header transmission, then attempt Read | Commitment stays sticky; no automatic 100 or replacement final response |
+| Commit 205, attempt a nonempty Write, then finalize | Write fails, the wire has Content-Length: 0 and no content or chunks |
+| Supply nonzero Content-Length for 205 | Commitment fails before bytes are emitted |
+| HEAD or 304 carries a valid representation length without body writes | No chunks or spurious content-length underrun |
+| Propagate a body-limit error with ? | Uncommitted response is 413, not generic 500 |
+| Complete a successful handler before final chunk emission | Request context cancellation does not suppress bounded server finalization |
+| Construct both facades from the task-local slots, call through borrowed I/O interfaces, then drop them | Shared connection loans coexist; disjoint mutable state loans end before slot reuse |
+| Attempt facade clone, task/channel/Mutex escape, owned-interface conversion, or premature owner drop | Compiler rejection under existing clone/provenance rules |
+| Suspend or panic during a facade operation | Backing owners remain live through suspension; unwind drops facades before the sole Conn owner |
+
 Runtime tests should use local loopback, controlled peers and bounded waits;
-do not rely on Internet endpoints or sleeps as evidence of completion. This
-proposal adds no implementation or executable tests yet.
+use synchronization gates for the poison race and a controlled clock for deadline
+boundaries. Do not rely on Internet endpoints or sleeps as evidence of completion.
+This proposal adds no implementation or executable tests yet.
