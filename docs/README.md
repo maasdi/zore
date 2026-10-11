@@ -24,6 +24,7 @@ These proposals were not accepted and changed nothing. They are kept for their r
 
 These proposals await a decision and change nothing yet.
 
+- [HTTP server and URL design](proposals/http-server.md) (issue #105; awaiting acceptance)
 - [Opt-in scoped tasks](proposals/scoped-tasks.md) (Q10)
 - [Staged self-hosting plan](proposals/self-hosting-plan.md) (issue #56; stages 1 and 2 done)
 
