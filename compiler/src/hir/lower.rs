@@ -1,4 +1,5 @@
 mod closure_kind;
+mod format;
 mod generic;
 mod globals;
 mod interface;
@@ -1025,9 +1026,6 @@ impl<'a> Checker<'a> {
     }
 
     fn closure(&mut self, closure: &ast::Closure, span: Span) -> Option<Value> {
-        if self.reject_in_generic_body("a function literal", span) {
-            return None;
-        }
         // Resolution reports a literal it could not give a body.
         let index = self.res.closures.iter().position(|c| c.span == span)?;
         let id = self.res.closures[index].id;
@@ -1115,7 +1113,10 @@ impl<'a> Checker<'a> {
             is_async: false,
             native: false,
             call_once,
-            type_params: Vec::new(),
+            type_params: self
+                .generic_root(id)
+                .map(|root| self.res.type_params[&root].clone())
+                .unwrap_or_default(),
             probe: false,
         });
         let captures = captures
@@ -1447,6 +1448,19 @@ impl<'a> Checker<'a> {
 
     fn function_value(&mut self, id: FunctionId, span: Span) -> Option<Value> {
         let declaration = self.res.functions[id.0 as usize];
+        if self.format_kind(id).is_some() {
+            self.diagnostics.push(
+                Diagnostic::new(
+                    Severity::Error,
+                    format!("`fmt.{}` cannot be used as a value", declaration.name.text),
+                    span,
+                )
+                .note(
+                    "each call is checked against its own arguments; wrap it in a function literal",
+                ),
+            );
+            return None;
+        }
         if self.is_generic(id) {
             self.diagnostics.push(
                 Diagnostic::new(
@@ -2810,6 +2824,11 @@ impl<'a> Checker<'a> {
         args: &[ast::Expr],
         span: Span,
     ) -> Option<Value> {
+        if receiver.is_none()
+            && let Some(kind) = self.format_kind(id)
+        {
+            return self.format_call(kind, args, span);
+        }
         if self.is_generic(id) {
             return match receiver {
                 Some(receiver) => self.generic_method_call(id, name, receiver, args, span),

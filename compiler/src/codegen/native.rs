@@ -78,8 +78,24 @@ impl Module<'_> {
                     args.push(format!("i1 zeroext %p{index}"));
                     declared.push("i1 zeroext".to_string());
                 }
+                TypeKind::Error => {
+                    writeln!(
+                        release,
+                        "  call void @zore_string_release(ptr %d{index}, i64 %n{index})"
+                    )
+                    .unwrap();
+                    writeln!(
+                        prologue,
+                        "  %present{index} = extractvalue {{ i1, ptr, i64 }} %p{index}, 0\n  %d{index} = extractvalue {{ i1, ptr, i64 }} %p{index}, 1\n  %n{index} = extractvalue {{ i1, ptr, i64 }} %p{index}, 2"
+                    )
+                    .unwrap();
+                    args.push(format!(
+                        "i1 zeroext %present{index}, ptr %d{index}, i64 %n{index}"
+                    ));
+                    declared.push("i1 zeroext, ptr, i64".to_string());
+                }
                 _ => unreachable!(
-                    "bundled functions take strings, slices, numbers, runes, and booleans"
+                    "bundled functions take strings, slices, numbers, runes, booleans, and errors"
                 ),
             }
         }

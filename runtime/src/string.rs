@@ -13,6 +13,15 @@ struct Buffer {
     owners: usize,
     /// Held by a package-level value until the program ends, so it is not a leak.
     pinned: bool,
+    /// The error a wrapped error's text was made from, and the length of that text.
+    cause: Option<Cause>,
+}
+
+#[derive(Clone, Copy)]
+struct Cause {
+    data: usize,
+    len: usize,
+    text_len: usize,
 }
 
 struct Registry(BTreeMap<usize, Buffer>);
@@ -69,6 +78,7 @@ fn new_buffer(pieces: &[&[u8]], capacity: usize) -> *mut u8 {
             used,
             owners: 1,
             pinned: false,
+            cause: None,
         },
     );
     data
@@ -131,21 +141,56 @@ pub(super) fn retain(data: *const u8, len: usize) {
 pub(super) fn release(data: *const u8, len: usize) {
     let freed = with_buffer(data, len, |buffer| {
         buffer.owners -= 1;
-        (buffer.owners == 0).then_some((buffer.data, buffer.capacity))
+        (buffer.owners == 0).then_some((buffer.data, buffer.capacity, buffer.cause))
     });
-    if let Some(Some((base, capacity))) = freed {
+    if let Some(Some((base, capacity, cause))) = freed {
         owned().remove(&(base as usize));
         // SAFETY: the buffer came from `zore_alloc(capacity)` and had no owners left.
         unsafe { zore_free(base, capacity as i64) };
+        if let Some(cause) = cause {
+            release(cause.data as *const u8, cause.len);
+        }
     }
 }
 
 /// A package-level value holds this string for the rest of the program.
 #[unsafe(no_mangle)]
 pub extern "C" fn zore_string_pin(data: *const u8, len: i64) {
-    with_buffer(data, usize::try_from(len).unwrap_or(0), |buffer| {
+    let cause = with_buffer(data, usize::try_from(len).unwrap_or(0), |buffer| {
         buffer.pinned = true;
+        buffer.cause
     });
+    if let Some(Some(cause)) = cause {
+        zore_string_pin(cause.data as *const u8, cause.len as i64);
+    }
+}
+
+/// New text that remembers the error it wraps; empty text cannot remember one.
+pub(super) fn with_cause(text: &[u8], cause: *const u8, cause_len: usize) -> StringOut {
+    let built = StringOut::built(text);
+    if text.is_empty() || cause_len == 0 {
+        return built;
+    }
+    retain(cause, cause_len);
+    with_buffer(built.data, text.len(), |buffer| {
+        buffer.cause = Some(Cause {
+            data: cause as usize,
+            len: cause_len,
+            text_len: text.len(),
+        });
+    });
+    built
+}
+
+/// The text of the error that this exact text wraps, with a new owner.
+pub(super) fn cause_of(data: *const u8, len: usize) -> Option<(*const u8, usize)> {
+    let cause = with_buffer(data, len, |buffer| {
+        buffer
+            .cause
+            .filter(|cause| std::ptr::eq(buffer.data, data) && cause.text_len == len)
+    })??;
+    retain(cause.data as *const u8, cause.len);
+    Some((cause.data as *const u8, cause.len))
 }
 
 /// Another owner now reads this string.

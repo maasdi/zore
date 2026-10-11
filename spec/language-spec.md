@@ -3557,15 +3557,18 @@ error(message string) error
 
 reusing the type-name-as-callable-form convention already locked for numeric
 conversions (§6.6), rather than introducing new construction syntax. The zero
-value of `error` is `nil` (§41.4), meaning "no error." Wrapping/cause chains,
-sentinel error declarations, and structured error payloads are not decided by
-this section and remain open for a future standard-library decision (Q05);
-nothing here should be read as authorizing them yet.
+value of `error` is `nil` (§41.4), meaning "no error." A non-nil error may also
+carry the error it wraps, its *cause*, made by `errors.Wrap` or the `%w`
+directive of `fmt.Errorf` (§37.2); the cause stays reachable through
+`errors.Unwrap` and `errors.Is`, and copying an error copies the whole chain.
+Sentinel errors are package-level `let` values (§3.21). Structured error
+payloads remain out.
 
 `==` and `!=` are defined between two `error` values (§6.6): both `nil` are
 equal; one `nil` and one non-nil are unequal; two non-nil values are equal iff
 their messages are equal (content equality, not identity — consistent with
-`error` being Copy). This is a wider comparability than `Task<...>`, which is
+`error` being Copy). Causes are not compared: an error equals another with the
+same message whatever either wraps. This is a wider comparability than `Task<...>`, which is
 comparable only against `nil` (§41.4), and `channel<T>`, which is not
 comparable at all (§6.6); those are runtime handles without meaningful content
 equality.
@@ -5095,8 +5098,8 @@ then gets its own copy of the function, compiled like ordinary code. A generic
 function whose calls would need endless new sets of type arguments, such as one
 calling itself with `Array<T>`, is an error.
 
-**Not yet supported.** Inside a generic function or a method of a generic type:
-function literals, `go`, method values, converting a value whose type uses a
+**Not yet supported.** Inside a generic function or a method of a generic type,
+including inside its function literals: `go`, method values, converting a value whose type uses a
 type parameter to an interface type, `clone` of a `T`, and printing a `T`. A
 method of a generic type cannot be used as a value. These produce diagnostics.
 
@@ -5881,7 +5884,7 @@ back to exactly the same value of its type, so a `float32` shows the digits a
 
 The compiler ships the standard packages of §37.2–§37.5, imported by their
 paths (§3.20): `"zore/strings"`, `"zore/strconv"`, `"zore/unicode"`,
-`"zore/unicode/utf8"`, `"zore/bytes"`, `"zore/errors"`, and `"zore/math"` here. They are
+`"zore/unicode/utf8"`, `"zore/bytes"`, `"zore/errors"`, `"zore/fmt"`, and `"zore/math"` here. They are
 ordinary packages as far as users can tell: names are used with the qualifier
 (the last segment of the path) and every function, type, method, and constant
 listed is exported. A package whose path has several segments, such as
@@ -5892,6 +5895,7 @@ The packages follow one set of conventions:
 
 - Exported functions start with an upper-case letter and use the same name for
   the same job across packages (`Index`, `HasPrefix`, `Count`, `Equal`).
+- `fmt` functions take any number of arguments (§37.2); no other function does.
 - A function that can fail returns `error` last (§7.2). An error message begins
   with the qualified function name, such as `strconv.Atoi: `, except the fixed
   message `EOF`, which every reading function uses for the end of its input.
@@ -6043,10 +6047,71 @@ the front.
 | Function | Behavior |
 | --- | --- |
 | `New(text string) error` | `error(text)` (§15.1) |
-| `Is(err error, target error) bool` | `err == target` |
+| `Message(err error) string` | The error's message; `""` for `nil` |
+| `Wrap(err error, context string) error` | `nil` when `err` is `nil`; otherwise an error whose message is `context`, `": "`, and `err`'s message, and whose cause is `err` |
+| `Unwrap(err error) error` | The cause of `err`, or `nil` when it has none |
+| `Is(err error, target error) bool` | Whether `err` or any error in its chain of causes equals `target` (§15.1) |
 
-Wrapping and cause chains remain open (Q05); `Is` compares messages, as `==`
-does.
+An error whose message is empty carries no cause.
+
+**`zore/fmt`** prints and formats values. Its functions take any number of
+arguments, and the compiler checks every call against its arguments, so a
+mismatched format is a compile-time error rather than wrong output. They cannot
+be used as function values.
+
+| Function | Behavior |
+| --- | --- |
+| `Print(args...)` | Writes each argument's text to standard output, with a space between two arguments when neither is a `string` |
+| `Println(args...)` | Writes each argument's text with a space between every two, then a line feed |
+| `Printf(format, args...)` | Writes `format` with each directive replaced by the text of the next argument |
+| `Sprint(args...) string`, `Sprintln(args...) string`, `Sprintf(format, args...) string` | The same text, returned instead of written |
+| `Errorf(format, args...) error` | An error whose message is the formatted text; with a `%w` directive, the error formatted by it becomes the result's cause |
+
+An argument can be a `bool`, an integer or float type, `rune`, `string`,
+`error`, a named type built on one of these, or a type with a method
+`String() string` with a shared receiver, which is used for its text. The
+default text (`%v`) of each is what `println` writes (§37.1); a `rune` is its
+character, an `error` its message or `<nil>`. `format` must be a constant
+`string`. A directive is `%`, optional flags (`-` to pad on the right, `0` to
+pad with zeros), an optional width, an optional `.` and precision for floats,
+and a verb:
+
+| Verb | Arguments | Text |
+| --- | --- | --- |
+| `%v` | any | The default text |
+| `%d` | integers, `rune` | Decimal |
+| `%x`, `%X`, `%o`, `%b` | integers, `rune` | Hexadecimal in lower or upper case, octal, binary |
+| `%c` | integers, `rune` | The character with that code |
+| `%s` | `string`, `error`, `String()` types | The text |
+| `%q` | `string`, `rune`, `String()` types | Quoted as `strconv.Quote` or `strconv.QuoteRune` |
+| `%t` | `bool` | `true` or `false` |
+| `%f`, `%e`, `%E`, `%g`, `%G` | floats | As `strconv.FormatFloat`; the precision defaults to 6 for `f`, `e`, and `E` and to the shortest for `g` and `G` |
+| `%w` | `error`, in `Errorf` only, at most once | The message, and the error becomes the cause |
+| `%%` | none | `%` |
+
+A width pads the text with spaces, or with zeros after any sign, to that many
+characters. The number of directives must equal the number of arguments.
+
+```ore
+import "zore/fmt"
+
+type Point struct {
+    x int
+    y int
+}
+
+func (p Point) String() string {
+    return fmt.Sprintf("(%d, %d)", p.x, p.y)
+}
+
+func main() {
+    fmt.Println("total:", 3, true)                   // total: 3 true
+    fmt.Printf("%-5s|%05.1f|%x\n", "ab", 3.14159, 255)  // ab   |003.1|ff
+    fmt.Println(Point{x: 1, y: 2})                     // (1, 2)
+    let err = fmt.Errorf("loading %q: %w", "app.cfg", error("not found"))
+    fmt.Println(err)                                  // loading "app.cfg": not found
+}
+```
 
 ```ore
 import "zore/strconv"

@@ -4,6 +4,28 @@ func New(text string) error {
     return error(text)
 }
 
-func Is(err error, target error) bool {
-    return err == target
+func Message(err error) string
+
+func Wrap(err error, context string) error {
+    if err == nil {
+        return nil
+    }
+    return wrapText(context + ": " + Message(err), err)
 }
+
+func Unwrap(err error) error
+
+func Is(err error, target error) bool {
+    var current = err
+    for {
+        if current == target {
+            return true
+        }
+        if current == nil {
+            return false
+        }
+        current = Unwrap(current)
+    }
+}
+
+func wrapText(text string, cause error) error

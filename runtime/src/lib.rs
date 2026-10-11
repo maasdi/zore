@@ -11,6 +11,8 @@ mod blocking;
 mod channel;
 #[path = "deadlock.rs"]
 mod deadlock;
+#[path = "errors.rs"]
+mod errors;
 #[path = "exec.rs"]
 mod exec;
 #[path = "float.rs"]

@@ -108,6 +108,9 @@ crate's unit tests cover the native string functions directly.
 `conformance/runes.md` covers single-scalar rune literals and escapes.
 `conformance/integers.md` covers integer bases and prefix validation.
 `conformance/floats.md` covers decimal fractions and scientific notation.
+`conformance/fmt.md` lists the `zore/fmt` functions and directives, the
+compile-time checks on formats, and `Errorf` causes; the checker and native
+tests cover each row.
 `conformance/keywords.md` covers MVP keywords and future-reserved words.
 `conformance/entry-point.md` covers the `main` entry point and exit status (§3.19).
 `conformance/println.md` covers `println` arguments, output text, and misuse (§37.1).

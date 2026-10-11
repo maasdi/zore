@@ -98,3 +98,16 @@ Covered by `tests/codegen/native.rs` and `tests/typecheck/check.rs`.
 | `panic(1)`, `panic()`, `panic("a", "b")` | Reject: one `string` argument |
 | `let p = panic`, `let x = panic("x")` | Reject: `panic` can only be called and has no result |
 | `let panic = 1`, `func panic()` | Reject: predeclared names cannot be shadowed |
+
+## Causes (§15.1, §37.2)
+
+| Scenario | Expected result |
+| --- | --- |
+| `errors.Wrap(NotFound, "loading x")` | Message `loading x: not found`; `errors.Unwrap` gives `NotFound` |
+| `errors.Is` on an error wrapped twice, with the innermost error | `true`; with an unrelated error, `false` |
+| `errors.Wrap(nil, "x")` | `nil` |
+| `errors.Unwrap` of an error made by `error(...)`, and of `nil` | `nil` |
+| `error(errors.Message(w)) == w` for a wrapped `w` | `true`: equality compares messages only |
+| `errors.Message(nil)` | `""` |
+| Wrapped errors stored in an `Array<error>` and dropped | Every message and cause is released exactly once (leak checker) |
+| A package-level `let` sentinel compared with `errors.Is` | `true` through any number of wraps |

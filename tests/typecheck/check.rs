@@ -1238,8 +1238,8 @@ fn unsupported_features_are_never_accepted() {
             "requires a trailing `error` result in this function",
         ),
         (
-            "package main\nimport \"zore/fmt\"\nfunc main() {}\n".into(),
-            "no standard package `zore/fmt`",
+            "package main\nimport \"zore/format\"\nfunc main() {}\n".into(),
+            "no standard package `zore/format`",
         ),
         (
             program("var top = 1"),
@@ -4863,8 +4863,12 @@ fn generic_bodies_are_checked_for_every_allowed_type() {
             "`println` cannot print values of type `T`",
         ),
         (
-            "func A<T any>(item T) { let f = func() {}\n f() }",
-            "a function literal inside a generic function is not supported yet",
+            "func A<T any>(items []T) { let f = func() T { return items[0] }\n _ = f }",
+            "moving captured value `items[_]` out of a function literal is not supported yet",
+        ),
+        (
+            "func B() {}\nfunc A<T any>(item T) { let f = func() { let t = go B() }\n f() }",
+            "`go` inside a generic function is not supported yet",
         ),
         (
             "func B() {}\nfunc A<T any>(item T) { let t = go B() }",
@@ -5102,5 +5106,62 @@ fn generic_types_reject_missing_wrong_or_unsatisfying_type_arguments() {
         ),
     ] {
         rejects(&with_generic_types(decls), message);
+    }
+}
+
+#[test]
+fn fmt_checks_each_directive_against_its_argument() {
+    let wrap = |body: &str| {
+        format!(
+            "package main\n\nimport \"zore/fmt\"\n\ntype Box struct {{ n int }}\n\nfunc main() {{\n{body}\n}}\n"
+        )
+    };
+    accepts(&wrap(
+        "fmt.Printf(\"%d %s %v %.1f %q %t %x %c\\n\", 1, \"s\", Box{n: 1}.n, 1.5, \"q\", true, 255, 'c')\n    let e = fmt.Errorf(\"a %w\", error(\"b\"))\n    _ = e",
+    ));
+    for (body, message) in [
+        (
+            "fmt.Printf(\"%d\", \"text\")",
+            "`fmt.Printf` directive `%d` cannot format a value of type `string`",
+        ),
+        (
+            "fmt.Printf(\"%d %d\", 1)",
+            "`fmt.Printf` format has 2 directives but 1 argument was given",
+        ),
+        (
+            "let f = \"%d\"\n    fmt.Printf(f, 1)",
+            "the format of `fmt.Printf` must be a constant string",
+        ),
+        (
+            "fmt.Printf(\"%w\", error(\"x\"))",
+            "`fmt.Printf` directive `%w` cannot format a value of type `error`",
+        ),
+        (
+            "fmt.Println(Box{n: 1})",
+            "`fmt.Println` cannot format a value of type `Box`",
+        ),
+        (
+            "fmt.Printf(\"%z\", 1)",
+            "`fmt.Printf` format: `%z` is not a formatting verb",
+        ),
+        (
+            "fmt.Printf(\"%d %\", 1)",
+            "`fmt.Printf` format: the format ends in the middle of a `%` directive",
+        ),
+        (
+            "fmt.Printf(\"%.2d\", 1)",
+            "`fmt.Printf` directive `%d` takes no precision for a value of type `int64`",
+        ),
+        (
+            "let e = fmt.Errorf(\"%w %w\", error(\"a\"), error(\"b\"))",
+            "`fmt.Errorf` takes at most one `%w` directive",
+        ),
+        (
+            "let g = fmt.Println",
+            "`fmt.Println` cannot be used as a value",
+        ),
+        ("fmt.Printf()", "`fmt.Printf` needs a format string"),
+    ] {
+        rejects(&wrap(body), message);
     }
 }

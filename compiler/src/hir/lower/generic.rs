@@ -205,7 +205,15 @@ impl Checker<'_> {
     }
 
     pub(super) fn in_generic_body(&self) -> bool {
-        self.current < self.res.functions.len() && self.is_generic(FunctionId(self.current as u32))
+        self.generic_root(FunctionId(self.current as u32)).is_some()
+    }
+
+    /// The generic function a function literal is written in, through any enclosing literals.
+    pub(super) fn generic_root(&self, mut id: FunctionId) -> Option<FunctionId> {
+        while id.0 as usize >= self.res.functions.len() {
+            id = self.res.closures[id.0 as usize - self.res.functions.len()].parent;
+        }
+        self.is_generic(id).then_some(id)
     }
 
     pub(super) fn reject_in_generic_body(&mut self, what: &str, span: Span) -> bool {
@@ -735,7 +743,7 @@ impl Checker<'_> {
             runaway: HashSet::new(),
         };
         for index in 0..functions.len() {
-            if functions[index].type_params.is_empty() {
+            if functions[index].type_params.is_empty() || functions[index].is_closure {
                 continue;
             }
             let placeholders: Vec<TypeId> = functions[index]
@@ -845,10 +853,13 @@ impl Checker<'_> {
         if !probe {
             self.satisfy_interface_constraints(functions, &template, &key.1, span);
         }
+        let first_new = functions.len();
         let copy = self.copy(functions, template, &key.1, probe);
         copies.by_key.insert(key, copy);
-        copies.depths.push(depth);
-        copies.pending.push(copy.0 as usize);
+        for index in first_new..functions.len() {
+            copies.depths.push(depth);
+            copies.pending.push(index);
+        }
         Some(copy)
     }
 
@@ -990,6 +1001,27 @@ impl Checker<'_> {
                     }
                 }
                 _ => {}
+            }
+        });
+        let mut literals = Vec::new();
+        each_expr(&mut copy.body, &mut |expr| {
+            if let ExprKind::Closure { function, .. } = expr.kind {
+                literals.push(function);
+            }
+        });
+        let mut replaced = HashMap::new();
+        for literal in literals {
+            if functions[literal.0 as usize].type_params.is_empty() {
+                continue;
+            }
+            let literal_copy = self.copy(functions, literal, type_args, probe);
+            replaced.insert(literal, literal_copy);
+        }
+        each_expr(&mut copy.body, &mut |expr| {
+            if let ExprKind::Closure { function, .. } = &mut expr.kind
+                && let Some(&literal_copy) = replaced.get(function)
+            {
+                *function = literal_copy;
             }
         });
         functions.push(copy);

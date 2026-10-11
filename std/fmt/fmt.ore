@@ -1,0 +1,159 @@
+package fmt
+
+import "zore/errors"
+import "zore/os"
+import "zore/strconv"
+
+func Print(text string) {
+    writeOut(text)
+}
+
+func Println(text string) {
+    writeOut(text)
+}
+
+func Printf(format string) {
+    writeOut(format)
+}
+
+func Sprint(text string) string {
+    return text
+}
+
+func Sprintln(text string) string {
+    return text
+}
+
+func Sprintf(format string) string {
+    return format
+}
+
+func Errorf(format string) error {
+    return error(format)
+}
+
+func writeOut(text string) {
+    let _, _ = os.Stdout().WriteString(text)
+}
+
+func digits(value uint64, base uint64, upper bool) string {
+    let lower = "0123456789abcdef"
+    let capital = "0123456789ABCDEF"
+    var out = ""
+    var rest = value
+    for {
+        let digit = int(rest % base)
+        if upper {
+            out = capital[digit:digit + 1] + out
+        } else {
+            out = lower[digit:digit + 1] + out
+        }
+        rest = rest / base
+        if rest == 0 {
+            return out
+        }
+    }
+}
+
+func baseOf(verb rune) uint64 {
+    if verb == 'x' || verb == 'X' {
+        return 16
+    }
+    if verb == 'o' {
+        return 8
+    }
+    if verb == 'b' {
+        return 2
+    }
+    return 10
+}
+
+func formatInt(value int, verb rune) string {
+    if verb == 'c' {
+        return string(rune(value))
+    }
+    if value < 0 {
+        return "-" + digits(uint64(-(value + 1)) + 1, baseOf(verb), verb == 'X')
+    }
+    return digits(uint64(value), baseOf(verb), verb == 'X')
+}
+
+func formatUint(value uint64, verb rune) string {
+    if verb == 'c' {
+        return string(rune(value))
+    }
+    return digits(value, baseOf(verb), verb == 'X')
+}
+
+func formatFloat(value float64, verb rune, precision int, bits int) string {
+    if verb == 'v' {
+        return strconv.FormatFloat(value, 'g', -1, bits)
+    }
+    var digitsAfter = precision
+    if digitsAfter < 0 && (verb == 'f' || verb == 'e' || verb == 'E') {
+        digitsAfter = 6
+    }
+    return strconv.FormatFloat(value, verb, digitsAfter, bits)
+}
+
+func formatBool(value bool) string {
+    if value {
+        return "true"
+    }
+    return "false"
+}
+
+func formatString(value string, verb rune) string {
+    if verb == 'q' {
+        return strconv.Quote(value)
+    }
+    return value
+}
+
+func formatRune(value rune, verb rune) string {
+    if verb == 'q' {
+        return strconv.QuoteRune(value)
+    }
+    if verb == 'c' || verb == 'v' {
+        return string(value)
+    }
+    return formatInt(int(value), verb)
+}
+
+func formatError(err error) string {
+    if err == nil {
+        return "<nil>"
+    }
+    return errors.Message(err)
+}
+
+func pad(text string, width int, left bool, zero bool) string {
+    var count = 0
+    for _, _ in text {
+        count += 1
+    }
+    if count >= width {
+        return text
+    }
+    var fill = ""
+    for var i = count; i < width; i += 1 {
+        if zero && !left {
+            fill = fill + "0"
+        } else {
+            fill = fill + " "
+        }
+    }
+    if left {
+        return text + fill
+    }
+    if zero && text.len() > 0 && (text[0] == 45 || text[0] == 43) {
+        return text[0:1] + fill + text[1:]
+    }
+    return fill + text
+}
+
+func wrapFormatted(before string, cause error, after string) error {
+    return wrapText(before + formatError(cause) + after, cause)
+}
+
+func wrapText(text string, cause error) error
