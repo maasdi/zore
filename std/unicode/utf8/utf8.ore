@@ -1,6 +1,6 @@
 package utf8
 
-import "zore/strings"
+import "std/strings"
 
 const RuneError = '�'
 const RuneSelf = 0x80

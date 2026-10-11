@@ -45,7 +45,7 @@ rules are locked. At semantic milestones, verify primitive Copy behavior.
 | `strconv.ParseFloat("0.1", 32)` | The `float32` nearest 0.1, as a `float64`: `0.10000000149011612` |
 | Every finite `float64` printed and parsed back | The same value |
 
-## `zore/math`
+## `std/math`
 
 | Scenario | Expected result |
 | --- | --- |

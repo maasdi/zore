@@ -1,8 +1,8 @@
 package main
 
-import "zore/net"
-import "zore/strings"
-import "zore/time"
+import "std/net"
+import "std/strings"
+import "std/time"
 
 func shout(conn own net.Conn) {
     var buf = strings.Bytes("................................")

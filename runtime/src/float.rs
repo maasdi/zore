@@ -1,4 +1,4 @@
-//! The text form of floats, shared by `println`, `zore/strconv`, and `zore/math`.
+//! The text form of floats, shared by `println`, `std/strconv`, and `std/math`.
 
 /// The shortest decimal digits that read back to the value, and the exponent of the first digit.
 fn shortest(value: f64, single: bool) -> (String, i32) {

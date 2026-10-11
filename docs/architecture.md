@@ -42,7 +42,7 @@ when existing code belongs in it (rule 11: no empty scaffolding):
   `ty.rs`, `type_store.rs`, plus `constant.rs` and `bignum.rs` for exact
   constant evaluation), `hir/` (`expr.rs`, `stmt.rs`, `function.rs`, `lower.rs`,
   `lower/closure_kind.rs`, which decides which closures own their captures,
-  `lower/format.rs`, which checks `zore/fmt` calls against their formats and
+  `lower/format.rs`, which checks `std/fmt` calls against their formats and
   turns them into string building, `lower/interface.rs`, which checks interface satisfaction, conversions, and
   calls through interfaces, and `lower/generic.rs`, which infers type arguments,
   checks them against constraints, and makes one copy of a generic function or
@@ -97,8 +97,8 @@ runtime in `runtime/src/` holds allocation (`alloc.rs`), text (`string.rs`,
 (`waiter.rs`), channels and `select` (`channel.rs`), `Mutex` (`mutex.rs`),
 deadlock detection (`deadlock.rs`), and async I/O: the event loop and timers
 (`reactor.rs`), helper threads for blocking calls (`blocking.rs`), and the
-natives behind `zore/time` (`sys.rs`), `zore/os` (`os.rs`), `zore/os/exec`
-(`exec.rs`), `zore/net` (`net.rs`, `net_poll.rs`), and `zore/unicode`
+natives behind `std/time` (`sys.rs`), `std/os` (`os.rs`), `std/os/exec`
+(`exec.rs`), `std/net` (`net.rs`, `net_poll.rs`), and `std/unicode`
 (`unicode.rs`). The driver compiles it once into a cached library, and `main.rs` is
 the native entry shim compiled with each program; the Cargo library target
 enables runtime unit tests without a generated entry.
@@ -220,7 +220,7 @@ still use conservative reachability through their success and unwind paths.
 Suspended frames are abandoned at process exit. Very large sets of waiting
 tasks should use `async func`: a plain function holds an OS worker while it
 waits, and compensation may need one replacement thread per blocked worker.
-The private `zore/context` `expire` and `follow` tasks are async, as is the timer
+The private `std/context` `expire` and `follow` tasks are async, as is the timer
 package's `fire` task.
 
 ### Channel and select polls (Q32 slice 4, first PR)

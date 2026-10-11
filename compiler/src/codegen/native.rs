@@ -6,7 +6,7 @@ use super::llvm::Module;
 use crate::mir::Body;
 use crate::types::{TypeId, TypeKind, TypeStore};
 
-/// `zore/strings.HasPrefix` is `zore_native_strings_has_prefix` in the runtime.
+/// `std/strings.HasPrefix` is `zore_native_strings_has_prefix` in the runtime.
 fn symbol(name: &str) -> String {
     let (path, function) = name.rsplit_once('.').unwrap_or(("", name));
     let package = path.rsplit('/').next().unwrap_or(path);

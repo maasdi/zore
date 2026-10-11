@@ -1,6 +1,6 @@
 package main
 
-import "zore/time"
+import "std/time"
 
 async func wait(rounds int) int {
     var completed = 0

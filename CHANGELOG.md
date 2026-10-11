@@ -9,6 +9,9 @@ once it does.
 
 ### Language specification
 
+- Standard packages are now imported as `"std/<path>"` (`"std/strings"`,
+  `"std/os/exec"`) instead of `"zore/<path>"`; `std` is the reserved project
+  name (§3.20, Q45).
 - Locked the program entry point: `package main` with exactly one
   `func main()`; exit status 0 on return, nonzero after a panic (§3.19).
 - Locked `println`: one printable argument, one line per call (§37.1).

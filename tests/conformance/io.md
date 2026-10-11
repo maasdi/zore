@@ -3,7 +3,7 @@
 Authority: spec §37.3–§37.4. The cases below are covered by executable tests in
 `tests/codegen/native.rs` and `tests/packages/packages.rs` unless marked pending.
 
-## `zore/time`
+## `std/time`
 
 | Scenario | Expected result |
 | --- | --- |
@@ -27,7 +27,7 @@ Authority: spec §37.3–§37.4. The cases below are covered by executable tests
 | `FromBytes` of `{104, 255}` or of a cut character | `""` and an error equal to `error("strings.FromBytes: invalid UTF-8")` |
 | `FromBytes(data)` with an `Array<byte>` argument | Rejected: arrays do not convert to slices implicitly |
 
-## `zore/os`
+## `std/os`
 
 | Scenario | Expected result |
 | --- | --- |
@@ -46,7 +46,7 @@ Authority: spec §37.3–§37.4. The cases below are covered by executable tests
 | `Stdout().WriteString` | The text on standard output and its byte count |
 | `Exit(4)` | The process ends with status 4; later statements do not run |
 
-## `zore/os/exec`
+## `std/os/exec`
 
 | Scenario | Expected result |
 | --- | --- |
@@ -56,7 +56,7 @@ Authority: spec §37.3–§37.4. The cases below are covered by executable tests
 | `Dir` set to `/` with `pwd` | The program ran there |
 | A program that does not exist | An error |
 
-## `zore/io`
+## `std/io`
 
 | Scenario | Expected result |
 | --- | --- |
@@ -67,7 +67,7 @@ Authority: spec §37.3–§37.4. The cases below are covered by executable tests
 | `io.WriteString` to a file | The byte count |
 | A `string` where an `io.Reader` is expected | Reject: `string` does not satisfy `io.Reader` |
 
-## `zore/bufio`
+## `std/bufio`
 
 | Scenario | Expected result |
 | --- | --- |
@@ -80,7 +80,7 @@ Authority: spec §37.3–§37.4. The cases below are covered by executable tests
 | A `bufio.Reader` made over another `bufio.Reader`, read with `io.ReadAll` | Every byte |
 | An async task scanning lines from a `net.Conn` while a `bufio.Writer` over the other end writes them | Each line arrives; the scanner ends when the writer's connection is dropped |
 
-## `zore/net`
+## `std/net`
 
 | Scenario | Expected result |
 | --- | --- |
@@ -114,7 +114,7 @@ Authority: spec §37.3–§37.4. The cases below are covered by executable tests
 | `SetDeadline` on a zero-value `Conn` | `error("net.SetDeadline: not an open connection or listener")` |
 | `DialTimeout` to a closed port or `"not an address"` | An error |
 
-## `zore/context` and `zore/sync`
+## `std/context` and `std/sync`
 
 | Scenario | Expected result |
 | --- | --- |

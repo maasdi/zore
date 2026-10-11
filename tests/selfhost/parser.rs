@@ -870,7 +870,7 @@ fn targeted_programs_and_errors_match() {
         "package main\n",
         "func main() {}",
         "package 1\nfunc main() {}\n",
-        "package main\nimport \"zore/os\"\nimport `raw`\nimport (\n\"a\"\n)\nfunc main() {}\nimport \"late\"\n",
+        "package main\nimport \"std/os\"\nimport `raw`\nimport (\n\"a\"\n)\nfunc main() {}\nimport \"late\"\n",
         "package main\ntype Point struct {\n    X int\n    Y int\n}\ntype Bad interface {}\n",
         "package main\nfunc (p mut Point) move(dx int, dy own []int) (int, error) { return 0, nil }\n",
         "package main\nfunc f(a, b int) {}\nfunc g(a int = 1) {}\nfunc h() () {}\nfunc k() (int) {}\n",

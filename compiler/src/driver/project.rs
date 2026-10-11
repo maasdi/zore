@@ -139,7 +139,7 @@ fn project_name(text: &str) -> Option<String> {
         (key.trim() == "name").then(|| value.trim().trim_matches('"').to_string())
     })?;
     let valid = !value.is_empty()
-        && value != "zore"
+        && value != "std"
         && value
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-');
@@ -410,7 +410,7 @@ impl<'a> Loader<'a> {
             return Some(index);
         }
         let (first, rest) = path.split_once('/').unwrap_or((path, ""));
-        if first == "zore" {
+        if first == "std" {
             return self.load_standard(path, rest, span);
         }
         let Some(manifest) = &self.manifest else {
@@ -428,7 +428,7 @@ impl<'a> Loader<'a> {
         if first != project {
             return self.import_error(
                 format!(
-                    "package `{path}` was not found: import paths start with `{project}` or `zore`"
+                    "package `{path}` was not found: import paths start with `{project}` or `std`"
                 ),
                 span,
             );

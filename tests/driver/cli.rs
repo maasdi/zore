@@ -262,7 +262,7 @@ fn import_problems_are_reported_without_a_panic() {
             ("zore.toml", "name = \"app\"\n"),
             (
                 "main.ore",
-                "package main\nimport \"app/a\"\nimport \"other/b\"\nimport \"zore/nothing\"\nfunc main() {}\n",
+                "package main\nimport \"app/a\"\nimport \"other/b\"\nimport \"std/nothing\"\nfunc main() {}\n",
             ),
             ("a/a.ore", "package a\nimport \"app/a\"\n"),
         ],
@@ -274,7 +274,7 @@ fn import_problems_are_reported_without_a_panic() {
     for message in [
         "import cycle: app/a -> app/a",
         "package `other/b` was not found",
-        "no standard package `zore/nothing`",
+        "no standard package `std/nothing`",
     ] {
         assert!(stderr.contains(message), "{message}: {stderr}");
     }

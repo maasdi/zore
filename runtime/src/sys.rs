@@ -1,4 +1,4 @@
-//! The code behind `zore/time`, and the result layouts shared by the other runtime packages.
+//! The code behind `std/time`, and the result layouts shared by the other runtime packages.
 
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};

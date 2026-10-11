@@ -1,7 +1,7 @@
 package filepath
 
-import "zore/os"
-import "zore/path"
+import "std/os"
+import "std/path"
 
 const Separator = '/'
 const ListSeparator = ':'

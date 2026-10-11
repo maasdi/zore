@@ -1,8 +1,8 @@
 package fmt
 
-import "zore/errors"
-import "zore/os"
-import "zore/strconv"
+import "std/errors"
+import "std/os"
+import "std/strconv"
 
 func Print(text string) {
     writeOut(text)

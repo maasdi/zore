@@ -24,7 +24,7 @@ counterpart in `tests/driver/cli.rs`, `tests/typecheck/check.rs`, or
 | --- | --- |
 | `import "myapp/shapes"` in project `myapp` | Loads folder `shapes` below the root |
 | `import "other/shapes"` with a different first segment | Reject: unknown package |
-| `import "zore/nope"` | Reject: no such standard package |
+| `import "std/nope"` | Reject: no such standard package |
 | Nested path `"myapp/geo/shapes"` | Loads `geo/shapes`; the name is `shapes` |
 | `shapes.Area(c)` for an exported function | Valid |
 | `shapes.area(c)` for an unexported function | Reject, naming the package |
@@ -80,8 +80,8 @@ Authority: spec §3.20 and §37.2–§37.5.
 | `slices.Contains` on floats | Reject: does not satisfy `comparable` |
 | `slices.Sort` of a view of a `let` array | Reject: cannot take a mutable slice |
 | `maps.Keys`, `Values`, and `Clone` | Every key, every value, and an equal map; `Values` of non-copyable values is rejected |
-| `import "zore/os/exec"`, `"zore/path/filepath"`, `"zore/unicode/utf8"` | Used as `exec.`, `filepath.`, and `utf8.` |
-| `import "zore/io"`, `"zore/cancel"`, `"zore/os/nope"` | Reject: no such standard package |
+| `import "std/os/exec"`, `"std/path/filepath"`, `"std/unicode/utf8"` | Used as `exec.`, `filepath.`, and `utf8.` |
+| `import "std/io"`, `"std/cancel"`, `"std/os/nope"` | Reject: no such standard package |
 | `strings.Upper` | Reject: the package does not declare it |
 | Unused `error` from `Atoi` | Reject, as for any error value |
 | A function declaration without a body in user code | Reject |

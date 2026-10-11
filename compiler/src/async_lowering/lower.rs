@@ -11,7 +11,7 @@ pub fn lower(package: &hir::Package, program: &mir::Program) -> Plan {
         let before = waiting_library.len();
         for body in &program.bodies {
             let function = package.function(body.function);
-            if function.native || function.is_closure || !function.name.starts_with("zore/") {
+            if function.native || function.is_closure || !function.name.starts_with("std/") {
                 continue;
             }
             if body.blocks.iter().any(|block| match &block.terminator {
@@ -19,7 +19,7 @@ pub fn lower(package: &hir::Package, program: &mir::Program) -> Plan {
                     Callee::Function(id) => {
                         waiting_library.contains(id)
                             || super::native_wait(&package.function(*id).name).is_some()
-                            || package.function(*id).name == "zore/time.Sleep"
+                            || package.function(*id).name == "std/time.Sleep"
                     }
                     // What serves the entry may wait.
                     Callee::Interface { .. }
@@ -101,7 +101,7 @@ pub fn lower(package: &hir::Package, program: &mir::Program) -> Plan {
                         }
                         Callee::Function(id)
                             if package.function(*id).native
-                                && package.function(*id).name == "zore/time.Sleep" =>
+                                && package.function(*id).name == "std/time.Sleep" =>
                         {
                             Suspension::Sleep
                         }

@@ -1,4 +1,4 @@
-//! The code behind `zore/math`.
+//! The code behind `std/math`.
 
 #[unsafe(no_mangle)]
 pub extern "C" fn zore_native_math_sqrt(x: f64) -> f64 {

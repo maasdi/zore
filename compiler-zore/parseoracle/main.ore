@@ -4,9 +4,9 @@ import "compiler-zore/diagnostic"
 import "compiler-zore/lexer"
 import "compiler-zore/parser"
 import "compiler-zore/source"
-import "zore/os"
-import "zore/strconv"
-import "zore/strings"
+import "std/os"
+import "std/strconv"
+import "std/strings"
 
 // Case modes: `p` parses, `n` parses with native functions allowed, `s` probes the source manager.
 func main() {

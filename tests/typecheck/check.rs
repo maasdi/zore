@@ -1238,8 +1238,8 @@ fn unsupported_features_are_never_accepted() {
             "requires a trailing `error` result in this function",
         ),
         (
-            "package main\nimport \"zore/format\"\nfunc main() {}\n".into(),
-            "no standard package `zore/format`",
+            "package main\nimport \"std/format\"\nfunc main() {}\n".into(),
+            "no standard package `std/format`",
         ),
         (
             program("var top = 1"),
@@ -2898,7 +2898,7 @@ fn strings_have_length_index_slice_loops_and_a_rune_conversion() {
 
 #[test]
 fn standard_packages_have_typed_signatures() {
-    let head = "package main\nimport \"zore/strings\"\nimport \"zore/strconv\"\n";
+    let head = "package main\nimport \"std/strings\"\nimport \"std/strconv\"\n";
     let accepts_main = |stmts: &str| {
         accepts(&format!("{head}\nfunc main() {{\n{stmts}\n}}\n"));
     };
@@ -5117,7 +5117,7 @@ fn generic_types_reject_missing_wrong_or_unsatisfying_type_arguments() {
 fn fmt_checks_each_directive_against_its_argument() {
     let wrap = |body: &str| {
         format!(
-            "package main\n\nimport \"zore/fmt\"\n\ntype Box struct {{ n int }}\n\nfunc main() {{\n{body}\n}}\n"
+            "package main\n\nimport \"std/fmt\"\n\ntype Box struct {{ n int }}\n\nfunc main() {{\n{body}\n}}\n"
         )
     };
     accepts(&wrap(

@@ -1,8 +1,8 @@
 package diagnostic
 
 import "compiler-zore/source"
-import "zore/strconv"
-import "zore/strings"
+import "std/strconv"
+import "std/strings"
 
 const SeverityError = 1
 const SeverityWarning = 2

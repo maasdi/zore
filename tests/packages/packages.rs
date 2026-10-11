@@ -252,7 +252,7 @@ fn import_declarations_are_checked() {
         ),
         (
             "import \"other/shapes\"\n",
-            "was not found: import paths start with `myapp` or `zore`",
+            "was not found: import paths start with `myapp` or `std`",
         ),
         (
             "import \"myapp/nothing\"\n",
@@ -265,8 +265,8 @@ fn import_declarations_are_checked() {
         ("import \"myapp//shapes\"\n", "is not a valid import path"),
         ("import \"myapp/../shapes\"\n", "is not a valid import path"),
         (
-            "import \"zore/nothing\"\n",
-            "no standard package `zore/nothing`",
+            "import \"std/nothing\"\n",
+            "no standard package `std/nothing`",
         ),
     ] {
         rejects(&with_shapes(&main_with(imports, "println(1)")), message);
@@ -445,7 +445,7 @@ fn imports_need_a_named_project() {
     for (manifest, message) in [
         (None, "no `zore.toml` project file was found"),
         (Some("version = \"1\"\n"), "has no valid `name`"),
-        (Some("name = \"zore\"\n"), "has no valid `name`"),
+        (Some("name = \"std\"\n"), "has no valid `name`"),
         (Some("name = \"my app\"\n"), "has no valid `name`"),
     ] {
         let mut memory = Memory::new();
@@ -490,7 +490,7 @@ fn the_time_os_bufio_and_net_packages_type_check_their_uses() {
     accepts(&[(
         "main.ore",
         &main_with(
-            "import \"zore/time\"\nimport \"zore/bufio\"\nimport \"zore/os\"\nimport \"zore/net\"",
+            "import \"std/time\"\nimport \"std/bufio\"\nimport \"std/os\"\nimport \"std/net\"",
             "time.Sleep(10 * time.Millisecond)
             let started = time.Now()
             var input = bufio.NewScanner(os.Stdin())
@@ -524,25 +524,25 @@ fn the_time_os_bufio_and_net_packages_type_check_their_uses() {
 
 #[test]
 fn the_io_packages_reject_misuse() {
-    let net = "import \"zore/net\"";
+    let net = "import \"std/net\"";
     rejects(
         &[(
             "main.ore",
-            &main_with("import \"zore/time\"", "time.Sleep(\"soon\")"),
+            &main_with("import \"std/time\"", "time.Sleep(\"soon\")"),
         )],
         "mismatched types",
     );
     rejects(
         &[(
             "main.ore",
-            &main_with("import \"zore/time\"", "time.Sleep()"),
+            &main_with("import \"std/time\"", "time.Sleep()"),
         )],
         "takes 1 argument",
     );
     rejects(
         &[(
             "main.ore",
-            &main_with("import \"zore/os\"", "let data = os.ReadFile(\"a\")"),
+            &main_with("import \"std/os\"", "let data = os.ReadFile(\"a\")"),
         )],
         "returns 2 values",
     );
@@ -550,7 +550,7 @@ fn the_io_packages_reject_misuse() {
         &[(
             "main.ore",
             &main_with(
-                "import \"zore/os\"",
+                "import \"std/os\"",
                 "os.WriteFile(\"a\", Array<byte>{}[:], 0o644)",
             ),
         )],
@@ -559,13 +559,13 @@ fn the_io_packages_reject_misuse() {
     rejects(
         &[(
             "main.ore",
-            &main_with("import \"zore/bufio\"", "let r = bufio.NewReader(\"text\")"),
+            &main_with("import \"std/bufio\"", "let r = bufio.NewReader(\"text\")"),
         )],
         "`string` does not satisfy `io.Reader`",
     );
     rejects(
-        &[("main.ore", &main_with("import \"zore/cancel\"", ""))],
-        "no standard package `zore/cancel`",
+        &[("main.ore", &main_with("import \"std/cancel\"", ""))],
+        "no standard package `std/cancel`",
     );
     rejects(
         &[("main.ore", &main_with(net, "let conn = net.Conn{id: 1}"))],
@@ -602,7 +602,7 @@ fn nested_standard_packages_are_named_by_their_last_segment() {
     accepts(&[(
         "main.ore",
         &main_with(
-            "import \"zore/os/exec\"\nimport \"zore/path/filepath\"\nimport \"zore/unicode/utf8\"",
+            "import \"std/os/exec\"\nimport \"std/path/filepath\"\nimport \"std/unicode/utf8\"",
             "let cmd = exec.Command(\"true\", Array<string>{}[:])
             println(cmd.Path)
             println(filepath.Base(\"/a/b.txt\"))
@@ -610,8 +610,8 @@ fn nested_standard_packages_are_named_by_their_last_segment() {
         ),
     )]);
     rejects(
-        &[("main.ore", &main_with("import \"zore/os/nope\"", ""))],
-        "no standard package `zore/os/nope`",
+        &[("main.ore", &main_with("import \"std/os/nope\"", ""))],
+        "no standard package `std/os/nope`",
     );
 }
 
@@ -893,7 +893,7 @@ fn slices_maps_and_sort_slice_check_their_element_types() {
     accepts(&[(
         "main.ore",
         &main_with(
-            "import \"zore/maps\"\nimport \"zore/slices\"\nimport \"zore/sort\"",
+            "import \"std/maps\"\nimport \"std/slices\"\nimport \"std/sort\"",
             "var xs = Array<int>{2, 1}
     slices.Sort(xs[:])
     sort.Slice(xs[:], func(a int, b int) bool { return a > b })
@@ -923,7 +923,7 @@ fn slices_maps_and_sort_slice_check_their_element_types() {
             &[(
                 "main.ore",
                 &main_with(
-                    "import \"zore/maps\"\nimport \"zore/slices\"\nimport \"zore/sort\"",
+                    "import \"std/maps\"\nimport \"std/slices\"\nimport \"std/sort\"",
                     &format!("{body}\n    _ = maps.Keys\n    _ = sort.Ints\n    _ = slices.Max"),
                 ),
             )],

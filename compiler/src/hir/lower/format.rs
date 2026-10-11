@@ -138,7 +138,7 @@ impl Checker<'_> {
     pub(super) fn format_kind(&self, id: FunctionId) -> Option<FormatKind> {
         let index = id.0 as usize;
         if index >= self.res.functions.len()
-            || self.res.packages[self.res.function_package[index]].path != "zore/fmt"
+            || self.res.packages[self.res.function_package[index]].path != "std/fmt"
         {
             return None;
         }
@@ -157,7 +157,7 @@ impl Checker<'_> {
     fn fmt_helper(&self, name: &str) -> FunctionId {
         let index = (0..self.res.functions.len())
             .find(|&index| {
-                self.res.packages[self.res.function_package[index]].path == "zore/fmt"
+                self.res.packages[self.res.function_package[index]].path == "std/fmt"
                     && self.res.functions[index].name.text == name
             })
             .expect("the bundled fmt package declares its helpers");

@@ -1,7 +1,7 @@
 package bufio
 
-import "zore/io"
-import "zore/strings"
+import "std/io"
+import "std/strings"
 
 const defaultSize = 4096
 

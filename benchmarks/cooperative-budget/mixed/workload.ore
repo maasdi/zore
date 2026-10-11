@@ -1,6 +1,6 @@
 package main
 
-import "zore/time"
+import "std/time"
 
 async func compute(rounds int) int {
     var sum = 0

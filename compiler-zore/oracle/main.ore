@@ -1,9 +1,9 @@
 package main
 
 import "compiler-zore/lexer"
-import "zore/os"
-import "zore/strconv"
-import "zore/strings"
+import "std/os"
+import "std/strconv"
+import "std/strings"
 
 // Each case in `cases.bin` is a byte count, a space, a mode letter, a newline, and the bytes.
 func main() {

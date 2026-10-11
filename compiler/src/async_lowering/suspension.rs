@@ -22,22 +22,22 @@ pub enum NativeWait {
 
 pub fn native_wait(name: &str) -> Option<NativeWait> {
     match name {
-        "zore/os.ReadFile"
-        | "zore/os.WriteFile"
-        | "zore/os.MkdirAll"
-        | "zore/os.Remove"
-        | "zore/os.RemoveAll"
-        | "zore/os.dirNames"
-        | "zore/os.statFields"
-        | "zore/os.fileOpen"
-        | "zore/os.fileRead"
-        | "zore/os.fileWrite"
-        | "zore/os.fileWriteString"
-        | "zore/os.fileClose"
-        | "zore/os/exec.run"
-        | "zore/net.listen"
-        | "zore/net.dial" => Some(NativeWait::Helper),
-        "zore/net.accept" | "zore/net.read" | "zore/net.write" => {
+        "std/os.ReadFile"
+        | "std/os.WriteFile"
+        | "std/os.MkdirAll"
+        | "std/os.Remove"
+        | "std/os.RemoveAll"
+        | "std/os.dirNames"
+        | "std/os.statFields"
+        | "std/os.fileOpen"
+        | "std/os.fileRead"
+        | "std/os.fileWrite"
+        | "std/os.fileWriteString"
+        | "std/os.fileClose"
+        | "std/os/exec.run"
+        | "std/net.listen"
+        | "std/net.dial" => Some(NativeWait::Helper),
+        "std/net.accept" | "std/net.read" | "std/net.write" => {
             Some(if cfg!(any(target_os = "linux", target_os = "macos")) {
                 NativeWait::Socket
             } else {
