@@ -66,6 +66,9 @@ the new support. The original validation counts below remain historical.
 The five candidates below were added after the baseline. Each test passed on
 `main` at `f164889` without a compiler change, so none exposed a defect. The
 baseline rows above are kept as written; this section records what changed.
+Follow-up #100 makes both destructor-observed-view tests wait for the scheduler
+to observe the receiver idle after Pending before sending on its gate, so the
+normal and panic paths necessarily cross a poll boundary.
 
 | Candidate | Test | Asserts |
 | --- | --- | --- |

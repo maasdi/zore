@@ -34,12 +34,8 @@ pub unsafe extern "C" fn zore_native_errors_wrap_text(
 ) {
     // SAFETY: guaranteed by the caller.
     let text = unsafe { super::bytes(data, len) };
-    let cause_len = if present {
-        usize::try_from(cause_len).unwrap_or(0)
-    } else {
-        0
-    };
-    let built = with_cause(text, cause, cause_len);
+    let cause = present.then_some((cause, usize::try_from(cause_len).unwrap_or(0)));
+    let built = with_cause(text, cause);
     // SAFETY: `out` is writable.
     unsafe {
         out.write(ErrorOut {

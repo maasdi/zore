@@ -8,7 +8,7 @@ const SeverityError = 1
 const SeverityWarning = 2
 
 type Label struct {
-    File    int
+    File    source.File
     Start   int
     End     int
     Message string
@@ -22,7 +22,7 @@ type Diagnostic struct {
     Notes    Array<string>
 }
 
-func Error(message string, file int, start int, end int) Diagnostic {
+func Error(message string, file source.File, start int, end int) Diagnostic {
     return Diagnostic{
         Severity: SeverityError,
         Message: message,
@@ -36,7 +36,7 @@ func (d mut Diagnostic) SetPrimaryMessage(message string) {
     d.Primary.Message = message
 }
 
-func (d mut Diagnostic) AddRelated(file int, start int, end int, message string) {
+func (d mut Diagnostic) AddRelated(file source.File, start int, end int, message string) {
     d.Related.push(Label{File: file, Start: start, End: end, Message: message})
 }
 
@@ -51,16 +51,16 @@ func severityName(severity int) string {
     return "error"
 }
 
-// The text a terminal shows, or false when a label is not a span of a file in `sources`.
-func Render(d Diagnostic, sources source.Manager) (string, bool) {
+// Returns false when a label is outside its source file.
+func Render(d Diagnostic) (string, bool) {
     var output = severityName(d.Severity) + ": " + d.Message + "\n"
-    let primary, ok = renderLabel(sources, d.Primary, "-->")
+    let primary, ok = renderLabel(d.Primary, "-->")
     if !ok {
         return "", false
     }
     output += primary
     for label in d.Related {
-        let related, found = renderLabel(sources, label, ":::")
+        let related, found = renderLabel(label, ":::")
         if !found {
             return "", false
         }
@@ -72,13 +72,13 @@ func Render(d Diagnostic, sources source.Manager) (string, bool) {
     return output, true
 }
 
-func renderLabel(sources source.Manager, label Label, arrow string) (string, bool) {
-    if !sources.Contains(label.File, label.Start, label.End) {
+func renderLabel(label Label, arrow string) (string, bool) {
+    if !label.File.Contains(label.Start, label.End) {
         return "", false
     }
-    let startLine, startColumn, _ = sources.Location(label.File, label.Start)
-    let endLine, endColumn, _ = sources.Location(label.File, label.End)
-    let line, _ = sources.Line(label.File, startLine - 1)
+    let startLine, startColumn, _ = label.File.Location(label.Start)
+    let endLine, endColumn, _ = label.File.Location(label.End)
+    let line, _ = label.File.Line(startLine - 1)
     let display = displayLine(line)
     let last = display.Boundaries.len() - 1
     let startScalar = smaller(startColumn - 1, last)
@@ -90,7 +90,7 @@ func renderLabel(sources source.Manager, label Label, arrow string) (string, boo
     let markerEnd = larger(display.Boundaries[visibleEnd], markerStart + 1)
     let lineNumber = strconv.Itoa(startLine)
     let gutter = spaces(lineNumber.len())
-    var output = " " + arrow + " " + sources.Path(label.File) + ":" + lineNumber + ":" +
+    var output = " " + arrow + " " + label.File.Path() + ":" + lineNumber + ":" +
         strconv.Itoa(startColumn) + "\n"
     output += gutter + " |\n"
     output += lineNumber + " | " + display.Text + "\n"

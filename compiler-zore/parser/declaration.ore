@@ -28,7 +28,7 @@ func (p mut Parser) fileAst() int {
             p.synchronize(0, false)
         }
     }
-    let end = p.text.len()
+    let end = p.file.Text().len()
     let file = p.tree.Add("file", 0, end, "")
     p.tree.Append(file, pkg)
     p.tree.Append(file, imports)
@@ -71,7 +71,7 @@ func quoteBytes(text string) string {
 func (p mut Parser) importDecl() int {
     let start = p.bump()
     let token = p.current()
-    if token.Kind == lexer.KindString && p.text[token.Start] == 34 {
+    if token.Kind == lexer.KindString && p.file.Text()[token.Start] == 34 {
         _ = p.bump()
         let path = p.tree.Add("path", token.Start, token.End, quoteBytes(token.Text))
         let node = p.addNode("import", start.Start, start.End, "")

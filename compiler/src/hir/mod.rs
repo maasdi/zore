@@ -185,6 +185,20 @@ impl Package {
         })
     }
 
+    /// The custom `drop` methods that destroying a value of `ty` runs.
+    pub fn drops_within(&self, ty: TypeId) -> Vec<FunctionId> {
+        let drops = std::cell::RefCell::new(Vec::new());
+        self.contains(ty, &|kind| {
+            if let TypeKind::Struct(id) = kind
+                && let Some(drop) = self.strukt(id).drop
+            {
+                drops.borrow_mut().push(drop);
+            }
+            false
+        });
+        drops.into_inner()
+    }
+
     pub fn contains_array(&self, ty: TypeId) -> bool {
         self.contains(ty, &|kind| matches!(kind, TypeKind::Array { .. }))
     }

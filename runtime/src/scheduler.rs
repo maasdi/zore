@@ -334,9 +334,10 @@ impl Pool {
     }
 }
 
+static POOL: OnceLock<Arc<Pool>> = OnceLock::new();
+
 /// Register a waker before Pending; dropping the returned waker does not cancel the task.
 pub fn spawn(body: impl FnMut(&mut Context) -> Poll + Send + 'static) -> Waker {
-    static POOL: OnceLock<Arc<Pool>> = OnceLock::new();
     POOL.get_or_init(|| {
         Pool::new(std::thread::available_parallelism().map_or(2, |n| n.get().max(2)))
     })
@@ -958,5 +959,43 @@ mod tests {
             "{}",
             String::from_utf8_lossy(&output.stderr)
         );
+    }
+}
+
+#[cfg(any(test, zore_test_hooks))]
+pub mod test_support {
+    use super::*;
+
+    pub fn install_pool(capacity: usize) {
+        assert!(capacity > 0);
+        assert!(POOL.set(Pool::new(capacity)).is_ok());
+    }
+
+    pub fn wait_pending(count: usize) {
+        let pool = POOL.get().expect("test pool installed");
+        until(|| {
+            let tasks: Vec<_> = lock(&pool.state).tasks.values().cloned().collect();
+            tasks
+                .iter()
+                .filter(|task| lock(&task.scheduling).status == Status::Idle)
+                .count()
+                >= count
+        });
+    }
+
+    pub fn wait_blocked(count: usize) {
+        let pool = POOL.get().expect("test pool installed");
+        until(|| lock(&pool.state).blocked >= count);
+    }
+
+    fn until(mut ready: impl FnMut() -> bool) {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !ready() {
+            assert!(
+                Instant::now() < deadline,
+                "scheduler state checkpoint timed out"
+            );
+            std::thread::yield_now();
+        }
     }
 }

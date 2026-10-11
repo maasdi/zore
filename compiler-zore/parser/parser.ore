@@ -3,6 +3,7 @@ package parser
 import "compiler-zore/ast"
 import "compiler-zore/diagnostic"
 import "compiler-zore/lexer"
+import "compiler-zore/source"
 
 // Returned in place of a node after a diagnostic has been reported.
 const failed = -2
@@ -24,8 +25,7 @@ type Parsed struct {
 
 // A token the parser makes, such as half of a split `>>`, waits in `pending` ahead of `tokens[pos]`.
 type Parser struct {
-    text            string
-    file            int
+    file            source.File
     tokens          Array<lexer.Token>
     pos             int
     pending         lexer.Token
@@ -52,10 +52,9 @@ type parserState struct {
 }
 
 // Parse expects valid UTF-8; with `native`, function declarations may omit their bodies.
-func Parse(text string, file int, native bool) Parsed {
-    var lexed = lexer.Lex(text)
+func Parse(file source.File, native bool) Parsed {
+    var lexed = lexer.Lex(file.Text())
     var p = Parser{
-        text: text,
         file: file,
         tokens: lexed.Tokens,
         pos: 0,
@@ -178,7 +177,7 @@ func (p Parser) detail() int {
 
 func (p Parser) spellingAt(ahead int) string {
     let token = p.tokenAt(ahead)
-    return p.text[token.Start:token.End]
+    return p.file.Text()[token.Start:token.End]
 }
 
 func (p Parser) currentText() string {
@@ -211,7 +210,7 @@ func (p Parser) matchesAt(ahead int, kind int, spelling string) bool {
         return false
     }
     for var i = 0; i < spelling.len(); i += 1 {
-        if p.text[token.Start + i] != spelling[i] {
+        if p.file.Text()[token.Start + i] != spelling[i] {
             return false
         }
     }

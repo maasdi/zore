@@ -125,24 +125,21 @@ toolchain and clang with LLVM 15 or newer. Every command exited successfully:
 
 The four candidates above, plus process-exit abandonment, were added after the
 baseline. Each test passed on `main` at `07af334` without a runtime change, so
-none exposed a defect. Native cases run through `run_poll_bounded`, which kills
-the program after 30 seconds, and use channel handshakes rather than sleeps.
-They saturate the pool with 64 waiting tasks, more than the base worker count on
-any supported CI host, so the result does not depend on the host's core count.
+none exposed a defect. Follow-up #100 strengthens these cases with a test-only
+runtime containing exactly two workers. Bounded checkpoints observe actual idle
+polled tasks or compensated blocked workers before the test releases them. The
+subprocess still has a 30-second deadline; each checkpoint has a 10-second bound.
 
 | Candidate | Test | Asserts |
 | --- | --- | --- |
-| 1. Pending async `Accept` | [`pending_async_accepts_leave_workers_for_an_unrelated_task`](../../tests/codegen/native.rs#L7213) | 64 tasks each reach `Accept` on their own listener; an unrelated task then completes before any connection is made, and all 64 accepts finish. Two rounds. |
-| 2. `Done()` in a pending `select` | [`cancelling_from_another_task_wakes_a_pending_done_select_exactly_once`](../../tests/codegen/native.rs#L7281) | 200 async and 200 plain rounds: a waiter signals it is entering `select` on `token.Done()` and an unused channel, another task cancels, and the `Done` case wins every round. Both tasks are joined each round, so none stays blocked. |
-| 3. Plain helper from async tasks | [`async_tasks_blocked_in_a_plain_helper_get_compensation_workers_for_queued_senders`](../../tests/codegen/native.rs#L7351) | 64 async tasks block in a plain `receive` helper; only then are 64 senders spawned, and every helper returns its value (sum 2080). Three rounds. |
+| 1. Pending async `Accept` | [`pending_async_accepts_leave_workers_for_an_unrelated_task`](../../tests/codegen/native.rs#L7213) | Four tasks are observed Pending in `Accept` on their own listener; an unrelated task then completes before any connection is made, and all four accepts finish. Two rounds. |
+| 2. `Done()` in a pending `select` | [`cancelling_from_another_task_wakes_a_pending_done_select_exactly_once`](../../tests/codegen/native.rs#L7281) | 200 async and 200 plain rounds: a waiter is observed Pending (async) or blocked (plain) in `select` on `ctx.Done()` and an unused channel before another task cancels, and the `Done` case wins every round. Both tasks are joined each round, so none stays blocked. |
+| 3. Plain helper from async tasks | [`async_tasks_blocked_in_a_plain_helper_get_compensation_workers_for_queued_senders`](../../tests/codegen/native.rs#L7351) | Four async tasks are observed blocked in a plain `receive` helper on a two-worker pool; only then are four senders spawned, and every helper returns its value (sum 10). Three rounds. |
 | 4. Detach, final wake, completion | [`detach_final_wake_and_completion_race_clean_up_once_and_never_poll_again`](../../runtime/src/task.rs#L452) | On a private two-worker `TestPool`, 600 iterations detach before, after, and concurrently with the final wake. Each iteration asserts exactly two polls, one result cleanup, no poll after Ready, and no concurrent poll. The test lives in `task.rs`, where detach and completion are implemented; `poll_task` was split out of `zore_task_spawn_poll`, without changing behavior, so the test can use an isolated pool. Making detach clean up unconditionally makes it abort. |
-| 5. Process-exit abandonment | [`process_exit_abandons_a_pending_detached_task_and_its_buffered_value`](../../tests/codegen/native.rs#L7406) | After a detached task confirms it holds an owned `Res` and a channel with a buffered `Res`, `main` returns: exit status 0, and neither destructor prints, as §18.11 specifies. |
+| 5. Process-exit abandonment | [`process_exit_abandons_a_pending_detached_task_and_its_buffered_value`](../../tests/codegen/native.rs#L7406) | After the runtime observes a detached task Pending while holding an owned `Res` and a channel with a buffered `Res`, `main` returns: exit status 0, and neither destructor prints, as §18.11 specifies. |
 
 Retained gaps after this work:
 
-- Case 1 detects an async accept that blocks a worker without compensation. It
-  cannot detect one that blocks with compensation, since an extra worker would
-  still run the unrelated task.
-- Case 4 isolates the task lifecycle on a test pool; native programs still share
-  the process-wide pool, whose size follows the host's core count.
-- No test interrupts a task mid-poll; there is no preemption to test.
+- No test interrupts a task mid-poll; forced preemption is not implemented.
+- These focused native tests use a controlled pool; the rest of the native suite
+  continues to exercise the production pool sizing policy.

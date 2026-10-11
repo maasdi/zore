@@ -44,12 +44,27 @@ func Copy(dst mut Writer, src mut Reader) (int, error) {
     var total = 0
     for {
         let count, err = src.Read(buf[:])
-        if count > 0 {
-            let written, writeErr = dst.Write(buf[:count])
+        if count < 0 || count > buf.len() {
+            _ = err
+            return total, error("io.Copy: invalid read count")
+        }
+        var offset = 0
+        for offset < count {
+            let written, writeErr = dst.Write(buf[offset:count])
+            if written < 0 || written > count - offset {
+                _ = err
+                _ = writeErr
+                return total, error("io.Copy: invalid write count")
+            }
             total += written
+            offset += written
             if writeErr != nil {
                 _ = err
                 return total, writeErr
+            }
+            if written == 0 {
+                _ = err
+                return total, error("io.Copy: no write progress")
             }
         }
         if err == EOF {
@@ -83,7 +98,15 @@ func ReadFull(r mut Reader, buf mut []byte) (int, error) {
     let size = buf.len()
     for total < size {
         let count, err = r.Read(buf[total:])
+        if count < 0 || count > size - total {
+            _ = err
+            return total, error("io.ReadFull: invalid read count")
+        }
         total += count
+        if total == size {
+            _ = err
+            return total, nil
+        }
         if err == EOF && total > 0 && total < size {
             return total, error("unexpected EOF")
         }

@@ -19,6 +19,7 @@ use zore::source::{SourceFile, SourceMap};
 const PARSE: u8 = b'p';
 const PARSE_NATIVE: u8 = b'n';
 const PROBE: u8 = b's';
+const IDENTITY: u8 = b'i';
 const GENERATED_CASES: usize = 4000;
 const MUTATED_CASES: usize = 2000;
 const GENERATED_PROBES: usize = 600;
@@ -43,6 +44,21 @@ fn body(text: &str) -> String {
 }
 
 fn rust_records(_dir: &Path, index: usize, case: &Case) -> Vec<String> {
+    if case.mode == IDENTITY {
+        let mut sources = SourceMap::new();
+        let first = sources.add("same.ore", "first".into()).unwrap();
+        let second = sources.add("same.ore", "second".into()).unwrap();
+        let other = sources.add("other.ore", "third".into()).unwrap();
+        let span = |file, end| sources.file(file).unwrap().span(0, end).unwrap();
+        let diagnostic = Diagnostic::new(Severity::Error, "identity", span(first, 5))
+            .related(span(second, 6), "second file")
+            .related(span(other, 5), "other file");
+        let mut records = Vec::new();
+        describe(&mut records, &sources, &diagnostic);
+        records.push("invalid span rejected".into());
+        records.push("empty file rejected".into());
+        return records;
+    }
     let Ok(text) = String::from_utf8(case.bytes.clone()) else {
         return vec!["invalid-utf8".into()];
     };
@@ -1207,4 +1223,9 @@ fn invalid_utf8_is_rejected_before_parsing() {
         })
         .collect();
     compare(&cases);
+}
+
+#[test]
+fn diagnostic_file_handles_preserve_duplicate_paths_and_cross_file_labels() {
+    compare(&[Case::text("source identity", IDENTITY, "")]);
 }

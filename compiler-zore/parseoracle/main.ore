@@ -15,7 +15,6 @@ func main() {
         println("cannot read cases.bin")
         return
     }
-    var sources = source.NewManager()
     var pos = 0
     var index = 0
     for pos < data.len() {
@@ -30,12 +29,14 @@ func main() {
         if invalid != nil {
             println("invalid-utf8\ndone")
         } else {
-            let file = sources.Add("case-" + strconv.Itoa(index) + ".ore", text)
+            let file = source.NewFile("case-" + strconv.Itoa(index) + ".ore", text)
             var lines = Array<string>{}
-            if mode == 115 {
-                probe(lines, sources, file)
+            if mode == 105 {
+                identityProbe(lines)
+            } else if mode == 115 {
+                probe(lines, file)
             } else {
-                parsed(lines, sources, file, mode == 110)
+                parsed(lines, file, mode == 110)
             }
             lines.push("done")
             println(strings.Join(lines[:], "\n"))
@@ -49,18 +50,18 @@ func span(start int, end int) string {
     return strconv.Itoa(start) + " " + strconv.Itoa(end)
 }
 
-func parsed(lines mut Array<string>, sources source.Manager, file int, native bool) {
-    let result = parser.Parse(sources.Text(file), file, native)
+func parsed(lines mut Array<string>, file source.File, native bool) {
+    let result = parser.Parse(file, native)
     lines.push("tree " + result.Tree.Print(result.Root))
     for problem in result.LexProblems {
         lines.push("lexerror:" + problem.Code + " " + span(problem.Start, problem.End))
     }
     for d in result.Diagnostics {
-        describe(lines, sources, d)
+        describe(lines, d)
     }
 }
 
-func describe(lines mut Array<string>, sources source.Manager, d diagnostic.Diagnostic) {
+func describe(lines mut Array<string>, d diagnostic.Diagnostic) {
     lines.push("diag " + span(d.Primary.Start, d.Primary.End) + " " + d.Message)
     if d.Primary.Message != "" {
         lines.push("  primary " + d.Primary.Message)
@@ -71,7 +72,7 @@ func describe(lines mut Array<string>, sources source.Manager, d diagnostic.Diag
     for note in d.Notes {
         lines.push("  note " + note)
     }
-    let rendered, ok = diagnostic.Render(d, sources)
+    let rendered, ok = diagnostic.Render(d)
     if !ok {
         lines.push("  render failed")
         return
@@ -84,18 +85,18 @@ func describe(lines mut Array<string>, sources source.Manager, d diagnostic.Diag
     }
 }
 
-func probe(lines mut Array<string>, sources source.Manager, file int) {
-    let count = sources.LineCount(file)
+func probe(lines mut Array<string>, file source.File) {
+    let count = file.LineCount()
     lines.push("lines " + strconv.Itoa(count))
     for var i = 0; i < count; i += 1 {
-        let line, _ = sources.Line(file, i)
+        let line, _ = file.Line(i)
         lines.push("line " + strconv.Itoa(i) + " " + lexer.ByteList(line))
     }
-    let text = sources.Text(file)
+    let text = file.Text()
     var locations = Array<string>{}
     var boundaries = Array<int>{}
     for var offset = 0; offset <= text.len(); offset += 1 {
-        let line, column, ok = sources.Location(file, offset)
+        let line, column, ok = file.Location(offset)
         if ok {
             locations.push(strconv.Itoa(line) + ":" + strconv.Itoa(column))
             boundaries.push(offset)
@@ -109,5 +110,29 @@ func probe(lines mut Array<string>, sources source.Manager, file int) {
     d.SetPrimaryMessage("here")
     d.AddRelated(file, boundaries[0], boundaries[n - 1], "there")
     d.AddNote("probe note")
-    describe(lines, sources, d)
+    describe(lines, d)
+}
+
+func retainedDiagnostic() diagnostic.Diagnostic {
+    let first = source.NewFile("same.ore", "first")
+    let second = source.NewFile("same.ore", "second")
+    let other = source.NewFile("other.ore", "third")
+    var d = diagnostic.Error("identity", first, 0, 5)
+    d.AddRelated(second, 0, 6, "second file")
+    d.AddRelated(other, 0, 5, "other file")
+    return d
+}
+
+func identityProbe(lines mut Array<string>) {
+    let unrelated = source.NewFile("same.ore", "wrong")
+    describe(lines, retainedDiagnostic())
+    let invalid = diagnostic.Error("invalid", unrelated, 0, 99)
+    let _, ok = diagnostic.Render(invalid)
+    if !ok { lines.push("invalid span rejected") }
+    let empty = channel<source.File>()
+    empty.close()
+    let file, _ = empty.receive()
+    let missing = diagnostic.Error("missing", file, 0, 0)
+    let _, found = diagnostic.Render(missing)
+    if !found { lines.push("empty file rejected") }
 }

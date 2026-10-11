@@ -85,9 +85,18 @@ fn fixed_form(digits: &str, exponent: i32, decimals: usize) -> String {
     }
 }
 
+fn at_width(value: f64, single: bool) -> f64 {
+    if single {
+        f64::from(value as f32)
+    } else {
+        value
+    }
+}
+
 /// The text `println` writes: the shortest decimal that reads back to the value,
 /// in exponent form below 1e-4 or from 1e21 up, and with `.0` when it is whole.
 pub(super) fn default_text(value: f64, single: bool) -> String {
+    let value = at_width(value, single);
     if let Some(text) = special(value) {
         return text.to_string();
     }
@@ -109,6 +118,7 @@ pub(super) fn format(value: f64, format: u8, precision: i64, single: bool) -> Op
     if !matches!(format, b'e' | b'E' | b'f' | b'g' | b'G') {
         return None;
     }
+    let value = at_width(value, single);
     if let Some(text) = special(value) {
         return Some(text.to_string());
     }

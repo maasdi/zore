@@ -183,7 +183,7 @@ func (w mut Writer) Write(p []byte) (int, error) {
     if w.pending.len() >= defaultSize {
         let err = w.Flush()
         if err != nil {
-            return 0, err
+            return p.len(), err
         }
     }
     return p.len(), nil
@@ -214,10 +214,29 @@ func (w mut Writer) Flush() error {
     if w.pending.len() == 0 {
         return nil
     }
-    let _, err = w.sink.Write(w.pending[:])
-    w.pending = Array<byte>{}
-    if err != nil {
-        w.err = err
+    var offset = 0
+    let size = w.pending.len()
+    for offset < size {
+        let count, err = w.sink.Write(w.pending[offset:])
+        if count < 0 || count > size - offset {
+            _ = err
+            w.err = error("bufio.Writer: invalid write count")
+            break
+        }
+        offset += count
+        if err != nil {
+            w.err = err
+            break
+        }
+        if count == 0 {
+            w.err = error("bufio.Writer: no write progress")
+            break
+        }
     }
-    return err
+    var rest = Array<byte>{}
+    for var i = offset; i < size; i += 1 {
+        rest.push(w.pending[i])
+    }
+    w.pending = rest
+    return w.err
 }

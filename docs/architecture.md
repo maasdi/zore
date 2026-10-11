@@ -725,3 +725,24 @@ The policy makes CPU-heavy async loops and nested async polls cooperative; it
 cannot interrupt a long straight-line block, arbitrary synchronous function,
 native call, or synchronous mutex callback. It uses no signals or stack
 preemption and adds no source-level `yield` syntax.
+
+## Review conformance fixes (#100)
+
+Initializer dependency analysis follows interface dispatch as well as direct
+calls. It collects conversions in reachable functions and follows the matching
+concrete implementations and interface-to-interface adapters to a fixed point,
+with visited sets for cycles. An unrelated conversion used only from `main` does
+not make its method an initializer dependency. Like direct-call analysis, this is
+path-insensitive within reachable bodies; conditional branches are checked even
+if one is not taken at runtime.
+
+An interface adapter that discovers an empty inner interface owns the by-value
+arguments already transferred to it. It destroys those arguments in reverse
+order, releases an owned receiver, and propagates the language panic. Plain and
+async adapters use the same cleanup path.
+
+The self-hosted source package uses immutable file handles containing their own
+path/text and a shared cached line index. Labels retain those handles, rather
+than resolving numeric positions in an independently supplied manager. Rendering
+therefore cannot substitute another manager's file at the same index. This is an
+internal self-hosted frontend representation, not a source-language feature.

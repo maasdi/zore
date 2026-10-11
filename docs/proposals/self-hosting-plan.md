@@ -44,7 +44,7 @@ stage. These are implementation sketches, not required language types.
 
 | Rust subsystem and evidence | Candidate Zore representation | Dependency or risk |
 | --- | --- | --- |
-| `compiler/src/source/{source_file,source_map,span}.rs` | `FileId` as `int`; owned source text or bytes in an `Array<SourceFile>`; byte-offset spans with file ID | `std/os.ReadFile` exists; preserve UTF-8 validation and stable IDs before diagnostics |
+| `compiler/src/source/{source_file,source_map,span}.rs` | Immutable `source.File` handles owning text and a shared line index; labels carry the handle and byte offsets | `std/os.ReadFile` exists; preserve UTF-8 validation and bind each label to its own source, without manager-local integer lookup |
 | `compiler/src/diagnostic/{diagnostic,label,renderer}.rs` | Diagnostic records with severity tag, primary span, and `Array<Label>`; render after sorting | Structured comparison of severity, code/message, spans, and related labels is needed before comparing display text |
 | `compiler/src/lexer/` and `compiler/src/parser/`, `compiler/src/ast/` | Byte-indexed scanner; tokens with kind tag and span; AST node IDs in indexed arenas | Parser variants need explicit tags; lexer can avoid recursive data entirely |
 | `compiler/src/resolve/` and `compiler/src/types/` | Interned symbol/type IDs; scope stack and maps from names to IDs; concrete type records and indexed child arrays | Check map key/value support and borrow rules against actual code before porting; `types/bignum.rs` needs its own bounded milestone |
