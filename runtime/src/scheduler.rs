@@ -962,7 +962,7 @@ mod tests {
     }
 }
 
-#[cfg(test)]
+#[cfg(any(test, zore_test_hooks))]
 pub mod test_support {
     use super::*;
 

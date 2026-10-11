@@ -205,7 +205,7 @@ func (p mut Parser) closeTypeArguments() bool {
     }
     let start = p.currentStart()
     let end = p.currentEnd()
-    let rest = lexer.PunctIndex(p.text[start + 1:end])
+    let rest = lexer.PunctIndex(p.file.Text()[start + 1:end])
     p.replaceCurrent(lexer.Token{Kind: lexer.KindPunct, Start: start + 1, End: end, Detail: rest, Text: ""})
     p.lastTokenEnd = start + 1
     return true
@@ -216,16 +216,17 @@ func (p mut Parser) insertSemicolonAfterTypeArguments() {
     if p.atSeparator() {
         return
     }
+    let text = p.file.Text()
     let gapStart = p.lastTokenEnd
-    var gapEnd = p.text.len()
+    var gapEnd = text.len()
     if !p.atEof() {
         gapEnd = p.currentStart()
     }
     var at = -1
     for var i = gapStart; i < gapEnd; i += 1 {
-        if p.text[i] == 10 {
+        if text[i] == 10 {
             at = i
-            if i > gapStart && p.text[i - 1] == 13 {
+            if i > gapStart && text[i - 1] == 13 {
                 at = i - 1
             }
             break

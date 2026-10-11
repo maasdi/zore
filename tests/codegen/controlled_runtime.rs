@@ -36,7 +36,7 @@ fn runtime() -> &'static Runtime {
                     "--edition=2024",
                     "--crate-name=zore_runtime",
                     "--crate-type=rlib",
-                    "--cfg=test",
+                    "--cfg=zore_test_hooks",
                     "-Copt-level=2",
                     "-Cpanic=abort",
                 ])

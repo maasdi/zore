@@ -4,17 +4,10 @@ type File struct {
     valid bool
     path string
     text string
-    lines Mutex<Array<int>>
 }
 
 func NewFile(path string, text string) File {
-    var starts = Array<int>{0}
-    for var i = 0; i < text.len(); i += 1 {
-        if text[i] == 10 {
-            starts.push(i + 1)
-        }
-    }
-    return File{valid: true, path: path, text: text, lines: mutex(starts)}
+    return File{valid: true, path: path, text: text}
 }
 
 func (f File) Path() string { return f.path }
@@ -22,7 +15,13 @@ func (f File) Text() string { return f.text }
 
 func (f File) LineCount() int {
     if !f.valid { return 0 }
-    return f.lines.withLock(func(starts mut Array<int>) int { return starts.len() })
+    var count = 1
+    for var i = 0; i < f.text.len(); i += 1 {
+        if f.text[i] == 10 {
+            count += 1
+        }
+    }
+    return count
 }
 
 func (f File) IsBoundary(offset int) bool {
@@ -37,50 +36,42 @@ func (f File) Contains(start int, end int) bool {
 }
 
 func (f File) Line(zeroBased int) (string, bool) {
-    if !f.valid { return "", false }
+    if !f.valid || zeroBased < 0 { return "", false }
     let text = f.text
-    return f.lines.withLock(func(starts mut Array<int>) (string, bool) {
-        if zeroBased < 0 || zeroBased >= starts.len() {
+    var start = 0
+    var line = 0
+    for line < zeroBased {
+        if start == text.len() {
             return "", false
         }
-        var end = text.len()
-        if zeroBased + 1 < starts.len() {
-            end = starts[zeroBased + 1]
+        if text[start] == 10 {
+            line += 1
         }
-        let start = starts[zeroBased]
-        if end > start && text[end - 1] == 10 {
-            end -= 1
-            if end > start && text[end - 1] == 13 {
-                end -= 1
-            }
-        }
-        return text[start:end], true
-    })
+        start += 1
+    }
+    var end = start
+    for end < text.len() && text[end] != 10 {
+        end += 1
+    }
+    if end < text.len() && end > start && text[end - 1] == 13 {
+        end -= 1
+    }
+    return text[start:end], true
 }
 
 func (f File) Location(offset int) (int, int, bool) {
     if !f.IsBoundary(offset) {
         return 0, 0, false
     }
-    let text = f.text
-    return f.lines.withLock(func(starts mut Array<int>) (int, int, bool) {
-        var low = 0
-        var high = starts.len()
-        for low < high {
-            let middle = (low + high) / 2
-            if starts[middle] <= offset {
-                low = middle + 1
-            } else {
-                high = middle
-            }
+    var line = 1
+    var column = 1
+    for var i = 0; i < offset; i += 1 {
+        if f.text[i] == 10 {
+            line += 1
+            column = 1
+        } else if f.text[i] & 0xC0 != 0x80 {
+            column += 1
         }
-        let line = low - 1
-        var column = 1
-        for var i = starts[line]; i < offset; i += 1 {
-            if text[i] & 0xC0 != 0x80 {
-                column += 1
-            }
-        }
-        return line + 1, column, true
-    })
+    }
+    return line, column, true
 }

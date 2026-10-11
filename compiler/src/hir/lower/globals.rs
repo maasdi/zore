@@ -1,11 +1,11 @@
 //! Checks package-level `let` values once every function is known, and builds their initializer.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use crate::diagnostic::{Diagnostic, Severity};
 use crate::hir::{self, ExprKind, SelectComm, StmtKind};
 use crate::resolve::{FunctionId, GlobalId};
-use crate::types::TypeId;
+use crate::types::{InterfaceId, TypeId};
 
 /// `initializers[i]` computes global `i`.
 pub(in crate::hir) fn check(
@@ -120,23 +120,23 @@ fn reached_globals(
     start: FunctionId,
 ) -> HashSet<GlobalId> {
     let mut seen = HashSet::new();
-    let mut pending = vec![start];
     let mut globals = HashSet::new();
-    let mut calls = HashSet::new();
-    let mut conversions = HashSet::new();
+    let mut calls: HashMap<InterfaceId, HashSet<usize>> = HashMap::new();
+    let mut sources: HashMap<InterfaceId, HashSet<TypeId>> = HashMap::new();
+    let mut pending_functions = vec![start];
+    let mut pending_calls = Vec::new();
+    let mut pending_conversions = Vec::new();
     loop {
-        while let Some(function) = pending.pop() {
+        if let Some(function) = pending_functions.pop() {
             if !seen.insert(function) {
                 continue;
             }
             let found = &references[function.0 as usize];
             globals.extend(found.globals.iter().copied());
-            pending.extend(found.functions.iter().copied());
+            pending_functions.extend(found.functions.iter().copied());
             for &(ty, method) in &found.interfaces {
-                calls.insert((
-                    package.types.interface_of(ty).expect("interface receiver"),
-                    method,
-                ));
+                let interface = package.types.interface_of(ty).expect("interface receiver");
+                pending_calls.push((interface, method));
             }
             for &(source, target) in &found.conversions {
                 let source = match package.types.interface_of(source) {
@@ -147,36 +147,55 @@ fn reached_globals(
                     .types
                     .interface_of(target)
                     .expect("interface conversion");
-                conversions.insert((source, target));
+                pending_conversions.push((source, target));
             }
-        }
-        let mut changed = false;
-        for &(interface, method) in &calls.clone() {
-            for &(source, target) in &conversions {
-                if target != interface {
-                    continue;
-                }
-                let Some(entries) = package.implementations.get(&(source, target)) else {
-                    continue;
-                };
-                match entries[method] {
-                    hir::Implementation::Method(function) => {
-                        if !seen.contains(&function) {
-                            pending.push(function);
-                        }
-                    }
-                    hir::Implementation::Entry(index) => {
-                        let inner = package
-                            .types
-                            .interface_of(source)
-                            .expect("interface adapter");
-                        changed |= calls.insert((inner, index));
-                    }
-                }
+        } else if let Some((interface, method)) = pending_calls.pop() {
+            if !calls.entry(interface).or_default().insert(method) {
+                continue;
             }
-        }
-        if pending.is_empty() && !changed {
+            for &source in sources.get(&interface).into_iter().flatten() {
+                dispatch(
+                    package,
+                    (source, interface, method),
+                    &mut pending_functions,
+                    &mut pending_calls,
+                );
+            }
+        } else if let Some((source, target)) = pending_conversions.pop() {
+            if !sources.entry(target).or_default().insert(source) {
+                continue;
+            }
+            for &method in calls.get(&target).into_iter().flatten() {
+                dispatch(
+                    package,
+                    (source, target, method),
+                    &mut pending_functions,
+                    &mut pending_calls,
+                );
+            }
+        } else {
             return globals;
+        }
+    }
+}
+
+fn dispatch(
+    package: &hir::Package,
+    (source, target, method): (TypeId, InterfaceId, usize),
+    functions: &mut Vec<FunctionId>,
+    calls: &mut Vec<(InterfaceId, usize)>,
+) {
+    let Some(entries) = package.implementations.get(&(source, target)) else {
+        return;
+    };
+    match entries[method] {
+        hir::Implementation::Method(function) => functions.push(function),
+        hir::Implementation::Entry(index) => {
+            let inner = package
+                .types
+                .interface_of(source)
+                .expect("interface adapter");
+            calls.push((inner, index));
         }
     }
 }

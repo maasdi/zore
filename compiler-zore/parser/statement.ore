@@ -6,7 +6,7 @@ import "compiler-zore/lexer"
 
 func (p mut Parser) binding() int {
     let start = p.bump()
-    let kind = p.text[start.Start:start.End]
+    let kind = p.file.Text()[start.Start:start.End]
     let targets = p.tree.List()
     let first = p.bindingTarget(kind)
     if first == failed {
