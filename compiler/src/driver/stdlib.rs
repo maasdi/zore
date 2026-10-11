@@ -13,6 +13,7 @@ bundled! {
     "bytes" => ["bytes.ore", "buffer.ore"],
     "context" => ["context.ore"],
     "errors" => ["errors.ore"],
+    "fmt" => ["fmt.ore"],
     "io" => ["io.ore"],
     "maps" => ["maps.ore"],
     "math" => ["math.ore"],

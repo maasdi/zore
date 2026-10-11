@@ -41,8 +41,9 @@ when existing code belongs in it (rule 11: no empty scaffolding):
   the package and file units handed to resolution), `types/` (`type_id.rs`,
   `ty.rs`, `type_store.rs`, plus `constant.rs` and `bignum.rs` for exact
   constant evaluation), `hir/` (`expr.rs`, `stmt.rs`, `function.rs`, `lower.rs`,
-  `lower/closure_kind.rs`, which decides which closures own their captures, and
-  `lower/interface.rs`, which checks interface satisfaction, conversions, and
+  `lower/closure_kind.rs`, which decides which closures own their captures,
+  `lower/format.rs`, which checks `zore/fmt` calls against their formats and
+  turns them into string building, `lower/interface.rs`, which checks interface satisfaction, conversions, and
   calls through interfaces, and `lower/generic.rs`, which infers type arguments,
   checks them against constraints, and makes one copy of a generic function or
   method per set of type arguments plus a never-compiled copy that checks

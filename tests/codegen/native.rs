@@ -9427,3 +9427,167 @@ func main() {
         "1.4142135623730951\n3.141592653589793\n-3.0\n-2.0\n-2.0\n-3.0\n2.0\n1024.0\n1.0\n1.0\n0.0\nNaN\nNaN\ntrue\ntrue\nfalse\ntrue\nfalse\nNaN\n2.0\n1.0\n0.0\n3.5\n",
     );
 }
+
+#[test]
+fn errors_wrap_and_find_their_causes_through_the_chain() {
+    let source = "package main
+
+import \"zore/errors\"
+
+let NotFound = errors.New(\"not found\")
+
+func find(name string) error {
+    if name == \"missing\" {
+        return NotFound
+    }
+    return nil
+}
+
+func load(name string) error {
+    return errors.Wrap(find(name), \"loading \" + name)
+}
+
+func main() {
+    let err = load(\"missing\")
+    println(errors.Message(err))
+    println(errors.Is(err, NotFound))
+    println(errors.Unwrap(err) == NotFound)
+    let outer = errors.Wrap(err, \"starting\")
+    println(errors.Message(outer))
+    println(errors.Is(outer, NotFound))
+    println(errors.Is(outer, err))
+    println(errors.Is(outer, error(\"other\")))
+    println(load(\"present\") == nil)
+    println(errors.Unwrap(NotFound) == nil)
+    println(errors.Unwrap(nil) == nil)
+    println(errors.Message(nil) == \"\")
+    let same = error(errors.Message(err))
+    println(same == err)
+    var kept = Array<error>{}
+    for var i = 0; i < 3; i += 1 {
+        kept.push(errors.Wrap(NotFound, \"try\"))
+    }
+    println(errors.Is(kept[2], NotFound))
+}
+";
+    prints(
+        source,
+        "loading missing: not found\ntrue\ntrue\nstarting: loading missing: not found\ntrue\ntrue\nfalse\ntrue\ntrue\ntrue\ntrue\ntrue\ntrue\n",
+    );
+}
+
+#[test]
+fn fmt_prints_and_formats_values_checked_at_compile_time() {
+    let source = "package main
+
+import \"zore/errors\"
+import \"zore/fmt\"
+
+type Point struct {
+    x int
+    y int
+}
+
+func (p Point) String() string {
+    return fmt.Sprintf(\"(%d, %d)\", p.x, p.y)
+}
+
+type Celsius float64
+
+type Box<T copyable> struct {
+    value T
+}
+
+func (b Box<T>) String() string {
+    return \"box\"
+}
+
+let NotFound = errors.New(\"not found\")
+
+func main() {
+    fmt.Println(\"sum:\", 1 + 2, true, 2.5, 'é')
+    fmt.Print(\"a\", \"b\", 1, 2, \"\\n\")
+    fmt.Printf(\"%s is %d, %.2f m, %x %X %o %b, %q %c %t\\n\", \"Ann\", 40, 1.756, 255, 255, 8, 5, \"q\", 'z', false)
+    fmt.Printf(\"[%5d] [%-5d] [%05d] [%6s] [%-6s] [%8.3f]\\n\", 42, 42, -42, \"ab\", \"ab\", 3.14159)
+    fmt.Println(Point{x: 1, y: 2}, Celsius(21.5), Box<int>{value: 1})
+    fmt.Printf(\"%v %s %q\\n\", Point{x: 3, y: 4}, Point{x: 5, y: 6}, Point{x: 7, y: 8})
+    fmt.Println(fmt.Sprint(\"x=\", 3), fmt.Sprintln(\"line\", 1) == \"line 1\\n\")
+    let err = fmt.Errorf(\"loading %q: %w\", \"cfg\", NotFound)
+    fmt.Println(err, errors.Is(err, NotFound))
+    let plain = fmt.Errorf(\"code %d\", 7)
+    fmt.Println(plain, errors.Unwrap(plain) == nil)
+    var nothing error = nil
+    fmt.Printf(\"%v %e %g %v %d\\n\", nothing, 1234.5, 0.000012, uint8(200), int8(-5))
+    fmt.Printf(\"100%%\\n\")
+    fmt.Println()
+    fmt.Println(\"end\")
+}
+";
+    prints(
+        source,
+        "sum: 3 true 2.5 é\nab1 2\nAnn is 40, 1.76 m, ff FF 10 101, \"q\" z false\n[   42] [42   ] [-0042] [    ab] [ab    ] [   3.142]\n(1, 2) 21.5 box\n(3, 4) (5, 6) \"(7, 8)\"\nx=3 true\nloading \"cfg\": not found true\ncode 7 true\n<nil> 1.234500e+03 1.2e-05 200 -5\n100%\n\nend\n",
+    );
+}
+
+#[test]
+fn function_literals_run_inside_generic_functions_and_methods() {
+    let source = "package main
+
+import \"zore/sort\"
+
+func Map<T copyable, U copyable>(items []T, convert func(T) U) Array<U> {
+    var out = Array<U>{}
+    for item in items {
+        out.push(convert(item))
+    }
+    return out
+}
+
+func SortDescending<T ordered>(items mut []T) {
+    sort.Slice(items, func(a T, b T) bool {
+        return a > b
+    })
+}
+
+func CountAbove<T ordered>(items []T, limit T) int {
+    var count = 0
+    let check = func(value T) bool {
+        return value > limit
+    }
+    for item in items {
+        if check(item) {
+            count += 1
+        }
+    }
+    return count
+}
+
+type Stack<T any> struct {
+    items Array<T>
+}
+
+func (s Stack<T>) Each(visit func(int)) {
+    let report = func(index int) {
+        visit(index)
+    }
+    for i, _ in s.items {
+        report(i)
+    }
+}
+
+func main() {
+    var nums = Array<int>{3, 1, 2}
+    SortDescending(nums[:])
+    println(nums[0])
+    var words = Array<string>{\"b\", \"a\", \"c\"}
+    SortDescending(words[:])
+    println(words[0])
+    println(CountAbove(nums[:], 1))
+    let lengths = Map(words[:], func(w string) int { return w.len() + 10 })
+    println(lengths[0])
+    let s = Stack<string>{items: Array<string>{\"x\", \"y\"}}
+    s.Each(func(i int) { println(i) })
+}
+";
+    prints(source, "3\nc\n2\n11\n0\n1\n");
+}

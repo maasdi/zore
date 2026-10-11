@@ -69,6 +69,14 @@ once it does.
   `strconv.FormatFloat` and `strconv.ParseFloat`, and a `zore/math` package
   with constants, `Sqrt`, `Floor`, `Ceil`, `Trunc`, `Round`, `Pow`, `Mod`,
   `Exp`, `Log`, `Abs`, `Max`, `Min`, `Inf`, `NaN`, `IsNaN`, and `IsInf`.
+- Added `zore/fmt` (§37.2, Q44): `Print`, `Println`, `Printf`, `Sprint`,
+  `Sprintln`, `Sprintf`, and `Errorf`, with Go's verbs, widths, and float
+  precision. The compiler checks each format against its arguments, and types
+  with a `String() string` method print through it.
+- Errors can carry a cause (§15.1, Q44): `errors.Wrap`, `errors.Unwrap`,
+  `errors.Message`, `fmt.Errorf` with `%w`, and an `errors.Is` that searches
+  the whole chain.
+- Function literals are allowed inside generic functions and methods (§22.1).
 
 ### Compiler
 
