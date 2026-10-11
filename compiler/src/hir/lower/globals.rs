@@ -5,6 +5,7 @@ use std::collections::HashSet;
 use crate::diagnostic::{Diagnostic, Severity};
 use crate::hir::{self, ExprKind, SelectComm, StmtKind};
 use crate::resolve::{FunctionId, GlobalId};
+use crate::types::TypeId;
 
 /// `initializers[i]` computes global `i`.
 pub(in crate::hir) fn check(
@@ -27,9 +28,12 @@ pub(in crate::hir) fn check(
             );
         }
     }
+    if package.globals.is_empty() {
+        return diagnostics;
+    }
     let references: Vec<References> = package.functions.iter().map(references).collect();
     for (index, &function) in initializers.iter().enumerate() {
-        let used = reached_globals(&references, function);
+        let used = reached_globals(package, &references, function);
         let mut later: Vec<&GlobalId> = used.iter().filter(|g| g.0 as usize >= index).collect();
         later.sort_by_key(|g| g.0);
         if let Some(&&first) = later.first() {
@@ -101,21 +105,75 @@ fn short(name: &str) -> &str {
 struct References {
     globals: HashSet<GlobalId>,
     functions: HashSet<FunctionId>,
+    interfaces: HashSet<(TypeId, usize)>,
+    conversions: HashSet<(TypeId, TypeId)>,
 }
 
-fn reached_globals(references: &[References], start: FunctionId) -> HashSet<GlobalId> {
+fn reached_globals(
+    package: &hir::Package,
+    references: &[References],
+    start: FunctionId,
+) -> HashSet<GlobalId> {
     let mut seen = HashSet::new();
     let mut pending = vec![start];
     let mut globals = HashSet::new();
-    while let Some(function) = pending.pop() {
-        if !seen.insert(function) {
-            continue;
+    let mut calls = HashSet::new();
+    let mut conversions = HashSet::new();
+    loop {
+        while let Some(function) = pending.pop() {
+            if !seen.insert(function) {
+                continue;
+            }
+            let found = &references[function.0 as usize];
+            globals.extend(found.globals.iter().copied());
+            pending.extend(found.functions.iter().copied());
+            for &(ty, method) in &found.interfaces {
+                calls.insert((
+                    package.types.interface_of(ty).expect("interface receiver"),
+                    method,
+                ));
+            }
+            for &(source, target) in &found.conversions {
+                let source = match package.types.interface_of(source) {
+                    Some(interface) => package.types.interface_type(interface),
+                    None => source,
+                };
+                let target = package
+                    .types
+                    .interface_of(target)
+                    .expect("interface conversion");
+                conversions.insert((source, target));
+            }
         }
-        let found = &references[function.0 as usize];
-        globals.extend(found.globals.iter().copied());
-        pending.extend(found.functions.iter().copied());
+        let mut changed = false;
+        for &(interface, method) in &calls.clone() {
+            for &(source, target) in &conversions {
+                if target != interface {
+                    continue;
+                }
+                let Some(entries) = package.implementations.get(&(source, target)) else {
+                    continue;
+                };
+                match entries[method] {
+                    hir::Implementation::Method(function) => {
+                        if !seen.contains(&function) {
+                            pending.push(function);
+                        }
+                    }
+                    hir::Implementation::Entry(index) => {
+                        let inner = package
+                            .types
+                            .interface_of(source)
+                            .expect("interface adapter");
+                        changed |= calls.insert((inner, index));
+                    }
+                }
+            }
+        }
+        if pending.is_empty() && !changed {
+            return globals;
+        }
     }
-    globals
 }
 
 fn references(function: &hir::Function) -> References {
@@ -225,6 +283,14 @@ fn statement(stmt: &hir::Stmt, found: &mut References) {
 
 fn expr(expr_: &hir::Expr, found: &mut References) {
     match &expr_.kind {
+        ExprKind::InterfaceBox(source) | ExprKind::InterfaceView { source, .. } => {
+            found.conversions.insert((source.ty(), expr_.ty()));
+        }
+        ExprKind::InterfaceCall {
+            receiver, method, ..
+        } => {
+            found.interfaces.insert((receiver.ty(), *method));
+        }
         ExprKind::Global(global) => {
             found.globals.insert(*global);
         }

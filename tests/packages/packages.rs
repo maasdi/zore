@@ -931,3 +931,52 @@ fn slices_maps_and_sort_slice_check_their_element_types() {
         );
     }
 }
+
+#[test]
+fn initializer_dependencies_follow_interface_dispatch_and_generic_constraints() {
+    let declarations = r#"
+type Getter interface { Get() int }
+type Wider interface { Get() int; Extra() }
+type Value struct {}
+func (v Value) Get() int { return Later }
+func (v Value) Extra() {}
+func read(g Getter) int { return g.Get() }
+func narrow(g Wider) int { return read(g) }
+func generic<T Getter>(g T) int { return g.Get() }
+async func worker(g own Getter) int { return g.Get() }
+func spawn() int { let t = go worker(Value{}); return t.wait() }
+"#;
+    for call in [
+        "read(Value{})",
+        "narrow(Value{})",
+        "generic(Value{})",
+        "spawn()",
+    ] {
+        let invalid = format!(
+            "package main\n{declarations}\nlet Early = {call}\nlet Later = 42\nfunc main() {{ println(Early) }}"
+        );
+        rejects(&[("main.ore", &invalid)], "initialized after it");
+        let valid = format!(
+            "package main\n{declarations}\nlet Later = 42\nlet Early = {call}\nfunc main() {{ println(Early) }}"
+        );
+        accepts(&[("main.ore", &valid)]);
+    }
+}
+
+#[test]
+fn initializer_dispatch_ignores_implementations_only_created_in_main() {
+    accepts(&[(
+        "main.ore",
+        r#"package main
+    type Getter interface { Get() int }
+    type Early struct {}
+    type Late struct {}
+    func (e Early) Get() int { return 42 }
+    func (l Late) Get() int { return Later }
+    func read(g Getter) int { return g.Get() }
+    let First = read(Early{})
+    let Later = 99
+    func main() { println(read(Late{})); println(First) }
+    "#,
+    )]);
+}

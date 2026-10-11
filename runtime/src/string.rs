@@ -166,11 +166,11 @@ pub extern "C" fn zore_string_pin(data: *const u8, len: i64) {
 }
 
 /// New text that remembers the error it wraps; empty text cannot remember one.
-pub(super) fn with_cause(text: &[u8], cause: *const u8, cause_len: usize) -> StringOut {
+pub(super) fn with_cause(text: &[u8], cause: Option<(*const u8, usize)>) -> StringOut {
     let built = StringOut::built(text);
-    if text.is_empty() || cause_len == 0 {
+    let Some((cause, cause_len)) = cause.filter(|_| !text.is_empty()) else {
         return built;
-    }
+    };
     retain(cause, cause_len);
     with_buffer(built.data, text.len(), |buffer| {
         buffer.cause = Some(Cause {

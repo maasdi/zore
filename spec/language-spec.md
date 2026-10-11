@@ -6239,6 +6239,24 @@ one function can work with any of them. Its interface types (§22.2) are:
 `os.File`, `net.Conn`, `bytes.Buffer`, `bufio.Reader`, and `bufio.Writer`
 satisfy the ones whose methods they have. A `Read` gives at least one byte, or
 `0` and an error; the end of the input is the error `EOF`.
+A read may deliver its last bytes together with an error. `ReadFull` succeeds
+with `nil` as soon as the requested buffer is filled, including when that read
+also reports an error.
+
+A `Write` reports the number of bytes accepted, between zero and the input
+length. A positive short write with `nil` is permitted. `Copy` and
+`bufio.Writer.Flush` retry the unwritten suffix before proceeding. Zero bytes
+with `nil` stops them with `io.Copy: no write progress` or
+`bufio.Writer: no write progress`; an out-of-range count stops them with
+`io.Copy: invalid write count` or `bufio.Writer: invalid write count`.
+`Flush` retains the unwritten suffix and its error, and later flushes return
+that error. For example, copying `abc` to a writer accepting one byte per call
+writes `a`, then `b`, then `c`, returning `(3, nil)`.
+
+These rules preserve ordinary borrowed buffer ownership and explicit errors;
+interface calls still suspend in async callers. They require no compiler syntax
+or type changes. Native conformance covers final data plus EOF, partial writes,
+and no-progress errors in `tests/codegen/review_regressions.rs`.
 
 | Name | Behavior |
 | --- | --- |

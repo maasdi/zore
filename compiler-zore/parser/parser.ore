@@ -3,6 +3,7 @@ package parser
 import "compiler-zore/ast"
 import "compiler-zore/diagnostic"
 import "compiler-zore/lexer"
+import "compiler-zore/source"
 
 // Returned in place of a node after a diagnostic has been reported.
 const failed = -2
@@ -25,7 +26,7 @@ type Parsed struct {
 // A token the parser makes, such as half of a split `>>`, waits in `pending` ahead of `tokens[pos]`.
 type Parser struct {
     text            string
-    file            int
+    file            source.File
     tokens          Array<lexer.Token>
     pos             int
     pending         lexer.Token
@@ -52,7 +53,8 @@ type parserState struct {
 }
 
 // Parse expects valid UTF-8; with `native`, function declarations may omit their bodies.
-func Parse(text string, file int, native bool) Parsed {
+func Parse(file source.File, native bool) Parsed {
+    let text = file.Text()
     var lexed = lexer.Lex(text)
     var p = Parser{
         text: text,

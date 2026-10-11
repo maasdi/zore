@@ -14,15 +14,20 @@ programs, and this is not a self-compilation claim.
   span, and decoded literal text, plus the lexical errors with their byte spans.
 - `lexer/unicode.ore` is a generated table of non-ASCII letters and digits, as
   Rust's `char::is_alphanumeric` defines them for the pinned toolchain.
-- `source/` is the `source` package. A `source.Manager` holds files by number,
-  with their path, text, and line starts. It answers line text and one-based
-  line and column lookups.
+- `source/` is the `source` package. `source.NewFile(path, text)` creates an
+  immutable `source.File` handle that owns its path, text, and cached line index.
+  Handles are Copy; their private line-index storage is shared through a mutex.
+  Line text and one-based line/column lookups always use the handle's own source.
+  There is no manager-local integer ID that could resolve against another file.
 - `diagnostic/` is the `diagnostic` package. It provides diagnostic records
   (severity, message, primary label, related labels, and notes) and
-  `diagnostic.Render`, which prints them the way the Rust compiler does.
+  `diagnostic.Render(d)`, which prints them the way the Rust compiler does.
+  Every label carries its source handle, so diagnostics survive the scope that
+  created the files and can contain labels from independently created files.
+  Invalid byte bounds and empty zero-value file handles are rejected.
 - `ast/` is the `ast` package: a syntax tree stored as one array of nodes.
   Each node has a tag, a byte span, one attribute, and child node numbers.
-- `parser/` is the `parser` package. `parser.Parse(text, file, native)` runs the
+- `parser/` is the `parser` package. `parser.Parse(file, native)` runs the
   lexer and builds the tree. It reports the same syntax errors, and recovers
   from them, the same way as `compiler/src/parser`. With `native` set, function
   declarations may omit their bodies, as in the bundled standard packages.
@@ -98,7 +103,7 @@ diagnostic prints as `diag <start> <end> <message>`, followed by:
 
 Parser messages, labels, notes, and rendered text are compared exactly.
 
-A probe case checks the source manager. It records:
+A probe case checks source-file lookups. It records:
 
 - the line count, and every line's bytes
 - the line and column of every byte offset, or `-` where an offset splits a
@@ -176,3 +181,9 @@ Not compared:
 - Comma-separated lists pick their item parser from a small integer code. The
   alternative is passing a closure that would itself need the parser as `mut`
   while the list also holds it.
+
+The identity regression creates independent files, including duplicate paths,
+and compares a diagnostic with primary and related labels across those files.
+An unrelated file cannot redirect rendering: the rendering API takes only the
+diagnostic and has no ambient manager argument. This representation differs
+from Rust's namespaced numeric FileId while preserving source-bound labels.

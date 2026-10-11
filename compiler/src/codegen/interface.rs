@@ -183,7 +183,7 @@ impl<'a> Module<'a> {
             Target::Entry { index, .. } => {
                 let inner = f.fresh();
                 f.line(format!("{inner} = load {INTERFACE_TY}, ptr %data"));
-                f.panic_if_empty(&inner, &results_ty);
+                f.panic_if_empty(&inner, &results_ty, source, &entry);
                 let code = f.interface_slot(&inner, 1 + index);
                 let (data, flags) = f.interface_parts(&inner);
                 let mut args = vec![format!("ptr {data}"), format!("ptr {flags}")];
@@ -479,7 +479,13 @@ impl FunctionBuilder<'_, '_> {
     }
 
     /// Raises the panic and returns at once, since there is no method to call.
-    fn panic_if_empty(&mut self, value: &str, results_ty: &str) {
+    fn panic_if_empty(
+        &mut self,
+        value: &str,
+        results_ty: &str,
+        source: TypeId,
+        entry: &crate::types::InterfaceMethod,
+    ) {
         let table = self.interface_table(value);
         let empty = self.fresh();
         self.line(format!("{empty} = icmp eq ptr {table}, null"));
@@ -492,6 +498,19 @@ impl FunctionBuilder<'_, '_> {
             "call void @zore_raise_panic(ptr {global}, i64 {})",
             message.len()
         ));
+        let package = self.module.package;
+        for (index, &(mode, ty)) in entry.params.iter().enumerate().rev() {
+            if !package.passes_by_reference(mode, ty) && package.needs_drop(ty) {
+                let slot = self.fresh();
+                let llvm_ty = self.ty(ty);
+                self.hoist_alloca(&slot, &llvm_ty);
+                self.line(format!("store {llvm_ty} %a{index}, ptr {slot}"));
+                self.drop_unconditional(&slot, ty);
+            }
+        }
+        if entry.receiver == ParamMode::Own {
+            self.release_boxed("%data", "%flags", source, true);
+        }
         if results_ty == "void" {
             self.line("ret void");
         } else {

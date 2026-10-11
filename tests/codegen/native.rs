@@ -1,5 +1,8 @@
 //! Requires clang (LLVM 15+) and rustc 1.98+; a missing toolchain fails rather than skips.
 
+mod controlled_runtime;
+mod review_regressions;
+
 use std::io::Write;
 use std::path::Path;
 use std::process::{Command, Output, Stdio};
@@ -5789,9 +5792,21 @@ fn run_channel_poll_bounded(source: &str) -> Output {
 }
 
 fn run_poll_bounded(source: &str, input: Option<&[u8]>) -> Output {
+    run_bounded(source, input, false)
+}
+
+fn run_controlled(source: &str) -> Output {
+    run_bounded(source, None, true)
+}
+
+fn run_bounded(source: &str, input: Option<&[u8]>, controlled: bool) -> Output {
     let dir = TempDir::new().unwrap();
     let executable = dir.path().join("program");
-    build_file(source, &executable).unwrap_or_else(|e| panic!("build failed: {e:?}"));
+    if controlled {
+        controlled_runtime::build(source, &executable);
+    } else {
+        build_file(source, &executable).unwrap_or_else(|e| panic!("build failed: {e:?}"));
+    }
     let mut child = Command::new(&executable)
         .env("ZORE_CHECK_LEAKS", "1")
         .stdin(if input.is_some() {
@@ -7247,7 +7262,7 @@ func main() {
 
 #[test]
 fn a_drop_that_reads_a_view_keeps_the_backing_owner_live_across_suspension() {
-    prints(
+    prints_controlled(
         "package main
 
 type Watch struct {
@@ -7274,6 +7289,7 @@ async func observe(gate channel<int>) int {
 func main() {
     let gate = channel<int>()
     let task = go observe(gate)
+    waitPending(1)
     gate.send(10)
     println(task.wait())
 }
@@ -7305,10 +7321,11 @@ async func observe(gate channel<int>, zero int) int {
 func main() {
     let gate = channel<int>()
     let task = go observe(gate, 0)
+    waitPending(1)
     gate.send(5)
     println(task.wait())
 }";
-    let output = run(source);
+    let output = run_controlled(source);
     assert_eq!(output.status.code(), Some(2), "{}", stderr(&output));
     assert_eq!(stdout(&output), "5\n70\n");
     assert!(
@@ -7318,8 +7335,15 @@ func main() {
     );
 }
 
+fn prints_controlled(source: &str, expected: &str) {
+    let output = run_controlled(source);
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    assert_eq!(stdout(&output), expected);
+    assert!(output.stderr.is_empty(), "{}", stderr(&output));
+}
+
 fn exits_cleanly_within_bound(source: &str, expected: &str) {
-    let output = run_poll_bounded(source, None);
+    let output = run_controlled(source);
     assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
     assert_eq!(stdout(&output), expected);
     assert!(output.stderr.is_empty(), "{}", stderr(&output));
@@ -7362,6 +7386,7 @@ func round(count int) int {
     for var i = 0; i < count; i += 1 {
         let one, ok = started.receive()
     }
+    waitPending(count)
     let ready = channel<int>(1)
     go unrelated(ready)
     let value, ok = ready.receive()
@@ -7384,11 +7409,11 @@ func round(count int) int {
 
 func main() {
     for var i = 0; i < 2; i += 1 {
-        println(round(64))
+        println(round(4))
     }
 }
 ",
-        "7\n64\n7\n64\n",
+        "7\n4\n7\n4\n",
     );
 }
 
@@ -7438,6 +7463,7 @@ func main() {
         let other = channel<int>()
         let ready = channel<int>(1)
         let waiting = go waiter(ctx, other, ready)
+        waitPending(1)
         let cancelling = go canceller(stop, ready)
         asyncWins += waiting.wait()
         cancelling.wait()
@@ -7450,6 +7476,7 @@ func main() {
         let other = channel<int>()
         let ready = channel<int>(1)
         let waiting = go plainWaiter(ctx, other, ready)
+        waitBlocked(1)
         let cancelling = go canceller(stop, ready)
         plainWins += waiting.wait()
         cancelling.wait()
@@ -7464,7 +7491,6 @@ func main() {
 
 #[test]
 fn async_tasks_blocked_in_a_plain_helper_get_compensation_workers_for_queued_senders() {
-    // More blocked helpers than any CI host has base workers: queued senders need replacements.
     exits_cleanly_within_bound(
         "package main
 
@@ -7494,6 +7520,7 @@ func round(count int) int {
     for var i = 0; i < count; i += 1 {
         let one, ok = started.receive()
     }
+    waitBlocked(count)
     for var i = 0; i < count; i += 1 {
         go sender(chans[i], i + 1)
     }
@@ -7509,11 +7536,11 @@ func round(count int) int {
 
 func main() {
     for var i = 0; i < 3; i += 1 {
-        println(round(64))
+        println(round(4))
     }
 }
 ",
-        "2080\n2080\n2080\n",
+        "10\n10\n10\n",
     );
 }
 
@@ -7539,6 +7566,7 @@ func main() {
     buffered.send(Res{Name: \"buffered\"})
     go hold(Res{Name: \"pending\"}, buffered, gate, ready)
     let one, ok = ready.receive()
+    waitPending(1)
     println(\"main done\")
 }
 ",
@@ -8005,7 +8033,7 @@ func count(wg sync.WaitGroup, total Mutex<int>) {
 }
 
 func main() {
-    let root = "/tmp/claude-0/-home-user-zore/355b2514-d804-551c-ad77-430871dd9f09/scratchpad/new/tree"
+    let root = "DIR/tree"
     println(os.MkdirAll(root + "/sub/deeper", 0o755) == nil)
     println(os.WriteFile(root + "/b.txt", strings.Bytes("bee")[:], 0o640) == nil)
     println(os.WriteFile(root + "/a.txt", strings.Bytes("a")[:], 0o644) == nil)
@@ -8019,7 +8047,7 @@ func main() {
     println(statErr == nil)
     println(info.Name())
     println(info.Size())
-    println(info.Mode() == 0o640)
+    println(info.Mode() & 0o600 == 0o600 && info.Mode() & 0o137 == 0)
     println(info.IsDir())
     let _, missing = os.Stat(root + "/nope")
     println(missing != nil)

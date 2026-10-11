@@ -238,3 +238,24 @@ tasks do not wait and remain plain functions. A waiting plain function holds an 
 worker; replacement threads maintain progress but remain subject to host thread
 limits. A 1,000-child context regression checks the private async expiry
 and parent-following tasks.
+
+## Controlled suspension regressions
+
+`codegen/controlled_runtime.rs` builds a separate `cfg(test)` runtime once for
+focused native regressions. Each generated program runs in its own process with
+a two-worker pool. Only the bodies of the test fixture's `waitPending` and
+`waitBlocked` functions are replaced in emitted LLVM, to call bounded Rust state
+observers. Generated async bodies, ownership/drop lowering, and wait operations
+remain the compiler's real output. These hooks do not exist in production builds
+and add no Zore builtin or runtime configuration option.
+
+The observers clone the task list before acquiring per-task scheduling locks,
+preserving the scheduler's lock order. Idle status establishes that a task has
+returned Pending; the blocked-worker count establishes compensation is needed.
+The fixture has no unrelated waiters that could satisfy its expected count.
+
+`codegen/review_regressions.rs` covers empty interface adapter cleanup, float32
+formatting overflow/underflow, empty-message error causes, and partial I/O.
+The filesystem fixture uses its allocated temporary directory and tests that
+requested permissions are not widened, allowing the inherited umask to remove
+permission bits.
