@@ -1,6 +1,6 @@
 package path
 
-import "zore/strings"
+import "std/strings"
 
 func Clean(p string) string {
     if p.len() == 0 {

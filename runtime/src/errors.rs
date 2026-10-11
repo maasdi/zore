@@ -1,4 +1,4 @@
-//! The code behind `zore/errors`: an error's text, and the error it wraps.
+//! The code behind `std/errors`: an error's text, and the error it wraps.
 
 use super::string::{StringOut, cause_of, with_cause};
 use super::sys::ErrorOut;

@@ -1,8 +1,8 @@
 package main
 
-import "zore/context"
-import "zore/net"
-import "zore/time"
+import "std/context"
+import "std/net"
+import "std/time"
 
 func count(ctx context.Context, results channel<int>) {
     var steps = 0

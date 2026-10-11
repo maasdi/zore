@@ -1,4 +1,4 @@
-//! The code behind `zore/os`. File handles are numbers that are never reused, so a stale handle
+//! The code behind `std/os`. File handles are numbers that are never reused, so a stale handle
 //! can only fail; 1, 2, and 3 are standard input, output, and error.
 
 use std::collections::HashMap;

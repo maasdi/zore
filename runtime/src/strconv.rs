@@ -1,4 +1,4 @@
-//! The code behind `zore/strconv`.
+//! The code behind `std/strconv`.
 
 use super::string::StringOut;
 use super::sys::StringError;

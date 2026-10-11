@@ -1,7 +1,7 @@
 package ast
 
-import "zore/strconv"
-import "zore/strings"
+import "std/strconv"
+import "std/strings"
 
 // A child slot that holds no node, such as a missing receiver.
 const Absent = -1

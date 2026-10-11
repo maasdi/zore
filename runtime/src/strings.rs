@@ -1,4 +1,4 @@
-//! The code behind `zore/strings`. Results share storage with their arguments when they can.
+//! The code behind `std/strings`. Results share storage with their arguments when they can.
 
 use super::alloc::zore_alloc;
 use super::string::{StringOut, character_at};

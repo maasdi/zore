@@ -2,7 +2,7 @@ package parser
 
 import "compiler-zore/ast"
 import "compiler-zore/lexer"
-import "zore/strconv"
+import "std/strconv"
 
 func (p mut Parser) exprList() int {
     let list = p.tree.List()

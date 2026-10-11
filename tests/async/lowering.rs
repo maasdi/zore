@@ -233,7 +233,7 @@ func main() {}",
 fn implicit_mutex_and_io_waits_preserve_later_values() {
     let (package, program, plan) = plan(
         "package main
-import \"zore/os\"
+import \"std/os\"
 async func run(m Mutex<int>, path string) int {
     let early = 7
     println(early)
@@ -471,7 +471,7 @@ func main() { let t = go parent(go plain()); println(t.wait()) }",
                     matches!(callee, mir::Callee::Interface { method: called } if called == method)
                 ),
                 Suspension::Sleep => assert!(
-                    matches!(callee, mir::Callee::Function(id) if package.function(*id).name == "zore/time.Sleep")
+                    matches!(callee, mir::Callee::Function(id) if package.function(*id).name == "std/time.Sleep")
                 ),
                 Suspension::Io(id) => {
                     assert!(matches!(callee, mir::Callee::Function(callee) if id == callee))
@@ -502,7 +502,7 @@ func main() { let t = go parent(go plain()); println(t.wait()) }",
 fn io_calls_and_their_awaited_callers_are_polled_but_plain_helpers_stay_ordinary() {
     let (package, _, plan) = plan(
         "package main
-import \"zore/os\"
+import \"std/os\"
 async func ioWait() int { let _, _ = os.ReadFile(\"x\"); return 1 }
 async func fallback() int { return await ioWait() }
 async func simple() int { let task = go ioWait(); return await task }
@@ -524,7 +524,7 @@ func main() {}",
 #[test]
 fn recursive_calls_are_planned_and_nonblocking_natives_preserve_poll_lowering() {
     let (package, _, plan) = plan("package main
-import \"zore/strings\"
+import \"std/strings\"
 async func recurse(n int) string { if n == 0 { return strings.ToUpper(\"done\") }; return await recurse(n - 1) }
 func main() { let t = go recurse(5); println(t.wait()) }");
     let (&id, machine) = plan
@@ -580,7 +580,7 @@ func main() {}",
 fn native_sleep_is_a_suspension_and_nonwaiting_time_calls_stay_ordinary() {
     let (package, program, plan) = plan(
         "package main
-import \"zore/time\"
+import \"std/time\"
 async func sleeper(d int) int { let start = time.Now(); time.Sleep(d); return time.Since(start) }
 async func parent() int { return await sleeper(1) }
 func plain() { time.Sleep(1) }
@@ -645,8 +645,8 @@ func main() {}",
 fn io_and_waiting_library_wrappers_keep_spans_cleanup_and_plain_helpers() {
     let (package, program, plan) = plan(
         "package main
-import \"zore/net\"
-import \"zore/os\"
+import \"std/net\"
+import \"std/os\"
 func helper(path string) int { let data, _ = os.ReadFile(path); return data.len() }
 async func run(path string, listener own net.Listener) int {
     let _, _ = listener.Accept()

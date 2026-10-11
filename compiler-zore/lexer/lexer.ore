@@ -1,6 +1,6 @@
 package lexer
 
-import "zore/strings"
+import "std/strings"
 
 type Lexer struct {
     text     string

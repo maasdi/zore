@@ -2838,8 +2838,8 @@ fn every_standard_function_computes_its_documented_result() {
     prints(
         "package main
 
-import \"zore/strconv\"
-import \"zore/strings\"
+import \"std/strconv\"
+import \"std/strings\"
 
 func show(parts Array<string>) {
     var joined = \"\"
@@ -2923,7 +2923,7 @@ fn standard_functions_that_panic_clean_up_and_report() {
             &format!(
                 "package main
 
-import \"zore/strings\"
+import \"std/strings\"
 
 type Guard struct {{ Name string }}
 
@@ -2972,7 +2972,7 @@ fn discarded_text_is_freed_when_it_is_overwritten_or_goes_out_of_scope() {
     prints(
         "package main
 
-import \"zore/strconv\"
+import \"std/strconv\"
 
 func main() {
     var kept = \"\"
@@ -3025,7 +3025,7 @@ fn text_in_dynamic_arrays_and_maps_is_released_with_its_owner() {
     prints(
         "package main
 
-import \"zore/strconv\"
+import \"std/strconv\"
 
 func main() {
     var names = Array<string>{}
@@ -3068,7 +3068,7 @@ fn closures_keep_the_text_they_capture_until_they_are_dropped() {
     prints(
         "package main
 
-import \"zore/strconv\"
+import \"std/strconv\"
 
 func counter(prefix string) func() string {
     var n = 0
@@ -3096,7 +3096,7 @@ fn error_messages_built_from_text_are_released() {
     prints(
         "package main
 
-import \"zore/strconv\"
+import \"std/strconv\"
 
 func parse(text string) (int, error) {
     let value, err = strconv.Atoi(text)
@@ -3142,7 +3142,7 @@ fn text_from_the_standard_packages_outlives_the_text_it_came_from() {
     prints(
         "package main
 
-import \"zore/strings\"
+import \"std/strings\"
 
 func pieces() Array<string> {
     let line = \"one\" + \" \" + \"two\" + \" \" + \"three\"
@@ -3167,7 +3167,7 @@ fn text_is_released_when_a_panic_unwinds_the_stack() {
     panics(
         "package main
 
-import \"zore/strconv\"
+import \"std/strconv\"
 
 type Guard struct { Label string }
 
@@ -3789,7 +3789,7 @@ func main() {
 #[test]
 fn many_sleeping_tasks_wait_together() {
     let source = "package main
-import \"zore/time\"
+import \"std/time\"
 async func nap(ms int) int {
     time.Sleep(ms * time.Millisecond)
     return ms
@@ -3817,7 +3817,7 @@ func main() {
 #[test]
 fn a_sleeping_task_does_not_hold_up_a_busy_one() {
     let source = "package main
-import \"zore/time\"
+import \"std/time\"
 func sleeper(done channel<string>) {
     time.Sleep(150 * time.Millisecond)
     done.send(\"slept\")
@@ -3846,8 +3846,8 @@ fn files_are_written_and_read_whole() {
     let missing = dir.path().join("absent.txt");
     let source = format!(
         "package main
-import \"zore/os\"
-import \"zore/strings\"
+import \"std/os\"
+import \"std/strings\"
 func read(path string) string {{
     let data, err = os.ReadFile(path)
     if err != nil {{ return \"error\" }}
@@ -3879,8 +3879,8 @@ fn file_reads_keep_any_bytes_and_errors_name_the_operation() {
     let nowhere = dir.path().join("no-folder").join("file.txt");
     let source = format!(
         "package main
-import \"zore/os\"
-import \"zore/strings\"
+import \"std/os\"
+import \"std/strings\"
 func main() {{
     let data, err = os.ReadFile(\"{binary}\")
     println(err == nil)
@@ -3901,8 +3901,8 @@ func main() {{
 #[test]
 fn standard_input_is_read_line_by_line() {
     let source = "package main
-import \"zore/bufio\"
-import \"zore/os\"
+import \"std/bufio\"
+import \"std/os\"
 func main() {
     var input = bufio.NewScanner(os.Stdin())
     var lines = 0
@@ -3924,8 +3924,8 @@ func main() {
     );
     let bad = run_with_input(
         "package main
-import \"zore/bufio\"
-import \"zore/os\"
+import \"std/bufio\"
+import \"std/os\"
 func main() {
     var input = bufio.NewScanner(os.Stdin())
     println(input.Scan())
@@ -3941,8 +3941,8 @@ func main() {
 #[test]
 fn a_task_waiting_for_input_does_not_stop_the_others() {
     let source = "package main
-import \"zore/bufio\"
-import \"zore/os\"
+import \"std/bufio\"
+import \"std/os\"
 func reader(done channel<string>) {
     var input = bufio.NewScanner(os.Stdin())
     _ = input.Scan()
@@ -3969,8 +3969,8 @@ func main() {
 }
 
 const ECHO_PRELUDE: &str = "
-import \"zore/net\"
-import \"zore/strings\"
+import \"std/net\"
+import \"std/strings\"
 func digits(n int) string {
     if n == 0 { return \"0\" }
     var text = \"\"
@@ -4086,8 +4086,8 @@ func main() {{
 #[test]
 fn dropping_a_connection_ends_the_peers_stream() {
     let source = "package main
-import \"zore/net\"
-import \"zore/strings\"
+import \"std/net\"
+import \"std/strings\"
 func greet(listener own net.Listener) {
     let conn, err = listener.Accept()
     if err != nil { return }
@@ -4114,8 +4114,8 @@ func main() {
 #[test]
 fn network_errors_are_reported_and_closed_handles_fail() {
     let source = "package main
-import \"zore/net\"
-import \"zore/strings\"
+import \"std/net\"
+import \"std/strings\"
 func main() {
     let conns = channel<net.Conn>(1)
     conns.close()
@@ -4166,8 +4166,8 @@ fn bytes_from_a_peer_that_are_not_text_arrive_unchanged() {
     });
     let source = format!(
         "package main
-import \"zore/net\"
-import \"zore/strings\"
+import \"std/net\"
+import \"std/strings\"
 func main() {{
     let conn, _ = net.Dial(\"tcp\", \"127.0.0.1:{port}\")
     var all = Array<byte>{{}}
@@ -4194,7 +4194,7 @@ func main() {{
 #[test]
 fn a_listener_waiting_in_accept_does_not_stop_other_tasks() {
     let source = "package main
-import \"zore/net\"
+import \"std/net\"
 func wait(listener own net.Listener) string {
     let conn, err = listener.Accept()
     if err != nil { return \"failed\" }
@@ -4293,8 +4293,8 @@ func main() {
 #[test]
 fn waiting_on_a_timer_a_helper_thread_or_a_busy_task_is_not_a_deadlock() {
     let source = "package main
-import \"zore/time\"
-import \"zore/os\"
+import \"std/time\"
+import \"std/os\"
 func late(ch channel<int>) {
     time.Sleep(200 * time.Millisecond)
     ch.send(5)
@@ -4328,8 +4328,8 @@ func main() {
 #[test]
 fn a_waiting_accept_keeps_the_program_from_being_called_dead() {
     let source = "package main
-import \"zore/net\"
-import \"zore/time\"
+import \"std/net\"
+import \"std/time\"
 func accept(listener own net.Listener, done channel<string>) {
     let conn, err = listener.Accept()
     if err != nil {
@@ -4433,7 +4433,7 @@ func main() {
 #[test]
 fn a_task_waiting_for_the_lock_does_not_block_the_others() {
     let source = "package main
-import \"zore/time\"
+import \"std/time\"
 func holder(m Mutex<int>, events channel<string>) {
     m.withLock(func(value mut int) {
         events.send(\"holder locked\")
@@ -4475,7 +4475,7 @@ func main() {
 #[test]
 fn waiters_get_the_lock_in_the_order_they_arrived() {
     let source = "package main
-import \"zore/time\"
+import \"std/time\"
 func take(m Mutex<Array<int>>, id int, ready channel<bool>) {
     ready.send(true)
     m.withLock(func(order mut Array<int>) { order.push(id) })
@@ -4506,7 +4506,7 @@ func main() {
 #[test]
 fn a_panic_while_holding_the_lock_poisons_the_mutex() {
     let source = "package main
-import \"zore/time\"
+import \"std/time\"
 type Marker struct { Name string }
 func (m mut Marker) drop() { println(\"drop \" + m.Name) }
 func breaker(m Mutex<int>) {
@@ -4568,7 +4568,7 @@ func main() {
 #[test]
 fn two_tasks_locking_in_opposite_order_are_a_deadlock() {
     let source = "package main
-import \"zore/time\"
+import \"std/time\"
 func lockBoth(first Mutex<int>, second Mutex<int>, done channel<bool>) {
     first.withLock(func(a mut int) {
         time.Sleep(100 * time.Millisecond)
@@ -4591,7 +4591,7 @@ func main() {
 #[test]
 fn a_mutex_works_from_async_functions_and_hundreds_of_waiters() {
     let source = "package main
-import \"zore/time\"
+import \"std/time\"
 async func add(m Mutex<int>, amount int) {
     m.withLock(func(value mut int) {
         time.Sleep(1 * time.Millisecond)
@@ -4746,7 +4746,7 @@ select {
 fn strings_convert_to_bytes_and_back_with_a_utf8_check() {
     prints(
         "package main
-import \"zore/strings\"
+import \"std/strings\"
 func main() {
     let data = strings.Bytes(\"héllo\")
     println(data.len())
@@ -4781,7 +4781,7 @@ fn files_hold_any_bytes() {
     let path = dir.path().join("data.bin").display().to_string();
     let source = format!(
         "package main
-import \"zore/os\"
+import \"std/os\"
 func main() {{
     let data = Array<byte>{{0, 255, 10, 0, 128}}
     println(os.WriteFile(\"{path}\", data[:], 0o644) == nil)
@@ -4857,7 +4857,7 @@ func main() {{
 fn after_gives_a_channel_that_fires_once_and_closes() {
     prints(
         "package main
-import \"zore/time\"
+import \"std/time\"
 func main() {
     let started = time.Now()
     let timer = time.After(60 * time.Millisecond)
@@ -4887,7 +4887,7 @@ func main() {
 fn a_task_waiting_on_a_timer_channel_is_not_a_deadlock() {
     prints(
         "package main
-import \"zore/time\"
+import \"std/time\"
 func main() {
     let never = channel<int>()
     select {
@@ -4903,8 +4903,8 @@ func main() {
 fn a_context_cancels_once_and_reaches_its_children() {
     prints(
         "package main
-import \"zore/context\"
-import \"zore/time\"
+import \"std/context\"
+import \"std/time\"
 func worker(ctx context.Context, results channel<int>) {
     var steps = 0
     for {
@@ -4966,7 +4966,7 @@ func main() {
 fn reads_and_accepts_give_up_at_their_deadline() {
     let source = format!(
         "package main
-import \"zore/time\"
+import \"std/time\"
 {ECHO_PRELUDE}
 func quiet(listener own net.Listener, release channel<bool>) {{
     let conn, err = listener.Accept()
@@ -5016,7 +5016,7 @@ func main() {{
 fn a_write_to_a_peer_that_never_reads_gives_up() {
     let source = format!(
         "package main
-import \"zore/time\"
+import \"std/time\"
 {ECHO_PRELUDE}
 func hold(listener own net.Listener, release channel<bool>) {{
     let conn, err = listener.Accept()
@@ -5057,8 +5057,8 @@ func main() {{
 fn deadlines_reject_closed_handles_and_connects_that_fail() {
     prints(
         "package main
-import \"zore/net\"
-import \"zore/time\"
+import \"std/net\"
+import \"std/time\"
 func main() {
     let holder = channel<net.Conn>(1)
     holder.close()
@@ -5427,7 +5427,7 @@ func main() {
 fn async_state_machines_preserve_mutable_borrows_and_views_across_pending_children() {
     prints(
         r#"package main
-import "zore/time"
+import "std/time"
 func delayed(n int) int { time.Sleep(20 * time.Millisecond); return n }
 async func change(data mut [int; 2], t own Task<int>) {
     let n = await t
@@ -5454,7 +5454,7 @@ func main() { let t = go process(); println(t.wait()) }
 fn async_state_machines_evaluate_arguments_once_and_keep_loop_closures_alive() {
     prints(
         r#"package main
-import "zore/time"
+import "std/time"
 func delayed(n int) int { time.Sleep(2 * time.Millisecond); return n }
 func next(counter Mutex<int>) int {
     return counter.withLock(func(n mut int) int { n += 1; return n })
@@ -5487,7 +5487,7 @@ func main() {
 fn async_state_machines_drop_moved_and_partially_moved_resources_once() {
     prints(
         r#"package main
-import "zore/time"
+import "std/time"
 type Resource struct { Name string }
 func (r mut Resource) drop() { println("drop " + r.Name) }
 type Pair struct { First Resource; Second Resource }
@@ -5508,7 +5508,7 @@ func main() { let t = go run(); println(t.wait()) }
 #[test]
 fn async_state_machine_panic_runs_nested_cleanup_and_propagates_through_join() {
     let output = run(r#"package main
-import "zore/time"
+import "std/time"
 type Resource struct { Name string }
 func (r mut Resource) drop() { println("drop " + r.Name) }
 func delayed() int { time.Sleep(20 * time.Millisecond); return 0 }
@@ -5537,7 +5537,7 @@ func main() {
 fn async_state_machines_propagate_errors_and_return_move_values() {
     prints(
         r#"package main
-import "zore/time"
+import "std/time"
 func delayed(ok bool) (int, error) {
     time.Sleep(10 * time.Millisecond)
     if !ok { return 0, error("failed") }
@@ -5598,7 +5598,7 @@ func main() { let t = go fail(); println(t.wait()) }
 fn async_state_machines_can_await_plain_tasks_after_channel_suspension() {
     prints(
         r#"package main
-import "zore/time"
+import "std/time"
 func delayed() string { time.Sleep(10 * time.Millisecond); return "ready" }
 async func polled() string { let t = go delayed(); return await t }
 async func fallback(ch channel<bool>) string {
@@ -5620,7 +5620,7 @@ func main() {
 fn plain_tasks_join_polled_children_and_mix_with_async_channel_waiters() {
     let output = run_channel_poll_bounded(
         r#"package main
-import "zore/time"
+import "std/time"
 async func child(value int) int { time.Sleep(1 * time.Millisecond); return value }
 func parent(value int) int { let task = go child(value); return task.wait() }
 func plain(ch channel<int>, ready channel<bool>) int {
@@ -5660,7 +5660,7 @@ func main() {
 #[test]
 fn async_state_machine_task_panics_are_reported_at_both_task_boundaries() {
     let output = run(r#"package main
-import "zore/time"
+import "std/time"
 type Resource struct { Name string }
 func (r mut Resource) drop() { println("drop " + r.Name) }
 func delayed() int { time.Sleep(20 * time.Millisecond); return 0 }
@@ -5701,7 +5701,7 @@ func main() {
 fn async_state_machines_drop_detached_results_and_keep_work_running() {
     prints(
         r#"package main
-import "zore/time"
+import "std/time"
 type Resource struct { Name string; Done channel<bool> }
 func (r mut Resource) drop() { println("drop " + r.Name); r.Done.send(true) }
 func delayed() int { time.Sleep(10 * time.Millisecond); return 7 }
@@ -6073,7 +6073,7 @@ fn timer_poll_parity(source: &str, expected: &str) {
         let id = sources.add("timers.ore", source.clone()).unwrap();
         let ir = emit_llvm(sources.file(id).unwrap()).unwrap();
         if source.contains("time.After") {
-            assert!(ir.contains("zore/time.fire$async$poll"));
+            assert!(ir.contains("std/time.fire$async$poll"));
         }
         if !mode.is_empty() {
             assert!(ir.contains("run$async$poll"));
@@ -6082,7 +6082,7 @@ fn timer_poll_parity(source: &str, expected: &str) {
             for function in ir.split("define private i8 ").skip(1) {
                 let function = function.split("\n}\n").next().unwrap();
                 if function.contains("$async$poll") {
-                    assert!(!function.contains("call void @\"main.zore/time.Sleep\""));
+                    assert!(!function.contains("call void @\"main.std/time.Sleep\""));
                     assert!(!function.contains("call void @zore_native_time_sleep("));
                 }
             }
@@ -6098,7 +6098,7 @@ fn timer_poll_parity(source: &str, expected: &str) {
 fn timer_poll_positive_zero_and_negative_durations_match_plain_execution() {
     timer_poll_parity(
         r#"package main
-import "zore/time"
+import "std/time"
 MODE func run() {
     let start = time.Now()
     time.Sleep(25 * time.Millisecond)
@@ -6118,7 +6118,7 @@ func main() { let t = go run(); t.wait() }
 fn timer_poll_nested_calls_preserve_views_mutable_borrows_and_move_cleanup() {
     timer_poll_parity(
         r#"package main
-import "zore/time"
+import "std/time"
 type Job struct { Name string }
 func (j mut Job) drop() { println("drop " + j.Name) }
 MODE func change(data mut [int; 2], job own Job) {
@@ -6143,7 +6143,7 @@ func main() { let t = go run(); t.wait() }
 fn timer_poll_evaluates_sleep_arguments_once_across_loop_resumptions() {
     timer_poll_parity(
         r#"package main
-import "zore/time"
+import "std/time"
 func next(counter Mutex<int>) int { return counter.withLock(func(n mut int) int { n += 1; return 1 }) }
 func count(counter Mutex<int>) int { return counter.withLock(func(n mut int) int { return n }) }
 MODE func run(counter Mutex<int>) int {
@@ -6161,7 +6161,7 @@ func main() { let counter = mutex(0); let t = go run(counter); println(t.wait())
 fn timer_poll_after_select_and_internal_waits_are_not_false_deadlocks() {
     timer_poll_parity(
         r#"package main
-import "zore/time"
+import "std/time"
 MODE func produce(ch channel<int>, ms int) { time.Sleep(ms * time.Millisecond); ch.send(7); ch.close() }
 MODE func run() {
     let ch = channel<int>()
@@ -6188,7 +6188,7 @@ fn timer_poll_panic_after_resumption_unwinds_owned_values_once() {
     for mode in ["", "async "] {
         let source = format!(
             r#"package main
-import "zore/time"
+import "std/time"
 type Job struct {{ Name string }}
 func (j mut Job) drop() {{ println("drop " + j.Name) }}
 {mode}func run() int {{ let job = Job{{Name: "live"}}; time.Sleep(5 * time.Millisecond); var zero = 0; return 1 / zero }}
@@ -6206,7 +6206,7 @@ func main() {{ let t = go run(); println(t.wait()) }}
 fn timer_poll_many_sleeping_tasks_and_plain_helpers_preserve_progress() {
     timer_poll_parity(
         r#"package main
-import "zore/time"
+import "std/time"
 func helper() { time.Sleep(1 * time.Millisecond) }
 MODE func run() int { time.Sleep(10 * time.Millisecond); helper(); return 1 }
 func main() {
@@ -6225,7 +6225,7 @@ func main() {
 fn timer_poll_then_internal_wait_still_detects_deadlock() {
     let output = run_channel_poll_bounded(
         r#"package main
-import "zore/time"
+import "std/time"
 async func run() { time.Sleep(1 * time.Millisecond); let ch = channel<int>(); ch.send(1) }
 func main() { let t = go run(); t.wait() }
 "#,
@@ -6237,7 +6237,7 @@ func main() { let t = go run(); t.wait() }
 fn timer_poll_detached_result_is_destroyed_after_sleep_completion() {
     let output = run_channel_poll_bounded(
         r#"package main
-import "zore/time"
+import "std/time"
 type Job struct { Done channel<bool> }
 func (j mut Job) drop() { j.Done.send(true) }
 async func run(done channel<bool>) Job { time.Sleep(1 * time.Millisecond); return Job{Done: done} }
@@ -6313,7 +6313,7 @@ func main() {
 fn mutex_poll_repeated_contention_preserves_callback_results_and_cleanup() {
     mutex_poll_parity(
         r#"package main
-import "zore/time"
+import "std/time"
 MODE func run(m Mutex<int>) int {
     var result = 0
     for var i = 0; i < 20; i += 1 {
@@ -6424,8 +6424,8 @@ fn io_poll_files_and_byte_views_preserve_results_and_cleanup() {
     let dir = TempDir::new().unwrap();
     let path = dir.path().join("poll.dat").display().to_string();
     let source = r#"package main
-import "zore/os"
-import "zore/strings"
+import "std/os"
+import "std/strings"
 MODE func run(path string) Array<byte> {
     let first = os.WriteFile(path, strings.Bytes("héllo")[:], 0o644)
     println(first == nil)
@@ -6453,8 +6453,8 @@ func main() { let t = go run("PATH"); let bytes = t.wait(); println(bytes.len())
 fn io_poll_socket_wrappers_suspend_and_echo_one_byte_at_a_time() {
     io_poll_parity(
         r#"package main
-import "zore/net"
-import "zore/strings"
+import "std/net"
+import "std/strings"
 MODE func run(conn own net.Conn) int {
     var count = 0
     var buf = Array<byte>{0}
@@ -6507,8 +6507,8 @@ func main() {
 fn io_poll_stdin_reads_lines_bytes_and_eof() {
     for mode in ["", "async "] {
         let source = r#"package main
-import "zore/bufio"
-import "zore/os"
+import "std/bufio"
+import "std/os"
 MODE func run() int {
     var input = bufio.NewReader(os.Stdin())
     let raw, rawErr = input.ReadBytes(10)
@@ -6540,7 +6540,7 @@ fn io_poll_file_errors_and_question_mark_run_frame_cleanup_once() {
     let missing = dir.path().join("missing.txt");
     std::fs::write(&good, "abc").unwrap();
     let source = r#"package main
-import "zore/os"
+import "std/os"
 type Marker struct { Name string }
 func (m mut Marker) drop() { println("drop " + m.Name) }
 MODE func run(path string) (int, error) {
@@ -6568,8 +6568,8 @@ func main() {
 fn io_poll_socket_deadlines_and_byte_results_match_plain_execution() {
     io_poll_parity(
         r#"package main
-import "zore/net"
-import "zore/time"
+import "std/net"
+import "std/time"
 MODE func run(listener own net.Listener) int {
     _ = listener.SetDeadline(time.Now() + 10 * time.Millisecond)
     let _, timed = listener.Accept()
@@ -6620,8 +6620,8 @@ func main() {
 fn io_poll_context_library_wrappers_suspend_without_changing_their_api() {
     io_poll_parity(
         r#"package main
-import "zore/context"
-import "zore/time"
+import "std/context"
+import "std/time"
 MODE func run() bool {
     let ctx, cancel = context.WithTimeout(context.Background(), 10 * time.Millisecond)
     var completed = false
@@ -6645,7 +6645,7 @@ fn io_poll_panic_after_helper_completion_drops_live_frame_values_once() {
     let path = dir.path().join("panic.txt");
     std::fs::write(&path, "owned text").unwrap();
     let source = r#"package main
-import "zore/os"
+import "std/os"
 type Marker struct { Name string }
 func (m mut Marker) drop() { println("drop " + m.Name) }
 async func run(path string) int {
@@ -6668,8 +6668,8 @@ func main() { let t = go run("PATH"); println(t.wait()) }
 fn cancellation_background_tasks_scale_as_async_frames() {
     let output = run_channel_poll_bounded(
         r#"package main
-import "zore/context"
-import "zore/time"
+import "std/context"
+import "std/time"
 func main() {
     let parent, stop = context.WithTimeout(context.Background(), 200 * time.Millisecond)
     var children = Array<context.Context>{}
@@ -6701,7 +6701,7 @@ fn declared_functions_run_as_function_values() {
     prints(
         "package main
 
-import \"zore/strings\"
+import \"std/strings\"
 
 func add(a int, b int) int { return a + b }
 
@@ -7355,7 +7355,7 @@ fn pending_async_accepts_leave_workers_for_an_unrelated_task() {
     exits_cleanly_within_bound(
         "package main
 
-import \"zore/net\"
+import \"std/net\"
 
 async func acceptOne(listener own net.Listener, started channel<int>, done channel<int>) {
     started.send(1)
@@ -7422,7 +7422,7 @@ fn cancelling_from_another_task_wakes_a_pending_done_select_exactly_once() {
     exits_cleanly_within_bound(
         "package main
 
-import \"zore/context\"
+import \"std/context\"
 
 async func waiter(ctx context.Context, other channel<int>, ready channel<int>) int {
     let done = ctx.Done()
@@ -7642,7 +7642,7 @@ fn string_search_trimming_splitting_and_builders_follow_their_documented_results
     prints(
         r##"package main
 
-import "zore/strings"
+import "std/strings"
 
 func show(parts Array<string>) {
     var joined = ""
@@ -7741,9 +7741,9 @@ fn number_parsing_quoting_and_unicode_helpers_follow_their_documented_results() 
     prints(
         r##"package main
 
-import "zore/strconv"
-import "zore/unicode"
-import "zore/unicode/utf8"
+import "std/strconv"
+import "std/unicode"
+import "std/unicode/utf8"
 
 func main() {
     println(strconv.FormatInt(255, 2))
@@ -7875,12 +7875,12 @@ fn paths_sorting_errors_and_byte_buffers_follow_their_documented_results() {
     prints(
         r##"package main
 
-import "zore/bytes"
-import "zore/errors"
-import "zore/path"
-import "zore/path/filepath"
-import "zore/sort"
-import "zore/strconv"
+import "std/bytes"
+import "std/errors"
+import "std/path"
+import "std/path/filepath"
+import "std/sort"
+import "std/strconv"
 
 func main() {
     for p in Array<string>{"", "a/b/../c", "/../x/./y//", "a/../..", "./", "/", "a//b/"} {
@@ -8021,11 +8021,11 @@ fn folders_files_environment_processes_and_wait_groups_work_together() {
     let dir = TempDir::new().unwrap();
     let source = r##"package main
 
-import "zore/bufio"
-import "zore/os"
-import "zore/os/exec"
-import "zore/strings"
-import "zore/sync"
+import "std/bufio"
+import "std/os"
+import "std/os/exec"
+import "std/strings"
+import "std/sync"
 
 func count(wg sync.WaitGroup, total Mutex<int>) {
     total.withLock(func(n mut int) { n += 1 })
@@ -8148,17 +8148,17 @@ true\nhi there\ntrue\n8\n2\ntrue\n50\nonce\n"
 fn library_misuse_panics_with_its_message() {
     for (imports, call, message) in [
         (
-            "import \"zore/sync\"",
+            "import \"std/sync\"",
             "sync.NewWaitGroup().Done()",
             "sync: negative WaitGroup counter",
         ),
         (
-            "import \"zore/bytes\"",
+            "import \"std/bytes\"",
             "var buf = bytes.NewBufferString(\"ab\")\n    buf.Truncate(5)",
             "bytes.Buffer: truncation out of range",
         ),
         (
-            "import \"zore/strconv\"",
+            "import \"std/strconv\"",
             "println(strconv.FormatInt(1, 99))",
             "strconv.FormatInt: invalid base",
         ),
@@ -8288,7 +8288,7 @@ fn package_level_lets_are_initialized_once_in_order_before_main() {
     prints(
         "package main
 
-import \"zore/strconv\"
+import \"std/strconv\"
 
 type Point struct {
     X int
@@ -8606,8 +8606,8 @@ func main() {
 fn async_code_suspends_on_connections_reached_through_interfaces() {
     let source = "package main
 
-import \"zore/net\"
-import \"zore/strings\"
+import \"std/net\"
+import \"std/strings\"
 
 type ReadWriter interface {
     Read(buf mut []byte) (int, error)
@@ -8942,7 +8942,7 @@ func main() {
 fn generic_async_functions_are_awaited_and_spawned() {
     let source = "package main
 
-import \"zore/time\"
+import \"std/time\"
 
 async func Later<T any>(item own T) T {
     time.Sleep(time.Millisecond)
@@ -8971,9 +8971,9 @@ func main() {
 fn io_copies_and_reads_from_any_reader_into_any_writer() {
     let source = "package main
 
-import \"zore/bytes\"
-import \"zore/io\"
-import \"zore/os\"
+import \"std/bytes\"
+import \"std/io\"
+import \"std/os\"
 
 type Upper struct {
     out bytes.Buffer
@@ -9025,10 +9025,10 @@ func main() {
 fn bufio_reads_and_writes_through_any_reader_or_writer() {
     let source = "package main
 
-import \"zore/bufio\"
-import \"zore/bytes\"
-import \"zore/io\"
-import \"zore/os\"
+import \"std/bufio\"
+import \"std/bytes\"
+import \"std/io\"
+import \"std/os\"
 
 func main() {
     var lines = bufio.NewScanner(bytes.NewBufferString(\"one\\ntwo\\r\\nthree\"))
@@ -9066,8 +9066,8 @@ func main() {
 fn bufio_reads_lines_from_a_connection_in_an_async_task() {
     let source = "package main
 
-import \"zore/bufio\"
-import \"zore/net\"
+import \"std/bufio\"
+import \"std/net\"
 
 async func serve(listener own net.Listener) int {
     let conn, err = listener.Accept()
@@ -9267,9 +9267,9 @@ func main() {
 fn slices_maps_and_sort_slice_work_on_any_allowed_element_type() {
     let source = "package main
 
-import \"zore/maps\"
-import \"zore/slices\"
-import \"zore/sort\"
+import \"std/maps\"
+import \"std/slices\"
+import \"std/sort\"
 
 type Person struct {
     name string
@@ -9328,7 +9328,7 @@ func main() {
 fn println_writes_the_shortest_float_text_that_reads_back() {
     let source = "package main
 
-import \"zore/math\"
+import \"std/math\"
 
 func main() {
     let third = 1.0 / 3.0
@@ -9364,7 +9364,7 @@ func main() {
 fn strconv_formats_and_parses_floats() {
     let source = "package main
 
-import \"zore/strconv\"
+import \"std/strconv\"
 
 func show(text string) {
     let value, err = strconv.ParseFloat(text, 64)
@@ -9421,7 +9421,7 @@ func main() {
 fn math_functions_follow_ieee_754_without_panics() {
     let source = "package main
 
-import \"zore/math\"
+import \"std/math\"
 
 func main() {
     let zero = 0.0
@@ -9460,7 +9460,7 @@ func main() {
 fn errors_wrap_and_find_their_causes_through_the_chain() {
     let source = "package main
 
-import \"zore/errors\"
+import \"std/errors\"
 
 let NotFound = errors.New(\"not found\")
 
@@ -9508,8 +9508,8 @@ func main() {
 fn fmt_prints_and_formats_values_checked_at_compile_time() {
     let source = "package main
 
-import \"zore/errors\"
-import \"zore/fmt\"
+import \"std/errors\"
+import \"std/fmt\"
 
 type Point struct {
     x int
@@ -9561,7 +9561,7 @@ func main() {
 fn function_literals_run_inside_generic_functions_and_methods() {
     let source = "package main
 
-import \"zore/sort\"
+import \"std/sort\"
 
 func Map<T copyable, U copyable>(items []T, convert func(T) U) Array<U> {
     var out = Array<U>{}

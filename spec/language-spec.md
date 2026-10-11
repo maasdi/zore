@@ -160,7 +160,7 @@ func main() {
 Import syntax is Go-like:
 
 ```ore
-import "zore/strings"
+import "std/strings"
 ```
 
 The meaning of an import path, and how imported names are used, is specified in
@@ -940,7 +940,7 @@ this decision.
 
 **Projects.** A project is a folder tree whose root holds `zore.toml` (§3.4).
 The `name` in that file is the project name. A project name is one or more
-ASCII letters, digits, `_`, or `-`, and must not be `zore`, which is reserved
+ASCII letters, digits, `_`, or `-`, and must not be `std`, which is reserved
 for standard packages.
 
 **Building a program.** `zore check`, `zore build`, and `zore run` take a file
@@ -955,7 +955,7 @@ double-quoted path of segments separated by `/` (§3.3):
 
 | Path | Package |
 | --- | --- |
-| `"zore/<path>"` | The standard package at `<path>` shipped with the compiler, such as `"zore/os"` or `"zore/os/exec"` (§37.2–§37.5) |
+| `"std/<path>"` | The standard package at `<path>` shipped with the compiler, such as `"std/os"` or `"std/os/exec"` (§37.2–§37.5) |
 | `"<project>/<dir>/..."` | The folder `<dir>/...` below the project root, where `<project>` is the project's name |
 
 Anything else is an error that names the path. A project imports only its own
@@ -970,7 +970,7 @@ its name is the last path segment. Members are used with a qualifier:
 
 ```ore
 import "myapp/shapes"
-import "zore/strings"
+import "std/strings"
 
 func main() {
     let circle = shapes.Circle{Radius: 2}
@@ -1995,7 +1995,7 @@ println(string('é'))       // é
   encoding. It is the only string conversion: no other type converts to
   `string`, `string(s)` of a string is rejected, and there is no implicit
   number-to-string conversion. Converting numbers to text, and text to
-  numbers, is the job of `zore/strconv` (§37.2).
+  numbers, is the job of `std/strconv` (§37.2).
 - `==`, `!=`, `<`, `<=`, `>`, `>=` compare by bytes (§6.6).
 
 Ownership, error, and async implications: `string` stays Copy and no operation
@@ -5883,13 +5883,13 @@ back to exactly the same value of its type, so a `float32` shows the digits a
 ## 37.2 Text, number, byte, and error packages — LOCKED
 
 The compiler ships the standard packages of §37.2–§37.5, imported by their
-paths (§3.20): `"zore/strings"`, `"zore/strconv"`, `"zore/unicode"`,
-`"zore/unicode/utf8"`, `"zore/bytes"`, `"zore/errors"`, `"zore/fmt"`, and `"zore/math"` here. They are
+paths (§3.20): `"std/strings"`, `"std/strconv"`, `"std/unicode"`,
+`"std/unicode/utf8"`, `"std/bytes"`, `"std/errors"`, `"std/fmt"`, and `"std/math"` here. They are
 ordinary packages as far as users can tell: names are used with the qualifier
 (the last segment of the path) and every function, type, method, and constant
 listed is exported. A package whose path has several segments, such as
-`"zore/unicode/utf8"`, is used as `utf8.Name`; it is a separate package from
-`"zore/unicode"` and is imported on its own.
+`"std/unicode/utf8"`, is used as `utf8.Name`; it is a separate package from
+`"std/unicode"` and is imported on its own.
 
 The packages follow one set of conventions:
 
@@ -5908,7 +5908,7 @@ The packages follow one set of conventions:
 Their functions never mutate their arguments except a `mut` parameter; `string`
 results may share storage with their arguments (§6.8, §41.5).
 
-**`zore/strings`**
+**`std/strings`**
 
 | Function | Behavior |
 | --- | --- |
@@ -5952,7 +5952,7 @@ results may share storage with their arguments (§6.8, §41.5).
 | `(b Builder) String() string` | Everything written, in order |
 | `(b mut Builder) Reset()` | Empties the builder |
 
-**`zore/strconv`**
+**`std/strconv`**
 
 | Function | Behavior |
 | --- | --- |
@@ -5973,7 +5973,7 @@ message is `strconv.Name: parsing Q: problem`, where `Q` is the input quoted by
 `Quote` and `problem` is `invalid syntax`, `value out of range`, `invalid base
 B`, or `invalid bit size B`.
 
-**`zore/math`** gives float constants and functions. Its constants are untyped
+**`std/math`** gives float constants and functions. Its constants are untyped
 float constants (§6.7):
 
 | Name | Behavior |
@@ -5990,7 +5990,7 @@ float constants (§6.7):
 The functions follow IEEE 754: a result that is not a real number is `NaN`,
 such as `Sqrt(-1)`, and they never panic.
 
-**`zore/unicode`**
+**`std/unicode`**
 
 | Name | Behavior |
 | --- | --- |
@@ -6003,7 +6003,7 @@ such as `Sqrt(-1)`, and they never panic.
 | `IsControl(r rune) bool` | Whether `r` is in general category Cc |
 | `ToUpper(r rune) rune`, `ToLower(r rune) rune` | The single-character case mapping of `r`, or `r` when the mapping is not one character |
 
-**`zore/unicode/utf8`**
+**`std/unicode/utf8`**
 
 | Name | Behavior |
 | --- | --- |
@@ -6019,14 +6019,14 @@ such as `Sqrt(-1)`, and they never panic.
 | `DecodeLastRune(p []byte) (rune, int)` | The same for the last character of `p` |
 | `DecodeRuneInString(s string) (rune, int)`, `DecodeLastRuneInString(s string) (rune, int)` | The same for a string, which is always well-formed |
 
-**`zore/bytes`** works on `[]byte` the way `zore/strings` works on text:
+**`std/bytes`** works on `[]byte` the way `std/strings` works on text:
 
 | Function | Behavior |
 | --- | --- |
 | `Equal(a []byte, b []byte) bool` | Whether the two views hold the same bytes |
 | `Compare(a []byte, b []byte) int` | `-1`, `0`, or `1` as `a` sorts before, equal to, or after `b` byte by byte |
-| `HasPrefix`, `HasSuffix`, `Contains(s []byte, sub []byte) bool` | As in `zore/strings` |
-| `Index`, `LastIndex(s []byte, sep []byte) int`, `IndexByte(s []byte, c byte) int` | As in `zore/strings`, in bytes |
+| `HasPrefix`, `HasSuffix`, `Contains(s []byte, sub []byte) bool` | As in `std/strings` |
+| `Index`, `LastIndex(s []byte, sep []byte) int`, `IndexByte(s []byte, c byte) int` | As in `std/strings`, in bytes |
 | `Count(s []byte, sep []byte) int` | Non-overlapping occurrences of `sep`; an empty `sep` gives `s.len() + 1` |
 | `Clone(s []byte) Array<byte>` | A new array holding the bytes of `s` |
 
@@ -6042,7 +6042,7 @@ the front.
 | `(b Buffer) Len() int`, `(b Buffer) Bytes() Array<byte>` | The number of unread bytes, and a copy of them |
 | `(b mut Buffer) Truncate(n int)`, `(b mut Buffer) Reset()` | Keeps the first `n` unread bytes, panicking when `n` is negative or above `Len()`; or empties the buffer |
 
-**`zore/errors`**
+**`std/errors`**
 
 | Function | Behavior |
 | --- | --- |
@@ -6054,7 +6054,7 @@ the front.
 
 An error whose message is empty carries no cause.
 
-**`zore/fmt`** prints and formats values. Its functions take any number of
+**`std/fmt`** prints and formats values. Its functions take any number of
 arguments, and the compiler checks every call against its arguments, so a
 mismatched format is a compile-time error rather than wrong output. They cannot
 be used as function values.
@@ -6093,7 +6093,7 @@ A width pads the text with spaces, or with zeros after any sign, to that many
 characters. The number of directives must equal the number of arguments.
 
 ```ore
-import "zore/fmt"
+import "std/fmt"
 
 type Point struct {
     x int
@@ -6114,8 +6114,8 @@ func main() {
 ```
 
 ```ore
-import "zore/strconv"
-import "zore/strings"
+import "std/strconv"
+import "std/strings"
 
 func main() {
     let parts = strings.Split("a,b,c", ",")
@@ -6143,8 +6143,8 @@ cases: `tests/conformance/packages.md` and `tests/conformance/strings.md`.
 
 ## 37.3 Time, operating system, buffered I/O, and network packages — LOCKED
 
-`"zore/time"`, `"zore/os"`, `"zore/os/exec"`, `"zore/io"`, `"zore/bufio"`, and
-`"zore/net"` give tasks a way to wait for the clock, files, standard input and output, other
+`"std/time"`, `"std/os"`, `"std/os/exec"`, `"std/io"`, `"std/bufio"`, and
+`"std/net"` give tasks a way to wait for the clock, files, standard input and output, other
 programs, and TCP connections without blocking other tasks. Functions are
 ordinary calls: they are written without `await`, and may be called from
 synchronous and `async` functions alike. In an `async func` body a call that
@@ -6158,7 +6158,7 @@ Files, standard input, and connections carry bytes. Turning bytes into text is
 passed to a `[]byte` parameter as a view, `data[:]`, and to a `mut []byte`
 parameter the same way (§12.1–§12.2).
 
-**`zore/time`** measures time in `int` nanoseconds.
+**`std/time`** measures time in `int` nanoseconds.
 
 | Name | Behavior |
 | --- | --- |
@@ -6176,7 +6176,7 @@ let started = time.Now()
 println(time.Since(started) < time.Second)
 ```
 
-**`zore/os`**
+**`std/os`**
 
 | Function | Behavior |
 | --- | --- |
@@ -6209,7 +6209,7 @@ Error messages begin with the function name (`os.ReadFile: `, `os.Open: `,
 `os.Read: `, `os.Write: `, `os.Stat: `, `os.ReadDir: `, and so on) and continue
 with system-defined text.
 
-**`zore/os/exec`** runs other programs.
+**`std/os/exec`** runs other programs.
 
 | Name | Behavior |
 | --- | --- |
@@ -6224,7 +6224,7 @@ ended by a signal gives `signal: N`, and one that cannot start gives an error
 beginning `exec: `. `Output` and `CombinedOutput` return what was captured
 together with the error.
 
-**`zore/io`** names what files, connections, and buffers have in common, so
+**`std/io`** names what files, connections, and buffers have in common, so
 one function can work with any of them. Its interface types (§22.2) are:
 
 | Interface | Entries |
@@ -6270,8 +6270,8 @@ and no-progress errors in `tests/codegen/review_regressions.rs`.
 | `WriteString(w mut Writer, s string) (int, error)` | Writes the bytes of `s` |
 
 ```ore
-import "zore/io"
-import "zore/os"
+import "std/io"
+import "std/os"
 
 func save(dst mut io.Writer, path string) (int, error) {
     var src = os.Open(path)?
@@ -6279,7 +6279,7 @@ func save(dst mut io.Writer, path string) (int, error) {
 }
 ```
 
-**`zore/bufio`** reads and writes any `io.Reader` or `io.Writer` in large
+**`std/bufio`** reads and writes any `io.Reader` or `io.Writer` in large
 pieces. Each type owns the reader or writer it was made from (an `own`
 parameter, so a file or connection moves into it), and that value is dropped,
 closing a file or connection, when the reader, scanner, or writer is dropped.
@@ -6300,8 +6300,8 @@ closing a file or connection, when the reader, scanner, or writer is dropped.
 | `(w mut Writer) Flush() error`, `(w Writer) Buffered() int` | Write the pending bytes now; the number pending. Bytes still pending when a writer is dropped are lost |
 
 ```ore
-import "zore/bufio"
-import "zore/os"
+import "std/bufio"
+import "std/os"
 
 func main() {
     var input = bufio.NewScanner(os.Stdin())
@@ -6311,7 +6311,7 @@ func main() {
 }
 ```
 
-**`zore/net`** (TCP over IPv4 and IPv6)
+**`std/net`** (TCP over IPv4 and IPv6)
 
 `Listener` and `Conn` are struct types with a custom `drop` (§8.3), so they are
 Move values: dropping one closes it, as does `Close`. Their fields are not
@@ -6327,7 +6327,7 @@ unknown network N` or `net.Dial: unknown network N`.
 | `DialTimeout(network string, address string, timeout int) (Conn, error)` | Like `Dial`, but gives up after `timeout` nanoseconds for each address tried; zero or less means no limit |
 | `(l Listener) Accept() (Conn, error)` | Waits for and returns the next incoming connection |
 | `(l Listener) Addr() string` | The address the listener is bound to, as `host:port` (`[host]:port` for IPv6), or `""` when closed |
-| `(l Listener) SetDeadline(t int) error` | Makes `Accept` give up at the deadline `t` (§37.3, `zore/time`); zero removes it |
+| `(l Listener) SetDeadline(t int) error` | Makes `Accept` give up at the deadline `t` (§37.3, `std/time`); zero removes it |
 | `(c Conn) Read(buf mut []byte) (int, error)` | Waits until at least one byte is available and moves up to `buf.len()` bytes into `buf`; at end of stream, `0` and `EOF`; an empty `buf` gives `0` and `nil` at once |
 | `(c Conn) Write(data []byte) (int, error)` | Waits until all of `data` is sent and returns its length; on failure, the bytes sent before it |
 | `(c Conn) LocalAddr() string`, `(c Conn) RemoteAddr() string` | The two ends of the connection, or `""` when closed |
@@ -6348,7 +6348,7 @@ Error messages begin `net.Listen: `, `net.Dial: `, `net.Accept: `, `net.Read: `,
 continue with system-defined text, except the fixed messages above.
 
 ```ore
-import "zore/net"
+import "std/net"
 
 func serve(conn own net.Conn) {
     var buf = Array<byte>{0, 0, 0, 0, 0, 0, 0, 0}
@@ -6385,9 +6385,9 @@ or a helper thread (§36.2); the mechanism is not specified. A bundled function
 that calls a waiting function waits too, so it is lowered like any other
 waiting call. Pending conformance cases: `tests/conformance/io.md`.
 
-## 37.4 Standard packages `zore/context` and `zore/sync` — LOCKED
+## 37.4 Standard packages `std/context` and `std/sync` — LOCKED
 
-`"zore/context"` gives tasks a way to ask each other to stop. Cancellation is
+`"std/context"` gives tasks a way to ask each other to stop. Cancellation is
 cooperative: nothing is interrupted, and a task stops when it looks at its
 context. A `Context` is a Copy value; every copy refers to the same context.
 
@@ -6407,8 +6407,8 @@ cancelled, and its error does not change. Call the cancel function when the
 work is done, so the waiting described below can end early.
 
 ```ore
-import "zore/context"
-import "zore/time"
+import "std/context"
+import "std/time"
 
 func worker(ctx context.Context, results channel<int>) {
     var steps = 0
@@ -6431,7 +6431,7 @@ give it a deadline (§37.3) or wait on `Done()` in a `select`. Cancelling has no
 effect on tasks that never look at the context, and a task is never stopped or
 dropped because of one.
 
-`"zore/sync"` coordinates tasks beyond what channels and `Mutex<T>` (§20.2) do
+`"std/sync"` coordinates tasks beyond what channels and `Mutex<T>` (§20.2) do
 directly. Both types are Copy handles that share their state.
 
 | Function or method | Behavior |
@@ -6454,10 +6454,10 @@ Compiler impact: both packages are bundled Zore source built from channels,
 `Mutex<T>`, `select`, and `time.After`. Pending conformance cases:
 `tests/conformance/io.md`.
 
-## 37.5 Standard packages `zore/path`, `zore/path/filepath`, `zore/sort`, `zore/slices`, and `zore/maps` — LOCKED
+## 37.5 Standard packages `std/path`, `std/path/filepath`, `std/sort`, `std/slices`, and `std/maps` — LOCKED
 
-`"zore/path"` works on slash-separated paths as text, without looking at any
-file. `"zore/path/filepath"` offers the same functions for paths of the host
+`"std/path"` works on slash-separated paths as text, without looking at any
+file. `"std/path/filepath"` offers the same functions for paths of the host
 system, which use `/` on every supported system, plus `Abs`.
 
 | Function | Behavior |
@@ -6472,7 +6472,7 @@ system, which use `/` on every supported system, plus `Abs`.
 | `filepath.Abs(p string) (string, error)` | `p` cleaned when absolute, otherwise joined to the current folder |
 | `const filepath.Separator`, `filepath.ListSeparator` | `'/'` and `':'` |
 
-`"zore/sort"` sorts and searches in place.
+`"std/sort"` sorts and searches in place.
 
 | Function | Behavior |
 | --- | --- |
@@ -6482,7 +6482,7 @@ system, which use `/` on every supported system, plus `Abs`.
 | `Slice<T copyable>(x mut []T, less func(T, T) bool)` | Sorts `x` so that `less` holds between no later element and an earlier one; equal elements may change order |
 | `SliceIsSorted<T copyable>(x []T, less func(T, T) bool) bool` | Whether no element is `less` than the one before it |
 
-`"zore/slices"` and `"zore/maps"` are generic helpers (§22.1) for slices of
+`"std/slices"` and `"std/maps"` are generic helpers (§22.1) for slices of
 any element type their constraints allow, and for maps.
 
 | Function | Behavior |
@@ -6498,8 +6498,8 @@ any element type their constraints allow, and for maps.
 | `maps.Clone<K comparable, V copyable>(m map[K]V) map[K]V` | A new map with the same entries |
 
 ```ore
-import "zore/slices"
-import "zore/sort"
+import "std/slices"
+import "std/sort"
 
 type Person struct {
     name string

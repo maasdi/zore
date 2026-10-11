@@ -1,4 +1,4 @@
-//! The code behind `zore/net`. Handles are numbers that are never reused, so a stale handle
+//! The code behind `std/net`. Handles are numbers that are never reused, so a stale handle
 //! can only fail.
 
 use std::collections::HashMap;

@@ -1,6 +1,6 @@
 # fmt conformance cases
 
-Authority: spec §37.2 (`zore/fmt`), with §15.1 and §37.1. Every row has an
+Authority: spec §37.2 (`std/fmt`), with §15.1 and §37.1. Every row has an
 executable counterpart in `tests/typecheck/check.rs` or `tests/codegen/native.rs`.
 
 ## Printing

@@ -1351,7 +1351,7 @@ fn statement_boundaries_are_honored_by_the_parser() {
 
 #[test]
 fn package_and_imports() {
-    let case = Case::new("package main\nimport \"zore/fmt\"\nimport \"net\"\nfunc main() {}");
+    let case = Case::new("package main\nimport \"std/fmt\"\nimport \"net\"\nfunc main() {}");
     case.assert_clean();
     let paths: Vec<&str> = case
         .parsed
@@ -1360,10 +1360,10 @@ fn package_and_imports() {
         .iter()
         .map(|i| i.path.as_str())
         .collect();
-    assert_eq!(paths, ["zore/fmt", "net"]);
+    assert_eq!(paths, ["std/fmt", "net"]);
     assert_eq!(
         case.text(case.parsed.file.imports[0].span),
-        "import \"zore/fmt\""
+        "import \"std/fmt\""
     );
 
     rejects_file("func main() {}", "expected `package` clause");

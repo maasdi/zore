@@ -66,7 +66,7 @@ fn empty_interface_adapters_destroy_transferred_arguments_in_plain_and_async_cal
 fn float32_formatting_rounds_before_classifying_special_values() {
     prints(
         r#"package main
-import "zore/strconv"
+import "std/strconv"
 func main() {
     for format in "fFeEgG" {
         if format == 'F' { continue }
@@ -85,8 +85,8 @@ func main() {
 fn empty_message_errors_remain_present_in_wrapped_and_formatted_chains() {
     prints(
         r#"package main
-import "zore/errors"
-import "zore/fmt"
+import "std/errors"
+import "std/fmt"
 func main() {
     let none error = nil
     let cause = error("")
@@ -112,7 +112,7 @@ func main() {
 fn read_full_succeeds_when_the_final_bytes_arrive_with_an_error() {
     prints(
         r#"package main
-import "zore/io"
+import "std/io"
 type Reader struct { left int; err error }
 func (r mut Reader) Read(p mut []byte) (int, error) {
     if r.left == 0 { return 0, r.err }
@@ -147,9 +147,9 @@ func main() {
 fn copying_and_flushing_retry_short_writes_and_reject_zero_progress() {
     prints(
         r#"package main
-import "zore/io"
-import "zore/bytes"
-import "zore/bufio"
+import "std/io"
+import "std/bytes"
+import "std/bufio"
 type Writer struct { limit int }
 func (w mut Writer) Write(p []byte) (int, error) {
     if w.limit == 0 { return 0, nil }
@@ -187,9 +187,9 @@ func main() {
 fn partial_io_errors_preserve_counts_and_unwritten_buffered_bytes() {
     prints(
         r#"package main
-import "zore/io"
-import "zore/bytes"
-import "zore/bufio"
+import "std/io"
+import "std/bytes"
+import "std/bufio"
 type Writer struct { count int; fail bool }
 func (w mut Writer) Write(p []byte) (int, error) {
     if w.fail { return w.count, error("stopped") }
@@ -225,8 +225,8 @@ func main() {
 fn copying_and_full_reads_reject_out_of_range_read_counts() {
     prints(
         r#"package main
-import "zore/io"
-import "zore/bytes"
+import "std/io"
+import "std/bytes"
 type Reader struct { count int }
 func (r mut Reader) Read(p mut []byte) (int, error) { return r.count, nil }
 func main() {
@@ -253,7 +253,7 @@ func main() {
 fn buffered_write_reports_accepted_bytes_when_its_flush_fails() {
     prints(
         r#"package main
-import "zore/bufio"
+import "std/bufio"
 type Writer struct {}
 func (w mut Writer) Write(p []byte) (int, error) { return 0, error("stopped") }
 func main() {

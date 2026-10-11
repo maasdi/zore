@@ -1,9 +1,9 @@
 package main
 
-import "zore/bufio"
-import "zore/os"
-import "zore/strconv"
-import "zore/time"
+import "std/bufio"
+import "std/os"
+import "std/strconv"
+import "std/time"
 
 async func wait(ready channel<bool>, release channel<bool>) int {
     var sum = 0

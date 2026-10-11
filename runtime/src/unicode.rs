@@ -1,4 +1,4 @@
-//! The code behind `zore/unicode`.
+//! The code behind `std/unicode`.
 
 /// Inclusive ranges of general category Nd, from Unicode 15.1.0.
 const DECIMAL_DIGITS: &[(u32, u32)] = &[

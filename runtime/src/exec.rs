@@ -1,4 +1,4 @@
-//! The code behind `zore/os/exec`.
+//! The code behind `std/os/exec`.
 
 use std::io::Read;
 use std::process::{Command, ExitStatus, Stdio};

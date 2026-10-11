@@ -1,6 +1,6 @@
 package context
 
-import "zore/time"
+import "std/time"
 
 const active = 0
 const canceled = 1
