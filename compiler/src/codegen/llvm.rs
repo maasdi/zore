@@ -2161,7 +2161,7 @@ impl FunctionBuilder<'_, '_> {
                     Callee::Interface { method } => self.interface_call(*method, args, *span),
                     Callee::Clone(ty) => Some(self.clone_call(*ty, args)),
                     Callee::Println => {
-                        self.println(&args[0], *span);
+                        self.println(&args[0]);
                         None
                     }
                     Callee::Panic => {

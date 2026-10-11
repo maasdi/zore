@@ -30,7 +30,7 @@ enum Result {
     Scalar(TypeId),
     /// Written through an out pointer: a `string` or an `Array<string>`.
     Aggregate(TypeId),
-    /// `(int, error)` or `(bool, error)`, written as `{ i64, i8, ptr, i64 }`.
+    /// `(int, error)`, `(bool, error)`, or `(float64, error)` with the float's bits, written as `{ i64, i8, ptr, i64 }`.
     ValueError(TypeId),
     /// `error`, written as `{ i8, ptr, i64 }`.
     ErrorOnly,
@@ -69,7 +69,7 @@ impl Module<'_> {
                     args.push(format!("ptr %d{index}, i64 %n{index}"));
                     declared.push("ptr, i64".to_string());
                 }
-                TypeKind::Int(_) | TypeKind::Rune => {
+                TypeKind::Int(_) | TypeKind::Rune | TypeKind::Float(_) => {
                     let llvm = self.ty(ty);
                     args.push(format!("{llvm} %p{index}"));
                     declared.push(llvm);
@@ -79,7 +79,7 @@ impl Module<'_> {
                     declared.push("i1 zeroext".to_string());
                 }
                 _ => unreachable!(
-                    "bundled functions take strings, slices, integers, runes, and booleans"
+                    "bundled functions take strings, slices, numbers, runes, and booleans"
                 ),
             }
         }
@@ -221,6 +221,8 @@ impl Module<'_> {
                 writeln!(conversion, "  %value = extractvalue {layout} %r, 0").unwrap();
                 if ty == TypeStore::BOOL {
                     conversion.push_str("  %v = trunc i64 %value to i1\n");
+                } else if ty == TypeStore::FLOAT64 {
+                    conversion.push_str("  %v = bitcast i64 %value to double\n");
                 } else {
                     conversion.push_str("  %v = add i64 %value, 0\n");
                 }

@@ -15,6 +15,7 @@ bundled! {
     "errors" => ["errors.ore"],
     "io" => ["io.ore"],
     "maps" => ["maps.ore"],
+    "math" => ["math.ore"],
     "net" => ["net.ore"],
     "os" => ["os.ore", "file.ore"],
     "os/exec" => ["exec.ore"],

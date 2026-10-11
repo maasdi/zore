@@ -68,6 +68,16 @@ pub extern "C" fn zore_println_i64(value: i64) {
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn zore_println_f64(value: f64) {
+    write_line(super::float::default_text(value, false).as_bytes());
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn zore_println_f32(value: f32) {
+    write_line(super::float::default_text(f64::from(value), true).as_bytes());
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn zore_println_bool(value: bool) {
     write_line(if value { b"true" } else { b"false" });
 }

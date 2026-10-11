@@ -28,3 +28,30 @@ not rounded binary representations or a selected target float type.
 Assert source spans and malformed-exponent/separator diagnostics. Do not add
 target rounding, overflow, or unary-expression expectations until their
 rules are locked. At semantic milestones, verify primitive Copy behavior.
+
+## Float text and parsing (§37.1, §37.2)
+
+| Scenario | Expected result |
+| --- | --- |
+| `strconv.FormatFloat(3.14159, 'f', 2, 64)` | `3.14` |
+| `strconv.FormatFloat(1234.5678, 'e', 3, 64)` and `'E'` with -1 | `1.235e+03`, `1.2345678E+03` |
+| `strconv.FormatFloat(1234.5678, 'g', 3, 64)` and `strconv.FormatFloat(100.0, 'g', 5, 64)` | `1.23e+03`, `100` |
+| `strconv.FormatFloat(v, 'g', -1, 64)` | The same text as `println(v)` |
+| `strconv.FormatFloat` with format `'x'` or bit size 16 | Panics naming the bad argument |
+| `strconv.ParseFloat("2.5e3", 64)`, `"-2"`, `".5"`, `"7."` | `2500.0`, `-2.0`, `0.5`, `7.0` with `nil` |
+| `strconv.ParseFloat("NaN", 64)`, `"-Inf"`, `"infinity"` | Not-a-number, negative and positive infinity |
+| `strconv.ParseFloat("1_000", 64)`, `"0x1p-2"`, `""`, `"1e"` | `0` and `strconv.ParseFloat: parsing Q: invalid syntax` |
+| `strconv.ParseFloat("1e400", 64)`, `"1e39"` with bit size 32 | `+Inf` and `value out of range` |
+| `strconv.ParseFloat("0.1", 32)` | The `float32` nearest 0.1, as a `float64`: `0.10000000149011612` |
+| Every finite `float64` printed and parsed back | The same value |
+
+## `zore/math`
+
+| Scenario | Expected result |
+| --- | --- |
+| `math.Sqrt(2)`, `math.Pi` | `1.4142135623730951`, `3.141592653589793` |
+| `math.Floor(-2.5)`, `Ceil`, `Trunc`, `Round` | `-3.0`, `-2.0`, `-2.0`, `-3.0` |
+| `math.Sqrt(-1)`, `math.Log(-1)` | `NaN`, without a panic |
+| `math.IsInf(math.Inf(-1), -1)`, `math.IsInf(math.Inf(1), 0)`, `math.IsNaN(math.NaN())` | `true` |
+| `math.Max(1, math.NaN())` | `NaN` |
+| `math.Abs` of a negative zero | `0.0` |

@@ -364,6 +364,78 @@ pub unsafe extern "C" fn zore_native_strconv_unquote(
     unsafe { out.write(result) };
 }
 
+fn single(bit_size: i64) -> Option<bool> {
+    match bit_size {
+        32 => Some(true),
+        64 => Some(false),
+        _ => None,
+    }
+}
+
+/// # Safety
+/// `out` must be writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn zore_native_strconv_format_float(
+    out: *mut StringOut,
+    value: f64,
+    format: u32,
+    precision: i64,
+    bit_size: i64,
+) {
+    let text = match single(bit_size) {
+        None => {
+            super::panic::raise(b"strconv.FormatFloat: invalid bit size");
+            None
+        }
+        Some(single) => {
+            let text = u8::try_from(format)
+                .ok()
+                .and_then(|format| super::float::format(value, format, precision, single));
+            if text.is_none() {
+                super::panic::raise(b"strconv.FormatFloat: invalid format");
+            }
+            text
+        }
+    };
+    let built = text.map_or_else(StringOut::empty, |text| StringOut::built(text.as_bytes()));
+    // SAFETY: `out` is writable.
+    unsafe { out.write(built) };
+}
+
+/// The value's bits travel in the integer slot.
+///
+/// # Safety
+/// `out` must be writable and the string must satisfy the storage rule of `bytes`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn zore_native_strconv_parse_float(
+    out: *mut ValueError,
+    s: *const u8,
+    s_len: i64,
+    bit_size: i64,
+) {
+    // SAFETY: guaranteed by the caller.
+    let input = unsafe { text(s, s_len) };
+    let parsed = match single(bit_size) {
+        None => ValueError::failed_text(&syntax_error(
+            "ParseFloat",
+            input,
+            &format!("invalid bit size {bit_size}"),
+        )),
+        Some(single) => match super::float::parse(input, single) {
+            Ok(value) => ValueError::ok(value.to_bits() as i64),
+            Err(super::float::ParseFailure::Syntax) => {
+                ValueError::failed_text(&syntax_error("ParseFloat", input, "invalid syntax"))
+            }
+            Err(super::float::ParseFailure::Range(value)) => ValueError::failed_with(
+                value.to_bits() as i64,
+                &syntax_error("ParseFloat", input, "value out of range"),
+            ),
+        },
+    };
+    // SAFETY: guaranteed by the caller.
+    unsafe { out.write(parsed) };
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

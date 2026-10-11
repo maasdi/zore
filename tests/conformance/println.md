@@ -17,7 +17,15 @@ coverage. Outputs show exact stdout bytes, with `\n` meaning one line feed.
 | `println(true)` / `println(false)` | `true\n` / `false\n` |
 | `println('A')` and `println('😀')` | `A\n` and `😀\n`; the character, not its number |
 | `println(user.Name)` with a `string` field | Field contents |
-| `println(ratio)` with a `float64` value | Type-checks; native output awaits the float format decision |
+| `println(ratio)` with a `float64` value | The default float text form |
+| `println(3.0)`, `println(0.25)`, `println(100000.0)` | `3.0`, `0.25`, `100000.0` |
+| `println(1.0 / 3.0)` at run time | `0.3333333333333333`, the shortest text that reads back |
+| `println(1e20)`, `println(1e21)` | `100000000000000000000.0`, `1e+21` |
+| `println(0.0001)`, `println(0.00001)` | `0.0001`, `1e-05` |
+| A computed negative zero, and the constant `-0.0` | `-0.0`, and `0.0` |
+| `NaN`, positive and negative infinity | `NaN`, `+Inf`, `-Inf` |
+| `println(float32(0.1))` | `0.1`: the shortest text for the `float32` value |
+| The largest `float64` and the smallest positive `float64` | `1.7976931348623157e+308`, `5e-324` |
 | `println()` | Reject: exactly one argument |
 | `println("a", "b")` | Reject: exactly one argument |
 | `println(user)` with a struct value | Reject: type is not printable |
