@@ -373,6 +373,40 @@ fn http_framing_routing_and_shutdown_on_loopback() {
 }
 
 #[test]
+fn http_body_spans_preserve_chunk_boundaries_and_pipelined_input() {
+    let source = SERVER.replace("config.MaxBodyBytes = 32", "config.MaxBodyBytes = 1048576");
+    let server = ServerProcess::start(&source);
+    let body = "abcdefgh".repeat(2049);
+    let next = "GET /echo HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n";
+    let request = format!(
+        "POST /echo HTTP/1.1\r\nHost: x\r\nContent-Length: {}\r\n\r\n{body}{next}",
+        body.len()
+    );
+    let response = server.exchange(&request);
+    assert_eq!(response.matches("HTTP/1.1 200").count(), 2, "{response}");
+    assert!(response.contains(&format!("\r\n{body}\r\n0\r\n\r\n")));
+    let first = &body[..4097];
+    let second = &body[4097..];
+    let request = format!(
+        "POST /echo HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n{:x}\r\n{first}\r\n{:x};name=value\r\n{second}\r\n0\r\n\r\n{next}",
+        first.len(),
+        second.len()
+    );
+    let response = server.exchange(&request);
+    assert_eq!(response.matches("HTTP/1.1 200").count(), 2, "{response}");
+    assert!(response.contains(&format!("\r\n{body}\r\n0\r\n\r\n")));
+    let mut truncated = server.connect();
+    write!(
+        truncated,
+        "POST /echo HTTP/1.1\r\nHost: x\r\nContent-Length: 20000\r\n\r\n{body}"
+    )
+    .unwrap();
+    truncated.shutdown(Shutdown::Write).unwrap();
+    status(&read_closed(&mut truncated), 400);
+    server.stop("");
+}
+
+#[test]
 fn http_url_headers_dates_and_ambiguous_routes() {
     prints(
         r#"package main
@@ -773,7 +807,7 @@ func main() {{
 fn http_first_byte_preserves_initial_deadline_and_starts_subsequent_budget() {
     let mut source = http_sources();
     for (start, end) in [
-        ("func (r mut Request) nextByte", "func (r mut Request) line"),
+        ("func (r Request) readReady", "func (r mut Request) line"),
         (
             "func (r mut Request) beginHeaders",
             "func (r mut Request) parseHeaders",

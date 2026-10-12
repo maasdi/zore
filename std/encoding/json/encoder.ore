@@ -94,16 +94,41 @@ func (e mut Encoder) EndObject() { e.end(KindObject, 125) }
 func (e mut Encoder) BeginArray() { e.begin(KindArray, 91) }
 func (e mut Encoder) EndArray() { e.end(KindArray, 93) }
 
-func (e mut Encoder) quoted(text string) {
+func (e mut Encoder) escapeByte(value byte) {
     let digits = "0123456789abcdef"
-    e.data.push(34)
-    for r in text {
-        if r == '"' { e.append("\\\"") } else if r == '\\' { e.append("\\\\") } else if r == '<' { e.append("\\u003c") } else if r == '>' { e.append("\\u003e") } else if r == '&' { e.append("\\u0026") } else if r == '\u2028' { e.append("\\u2028") } else if r == '\u2029' { e.append("\\u2029") } else if int(r) < 32 {
-            e.append("\\u00")
-            e.data.push(digits[int(r) / 16])
-            e.data.push(digits[int(r) % 16])
-        } else { e.append(string(r)) }
+    if value == 34 {
+        e.append("\\\"")
+    } else if value == 92 {
+        e.append("\\\\")
+    } else if value == 60 {
+        e.append("\\u003c")
+    } else if value == 62 {
+        e.append("\\u003e")
+    } else if value == 38 {
+        e.append("\\u0026")
+    } else {
+        e.append("\\u00")
+        e.data.push(digits[int(value) / 16])
+        e.data.push(digits[int(value) % 16])
     }
+}
+
+func (e mut Encoder) quoted(text string) {
+    e.data.push(34)
+    var start = 0
+    for var i = 0; i < text.len(); i += 1 {
+        let value = text[i]
+        let escaped = value < 32 || value == 34 || value == 92 || value == 60 || value == 62 || value == 38
+        let separator = value == 226 && i + 2 < text.len() && text[i + 1] == 128 && (text[i + 2] == 168 || text[i + 2] == 169)
+        if !escaped && !separator { continue }
+        e.append(text[start:i])
+        if separator {
+            if text[i + 2] == 168 { e.append("\\u2028") } else { e.append("\\u2029") }
+            i += 2
+        } else { e.escapeByte(value) }
+        start = i + 1
+    }
+    e.append(text[start:])
     e.data.push(34)
 }
 

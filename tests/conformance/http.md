@@ -13,6 +13,7 @@ The contracts are locked in specification §37.6. Executable tests are in
 | Routing | Literal precedence, decoded path params, crossing ambiguity rejection, HEAD fallback, OPTIONS/Allow, 404/405 |
 | Framing | CL and chunked echo, valid quoted extensions, repeated CL, TE+CL, unsupported TE, signed/overflowing lengths, missing/repeated Host, invalid fields, version rejection, header overflow, early EOF, trailers rejected |
 | Body/response | Known and streamed limits, sticky body error before commitment, Expect once, empty Read, Read after final commitment, 204/205/304/HEAD, length overrun/underrun, generic handler error, unread-body close |
+| Buffered body spans | Multi-buffer CL and chunked bodies, chunk boundaries across refill, retained pipelined input, partial body EOF |
 | Lifecycle | Pipelined responses, silent initial deadline, body and idle timeouts, capacity rejection/release, handler panic cleanup, poisoned factory registry, idle shutdown and repeated Shutdown |
 | REST model | JSON string escapes and surrogate pairs, invalid/non-JSON escapes, duplicate/unknown fields, empty names, trailing input |
 

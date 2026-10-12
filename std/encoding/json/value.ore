@@ -17,12 +17,20 @@ type valueNode struct {
 type Value struct {
     nodes Array<valueNode>
     root int
+    members map[string]int
+    free Array<int>
 }
 
+func emptyNode(kind Kind, text string, boolean bool) valueNode {
+    return valueNode{kind: kind, text: text, boolean: boolean, first: -1, last: -1, next: -1, key: ""}
+}
+func emptyValue() Value {
+    return Value{nodes: Array<valueNode>{}, root: 0, members: map[string]int{}, free: Array<int>{}}
+}
 func scalar(kind Kind, text string, boolean bool) Value {
-    var nodes = Array<valueNode>{}
-    nodes.push(valueNode{kind: kind, text: text, boolean: boolean, first: -1, last: -1, next: -1, key: ""})
-    return Value{nodes: nodes, root: 0}
+    var result = emptyValue()
+    result.nodes.push(emptyNode(kind, text, boolean))
+    return result
 }
 func NullValue() Value { return scalar(KindNull, "", false) }
 func BoolValue(value bool) Value { return scalar(KindBool, "", value) }
@@ -66,19 +74,20 @@ func (v Value) Len() int {
     for child >= 0 { count += 1; child = v.nodes[child].next }
     return count
 }
+func memberKey(parent int, key string) string { return strconv.Itoa(parent) + ":" + key }
+func (v Value) member(parent int, key string) int {
+    let found, index = v.members[memberKey(parent, key)]
+    if found { return index }
+    return -1
+}
 func (v Value) child(key string) int {
     if v.Kind() != KindObject { return -1 }
-    var child = v.nodes[v.root].first
-    for child >= 0 {
-        if v.nodes[child].key == key { return child }
-        child = v.nodes[child].next
-    }
-    return -1
+    return v.member(v.root, key)
 }
 func (v Value) Has(key string) bool { return v.child(key) >= 0 }
 func (v Value) subtree(root int) Value {
-    var result = clone(v)
-    result.root = root
+    var result = emptyValue()
+    result.importTree(-1, "", v, root)
     return result
 }
 func (v Value) Get(key string) Value {
@@ -104,33 +113,68 @@ func (v Value) Keys() Array<string> {
     for child >= 0 { keys.push(v.nodes[child].key); child = v.nodes[child].next }
     return keys
 }
-func (v mut Value) attach(key string, item own Value) {
-    let offset = v.nodes.len()
-    var root = offset
-    if item.nodes.len() == 0 {
-        v.nodes.push(valueNode{kind: KindNull, text: "", boolean: false, first: -1, last: -1, next: -1, key: key})
-    } else {
-        root += item.root
-        for node in item.nodes {
-            var copy = node
-            if copy.first >= 0 { copy.first += offset }
-            if copy.last >= 0 { copy.last += offset }
-            if copy.next >= 0 { copy.next += offset }
-            v.nodes.push(copy)
+func (v mut Value) clearChildren(root int) {
+    var pending = Array<int>{root}
+    for pending.len() > 0 {
+        let _, index = pending.pop()
+        let node = v.nodes[index]
+        var child = node.first
+        for child >= 0 {
+            if node.kind == KindObject { let _, _ = v.members.remove(memberKey(index, v.nodes[child].key)) }
+            pending.push(child)
+            child = v.nodes[child].next
+        }
+        if index != root {
+            v.nodes[index] = emptyNode(KindNull, "", false)
+            v.free.push(index)
         }
     }
-    v.nodes[root].key = key
-    v.nodes[root].next = -1
-    let existing = v.child(key)
-    if v.Kind() == KindObject && existing >= 0 {
-        let next = v.nodes[existing].next
-        v.nodes[existing] = v.nodes[root]
-        v.nodes[existing].next = next
-        return
+}
+func (v mut Value) insert(parent int, key string, node valueNode) int {
+    var copy = emptyNode(node.kind, node.text, node.boolean)
+    copy.key = key
+    if parent >= 0 && v.nodes[parent].kind == KindObject {
+        let existing = v.member(parent, key)
+        if existing >= 0 {
+            copy.next = v.nodes[existing].next
+            v.clearChildren(existing)
+            v.nodes[existing] = copy
+            return existing
+        }
     }
-    let last = v.nodes[v.root].last
-    if last >= 0 { v.nodes[last].next = root } else { v.nodes[v.root].first = root }
-    v.nodes[v.root].last = root
+    var index = v.nodes.len()
+    if v.free.len() > 0 {
+        let _, available = v.free.pop()
+        index = available
+        v.nodes[index] = copy
+    } else { v.nodes.push(copy) }
+    if parent < 0 { v.root = index; return index }
+    let last = v.nodes[parent].last
+    if last >= 0 { v.nodes[last].next = index } else { v.nodes[parent].first = index }
+    v.nodes[parent].last = index
+    if v.nodes[parent].kind == KindObject { v.members[memberKey(parent, key)] = index }
+    return index
+}
+func (v mut Value) importTree(parent int, key string, item Value, root int) {
+    if item.nodes.len() == 0 { let _ = v.insert(parent, key, emptyNode(KindNull, "", false)); return }
+    let target = v.insert(parent, key, item.nodes[root])
+    var sources = Array<int>{root}
+    var targets = Array<int>{target}
+    for sources.len() > 0 {
+        let _, source = sources.pop()
+        let _, destination = targets.pop()
+        var child = item.nodes[source].first
+        for child >= 0 {
+            let node = item.nodes[child]
+            let next = v.insert(destination, node.key, node)
+            if node.first >= 0 { sources.push(child); targets.push(next) }
+            child = node.next
+        }
+    }
+}
+func (v mut Value) attach(key string, item own Value) {
+    let root = v.root
+    v.importTree(root, key, item, item.root)
 }
 func (v mut Value) Push(item own Value) {
     if v.Kind() == KindArray { v.attach("", item) }
@@ -140,39 +184,41 @@ func (v mut Value) Set(key string, item own Value) {
 }
 
 func (d mut Decoder) Value() (Value, error) {
-    var containers = Array<Value>{}
-    var keys = Array<string>{}
+    var value = emptyValue()
+    var containers = Array<int>{}
+    var parent = -1
+    var key = ""
     for {
         let kind = d.Peek()?
-        var item = NullValue()
-        if kind == KindArray { d.BeginArray()?; item = NewArray() } else if kind == KindObject { d.BeginObject()?; item = NewObject() } else if kind == KindNull { d.Null()? } else if kind == KindBool { item = BoolValue(d.Bool()?) } else if kind == KindString { item = StringValue(d.String()?) } else { item = scalar(KindNumber, d.number()?, false) }
+        var node = emptyNode(kind, "", false)
+        if kind == KindArray {
+            d.BeginArray()?
+        } else if kind == KindObject {
+            d.BeginObject()?
+        } else if kind == KindNull {
+            d.Null()?
+        } else if kind == KindBool {
+            node.boolean = d.Bool()?
+        } else if kind == KindString {
+            node.text = d.String()?
+        } else {
+            node.text = d.number()?
+        }
+        let index = value.insert(parent, key, node)
         if kind == KindArray || kind == KindObject {
-            containers.push(item)
-            if d.More() {
-                var key = ""
-                if kind == KindObject { key = d.Key()? }
-                keys.push(key)
-                continue
-            }
-            if kind == KindObject { d.EndObject()? } else { d.EndArray()? }
-            let _, complete = containers.pop()
-            item = complete
+            containers.push(index)
         }
         for {
-            if containers.len() == 0 { return item, nil }
-            let top = containers.len() - 1
-            let _, key = keys.pop()
-            let parentKind = containers[top].Kind()
-            if parentKind == KindObject { containers[top].Set(key, item) } else { containers[top].Push(item) }
+            if containers.len() == 0 { return value, nil }
+            parent = containers[containers.len() - 1]
+            let parentKind = value.nodes[parent].kind
             if d.More() {
-                var nextKey = ""
-                if parentKind == KindObject { nextKey = d.Key()? }
-                keys.push(nextKey)
+                key = ""
+                if parentKind == KindObject { key = d.Key()? }
                 break
             }
             if parentKind == KindObject { d.EndObject()? } else { d.EndArray()? }
-            let _, complete = containers.pop()
-            item = complete
+            let _, _ = containers.pop()
         }
     }
 }

@@ -1180,6 +1180,18 @@ fn json_fresh_interface_values_require_a_concrete_decoder() {
             "main.ore",
             r#"package main
 import "std/encoding/json"
+type Codec struct {}
+func (c mut Codec) DecodeJSON(d mut json.Decoder) error { return d.Null() }
+func main() { var values = [json.Unmarshaler; 1]{Codec{}}; let err = json.Unmarshal(Array<byte>{91,93}[:], values); _ = err }
+"#,
+        )],
+        "a fresh codec interface needs a concrete type or custom decoder",
+    );
+    rejects(
+        &[(
+            "main.ore",
+            r#"package main
+import "std/encoding/json"
 func main() { var values = Array<json.Unmarshaler>{}; let err = json.Unmarshal(Array<byte>{91,93}[:], values); _ = err }
 "#,
         )],

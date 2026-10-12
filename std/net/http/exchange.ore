@@ -129,40 +129,43 @@ func writeBytes(conn []net.Conn, server Server, data []byte, deadline int, inter
     return position, nil
 }
 
-func (r mut Request) nextByte() (byte, error) {
+func (r Request) readReady() error {
     if !r.waiting {
         let err = r.ctx.Err()
-        if err != nil { return 0, err }
+        if err != nil { return err }
     }
-    if r.server.canceled() || (r.waiting && r.server.draining()) { return 0, error("http: server draining") }
-    if time.Now() >= r.deadline { return 0, error("http: read timed out") }
-    if r.position < r.buffer.len() {
-        let value = r.buffer[r.position]
-        r.position += 1
-        return value, nil
-    }
+    if r.server.canceled() || (r.waiting && r.server.draining()) { return error("http: server draining") }
+    if time.Now() >= r.deadline { return error("http: read timed out") }
+    return nil
+}
+
+func (r mut Request) fill() error {
+    r.readReady()?
+    if r.position < r.buffer.len() { return nil }
     var data = Array<byte>{}
     for var i = 0; i < 4096; i += 1 { data.push(0) }
     for {
-        if !r.waiting {
-            let err = r.ctx.Err()
-            if err != nil { return 0, err }
-        }
-        if r.server.canceled() || (r.waiting && r.server.draining()) { return 0, error("http: server draining") }
-        if time.Now() >= r.deadline { return 0, error("http: read timed out") }
+        r.readReady()?
         r.conn[0].SetReadDeadline(pollDeadline(r.deadline, r.config.AcceptPollInterval))?
         let n, err = r.conn[0].Read(data[:])
         _ = err
         if n > 0 {
             r.buffer = Array<byte>{}
             for var i = 0; i < n; i += 1 { r.buffer.push(data[i]) }
-            r.position = 1
-            return data[0], nil
+            r.position = 0
+            return nil
         }
         if err == error("net.Read: timed out") { continue }
-        if err != nil { return 0, err }
-        return 0, error("http: read made no progress")
+        if err != nil { return err }
+        return error("http: read made no progress")
     }
+}
+
+func (r mut Request) nextByte() (byte, error) {
+    r.fill()?
+    let value = r.buffer[r.position]
+    r.position += 1
+    return value, nil
 }
 
 func (r mut Request) line() (string, error) {
@@ -301,12 +304,17 @@ func (r mut Request) Read(buf mut []byte) (int, error) {
     if r.chunked {
         if count > r.chunkRemaining { count = r.chunkRemaining }
     } else if count > r.remaining { count = r.remaining }
-    for var i = 0; i < count; i += 1 {
-        let c, err = r.nextByte()
-        if err != nil { return i, r.fail(err) }
-        buf[i] = c
-        r.total += 1
-        if r.chunked { r.chunkRemaining -= 1 } else { r.remaining -= 1 }
+    var copied = 0
+    for copied < count {
+        let err = r.fill()
+        if err != nil { return copied, r.fail(err) }
+        var available = r.buffer.len() - r.position
+        if available > count - copied { available = count - copied }
+        for var i = 0; i < available; i += 1 { buf[copied + i] = r.buffer[r.position + i] }
+        r.position += available
+        copied += available
+        r.total += available
+        if r.chunked { r.chunkRemaining -= available } else { r.remaining -= available }
     }
     if !r.chunked && r.remaining == 0 { r.done = true }
     return count, nil

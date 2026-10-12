@@ -1,5 +1,135 @@
 use super::*;
 
+fn tree_sources() -> String {
+    let mut source = String::from(
+        "package main\nimport \"std/math\"\nimport \"std/strconv\"\nimport \"std/strings\"\nimport \"std/unicode/utf8\"\n",
+    );
+    for file in [
+        include_str!("../../std/encoding/json/encoder.ore"),
+        include_str!("../../std/encoding/json/decoder.ore"),
+        include_str!("../../std/encoding/json/value.ore"),
+    ] {
+        for line in file.lines() {
+            if !line.starts_with("package ") && !line.starts_with("import ") {
+                source.push_str(line);
+                source.push('\n');
+            }
+        }
+    }
+    source
+}
+
+#[test]
+fn json_value_edits_reuse_storage_and_clone_only_reachable_nodes() {
+    let source = format!(
+        r#"{}
+func require(ok bool) {{ if !ok {{ panic("JSON arena assertion") }} }}
+func exercise() error {{
+    var object = NewObject()
+    object.Set("a", IntValue(1))
+    for var i = 0; i < 128; i += 1 {{
+        let scalar = object.Get("a")
+        require(scalar.nodes.len() == 1)
+        object.Set("b", scalar)
+        require(object.nodes.len() == 3 && object.Len() == 2)
+    }}
+    let input = strings.Bytes("{{\"a\":{{\"x\":1}},\"z\":2,\"a\":[3],\"a\":{{\"x\":4,\"k\":{{\"x\":5}}}},\"z\":{{\"x\":6}}}}")
+    var tree = Parse(input[:])?
+    let keys = tree.Keys()
+    require(keys.len() == 2 && keys[0] == "a" && keys[1] == "z")
+    var branch = tree.Get("a")
+    require(branch.nodes.len() == 4 && branch.members.len() == 3)
+    require(branch.Get("k").Get("x").Int()? == 5 && tree.Get("z").Get("x").Int()? == 6)
+    branch.Set("x", IntValue(99))
+    require(tree.Get("a").Get("x").Int()? == 4)
+    let snapshot = clone(tree)
+    let capacity = tree.nodes.len()
+    for var i = 0; i < 128; i += 1 {{
+        tree.Set("a", StringValue("replacement"))
+        tree.Set("a", snapshot.Get("a"))
+        require(tree.nodes.len() == capacity && tree.members.len() == snapshot.members.len())
+        require(tree.Get("a").Get("k").Get("x").Int()? == 5)
+    }}
+    var text = "{{"
+    for var i = 0; i < 4000; i += 1 {{
+        if i > 0 {{ text += "," }}
+        text += "\"key" + strconv.Itoa(i) + "\":" + strconv.Itoa(i)
+    }}
+    text += "}}"
+    let bytes = strings.Bytes(text)
+    let wide = Parse(bytes[:])?
+    require(wide.nodes.len() == 4001 && wide.members.len() == 4000 && wide.free.len() == 0)
+    require(wide.Get("key3999").Int()? == 3999)
+    println("ok")
+    return nil
+}}
+func main() {{ let err = exercise(); if err != nil {{ panic("JSON arena error") }} }}
+"#,
+        tree_sources()
+    );
+    prints(&source, "ok\n");
+}
+
+#[test]
+fn json_fixed_arrays_decode_fresh_elements_and_clean_up_partial_values() {
+    prints(
+        r#"package main
+import "std/encoding/json"
+import "std/strings"
+type Row struct { N int; Labels Array<string>; Email json.Optional<int>; hidden int }
+func require(ok bool) { if !ok { panic("JSON fresh array assertion") } }
+func main() {
+    var fixed = [Row; 1]{Row{N: 42, Labels: Array<string>{"old"}, Email: json.Some(7), hidden: 99}}
+    var dynamic = Array<Row>{clone(fixed[0])}
+    let data = strings.Bytes("[{}]")
+    require(json.Unmarshal(data[:], fixed) == nil && json.Unmarshal(data[:], dynamic) == nil)
+    require(fixed[0].N == 0 && dynamic[0].N == 0 && fixed[0].hidden == 0 && fixed[0].Labels.len() == 0 && !fixed[0].Email.Set)
+    let partial = strings.Bytes("[{\"N\":1,\"Labels\":[\"partial\",false]}]")
+    require(json.Unmarshal(partial[:], fixed) != nil && fixed[0].N == 0 && fixed[0].Labels.len() == 0)
+    let valid = strings.Bytes("[{\"N\":2,\"Labels\":[\"new\"]}]")
+    require(json.Unmarshal(valid[:], fixed) == nil && fixed[0].N == 2 && fixed[0].Labels[0] == "new")
+    var zero = [int; 0]{}
+    require(json.Unmarshal(strings.Bytes("[]")[:], zero) == nil && json.Unmarshal(strings.Bytes("[1]")[:], zero) != nil)
+    println("ok")
+}
+"#,
+        "ok\n",
+    );
+}
+
+#[test]
+fn json_string_spans_preserve_unicode_and_escape_every_control() {
+    prints(
+        r#"package main
+import "std/encoding/json"
+import "std/strings"
+func require(ok bool) { if !ok { panic("JSON string span assertion") } }
+func exercise() error {
+    var original = "plain é 😀 \u2028\u2029<>&\\\"tail"
+    for var i = 0; i < 32; i += 1 { original += string(rune(i)) }
+    var encoder = json.NewEncoder()
+    encoder.BeginObject()
+    encoder.Field(original)
+    encoder.String(original)
+    encoder.EndObject()
+    let output = encoder.Finish()?
+    let text = strings.FromBytes(output[:])?
+    require(strings.Contains(text, "\\u2028\\u2029\\u003c\\u003e\\u0026"))
+    require(strings.Contains(text, "\\u0000") && strings.Contains(text, "\\u001f"))
+    var decoder = json.NewDecoder(output[:])
+    decoder.BeginObject()?
+    require(decoder.Key()? == original && decoder.String()? == original)
+    decoder.EndObject()?
+    decoder.Finish()?
+    println("ok")
+    return nil
+}
+func main() { let err = exercise(); if err != nil { panic("JSON string span error") } }
+"#,
+        "ok\n",
+    );
+}
+
 #[test]
 fn json_tokens_validate_rfc_syntax_ranges_and_sticky_errors() {
     prints(
