@@ -32,10 +32,12 @@ async func serveAndReport(server Server, listener own net.Listener, outcome chan
     if err != nil && canceledBeforeStart { err = nil }
     outcome.send(err)
 }
-func ListenAndServe(ctx context.Context, address string, router Router, config Config) error {
+func ListenAndServeContext(ctx context.Context, address string, router Router, config Config) error {
     let server = NewServer(router, config)?
     if ctx.Err() != nil { return nil }
-    let listener = net.Listen("tcp", address)?
+    var endpoint = address
+    if strings.HasPrefix(endpoint, ":") { endpoint = "0.0.0.0" + endpoint }
+    let listener = net.Listen("tcp", endpoint)?
     let outcome = channel<error>(1)
     let serving = go serveAndReport(server, listener, outcome)
     select {
@@ -50,10 +52,13 @@ func ListenAndServe(ctx context.Context, address string, router Router, config C
     serving.wait()
     return result
 }
-func Run(address string, router Router, config Config) error {
+func ListenAndServe(address string, router Router) error {
+    return ListenAndServeWithConfig(address, router, DefaultConfig())
+}
+func ListenAndServeWithConfig(address string, router Router, config Config) error {
     let selected = [signal.Signal; 2]{signal.Interrupt, signal.Terminate}
     let ctx, stop = signal.NotifyContext(context.Background(), selected[:])?
-    let err = ListenAndServe(ctx, address, router, config)
+    let err = ListenAndServeContext(ctx, address, router, config)
     stop()
     return err
 }

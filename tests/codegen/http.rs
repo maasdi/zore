@@ -204,18 +204,18 @@ func main() {
     if routeErr != nil { panic("route") }
     let listener, listenErr = net.Listen("tcp", "127.0.0.1:0")
     if listenErr != nil { panic("listen") }
-    let err2 = http.ListenAndServe(context.Background(), listener.Addr(), router, http.DefaultConfig())
+    let err2 = http.ListenAndServeContext(context.Background(), listener.Addr(), router, http.DefaultConfig())
     println(err2 != nil)
     let ctx, cancel = context.WithCancel(context.Background())
     cancel()
-    println(http.ListenAndServe(ctx, listener.Addr(), router, http.DefaultConfig()) == nil)
+    println(http.ListenAndServeContext(ctx, listener.Addr(), router, http.DefaultConfig()) == nil)
     var config = http.DefaultConfig()
     config.ShutdownTimeout = -1
-    let err3 = http.ListenAndServe(context.Background(), "127.0.0.1:0", router, config)
+    let err3 = http.ListenAndServeContext(context.Background(), "127.0.0.1:0", router, config)
     println(err3 != nil)
     for var i = 0; i < 20; i += 1 {
         let soon, stopSoon = context.WithTimeout(context.Background(), 1)
-        let canceled = http.ListenAndServe(soon, "127.0.0.1:0", router, http.DefaultConfig())
+        let canceled = http.ListenAndServeContext(soon, "127.0.0.1:0", router, http.DefaultConfig())
         stopSoon()
         if canceled != nil { panic("cancellation during startup") }
     }
@@ -227,10 +227,11 @@ func main() {
 
 #[cfg(unix)]
 #[test]
-fn http_run_bootstraps_signals_and_drains_active_requests() {
+fn http_listen_and_serve_bootstraps_signals_and_drains_active_requests() {
     for selected in [2, 15] {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap().to_string();
+        let endpoint = format!(":{}", listener.local_addr().unwrap().port());
         drop(listener);
         let source = r#"package main
 import "std/net/http"
@@ -252,10 +253,19 @@ func run() error {
     config.AcceptPollInterval = 10 * time.Millisecond
     config.ShutdownTimeout = 5 * time.Second
     println("ADDRESS")
-    return http.Run("ADDRESS", router, config)
+    return SERVE
 }
 func main() { let err = run(); if err != nil { panic("server failure") } }
 "#
+        .replace(
+            "SERVE",
+            if selected == 2 {
+                "http.ListenAndServe(\"ENDPOINT\", router)"
+            } else {
+                "http.ListenAndServeWithConfig(\"ENDPOINT\", router, config)"
+            },
+        )
+        .replace("ENDPOINT", &endpoint)
         .replace("ADDRESS", &address);
         let mut server = ServerProcess::start(&source);
         let mut stream = server.connect();
@@ -269,13 +279,17 @@ func main() { let err = run(); if err != nil { panic("server failure") } }
         assert_eq!(entered, "handling\n");
         send_signal(&server.child, selected);
         let deadline = std::time::Instant::now() + Duration::from_secs(4);
+        let address = server.address.parse().unwrap();
         loop {
-            match TcpStream::connect(&server.address) {
+            match TcpStream::connect_timeout(&address, Duration::from_millis(100)) {
                 Ok(probe) => drop(probe),
-                Err(error) => {
-                    assert_eq!(error.kind(), std::io::ErrorKind::ConnectionRefused);
-                    break;
-                }
+                Err(error) if error.kind() == std::io::ErrorKind::ConnectionRefused => break,
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        std::io::ErrorKind::ConnectionReset | std::io::ErrorKind::TimedOut
+                    ) => {}
+                Err(error) => panic!("listener probe failed: {error}"),
             }
             assert!(
                 std::time::Instant::now() < deadline,
@@ -294,7 +308,7 @@ func main() { let err = run(); if err != nil { panic("server failure") } }
 
 #[cfg(unix)]
 #[test]
-fn http_run_restores_signals_after_startup_failure() {
+fn http_listen_and_serve_restores_signals_after_startup_failure() {
     use std::os::unix::process::ExitStatusExt;
 
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -306,7 +320,13 @@ func run() error {
     var routes = http.NewRouterBuilder()
     routes.Handle("GET /", h)
     let router = routes.Build()?
-    return http.Run("ADDRESS", router, http.DefaultConfig())
+    var invalid = http.DefaultConfig()
+    invalid.ShutdownTimeout = -1
+    let configErr = http.ListenAndServeWithConfig("ADDRESS", router, invalid)
+    if configErr == nil { panic("missing configuration error") }
+    let portErr = http.ListenAndServe(":65536", router)
+    if portErr == nil { panic("missing port error") }
+    return http.ListenAndServe("ADDRESS", router)
 }
 func main() {
     let err = run()

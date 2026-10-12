@@ -36,7 +36,7 @@ func run() error {
     routes.Handle("GET /health", health)
     let router = routes.Build()?
 
-    return http.Run("127.0.0.1:8080", router, http.DefaultConfig())
+    return http.ListenAndServe("127.0.0.1:8080", router)
 }
 
 func main() {
@@ -46,8 +46,8 @@ func main() {
 ```
 
 The single final error boundary reports genuine failures. Normal signal shutdown
-returns nil after successful draining. Run registers both signals and waits for
-subscription cleanup before returning, including when startup fails.
+returns nil after successful draining. ListenAndServe registers both signals
+and waits for subscription cleanup before returning, including when startup fails.
 
 ## Function registration
 
@@ -107,7 +107,7 @@ Keep low-level I/O errors observable and preserve sticky framing failures.
 Conveniences should remove repeated setup, not hide failed reads or silently
 turn malformed application responses into success.
 
-ListenAndServe owns listener creation, startup, and context-driven draining.
+ListenAndServeContext owns listener creation, startup, and context-driven draining.
 Document a positive graceful-shutdown budget in configuration, defaulting to ten
 seconds. It returns actual startup, listener, or drain-expiry errors. A listener
 failure must wake the caller even when its context has not been canceled.
@@ -116,10 +116,13 @@ using the already canceled serving context would abort draining immediately.
 On drain expiry, request cooperative cancellation and preserve the existing
 limits on interrupting application code.
 
-Run(address, router, config) is the ordinary application entry point. It wraps
-ListenAndServe with automatic SIGINT/SIGTERM registration and synchronous
-subscription cleanup. NewServer and ListenAndServe still provide explicit
-lifecycle control for applications with another cancellation source.
+ListenAndServe(address, router) is the ordinary application entry point with
+default configuration. ListenAndServeWithConfig(address, router, config)
+accepts custom limits and deadlines. Both wrap ListenAndServeContext with
+automatic SIGINT/SIGTERM registration and synchronous subscription cleanup.
+NewServer and ListenAndServeContext provide explicit lifecycle control for
+applications with another cancellation source. These are ordinary fixed-arity
+functions; no optional-parameter syntax or compiler exception is introduced.
 
 ## OS signals
 

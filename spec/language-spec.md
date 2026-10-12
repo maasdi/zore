@@ -6578,8 +6578,9 @@ func DefaultConfig() Config
 func NewServer(router Router, config Config) (Server, error)
 func (s Server) Serve(listener own net.Listener) error
 func (s Server) Shutdown(ctx context.Context) error
-func ListenAndServe(ctx context.Context, address string, router Router, config Config) error
-func Run(address string, router Router, config Config) error
+func ListenAndServe(address string, router Router) error
+func ListenAndServeWithConfig(address string, router Router, config Config) error
+func ListenAndServeContext(ctx context.Context, address string, router Router, config Config) error
 ```
 
 `CallHandler` calls a plain function or borrowing closure immediately. It neither
@@ -6622,7 +6623,7 @@ exact byte length, and writing through the existing response rules. Standalone
 JSON<T any>(w mut ResponseWriter, status int, value T) error and JSONWith with a
 final json.Naming argument finish serialization before commitment; JSON uses
 AsWritten. Write failures remain observable, and bodyless/HEAD rules still apply.
-ListenAndServe creates the listener and server and waits for either listener
+ListenAndServeContext creates the listener and server and waits for either listener
 completion or context cancellation. Cancellation initiates graceful draining
 under a fresh context bounded by Config.ShutdownTimeout (default ten seconds,
 zero selects the default, negative/overflowing values are errors). Normal drain
@@ -6630,19 +6631,25 @@ returns nil; startup/listener/drain errors propagate. It does not wait forever
 for arbitrary computation after cancellation expires. Main must stay alive for
 application tasks requiring cleanup, as with explicit Shutdown.
 
-Run is the application entry point with automatic OS-signal shutdown. It
+ListenAndServe is the application entry point with automatic OS-signal shutdown
+and DefaultConfig. ListenAndServeWithConfig accepts explicit configuration. Each
 synchronously subscribes to SIGINT and SIGTERM through std/os/signal, then uses
-ListenAndServe with the derived context. Either signal initiates the same
-bounded graceful drain. Run waits for subscription cleanup on normal return
+ListenAndServeContext with the derived context. Either signal initiates the same
+bounded graceful drain. Both wait for subscription cleanup on normal return
 and every serving/startup error before returning that result. Signal
 registration errors propagate without opening a listener. Supported hosts and
 process-disposition restoration follow the locked signal contract below.
 Applications need no signal imports, signal list, context, or stop function.
-NewServer and context-based ListenAndServe retain their explicit lifecycle.
-No new language or compiler behavior is required; Run composes the existing
+NewServer and ListenAndServeContext retain their explicit lifecycle and do not
+register process signals. There is no new optional-parameter syntax or compiler
+behavior; the two entry points compose the existing
 owned listener, Copy router/context handles, and synchronous signal cleanup.
 Conformance exercises both real signals, active-request drain, and cleanup
 after listener startup failure.
+Addresses are strings in host:port form. A numeric port-only address such as
+":8080" binds the IPv4 wildcard (0.0.0.0); an explicit host retains its usual
+net.Listen meaning. Normalization is shared by all three entry points, and
+invalid ports remain errors. There is no implicit integer-to-address conversion.
 
 ```ore
 func health(w mut http.ResponseWriter, r mut http.Request) error {
@@ -6651,7 +6658,7 @@ func health(w mut http.ResponseWriter, r mut http.Request) error {
 var routes = http.NewRouterBuilder()
 routes.Handle("GET /health", health)
 let router = routes.Build()?
-return http.Run("127.0.0.1:8080", router, http.DefaultConfig())
+return http.ListenAndServe(":8080", router)
 ```
 
 ##### Request and response
@@ -6854,7 +6861,7 @@ mode is part of this initial safety contract.
 | `WriteTimeout` | 30 seconds | Absolute budget from handler entry through final write |
 | `IdleTimeout` | 60 seconds | Wait for first byte of the next request |
 | `AcceptPollInterval` | 100 milliseconds | Bounded shutdown/cancellation observation |
-| `ShutdownTimeout` | 10 seconds | ListenAndServe graceful-drain budget after context cancellation |
+| `ShutdownTimeout` | 10 seconds | Graceful-drain budget for the ListenAndServe entry points |
 
 Durations are nanoseconds; the constructor checks range and deadline overflow.
 For the first request, record the acceptance time and set the read deadline
@@ -7331,7 +7338,7 @@ an opaque function value into a task.
 ```ore
 let signals = [signal.Signal; 2]{signal.Interrupt, signal.Terminate}
 let ctx, stop = signal.NotifyContext(context.Background(), signals[:])?
-let err = http.ListenAndServe(ctx, "127.0.0.1:8080", router, http.DefaultConfig())
+let err = http.ListenAndServeContext(ctx, "127.0.0.1:8080", router, http.DefaultConfig())
 stop()
 return err
 ```

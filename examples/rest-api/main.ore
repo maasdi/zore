@@ -63,7 +63,7 @@ func run() error {
     routes.Handle("POST /users", func(w mut http.ResponseWriter, r mut http.Request) error { return createUser(store, w, r) })
     let router = routes.Build()?
     println("Starting http://127.0.0.1:8080; Ctrl-C shuts down gracefully")
-    return http.Run("127.0.0.1:8080", router, http.DefaultConfig())
+    return http.ListenAndServe("127.0.0.1:8080", router)
 }
 func main() {
     let err = run()

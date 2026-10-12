@@ -18,16 +18,18 @@ captures, call-once callbacks, and views are rejected with source diagnostics.
 No general function type, generic, channel, or mutex restriction is relaxed.
 
 Text and JSON helpers preserve observable errors and HTTP framing rules.
-ListenAndServe consolidates construction, listener ownership, completion/error
+ListenAndServeContext consolidates construction, listener ownership, result
 reporting, and cancellation. Graceful draining uses a new context with a default
 ten-second timeout, so an already canceled serving context does not abort it.
 Drain expiry requests cooperative cancellation and returns instead of waiting
 indefinitely for arbitrary handler code.
-Run is the application bootstrap: it registers SIGINT/SIGTERM, calls
-ListenAndServe, and waits for subscription cleanup before returning either
-success or a serving/startup error. Applications using Run need no explicit
-signal or context setup. NewServer and ListenAndServe retain explicit lifecycle
-control for other shutdown sources.
+ListenAndServe(address, router) is the application bootstrap: it uses default
+configuration, registers SIGINT/SIGTERM, calls ListenAndServeContext, and waits
+for subscription cleanup before returning either success or a serving/startup
+error. ListenAndServeWithConfig accepts explicit configuration. Both need no
+application signal or context setup. NewServer and ListenAndServeContext retain
+explicit lifecycle control for other shutdown sources. Separate entry points
+preserve the language's fixed-arity calls without optional-parameter syntax.
 
 Signal notification uses platform sigaction bindings and lock-free generation
 counters. The OS callback allocates nothing, acquires no runtime locks, and
