@@ -35,6 +35,8 @@ mod panic;
 mod reactor;
 #[path = "scheduler.rs"]
 pub mod scheduler;
+#[path = "signal.rs"]
+mod signal;
 #[path = "slot.rs"]
 mod slot;
 #[path = "strconv.rs"]
@@ -54,6 +56,13 @@ mod waiter;
 
 pub fn finish() {
     let tasks_running = task::running() > 0;
+    if signal::live_subscriptions() > 0
+        && !tasks_running
+        && std::env::var_os("ZORE_CHECK_LEAKS").is_some()
+    {
+        eprintln!("leak: signal subscriptions still alive at exit");
+        std::process::exit(70);
+    }
     let leaked = string::live_buffers();
     if leaked > 0 && !tasks_running && std::env::var_os("ZORE_CHECK_LEAKS").is_some() {
         eprintln!("leak: {leaked} text buffers still owned at exit");

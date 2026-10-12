@@ -11,6 +11,9 @@ The contracts are locked in specification §37.6. Executable tests are in
 | Dates | Unix epoch, leap day, 1601/9999 boundaries, out-of-range failure, separate wall clock |
 | Ownership | Two mutable facades sharing a socket slice, borrowed I/O and function adapters; rejection of clone, channel/Mutex/task escape and owned I/O conversion; compatible array and opaque handler loans retained |
 | Routing | Literal precedence, decoded path params, crossing ambiguity rejection, HEAD fallback, OPTIONS/Allow, 404/405 |
+| Function callbacks | Declared functions, inline Copy-handle captures, independent immutable snapshots, concurrent invocations; unsafe/opaque captures rejected |
+| Convenience/lifecycle | Sticky registration, Text/JSON framing, serialization failure before commitment, ListenAndServeContext startup failures, default/configured ListenAndServe signal bootstrap, active-request drain, and signal cleanup after startup failure |
+| OS signals | Real SIGINT/SIGTERM, overlapping subscriptions, parent cancellation, idempotent stop, restored default dispositions |
 | Framing | CL and chunked echo, valid quoted extensions, repeated CL, TE+CL, unsupported TE, signed/overflowing lengths, missing/repeated Host, invalid fields, version rejection, header overflow, early EOF, trailers rejected |
 | Body/response | Known and streamed limits, sticky body error before commitment, Expect once, empty Read, Read after final commitment, 204/205/304/HEAD, length overrun/underrun, generic handler error, unread-body close |
 | Buffered body spans | Multi-buffer CL and chunked bodies, chunk boundaries across refill, retained pipelined input, partial body EOF |

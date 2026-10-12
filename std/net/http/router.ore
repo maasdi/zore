@@ -24,13 +24,21 @@ type registry struct {
 type RouterBuilder struct {
     routes Array<route>
     live bool
+    failure error
 }
 type Router struct {
     state Mutex<registry>
     live bool
 }
 
-func NewRouterBuilder() RouterBuilder { return RouterBuilder{routes: Array<route>{}, live: true} }
+func NewRouterBuilder() RouterBuilder { return RouterBuilder{routes: Array<route>{}, live: true, failure: nil} }
+
+func (b mut RouterBuilder) Handle(pattern string, handler own func(mut ResponseWriter, mut Request) error)
+
+func (b mut RouterBuilder) register(pattern string, factory own HandlerFactory) {
+    if b.failure != nil { return }
+    b.failure = b.HandleFactory(pattern, factory)
+}
 
 func identifier(text string) bool {
     if text == "" { return false }
@@ -43,7 +51,7 @@ func identifier(text string) bool {
     return true
 }
 
-func (b mut RouterBuilder) Handle(pattern string, factory own HandlerFactory) error {
+func (b mut RouterBuilder) HandleFactory(pattern string, factory own HandlerFactory) error {
     if !b.live { return error("http.RouterBuilder: empty builder") }
     let method, path, found = strings.Cut(pattern, " ")
     if !found || !token(method) { return error("http: invalid route pattern") }
@@ -93,6 +101,7 @@ func relation(a []segment, b []segment) (bool, int) {
 func (b own RouterBuilder) Build() (Router, error) {
     let empty = Router{state: mutex(registry{routes: Array<route>{}}), live: false}
     if !b.live { return empty, error("http.RouterBuilder: empty builder") }
+    if b.failure != nil { return empty, b.failure }
     for var i = 0; i < b.routes.len(); i += 1 {
         for var j = 0; j < i; j += 1 {
             if b.routes[i].method != b.routes[j].method { continue }

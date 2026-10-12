@@ -2,6 +2,7 @@ mod closure_kind;
 mod format;
 mod generic;
 mod globals;
+mod http;
 mod interface;
 mod json;
 mod method_value;
@@ -129,7 +130,8 @@ pub fn check(
         init: None,
         implementations: std::mem::take(&mut checker.implementations),
     };
-    let diagnostics = globals::check(&mut package, &initializers);
+    let mut diagnostics = http::adapt(&mut package);
+    diagnostics.extend(globals::check(&mut package, &initializers));
     if !diagnostics.is_empty() {
         return (None, diagnostics);
     }

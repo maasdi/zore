@@ -30,6 +30,7 @@ const RUNTIME_SOURCES: &[(&str, &str)] = &[
         include_str!("../../../runtime/src/deadlock.rs"),
     ),
     ("slot.rs", include_str!("../../../runtime/src/slot.rs")),
+    ("signal.rs", include_str!("../../../runtime/src/signal.rs")),
     ("errors.rs", include_str!("../../../runtime/src/errors.rs")),
     ("exec.rs", include_str!("../../../runtime/src/exec.rs")),
     ("io.rs", include_str!("../../../runtime/src/io.rs")),

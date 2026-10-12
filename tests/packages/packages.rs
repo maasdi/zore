@@ -1209,3 +1209,38 @@ func main() { var values = map[string]Holder{}; let err = json.Unmarshal(Array<b
         "Holder[value].Codec: a fresh codec interface",
     );
 }
+
+#[test]
+fn http_direct_handlers_reject_unsafe_and_opaque_captures() {
+    for binding in [
+        "var count = 0\n    routes.Handle(\"GET /\", func(w mut http.ResponseWriter, r mut http.Request) error { count += 1; return nil })",
+        "let data = Array<int>{1}\n    let view = data[:]\n    routes.Handle(\"GET /\", func(w mut http.ResponseWriter, r mut http.Request) error { println(view.len()); return nil })",
+        "let data = Array<int>{1}\n    routes.Handle(\"GET /\", func(w mut http.ResponseWriter, r mut http.Request) error { println(data.len()); return nil })",
+    ] {
+        let source = format!(
+            "package main\nimport \"std/net/http\"\nfunc main() {{ var routes = http.NewRouterBuilder()\n{binding}\n}}\n"
+        );
+        rejects(&[("main.ore", &source)], "HTTP handler capture");
+    }
+    rejects(
+        &[(
+            "main.ore",
+            r#"package main
+import "std/net/http"
+func h(w mut http.ResponseWriter, r mut http.Request) error { return nil }
+func main() { let f = h; var routes = http.NewRouterBuilder(); routes.Handle("GET /", f) }
+"#,
+        )],
+        "HTTP registration needs a declared function name or inline function literal",
+    );
+    rejects(
+        &[(
+            "main.ore",
+            r#"package main
+import "std/net/http"
+func main() { var routes = http.NewRouterBuilder(); let f = routes.Handle }
+"#,
+        )],
+        "HTTP registration needs a declared function name or inline function literal",
+    );
+}
