@@ -229,12 +229,13 @@ func main() {
 #[test]
 fn http_listen_and_serve_bootstraps_signals_and_drains_active_requests() {
     for selected in [2, 15] {
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let address = listener.local_addr().unwrap().to_string();
-        let endpoint = format!(":{}", listener.local_addr().unwrap().port());
-        drop(listener);
+        let listener = std::net::TcpListener::bind("0.0.0.0:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let address = format!("127.0.0.1:{port}");
+        let endpoint = format!(":{port}");
         let source = r#"package main
 import "std/net/http"
+import "std/errors"
 import "std/os"
 import "std/time"
 func hold(w mut http.ResponseWriter, r mut http.Request) error {
@@ -255,7 +256,7 @@ func run() error {
     println("ADDRESS")
     return SERVE
 }
-func main() { let err = run(); if err != nil { panic("server failure") } }
+func main() { let err = run(); if err != nil { panic(errors.Message(err)) } }
 "#
         .replace(
             "SERVE",
@@ -267,8 +268,24 @@ func main() { let err = run(); if err != nil { panic("server failure") } }
         )
         .replace("ENDPOINT", &endpoint)
         .replace("ADDRESS", &address);
-        let mut server = ServerProcess::start(&source);
-        let mut stream = server.connect();
+        let dir = TempDir::new().unwrap();
+        let executable = dir.path().join("server");
+        build_file(&source, &executable).unwrap_or_else(|e| panic!("build failed: {e:?}"));
+        drop(listener);
+        let mut server = ServerProcess::launch(&executable, dir);
+        let mut stream = server.try_connect().unwrap_or_else(|error| {
+            let _ = server.child.kill();
+            let _ = server.child.wait();
+            let mut errors = String::new();
+            server
+                .child
+                .stderr
+                .as_mut()
+                .unwrap()
+                .read_to_string(&mut errors)
+                .unwrap();
+            panic!("server did not start: {error}; stderr: {errors}");
+        });
         stream
             .write_all(b"GET /hold HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n")
             .unwrap();
@@ -352,6 +369,10 @@ impl ServerProcess {
         let dir = TempDir::new().unwrap();
         let executable = dir.path().join("server");
         build_file(source, &executable).unwrap_or_else(|e| panic!("build failed: {e:?}"));
+        Self::launch(&executable, dir)
+    }
+
+    fn launch(executable: &Path, dir: TempDir) -> Self {
         let mut child = Command::new(executable)
             .env("ZORE_CHECK_LEAKS", "1")
             .stdin(Stdio::piped())
@@ -372,24 +393,27 @@ impl ServerProcess {
     }
 
     fn connect(&self) -> TcpStream {
+        self.try_connect()
+            .unwrap_or_else(|error| panic!("server did not start: {error}"))
+    }
+
+    fn try_connect(&self) -> std::io::Result<TcpStream> {
         let deadline = std::time::Instant::now() + Duration::from_secs(4);
         let stream = loop {
             match TcpStream::connect(&self.address) {
                 Ok(stream) => break stream,
-                Err(error) if std::time::Instant::now() < deadline => {
-                    assert_eq!(error.kind(), std::io::ErrorKind::ConnectionRefused);
+                Err(error)
+                    if error.kind() == std::io::ErrorKind::ConnectionRefused
+                        && std::time::Instant::now() < deadline =>
+                {
                     std::thread::sleep(Duration::from_millis(10));
                 }
-                Err(error) => panic!("server did not start: {error}"),
+                Err(error) => return Err(error),
             }
         };
-        stream
-            .set_read_timeout(Some(Duration::from_secs(4)))
-            .unwrap();
-        stream
-            .set_write_timeout(Some(Duration::from_secs(4)))
-            .unwrap();
-        stream
+        stream.set_read_timeout(Some(Duration::from_secs(4)))?;
+        stream.set_write_timeout(Some(Duration::from_secs(4)))?;
+        Ok(stream)
     }
 
     fn exchange(&self, request: &str) -> String {
