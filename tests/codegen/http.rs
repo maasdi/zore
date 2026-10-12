@@ -134,8 +134,20 @@ impl ServerProcess {
     }
 
     fn stop(self, expected_error: &str) {
-        let response =
-            self.exchange("GET /stop HTTP/1.1\r\nHost: test\r\nConnection: close\r\n\r\n");
+        let deadline = std::time::Instant::now() + Duration::from_secs(4);
+        let response = loop {
+            let response =
+                self.exchange("GET /stop HTTP/1.1\r\nHost: test\r\nConnection: close\r\n\r\n");
+            if !response.is_empty() {
+                break response;
+            }
+            // Peer EOF can precede connection permit release.
+            assert!(
+                std::time::Instant::now() < deadline,
+                "shutdown request was not admitted"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        };
         assert!(response.starts_with("HTTP/1.1 204"), "{response}");
         self.finish(expected_error);
     }
