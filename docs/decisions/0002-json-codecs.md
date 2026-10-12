@@ -15,7 +15,12 @@ Only the bundled JSON encode/decode hooks may declare a generic function without
 a source body. Only the six JSON entry points and those hooks use JSON-specific
 type-argument validation. Ordinary generic restrictions remain unchanged.
 Borrowed codec interfaces dispatch through existing method tables. Custom
-methods take precedence over generated field traversal.
+methods take precedence over generated field traversal. Generated fresh values
+cannot instantiate a codec interface without a concrete implementation; the
+compiler rejects those paths unless a custom decoder handles construction.
+Compound targets containing existing codec interfaces remain subject to the
+ordinary conservative borrow rules for indirect calls; root interface decoding
+is covered separately.
 
 Naming values may be computed at runtime. The compiler checks all three naming
 policies for collisions and emits precomputed keys for every generated struct

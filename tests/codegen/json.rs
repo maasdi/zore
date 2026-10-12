@@ -252,6 +252,8 @@ func main() {
     let data, err = write(box)
     require(err == nil)
     require(read(data[:], box) == nil)
+    var owned json.Unmarshaler = Box<int>{Item: 8}
+    require(json.Unmarshal(data[:], owned) == nil)
     let boxes = Array<Box<int>>{Box<int>{Item: 7}}
     let encoded, encodedErr = json.Marshal(boxes)
     require(encodedErr == nil)

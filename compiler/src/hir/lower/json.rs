@@ -38,7 +38,7 @@ impl Checker<'_> {
             "std/encoding/json.decode" => true,
             _ => return,
         };
-        if !self.validate_json_type(ty, decode, &self.name(ty), span, &mut HashSet::new()) {
+        if !self.validate_json_type(ty, decode, false, &self.name(ty), span, &mut HashSet::new()) {
             return;
         }
         let mut function = functions[copy.0 as usize].clone();
@@ -79,12 +79,23 @@ impl Checker<'_> {
         &mut self,
         ty: TypeId,
         decode: bool,
+        fresh: bool,
         path: &str,
         span: Span,
-        seen: &mut HashSet<TypeId>,
+        seen: &mut HashSet<(TypeId, bool)>,
     ) -> bool {
-        if !seen.insert(ty) {
+        if !seen.insert((ty, fresh)) {
             return true;
+        }
+        if decode
+            && fresh
+            && matches!(
+                self.types.kind(ty),
+                TypeKind::Interface(_) | TypeKind::InterfaceView { .. }
+            )
+        {
+            self.error(format!("cannot decode {path}: a fresh codec interface needs a concrete type or custom decoder"), span);
+            return false;
         }
         let method = if decode { "DecodeJSON" } else { "EncodeJSON" };
         if let Some(id) = self.method_of(ty, method) {
@@ -146,6 +157,7 @@ impl Checker<'_> {
                         valid &= self.validate_json_type(
                             field.unwrap(),
                             decode,
+                            fresh,
                             &format!("{path}.{name}"),
                             span,
                             seen,
@@ -154,17 +166,27 @@ impl Checker<'_> {
                 }
                 valid
             }
-            TypeKind::Array { element, .. } | TypeKind::DynArray { element } => {
-                self.validate_json_type(element, decode, &format!("{path}[]"), span, seen)
+            TypeKind::Array { element, .. } => {
+                self.validate_json_type(element, decode, fresh, &format!("{path}[]"), span, seen)
+            }
+            TypeKind::DynArray { element } => {
+                self.validate_json_type(element, decode, true, &format!("{path}[]"), span, seen)
             }
             TypeKind::Slice { element, .. } if !decode => {
-                self.validate_json_type(element, decode, &format!("{path}[]"), span, seen)
+                self.validate_json_type(element, decode, fresh, &format!("{path}[]"), span, seen)
             }
             TypeKind::Map { key, value } => {
                 if !matches!(self.types.kind(key), TypeKind::String | TypeKind::Int(_)) {
                     false
                 } else {
-                    self.validate_json_type(value, decode, &format!("{path}[value]"), span, seen)
+                    self.validate_json_type(
+                        value,
+                        decode,
+                        true,
+                        &format!("{path}[value]"),
+                        span,
+                        seen,
+                    )
                 }
             }
             TypeKind::Interface(_) | TypeKind::InterfaceView { .. } => {

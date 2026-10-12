@@ -7167,12 +7167,24 @@ apply JSON codec validation to type arguments, including borrowed codec
 interfaces, mutable slices for encoding, and custom types containing views or
 closures, without relaxing the generic type-argument restrictions for ordinary
 functions or stored generic structs. Their implementations never own those arguments.
-Recursive types are supported.
+Recursive types are supported. Codec interface targets must already hold a
+concrete implementation. Generated fresh array/map values cannot choose an
+implementation and reject codec interface fields unless an enclosing custom
+decoder constructs it. Initialized root codec-interface targets can be decoded;
+ordinary borrow checks still govern compound targets. In particular, indirect
+custom calls may retain a target loan in the mutable decoder, which can prevent
+repeated mutable access through an array or object loop. A concrete codec type
+or an enclosing custom decoder avoids that ambiguous dispatch. Zero owned
+interfaces follow the ordinary interface-call rules.
 
 Matching custom methods take precedence at every nesting level. EncodeJSON
 must match Marshaler and DecodeJSON must match Unmarshaler. Custom methods
 control their own key handling and consume/write one value through the token
-API; their errors and token-state violations propagate normally.
+API; their errors and token-state violations propagate normally. A custom
+DecodeJSON must consume from the supplied input without retaining the decoder
+or replacing its input; decoded data must be independently owned. The compiler
+continues to apply ordinary borrowing rules rather than assuming this behavioral
+contract when checking an indirect call.
 
 Structs encode exported fields in declaration order and ignore private fields.
 AsWritten preserves names. LowerCamel lowercases the initial acronym, keeping

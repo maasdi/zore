@@ -1172,3 +1172,28 @@ func main() { let bytes = Array<byte>{49}; let decoder = json.NewDecoder(bytes[:
         "task",
     );
 }
+
+#[test]
+fn json_fresh_interface_values_require_a_concrete_decoder() {
+    rejects(
+        &[(
+            "main.ore",
+            r#"package main
+import "std/encoding/json"
+func main() { var values = Array<json.Unmarshaler>{}; let err = json.Unmarshal(Array<byte>{91,93}[:], values); _ = err }
+"#,
+        )],
+        "a fresh codec interface needs a concrete type or custom decoder",
+    );
+    rejects(
+        &[(
+            "main.ore",
+            r#"package main
+import "std/encoding/json"
+type Holder struct { Codec json.Unmarshaler }
+func main() { var values = map[string]Holder{}; let err = json.Unmarshal(Array<byte>{123,125}[:], values); _ = err }
+"#,
+        )],
+        "Holder[value].Codec: a fresh codec interface",
+    );
+}

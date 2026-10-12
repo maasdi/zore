@@ -15,7 +15,7 @@ memory; HTTP owns request-size and I/O limits.
 | Generic callers, generic custom methods, interface codecs, optional array elements | Struct and interface codec tests |
 | Recursive structs, slices, fixed arrays, sorted map keys, fresh values, duplicate map members, nested strict errors | Collection and interface codec tests |
 | Partially decoded owned arrays/maps clean up after error | Native tests run with `ZORE_CHECK_LEAKS=1` |
-| Unsupported types and paths, bad custom signatures, naming collisions, preserved ordinary generic restrictions | JSON package-checking tests |
+| Unsupported types and paths, bad custom signatures, naming collisions, fresh interface rejection, preserved ordinary generic restrictions | JSON package-checking tests |
 | Borrowed Decoder cannot escape local input, channel, mutex, or task | `json_decoder_preserves_input_provenance` and codec validation tests |
 | Parsed Value may outlive its input | Package acceptance test |
 | User structs, Optional, strict requests, Value patches, pretty output | `examples/json` with exact expected output |
