@@ -164,10 +164,3 @@ but fails when zore build links a generated executable.
 - Update the locked specification, decisions, roadmap, and conformance coverage;
   pass formatting, clippy, build, documentation, and full Ubuntu/macOS tests.
 
-## Current execution blocker
-
-The selected executor failed to attach with "failed to read executor
-configuration". No terminal or file-editing tools are available in this session.
-GitHub source inspection and draft preparation work; implementation, compiler
-checks, and native signal verification require the execution workspace to be
-restored. No implementation or test success is claimed by this proposal.
