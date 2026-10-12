@@ -259,3 +259,7 @@ formatting overflow/underflow, empty-message error causes, and partial I/O.
 The filesystem fixture uses its allocated temporary directory and tests that
 requested permissions are not widened, allowing the inherited umask to remove
 permission bits.
+
+`conformance/http.md` maps the HTTP/URL contract to native loopback and ownership
+regressions. It distinguishes tested behavior from additional fault-injection
+coverage. The REST example codec is also exercised as executable Zore source.

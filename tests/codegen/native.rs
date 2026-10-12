@@ -1,6 +1,7 @@
 //! Requires clang (LLVM 15+) and rustc 1.98+; a missing toolchain fails rather than skips.
 
 mod controlled_runtime;
+mod http;
 mod review_regressions;
 
 use std::io::Write;
@@ -787,6 +788,10 @@ fn every_example_prints_its_expected_output() {
     let examples = examples();
     assert!(examples.len() >= 15, "{examples:?}");
     for (name, path) in examples {
+        if name == "rest-api" {
+            http::check_rest_example();
+            continue;
+        }
         let expected = std::fs::read_to_string(path.join("expected-output.txt"))
             .unwrap_or_else(|_| panic!("examples/{name} needs expected-output.txt"));
         let output = zore()

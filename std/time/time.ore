@@ -1,5 +1,7 @@
 package time
 
+import "std/strconv"
+
 const Nanosecond = 1
 const Microsecond = 1000 * Nanosecond
 const Millisecond = 1000 * Microsecond
@@ -28,4 +30,43 @@ async func fire(ready channel<bool>, d int) {
     Sleep(d)
     ready.send(true)
     ready.close()
+}
+
+func UnixSeconds() int
+
+func FormatHTTPDate(seconds int) (string, error) {
+    if seconds < -11644473600 || seconds > 253402300799 {
+        return "", error("time.FormatHTTPDate: year outside 1601..9999")
+    }
+    var days = seconds / 86400
+    var remainder = seconds % 86400
+    if remainder < 0 { days -= 1; remainder += 86400 }
+    let weekdays = [string; 7]{"Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"}
+    let months = [string; 12]{"Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"}
+    let lengths = [int; 12]{31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31}
+    let weekday = ((days + 4) % 7 + 7) % 7
+    var year = 1601
+    days += 134774
+    for {
+        var count = 365
+        if leap(year) { count = 366 }
+        if days < count { break }
+        days -= count
+        year += 1
+    }
+    var month = 0
+    for {
+        var count = lengths[month]
+        if month == 1 && leap(year) { count += 1 }
+        if days < count { break }
+        days -= count
+        month += 1
+    }
+    return weekdays[weekday] + ", " + two(days + 1) + " " + months[month] + " " + strconv.Itoa(year) + " " + two(remainder / 3600) + ":" + two(remainder / 60 % 60) + ":" + two(remainder % 60) + " GMT", nil
+}
+
+func leap(year int) bool { return year % 4 == 0 && (year % 100 != 0 || year % 400 == 0) }
+func two(value int) string {
+    if value < 10 { return "0" + strconv.Itoa(value) }
+    return strconv.Itoa(value)
 }

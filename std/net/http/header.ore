@@ -1,0 +1,124 @@
+package http
+
+import "std/strings"
+
+const HeaderContentType = "Content-Type"
+const HeaderContentLength = "Content-Length"
+const HeaderHost = "Host"
+const HeaderAllow = "Allow"
+const HeaderLocation = "Location"
+const StatusOK = 200
+const StatusCreated = 201
+const StatusNoContent = 204
+const StatusResetContent = 205
+const StatusBadRequest = 400
+const StatusNotFound = 404
+const StatusMethodNotAllowed = 405
+const StatusRequestTimeout = 408
+const StatusContentTooLarge = 413
+const StatusExpectationFailed = 417
+const StatusRequestHeaderFieldsTooLarge = 431
+const StatusInternalServerError = 500
+const StatusNotImplemented = 501
+const StatusServiceUnavailable = 503
+
+func StatusText(code int) string {
+    if code == 100 { return "Continue" }
+    if code == 200 { return "OK" }
+    if code == 201 { return "Created" }
+    if code == 202 { return "Accepted" }
+    if code == 204 { return "No Content" }
+    if code == 205 { return "Reset Content" }
+    if code == 301 { return "Moved Permanently" }
+    if code == 302 { return "Found" }
+    if code == 304 { return "Not Modified" }
+    if code == 400 { return "Bad Request" }
+    if code == 401 { return "Unauthorized" }
+    if code == 403 { return "Forbidden" }
+    if code == 404 { return "Not Found" }
+    if code == 405 { return "Method Not Allowed" }
+    if code == 408 { return "Request Timeout" }
+    if code == 409 { return "Conflict" }
+    if code == 413 { return "Content Too Large" }
+    if code == 415 { return "Unsupported Media Type" }
+    if code == 417 { return "Expectation Failed" }
+    if code == 431 { return "Request Header Fields Too Large" }
+    if code == 500 { return "Internal Server Error" }
+    if code == 501 { return "Not Implemented" }
+    if code == 503 { return "Service Unavailable" }
+    if code == 505 { return "HTTP Version Not Supported" }
+    return ""
+}
+
+type HeaderEntry struct {
+    Name string
+    Value string
+}
+type Header struct {
+    entries Array<HeaderEntry>
+}
+func NewHeader() Header { return Header{entries: Array<HeaderEntry>{}} }
+
+func token(text string) bool {
+    if text == "" { return false }
+    for var i = 0; i < text.len(); i += 1 {
+        let c = text[i]
+        if (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || (c >= 48 && c <= 57) { continue }
+        if !strings.Contains("!#$%&'*+-.^_`|~", text[i:i + 1]) { return false }
+    }
+    return true
+}
+
+func asciiEqual(a string, b string) bool {
+    if a.len() != b.len() { return false }
+    for var i = 0; i < a.len(); i += 1 {
+        var left = a[i]
+        var right = b[i]
+        if left >= 65 && left <= 90 { left += 32 }
+        if right >= 65 && right <= 90 { right += 32 }
+        if left != right { return false }
+    }
+    return true
+}
+
+func fieldValue(text string) bool {
+    for var i = 0; i < text.len(); i += 1 {
+        let c = text[i]
+        if (c < 32 && c != 9) || c > 126 { return false }
+    }
+    return true
+}
+
+func (h Header) Get(name string) (string, bool) {
+    for entry in h.entries {
+        if asciiEqual(entry.Name, name) { return entry.Value, true }
+    }
+    return "", false
+}
+func (h Header) Values(name string) Array<string> {
+    var result = Array<string>{}
+    for entry in h.entries {
+        if asciiEqual(entry.Name, name) { result.push(entry.Value) }
+    }
+    return result
+}
+func (h Header) Entries() Array<HeaderEntry> { return clone(h.entries) }
+func (h mut Header) Del(name string) error {
+    if !token(name) { return error("http.Header: invalid name") }
+    var result = Array<HeaderEntry>{}
+    for entry in h.entries {
+        if !asciiEqual(entry.Name, name) { result.push(entry) }
+    }
+    h.entries = result
+    return nil
+}
+func (h mut Header) Add(name string, value string) error {
+    if !token(name) || !fieldValue(value) { return error("http.Header: invalid field") }
+    h.entries.push(HeaderEntry{Name: name, Value: value})
+    return nil
+}
+func (h mut Header) Set(name string, value string) error {
+    if !token(name) || !fieldValue(value) { return error("http.Header: invalid field") }
+    h.Del(name)?
+    return h.Add(name, value)
+}

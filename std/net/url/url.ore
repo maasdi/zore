@@ -1,0 +1,140 @@
+package url
+
+import "std/strings"
+
+type Target struct {
+    Path string
+    RawQuery string
+}
+
+type Entry struct {
+    Key string
+    Value string
+}
+
+type Values struct {
+    entries Array<Entry>
+}
+
+func NewValues() Values { return Values{entries: Array<Entry>{}} }
+
+func (v Values) Get(key string) (string, bool) {
+    for entry in v.entries {
+        if entry.Key == key { return entry.Value, true }
+    }
+    return "", false
+}
+
+func (v Values) Values(key string) Array<string> {
+    var result = Array<string>{}
+    for entry in v.entries {
+        if entry.Key == key { result.push(entry.Value) }
+    }
+    return result
+}
+
+func (v Values) Entries() Array<Entry> { return clone(v.entries) }
+func (v mut Values) Add(key string, value string) { v.entries.push(Entry{Key: key, Value: value}) }
+func (v mut Values) Del(key string) {
+    var result = Array<Entry>{}
+    for entry in v.entries {
+        if entry.Key != key { result.push(entry) }
+    }
+    v.entries = result
+}
+func (v mut Values) Set(key string, value string) { v.Del(key); v.Add(key, value) }
+func (v Values) Encode() string {
+    var result = ""
+    for entry in v.entries {
+        if result != "" { result += "&" }
+        result += QueryEscape(entry.Key) + "=" + QueryEscape(entry.Value)
+    }
+    return result
+}
+
+func hex(c byte) int {
+    if c >= 48 && c <= 57 { return int(c) - 48 }
+    if c >= 65 && c <= 70 { return int(c) - 55 }
+    if c >= 97 && c <= 102 { return int(c) - 87 }
+    return -1
+}
+
+func unescape(text string, query bool) (string, error) {
+    var data = Array<byte>{}
+    for var i = 0; i < text.len(); i += 1 {
+        var c = text[i]
+        if c == 37 {
+            if i + 2 >= text.len() { return "", error("url: invalid escape") }
+            let high = hex(text[i + 1])
+            let low = hex(text[i + 2])
+            if high < 0 || low < 0 { return "", error("url: invalid escape") }
+            c = byte(high * 16 + low)
+            i += 2
+        } else if query && c == 43 { c = 32 }
+        if c == 0 { return "", error("url: NUL is forbidden") }
+        data.push(c)
+    }
+    return strings.FromBytes(data[:])
+}
+
+func PathUnescape(text string) (string, error) { return unescape(text, false) }
+func QueryUnescape(text string) (string, error) { return unescape(text, true) }
+
+func escape(text string, query bool) string {
+    let digits = "0123456789ABCDEF"
+    var data = Array<byte>{}
+    for var i = 0; i < text.len(); i += 1 {
+        let c = text[i]
+        if (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || (c >= 48 && c <= 57) || c == 45 || c == 46 || c == 95 || c == 126 {
+            data.push(c)
+        } else if query && c == 32 { data.push(43) } else {
+            data.push(37)
+            data.push(digits[int(c) / 16])
+            data.push(digits[int(c) % 16])
+        }
+    }
+    let result, _ = strings.FromBytes(data[:])
+    return result
+}
+
+func PathEscape(text string) string { return escape(text, false) }
+func QueryEscape(text string) string { return escape(text, true) }
+
+func ParseQuery(text string) (Values, error) {
+    var result = NewValues()
+    let pairs = strings.Split(text, "&")
+    for pair in pairs {
+        if pair == "" { continue }
+        let keyText, valueText, _ = strings.Cut(pair, "=")
+        let key, keyErr = QueryUnescape(keyText)
+        if keyErr != nil { return NewValues(), keyErr }
+        let value, valueErr = QueryUnescape(valueText)
+        if valueErr != nil { return NewValues(), valueErr }
+        result.Add(key, value)
+    }
+    return result, nil
+}
+
+func ParseRequestTarget(text string) (Target, error) {
+    let empty = Target{Path: "", RawQuery: ""}
+    if text == "" || text[0] != 47 { return empty, error("url: expected origin-form target") }
+    for var i = 0; i < text.len(); i += 1 {
+        let c = text[i]
+        if c <= 32 || c == 127 || c == 35 { return empty, error("url: forbidden target byte") }
+        if c == 37 {
+            if i + 2 >= text.len() { return empty, error("url: invalid escape") }
+            if hex(text[i + 1]) < 0 || hex(text[i + 2]) < 0 { return empty, error("url: invalid escape") }
+            i += 2
+        }
+    }
+    let path, query, _ = strings.Cut(text, "?")
+    let segments = strings.Split(path, "/")
+    for segment in segments {
+        let decoded, err = PathUnescape(segment)
+        if err != nil { return empty, err }
+        if decoded == "." || decoded == ".." || strings.Contains(decoded, "/") || strings.Contains(decoded, "\\") {
+            return empty, error("url: forbidden path segment")
+        }
+    }
+    return Target{Path: path, RawQuery: query}, nil
+}

@@ -1,9 +1,14 @@
 # HTTP server and URL proposal (issue #105)
 
-Status: Proposed; awaiting maintainer acceptance. Not locked or implemented.
-This document proposes library contracts, not new language syntax. The current
-specification remains authoritative. After acceptance, move the contracts into
-new §37 sections with conformance cases; do not label them LOCKED beforehand.
+Status: Accepted. Normative contracts are locked in specification §37.6.
+
+This document preserves the reviewed design from PR #107. The implementation
+uses shared connection slices and owns each facade's protocol state by value;
+the original mutable-state-slice sketch below is historical. Type-aware
+indirect-call provenance makes the handler boundary checkable without dropping
+lifetime restrictions. See §37.6 and `tests/conformance/http.md` for the current
+contract and executable coverage. General JSON and OS signals remain separate;
+the REST example uses a local user-model codec and stdin-driven shutdown.
 
 ## Recommendation
 
@@ -496,4 +501,5 @@ they are test specifications, not passing executable tests:
 Runtime tests should use local loopback, controlled peers and bounded waits;
 use synchronization gates for the poison race and a controlled clock for deadline
 boundaries. Do not rely on Internet endpoints or sleeps as evidence of completion.
-This proposal adds no implementation or executable tests yet.
+The original design PR added no implementation. The subsequent implementation
+and executable coverage are described in `tests/conformance/http.md`.

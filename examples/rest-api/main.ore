@@ -1,0 +1,104 @@
+package main
+
+import "std/net"
+import "std/errors"
+import "std/net/http"
+import "std/context"
+import "std/io"
+import "std/os"
+import "std/strconv"
+import "std/strings"
+import "std/time"
+
+type User struct {
+    ID int
+    Name string
+}
+type UserStore struct {
+    users Array<User>
+    next int
+}
+type UsersFactory struct {
+    store Mutex<UserStore>
+    kind int
+}
+type UsersHandler struct {
+    store Mutex<UserStore>
+    kind int
+}
+func (f UsersFactory) NewHandler() (http.Handler, error) { return UsersHandler{store: f.store, kind: f.kind}, nil }
+func userJSON(user User) string { return "{\"id\":" + strconv.Itoa(user.ID) + ",\"name\":" + quoteJSON(user.Name) + "}" }
+func respond(w mut http.ResponseWriter, status int, text string) error {
+    w.SetHeader(http.HeaderContentType, "application/json")?
+    w.SetHeader(http.HeaderContentLength, strconv.Itoa(text.len()))?
+    w.WriteHeader(status)?
+    let _, err = w.Write(strings.Bytes(text)[:])
+    return err
+}
+func (h UsersHandler) Handle(w mut http.ResponseWriter, r mut http.Request) error {
+    if h.kind == 0 {
+        let users = h.store.withLock(func(store mut UserStore) Array<User> { return clone(store.users) })
+        var text = "["
+        for var i = 0; i < users.len(); i += 1 {
+            if i > 0 { text += "," }
+            text += userJSON(users[i])
+        }
+        return respond(w, 200, text + "]")
+    }
+    if h.kind == 1 {
+        let rawID, _ = r.PathParam("id")
+        for var i = 0; i < rawID.len(); i += 1 {
+            if rawID[i] < 48 || rawID[i] > 57 { return respond(w, 400, "{\"error\":\"invalid id\"}") }
+        }
+        let id, err = strconv.Atoi(rawID)
+        if err != nil || id < 1 { return respond(w, 400, "{\"error\":\"invalid id\"}") }
+        let user, found = h.store.withLock(func(store mut UserStore) (User, bool) {
+            for user in store.users { if user.ID == id { return user, true } }
+            return User{ID: 0, Name: ""}, false
+        })
+        if !found { return respond(w, 404, "{\"error\":\"user not found\"}") }
+        return respond(w, 200, userJSON(user))
+    }
+    let headers = r.Headers()
+    let types = headers.Values(http.HeaderContentType)
+    if types.len() != 1 || !strings.EqualFold(strings.TrimSpace(types[0]), "application/json") {
+        return respond(w, 415, "{\"error\":\"expected application/json\"}")
+    }
+    let body = io.ReadAll(r)?
+    let name, err = decodeName(body[:])
+    if err != nil { return respond(w, 400, "{\"error\":\"expected a nonempty name string\"}") }
+    let user = h.store.withLock(func(store mut UserStore) User {
+        let user = User{ID: store.next, Name: name}
+        store.next += 1
+        store.users.push(user)
+        return user
+    })
+    w.SetHeader(http.HeaderLocation, "/users/" + strconv.Itoa(user.ID))?
+    return respond(w, 201, userJSON(user))
+}
+func main() {
+    let store = mutex(UserStore{users: Array<User>{}, next: 1})
+    var builder = http.NewRouterBuilder()
+    let routes = [string; 3]{"GET /users", "GET /users/{id}", "POST /users"}
+    for var i = 0; i < routes.len(); i += 1 {
+        let err = builder.Handle(routes[i], UsersFactory{store: store, kind: i})
+        if err != nil { println(errors.Message(err)); return }
+    }
+    let router, buildErr = builder.Build()
+    if buildErr != nil { println(errors.Message(buildErr)); return }
+    let server, configErr = http.NewServer(router, http.DefaultConfig())
+    if configErr != nil { println(errors.Message(configErr)); return }
+    let listener, listenErr = net.Listen("tcp", "127.0.0.1:8080")
+    if listenErr != nil { println(errors.Message(listenErr)); return }
+    println("Listening on http://" + listener.Addr() + "; press Enter to shut down")
+    let serving = go server.Serve(listener)
+    var input = Array<byte>{0}
+    let stdin = os.Stdin()
+    let _, _ = stdin.Read(input[:])
+    let ctx, cancel = context.WithTimeout(context.Background(), 10 * time.Second)
+    let shutdownErr = server.Shutdown(ctx)
+    cancel()
+    if shutdownErr != nil { println(errors.Message(shutdownErr)) }
+    let serveErr = serving.wait()
+    if serveErr != nil { println(errors.Message(serveErr)) }
+}

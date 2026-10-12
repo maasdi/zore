@@ -1005,6 +1005,64 @@ impl<'a> Analysis<'a> {
         (params, entry.results.clone())
     }
 
+    fn storage_can_back(&self, source: TypeId, target: TypeId) -> bool {
+        let mut pending = vec![target];
+        let mut seen = HashSet::new();
+        while let Some(target) = pending.pop() {
+            if !seen.insert(target) {
+                continue;
+            }
+            match self.package.types.kind(target) {
+                TypeKind::Slice { element, .. } => {
+                    if self.package.contains_view(element)
+                        || self.storage_contains_array(source, element)
+                    {
+                        return true;
+                    }
+                }
+                TypeKind::Struct(id) => {
+                    pending.extend(self.package.strukt(id).fields.iter().map(|field| field.ty));
+                }
+                TypeKind::Array { element, .. } | TypeKind::DynArray { element } => {
+                    pending.push(element);
+                }
+                TypeKind::Map { key, value } => pending.extend([key, value]),
+                TypeKind::Func(_) | TypeKind::InterfaceView { .. } | TypeKind::Param(_) => {
+                    return true;
+                }
+                _ => {}
+            }
+        }
+        false
+    }
+
+    fn storage_contains_array(&self, source: TypeId, target: TypeId) -> bool {
+        let mut pending = vec![source];
+        let mut seen = HashSet::new();
+        while let Some(source) = pending.pop() {
+            if !seen.insert(source) {
+                continue;
+            }
+            match self.package.types.kind(source) {
+                TypeKind::Array { element, .. } | TypeKind::DynArray { element } => {
+                    if element == target {
+                        return true;
+                    }
+                    pending.push(element);
+                }
+                TypeKind::Struct(id) => {
+                    pending.extend(self.package.strukt(id).fields.iter().map(|field| field.ty));
+                }
+                TypeKind::Map { key, value } => pending.extend([key, value]),
+                TypeKind::Interface(_) | TypeKind::InterfaceView { .. } | TypeKind::Param(_) => {
+                    return true;
+                }
+                _ => {}
+            }
+        }
+        false
+    }
+
     /// An unknown callee may pass any argument's or capture's views to its results and `mut` arguments.
     #[allow(clippy::too_many_arguments)]
     fn unknown_call_effects(
@@ -1047,7 +1105,14 @@ impl<'a> Analysis<'a> {
             let loans = if self.package.contains_view(ty) {
                 let kind = self.loan_kind_for(ty);
                 self.origin_loans(
-                    sources.iter().map(|(p, o, b)| (p, *o, *b)),
+                    sources
+                        .iter()
+                        .map(|(p, o, b)| {
+                            let mut origin = *o;
+                            origin.storage &= self.storage_can_back(self.place_ty(p), ty);
+                            (p, origin, *b)
+                        })
+                        .collect::<Vec<_>>(),
                     kind,
                     site,
                     state,
@@ -1070,7 +1135,14 @@ impl<'a> Analysis<'a> {
             {
                 let kind = self.loan_kind_for(ty);
                 let loans = self.origin_loans(
-                    sources.iter().map(|(p, o, b)| (p, *o, *b)),
+                    sources
+                        .iter()
+                        .map(|(p, o, b)| {
+                            let mut origin = *o;
+                            origin.storage &= self.storage_can_back(self.place_ty(p), ty);
+                            (p, origin, *b)
+                        })
+                        .collect::<Vec<_>>(),
                     kind,
                     site,
                     state,

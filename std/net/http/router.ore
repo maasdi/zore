@@ -1,0 +1,174 @@
+package http
+
+import "std/net/url"
+import "std/strings"
+import "std/sort"
+
+type Handler interface { Handle(w mut ResponseWriter, r mut Request) error }
+type HandlerFactory interface { NewHandler() (Handler, error) }
+
+func CallHandler(f func(mut ResponseWriter, mut Request) error, w mut ResponseWriter, r mut Request) error { return f(w, r) }
+
+type segment struct {
+    text string
+    parameter bool
+}
+type route struct {
+    method string
+    segments Array<segment>
+    factory HandlerFactory
+}
+type registry struct {
+    routes Array<route>
+}
+type RouterBuilder struct {
+    routes Array<route>
+    live bool
+}
+type Router struct {
+    state Mutex<registry>
+    live bool
+}
+
+func NewRouterBuilder() RouterBuilder { return RouterBuilder{routes: Array<route>{}, live: true} }
+
+func identifier(text string) bool {
+    if text == "" { return false }
+    for var i = 0; i < text.len(); i += 1 {
+        let c = text[i]
+        if (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || c == 95 { continue }
+        if i > 0 && c >= 48 && c <= 57 { continue }
+        return false
+    }
+    return true
+}
+
+func (b mut RouterBuilder) Handle(pattern string, factory own HandlerFactory) error {
+    if !b.live { return error("http.RouterBuilder: empty builder") }
+    let method, path, found = strings.Cut(pattern, " ")
+    if !found || !token(method) { return error("http: invalid route pattern") }
+    let target, err = url.ParseRequestTarget(path)
+    if err != nil { return err }
+    if strings.Contains(path, "?") { return error("http: query in route pattern") }
+    let parts = strings.Split(target.Path, "/")
+    var segments = Array<segment>{}
+    for part in parts {
+        if strings.HasPrefix(part, "{") && strings.HasSuffix(part, "}") {
+            let name = part[1:part.len() - 1]
+            if !identifier(name) { return error("http: invalid route parameter") }
+            for prior in segments {
+                if prior.parameter && prior.text == name { return error("http: duplicate route parameter") }
+            }
+            segments.push(segment{text: name, parameter: true})
+        } else {
+            if strings.Contains(part, "{") || strings.Contains(part, "}") { return error("http: invalid route parameter") }
+            let decoded = url.PathUnescape(part)?
+            segments.push(segment{text: decoded, parameter: false})
+        }
+    }
+    b.routes.push(route{method: method, segments: segments, factory: factory})
+    return nil
+}
+
+func relation(a []segment, b []segment) (bool, int) {
+    if a.len() != b.len() { return false, 0 }
+    var better = false
+    var worse = false
+    for var i = 0; i < a.len(); i += 1 {
+        if !a[i].parameter && !b[i].parameter && a[i].text != b[i].text { return false, 0 }
+        if a[i].parameter && !b[i].parameter {
+            if b[i].text == "" { return false, 0 }
+            worse = true
+        }
+        if !a[i].parameter && b[i].parameter {
+            if a[i].text == "" { return false, 0 }
+            better = true
+        }
+    }
+    if better && !worse { return true, 1 }
+    if worse && !better { return true, -1 }
+    return true, 0
+}
+
+func (b own RouterBuilder) Build() (Router, error) {
+    let empty = Router{state: mutex(registry{routes: Array<route>{}}), live: false}
+    if !b.live { return empty, error("http.RouterBuilder: empty builder") }
+    for var i = 0; i < b.routes.len(); i += 1 {
+        for var j = 0; j < i; j += 1 {
+            if b.routes[i].method != b.routes[j].method { continue }
+            let overlaps, order = relation(b.routes[i].segments[:], b.routes[j].segments[:])
+            if overlaps && order == 0 { return empty, error("http: ambiguous routes") }
+        }
+    }
+    return Router{state: mutex(registry{routes: b.routes}), live: true}, nil
+}
+
+type automatic struct {
+    status int
+    allow string
+}
+func (h automatic) Handle(w mut ResponseWriter, r mut Request) error {
+    if h.allow != "" { w.SetHeader(HeaderAllow, h.allow)? }
+    return w.WriteHeader(h.status)
+}
+
+func matches(pattern []segment, path []string) bool {
+    if pattern.len() != path.len() { return false }
+    for var i = 0; i < path.len(); i += 1 {
+        if pattern[i].parameter {
+            if path[i] == "" { return false }
+        } else if pattern[i].text != path[i] { return false }
+    }
+    return true
+}
+
+func (router Router) dispatch(method string, path string) (Handler, url.Values, error) {
+    if !router.live { return automatic{status: 500, allow: ""}, url.NewValues(), error("http: empty router") }
+    if router.state.isPoisoned() { return automatic{status: 503, allow: ""}, url.NewValues(), nil }
+    var parts = strings.Split(path, "/")
+    for var i = 0; i < parts.len(); i += 1 { parts[i] = url.PathUnescape(parts[i])? }
+    return router.state.withLock(func(state mut registry) (Handler, url.Values, error) {
+        var best = -1
+        var headFallback = -1
+        var allow = Array<string>{}
+        for var i = 0; i < state.routes.len(); i += 1 {
+            if !matches(state.routes[i].segments[:], parts[:]) { continue }
+            allow.push(state.routes[i].method)
+            if state.routes[i].method == "GET" { allow.push("HEAD") }
+            if state.routes[i].method == method {
+                if best < 0 { best = i } else {
+                    let _, order = relation(state.routes[i].segments[:], state.routes[best].segments[:])
+                    if order > 0 { best = i }
+                }
+            }
+            if state.routes[i].method == "GET" {
+                if headFallback < 0 { headFallback = i } else {
+                    let _, order = relation(state.routes[i].segments[:], state.routes[headFallback].segments[:])
+                    if order > 0 { headFallback = i }
+                }
+            }
+        }
+        if method == "HEAD" && best < 0 { best = headFallback }
+        if best >= 0 {
+            var params = url.NewValues()
+            for var i = 0; i < parts.len(); i += 1 {
+                if state.routes[best].segments[i].parameter { params.Add(state.routes[best].segments[i].text, parts[i]) }
+            }
+            let handler, err = state.routes[best].factory.NewHandler()
+            return handler, params, err
+        }
+        if allow.len() == 0 { return automatic{status: 404, allow: ""}, url.NewValues(), nil }
+        allow.push("OPTIONS")
+        sort.Strings(allow[:])
+        var list = ""
+        var previous = ""
+        for item in allow {
+            if item == previous { continue }
+            if list != "" { list += ", " }
+            list += item
+            previous = item
+        }
+        if method == "OPTIONS" { return automatic{status: 204, allow: list}, url.NewValues(), nil }
+        return automatic{status: 405, allow: list}, url.NewValues(), nil
+    })
+}

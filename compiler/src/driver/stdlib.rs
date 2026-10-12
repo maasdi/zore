@@ -18,6 +18,8 @@ bundled! {
     "maps" => ["maps.ore"],
     "math" => ["math.ore"],
     "net" => ["net.ore"],
+    "net/url" => ["url.ore"],
+    "net/http" => ["header.ore", "router.ore", "exchange.ore", "server.ore"],
     "os" => ["os.ore", "file.ore"],
     "os/exec" => ["exec.ore"],
     "path" => ["path.ore"],
