@@ -6914,6 +6914,334 @@ through indirect calls. Add wall-clock native functions without changing the
 monotonic clock. Conformance covers URL/framing/routing/deadlines/shutdown and
 accepted/rejected facade lifetimes. JSON and OS signals remain separate work.
 
+## 37.7 JSON encoding and decoding — LOCKED
+
+`std/encoding/json` provides an owned token encoder and a decoder borrowing an
+in-memory byte slice, an owned JSON tree, and compiler-generated codecs for
+supported concrete types. No reflection or new syntax is added.
+
+### Kinds and ownership
+
+```ore
+type Kind int
+const KindNull Kind = 0
+const KindBool Kind = 1
+const KindNumber Kind = 2
+const KindString Kind = 3
+const KindArray Kind = 4
+const KindObject Kind = 5
+```
+
+`Encoder` owns its output and container stack. `Decoder` holds the input
+`[]byte` view and owns its cursor, container stack, and error state. Both are
+Move structs by their owned arrays; neither needs a custom drop. Ordinary
+struct cloning gives independent cursor/output state while retaining the
+input's borrowed provenance. A decoder cannot outlive its backing bytes or be
+placed in a channel, Mutex, owned interface, or task. Copying decoded strings
+or transferring a finished owned byte array does not retain that loan.
+
+Zero encoders behave like NewEncoder; zero decoders have empty input and the
+default depth limit. Reading or finishing an empty document reports an error,
+never an indexing panic. Operations use ordinary mutable borrowing and do not
+wait or spawn tasks. I/O is the caller's responsibility.
+
+### Encoder
+
+```ore
+func NewEncoder() Encoder
+func (e mut Encoder) SetIndent(indent string)
+func (e mut Encoder) BeginObject()
+func (e mut Encoder) EndObject()
+func (e mut Encoder) BeginArray()
+func (e mut Encoder) EndArray()
+func (e mut Encoder) Field(name string)
+func (e mut Encoder) Null()
+func (e mut Encoder) Bool(value bool)
+func (e mut Encoder) Int(value int)
+func (e mut Encoder) Float(value float64)
+func (e mut Encoder) String(value string)
+func (e mut Encoder) Value(value Value)
+func (e own Encoder) Finish() (Array<byte>, error)
+```
+
+The encoder accepts exactly one root value. In an object, Field must precede
+each value; in an array, values follow one another without Field. BeginObject
+and BeginArray start a value and EndObject/EndArray close the matching innermost
+container. An unmatched end, a missing field value, Field outside an object,
+a second root, and an empty or unfinished document are errors. Repeated object
+keys are permitted and are emitted in call order; token encoding does not
+silently coalesce fields.
+
+The first error is sticky. Every subsequent mutation is a no-op; Finish returns
+an empty owned array and that first error, never partial output. Non-finite
+floats are errors. Finite floats use the shortest float64 text of §37.2,
+including negative zero. Int emits signed decimal without a leading plus.
+
+String and field-name encoding escapes quotes, backslashes, all U+0000–U+001F
+controls, `<`, `>`, `&`, U+2028, and U+2029. Other Unicode text is emitted as
+UTF-8 without normalization. A slash does not require escaping. Escapes for
+HTML-sensitive characters are literal JSON `\u003c`, `\u003e`, and `\u0026`;
+writing the raw characters would not satisfy the default escaping policy.
+
+Indent is a sequence of spaces and tabs. Empty means compact output. SetIndent
+must be called before the first root value or Field; invalid indentation or a
+late change records an error. Nonempty indentation puts each member/element on
+its own line, uses one indent per nesting level, and puts one space after an
+object colon. Empty containers stay `{}` and `[]`. Finish adds no final newline.
+
+### Decoder
+
+```ore
+func NewDecoder(data []byte) Decoder
+func (d mut Decoder) SetMaxDepth(depth int)
+func (d mut Decoder) DisallowUnknownFields()
+func (d mut Decoder) Peek() (Kind, error)
+func (d mut Decoder) BeginObject() error
+func (d mut Decoder) EndObject() error
+func (d mut Decoder) BeginArray() error
+func (d mut Decoder) EndArray() error
+func (d mut Decoder) More() bool
+func (d mut Decoder) Key() (string, error)
+func (d mut Decoder) IsNull() bool
+func (d mut Decoder) Null() error
+func (d mut Decoder) Bool() (bool, error)
+func (d mut Decoder) Int() (int, error)
+func (d mut Decoder) Float() (float64, error)
+func (d mut Decoder) String() (string, error)
+func (d mut Decoder) Skip() error
+func (d mut Decoder) Value() (Value, error)
+func (d mut Decoder) Finish() error
+```
+
+The decoder accepts RFC 8259 syntax and valid UTF-8 only. Whitespace is space,
+tab, CR, and LF. Reject a BOM, comments, trailing commas, leading plus, leading
+zeroes, missing fractional/exponent digits, invalid escapes, unescaped controls,
+and unpaired UTF-16 surrogates. Valid surrogate pairs decode to one scalar.
+Escaped NUL is valid JSON string content. No Unicode replacement or normalization
+is performed. Duplicate keys are returned in input order; tree and generated decoders
+apply the last-value-wins policy.
+
+BeginObject/BeginArray consume an opening delimiter. More inspects whether a
+member/element remains in the current container. Key consumes an object key
+and colon, and the next read consumes its value. EndObject/EndArray consume
+the matching closing delimiter, including any preceding whitespace. Array reads
+handle the intervening comma; object callers must use Key. End methods are
+required even when More returned false. More outside a container or before an
+object field's value has been consumed records an error and returns false.
+
+Peek reports the next value's kind without consuming it, including looking
+past required array separators; the subsequent read still validates the token.
+It does not replace Key in objects. IsNull is the same lookahead as Peek and
+returns false on failure while retaining the error. It does not consume null;
+Null consumes it. A typed read of another kind is an error, not a conversion.
+
+Int accepts integer syntax only, with no fraction or exponent, and requires the
+signed value to fit `int`, including its minimum value. Float accepts all JSON
+number syntax and uses the float64 conversion of §37.2; ordinary binary rounding
+is inherent in that conversion, while overflow to infinity is an error. Skip
+validates one entire value without converting number text to a machine number,
+so a syntactically valid number such as `1e9999` can be skipped. This distinction
+also permits a Value tree to retain numbers losslessly.
+
+SetMaxDepth takes a positive maximum count of simultaneously open arrays and
+objects, default 512. A scalar has depth zero. A nonpositive setting or reducing
+the limit below the current depth records an error. Skip obeys the same limit
+and uses an explicit container stack; adversarial nesting must not exhaust the
+native call stack. There is no unlimited mode. Input/output byte limits remain
+the caller's responsibility; HTTP already bounds request bodies.
+
+DisallowUnknownFields records the policy for generated struct decoding.
+The token decoder has no field schema and does not itself reject a key merely
+because that policy is set.
+
+Errors have a `json: line L, column C: ` prefix, with one-based line and UTF-8
+byte column in the original input. LF starts a new line; other bytes advance the
+column. Errors identify syntax, expected kinds, integer/float range, depth, or
+invalid call ordering. The first error is sticky, including conversion and
+configuration failures. After it, More and IsNull return false; every fallible
+operation returns that same error and zero/empty result without consuming input.
+No rollback or recovery is promised. Finish requires one fully consumed root,
+no open containers, and only trailing whitespace. It does not silently skip an
+unread root or a second document.
+
+```ore
+var e = json.NewEncoder()
+e.BeginObject()
+e.Field("name")
+e.String("Ada")
+e.EndObject()
+let data = e.Finish()?
+var d = json.NewDecoder(data[:])
+d.BeginObject()?
+for d.More() {
+    let key = d.Key()?
+    if key == "name" {
+        println(d.String()?)
+    } else {
+        d.Skip()?
+    }
+}
+d.EndObject()?
+d.Finish()?
+```
+
+### JSON tree
+
+```ore
+func Parse(data []byte) (Value, error)
+func Valid(data []byte) bool
+func NullValue() Value
+func BoolValue(value bool) Value
+func IntValue(value int) Value
+func FloatValue(value float64) Value
+func StringValue(value string) Value
+func NewArray() Value
+func NewObject() Value
+func (v Value) Kind() Kind
+func (v Value) IsNull() bool
+func (v Value) Bool() (bool, error)
+func (v Value) Int() (int, error)
+func (v Value) Float() (float64, error)
+func (v Value) String() (string, error)
+func (v Value) Len() int
+func (v Value) Index(i int) Value
+func (v Value) Has(key string) bool
+func (v Value) Get(key string) Value
+func (v Value) Keys() Array<string>
+func (v mut Value) Push(item own Value)
+func (v mut Value) Set(key string, item own Value)
+```
+
+Value owns its tree; it retains no input loan and needs no custom drop. Its zero
+value is null. Get and Index return independent structural clones, or null on
+missing keys, wrong container kind, or invalid indices. Len returns zero for
+scalars. Keys returns an owned array in document order (empty for nonobjects).
+Push and Set on a wrong container kind are no-ops. Accessors reject wrong kinds
+with an error naming expected and actual kind. Parsed numbers retain their
+original text, including exponent spelling and negative zero. Re-encoding
+preserves this text. Int and Float validate range on access. FloatValue accepts
+any float; accessing or encoding a non-finite value reports an error.
+
+Objects preserve document order. Set replaces an existing member in place;
+duplicate parsed keys retain the first position and last value. Parse consumes
+exactly one document. Valid checks syntax without numeric range conversion.
+Decoder.Value obeys the same depth limit as Skip. Trees and token traversal
+must handle deep input without unbounded native recursion.
+
+### Generated codecs
+
+```ore
+type Naming int
+const AsWritten Naming = 0
+const LowerCamel Naming = 1
+const SnakeCase Naming = 2
+func Marshal<T any>(value T) (Array<byte>, error)
+func MarshalWith<T any>(value T, naming Naming) (Array<byte>, error)
+func MarshalIndent<T any>(value T, naming Naming, indent string) (Array<byte>, error)
+func Unmarshal<T any>(data []byte, value mut T) error
+func UnmarshalWith<T any>(data []byte, value mut T, naming Naming) error
+func UnmarshalStrict<T any>(data []byte, value mut T, naming Naming) error
+
+type Marshaler interface { EncodeJSON(e mut Encoder) }
+type Unmarshaler interface { mut DecodeJSON(d mut Decoder) error }
+type Optional<T any> struct { Value T; Set bool }
+func Some<T any>(value own T) Optional<T>
+```
+
+Marshal borrows its argument and owns the returned bytes. Unmarshal borrows the
+input and mutably borrows the existing target, retaining no input loan in the
+target. Errors may leave a partially updated target. All operations are
+synchronous. Marshal and Unmarshal use AsWritten; With/Indent/Strict accept a
+Naming value. Invalid naming values report an error. Naming may be computed at
+runtime; every supported naming policy is checked for field collisions at
+compile time for each generated struct codec. This conservative rule also
+makes generic wrappers independent of call-site constant propagation.
+
+Supported types are bool, integer and float types, string, named primitive
+types, structs, fixed arrays, Array, maps with string/integer keys, Optional,
+Value, and custom codecs. Slices support encoding only. Rune, error, functions,
+channels, tasks, Mutex, and general interfaces are rejected with a diagnostic
+naming the path to the unsupported member. Marshaler and Unmarshaler interface
+views support their respective custom operation. These compiler-known calls
+apply JSON codec validation to type arguments, including borrowed codec
+interfaces, mutable slices for encoding, and custom types containing views or
+closures, without relaxing the generic type-argument restrictions for ordinary
+functions or stored generic structs. Their implementations never own those arguments.
+Recursive types are supported. Codec interface targets must already hold a
+concrete implementation. Generated fresh array/map values cannot choose an
+implementation and reject codec interface fields unless an enclosing custom
+decoder constructs it. Initialized root codec-interface targets can be decoded;
+ordinary borrow checks still govern compound targets. In particular, indirect
+custom calls may retain a target loan in the mutable decoder, which can prevent
+repeated mutable access through an array or object loop. A concrete codec type
+or an enclosing custom decoder avoids that ambiguous dispatch. Zero owned
+interfaces follow the ordinary interface-call rules.
+
+Matching custom methods take precedence at every nesting level. EncodeJSON
+must match Marshaler and DecodeJSON must match Unmarshaler. Custom methods
+control their own key handling and consume/write one value through the token
+API; their errors and token-state violations propagate normally. A custom
+DecodeJSON must consume from the supplied input without retaining the decoder
+or replacing its input; decoded data must be independently owned. The compiler
+continues to apply ordinary borrowing rules rather than assuming this behavioral
+contract when checking an indirect call.
+
+Structs encode exported fields in declaration order and ignore private fields.
+AsWritten preserves names. LowerCamel lowercases the initial acronym, keeping
+the last acronym capital when it begins a following word: ID becomes id,
+UserID becomes userID, HTTPServer becomes httpServer. SnakeCase splits before
+uppercase letters following lowercase/numeric characters, and before the final
+uppercase letter of an acronym followed by lowercase, then lowercases: UserID becomes
+user_id and HTTPServer becomes http_server. Unicode case mappings use unicode.ToLower (a single-scalar mapping);
+case-insensitive matching uses strings.EqualFold. On decoding, exact keys win; otherwise
+case-insensitive comparison is attempted in declaration order, first match wins.
+
+Missing ordinary fields retain their prior values. At each decoded struct
+object, Optional fields reset Set to false before members are read, so a
+missing Optional and explicit null both mean not set. An unset Optional is
+omitted only as a struct field; at the root or in arrays/maps it encodes null.
+Some takes ownership of its argument and sets Set true. Null clears Set but
+need not change Value. For all other types except Value/custom codecs, null is
+an error. Duplicate keys update in order, with the last occurrence winning.
+
+Unknown struct keys are skipped by default; strict mode rejects them at every
+generated struct depth. Maps and Value accept arbitrary keys. Generated array
+and map elements start from zero values without introducing source-level
+partial struct literals. Decoding an Array replaces its contents; decoding a
+map updates existing entries, replacing each present value from a fresh zero.
+Fixed-array decoding requires exactly its declared length. All integer widths
+are range checked without wrapping; integer reads reject fractions/exponents.
+Float widths use their normal binary rounding with overflow rejected.
+
+Map encoding sorts the emitted key strings lexicographically by UTF-8 bytes.
+Integer keys use canonical decimal spelling. Integer-key decoding accepts only
+canonical decimal strings within the key type's range. Different keys cannot
+silently map to the same emitted key. Generated Float encoding uses the source
+width's shortest round-trip text.
+
+```ore
+type User struct { ID int; Name string; Email json.Optional<string> }
+func writeUser(user User) (Array<byte>, error) {
+    return json.MarshalWith(user, json.LowerCamel)
+}
+func readUser(data []byte, user mut User) error {
+    return json.UnmarshalStrict(data, user, json.LowerCamel)
+}
+```
+
+Compiler impact: recognize the six bundled JSON generic entry points and their private
+encode/decode specialization hooks,
+validate concrete codec types, synthesize ordinary typed encode/decode functions
+built on the Zore token API, and reuse those functions for recursive calls.
+Generated code goes through ordinary ownership, cleanup, and lowering checks.
+No runtime reflection, annotations, new syntax, or LLVM-dependent semantic
+checking is introduced. The token API and Value tree are written in Zore.
+
+Conformance covers RFC syntax, UTF-8, surrogates, all number widths, depth,
+duplicates, stable order, naming and collision diagnostics, optional fields,
+strict nested decoding, custom codecs, recursive types, generic callers,
+zero values, sticky errors, round trips, and rejected lifetime/task escapes.
+
 # 38. Self-Hosting Constraint
 
 ## 38.1 Long-term goal — LOCKED

@@ -1,0 +1,11 @@
+{"id":1,"name":"Ada","tags":["admin"]}
+Grace
+grace@example.com
+{
+  "id": 2,
+  "name": "Grace",
+  "tags": [
+    "member"
+  ]
+}
+true

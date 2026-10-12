@@ -3,6 +3,7 @@ mod format;
 mod generic;
 mod globals;
 mod interface;
+mod json;
 mod method_value;
 mod spawn;
 

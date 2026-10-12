@@ -133,9 +133,26 @@ impl ServerProcess {
         read_closed(&mut stream)
     }
 
+    fn exchange_when_admitted(&self, request: &str) -> String {
+        let deadline = std::time::Instant::now() + Duration::from_secs(4);
+        loop {
+            let response = self.exchange(request);
+            if !response.is_empty() {
+                return response;
+            }
+            // Peer EOF can precede connection permit release.
+            assert!(
+                std::time::Instant::now() < deadline,
+                "request was not admitted"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
     fn stop(self, expected_error: &str) {
-        let response =
-            self.exchange("GET /stop HTTP/1.1\r\nHost: test\r\nConnection: close\r\n\r\n");
+        let response = self.exchange_when_admitted(
+            "GET /stop HTTP/1.1\r\nHost: test\r\nConnection: close\r\n\r\n",
+        );
         assert!(response.starts_with("HTTP/1.1 204"), "{response}");
         self.finish(expected_error);
     }
@@ -447,23 +464,68 @@ fn read_headers(stream: &mut TcpStream) -> String {
 
 #[test]
 fn http_capacity_and_handler_panic_release_the_connection_permit() {
-    let source = SERVER.replace(
-        "config.MaxBodyBytes = 32",
-        "config.MaxConnections = 1\n    config.MaxBodyBytes = 32",
-    );
-    let server = ServerProcess::start(&source);
+    let source = SERVER
+        .replace(
+            "config.MaxBodyBytes = 32",
+            "config.MaxConnections = 1\n    config.MaxBodyBytes = 32",
+        )
+        .replace(
+            "config.ReadHeaderTimeout = 300 * time.Millisecond",
+            "config.ReadHeaderTimeout = 10 * time.Second",
+        )
+        .replace(
+            "config.IdleTimeout = 300 * time.Millisecond",
+            "config.IdleTimeout = 10 * time.Second",
+        )
+        .replace(
+            "if path == \"/panic\" { panic(\"handler failure\") }",
+            "if path == \"/panic\" { println(\"panic-entered\"); panic(\"handler failure\") }",
+        );
+    let mut server = ServerProcess::start(&source);
+    let output = server.child.stdout.take().unwrap();
+    let (entered, started) = std::sync::mpsc::channel();
+    let observer = std::thread::spawn(move || {
+        let mut output = BufReader::new(output);
+        let mut line = String::new();
+        output.read_line(&mut line).unwrap();
+        entered.send(line).unwrap();
+        let mut remaining = String::new();
+        output.read_to_string(&mut remaining).unwrap();
+    });
     let mut held = server.connect();
     held.write_all(b"GET /echo HTTP/1.1\r\nHost: x\r\n\r\n")
         .unwrap();
     status(&read_headers(&mut held), 200);
     let mut excess = server.connect();
     assert!(read_closed(&mut excess).is_empty());
-    assert!(read_closed(&mut held).is_empty());
-    let panic_response = server.exchange("GET /panic HTTP/1.1\r\nHost: x\r\n\r\n");
-    assert!(panic_response.is_empty());
-    let response = server.exchange("GET /echo HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n");
+    held.shutdown(Shutdown::Both).unwrap();
+    drop(held);
+    let deadline = std::time::Instant::now() + Duration::from_secs(4);
+    loop {
+        assert!(
+            server
+                .exchange("GET /panic HTTP/1.1\r\nHost: x\r\n\r\n")
+                .is_empty()
+        );
+        match started.recv_timeout(Duration::from_millis(10)) {
+            Ok(line) => {
+                assert_eq!(line, "panic-entered\n");
+                break;
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "panic handler was not admitted"
+                );
+            }
+            Err(error) => panic!("panic observer failed: {error}"),
+        }
+    }
+    let response =
+        server.exchange_when_admitted("GET /echo HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n");
     status(&response, 200);
     server.stop("handler failure");
+    observer.join().unwrap();
 }
 
 #[test]
@@ -490,7 +552,7 @@ fn http_factory_poison_preserves_acceptance_and_shutdown() {
 }
 
 #[test]
-fn rest_example_model_codec_handles_unicode_and_rejects_non_json_escapes() {
+fn rest_example_json_codec_handles_unicode_and_rejects_non_json_escapes() {
     let codec = include_str!("../../examples/rest-api/json.ore");
     let source = format!(
         r#"{codec}
@@ -498,7 +560,9 @@ func main() {{
     let good = strings.Bytes("{{\"name\":\"Ada \\uD83D\\uDE00\"}}")
     let name, err = decodeName(good[:])
     println(err == nil)
-    println(quoteJSON(name))
+    let quoted, quoteErr = encodeJSON(name)
+    if quoteErr != nil {{ panic("quote") }}
+    println(quoted)
     let inputs = [string; 7]{{"{{\"name\":\"\\x41\"}}", "{{\"name\":\"\\uD800\"}}", "{{\"name\":\"\\uDC00\"}}", "{{\"name\":\"\"}}", "{{\"name\":\"a\",\"name\":\"b\"}}", "{{\"other\":\"a\"}}", "{{\"name\":\"a\"}} trailing"}}
     for input in inputs {{ let _, err = decodeName(strings.Bytes(input)[:]); println(err != nil) }}
 }}
@@ -562,6 +626,10 @@ func main() {
 
 pub(super) fn check_rest_example() {
     let main = include_str!("../../examples/rest-api/main.ore")
+        .replace(
+            "package main\n",
+            "package main\nimport \"std/encoding/json\"\n",
+        )
         .replace("127.0.0.1:8080", "127.0.0.1:0")
         .replace(
             "println(\"Listening on http://\" + listener.Addr() + \"; press Enter to shut down\")",
@@ -569,6 +637,7 @@ pub(super) fn check_rest_example() {
         );
     let codec = include_str!("../../examples/rest-api/json.ore")
         .replace("package main\n", "")
+        .replace("import \"std/encoding/json\"\n", "")
         .replace("import \"std/strings\"\n", "");
     let mut server = ServerProcess::start(&format!("{main}\n{codec}"));
     let body = r#"{"name":"Ada"}"#;

@@ -27,7 +27,6 @@ type UsersHandler struct {
     kind int
 }
 func (f UsersFactory) NewHandler() (http.Handler, error) { return UsersHandler{store: f.store, kind: f.kind}, nil }
-func userJSON(user User) string { return "{\"id\":" + strconv.Itoa(user.ID) + ",\"name\":" + quoteJSON(user.Name) + "}" }
 func respond(w mut http.ResponseWriter, status int, text string) error {
     w.SetHeader(http.HeaderContentType, "application/json")?
     w.SetHeader(http.HeaderContentLength, strconv.Itoa(text.len()))?
@@ -38,12 +37,7 @@ func respond(w mut http.ResponseWriter, status int, text string) error {
 func (h UsersHandler) Handle(w mut http.ResponseWriter, r mut http.Request) error {
     if h.kind == 0 {
         let users = h.store.withLock(func(store mut UserStore) Array<User> { return clone(store.users) })
-        var text = "["
-        for var i = 0; i < users.len(); i += 1 {
-            if i > 0 { text += "," }
-            text += userJSON(users[i])
-        }
-        return respond(w, 200, text + "]")
+        return respond(w, 200, encodeJSON(users)?)
     }
     if h.kind == 1 {
         let rawID, _ = r.PathParam("id")
@@ -57,7 +51,7 @@ func (h UsersHandler) Handle(w mut http.ResponseWriter, r mut http.Request) erro
             return User{ID: 0, Name: ""}, false
         })
         if !found { return respond(w, 404, "{\"error\":\"user not found\"}") }
-        return respond(w, 200, userJSON(user))
+        return respond(w, 200, encodeJSON(user)?)
     }
     let headers = r.Headers()
     let types = headers.Values(http.HeaderContentType)
@@ -74,7 +68,7 @@ func (h UsersHandler) Handle(w mut http.ResponseWriter, r mut http.Request) erro
         return user
     })
     w.SetHeader(http.HeaderLocation, "/users/" + strconv.Itoa(user.ID))?
-    return respond(w, 201, userJSON(user))
+    return respond(w, 201, encodeJSON(user)?)
 }
 func main() {
     let store = mutex(UserStore{users: Array<User>{}, next: 1})

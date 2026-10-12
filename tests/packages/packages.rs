@@ -1036,3 +1036,164 @@ func (h H) Handle(w mut http.ResponseWriter, r mut http.Request) error {
 func main() {}",
     )]);
 }
+
+#[test]
+fn json_rejects_unsupported_fields_slices_and_name_collisions() {
+    rejects(
+        &[(
+            "main.ore",
+            r#"package main
+import "std/encoding/json"
+type User struct { Lock Mutex<int> }
+func main() { let _, err = json.Marshal(User{Lock: mutex(0)}); _ = err }
+"#,
+        )],
+        "cannot encode User.Lock",
+    );
+    rejects(
+        &[(
+            "main.ore",
+            r#"package main
+import "std/encoding/json"
+func main() { var values = Array<int>{1}; var view = values[:]; let err = json.Unmarshal(Array<byte>{91,93}[:], view); _ = err }
+"#,
+        )],
+        "has no JSON form",
+    );
+    rejects(
+        &[(
+            "main.ore",
+            r#"package main
+import "std/encoding/json"
+type Collision struct { ID int; Id int }
+func main() { let _, err = json.Marshal(Collision{ID: 1, Id: 2}); _ = err }
+"#,
+        )],
+        "field name collision",
+    );
+    rejects(
+        &[(
+            "main.ore",
+            r#"package main
+import "std/encoding/json"
+type Bad struct { N int }
+func (b Bad) EncodeJSON(e json.Encoder) { _ = e }
+func main() { let _, err = json.Marshal(Bad{N: 1}); _ = err }
+"#,
+        )],
+        "incompatible codec signature",
+    );
+}
+
+#[test]
+fn json_decoder_preserves_input_provenance() {
+    rejects(
+        &[(
+            "main.ore",
+            r#"package main
+import "std/encoding/json"
+func invalid() json.Decoder { let bytes = Array<byte>{49}; return json.NewDecoder(bytes[:]) }
+func main() {}
+"#,
+        )],
+        "cannot return a view",
+    );
+    rejects(
+        &[(
+            "main.ore",
+            r#"package main
+import "std/encoding/json"
+func main() { let bytes = Array<byte>{49}; let decoder = json.NewDecoder(bytes[:]); let queue = channel<json.Decoder>(1); queue.send(decoder) }
+"#,
+        )],
+        "a channel cannot carry slices",
+    );
+    accepts(&[(
+        "main.ore",
+        r#"package main
+import "std/encoding/json"
+func parse() (json.Value, error) { let bytes = Array<byte>{49}; return json.Parse(bytes[:]) }
+func main() { let _, err = parse(); _ = err }
+"#,
+    )]);
+}
+
+#[test]
+fn json_codec_validation_is_separate_from_ordinary_generics() {
+    rejects(
+        &[(
+            "main.ore",
+            r#"package main
+import "std/encoding/json"
+func main() { let _, err = json.Marshal('x'); _ = err }
+"#,
+        )],
+        "rune has no JSON form",
+    );
+    rejects(
+        &[(
+            "main.ore",
+            r#"package main
+import "std/encoding/json"
+func main() { let _, err = json.Marshal(map[bool]int{}); _ = err }
+"#,
+        )],
+        "has no JSON form",
+    );
+    rejects(
+        &[(
+            "main.ore",
+            r#"package main
+func ordinary<T any>(value T) { _ = value }
+func main() { ordinary(func() {}) }
+"#,
+        )],
+        "cannot be the type argument",
+    );
+    rejects(
+        &[(
+            "main.ore",
+            r#"package main
+import "std/encoding/json"
+func main() { var bytes = Array<byte>{49}; let decoder = json.NewDecoder(bytes[:]); let shared = mutex(decoder); _ = shared }
+"#,
+        )],
+        "a mutex cannot guard slices",
+    );
+    rejects(
+        &[(
+            "main.ore",
+            r#"package main
+import "std/encoding/json"
+func read(decoder own json.Decoder) {}
+func main() { let bytes = Array<byte>{49}; let decoder = json.NewDecoder(bytes[:]); let task = go read(decoder); task.wait() }
+"#,
+        )],
+        "task",
+    );
+}
+
+#[test]
+fn json_fresh_interface_values_require_a_concrete_decoder() {
+    rejects(
+        &[(
+            "main.ore",
+            r#"package main
+import "std/encoding/json"
+func main() { var values = Array<json.Unmarshaler>{}; let err = json.Unmarshal(Array<byte>{91,93}[:], values); _ = err }
+"#,
+        )],
+        "a fresh codec interface needs a concrete type or custom decoder",
+    );
+    rejects(
+        &[(
+            "main.ore",
+            r#"package main
+import "std/encoding/json"
+type Holder struct { Codec json.Unmarshaler }
+func main() { var values = map[string]Holder{}; let err = json.Unmarshal(Array<byte>{123,125}[:], values); _ = err }
+"#,
+        )],
+        "Holder[value].Codec: a fresh codec interface",
+    );
+}

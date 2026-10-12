@@ -484,7 +484,8 @@ impl Checker<'_> {
         for &param in &type_params {
             match bound.get(&param) {
                 Some(&argument) => {
-                    ok &= self.type_argument_allowed(param, argument, span);
+                    ok &= self.json_type_argument(id)
+                        || self.type_argument_allowed(param, argument, span);
                     type_args.push(argument);
                 }
                 None => {
@@ -855,7 +856,10 @@ impl Checker<'_> {
         }
         let first_new = functions.len();
         let copy = self.copy(functions, template, &key.1, probe);
-        copies.by_key.insert(key, copy);
+        copies.by_key.insert(key.clone(), copy);
+        if !probe && key.1.len() == 1 {
+            self.generate_json_codec(functions, copy, template, key.1[0], span);
+        }
         for index in first_new..functions.len() {
             copies.depths.push(depth);
             copies.pending.push(index);

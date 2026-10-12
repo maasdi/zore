@@ -993,7 +993,11 @@ impl<'a> Resolver<'a> {
                 func.type_params[0].span,
             );
         }
-        if func.native {
+        if func.native
+            && !(self.out.packages[self.out.function_package[id.0 as usize]].path
+                == "std/encoding/json"
+                && matches!(func.name.text.as_str(), "encode" | "decode"))
+        {
             self.error(
                 "a function without a body cannot declare type parameters",
                 func.type_params[0].span,

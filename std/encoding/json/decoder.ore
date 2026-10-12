@@ -1,0 +1,320 @@
+package json
+
+import "std/strconv"
+import "std/strings"
+import "std/unicode/utf8"
+
+type decodeFrame struct {
+    kind Kind
+    count int
+    field bool
+}
+
+type Decoder struct {
+    data []byte
+    at int
+    frames Array<decodeFrame>
+    started bool
+    failure error
+    maxDepth int
+    strict bool
+}
+
+func NewDecoder(data []byte) Decoder {
+    return Decoder{data: data, at: 0, frames: Array<decodeFrame>{}, started: false, failure: nil, maxDepth: 512, strict: false}
+}
+
+func (d mut Decoder) fail(message string) error {
+    if d.failure == nil {
+        var line = 1
+        var column = 1
+        for var i = 0; i < d.at && i < d.data.len(); i += 1 {
+            if d.data[i] == 10 { line += 1; column = 1 } else { column += 1 }
+        }
+        d.failure = error("json: line " + strconv.Itoa(line) + ", column " + strconv.Itoa(column) + ": " + message)
+    }
+    return d.failure
+}
+
+func whitespace(b byte) bool { return b == 32 || b == 9 || b == 10 || b == 13 }
+func digit(b byte) bool { return b >= 48 && b <= 57 }
+func boundary(b byte) bool { return whitespace(b) || b == 44 || b == 93 || b == 125 }
+
+func (d Decoder) space(position int) int {
+    var pos = position
+    for pos < d.data.len() && whitespace(d.data[pos]) { pos += 1 }
+    return pos
+}
+
+func (d mut Decoder) position() (int, error) {
+    if d.failure != nil { return 0, d.failure }
+    var pos = d.space(d.at)
+    if d.frames.len() == 0 {
+        if d.started { return 0, d.fail("multiple root values") }
+    } else {
+        let top = d.frames.len() - 1
+        if d.frames[top].kind == KindObject {
+            if !d.frames[top].field { return 0, d.fail("object value requires Key") }
+        } else if d.frames[top].count > 0 {
+            if pos >= d.data.len() || d.data[pos] != 44 { d.at = pos; return 0, d.fail("expected ',' before array element") }
+            pos = d.space(pos + 1)
+        }
+    }
+    if pos >= d.data.len() { d.at = pos; return 0, d.fail("expected value") }
+    return pos, nil
+}
+
+func (d mut Decoder) start() error {
+    let pos = d.position()?
+    d.at = pos
+    if d.frames.len() == 0 { d.started = true } else {
+        let top = d.frames.len() - 1
+        d.frames[top].count += 1
+        d.frames[top].field = false
+    }
+    return nil
+}
+
+func (d mut Decoder) Peek() (Kind, error) {
+    let pos = d.position()?
+    let b = d.data[pos]
+    if b == 110 { return KindNull, nil }
+    if b == 116 || b == 102 { return KindBool, nil }
+    if b == 45 || digit(b) { return KindNumber, nil }
+    if b == 34 { return KindString, nil }
+    if b == 91 { return KindArray, nil }
+    if b == 123 { return KindObject, nil }
+    d.at = pos
+    return KindNull, d.fail("expected value")
+}
+
+func kindName(kind Kind) string {
+    if kind == KindNull { return "null" }
+    if kind == KindBool { return "boolean" }
+    if kind == KindNumber { return "number" }
+    if kind == KindString { return "string" }
+    if kind == KindArray { return "array" }
+    return "object"
+}
+
+func (d mut Decoder) expect(kind Kind) error {
+    let found = d.Peek()?
+    if found != kind {
+        d.at = d.position()?
+        return d.fail("expected " + kindName(kind) + ", found " + kindName(found))
+    }
+    return d.start()
+}
+
+func (d mut Decoder) SetMaxDepth(depth int) {
+    if d.failure != nil { return }
+    if depth <= 0 || depth < d.frames.len() { _ = d.fail("invalid maximum depth"); return }
+    d.maxDepth = depth
+}
+func (d mut Decoder) DisallowUnknownFields() { if d.failure == nil { d.strict = true } }
+
+func (d mut Decoder) begin(kind Kind) error {
+    d.expect(kind)?
+    var limit = d.maxDepth
+    if limit == 0 { limit = 512 }
+    if d.frames.len() >= limit { return d.fail("maximum depth exceeded") }
+    d.at += 1
+    d.frames.push(decodeFrame{kind: kind, count: 0, field: false})
+    return nil
+}
+func (d mut Decoder) end(kind Kind, delimiter byte) error {
+    if d.failure != nil { return d.failure }
+    if d.frames.len() == 0 { return d.fail("unmatched container end") }
+    let top = d.frames.len() - 1
+    if d.frames[top].kind != kind { return d.fail("mismatched container end") }
+    if d.frames[top].field { return d.fail("missing object field value") }
+    d.at = d.space(d.at)
+    if d.at >= d.data.len() || d.data[d.at] != delimiter { return d.fail("expected container end") }
+    d.at += 1
+    let _, _ = d.frames.pop()
+    return nil
+}
+func (d mut Decoder) BeginObject() error { return d.begin(KindObject) }
+func (d mut Decoder) EndObject() error { return d.end(KindObject, 125) }
+func (d mut Decoder) BeginArray() error { return d.begin(KindArray) }
+func (d mut Decoder) EndArray() error { return d.end(KindArray, 93) }
+
+func (d mut Decoder) More() bool {
+    if d.failure != nil { return false }
+    if d.frames.len() == 0 { _ = d.fail("More outside a container"); return false }
+    let top = d.frames.len() - 1
+    if d.frames[top].field { _ = d.fail("missing object field value"); return false }
+    var pos = d.space(d.at)
+    var close = byte(93)
+    if d.frames[top].kind == KindObject { close = 125 }
+    if pos < d.data.len() && d.data[pos] == close { return false }
+    if d.frames[top].count > 0 {
+        if pos >= d.data.len() || d.data[pos] != 44 { d.at = pos; _ = d.fail("expected ',' between values"); return false }
+        pos = d.space(pos + 1)
+    }
+    if pos >= d.data.len() || d.data[pos] == 93 || d.data[pos] == 125 {
+        d.at = pos
+        _ = d.fail("expected value after separator")
+        return false
+    }
+    return true
+}
+
+func (d mut Decoder) Key() (string, error) {
+    if d.failure != nil { return "", d.failure }
+    if d.frames.len() == 0 { return "", d.fail("Key outside an object") }
+    let top = d.frames.len() - 1
+    if d.frames[top].kind != KindObject { return "", d.fail("Key outside an object") }
+    if d.frames[top].field { return "", d.fail("missing object field value") }
+    d.at = d.space(d.at)
+    if d.frames[top].count > 0 {
+        if d.at >= d.data.len() || d.data[d.at] != 44 { return "", d.fail("expected ',' before object key") }
+        d.at = d.space(d.at + 1)
+    }
+    let key = d.quoted()?
+    d.at = d.space(d.at)
+    if d.at >= d.data.len() || d.data[d.at] != 58 { return "", d.fail("expected ':' after object key") }
+    d.at += 1
+    d.frames[top].field = true
+    return key, nil
+}
+
+func (d mut Decoder) literal(text string) error {
+    for var i = 0; i < text.len(); i += 1 {
+        if d.at >= d.data.len() || d.data[d.at] != text[i] { return d.fail("invalid literal") }
+        d.at += 1
+    }
+    if d.at < d.data.len() && !boundary(d.data[d.at]) { return d.fail("invalid character after literal") }
+    return nil
+}
+func (d mut Decoder) IsNull() bool {
+    let kind, err = d.Peek()
+    return err == nil && kind == KindNull
+}
+func (d mut Decoder) Null() error { d.expect(KindNull)?; return d.literal("null") }
+func (d mut Decoder) Bool() (bool, error) {
+    d.expect(KindBool)?
+    if d.data[d.at] == 116 { d.literal("true")?; return true, nil }
+    d.literal("false")?
+    return false, nil
+}
+
+func (d mut Decoder) number() (string, error) {
+    d.expect(KindNumber)?
+    let start = d.at
+    if d.data[d.at] == 45 { d.at += 1 }
+    if d.at >= d.data.len() || !digit(d.data[d.at]) { return "", d.fail("expected digit") }
+    if d.data[d.at] == 48 { d.at += 1 } else {
+        for d.at < d.data.len() && digit(d.data[d.at]) { d.at += 1 }
+    }
+    if d.at < d.data.len() && d.data[d.at] == 46 {
+        d.at += 1
+        let fraction = d.at
+        for d.at < d.data.len() && digit(d.data[d.at]) { d.at += 1 }
+        if d.at == fraction { return "", d.fail("expected fraction digit") }
+    }
+    if d.at < d.data.len() && (d.data[d.at] == 101 || d.data[d.at] == 69) {
+        d.at += 1
+        if d.at < d.data.len() && (d.data[d.at] == 43 || d.data[d.at] == 45) { d.at += 1 }
+        let exponent = d.at
+        for d.at < d.data.len() && digit(d.data[d.at]) { d.at += 1 }
+        if d.at == exponent { return "", d.fail("expected exponent digit") }
+    }
+    if d.at < d.data.len() && !boundary(d.data[d.at]) { return "", d.fail("invalid character after number") }
+    return strings.FromBytes(d.data[start:d.at])
+}
+func (d mut Decoder) Int() (int, error) {
+    let text = d.number()?
+    let value, err = strconv.Atoi(text)
+    if err != nil { return 0, d.fail("expected integer within int range") }
+    return value, nil
+}
+func (d mut Decoder) Float() (float64, error) {
+    let text = d.number()?
+    let value, err = strconv.ParseFloat(text, 64)
+    if err != nil { return 0, d.fail("number outside float64 range") }
+    return value, nil
+}
+
+func hex(b byte) int {
+    if b >= 48 && b <= 57 { return int(b - 48) }
+    if b >= 65 && b <= 70 { return int(b - 65) + 10 }
+    if b >= 97 && b <= 102 { return int(b - 97) + 10 }
+    return -1
+}
+func (d mut Decoder) unicodeEscape() (int, error) {
+    var code = 0
+    for var i = 0; i < 4; i += 1 {
+        if d.at >= d.data.len() { return 0, d.fail("incomplete unicode escape") }
+        let nibble = hex(d.data[d.at])
+        if nibble < 0 { return 0, d.fail("invalid unicode escape") }
+        code = code * 16 + nibble
+        d.at += 1
+    }
+    return code, nil
+}
+func (d mut Decoder) quoted() (string, error) {
+    if d.at >= d.data.len() || d.data[d.at] != 34 { return "", d.fail("expected string") }
+    d.at += 1
+    var output = Array<byte>{}
+    for d.at < d.data.len() {
+        let b = d.data[d.at]
+        if b == 34 { d.at += 1; return strings.FromBytes(output[:]) }
+        if b < 32 { return "", d.fail("unescaped control character") }
+        if b == 92 {
+            d.at += 1
+            if d.at >= d.data.len() { return "", d.fail("incomplete escape") }
+            let escaped = d.data[d.at]
+            d.at += 1
+            if escaped == 34 || escaped == 92 || escaped == 47 { output.push(escaped) } else if escaped == 98 { output.push(8) } else if escaped == 102 { output.push(12) } else if escaped == 110 { output.push(10) } else if escaped == 114 { output.push(13) } else if escaped == 116 { output.push(9) } else if escaped == 117 {
+                var code = d.unicodeEscape()?
+                if code >= 55296 && code <= 56319 {
+                    if d.at + 1 >= d.data.len() || d.data[d.at] != 92 || d.data[d.at + 1] != 117 { return "", d.fail("missing low surrogate") }
+                    d.at += 2
+                    let low = d.unicodeEscape()?
+                    if low < 56320 || low > 57343 { return "", d.fail("invalid low surrogate") }
+                    code = 65536 + (code - 55296) * 1024 + low - 56320
+                } else if code >= 56320 && code <= 57343 { return "", d.fail("unpaired low surrogate") }
+                let encoded = string(rune(code))
+                for var i = 0; i < encoded.len(); i += 1 { output.push(encoded[i]) }
+            } else { return "", d.fail("invalid escape") }
+        } else {
+            let r, size = utf8.DecodeRune(d.data[d.at:])
+            if r == utf8.RuneError && size == 1 { return "", d.fail("invalid UTF-8") }
+            for var i = 0; i < size; i += 1 { output.push(d.data[d.at + i]) }
+            d.at += size
+        }
+    }
+    return "", d.fail("unterminated string")
+}
+func (d mut Decoder) String() (string, error) { d.expect(KindString)?; return d.quoted() }
+
+func (d mut Decoder) skipToken() error {
+    let kind = d.Peek()?
+    if kind == KindObject { return d.BeginObject() }
+    if kind == KindArray { return d.BeginArray() }
+    if kind == KindNull { return d.Null() }
+    if kind == KindBool { let _ = d.Bool()?; return nil }
+    if kind == KindString { let _ = d.String()?; return nil }
+    let _ = d.number()?
+    return nil
+}
+func (d mut Decoder) Skip() error {
+    let depth = d.frames.len()
+    d.skipToken()?
+    for d.frames.len() > depth {
+        let kind = d.frames[d.frames.len() - 1].kind
+        if d.More() {
+            if kind == KindObject { let _ = d.Key()? }
+            d.skipToken()?
+        } else if kind == KindObject { d.EndObject()? } else { d.EndArray()? }
+    }
+    return nil
+}
+func (d mut Decoder) Finish() error {
+    if d.failure != nil { return d.failure }
+    if !d.started || d.frames.len() != 0 { return d.fail("unfinished document") }
+    d.at = d.space(d.at)
+    if d.at != d.data.len() { return d.fail("unexpected trailing data") }
+    return nil
+}
