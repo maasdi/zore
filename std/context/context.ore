@@ -28,6 +28,19 @@ func WithCancel(parent Context) (Context, func()) {
     }
 }
 
+func WithCancelOn(parent Context, done channel<bool>) (Context, func()) {
+    let ctx = derive(parent, parent.deadline)
+    go cancelOn(ctx, done)
+    return ctx, func() { ctx.cancel(canceled) }
+}
+
+async func cancelOn(ctx Context, done channel<bool>) {
+    select {
+        case done.receive() { ctx.cancel(canceled) }
+        case ctx.Done().receive() {}
+    }
+}
+
 func WithTimeout(parent Context, timeout int) (Context, func()) {
     return WithDeadline(parent, time.Now() + timeout)
 }

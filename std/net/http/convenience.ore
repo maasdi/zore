@@ -1,0 +1,51 @@
+package http
+
+import "std/context"
+import "std/encoding/json"
+import "std/net"
+import "std/strconv"
+import "std/strings"
+import "std/time"
+
+func (w mut ResponseWriter) response(status int, contentType string, data []byte) error {
+    w.SetHeader(HeaderContentType, contentType)?
+    if status != 204 { w.SetHeader(HeaderContentLength, strconv.Itoa(data.len()))? }
+    w.WriteHeader(status)?
+    let _, err = w.Write(data)
+    return err
+}
+func (w mut ResponseWriter) Text(status int, text string) error {
+    let data = strings.Bytes(text)
+    return w.response(status, "text/plain; charset=utf-8", data[:])
+}
+func JSON<T any>(w mut ResponseWriter, status int, value T) error {
+    return JSONWith(w, status, value, json.AsWritten)
+}
+func JSONWith<T any>(w mut ResponseWriter, status int, value T, naming json.Naming) error {
+    let data = json.MarshalWith(value, naming)?
+    return w.response(status, "application/json", data[:])
+}
+async func serveAndReport(server Server, listener own net.Listener, outcome channel<error>) {
+    var err = server.Serve(listener)
+    let canceledBeforeStart = server.state.withLock(func(state mut serverState) bool { return state.draining && !state.started })
+    if err != nil && canceledBeforeStart { err = nil }
+    outcome.send(err)
+}
+func ListenAndServe(ctx context.Context, address string, router Router, config Config) error {
+    let server = NewServer(router, config)?
+    if ctx.Err() != nil { return nil }
+    let listener = net.Listen("tcp", address)?
+    let outcome = channel<error>(1)
+    let serving = go serveAndReport(server, listener, outcome)
+    select {
+        case let err, _ = outcome.receive() { serving.wait(); return err }
+        case ctx.Done().receive() {}
+    }
+    let drain, cancel = context.WithDeadline(context.Background(), deadlineAfter(time.Now(), server.config.ShutdownTimeout))
+    let err = server.Shutdown(drain)
+    cancel()
+    if err != nil { return err }
+    let result, _ = outcome.receive()
+    serving.wait()
+    return result
+}

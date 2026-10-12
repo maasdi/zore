@@ -19,11 +19,15 @@ not been validated here.
 
 HTTP/1.1 server work for issue #105 adds `std/net/http`, request-target
 `std/net/url`, wall-clock HTTP dates, and the runnable `examples/rest-api/`.
-The router uses owned handler factories and `Handler.Handle`; task-local socket
+The router accepts direct handler functions and inline Copy-handle closures,
+adapted to fresh owned per-request invocations; advanced factories use
+`HandleFactory`. Task-local socket
 views remain checked by the compiler. The native HTTP tests exercise loopback
 framing, routing, capacity, deadlines, panic cleanup, and shutdown. This does not
-implement an HTTP client, TLS, HTTP/2, or OS signal channels. The example drains
-on stdin input.
+implement an HTTP client, TLS, or HTTP/2. `std/os/signal.NotifyContext` supports
+SIGINT/SIGTERM cancellation on Linux/macOS, with idempotent subscription cleanup.
+The REST example uses function routes, JSON response helpers, and signal-driven
+ListenAndServe with a bounded graceful shutdown.
 
 Issue #106 adds `std/encoding/json`: Zore token encoding/decoding and an owned
 Value tree, plus compiler-generated concrete codecs with naming policies,

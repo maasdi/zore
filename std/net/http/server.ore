@@ -15,6 +15,7 @@ type Config struct {
     WriteTimeout int
     IdleTimeout int
     AcceptPollInterval int
+    ShutdownTimeout int
 }
 type serverState struct {
     started bool
@@ -40,12 +41,13 @@ func DefaultConfig() Config {
         WriteTimeout: 30 * time.Second,
         IdleTimeout: 60 * time.Second,
         AcceptPollInterval: 100 * time.Millisecond,
+        ShutdownTimeout: 10 * time.Second,
     }
 }
 func NewServer(router Router, config Config) (Server, error) {
     var chosen = config
     let defaults = DefaultConfig()
-    let values = [int; 8]{config.MaxHeaderBytes, config.MaxBodyBytes, config.MaxConnections, config.ReadHeaderTimeout, config.ReadBodyTimeout, config.WriteTimeout, config.IdleTimeout, config.AcceptPollInterval}
+    let values = [int; 9]{config.MaxHeaderBytes, config.MaxBodyBytes, config.MaxConnections, config.ReadHeaderTimeout, config.ReadBodyTimeout, config.WriteTimeout, config.IdleTimeout, config.AcceptPollInterval, config.ShutdownTimeout}
     var invalid = !router.live
     for value in values { if value < 0 { invalid = true } }
     if chosen.MaxHeaderBytes == 0 { chosen.MaxHeaderBytes = defaults.MaxHeaderBytes }
@@ -56,7 +58,8 @@ func NewServer(router Router, config Config) (Server, error) {
     if chosen.WriteTimeout == 0 { chosen.WriteTimeout = defaults.WriteTimeout }
     if chosen.IdleTimeout == 0 { chosen.IdleTimeout = defaults.IdleTimeout }
     if chosen.AcceptPollInterval == 0 { chosen.AcceptPollInterval = defaults.AcceptPollInterval }
-    let durations = [int; 5]{chosen.ReadHeaderTimeout, chosen.ReadBodyTimeout, chosen.WriteTimeout, chosen.IdleTimeout, chosen.AcceptPollInterval}
+    if chosen.ShutdownTimeout == 0 { chosen.ShutdownTimeout = defaults.ShutdownTimeout }
+    let durations = [int; 6]{chosen.ReadHeaderTimeout, chosen.ReadBodyTimeout, chosen.WriteTimeout, chosen.IdleTimeout, chosen.AcceptPollInterval, chosen.ShutdownTimeout}
     for duration in durations { if duration > 9223372036854775807 - time.Now() { invalid = true } }
     let server = Server{router: router, config: chosen, state: mutex(serverState{started: false, accepting: false, draining: false, canceled: false, connections: 0}), live: !invalid}
     if invalid { return server, error("http.NewServer: invalid configuration or router") }

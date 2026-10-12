@@ -1042,7 +1042,7 @@ struct Copies {
     runaway: HashSet<FunctionId>,
 }
 
-fn each_expr(block: &mut hir::Block, visit: &mut dyn FnMut(&mut hir::Expr)) {
+pub(super) fn each_expr(block: &mut hir::Block, visit: &mut dyn FnMut(&mut hir::Expr)) {
     for stmt in &mut block.stmts {
         each_stmt_expr(stmt, visit);
     }

@@ -8,9 +8,10 @@ curl -i http://127.0.0.1:8080/users
 curl -i http://127.0.0.1:8080/users/1
 ```
 
-Press Enter in the server terminal to drain connections and wait for completion.
-OS signal integration is not available yet. The example binds loopback and keeps
-its store in memory. Each request gets an owned handler; handlers share a mutex
+Press Ctrl-C or send SIGTERM to drain connections and wait for completion.
+The example uses function handlers and signal-driven ListenAndServe, binds
+loopback, and keeps its store in memory. Each request gets a fresh invocation;
+handlers share a mutex
 and release it before reading or writing the network.
 
 POST accepts exactly one `name` field containing a nonempty JSON string of at

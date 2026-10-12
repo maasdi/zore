@@ -4,6 +4,8 @@ mod controlled_runtime;
 mod http;
 mod json;
 mod review_regressions;
+#[cfg(unix)]
+mod signal;
 
 use std::io::Write;
 use std::path::Path;

@@ -6570,19 +6570,32 @@ func CallHandler(f func(mut ResponseWriter, mut Request) error,
                  w mut ResponseWriter, r mut Request) error
 
 func NewRouterBuilder() RouterBuilder
-func (b mut RouterBuilder) Handle(pattern string, factory own HandlerFactory) error
+func (b mut RouterBuilder) Handle(pattern string, handler own func(mut ResponseWriter, mut Request) error)
+func (b mut RouterBuilder) HandleFactory(pattern string, factory own HandlerFactory) error
 func (b own RouterBuilder) Build() (Router, error)
 
 func DefaultConfig() Config
 func NewServer(router Router, config Config) (Server, error)
 func (s Server) Serve(listener own net.Listener) error
 func (s Server) Shutdown(ctx context.Context) error
+func ListenAndServe(ctx context.Context, address string, router Router, config Config) error
 ```
 
 `CallHandler` calls a plain function or borrowing closure immediately. It neither
 stores nor spawns it. A concrete handler can call a declared function through
 this helper; that concrete handler and its factory contain only owned data and
-Copy handles. Arbitrary captured function registration is excluded. Methods
+Copy handles. Direct registration accepts a declared synchronous function name
+or an inline closure literal with only shared-read Copy captures containing no
+views or function values. Mutex/channel handles and immutable configuration are
+accepted. Mutable captures, Move captures, call-once callbacks, and opaque local
+or parameter function values are rejected; use a factory for per-request owned
+state and a Mutex/channel for shared mutation. The compiler adapts these known
+callbacks to ordinary owned factory/handler records and constructs a fresh
+invocation after each match. It never stores a function value in the registry
+or relaxes general callable escape rules. Handler execution remains concurrent.
+Handle records the first route error in the builder; later registrations dispose
+of their transferred data and leave that error unchanged. Build reports it once.
+HandleFactory retains explicit errors for advanced callers. Methods
 that wait are ordinary calls: they suspend a suspending caller and block a
 plain caller with worker compensation, following §§17.7 and 37.3.
 
@@ -6602,6 +6615,28 @@ handlers never run under the registry or application mutex by default.
 For example, `UsersFactory` and `UsersHandler` can each hold
 `Mutex<UserStore>` and a Copy route-kind discriminator. Registration takes
 `UsersFactory`, and `NewHandler` returns a fresh `UsersHandler` interface.
+
+Text(status, text) returns one error after setting a UTF-8 text content type,
+exact byte length, and writing through the existing response rules. Standalone
+JSON<T any>(w mut ResponseWriter, status int, value T) error and JSONWith with a
+final json.Naming argument finish serialization before commitment; JSON uses
+AsWritten. Write failures remain observable, and bodyless/HEAD rules still apply.
+ListenAndServe creates the listener and server and waits for either listener
+completion or context cancellation. Cancellation initiates graceful draining
+under a fresh context bounded by Config.ShutdownTimeout (default ten seconds,
+zero selects the default, negative/overflowing values are errors). Normal drain
+returns nil; startup/listener/drain errors propagate. It does not wait forever
+for arbitrary computation after cancellation expires. Main must stay alive for
+application tasks requiring cleanup, as with explicit Shutdown.
+
+```ore
+func health(w mut http.ResponseWriter, r mut http.Request) error {
+    return w.Text(200, "ok")
+}
+var routes = http.NewRouterBuilder()
+routes.Handle("GET /health", health)
+let router = routes.Build()?
+```
 
 ##### Request and response
 
@@ -6803,6 +6838,7 @@ mode is part of this initial safety contract.
 | `WriteTimeout` | 30 seconds | Absolute budget from handler entry through final write |
 | `IdleTimeout` | 60 seconds | Wait for first byte of the next request |
 | `AcceptPollInterval` | 100 milliseconds | Bounded shutdown/cancellation observation |
+| `ShutdownTimeout` | 10 seconds | ListenAndServe graceful-drain budget after context cancellation |
 
 Durations are nanoseconds; the constructor checks range and deadline overflow.
 For the first request, record the acceptance time and set the read deadline
@@ -6912,7 +6948,8 @@ worker compensation behavior. Shutdown is cooperative, not preemptive.
 Compiler impact: bundle both packages and preserve type-compatible provenance
 through indirect calls. Add wall-clock native functions without changing the
 monotonic clock. Conformance covers URL/framing/routing/deadlines/shutdown and
-accepted/rejected facade lifetimes. JSON and OS signals remain separate work.
+accepted/rejected facade lifetimes. JSON and OS signals are defined in the
+following sections.
 
 ## 37.7 JSON encoding and decoding — LOCKED
 
@@ -7243,6 +7280,52 @@ Conformance covers RFC syntax, UTF-8, surrogates, all number widths, depth,
 duplicates, stable order, naming and collision diagnostics, optional fields,
 strict nested decoding, custom codecs, recursive types, generic callers,
 zero values, sticky errors, round trips, and rejected lifetime/task escapes.
+
+## 37.8 OS signal cancellation — LOCKED
+
+std/os/signal provides Signal (a named int), portable selectors Interrupt = 1
+and Terminate = 2, and NotifyContext(parent context.Context, signals []Signal)
+(context.Context, func(), error). Nonempty selections of SIGINT/SIGTERM are
+supported on Linux and macOS; invalid selectors, empty selection, registration
+failure, and unsupported hosts return an error before publishing a subscription.
+Duplicates are harmless. No SIGKILL/SIGSTOP or numeric-OS-signal conversion is
+promised. Registration is synchronous; derived contexts own only Copy control
+handles and retain no signal-slice loan.
+
+A selected signal cancels the derived context. Parent cancellation also ends
+the subscription. The returned stop function cancels and waits for subscription
+cleanup, is idempotent, and is called on startup failure as well as normal exit.
+Signals may coalesce, and each active subscription observes notification
+independently. First/last subscriptions install/restore the previous process
+signal dispositions. Signals racing subscription transitions may coalesce;
+unsubscribing never leaves a language callback installed as an OS handler.
+Signal handlers perform only lock-free atomic publication, never allocations,
+runtime locks, channel operations, or Zore calls. Ordinary tasks poll the
+publication with a bounded ten-millisecond interval and perform cancellation.
+Native registration bookkeeping uses platform sigaction bindings; no new
+third-party runtime dependency is required.
+
+context.WithCancelOn(parent Context, done channel<bool>) (Context, func())
+derives a context canceled by parent cancellation, a received boolean, or done
+closure. Its cancel function has the usual WithCancel behavior. Its forwarding
+task finishes when the child is canceled, so an unused external event cannot
+keep that task alive. Signal notification uses this bridge without transferring
+an opaque function value into a task.
+
+```ore
+let signals = [signal.Signal; 2]{signal.Interrupt, signal.Terminate}
+let ctx, stop = signal.NotifyContext(context.Background(), signals[:])?
+let err = http.ListenAndServe(ctx, "127.0.0.1:8080", router, http.DefaultConfig())
+stop()
+return err
+```
+
+Compiler impact: bundle the signal package, embed its runtime bindings in native
+builds, and adapt HTTP function registrations in typed HIR before ordinary MIR
+ownership/drop analysis. Conformance must accept Copy-handle callbacks, reject
+unsafe/opaque registrations, exercise response framing and startup failures,
+and deliver real SIGINT/SIGTERM in isolated subprocesses, including overlapping
+subscriptions, parent cancellation, cleanup, and graceful HTTP drain.
 
 # 38. Self-Hosting Constraint
 

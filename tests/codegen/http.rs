@@ -57,7 +57,7 @@ func main() {
     let stop = channel<bool>(1)
     var b = http.NewRouterBuilder()
     let paths = [string; 14]{"POST /echo", "POST /reject", "GET /reset", "GET /not-modified", "GET /head", "GET /error", "GET /panic", "POST /unread", "GET /overrun", "GET /underrun", "GET /users/{id}", "GET /users/me", "GET /stop", "GET /echo"}
-    for path in paths { let err = b.Handle(path, Factory{stop: stop}); if err != nil { panic("route") } }
+    for path in paths { let err = b.HandleFactory(path, Factory{stop: stop}); if err != nil { panic("route") } }
     let router, buildErr = b.Build()
     if buildErr != nil { panic("build") }
     var config = http.DefaultConfig()
@@ -85,6 +85,145 @@ func main() {
     if serveErr != nil { panic("serve") }
 }
 "#;
+
+#[cfg(unix)]
+fn send_signal(child: &Child, signal: i32) {
+    unsafe extern "C" {
+        fn kill(pid: i32, signal: i32) -> i32;
+    }
+    // SAFETY: the child is live and the test selects a supported POSIX signal.
+    assert_eq!(unsafe { kill(child.id() as i32, signal) }, 0);
+}
+#[cfg(not(unix))]
+fn send_signal(_child: &Child, _signal: i32) {
+    panic!("signal tests need Unix");
+}
+
+#[test]
+fn http_function_handlers_run_concurrently_and_shutdown_on_real_signals() {
+    let source = r#"package main
+import "std/context"
+import "std/net/http"
+import "std/net"
+import "std/os/signal"
+import "std/time"
+import "std/math"
+func health(w mut http.ResponseWriter, r mut http.Request) error { return w.Text(200, "ok") }
+func exercise() error {
+    let arrived = channel<bool>(2)
+    let release = channel<bool>()
+    let counter = mutex(0)
+    var routes = http.NewRouterBuilder()
+    routes.Handle("GET /health", health)
+    var label = "before"
+    routes.Handle("GET /label", func(w mut http.ResponseWriter, r mut http.Request) error { return w.Text(200, label) })
+    label = "after"
+    routes.Handle("GET /nan", func(w mut http.ResponseWriter, r mut http.Request) error { return http.JSON(w, 200, math.NaN()) })
+    routes.Handle("GET /empty", func(w mut http.ResponseWriter, r mut http.Request) error { return w.Text(204, "") })
+    routes.Handle("GET /barrier", func(w mut http.ResponseWriter, r mut http.Request) error {
+        arrived.send(true)
+        let _, _ = release.receive()
+        let n = counter.withLock(func(value mut int) int { value += 1; return value })
+        return http.JSON(w, 200, n)
+    })
+    let router = routes.Build()?
+    let selected = [signal.Signal; 2]{signal.Interrupt, signal.Terminate}
+    let ctx, stop = signal.NotifyContext(context.Background(), selected[:])?
+    let listener = net.Listen("tcp", "127.0.0.1:0")?
+    println(listener.Addr())
+    let server = http.NewServer(router, http.DefaultConfig())?
+    let serving = go server.Serve(listener)
+    let _, _ = arrived.receive()
+    let _, _ = arrived.receive()
+    let _, _ = ctx.Done().receive()
+    if ctx.Err() == nil { panic("missing signal cancellation") }
+    release.close()
+    let drain, cancel = context.WithTimeout(context.Background(), 5 * time.Second)
+    let err = server.Shutdown(drain)
+    cancel()
+    stop()
+    stop()
+    if err != nil { return err }
+    return serving.wait()
+}
+func main() { let err = exercise(); if err != nil { panic("server failure") } }
+"#;
+    for selected in [2, 15] {
+        let server = ServerProcess::start(source);
+        status(
+            &server.exchange("GET /health HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n"),
+            200,
+        );
+        let label = server.exchange("GET /label HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n");
+        assert!(label.ends_with("before"));
+        let head = server.exchange("HEAD /label HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n");
+        assert!(head.contains("Content-Length: 6\r\n") && head.ends_with("\r\n\r\n"));
+        let failure = server.exchange("GET /nan HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n");
+        status(&failure, 500);
+        assert!(!failure.contains("NaN") && !failure.contains("HTTP/1.1 200"));
+        let empty = server.exchange("GET /empty HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n");
+        status(&empty, 204);
+        assert!(!empty.contains("Content-Length") && empty.ends_with("\r\n\r\n"));
+        let mut first = server.connect();
+        let mut second = server.connect();
+        for stream in [&mut first, &mut second] {
+            stream
+                .write_all(b"GET /barrier HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n")
+                .unwrap();
+        }
+        send_signal(&server.child, selected);
+        let one = read_closed(&mut first);
+        let two = read_closed(&mut second);
+        status(&one, 200);
+        status(&two, 200);
+        assert!(
+            (one.ends_with('1') && two.ends_with('2'))
+                || (one.ends_with('2') && two.ends_with('1'))
+        );
+        server.finish("");
+    }
+}
+
+#[test]
+fn http_function_registration_is_sticky_and_listen_errors_propagate() {
+    prints(
+        r#"package main
+import "std/context"
+import "std/net"
+import "std/net/http"
+func h(w mut http.ResponseWriter, r mut http.Request) error { return nil }
+func main() {
+    var b = http.NewRouterBuilder()
+    b.Handle("invalid", h)
+    b.Handle("GET /ok", h)
+    let _, err = b.Build()
+    println(err == error("http: invalid route pattern"))
+    var good = http.NewRouterBuilder()
+    good.Handle("GET /", h)
+    let router, routeErr = good.Build()
+    if routeErr != nil { panic("route") }
+    let listener, listenErr = net.Listen("tcp", "127.0.0.1:0")
+    if listenErr != nil { panic("listen") }
+    let err2 = http.ListenAndServe(context.Background(), listener.Addr(), router, http.DefaultConfig())
+    println(err2 != nil)
+    let ctx, cancel = context.WithCancel(context.Background())
+    cancel()
+    println(http.ListenAndServe(ctx, listener.Addr(), router, http.DefaultConfig()) == nil)
+    var config = http.DefaultConfig()
+    config.ShutdownTimeout = -1
+    let err3 = http.ListenAndServe(context.Background(), "127.0.0.1:0", router, config)
+    println(err3 != nil)
+    for var i = 0; i < 20; i += 1 {
+        let soon, stopSoon = context.WithTimeout(context.Background(), 1)
+        let canceled = http.ListenAndServe(soon, "127.0.0.1:0", router, http.DefaultConfig())
+        stopSoon()
+        if canceled != nil { panic("cancellation during startup") }
+    }
+}
+"#,
+        "true\ntrue\ntrue\ntrue\n",
+    );
+}
 
 struct ServerProcess {
     child: Child,
@@ -117,7 +256,17 @@ impl ServerProcess {
     }
 
     fn connect(&self) -> TcpStream {
-        let stream = TcpStream::connect(&self.address).unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(4);
+        let stream = loop {
+            match TcpStream::connect(&self.address) {
+                Ok(stream) => break stream,
+                Err(error) if std::time::Instant::now() < deadline => {
+                    assert_eq!(error.kind(), std::io::ErrorKind::ConnectionRefused);
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                Err(error) => panic!("server did not start: {error}"),
+            }
+        };
         stream
             .set_read_timeout(Some(Duration::from_secs(4)))
             .unwrap();
@@ -434,7 +583,7 @@ func checkZeros() {
     if writeErr == nil { panic("zero write") }
     let shutdownErr = server.Shutdown(r.Context())
     if shutdownErr == nil { panic("zero shutdown") }
-    let routeErr = builder.Handle("GET /", F{n: 0})
+    let routeErr = builder.HandleFactory("GET /", F{n: 0})
     if routeErr == nil { panic("zero builder") }
     let _, buildErr = builder.Build()
     if buildErr == nil { panic("zero build") }
@@ -475,8 +624,8 @@ func main() {
     let _, outside = time.FormatHTTPDate(253402300800)
     println(outside != nil); println(time.UnixSeconds() > 0)
     var builder = http.NewRouterBuilder()
-    _ = builder.Handle("GET /a/{x}", F{n: 0})
-    _ = builder.Handle("GET /{y}/b", F{n: 0})
+    _ = builder.HandleFactory("GET /a/{x}", F{n: 0})
+    _ = builder.HandleFactory("GET /{y}/b", F{n: 0})
     let _, ambiguous = builder.Build()
     println(ambiguous != nil)
 }
@@ -568,7 +717,7 @@ fn http_factory_poison_preserves_acceptance_and_shutdown() {
         .replace("type Factory struct { stop channel<bool> }", "type Factory struct { stop channel<bool>; poison bool }")
         .replace("{ return Handler{stop: f.stop}, nil }", "{ if f.poison { panic(\"factory failure\") }; return Handler{stop: f.stop}, nil }")
         .replace("Factory{stop: stop}", "Factory{stop: stop, poison: false}")
-        .replace("let router, buildErr = b.Build()", "_ = b.Handle(\"GET /factory-panic\", Factory{stop: stop, poison: true})\n    let router, buildErr = b.Build()")
+        .replace("let router, buildErr = b.Build()", "_ = b.HandleFactory(\"GET /factory-panic\", Factory{stop: stop, poison: true})\n    let router, buildErr = b.Build()")
         .replace("let _, _ = stop.receive()", "let input = os.Stdin()\n    var signalByte = Array<byte>{0}\n    let _, _ = input.Read(signalByte[:])")
         .replace("import \"std/net\"", "import \"std/net\"\nimport \"std/os\"");
     let mut server = ServerProcess::start(&source);
@@ -629,7 +778,7 @@ func main() {
     let entered = channel<bool>(1)
     let release = channel<bool>()
     var b = http.NewRouterBuilder()
-    _ = b.Handle("GET /hold", Factory{entered: entered, release: release})
+    _ = b.HandleFactory("GET /hold", Factory{entered: entered, release: release})
     let router, _ = b.Build()
     var config = http.DefaultConfig()
     config.AcceptPollInterval = time.Millisecond
@@ -659,21 +808,20 @@ func main() {
 }
 
 pub(super) fn check_rest_example() {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap().to_string();
+    drop(listener);
     let main = include_str!("../../examples/rest-api/main.ore")
         .replace(
-            "package main\n",
-            "package main\nimport \"std/encoding/json\"\n",
+            "println(\"Starting http://127.0.0.1:8080; Ctrl-C shuts down gracefully\")",
+            "println(\"127.0.0.1:8080\")",
         )
-        .replace("127.0.0.1:8080", "127.0.0.1:0")
-        .replace(
-            "println(\"Listening on http://\" + listener.Addr() + \"; press Enter to shut down\")",
-            "println(listener.Addr())",
-        );
+        .replace("127.0.0.1:8080", &address);
     let codec = include_str!("../../examples/rest-api/json.ore")
         .replace("package main\n", "")
         .replace("import \"std/encoding/json\"\n", "")
         .replace("import \"std/strings\"\n", "");
-    let mut server = ServerProcess::start(&format!("{main}\n{codec}"));
+    let server = ServerProcess::start(&format!("{main}\n{codec}"));
     let body = r#"{"name":"Ada"}"#;
     let created = server.exchange(&format!("POST /users HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()));
     status(&created, 201);
@@ -699,7 +847,7 @@ pub(super) fn check_rest_example() {
         415,
     );
     status(&server.exchange("POST /users HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}"), 400);
-    server.child.stdin.take().unwrap().write_all(b"\n").unwrap();
+    send_signal(&server.child, 15);
     server.finish("");
 }
 
@@ -713,6 +861,9 @@ fn http_sources() -> String {
         include_str!("../../std/net/http/server.ore"),
     ] {
         for line in source.lines() {
+            if line.starts_with("func (b mut RouterBuilder) Handle(") {
+                continue;
+            }
             if line.starts_with("import ") {
                 imports.insert(line);
             } else if !line.starts_with("package ") {
@@ -881,7 +1032,7 @@ func main() {{
     let entered = channel<bool>(1)
     let release = channel<bool>()
     var builder = NewRouterBuilder()
-    _ = builder.Handle("GET /race", raceFactory{{entered: entered, release: release}})
+    _ = builder.HandleFactory("GET /race", raceFactory{{entered: entered, release: release}})
     let router, _ = builder.Build()
     let server, _ = NewServer(router, DefaultConfig())
     server.state.withLock(func(state mut serverState) {{ state.connections = 2 }})

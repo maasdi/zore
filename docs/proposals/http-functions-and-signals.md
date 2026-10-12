@@ -1,9 +1,9 @@
 # Direct HTTP handlers, signal shutdown, and simpler error handling
 
-Status: proposed implementation scope, requested by the maintainer.
-The APIs below are targets, not currently implemented signatures. The current
-locked specification continues to govern until the contract changes and
-conformance cases are prepared under its change policy.
+Status: implemented; contracts locked in specification §37.6 and §37.8.
+The following design is realized through typed HIR adapters, the Zore HTTP and
+context packages, and native signal-disposition bindings. The conformance tests
+exercise the APIs and native lifecycle behavior described below.
 
 ## Problem and scope
 
@@ -17,9 +17,9 @@ request/writer lifetime checks, bounded framing and deadlines, and deterministic
 cleanup. Factories remain available for applications that construct owned
 per-request state.
 
-## Proposed application code
+## Application code
 
-This is the intended user flow after implementation:
+The normal user flow is:
 
 ```ore
 package main
@@ -57,7 +57,7 @@ the example binds the serving result, calls stop, then returns the result.
 
 ## Function registration
 
-The proposed normal entry accepts an owned function with the signature
+The normal entry accepts an owned function with the signature
 `func(mut ResponseWriter, mut Request) error`. Registration records its first
 route-validation error in the builder; Build returns that error or a validated
 router. Subsequent registrations on a failed builder dispose of transferred
@@ -72,7 +72,7 @@ calling one mutable closure environment concurrently or holding the registry
 mutex during application code or I/O. Calling all handlers under the router
 lock is not an acceptable implementation.
 
-The compiler should adapt known declared functions and known closure literals
+The compiler adapts declared functions and inline closure literals
 to private factory/handler implementations. These carry validated captures as
 ordinary fields and construct a fresh invocation for each request. The
 application should not have to write those wrapper types.
@@ -86,14 +86,15 @@ diagnostics before erasing the callable's capture information. Shared mutable
 application data belongs behind a Mutex or a channel. Moving a captured resource
 into request execution is handled by an explicit factory.
 
-The adaptation must preserve normal owning-capture behavior and source spans.
+The adaptation preserves normal owning-capture behavior and source spans.
 It must not relax the general rules for function values in channels, Mutex
 storage, generic arguments, or task spawning. Existing private registries can
 continue to store owned factory interfaces rather than erased function values.
 
-Lock this narrow registration contract in the HTTP specification before
-implementation. Direct registration is currently explicitly excluded there;
-the new contract replaces that exclusion.
+The locked registration contract replaces the original HTTP exclusion of direct
+callbacks. Opaque function-valued locals/parameters are rejected before lowering;
+pass a declared function name or literal directly. No function value is stored
+in the private shared registry.
 
 ## Response and startup conveniences
 
@@ -139,10 +140,12 @@ notification; ordinary runtime code translates that notification into context
 cancellation. First/last subscription transitions must install and restore the
 previous process handlers correctly, with registration/stop races accounted for.
 
-The runtime currently has no third-party dependencies and is linked through the
-compiler driver. If a signal library is chosen, account for that driver path and
-Cargo.lock explicitly. Do not add a dependency that works only in cargo tests
-but fails when zore build links a generated executable.
+The runtime retains no third-party dependencies. Signal handlers increment
+lock-free generation counters. Zore tasks poll them at ten-millisecond intervals
+and forward notification into contexts without sending from an OS handler.
+Native bookkeeping preserves the complete previous sigaction records and
+restores them on the last unsubscription. Signal source is also embedded by the
+compiler driver so generated executables link it normally.
 
 ## Verification and migration
 
