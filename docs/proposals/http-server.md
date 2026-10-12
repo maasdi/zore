@@ -14,7 +14,9 @@ its requests sequentially. A handler accesses the connection through borrowed
 request/writer views in that same task; the connection never crosses into a
 second task while those views are live.
 
-Use a shared-receiver `Handler` interface, plus a borrowed function helper.
+Use a shared-receiver `Handler` interface with a `Handle` method, plus a borrowed
+function helper. The `http` package and parameter types identify the protocol;
+`Handle` names the operation without repeating HTTP in every implementation.
 Store owned handler factories in a sealed router, sharing its registry through
 a Copy mutex handle. A factory makes an independently owned handler for each
 request. This avoids inventing immutable shared ownership, cloning interfaces,
@@ -38,7 +40,7 @@ No empty-state method indexes an empty internal view.
 
 ```ore
 type Handler interface {
-    ServeHTTP(w mut ResponseWriter, r mut Request) error
+    Handle(w mut ResponseWriter, r mut Request) error
 }
 
 type HandlerFactory interface {
@@ -445,7 +447,7 @@ Dependencies and acceptance checkpoints:
 
 No changes to async matching, panic recovery, task borrowing, interface cloning,
 or shared socket ownership are authorized. Existing waiting-call lowering must
-work through ServeHTTP and io interfaces. The proposed facade layout uses
+work through Handle and io interfaces. The proposed facade layout uses
 existing slice-containing structs and shared Conn methods; validate its inferred
 provenance and cleanup before claiming implementation support. Library state must
 obey Mutex's no-view/no-function restriction and ordinary zero-resource cleanup.
