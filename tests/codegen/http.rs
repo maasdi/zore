@@ -225,6 +225,102 @@ func main() {
     );
 }
 
+#[cfg(unix)]
+#[test]
+fn http_run_bootstraps_signals_and_drains_active_requests() {
+    for selected in [2, 15] {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap().to_string();
+        drop(listener);
+        let source = r#"package main
+import "std/net/http"
+import "std/os"
+import "std/time"
+func hold(w mut http.ResponseWriter, r mut http.Request) error {
+    println("handling")
+    let input = os.Stdin()
+    var release = Array<byte>{0}
+    let _, err = input.Read(release[:])
+    if err != nil { return err }
+    return w.Text(200, "drained")
+}
+func run() error {
+    var routes = http.NewRouterBuilder()
+    routes.Handle("GET /hold", hold)
+    let router = routes.Build()?
+    var config = http.DefaultConfig()
+    config.AcceptPollInterval = 10 * time.Millisecond
+    config.ShutdownTimeout = 5 * time.Second
+    println("ADDRESS")
+    return http.Run("ADDRESS", router, config)
+}
+func main() { let err = run(); if err != nil { panic("server failure") } }
+"#
+        .replace("ADDRESS", &address);
+        let mut server = ServerProcess::start(&source);
+        let mut stream = server.connect();
+        stream
+            .write_all(b"GET /hold HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n")
+            .unwrap();
+        let mut entered = String::new();
+        BufReader::new(server.child.stdout.as_mut().unwrap())
+            .read_line(&mut entered)
+            .unwrap();
+        assert_eq!(entered, "handling\n");
+        send_signal(&server.child, selected);
+        let deadline = std::time::Instant::now() + Duration::from_secs(4);
+        loop {
+            match TcpStream::connect(&server.address) {
+                Ok(probe) => drop(probe),
+                Err(error) => {
+                    assert_eq!(error.kind(), std::io::ErrorKind::ConnectionRefused);
+                    break;
+                }
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "listener did not stop"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(server.child.try_wait().unwrap().is_none());
+        server.child.stdin.take().unwrap().write_all(b"\n").unwrap();
+        let response = read_closed(&mut stream);
+        status(&response, 200);
+        assert!(response.ends_with("drained"), "{response}");
+        server.finish("");
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn http_run_restores_signals_after_startup_failure() {
+    use std::os::unix::process::ExitStatusExt;
+
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let source = r#"package main
+import "std/net/http"
+import "std/time"
+func h(w mut http.ResponseWriter, r mut http.Request) error { return nil }
+func run() error {
+    var routes = http.NewRouterBuilder()
+    routes.Handle("GET /", h)
+    let router = routes.Build()?
+    return http.Run("ADDRESS", router, http.DefaultConfig())
+}
+func main() {
+    let err = run()
+    if err == nil { panic("missing startup error") }
+    println("restored:0")
+    time.Sleep(2 * time.Second)
+}
+"#
+    .replace("ADDRESS", &listener.local_addr().unwrap().to_string());
+    let mut server = ServerProcess::start(&source);
+    send_signal(&server.child, 15);
+    assert_eq!(server.child.wait().unwrap().signal(), Some(15));
+}
+
 struct ServerProcess {
     child: Child,
     address: String,

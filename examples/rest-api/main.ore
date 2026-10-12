@@ -3,9 +3,7 @@ package main
 import "std/encoding/json"
 import "std/errors"
 import "std/net/http"
-import "std/context"
 import "std/io"
-import "std/os/signal"
 import "std/strconv"
 import "std/strings"
 
@@ -64,12 +62,8 @@ func run() error {
     routes.Handle("GET /users/{id}", func(w mut http.ResponseWriter, r mut http.Request) error { return getUser(store, w, r) })
     routes.Handle("POST /users", func(w mut http.ResponseWriter, r mut http.Request) error { return createUser(store, w, r) })
     let router = routes.Build()?
-    let signals = [signal.Signal; 2]{signal.Interrupt, signal.Terminate}
-    let ctx, stop = signal.NotifyContext(context.Background(), signals[:])?
     println("Starting http://127.0.0.1:8080; Ctrl-C shuts down gracefully")
-    let err = http.ListenAndServe(ctx, "127.0.0.1:8080", router, http.DefaultConfig())
-    stop()
-    return err
+    return http.Run("127.0.0.1:8080", router, http.DefaultConfig())
 }
 func main() {
     let err = run()

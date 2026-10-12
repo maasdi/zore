@@ -6579,6 +6579,7 @@ func NewServer(router Router, config Config) (Server, error)
 func (s Server) Serve(listener own net.Listener) error
 func (s Server) Shutdown(ctx context.Context) error
 func ListenAndServe(ctx context.Context, address string, router Router, config Config) error
+func Run(address string, router Router, config Config) error
 ```
 
 `CallHandler` calls a plain function or borrowing closure immediately. It neither
@@ -6629,6 +6630,20 @@ returns nil; startup/listener/drain errors propagate. It does not wait forever
 for arbitrary computation after cancellation expires. Main must stay alive for
 application tasks requiring cleanup, as with explicit Shutdown.
 
+Run is the application entry point with automatic OS-signal shutdown. It
+synchronously subscribes to SIGINT and SIGTERM through std/os/signal, then uses
+ListenAndServe with the derived context. Either signal initiates the same
+bounded graceful drain. Run waits for subscription cleanup on normal return
+and every serving/startup error before returning that result. Signal
+registration errors propagate without opening a listener. Supported hosts and
+process-disposition restoration follow the locked signal contract below.
+Applications need no signal imports, signal list, context, or stop function.
+NewServer and context-based ListenAndServe retain their explicit lifecycle.
+No new language or compiler behavior is required; Run composes the existing
+owned listener, Copy router/context handles, and synchronous signal cleanup.
+Conformance exercises both real signals, active-request drain, and cleanup
+after listener startup failure.
+
 ```ore
 func health(w mut http.ResponseWriter, r mut http.Request) error {
     return w.Text(200, "ok")
@@ -6636,6 +6651,7 @@ func health(w mut http.ResponseWriter, r mut http.Request) error {
 var routes = http.NewRouterBuilder()
 routes.Handle("GET /health", health)
 let router = routes.Build()?
+return http.Run("127.0.0.1:8080", router, http.DefaultConfig())
 ```
 
 ##### Request and response

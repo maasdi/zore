@@ -3,6 +3,7 @@ package http
 import "std/context"
 import "std/encoding/json"
 import "std/net"
+import "std/os/signal"
 import "std/strconv"
 import "std/strings"
 import "std/time"
@@ -48,4 +49,11 @@ func ListenAndServe(ctx context.Context, address string, router Router, config C
     let result, _ = outcome.receive()
     serving.wait()
     return result
+}
+func Run(address string, router Router, config Config) error {
+    let selected = [signal.Signal; 2]{signal.Interrupt, signal.Terminate}
+    let ctx, stop = signal.NotifyContext(context.Background(), selected[:])?
+    let err = ListenAndServe(ctx, address, router, config)
+    stop()
+    return err
 }

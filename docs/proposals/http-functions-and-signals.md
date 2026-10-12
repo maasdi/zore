@@ -7,10 +7,10 @@ exercise the APIs and native lifecycle behavior described below.
 
 ## Problem and scope
 
-The REST example requires a factory and a handler type for each route, several
-separate startup error checks, and stdin input to stop the server. The next
-implementation PR should make a function the normal handler, support SIGINT and
-SIGTERM shutdown, and consolidate common response and startup operations.
+The original REST example required a factory and handler type for each route,
+separate startup error checks, and stdin input to stop the server. This PR makes
+a function the normal handler, supports automatic SIGINT/SIGTERM shutdown, and
+consolidates common response and startup operations.
 
 Deliver all three changes in this PR. Preserve concurrent request execution,
 request/writer lifetime checks, bounded framing and deadlines, and deterministic
@@ -24,10 +24,8 @@ The normal user flow is:
 ```ore
 package main
 
-import "std/context"
 import "std/errors"
 import "std/net/http"
-import "std/os/signal"
 
 func health(w mut http.ResponseWriter, r mut http.Request) error {
     return w.Text(200, "ok")
@@ -38,11 +36,7 @@ func run() error {
     routes.Handle("GET /health", health)
     let router = routes.Build()?
 
-    let signals = [signal.Signal; 2]{signal.Interrupt, signal.Terminate}
-    let ctx, stop = signal.NotifyContext(context.Background(), signals[:])?
-    let err = http.ListenAndServe(ctx, "127.0.0.1:8080", router, http.DefaultConfig())
-    stop()
-    return err
+    return http.Run("127.0.0.1:8080", router, http.DefaultConfig())
 }
 
 func main() {
@@ -52,8 +46,8 @@ func main() {
 ```
 
 The single final error boundary reports genuine failures. Normal signal shutdown
-returns nil after successful draining. Signal cleanup runs even if startup fails:
-the example binds the serving result, calls stop, then returns the result.
+returns nil after successful draining. Run registers both signals and waits for
+subscription cleanup before returning, including when startup fails.
 
 ## Function registration
 
@@ -121,6 +115,11 @@ Shutdown uses a fresh bounded context after the serving context is canceled;
 using the already canceled serving context would abort draining immediately.
 On drain expiry, request cooperative cancellation and preserve the existing
 limits on interrupting application code.
+
+Run(address, router, config) is the ordinary application entry point. It wraps
+ListenAndServe with automatic SIGINT/SIGTERM registration and synchronous
+subscription cleanup. NewServer and ListenAndServe still provide explicit
+lifecycle control for applications with another cancellation source.
 
 ## OS signals
 

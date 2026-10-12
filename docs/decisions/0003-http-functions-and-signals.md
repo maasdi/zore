@@ -23,6 +23,11 @@ reporting, and cancellation. Graceful draining uses a new context with a default
 ten-second timeout, so an already canceled serving context does not abort it.
 Drain expiry requests cooperative cancellation and returns instead of waiting
 indefinitely for arbitrary handler code.
+Run is the application bootstrap: it registers SIGINT/SIGTERM, calls
+ListenAndServe, and waits for subscription cleanup before returning either
+success or a serving/startup error. Applications using Run need no explicit
+signal or context setup. NewServer and ListenAndServe retain explicit lifecycle
+control for other shutdown sources.
 
 Signal notification uses platform sigaction bindings and lock-free generation
 counters. The OS callback allocates nothing, acquires no runtime locks, and

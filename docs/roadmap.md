@@ -26,8 +26,8 @@ views remain checked by the compiler. The native HTTP tests exercise loopback
 framing, routing, capacity, deadlines, panic cleanup, and shutdown. This does not
 implement an HTTP client, TLS, or HTTP/2. `std/os/signal.NotifyContext` supports
 SIGINT/SIGTERM cancellation on Linux/macOS, with idempotent subscription cleanup.
-The REST example uses function routes, JSON response helpers, and signal-driven
-ListenAndServe with a bounded graceful shutdown.
+The REST example uses function routes, JSON response helpers, and `http.Run`
+with automatic signal registration and bounded graceful shutdown.
 
 Issue #106 adds `std/encoding/json`: Zore token encoding/decoding and an owned
 Value tree, plus compiler-generated concrete codecs with naming policies,
