@@ -490,7 +490,7 @@ fn http_factory_poison_preserves_acceptance_and_shutdown() {
 }
 
 #[test]
-fn rest_example_model_codec_handles_unicode_and_rejects_non_json_escapes() {
+fn rest_example_json_codec_handles_unicode_and_rejects_non_json_escapes() {
     let codec = include_str!("../../examples/rest-api/json.ore");
     let source = format!(
         r#"{codec}
@@ -498,7 +498,9 @@ func main() {{
     let good = strings.Bytes("{{\"name\":\"Ada \\uD83D\\uDE00\"}}")
     let name, err = decodeName(good[:])
     println(err == nil)
-    println(quoteJSON(name))
+    let quoted, quoteErr = encodeJSON(name)
+    if quoteErr != nil {{ panic("quote") }}
+    println(quoted)
     let inputs = [string; 7]{{"{{\"name\":\"\\x41\"}}", "{{\"name\":\"\\uD800\"}}", "{{\"name\":\"\\uDC00\"}}", "{{\"name\":\"\"}}", "{{\"name\":\"a\",\"name\":\"b\"}}", "{{\"other\":\"a\"}}", "{{\"name\":\"a\"}} trailing"}}
     for input in inputs {{ let _, err = decodeName(strings.Bytes(input)[:]); println(err != nil) }}
 }}
@@ -562,6 +564,10 @@ func main() {
 
 pub(super) fn check_rest_example() {
     let main = include_str!("../../examples/rest-api/main.ore")
+        .replace(
+            "package main\n",
+            "package main\nimport \"std/encoding/json\"\n",
+        )
         .replace("127.0.0.1:8080", "127.0.0.1:0")
         .replace(
             "println(\"Listening on http://\" + listener.Addr() + \"; press Enter to shut down\")",
@@ -569,6 +575,7 @@ pub(super) fn check_rest_example() {
         );
     let codec = include_str!("../../examples/rest-api/json.ore")
         .replace("package main\n", "")
+        .replace("import \"std/encoding/json\"\n", "")
         .replace("import \"std/strings\"\n", "");
     let mut server = ServerProcess::start(&format!("{main}\n{codec}"));
     let body = r#"{"name":"Ada"}"#;

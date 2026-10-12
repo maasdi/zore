@@ -1,0 +1,42 @@
+package main
+
+import "std/encoding/json"
+import "std/errors"
+import "std/strings"
+
+type User struct {
+    ID int
+    Name string
+    Email json.Optional<string>
+    Tags Array<string>
+    password string
+}
+
+func example() error {
+    var user = User{ID: 1, Name: "Ada", Email: json.Optional<string>{Value: "", Set: false}, Tags: Array<string>{"admin"}, password: "private"}
+    let data = json.MarshalWith(user, json.LowerCamel)?
+    println(strings.FromBytes(data[:])?)
+
+    let request = strings.Bytes("{\"id\":2,\"name\":\"Grace\",\"email\":\"grace@example.com\",\"tags\":[\"member\"]}")
+    json.UnmarshalStrict(request[:], user, json.LowerCamel)?
+    println(user.Name)
+    println(user.Email.Value)
+
+    let patchBytes = strings.Bytes("{\"email\":null,\"other\":1e9999}")
+    let patch = json.Parse(patchBytes[:])?
+    if patch.Has("email") {
+        let email = patch.Get("email")
+        if email.IsNull() { user.Email.Set = false } else { user.Email = json.Some(email.String()?) }
+    }
+    let updated = json.MarshalIndent(user, json.SnakeCase, "  ")?
+    println(strings.FromBytes(updated[:])?)
+
+    let invalid = strings.Bytes("{\"emial\":\"typo\"}")
+    println(json.UnmarshalStrict(invalid[:], user, json.LowerCamel) != nil)
+    return nil
+}
+
+func main() {
+    let err = example()
+    if err != nil { println(errors.Message(err)) }
+}

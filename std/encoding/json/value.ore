@@ -1,0 +1,225 @@
+package json
+
+import "std/strconv"
+import "std/math"
+import "std/strings"
+
+type valueNode struct {
+    kind Kind
+    text string
+    boolean bool
+    first int
+    last int
+    next int
+    key string
+}
+
+type Value struct {
+    nodes Array<valueNode>
+    root int
+}
+
+func scalar(kind Kind, text string, boolean bool) Value {
+    var nodes = Array<valueNode>{}
+    nodes.push(valueNode{kind: kind, text: text, boolean: boolean, first: -1, last: -1, next: -1, key: ""})
+    return Value{nodes: nodes, root: 0}
+}
+func NullValue() Value { return scalar(KindNull, "", false) }
+func BoolValue(value bool) Value { return scalar(KindBool, "", value) }
+func IntValue(value int) Value { return scalar(KindNumber, strconv.Itoa(value), false) }
+func FloatValue(value float64) Value { return scalar(KindNumber, strconv.FormatFloat(value, 'g', -1, 64), false) }
+func StringValue(value string) Value { return scalar(KindString, value, false) }
+func NewArray() Value { return scalar(KindArray, "", false) }
+func NewObject() Value { return scalar(KindObject, "", false) }
+func (v Value) Kind() Kind {
+    if v.nodes.len() == 0 { return KindNull }
+    return v.nodes[v.root].kind
+}
+func (v Value) IsNull() bool { return v.Kind() == KindNull }
+func (v Value) expected(kind Kind) error {
+    return error("json: expected " + kindName(kind) + ", found " + kindName(v.Kind()))
+}
+func (v Value) Bool() (bool, error) {
+    if v.Kind() != KindBool { return false, v.expected(KindBool) }
+    return v.nodes[v.root].boolean, nil
+}
+func (v Value) Int() (int, error) {
+    if v.Kind() != KindNumber { return 0, v.expected(KindNumber) }
+    let result, err = strconv.Atoi(v.nodes[v.root].text)
+    if err != nil { return 0, error("json: expected integer within int range") }
+    return result, nil
+}
+func (v Value) Float() (float64, error) {
+    if v.Kind() != KindNumber { return 0, v.expected(KindNumber) }
+    let result, err = strconv.ParseFloat(v.nodes[v.root].text, 64)
+    if err != nil || math.IsNaN(result) || math.IsInf(result, 0) { return 0, error("json: number outside float64 range") }
+    return result, nil
+}
+func (v Value) String() (string, error) {
+    if v.Kind() != KindString { return "", v.expected(KindString) }
+    return v.nodes[v.root].text, nil
+}
+func (v Value) Len() int {
+    if v.Kind() != KindArray && v.Kind() != KindObject { return 0 }
+    var count = 0
+    var child = v.nodes[v.root].first
+    for child >= 0 { count += 1; child = v.nodes[child].next }
+    return count
+}
+func (v Value) child(key string) int {
+    if v.Kind() != KindObject { return -1 }
+    var child = v.nodes[v.root].first
+    for child >= 0 {
+        if v.nodes[child].key == key { return child }
+        child = v.nodes[child].next
+    }
+    return -1
+}
+func (v Value) Has(key string) bool { return v.child(key) >= 0 }
+func (v Value) subtree(root int) Value {
+    var result = clone(v)
+    result.root = root
+    return result
+}
+func (v Value) Get(key string) Value {
+    let child = v.child(key)
+    if child < 0 { return NullValue() }
+    return v.subtree(child)
+}
+func (v Value) Index(index int) Value {
+    if v.Kind() != KindArray || index < 0 { return NullValue() }
+    var child = v.nodes[v.root].first
+    var position = 0
+    for child >= 0 {
+        if position == index { return v.subtree(child) }
+        child = v.nodes[child].next
+        position += 1
+    }
+    return NullValue()
+}
+func (v Value) Keys() Array<string> {
+    var keys = Array<string>{}
+    if v.Kind() != KindObject { return keys }
+    var child = v.nodes[v.root].first
+    for child >= 0 { keys.push(v.nodes[child].key); child = v.nodes[child].next }
+    return keys
+}
+func (v mut Value) attach(key string, item own Value) {
+    let offset = v.nodes.len()
+    var root = offset
+    if item.nodes.len() == 0 {
+        v.nodes.push(valueNode{kind: KindNull, text: "", boolean: false, first: -1, last: -1, next: -1, key: key})
+    } else {
+        root += item.root
+        for node in item.nodes {
+            var copy = node
+            if copy.first >= 0 { copy.first += offset }
+            if copy.last >= 0 { copy.last += offset }
+            if copy.next >= 0 { copy.next += offset }
+            v.nodes.push(copy)
+        }
+    }
+    v.nodes[root].key = key
+    v.nodes[root].next = -1
+    let existing = v.child(key)
+    if v.Kind() == KindObject && existing >= 0 {
+        let next = v.nodes[existing].next
+        v.nodes[existing] = v.nodes[root]
+        v.nodes[existing].next = next
+        return
+    }
+    let last = v.nodes[v.root].last
+    if last >= 0 { v.nodes[last].next = root } else { v.nodes[v.root].first = root }
+    v.nodes[v.root].last = root
+}
+func (v mut Value) Push(item own Value) {
+    if v.Kind() == KindArray { v.attach("", item) }
+}
+func (v mut Value) Set(key string, item own Value) {
+    if v.Kind() == KindObject { v.attach(key, item) }
+}
+
+func (d mut Decoder) Value() (Value, error) {
+    var containers = Array<Value>{}
+    var keys = Array<string>{}
+    for {
+        let kind = d.Peek()?
+        var item = NullValue()
+        if kind == KindArray { d.BeginArray()?; item = NewArray() } else if kind == KindObject { d.BeginObject()?; item = NewObject() } else if kind == KindNull { d.Null()? } else if kind == KindBool { item = BoolValue(d.Bool()?) } else if kind == KindString { item = StringValue(d.String()?) } else { item = scalar(KindNumber, d.number()?, false) }
+        if kind == KindArray || kind == KindObject {
+            containers.push(item)
+            if d.More() {
+                var key = ""
+                if kind == KindObject { key = d.Key()? }
+                keys.push(key)
+                continue
+            }
+            if kind == KindObject { d.EndObject()? } else { d.EndArray()? }
+            let _, complete = containers.pop()
+            item = complete
+        }
+        for {
+            if containers.len() == 0 { return item, nil }
+            let top = containers.len() - 1
+            let _, key = keys.pop()
+            let parentKind = containers[top].Kind()
+            if parentKind == KindObject { containers[top].Set(key, item) } else { containers[top].Push(item) }
+            if d.More() {
+                var nextKey = ""
+                if parentKind == KindObject { nextKey = d.Key()? }
+                keys.push(nextKey)
+                break
+            }
+            if parentKind == KindObject { d.EndObject()? } else { d.EndArray()? }
+            let _, complete = containers.pop()
+            item = complete
+        }
+    }
+}
+func Parse(data []byte) (Value, error) {
+    var decoder = NewDecoder(data)
+    let value = decoder.Value()?
+    decoder.Finish()?
+    return value, nil
+}
+func Valid(data []byte) bool {
+    var decoder = NewDecoder(data)
+    let err = decoder.Skip()
+    return err == nil && decoder.Finish() == nil
+}
+func (e mut Encoder) Value(value Value) {
+    if e.failure != nil { return }
+    if value.nodes.len() == 0 { e.Null(); return }
+    var pending = Array<int>{value.root}
+    var endings = Array<Kind>{}
+    for pending.len() > 0 {
+        let _, index = pending.pop()
+        if index == -1 {
+            let _, kind = endings.pop()
+            if kind == KindObject { e.EndObject() } else { e.EndArray() }
+            continue
+        }
+        if index < -1 {
+            e.Field(value.nodes[-index - 2].key)
+            continue
+        }
+        let node = value.nodes[index]
+        if node.kind == KindNull { e.Null() } else if node.kind == KindBool { e.Bool(node.boolean) } else if node.kind == KindString { e.String(node.text) } else if node.kind == KindNumber {
+            let bytes = strings.Bytes(node.text)
+            if !Valid(bytes[:]) { e.fail("invalid number"); return }
+            if e.beforeValue() { e.append(node.text) }
+        } else {
+            if node.kind == KindObject { e.BeginObject() } else { e.BeginArray() }
+            pending.push(-1)
+            endings.push(node.kind)
+            var children = Array<int>{}
+            var child = node.first
+            for child >= 0 { children.push(child); child = value.nodes[child].next }
+            for children.len() > 0 {
+                let _, next = children.pop()
+                pending.push(next)
+                if node.kind == KindObject { pending.push(-next - 2) }
+            }
+        }
+    }
+}

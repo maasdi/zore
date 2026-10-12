@@ -263,3 +263,7 @@ permission bits.
 `conformance/http.md` maps the HTTP/URL contract to native loopback and ownership
 regressions. It distinguishes tested behavior from additional fault-injection
 coverage. The REST example codec is also exercised as executable Zore source.
+
+`conformance/json.md` maps the JSON token, tree, and generated-codec contract to
+`codegen/json.rs`, JSON package-checking tests, and the console/REST examples.
+Native JSON programs run with leak checking, including partial-decode errors.

@@ -1,0 +1,146 @@
+package json
+
+import "std/math"
+import "std/strconv"
+
+type Kind int
+const KindNull Kind = 0
+const KindBool Kind = 1
+const KindNumber Kind = 2
+const KindString Kind = 3
+const KindArray Kind = 4
+const KindObject Kind = 5
+
+type encodeFrame struct {
+    kind Kind
+    count int
+    field bool
+}
+
+type Encoder struct {
+    data Array<byte>
+    frames Array<encodeFrame>
+    indent string
+    started bool
+    failure error
+}
+
+func NewEncoder() Encoder {
+    return Encoder{data: Array<byte>{}, frames: Array<encodeFrame>{}, indent: "", started: false, failure: nil}
+}
+
+func (e mut Encoder) fail(message string) {
+    if e.failure == nil { e.failure = error("json: " + message) }
+}
+
+func (e mut Encoder) append(text string) {
+    for var i = 0; i < text.len(); i += 1 { e.data.push(text[i]) }
+}
+
+func (e mut Encoder) newline(depth int) {
+    if e.indent == "" { return }
+    e.data.push(10)
+    let indent = e.indent
+    for var i = 0; i < depth; i += 1 { e.append(indent) }
+}
+
+func (e mut Encoder) SetIndent(indent string) {
+    if e.failure != nil { return }
+    if e.started { e.fail("indentation must be set before encoding"); return }
+    for var i = 0; i < indent.len(); i += 1 {
+        if indent[i] != 32 && indent[i] != 9 { e.fail("indentation must contain only spaces and tabs"); return }
+    }
+    e.indent = indent
+}
+
+func (e mut Encoder) beforeValue() bool {
+    if e.failure != nil { return false }
+    if e.frames.len() == 0 {
+        if e.started { e.fail("multiple root values"); return false }
+        e.started = true
+        return true
+    }
+    let top = e.frames.len() - 1
+    if e.frames[top].kind == KindObject {
+        if !e.frames[top].field { e.fail("object value requires Field"); return false }
+        e.frames[top].field = false
+    } else {
+        if e.frames[top].count > 0 { e.data.push(44) }
+        e.newline(e.frames.len())
+    }
+    e.frames[top].count += 1
+    return true
+}
+
+func (e mut Encoder) begin(kind Kind, delimiter byte) {
+    if !e.beforeValue() { return }
+    e.data.push(delimiter)
+    e.frames.push(encodeFrame{kind: kind, count: 0, field: false})
+}
+
+func (e mut Encoder) end(kind Kind, delimiter byte) {
+    if e.failure != nil { return }
+    if e.frames.len() == 0 { e.fail("unmatched container end"); return }
+    let top = e.frames.len() - 1
+    if e.frames[top].kind != kind { e.fail("mismatched container end"); return }
+    if e.frames[top].field { e.fail("missing object field value"); return }
+    if e.frames[top].count > 0 { e.newline(top) }
+    let _, _ = e.frames.pop()
+    e.data.push(delimiter)
+}
+
+func (e mut Encoder) BeginObject() { e.begin(KindObject, 123) }
+func (e mut Encoder) EndObject() { e.end(KindObject, 125) }
+func (e mut Encoder) BeginArray() { e.begin(KindArray, 91) }
+func (e mut Encoder) EndArray() { e.end(KindArray, 93) }
+
+func (e mut Encoder) quoted(text string) {
+    let digits = "0123456789abcdef"
+    e.data.push(34)
+    for r in text {
+        if r == '"' { e.append("\\\"") } else if r == '\\' { e.append("\\\\") } else if r == '<' { e.append("\\u003c") } else if r == '>' { e.append("\\u003e") } else if r == '&' { e.append("\\u0026") } else if r == '\u2028' { e.append("\\u2028") } else if r == '\u2029' { e.append("\\u2029") } else if int(r) < 32 {
+            e.append("\\u00")
+            e.data.push(digits[int(r) / 16])
+            e.data.push(digits[int(r) % 16])
+        } else { e.append(string(r)) }
+    }
+    e.data.push(34)
+}
+
+func (e mut Encoder) Field(name string) {
+    if e.failure != nil { return }
+    if e.frames.len() == 0 { e.fail("Field outside an object"); return }
+    let top = e.frames.len() - 1
+    if e.frames[top].kind != KindObject { e.fail("Field outside an object"); return }
+    if e.frames[top].field { e.fail("missing object field value"); return }
+    if e.frames[top].count > 0 { e.data.push(44) }
+    e.newline(e.frames.len())
+    e.quoted(name)
+    e.data.push(58)
+    if e.indent != "" { e.data.push(32) }
+    e.frames[top].field = true
+}
+
+func (e mut Encoder) Null() {
+    if e.beforeValue() { e.append("null") }
+}
+func (e mut Encoder) Bool(value bool) {
+    if e.beforeValue() { e.append(strconv.FormatBool(value)) }
+}
+func (e mut Encoder) Int(value int) {
+    if e.beforeValue() { e.append(strconv.Itoa(value)) }
+}
+func (e mut Encoder) Float(value float64) {
+    if e.failure != nil { return }
+    if math.IsNaN(value) || math.IsInf(value, 0) { e.fail("non-finite number"); return }
+    if e.beforeValue() { e.append(strconv.FormatFloat(value, 'g', -1, 64)) }
+}
+func (e mut Encoder) String(value string) {
+    if e.beforeValue() { e.quoted(value) }
+}
+
+func (e own Encoder) Finish() (Array<byte>, error) {
+    if e.failure != nil { return Array<byte>{}, e.failure }
+    if !e.started || e.frames.len() != 0 { return Array<byte>{}, error("json: unfinished document") }
+    return e.data, nil
+}

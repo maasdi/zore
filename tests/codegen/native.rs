@@ -2,6 +2,7 @@
 
 mod controlled_runtime;
 mod http;
+mod json;
 mod review_regressions;
 
 use std::io::Write;

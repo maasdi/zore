@@ -22,8 +22,16 @@ HTTP/1.1 server work for issue #105 adds `std/net/http`, request-target
 The router uses owned handler factories and `Handler.Handle`; task-local socket
 views remain checked by the compiler. The native HTTP tests exercise loopback
 framing, routing, capacity, deadlines, panic cleanup, and shutdown. This does not
-implement an HTTP client, TLS, HTTP/2, general JSON codecs, or OS signal channels.
-The example has its own narrow user-model JSON codec and drains on stdin input.
+implement an HTTP client, TLS, HTTP/2, or OS signal channels. The example drains
+on stdin input.
+
+Issue #106 adds `std/encoding/json`: Zore token encoding/decoding and an owned
+Value tree, plus compiler-generated concrete codecs with naming policies,
+Optional fields, strict decoding, and custom codec interfaces (§37.7, decision
+record 0002). `examples/json/` exercises the public APIs; the REST example uses
+generated response codecs and the token decoder for its single-name request
+contract. JSON-specific native and rejection tests cover the implemented
+contract; full MVP and Windows validation remain separate work.
 
 Canonical M IDs follow specification §43. Detailed phases and their mapping
 to those IDs are below, followed by the active validation work package.
