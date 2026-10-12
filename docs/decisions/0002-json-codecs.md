@@ -32,8 +32,12 @@ struct fields encode null.
 
 Value uses flat node storage and explicit work stacks, so deep trees do not need
 recursive destruction or token traversal. Numbers retain their original text.
-Get and Index clone node storage; a borrowed collection API can reduce this cost
-later. Map encoding sorts emitted key strings and scans borrowed entries for
+Get and Index copy only reachable subtree nodes. Object members use an index
+alongside their document-order links. Replacement releases descendant strings
+and index entries immediately and recycles node slots; allocated capacity can
+remain at the largest tree size until the Value is dropped. Parsing builds into
+one arena instead of copying each completed container into its parent.
+Map encoding sorts emitted key strings and scans borrowed entries for
 each key because the language does not yet expose borrowed map lookup for Move
 values. This avoids cloning values or invoking a user's clone method.
 

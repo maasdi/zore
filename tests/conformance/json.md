@@ -11,6 +11,9 @@ memory; HTTP owns request-size and I/O limits.
 | Sticky errors, byte line/column positions, HTML/JavaScript escaping, indentation | Token syntax tests |
 | Token state, Peek/IsNull, duplicate keys, depth configuration, zero Encoder/Value | `json_token_call_order_zero_values_and_peek_are_checked` |
 | Number spelling, document order, replacement in place, independent lookups, iterative parse/skip/encode at depth 600 | `json_tree_preserves_numbers_order_clones_and_depth_limits` |
+| Subtree-only copies, bounded storage under repeated edits, object indexing, recycled descendants | `json_value_edits_reuse_storage_and_clone_only_reachable_nodes` |
+| Fresh fixed-array elements and cleanup on partial element failure | `json_fixed_arrays_decode_fresh_elements_and_clean_up_partial_values` |
+| Unchanged UTF-8 spans, separator escapes, all control bytes in keys and strings | `json_string_spans_preserve_unicode_and_escape_every_control` |
 | Declaration order, private fields, acronyms, all naming modes, missing ordinary/optional fields, null, unknown fields | `json_generated_struct_codecs_support_naming_optional_strict_and_custom_types` |
 | Generic callers, generic custom methods, interface codecs, optional array elements | Struct and interface codec tests |
 | Recursive structs, slices, fixed arrays, sorted map keys, fresh values, duplicate map members, nested strict errors | Collection and interface codec tests |
@@ -21,8 +24,8 @@ memory; HTTP owns request-size and I/O limits.
 | User structs, Optional, strict requests, Value patches, pretty output | `examples/json` with exact expected output |
 | REST response serialization and single-name request validation | REST loopback example and model validation test |
 
-Current implementation costs are explicit: Value lookups clone their backing
-node storage, and map encoding scans the entries for each sorted emitted key
+Current implementation costs are explicit: Value lookups copy the reachable
+subtree, and map encoding scans the entries for each sorted emitted key
 until the language has a borrowed map-entry API. These affect performance,
 not output order or ownership. General struct recursion still uses ordinary
 compiled calls; the decoder's depth limit bounds recursive JSON input.

@@ -7209,7 +7209,9 @@ generated struct depth. Maps and Value accept arbitrary keys. Generated array
 and map elements start from zero values without introducing source-level
 partial struct literals. Decoding an Array replaces its contents; decoding a
 map updates existing entries, replacing each present value from a fresh zero.
-Fixed-array decoding requires exactly its declared length. All integer widths
+Fixed-array elements also start from fresh zero values and replace an existing
+element after that element decodes successfully. Fixed-array decoding requires
+exactly its declared length. All integer widths
 are range checked without wrapping; integer reads reject fractions/exponents.
 Float widths use their normal binary rounding with overflow rejected.
 

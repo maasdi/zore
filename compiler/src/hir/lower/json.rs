@@ -166,9 +166,14 @@ impl Checker<'_> {
                 }
                 valid
             }
-            TypeKind::Array { element, .. } => {
-                self.validate_json_type(element, decode, fresh, &format!("{path}[]"), span, seen)
-            }
+            TypeKind::Array { element, .. } => self.validate_json_type(
+                element,
+                decode,
+                decode || fresh,
+                &format!("{path}[]"),
+                span,
+                seen,
+            ),
             TypeKind::DynArray { element } => {
                 self.validate_json_type(element, decode, true, &format!("{path}[]"), span, seen)
             }
@@ -815,13 +820,16 @@ impl CodecBuilder<'_, '_> {
                 TypeStore::BOOL,
             );
             let failure = self.method("fail", vec![self.string("too many fixed-array elements")]);
+            let (item, initialize) = self.bind_zero(element);
             let members = vec![
                 self.conditional(
                     overflow,
                     vec![self.statement(StmtKind::Return(vec![failure]))],
                     vec![],
                 ),
-                self.nested(target),
+                initialize,
+                self.nested(item.clone()),
+                self.assign(target, item),
                 self.assign(
                     index.clone(),
                     self.binary(
