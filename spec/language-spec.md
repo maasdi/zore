@@ -2906,6 +2906,21 @@ field-level relationships where provable; otherwise conservatively retain all
 possible origins. Recursive calls require mutually consistent contracts;
 unresolved provenance is rejected, never treated as ownership.
 
+At an indirect function or interface call, retain every compatible input origin
+for results and mutable outputs. Distinguish an argument's owned storage from
+views it already contains: a slice of `T` cannot borrow an argument's own
+storage when that storage contains no fixed or dynamic array of `T`. Forwarded
+view origins remain conservative. Opaque interfaces, function captures,
+generic parameters, and nested mutable views must not lose possible origins.
+This is a precision refinement, not authorization for escaping a loan.
+For example two mutable facades each containing `[]Socket` may share an older
+socket array without borrowing each other's unrelated `Array<byte>` fields.
+The socket owner and any opaque borrowed handler must still outlive them.
+No new runtime, error, or async behavior is introduced. The compiler refines
+indirect-call storage effects by type while preserving existing view effects;
+positive facade and negative compatible/opaque storage tests live in
+`tests/ownership/ownership.rs`.
+
 A returned view must not refer to storage owned by a local, temporary, or
 `own` parameter of the returning function. Returning that owner alongside a
 view does not authorize a self-referential aggregate. A borrowed view already
@@ -6527,6 +6542,377 @@ Compiler impact: the packages are bundled Zore source. Pending conformance
 cases: `tests/conformance/packages.md`.
 
 ---
+
+## 37.6 HTTP/1.1 servers and request URLs — LOCKED
+
+The accepted design for issue #105 adds `std/net/http` and `std/net/url`.
+Handlers use `Handle`, with ordinary waiting calls and owned per-request
+factories. The contracts below do not add language syntax or socket sharing.
+
+### API sketches
+
+The following declarations define the package contracts. Types with private fields have constructors. Their
+zero values are inert and safe to destroy. Fallible operations on an empty
+server, request, writer, router, or builder return a documented error; infallible
+request/writer getters return empty metadata, false, or a Background context.
+No empty-state method indexes an empty internal view.
+
+```ore
+type Handler interface {
+    Handle(w mut ResponseWriter, r mut Request) error
+}
+
+type HandlerFactory interface {
+    NewHandler() (Handler, error)
+}
+
+func CallHandler(f func(mut ResponseWriter, mut Request) error,
+                 w mut ResponseWriter, r mut Request) error
+
+func NewRouterBuilder() RouterBuilder
+func (b mut RouterBuilder) Handle(pattern string, factory own HandlerFactory) error
+func (b own RouterBuilder) Build() (Router, error)
+
+func DefaultConfig() Config
+func NewServer(router Router, config Config) (Server, error)
+func (s Server) Serve(listener own net.Listener) error
+func (s Server) Shutdown(ctx context.Context) error
+```
+
+`CallHandler` calls a plain function or borrowing closure immediately. It neither
+stores nor spawns it. A concrete handler can call a declared function through
+this helper; that concrete handler and its factory contain only owned data and
+Copy handles. Arbitrary captured function registration is excluded. Methods
+that wait are ordinary calls: they suspend a suspending caller and block a
+plain caller with worker compensation, following §§17.7 and 37.3.
+
+`RouterBuilder` is Move. `Build` consumes it, validates routes, and seals the
+registry. `Router` is a struct containing a Copy `Mutex<Registry>` handle;
+the private registry contains route data and owned `HandlerFactory` values,
+never slices or function values. `HandlerFactory.NewHandler` has a shared
+receiver and must create a fresh handler or one holding Copy shared handles.
+An owned interface cannot be cloned merely because its concrete value is Copy.
+
+Dispatch locks the registry only to match a route and construct its handler;
+the returned owned handler contains no views and is used after unlocking.
+Factories must be short and avoid I/O, reentrancy, or calls to this router.
+Factory construction is serialized; handler execution is concurrent across
+connections. Application data is shared through channels or `Mutex<T>`;
+handlers never run under the registry or application mutex by default.
+For example, `UsersFactory` and `UsersHandler` can each hold
+`Mutex<UserStore>` and a Copy route-kind discriminator. Registration takes
+`UsersFactory`, and `NewHandler` returns a fresh `UsersHandler` interface.
+
+##### Request and response
+
+`Request` is a Move, request-scoped facade with private fields. Methods:
+
+| Method | Contract |
+| --- | --- |
+| `Method() string`, `Path() string`, `RawQuery() string` | Validated method token, escaped path, and query without `?` |
+| `Target() string`, `Host() string`, `RemoteAddr() string` | Original target, validated Host value, peer address |
+| `Headers() Header` | Independent owned header snapshot |
+| `Query() (url.Values, error)` | Parse query explicitly; malformed query is an error |
+| `PathParam(name string) (string, bool)` | Decoded route parameter; absent gives empty text and false |
+| `Context() context.Context` | Cooperative request cancellation and deadline |
+| `mut Read(buf mut []byte) (int, error)` | Size-limited decoded body stream; satisfies `io.Reader` |
+| `ContentLength() (int, bool)` | Declared length when present; false for chunked or absent |
+
+The body is the request's `io.Reader` behavior, not an owned `Body` interface
+field that secretly owns or duplicates the socket. Read bytes with
+`io.ReadAll(r)` or stream them; arbitrary body bytes need not be UTF-8.
+Request and writer are borrowed exclusively for the handler call. The handler
+cannot retain either borrow after returning or pass it to a task. The server
+retains both facades through response finalization, then drops them before
+reusing parser storage. The following concrete representation uses existing
+slice provenance (§11.7), shared slice aliasing (§12.3), and shared-receiver
+Conn operations (§37.3); it requires no new borrowed-reference syntax.
+
+##### Ownership representation
+
+The connection task owns a one-element fixed array of Conn. Both facades
+hold a shared slice of that array and own their respective protocol state by
+value. Request owns its bounded input buffer and metadata; ResponseWriter owns
+headers and framing counters. A shared Copy Mutex<ExchangeControl> carries only
+flags, never views or sockets. Each facade has a harmless custom drop and no
+clone, making it Move and non-clonable. All socket access remains in the owning
+connection task. Shared getters do not traverse mutable views.
+
+The server calls the handler, finalizes through the writer, preserves bounded
+prefetched input, then drops both facades before reusing the connection slot.
+Cleanup on panic drops the facades before the socket. Constructors forward the
+connection slice provenance. Reject facade cloning, task/channel/Mutex escape,
+owned-interface conversion, and premature drop of the connection owner. Indirect
+calls may forward existing view provenance but need not invent a loan of an
+argument's own storage when its type cannot back the destination's view type.
+Opaque interface and function captures remain conservative.
+
+To process a body in another task, read a bounded owned `Array<byte>` first
+and pass it to an `own` worker parameter. Copy metadata strings separately.
+Streaming a live body into another task is excluded: planned retrieval does
+not prove a borrow safe (§18.4). A handler can wait for the worker without
+transferring the request or writer.
+
+`ResponseWriter` has a mutable `Write(data []byte) (int, error)` entry, so it
+satisfies `io.Writer`, plus these methods:
+
+| Method | Contract |
+| --- | --- |
+| `mut SetHeader(name string, value string) error` | Replace all values before commitment |
+| `mut AddHeader(name string, value string) error` | Append one value before commitment |
+| `mut WriteHeader(status int) error` | Commit a final status in 200–599 |
+| `mut Write(data []byte) (int, error)` | Implicitly commit 200, then write bytes |
+| `Committed() bool` | Whether final-response emission has started; remains true after a partial-write failure |
+
+Repeated commitment and header mutation after commitment return errors. Invalid
+names, values, status, or framing headers fail before emitting bytes. The server
+owns `Connection` and `Transfer-Encoding`; the handler may set a single valid
+`Content-Length`. For responses that carry content, it must then write exactly
+that many bytes; overrun fails without emitting excess, underrun closes the
+connection. Without a declared length, body responses use chunked encoding,
+finalized after the handler returns. Mark the exchange committed immediately
+before attempting the first final-header byte; a partial-header failure is
+terminal and must never permit a second response or automatic 100.
+An empty uncommitted successful response is 200 with length zero.
+
+Body eligibility is determined before choosing framing:
+
+| Response | Body writes | Wire framing and Content-Length |
+| --- | --- | --- |
+| HEAD | Count/discard writes; no content bytes | Never emit chunks; an explicit length describes the corresponding GET, and zero writes do not constitute an underrun |
+| 204 | Reject nonempty writes | No content, chunks, or Content-Length; reject a supplied length at commitment |
+| 205 | Reject nonempty writes | Emit Content-Length: 0, no chunks; reject a supplied nonzero length before commitment |
+| 304 | Reject nonempty writes | No content or chunks; an optional length describes the corresponding 200 representation and is not checked against bytes written |
+
+The 204/205/304 status restrictions take precedence over HEAD write suppression.
+Empty writes on an active writer are no-ops. Errors after commitment never
+append an error response. These rules follow [RFC 9110 §8.6](https://www.rfc-editor.org/rfc/rfc9110.html#section-8.6)
+and [§15.3.6](https://www.rfc-editor.org/rfc/rfc9110.html#section-15.3.6).
+Response trailers, interim handler responses, upgrades, CONNECT, hijacking,
+and flush/streaming control are outside version one.
+
+### Headers and common names
+
+`Header` owns an ordered list of entries. Operations are
+`NewHeader() Header`, shared `Get(name) (string, bool)`,
+`Values(name) Array<string>`, and `Entries() Array<HeaderEntry>`, plus mutable
+`Set(name, value) error`, `Add(name, value) error`, and `Del(name) error`.
+`HeaderEntry` has exported `Name string` and `Value string` fields.
+Lookup folds ASCII case only; field names are nonempty HTTP tokens. Preserve
+entry arrival order and original spelling. `Get` returns the first value;
+`Values` preserves all occurrences without comma-joining. `Set` removes all
+matching entries and appends the replacement. Reject CR, LF, NUL and forbidden
+controls; version one accepts ASCII values and horizontal tab, trims surrounding
+space/tab on input, and rejects obs-text rather than creating invalid strings.
+This ASCII restriction must be documented as interoperability policy.
+
+Provide `StatusText(code int) string` and integer constants including `StatusOK`,
+`StatusCreated`, `StatusNoContent`, `StatusResetContent`, `StatusBadRequest`,
+`StatusNotFound`,
+`StatusMethodNotAllowed`, `StatusRequestTimeout`, `StatusContentTooLarge`,
+`StatusExpectationFailed`, `StatusRequestHeaderFieldsTooLarge`,
+`StatusInternalServerError`, `StatusNotImplemented`, and
+`StatusServiceUnavailable`. Unknown codes have empty status text. Common header
+string constants are `HeaderContentType`, `HeaderContentLength`, `HeaderHost`,
+`HeaderAllow`, and `HeaderLocation`. No JSON reflection/helper API is invented.
+
+### URL package and routing
+
+Version one URL support is request-target focused, not a general URL client API.
+Functions:
+
+| Signature | Contract |
+| --- | --- |
+| `ParseRequestTarget(target string) (Target, error)` | Origin-form only: nonempty path starting `/`, optional query; reject fragments and controls |
+| `PathUnescape(text string) (string, error)` | Decode `%HH`; `+` stays plus; reject malformed escapes, invalid decoded UTF-8 and NUL |
+| `QueryUnescape(text string) (string, error)` | Same, with `+` decoded to space |
+| `PathEscape(text string) string` | Escape one segment; retain only ASCII unreserved bytes; uppercase hex |
+| `QueryEscape(text string) string` | Escape one query component; unreserved bytes retained, space becomes `+` |
+| `ParseQuery(text string) (Values, error)` | Split on `&`, first `=` separates key/value; ignore empty pairs; bare key has empty value |
+
+`Target` has `Path string` (escaped) and `RawQuery string`. `Values` owns ordered
+key/value entries, preserves duplicates and order, and has `Get`, `Values`,
+`Entries`, `Add`, `Set`, `Del`, and `Encode` equivalents to Header (case-sensitive
+keys). Query decoding is all-or-error, returning an empty value on failure;
+semicolons are ordinary data. Encode preserves entry order. Invalid escapes
+anywhere in a request target are rejected before dispatch; decoded path segments
+must be valid UTF-8. Query UTF-8 validation occurs in `ParseQuery`.
+
+Patterns are `METHOD /literal/{name}`. Methods are case-sensitive tokens.
+Parameters occupy a whole segment, have unique identifier names, and match one
+nonempty segment. No wildcard, catch-all, regex, optional segment, or host pattern.
+Split the escaped path on literal `/` before decoding each segment; reject
+decoded `/`, backslash, NUL, `.` and `..` segments. Thus `%2F` cannot change route
+boundaries. Preserve repeated/trailing slashes and never redirect or normalize.
+Pattern literal segments obey the same decoding rules.
+
+Literal matches outrank parameter matches. Reject duplicate routes and overlaps
+that have no unique specificity winner during Build, independent of registration
+order (including crossing patterns `/a/{x}` and `/{y}/b`). Compare specificity
+as a partial order: a winner is at least as specific at every segment, and more
+specific at one. No path match returns 404; path match with no method match
+returns 405 and a sorted, deduplicated Allow list. Explicit HEAD wins, otherwise
+HEAD uses GET with body suppression. OPTIONS is explicit, otherwise a matching
+path returns 204 and Allow including OPTIONS and inferred HEAD.
+
+### Framing, limits, and connection lifecycle
+
+Use strict CRLF parsing. Accept HTTP/1.1 origin-form with exactly one nonempty
+Host; reject whitespace before colon, folded fields, invalid tokens, fragments,
+and unsupported target forms. Other protocol versions receive 505 and close.
+Absolute-form proxies, CONNECT, and `OPTIONS *` are excluded and documented.
+Validate the entire header block before creating a request or invoking a handler.
+
+Reject both Transfer-Encoding and Content-Length, any repeated/comma-list
+Content-Length (even identical values), signed/overflowing/nondecimal lengths,
+and any Transfer-Encoding other than one `chunked` coding. These failures are
+400 and close. No framing fields means an empty body. Enforce decoded body
+limits for both framing modes. Chunk sizes are bounded unsigned hex; bound chunk
+metadata by the header limit. Accept syntactically valid bounded chunk extensions
+without interpreting them. Reject trailers in version one, except an empty
+trailer section. Premature EOF and malformed chunks invalidate the connection.
+Unsupported expectations receive 417 and close. An oversized known length
+receives 413 before dispatch or 100. For a validated `Expect: 100-continue`
+request with a body, the first nonempty-buffer Read sends at most one automatic
+100, before waiting for body bytes, only while no final response has started.
+Empty-buffer reads emit nothing. Final-response commitment permanently disables
+automatic 100, including when final-header transmission subsequently fails.
+
+Version one requires handlers to read the body before committing a final
+response. A subsequent Read returns `http.Request.Read: response already started`
+without reading the socket or emitting 100. The server does not drain the body
+through another path; if unread bytes remain, it closes after the response.
+For example, WriteHeader(403) followed by Read returns that error and never
+places an informational response after 403. Repeated reads before commitment
+cannot emit a second 100. Informational responses precede final responses
+([RFC 9110 §15.2](https://www.rfc-editor.org/rfc/rfc9110.html#section-15.2));
+this library restriction also avoids interleaving request reads with a partially
+written final response.
+
+Config has these exported integer fields; construct it with DefaultConfig.
+Zero selects the default; negative values are configuration errors. No unlimited
+mode is part of this initial safety contract.
+
+| Field | Default | Meaning |
+| --- | --- | --- |
+| `MaxHeaderBytes` | 32768 | Request line, header lines and terminating CRLF combined |
+| `MaxBodyBytes` | 1048576 | Decoded body bytes per request |
+| `MaxConnections` | 1024 | Accepted active connections |
+| `ReadHeaderTimeout` | 5 seconds | First request: absolute budget from acceptance; subsequent requests: from first byte observed for that request |
+| `ReadBodyTimeout` | 30 seconds | Absolute budget after header validation |
+| `WriteTimeout` | 30 seconds | Absolute budget from handler entry through final write |
+| `IdleTimeout` | 60 seconds | Wait for first byte of the next request |
+| `AcceptPollInterval` | 100 milliseconds | Bounded shutdown/cancellation observation |
+
+Durations are nanoseconds; the constructor checks range and deadline overflow.
+For the first request, record the acceptance time and set the read deadline
+before any socket read or task scheduling delay. The entire header block must
+arrive by acceptance plus ReadHeaderTimeout; receiving the first byte does not
+restart that budget. A silent peer is closed at that deadline without a 408.
+Polling timeouts check control state but never extend the absolute deadline.
+
+After a completed response, IdleTimeout bounds the wait for the next request's
+first byte. Observing that byte starts a fresh ReadHeaderTimeout; when bytes
+were prefetched while serving the preceding request, start this header budget
+when the connection loop begins parsing the next request, without an idle wait.
+An expired idle wait also closes silently. Shutdown polling applies in all phases,
+including the first-byte wait immediately after acceptance.
+
+Header count and chunk metadata are bounded by MaxHeaderBytes; no unbounded
+allocation precedes validation. Exceeding connection capacity closes the newly
+accepted connection without parsing it. Header overflow is 431 and close.
+Once header bytes have arrived, a header/body timeout is 408 and close when no
+final response was committed and a bounded write is possible. Unknown methods
+may route if valid tokens.
+
+The connection task owns the Conn, parser buffers, and response serialization.
+It serves one request at a time, including pipelined input; responses stay in
+request order. Keep-alive is default unless either side requests close or framing
+fails. If the handler leaves body bytes unread, send its response and close;
+do not start an unbounded drain. Once a streamed body exceeds the limit,
+Read records a stable limit error and marks the connection for closure after a
+bounded error response; emit 413 only if uncommitted. A handler cannot erase a
+parser/body error by returning nil. Close immediately if a response cannot be
+sent safely.
+
+Set socket deadlines before the associated wait, using std/time's monotonic
+clock. Context cancellation alone does not interrupt a socket wait (§37.4).
+Bound waits to the earlier phase deadline or a control polling deadline, check
+the context after each timeout, and retry only polling timeouts within the phase
+budget. A write retry advances by the reported count and never repeats bytes.
+Do not promise interruption of arbitrary handler computation or external I/O.
+Request context expires at the handler/write budget and is cancelled on handler
+completion or shutdown expiry. Successful handler completion does not cancel the
+server's response-finalization writes: they retain the original absolute write
+deadline and shutdown control. Graceful shutdown itself permits active requests
+to finish. There is no preemptive handler cancellation.
+
+### Errors, panics, and shutdown
+
+A non-nil handler or factory error becomes a generic 500 if uncommitted,
+except that sticky body/framing failures take precedence: malformed framing is
+400, a body limit is 413, and an expired body-read budget is 408. This priority
+also applies when a handler propagates a Read error with `?` or returns nil.
+After commitment, close without appending another response. Never expose error
+messages to clients. I/O failure affects one connection. Serve returns listener
+or configuration failures; per-request failures do not stop the server.
+
+Panics remain uncatchable. Detach connection task handles so a handler panic
+unwinds that task, drops its socket, and is reported by the runtime; never
+retrieve its handle in the accept loop. A panic does not promise a 500 response.
+A private per-connection completion guard must release the capacity permit and
+signal completion on normal exit, error, and panic. It must not panic during
+drop. An application mutex held during panic is poisoned; other handlers using
+that mutex may also fail. A factory panic while holding the registry lock poisons
+the router. Dispatch checks isPoisoned before acquisition: if it observes poison,
+return 503 without entering the mutex. That check is advisory, not atomic with
+withLock. A dispatch that checked before another factory panicked, including one
+already queued for the lock, may itself panic when acquiring the poisoned mutex
+under §20.2. Its connection closes without a promised response; there is no
+recovery or guaranteed 503 for these racing requests. Already-created handlers
+outside the registry lock may finish normally.
+
+The accept loop and completion guards never acquire the registry mutex. Their
+private accounting state contains no user callbacks and is separate from it,
+so router poison cannot cause a second panic during a connection's cleanup.
+After poisoning, the router remains unusable; replace the server/router to
+resume service. This differs from a handler panic outside the registry lock,
+which does not itself poison the router.
+
+Server is a Copy control handle with mutex/channel-backed internal state; Serve
+is allowed once. It consumes the listener and owns it in the accepting task.
+Shutdown transitions running to draining idempotently, rejects new admissions,
+and waits for all admitted connections' completion guards. Accept uses finite
+deadlines so its owner observes the transition and closes the listener. Shutdown
+may return after the accepting loop acknowledges listener closure, not merely
+after it requests closure. Idle connections close at their next bounded poll;
+active connections finish their current response and close without dispatching
+another request. Admission and the draining transition are synchronized.
+
+Serve returns nil after draining completes. Shutdown returns nil only after the
+accept loop and every admitted connection have completed. If its context expires,
+Shutdown returns its context error and requests cooperative cancellation; the
+server stays draining. It cannot promise all tasks have stopped, close a Conn
+owned by another task, or kill a CPU-bound handler. A later Shutdown can continue
+waiting. Main must remain alive until Serve and successful draining finish;
+dropping handles or returning from main is not graceful shutdown (§18.11).
+
+### Wall-clock HTTP dates — LOCKED
+
+`time.UnixSeconds() int` reads wall-clock seconds since the Unix epoch, rounded
+down. `time.FormatHTTPDate(seconds int) (string, error)` formats UTC IMF-fixdate
+for years 1601 through 9999, and returns an error outside that interval.
+Neither function supplies monotonic deadlines; those continue to use `time.Now`.
+HTTP supplies Date from the wall clock, replacing any application Date value.
+
+Ownership/error/async implications: URL/header collections own their entries;
+request/writer facades carry task-local socket loans. Parsing and configuration
+fail through error values. Socket waits retain the existing task suspension and
+worker compensation behavior. Shutdown is cooperative, not preemptive.
+Compiler impact: bundle both packages and preserve type-compatible provenance
+through indirect calls. Add wall-clock native functions without changing the
+monotonic clock. Conformance covers URL/framing/routing/deadlines/shutdown and
+accepted/rejected facade lifetimes. JSON and OS signals remain separate work.
 
 # 38. Self-Hosting Constraint
 

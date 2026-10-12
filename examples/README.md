@@ -1,15 +1,17 @@
 # Examples
 
 Each directory holds one runnable program, `main.ore`, for a feature the
-bootstrap compiler supports today, along with the exact output it prints,
-`expected-output.txt`. Run one from the repository root:
+bootstrap compiler supports today. Console examples include their exact output
+in `expected-output.txt`. The REST server is checked with live loopback clients
+and stdin-driven shutdown instead of a fixed output file. Run one from the repository root:
 
 ```sh
 zore run examples/maps/main.ore
 ```
 
 `cargo test` checks every example with `zore check` and builds and runs each
-one natively, comparing its output with `expected-output.txt`. So a directory
+one natively, comparing console output with `expected-output.txt` or exercising
+the REST endpoints. So a directory
 here is supported working code, not an aspiration. Features still in
 progress have no example until they work.
 
@@ -43,3 +45,4 @@ progress have no example until they work.
 | [`bytes`](bytes) | `Array<byte>` made from a string and turned back with a UTF-8 check, a sum over a byte view, and raw bytes sent over a loopback connection and read back reversed | §37.2, §37.3 |
 | [`timeouts`](timeouts) | A `select` that gives up after `time.After`, a worker stopped by a `context.WithTimeout` context, and a `Listener` whose `Accept` reaches its deadline | §37.3, §37.4 |
 | [`mutex`](mutex) | `Mutex<T>`: forty tasks updating one shared counter, a guarded struct with a custom `drop`, results from `withLock`, and `isPoisoned` | §20.2 |
+| [`rest-api`](rest-api) | HTTP/1.1 user API, factory handlers, shared store, bounded JSON body and graceful shutdown | §37.6 |

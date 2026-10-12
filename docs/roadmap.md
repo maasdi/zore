@@ -17,6 +17,14 @@ on Ubuntu and macOS: rustfmt, clippy with warnings denied, build, docs, and
 commit; it does not establish full MVP coverage. Windows native linking has
 not been validated here.
 
+HTTP/1.1 server work for issue #105 adds `std/net/http`, request-target
+`std/net/url`, wall-clock HTTP dates, and the runnable `examples/rest-api/`.
+The router uses owned handler factories and `Handler.Handle`; task-local socket
+views remain checked by the compiler. The native HTTP tests exercise loopback
+framing, routing, capacity, deadlines, panic cleanup, and shutdown. This does not
+implement an HTTP client, TLS, HTTP/2, general JSON codecs, or OS signal channels.
+The example has its own narrow user-model JSON codec and drains on stdin input.
+
 Canonical M IDs follow specification §43. Detailed phases and their mapping
 to those IDs are below, followed by the active validation work package.
 

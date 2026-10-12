@@ -1990,3 +1990,76 @@ fn a_custom_drop_cannot_export_the_value_being_destroyed() {
         func (r mut Resource) drop() { println(r.name) }",
     ));
 }
+
+#[test]
+fn indirect_calls_preserve_compatible_views_without_inventing_storage_loans() {
+    accepts(&program(
+        "type Socket struct { id int }
+         type View struct { socket []Socket; bytes Array<byte> }
+         func (v mut View) drop() {}
+         type Handler interface { Handle(a mut View, b mut View) error }
+         func use(h own Handler) error {
+             let sockets = [Socket; 1]{Socket{id: 1}}
+             var a = View{socket: sockets[:], bytes: Array<byte>{}}
+             var b = View{socket: sockets[:], bytes: Array<byte>{}}
+             let err = h.Handle(a, b)
+             a.bytes.push(1)
+             b.bytes.push(2)
+             drop(b)
+             drop(a)
+             return err
+         }",
+    ));
+}
+
+#[test]
+fn indirect_calls_still_borrow_compatible_backing_storage() {
+    rejects(
+        &program(
+            "type View struct { items []int }
+             func (v mut View) drop() {}
+             func use(f func(mut View, []int)) {
+                 var data = Array<int>{1}
+                 let other = Array<int>{2}
+                 var v = View{items: other[:]}
+                 f(v, data[:])
+                 data.push(3)
+                 println(v.items.len())
+             }",
+        ),
+        "borrow",
+    );
+    rejects(
+        &program(
+            "type View struct { items []int }
+             func (v mut View) drop() {}
+             func use(f func(mut View, Array<int>)) {
+                 let other = Array<int>{2}
+                 var v = View{items: other[:]}
+                 let data = Array<int>{1}
+                 f(v, data)
+                 println(v.items.len())
+             }",
+        ),
+        "drop",
+    );
+}
+
+#[test]
+fn indirect_calls_keep_opaque_receiver_storage_alive() {
+    rejects(
+        &program(
+            "type View struct { items []int }
+             func (v mut View) drop() {}
+             type Source interface { Fill(v mut View) }
+             func use(source own Source) {
+                 let other = Array<int>{2}
+                 var v = View{items: other[:]}
+                 source.Fill(v)
+                 drop(source)
+                 println(v.items.len())
+             }",
+        ),
+        "borrow",
+    );
+}

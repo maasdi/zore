@@ -980,3 +980,59 @@ fn initializer_dispatch_ignores_implementations_only_created_in_main() {
     "#,
     )]);
 }
+
+#[test]
+fn http_facades_cannot_be_cloned_owned_or_sent_to_other_tasks() {
+    let prefix = "package main\nimport \"std/net/http\"\nimport \"std/io\"\nfunc main() {}\n";
+    for (declaration, message) in [
+        (
+            "func bad(r http.Request) { let copy = clone(r); println(copy.Path()) }",
+            "clone",
+        ),
+        (
+            "func bad(r http.Request) { let held = mutex(r); _ = held }",
+            "slices",
+        ),
+        (
+            "func bad(r own http.Request) { let messages = channel<http.Request>(1); messages.send(r) }",
+            "slices",
+        ),
+        (
+            "func worker(r own http.Request) {}\nfunc bad(r own http.Request) { go worker(r) }",
+            "borrow",
+        ),
+        (
+            "func take(r own io.Reader) {}\nfunc bad(r own http.Request) { take(r) }",
+            "view",
+        ),
+    ] {
+        let source = format!("{prefix}{declaration}").replace(
+            "import \"std/io\"\n",
+            if declaration.contains("io.Reader") {
+                "import \"std/io\"\n"
+            } else {
+                ""
+            },
+        );
+        rejects(&[("main.ore", &source)], message);
+    }
+}
+
+#[test]
+fn http_plain_function_adapter_and_io_views_are_supported() {
+    accepts(&[(
+        "main.ore",
+        "package main
+import \"std/net/http\"
+import \"std/io\"
+func copy(w mut http.ResponseWriter, r mut http.Request) error {
+    let _, err = io.Copy(w, r)
+    return err
+}
+type H struct { n int }
+func (h H) Handle(w mut http.ResponseWriter, r mut http.Request) error {
+    return http.CallHandler(copy, w, r)
+}
+func main() {}",
+    )]);
+}
