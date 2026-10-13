@@ -162,6 +162,12 @@ pub enum ExprKind {
         map: Box<Expr>,
         key: Box<Expr>,
     },
+    MapWithEntry {
+        map: Box<Expr>,
+        key: Box<Expr>,
+        callback: Box<Expr>,
+        mutable: bool,
+    },
     /// Elements of an array or slice, or entries of a map.
     Len(Box<Expr>),
     ArrayPush {

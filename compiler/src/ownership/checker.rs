@@ -225,7 +225,7 @@ fn check_rvalue(
                 check_operand(package, body, field, span, state, diagnostics);
             }
         }
-        Rvalue::Length(place) | Rvalue::Ref(place) => {
+        Rvalue::Length(place) | Rvalue::Ref(place) | Rvalue::RefMut(place) => {
             let base = Operand::Ref(place.clone());
             check_operand(package, body, &base, span, state, diagnostics);
         }

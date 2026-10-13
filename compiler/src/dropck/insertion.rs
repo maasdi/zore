@@ -29,8 +29,10 @@ fn insert_body(package: &hir::Package, body: &mut Body) {
                     rvalue,
                     span,
                 } => {
-                    let binds_reference =
-                        matches!(rvalue, Rvalue::Ref(_) | Rvalue::MapValueRef(..));
+                    let binds_reference = matches!(
+                        rvalue,
+                        Rvalue::Ref(_) | Rvalue::RefMut(_) | Rvalue::MapValueRef(..)
+                    );
                     if !binds_reference
                         && !package.is_copy(place_type(package, &body.locals, &place))
                     {

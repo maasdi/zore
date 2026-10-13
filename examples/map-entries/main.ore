@@ -1,0 +1,29 @@
+package main
+
+func main() {
+    var documents = map[string]Document{
+        "report": Document{name: "report", data: Array<byte>{104, 105}},
+    }
+
+    let found, length = documents.withEntry("report", func(document Document) int {
+        return document.data.len()
+    })
+    println(found)
+    println(length)
+
+    let updated = documents.withEntryMut("report", func(document mut Document) {
+        document.data.push(33)
+    })
+    println(updated)
+
+    let present, current = documents.withEntry("report", func(document Document) int {
+        return document.data.len()
+    })
+    println(present)
+    println(current)
+
+    let missing = documents.withEntry("missing", func(document Document) {
+        panic("a missing key must not invoke the callback")
+    })
+    println(missing)
+}

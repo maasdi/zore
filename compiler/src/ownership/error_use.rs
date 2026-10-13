@@ -167,7 +167,7 @@ fn read_rvalue(rvalue: &Rvalue, state: &mut [UseState]) {
                 read_operand(value, state);
             }
         }
-        Rvalue::Length(_) | Rvalue::Ref(_) => {}
+        Rvalue::Length(_) | Rvalue::Ref(_) | Rvalue::RefMut(_) => {}
         Rvalue::MapKeyAt(_, position) | Rvalue::MapValueRef(_, position) => {
             read_operand(position, state)
         }

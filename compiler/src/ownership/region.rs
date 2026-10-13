@@ -782,6 +782,7 @@ impl<'a> Analysis<'a> {
             | Callee::MutexIsPoisoned => vec![None; args.len()],
             // The callback is called, so it is used exclusively.
             Callee::MutexWithLock => vec![None, Some(ParamMode::Mut)],
+            Callee::MapWithEntry { .. } => vec![callee.map_access(), None, Some(ParamMode::Mut)],
             Callee::MapInsertNew | Callee::MapAssign | Callee::MapLookup | Callee::MapRemove => {
                 let mut modes = vec![None; args.len()];
                 modes[0] = callee.map_access();
@@ -846,7 +847,10 @@ impl<'a> Analysis<'a> {
                 self.target_accesses(destination, site.span, &mut accesses);
                 self.check_view_store(destination, state, site.span, findings);
             }
-            if let (Some(ParamMode::Mut), [Operand::Ref(map), _, _]) = (callee.map_access(), args) {
+            if !matches!(callee, Callee::MapWithEntry { .. })
+                && let (Some(ParamMode::Mut), [Operand::Ref(map), _, _]) =
+                    (callee.map_access(), args)
+            {
                 self.check_view_store(map, state, site.span, findings);
             }
             if let (Callee::ArrayPush, [Operand::Ref(array), _]) = (callee, args) {
@@ -862,6 +866,13 @@ impl<'a> Analysis<'a> {
                 state[local.0 as usize].clear();
             }
         };
+        if let Callee::MapWithEntry { .. } = callee {
+            for destination in destinations.iter().flatten() {
+                self.assign(destination, BTreeSet::new(), state);
+            }
+            clear(state);
+            return;
+        }
         if callee.map_access().is_some() {
             self.map_call(args, destinations, site, state);
             clear(state);
@@ -1348,13 +1359,17 @@ impl<'a> Analysis<'a> {
                 loans.extend(inherited);
                 loans
             }
-            Rvalue::Ref(place) | Rvalue::MapValueRef(place, _) => {
+            Rvalue::Ref(place) | Rvalue::RefMut(place) | Rvalue::MapValueRef(place, _) => {
                 let mut path = Path::of(self.package, self.body, place);
                 if matches!(rvalue, Rvalue::MapValueRef(..)) {
                     path.elems.push(PathElem::Index);
                 }
                 let loan = Loan {
-                    kind: LoanKind::Shared,
+                    kind: if matches!(rvalue, Rvalue::RefMut(_)) {
+                        LoanKind::Exclusive
+                    } else {
+                        LoanKind::Shared
+                    },
                     target: LoanTarget::Place(path),
                     span: site.span,
                     name: self.describe(place),
@@ -1479,13 +1494,21 @@ impl<'a> Analysis<'a> {
                     false,
                 ));
             }
-            Rvalue::Ref(place) => {
+            Rvalue::Ref(place) | Rvalue::RefMut(place) => {
                 self.index_accesses(place, span, out);
                 out.push(self.access(
                     place,
-                    AccessKind::Read,
+                    if matches!(rvalue, Rvalue::RefMut(_)) {
+                        AccessKind::Write
+                    } else {
+                        AccessKind::Read
+                    },
                     Depth::Deep,
-                    Action::Borrow,
+                    if matches!(rvalue, Rvalue::RefMut(_)) {
+                        Action::MutBorrow
+                    } else {
+                        Action::Borrow
+                    },
                     span,
                     false,
                 ));
@@ -1997,7 +2020,9 @@ impl Liveness {
                     Self::use_operand(operand, live);
                 }
             }
-            Rvalue::Length(place) | Rvalue::Ref(place) => Self::use_place(place, live),
+            Rvalue::Length(place) | Rvalue::Ref(place) | Rvalue::RefMut(place) => {
+                Self::use_place(place, live)
+            }
             Rvalue::MapKeyAt(place, position) | Rvalue::MapValueRef(place, position) => {
                 Self::use_place(place, live);
                 Self::use_operand(position, live);

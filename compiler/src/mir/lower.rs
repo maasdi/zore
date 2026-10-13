@@ -341,6 +341,7 @@ impl Builder {
                 | ExprKind::ChannelReceive(_)
                 | ExprKind::ChannelClose(_)
                 | ExprKind::MutexWithLock { .. }
+                | ExprKind::MapWithEntry { .. }
                 | ExprKind::ArrayPush { .. }
                 | ExprKind::ArrayPop(_) => {
                     let discard = vec![None; expr.types.len()];
@@ -875,6 +876,7 @@ impl Builder {
                 | ExprKind::InterfaceCall { .. }
                 | ExprKind::TaskWait(_)
                 | ExprKind::MutexWithLock { .. }
+                | ExprKind::MapWithEntry { .. }
                 | ExprKind::MapLookup { .. }
                 | ExprKind::MapRemove { .. }
                 | ExprKind::ArrayPop(_)
@@ -1001,6 +1003,15 @@ impl Builder {
             ExprKind::MakeMutex(value) => {
                 (Callee::MutexNew(value.ty()), std::slice::from_ref(&**value))
             }
+            ExprKind::MapWithEntry {
+                map,
+                key,
+                callback,
+                mutable,
+            } => {
+                map_args = vec![(**map).clone(), (**key).clone(), (**callback).clone()];
+                (Callee::MapWithEntry { mutable: *mutable }, &map_args[..])
+            }
             ExprKind::MutexWithLock { mutex, callback } => {
                 map_args = vec![(**mutex).clone(), (**callback).clone()];
                 (Callee::MutexWithLock, &map_args[..])
@@ -1026,6 +1037,20 @@ impl Builder {
         };
         let mut operands = Vec::new();
         for (index, arg) in args.iter().enumerate() {
+            if matches!(callee, Callee::MapWithEntry { .. }) && index == 0 {
+                let place = self
+                    .argument_place_opt(package, arg)
+                    .unwrap_or_else(|| self.base_place(package, arg));
+                let anchor = self.reference(arg.ty());
+                let reference = if matches!(callee, Callee::MapWithEntry { mutable: true }) {
+                    Rvalue::RefMut(place)
+                } else {
+                    Rvalue::Ref(place)
+                };
+                self.push(Place::local(anchor), reference, arg.span);
+                operands.push(Operand::Ref(Place::local(anchor)));
+                continue;
+            }
             let (by_reference, by_ownership) = match &callee {
                 Callee::Function(id) => {
                     let function = package.function(*id);
@@ -1080,6 +1105,7 @@ impl Builder {
                 Callee::Select { .. } => unreachable!("a select is lowered by `select`"),
                 Callee::MutexNew(_) => (false, true),
                 Callee::MutexWithLock => (true, true),
+                Callee::MapWithEntry { .. } => (index != 1, false),
                 Callee::MutexIsPoisoned => (true, false),
             };
             operands.push(if by_reference {
@@ -1241,6 +1267,7 @@ impl Builder {
             | ExprKind::MakeChannel { .. }
             | ExprKind::MakeMutex(_)
             | ExprKind::MutexWithLock { .. }
+            | ExprKind::MapWithEntry { .. }
             | ExprKind::MutexIsPoisoned(_) => {
                 let temp = self.temp(expr.ty());
                 self.call(package, expr, vec![Some(Place::local(temp))]);

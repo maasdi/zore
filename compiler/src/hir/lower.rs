@@ -5,6 +5,7 @@ mod globals;
 mod http;
 mod interface;
 mod json;
+mod map_entry;
 mod method_value;
 mod spawn;
 
@@ -125,6 +126,7 @@ pub(crate) fn check_with_entry(
         .chain(std::mem::take(&mut checker.generated_functions))
         .collect();
     let struct_methods = checker.instantiate(&mut functions);
+    checker.check_map_entries(&mut functions);
     if let Some(template) = checker.types.take_runaway() {
         let decl = checker.res.structs[template.0 as usize];
         checker.error(
@@ -2642,6 +2644,11 @@ impl<'a> Checker<'a> {
         {
             return self.map_remove(receiver, key, value, args, span);
         }
+        if let TypeKind::Map { key, value } = self.types.kind(ty)
+            && matches!(name.text.as_str(), "withEntry" | "withEntryMut")
+        {
+            return self.map_with_entry(receiver, key, value, name, args, span);
+        }
         if let TypeKind::Channel { element } = self.types.kind(ty)
             && matches!(name.text.as_str(), "send" | "receive" | "close")
         {
@@ -5144,6 +5151,9 @@ fn subexpressions(expr: &hir::Expr) -> Vec<&hir::Expr> {
         ExprKind::ArrayPush { array, value } => vec![array, value],
         ExprKind::ChannelSend { channel, value } => vec![channel, value],
         ExprKind::MutexWithLock { mutex, callback } => vec![mutex, callback],
+        ExprKind::MapWithEntry {
+            map, key, callback, ..
+        } => vec![map, key, callback],
         ExprKind::MakeMutex(inner) | ExprKind::MutexIsPoisoned(inner) => vec![inner],
         ExprKind::MakeChannel { capacity, .. } => capacity.as_deref().into_iter().collect(),
         ExprKind::ChannelReceive(inner) | ExprKind::ChannelClose(inner) => vec![inner],

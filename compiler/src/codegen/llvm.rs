@@ -776,7 +776,9 @@ impl FunctionBuilder<'_, '_> {
     /// A by-reference local designates the referent and borrows its drop flags.
     fn bind_reference(&mut self, local: Local, rvalue: &Rvalue) {
         let (address, ty) = match rvalue {
-            Rvalue::Ref(place) => (self.address(place), self.place_ty(place)),
+            Rvalue::Ref(place) | Rvalue::RefMut(place) => {
+                (self.address(place), self.place_ty(place))
+            }
             Rvalue::MapValueRef(map, position) => {
                 let TypeKind::Map { value, .. } =
                     self.module.package.types.kind(self.place_ty(map))
@@ -798,7 +800,7 @@ impl FunctionBuilder<'_, '_> {
         self.line(format!("store ptr {address}, ptr %l{}", local.0));
         if self.module.package.needs_drop(ty) {
             let flags = match rvalue {
-                Rvalue::Ref(place)
+                Rvalue::Ref(place) | Rvalue::RefMut(place)
                     if !place
                         .projections
                         .iter()
@@ -1273,7 +1275,7 @@ impl FunctionBuilder<'_, '_> {
     }
 
     pub(super) fn assign_rvalue(&mut self, place: &Place, rvalue: &Rvalue, span: Span) {
-        if let Rvalue::Ref(_) | Rvalue::MapValueRef(..) = rvalue {
+        if let Rvalue::Ref(_) | Rvalue::RefMut(_) | Rvalue::MapValueRef(..) = rvalue {
             self.bind_reference(place.local, rvalue);
             return;
         }
@@ -1318,7 +1320,9 @@ impl FunctionBuilder<'_, '_> {
                 next
             }
             Rvalue::MapKeyAt(map, position) => self.map_key_at(map, position),
-            Rvalue::Ref(_) | Rvalue::MapValueRef(..) => unreachable!("bound above"),
+            Rvalue::Ref(_) | Rvalue::RefMut(_) | Rvalue::MapValueRef(..) => {
+                unreachable!("bound above")
+            }
             Rvalue::Slice {
                 place, low, high, ..
             } => self.slice(place, low.as_ref(), high.as_ref(), span),
@@ -2190,6 +2194,7 @@ impl FunctionBuilder<'_, '_> {
                     }
                     Callee::MutexNew(element) => Some(self.mutex_new(*element, &args[0])),
                     Callee::MutexWithLock => self.mutex_with_lock(args),
+                    Callee::MapWithEntry { mutable } => Some(self.map_with_entry(args, *mutable)),
                     Callee::MutexIsPoisoned => Some(self.mutex_is_poisoned(&args[0])),
                 };
                 self.call_continuation(result, destinations, *target, *unwind);
