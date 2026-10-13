@@ -47,3 +47,4 @@ progress have no example until they work.
 | [`mutex`](mutex) | `Mutex<T>`: forty tasks updating one shared counter, a guarded struct with a custom `drop`, results from `withLock`, and `isPoisoned` | §20.2 |
 | [`rest-api`](rest-api) | HTTP/1.1 user API, factory handlers, shared store, bounded JSON body and graceful shutdown | §37.6 |
 | [`json`](json) | Generated JSON codecs, naming, Optional, strict decoding, Value patches and indentation | §37.7 |
+| [`application-tests`](application-tests) | Same-package tests, private helpers, both test signatures, return/error/panic cleanup and continued failure reporting | §45.1 |

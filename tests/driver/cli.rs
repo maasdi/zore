@@ -27,7 +27,7 @@ fn help_is_successful_and_honest_about_support() {
         let stdout = String::from_utf8(output.stdout).unwrap();
         assert!(stdout.contains("Usage: zore"));
         assert!(stdout.contains("check <file.ore>"));
-        assert!(stdout.contains("Not implemented yet"));
+        assert!(stdout.contains("test <target>"));
         assert!(stdout.contains("build <file.ore>"));
         assert!(stdout.contains("run <file.ore>"));
     }
@@ -94,18 +94,16 @@ fn commands_validate_target_count_and_offer_help() {
                 "check" => assert!(stdout.contains("Only part of the")),
                 "build" | "run" => assert!(stdout.contains("Requires clang")),
                 "fmt" => assert!(stdout.contains("--check")),
-                _ => assert!(stdout.contains("not implemented yet")),
+                "test" => assert!(stdout.contains("_test.ore")),
+                _ => unreachable!(),
             }
         }
     }
 }
 
 #[test]
-fn unimplemented_commands_never_claim_success() {
-    for target in [".", "missing.ore", "a path with spaces.ore"] {
-        failure(&invoke(&["test", target]), 1, "not implemented yet");
-    }
-    for action in ["build", "run"] {
+fn native_commands_report_missing_targets() {
+    for action in ["build", "run", "test"] {
         failure(&invoke(&[action, "missing.ore"]), 1, "zore: missing.ore:");
     }
 }
@@ -184,6 +182,11 @@ fn delimiter_allows_option_shaped_targets() {
             1,
             &format!("zore: {target}:"),
         );
+        failure(
+            &invoke(&["test", "--", target]),
+            1,
+            &format!("zore: {target}:"),
+        );
     }
     failure(&invoke(&["check", "-source.ore"]), 2, "unknown option");
     failure(
@@ -207,6 +210,11 @@ fn non_utf8_arguments_do_not_panic() {
     );
     failure(
         &invoke(&[OsString::from("fmt"), path.clone()]),
+        1,
+        "zore: source-",
+    );
+    failure(
+        &invoke(&[OsString::from("test"), path.clone()]),
         1,
         "zore: source-",
     );

@@ -9,6 +9,10 @@ once it does.
 
 ### Language specification
 
+- Locked application test discovery, signatures, package access, native process
+  isolation, failure reporting and cleanup in §45.1. Ordinary builds and imports
+  exclude `_test.ore` files.
+
 - Standard packages are now imported as `"std/<path>"` (`"std/strings"`,
   `"std/os/exec"`) instead of `"zore/<path>"`; `std` is the reserved project
   name (§3.20, Q45).
@@ -92,6 +96,11 @@ once it does.
 - Added `zore fmt <file|directory>` and `--check`, with syntax validation,
   comment/literal and statement-boundary preservation, recursive source
   discovery, and atomic replacement of each changed file.
+- Added `zore test <file|directory>`, using ordinary checking and native linking,
+  one build per package and one process per test. Tests can return nothing or
+  `error`; errors and panics fail their test while later tests continue.
+- Added the multi-file application test sample and driver regressions for
+  discovery, isolation, failure reporting and deterministic cleanup.
 - Audited MVP implementation/test evidence and recorded focused conformance,
   tooling, library, performance, portability, and task follow-ups. Further
   self-hosting is deferred.

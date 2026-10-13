@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::codegen;
 use crate::diagnostic::Diagnostic;
-use crate::driver::check::check_project;
+use crate::driver::check::{check_project, check_project_with_entry};
 use crate::driver::project::{Project, load_file};
 use crate::dropck;
 use crate::mir::lower::lower;
@@ -109,6 +109,14 @@ pub fn emit_project_llvm(project: &Project, sources: &dyn Sources) -> Result<Str
             package.name
         )));
     }
+    emit_checked_project_llvm(project, sources, package)
+}
+
+fn emit_checked_project_llvm(
+    project: &Project,
+    sources: &dyn Sources,
+    package: crate::hir::Package,
+) -> Result<String, BuildError> {
     let mut program = lower(&package);
     dropck::insert(&package, &mut program);
     let machines = crate::async_lowering::lower(&package, &program);
@@ -150,7 +158,7 @@ pub fn compiler() -> String {
 }
 
 pub fn build(file: &SourceFile, output: &Path) -> Result<(), BuildError> {
-    link(&emit_llvm(file)?, output)
+    link(&emit_llvm(file)?, output, RUNTIME_MAIN)
 }
 
 pub fn build_project(
@@ -158,10 +166,29 @@ pub fn build_project(
     sources: &dyn Sources,
     output: &Path,
 ) -> Result<(), BuildError> {
-    link(&emit_project_llvm(project, sources)?, output)
+    link(&emit_project_llvm(project, sources)?, output, RUNTIME_MAIN)
 }
 
-fn link(ir: &str, output: &Path) -> Result<(), BuildError> {
+pub(crate) fn build_test_project(
+    project: &Project,
+    sources: &dyn Sources,
+    output: &Path,
+    entry_name: &str,
+) -> Result<(), BuildError> {
+    let checked = check_project_with_entry(project, sources, Some(entry_name));
+    if !checked.diagnostics.is_empty() {
+        return Err(BuildError::Diagnostics(checked.diagnostics));
+    }
+    let package = checked.package.expect("a test project was checked");
+    let ir = emit_checked_project_llvm(project, sources, package)?;
+    link(
+        &ir,
+        output,
+        include_str!("../../../runtime/src/test_main.rs"),
+    )
+}
+
+fn link(ir: &str, output: &Path, runtime_main: &str) -> Result<(), BuildError> {
     let dir = TempDir::new()?;
     let ir_path = dir.path().join("program.ll");
     let object_path = dir.path().join("program.o");
@@ -194,7 +221,7 @@ fn link(ir: &str, output: &Path) -> Result<(), BuildError> {
     let rustc = std::env::var_os("ZORE_RUSTC").unwrap_or_else(|| "rustc".into());
     let runtime = runtime_library(&rustc, dir.path())?;
     let main_path = dir.path().join("main.rs");
-    fs::write(&main_path, RUNTIME_MAIN)
+    fs::write(&main_path, runtime_main)
         .map_err(|e| BuildError::Io(format!("{}: {e}", main_path.display())))?;
     let mut link_arg = std::ffi::OsString::from("link-arg=");
     link_arg.push(&object_path);

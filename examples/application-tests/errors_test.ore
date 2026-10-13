@@ -1,0 +1,23 @@
+package main
+
+import "std/os"
+
+func requestedFailure() error {
+    if os.Getenv("ZORE_TEST_DEMO_FAILURES") == "1" {
+        return error("intentional returned error")
+    }
+    return nil
+}
+
+func TestReturnedError() error {
+    let probe = CleanupProbe{label: "error return"}
+    requestedFailure()?
+    return nil
+}
+
+func TestPanic() {
+    let probe = CleanupProbe{label: "panic or normal return"}
+    if os.Getenv("ZORE_TEST_DEMO_FAILURES") == "1" {
+        panic("intentional panic")
+    }
+}

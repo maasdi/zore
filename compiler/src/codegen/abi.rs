@@ -73,14 +73,28 @@ impl Module<'_> {
     pub(super) fn entry_shim(&self, entry: FunctionId) -> String {
         let package = &self.package.name;
         let name = &self.package.function(entry).name;
+        let returns = self.results_ty(&self.package.function(entry).results);
+        let (call, result, failed_result) = if returns == "void" {
+            (
+                "call void".to_string(),
+                "ret void".to_string(),
+                "ret void".to_string(),
+            )
+        } else {
+            (
+                format!("%result = call {returns}"),
+                format!("ret {returns} %result"),
+                format!("ret {returns} 1"),
+            )
+        };
         let Some(init) = self.package.init else {
             return format!(
-                "define void @zore_entry() {{\nentry:\n  call void @\"{package}.{name}\"()\n  ret void\n}}\n"
+                "define {returns} @zore_entry() {{\nentry:\n  {call} @\"{package}.{name}\"()\n  {result}\n}}\n"
             );
         };
         let init = &self.package.function(init).name;
         format!(
-            "define void @zore_entry() {{\nentry:\n  call void @\"{package}.{init}\"()\n  %failed = call zeroext i1 @zore_panic_pending()\n  br i1 %failed, label %done, label %run\nrun:\n  call void @\"{package}.{name}\"()\n  br label %done\ndone:\n  ret void\n}}\n"
+            "define {returns} @zore_entry() {{\nentry:\n  call void @\"{package}.{init}\"()\n  %failed = call zeroext i1 @zore_panic_pending()\n  br i1 %failed, label %failed_init, label %run\nrun:\n  {call} @\"{package}.{name}\"()\n  {result}\nfailed_init:\n  {failed_result}\n}}\n"
         )
     }
 }

@@ -33,6 +33,11 @@ pub trait FileSystem {
 
 pub struct Disk;
 
+pub(crate) fn is_test_file(path: &Path) -> bool {
+    path.file_name()
+        .is_some_and(|name| name.as_encoded_bytes().ends_with(b"_test.ore"))
+}
+
 fn io_error(path: &Path, source: std::io::Error) -> SourceError {
     SourceError::Io {
         path: path.to_path_buf(),
@@ -51,11 +56,17 @@ impl FileSystem for Disk {
 
     fn ore_files(&self, dir: &Path) -> Result<Vec<PathBuf>, SourceError> {
         let listing = std::fs::read_dir(dir).map_err(|source| io_error(dir, source))?;
-        let mut files: Vec<PathBuf> = listing
-            .filter_map(Result::ok)
-            .map(|entry| entry.path())
-            .filter(|path| path.extension().is_some_and(|ext| ext == "ore") && path.is_file())
-            .collect();
+        let mut files = Vec::new();
+        for entry in listing {
+            let entry = entry.map_err(|source| io_error(dir, source))?;
+            let path = entry.path();
+            let kind = entry
+                .file_type()
+                .map_err(|source| io_error(&path, source))?;
+            if kind.is_file() && path.extension().is_some_and(|ext| ext == "ore") {
+                files.push(path);
+            }
+        }
         files.sort_by(|a, b| a.file_name().cmp(&b.file_name()));
         Ok(files)
     }
@@ -193,6 +204,99 @@ impl Project {
     pub fn std_sources(&self) -> &SourceMap {
         &self.std_sources
     }
+
+    pub(crate) fn add_test_runner(
+        &mut self,
+        sources: &mut SourceMap,
+        text: String,
+        entry_name: &str,
+    ) -> Result<(), LoadError> {
+        let id = sources
+            .add("<zore test runner>", text)
+            .map_err(LoadError::Source)?;
+        let mut parsed = parse(sources.file(id).expect("added test runner"));
+        if !parsed.diagnostics.is_empty() {
+            return Err(LoadError::Diagnostics(parsed.diagnostics));
+        }
+        for item in &mut parsed.file.items {
+            if let ast::Item::Func(function) = item {
+                function.name.text = entry_name.to_string();
+                hide_test_imports(&mut function.body);
+            }
+        }
+        let mut loader = Loader::new(&Disk, Some(sources));
+        loader.packages = std::mem::take(&mut self.packages);
+        loader.std_sources = std::mem::take(&mut self.std_sources);
+        let mut entry = loader.packages.pop().expect("a loaded entry package");
+        loader.done = loader
+            .packages
+            .iter()
+            .enumerate()
+            .map(|(index, package)| (package.path.clone(), index))
+            .collect();
+        let mut imports = loader.bind_imports(&parsed.file);
+        for import in &mut imports {
+            import.name = format!("$test_{}", import.name);
+        }
+        entry.files.push(LoadedFile {
+            file: parsed.file,
+            imports,
+        });
+        loader.packages.push(entry);
+        *self = loader.finish()?;
+        Ok(())
+    }
+}
+
+fn hide_test_imports(block: &mut ast::Block) {
+    for statement in &mut block.stmts {
+        match &mut statement.kind {
+            ast::StmtKind::Binding(binding) => hide_test_import_expression(&mut binding.value),
+            ast::StmtKind::Expr(expression) => hide_test_import_expression(expression),
+            ast::StmtKind::Return(expressions) => {
+                for expression in expressions {
+                    hide_test_import_expression(expression);
+                }
+            }
+            ast::StmtKind::If(branch) => {
+                hide_test_import_expression(&mut branch.condition);
+                hide_test_imports(&mut branch.then_block);
+                assert!(
+                    branch.else_branch.is_none(),
+                    "the dispatcher has no else branches"
+                );
+            }
+            _ => unreachable!("unexpected generated dispatcher statement"),
+        }
+    }
+}
+
+fn hide_test_import_expression(expression: &mut ast::Expr) {
+    match &mut expression.kind {
+        ast::ExprKind::Name(name) if name == "os" || name == "errors" => {
+            *name = format!("$test_{name}");
+        }
+        ast::ExprKind::Call { callee, args } => {
+            hide_test_import_expression(callee);
+            for argument in args {
+                hide_test_import_expression(argument);
+            }
+        }
+        ast::ExprKind::Field { base, .. } => hide_test_import_expression(base),
+        ast::ExprKind::Binary { lhs, rhs, .. } => {
+            hide_test_import_expression(lhs);
+            hide_test_import_expression(rhs);
+        }
+        ast::ExprKind::Index { base, index } => {
+            hide_test_import_expression(base);
+            hide_test_import_expression(index);
+        }
+        ast::ExprKind::Name(_)
+        | ast::ExprKind::String(_)
+        | ast::ExprKind::Int(_)
+        | ast::ExprKind::Nil => {}
+        _ => unreachable!("unexpected generated dispatcher expression"),
+    }
 }
 
 pub enum LoadError {
@@ -217,12 +321,41 @@ pub fn load_project(
     files: &dyn FileSystem,
     entry: &Path,
 ) -> Result<Project, LoadError> {
+    if is_test_file(entry) {
+        return Err(LoadError::Source(io_error(
+            entry,
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "use `zore test` for _test.ore files",
+            ),
+        )));
+    }
+    load_package_project(sources, files, entry, false)
+}
+
+pub(crate) fn load_test_project(
+    sources: &mut SourceMap,
+    files: &dyn FileSystem,
+    entry: &Path,
+) -> Result<Project, LoadError> {
+    load_package_project(sources, files, entry, true)
+}
+
+fn load_package_project(
+    sources: &mut SourceMap,
+    files: &dyn FileSystem,
+    entry: &Path,
+    include_tests: bool,
+) -> Result<Project, LoadError> {
     let dir = match entry.parent() {
         Some(parent) if !parent.as_os_str().is_empty() => parent.to_path_buf(),
         _ => PathBuf::from("."),
     };
     let manifest = files.manifest(&dir).map_err(LoadError::Source)?;
     let mut paths = files.ore_files(&dir).map_err(LoadError::Source)?;
+    if !include_tests {
+        paths.retain(|path| !is_test_file(path));
+    }
     if !paths
         .iter()
         .any(|path| path.file_name() == entry.file_name())
@@ -444,7 +577,14 @@ impl<'a> Loader<'a> {
             return self.import_error("the `main` package cannot be imported".into(), span);
         }
         let paths = match self.files.ore_files(&dir) {
-            Ok(paths) if !paths.is_empty() => paths,
+            Ok(paths) => paths
+                .into_iter()
+                .filter(|path| !is_test_file(path))
+                .collect::<Vec<_>>(),
+            Err(_) => Vec::new(),
+        };
+        let paths = match paths {
+            paths if !paths.is_empty() => paths,
             _ => {
                 return self.import_error(
                     format!(
