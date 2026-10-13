@@ -1252,10 +1252,75 @@ MVP; use separate declarations when explicit per-name types are needed. This
 does not add tuple destructuring or comma-separated initializer expressions to
 binding declarations.
 
+### Explicit mixed target lists — LOCKED
+
+A local statement may declare and assign individual results of one expression:
+
+```ore
+(let name, var err) = decodeName(data)
+if err != nil { return err }
+(let user, err) = loadUser(name)
+if err != nil { return err }
+```
+
+The parenthesized target list has at least two positions and at least one named
+declaration. Each `let name` declares a new immutable local; each `var name`
+declares a new mutable local. An unmarked name assigns to an existing local
+binding under the ordinary mutability and name-resolution rules. `_` discards
+one result and introduces no binding; it is unmarked in this form. All named
+targets must have distinct spellings. A trailing comma before `)` is permitted.
+
+Only simple names and `_` are targets in this form. Per-target type annotations,
+`const`, field/index targets, compound updates, and comma-separated initializer
+expressions are rejected. The single initializer must produce exactly as many
+results as targets. The parentheses group statement targets; they do not create
+a tuple value or a value-producing declaration expression.
+
+Resolve unmarked targets and the initializer in the environment before the
+statement. New names enter scope together after the initializer, following
+§5.8; a bare undeclared name is an error, never an inferred declaration. Marked
+names follow the existing duplicate-declaration and shadowing rules (§5.7).
+The statement is permitted in local blocks and as a counting-loop initializer,
+with the existing loop-initializer scope. It is not a package declaration,
+conditional initializer, counting-loop update, or `select` communication form.
+Ordinary `let a, b = pair()`, `var a, b = pair()`, and `a, b = pair()` retain
+their existing declaration or assignment meanings.
+
+```ore
+var previous = 0
+(previous, let current) = pair() // assign previous and declare current
+(let first, var second) = pair() // independent immutable/mutable declarations
+(let kept, _) = pair()          // explicitly discard the other result
+(let missing, unknown) = pair() // invalid: unknown must already exist
+```
+
+Evaluate the initializer exactly once and retain all results before initializing,
+replacing, or discarding targets from left to right. An assignment target retains
+its existing type; a new declaration infers its type from the corresponding
+result. Replacing a Move value performs its required cleanup and obeys the same
+move, borrow, and overlap rules as §5.6. New locals have independent semantic
+identities and ordinary scope/drop lifetimes; this syntax grants no extra
+ownership or borrowing permissions.
+
+Errors remain explicit: a named error must be used on every path before scope
+exit or replacement (§15.6). `_` is an explicit discard. `?` and `await` keep
+their existing effects; propagated errors or panics during initializer evaluation
+do not start target stores, and required cleanup of evaluated values still runs.
+Suspension preserves the same local storage and borrowing guarantees as ordinary
+bindings and assignments; there is no separate async binding model.
+
+Compiler impact: preserve per-target declaration/assignment/discard roles in the
+AST, resolve existing targets before introducing new locals, and lower retained
+results into ordinary local initialization and replacement stores. Reuse the
+existing ownership, error-use, drop, and async analyses. Executable acceptance
+and rejection coverage accompanies the cases in
+`tests/conformance/bindings-assignments.md`.
+
 ## 5.5 Discard target `_` — LOCKED
 
-Standalone `_` may be used as a discard target in `let` and `var` bindings and
-ordinary assignments, including individual positions in a multiple-value result.
+Standalone `_` may be used as a discard target in `let` and `var` bindings,
+ordinary assignments, and explicit mixed target lists, including individual
+positions in a multiple-value result.
 It creates no binding, occupies no name in scope, and cannot be read as a value.
 Multiple discard positions may occur in the same binding or assignment.
 

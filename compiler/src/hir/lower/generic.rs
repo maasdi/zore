@@ -1060,7 +1060,9 @@ fn each_stmt_expr(stmt: &mut hir::Stmt, visit: &mut dyn FnMut(&mut hir::Expr)) {
         StmtKind::Let { value, .. } | StmtKind::Expr(value) | StmtKind::SetGlobal { value, .. } => {
             visit_expr(value, visit)
         }
-        StmtKind::Assign { targets, values } => {
+        StmtKind::Assign {
+            targets, values, ..
+        } => {
             for target in targets.iter_mut().flatten() {
                 place_exprs(target, visit);
             }

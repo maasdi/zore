@@ -42,6 +42,13 @@ contract; full MVP and Windows validation remain separate work.
 Canonical M IDs follow specification §43. Detailed phases and their mapping
 to those IDs are below, followed by the active validation work package.
 
+Explicit mixed target lists support independently marked `let` and `var`
+declarations alongside assignments to existing local bindings. Bare targets
+never infer declarations. The Rust and Zore parsers agree on the form, and
+native tests cover replacement cleanup, error propagation, and awaited results.
+The REST API example separates routing, handlers, models, request decoding,
+and storage and demonstrates reuse of one mutable error binding.
+
 The children of maturity tracker [#50](https://github.com/maasdi/zore/issues/50)
 delivered recursive owned types, owning callables, conservative frame storage
 and slot reuse, quadratic interference analysis, cooperative budgets with

@@ -1,0 +1,43 @@
+package main
+
+let errUserNotFound = error("user not found")
+
+type UserStore struct {
+    state Mutex<userState>
+}
+
+type userState struct {
+    users Array<User>
+    nextID int
+}
+
+func NewUserStore() UserStore {
+    let state = mutex(userState{users: Array<User>{}, nextID: 1})
+    return UserStore{state: state}
+}
+
+func (store UserStore) List() Array<User> {
+    return store.state.withLock(func(state mut userState) Array<User> {
+        return clone(state.users)
+    })
+}
+
+func (store UserStore) Get(id int) (User, error) {
+    return store.state.withLock(func(state mut userState) (User, error) {
+        for user in state.users {
+            if user.ID == id {
+                return user, nil
+            }
+        }
+        return User{ID: 0, Name: ""}, errUserNotFound
+    })
+}
+
+func (store UserStore) Create(input CreateUserInput) User {
+    return store.state.withLock(func(state mut userState) User {
+        let user = User{ID: state.nextID, Name: input.Name}
+        state.nextID += 1
+        state.users.push(user)
+        return user
+    })
+}

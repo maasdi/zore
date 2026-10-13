@@ -1,5 +1,15 @@
 # REST API
 
+The package keeps HTTP concerns separate from its in-memory store:
+
+| File | Responsibility |
+| --- | --- |
+| `main.ore` | Application startup and route registration |
+| `handlers.ore` | HTTP validation, status mapping, and responses |
+| `models.ore` | User, creation input, and problem response types |
+| `store.ore` | Mutex-protected storage, snapshots, and user lookup |
+| `json.ore` | Strict decoding of creation requests |
+
 Run `zore run examples/rest-api/main.ore`, then from another terminal:
 
 ```sh
@@ -13,6 +23,12 @@ The example uses function handlers and `http.ListenAndServe`, which manages sign
 registration, graceful shutdown, and cleanup automatically. It binds loopback
 and keeps its store in memory. Each request gets a fresh invocation; handlers
 share a mutex and release it before reading or writing the network.
+Startup or listener failure prints an error and exits with a nonzero status.
+
+The lookup handler uses `(let id, var err)` to declare an immutable ID and
+a reusable error, then `(let user, err)` to declare the user and assign the next
+error. It handles malformed IDs and missing users locally; other failures
+propagate with `?` or an explicit return. No error result is silently ignored.
 
 `http.ListenAndServe(address, router)` uses default limits and deadlines. Use
 `http.ListenAndServeWithConfig(address, router, config)` to customize them;

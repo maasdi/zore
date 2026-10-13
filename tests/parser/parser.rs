@@ -307,6 +307,22 @@ fn binding(case: &Case, b: &Binding) -> String {
 fn stmt(case: &Case, s: &Stmt) -> String {
     match &s.kind {
         StmtKind::Binding(b) => binding(case, b),
+        StmtKind::MixedBinding(binding) => {
+            let targets: Vec<String> = binding
+                .targets
+                .iter()
+                .map(|target| match target {
+                    MixedTarget::Declare { kind, name } => format!("{:?} {}", kind, name.text),
+                    MixedTarget::Assign(value) => expr(case, value),
+                    MixedTarget::Discard(_) => "_".into(),
+                })
+                .collect();
+            format!(
+                "(mixed {} {})",
+                targets.join(","),
+                expr(case, &binding.value)
+            )
+        }
         StmtKind::Assign {
             targets,
             op,
@@ -385,6 +401,64 @@ fn stmt(case: &Case, s: &Stmt) -> String {
             }
             out.push(')');
             out
+        }
+    }
+}
+
+#[test]
+fn mixed_bindings_preserve_each_target_role_and_statement_span() {
+    let case = Case::body(
+        "(let name, var err) = decode()\n(err, let user, _) = load()\n(let a, var b,) = pair()\n(call)()",
+    );
+    case.assert_clean();
+    assert_eq!(
+        case.shape(),
+        [
+            "(mixed Let name,Var err (call decode))",
+            "(mixed err,Let user,_ (call load))",
+            "(mixed Let a,Var b (call pair))",
+            "(call (paren call))",
+        ]
+    );
+    assert_eq!(
+        case.text(case.main_stmts()[0].span),
+        "(let name, var err) = decode()"
+    );
+    let case = Case::body("for (let first, var i) = pair(); i < first; i += 1 { println(i) }");
+    case.assert_clean();
+    let StmtKind::For(For {
+        header: ForHeader::Counting { init, .. },
+        ..
+    }) = &case.main_stmts()[0].kind
+    else {
+        panic!()
+    };
+    assert!(matches!(init.kind, StmtKind::MixedBinding(_)));
+}
+
+#[test]
+fn malformed_mixed_bindings_report_errors_and_recover() {
+    for source in [
+        "(let only) = one()",
+        "(let _, var err) = pair()",
+        "(let a int, var b) = pair()",
+        "(let a, const b) = pair()",
+        "(let a, object.field) = pair()",
+        "(let a, items[0]) = pair()",
+        "(let a, var b) += pair()",
+        "(let a, var b) = 1, 2",
+        "(let a, var b = pair()",
+        "for var i = 0; i < 2; (let a, var b) = pair() {}",
+    ] {
+        let case = Case::body(&format!("{source}\nprintln(9)"));
+        assert!(!case.parsed.diagnostics.is_empty(), "{source}");
+        if source != "(let a, var b = pair()" {
+            assert_eq!(
+                case.shape().last().map(String::as_str),
+                Some("(call println 9)"),
+                "{source}: {:?}",
+                case.shape()
+            );
         }
     }
 }

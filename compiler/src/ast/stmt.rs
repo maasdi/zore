@@ -27,6 +27,20 @@ pub enum BindingTarget {
 }
 
 #[derive(Clone, Debug, PartialEq)]
+pub struct MixedBinding {
+    pub targets: Vec<MixedTarget>,
+    pub value: Expr,
+    pub span: Span,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum MixedTarget {
+    Declare { kind: BindingKind, name: Name },
+    Assign(Expr),
+    Discard(Span),
+}
+
+#[derive(Clone, Debug, PartialEq)]
 pub struct Block {
     pub stmts: Vec<Stmt>,
     pub span: Span,
@@ -41,6 +55,7 @@ pub struct Stmt {
 #[derive(Clone, Debug, PartialEq)]
 pub enum StmtKind {
     Binding(Binding),
+    MixedBinding(MixedBinding),
     Assign {
         targets: Vec<AssignTarget>,
         op: AssignOp,

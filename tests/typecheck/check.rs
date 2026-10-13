@@ -257,6 +257,121 @@ fn name_errors_are_reported() {
 }
 
 #[test]
+fn mixed_bindings_declare_individual_locals_and_assign_existing_variables() {
+    let decls =
+        "func pair() (int, int) { return 2, 3 }\nfunc load() (int, error) { return 7, nil }";
+    accepts(&program(&format!(
+        "{decls}
+func use() {{
+    (let value, var err) = load()
+    if err != nil {{ return }}
+    (let next, err) = load()
+    println(value + next)
+    _ = err
+    var prior = 1
+    (prior, let fresh) = pair()
+    (let kept, _) = pair()
+    println(prior + fresh + kept)
+    for (let limit, var i) = pair(); i < limit; i += 1 {{ println(i) }}
+}}"
+    )));
+    accepts(&program(&format!(
+        "{decls}
+func use() {{ var outer = 1
+    {{ (let outer, var next) = pair(); next += outer; println(next) }}
+    {{ (outer, let fresh) = pair(); println(fresh) }}
+    println(outer)
+}}"
+    )));
+    for (statements, message) in [
+        ("(let value, missing) = pair()", "cannot find `missing`"),
+        (
+            "(let value, var other) = pair()\nvalue = 4",
+            "cannot assign to immutable binding `value`",
+        ),
+        (
+            "let prior = 1\n(let value, prior) = pair()",
+            "cannot assign to immutable binding `prior`",
+        ),
+        (
+            "var prior = false\n(let value, prior) = pair()",
+            "expected `bool`, found `int64`",
+        ),
+        (
+            "var prior = 1\n(let prior, var other) = pair()",
+            "duplicate declaration `prior`",
+        ),
+        (
+            "var prior = 1\n(let prior, prior) = pair()",
+            "duplicate mixed binding target `prior`",
+        ),
+        (
+            "(let value, let value) = pair()",
+            "duplicate mixed binding target `value`",
+        ),
+        (
+            "(let println, var other) = pair()",
+            "shadows a predeclared name",
+        ),
+        ("(let value, var other) = value", "cannot find `value`"),
+        (
+            "(let value, var other) = 1",
+            "expected 2 values for this mixed binding, found 1",
+        ),
+        (
+            "for (let limit, var i) = pair(); i < limit; i += 1 {}\nprintln(i)",
+            "cannot find `i`",
+        ),
+    ] {
+        rejects(
+            &program(&format!("{decls}\nfunc use() {{ {statements} }}")),
+            message,
+        );
+    }
+}
+
+#[test]
+fn mixed_bindings_preserve_path_sensitive_error_use() {
+    let decls = "func load() (int, error) { return 7, nil }";
+    rejects(
+        &program(&format!(
+            "{decls}\nfunc use() {{ (let value, var err) = load() }}"
+        )),
+        "error value in `err` may be unused",
+    );
+    rejects(
+        &program(&format!(
+            "{decls}\nfunc use() {{
+        (let value, var err) = load()
+        (let next, err) = load()
+        _ = err
+    }}"
+        )),
+        "error value in `err` may be overwritten before use",
+    );
+    rejects(
+        &program(&format!(
+            "{decls}\nfunc use(flag bool) {{
+        (let value, var err) = load()
+        if flag {{ _ = err }}
+        (let next, err) = load()
+        _ = err
+    }}"
+        )),
+        "error value in `err` may be overwritten before use",
+    );
+    accepts(&program(&format!(
+        "{decls}\nfunc use() error {{
+        (let value, var err) = load()
+        if err != nil {{ return err }}
+        (let next, err) = load()
+        if err != nil {{ return err }}
+        return nil
+    }}"
+    )));
+}
+
+#[test]
 fn bindings_types_and_defaults() {
     let case = accepts(&body(
         "let a = 1
