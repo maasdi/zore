@@ -90,6 +90,13 @@ Retained gaps after this work:
 
 ## Validation
 
+Issue #114's [current MVP follow-up](mvp.md#direct-evidence-added-for-issue-114)
+adds nested Array/map return and clone-call provenance, primitive/library
+resource classification, lifetime-syntax rejection, collection-field
+resurrection rejection, and destructor-observed views across timer/mutex/socket
+suspension. These additions supersede the named retained gaps above; the
+original validation counts below remain historical.
+
 Run on 2026-10-08 from base commit
 `1a98b74f3f0f413db21f9be0e6ef9835abede13e`, with this document as the
 only working-tree change. Native tests used the repository's pinned Rust

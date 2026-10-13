@@ -83,6 +83,12 @@ once it does.
 
 ### Compiler
 
+- Added direct conformance coverage for nested return/clone provenance,
+  primitive/library resource transfer, lifetime-syntax rejection, and
+  collection-field resurrection. Destructor-observed views now have bounded
+  normal/panic regressions across observed timer, mutex and socket suspension.
+  A test-only timer-expiry hook keeps the timer fixture independent of timing.
+
 - Added `zore fmt <file|directory>` and `--check`, with syntax validation,
   comment/literal and statement-boundary preservation, recursive source
   discovery, and atomic replacement of each changed file.

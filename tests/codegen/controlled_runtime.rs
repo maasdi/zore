@@ -50,14 +50,23 @@ fn runtime() -> &'static Runtime {
 
 pub(super) fn build(source: &str, output: &Path) {
     assert!(source.contains("waitPending(") || source.contains("waitBlocked("));
-    let source = format!("{source}\nfunc waitPending(n int) {{}}\nfunc waitBlocked(n int) {{}}\n");
+    let timer_hook = source.contains("expireTimers(");
+    let mut source =
+        format!("{source}\nfunc waitPending(n int) {{}}\nfunc waitBlocked(n int) {{}}\n");
+    if timer_hook {
+        source.push_str("func expireTimers(n int) {}\n");
+    }
     let mut sources = SourceMap::new();
     let file = sources.add("test.ore", source).unwrap();
     let mut llvm = emit_llvm(sources.file(file).unwrap()).expect("check controlled test program");
-    for (name, hook) in [
+    let mut hooks = vec![
         ("waitPending", "zore_test_wait_pending"),
         ("waitBlocked", "zore_test_wait_blocked"),
-    ] {
+    ];
+    if timer_hook {
+        hooks.push(("expireTimers", "zore_test_expire_timers"));
+    }
+    for (name, hook) in hooks {
         let symbol = format!("define void @\"main.{name}\"(");
         let start = llvm.find(&symbol).expect("checkpoint function emitted");
         let end = start + llvm[start..].find("\n}").expect("function end") + 2;
@@ -90,6 +99,11 @@ extern "C" fn zore_test_wait_pending(count: i64) {
 #[unsafe(no_mangle)]
 extern "C" fn zore_test_wait_blocked(count: i64) {
     zore_runtime::scheduler::test_support::wait_blocked(usize::try_from(count).unwrap());
+}
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[unsafe(no_mangle)]
+extern "C" fn zore_test_expire_timers(count: i64) {
+    zore_runtime::scheduler::test_support::expire_timers(usize::try_from(count).unwrap());
 }
 fn main() {
     zore_runtime::scheduler::test_support::install_pool(2);

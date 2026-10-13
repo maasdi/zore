@@ -459,6 +459,27 @@ mod imp {
         }
     }
 
+    #[cfg(zore_test_hooks)]
+    pub(super) fn expire_test_timers(count: usize) {
+        let reactor = started();
+        let mut completed = Vec::new();
+        {
+            let mut state = reactor.lock();
+            let last = state
+                .timers
+                .iter()
+                .map(|Reverse((when, _))| *when)
+                .max()
+                .expect("a timer is registered");
+            state.collect_expired(last, &mut completed);
+        }
+        assert_eq!(completed.len(), count, "registered timer count");
+        for operation in completed {
+            operation.complete();
+        }
+        reactor.nudge();
+    }
+
     pub fn start_sleep(milliseconds: u64, waiter: Waiter) -> Arc<Operation> {
         let reactor = started();
         let operation = Operation::new(waiter);
@@ -660,6 +681,11 @@ pub(super) fn wait_fd(fd: Descriptor, write: bool, deadline: Option<std::time::I
 
 pub(super) fn start_sleep(milliseconds: u64, waiter: Waiter) -> Arc<Operation> {
     imp::start_sleep(milliseconds, waiter)
+}
+
+#[cfg(all(zore_test_hooks, any(target_os = "linux", target_os = "macos")))]
+pub(super) fn expire_test_timers(count: usize) {
+    imp::expire_test_timers(count);
 }
 
 pub(super) fn start_wait_fd(

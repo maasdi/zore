@@ -8,6 +8,14 @@ recursive traversal, symlink exclusion, and permission preservation.
 The [MVP evidence inventory](../docs/conformance/mvp.md) distinguishes executed
 assertions from pending conformance scenarios and historical test gaps.
 
+`tests/codegen/conformance.rs` adds #114's nested return/clone, concrete
+resource transfer, and view-observing destructor regressions. Timer, mutex and
+socket cases verify actual Pending state on the controlled two-worker runtime
+before releasing the wait, and exercise normal and panic cleanup. The timer
+fixture expires its registered long timer through a test-only reactor hook;
+real clock behavior remains covered by existing timer tests. Each process is
+bounded by 30 seconds, and the state checkpoint by 10 seconds.
+
 `tests/driver/cli.rs` contains executable subprocess tests for the M0 driver: help,
 version, usage errors, unsupported commands, native paths, and option delimiters.
 `tests/diagnostics/source_diagnostics.rs` tests M1 UTF-8 loading, file IDs, byte spans,

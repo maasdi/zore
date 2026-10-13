@@ -1968,6 +1968,193 @@ fn has_error(case: &Case, message: &str, span: &str) -> bool {
 }
 
 #[test]
+fn nested_array_and_map_results_keep_external_view_provenance() {
+    for (result, make, use_view) in [
+        (
+            "Array<Array<View>>",
+            "Array<Array<View>>{Array<View>{View{items: items}}}",
+            "println(result[0][0].items[0])",
+        ),
+        (
+            "map[int]Array<View>",
+            "map[int]Array<View>{1: Array<View>{View{items: items}}}",
+            "let found, rows = result.remove(1); println(rows[0].items[0])",
+        ),
+        (
+            "Array<map[int]View>",
+            "Array<map[int]View>{map[int]View{1: View{items: items}}}",
+            "let found, view = result[0][1]; println(view.items[0])",
+        ),
+    ] {
+        let declarations = format!(
+            "type View struct {{ items []int }}\nfunc wrap(items []int) {result} {{ return {make} }}\nfunc forward(value own {result}) {result} {{ return value }}"
+        );
+        accepts(&program(&format!(
+            "{declarations}\nfunc valid() {{ var data = [int; 1]{{7}}; {{ var result = forward(wrap(data[:])); {use_view} }}; data[0] = 8 }}"
+        )));
+        let case = rejects(
+            &program(&format!(
+                "{declarations}\nfunc invalid() {{ var data = [int; 1]{{7}}; var result = forward(wrap(data[:])); data[0] = 8; {use_view} }}"
+            )),
+            "cannot assign to `data[_]` while it is borrowed",
+        );
+        assert!(
+            has_error(
+                &case,
+                "cannot assign to `data[_]` while it is borrowed",
+                "8"
+            ),
+            "{:#?}",
+            case.errors()
+        );
+        let case = rejects(
+            &program(&format!(
+                "{declarations}\nfunc escape() {result} {{ let data = [int; 1]{{7}}; return forward(wrap(data[:])) }}"
+            )),
+            "cannot return a view of local `data`",
+        );
+        assert!(has_error(
+            &case,
+            "cannot return a view of local `data`",
+            "data[:]"
+        ));
+    }
+}
+
+#[test]
+fn calls_through_cloned_containers_preserve_shared_view_origins() {
+    let declarations = "type View struct { items []int; owned Array<int> }
+        func read(view View) []int { return view.items }
+        func forward(view own View) []int { return read(view) }";
+    accepts(&program(&format!(
+        "{declarations}\nfunc valid() {{ var data = [int; 1]{{7}}; let original = View{{items: data[:], owned: Array<int>{{1}}}}; let duplicate = clone(original); let result = forward(duplicate); println(result[0]); drop(original); data[0] = 8 }}"
+    )));
+    let case = rejects(
+        &program(&format!(
+            "{declarations}\nfunc invalid() {{ var data = [int; 1]{{7}}; let original = View{{items: data[:], owned: Array<int>{{1}}}}; let duplicate = clone(original); drop(original); let result = forward(duplicate); data[0] = 8; println(result[0]) }}"
+        )),
+        "cannot assign to `data[_]` while it is borrowed",
+    );
+    assert!(
+        has_error(
+            &case,
+            "cannot assign to `data[_]` while it is borrowed",
+            "8"
+        ),
+        "{:#?}",
+        case.errors()
+    );
+    rejects(
+        &program(&format!(
+            "{declarations}\nfunc escape() []int {{ let data = [int; 1]{{7}}; let original = View{{items: data[:], owned: Array<int>{{1}}}}; return forward(clone(original)) }}"
+        )),
+        "cannot return a view of local `data`",
+    );
+}
+
+#[test]
+fn primitive_and_library_resource_assignments_follow_copy_move_classification() {
+    for (ty, value) in [
+        ("bool", "true"),
+        ("int8", "7"),
+        ("int16", "7"),
+        ("int32", "7"),
+        ("int64", "7"),
+        ("int", "7"),
+        ("uint8", "7"),
+        ("uint16", "7"),
+        ("uint32", "7"),
+        ("uint64", "7"),
+        ("uint", "7"),
+        ("byte", "7"),
+        ("float32", "1.5"),
+        ("float64", "1.5"),
+        ("rune", "'x'"),
+        ("string", "\"text\""),
+        ("error", "error(\"failure\")"),
+        ("channel<int>", "channel<int>(1)"),
+        ("Mutex<int>", "mutex(1)"),
+    ] {
+        let case = accepts(&program(&format!(
+            "func copy_value() {{ let source {ty} = {value}; let duplicate = source; let _ = source; let _ = duplicate }}"
+        )));
+        let package = case.checked.package.as_ref().unwrap();
+        let function = package
+            .functions
+            .iter()
+            .find(|f| f.name == "copy_value")
+            .unwrap();
+        let source = function
+            .locals
+            .iter()
+            .find(|local| local.name == "source")
+            .unwrap();
+        assert!(package.is_copy(source.ty), "{ty}");
+    }
+    for (ty, observe) in [
+        ("Array<byte>", "value.len()"),
+        ("net.Listener", "value.Addr()"),
+        ("net.Conn", "value.LocalAddr()"),
+        ("os.FileInfo", "value.Name()"),
+    ] {
+        let imports = if ty.starts_with("net.") {
+            "import \"std/net\""
+        } else if ty.starts_with("os.") {
+            "import \"std/os\""
+        } else {
+            ""
+        };
+        let valid = format!(
+            "package main\n{imports}\nfunc transfer(source own {ty}) {{ let value = source; let _ = {observe} }}\nfunc main() {{}}"
+        );
+        let case = accepts(&valid);
+        let package = case.checked.package.as_ref().unwrap();
+        let function = package
+            .functions
+            .iter()
+            .find(|f| f.name == "transfer")
+            .unwrap();
+        let source = function
+            .locals
+            .iter()
+            .find(|local| local.name == "source")
+            .unwrap();
+        let copy = ty == "os.FileInfo";
+        assert_eq!(package.is_copy(source.ty), copy, "{ty}");
+        let after_move = valid.replace("let _ = ", "let _ = source; let _ = ");
+        if copy {
+            accepts(&after_move);
+        } else {
+            let case = rejects(&after_move, "use of moved value `source`");
+            assert!(has_error(
+                &case,
+                "use of moved value `source`",
+                "let _ = source"
+            ));
+        }
+    }
+}
+
+#[test]
+fn a_custom_drop_cannot_resurrect_a_resource_through_a_collection_field() {
+    let declarations = "type Resource struct { name string; rescued Array<Resource> }";
+    let case = rejects(
+        &program(&format!(
+            "{declarations}\nfunc (r mut Resource) drop() {{ r.rescued.push(r) }}"
+        )),
+        "cannot move borrowed value `r`",
+    );
+    assert!(has_error(
+        &case,
+        "cannot move borrowed value `r`",
+        "r.rescued.push(r)"
+    ));
+    accepts(&program(&format!(
+        "{declarations}\nfunc (r mut Resource) drop() {{ if r.name != \"fresh\" {{ r.rescued.push(Resource{{name: \"fresh\", rescued: Array<Resource>{{}}}}) }} }}"
+    )));
+}
+
+#[test]
 fn fixed_arrays_copy_or_move_on_assignment_by_their_element_type() {
     let resource = "type Resource struct { id int }
         func (r mut Resource) drop() {}";

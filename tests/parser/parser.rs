@@ -805,6 +805,27 @@ fn functions_methods_and_parameters() {
 }
 
 #[test]
+fn source_lifetime_annotations_are_rejected_while_slice_lifetimes_are_inferred() {
+    Case::new("package main\nfunc first(items []int) []int { return items[:1] }\nfunc main() { println('a') }\n").assert_clean();
+    for declaration in [
+        "func first<'a>(items []int) []int { return items }",
+        "func first(items &'a []int) []int { return items }",
+        "func first(items []int) &'a []int { return items }",
+        "type View<'a> struct { items &'a []int }",
+    ] {
+        let case = Case::new(&format!("package main\n{declaration}\nfunc main() {{}}\n"));
+        assert!(!case.parsed.diagnostics.is_empty(), "{declaration}");
+        assert!(
+            case.errors()
+                .iter()
+                .any(|(_, span)| span.contains('\'') || span.contains('&')),
+            "{declaration}: {:#?}",
+            case.errors()
+        );
+    }
+}
+
+#[test]
 fn invalid_function_syntax_is_rejected() {
     for (text, message) in [
         ("func add(a, b int) int { return a }", "grouped `a, b T`"),

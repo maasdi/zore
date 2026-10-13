@@ -988,6 +988,11 @@ pub mod test_support {
         until(|| lock(&pool.state).blocked >= count);
     }
 
+    #[cfg(all(zore_test_hooks, any(target_os = "linux", target_os = "macos")))]
+    pub fn expire_timers(count: usize) {
+        super::super::reactor::expire_test_timers(count);
+    }
+
     fn until(mut ready: impl FnMut() -> bool) {
         let deadline = Instant::now() + Duration::from_secs(10);
         while !ready() {

@@ -140,3 +140,19 @@ locked in §12.6; see `arrays-slices.md`. Map operations follow §13.3 and
 
 Map forms follow §13.3 and array/slice forms §12.6; closure forms and borrowed
 map-entry APIs remain Q02/Q05. These requirements do not count as executable coverage.
+
+## Executable follow-up for issue #114
+
+The [MVP evidence inventory](../../docs/conformance/mvp.md#direct-evidence-added-for-issue-114)
+maps the following assertions to their actual Rust test functions:
+
+| Scenario | Executable result |
+| --- | --- |
+| Returned nested Array/map values retain external shared views across ownership transfer | Valid scoped reads; backing writes before the read and escape of local backing are rejected |
+| Clone with an owned field and an externally backed shared view is forwarded through a later call | Readable after destruction of the original; conflicting mutation and local-backed return are rejected |
+| A view-observing destructor crosses a timer, mutex, or TCP-read suspension | Each wait is observed Pending before release; normal and panic paths read backing before exactly-once owner cleanup |
+| Source lifetime parameters and parameter/result/field annotations | Rejected; ordinary slice signatures and rune literals remain valid |
+| Primitive/shared-handle values are assigned | Copy sources remain usable after assignment |
+| File-read byte buffers and socket handles are assigned | Move sources become unusable; native transfers retain usable payload/connection ownership |
+| A destructor inserts its own receiver into a collection field | Rejected as moving a borrowed receiver |
+| A destructor inserts a fresh independent resource | Accepted; native cleanup drops original then fresh child exactly once |
