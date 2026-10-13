@@ -30,6 +30,10 @@ name = "format"
 path = "../tests/format/format.rs"
 
 [[test]]
+name = "application_tests"
+path = "../tests/driver/testing.rs"
+
+[[test]]
 name = "source_diagnostics"
 path = "../tests/diagnostics/source_diagnostics.rs"
 

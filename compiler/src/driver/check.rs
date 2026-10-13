@@ -26,11 +26,20 @@ pub fn check_file(file: &SourceFile) -> Checked {
 
 /// `sources` holds the text of the project's own files.
 pub fn check_project(project: &Project, sources: &dyn Sources) -> Checked {
+    check_project_with_entry(project, sources, None)
+}
+
+pub(crate) fn check_project_with_entry(
+    project: &Project,
+    sources: &dyn Sources,
+    entry_name: Option<&str>,
+) -> Checked {
     let units = project.units();
     let initializers = initializers(&units);
     let resolution = resolve(&units, &initializers);
     let layered = Layered(sources, project.std_sources());
-    let (mut package, mut diagnostics) = hir::lower::check(resolution, &layered);
+    let (mut package, mut diagnostics) =
+        hir::lower::check_with_entry(resolution, &layered, entry_name);
     if let Some(checked) = &package {
         let program = mir::lower::lower(checked);
         // Copies of one generic function report the same mistake once.

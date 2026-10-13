@@ -58,6 +58,7 @@ John
 | Packages and imports | Folders are packages; `import "project/folder"` and qualified names work, with exports, import checks, and cycle detection; bundled packages are `std/strings`, `std/strconv`, `std/bytes`, `std/errors`, `std/fmt`, `std/math`, `std/unicode`, `std/unicode/utf8`, `std/time`, `std/os`, `std/os/exec`, `std/io`, `std/bufio`, `std/net`, `std/context`, `std/sync`, `std/path`, `std/path/filepath`, `std/sort`, `std/slices`, and `std/maps` |
 | `async`/`await`, tasks, channels, mutexes | Implemented for the supported operations: polled async tasks, channel send/receive and `select`, mutex acquisition, timers, TCP I/O, files, standard input, child processes, and cooperative cancellation. A waiting plain function occupies an OS worker; the runtime starts replacement workers |
 | Self-hosting | Long-term goal; a lexer and a parser written in Zore (`compiler-zore/`) match the Rust frontend in differential tests |
+| Application testing | `zore test` discovers `_test.ore` functions, checks whole packages, and runs each test in a fresh native process |
 
 Features outside the implemented subset are reported as errors, never silently
 accepted. Recursive owned structs through `Array<T>` and maps are supported,
@@ -99,18 +100,21 @@ zore build main.ore   # compile to ./main
 zore run main.ore     # build into a temporary directory and run
 zore fmt .           # format .ore files recursively
 zore fmt --check .   # check formatting without writing
+zore test .          # run application tests recursively
 zore --help
 ```
 
 `check`, `build`, and `run` take a source file. The file's folder is the program's `main`
-package, so every `.ore` file in it is compiled together, and `import` finds
+package, so its ordinary `.ore` files are compiled together, and `import` finds
 other packages as folders of the project (see `examples/packages`).
 Diagnostics are printed to standard error with source locations, and the
 command exits with status 1. A program that panics reports the panic on
 standard error and exits with status 2; `zore run` passes the program's exit
 status through. Invalid command-line arguments also exit with status 2.
 `zore fmt` accepts a file or directory and needs no native toolchain; see the
-[formatter guide](docs/formatter.md). `zore test` is not implemented yet.
+[formatter guide](docs/formatter.md). `zore test` accepts a file or directory;
+tests take no parameters and return nothing or `error`. See the
+[application testing guide](docs/testing.md) and [multi-file example](examples/application-tests).
 
 ## Repository layout
 

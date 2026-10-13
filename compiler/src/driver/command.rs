@@ -124,13 +124,12 @@ pub(crate) fn help(action: Option<Action>) -> String {
                 --check lists files that need formatting and exits 1 without writing.\n\
                 Skips symbolic links, hidden directories, target, and node_modules.\n"
             }
-            _ => {
-                return format!(
-                    "Usage: zore {} [--] <target>\n\n\
-                     This command is not implemented yet. No target is read or modified.\n\
-                     Use -- before a target whose name starts with '-'.\n",
-                    action.name()
-                );
+            Action::Test => {
+                "Usage: zore test [--] <file.ore|directory>\n\n\
+                Run TestName functions in _test.ore files, one process per test.\n\
+                Tests take no parameters and return nothing or error.\n\
+                A directory selects packages recursively; a test file selects its tests.\n\
+                Requires clang and rustc, as for build. Exits 1 on any failure.\n"
             }
         };
         return format!("{text}Use -- before a target whose name starts with '-'.\n");
@@ -143,9 +142,8 @@ pub(crate) fn help(action: Option<Action>) -> String {
        check <file.ore>  Check a source file\n\
        build <file.ore>  Build a native executable (requires clang)\n\
        run <file.ore>    Build and run a program (requires clang)\n\n\
-       fmt <target>      Format a source file or directory (--check for CI)\n\n\
-     Not implemented yet:\n\
-       test <target>     Run Zore tests\n\n\
+       fmt <target>      Format a source file or directory (--check for CI)\n\
+       test <target>     Run application tests (requires clang and rustc)\n\n\
      Options:\n\
        -h, --help        Show help; also accepted after a command\n\
        -V, --version     Show compiler version\n\n\

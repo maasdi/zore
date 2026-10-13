@@ -935,8 +935,9 @@ one folder (subfolders are separate packages). Every file declares the same
 package name, and the files share one package scope: a declaration in one file
 is visible in the others (§3.2), and a name declared twice anywhere in the
 package is a duplicate (§7.8). Files are processed in file-name order, so
-diagnostics are deterministic. Test files and other file kinds are not part of
-this decision.
+diagnostics are deterministic. Files ending in `_test.ore` are included only for
+their own package under `zore test` (§45.1), and excluded from ordinary program
+loading and imported dependencies. Other file kinds are outside this decision.
 
 **Projects.** A project is a folder tree whose root holds `zore.toml` (§3.4).
 The `name` in that file is the project name. A project name is one or more
@@ -8024,8 +8025,81 @@ differences or errors and 0 for already formatted input. Formatting must
 preserve source meaning, including literal contents and statement boundaries.
 The command validates all selected source files before writing; a syntax error
 leaves them unmodified. The initial style and traversal/write behavior are
-documented in `docs/formatter.md`. `test` remains future tooling work until its
-application-test discovery and execution contract is defined.
+documented in `docs/formatter.md`.
+
+## 45.1 Application tests (locked)
+
+`zore test <file.ore|directory>` compiles and runs application tests. Files whose
+names end in `_test.ore` belong to their folder's ordinary package, including
+access to private declarations. They are excluded from `check`, `build`, `run`,
+and imported dependencies; explicitly naming one with those commands is an
+error. A separate external test package is not supported.
+
+A test is a top-level, synchronous, non-generic function in a `_test.ore` file
+whose name starts with `Test` followed by an ASCII uppercase letter. It has no
+receiver or parameters and returns either nothing or exactly the predeclared
+`error` type. A matching top-level name with another signature is an error,
+not a silently skipped test. Methods and other names are ordinary helpers.
+
+```ore
+package calculator
+
+func TestSum() {
+    if sum(2, 3) != 5 { panic("unexpected sum") }
+}
+
+func TestLoad() error {
+    let value = loadFixture()?
+    if value != 5 { return error("unexpected fixture value") }
+    return nil
+}
+```
+
+A directory target recursively selects package folders. A source-file target
+selects its folder; an ordinary file selects every test there, whereas a
+`_test.ore` file selects only tests declared in that file. All ordinary and test
+files in each selected package are checked together, even for a file selection.
+Imported packages are checked without their test files. Direct symbolic-link
+targets are rejected; traversal skips symbolic links, hidden directories,
+`target`, and `node_modules`. Packages run in path order, and their selected tests
+in name order. All selected packages must check and build before any test runs.
+
+Each test runs sequentially in a fresh native process, with its package folder
+as the working directory and inherited environment and standard streams. The
+application's `main` is checked if present but is not invoked; test-only `main`
+packages need no application entry point. Package initialization runs normally
+in each process. Normal return or `nil` passes; a returned non-nil error is
+printed and exits the child with status 1. A panic retains ordinary panic
+diagnostics and status 2. Other nonzero exits, signals, or launch failures also
+fail the test. The runner reports `RUN`, `PASS` or `FAIL` with package path and
+test name, then a passed/failed count; it continues after child failures.
+Its exit status is 0 if every selected test passes (including no tests), 1 for
+test/load/check/build/execution failures, and 2 for invalid command arguments.
+
+Ownership and error implications: ordinary checking and deterministic drop
+placement apply to test bodies and the generated entry wrapper. Cleanup occurs
+on return, `?`, and panic exactly as in ordinary programs. A returned error does
+not use abrupt `os.Exit` to bypass wrapper cleanup. Explicit `os.Exit` still has
+its ordinary abrupt-exit behavior and determines the child status, including 0.
+Filesystem or other external state is not reset between tests. There is no
+implicit execution timeout; the caller can impose one. Temporary build artifacts
+are removed on normal runner exit, including reported failures, but forced
+termination does not promise cleanup.
+
+Async implications: test entry functions are synchronous; they may spawn async
+work and wait through existing task APIs. Dropping a task still detaches it;
+tests must wait for work they intend to verify. No task cancellation or new
+exception/assertion semantics are introduced.
+
+Compiler impact: discovery and a compiler-generated dispatcher reuse parsing,
+resolution, typing, ownership validation, MIR cleanup, async lowering, native
+linking, and runtime finalization. Native host requirements are the same as for
+`build` and `run`; no toolchain is needed when there are no selected tests.
+Conformance coverage must include both valid signatures, invalid signatures,
+private helper access, imported-test exclusion, deterministic file/directory
+selection, returned errors and panics followed by later passing tests, and
+cleanup on normal/error/panic exits. No registry, dependency solver, test context,
+fixture syntax, or new source-language construct is added.
 
 Semantic analysis and diagnostics should work independently of LLVM code generation.
 

@@ -107,7 +107,7 @@ was demonstrated by this review, and exhaustive MVP conformance is not claimed.
 | --- | --- | --- |
 | Current | MVP inventory and `zore fmt` | Inventory delivered with this change. Formatter supports a file/directory and `--check`, syntax/token preservation, comments/literals, deterministic traversal and per-file atomic writes; see [formatter guide](formatter.md). |
 | 1 | [#114: conformance evidence](https://github.com/maasdi/zore/issues/114) | Covered by the #114 follow-up's paired frontend cases and bounded native tests. See the [evidence inventory](conformance/mvp.md#direct-evidence-added-for-issue-114); broader conformance is not implied. |
-| 2 | [#115: `zore test`](https://github.com/maasdi/zore/issues/115) | Decide discovery, signatures, package scope, isolation and failure/cleanup reporting, then implement an application test workflow. |
+| 2 | [#115: `zore test`](https://github.com/maasdi/zore/issues/115) | Implemented against locked §45.1: same-package `_test.ore` discovery, file/directory selection, both signatures, native process isolation, continued failure reporting and ordinary cleanup. See [application testing](testing.md). |
 | 3 | [#116: borrowed map entries](https://github.com/maasdi/zore/issues/116) | Resolve Q05 with concrete shared/mutable access, missing-key, provenance and cleanup rules before implementation. |
 | 4 | [#118: performance baselines](https://github.com/maasdi/zore/issues/118) | Extend existing workloads with compiler and REST/JSON measurements; choose optimizations from measured bottlenecks. |
 | 5 | [#119: Windows hosts](https://github.com/maasdi/zore/issues/119) | Establish native linking/runtime evidence and honest platform CI; no cross-compilation claim. |
@@ -1861,10 +1861,11 @@ zore fmt --check .
 
 Do not let formatting/tooling work block compiler correctness.
 
-`fmt` now supports files and recursive directories, with check mode and no
-native-toolchain requirement. `test` still reports unimplemented; #115 must
-lock its application-test contract. `check`, `build`, and `run` continue to
-take a source file, as §45 describes.
+`fmt` supports files and recursive directories, with check mode and no native
+toolchain requirement. `test` supports application packages under locked §45.1,
+with same-package access, ordinary checking/cleanup and one native process per
+test. `check`, `build`, and `run` continue to take a source file, excluding
+`_test.ore` files, as §45 describes.
 
 ---
 

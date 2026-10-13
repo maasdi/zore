@@ -23,8 +23,16 @@ use crate::types::{FuncSignature, IntType, InterfaceId, StructId, TypeId, TypeKi
 
 /// HIR is returned only when there are no diagnostics.
 pub fn check(
+    resolution: Resolution<'_>,
+    sources: &dyn Sources,
+) -> (Option<hir::Package>, Vec<Diagnostic>) {
+    check_with_entry(resolution, sources, None)
+}
+
+pub(crate) fn check_with_entry(
     mut resolution: Resolution<'_>,
     sources: &dyn Sources,
+    entry_name: Option<&str>,
 ) -> (Option<hir::Package>, Vec<Diagnostic>) {
     let diagnostics = std::mem::take(&mut resolution.diagnostics);
     let types = std::mem::take(&mut resolution.types);
@@ -71,7 +79,20 @@ pub fn check(
     for index in 0..checker.res.consts.len() {
         checker.eval_const(ConstId(index as u32));
     }
-    let entry = checker.check_entry_point();
+    let application_entry = checker.check_entry_point(entry_name.is_some());
+    let entry = entry_name.map_or(application_entry, |name| {
+        checker
+            .res
+            .functions
+            .iter()
+            .enumerate()
+            .find_map(|(index, function)| {
+                (checker.res.function_package[index] == checker.res.entry_package
+                    && function.receiver.is_none()
+                    && function.name.text == name)
+                    .then_some(FunctionId(index as u32))
+            })
+    });
     if checker.diagnostics.is_empty()
         && let Some(index) = checker.closures.iter().position(Option::is_none)
     {
@@ -1140,7 +1161,7 @@ impl<'a> Checker<'a> {
         )))
     }
 
-    fn check_entry_point(&mut self) -> Option<FunctionId> {
+    fn check_entry_point(&mut self, allow_missing: bool) -> Option<FunctionId> {
         let entry = self.res.entry_package;
         let package = self.res.packages.get(entry)?;
         if package.name != "main" {
@@ -1148,6 +1169,9 @@ impl<'a> Checker<'a> {
         }
         let clause = package.clause?;
         let Some(main) = self.res.entry_main else {
+            if allow_missing {
+                return None;
+            }
             self.diagnostics.push(
                 Diagnostic::new(
                     Severity::Error,

@@ -1,5 +1,16 @@
 # Compiler testing
 
+`tests/driver/testing.rs` verifies the application test runner: both signatures,
+discovery and file selection, private helpers, hidden dispatcher imports,
+fresh package initialization, ordinary ownership/error checking, imported-test
+exclusion, preflight builds, no-test behavior, async work, returned errors,
+panics, nonzero exits, continued execution, temporary artifact cleanup, and
+deterministic recursive traversal with symlink exclusion. It executes the
+multi-file `examples/application-tests` sample, including its opt-in failures.
+See the [application testing guide](../docs/testing.md) and
+[contract coverage](conformance/application-tests.md). Native cases require the
+same clang/rustc toolchain as `zore build`.
+
 `tests/format/format.rs` checks source formatting, idempotence, preservation of
 literal/comment spellings and statement boundaries, and every repository `.ore`
 source under examples, standard packages, the Zore frontend, and benchmarks.

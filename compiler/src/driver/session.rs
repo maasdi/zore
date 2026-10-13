@@ -28,14 +28,7 @@ pub fn run() -> ExitCode {
             cli::Action::Build => build_command(&target),
             cli::Action::Run => run_command(&target),
             cli::Action::Format => super::format::run(&target, format_check),
-            cli::Action::Test => {
-                eprintln!(
-                    "zore: {} is not implemented yet; {:?} was not processed",
-                    action.name(),
-                    target
-                );
-                ExitCode::FAILURE
-            }
+            cli::Action::Test => super::testing::run(&target),
         },
         Err(message) => {
             eprintln!("zore: {message}\nTry 'zore --help' for usage.");
@@ -56,7 +49,7 @@ fn load(target: &Path, verb: &str) -> Result<(SourceMap, Project), ExitCode> {
     }
 }
 
-fn report(sources: &SourceMap, diagnostics: &[Diagnostic], verb: &str) -> ExitCode {
+pub(super) fn report(sources: &SourceMap, diagnostics: &[Diagnostic], verb: &str) -> ExitCode {
     for diagnostic in diagnostics {
         match diagnostic.render(sources) {
             Ok(rendered) => eprintln!("{rendered}"),

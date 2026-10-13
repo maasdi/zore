@@ -1,0 +1,11 @@
+package main
+
+func TestSum() {
+    if sum(2, 3) != 5 {
+        panic("sum must produce 5")
+    }
+}
+
+func TestCleanup() {
+    let probe = CleanupProbe{label: "normal return"}
+}
