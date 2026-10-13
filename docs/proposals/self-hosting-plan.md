@@ -64,13 +64,13 @@ not a porting contract (`docs/architecture.md`).
 
 | Operation required by a stage | Available now | Gap and first need |
 | --- | --- | --- |
-| Preserve arbitrary source bytes, index them, validate or decode UTF-8 | `os.ReadFile`; `strings.Bytes` and `FromBytes`; `zore/unicode/utf8`; `Array<byte>` and slices | Enough for an in-memory lexer. Keep spans in bytes and compare invalid UTF-8 behavior with `compiler/src/source/` |
-| Build text, parse and format basic values | `zore/strings` (search, split, trim, case, `Builder`), `zore/bytes`, `zore/strconv` (integers in any base, booleans, `Quote`/`Unquote`), `zore/unicode` | Check allocation and large-input throughput of `strings.Builder` |
+| Preserve arbitrary source bytes, index them, validate or decode UTF-8 | `os.ReadFile`; `strings.Bytes` and `FromBytes`; `std/unicode/utf8`; `Array<byte>` and slices | Enough for an in-memory lexer. Keep spans in bytes and compare invalid UTF-8 behavior with `compiler/src/source/` |
+| Build text, parse and format basic values | `std/strings` (search, split, trim, case, `Builder`), `std/bytes`, `std/strconv` (integers in any base, booleans, `Quote`/`Unquote`), `std/unicode`; rune/integer conversions | Check allocation and large-input throughput of `strings.Builder` |
 | Read and write a named file | `os.ReadFile`, `WriteFile`, `os.File`, `bufio.Reader`/`Writer`; explicit `error` results | Enough for a one-file driver; file errors and invalid UTF-8 must preserve useful path/context |
-| Discover `.ore` files, manifests and imports | `compiler/src/driver/project.rs` uses sorted `read_dir`, `is_file`, ancestor search and canonical paths | `os.ReadDir` (sorted), `os.Stat`, `path`/`filepath` (`Join`, `Dir`, `Base`, `Ext`, `Clean`, `Abs`). Missing: resolving symbolic links for canonical paths |
-| Read CLI arguments and selected environment | `compiler/src/driver/{command,session,build}.rs` uses `OsString` args, current directory, temp directory and `ZORE_CC`/cache settings | `os.Args`, `os.Getenv`, `os.Getwd`, `os.Exit`. Arguments and values that are not UTF-8 are replaced lossily; a byte policy is still open, and there is no temporary-folder lookup |
-| Invoke backend tools and run produced programs | `compiler/src/driver/build.rs` invokes clang and rustc with `std::process::Command` | `zore/os/exec`: argument vector without a shell, exit status in the error, captured output. Missing: separate stderr capture and inherited output |
-| Manage temporary output and cleanup | Rust `TempDir` in `compiler/src/driver/build.rs` creates and removes a build directory | `os.MkdirAll`, `Remove`, `RemoveAll`. Missing: a unique temporary folder and failure-safe cleanup |
+| Discover `.ore` files, manifests and imports | `os.ReadDir` (sorted), `os.Stat`, `std/path` and `std/path/filepath` (`Join`, `Dir`, `Base`, `Ext`, `Clean`, `Abs`); Rust reference: `compiler/src/driver/project.rs` | Missing: resolving symbolic links for canonical paths |
+| Read CLI arguments and selected environment | `os.Args`, `os.Getenv`, `os.Getwd`, `os.Exit`; Rust reference: `compiler/src/driver/{command,session,build}.rs` | Arguments and values that are not UTF-8 are replaced lossily; a byte policy is still open, and there is no temporary-folder lookup |
+| Invoke backend tools and run produced programs | `std/os/exec`: argument vector without a shell, exit status in the error, `Run`, `Output`, and `CombinedOutput`; Rust reference: `compiler/src/driver/build.rs` | Missing: separate stderr capture and inherited output |
+| Manage temporary output and cleanup | `os.MkdirAll`, `Remove`, `RemoveAll`; Rust reference: `TempDir` in `compiler/src/driver/build.rs` | Missing: a unique temporary folder and failure-safe cleanup |
 
 The standard package surface above is defined in `std/`; runtime backing lives
 in `runtime/src/` (`os.rs`, `exec.rs`, `net.rs`, `strings.rs`, `strconv.rs`,
@@ -81,8 +81,11 @@ Zore-native test runner are useful after the compiler works; neither blocks
 the first lexer, frontend, or bootstrap comparison. Rust/Cargo tests remain
 the test harness meanwhile.
 
-Package initialization is not needed for the proposed stages: pass explicit
-compiler contexts and construct tables in `main`. Borrowed map-entry access
+Immutable package-level `let` values of permitted Copy types are supported;
+package-level `var`, Move values, slices, function values, tasks, channels, and
+mutexes remain rejected. The proposed stages can
+pass explicit compiler contexts and construct owned tables in `main` instead.
+Borrowed map-entry access
 is also not required initially: store integer IDs or Copy descriptors in
 maps and retain owned records in arenas. Revisit either only after a concrete
 workload demonstrates that the current API is insufficient. Do not silently

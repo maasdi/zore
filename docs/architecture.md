@@ -3,7 +3,7 @@
 Status: The compiler supports tasks and stackless async state machines alongside the synchronous subset,
 including Move structs, deterministic drops, concrete error values, fixed
 arrays, dynamic `Array<T>`, maps, borrowed slices with region analysis, and
-non-escaping closures. Paths below are relative to `compiler/src/`. `main.rs` delegates to
+borrowing and owning closures and function values. Paths below are relative to `compiler/src/`. `main.rs` delegates to
 `driver`; `driver/command.rs` and `driver/session.rs` handle CLI arguments and
 exit status; `driver/check.rs` orchestrates the frontend pipeline and
 `driver/build.rs` the native one. `source/` stores UTF-8 text under stable
@@ -450,12 +450,14 @@ exclusive) are held by the closure value until its last use; a call through a
 value is `Callee::Value(place)`, an exclusive access of the callee, and a
 function value passed to a function-typed parameter is borrowed exclusively.
 The closure body is an ordinary MIR body whose capture locals are by-reference
-locals. Codegen represents a closure as `{ code, environment }`: the
-environment is a hoisted `[N x ptr]` in the creating frame holding each captured
-place's address (and its drop flags' address for a Move value), and the body
-receives it as a leading `ptr` parameter and loads its capture locals from it.
-Function-typed results, fields, and elements are rejected, so a closure cannot
-escape the frame that holds its environment.
+locals. Codegen represents every closure as `{ code, environment, destructor }`.
+A borrowing closure has a null destructor and a hoisted `[N x ptr]`
+environment in the creating frame, holding each captured place's address and
+its drop flags' address for a Move value. The body receives the environment as
+a leading `ptr` parameter and loads its capture locals from it. Owning closures
+use heap storage and may be returned or stored in struct fields, fixed or dynamic
+arrays, and map values; captured views still retain their backing loans through
+region analysis.
 
 Clone (§10.7) has two forms. A declared custom `clone` is an ordinary method,
 validated at its declaration (shared receiver, no parameters, own type as the
@@ -480,8 +482,7 @@ Temporary
 restrictions, each diagnosed: a shared parameter cannot hold a `mut []T` inside
 a struct, fixed array, or collection; a closure can store
 into a capture only views of other captures; a value whose custom `drop`
-reads a view must be declared after the storage it views; and a closure cannot
-consume a captured Move value.
+reads a view must be declared after the storage it views.
 
 Return contracts also carry outputs: for each `mut` parameter or
 capture, which inputs' storage or views it may receive, read from its holdings
@@ -506,6 +507,14 @@ environment instead of borrowing it, and a direct call of a call-once local is
 followed by a `drop` of it. Code generation gives every closure a destructor
 slot; an owning closure's heap environment begins with the capture pointers
 its body loads, so one body serves both kinds.
+
+Declared functions become capture-free owning function values. Method values
+capture their receiver through ordinary closure inference. Declared async
+functions carry an async function type and must be awaited or spawned when
+called. Spawning an owning plain callable transfers it and independent
+arguments into task-owned storage; it executes as a plain task and destroys
+the callable once on success, error, or panic. Mutable or borrowed captures
+without independent task lifetimes remain rejected.
 
 A collection loop lowers to a counting loop. MIR binds two by-reference
 temporaries with `Rvalue::Ref`: one to the collection, read by the loop header

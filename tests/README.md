@@ -11,6 +11,10 @@ Zore lexer in `compiler-zore/` and compares its tokens, byte spans, decoded
 literals, and error codes with the Rust lexer. The inputs are targeted cases,
 each line of the lexer tests, the lexical conformance documents, every `.ore`
 file in the repository, and seeded generated text and bytes.
+`tests/selfhost/harness.rs` verifies large-output capture, failure diagnostics,
+and timeout kill/reap behavior. Each oracle batch has a 60-second execution
+deadline with file-backed stdout/stderr; timeout failures name the unfinished
+case and include output tails. Compilation is outside this execution deadline.
 `tests/selfhost/parser.rs` does the same for the Zore parser, source manager,
 and diagnostics. It compares complete syntax trees with byte spans, every
 parser diagnostic with its labels, notes, and rendered text, and line and
