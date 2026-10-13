@@ -220,7 +220,7 @@ fn needs_space(text: &str, previous: &Token, current: &Token, layout: &Layout) -
             previous.kind,
             TokenKind::Ident
                 | TokenKind::Punct(Punct::RParen | Punct::RBracket | Punct::RBrace)
-                | TokenKind::Keyword(Keyword::Map | Keyword::Mut)
+                | TokenKind::Keyword(Keyword::Map)
         ),
         (TokenKind::Punct(Punct::LBrace), _) => false,
         (_, TokenKind::Punct(Punct::Not | Punct::Plus | Punct::Minus | Punct::Caret))

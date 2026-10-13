@@ -45,7 +45,7 @@ impl Layout {
             match item {
                 Item::Func(func) => {
                     if let Some(receiver) = &func.receiver {
-                        builder.ty(&receiver.ty);
+                        builder.declared_ty(&receiver.ty);
                         let at = builder
                             .tokens
                             .partition_point(|t| t.span.start() < receiver.span.start());
@@ -65,7 +65,7 @@ impl Layout {
                     builder.generics(&decl.type_params, decl.span);
                     builder.braces(decl.span);
                     for field in &decl.fields {
-                        builder.ty(&field.ty);
+                        builder.declared_ty(&field.ty);
                     }
                     builder.layout.blank_after.insert(decl.span.end());
                 }
@@ -76,7 +76,7 @@ impl Layout {
                     }
                     builder.layout.blank_after.insert(decl.span.end());
                 }
-                Item::Named(decl) => builder.ty(&decl.base),
+                Item::Named(decl) => builder.declared_ty(&decl.base),
                 Item::Binding(binding) => builder.binding(binding),
             }
         }
@@ -199,7 +199,7 @@ impl Builder<'_> {
 
     fn signature(&mut self, params: &[Param], results: &[Type]) {
         for param in params {
-            self.ty(&param.ty);
+            self.declared_ty(&param.ty);
         }
         for result in results {
             self.ty(result);
@@ -212,17 +212,25 @@ impl Builder<'_> {
             let at = self
                 .tokens
                 .partition_point(|t| t.span.start() < first.span().start());
-            if let Some(token) = self.tokens[..at].iter().rfind(|t| !t.span.is_empty())
-                && token.kind == TokenKind::Punct(Punct::LParen)
-            {
-                self.layout.spaced_before.insert(token.span.start());
+            if let Some(token) = self.tokens[..at].iter().rfind(|t| !t.span.is_empty()) {
+                let start = if token.kind == TokenKind::Punct(Punct::LParen) {
+                    token.span.start()
+                } else {
+                    first.span().start()
+                };
+                self.layout.spaced_before.insert(start);
             }
         }
     }
 
+    fn declared_ty(&mut self, ty: &Type) {
+        self.layout.spaced_before.insert(ty.span().start());
+        self.ty(ty);
+    }
+
     fn binding(&mut self, binding: &Binding) {
         if let Some(ty) = &binding.ty {
-            self.ty(ty);
+            self.declared_ty(ty);
         }
         self.expr(&binding.value);
     }

@@ -70,6 +70,19 @@ fn fixed_array_type_separators_remain_inline() {
     let output =
         formatted("package main\nfunc main(){\nlet values=[int;2]{1,2}\nprintln(values[0])\n}\n");
     assert!(output.contains("[int; 2]{1, 2}"), "{output}");
+    let output = formatted(
+        "package main\ntype Numbers []int\ntype Holder struct { values []int }\nfunc use(values []int, edit mut []int) [int;2] {\nlet view []int=values\nreturn [int;2]{view[0],edit[0]}\n}\n",
+    );
+    for expected in [
+        "type Numbers []int",
+        "values []int",
+        "edit mut []int",
+        ") [int; 2]",
+        "let view []int = values",
+        "view[0]",
+    ] {
+        assert!(output.contains(expected), "{output}");
+    }
 }
 
 #[test]
