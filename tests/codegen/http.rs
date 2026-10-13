@@ -876,18 +876,24 @@ fn http_factory_poison_preserves_acceptance_and_shutdown() {
 
 #[test]
 fn rest_example_json_codec_handles_unicode_and_rejects_non_json_escapes() {
-    let codec = include_str!("../../examples/rest-api/json.ore");
+    let codec = rest_sources(&[
+        include_str!("../../examples/rest-api/json.ore"),
+        include_str!("../../examples/rest-api/models.ore"),
+        "import \"std/strings\"\n",
+    ]);
     let source = format!(
         r#"{codec}
 func main() {{
     let good = strings.Bytes("{{\"name\":\"Ada \\uD83D\\uDE00\"}}")
-    let name, err = decodeName(good[:])
+    (let input, var err) = decodeCreateUser(good[:])
     println(err == nil)
-    let quoted, quoteErr = encodeJSON(name)
-    if quoteErr != nil {{ panic("quote") }}
+    (let bytes, err) = json.MarshalWith(input.Name, json.LowerCamel)
+    if err != nil {{ panic("quote") }}
+    (let quoted, err) = strings.FromBytes(bytes[:])
+    if err != nil {{ panic("utf8") }}
     println(quoted)
     let inputs = [string; 7]{{"{{\"name\":\"\\x41\"}}", "{{\"name\":\"\\uD800\"}}", "{{\"name\":\"\\uDC00\"}}", "{{\"name\":\"\"}}", "{{\"name\":\"a\",\"name\":\"b\"}}", "{{\"other\":\"a\"}}", "{{\"name\":\"a\"}} trailing"}}
-    for input in inputs {{ let _, err = decodeName(strings.Bytes(input)[:]); println(err != nil) }}
+    for input in inputs {{ let _, err = decodeCreateUser(strings.Bytes(input)[:]); println(err != nil) }}
 }}
 "#
     );
@@ -947,21 +953,25 @@ func main() {
     server.finish("");
 }
 
-pub(super) fn check_rest_example() {
+#[test]
+fn rest_api_example_serves_requests_and_shuts_down_cleanly() {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let address = listener.local_addr().unwrap().to_string();
     drop(listener);
     let main = include_str!("../../examples/rest-api/main.ore")
         .replace(
-            "println(\"Starting http://127.0.0.1:8080; Ctrl-C shuts down gracefully\")",
-            "println(\"127.0.0.1:8080\")",
+            "println(\"Starting http://\" + listenAddress + \"; Ctrl-C shuts down gracefully\")",
+            "println(listenAddress)",
         )
         .replace("127.0.0.1:8080", &address);
-    let codec = include_str!("../../examples/rest-api/json.ore")
-        .replace("package main\n", "")
-        .replace("import \"std/encoding/json\"\n", "")
-        .replace("import \"std/strings\"\n", "");
-    let server = ServerProcess::start(&format!("{main}\n{codec}"));
+    let source = rest_sources(&[
+        &main,
+        include_str!("../../examples/rest-api/handlers.ore"),
+        include_str!("../../examples/rest-api/models.ore"),
+        include_str!("../../examples/rest-api/store.ore"),
+        include_str!("../../examples/rest-api/json.ore"),
+    ]);
+    let server = ServerProcess::start(&source);
     let body = r#"{"name":"Ada"}"#;
     let created = server.exchange(&format!("POST /users HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()));
     status(&created, 201);
@@ -972,7 +982,14 @@ pub(super) fn check_rest_example() {
     let users = server.exchange("GET /users HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n");
     status(&users, 200);
     assert!(users.ends_with(r#"[{"id":1,"name":"Ada"}]"#), "{users}");
-    for (path, expected) in [("/users/1", 200), ("/users/2", 404), ("/users/no", 400)] {
+    for (path, expected) in [
+        ("/users/1", 200),
+        ("/users/2", 404),
+        ("/users/no", 400),
+        ("/users/0", 400),
+        ("/users/-1", 400),
+        ("/users/999999999999999999999999999999", 400),
+    ] {
         status(
             &server.exchange(&format!(
                 "GET {path} HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n"
@@ -989,6 +1006,25 @@ pub(super) fn check_rest_example() {
     status(&server.exchange("POST /users HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}"), 400);
     send_signal(&server.child, 15);
     server.finish("");
+}
+
+fn rest_sources(sources: &[&str]) -> String {
+    let mut imports = std::collections::BTreeSet::new();
+    let mut body = String::new();
+    for source in sources {
+        for line in source.lines() {
+            if line.starts_with("import ") {
+                imports.insert(line);
+            } else if !line.starts_with("package ") {
+                body.push_str(line);
+                body.push('\n');
+            }
+        }
+    }
+    format!(
+        "package main\n{}\n{body}",
+        imports.into_iter().collect::<Vec<_>>().join("\n")
+    )
 }
 
 fn http_sources() -> String {

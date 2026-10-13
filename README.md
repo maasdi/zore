@@ -51,6 +51,7 @@ John
 | Native code generation | Implemented for that subset: LLVM IR with checked arithmetic and bounds, persistent async state machines, and a linked Rust runtime |
 | Ownership, borrowing, and cleanup | Implemented: Copy/Move classification, partial moves, shared and `mut` borrows, inferred regions for stored views, and cleanup on normal, error, and panic paths; task inputs use conservative borrow restrictions |
 | Errors and `?` | Implemented for synchronous and async code, including propagation after awaiting async calls or task results |
+| Local bindings | Immutable `let`, mutable `var`, and explicit mixed target lists: `(let value, var err) = load()` and `(let next, err) = load()` |
 | Strings | Length, indexing, slicing, loops by character, `+`, and `string(rune)` work |
 | Collections | `[T; N]`, `Array<T>`, `map[K]V`, and `[]T` work; `clone` works for structs and collections; `len`, `push`, `pop`, and `for … in` loops work; borrowed map entries are planned |
 | Closures and function types | Implemented, including closures that are returned or stored, call-once closures, declared functions and methods as values, and `go` on closures and function-typed locals; async function values are awaited or spawned; a callee stored in a field, element, or map value cannot be spawned directly |

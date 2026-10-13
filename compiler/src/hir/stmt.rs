@@ -26,6 +26,7 @@ pub enum StmtKind {
     Assign {
         targets: Vec<Option<Place>>,
         values: Vec<Expr>,
+        declarations: Vec<LocalId>,
     },
     /// Evaluates the map place, key, then value before changing the entry.
     MapAssign {

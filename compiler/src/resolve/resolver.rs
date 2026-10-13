@@ -1149,6 +1149,7 @@ impl<'a> Resolver<'a> {
     fn stmt(&mut self, stmt: &'a ast::Stmt) {
         match &stmt.kind {
             StmtKind::Binding(binding) => self.binding(binding),
+            StmtKind::MixedBinding(binding) => self.mixed_binding(binding),
             StmtKind::Assign {
                 targets, values, ..
             } => {
@@ -1265,6 +1266,44 @@ impl<'a> Resolver<'a> {
                     continue;
                 }
                 seen.insert(&name.text, name.span);
+                self.new_local(name, kind);
+            }
+        }
+    }
+
+    fn mixed_binding(&mut self, binding: &'a ast::MixedBinding) {
+        let mut seen = HashMap::new();
+        for target in &binding.targets {
+            let (text, span) = match target {
+                ast::MixedTarget::Declare { name, .. } => (name.text.as_str(), name.span),
+                ast::MixedTarget::Assign(expr) => {
+                    self.expr(expr);
+                    let ExprKind::Name(name) = &expr.kind else {
+                        unreachable!("mixed assignment targets are simple names")
+                    };
+                    (name.as_str(), expr.span)
+                }
+                ast::MixedTarget::Discard(_) => continue,
+            };
+            if let Some(first) = seen.insert(text, span) {
+                self.out.diagnostics.push(
+                    Diagnostic::new(
+                        Severity::Error,
+                        format!("duplicate mixed binding target `{text}`"),
+                        span,
+                    )
+                    .related(first, "first target here"),
+                );
+            }
+        }
+        self.expr(&binding.value);
+        for target in &binding.targets {
+            if let ast::MixedTarget::Declare { kind, name } = target {
+                let kind = if *kind == BindingKind::Let {
+                    LocalKind::Let
+                } else {
+                    LocalKind::Var
+                };
                 self.new_local(name, kind);
             }
         }

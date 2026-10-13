@@ -4198,6 +4198,7 @@ impl<'a> Checker<'a> {
         let span = stmt.span;
         let kind = match &stmt.kind {
             ast::StmtKind::Binding(binding) => self.binding(binding)?,
+            ast::StmtKind::MixedBinding(binding) => self.mixed_binding(binding)?,
             ast::StmtKind::Assign {
                 targets,
                 op,
@@ -4491,6 +4492,70 @@ impl<'a> Checker<'a> {
         Some(hir::StmtKind::Let {
             targets,
             value: expr,
+        })
+    }
+
+    fn mixed_binding(&mut self, binding: &ast::MixedBinding) -> Option<hir::StmtKind> {
+        let mut targets: Vec<Option<hir::Place>> = binding
+            .targets
+            .iter()
+            .map(|target| match target {
+                ast::MixedTarget::Assign(expr) => self.assignable_place(expr),
+                _ => None,
+            })
+            .collect();
+        let value = self.expr(&binding.value, None)?;
+        let value = match value {
+            Value::Typed(expr) if expr.types.len() == targets.len() => expr,
+            other => {
+                let found = match &other {
+                    Value::Typed(expr) => expr.types.len(),
+                    Value::Untyped(..) => 1,
+                };
+                self.error(
+                    format!(
+                        "expected {} values for this mixed binding, found {found}",
+                        targets.len()
+                    ),
+                    other.span(),
+                );
+                return None;
+            }
+        };
+        let mut declarations = Vec::new();
+        let mut ok = true;
+        for ((target, place), &ty) in binding.targets.iter().zip(&mut targets).zip(&value.types) {
+            match target {
+                ast::MixedTarget::Declare { name, .. } => {
+                    self.set_local(name, ty);
+                    let Some(Res::Local(local)) = self.res.declarations.get(&name.span).copied()
+                    else {
+                        ok = false;
+                        continue;
+                    };
+                    declarations.push(local);
+                    *place = Some(hir::Place {
+                        root: local,
+                        projections: Vec::new(),
+                        ty,
+                        span: name.span,
+                    });
+                }
+                ast::MixedTarget::Assign(_) => match place {
+                    Some(place) if place.ty == ty => {}
+                    Some(place) => {
+                        self.mismatch(place.ty, ty, value.span);
+                        ok = false;
+                    }
+                    None => ok = false,
+                },
+                ast::MixedTarget::Discard(_) => {}
+            }
+        }
+        ok.then(|| hir::StmtKind::Assign {
+            targets,
+            values: vec![value],
+            declarations,
         })
     }
 
@@ -4852,6 +4917,7 @@ impl<'a> Checker<'a> {
         ok.then(|| hir::StmtKind::Assign {
             targets: places.into_iter().map(|p| p.flatten()).collect(),
             values: checked,
+            declarations: Vec::new(),
         })
     }
 

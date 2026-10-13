@@ -1,71 +1,36 @@
 package main
 
-import "std/encoding/json"
 import "std/errors"
 import "std/net/http"
-import "std/io"
-import "std/strconv"
-import "std/strings"
+import "std/os"
 
-type User struct {
-    ID int
-    Name string
-}
-type UserStore struct {
-    users Array<User>
-    next int
-}
-type Problem struct { Error string }
-func problem(w mut http.ResponseWriter, status int, message string) error {
-    return http.JSONWith(w, status, Problem{Error: message}, json.LowerCamel)
-}
-func listUsers(store Mutex<UserStore>, w mut http.ResponseWriter, r mut http.Request) error {
-    let users = store.withLock(func(s mut UserStore) Array<User> { return clone(s.users) })
-    return http.JSONWith(w, 200, users, json.LowerCamel)
-}
-func getUser(store Mutex<UserStore>, w mut http.ResponseWriter, r mut http.Request) error {
-    let rawID, _ = r.PathParam("id")
-    for var i = 0; i < rawID.len(); i += 1 {
-        if rawID[i] < 48 || rawID[i] > 57 { return problem(w, 400, "invalid id") }
-    }
-    let id, err = strconv.Atoi(rawID)
-    if err != nil || id < 1 { return problem(w, 400, "invalid id") }
-    let user, found = store.withLock(func(s mut UserStore) (User, bool) {
-        for user in s.users { if user.ID == id { return user, true } }
-        return User{ID: 0, Name: ""}, false
-    })
-    if !found { return problem(w, 404, "user not found") }
-    return http.JSONWith(w, 200, user, json.LowerCamel)
-}
-func createUser(store Mutex<UserStore>, w mut http.ResponseWriter, r mut http.Request) error {
-    let headers = r.Headers()
-    let types = headers.Values(http.HeaderContentType)
-    if types.len() != 1 || !strings.EqualFold(strings.TrimSpace(types[0]), "application/json") {
-        return problem(w, 415, "expected application/json")
-    }
-    let body = io.ReadAll(r)?
-    let name, err = decodeName(body[:])
-    if err != nil { return problem(w, 400, "expected a nonempty name string") }
-    let user = store.withLock(func(s mut UserStore) User {
-        let user = User{ID: s.next, Name: name}
-        s.next += 1
-        s.users.push(user)
-        return user
-    })
-    w.SetHeader(http.HeaderLocation, "/users/" + strconv.Itoa(user.ID))?
-    return http.JSONWith(w, 201, user, json.LowerCamel)
-}
-func run() error {
-    let store = mutex(UserStore{users: Array<User>{}, next: 1})
-    var routes = http.NewRouterBuilder()
-    routes.Handle("GET /users", func(w mut http.ResponseWriter, r mut http.Request) error { return listUsers(store, w, r) })
-    routes.Handle("GET /users/{id}", func(w mut http.ResponseWriter, r mut http.Request) error { return getUser(store, w, r) })
-    routes.Handle("POST /users", func(w mut http.ResponseWriter, r mut http.Request) error { return createUser(store, w, r) })
-    let router = routes.Build()?
-    println("Starting http://127.0.0.1:8080; Ctrl-C shuts down gracefully")
-    return http.ListenAndServe("127.0.0.1:8080", router)
-}
+const listenAddress = "127.0.0.1:8080"
+
 func main() {
     let err = run()
-    if err != nil { println(errors.Message(err)) }
+    if err != nil {
+        println(errors.Message(err))
+        os.Exit(1)
+    }
+}
+
+func run() error {
+    let store = NewUserStore()
+    let router = newRouter(store)?
+    println("Starting http://" + listenAddress + "; Ctrl-C shuts down gracefully")
+    return http.ListenAndServe(listenAddress, router)
+}
+
+func newRouter(store UserStore) (http.Router, error) {
+    var routes = http.NewRouterBuilder()
+    routes.Handle("GET /users", func(w mut http.ResponseWriter, r mut http.Request) error {
+        return listUsers(store, w, r)
+    })
+    routes.Handle("GET /users/{id}", func(w mut http.ResponseWriter, r mut http.Request) error {
+        return getUser(store, w, r)
+    })
+    routes.Handle("POST /users", func(w mut http.ResponseWriter, r mut http.Request) error {
+        return createUser(store, w, r)
+    })
+    return routes.Build()
 }

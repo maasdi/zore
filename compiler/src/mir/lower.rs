@@ -267,7 +267,15 @@ impl Builder {
                     .collect();
                 self.store_results(package, &places, value, stmt.span);
             }
-            StmtKind::Assign { targets, values } => {
+            StmtKind::Assign {
+                targets,
+                values,
+                declarations,
+            } => {
+                self.scopes
+                    .last_mut()
+                    .expect("binding scope")
+                    .extend(declarations.iter().map(|local| Local(local.0)));
                 let places: Vec<Option<Place>> = targets
                     .iter()
                     .map(|t| t.as_ref().map(|p| self.place(package, p)))

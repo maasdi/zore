@@ -53,6 +53,88 @@ fn rejects(text: &str, message: &str) -> Case {
 }
 
 #[test]
+fn mixed_bindings_preserve_moves_reinitialization_and_slice_loans() {
+    let decls = "type Guard struct { id int }
+func (g mut Guard) drop() {}
+func pair() (Guard, Guard) { return Guard{id: 2}, Guard{id: 3} }
+func view(values []int) ([]int, int) { return values, 1 }";
+    accepts(&program(&format!(
+        "{decls}
+func use() {{
+    var old = Guard{{id: 1}}
+    (let fresh, old) = pair()
+    let taken = old
+    (let next, old) = pair()
+    drop(fresh)
+    drop(next)
+    drop(taken)
+    drop(old)
+}}"
+    )));
+    accepts(&program(&format!(
+        "{decls}
+func use() {{
+    var values = Array<int>{{1, 2}}
+    var count = 0
+    (let slice, count) = view(values[:])
+    println(slice[0] + count)
+}}"
+    )));
+    rejects(
+        &program(&format!(
+            "{decls}
+func use() {{
+    var old = Guard{{id: 1}}
+    (let fresh, old) = pair()
+    let taken = fresh
+    println(fresh.id)
+    drop(taken)
+}}"
+        )),
+        "use of moved value `fresh.id`",
+    );
+    rejects(
+        &program(&format!(
+            "{decls}
+func use() {{
+    var values = Array<int>{{1, 2}}
+    var count = 0
+    (let slice, count) = view(values[:])
+    values = Array<int>{{3, 4}}
+    println(slice[0] + count)
+}}"
+        )),
+        "borrowed",
+    );
+    rejects(
+        &program(&format!(
+            "{decls}
+func use() {{
+    var values = Array<int>{{1, 2}}
+    let slice = values[:]
+    (let ignored, values) = arrays()
+    println(slice[0])
+}}
+func arrays() (int, Array<int>) {{ return 1, Array<int>{{3}} }}"
+        )),
+        "borrowed",
+    );
+    rejects(
+        &program(
+            "func replaceView(values []int) ([]int, Array<int>) {
+        return values, Array<int>{3, 4}
+    }
+    func use() {
+        var values = Array<int>{1, 2}
+        (let slice, values) = replaceView(values[:])
+        println(slice[0])
+    }",
+        ),
+        "borrowed",
+    );
+}
+
+#[test]
 fn move_values_transfer_and_ordinary_calls_borrow() {
     let declarations = "type Resource struct { id int }
         func (r mut Resource) drop() { println(r.id) }

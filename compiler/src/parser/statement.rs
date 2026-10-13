@@ -79,6 +79,83 @@ impl Parser<'_> {
         self.name("a binding name").map(BindingTarget::Name)
     }
 
+    fn at_mixed_binding(&self) -> bool {
+        if !self.at(Punct::LParen) {
+            return false;
+        }
+        let mut depth = 0;
+        for token in &self.tokens[self.pos..] {
+            match token.kind {
+                TokenKind::Punct(Punct::LParen | Punct::LBracket | Punct::LBrace) => depth += 1,
+                TokenKind::Punct(Punct::RParen | Punct::RBracket | Punct::RBrace) => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return false;
+                    }
+                }
+                TokenKind::Keyword(Keyword::Let | Keyword::Var | Keyword::Const) if depth == 1 => {
+                    return true;
+                }
+                TokenKind::Eof | TokenKind::Semicolon(_) => return false,
+                _ => {}
+            }
+        }
+        false
+    }
+
+    fn mixed_binding(&mut self) -> PResult<MixedBinding> {
+        let start = self.expect(Punct::LParen)?;
+        let mut targets = Vec::new();
+        let mut declared = false;
+        loop {
+            let target = match self.peek() {
+                TokenKind::Keyword(Keyword::Let | Keyword::Var) => {
+                    let kind = if self.at_keyword(Keyword::Let) {
+                        BindingKind::Let
+                    } else {
+                        BindingKind::Var
+                    };
+                    self.bump();
+                    let name = self.name("a mixed binding declaration name")?;
+                    declared = true;
+                    MixedTarget::Declare { kind, name }
+                }
+                TokenKind::Underscore => MixedTarget::Discard(self.bump().span),
+                _ => {
+                    let name = self.name("a mixed binding target name")?;
+                    MixedTarget::Assign(Expr {
+                        kind: ExprKind::Name(name.text),
+                        span: name.span,
+                    })
+                }
+            };
+            targets.push(target);
+            if !self.eat(Punct::Comma) || self.at(Punct::RParen) {
+                break;
+            }
+        }
+        self.expect(Punct::RParen)?;
+        if targets.len() < 2 || !declared {
+            return Err(self.error(
+                "mixed bindings require at least two targets and a named declaration",
+                self.span_from(start),
+            ));
+        }
+        self.expect(Punct::Eq)?;
+        let value = self.expr()?;
+        if self.at(Punct::Comma) {
+            return Err(self.error(
+                "a mixed binding takes exactly one initializer expression",
+                self.current_span(),
+            ));
+        }
+        Ok(MixedBinding {
+            targets,
+            value,
+            span: self.span_from(start),
+        })
+    }
+
     pub(super) fn body_open(&mut self, header: &str) -> PResult<Span> {
         if self.at_newline_before(&TokenKind::Punct(Punct::LBrace)) {
             let span = self.current_span();
@@ -169,6 +246,9 @@ impl Parser<'_> {
     pub(super) fn stmt(&mut self) -> PResult<Stmt> {
         let start = self.current_span();
         let kind = match self.peek() {
+            TokenKind::Punct(Punct::LParen) if self.at_mixed_binding() => {
+                StmtKind::MixedBinding(self.mixed_binding()?)
+            }
             TokenKind::Keyword(Keyword::Let | Keyword::Var | Keyword::Const) => {
                 StmtKind::Binding(self.binding()?)
             }
@@ -456,6 +536,13 @@ impl Parser<'_> {
     }
 
     pub(super) fn for_first_clause(&mut self) -> PResult<StatementOrExpr> {
+        if self.at_mixed_binding() {
+            let start = self.current_span();
+            return Ok(StatementOrExpr::Stmt(Stmt {
+                kind: StmtKind::MixedBinding(self.mixed_binding()?),
+                span: self.span_from(start),
+            }));
+        }
         if matches!(self.peek(), TokenKind::Keyword(Keyword::Let | Keyword::Var)) {
             let start = self.current_span();
             let binding = self.binding()?;

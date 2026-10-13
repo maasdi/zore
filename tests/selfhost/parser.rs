@@ -649,6 +649,28 @@ impl Printer<'_> {
     fn stmt(&self, stmt: &Stmt) -> String {
         let inner = match &stmt.kind {
             StmtKind::Binding(binding) => self.binding(binding),
+            StmtKind::MixedBinding(binding) => node(
+                "mixed",
+                Some(binding.span),
+                "",
+                &[
+                    list(binding.targets.iter().map(|target| match target {
+                        MixedTarget::Declare { kind, name } => node(
+                            "declare",
+                            Some(name.span),
+                            if *kind == BindingKind::Let {
+                                "let"
+                            } else {
+                                "var"
+                            },
+                            &[self.name(name)],
+                        ),
+                        MixedTarget::Assign(value) => self.expr(value),
+                        MixedTarget::Discard(span) => node("discard", Some(*span), "", &[]),
+                    })),
+                    self.expr(&binding.value),
+                ],
+            ),
             StmtKind::Assign {
                 targets,
                 op,
@@ -1059,6 +1081,41 @@ const PIECES: &[&str] = &[
     "break", "continue", "nil", "true", "int", "+=", "<<=", "// c\n", "/* c */", "é", "\t",
     "\r\n", "0x", "'", "\"",
 ];
+
+#[test]
+fn mixed_binding_statements_and_recovery_match() {
+    let cases: Vec<Case> = [
+        "(let name, var err) = decode()",
+        "(err, let user, _) = load()",
+        "(let a, var b,) = pair()",
+        "(let a,\n var b,\n) = pair()",
+        "for (let limit, var i) = pair(); i < limit; i += 1 { println(i) }",
+        "(let only) = one()",
+        "(a, b) = pair()",
+        "(let _, var err) = pair()",
+        "(let a int, var b) = pair()",
+        "(let a, const b) = pair()",
+        "(let a, object.field) = pair()",
+        "(let a, items[0]) = pair()",
+        "(let a, var b) += pair()",
+        "(let a, var b) = 1, 2",
+        "(let a, var b = pair()",
+        "for var i = 0; i < 2; (let a, var b) = pair() {}",
+        "if (let a, var b) = pair(); a > 0 {}",
+        "f((let a, var b) = pair())",
+        "(func() { let value = 1 })()",
+    ]
+    .iter()
+    .enumerate()
+    .map(|(index, source)| {
+        parse_case(
+            format!("mixed binding {index}"),
+            &body(&format!("{source}\nprintln(9)")),
+        )
+    })
+    .collect();
+    compare(&cases);
+}
 
 #[test]
 fn seeded_token_sequences_match() {

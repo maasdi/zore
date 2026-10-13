@@ -107,7 +107,9 @@ impl Checker<'_> {
                 }
                 self.expr_escapes(value, false, escapes);
             }
-            StmtKind::Assign { targets, values } => {
+            StmtKind::Assign {
+                targets, values, ..
+            } => {
                 for (target, value) in targets.iter().zip(values.iter_mut()) {
                     let into_storage = target
                         .as_ref()
@@ -302,7 +304,10 @@ impl Checker<'_> {
                     continue;
                 }
             }
-            if let StmtKind::Assign { targets, values } = &mut stmt.kind {
+            if let StmtKind::Assign {
+                targets, values, ..
+            } = &mut stmt.kind
+            {
                 for (target, value) in targets.iter().zip(values.iter_mut()) {
                     if let (Some(place), ExprKind::Closure { owning, .. }) =
                         (target, &mut value.kind)
@@ -447,7 +452,9 @@ impl Checker<'_> {
             | StmtKind::CompoundAssign { value, .. }
             | StmtKind::Expr(value)
             | StmtKind::SetGlobal { value, .. } => self.value_moves(value, moved),
-            StmtKind::Assign { targets, values } => {
+            StmtKind::Assign {
+                targets, values, ..
+            } => {
                 for target in targets.iter().flatten() {
                     for projection in &target.projections {
                         if let hir::Projection::Index(index) = projection {
@@ -753,7 +760,9 @@ pub(super) fn stmt_exprs(stmt: &mut hir::Stmt) -> Vec<&mut hir::Expr> {
         | StmtKind::CompoundAssign { value, .. }
         | StmtKind::Expr(value)
         | StmtKind::SetGlobal { value, .. } => roots.push(value),
-        StmtKind::Assign { targets, values } => {
+        StmtKind::Assign {
+            targets, values, ..
+        } => {
             for target in targets.iter_mut().flatten() {
                 for projection in &mut target.projections {
                     if let hir::Projection::Index(index) = projection {

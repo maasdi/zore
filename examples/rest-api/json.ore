@@ -1,21 +1,21 @@
 package main
 
 import "std/encoding/json"
-import "std/strings"
 
-func encodeJSON<T any>(value T) (string, error) {
-    let bytes = json.MarshalWith(value, json.LowerCamel)?
-    return strings.FromBytes(bytes[:])
-}
+const maxUserNameBytes = 200
 
-func decodeName(data []byte) (string, error) {
+func decodeCreateUser(data []byte) (CreateUserInput, error) {
     var decoder = json.NewDecoder(data)
     decoder.BeginObject()?
     let key = decoder.Key()?
-    if key != "name" { return "", error("expected name field") }
+    if key != "name" {
+        return CreateUserInput{Name: ""}, error("expected name field")
+    }
     let name = decoder.String()?
     decoder.EndObject()?
     decoder.Finish()?
-    if name == "" || name.len() > 200 { return "", error("invalid name") }
-    return name, nil
+    if name == "" || name.len() > maxUserNameBytes {
+        return CreateUserInput{Name: ""}, error("invalid name")
+    }
+    return CreateUserInput{Name: name}, nil
 }

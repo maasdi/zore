@@ -464,6 +464,7 @@ impl CodecBuilder<'_, '_> {
         self.statement(StmtKind::Assign {
             targets: vec![Some(self.place(&target))],
             values: vec![value],
+            declarations: Vec::new(),
         })
     }
     fn conditional(&self, condition: Expr, yes: Vec<Stmt>, no: Vec<Stmt>) -> Stmt {

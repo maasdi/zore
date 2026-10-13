@@ -1,0 +1,63 @@
+package main
+
+import "std/encoding/json"
+import "std/io"
+import "std/net/http"
+import "std/strconv"
+import "std/strings"
+
+const statusUnsupportedMediaType = 415
+
+func problem(w mut http.ResponseWriter, status int, message string) error {
+    return http.JSONWith(w, status, Problem{Error: message}, json.LowerCamel)
+}
+
+func listUsers(store UserStore, w mut http.ResponseWriter, r mut http.Request) error {
+    let users = store.List()
+    return http.JSONWith(w, http.StatusOK, users, json.LowerCamel)
+}
+
+func getUser(store UserStore, w mut http.ResponseWriter, r mut http.Request) error {
+    let rawID, _ = r.PathParam("id")
+    (let id, var err) = parseUserID(rawID)
+    if err != nil {
+        return problem(w, http.StatusBadRequest, "invalid id")
+    }
+    (let user, err) = store.Get(id)
+    if err == errUserNotFound {
+        return problem(w, http.StatusNotFound, "user not found")
+    }
+    if err != nil {
+        return err
+    }
+    return http.JSONWith(w, http.StatusOK, user, json.LowerCamel)
+}
+
+func createUser(store UserStore, w mut http.ResponseWriter, r mut http.Request) error {
+    let headers = r.Headers()
+    let types = headers.Values(http.HeaderContentType)
+    if types.len() != 1 || !strings.EqualFold(strings.TrimSpace(types[0]), "application/json") {
+        return problem(w, statusUnsupportedMediaType, "expected application/json")
+    }
+    let body = io.ReadAll(r)?
+    let input, err = decodeCreateUser(body[:])
+    if err != nil {
+        return problem(w, http.StatusBadRequest, "expected a nonempty name string")
+    }
+    let user = store.Create(input)
+    w.SetHeader(http.HeaderLocation, "/users/" + strconv.Itoa(user.ID))?
+    return http.JSONWith(w, http.StatusCreated, user, json.LowerCamel)
+}
+
+func parseUserID(raw string) (int, error) {
+    for var i = 0; i < raw.len(); i += 1 {
+        if raw[i] < 48 || raw[i] > 57 {
+            return 0, error("invalid id")
+        }
+    }
+    let id = strconv.Atoi(raw)?
+    if id < 1 {
+        return 0, error("invalid id")
+    }
+    return id, nil
+}

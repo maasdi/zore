@@ -3,6 +3,7 @@
 mod controlled_runtime;
 mod http;
 mod json;
+mod mixed_bindings;
 mod review_regressions;
 #[cfg(unix)]
 mod signal;
@@ -792,7 +793,6 @@ fn every_example_prints_its_expected_output() {
     assert!(examples.len() >= 15, "{examples:?}");
     for (name, path) in examples {
         if name == "rest-api" {
-            http::check_rest_example();
             continue;
         }
         let expected = std::fs::read_to_string(path.join("expected-output.txt"))

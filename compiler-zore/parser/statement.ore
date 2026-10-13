@@ -83,6 +83,74 @@ func (p mut Parser) bindingTarget(kind string) int {
     return p.name("a binding name")
 }
 
+func (p Parser) atMixedBinding() bool {
+    if !p.at("(") { return false }
+    var depth = 0
+    var ahead = 0
+    for {
+        let token = p.tokenAt(ahead)
+        let nesting = p.nestingOf(token)
+        if nesting > 0 {
+            depth += 1
+        } else if nesting < 0 {
+            depth -= 1
+            if depth == 0 { return false }
+        } else if depth == 1 && (p.atKeywordAt(ahead, "let") || p.atKeywordAt(ahead, "var") || p.atKeywordAt(ahead, "const")) {
+            return true
+        } else if token.Kind == lexer.KindEof || token.Kind == lexer.KindSemicolon {
+            return false
+        }
+        ahead += 1
+    }
+}
+
+func (p mut Parser) mixedBinding() int {
+    let start = p.bump()
+    let targets = p.tree.List()
+    var declared = false
+    for {
+        var target = failed
+        if p.atKeyword("let") || p.atKeyword("var") {
+            let kind = p.currentText()
+            _ = p.bump()
+            let name = p.name("a mixed binding declaration name")
+            if name == failed { return failed }
+            let nameStart = p.tree.Start(name)
+            let nameEnd = p.tree.End(name)
+            target = p.tree.Add("declare", nameStart, nameEnd, kind)
+            p.tree.Append(target, name)
+            declared = true
+        } else if p.atKind(lexer.KindUnderscore) {
+            let token = p.bump()
+            target = p.tree.Add("discard", token.Start, token.End, "")
+        } else {
+            let name = p.name("a mixed binding target name")
+            if name == failed { return failed }
+            let nameStart = p.tree.Start(name)
+            let nameEnd = p.tree.End(name)
+            let text = p.tree.Attr(name)
+            target = p.tree.Add("ident", nameStart, nameEnd, text)
+        }
+        p.tree.Append(targets, target)
+        if !p.eat(",") || p.at(")") { break }
+    }
+    if p.expect(")") == failed { return failed }
+    if p.tree.Count(targets) < 2 || !declared {
+        let end = p.spanEnd(start.End)
+        return p.error("mixed bindings require at least two targets and a named declaration", start.Start, end)
+    }
+    if p.expect("=") == failed { return failed }
+    let value = p.expr()
+    if value == failed { return failed }
+    if p.at(",") {
+        return p.errorAtCurrent("a mixed binding takes exactly one initializer expression")
+    }
+    let node = p.addNode("mixed", start.Start, start.End, "")
+    p.tree.Append(node, targets)
+    p.tree.Append(node, value)
+    return node
+}
+
 // The start offset of the `{`, or `failed`.
 func (p mut Parser) bodyOpen(header string) int {
     if p.atNewlineBeforePunct("{") {
@@ -180,6 +248,8 @@ func (p mut Parser) stmt() int {
             inner = p.spanless("return", "")
             p.tree.Append(inner, values)
         }
+    } else if p.atMixedBinding() {
+        inner = p.mixedBinding()
     } else if p.atKeyword("break") || p.atKeyword("continue") {
         let word = p.currentText()
         _ = p.bump()
@@ -531,6 +601,14 @@ func (p Parser) atEachHeader() bool {
 }
 
 func (p mut Parser) forFirstClause() (int, bool) {
+    if p.atMixedBinding() {
+        let start = p.current()
+        let binding = p.mixedBinding()
+        if binding == failed { return failed, false }
+        let node = p.addNode("stmt", start.Start, start.End, "")
+        p.tree.Append(node, binding)
+        return node, true
+    }
     if p.atKeyword("let") || p.atKeyword("var") {
         let start = p.current()
         let binding = p.binding()

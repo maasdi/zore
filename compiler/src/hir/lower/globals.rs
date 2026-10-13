@@ -231,7 +231,9 @@ fn statement(stmt: &hir::Stmt, found: &mut References) {
         StmtKind::Let { value, .. } | StmtKind::Expr(value) | StmtKind::SetGlobal { value, .. } => {
             expr(value, found)
         }
-        StmtKind::Assign { targets, values } => {
+        StmtKind::Assign {
+            targets, values, ..
+        } => {
             for target in targets.iter().flatten() {
                 place(target, found);
             }
