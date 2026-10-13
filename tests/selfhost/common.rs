@@ -1,15 +1,73 @@
 //! Shared plumbing for the tests that compare a Zore implementation with its Rust oracle.
 #![allow(dead_code)]
 
-use std::fs;
+use std::fs::{self, File};
+use std::io;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Child, Command, Output, Stdio};
+use std::time::{Duration, Instant};
 
 use zore::build::{TempDir, build_project};
 use zore::driver::project::{Disk, LoadError, load_project};
 use zore::source::SourceMap;
 
 pub const DEFAULT_SEED: u64 = 0x5EED_2026_1009;
+const ORACLE_TIMEOUT: Duration = Duration::from_secs(60);
+
+pub struct OracleOutput {
+    pub output: Output,
+    pub timed_out: bool,
+}
+
+struct RunningOracle(Child);
+
+impl Drop for RunningOracle {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
+pub fn oracle_output(
+    command: &mut Command,
+    dir: &Path,
+    timeout: Duration,
+) -> io::Result<OracleOutput> {
+    let stdout = dir.join("oracle.stdout");
+    let stderr = dir.join("oracle.stderr");
+    let mut child = RunningOracle(
+        command
+            .stdin(Stdio::null())
+            .stdout(File::create(&stdout)?)
+            .stderr(File::create(&stderr)?)
+            .spawn()?,
+    );
+    let started = Instant::now();
+    let mut timed_out = false;
+    let status = loop {
+        if let Some(status) = child.0.try_wait()? {
+            break status;
+        }
+        if started.elapsed() >= timeout {
+            timed_out = true;
+            child.0.kill()?;
+            break child.0.wait()?;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    };
+    Ok(OracleOutput {
+        output: Output {
+            status,
+            stdout: fs::read(stdout)?,
+            stderr: fs::read(stderr)?,
+        },
+        timed_out,
+    })
+}
+
+fn output_tail(bytes: &[u8]) -> String {
+    String::from_utf8_lossy(&bytes[bytes.len().saturating_sub(4096)..]).into_owned()
+}
 
 pub struct Case {
     pub label: String,
@@ -75,11 +133,33 @@ pub fn run_cases(executable: &Path, dir: &Path, cases: &[Case]) -> Vec<Vec<Strin
         input.extend_from_slice(&case.bytes);
     }
     fs::write(dir.join("cases.bin"), input).unwrap();
-    let output = Command::new(executable)
-        .current_dir(dir)
-        .env("ZORE_CHECK_LEAKS", "1")
-        .output()
-        .expect("run the Zore program");
+    let result = oracle_output(
+        Command::new(executable)
+            .current_dir(dir)
+            .env("ZORE_CHECK_LEAKS", "1"),
+        dir,
+        ORACLE_TIMEOUT,
+    )
+    .expect("run the Zore program");
+    let output = result.output;
+    if result.timed_out {
+        let completed = output
+            .stdout
+            .split(|&byte| byte == b'\n')
+            .filter(|line| *line == b"done")
+            .count();
+        let current = cases
+            .get(completed)
+            .map_or("after the final case", |case| case.label.as_str());
+        panic!(
+            "Zore oracle {} timed out after {} seconds; completed {completed}/{} cases; current case: {current}\nstdout tail:\n{}\nstderr tail:\n{}",
+            executable.display(),
+            ORACLE_TIMEOUT.as_secs(),
+            cases.len(),
+            output_tail(&output.stdout),
+            output_tail(&output.stderr),
+        );
+    }
     assert!(
         output.status.success() && output.stderr.is_empty(),
         "the Zore program failed ({}):\n{}",

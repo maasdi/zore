@@ -42,6 +42,7 @@ Build the Rust compiler first, then run from the repository root:
 ```sh
 cargo test --locked --test selfhost_lexer
 cargo test --locked --test selfhost_parser
+cargo test --locked --test selfhost_harness
 ZORE_LEXER_SEED=12345 cargo test --locked --test selfhost_lexer seeded
 ZORE_PARSER_SEED=12345 cargo test --locked --test selfhost_parser seeded
 ZORE_WRITE_UNICODE_TABLE=1 cargo test --locked --test selfhost_lexer unicode_table
@@ -53,6 +54,14 @@ explore other generated inputs. The default seeds are fixed, so ordinary runs
 are reproducible. The last command regenerates the Unicode table after a
 toolchain upgrade; without the variable, that test fails if the table is out of
 date.
+
+Each oracle execution has a 60-second deadline, separate from compilation.
+Output is captured in files so a full stdout or stderr pipe cannot block it.
+On timeout the harness kills and reaps the process, reports the next unfinished
+case label (including the seed for generated cases), and shows the last 4 KiB
+of both output streams. The harness tests cover large output, nonzero exits,
+and timeout cleanup with partial diagnostics preserved; their ignored fixture
+is invoked explicitly by those tests.
 
 A mismatch report names the case and its input, then shows the first record
 that differs and both full record lists. Generated cases are named by seed and
@@ -165,11 +174,12 @@ Not compared:
 
 - There are no enums, so token kinds and tree node kinds are integer constants
   or string tags.
-- `rune` does not convert to `int`, so the lexer decodes UTF-8 into integer
-  code points itself. It encodes decoded literals back into a `string` through
-  `strings.FromBytes`.
-- There are no package-level values, so each `Lex` call rebuilds the Unicode
-  table.
+- Rune/integer conversions now work. The lexer retains its original
+  representation: it decodes UTF-8 into integer code points and encodes decoded
+  literals back into a `string` through `strings.FromBytes`.
+- Immutable package-level `let` values now work for permitted Copy types.
+  The Unicode table remains an owned `Array<int>`, a Move type that cannot be
+  a package-level value, so each `Lex` call still constructs its own table.
 - A call that borrows a value as `mut` cannot also read one of its fields as an
   argument, as in `l.report(code, start, l.pos)`. The same applies to a nested
   call on the same value, as in `p.append(list, p.node(...))`. The checker
