@@ -83,6 +83,16 @@ once it does.
 
 ### Compiler
 
+- Added `zore fmt <file|directory>` and `--check`, with syntax validation,
+  comment/literal and statement-boundary preservation, recursive source
+  discovery, and atomic replacement of each changed file.
+- Audited MVP implementation/test evidence and recorded focused conformance,
+  tooling, library, performance, portability, and task follow-ups. Further
+  self-hosting is deferred.
+
+The remaining compiler entries record the initial bootstrap implementation;
+current feature support is documented in the README and roadmap.
+
 - `zore` command-line driver with `check`, `build`, and `run`; `fmt` and
   `test` report that they are not implemented.
 - Source manager with stable file IDs, byte spans, and source-aware diagnostics.
@@ -101,10 +111,12 @@ once it does.
   runtime (decision record 0001).
 - The first semantic target (spec §42) builds and prints `John`.
 
-### Not yet supported
+### Initial bootstrap limitations
 
-Ownership and borrow checking, drop insertion, `error` and `?`,
+The initial bootstrap did not yet support ownership and borrow checking,
+drop insertion, `error` and `?`,
 collections, closures, async/await, tasks, channels, imports, runtime string
-concatenation, and printing floats. See [the roadmap](docs/roadmap.md).
+concatenation, or printing floats. These features are now implemented for the
+supported subset; see [the roadmap](docs/roadmap.md).
 
 [Unreleased]: https://github.com/maasdi/zore/commits/main
