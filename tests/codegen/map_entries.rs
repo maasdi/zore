@@ -203,7 +203,7 @@ async func check() {
     let found, text = texts.withEntry(await key(), func(value string) string { return value + " read" })
     println(found)
     println(text)
-    let changed = texts.withEntryMut("entry", func(value mut string) { value = "new" + " value" })
+    let changed = texts.withEntryMut(await key(), func(value mut string) { value = "new" + " value" })
     println(changed)
     let present, copied = texts["entry"]
     println(present)
