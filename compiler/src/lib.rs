@@ -4,6 +4,7 @@ pub mod codegen;
 pub mod diagnostic;
 pub mod driver;
 pub mod dropck;
+pub mod format;
 pub mod hir;
 pub mod lexer;
 pub mod mir;

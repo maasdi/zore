@@ -62,12 +62,13 @@ John
 Features outside the implemented subset are reported as errors, never silently
 accepted. Recursive owned structs through `Array<T>` and maps are supported,
 including cloning and deterministic cleanup; infinite-size by-value cycles are
-rejected. Package-level `var` is not yet supported; package-level `let` values are. Async frames keep values needed
+rejected. Package-level `var` is forbidden; package-level `let` values are supported. Async frames keep values needed
 across a suspension in the pinned heap frame; other locals use poll-local storage,
 and some same-type locals share a frame field, but frames are not shrunk by
 general liveness. Cooperative budgets yield long-running async loops, but scheduling
-has no forced preemption. Full MVP coverage still needs an audit; see the
-[roadmap](docs/roadmap.md).
+has no forced preemption. The [MVP evidence inventory](docs/conformance/mvp.md)
+records covered behavior and remaining conformance gaps; see the
+[roadmap](docs/roadmap.md) for tracked follow-ups.
 
 ## Getting started
 
@@ -96,17 +97,20 @@ cargo build --release
 zore check main.ore   # check a file; prints nothing when it is valid
 zore build main.ore   # compile to ./main
 zore run main.ore     # build into a temporary directory and run
+zore fmt .           # format .ore files recursively
+zore fmt --check .   # check formatting without writing
 zore --help
 ```
 
-Each command takes a source file. The file's folder is the program's `main`
+`check`, `build`, and `run` take a source file. The file's folder is the program's `main`
 package, so every `.ore` file in it is compiled together, and `import` finds
 other packages as folders of the project (see `examples/packages`).
 Diagnostics are printed to standard error with source locations, and the
 command exits with status 1. A program that panics reports the panic on
 standard error and exits with status 2; `zore run` passes the program's exit
-status through. Invalid command-line arguments also exit with status 2. `zore fmt`
-and `zore test` are not implemented yet.
+status through. Invalid command-line arguments also exit with status 2.
+`zore fmt` accepts a file or directory and needs no native toolchain; see the
+[formatter guide](docs/formatter.md). `zore test` is not implemented yet.
 
 ## Repository layout
 

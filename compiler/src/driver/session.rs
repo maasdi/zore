@@ -19,11 +19,16 @@ pub fn run() -> ExitCode {
             println!("zore {}", env!("CARGO_PKG_VERSION"));
             ExitCode::SUCCESS
         }
-        Ok(cli::Command::Run { action, target }) => match action {
+        Ok(cli::Command::Run {
+            action,
+            target,
+            format_check,
+        }) => match action {
             cli::Action::Check => check(&target),
             cli::Action::Build => build_command(&target),
             cli::Action::Run => run_command(&target),
-            cli::Action::Format | cli::Action::Test => {
+            cli::Action::Format => super::format::run(&target, format_check),
+            cli::Action::Test => {
                 eprintln!(
                     "zore: {} is not implemented yet; {:?} was not processed",
                     action.name(),

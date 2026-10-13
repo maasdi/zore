@@ -8013,9 +8013,19 @@ The first implementation should prioritize:
 zore check main.ore
 ```
 
-before implementing full code generation. Today's commands take a `.ore` file;
-the file's folder is the entry package and its project is found as specified in
-§3.20. Passing a folder instead of a file is a later addition.
+before implementing full code generation. `check`, `build`, and `run` take a
+`.ore` file; its folder is the entry package and its project is found as
+specified in §3.20. Directory targets for those commands are a later addition.
+
+`fmt` accepts a `.ore` file or a directory of source files and operates without
+semantic checking, import discovery, or a native toolchain. `fmt --check`
+reports files that need formatting without writing, with exit status 1 for
+differences or errors and 0 for already formatted input. Formatting must
+preserve source meaning, including literal contents and statement boundaries.
+The command validates all selected source files before writing; a syntax error
+leaves them unmodified. The initial style and traversal/write behavior are
+documented in `docs/formatter.md`. `test` remains future tooling work until its
+application-test discovery and execution contract is defined.
 
 Semantic analysis and diagnostics should work independently of LLVM code generation.
 

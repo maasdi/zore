@@ -93,6 +93,7 @@ fn commands_validate_target_count_and_offer_help() {
             match action {
                 "check" => assert!(stdout.contains("Only part of the")),
                 "build" | "run" => assert!(stdout.contains("Requires clang")),
+                "fmt" => assert!(stdout.contains("--check")),
                 _ => assert!(stdout.contains("not implemented yet")),
             }
         }
@@ -101,10 +102,8 @@ fn commands_validate_target_count_and_offer_help() {
 
 #[test]
 fn unimplemented_commands_never_claim_success() {
-    for action in ["fmt", "test"] {
-        for target in [".", "missing.ore", "a path with spaces.ore"] {
-            failure(&invoke(&[action, target]), 1, "not implemented yet");
-        }
+    for target in [".", "missing.ore", "a path with spaces.ore"] {
+        failure(&invoke(&["test", target]), 1, "not implemented yet");
     }
     for action in ["build", "run"] {
         failure(&invoke(&[action, "missing.ore"]), 1, "zore: missing.ore:");
@@ -180,7 +179,11 @@ fn delimiter_allows_option_shaped_targets() {
             1,
             &format!("zore: {target}:"),
         );
-        failure(&invoke(&["fmt", "--", target]), 1, "was not processed");
+        failure(
+            &invoke(&["fmt", "--", target]),
+            1,
+            &format!("zore: {target}:"),
+        );
     }
     failure(&invoke(&["check", "-source.ore"]), 2, "unknown option");
     failure(
@@ -205,7 +208,7 @@ fn non_utf8_arguments_do_not_panic() {
     failure(
         &invoke(&[OsString::from("fmt"), path.clone()]),
         1,
-        "was not processed",
+        "zore: source-",
     );
     failure(&invoke(&[path]), 2, "unknown command or option");
 }
@@ -327,4 +330,104 @@ fn a_file_is_built_together_with_the_rest_of_its_folder() {
         String::from_utf8_lossy(&output.stderr).contains("helper.ore:2:"),
         "{output:?}"
     );
+}
+
+#[test]
+fn format_checks_and_writes_a_directory_without_resolving_imports() {
+    let dir = project(
+        "format",
+        &[
+            (
+                "main.ore",
+                "package main\nimport \"missing/library\"\nfunc main(){println(1+2)}\n",
+            ),
+            ("lib/helper.ore", "package lib\nfunc F(){println(3)}\n"),
+            (".hidden/invalid.ore", "broken"),
+            ("target/invalid.ore", "broken"),
+            ("node_modules/invalid.ore", "broken"),
+            ("keep.txt", "unchanged"),
+        ],
+    );
+    let main = dir.join("main.ore");
+    let before = std::fs::read(&main).unwrap();
+    let checked = invoke(&[OsStr::new("fmt"), OsStr::new("--check"), dir.as_os_str()]);
+    assert_eq!(checked.status.code(), Some(1));
+    assert!(checked.stderr.is_empty(), "{checked:?}");
+    let listed = String::from_utf8(checked.stdout).unwrap();
+    assert!(listed.contains("main.ore") && listed.contains("lib/helper.ore"));
+    assert_eq!(std::fs::read(&main).unwrap(), before);
+    let output = invoke(&[OsStr::new("fmt"), dir.as_os_str()]);
+    assert!(output.status.success(), "{output:?}");
+    assert!(
+        output.stdout.is_empty() && output.stderr.is_empty(),
+        "{output:?}"
+    );
+    assert!(
+        std::fs::read_to_string(&main)
+            .unwrap()
+            .contains("    println(1 + 2)\n")
+    );
+    assert_eq!(
+        std::fs::read_to_string(dir.join("keep.txt")).unwrap(),
+        "unchanged"
+    );
+    let checked = invoke(&[OsStr::new("fmt"), OsStr::new("--check"), dir.as_os_str()]);
+    assert!(checked.status.success(), "{checked:?}");
+    assert!(checked.stdout.is_empty() && checked.stderr.is_empty());
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn format_refuses_invalid_directories_without_modifying_valid_files() {
+    let dir = project(
+        "format-invalid",
+        &[
+            ("valid.ore", "package main\nfunc main(){println(1)}\n"),
+            ("bad.ore", "package main\nfunc broken( {\n"),
+        ],
+    );
+    let before = std::fs::read(dir.join("valid.ore")).unwrap();
+    let output = invoke(&[OsStr::new("fmt"), dir.as_os_str()]);
+    failure(&output, 1, "no files were modified");
+    assert!(String::from_utf8_lossy(&output.stderr).contains("bad.ore:2:"));
+    assert_eq!(std::fs::read(dir.join("valid.ore")).unwrap(), before);
+    std::fs::remove_dir_all(dir).unwrap();
+    for args in [
+        ["fmt", "--check", "--check", "file.ore"],
+        ["check", "--check", "--", "file.ore"],
+    ] {
+        failure(&invoke(&args), 2, "unknown option");
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn format_preserves_permissions_and_skips_symbolic_links() {
+    use std::os::unix::fs::{PermissionsExt, symlink};
+    let dir = project(
+        "format-links",
+        &[("main.ore", "package main\nfunc main(){println(1)}\n")],
+    );
+    let main = dir.join("main.ore");
+    std::fs::set_permissions(&main, std::fs::Permissions::from_mode(0o640)).unwrap();
+    symlink("main.ore", dir.join("link.ore")).unwrap();
+    symlink(".", dir.join("cycle")).unwrap();
+    failure(
+        &invoke(&[OsStr::new("fmt"), dir.join("link.ore").as_os_str()]),
+        1,
+        "symbolic links",
+    );
+    let output = invoke(&[OsStr::new("fmt"), dir.as_os_str()]);
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(
+        std::fs::metadata(&main).unwrap().permissions().mode() & 0o777,
+        0o640
+    );
+    assert!(
+        std::fs::symlink_metadata(dir.join("link.ore"))
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
+    std::fs::remove_dir_all(dir).unwrap();
 }

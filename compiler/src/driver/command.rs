@@ -25,7 +25,11 @@ impl Action {
 pub(crate) enum Command {
     Help(Option<Action>),
     Version,
-    Run { action: Action, target: PathBuf },
+    Run {
+        action: Action,
+        target: PathBuf,
+        format_check: bool,
+    },
 }
 
 pub(crate) fn parse(args: Vec<OsString>) -> Result<Command, String> {
@@ -60,18 +64,27 @@ pub(crate) fn parse(args: Vec<OsString>) -> Result<Command, String> {
         return Ok(Command::Help(Some(action)));
     }
 
-    let (targets, literal) = match remaining.first() {
-        Some(arg) if arg == "--" => (&remaining[1..], true),
-        _ => (remaining, false),
-    };
-    if !literal {
-        for arg in targets {
-            if arg.as_encoded_bytes().starts_with(b"-") {
+    let mut targets = Vec::new();
+    let mut literal = false;
+    let mut format_check = false;
+    for arg in remaining {
+        if !literal && arg == "--" {
+            if !targets.is_empty() {
                 return Err(format!("unknown option {arg:?} for {}", action.name()));
             }
+            literal = true;
+            continue;
         }
+        if !literal && action == Action::Format && arg == "--check" && !format_check {
+            format_check = true;
+            continue;
+        }
+        if !literal && arg.as_encoded_bytes().starts_with(b"-") {
+            return Err(format!("unknown option {arg:?} for {}", action.name()));
+        }
+        targets.push(arg);
     }
-    let [target] = targets else {
+    let [target] = targets.as_slice() else {
         return Err(format!("{} requires exactly one target", action.name()));
     };
     if target.is_empty() {
@@ -80,6 +93,7 @@ pub(crate) fn parse(args: Vec<OsString>) -> Result<Command, String> {
     Ok(Command::Run {
         action,
         target: PathBuf::from(target),
+        format_check,
     })
 }
 
@@ -103,6 +117,13 @@ pub(crate) fn help(action: Option<Action>) -> String {
                 Build one source file into a temporary directory and run it. The\n\
                 program's exit status is returned. Requires clang, as for build.\n"
             }
+            Action::Format => {
+                "Usage: zore fmt [--check] [--] <file.ore|directory>\n\n\
+                Format a source file or recursively format .ore files in a directory.\n\
+                Validates syntax before writing; requires no imports or native toolchain.\n\
+                --check lists files that need formatting and exits 1 without writing.\n\
+                Skips symbolic links, hidden directories, target, and node_modules.\n"
+            }
             _ => {
                 return format!(
                     "Usage: zore {} [--] <target>\n\n\
@@ -122,8 +143,8 @@ pub(crate) fn help(action: Option<Action>) -> String {
        check <file.ore>  Check a source file\n\
        build <file.ore>  Build a native executable (requires clang)\n\
        run <file.ore>    Build and run a program (requires clang)\n\n\
+       fmt <target>      Format a source file or directory (--check for CI)\n\n\
      Not implemented yet:\n\
-       fmt <target>      Format source\n\
        test <target>     Run Zore tests\n\n\
      Options:\n\
        -h, --help        Show help; also accepted after a command\n\

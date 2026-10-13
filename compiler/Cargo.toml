@@ -26,6 +26,10 @@ name = "cli"
 path = "../tests/driver/cli.rs"
 
 [[test]]
+name = "format"
+path = "../tests/format/format.rs"
+
+[[test]]
 name = "source_diagnostics"
 path = "../tests/diagnostics/source_diagnostics.rs"
 

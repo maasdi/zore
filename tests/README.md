@@ -1,5 +1,13 @@
 # Compiler testing
 
+`tests/format/format.rs` checks source formatting, idempotence, preservation of
+literal/comment spellings and statement boundaries, and every repository `.ore`
+source under examples, standard packages, the Zore frontend, and benchmarks.
+`tests/driver/cli.rs` covers formatter check/write modes, preflight errors,
+recursive traversal, symlink exclusion, and permission preservation.
+The [MVP evidence inventory](../docs/conformance/mvp.md) distinguishes executed
+assertions from pending conformance scenarios and historical test gaps.
+
 `tests/driver/cli.rs` contains executable subprocess tests for the M0 driver: help,
 version, usage errors, unsupported commands, native paths, and option delimiters.
 `tests/diagnostics/source_diagnostics.rs` tests M1 UTF-8 loading, file IDs, byte spans,
