@@ -33,9 +33,6 @@ pub enum Callee {
     MapLookup,
     /// `[Ref(map), key]` to `[found, value]`; detaches the value.
     MapRemove,
-    MapWithEntry {
-        mutable: bool,
-    },
     /// `[Ref(array), value]`.
     ArrayPush,
     /// `[Ref(array)]` to `[found, value]`; detaches the last element.
@@ -71,11 +68,6 @@ impl Callee {
     pub fn map_access(&self) -> Option<crate::ast::ParamMode> {
         match self {
             Callee::MapLookup => Some(crate::ast::ParamMode::Borrow),
-            Callee::MapWithEntry { mutable } => Some(if *mutable {
-                crate::ast::ParamMode::Mut
-            } else {
-                crate::ast::ParamMode::Borrow
-            }),
             Callee::MapInsertNew | Callee::MapAssign | Callee::MapRemove => {
                 Some(crate::ast::ParamMode::Mut)
             }

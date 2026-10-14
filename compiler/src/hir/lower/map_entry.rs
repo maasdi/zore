@@ -1,38 +1,55 @@
-use super::{Checker, MutableUse, Value, generic};
+use super::{Checker, MutableUse, generic};
 use crate::hir::ExprKind;
-use crate::source::Span;
+use crate::resolve::Res;
 use crate::types::{TypeId, TypeKind, TypeStore};
 use crate::{ast, hir};
 
 impl Checker<'_> {
-    pub(super) fn map_with_entry(
+    pub(super) fn map_entry(
         &mut self,
-        map: hir::Expr,
-        key_ty: TypeId,
-        value_ty: TypeId,
-        method: &ast::Name,
-        args: &[ast::Expr],
-        span: Span,
-    ) -> Option<Value> {
-        if !self.argument_count(&method.text, 2, args, span) {
-            return None;
-        }
-        let mutable = method.text == "withEntryMut";
-        let key = self
-            .expr(&args[0], Some(key_ty))
-            .and_then(|key| self.coerce(key, key_ty));
-        let callback = self
-            .expr(&args[1], None)
-            .and_then(|value| self.with_default_type(value))
-            .and_then(|expression| self.single_value(expression));
-        let key = key?;
-        let callback = callback?;
-        if mutable && !self.mutable_place(&map, MutableUse::Argument) {
-            return None;
-        }
-        if self.entry_views_are_forbidden(value_ty, mutable) {
+        binding: &ast::EntryBinding,
+        expression: &ast::Expr,
+    ) -> Option<hir::Expr> {
+        let ast::ExprKind::Call { callee, args, .. } = &expression.kind else {
             self.error(
-                if mutable {
+                "an entry binding requires `map.entry(key)`",
+                expression.span,
+            );
+            return None;
+        };
+        let ast::ExprKind::Field { base, name } = &callee.kind else {
+            self.error(
+                "an entry binding requires `map.entry(key)`",
+                expression.span,
+            );
+            return None;
+        };
+        if name.text != "entry" || !self.argument_count("entry", 1, args, expression.span) {
+            if name.text != "entry" {
+                self.error(
+                    "an entry binding requires `map.entry(key)`",
+                    expression.span,
+                );
+            }
+            return None;
+        }
+        let map = self
+            .expr(base, None)
+            .and_then(|value| self.with_default_type(value))
+            .and_then(|expression| self.single_value(expression))?;
+        let TypeKind::Map { key, value } = self.types.kind(map.ty()) else {
+            self.error("an entry binding requires a map receiver", map.span);
+            return None;
+        };
+        let key = self
+            .expr(&args[0], Some(key))
+            .and_then(|expression| self.coerce(expression, key))?;
+        if binding.mutable && !self.mutable_place(&map, MutableUse::Argument) {
+            return None;
+        }
+        if self.entry_views_are_forbidden(value, binding.mutable) {
+            self.error(
+                if binding.mutable {
                     "mutable entries cannot contain borrowed views"
                 } else {
                     "shared entry access cannot grant mutable views"
@@ -41,60 +58,26 @@ impl Checker<'_> {
             );
             return None;
         }
-        let mode = if mutable {
-            ast::ParamMode::Mut
-        } else {
-            ast::ParamMode::Borrow
-        };
-        let guarded = match self.types.kind(value_ty) {
-            TypeKind::Interface(interface) => self.types.interface_view(interface, mutable),
-            _ => value_ty,
-        };
-        let Some(signature) = self
-            .types
-            .func_signature(callback.ty())
-            .cloned()
-            .filter(|signature| !signature.is_async && signature.params == [(mode, guarded)])
-        else {
-            self.error(
-                format!(
-                    "`{}` needs a synchronous function taking {}{}",
-                    method.text,
-                    if mutable { "mut " } else { "" },
-                    self.name(value_ty)
-                ),
-                callback.span,
-            );
+        let Some(Res::Local(local)) = self.res.declarations.get(&binding.name.span).copied() else {
             return None;
         };
-        if self.results_contain_views(&signature.results) {
-            self.error(
-                "an entry callback cannot return borrowed views or function values",
-                callback.span,
-            );
-            return None;
-        }
-        if let ExprKind::Local(local) = callback.kind {
-            self.mark_exclusive(local);
-        }
-        Some(Value::Typed(hir::Expr {
-            kind: ExprKind::MapWithEntry {
+        self.set_local(&binding.name, value);
+        Some(hir::Expr {
+            kind: ExprKind::MapEntry {
                 map: Box::new(map),
                 key: Box::new(key),
-                callback: Box::new(callback),
-                mutable,
+                binding: local,
+                mutable: binding.mutable,
             },
-            types: std::iter::once(TypeStore::BOOL)
-                .chain(signature.results)
-                .collect(),
-            span,
-        }))
+            types: vec![TypeStore::BOOL],
+            span: expression.span,
+        })
     }
 
     pub(super) fn check_map_entries(&mut self, functions: &mut [hir::Function]) {
         for function in functions.iter_mut().filter(|function| function.compiled()) {
             generic::each_expr(&mut function.body, &mut |expression| {
-                let ExprKind::MapWithEntry { map, mutable, .. } = &expression.kind else {
+                let ExprKind::MapEntry { map, mutable, .. } = &expression.kind else {
                     return;
                 };
                 let TypeKind::Map { value, .. } = self.types.kind(map.ty()) else {
@@ -110,32 +93,20 @@ impl Checker<'_> {
                         map.span,
                     );
                 }
-                if self.results_contain_views(&expression.types[1..]) {
-                    self.error(
-                        "an entry callback cannot return borrowed views or function values",
-                        expression.span,
-                    );
-                }
             });
         }
     }
 
     fn entry_views_are_forbidden(&self, value: TypeId, mutable: bool) -> bool {
         if mutable {
-            self.results_contain_views(&[value])
-        } else {
-            self.contains_mut_view(value)
-        }
-    }
-
-    fn results_contain_views(&self, results: &[TypeId]) -> bool {
-        results.iter().any(|&ty| {
-            self.type_contains(ty, &|kind| {
+            self.type_contains(value, &|kind| {
                 matches!(
                     kind,
                     TypeKind::Slice { .. } | TypeKind::Func(_) | TypeKind::InterfaceView { .. }
                 )
             })
-        })
+        } else {
+            self.contains_mut_view(value)
+        }
     }
 }

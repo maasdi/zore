@@ -1523,12 +1523,14 @@ if condition { statements } else { statements }
 if condition { statements } else if condition { statements } else { statements }
 ```
 
-Conditions must have type `bool`. Parentheses around a condition are optional;
+Ordinary conditions must have type `bool`. Conditional borrowed map-entry
+bindings are also supported as specified in §13.4. Parentheses around an ordinary condition are optional;
 body braces are required. Evaluate conditions in order, selecting the first true
 branch or the final `else` if present. Execute only the selected body. Each body
 has its own block scope; branch-local declarations do not escape it.
 
-There is no initializer clause before an `if` condition. `else` must occur on
+There is no general initializer clause before an `if` condition. The scoped
+entry binding in §13.4 is a distinct conditional form. `else` must occur on
 the same line as the preceding closing brace so that semicolon insertion does
 not separate it from the `if`. Chained `else if` and a final `else` are optional.
 An `if` is a statement, not a value-producing expression.
@@ -2921,6 +2923,7 @@ A place is **mutable** if and only if it is:
 - a field or element projection reached entirely through mutable places (a
   field of a mutable place, or an element of a mutable fixed/dynamic array,
   including runtime indexing under §12.6); or
+- reached through a mutable conditional entry binding (§13.4), or
 - reached through a `mut`-borrowed parameter, `mut` method receiver, or a
   `mut []T` slice element — such a parameter/receiver/element is itself a
   mutable place for the scope in which it is held.
@@ -3430,7 +3433,7 @@ entry by passing `m[key]` to a parameter expecting V, field updates such as
 `m[key].Field = value`, and chained access treating the result pair as V. Bind
 the two results first for Copy values; remove Move values to obtain ownership.
 
-Borrowed in-place access uses the scoped callbacks in §13.4. Subscript lookup
+Borrowed in-place access uses conditional entry bindings in §13.4. Subscript lookup
 and ownership-transferring removal retain the rules above.
 
 ### Assignment and replacement
@@ -3509,86 +3512,88 @@ Pending conformance cases: `tests/conformance/maps.md`. Map length is
 specified in §12.7 and iteration in §5.10. Borrowed entry access is specified in
 §13.4; capacity APIs remain a separate decision.
 
-## 13.4 Scoped borrowed map entries — LOCKED
+## 13.4 Conditional borrowed map entries — LOCKED
 
-Compiler-provided `m.withEntry(key, callback)` shared-borrows a present entry;
-`m.withEntryMut(key, callback)` mutably borrows it and requires a mutable map
-place. The synchronous callback takes exactly one ordinary parameter of V,
-respectively shared or `mut`; `own` is rejected. Both work for Copy and Move
-entries without ownership transfer or implicit cloning.
+A conditional entry binding borrows a present map value without copying or
+transferring ownership. Shared access is the default; `mut` explicitly requests
+exclusive access and requires a mutable map place:
 
 ```ore
-let found = resources.withEntry("primary", func(resource Resource) {
+if resource = resources.entry("primary") {
     println(resource.Name)
-})
-let updated = resources.withEntryMut("primary", func(resource mut Resource) {
+}
+if mut resource = resources.entry("primary") {
     resource.Count += 1
-})
-let present, count = resources.withEntry("primary", func(resource Resource) int {
-    return resource.Count
-})
-```
-
-Evaluate receiver, key, and callback once, left to right, including callback
-captures on a miss. Retain map identity and key; find the entry only after all
-arguments are evaluated. A hit calls the callback exactly once. A miss skips
-it, producing false and zero values of its result types, without insertion,
-panic, or ordinary error. Result shape is `(bool, R1, ..., Rn)`; no callback
-results means only `bool`. Results may be independent Copy or Move values but
-may not recursively contain slices, function values, or borrowed interfaces,
-even when a particular result could be proven independent. A trailing `error`
-remains trailing, so ordinary `?` applies:
-
-```ore
-func update(resources mut map[string]Resource) error {
-    let found = resources.withEntryMut("primary", func(resource mut Resource) error {
-        return resource.Update()
-    })?
-    if !found { return error("resource not found") }
-    return nil
+} else {
+    return error("resource not found")
 }
 ```
 
-Borrowing/provenance: shared access cannot grant exclusive access through entry
-types containing mutable views. Initially, mutable access rejects entry types
-recursively containing slices, function values, or borrowed interfaces;
-writeback provenance extensions are separate work. Shared access may read
-ordinary shared views, preserving their external backing lifetime. Entry
-parameters borrow, so moving them or owned fields out is forbidden. Parameter
-views cannot be stored into captures. Results, captures, tasks, and globals
-cannot retain map-owned entry views. Ordinary capture, region, and call-once
-rules apply to callback values, used exclusively for the call.
+Grammar: `if [mut] name = receiver.entry(key) { statements } [else ...]`.
+Exactly one named binding is required; `_`, `let`, `var`, type annotations,
+multiple names, and parenthesized binding headers are rejected. The initializer
+must be a direct `.entry(key)` call on a map, with exactly one argument of K.
+`entry` is compiler-provided only in this conditional form, not a first-class
+method or expression. There is no entry-handle type. Ordinary bool conditions,
+`==` comparison, and copied subscript lookup remain unchanged. `else if` may
+chain ordinary bool conditions and conditional entry bindings.
 
-The entire map is borrowed from receiver evaluation through the callback;
-key/callback evaluation cannot mutate or invalidate that receiver. Shared access may coexist with
-shared reads; mutable access excludes overlapping reads and writes, including
-captured aliases, nested access, insertion, removal, replacement and growth.
-Unequal keys do not prove disjointness. Capturing the same map mutably conflicts
-with either operation; a shared capture conflicts with mutable access. Entry
-mutation is allowed only through the mutable parameter.
+Evaluate receiver then key once, left to right. Borrow the receiver's storage
+before evaluating the key, keeping its identity stable. Lookup occurs after key
+evaluation and uses one existing map lookup. A hit initializes the scoped name
+as an alias to the actual V and runs the successful block; a miss runs `else`
+when present or skips the block. Neither inserts, panics, returns zero results,
+nor produces an ordinary error on a miss. Receiver/key effects still occur.
+The name enters scope after initializer evaluation, exists only in the
+successful block, and obeys ordinary shadowing/duplicate-name rules. Mutable
+assignment, including replacement of the whole V, updates the actual entry.
 
-Cleanup/errors: normal return and returned errors keep the entry and completed
-mutations, without rollback. Callback locals use ordinary cleanup. On callback
-panic, mutable access detaches the selected entry and destroys its initialized
-parts using the callback's drop flags before propagating the panic. This avoids
-repeating destruction after a replacement destructor panics. Other entries
-remain valid for ordinary caller cleanup. Shared access leaves entry destruction
-to the map. Double panic and custom-destructor ancestor abort rules remain
-unchanged. Missing-result zeros undergo harmless-zero cleanup (§41.4).
+Borrowing/provenance: both forms support Copy and Move V. Moving the entry or
+its owned fields out is forbidden. Shared access cannot grant exclusive access
+through V containing mutable views. Initially mutable access rejects V
+recursively containing slices, function values, or borrowed interfaces; writeback
+provenance extensions are separate work. Shared access may read ordinary shared
+views, preserving their external backing lifetime. Newly derived map-owned
+entry views and closures cannot escape the successful block, whether through
+returns, outer bindings, captures, globals, or tasks. Independent Copy/Move
+values may leave the block through ordinary assignments and returns. Views
+unrelated to the entry retain ordinary provenance rules; values obtained through
+the entry alias conservatively retain its scoped loan, including existing views.
 
-Async: callbacks are synchronous and retain no entry pointer across an implicit
-suspension. Argument expressions may await normally; lookup happens afterward.
-Existing task borrowing restrictions prohibit spawning work that borrows the
-entry or its views. Async callbacks are rejected.
+The entire map is borrowed from receiver evaluation until the selected entry
+block exits. Shared reads may coexist; mutable access excludes overlapping reads
+and writes, including aliases, nested access, insertion, removal, replacement,
+and growth. Different keys do not prove disjointness. Entry mutation is allowed
+only through the mutable scoped name. Release the loan before entering a missing
+branch, so that branch may ordinarily mutate or insert into the map. A receiver
+temporary remains alive through the successful block or until lookup misses.
 
-Compiler impact: distinct typed shared/mutable map-callback operations reuse
-ordinary resolution, callback signatures, ownership/region checking and drop
-placement. Lower one lookup and invoke the ordinary ABI borrow, preserving drop
-flags for mutable panic cleanup. Add no source type, raw reference, source
-lifetime, registry or generic method syntax. Paired conformance cases cover
-signatures, exclusivity and escapes, shared external-view provenance, miss
-evaluation/zeros, native Copy/Move edits and results, return/error/panic cleanup,
-and unchanged lookup/removal.
+Control flow/cleanup: statements have their ordinary meaning, including `return`,
+`?`, `break`, and `continue`; no callback return boundary exists. Normal exits and
+propagated errors retain the entry and completed mutations without rollback.
+Block locals are cleaned up before releasing the entry borrow. On panic during
+mutable access, detach the selected entry and destroy its initialized parts
+using the alias's drop flags before owner cleanup. This prevents repeated
+destruction if replacement panics. Other entries remain valid for ordinary
+cleanup. Shared access leaves entry destruction to the map. Double panic and
+custom-destructor ancestor abort rules remain unchanged.
+
+Async: receiver/key expressions and block statements may explicitly await
+where ordinary borrow and stable-storage checking permits it. Keep map identity,
+key, alias and mutable cleanup state stable across suspension. Existing task
+borrowing restrictions prohibit spawning work that borrows the entry or its
+map-owned views. No implicit task, callback, or cancellation is introduced.
+
+Compiler impact: parse a distinct conditional binding header; resolve its name
+only in the successful block; type shared/exclusive aliases with ordinary place
+rules. Lower a nullable entry reference and explicit branch, retain the whole-map
+loan through block cleanup, release it on all normal exits, and detach live
+mutable entries before panic owner cleanup. Reuse existing region checking,
+drop flags and async stable storage. Add no raw reference, source lifetime or
+source-level generic method syntax. Conformance pairs accepted/rejected headers,
+key types, mutability, aliases and escapes; native tests cover single evaluation,
+miss/else, Copy/Move/interface access, whole-entry replacement, ordinary control
+flow, panic cleanup, suspension, and unchanged copied lookup/removal.
 
 ---
 
@@ -7703,7 +7708,7 @@ Remaining work includes the complete primary/postfix grammar for strings,
 iteration, and full task expression grammar.
 Array literals, array/slice indexing, and slicing are locked in §12.6. Map
 construction, two-result lookup, assignment, and removal are locked in §13.3;
-borrowed entry callbacks are locked in §13.4 and iteration in §5.10. Other map APIs remain separate decisions.
+conditional borrowed entry bindings are locked in §13.4 and iteration in §5.10. Other map APIs remain separate decisions.
 Struct construction is specified in §8.4, assignments in §5.6, and calls/result
 forwarding in §7.8. Numeric and comparison type rules are locked in §6.5–6.6.
 

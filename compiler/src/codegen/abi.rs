@@ -304,7 +304,6 @@ impl FunctionBuilder<'_, '_> {
             | Callee::ChannelClose
             | Callee::Select { .. }
             | Callee::MutexNew(_)
-            | Callee::MapWithEntry { .. }
             | Callee::MutexWithLock
             | Callee::MutexIsPoisoned => {
                 unreachable!("not a map operation")

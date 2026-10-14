@@ -4,6 +4,15 @@ use super::rvalue::Rvalue;
 use crate::resolve::GlobalId;
 use crate::source::Span;
 
+#[derive(Clone, Debug)]
+pub struct MapEntryGuard {
+    pub entry: Local,
+    pub map: Place,
+    pub key: Operand,
+    pub mutable: bool,
+    pub span: Span,
+}
+
 #[derive(Debug)]
 pub enum Statement {
     Assign {
@@ -12,6 +21,10 @@ pub enum Statement {
         span: Span,
     },
     EndScope(Vec<Local>),
+    EndMapEntry {
+        guard: MapEntryGuard,
+        unwind: bool,
+    },
     /// Moves the value into a package-level `let`, which keeps it for the rest of the program.
     SetGlobal {
         global: GlobalId,

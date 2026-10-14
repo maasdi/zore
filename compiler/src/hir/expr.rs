@@ -162,10 +162,10 @@ pub enum ExprKind {
         map: Box<Expr>,
         key: Box<Expr>,
     },
-    MapWithEntry {
+    MapEntry {
         map: Box<Expr>,
         key: Box<Expr>,
-        callback: Box<Expr>,
+        binding: LocalId,
         mutable: bool,
     },
     /// Elements of an array or slice, or entries of a map.

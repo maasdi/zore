@@ -1,7 +1,7 @@
 use super::{prints, run, stderr, stdout};
 
 #[test]
-fn map_entries_support_interface_borrows_generic_callbacks_and_callback_variables() {
+fn map_entries_support_interface_borrows_and_generic_functions() {
     prints(
         r#"package main
 type Counter interface { Read() int; mut Add(value int) }
@@ -9,30 +9,21 @@ type OwnedCounter struct { value int }
 func (c mut OwnedCounter) drop() { println(c.value) }
 func (c OwnedCounter) Read() int { return c.value }
 func (c mut OwnedCounter) Add(value int) { c.value += value }
-func inspect<T ordered>(values map[int]T, callback func(T) T) T {
-    let found, value = values.withEntry(1, callback)
-    println(found)
-    return value
+func inspect<T ordered>(values map[int]T, fallback T) T {
+    if value = values.entry(1) { return value }
+    return fallback
 }
 func main() {
     var counters = map[int]Counter{1: OwnedCounter{value: 3}}
-    let found, before = counters.withEntry(1, func(c Counter) int { return c.Read() })
-    println(found)
-    println(before)
-    let changed = counters.withEntryMut(1, func(c mut Counter) { c.Add(2) })
-    println(changed)
-    let present, after = counters.withEntry(1, func(c Counter) int { return c.Read() })
-    println(present)
-    println(after)
+    if c = counters.entry(1) { println(c.Read()) }
+    if mut c = counters.entry(1) { c.Add(2) }
+    if c = counters.entry(1) { println(c.Read()) }
     let numbers = map[int]int{1: 4}
-    var count = 0
-    let callback = func(value int) int { count += 1; return value * 2 }
-    println(inspect(numbers, callback))
-    println(inspect(numbers, callback))
-    println(count)
+    println(inspect(numbers, 0))
+    println(inspect(map[int]int{}, 9))
 }
 "#,
-        "true\n3\ntrue\ntrue\n5\ntrue\n8\ntrue\n8\n2\n5\n",
+        "3\n5\n4\n9\n5\n",
     );
 }
 
@@ -44,89 +35,83 @@ type Resource struct { id int; values Array<int> }
 func (r mut Resource) drop() { println(r.id) }
 func main() {
     var resources = map[string]Resource{"main": Resource{id: 1, values: Array<int>{10}}}
-    let found, old = resources.withEntry("main", func(r Resource) int { return r.values[0] })
-    println(found)
-    println(old)
-    let edited = resources.withEntryMut("main", func(r mut Resource) { r.values[0] += 5 })
-    println(edited)
-    let present, current = resources.withEntry("main", func(r Resource) int { return r.values[0] })
-    println(present)
-    println(current)
+    if r = resources.entry("main") { println(r.values[0]) }
+    if mut r = resources.entry("main") { r.values[0] += 5 }
+    if r = resources.entry("main") { println(r.values[0]) }
     println(resources.len())
     let removed, owned = resources.remove("main")
     println(removed)
     println(owned.values[0])
 }
 "#,
-        "true\n10\ntrue\ntrue\n15\n1\ntrue\n15\n1\n",
+        "10\n15\n1\ntrue\n15\n1\n",
     );
 }
 
 #[test]
-fn map_entries_misses_evaluate_arguments_once_and_return_zero_results() {
-    prints(
-        r#"package main
-func key() string { println("key"); return "missing" }
-func receiver() map[string]int { println("receiver"); return map[string]int{"hit": 5} }
-func callback() func(int) (string, int, error) {
-    println("callback")
-    return func(value int) (string, int, error) { println("must not run"); return "bad", value, error("bad") }
-}
-func main() {
-    let numbers = map[string]int{"hit": 5}
-    let found, text, number, err = receiver().withEntry(key(), callback())
-    println(found)
-    println(text)
-    println(number)
-    println(err == nil)
-    let present, answer = numbers.withEntry("hit", func(value int) int { return value + 1 })
-    println(present)
-    println(answer)
-}
-"#,
-        "receiver\nkey\ncallback\nfalse\n\n0\ntrue\ntrue\n6\n",
-    );
-}
-
-#[test]
-fn map_entries_owned_results_and_error_propagation_preserve_mutations_and_cleanup() {
+fn map_entries_misses_evaluate_once_release_borrows_and_select_else_branches() {
     prints(
         r#"package main
 type Resource struct { id int }
-func (r mut Resource) drop() { if r.id != 0 { println(r.id) } }
+func (r mut Resource) drop() { println(r.id) }
+func key() string { println("key"); return "missing" }
+func receiver() map[string]Resource { println("receiver"); return map[string]Resource{"hit": Resource{id: 5}} }
+func main() {
+    if r = receiver().entry(key()) { panic("must not run") } else { println("missing") }
+    if r = receiver().entry("hit") { println(r.id) }
+    var values = map[int]int{1: 2}
+    if mut value = values.entry(3) { panic("must not run") } else { values[3] = 7 }
+    if value = values.entry(4) { panic("must not run") } else if value = values.entry(3) { println(value) } else { panic("must not run") }
+    if value = values.entry(4) { panic("must not run") }
+    println(values.len())
+}
+"#,
+        "receiver\nkey\n5\nmissing\nreceiver\n5\n5\n7\n2\n",
+    );
+}
+
+#[test]
+fn map_entries_return_errors_break_and_continue_preserve_mutations_and_cleanup() {
+    prints(
+        r#"package main
+type Resource struct { id int }
+func (r mut Resource) drop() { println(r.id) }
+func failure() error { return error("failure") }
 func update(resources mut map[string]Resource) error {
-    let found = resources.withEntryMut("main", func(r mut Resource) error {
+    if mut r = resources.entry("main") {
         r.id = 2
         let temporary = Resource{id: 9}
-        return error("failure")
-    })?
-    println(found)
+        failure()?
+    }
     return nil
+}
+func create(resources map[string]Resource) Resource {
+    if r = resources.entry("main") { return Resource{id: r.id + 1} }
+    return Resource{id: 7}
 }
 func main() {
     var resources = map[string]Resource{"main": Resource{id: 1}}
     let err = update(resources)
     println(err != nil)
-    let found, result = resources.withEntry("main", func(r Resource) Resource { return Resource{id: r.id + 1} })
-    println(found)
+    let result = create(resources)
     println(result.id)
-    let missing, zero = resources.withEntry("missing", func(r Resource) Resource { return Resource{id: 7} })
-    println(missing)
-    println(zero.id)
+    for var index = 0; index < 2; index += 1 {
+        if mut r = resources.entry("main") { r.id += 1; continue }
+    }
+    for { if mut r = resources.entry("main") { r.id += 1; break } }
+    resources["next"] = Resource{id: 6}
+    if r = resources.entry("main") { println(r.id) }
 }
 "#,
-        "9\ntrue\ntrue\n3\nfalse\n0\n3\n2\n",
+        "9\ntrue\n3\n5\n3\n5\n6\n",
     );
 }
 
 #[test]
 fn map_entries_mutable_panic_and_replacement_panic_drop_each_initialized_part_once() {
     for (body, expected) in [
-        ("r.id = 3; panic(\"callback failed\")", "3\n2\n"),
-        (
-            "r = Resource{id: 3}; panic(\"callback failed\")",
-            "1\n3\n2\n",
-        ),
+        ("r.id = 3; panic(\"entry failed\")", "3\n2\n"),
+        ("r = Resource{id: 3}; panic(\"entry failed\")", "1\n3\n2\n"),
         ("r = Resource{id: 3}", "1\n3\n2\n"),
     ] {
         let replacement_panics = body == "r = Resource{id: 3}";
@@ -136,8 +121,7 @@ type Resource struct {{ id int }}
 func (r mut Resource) drop() {{ println(r.id); if {replacement_panics} && r.id == 1 {{ panic("replacement failed") }} }}
 func main() {{
     var resources = map[string]Resource{{"selected": Resource{{id: 1}}, "other": Resource{{id: 2}}}}
-    let found = resources.withEntryMut("selected", func(r mut Resource) {{ {body} }})
-    println(found)
+    if mut r = resources.entry("selected") {{ {body} }}
 }}
 "#
         );
@@ -152,8 +136,7 @@ func (r mut Resource) drop() { println(r.id); if r.id == 1 { panic("field replac
 type Parts struct { first Resource; last Resource }
 func main() {
     var values = map[int]Parts{1: Parts{first: Resource{id: 1}, last: Resource{id: 2}}, 2: Parts{first: Resource{id: 4}, last: Resource{id: 5}}}
-    let found = values.withEntryMut(1, func(value mut Parts) { value.first = Resource{id: 3} })
-    println(found)
+    if mut value = values.entry(1) { value.first = Resource{id: 3} }
 }
 "#);
     assert_eq!(output.status.code(), Some(2), "{output:?}");
@@ -166,45 +149,15 @@ func main() {
 }
 
 #[test]
-fn map_entries_copy_text_shared_views_callbacks_and_async_arguments_run_normally() {
-    prints(
-        r#"package main
-func main() {
-    var values = map[int]int{1: 2}
-    let changed = values.withEntryMut(1, func(value mut int) { value += 1 })
-    println(changed)
-    let found, current = values[1]
-    println(found)
-    println(current)
-}
-"#,
-        "true\ntrue\n3\n",
-    );
-    let failed = run(r#"package main
-type Owner struct { values map[int]int }
-func (owner mut Owner) drop() { println(owner.values.len()) }
-func main() {
-    var owner = Owner{values: map[int]int{1: 2, 2: 3}}
-    let changed = owner.values.withEntryMut(1, func(value mut int) { value = 4; panic("copy callback failed") })
-    println(changed)
-}
-"#);
-    assert_eq!(failed.status.code(), Some(2), "{failed:?}");
-    assert_eq!(stdout(&failed), "1\n", "{failed:?}");
-    assert!(
-        stderr(&failed).contains("copy callback failed"),
-        "{failed:?}"
-    );
+fn map_entries_copy_text_shared_views_and_awaited_keys_and_bodies_run_normally() {
     prints(
         r#"package main
 async func key() string { return "entry" }
+async func suffix() string { return " read" }
 async func check() {
     var texts = map[string]string{"entry": "initial" + " value"}
-    let found, text = texts.withEntry(await key(), func(value string) string { return value + " read" })
-    println(found)
-    println(text)
-    let changed = texts.withEntryMut(await key(), func(value mut string) { value = "new" + " value" })
-    println(changed)
+    if value = texts.entry(await key()) { println(value + await suffix()) }
+    if mut value = texts.entry(await key()) { value = "new" + await suffix() }
     let present, copied = texts["entry"]
     println(present)
     println(copied)
@@ -214,11 +167,106 @@ func main() {
     work.wait()
     let backing = Array<int>{7}
     let views = map[string][]int{"entry": backing[:]}
-    let found, value = views.withEntry("entry", func(view []int) int { return view[0] })
+    if view = views.entry("entry") { println(view[0]) }
+    var values = map[int]int{1: 2}
+    if mut value = values.entry(1) { value += 1 }
+    let found, current = values[1]
     println(found)
-    println(value)
+    println(current)
 }
 "#,
-        "true\ninitial value read\ntrue\ntrue\nnew value\ntrue\n7\n",
+        "initial value read\ntrue\nnew read\n7\ntrue\n3\n",
     );
+    let failed = run(r#"package main
+type Owner struct { values map[int]int }
+func (owner mut Owner) drop() { println(owner.values.len()) }
+func main() {
+    var owner = Owner{values: map[int]int{1: 2, 2: 3}}
+    if mut value = owner.values.entry(1) { value = 4; panic("copy entry failed") }
+}
+"#);
+    assert_eq!(failed.status.code(), Some(2), "{failed:?}");
+    assert_eq!(stdout(&failed), "1\n", "{failed:?}");
+    assert!(stderr(&failed).contains("copy entry failed"), "{failed:?}");
+}
+
+#[test]
+fn map_entries_nested_guards_and_scope_destructor_panics_clean_up_in_order() {
+    for (source, expected) in [
+        (
+            r#"package main
+type Resource struct { id int }
+func (r mut Resource) drop() { println(r.id) }
+func main() {
+    var values = map[int]map[int]Resource{1: map[int]Resource{1: Resource{id: 1}, 2: Resource{id: 2}}, 2: map[int]Resource{1: Resource{id: 3}}}
+    if mut inner = values.entry(1) {
+        if mut r = inner.entry(1) { r.id = 4; panic("nested failure") }
+    }
+}
+"#,
+            "4\n2\n3\n",
+        ),
+        (
+            r#"package main
+type Resource struct { id int }
+func (r mut Resource) drop() { println(r.id); if r.id == 9 { panic("local drop failed") } }
+func main() {
+    var values = map[int]Resource{1: Resource{id: 1}, 2: Resource{id: 2}}
+    if mut r = values.entry(1) { let temporary = Resource{id: 9} }
+}
+"#,
+            "9\n1\n2\n",
+        ),
+        (
+            r#"package main
+type Resource struct { id int }
+func (r mut Resource) drop() { println(r.id) }
+func main() {
+    var values = map[int]Resource{1: Resource{id: 1}, 2: Resource{id: 2}}
+    if mut r = values.entry(1) { r.id = 3 }
+    panic("after scope")
+}
+"#,
+            "3\n2\n",
+        ),
+    ] {
+        let output = run(source);
+        assert_eq!(output.status.code(), Some(2), "{output:?}");
+        assert_eq!(stdout(&output), expected, "{output:?}");
+        assert!(!stderr(&output).contains("leak:"), "{output:?}");
+    }
+}
+
+#[test]
+fn map_entries_async_move_cleanup_survives_timer_suspension_and_key_panics() {
+    for (header, body, expected) in [
+        (
+            "values.entry(1)",
+            "time.Sleep(time.Millisecond); r.id = 3; panic(\"entry failed\")",
+            "3\n2\n",
+        ),
+        (
+            "values.entry(await failKey())",
+            "panic(\"must not run\")",
+            "1\n2\n",
+        ),
+    ] {
+        let source = format!(
+            r#"package main
+import "std/time"
+type Resource struct {{ id int }}
+func (r mut Resource) drop() {{ println(r.id) }}
+async func failKey() int {{ time.Sleep(time.Millisecond); panic("key failed"); return 1 }}
+async func work() {{
+    var values = map[int]Resource{{1: Resource{{id: 1}}, 2: Resource{{id: 2}}}}
+    if mut r = {header} {{ {body} }}
+}}
+func main() {{ let task = go work(); task.wait() }}
+"#
+        );
+        let output = run(&source);
+        assert_eq!(output.status.code(), Some(2), "{output:?}");
+        assert_eq!(stdout(&output), expected, "{output:?}");
+        assert!(!stderr(&output).contains("leak:"), "{output:?}");
+    }
 }

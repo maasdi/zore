@@ -1,7 +1,7 @@
 # Compiler testing
 
 `tests/ownership/map_entries.rs` and `tests/codegen/map_entries.rs` verify scoped
-map-entry callbacks, including signatures, aliases, escaping views, generic
+map-entry bindings, including headers, aliases, escaping views, generic
 constraints, argument evaluation, Copy/Move/interface values, normal/error/panic
 cleanup and unchanged lookup/removal. See [contract coverage](conformance/map-entries.md).
 

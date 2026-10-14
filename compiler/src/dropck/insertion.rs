@@ -12,6 +12,20 @@ pub fn insert(package: &hir::Package, program: &mut Program) {
 
 fn insert_body(package: &hir::Package, body: &mut Body) {
     let unwind = BlockId(body.blocks.len() as u32);
+    let mut guards = Vec::new();
+    for block in &body.blocks {
+        for statement in &block.statements {
+            if let Statement::EndMapEntry { guard, .. } = statement
+                && guard.mutable
+                && !guards
+                    .iter()
+                    .any(|previous: &crate::mir::MapEntryGuard| previous.entry == guard.entry)
+            {
+                guards.push(guard.clone());
+            }
+        }
+    }
+    guards.sort_by_key(|guard| guard.entry.0);
     let owned: Vec<Local> = body
         .locals
         .iter()
@@ -31,7 +45,10 @@ fn insert_body(package: &hir::Package, body: &mut Body) {
                 } => {
                     let binds_reference = matches!(
                         rvalue,
-                        Rvalue::Ref(_) | Rvalue::RefMut(_) | Rvalue::MapValueRef(..)
+                        Rvalue::Ref(_)
+                            | Rvalue::RefMut(_)
+                            | Rvalue::MapValueRef(..)
+                            | Rvalue::MapEntryRef { .. }
                     );
                     if !binds_reference
                         && !package.is_copy(place_type(package, &body.locals, &place))
@@ -59,6 +76,7 @@ fn insert_body(package: &hir::Package, body: &mut Body) {
                         }
                     }
                 }
+                end @ Statement::EndMapEntry { .. } => statements.push(end),
                 drop @ Statement::Drop { .. } => statements.push(drop),
                 set @ Statement::SetGlobal { .. } => statements.push(set),
             }
@@ -126,14 +144,18 @@ fn insert_body(package: &hir::Package, body: &mut Body) {
         body.blocks[index].statements = statements;
     }
     body.blocks.push(BasicBlock {
-        statements: owned
+        statements: guards
             .into_iter()
             .rev()
-            .map(|local| Statement::Drop {
+            .map(|guard| Statement::EndMapEntry {
+                guard,
+                unwind: true,
+            })
+            .chain(owned.into_iter().rev().map(|local| Statement::Drop {
                 place: Place::local(local),
                 replacement: false,
                 before_store: false,
-            })
+            }))
             .collect(),
         terminator: Terminator::PanicReturn,
     });

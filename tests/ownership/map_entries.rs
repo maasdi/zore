@@ -5,33 +5,34 @@ fn map_entries_pair_shared_and_mutable_access_with_alias_rejections() {
     accepts(&body(
         r#"
         var values = map[string]Array<int>{"entry": Array<int>{1}}
-        let read = values.withEntry("entry", func(v Array<int>) { println(v[0]); println(values.len()) })
-        let edited = values.withEntryMut("entry", func(v mut Array<int>) { v.push(2) })
-        println(read)
-        println(edited)
+        if v = values.entry("entry") { println(v[0]); println(values.len()) }
+        if mut v = values.entry("entry") { v.push(2) }
+        values["other"] = Array<int>{3}
+        if mut v = values.entry("missing") { v.push(4) } else { values["missing"] = Array<int>{5} }
     "#,
     ));
     for access in [
-        r#"values.withEntryMut("entry", func(v mut Array<int>) { println(values.len()) })"#,
-        r#"values.withEntry("entry", func(v Array<int>) { let found, old = values.remove("entry"); println(found) })"#,
-        r#"values.withEntryMut("entry", func(v mut Array<int>) { values["other"] = Array<int>{2} })"#,
-        r#"values.withEntryMut("entry", func(v mut Array<int>) { let found = values.withEntry("other", func(other Array<int>) {}); println(found) })"#,
+        r#"if mut v = values.entry("entry") { println(values.len()) }"#,
+        r#"if v = values.entry("entry") { let found, old = values.remove("entry"); println(found) }"#,
+        r#"if mut v = values.entry("entry") { values["other"] = Array<int>{2} }"#,
+        r#"if mut v = values.entry("entry") { if other = values.entry("other") { println(other.len()) } }"#,
+        r#"if v = values.entry("entry") { v.push(2) }"#,
+        r#"if mut v = values.entry("entry") { let read = func() { println(values.len()) }; read() }"#,
     ] {
         rejects(
             &body(&format!(
                 r#"var values = map[string]Array<int>{{"entry": Array<int>{{1}}}}
-            let found = {access}
-            println(found)"#
+            {access}"#
             )),
-            "borrow",
+            if access.contains("v.push") {
+                "mut"
+            } else {
+                "borrow"
+            },
         );
     }
     rejects(
-        &body(
-            r#"let values = map[int]int{1: 2}
-        let found = values.withEntryMut(1, func(v mut int) { v += 1 })
-        println(found)"#,
-        ),
+        &body("let values = map[int]int{1: 2}\nif mut v = values.entry(1) { v += 1 }"),
         "mutable",
     );
     rejects(
@@ -39,8 +40,7 @@ fn map_entries_pair_shared_and_mutable_access_with_alias_rejections() {
         func key(values mut Array<map[int]int>) int { let found, removed = values.pop(); println(found); return 1 }
         func main() {
             var values = Array<map[int]int>{map[int]int{1: 2}}
-            let found = values[0].withEntry(key(values), func(value int) {})
-            println(found)
+            if value = values[0].entry(key(values)) { println(value) }
         }"#,
         "borrow",
     );
@@ -48,43 +48,50 @@ fn map_entries_pair_shared_and_mutable_access_with_alias_rejections() {
 
 #[test]
 fn map_entries_reject_borrow_escape_moves_and_spawned_borrows() {
-    for (callback, expected) in [
-        (
-            "func(v Array<int>) { let stolen = v; println(stolen.len()) }",
-            "borrow",
+    rejects(
+        &body(
+            "let values = map[int]Array<int>{1: Array<int>{2}}\nif v = values.entry(1) { let stolen = v; println(stolen.len()) }",
         ),
-        (
-            "func(v Array<int>) []int { return v[:] }",
-            "cannot return borrowed views",
-        ),
-        (
-            "func(v Array<int>) Array<[]int> { return Array<[]int>{v[:]} }",
-            "cannot return borrowed views",
-        ),
-        (
-            "func(v Array<int>) { saved = v[:] }",
-            "parameter into captured",
-        ),
-    ] {
-        let text = body(&format!(
-            r#"let backing = Array<int>{{0}}
+        "cannot move borrowed",
+    );
+    rejects(
+        r#"package main
+        func escape(values map[int]Array<int>, fallback []int) []int {
+            if v = values.entry(1) { return v[:] }
+            return fallback
+        }
+        func main() {}"#,
+        "cannot return a view of local `v`",
+    );
+    for operation in ["saved = v[:]", "saved = Array<[]int>{v[:]}[0]"] {
+        rejects(
+            &body(&format!(
+                r#"let backing = Array<int>{{0}}
             var saved = backing[:]
             let values = map[int]Array<int>{{1: Array<int>{{2}}}}
-            let found = values.withEntry(1, {callback})
-            println(found)
+            if v = values.entry(1) {{ {operation} }}
             println(saved[0])"#
-        ));
-        rejects(&text, expected);
+            )),
+            "does not live long enough",
+        );
     }
     rejects(
         r#"package main
         func work(value Array<int>) {}
         func main() {
             let values = map[int]Array<int>{1: Array<int>{2}}
-            let found = values.withEntry(1, func(v Array<int>) { let task = go work(v); task.wait() })
-            println(found)
+            if v = values.entry(1) { let task = go work(v); task.wait() }
         }"#,
         "borrow",
+    );
+    rejects(
+        r#"package main
+        func escape(values map[int]Array<int>) func() int {
+            if v = values.entry(1) { return func() int { return v[0] } }
+            return func() int { return 0 }
+        }
+        func main() {}"#,
+        "cannot move borrowed",
     );
 }
 
@@ -93,9 +100,7 @@ fn map_entries_shared_external_views_keep_provenance_and_mutable_view_entries_ar
     accepts(&body(
         r#"var backing = Array<int>{7}
         let views = map[int][]int{1: backing[:]}
-        let found, number = views.withEntry(1, func(v []int) int { return v[0] })
-        println(found)
-        println(number)
+        if v = views.entry(1) { println(v[0]) }
         backing[0] = 8
     "#,
     ));
@@ -103,8 +108,7 @@ fn map_entries_shared_external_views_keep_provenance_and_mutable_view_entries_ar
         &body(
             r#"var backing = Array<int>{7}
         let views = map[int][]int{1: backing[:]}
-        let found = views.withEntry(1, func(v []int) { backing[0] = 8; println(v[0]) })
-        println(found)
+        if v = views.entry(1) { backing[0] = 8; println(v[0]) }
     "#,
         ),
         "borrow",
@@ -113,8 +117,7 @@ fn map_entries_shared_external_views_keep_provenance_and_mutable_view_entries_ar
         &body(
             r#"let backing = Array<int>{7}
         var views = map[int][]int{1: backing[:]}
-        let found = views.withEntryMut(1, func(v mut []int) {})
-        println(found)
+        if mut v = views.entry(1) { println(v[0]) }
     "#,
         ),
         "mutable entries cannot contain borrowed views",
@@ -123,8 +126,7 @@ fn map_entries_shared_external_views_keep_provenance_and_mutable_view_entries_ar
         &body(
             r#"var backing = Array<int>{7}
         let views = map[int]mut []int{1: backing[:]}
-        let found = views.withEntry(1, func(v mut []int) {})
-        println(found)
+        if v = views.entry(1) { println(v[0]) }
     "#,
         ),
         "mutable views",
@@ -132,86 +134,80 @@ fn map_entries_shared_external_views_keep_provenance_and_mutable_view_entries_ar
 }
 
 #[test]
-fn map_entries_reject_invalid_callback_signatures_and_result_types() {
-    for callback in [
-        "func(v mut int) {}",
-        "func(v own int) {}",
-        "func() {}",
-        "func(v int, second int) {}",
-        "5",
-        "func(v string) {}",
-    ] {
-        rejects(
-            &body(&format!(
-                "let values = map[int]int{{1: 2}}\nlet found = values.withEntry(1, {callback})\nprintln(found)"
-            )),
-            "synchronous function",
-        );
-    }
-    rejects(
-        r#"package main
-        async func callback(value int) {}
-        func main() { let values = map[int]int{1: 2}; let found = values.withEntry(1, callback); println(found) }
-    "#,
-        "synchronous function",
-    );
-    for call in [
-        "values.withEntry(1)",
-        "values.withEntry(1, func(v int) {}, 2)",
-        "values.withEntryMut(1)",
-    ] {
-        rejects(
-            &body(&format!(
-                "var values = map[int]int{{1: 2}}\nlet found = {call}\nprintln(found)"
-            )),
-            "takes 2 arguments",
-        );
-    }
-    rejects(
-        &body(
-            "let values = map[int]int{1: 2}\nlet found = values.withEntry(\"wrong\", func(v int) {})\nprintln(found)",
+fn map_entries_validate_headers_scope_and_key_types() {
+    for (header, expected) in [
+        ("if v = values.entry() {}", "takes 1 argument"),
+        ("if v = values.entry(1, 2) {}", "takes 1 argument"),
+        ("if v = values.entry(\"wrong\") {}", "int"),
+        ("if v = 5 {}", "requires `map.entry(key)`"),
+        ("if v = values.remove(1) {}", "requires `map.entry(key)`"),
+        ("if v = numbers.entry(1) {}", "map receiver"),
+        ("if mut v = values.entry(1) { let v = 3 }", "duplicate"),
+        (
+            "if v = values.entry(1) {} else { println(v) }",
+            "cannot find",
         ),
-        "int",
-    );
+        ("if v = values.entry(1) {}\nprintln(v)", "cannot find"),
+        ("let v = values.entry(1)", "entry"),
+        (
+            "let found = values.withEntry(1, func(v int) {})",
+            "withEntry",
+        ),
+        ("if _ = values.entry(1) {}", "cannot be used as a value"),
+        ("if let v = values.entry(1) {}", "expected"),
+        ("if var v = values.entry(1) {}", "expected"),
+        ("if (v = values.entry(1)) {}", "expected"),
+    ] {
+        rejects(
+            &body(&format!(
+                "var values = map[int]int{{1: 2}}\nlet numbers = Array<int>{{1}}\n{header}"
+            )),
+            expected,
+        );
+    }
+    accepts(&body(
+        r#"let value = 1
+        let values = map[int]int{1: 2}
+        if value = values.entry(value) { println(value) } else if missing = values.entry(3) { println(missing) } else { println(value) }
+        println(value)
+        if value == 1 { println(value) }
+    "#,
+    ));
 }
 
 #[test]
-fn map_entries_validate_specialized_generic_types_and_preserve_call_once_restrictions() {
+fn map_entries_validate_generic_types_and_allow_independent_control_flow() {
     rejects(
         r#"package main
-        func touch<T any>(values mut map[int]T) {
-            let found = values.withEntryMut(1, func(value mut T) {})
-            println(found)
-        }
-        func main() {
-            let backing = Array<int>{1}
-            var views = map[int][]int{1: backing[:]}
-            touch(views)
-        }"#,
+        func touch<T any>(values mut map[int]T) { if mut value = values.entry(1) {} }
+        func main() { let backing = Array<int>{1}; var views = map[int][]int{1: backing[:]}; touch(views) }
+    "#,
         "mutable entries cannot contain borrowed views",
     );
-    rejects(
+    accepts(
         r#"package main
-        func inspect<T any>(values map[int]int, callback func(int) T) {
-            let found, result = values.withEntry(1, callback)
-            println(found)
+        func inspect<T ordered>(values map[int]T, fallback T) T {
+            if value = values.entry(1) { return value }
+            return fallback
+        }
+        func stop() error { return error("stop") }
+        func update(values mut map[int]int) error {
+            if mut value = values.entry(1) { value += 1; stop()? }
+            return nil
+        }
+        async func key() int { return 1 }
+        async func run() {
+            var values = map[int]int{1: 2}
+            if mut value = values.entry(await key()) { value += await key() }
         }
         func main() {
-            let backing = Array<int>{1}
-            let values = map[int]int{1: 2}
-            inspect(values, func(value int) []int { return backing[:] })
-        }"#,
-        "cannot return borrowed views",
-    );
-    rejects(
-        &body(
-            r#"let owned = Array<int>{1}
-        let callback = func(value int) Array<int> { return owned }
-        let values = map[int]int{1: 2}
-        let found, result = values.withEntry(1, callback)
-        println(found)
+            var values = map[int]int{1: 2}
+            println(inspect(values, 0))
+            let err = update(values)
+            println(err != nil)
+            for { if mut value = values.entry(1) { value += 1; break } }
+            values[2] = 3
+        }
     "#,
-        ),
-        "call-once",
     );
 }

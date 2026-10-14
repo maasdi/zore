@@ -129,6 +129,22 @@ fn live_at_entry(body: &mir::Body) -> Vec<Vec<bool>> {
                         });
                     }
                 }
+                Statement::EndMapEntry { guard, .. } => {
+                    visit_place(&guard.map, &mut |local| {
+                        if !defined[index][local] {
+                            used_before_definition[index][local] = true;
+                        }
+                    });
+                    visit_operand(&guard.key, &mut |local| {
+                        if !defined[index][local] {
+                            used_before_definition[index][local] = true;
+                        }
+                    });
+                    let entry = guard.entry.0 as usize;
+                    if !defined[index][entry] {
+                        used_before_definition[index][entry] = true;
+                    }
+                }
                 Statement::Drop { place, .. } => visit_place(place, &mut |local| {
                     if !defined[index][local] {
                         used_before_definition[index][local] = true;
@@ -545,6 +561,7 @@ fn stable_rvalue(rvalue: &Rvalue, stable: &mut [bool]) {
         | Rvalue::RefMut(place)
         | Rvalue::Slice { place, .. }
         | Rvalue::MapValueRef(place, _)
+        | Rvalue::MapEntryRef { map: place, .. }
         | Rvalue::InterfaceView { place, .. } => {
             visit_place(place, &mut |local| stable[local] = true);
         }
@@ -594,10 +611,17 @@ fn visit_rvalue(rvalue: &Rvalue, visit: &mut impl FnMut(usize)) {
             visit_operand(left, visit);
             visit_operand(right, visit);
         }
-        Rvalue::Length(place) | Rvalue::Ref(place) | Rvalue::RefMut(place) => {
-            visit_place(place, visit)
-        }
-        Rvalue::MapKeyAt(place, index) | Rvalue::MapValueRef(place, index) => {
+        Rvalue::Length(place)
+        | Rvalue::Ref(place)
+        | Rvalue::RefMut(place)
+        | Rvalue::ReferencePresent(place) => visit_place(place, visit),
+        Rvalue::MapKeyAt(place, index)
+        | Rvalue::MapValueRef(place, index)
+        | Rvalue::MapEntryRef {
+            map: place,
+            key: index,
+            ..
+        } => {
             visit_place(place, visit);
             visit_operand(index, visit);
         }
@@ -634,6 +658,11 @@ fn visit_statement(statement: &Statement, visit: &mut impl FnMut(usize)) {
         Statement::Assign { place, rvalue, .. } => {
             visit_place(place, visit);
             visit_rvalue(rvalue, visit);
+        }
+        Statement::EndMapEntry { guard, .. } => {
+            visit(guard.entry.0 as usize);
+            visit_place(&guard.map, visit);
+            visit_operand(&guard.key, visit);
         }
         Statement::Drop { place, .. } => visit_place(place, visit),
         Statement::EndScope(locals) => {

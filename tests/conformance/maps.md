@@ -100,5 +100,5 @@ and `for key, value in m` in `control-flow.md` (§5.10). Borrowed in-place entry
 APIs and capacity operations remain Q02/Q05 decisions; do not invent their
 syntax.
 
-Scoped borrowed entry callbacks are locked in §13.4. Their executable acceptance,
+Conditional borrowed entry bindings are locked in §13.4. Their executable acceptance,
 rejection and cleanup coverage is listed in [map-entries.md](map-entries.md).

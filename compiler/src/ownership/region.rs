@@ -347,6 +347,22 @@ impl<'a> Analysis<'a> {
                         state[local.0 as usize].clear();
                     }
                 }
+                Statement::EndMapEntry { guard, .. } => {
+                    if let Some(findings) = findings.as_deref_mut() {
+                        let mut accesses = Vec::new();
+                        self.operand_accesses(
+                            &Operand::Ref(Place::local(guard.entry)),
+                            None,
+                            guard.span,
+                            &mut accesses,
+                        );
+                        self.operand_accesses(&guard.key, None, guard.span, &mut accesses);
+                        let live = findings.live.before(block_id, position);
+                        for access in &accesses {
+                            self.check_access(access, live, state, findings);
+                        }
+                    }
+                }
                 Statement::Drop { .. } | Statement::SetGlobal { .. } => {}
             }
         }
@@ -782,7 +798,6 @@ impl<'a> Analysis<'a> {
             | Callee::MutexIsPoisoned => vec![None; args.len()],
             // The callback is called, so it is used exclusively.
             Callee::MutexWithLock => vec![None, Some(ParamMode::Mut)],
-            Callee::MapWithEntry { .. } => vec![callee.map_access(), None, Some(ParamMode::Mut)],
             Callee::MapInsertNew | Callee::MapAssign | Callee::MapLookup | Callee::MapRemove => {
                 let mut modes = vec![None; args.len()];
                 modes[0] = callee.map_access();
@@ -847,10 +862,7 @@ impl<'a> Analysis<'a> {
                 self.target_accesses(destination, site.span, &mut accesses);
                 self.check_view_store(destination, state, site.span, findings);
             }
-            if !matches!(callee, Callee::MapWithEntry { .. })
-                && let (Some(ParamMode::Mut), [Operand::Ref(map), _, _]) =
-                    (callee.map_access(), args)
-            {
+            if let (Some(ParamMode::Mut), [Operand::Ref(map), _, _]) = (callee.map_access(), args) {
                 self.check_view_store(map, state, site.span, findings);
             }
             if let (Callee::ArrayPush, [Operand::Ref(array), _]) = (callee, args) {
@@ -866,13 +878,6 @@ impl<'a> Analysis<'a> {
                 state[local.0 as usize].clear();
             }
         };
-        if let Callee::MapWithEntry { .. } = callee {
-            for destination in destinations.iter().flatten() {
-                self.assign(destination, BTreeSet::new(), state);
-            }
-            clear(state);
-            return;
-        }
         if callee.map_access().is_some() {
             self.map_call(args, destinations, site, state);
             clear(state);
@@ -1359,13 +1364,19 @@ impl<'a> Analysis<'a> {
                 loans.extend(inherited);
                 loans
             }
-            Rvalue::Ref(place) | Rvalue::RefMut(place) | Rvalue::MapValueRef(place, _) => {
+            Rvalue::Ref(place)
+            | Rvalue::RefMut(place)
+            | Rvalue::MapValueRef(place, _)
+            | Rvalue::MapEntryRef { map: place, .. } => {
                 let mut path = Path::of(self.package, self.body, place);
-                if matches!(rvalue, Rvalue::MapValueRef(..)) {
+                if matches!(rvalue, Rvalue::MapValueRef(..) | Rvalue::MapEntryRef { .. }) {
                     path.elems.push(PathElem::Index);
                 }
                 let loan = Loan {
-                    kind: if matches!(rvalue, Rvalue::RefMut(_)) {
+                    kind: if matches!(
+                        rvalue,
+                        Rvalue::RefMut(_) | Rvalue::MapEntryRef { mutable: true, .. }
+                    ) {
                         LoanKind::Exclusive
                     } else {
                         LoanKind::Shared
@@ -1410,7 +1421,8 @@ impl<'a> Analysis<'a> {
                 }
                 loans
             }
-            Rvalue::Zero
+            Rvalue::ReferencePresent(_)
+            | Rvalue::Zero
             | Rvalue::Global(_)
             | Rvalue::Binary(..)
             | Rvalue::Unary(..)
@@ -1494,7 +1506,7 @@ impl<'a> Analysis<'a> {
                     false,
                 ));
             }
-            Rvalue::Ref(place) | Rvalue::RefMut(place) => {
+            Rvalue::Ref(place) | Rvalue::RefMut(place) | Rvalue::ReferencePresent(place) => {
                 self.index_accesses(place, span, out);
                 out.push(self.access(
                     place,
@@ -1513,7 +1525,13 @@ impl<'a> Analysis<'a> {
                     false,
                 ));
             }
-            Rvalue::MapKeyAt(place, position) | Rvalue::MapValueRef(place, position) => {
+            Rvalue::MapKeyAt(place, position)
+            | Rvalue::MapValueRef(place, position)
+            | Rvalue::MapEntryRef {
+                map: place,
+                key: position,
+                ..
+            } => {
                 out.push(self.access(
                     place,
                     AccessKind::Read,
@@ -1912,6 +1930,11 @@ impl Liveness {
                     }
                 }
             }
+            Statement::EndMapEntry { guard, .. } => {
+                Self::use_place(&Place::local(guard.entry), live);
+                Self::use_place(&guard.map, live);
+                Self::use_operand(&guard.key, live);
+            }
             Statement::Drop { .. } => {}
             Statement::SetGlobal { value, .. } => Self::use_operand(value, live),
         }
@@ -2020,10 +2043,17 @@ impl Liveness {
                     Self::use_operand(operand, live);
                 }
             }
-            Rvalue::Length(place) | Rvalue::Ref(place) | Rvalue::RefMut(place) => {
-                Self::use_place(place, live)
-            }
-            Rvalue::MapKeyAt(place, position) | Rvalue::MapValueRef(place, position) => {
+            Rvalue::Length(place)
+            | Rvalue::Ref(place)
+            | Rvalue::RefMut(place)
+            | Rvalue::ReferencePresent(place) => Self::use_place(place, live),
+            Rvalue::MapKeyAt(place, position)
+            | Rvalue::MapValueRef(place, position)
+            | Rvalue::MapEntryRef {
+                map: place,
+                key: position,
+                ..
+            } => {
                 Self::use_place(place, live);
                 Self::use_operand(position, live);
             }

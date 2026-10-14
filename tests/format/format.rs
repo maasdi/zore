@@ -171,3 +171,13 @@ fn all_repository_source_files_format_without_token_changes() {
         );
     }
 }
+
+#[test]
+fn conditional_entry_binding_headers_format_without_changing_modes() {
+    assert_eq!(
+        formatted(
+            "package main\nfunc main(){\nif user=users.entry(id){println(user.Name)}else if mut user=users.entry(other){user.Visits+=1}else{return}\n}\n"
+        ),
+        "package main\n\nfunc main() {\n    if user = users.entry(id) {\n        println(user.Name)\n    } else if mut user = users.entry(other) {\n        user.Visits += 1\n    } else {\n        return\n    }\n}\n"
+    );
+}

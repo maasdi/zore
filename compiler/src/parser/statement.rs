@@ -361,6 +361,19 @@ impl Parser<'_> {
 
     pub(super) fn if_stmt(&mut self) -> PResult<If> {
         let start = self.bump().span;
+        let binding = if self.at_keyword(Keyword::Mut)
+            || *self.peek() == TokenKind::Ident && *self.peek_at(1) == TokenKind::Punct(Punct::Eq)
+        {
+            let mutable = self.at_keyword(Keyword::Mut);
+            if mutable {
+                self.bump();
+            }
+            let name = self.name("an entry binding name")?;
+            self.expect(Punct::Eq)?;
+            Some(Box::new(EntryBinding { name, mutable }))
+        } else {
+            None
+        };
         let condition = self.header_expr()?;
         let then_block = self.body_block("`if` condition", "expected `{` after `if` condition")?;
         if self.at_newline_before(&TokenKind::Keyword(Keyword::Else)) {
@@ -387,6 +400,7 @@ impl Parser<'_> {
             None
         };
         Ok(If {
+            binding,
             condition,
             then_block,
             else_branch,
