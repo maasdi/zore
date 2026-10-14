@@ -42,6 +42,9 @@ struct Builder {
     scopes: Vec<Vec<Local>>,
     temp_scopes: Vec<Vec<Local>>,
     entry_guards: Vec<crate::mir::MapEntryGuard>,
+    task_scopes: Vec<crate::mir::TaskScope>,
+    active_task_scopes: Vec<usize>,
+    inputs: Vec<Local>,
 }
 
 fn lower_function(package: &hir::Package, id: FunctionId, function: &hir::Function) -> Body {
@@ -67,6 +70,14 @@ fn lower_function(package: &hir::Package, id: FunctionId, function: &hir::Functi
         scopes: Vec::new(),
         temp_scopes: Vec::new(),
         entry_guards: Vec::new(),
+        task_scopes: Vec::new(),
+        active_task_scopes: Vec::new(),
+        inputs: function
+            .params
+            .iter()
+            .chain(&function.captures)
+            .map(|local| Local(local.0))
+            .collect(),
     };
     builder.returns = function
         .results
@@ -84,6 +95,7 @@ fn lower_function(package: &hir::Package, id: FunctionId, function: &hir::Functi
             locals: builder.locals,
             blocks: Vec::new(),
             unwind: None,
+            task_scopes: Vec::new(),
         };
     }
     builder.block(package, &function.body);
@@ -110,6 +122,7 @@ fn lower_function(package: &hir::Package, id: FunctionId, function: &hir::Functi
             })
             .collect(),
         unwind: None,
+        task_scopes: builder.task_scopes,
     }
 }
 
@@ -179,6 +192,19 @@ impl Builder {
 
     fn end_scope(&mut self, locals: Vec<Local>) {
         if !locals.is_empty() && self.blocks[self.current.0 as usize].terminator.is_none() {
+            for scope in self
+                .task_scopes
+                .iter()
+                .filter(|scope| locals.contains(&scope.registry))
+                .rev()
+            {
+                self.blocks[self.current.0 as usize]
+                    .statements
+                    .push(Statement::EndTaskScope {
+                        scope: scope.registry,
+                        unwind: false,
+                    });
+            }
             for guard in self
                 .entry_guards
                 .iter()
@@ -538,6 +564,34 @@ impl Builder {
             } => self.for_each(package, *key, *item, collection, body, stmt.span),
             StmtKind::Select { arms, default } => {
                 self.select(package, arms, default.as_ref(), stmt.span)
+            }
+            StmtKind::TaskScope { id, body } => {
+                let registry = self.temp(TypeStore::INT);
+                self.push(Place::local(registry), Rvalue::TaskScope, stmt.span);
+                let index = self.task_scopes.len();
+                let mut eligible: Vec<Local> = self.scopes.iter().flatten().copied().collect();
+                eligible.extend(self.inputs.iter().copied());
+                self.task_scopes.push(crate::mir::TaskScope {
+                    id: *id,
+                    registry,
+                    eligible,
+                    children: Vec::new(),
+                    span: stmt.span,
+                    temp_start: self.locals.len() as u32,
+                    temp_end: 0,
+                });
+                self.active_task_scopes.push(index);
+                self.scopes.push(vec![registry]);
+                for statement in &body.stmts {
+                    self.stmt(package, statement);
+                }
+                let locals = self.scopes.pop().expect("task scope");
+                self.task_scopes[index]
+                    .eligible
+                    .extend(locals.iter().copied());
+                self.task_scopes[index].temp_end = self.locals.len() as u32;
+                self.end_scope(locals);
+                self.active_task_scopes.pop();
             }
             StmtKind::Block(block) => self.block(package, block),
         }
@@ -1328,17 +1382,37 @@ impl Builder {
                 thunk,
                 closure_ty,
                 args,
+                scope,
+                modes,
                 ..
             } => {
-                let captures = args
-                    .iter()
-                    .map(|arg| {
+                let mut captures = Vec::new();
+                let mut borrowed = Vec::new();
+                for (arg, mode) in args.iter().zip(modes.iter()) {
+                    let mode = if scope.is_some()
+                        && *mode == crate::ast::ParamMode::Borrow
+                        && matches!(package.types.kind(arg.ty()), TypeKind::Func(_))
+                    {
+                        crate::ast::ParamMode::Mut
+                    } else if scope.is_none()
+                        || *mode == crate::ast::ParamMode::Own
+                        || *mode == crate::ast::ParamMode::Borrow && package.is_copy(arg.ty())
+                    {
+                        crate::ast::ParamMode::Own
+                    } else {
+                        *mode
+                    };
+                    let place = if mode == crate::ast::ParamMode::Own {
                         let operand = self.operand(package, arg);
                         let held = self.temp(arg.ty());
                         self.push(Place::local(held), Rvalue::Use(operand), arg.span);
-                        (Place::local(held), false)
-                    })
-                    .collect();
+                        Place::local(held)
+                    } else {
+                        self.base_place(package, arg)
+                    };
+                    captures.push((place, mode == crate::ast::ParamMode::Mut));
+                    borrowed.push(mode);
+                }
                 let closure = self.assign_temp(
                     package,
                     *closure_ty,
@@ -1346,10 +1420,28 @@ impl Builder {
                         function: *thunk,
                         captures,
                         owning: true,
+                        capture_modes: if scope.is_some() {
+                            borrowed
+                        } else {
+                            Vec::new()
+                        },
                     },
                     span,
                 );
-                self.assign_temp(package, expr.ty(), Rvalue::Spawn(closure), span)
+                let rvalue = if let Some(id) = scope {
+                    let index = *self.active_task_scopes.last().expect("lexical task scope");
+                    assert_eq!(*id, self.task_scopes[index].id);
+                    let holder = self.reference(TypeStore::INT);
+                    self.task_scopes[index].children.push(holder);
+                    Rvalue::ScopedSpawn {
+                        closure,
+                        scope: self.task_scopes[index].registry,
+                        holder,
+                    }
+                } else {
+                    Rvalue::Spawn(closure)
+                };
+                self.assign_temp(package, expr.ty(), rvalue, span)
             }
             ExprKind::Call { .. }
             | ExprKind::CallValue { .. }
@@ -1387,6 +1479,7 @@ impl Builder {
                 function,
                 captures,
                 owning,
+                capture_modes: borrowed,
             } => {
                 let captures = captures
                     .iter()
@@ -1399,6 +1492,7 @@ impl Builder {
                         function: *function,
                         captures,
                         owning: *owning,
+                        capture_modes: borrowed.clone(),
                     },
                     span,
                 )

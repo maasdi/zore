@@ -78,6 +78,7 @@ impl Checker<'_> {
                 function,
                 captures: vec![(root, exclusive)],
                 owning: false,
+                capture_modes: Vec::new(),
             },
             ty,
             span,

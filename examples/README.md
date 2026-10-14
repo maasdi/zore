@@ -39,6 +39,7 @@ progress have no example until they work.
 | [`generics`](generics) | Generic functions with `ordered`, `comparable`, `any`, and interface constraints, type arguments taken from the arguments, a Move element returned from an owned array, and a generic `Stack<T>` with its methods | §22.1 |
 | [`function-values`](function-values) | Declared functions, methods, and `async` functions as values, and `go` on closure literals and function-typed locals that own what they use | §16.2, §17.8, §18.3, §18.4 |
 | [`tasks`](tasks) | `go`, `Task<...>` handles, `.wait()`, `async func` and `await`, owned inputs and results, errors from tasks, and a collection of tasks | §17, §18 |
+| [`scoped-tasks`](scoped-tasks) | Plain lexical scopes, shared array borrows, mutable children and implicit joining of ignored handles | §18.12 |
 | [`channels`](channels) | `channel<T>` with and without a buffer, `send`, `receive`, and `close`, a pipeline of tasks, a worker over a buffered channel, a request that carries its reply channel, and a closed channel's zero value | §19 |
 | [`select`](select) | `select` over two producers, a `default` arm, a send that finds room or not, and a receive that finds nothing | §19.14 |
 | [`io`](io) | `std/time` and `std/net`: tasks that sleep for `time.Millisecond` multiples, a TCP server that accepts clients, and a reply read into a byte buffer over a loopback connection, with the answers ordered by their delays | §37.3 |

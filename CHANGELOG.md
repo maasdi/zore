@@ -7,6 +7,17 @@ once it does.
 
 ## [Unreleased]
 
+### Scoped tasks
+
+- Added opt-in taskScope blocks in plain functions, with scoped borrowing and
+  child registration independent of handle drop, plus mandatory joins before
+  parent storage cleanup on normal, error, loop-transfer and panic exits.
+- Added scoped handle/view bounds, mixed owned/borrowed capture environments,
+  deterministic panic priority and reverse result cleanup. Ordinary task APIs
+  and detach behavior are unchanged; direct async scopes remain rejected.
+- Added syntax/tooling, ownership, native lifecycle and runtime regressions,
+  a runnable example and the locked plain-function contract.
+
 ### Performance evidence
 
 - Marked generated Zore functions internal to LLVM while preserving the exported

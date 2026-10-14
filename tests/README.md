@@ -1,5 +1,14 @@
 # Compiler testing
 
+`tests/ownership/scoped_tasks.rs` and `tests/codegen/scoped_tasks.rs` cover the
+plain lexical task-scope contract: shared/exclusive inputs, mixed captures,
+dropped/aliased/repeated handles, view and output provenance, shorter storage,
+all normal/error/panic exits, nested scopes, result destructors, bounded deadlock
+and compensation on one worker. Runtime units verify record/result ownership and
+failure ordering independent of completion order. Async bodies/literals remain
+rejected. Lexer/parser/formatter and self-hosting comparisons include the syntax.
+See [conformance coverage](conformance/scoped-tasks.md).
+
 The native linkage/timer module checks optimized symbol visibility, referenced
 initializers/callbacks/interfaces/generics/async cleanup, and diagnostics in
 unused code. Controlled context tests force real Pending states and timer

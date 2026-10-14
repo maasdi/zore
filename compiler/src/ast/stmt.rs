@@ -70,6 +70,7 @@ pub enum StmtKind {
     For(For),
     Select(Select),
     Block(Block),
+    TaskScope(Block),
 }
 
 #[derive(Clone, Debug, PartialEq)]

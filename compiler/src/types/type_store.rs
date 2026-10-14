@@ -19,6 +19,7 @@ pub struct TypeStore {
     func_types: HashMap<FuncSignature, TypeId>,
     task_results: Vec<Vec<TypeId>>,
     task_types: HashMap<Vec<TypeId>, TypeId>,
+    scoped_task_types: HashMap<(Vec<TypeId>, u32), TypeId>,
     channel_types: HashMap<TypeId, TypeId>,
     mutex_types: HashMap<TypeId, TypeId>,
     /// A named type's display name and the predeclared type it is built on.
@@ -83,6 +84,7 @@ impl TypeStore {
             func_types: HashMap::new(),
             task_results: Vec::new(),
             task_types: HashMap::new(),
+            scoped_task_types: HashMap::new(),
             channel_types: HashMap::new(),
             mutex_types: HashMap::new(),
             named: HashMap::new(),
@@ -266,13 +268,21 @@ impl TypeStore {
                 let element = self.substitute(element, arguments);
                 self.mutex_type(element)
             }
-            TypeKind::Task(id) => {
+            TypeKind::Task(id) | TypeKind::ScopedTask(id, _) => {
+                let scope = match self.kind(ty) {
+                    TypeKind::ScopedTask(_, scope) => Some(scope),
+                    _ => None,
+                };
                 let results = self.task_results[id.0 as usize].clone();
                 let results = results
                     .into_iter()
                     .map(|result| self.substitute(result, arguments))
                     .collect();
-                self.task_type(results)
+                if let Some(scope) = scope {
+                    self.scoped_task_type(results, scope)
+                } else {
+                    self.task_type(results)
+                }
             }
             TypeKind::Func(id) => {
                 let signature = self.signatures[id.0 as usize].clone();
@@ -309,7 +319,7 @@ impl TypeStore {
             | TypeKind::Channel { element }
             | TypeKind::Mutex { element } => self.mentions_param(element),
             TypeKind::Map { key, value } => self.mentions_param(key) || self.mentions_param(value),
-            TypeKind::Task(id) => self.task_results[id.0 as usize]
+            TypeKind::Task(id) | TypeKind::ScopedTask(id, _) => self.task_results[id.0 as usize]
                 .iter()
                 .any(|&result| self.mentions_param(result)),
             TypeKind::Func(id) => {
@@ -483,9 +493,24 @@ impl TypeStore {
         ty
     }
 
+    pub fn scoped_task_type(&mut self, results: Vec<TypeId>, scope: u32) -> TypeId {
+        let key = (results.clone(), scope);
+        if let Some(&ty) = self.scoped_task_types.get(&key) {
+            return ty;
+        }
+        let id = TaskTypeId(self.task_results.len() as u32);
+        self.task_results.push(results);
+        let ty = TypeId(self.kinds.len() as u32);
+        self.kinds.push(TypeKind::ScopedTask(id, scope));
+        self.scoped_task_types.insert(key, ty);
+        ty
+    }
+
     pub fn task_results(&self, ty: TypeId) -> Option<&[TypeId]> {
         match self.kind(ty) {
-            TypeKind::Task(id) => Some(&self.task_results[id.0 as usize]),
+            TypeKind::Task(id) | TypeKind::ScopedTask(id, _) => {
+                Some(&self.task_results[id.0 as usize])
+            }
             _ => None,
         }
     }
@@ -607,9 +632,15 @@ impl fmt::Display for TypeName<'_> {
                     self.store.interface_names[interface.0 as usize]
                 )
             }
-            TypeKind::Task(id) => {
+            TypeKind::Task(id) | TypeKind::ScopedTask(id, _) => {
                 let results = &self.store.task_results[id.0 as usize];
-                f.write_str("Task")?;
+                f.write_str(
+                    if matches!(self.store.kind(self.ty), TypeKind::ScopedTask(_, _)) {
+                        "ScopedTask"
+                    } else {
+                        "Task"
+                    },
+                )?;
                 if results.is_empty() {
                     return Ok(());
                 }

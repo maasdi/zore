@@ -271,6 +271,10 @@ impl Parser<'_> {
             TokenKind::Keyword(Keyword::If) => StmtKind::If(self.if_stmt()?),
             TokenKind::Keyword(Keyword::For) => StmtKind::For(self.for_stmt()?),
             TokenKind::Keyword(Keyword::Select) => StmtKind::Select(self.select_stmt()?),
+            TokenKind::Keyword(Keyword::TaskScope) => {
+                self.bump();
+                StmtKind::TaskScope(self.block()?)
+            }
             TokenKind::Punct(Punct::LBrace) => StmtKind::Block(self.block()?),
             TokenKind::Semicolon(Separator::Explicit) => {
                 return Err(self.error("empty statement", start));

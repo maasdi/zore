@@ -674,6 +674,32 @@ invokes the ordinary callback once, then unlocks or poisons before following the
 original result and cleanup edges. Callbacks remain synchronous; blocking inside
 them uses worker compensation. The blocking mutex ABI remains available to plain callers. Slice 4 I/O and helper completion polling are described below.
 
+### Lexical task scopes
+
+Plain-function task scopes have stable HIR identities and distinct inferred
+handle types. MIR records a registry local, eligible referents and independent
+child loan holders; scope exits join before drop insertion, including return,
+loop/error transfers and the unwind block. Unentered/already joined registry
+locals are zeroed so the common unwind path can safely close them.
+
+`ownership/scoped_tasks.rs` checks eligible backing, handle/view bounds and
+callable-result provenance. Region analysis keeps registry loans live after
+handle drop. Explicit retrieval ends only a uniquely identified child's loans;
+merged/repeated child identities retain potentially outstanding loans. Borrowed
+outputs retain ordinary provenance in their parent destinations.
+
+Scoped spawn environments mix child-owned values with stable parent references.
+Each instance lives on the heap; only owned fields are destroyed. The ordinary
+closure layout remains unchanged. `runtime/src/task_scope.rs` registers original
+task handles independently of public scoped handles. It joins every child before
+result destruction, preserves parent panic or chooses the earliest unobserved
+child failure, then discards results in reverse spawn order. It reuses task
+completion, worker compensation and internal deadlock detection.
+
+Direct async scopes are rejected before MIR; asynchronous children can use the
+existing poll engine, and synchronous helpers can join with compensation. No
+ordinary task detach/cancellation rule changes. See [the contract](scoped-tasks.md).
+
 ### I/O and helper completion polls
 
 `codegen/io.rs` lowers waiting native calls in async bodies without adding source

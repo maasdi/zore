@@ -387,6 +387,7 @@ fn stmt(case: &Case, s: &Stmt) -> String {
             };
             format!("(for{header} {})", block(case, &f.body))
         }
+        StmtKind::TaskScope(b) => format!("(taskScope {})", block(case, b)),
         StmtKind::Block(b) => block(case, b),
         StmtKind::Select(select) => {
             let mut out = String::from("(select");

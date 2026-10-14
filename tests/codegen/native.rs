@@ -10,6 +10,7 @@ mod map_entries;
 mod mixed_bindings;
 mod performance;
 mod review_regressions;
+mod scoped_tasks;
 #[cfg(unix)]
 mod signal;
 

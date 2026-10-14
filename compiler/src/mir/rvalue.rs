@@ -1,3 +1,4 @@
+use super::body::Local;
 use super::operand::{Operand, Place};
 use crate::ast::{BinaryOp, UnaryOp};
 use crate::resolve::{FunctionId, GlobalId};
@@ -66,13 +67,19 @@ pub enum Rvalue {
     },
     /// Moves or copies the value into heap storage the owned interface value owns.
     InterfaceBox(Operand),
-    /// Borrows each place, exclusively when marked, in capture order; an owning
-    /// closure instead copies or moves each value into its own environment.
-    /// Starts running the closure on a new task and gives the handle; consumes the closure.
+    /// Starts the closure on a new task; consumes it.
     Spawn(Operand),
+    TaskScope,
+    ScopedSpawn {
+        closure: Operand,
+        scope: Local,
+        holder: Local,
+    },
     Closure {
         function: FunctionId,
         captures: Vec<(Place, bool)>,
         owning: bool,
+        /// Empty preserves ordinary owning/borrowing capture behavior.
+        capture_modes: Vec<crate::ast::ParamMode>,
     },
 }

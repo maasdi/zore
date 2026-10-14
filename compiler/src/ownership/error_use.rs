@@ -110,7 +110,9 @@ fn transfer(
                     }
                 }
             }
-            Statement::EndMapEntry { .. } | Statement::Drop { .. } => {}
+            Statement::EndMapEntry { .. }
+            | Statement::EndTaskScope { .. }
+            | Statement::Drop { .. } => {}
             Statement::SetGlobal { value, .. } => read_operand(value, state),
         }
     }
@@ -149,9 +151,10 @@ fn transfer(
 
 fn read_rvalue(rvalue: &Rvalue, state: &mut [UseState]) {
     match rvalue {
-        Rvalue::Zero | Rvalue::Global(_) => {}
+        Rvalue::Zero | Rvalue::TaskScope | Rvalue::Global(_) => {}
         Rvalue::Use(value)
         | Rvalue::Spawn(value)
+        | Rvalue::ScopedSpawn { closure: value, .. }
         | Rvalue::Unary(_, value)
         | Rvalue::Convert(value, _)
         | Rvalue::Error(value)

@@ -11,6 +11,7 @@
 | [Testing guide](../tests/README.md) | Test suites, conformance documents, and conventions. |
 | [MVP evidence inventory](conformance/mvp.md) | Current specification coverage, direct test gaps, intentional restrictions, and tracked follow-ups. |
 | [Formatter](formatter.md) | `zore fmt`, check mode, style, traversal, and write behavior. |
+| [Lexical task scopes](scoped-tasks.md) | Plain-function borrowing tasks, mandatory join/cleanup, failure rules and staged async support. |
 | [Performance baseline](performance.md) | Reproducible compiler, REST/JSON and frame measurements, raw data and measured follow-ups. |
 | [Performance follow-ups](performance-followups.md) | Internal LLVM linkage and cancellable request deadlines, paired compiler measurements and long REST retention runs. |
 

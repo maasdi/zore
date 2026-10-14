@@ -87,7 +87,10 @@ impl Package {
             | TypeKind::Slice { .. }
             | TypeKind::InterfaceView { .. } => true,
             // A closure may hold exclusive borrows, so it is never duplicated.
-            TypeKind::Func(_) | TypeKind::Task(_) | TypeKind::Interface(_) => false,
+            TypeKind::Func(_)
+            | TypeKind::Task(_)
+            | TypeKind::ScopedTask(_, _)
+            | TypeKind::Interface(_) => false,
             TypeKind::Channel { .. } | TypeKind::Mutex { .. } => true,
             TypeKind::Struct(id) => {
                 let strukt = self.strukt(id);
@@ -134,7 +137,10 @@ impl Package {
         self.contains(ty, &|kind| {
             matches!(
                 kind,
-                TypeKind::Slice { .. } | TypeKind::Func(_) | TypeKind::InterfaceView { .. }
+                TypeKind::Slice { .. }
+                    | TypeKind::Func(_)
+                    | TypeKind::InterfaceView { .. }
+                    | TypeKind::ScopedTask(_, _)
             )
         })
     }
@@ -148,6 +154,7 @@ impl Package {
                     TypeKind::Slice { .. }
                         | TypeKind::Func(_)
                         | TypeKind::Task(_)
+                        | TypeKind::ScopedTask(_, _)
                         | TypeKind::Channel { .. }
                         | TypeKind::Mutex { .. }
                 )

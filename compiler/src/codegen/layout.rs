@@ -43,7 +43,10 @@ impl Module<'_> {
                 super::interface::INTERFACE_TY.into()
             }
             TypeKind::Param(_) => unreachable!("generic functions are compiled per instance"),
-            TypeKind::Task(_) | TypeKind::Channel { .. } | TypeKind::Mutex { .. } => "ptr".into(),
+            TypeKind::Task(_)
+            | TypeKind::ScopedTask(_, _)
+            | TypeKind::Channel { .. }
+            | TypeKind::Mutex { .. } => "ptr".into(),
         }
     }
 

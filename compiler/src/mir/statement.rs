@@ -21,6 +21,10 @@ pub enum Statement {
         span: Span,
     },
     EndScope(Vec<Local>),
+    EndTaskScope {
+        scope: Local,
+        unwind: bool,
+    },
     EndMapEntry {
         guard: MapEntryGuard,
         unwind: bool,

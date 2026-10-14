@@ -66,10 +66,10 @@ impl Checker<'_> {
                 mode
             })
             .collect();
-        if !self.spawn_inputs_are_independent(&modes, &args) {
+        if self.task_scope.is_none() && !self.spawn_inputs_are_independent(&modes, &args) {
             return None;
         }
-        let task = self.task_type(results.clone(), span)?;
+        let task = self.spawn_task_type(results.clone(), span)?;
         let closure_ty = self.types.func_type(FuncSignature {
             is_async: false,
             params: Vec::new(),
@@ -81,6 +81,8 @@ impl Checker<'_> {
                 thunk,
                 closure_ty,
                 callable: false,
+                scope: self.task_scope,
+                modes: modes.into_boxed_slice(),
                 args,
             },
             task,
@@ -90,7 +92,7 @@ impl Checker<'_> {
 
     fn spawn_callable(
         &mut self,
-        callee: hir::Expr,
+        mut callee: hir::Expr,
         args: Vec<hir::Expr>,
         results: Vec<TypeId>,
         span: Span,
@@ -110,10 +112,10 @@ impl Checker<'_> {
             .iter()
             .map(|&(mode, _)| mode)
             .collect();
-        if !self.spawn_inputs_are_independent(&modes, &args) {
+        if self.task_scope.is_none() && !self.spawn_inputs_are_independent(&modes, &args) {
             return None;
         }
-        let task = self.task_type(results.clone(), span)?;
+        let task = self.spawn_task_type(results.clone(), span)?;
         let closure_ty = self.types.func_type(FuncSignature {
             is_async: false,
             params: Vec::new(),
@@ -125,6 +127,31 @@ impl Checker<'_> {
             .func_signature(callee_ty)
             .is_some_and(|signature| signature.is_async);
         let thunk = self.spawn_callable_thunk(callee_ty, &args, results, is_async, span);
+        if self.task_scope.is_some()
+            && let ExprKind::Closure {
+                function,
+                captures,
+                owning,
+                capture_modes: borrowed,
+            } = &mut callee.kind
+        {
+            let index = function.0 as usize - self.res.functions.len();
+            let closure = self.closures[index].as_ref().expect("checked literal");
+            *borrowed = captures
+                .iter()
+                .zip(&closure.captures)
+                .map(|((_, exclusive), local)| {
+                    if self.consumes_capture(&closure.body, &[*local]) {
+                        ParamMode::Own
+                    } else if *exclusive {
+                        ParamMode::Mut
+                    } else {
+                        ParamMode::Borrow
+                    }
+                })
+                .collect();
+            *owning = true;
+        }
         let mut spawned = vec![callee];
         spawned.extend(args);
         Some(Value::Typed(typed(
@@ -132,6 +159,8 @@ impl Checker<'_> {
                 thunk,
                 closure_ty,
                 callable: true,
+                scope: self.task_scope,
+                modes: std::iter::once(ParamMode::Own).chain(modes).collect(),
                 args: spawned,
             },
             task,
@@ -398,9 +427,9 @@ impl Checker<'_> {
                         .and_then(|stmt| self.change_in_stmt(stmt, local))
                 })
                 .or_else(|| self.change_in_block(body, local)),
-            StmtKind::ForEach { body, .. } | StmtKind::Block(body) => {
-                self.change_in_block(body, local)
-            }
+            StmtKind::ForEach { body, .. }
+            | StmtKind::Block(body)
+            | StmtKind::TaskScope { body, .. } => self.change_in_block(body, local),
             StmtKind::Select { arms, default } => arms
                 .iter_mut()
                 .find_map(|arm| self.change_in_block(&mut arm.body, local))

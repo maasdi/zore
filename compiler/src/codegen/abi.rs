@@ -42,6 +42,12 @@ declare ptr @zore_task_spawn(ptr, ptr, ptr, i64)
 declare ptr @zore_task_spawn_poll(ptr, ptr, ptr, i64)
 declare i8 @zore_task_poll(ptr, ptr, i64, ptr)
 declare void @zore_budget_yield(ptr)
+declare ptr @zore_scope_new()
+declare ptr @zore_scope_spawn(ptr, ptr, ptr, ptr, i64)
+declare ptr @zore_scope_spawn_poll(ptr, ptr, ptr, ptr, i64)
+declare ptr @zore_scope_wait(ptr, i64)
+declare void @zore_scope_join(ptr)
+declare void @zore_scope_handle_drop(ptr)
 declare ptr @zore_task_wait(ptr, i64)
 declare void @zore_task_detach(ptr)
 declare ptr @zore_channel_make(i64, i64, ptr)
@@ -552,6 +558,7 @@ impl FunctionBuilder<'_, '_> {
             | TypeKind::Map { .. }
             | TypeKind::Func(_)
             | TypeKind::Task(_)
+            | TypeKind::ScopedTask(_, _)
             | TypeKind::Channel { .. }
             | TypeKind::Mutex { .. }
             | TypeKind::Interface(_)

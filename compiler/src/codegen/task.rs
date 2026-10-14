@@ -1,5 +1,5 @@
 use super::llvm::{FunctionBuilder, Module};
-use crate::mir::{Body, Operand};
+use crate::mir::{Body, Local, Operand, Place};
 use crate::types::TypeId;
 
 /// A task's heap block holds its closure, then room for its results.
@@ -174,7 +174,7 @@ impl Module<'_> {
 
 impl FunctionBuilder<'_, '_> {
     /// Moves the closure into a new block and starts the task.
-    pub(super) fn spawn(&mut self, closure: &Operand) -> String {
+    pub(super) fn spawn(&mut self, closure: &Operand, scope: Option<Local>) -> String {
         let package = self.module.package;
         let results = package
             .types
@@ -237,8 +237,23 @@ impl FunctionBuilder<'_, '_> {
         } else {
             ("zore_task_spawn", &shape.entry)
         };
+        let (spawn, prefix) = if let Some(scope) = scope {
+            let value = self.value(&Operand::Copy(Place::local(scope)));
+            let pointer = self.fresh();
+            self.line(format!("{pointer} = inttoptr i64 {value} to ptr"));
+            (
+                if thunk.is_some() {
+                    "zore_scope_spawn_poll"
+                } else {
+                    "zore_scope_spawn"
+                },
+                format!("ptr {pointer}, "),
+            )
+        } else {
+            (spawn, String::new())
+        };
         self.line(format!(
-            "{handle} = call ptr @{spawn}(ptr {entry}, ptr {}, ptr {block}, i64 {size})",
+            "{handle} = call ptr @{spawn}({prefix}ptr {entry}, ptr {}, ptr {block}, i64 {size})",
             shape.drop_results
         ));
         handle
@@ -257,8 +272,16 @@ impl FunctionBuilder<'_, '_> {
         let handle = self.value(task);
         let size = self.byte_size(&block_ty, "1");
         let block = self.fresh();
+        let wait = if matches!(
+            package.types.kind(self.operand_ty(task)),
+            crate::types::TypeKind::ScopedTask(_, _)
+        ) {
+            "zore_scope_wait"
+        } else {
+            "zore_task_wait"
+        };
         self.line(format!(
-            "{block} = call ptr @zore_task_wait(ptr {handle}, i64 {size})"
+            "{block} = call ptr @{wait}(ptr {handle}, i64 {size})"
         ));
         let loaded = (!results.is_empty()).then(|| {
             let slot = self.fresh();

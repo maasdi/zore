@@ -74,6 +74,10 @@ pub enum StmtKind {
         default: Option<Block>,
     },
     Block(Block),
+    TaskScope {
+        id: u32,
+        body: Block,
+    },
 }
 
 #[derive(Clone, Debug)]

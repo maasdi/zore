@@ -7,7 +7,7 @@ mod statement;
 mod terminator;
 
 pub use block::{BasicBlock, BlockId};
-pub use body::{Body, Local, LocalDecl, Program};
+pub use body::{Body, Local, LocalDecl, Program, TaskScope};
 pub use operand::{Operand, Place, Projection, captured_operand, place_type, projection_type};
 pub use rvalue::{AggregateKind, Rvalue};
 pub use statement::{MapEntryGuard, Statement};

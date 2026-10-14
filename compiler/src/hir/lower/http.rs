@@ -179,6 +179,7 @@ pub(super) fn adapt(package: &mut hir::Package) -> Vec<Diagnostic> {
                     function: callback,
                     captures: invocation_captures,
                     owning: true,
+                    capture_modes: Vec::new(),
                 },
                 callable_type,
                 expr.span,
