@@ -786,11 +786,11 @@ The MVP keyword list is:
 | Bindings | `let var const` |
 | Ownership | `mut own` |
 | Control flow | `if else for in break continue return` |
-| Concurrency | `async await go select taskScope` |
+| Concurrency | `async await go select scope` |
 | Built-in type syntax | `map channel` |
 | Literal values | `true false nil` |
 
-Match these exact spellings as whole words (`taskScope` retains its capital S). They cannot be used as
+Match these exact lowercase spellings as whole words. They cannot be used as
 identifiers in any name position. (`case` and `default` are not keywords; they
 have a meaning only at the start of a `select` arm, §19.14.) For example, `let func = 1` and a field named
 `own` are invalid; `let functionName = 1` is valid with respect to reservation.
@@ -4831,8 +4831,8 @@ Compiler impact: none; this is a runtime contract. Pending conformance cases:
 
 ## 18.12 Lexical task scopes, plain-function stage — LOCKED
 
-`taskScope { statements }` is an optional lexical block, accepted only in a
-plain `func`, including a plain closure. `taskScope` is a keyword. Every `go`
+`scope { statements }` is an optional lexical block, accepted only in a
+plain `func`, including a plain closure. `scope` is a keyword. Every `go`
 written within its body or nested ordinary blocks registers with the innermost
 lexical task scope. Calls and closure bodies do not inherit that scope. A nested
 task scope has its own registry. Ordinary tasks outside these blocks retain
@@ -4843,13 +4843,13 @@ func read(values Array<int>) int { return values[0] }
 func update(value mut int) { value += 1 }
 func main() {
     let values = Array<int>{7}
-    taskScope {
+    scope {
         let first = go read(values)
         let second = go read(values)
         println(first.wait() + second.wait())
     }
     var count = 0
-    taskScope {
+    scope {
         let child = go update(count)
         child.wait()
         println(count)
@@ -4892,12 +4892,12 @@ originating task scope, including aliases and composite values. Returning them,
 storing them outside that region, or sending them over a channel is rejected.
 
 ```ore
-taskScope {
+scope {
     let child = go update(count)
     drop(child)
     println(count) // rejected: child remains registered
 }
-taskScope {
+scope {
     if enabled {
         let short = Array<int>{1}
         go read(short) // rejected: backing ends before the mandatory join

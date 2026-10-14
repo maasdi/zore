@@ -11,7 +11,7 @@ func read(o Owner) int { return o.Values[0] }
 func inc(v mut int) { v += 1 }
 func main() {
     var n = 0
-    taskScope {
+    scope {
         let owner = Owner{Values: Array<int>{7}}
         let a = go read(owner)
         let b = go read(owner)
@@ -36,7 +36,7 @@ fn scope_ignored_handles_and_repeated_capture_sites_keep_their_storage() {
 func main() {
     let gate = channel<bool>()
     let results = channel<int>(4)
-    taskScope {
+    scope {
         for var i = 0; i < 4; i += 1 {
             go func(g channel<bool>, r channel<int>, n int) { let _, _ = g.receive(); r.send(n) }(gate, results, i)
         }
@@ -61,7 +61,7 @@ func child(g Guard, gate channel<bool>) { let _, _ = gate.receive(); println("ch
 func evaluate(gate channel<bool>) int { println("evaluate"); gate.close(); return 9 }
 func fail(gate channel<bool>) error { gate.close(); return error("stop") }
 func returning() int {
-    taskScope {
+    scope {
         let g = Guard{Label: "return drop"}
         let gate = channel<bool>()
         go child(g, gate)
@@ -69,7 +69,7 @@ func returning() int {
     }
 }
 func propagating() error {
-    taskScope {
+    scope {
         let g = Guard{Label: "error drop"}
         let gate = channel<bool>()
         go child(g, gate)
@@ -96,7 +96,7 @@ func blocked(g channel<bool>, r channel<int>, n int) { let _, _ = g.receive(); r
 func main() {
     let results = channel<int>(4)
     for var i = 0; i < 4; i += 1 {
-        taskScope {
+        scope {
             let gate = channel<bool>()
             go blocked(gate, results, i)
             for var j = 0; j < 3; j += 1 {
@@ -128,7 +128,7 @@ type Guard struct { Label string }
 func (g mut Guard) drop() { println(g.Label) }
 func child(g Guard) { time.Sleep(time.Millisecond); println("child") }
 func main() {
-    taskScope {
+    scope {
         let g = Guard{Label: "parent drop"}
         go child(g)
         panic("parent")
@@ -151,7 +151,7 @@ func (g mut Guard) drop() { println(g.Label) }
 func first(g Guard, gate channel<bool>) { let _, _ = gate.receive(); panic("first") }
 func second(g Guard, gate channel<bool>) { gate.close(); panic("second") }
 func main() {
-    taskScope {
+    scope {
         let g = Guard{Label: "parent drop"}
         let gate = channel<bool>()
         go first(g, gate)
@@ -178,7 +178,7 @@ func (g mut Guard) drop() { println(g.Label) }
 func later(g Guard) { time.Sleep(time.Millisecond); println("other child") }
 func fail() { panic("observed") }
 func main() {
-    taskScope {
+    scope {
         let g = Guard{Label: "parent drop"}
         go later(g)
         let child = go fail()
@@ -199,7 +199,7 @@ fn scope_async_children_and_plain_helpers_progress_with_one_pool_worker() {
         r#"package main
 async func read(values Array<int>) int { return values[0] }
 func helper(values Array<int>) int {
-    taskScope { let child = go read(values); return child.wait() }
+    scope { let child = go read(values); return child.wait() }
 }
 async func parent(values own Array<int>) int { return helper(values) }
 func main() {
@@ -222,7 +222,7 @@ type Guard struct { Label string }
 func (g mut Guard) drop() { println(g.Label) }
 func blocked(g Guard, gate channel<bool>) { let _, _ = gate.receive(); println(g.Label) }
 func main() {
-    taskScope {
+    scope {
         let g = Guard{Label: "must not drop"}
         go blocked(g, channel<bool>())
     }
@@ -246,7 +246,7 @@ func (r mut Result) drop() { println(r.Values[0]) }
 func result(p Parent) Result { return Result{Values: p.Values[:]} }
 func ignored() error { return error("ignored") }
 func main() {
-    taskScope {
+    scope {
         let p = Parent{Values: Array<int>{7}}
         go result(p)
         go ignored()
@@ -268,9 +268,9 @@ type Parent struct { Values Array<int>; Label string }
 func (p mut Parent) drop() { println(p.Label) }
 func read(p Parent) { println(p.Values[0]) }
 func main() {
-    taskScope {
+    scope {
         let outer = Parent{Values: Array<int>{1}, Label: "outer"}
-        taskScope {
+        scope {
             let inner = Parent{Values: Array<int>{2}, Label: "inner"}
             go read(inner)
         }
@@ -294,7 +294,7 @@ func main() {
     let values = Array<int>{7}
     let childOwned = Owned{Label: "child owned"}
     var out = Out{Values: values[:]}
-    taskScope {
+    scope {
         go func() { println(values[0]); drop(childOwned) }()
         go fill(out, values)
     }
@@ -317,7 +317,7 @@ func (r mut Result) drop() { println(r.Values[0]); panic("result drop") }
 func result(p Parent) Result { return Result{Values: p.Values[:]} }
 func other(p Parent) { time.Sleep(time.Millisecond); println("other") }
 func main() {
-    taskScope {
+    scope {
         let p = Parent{Values: Array<int>{7}}
         go result(p)
         go other(p)
@@ -340,7 +340,7 @@ func (g mut Guard) drop() { println(g.Label) }
 func child(g Guard) { panic("scope failure") }
 func fail() error { return error("pending error") }
 func exercise() error {
-    taskScope {
+    scope {
         let g = Guard{Label: "parent drop"}
         go child(g)
         fail()?

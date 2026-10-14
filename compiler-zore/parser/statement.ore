@@ -274,7 +274,7 @@ func (p mut Parser) stmt() int {
         inner = p.ifStmt()
     } else if p.atKeyword("for") {
         inner = p.forStmt()
-    } else if p.atKeyword("taskScope") {
+    } else if p.atKeyword("scope") {
         _ = p.bump()
         let block = p.block()
         if block != failed {

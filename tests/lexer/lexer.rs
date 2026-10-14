@@ -266,36 +266,9 @@ fn semicolons_are_inserted_after_eligible_tokens() {
         );
     }
     for ending in [
-        "package",
-        "import",
-        "func",
-        "type",
-        "struct",
-        "let",
-        "var",
-        "const",
-        "mut",
-        "own",
-        "if",
-        "else",
-        "for",
-        "in",
-        "async",
-        "await",
-        "go",
-        "select",
-        "taskScope",
-        "map",
-        "channel",
-        "(",
-        "[",
-        "{",
-        ",",
-        "+",
-        "=",
-        ".",
-        ":",
-        "!",
+        "package", "import", "func", "type", "struct", "let", "var", "const", "mut", "own", "if",
+        "else", "for", "in", "async", "await", "go", "select", "scope", "map", "channel", "(", "[",
+        "{", ",", "+", "=", ".", ":", "!",
     ] {
         for suffix in ["\n", ""] {
             let case = Case::new(&format!("{ending}{suffix}"));
@@ -929,18 +902,18 @@ fn examples_lex_without_diagnostics() {
 #[test]
 fn scoped_task_keyword_uses_exact_spelling_without_ending_a_statement() {
     assert_eq!(
-        Case::new("taskScope").kinds(),
-        [TokenKind::Keyword(Keyword::TaskScope)]
+        Case::new("scope").kinds(),
+        [TokenKind::Keyword(Keyword::Scope)]
     );
-    for spelling in ["taskscope", "TaskScope", "taskScopeValue"] {
+    for spelling in ["Scope", "SCOPE", "scoped", "scopeValue", "taskScope"] {
         assert_eq!(single(spelling), ident());
     }
-    let case = Case::new("taskScope\n{}\n");
+    let case = Case::new("scope\n{}\n");
     case.assert_clean();
     assert_eq!(
         case.kinds(),
         vec![
-            TokenKind::Keyword(Keyword::TaskScope),
+            TokenKind::Keyword(Keyword::Scope),
             TokenKind::Punct(Punct::LBrace),
             TokenKind::Punct(Punct::RBrace),
             semi(Separator::Newline)

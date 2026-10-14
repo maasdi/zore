@@ -117,7 +117,7 @@ words!(Keyword {
     Await = "await",
     Go = "go",
     Select = "select",
-    TaskScope = "taskScope",
+    Scope = "scope",
     Map = "map",
     Channel = "channel",
     True = "true",

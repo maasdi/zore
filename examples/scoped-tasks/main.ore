@@ -10,14 +10,14 @@ func increment(value mut int) { value += 1 }
 
 func main() {
     let values = Array<int>{1, 2, 3, 4}
-    taskScope {
+    scope {
         let first = go sum(values)
         let second = go sum(values)
         println(first.wait() + second.wait())
     }
 
     var count = 0
-    taskScope {
+    scope {
         go increment(count)
     }
     println(count)

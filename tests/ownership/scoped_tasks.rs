@@ -3,7 +3,7 @@ use super::*;
 #[test]
 fn scope_shared_exclusive_and_literal_borrows_are_accepted() {
     accepts(
-        "package main\nfunc read(v Array<int>) int { return v[0] }\nfunc inc(v mut int) { v += 1 }\nfunc main() { let v = Array<int>{1}; var n = 0; taskScope { let a = go read(v); let b = go read(v); println(a.wait() + b.wait()); let c = go inc(n); c.wait(); println(n); let d = go func() { n += 1 }(); d.wait(); println(n) } }\n",
+        "package main\nfunc read(v Array<int>) int { return v[0] }\nfunc inc(v mut int) { v += 1 }\nfunc main() { let v = Array<int>{1}; var n = 0; scope { let a = go read(v); let b = go read(v); println(a.wait() + b.wait()); let c = go inc(n); c.wait(); println(n); let d = go func() { n += 1 }(); d.wait(); println(n) } }\n",
     );
 }
 
@@ -12,7 +12,7 @@ fn scope_dropped_handles_retain_exclusive_loans() {
     for ending in ["println(n)", "n = 3", "let b = go inc(n)"] {
         rejects(
             &format!(
-                "package main\nfunc inc(v mut int) {{ v += 1 }}\nfunc main() {{ var n = 0; taskScope {{ let a = go inc(n); drop(a); {ending} }} }}\n"
+                "package main\nfunc inc(v mut int) {{ v += 1 }}\nfunc main() {{ var n = 0; scope {{ let a = go inc(n); drop(a); {ending} }} }}\n"
             ),
             "borrow",
         );
@@ -24,7 +24,7 @@ fn scope_ignored_shared_children_prevent_move_and_replacement() {
     for ending in ["drop(v)", "v = Array<int>{2}"] {
         rejects(
             &format!(
-                "package main\nfunc read(v Array<int>) {{ println(v[0]) }}\nfunc main() {{ var v = Array<int>{{1}}; taskScope {{ go read(v); {ending} }} }}\n"
+                "package main\nfunc read(v Array<int>) {{ println(v[0]) }}\nfunc main() {{ var v = Array<int>{{1}}; scope {{ go read(v); {ending} }} }}\n"
             ),
             "borrow",
         );
@@ -36,7 +36,7 @@ fn scope_short_inner_referents_are_rejected_even_after_a_wait() {
     for opening in ["if true", "for true"] {
         rejects(
             &format!(
-                "package main\nfunc read(v Array<int>) {{ println(v[0]) }}\nfunc main() {{ taskScope {{ {opening} {{ let v = Array<int>{{1}}; let a = go read(v); a.wait() }} }} }}\n"
+                "package main\nfunc read(v Array<int>) {{ println(v[0]) }}\nfunc main() {{ scope {{ {opening} {{ let v = Array<int>{{1}}; let a = go read(v); a.wait() }} }} }}\n"
             ),
             "shorter-lived",
         );
@@ -46,11 +46,11 @@ fn scope_short_inner_referents_are_rejected_even_after_a_wait() {
 #[test]
 fn scope_async_bodies_and_dynamic_scope_inheritance_are_rejected() {
     rejects(
-        "package main\nasync func bad() { taskScope {} }\nfunc main() {}\n",
+        "package main\nasync func bad() { scope {} }\nfunc main() {}\n",
         "async function",
     );
     rejects(
-        "package main\nfunc helper(v Array<int>) { go read(v) }\nfunc read(v Array<int>) {}\nfunc main() { let v = Array<int>{1}; taskScope { helper(v) } }\n",
+        "package main\nfunc helper(v Array<int>) { go read(v) }\nfunc read(v Array<int>) {}\nfunc main() { let v = Array<int>{1}; scope { helper(v) } }\n",
         "own",
     );
 }
@@ -58,15 +58,15 @@ fn scope_async_bodies_and_dynamic_scope_inheritance_are_rejected() {
 #[test]
 fn scope_handles_cannot_cross_calls_captures_or_scope_identity() {
     rejects(
-        "package main\nfunc job() {}\nfunc use<T any>(v own T) {}\nfunc main() { taskScope { let a = go job(); use(a) } }\n",
+        "package main\nfunc job() {}\nfunc use<T any>(v own T) {}\nfunc main() { scope { let a = go job(); use(a) } }\n",
         "cannot be passed",
     );
     rejects(
-        "package main\nfunc job() {}\nfunc main() { taskScope { let a = go job(); let f = func() { a.wait() }; f() } }\n",
+        "package main\nfunc job() {}\nfunc main() { scope { let a = go job(); let f = func() { a.wait() }; f() } }\n",
         "cannot be captured",
     );
     rejects(
-        "package main\nfunc job() {}\nfunc main() { taskScope { let a = go job(); taskScope { let b = a; b.wait() } } }\n",
+        "package main\nfunc job() {}\nfunc main() { scope { let a = go job(); scope { let b = a; b.wait() } } }\n",
         "another task scope",
     );
 }
@@ -74,14 +74,14 @@ fn scope_handles_cannot_cross_calls_captures_or_scope_identity() {
 #[test]
 fn scope_parent_backed_results_work_and_cannot_escape() {
     accepts(
-        "package main\nfunc view(v Array<int>) []int { return v[:] }\nfunc main() { let v = Array<int>{1}; taskScope { let a = go view(v); let s = a.wait(); println(s[0]) } }\n",
+        "package main\nfunc view(v Array<int>) []int { return v[:] }\nfunc main() { let v = Array<int>{1}; scope { let a = go view(v); let s = a.wait(); println(s[0]) } }\n",
     );
     rejects(
-        "package main\nfunc view(v Array<int>) []int { return v[:] }\nfunc bad(v Array<int>) []int { taskScope { let a = go view(v); return a.wait() } }\nfunc main() {}\n",
+        "package main\nfunc view(v Array<int>) []int { return v[:] }\nfunc bad(v Array<int>) []int { scope { let a = go view(v); return a.wait() } }\nfunc main() {}\n",
         "escape",
     );
     rejects(
-        "package main\nfunc view(v [int; 1]) []int { return v[:] }\nfunc main() { let v = [int; 1]{1}; taskScope { let a = go view(v); let s = a.wait(); println(s[0]) } }\n",
+        "package main\nfunc view(v [int; 1]) []int { return v[:] }\nfunc main() { let v = [int; 1]{1}; scope { let a = go view(v); let s = a.wait(); println(s[0]) } }\n",
         "child-owned",
     );
 }
@@ -89,28 +89,28 @@ fn scope_parent_backed_results_work_and_cannot_escape() {
 #[test]
 fn scope_direct_locals_nested_scopes_and_own_inputs_are_accepted() {
     accepts(
-        "package main\nfunc read(v Array<int>) {}\nfunc take(v own Array<int>) {}\nfunc main() { taskScope { let v = Array<int>{1}; go read(v); taskScope { go read(v) }; go take(Array<int>{2}) } }\n",
+        "package main\nfunc read(v Array<int>) {}\nfunc take(v own Array<int>) {}\nfunc main() { scope { let v = Array<int>{1}; go read(v); scope { go read(v) }; go take(Array<int>{2}) } }\n",
     );
 }
 
 #[test]
 fn scope_repeated_mutable_spawn_and_wait_releases_each_iteration() {
     accepts(
-        "package main\nfunc inc(v mut int) { v += 1 }\nfunc main() { var n = 0; taskScope { for var i = 0; i < 3; i += 1 { let a = go inc(n); a.wait(); println(n) } } }\n",
+        "package main\nfunc inc(v mut int) { v += 1 }\nfunc main() { var n = 0; scope { for var i = 0; i < 3; i += 1 { let a = go inc(n); a.wait(); println(n) } } }\n",
     );
 }
 
 #[test]
 fn scope_annotations_remain_ordinary_tasks_and_callable_results_require_parent_backing() {
     rejects(
-        "package main\nfunc job() int { return 1 }\nfunc main() { taskScope { let child Task<int> = go job(); println(child.wait()) } }\n",
+        "package main\nfunc job() int { return 1 }\nfunc main() { scope { let child Task<int> = go job(); println(child.wait()) } }\n",
         "expected",
     );
     accepts(
-        "package main\nfunc main() { let values = Array<int>{1}; taskScope { let child = go func() []int { return values[:] }(); let view = child.wait(); println(view[0]) } }\n",
+        "package main\nfunc main() { let values = Array<int>{1}; scope { let child = go func() []int { return values[:] }(); let view = child.wait(); println(view[0]) } }\n",
     );
     rejects(
-        "package main\ntype Pair struct { Keep Array<int>; Take Array<int> }\nfunc consume(v own Array<int>) {}\nfunc main() { let p = Pair{Keep: Array<int>{1}, Take: Array<int>{2}}; taskScope { let child = go func() []int { consume(p.Take); return p.Keep[:] }(); let view = child.wait(); println(view[0]) } }\n",
+        "package main\ntype Pair struct { Keep Array<int>; Take Array<int> }\nfunc consume(v own Array<int>) {}\nfunc main() { let p = Pair{Keep: Array<int>{1}, Take: Array<int>{2}}; scope { let child = go func() []int { consume(p.Take); return p.Keep[:] }(); let view = child.wait(); println(view[0]) } }\n",
         "child-owned",
     );
 }
@@ -120,7 +120,7 @@ fn scope_views_cannot_escape_through_an_outer_binding_or_wrapper_call() {
     for value in ["child.wait()", "identity(child.wait())"] {
         rejects(
             &format!(
-                "package main\nfunc view(v Array<int>) []int {{ return v[:] }}\nfunc identity(v []int) []int {{ return v }}\nfunc main() {{ let v = Array<int>{{1}}; var out = v[:]; taskScope {{ let child = go view(v); out = {value} }}; println(out[0]) }}\n"
+                "package main\nfunc view(v Array<int>) []int {{ return v[:] }}\nfunc identity(v []int) []int {{ return v }}\nfunc main() {{ let v = Array<int>{{1}}; var out = v[:]; scope {{ let child = go view(v); out = {value} }}; println(out[0]) }}\n"
             ),
             "escape",
         );
@@ -130,11 +130,11 @@ fn scope_views_cannot_escape_through_an_outer_binding_or_wrapper_call() {
 #[test]
 fn scope_wait_through_a_merged_handle_does_not_release_other_registered_children() {
     rejects(
-        "package main\nfunc read(v Array<int>) {}\nfunc main() { let v = Array<int>{1}; taskScope { var last = go read(v); if true { last = go read(v) }; last.wait(); drop(v) } }\n",
+        "package main\nfunc read(v Array<int>) {}\nfunc main() { let v = Array<int>{1}; scope { var last = go read(v); if true { last = go read(v) }; last.wait(); drop(v) } }\n",
         "borrow",
     );
     rejects(
-        "package main\nfunc none() {}\nfunc read(v Array<int>) {}\nfunc main() { let v = Array<int>{1}; taskScope { var last = go none(); for var i = 0; i < 2; i += 1 { last = go read(v) }; last.wait(); drop(v) } }\n",
+        "package main\nfunc none() {}\nfunc read(v Array<int>) {}\nfunc main() { let v = Array<int>{1}; scope { var last = go none(); for var i = 0; i < 2; i += 1 { last = go read(v) }; last.wait(); drop(v) } }\n",
         "borrow",
     );
 }
@@ -142,10 +142,10 @@ fn scope_wait_through_a_merged_handle_does_not_release_other_registered_children
 #[test]
 fn scope_function_arguments_borrow_exclusively_and_mutable_views_keep_backing_loans() {
     accepts(
-        "package main\nfunc update(v mut []int) { v[0] += 1 }\nfunc main() { var v = Array<int>{1}; taskScope { let t = go update(v[:]); t.wait(); println(v[0]) } }\n",
+        "package main\nfunc update(v mut []int) { v[0] += 1 }\nfunc main() { var v = Array<int>{1}; scope { let t = go update(v[:]); t.wait(); println(v[0]) } }\n",
     );
     rejects(
-        "package main\nfunc call(f func()) { f() }\nfunc main() { var n = 0; let f = func() { n += 1 }; taskScope { go call(f); go call(f) } }\n",
+        "package main\nfunc call(f func()) { f() }\nfunc main() { var n = 0; let f = func() { n += 1 }; scope { go call(f); go call(f) } }\n",
         "borrow",
     );
 }
@@ -153,21 +153,21 @@ fn scope_function_arguments_borrow_exclusively_and_mutable_views_keep_backing_lo
 #[test]
 fn scope_borrowed_outputs_keep_parent_provenance_after_child_completion() {
     accepts(
-        "package main\ntype Out struct { Values []int }\nfunc fill(out mut Out, values Array<int>) { out.Values = values[:] }\nfunc main() { let values = Array<int>{7}; var out = Out{Values: values[:]}; taskScope { go fill(out, values) }; println(out.Values[0]) }\n",
+        "package main\ntype Out struct { Values []int }\nfunc fill(out mut Out, values Array<int>) { out.Values = values[:] }\nfunc main() { let values = Array<int>{7}; var out = Out{Values: values[:]}; scope { go fill(out, values) }; println(out.Values[0]) }\n",
     );
     accepts(
-        "package main\ntype Out struct { Values []int }\nfunc main() { let values = Array<int>{7}; var out = Out{Values: values[:]}; taskScope { go func() { out.Values = values[:] }() }; println(out.Values[0]) }\n",
+        "package main\ntype Out struct { Values []int }\nfunc main() { let values = Array<int>{7}; var out = Out{Values: values[:]}; scope { go func() { out.Values = values[:] }() }; println(out.Values[0]) }\n",
     );
 }
 
 #[test]
 fn scope_async_closures_and_unproven_child_local_results_are_rejected() {
     rejects(
-        "package main\nfunc main() { let f = async func() { taskScope {} }; let child = go f(); child.wait() }\n",
+        "package main\nfunc main() { let f = async func() { scope {} }; let child = go f(); child.wait() }\n",
         "async function",
     );
     rejects(
-        "package main\nfunc bad() []int { let v = Array<int>{1}; return v[:] }\nfunc main() { taskScope { let child = go bad(); let v = child.wait(); println(v[0]) } }\n",
+        "package main\nfunc bad() []int { let v = Array<int>{1}; return v[:] }\nfunc main() { scope { let child = go bad(); let v = child.wait(); println(v[0]) } }\n",
         "return a view",
     );
 }

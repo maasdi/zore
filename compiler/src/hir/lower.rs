@@ -4339,12 +4339,12 @@ impl<'a> Checker<'a> {
             ast::StmtKind::TaskScope(block) => {
                 if self.in_async_body() {
                     self.error(
-                        "`taskScope` is not supported directly in an async function",
+                        "`scope` is not supported directly in an async function",
                         span,
                     );
                     return None;
                 }
-                if self.reject_in_generic_body("`taskScope`", span) {
+                if self.reject_in_generic_body("`scope`", span) {
                     return None;
                 }
                 let id = self.next_task_scope;

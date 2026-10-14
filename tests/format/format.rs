@@ -195,7 +195,7 @@ fn conditional_entry_binding_headers_format_without_changing_modes() {
 #[test]
 fn lexical_task_scopes_format_as_blocks_and_keep_their_keyword() {
     assert_eq!(
-        formatted("package main\nfunc main(){taskScope{\nlet t=go work()\nt.wait()\n}}\n"),
-        "package main\n\nfunc main() {\n    taskScope {\n        let t = go work()\n        t.wait()\n    }\n}\n"
+        formatted("package main\nfunc main(){scope{\nlet t=go work()\nt.wait()\n}}\n"),
+        "package main\n\nfunc main() {\n    scope {\n        let t = go work()\n        t.wait()\n    }\n}\n"
     );
 }

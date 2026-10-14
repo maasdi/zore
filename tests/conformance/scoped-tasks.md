@@ -24,7 +24,7 @@ self-hosting lexer/parser comparisons cover the syntax.
 | Scheduling | Plain joins compensate a small worker pool; internal cycles fail with bounded deadlock diagnostic |
 | Async | Accept async children/plain helpers; reject scopes directly in async functions/closures |
 | Ordinary tasks | Existing independent-input rejection, detach and process-exit behavior unchanged |
-| Frontend/tooling | Parse/format round trip, reserved keyword, scoped diagnostics and unused-body checking |
+| Frontend/tooling | Parse/format round trip, exact lowercase `scope` keyword without an alias, scoped diagnostics and unused-body checking |
 
 The first-stage checker releases explicit-wait loans only for a uniquely
 identified child. Ambiguous merged handles or multiple live children from a

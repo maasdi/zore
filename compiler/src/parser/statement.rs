@@ -271,7 +271,7 @@ impl Parser<'_> {
             TokenKind::Keyword(Keyword::If) => StmtKind::If(self.if_stmt()?),
             TokenKind::Keyword(Keyword::For) => StmtKind::For(self.for_stmt()?),
             TokenKind::Keyword(Keyword::Select) => StmtKind::Select(self.select_stmt()?),
-            TokenKind::Keyword(Keyword::TaskScope) => {
+            TokenKind::Keyword(Keyword::Scope) => {
                 self.bump();
                 StmtKind::TaskScope(self.block()?)
             }

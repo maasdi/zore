@@ -9,7 +9,7 @@ once it does.
 
 ### Scoped tasks
 
-- Added opt-in taskScope blocks in plain functions, with scoped borrowing and
+- Added opt-in scope blocks in plain functions, with scoped borrowing and
   child registration independent of handle drop, plus mandatory joins before
   parent storage cleanup on normal, error, loop-transfer and panic exits.
 - Added scoped handle/view bounds, mixed owned/borrowed capture environments,

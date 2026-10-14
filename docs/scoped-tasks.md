@@ -1,6 +1,6 @@
 # Lexical task scopes
 
-`taskScope { ... }` gives a plain function an explicit join boundary. Every
+`scope { ... }` gives a plain function an explicit join boundary. Every
 `go` written in that block or its nested ordinary blocks finishes before the
 boundary releases parent storage, including on return, `?`, loop transfer or
 panic. The contract is locked in specification §18.12.
@@ -8,7 +8,7 @@ panic. The contract is locked in specification §18.12.
 ```ore
 func read(values Array<int>) int { return values[0] }
 func example(values Array<int>) int {
-    taskScope {
+    scope {
         let first = go read(values)
         let second = go read(values)
         return first.wait() + second.wait()
