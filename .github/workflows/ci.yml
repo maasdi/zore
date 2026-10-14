@@ -52,4 +52,4 @@ jobs:
         if: runner.os != 'Windows'
         run: python3 -m unittest discover -s benchmarks/performance -p 'test_*.py'
       - name: Test
-        run: cargo test --locked --all-targets
+        run: cargo test --locked --all-targets --no-fail-fast

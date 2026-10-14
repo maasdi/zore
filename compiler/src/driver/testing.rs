@@ -125,7 +125,10 @@ fn test(target: &Path) -> Result<bool, String> {
                 }
                 Ok(status) => {
                     failed += 1;
-                    println!("FAIL {label} ({status})");
+                    match status.code() {
+                        Some(code) => println!("FAIL {label} (exit status: {code})"),
+                        None => println!("FAIL {label} ({status})"),
+                    }
                 }
                 Err(error) => {
                     failed += 1;

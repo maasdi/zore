@@ -6917,7 +6917,9 @@ the corresponding rules to host separators and preserves Windows volumes.
 Windows `filepath` recognizes drive volumes such as `C:` and UNC volumes such
 as `\\server\share`. Cleaning cannot remove a volume or ascend above its
 root. A drive-relative path such as `C:notes.txt` remains drive-relative after
-cleaning; it is not absolute. A path beginning with a separator but without a
+cleaning; it is not absolute. Cleaning a relative path must not introduce a
+volume: `a/../C:notes.txt` becomes `.\C:notes.txt`. UNC roots retain the volume
+without a trailing separator. A path beginning with a separator but without a
 volume, such as `\notes.txt`, is rooted on the current drive but is not fully
 absolute. `IsAbs` requires a drive plus a root separator, or a complete UNC
 volume. `Abs` uses the host's current directory and drive resolution, then

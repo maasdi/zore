@@ -147,6 +147,8 @@ fn windows_path_rules_preserve_volumes_and_handle_both_separators() {
             r#"
     for p in Array<string>{"", "C:", "C:foo/../bar", "C:/a/../../b", "\\\\host\\share\\a\\..\\..\\x", "\\foo\\..\\bar"} { println(Clean(p)) }
     println(Join(Array<string>{"C:", "notes.txt"}[:]))
+    println(Clean("a/../C:notes.txt"))
+    println(Clean("\\\\host\\share\\..\\"))
     println(Join(Array<string>{"C:/work", "../notes.txt"}[:]))
     let dir, file = Split("C:notes.txt")
     println(dir + "|" + file)
@@ -158,7 +160,7 @@ fn windows_path_rules_preserve_volumes_and_handle_both_separators() {
     println(ListSeparator == ';')
 "#,
         ),
-        ".\nC:.\nC:bar\nC:\\b\n\\\\host\\share\\x\n\\bar\nC:notes.txt\nC:\\notes.txt\nC:|notes.txt\na.txt\nC:\\work\n.txt\nfalse\nfalse\ntrue\ntrue\nfalse\ntrue\ntrue\n",
+        ".\nC:.\nC:bar\nC:\\b\n\\\\host\\share\\x\n\\bar\nC:notes.txt\n.\\C:notes.txt\n\\\\host\\share\nC:\\notes.txt\nC:|notes.txt\na.txt\nC:\\work\n.txt\nfalse\nfalse\ntrue\ntrue\nfalse\ntrue\ntrue\n",
     );
 }
 

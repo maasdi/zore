@@ -43,7 +43,11 @@ func Clean(p string) string {
         return strings.ReplaceAll(prefix, "/", "\\")
     }
     if unc && !strings.HasPrefix(rest, "/") { rest = "/" + rest }
-    let cleaned = path.Clean(rest)
+    var cleaned = path.Clean(rest)
+    if unc && cleaned == "/" {
+        return strings.ReplaceAll(prefix, "/", "\\")
+    }
+    if volume == 0 && volumeLength(cleaned) > 0 { cleaned = "./" + cleaned }
     return strings.ReplaceAll(prefix + cleaned, "/", "\\")
 }
 

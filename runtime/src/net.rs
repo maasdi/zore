@@ -101,13 +101,14 @@ fn until_ready<T>(
     deadline: &AtomicI64,
     mut attempt: impl FnMut() -> std::io::Result<T>,
 ) -> std::io::Result<T> {
-    let _blocking = super::scheduler::BlockingGuard::enter();
+    let mut blocking = None;
     loop {
         if deadline_of(deadline).is_some_and(|when| Instant::now() >= when) {
             return Err(std::io::Error::new(ErrorKind::TimedOut, "timed out"));
         }
         match attempt() {
             Err(error) if error.kind() == ErrorKind::WouldBlock => {
+                blocking.get_or_insert_with(super::scheduler::BlockingGuard::enter);
                 let deadline = deadline_of(deadline);
                 if deadline.is_some_and(|when| Instant::now() >= when) {
                     return Err(std::io::Error::new(ErrorKind::TimedOut, "timed out"));

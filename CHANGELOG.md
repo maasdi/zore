@@ -7,6 +7,14 @@ once it does.
 
 ## [Unreleased]
 
+### Native platforms
+
+- Added Windows x64 MSVC linking, `.exe` output names, a local application cache,
+  and native host smoke coverage for paths, process arguments, bytes and cleanup.
+- Added Windows `filepath` drive/UNC rules and explicit unsupported namespace and
+  signal diagnostics; helper-based socket waits now honor deadlines.
+- Added Windows host CI; native validation evidence is recorded in the platform guide.
+
 ### Scoped tasks
 
 - Added opt-in scope blocks in plain functions, with scoped borrowing and
