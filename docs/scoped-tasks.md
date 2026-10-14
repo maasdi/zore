@@ -72,7 +72,9 @@ process abort and external termination do not promise cleanup.
 
 ## First-stage limits
 
-Direct scopes in async functions and async literals are rejected. Async child
+Direct scopes in async functions and async literals are rejected;
+[issue #132](https://github.com/maasdi/zore/issues/132) tracks their pollable
+join and unwind-cleanup stage. Async child
 functions and plain helpers containing their own scopes are supported; a plain
 helper called from async code blocks with ordinary worker compensation.
 Existing restrictions on `go` in generic bodies remain; this stage rejects
