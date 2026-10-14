@@ -11,6 +11,7 @@
 | [Testing guide](../tests/README.md) | Test suites, conformance documents, and conventions. |
 | [MVP evidence inventory](conformance/mvp.md) | Current specification coverage, direct test gaps, intentional restrictions, and tracked follow-ups. |
 | [Formatter](formatter.md) | `zore fmt`, check mode, style, traversal, and write behavior. |
+| [Performance baseline](performance.md) | Reproducible compiler, REST/JSON and frame measurements, raw data and measured follow-ups. |
 
 ## Decision records
 

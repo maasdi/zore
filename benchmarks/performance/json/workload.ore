@@ -1,0 +1,74 @@
+package main
+
+import "std/bufio"
+import "std/encoding/json"
+import "std/os"
+import "std/strconv"
+import "std/strings"
+import "std/time"
+
+type User struct {
+    ID int
+    Name string
+    Tags Array<string>
+}
+
+func batch(mode string, count int) (int, error) {
+    let user = User{ID: 7, Name: "Ada Lovelace", Tags: Array<string>{"compiler", "runtime"}}
+    let data = strings.Bytes("{\"id\":7,\"name\":\"Ada Lovelace\",\"tags\":[\"compiler\",\"runtime\"]}")
+    let invalid = strings.Bytes("{\"id\":7,\"name\":\"Ada Lovelace\",\"tags\":[\"compiler\",\"runtime\"],\"unknown\":true}")
+    var checksum = 0
+    for var i = 0; i < count; i += 1 {
+        if mode == "encode" {
+            let encoded = json.MarshalWith(user, json.LowerCamel)?
+            if encoded.len() != data.len() {
+                panic("encoded length")
+            }
+            checksum += encoded.len()
+        } else {
+            var decoded = User{ID: 0, Name: "", Tags: Array<string>{}}
+            if mode == "decode" {
+                json.UnmarshalStrict(data[:], decoded, json.LowerCamel)?
+                if decoded.ID != 7 || decoded.Name != user.Name || decoded.Tags.len() != 2 || decoded.Tags[1] != "runtime" {
+                    panic("decoded value")
+                }
+                checksum += decoded.ID
+            } else {
+                let err = json.UnmarshalStrict(invalid[:], decoded, json.LowerCamel)
+                if err == nil {
+                    panic("accepted unknown field")
+                }
+                checksum += 1
+            }
+        }
+    }
+    return checksum, nil
+}
+
+func main() {
+    var input = bufio.NewScanner(os.Stdin())
+    if !input.Scan() {
+        panic("missing mode")
+    }
+    let mode = input.Text()
+    if mode != "encode" && mode != "decode" && mode != "reject" {
+        panic("invalid mode")
+    }
+    println("READY")
+    for input.Scan() {
+        let count, err = strconv.Atoi(input.Text())
+        if err != nil || count < 0 {
+            panic("invalid count")
+        }
+        if count == 0 {
+            return
+        }
+        let started = time.Now()
+        let checksum, batchError = batch(mode, count)
+        let elapsed = time.Since(started)
+        if batchError != nil {
+            panic("JSON batch")
+        }
+        println("DONE " + strconv.Itoa(count) + " " + strconv.Itoa(elapsed) + " " + strconv.Itoa(checksum))
+    }
+}

@@ -1,0 +1,83 @@
+package main
+
+import "std/bufio"
+import "std/context"
+import "std/encoding/json"
+import "std/io"
+import "std/net"
+import "std/net/http"
+import "std/os"
+import "std/strings"
+import "std/time"
+
+type User struct {
+    ID int
+    Name string
+}
+
+type Input struct {
+    Name string
+}
+
+type Problem struct {
+    Error string
+}
+
+func create(w mut http.ResponseWriter, r mut http.Request) error {
+    let headers = r.Headers()
+    let types = headers.Values(http.HeaderContentType)
+    if types.len() != 1 || !strings.EqualFold(types[0], "application/json") {
+        return http.JSONWith(w, 415, Problem{Error: "expected application/json"}, json.LowerCamel)
+    }
+    let body = io.ReadAll(r)?
+    var input = Input{Name: ""}
+    let err = json.UnmarshalStrict(body[:], input, json.LowerCamel)
+    if err != nil || input.Name == "" || input.Name.len() > 200 {
+        return http.JSONWith(w, 400, Problem{Error: "invalid name"}, json.LowerCamel)
+    }
+    return http.JSONWith(w, 201, User{ID: 1, Name: input.Name}, json.LowerCamel)
+}
+
+func main() {
+    var routes = http.NewRouterBuilder()
+    routes.Handle("GET /users/{id}", func(w mut http.ResponseWriter, r mut http.Request) error {
+        let id, _ = r.PathParam("id")
+        if id != "1" {
+            return http.JSONWith(w, 404, Problem{Error: "user not found"}, json.LowerCamel)
+        }
+        return http.JSONWith(w, 200, User{ID: 1, Name: "Ada Lovelace"}, json.LowerCamel)
+    })
+    routes.Handle("POST /users", create)
+    routes.Handle("GET /failure", func(w mut http.ResponseWriter, r mut http.Request) error {
+        return error("private detail")
+    })
+    let router, routeError = routes.Build()
+    if routeError != nil {
+        panic("routes")
+    }
+    let server, configError = http.NewServer(router, http.DefaultConfig())
+    if configError != nil {
+        panic("config")
+    }
+    let listener, listenError = net.Listen("tcp", "127.0.0.1:0")
+    if listenError != nil {
+        panic("listen")
+    }
+    println("READY " + listener.Addr())
+    let serving = go server.Serve(listener)
+    var input = bufio.NewScanner(os.Stdin())
+    if !input.Scan() || input.Text() != "stop" {
+        panic("missing stop")
+    }
+    let ctx, cancel = context.WithTimeout(context.Background(), 5 * time.Second)
+    let err = server.Shutdown(ctx)
+    cancel()
+    if err != nil {
+        panic("shutdown")
+    }
+    let serveError = serving.wait()
+    if serveError != nil {
+        panic("serve")
+    }
+    println("DONE")
+}

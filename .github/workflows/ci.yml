@@ -39,5 +39,7 @@ jobs:
         run: |
           clang --version
           rustc --version
+      - name: Benchmark harness correctness
+        run: python3 -m unittest discover -s benchmarks/performance -p 'test_*.py'
       - name: Test
         run: cargo test --locked --all-targets
