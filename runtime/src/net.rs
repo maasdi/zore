@@ -10,10 +10,12 @@ use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
+use super::blocking;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+use super::reactor;
 use super::strconv::ValueError;
 use super::string::StringOut;
 use super::sys::{ByteArrayError, ErrorOut, instant_of, text_of};
-use super::{blocking, reactor};
 
 struct Connection {
     stream: TcpStream,
