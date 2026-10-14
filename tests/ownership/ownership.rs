@@ -1,6 +1,7 @@
 use zore::check::{Checked, check_file};
 use zore::source::SourceMap;
 
+mod async_callables;
 mod map_entries;
 
 struct Case {

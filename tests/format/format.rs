@@ -173,6 +173,16 @@ fn all_repository_source_files_format_without_token_changes() {
 }
 
 #[test]
+fn async_literal_formatting_preserves_nested_body_modes() {
+    assert_eq!(
+        formatted(
+            "package main\nfunc main(){let f=async func(n int)int{let inner=func(){};return await load(n)};let t=go f(1);println(t.wait())}\n"
+        ),
+        "package main\n\nfunc main() {\n    let f = async func(n int) int {\n        let inner = func() {};\n        return await load(n)\n    };\n    let t = go f(1);\n    println(t.wait())\n}\n"
+    );
+}
+
+#[test]
 fn conditional_entry_binding_headers_format_without_changing_modes() {
     assert_eq!(
         formatted(

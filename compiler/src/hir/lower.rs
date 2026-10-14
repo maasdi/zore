@@ -1117,7 +1117,7 @@ impl<'a> Checker<'a> {
         let params: Option<Vec<TypeId>> = params.into_iter().collect();
         let (params, results, locals) = (params?, results?, locals?);
         let signature = FuncSignature {
-            is_async: false,
+            is_async: closure.is_async,
             params: closure
                 .params
                 .iter()
@@ -1136,7 +1136,7 @@ impl<'a> Checker<'a> {
             body,
             captures: capture_locals,
             is_closure: true,
-            is_async: false,
+            is_async: closure.is_async,
             native: false,
             call_once,
             type_params: self
@@ -1815,10 +1815,14 @@ impl<'a> Checker<'a> {
     }
 
     fn in_async_body(&self) -> bool {
-        self.res
-            .functions
-            .get(self.current)
-            .is_some_and(|func| func.is_async)
+        match self.res.functions.get(self.current) {
+            Some(function) => function.is_async,
+            None => {
+                self.res.closures[self.current - self.res.functions.len()]
+                    .closure
+                    .is_async
+            }
+        }
     }
 
     fn enclosing_description(&self) -> String {

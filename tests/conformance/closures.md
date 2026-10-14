@@ -89,7 +89,7 @@ tests. Every other row has an executable counterpart in
 | Collection loop over function values | Rejected |
 | Borrowing closure assigned to an outer `var` that outlives a captured local | Rejected |
 | Closure used in `go` | See "Spawned closures" below |
-| Closure live across `await` | Pending: `await` with closures is not implemented |
+| Closure live across `await` | Valid when backing and access remain valid under §17.6; see [async callable coverage](async-callables.md) |
 
 ## Call-once closures
 
@@ -220,7 +220,7 @@ Executable counterparts are in `tests/parser/parser.rs`
 | Parameter of async function type awaited twice | Valid |
 | `go op(x)` where `op` is a parameter | Rejected: came in through a parameter |
 | Package-qualified `async func` as a value | Valid |
-| Async method, built-in, or closure literal as an async value | Rejected |
+| Async literal or concrete async method as an async value | Valid under §16.7; built-ins remain rejected |
 | Callee and arguments of a call through the value | Evaluated once, callee first |
 | Environment destroyed once on return, error, panic, and when unused | Counting destructor tests |
 | Callee used while an awaited call through it is suspended | Rejected |

@@ -620,7 +620,7 @@ impl Printer<'_> {
             ExprKind::Closure(closure) => node(
                 "closure",
                 span,
-                "",
+                if closure.is_async { "async" } else { "" },
                 &[
                     list(closure.params.iter().map(|param| self.param(param))),
                     list(closure.results.iter().map(|ty| self.ty(ty))),
@@ -1288,6 +1288,25 @@ fn invalid_utf8_is_rejected_before_parsing() {
 #[test]
 fn diagnostic_file_handles_preserve_duplicate_paths_and_cross_file_labels() {
     compare(&[Case::text("source identity", IDENTITY, "")]);
+}
+
+#[test]
+fn async_literal_headers_and_nested_body_modes_match() {
+    let cases: Vec<_> = [
+        "let f = async func(n int) (int, error) { return await work(n) }",
+        "let f = async func() { let inner = func() { let next = async func() { await work() } } }",
+        "let task = go async func() { await work() }()",
+        "let f = async\nfunc() {}",
+        "let f = async other() {}",
+        "let f = async func named() {}",
+        "let f = async func()\n{}",
+        "let f = async func()",
+    ]
+    .into_iter()
+    .enumerate()
+    .map(|(index, text)| parse_case(format!("async literal {index}"), &body(text)))
+    .collect();
+    compare(&cases);
 }
 
 #[test]

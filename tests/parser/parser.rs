@@ -242,7 +242,8 @@ fn expr(case: &Case, e: &Expr) -> String {
             let results: Vec<String> = closure.results.iter().map(|r| ty(case, r)).collect();
             let body: Vec<String> = closure.body.stmts.iter().map(|s| stmt(case, s)).collect();
             format!(
-                "(func ({}) ({}) {{{}}})",
+                "({}func ({}) ({}) {{{}}})",
+                if closure.is_async { "async " } else { "" },
                 params.join(", "),
                 results.join(", "),
                 body.join("; ")
@@ -1695,6 +1696,38 @@ fn a_named_parameter_of_async_function_type_is_rejected() {
         "package main\nfunc run(f func(x async func())) {}\n",
         "function type parameters have no names",
     );
+}
+
+#[test]
+fn async_literals_preserve_flags_spans_nested_modes_and_header_rules() {
+    let case =
+        Case::body("let f = async func(n int) int { let inner = func() {}; return await load(n) }");
+    case.assert_clean();
+    let StmtKind::Binding(binding) = &case.main_stmts()[0].kind else {
+        panic!("expected binding")
+    };
+    let ExprKind::Closure(closure) = &binding.value.kind else {
+        panic!("expected closure")
+    };
+    assert!(closure.is_async);
+    assert_eq!(
+        case.text(binding.value.span),
+        "async func(n int) int { let inner = func() {}; return await load(n) }"
+    );
+    assert_eq!(
+        case.shape(),
+        [
+            "(let f (async func (n int) (int) {(let inner (func () () {})); (return (await (call load n)))}))"
+        ]
+    );
+    for (source, expected) in [
+        ("let f = async named() {}", "expected `func`"),
+        ("let f = async func named() {}", "has no name"),
+        ("let f = async func()", "require a body"),
+        ("let f = async func()\n{}", "same line"),
+    ] {
+        rejects(source, expected);
+    }
 }
 
 #[test]

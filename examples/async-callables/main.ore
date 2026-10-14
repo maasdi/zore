@@ -1,0 +1,39 @@
+package main
+
+import "std/time"
+
+type Counter struct {
+    Value int
+}
+
+async func (counter mut Counter) Add(amount int) int {
+    time.Sleep(time.Millisecond)
+    counter.Value += amount
+    return counter.Value
+}
+
+async func run() {
+    var counter = Counter{Value: 10}
+    let add = counter.Add
+    println(await add(2))
+    println(await add(3))
+
+    let read = async func() int {
+        time.Sleep(time.Millisecond)
+        return counter.Value
+    }
+    println(await read())
+
+    let message = "job complete"
+    let job = async func() string {
+        time.Sleep(time.Millisecond)
+        return message
+    }
+    let task = go job()
+    println(await task)
+}
+
+func main() {
+    let task = go run()
+    task.wait()
+}
