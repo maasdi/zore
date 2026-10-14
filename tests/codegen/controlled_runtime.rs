@@ -49,6 +49,10 @@ fn runtime() -> &'static Runtime {
 }
 
 pub(super) fn build(source: &str, output: &Path) {
+    build_with_workers(source, output, 2);
+}
+
+pub(super) fn build_with_workers(source: &str, output: &Path, workers: usize) {
     assert!(
         source.contains("waitPending(")
             || source.contains("waitBlocked(")
@@ -101,9 +105,7 @@ pub(super) fn build(source: &str, output: &Path) {
             .arg(&object),
     );
     let entry = dir.path().join("main.rs");
-    fs::write(
-        &entry,
-        r#"
+    let entry_source = r#"
 unsafe extern "C" { fn zore_entry(); }
 #[unsafe(no_mangle)]
 extern "C" fn zore_test_wait_pending(count: i64) {
@@ -132,7 +134,10 @@ fn main() {
     unsafe { zore_entry() };
     zore_runtime::finish();
 }
-"#,
+"#;
+    fs::write(
+        &entry,
+        entry_source.replace("install_pool(2)", &format!("install_pool({workers})")),
     )
     .unwrap();
     checked(

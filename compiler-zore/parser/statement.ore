@@ -308,7 +308,7 @@ func (p mut Parser) statement(simple int, isStatement bool) int {
     }
     let start = p.tree.Start(simple)
     let end = p.tree.End(simple)
-    if p.isCallBased(simple) {
+    if p.isStatementExpression(simple) {
         let node = p.tree.Add("stmt", start, end, "")
         p.tree.Append(node, simple)
         return node
@@ -317,17 +317,17 @@ func (p mut Parser) statement(simple int, isStatement bool) int {
         "expression is not a statement",
         start,
         end,
-        "only calls can be statements; discard a value explicitly with `_ = value`",
+        "only calls and task operations can be statements; discard a value explicitly with `_ = value`",
     )
 }
 
-func (p Parser) isCallBased(expr int) bool {
+func (p Parser) isStatementExpression(expr int) bool {
     let tag = p.tree.Tag(expr)
-    if tag == "call" || tag == "go" {
+    if tag == "call" || tag == "go" || tag == "await" {
         return true
     }
-    if tag == "await" || tag == "try" {
-        return p.isCallBased(p.tree.Child(expr, 0))
+    if tag == "try" {
+        return p.isStatementExpression(p.tree.Child(expr, 0))
     }
     return false
 }

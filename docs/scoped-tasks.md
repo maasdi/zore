@@ -1,9 +1,9 @@
 # Lexical task scopes
 
-`scope { ... }` gives a plain function an explicit join boundary. Every
+`scope { ... }` gives a plain or async function an explicit join boundary. Every
 `go` written in that block or its nested ordinary blocks finishes before the
 boundary releases parent storage, including on return, `?`, loop transfer or
-panic. The contract is locked in specification §18.12.
+panic. The contract is locked in specification §§18.12–18.13.
 
 ```ore
 func read(values Array<int>) int { return values[0] }
@@ -43,13 +43,42 @@ inputs, or put the task scope inside that shorter block instead.
 Scoped handles have an inferred, distinct scope identity; omit a `Task<...>`
 annotation. Handles can move between local bindings within the same task scope,
 but cannot escape through returns, storage, channels, helper calls or captures.
-There is no detach conversion. `.wait()` consumes the handle once.
+There is no detach conversion. Retrieval consumes the handle once: `.wait()`
+in a plain body, or `await handle` in an async body.
 
 A retrieved view must have proved parent backing and stay inside the originating
 scope. Child-local/child-owned backing and escaping views are rejected. A
 scoped handle or view cannot acquire a longer lifetime through aliases.
 Retrieved errors follow ordinary explicit handling or `?`; unretrieved error
 results are discarded after join.
+
+## Async scopes
+
+Async functions and explicit async literals can contain scopes directly:
+
+```ore
+async func combined(values own Array<int>) int {
+    scope {
+        let first = go read(values)
+        let second = go read(values)
+        return (await first) + (await second)
+    }
+}
+```
+
+The exit itself suspends until children finish, even without an explicit
+`await` in the body. Registry state, borrowed parent storage, drop flags and
+pending return/error values remain in stable frame storage. Unwinding can also
+suspend: the original parent panic follows the task across polls and worker
+migration while all children join. Another task cannot inherit that panic.
+Cleanup resumes at its saved position, including nested boundaries.
+
+Use `await child` to observe an individual result or panic before leaving;
+`.wait()` remains restricted to plain bodies. Ignored handles and errors have
+the same behavior in both kinds of scope. Joining does not request cancellation.
+Retrieval can be a statement for children with no results: `await child` ends
+their input loans before subsequent parent access. Error-only children can use
+`await child?`; an error cannot be silently ignored.
 
 ## Cleanup and failure
 
@@ -70,17 +99,15 @@ indefinitely. Worker compensation preserves runnable progress for blocking
 plain joins, but cannot solve a channel/mutex dependency cycle. Fatal deadlock,
 process abort and external termination do not promise cleanup.
 
-## First-stage limits
+## Conservative proof limits
 
-Direct scopes in async functions and async literals are rejected;
-[issue #132](https://github.com/maasdi/zore/issues/132) tracks their pollable
-join and unwind-cleanup stage. Async child
-functions and plain helpers containing their own scopes are supported; a plain
-helper called from async code blocks with ordinary worker compensation.
+Plain and async child functions and helpers containing their own scopes are
+supported. A plain helper called from async code blocks with ordinary worker
+compensation.
 Existing restrictions on `go` in generic bodies remain; this stage rejects
 a direct task-scope block there too.
 
-Loan release after an explicit wait requires an unambiguous registered child.
+Loan release after explicit retrieval requires an unambiguous registered child.
 For handles merged across branches or several live children from one repeated
 spawn site, potentially outstanding loans remain until the boundary. Returned
 views conservatively retain the input provenance needed by the current region
@@ -99,5 +126,9 @@ ownership, runtime and native checks to the contract. Tests cover shared and
 exclusive loans, handle discard/escape, view provenance, nested/repeated scopes,
 all crossing exits, parent/child/destructor failure, one-worker compensation,
 bounded internal deadlock and tracked cleanup after quiescence.
+
+Async lifecycle tests force Pending states and release gates after inspecting
+parked tasks. They cover implicit joins, retrieval, every exit, completion races,
+worker migration during unwind, result destruction and one-worker progress.
 
 Timing and resource high-water marks are not correctness assertions.

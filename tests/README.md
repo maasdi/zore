@@ -4,9 +4,13 @@
 plain lexical task-scope contract: shared/exclusive inputs, mixed captures,
 dropped/aliased/repeated handles, view and output provenance, shorter storage,
 all normal/error/panic exits, nested scopes, result destructors, bounded deadlock
-and compensation on one worker. Runtime units verify record/result ownership and
-failure ordering independent of completion order. Async bodies/literals remain
-rejected. Lexer/parser/formatter and self-hosting comparisons include the syntax.
+and compensation on one worker. `tests/codegen/async_scopes.rs` covers direct
+async scopes with parked-task checkpoints, pollable joins and retrieval,
+suspended unwind, worker migration, one-worker progress and result destruction.
+Frame tests check registry/referent/return persistence and prevent registry slot
+reuse. Runtime units verify record/result ownership, failure ordering independent
+of completion order and completion/wakeup races. Lexer/parser/formatter and
+self-hosting comparisons include the syntax.
 See [conformance coverage](conformance/scoped-tasks.md).
 
 The native linkage/timer module checks optimized symbol visibility, referenced

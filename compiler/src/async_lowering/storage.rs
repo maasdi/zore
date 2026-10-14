@@ -6,9 +6,13 @@ use super::LocalStorage;
 pub(super) fn classify(
     body: &mir::Body,
     suspensions: &[(mir::BlockId, super::Suspension)],
+    scope_joins: &[(mir::BlockId, usize)],
     budget_blocks: &[mir::BlockId],
 ) -> Vec<LocalStorage> {
     let mut frame = vec![false; body.locals.len()];
+    for scope in &body.task_scopes {
+        frame[scope.registry.0 as usize] = true;
+    }
     for &local in body
         .params
         .iter()
@@ -39,6 +43,28 @@ pub(super) fn classify(
 
     let mut reachable = vec![false; body.blocks.len()];
     let mut pending = Vec::new();
+    for &(block, index) in scope_joins {
+        let block = &body.blocks[block.0 as usize];
+        for statement in &block.statements[index + 1..] {
+            visit_statement(statement, &mut |local| frame[local] = true);
+        }
+        visit_terminator(&block.terminator, &mut |local| frame[local] = true);
+        pending.extend(block.terminator.successors());
+        if let Terminator::Call {
+            unwind,
+            destinations,
+            ..
+        } = &block.terminator
+        {
+            pending.extend(*unwind);
+            for destination in destinations.iter().flatten() {
+                visit_place(destination, &mut |local| frame[local] = true);
+            }
+        } else if let Terminator::Assert { unwind, .. } = &block.terminator {
+            pending.extend(*unwind);
+        }
+        pending.extend(body.unwind);
+    }
     for (block, _) in suspensions {
         if let Terminator::Call {
             target,
@@ -239,6 +265,9 @@ pub(super) fn reuse(
         .chain(&body.returns)
     {
         eligible[local.0 as usize] = false;
+    }
+    for scope in &body.task_scopes {
+        eligible[scope.registry.0 as usize] = false;
     }
     let mut stable = vec![false; count];
     for block in &body.blocks {

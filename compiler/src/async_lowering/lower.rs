@@ -122,13 +122,29 @@ pub fn lower(package: &hir::Package, program: &mir::Program) -> Plan {
                     Some((mir::BlockId(index as u32), suspension))
                 })
                 .collect();
+            let scope_joins: Vec<_> = body
+                .blocks
+                .iter()
+                .enumerate()
+                .flat_map(|(block, data)| {
+                    data.statements
+                        .iter()
+                        .enumerate()
+                        .filter_map(move |(index, statement)| {
+                            matches!(statement, mir::Statement::EndTaskScope { .. })
+                                .then_some((mir::BlockId(block as u32), index))
+                        })
+                })
+                .collect();
             let budget_blocks = budget_blocks(body);
-            let storage = super::storage::classify(body, &suspensions, &budget_blocks);
+            let storage =
+                super::storage::classify(body, &suspensions, &scope_joins, &budget_blocks);
             let (frame_reuse, frame_reuse_work) = super::storage::reuse(body, package, &storage);
             (
                 body.function,
                 StateMachine {
                     suspensions,
+                    scope_joins,
                     budget_blocks,
                     storage,
                     frame_reuse,

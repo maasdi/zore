@@ -8,6 +8,14 @@ func sum(values Array<int>) int {
 
 func increment(value mut int) { value += 1 }
 
+async func combined(values own Array<int>) int {
+    scope {
+        let first = go sum(values)
+        let second = go sum(values)
+        return (await first) + (await second)
+    }
+}
+
 func main() {
     let values = Array<int>{1, 2, 3, 4}
     scope {
@@ -21,4 +29,6 @@ func main() {
         go increment(count)
     }
     println(count)
+    let asynchronous = go combined(values)
+    println(asynchronous.wait())
 }

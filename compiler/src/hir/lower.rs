@@ -4268,7 +4268,7 @@ impl<'a> Checker<'a> {
                     return None;
                 }
                 Value::Typed(expr) => hir::StmtKind::Expr(expr),
-                Value::Untyped(..) => unreachable!("the parser accepts only call statements"),
+                Value::Untyped(..) => unreachable!("a checked effectful statement has a type"),
             },
             ast::StmtKind::Return(values) => self.return_stmt(values, span)?,
             ast::StmtKind::Break | ast::StmtKind::Continue => {
@@ -4337,13 +4337,6 @@ impl<'a> Checker<'a> {
                 }
             }
             ast::StmtKind::TaskScope(block) => {
-                if self.in_async_body() {
-                    self.error(
-                        "`scope` is not supported directly in an async function",
-                        span,
-                    );
-                    return None;
-                }
                 if self.reject_in_generic_body("`scope`", span) {
                     return None;
                 }

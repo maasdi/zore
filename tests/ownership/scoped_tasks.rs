@@ -1,6 +1,116 @@
 use super::*;
 
 #[test]
+fn async_scope_parent_backed_views_and_mutable_awaits_follow_existing_loans() {
+    accepts(
+        "package main
+async func view(values Array<int>) []int { return values[:] }
+async func update(value mut int) int { value += 1; return value }
+async func parent(values Array<int>) int {
+    var count = 0
+    scope {
+        let child = go view(values)
+        let result = await child
+        println(result[0])
+        let changed = go update(count)
+        _ = await changed
+        println(count)
+    }
+    return count
+}
+func main() {}",
+    );
+    accepts(
+        "package main\nasync func update(value mut int) { value += 1 }\nasync func parent() { var value = 0; scope { let child = go update(value); await child; println(value) } }\nfunc main() {}",
+    );
+}
+
+#[test]
+fn async_scope_borrows_remain_registered_across_handle_drop_and_body_await() {
+    rejects(
+        "package main
+async func read(values Array<int>) int { return values[0] }
+async func pause() int { return 0 }
+async func parent() {
+    var values = Array<int>{1}
+    scope { let child = go read(values); drop(child); _ = await pause(); values[0] = 2 }
+}
+func main() {}",
+        "borrowed",
+    );
+    rejects(
+        "package main
+async func update(value mut int) int { value += 1; return value }
+async func pause() int { return 0 }
+async func parent() {
+    var count = 0
+    scope { go update(count); _ = await pause(); println(count) }
+}
+func main() {}",
+        "borrowed",
+    );
+}
+
+#[test]
+fn async_scope_retrieval_cannot_extend_handles_or_view_lifetimes() {
+    rejects(
+        "package main
+async func view(values Array<int>) []int { return values[:] }
+async func parent(values Array<int>) []int { scope { let child = go view(values); return await child } }
+func main() {}",
+        "escape",
+    );
+    rejects(
+        "package main
+async func read(values Array<int>) int { return values[0] }
+async func parent() { scope { for var i = 0; i < 2; i += 1 { let values = Array<int>{1}; let child = go read(values); _ = await child } } }
+func main() {}",
+        "shorter",
+    );
+    rejects(
+        "package main
+async func read(values Array<int>) int { return values[0] }
+async func parent() { let values = Array<int>{1}; scope { var child = go read(values); if true { child = go read(values) }; _ = await child; drop(values) } }
+func main() {}",
+        "borrowed",
+    );
+    rejects(
+        "package main
+async func read() int { return 1 }
+async func parent() { scope { let child = go read(); _ = await child; _ = await child } }
+func main() {}",
+        "moved",
+    );
+}
+
+#[test]
+fn async_scope_keeps_wait_syntax_and_helper_body_boundaries() {
+    rejects(
+        "package main\nasync func parent() { await 1 }\nfunc main() {}",
+        "`await` needs",
+    );
+    rejects(
+        "package main\nasync func fail() error { return error(\"failed\") }\nasync func parent() { scope { let child = go fail(); await child } }\nfunc main() {}",
+        "error result must be used",
+    );
+    rejects(
+        "package main
+async func read() int { return 1 }
+async func parent() { scope { let child = go read(); println(child.wait()) } }
+func main() {}",
+        "`wait` blocks",
+    );
+    rejects(
+        "package main
+async func read(values Array<int>) int { return values[0] }
+async func helper(values Array<int>) { go read(values) }
+async func parent(values Array<int>) { scope { await helper(values) } }
+func main() {}",
+        "own",
+    );
+}
+
+#[test]
 fn scope_shared_exclusive_and_literal_borrows_are_accepted() {
     accepts(
         "package main\nfunc read(v Array<int>) int { return v[0] }\nfunc inc(v mut int) { v += 1 }\nfunc main() { let v = Array<int>{1}; var n = 0; scope { let a = go read(v); let b = go read(v); println(a.wait() + b.wait()); let c = go inc(n); c.wait(); println(n); let d = go func() { n += 1 }(); d.wait(); println(n) } }\n",
@@ -44,11 +154,8 @@ fn scope_short_inner_referents_are_rejected_even_after_a_wait() {
 }
 
 #[test]
-fn scope_async_bodies_and_dynamic_scope_inheritance_are_rejected() {
-    rejects(
-        "package main\nasync func bad() { scope {} }\nfunc main() {}\n",
-        "async function",
-    );
+fn scope_async_bodies_are_accepted_without_dynamic_scope_inheritance() {
+    accepts("package main\nasync func work() { scope {} }\nfunc main() {}\n");
     rejects(
         "package main\nfunc helper(v Array<int>) { go read(v) }\nfunc read(v Array<int>) {}\nfunc main() { let v = Array<int>{1}; scope { helper(v) } }\n",
         "own",
@@ -161,10 +268,9 @@ fn scope_borrowed_outputs_keep_parent_provenance_after_child_completion() {
 }
 
 #[test]
-fn scope_async_closures_and_unproven_child_local_results_are_rejected() {
-    rejects(
+fn scope_async_closures_are_accepted_and_child_local_results_remain_rejected() {
+    accepts(
         "package main\nfunc main() { let f = async func() { scope {} }; let child = go f(); child.wait() }\n",
-        "async function",
     );
     rejects(
         "package main\nfunc bad() []int { let v = Array<int>{1}; return v[:] }\nfunc main() { scope { let child = go bad(); let v = child.wait(); println(v[0]) } }\n",

@@ -62,6 +62,8 @@ using shared pool workers and persistent async frames.
 | `let v = task.wait()` in a synchronous function | Valid; blocks until completion |
 | `task.wait()` written directly inside an `async func` | Reject: use `await task` |
 | `let v = await task` inside an `async func` | Valid; suspends until completion |
+| `await task` as a statement inside an `async func` | Valid retrieval, including zero-result tasks; unused non-error results are cleaned up |
+| `await task` as a statement when a result is `error` | Reject unused error; handle, discard or propagate it |
 | `await task` inside a synchronous function | Reject: `await` outside an async body |
 | `task.wait()` then `task.wait()` on the same binding | Reject: use after move |
 | `await task` then `await task` on the same binding | Reject: use after move |
@@ -126,7 +128,8 @@ using shared pool workers and persistent async frames.
 | Reply-channel pattern: a request carrying a `channel<Reply>` handle | Valid; no cycle, so ordinary cleanup applies |
 
 These cases do not define the full `go` expression grammar (Q02), the
-entry-point signature or exit status (Q05), or direct async task scopes (Q10). Plain scopes have [separate coverage](scoped-tasks.md).
+entry-point signature or exit status (Q05). Plain and async lexical scopes have
+[separate coverage](scoped-tasks.md).
 
 ## Spawn lifetime proof on every exit (§18.4)
 
