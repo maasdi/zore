@@ -93,7 +93,9 @@ fn build_command(target: &Path) -> ExitCode {
         eprintln!("zore: {target:?} has no file name");
         return ExitCode::FAILURE;
     };
-    let executable_in_current_dir = PathBuf::from(stem);
+    let mut name = stem.to_os_string();
+    name.push(std::env::consts::EXE_SUFFIX);
+    let executable_in_current_dir = PathBuf::from(name);
     match build_to(target, &executable_in_current_dir, "build") {
         Ok(()) => ExitCode::SUCCESS,
         Err(code) => code,
@@ -108,7 +110,7 @@ fn run_command(target: &Path) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    let executable = dir.path().join("program");
+    let executable = dir.executable("program");
     if let Err(code) = build_to(target, &executable, "build") {
         return code;
     }

@@ -6896,7 +6896,9 @@ cancellation rule. Pending conformance cases:
 
 `"std/path"` works on slash-separated paths as text, without looking at any
 file. `"std/path/filepath"` offers the same functions for paths of the host
-system, which use `/` on every supported system, plus `Abs`.
+system, plus `Abs`. Linux and macOS use `/`; Windows accepts `/` and `\` and
+produces `\` separators. The table describes slash paths; `filepath` applies
+the corresponding rules to host separators and preserves Windows volumes.
 
 | Function | Behavior |
 | --- | --- |
@@ -6908,7 +6910,40 @@ system, which use `/` on every supported system, plus `Abs`.
 | `Ext(p string) string` | The text from the last `.` in the last element, or `""` |
 | `IsAbs(p string) bool` | Whether `p` starts with `/` |
 | `filepath.Abs(p string) (string, error)` | `p` cleaned when absolute, otherwise joined to the current folder |
-| `const filepath.Separator`, `filepath.ListSeparator` | `'/'` and `':'` |
+| `const filepath.Separator`, `filepath.ListSeparator` | `'/'` and `':'` on Linux/macOS; `'\\'` and `';'` on Windows |
+
+### Windows host paths — LOCKED
+
+Windows `filepath` recognizes drive volumes such as `C:` and UNC volumes such
+as `\\server\share`. Cleaning cannot remove a volume or ascend above its
+root. A drive-relative path such as `C:notes.txt` remains drive-relative after
+cleaning; it is not absolute. A path beginning with a separator but without a
+volume, such as `\notes.txt`, is rooted on the current drive but is not fully
+absolute. `IsAbs` requires a drive plus a root separator, or a complete UNC
+volume. `Abs` uses the host's current directory and drive resolution, then
+cleans the result; host lookup failures return an error. `Join` retains the
+first volume and cleans concatenated nonempty elements; joining `C:` and
+`notes.txt` produces `C:notes.txt`.
+
+```ore
+// On Windows:
+filepath.Clean("C:/work/../notes.txt") // "C:\\notes.txt"
+filepath.IsAbs("C:notes.txt")         // false
+filepath.IsAbs("C:/notes.txt")        // true
+filepath.IsAbs("\\\\server\\share\\notes.txt") // true
+```
+
+Device and verbatim namespace paths beginning with `\\.\` or `\\?\` are
+outside this host-path subset. Pure `filepath` functions panic with
+`filepath: Windows device and verbatim paths are unsupported`; `Abs` returns
+that error. `std/path` retains its slash-only text rules on every host.
+
+Ownership and async behavior are unchanged: inputs borrow immutable Copy
+strings/slices, results are Copy strings, and errors require ordinary explicit
+handling. Host selection changes bundled `filepath` implementation and constants,
+not source syntax. Conformance covers separators, drive-relative/rooted paths,
+UNC roots, lexical parent traversal, current-directory resolution and namespace
+rejection. Native support is host-only; this adds no cross-compilation contract.
 
 `"std/sort"` sorts and searches in place.
 

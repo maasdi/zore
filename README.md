@@ -85,6 +85,12 @@ You need:
   ships it with the Xcode Command Line Tools; on Linux, install your
   distribution's `clang` package. Set `ZORE_CC` to use a specific compiler.
 
+Windows native builds target `x86_64-pc-windows-msvc` and also require Visual
+Studio C++ Build Tools and the Windows SDK. Use an x64 Developer PowerShell or
+Developer Command Prompt; set `ZORE_CC` to the full LLVM `clang.exe` path if
+needed. Generated executables have an `.exe` suffix. See
+[platform support](docs/platform-support.md) for host-specific APIs and CI evidence.
+
 ```sh
 git clone https://github.com/maasdi/zore.git
 cd zore

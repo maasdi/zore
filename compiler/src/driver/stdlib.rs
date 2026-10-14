@@ -37,6 +37,12 @@ bundled! {
 }
 
 pub fn package(path: &str) -> Option<&'static [(&'static str, &'static str)]> {
+    if cfg!(windows) && path == "path/filepath" {
+        return Some(&[(
+            "windows.ore",
+            include_str!("../../../std/path/filepath/windows.ore"),
+        )]);
+    }
     PACKAGES
         .iter()
         .find(|(name, _)| *name == path)

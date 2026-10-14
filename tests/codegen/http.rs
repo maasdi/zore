@@ -94,11 +94,8 @@ fn send_signal(child: &Child, signal: i32) {
     // SAFETY: the child is live and the test selects a supported POSIX signal.
     assert_eq!(unsafe { kill(child.id() as i32, signal) }, 0);
 }
-#[cfg(not(unix))]
-fn send_signal(_child: &Child, _signal: i32) {
-    panic!("signal tests need Unix");
-}
 
+#[cfg(unix)]
 #[test]
 fn http_function_handlers_run_concurrently_and_shutdown_on_real_signals() {
     let source = r#"package main
@@ -269,7 +266,7 @@ func main() { let err = run(); if err != nil { panic(errors.Message(err)) } }
         .replace("ENDPOINT", &endpoint)
         .replace("ADDRESS", &address);
         let dir = TempDir::new().unwrap();
-        let executable = dir.path().join("server");
+        let executable = dir.executable("server");
         build_file(&source, &executable).unwrap_or_else(|e| panic!("build failed: {e:?}"));
         drop(listener);
         let mut server = ServerProcess::launch(&executable, dir);
@@ -450,7 +447,7 @@ fn rest_benchmark_checks_success_validation_handler_errors_and_clean_shutdown() 
 impl ServerProcess {
     fn start(source: &str) -> Self {
         let dir = TempDir::new().unwrap();
-        let executable = dir.path().join("server");
+        let executable = dir.executable("server");
         build_file(source, &executable).unwrap_or_else(|e| panic!("build failed: {e:?}"));
         Self::launch(&executable, dir)
     }
@@ -1036,6 +1033,7 @@ func main() {
     server.finish("");
 }
 
+#[cfg(unix)]
 #[test]
 fn rest_api_example_serves_requests_and_shuts_down_cleanly() {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();

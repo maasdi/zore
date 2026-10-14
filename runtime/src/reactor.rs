@@ -47,34 +47,18 @@ pub unsafe extern "C" fn zore_reactor_poll(operation: *const Operation) -> u8 {
     1
 }
 
-#[cfg(unix)]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 pub(super) type Descriptor = std::os::fd::RawFd;
-#[cfg(not(unix))]
-pub(super) type Descriptor = i32;
 
-/// Something a task can wait on until it is ready.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 pub(super) trait Pollable {
     fn descriptor(&self) -> Descriptor;
 }
 
-#[cfg(unix)]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 impl<T: std::os::fd::AsRawFd> Pollable for T {
     fn descriptor(&self) -> Descriptor {
         self.as_raw_fd()
-    }
-}
-
-#[cfg(not(unix))]
-impl Pollable for std::net::TcpStream {
-    fn descriptor(&self) -> Descriptor {
-        0
-    }
-}
-
-#[cfg(not(unix))]
-impl Pollable for std::net::TcpListener {
-    fn descriptor(&self) -> Descriptor {
-        0
     }
 }
 
@@ -698,7 +682,6 @@ mod imp {
 
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
 mod imp {
-    use super::Descriptor;
     use super::{Operation, Waiter};
     use std::sync::Arc;
     use std::time::Duration;
@@ -771,30 +754,10 @@ mod imp {
         let _blocking = super::super::scheduler::BlockingGuard::enter();
         std::thread::sleep(Duration::from_millis(milliseconds));
     }
-
-    pub fn start_wait_fd(
-        _: Descriptor,
-        _: bool,
-        _: Option<std::time::Instant>,
-        _: Waiter,
-    ) -> Arc<Operation> {
-        unreachable!("descriptors stay in blocking mode without an event queue")
-    }
 }
-
-/// Whether descriptors can be waited on; otherwise sockets stay blocking.
-pub(super) const POLLED: bool = cfg!(any(target_os = "linux", target_os = "macos"));
 
 pub(super) fn sleep(milliseconds: u64) {
     imp::sleep(milliseconds);
-}
-
-/// Waits until `fd` is ready or `deadline` passes; the caller tries again to find out which.
-#[cfg(not(any(target_os = "linux", target_os = "macos")))]
-pub(super) fn wait_fd(fd: Descriptor, write: bool, deadline: Option<std::time::Instant>) {
-    let slot = Arc::new(super::slot::Slot::default());
-    let _operation = start_wait_fd(fd, write, deadline, Arc::clone(&slot).into());
-    slot.park();
 }
 
 pub(super) fn start_sleep(milliseconds: u64, waiter: Waiter) -> Arc<Operation> {
@@ -820,6 +783,7 @@ pub(super) fn expire_test_timers(count: usize) {
     imp::expire_test_timers(count);
 }
 
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 pub(super) fn start_wait_fd(
     fd: Descriptor,
     write: bool,

@@ -115,7 +115,7 @@ pub fn build_program(entry: &str) -> Program {
         ),
     };
     let dir = TempDir::new().unwrap();
-    let executable = dir.path().join("oracle");
+    let executable = dir.executable("oracle");
     if let Err(error) = build_project(&project, &sources, &executable) {
         panic!("{} does not build: {error:?}", entry.display());
     }
