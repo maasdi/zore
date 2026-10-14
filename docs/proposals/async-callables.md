@@ -7,10 +7,10 @@ model. Specification §§16.1–16.7 defines the source contract.
 let load = async func(id int) (User, error) {
     return await fetchUser(id)
 }
-let user, err = await load(7)
+(let user, var err) = await load(7)
 
 let update = store.Update
-let err = await update(user)
+err = await update(user)
 ```
 
 The async property belongs to each literal and its function type. It never
