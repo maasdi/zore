@@ -162,7 +162,10 @@ impl Checker<'_> {
             is_async: self.res.functions[method.0 as usize].is_async,
             native: false,
             call_once,
-            type_params: Vec::new(),
+            type_params: self
+                .generic_root(FunctionId(self.current as u32))
+                .map(|root| self.res.type_params[&root].clone())
+                .unwrap_or_default(),
             probe: false,
             locals,
             body,

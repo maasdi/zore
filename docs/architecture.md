@@ -203,7 +203,11 @@ An awaited callable frame borrows its environment; destroying the child frame
 preserves the callable and its captures for later calls. A generated spawn
 wrapper owns the transferred callable and drops it after its child completes.
 Call-once calls consume the callable and drop its remaining captures on return
-or unwind. This is an internal representation, not a source contract.
+or unwind. Generated plain/polled task entries remember whether the body returned
+before destroying its captures. If that destruction panics, they drop the
+initialized results before completing the task with a panic, preserving the
+runtime invariant that a panicked task has no result values to release.
+This is an internal representation, not a source contract.
 
 The poll ABI returns `0` for Pending and `1` for Ready, including completion through
 panic cleanup. The context pointer is opaque to generated code and borrowed only

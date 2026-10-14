@@ -39,6 +39,14 @@ captures intact. The generated spawn wrapper owns the transferred callable and
 releases it once its child finishes, including errors and panic. Call-once
 calls use the existing consuming MIR call and cleanup flags.
 
+Forwarding bodies retain their enclosing generic parameters: capturing a generic
+root local through a concrete receiver field still requires specializing the
+whole capture layout. Task entries retain result initialization state through
+capture destruction. If destruction raises a panic after a successful body,
+the entry destroys those results before handing the panic to the runtime;
+this also applies to plain callables. Body-panic paths skip uninitialized results,
+and a second panic during result cleanup follows the ordinary abort rule.
+
 Implementation stages within one PR:
 1. Lock syntax, types, captures, suspension, spawn and cleanup semantics.
 2. Preserve async flags in both parsers, body contexts and method forwarding;

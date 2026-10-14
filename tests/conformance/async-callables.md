@@ -29,6 +29,7 @@ Required acceptance and paired rejection:
 | Formatting and nested modes | `format::async_literal_formatting_preserves_nested_body_modes` |
 | Signature identity, independent body contexts and async call requirements | `check::async_literals_keep_async_types_and_independent_nested_body_contexts` |
 | Concrete struct/named-type method signatures and invalid receivers | `check::async_method_values_keep_receiver_modes_and_existing_place_restrictions` |
+| Concrete method wrappers specialize generic capture roots and nested literals; borrowed Move roots stay rejected | `check::concrete_method_values_specialize_captured_generic_roots_and_nested_literals` |
 | Suspension loans, nested aliases, results and local-view escapes | `ownership::async_captures_keep_loans_across_suspension_and_release_after_last_use` |
 | Call-once moves, task capture independence and unknown callable inputs | `ownership::async_call_once_and_spawned_inputs_follow_ordinary_ownership_rules` |
 | Receiver loans and capture writeback provenance | `ownership::async_method_captures_and_writeback_keep_receiver_and_backing_exclusive` |
@@ -42,6 +43,11 @@ Required acceptance and paired rejection:
 | Owned callable arguments, borrowed views and loop environments | `native::async_callable_arguments_and_views_survive_waits_with_independent_cleanup` |
 | Callee/argument initialization and replacement destructor failure | `native::async_callable_argument_and_environment_replacement_panics_clean_every_owner` |
 | Replacement and detached-task ownership | `native::async_closure_replacement_and_detached_execution_preserve_owned_lifetimes` |
+| Plain/async method wrappers over generic roots, multiple instantiations, mutable/nested captures and Move cleanup | `native::method_values_specialize_generic_capture_roots_for_plain_async_and_nested_calls` |
+| Capture destruction panic discards initialized tuple/error results before wait/await rethrows | `native::task_capture_panics_destroy_returned_results_before_wait_or_await_rethrows` |
+| Detachment around result cleanup, drop-completion signaling and released resources | `native::detached_tasks_drop_returned_resources_when_capture_destruction_panics` |
+| Body panics skip uninitialized result slots | `native::task_body_panics_do_not_destroy_uninitialized_results` |
+| Result destructor panics during capture-panic cleanup abort on Linux/macOS | `native::a_second_panic_while_discarding_task_results_aborts` |
 
 The existing example checker/native runner also executes `examples/async-callables`.
 Native assertions require the supported Rust/clang toolchain and check for leaks.

@@ -59,6 +59,51 @@ func create() { let f = async func(n int) int { return n }; acceptsAsync(f) }
 }
 
 #[test]
+fn concrete_method_values_specialize_captured_generic_roots_and_nested_literals() {
+    let case = accepts(&program(
+        r#"type Counter struct { N int }
+async func (c Counter) read() int { return c.N }
+type Holder<T any> struct { Counter Counter; Value T }
+func reader<T any>(h own Holder<T>) async func() int { return h.Counter.read }
+func nested<T any>(h own Holder<T>) async func() int {
+    return async func() int { let read = h.Counter.read; return await read() }
+}
+func exercise() {
+    let f = reader(Holder<int>{Counter: Counter{N: 1}, Value: 7})
+    let g = reader(Holder<Array<int>>{Counter: Counter{N: 2}, Value: Array<int>{8}})
+    let h = nested(Holder<int>{Counter: Counter{N: 3}, Value: 9})
+    let a = go f()
+    let b = go g()
+    let c = go h()
+    println(a.wait() + b.wait() + c.wait())
+}
+"#,
+    ));
+    let package = case.package();
+    let wrappers: Vec<_> = package
+        .functions
+        .iter()
+        .filter(|function| function.name.contains("$method") && function.compiled())
+        .collect();
+    assert!(wrappers.len() >= 3);
+    for function in wrappers {
+        assert!(function.is_async);
+        assert!(
+            function
+                .locals
+                .iter()
+                .all(|local| !package.types.mentions_param(local.ty))
+        );
+    }
+    rejects(
+        &program(
+            "type Counter struct { N int }\nasync func (c Counter) read() int { return c.N }\ntype Holder<T any> struct { Counter Counter; Value T }\nfunc reader<T any>(h Holder<T>) async func() int { return h.Counter.read }",
+        ),
+        "cannot move borrowed",
+    );
+}
+
+#[test]
 fn async_method_values_keep_receiver_modes_and_existing_place_restrictions() {
     let prelude = r#"type Counter struct { N int }
 type Owner struct { Counter Counter }

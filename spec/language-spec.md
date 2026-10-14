@@ -4349,10 +4349,17 @@ reusable captures keep their ordinary owner, while call-once/task-owned
 environments are destroyed once on completion or unwind. No implicit join,
 rollback, or cancellation is introduced.
 
+If task-owned capture destruction panics after the body has returned its
+results, those initialized results are destroyed before the task finishes
+with a panic. Uninitialized results from a body that panicked are never
+destroyed. A second panic during this result cleanup aborts as in §15.4.
+
 Compiler impact: AST/resolution retain the literal's async flag; typing interns
 its async signature and checks each body's async context independently.
-Method values synthesize async forwarding bodies when appropriate. Existing
-capture inference, region analysis, call-once moves and drop insertion apply.
+Method values synthesize async forwarding bodies when appropriate and retain
+enclosing generic parameters, so whole-local capture storage is specialized
+even when the selected field's method is concrete. Existing capture inference,
+region analysis, call-once moves and drop insertion apply.
 MIR async-call lowering shares the existing code/environment/destructor triple
 and pinned heap-frame representation. Awaited child frames borrow callable
 environments; spawn wrapper frames own the transferred callable. Captures,
