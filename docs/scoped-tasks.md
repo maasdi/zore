@@ -76,6 +76,9 @@ Cleanup resumes at its saved position, including nested boundaries.
 Use `await child` to observe an individual result or panic before leaving;
 `.wait()` remains restricted to plain bodies. Ignored handles and errors have
 the same behavior in both kinds of scope. Joining does not request cancellation.
+Retrieval can be a statement for children with no results: `await child` ends
+their input loans before subsequent parent access. Error-only children can use
+`await child?`; an error cannot be silently ignored.
 
 ## Cleanup and failure
 

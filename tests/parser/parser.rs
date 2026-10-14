@@ -2,6 +2,14 @@ use zore::ast::*;
 use zore::parser::{Parsed, parse};
 use zore::source::{SourceMap, Span};
 
+#[test]
+fn awaited_task_retrieval_is_a_statement_but_arithmetic_remains_a_value() {
+    Case::body("await child\nawait child?\n").assert_clean();
+    for expression in ["await child + 1", "child", "child?"] {
+        assert!(!Case::body(expression).errors().is_empty(), "{expression}");
+    }
+}
+
 struct Case {
     sources: SourceMap,
     parsed: Parsed,
@@ -734,7 +742,7 @@ fn invalid_assignments_and_bare_expressions_are_rejected() {
         ("1 + 2", "not a statement"),
         ("a == b", "not a statement"),
         ("\"text\"", "not a statement"),
-        ("await task", "not a statement"),
+        ("await task + 1", "not a statement"),
         ("(greet(user))", "not a statement"),
         (";", "empty statement"),
         ("a();;", "empty statement"),

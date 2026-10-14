@@ -23,6 +23,7 @@ self-hosting lexer/parser comparisons cover the syntax.
 | Child result cleanup | Result destructors finish while parent referents remain valid |
 | Scheduling | Plain joins compensate a small worker pool; internal cycles fail with bounded deadlock diagnostic |
 | Async | Accept direct scopes in async functions/literals; retrieval uses `await`, and `.wait()` remains plain-only |
+| Await statements | Retrieve zero-result tasks with `await child`, propagate error-only results with `await child?`, reject unused errors and non-task operands |
 | Async persistence | Pin registry/referents/drop flags and pending transfers; never reuse registry slots or repeat evaluated returns/errors |
 | Async unwind | Poll joins while preserving the original panic across Pending and worker migration; close nested boundaries before parent drops |
 | Completion races | Atomically register wakeups; latch wake-before-park; complete and destroy results exactly once |

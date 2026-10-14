@@ -1,6 +1,55 @@
 use super::*;
 
 #[test]
+fn awaited_void_and_error_only_tasks_are_statements_in_both_task_modes() {
+    let output = run_controlled_one_worker(
+        r#"package main
+type Result struct { Values Array<int> }
+func (v mut Result) drop() { println(v.Values[0]) }
+async func temporary() Result { return Result{Values: Array<int>{42}} }
+async func increment(value mut int, gate channel<bool>) { let _, _ = gate.receive(); value += 1 }
+async func done() {}
+async func ok() error { return nil }
+async func failed() error { return error("stop") }
+async func parent(ready channel<bool>, gate channel<bool>) error {
+    var value = 0
+    let ordinary = go done()
+    await ordinary
+    let unused = go temporary()
+    await unused
+    scope {
+        let child = go increment(value, gate)
+        ready.send(true)
+        await child
+        println(value)
+        let unused = go temporary()
+        await unused
+        let success = go ok()
+        await success?
+        let failure = go failed()
+        await failure?
+    }
+    return nil
+}
+func main() {
+    let ready = channel<bool>()
+    let gate = channel<bool>()
+    let child = go parent(ready, gate)
+    let _, _ = ready.receive()
+    waitPending(2)
+    gate.close()
+    let err = child.wait()
+    println(err == error("stop"))
+    waitIdle(0)
+}
+"#,
+    );
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert_eq!(stdout(&output), "42\n1\n42\ntrue\n");
+    assert!(output.stderr.is_empty(), "{}", stderr(&output));
+}
+
+#[test]
 fn async_scope_awaited_error_joins_the_remaining_child_before_propagation() {
     let output = run_controlled_one_worker(
         r#"package main

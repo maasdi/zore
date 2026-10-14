@@ -21,6 +21,8 @@ once it does.
   registry/borrow/return storage, pollable joins and `await` retrieval, and
   resumable unwind cleanup that preserves panic priority across worker migration.
   Completion-race and one-worker lifecycle tests cover the extension.
+- Allowed awaited task retrieval as a statement, including tasks with no results
+  and error-only `await child?`; unused error results still require explicit use.
 
 ### Performance evidence
 

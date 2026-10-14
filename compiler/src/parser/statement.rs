@@ -294,13 +294,13 @@ impl Parser<'_> {
     pub(super) fn statement(&mut self, simple: StatementOrExpr) -> PResult<Stmt> {
         match simple {
             StatementOrExpr::Stmt(stmt) => Ok(stmt),
-            StatementOrExpr::Expr(expr) if is_call_based(&expr) => Ok(Stmt {
+            StatementOrExpr::Expr(expr) if is_statement_expression(&expr) => Ok(Stmt {
                 span: expr.span,
                 kind: StmtKind::Expr(expr),
             }),
             StatementOrExpr::Expr(expr) => Err(self.report(
                 Diagnostic::new(Severity::Error, "expression is not a statement", expr.span).note(
-                    "only calls can be statements; discard a value explicitly with `_ = value`",
+                    "only calls and task operations can be statements; discard a value explicitly with `_ = value`",
                 ),
             )),
         }
@@ -607,10 +607,10 @@ impl Parser<'_> {
     }
 }
 
-fn is_call_based(expr: &Expr) -> bool {
+fn is_statement_expression(expr: &Expr) -> bool {
     match &expr.kind {
-        ExprKind::Call { .. } | ExprKind::Go(_) => true,
-        ExprKind::Await(inner) | ExprKind::Try(inner) => is_call_based(inner),
+        ExprKind::Call { .. } | ExprKind::Go(_) | ExprKind::Await(_) => true,
+        ExprKind::Try(inner) => is_statement_expression(inner),
         _ => false,
     }
 }

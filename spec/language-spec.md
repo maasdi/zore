@@ -2441,7 +2441,10 @@ func main() {
 ### Expression statements
 
 Calls and task creation may be used as statements, including call-based forms
-with explicit `await` or `?` where their contracts permit. Unused arithmetic,
+with explicit `await` or `?` where their contracts permit. Awaited task retrieval
+may also be a statement, including `await child` for a task with no results or
+`await child?` when propagating its last error result leaves no values. Unused
+arithmetic,
 comparisons, bare identifiers/literals, and other bare value expressions are
 not expression statements. Use an explicit discard assignment when a value is
 intentionally discarded. Ignored non-error call results still require ordinary
@@ -4948,7 +4951,10 @@ same lexical registration, borrowing, handle/view bounds, error observation,
 panic priority and result destruction rules as §18.12. Closing its boundary is
 a suspension point even when the body contains no explicit `await`. It polls
 child completion and registers a wakeup rather than blocking a worker thread.
-Explicit `await handle` retrieval suspends until completion; `.wait()` remains
+Explicit `await handle` retrieval suspends until completion and may be a
+statement when its results are unused, including children with no results.
+An unused error still requires ordinary handling, discard or propagation.
+`.wait()` remains
 restricted to plain bodies under §18.9. Retrieval consumes the handle once;
 ignoring or dropping it does not detach
 the registered child or release its loans.

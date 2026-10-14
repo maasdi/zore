@@ -20,6 +20,9 @@ async func parent(values Array<int>) int {
 }
 func main() {}",
     );
+    accepts(
+        "package main\nasync func update(value mut int) { value += 1 }\nasync func parent() { var value = 0; scope { let child = go update(value); await child; println(value) } }\nfunc main() {}",
+    );
 }
 
 #[test]
@@ -82,6 +85,14 @@ func main() {}",
 
 #[test]
 fn async_scope_keeps_wait_syntax_and_helper_body_boundaries() {
+    rejects(
+        "package main\nasync func parent() { await 1 }\nfunc main() {}",
+        "`await` needs",
+    );
+    rejects(
+        "package main\nasync func fail() error { return error(\"failed\") }\nasync func parent() { scope { let child = go fail(); await child } }\nfunc main() {}",
+        "error result must be used",
+    );
     rejects(
         "package main
 async func read() int { return 1 }
