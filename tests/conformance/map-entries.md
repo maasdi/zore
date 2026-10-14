@@ -19,6 +19,10 @@ result order and ownership-transferring removal remain unchanged.
 | Move cleanup after timer suspension and panic during awaited key | `native::map_entries_async_move_cleanup_survives_timer_suspension_and_key_panics` |
 | Copy/text/view access, unchanged lookup, awaited keys and shared/mutable block bodies | `native::map_entries_copy_text_shared_views_and_awaited_keys_and_bodies_run_normally` |
 
+Self-hosted parser AST modes/names and malformed-header diagnostics match the
+Rust frontend in `selfhost_parser::conditional_entry_binding_headers_and_diagnostics_match`;
+the existing repository/specification and generated/mutated-source corpora also run.
+
 Parser header and line-boundary cases are in `tests/parser/parser.rs`; formatter
 mode preservation and idempotence are in `tests/format/format.rs`.
 
