@@ -240,14 +240,21 @@ impl FunctionBuilder<'_, '_> {
         self.line("switch i32 %state, label %invalid [ i32 0, label %bb0");
         let machine = &self.module.machines.machines[&self.body.function];
         let suspensions = machine.suspensions.clone();
+        let scope_joins = machine.scope_joins.clone();
         let budget_blocks = machine.budget_blocks.clone();
         for (index, _) in suspensions.iter().enumerate() {
             self.line(format!("i32 {}, label %resume.{index}", index + 1));
         }
+        for (index, _) in scope_joins.iter().enumerate() {
+            self.line(format!(
+                "i32 {}, label %resume.scope.{index}",
+                suspensions.len() + index + 1
+            ));
+        }
         for (index, block) in budget_blocks.iter().enumerate() {
             self.line(format!(
                 "i32 {}, label %bb{}",
-                suspensions.len() + index + 1,
+                suspensions.len() + scope_joins.len() + index + 1,
                 block.0
             ));
         }
@@ -260,10 +267,20 @@ impl FunctionBuilder<'_, '_> {
                 .iter()
                 .position(|block| block.0 as usize == index)
             {
-                self.budget_step(Some(suspensions.len() + state + 1));
+                self.budget_step(Some(suspensions.len() + scope_joins.len() + state + 1));
             }
-            for statement in &block.statements {
-                self.statement(statement);
+            for (statement_index, statement) in block.statements.iter().enumerate() {
+                if let mir::Statement::EndTaskScope { scope, unwind } = statement {
+                    let state = scope_joins
+                        .iter()
+                        .position(|&(id, position)| {
+                            id.0 as usize == index && position == statement_index
+                        })
+                        .expect("scope join resume site");
+                    self.suspend_scope_join(state, suspensions.len() + state + 1, *scope, *unwind);
+                } else {
+                    self.statement(statement);
+                }
             }
             if let Some((state, (_, kind))) = suspensions
                 .iter()
@@ -278,6 +295,30 @@ impl FunctionBuilder<'_, '_> {
         self.out
             .insert_str(entry_end, &std::mem::take(&mut self.hoisted));
         self.out.push_str("}\n\n");
+    }
+
+    fn suspend_scope_join(&mut self, index: usize, state: usize, scope: mir::Local, unwind: bool) {
+        self.line(format!("br label %resume.scope.{index}"));
+        self.out.push_str(&format!("resume.scope.{index}:\n"));
+        let value = self.value(&Operand::Copy(Place::local(scope)));
+        let pointer = self.fresh();
+        self.line(format!("{pointer} = inttoptr i64 {value} to ptr"));
+        let ready = self.fresh();
+        self.line(format!(
+            "{ready} = call i8 @zore_scope_join_poll(ptr {pointer}, ptr %context)"
+        ));
+        let finished = self.fresh();
+        self.line(format!("{finished} = icmp ne i8 {ready}, 0"));
+        let (done, pending) = (self.label(), self.label());
+        self.line(format!("br i1 {finished}, label %{done}, label %{pending}"));
+        self.out.push_str(&format!("{pending}:\n"));
+        self.line(format!("store i32 {state}, ptr %frame"));
+        self.line("ret i8 0");
+        self.out.push_str(&format!("{done}:\n"));
+        self.line(format!("store i64 0, ptr %l{}", scope.0));
+        if !unwind {
+            self.check_after_drop(false);
+        }
     }
 
     fn budget_step(&mut self, state: Option<usize>) {
@@ -457,7 +498,17 @@ impl FunctionBuilder<'_, '_> {
             }
             Suspension::Task => {
                 let size = self.byte_size(&block_ty, "1");
-                self.line(format!("{ready} = call i8 @zore_task_poll(ptr {child}, ptr %context, i64 {size}, ptr {output})"));
+                let poll = if matches!(
+                    self.module.package.types.kind(self.operand_ty(&args[0])),
+                    crate::types::TypeKind::ScopedTask(_, _)
+                ) {
+                    "zore_scope_poll"
+                } else {
+                    "zore_task_poll"
+                };
+                self.line(format!(
+                    "{ready} = call i8 @{poll}(ptr {child}, ptr %context, i64 {size}, ptr {output})"
+                ));
             }
             Suspension::Channel | Suspension::Sleep | Suspension::Mutex | Suspension::Io(_) => {
                 unreachable!()

@@ -1,6 +1,7 @@
 //! Requires clang (LLVM 15+) and rustc 1.98+; a missing toolchain fails rather than skips.
 
 mod async_callables;
+mod async_scopes;
 mod conformance;
 mod controlled_runtime;
 mod http;
@@ -5819,11 +5820,19 @@ fn run_controlled(source: &str) -> Output {
     run_bounded(source, None, true)
 }
 
+fn run_controlled_one_worker(source: &str) -> Output {
+    run_bounded_with_workers(source, None, Some(1))
+}
+
 fn run_bounded(source: &str, input: Option<&[u8]>, controlled: bool) -> Output {
+    run_bounded_with_workers(source, input, controlled.then_some(2))
+}
+
+fn run_bounded_with_workers(source: &str, input: Option<&[u8]>, workers: Option<usize>) -> Output {
     let dir = TempDir::new().unwrap();
     let executable = dir.path().join("program");
-    if controlled {
-        controlled_runtime::build(source, &executable);
+    if let Some(workers) = workers {
+        controlled_runtime::build_with_workers(source, &executable, workers);
     } else {
         build_file(source, &executable).unwrap_or_else(|e| panic!("build failed: {e:?}"));
     }

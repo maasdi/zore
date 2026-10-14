@@ -676,7 +676,7 @@ them uses worker compensation. The blocking mutex ABI remains available to plain
 
 ### Lexical task scopes
 
-Plain-function task scopes have stable HIR identities and distinct inferred
+Lexical task scopes have stable HIR identities and distinct inferred
 handle types. MIR records a registry local, eligible referents and independent
 child loan holders; scope exits join before drop insertion, including return,
 loop/error transfers and the unwind block. Unentered/already joined registry
@@ -696,9 +696,18 @@ result destruction, preserves parent panic or chooses the earliest unobserved
 child failure, then discards results in reverse spawn order. It reuses task
 completion, worker compensation and internal deadlock detection.
 
-Direct async scopes are rejected before MIR; asynchronous children can use the
-existing poll engine, and synchronous helpers can join with compensation. No
-ordinary task detach/cancellation rule changes. See [the contract](scoped-tasks.md).
+Async scope-close statements have explicit resume sites in the state-machine
+plan, including each join in the common unwind block. Storage classification
+pins registries and post-join values; registries cannot share frame slots.
+Parent referents and pending transfers survive cleanup suspensions. Polling
+registers a waker under the child-completion lock and advances a scope cursor;
+all completed children remain registered until result destruction. The registry
+slot clears only after Ready, before checking for a newly selected panic.
+
+Task-local panic state already migrates with the scheduler frame, so suspended
+unwind cleanup preserves parent priority without leaking a panic into other
+polls. Async retrieval uses the scoped handle's polling adapter; plain helpers
+still join with compensation. See [the contract](scoped-tasks.md).
 
 ### I/O and helper completion polls
 

@@ -2,6 +2,52 @@ use zore::async_lowering::{self, LocalStorage, Suspension};
 use zore::source::SourceMap;
 use zore::{check, codegen, dropck, hir, mir};
 
+#[test]
+fn scope_only_async_bodies_pin_registries_referents_and_pending_returns() {
+    let (package, program, plan) = plan(
+        "package main
+func read(values Array<int>) int { return values[0] }
+async func parent() int {
+    var total = 0
+    scope { let values = Array<int>{7}; go read(values); total += 1 }
+    scope { let values = Array<int>{8}; go read(values); total += 1 }
+    return total
+}
+func main() {}",
+    );
+    let (body, storage) = storage_for(&package, &program, &plan, "parent");
+    let machine = &plan.machines[&body.function];
+    assert!(machine.suspensions.is_empty());
+    assert!(!machine.scope_joins.is_empty());
+    assert_eq!(named_storage(body, storage, "total"), LocalStorage::Frame);
+    for scope in &body.task_scopes {
+        let registry = scope.registry.0 as usize;
+        assert_eq!(storage[registry], LocalStorage::Frame);
+        assert_eq!(machine.frame_reuse[registry], registry);
+        assert_eq!(
+            machine
+                .frame_reuse
+                .iter()
+                .filter(|&&slot| slot == registry)
+                .count(),
+            1
+        );
+    }
+    for (index, local) in body.locals.iter().enumerate() {
+        if local.name.as_deref() == Some("values")
+            || body.returns.contains(&mir::Local(index as u32))
+        {
+            assert_eq!(storage[index], LocalStorage::Frame);
+        }
+    }
+    assert!(
+        machine
+            .scope_joins
+            .iter()
+            .any(|&(block, _)| Some(block) == body.unwind)
+    );
+}
+
 fn plan(source: &str) -> (hir::Package, mir::Program, async_lowering::Plan) {
     let mut sources = SourceMap::new();
     let id = sources.add("async.ore", source.to_owned()).unwrap();

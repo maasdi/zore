@@ -8,6 +8,7 @@ struct Child {
 
 pub struct Scope {
     children: Vec<Arc<Child>>,
+    joining: usize,
 }
 
 pub struct ScopedHandle {
@@ -18,6 +19,7 @@ pub struct ScopedHandle {
 pub extern "C" fn zore_scope_new() -> *mut Scope {
     Box::into_raw(Box::new(Scope {
         children: Vec::new(),
+        joining: 0,
     }))
 }
 
@@ -30,6 +32,18 @@ impl Scope {
         });
         self.children.push(Arc::clone(&child));
         Box::into_raw(Box::new(ScopedHandle { child }))
+    }
+}
+
+impl Child {
+    fn poll_ready(&self, context: &mut super::super::scheduler::Context) -> bool {
+        let handle = self
+            .handle
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        handle
+            .as_ref()
+            .is_none_or(|handle| handle.shared.poll_ready(context))
     }
 }
 
@@ -86,6 +100,43 @@ pub unsafe extern "C" fn zore_scope_wait(handle: *mut ScopedHandle, size: i64) -
 }
 
 /// # Safety
+/// Retain a unique handle until Ready; context and result output must be live for this poll.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn zore_scope_poll(
+    handle: *mut ScopedHandle,
+    context: *mut super::super::scheduler::Context,
+    size: i64,
+    out: *mut *mut u8,
+) -> u8 {
+    if let Some(handle) = unsafe { handle.as_ref() }
+        && !handle.child.poll_ready(unsafe { &mut *context })
+    {
+        return 0;
+    }
+    unsafe { out.write(zore_scope_wait(handle, size)) };
+    1
+}
+
+/// # Safety
+/// Retain an exclusive scope until Ready; context must be live for this poll.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn zore_scope_join_poll(
+    scope: *mut Scope,
+    context: *mut super::super::scheduler::Context,
+) -> u8 {
+    if let Some(scope) = unsafe { scope.as_mut() } {
+        while let Some(child) = scope.children.get(scope.joining) {
+            if !child.poll_ready(unsafe { &mut *context }) {
+                return 0;
+            }
+            scope.joining += 1;
+        }
+    }
+    unsafe { zore_scope_join(scope) };
+    1
+}
+
+/// # Safety
 /// Consume one uniquely owned scoped handle or null.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn zore_scope_handle_drop(handle: *mut ScopedHandle) {
@@ -138,6 +189,181 @@ mod tests {
     use crate::slot::Slot;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::{Duration, Instant};
+
+    fn registered_result(
+        scope: *mut Scope,
+        drops: &Arc<AtomicUsize>,
+    ) -> (*mut ScopedHandle, Arc<super::super::Shared>) {
+        let size = std::mem::size_of::<Probe>() as i64;
+        let data = zore_alloc(size);
+        let shared = Arc::new(super::super::Shared::default());
+        // SAFETY: this synthetic completion owns one initialized result until retrieval or join.
+        unsafe {
+            data.cast::<Probe>().write(Probe {
+                drops: drops.clone(),
+                gate: None,
+                failure: b"",
+            })
+        };
+        let handle = Box::new(Handle {
+            shared: shared.clone(),
+            block: super::super::Block {
+                data,
+                size,
+                drop_results: discard,
+            },
+        });
+        let handle = unsafe { &mut *scope }.register(Box::into_raw(handle));
+        (handle, shared)
+    }
+
+    fn finish_result(shared: &super::super::Shared) {
+        let mut state = shared.lock();
+        state.finished = true;
+        let waiter = state.waiter.take();
+        drop(state);
+        shared.finished.notify_all();
+        if let Some(waiter) = waiter {
+            waiter.wake();
+        }
+    }
+
+    #[test]
+    fn poll_join_retains_discarded_handles_and_parent_panic_across_pending() {
+        let pool = crate::scheduler::TestPool::new(1);
+        let drops = Arc::new(AtomicUsize::new(0));
+        let scope = zore_scope_new();
+        let (a, first) = registered_result(scope, &drops);
+        let (b, second) = registered_result(scope, &drops);
+        let records: Vec<_> = unsafe { &*scope }
+            .children
+            .iter()
+            .map(Arc::downgrade)
+            .collect();
+        unsafe {
+            zore_scope_handle_drop(a);
+            zore_scope_handle_drop(b);
+        }
+        let scope = scope as usize;
+        let (pending, rx) = std::sync::mpsc::channel();
+        let mut start = true;
+        let observed = drops.clone();
+        let waker = pool.spawn(move |context| {
+            if std::mem::take(&mut start) {
+                crate::panic::raise(b"parent");
+            }
+            assert!(crate::panic::zore_panic_pending());
+            let ready = unsafe { zore_scope_join_poll(scope as *mut Scope, context) };
+            if ready == 0 {
+                assert_eq!(observed.load(Ordering::SeqCst), 0);
+                pending.send(()).unwrap();
+                crate::scheduler::Poll::Pending
+            } else {
+                assert_eq!(crate::panic::take(), Some(b"parent".to_vec()));
+                crate::scheduler::Poll::Ready
+            }
+        });
+        rx.recv_timeout(Duration::from_secs(10)).unwrap();
+        finish_result(&second);
+        waker.wake_by_ref();
+        rx.recv_timeout(Duration::from_secs(10)).unwrap();
+        assert!(records.iter().all(|record| record.upgrade().is_some()));
+        finish_result(&first);
+        pool.idle();
+        assert_eq!(drops.load(Ordering::SeqCst), 2);
+        assert!(records.iter().all(|record| record.upgrade().is_none()));
+        assert!(!crate::panic::zore_panic_pending());
+    }
+
+    #[test]
+    fn scoped_poll_retrieval_transfers_results_once_without_scope_discard() {
+        let pool = crate::scheduler::TestPool::new(1);
+        let drops = Arc::new(AtomicUsize::new(0));
+        let scope = zore_scope_new();
+        let (handle, shared) = registered_result(scope, &drops);
+        let (scope, handle) = (scope as usize, handle as usize);
+        let (pending, rx) = std::sync::mpsc::channel();
+        let observed = drops.clone();
+        pool.spawn(move |context| {
+            let mut result = std::ptr::null_mut();
+            let ready = unsafe {
+                zore_scope_poll(
+                    handle as *mut ScopedHandle,
+                    context,
+                    std::mem::size_of::<Probe>() as i64,
+                    &mut result,
+                )
+            };
+            if ready == 0 {
+                pending.send(()).unwrap();
+                return crate::scheduler::Poll::Pending;
+            }
+            assert_eq!(
+                unsafe { zore_scope_join_poll(scope as *mut Scope, context) },
+                1
+            );
+            assert_eq!(observed.load(Ordering::SeqCst), 0);
+            let probe = unsafe { result.cast::<Probe>().read() };
+            probe.drops.fetch_add(1, Ordering::SeqCst);
+            unsafe { zore_free(result, std::mem::size_of::<Probe>() as i64) };
+            crate::scheduler::Poll::Ready
+        });
+        rx.recv_timeout(Duration::from_secs(10)).unwrap();
+        finish_result(&shared);
+        pool.idle();
+        assert_eq!(drops.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn scope_join_completion_before_pending_is_latched() {
+        let pool = crate::scheduler::TestPool::new(1);
+        let drops = Arc::new(AtomicUsize::new(0));
+        let scope = zore_scope_new();
+        let (handle, shared) = registered_result(scope, &drops);
+        unsafe { zore_scope_handle_drop(handle) };
+        let scope = scope as usize;
+        let calls = Arc::new(AtomicUsize::new(0));
+        let polled = calls.clone();
+        pool.spawn(move |context| {
+            polled.fetch_add(1, Ordering::SeqCst);
+            if unsafe { zore_scope_join_poll(scope as *mut Scope, context) } == 0 {
+                finish_result(&shared);
+                crate::scheduler::Poll::Pending
+            } else {
+                crate::scheduler::Poll::Ready
+            }
+        });
+        pool.idle();
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+        assert_eq!(drops.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn scope_poll_registration_races_do_not_lose_completion_or_repeat_destruction() {
+        let pool = crate::scheduler::TestPool::new(4);
+        let drops = Arc::new(AtomicUsize::new(0));
+        for index in 0..128 {
+            let scope = zore_scope_new();
+            let (handle, shared) = registered_result(scope, &drops);
+            unsafe { zore_scope_handle_drop(handle) };
+            let scope = scope as usize;
+            if index % 2 == 0 {
+                finish_result(&shared);
+            }
+            pool.spawn(move |context| {
+                if unsafe { zore_scope_join_poll(scope as *mut Scope, context) } == 0 {
+                    crate::scheduler::Poll::Pending
+                } else {
+                    crate::scheduler::Poll::Ready
+                }
+            });
+            if index % 2 != 0 {
+                finish_result(&shared);
+            }
+        }
+        pool.idle();
+        assert_eq!(drops.load(Ordering::SeqCst), 128);
+    }
 
     struct Probe {
         drops: Arc<AtomicUsize>,

@@ -1,8 +1,8 @@
-# Lexical task scopes (§18.12)
+# Lexical task scopes (§§18.12–18.13)
 
-The plain-function stage is locked and implemented. Direct async scopes remain
-rejected. Executable ownership cases live in `tests/ownership/scoped_tasks.rs`,
-native lifecycle cases in `tests/codegen/scoped_tasks.rs`, and record/result
+Plain and direct async scopes are locked and implemented. Executable ownership
+cases live in `tests/ownership/scoped_tasks.rs`, native lifecycle cases in
+`tests/codegen/scoped_tasks.rs` and `tests/codegen/async_scopes.rs`, and record/result
 ownership units in `runtime/src/task_scope.rs`. Lexer/formatter regressions and
 self-hosting lexer/parser comparisons cover the syntax.
 
@@ -22,7 +22,11 @@ self-hosting lexer/parser comparisons cover the syntax.
 | Repeated spawn site | Each child has stable capture/argument storage, including inside loops |
 | Child result cleanup | Result destructors finish while parent referents remain valid |
 | Scheduling | Plain joins compensate a small worker pool; internal cycles fail with bounded deadlock diagnostic |
-| Async | Accept async children/plain helpers; reject scopes directly in async functions/closures |
+| Async | Accept direct scopes in async functions/literals; retrieval uses `await`, and `.wait()` remains plain-only |
+| Async persistence | Pin registry/referents/drop flags and pending transfers; never reuse registry slots or repeat evaluated returns/errors |
+| Async unwind | Poll joins while preserving the original panic across Pending and worker migration; close nested boundaries before parent drops |
+| Completion races | Atomically register wakeups; latch wake-before-park; complete and destroy results exactly once |
+| Async scheduling | Progress on one worker through suspending joins; internal cycles still produce bounded fatal deadlock diagnostics |
 | Ordinary tasks | Existing independent-input rejection, detach and process-exit behavior unchanged |
 | Frontend/tooling | Parse/format round trip, exact lowercase `scope` keyword without an alias, scoped diagnostics and unused-body checking |
 

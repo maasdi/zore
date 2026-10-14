@@ -4489,7 +4489,8 @@ spawning it and later retrieving it from the task (§18.9).
 
 `await` is valid only inside the body of an `async func`. Its operand is
 either a call to an `async func` or to a value of async function type (§16.2),
-or a `Task<...>` value (§18.9). Using `await`
+or a `Task<...>` value (§18.9), including an inferred scoped task handle
+(§18.12). Using `await`
 anywhere else — including in a synchronous function or a non-async closure —
 is a compile-time error. A synchronous function reaches async work only by
 spawning it with `go`.
@@ -4829,10 +4830,10 @@ Compiler impact: none; this is a runtime contract. Pending conformance cases:
 
 ---
 
-## 18.12 Lexical task scopes, plain-function stage — LOCKED
+## 18.12 Lexical task scopes — LOCKED
 
-`scope { statements }` is an optional lexical block, accepted only in a
-plain `func`, including a plain closure. `scope` is a keyword. Every `go`
+`scope { statements }` is an optional lexical block in a plain or async
+`func`, including closures. Async boundaries follow §18.13. `scope` is a keyword. Every `go`
 written within its body or nested ordinary blocks registers with the innermost
 lexical task scope. Calls and closure bodies do not inherit that scope. A nested
 task scope has its own registry. Ordinary tasks outside these blocks retain
@@ -4865,8 +4866,9 @@ Only retrieval and explicit drop may consume it: returning it, moving it to an
 outer or nested task scope, storing it in a field/collection/channel, passing
 it to a function, or capturing it in a closure is rejected. Dropping or
 ignoring a handle retains its registered child and its loans until mandatory
-completion. `.wait()` consumes the handle and observes its one-shot results;
-a successful wait ends input loans except provenance carried by the results.
+completion. Retrieval follows §18.9: `.wait()` in plain code or `await` in
+async code consumes the handle and observes its one-shot results. Successful
+retrieval ends input loans except provenance carried by the results.
 The initial checker requires unique child identity to end those loans: merged
 handles or several live children from one repeated site retain potentially
 outstanding loans until the boundary. Returned views may conservatively retain
@@ -4924,10 +4926,9 @@ unobserved child panic is re-raised, superseding a pending return/error.
 Cleanup destructor panics obey existing panic/double-panic rules. Process abort,
 external termination and fatal deadlock make no cleanup guarantee.
 
-Blocking joins reuse worker compensation and internal deadlock accounting;
-compensation does not solve program-level cycles. Direct scopes in async
-functions are rejected until a separately locked/tested persistent registry,
-pollable join and unwind-cleanup stage exists. A plain helper with its own scope
+Plain joins reuse worker compensation and internal deadlock accounting;
+compensation does not solve program-level cycles. Async joins suspend under
+§18.13. A plain helper with its own scope
 may be called from async code and blocks with the usual compensation guarantee.
 Plain and async children are both permitted in a plain task scope. Existing
 generic-body go restrictions remain; direct task-scope blocks in generic bodies
@@ -4937,8 +4938,64 @@ Compiler impact: preserve scope identities through AST/HIR/MIR; distinguish
 scoped handles, bounds and child-owned versus borrowed captures; keep child
 loans independently of handle liveness; insert joins before any cleanup on
 all exits, including unwind; preserve source spans and argument evaluation.
-Conformance cases: `tests/conformance/scoped-tasks.md`. This stage adds no
-ordinary task-lifetime exception outside the explicit block and no async scope.
+Conformance cases: `tests/conformance/scoped-tasks.md`. This adds no
+ordinary task-lifetime exception outside the explicit block.
+
+## 18.13 Async lexical task scopes — LOCKED
+
+A `scope` directly inside an async function or explicit async closure has the
+same lexical registration, borrowing, handle/view bounds, error observation,
+panic priority and result destruction rules as §18.12. Closing its boundary is
+a suspension point even when the body contains no explicit `await`. It polls
+child completion and registers a wakeup rather than blocking a worker thread.
+Explicit `await handle` retrieval suspends until completion; `.wait()` remains
+restricted to plain bodies under §18.9. Retrieval consumes the handle once;
+ignoring or dropping it does not detach
+the registered child or release its loans.
+
+```ore
+async func read(values Array<int>) int { return values[0] }
+async func combined(values Array<int>) int {
+    scope {
+        let first = go read(values)
+        let second = go read(values)
+        return (await first) + (await second)
+    }
+}
+```
+
+Eligible parent storage and outstanding child loans remain valid across every
+body and cleanup suspension, under §17.6. Return/error operands are evaluated
+once before joining and preserved while cleanup waits. No parent referent may
+be destroyed or reused while a registered child can still access it. Nested
+boundaries finish from inside out on normal exit and unwinding. Scopes are not
+inherited by plain or async helper/closure bodies.
+
+Unwinding itself may suspend to join remaining children. An existing parent
+panic follows that computation across polls and worker migration; it is not
+raised again at each resume and cannot leak into another task. All children
+finish before unretrieved result destruction and parent cleanup. If there was
+no parent panic, the earliest spawned unobserved child panic supersedes a
+pending return/error after every child finishes. Explicit retrieval observes
+its child's panic first. Destructor panic and double-panic behavior remains
+unchanged. Fatal deadlock, process abort and external termination do not
+promise cleanup.
+
+A pending join preserves its completion obligation and receives wakeups even
+when a child finishes before the parent parks. Runnable children progress on
+a one-worker pool without blocking join compensation. Program dependency
+cycles remain fatal deadlocks; joining implies no cancellation, timeout or
+error aggregation. Existing generic-body and conservative provenance
+restrictions remain unchanged.
+
+Compiler impact: represent scope-close suspension sites in async state
+machines, keep registry identities, eligible referents, drop flags and pending
+transfers in persistent frame storage, and resume cleanup at its saved position
+without repeating prior work. The registry remains live until a completed
+join consumes it. Runtime polling atomically observes child completion and
+registers the current task's waker. Conformance includes every normal/error/
+panic exit, wake-before-park and completion races, nested scopes, discarded
+handles, result ownership/cleanup and one-worker progress.
 
 ---
 

@@ -195,7 +195,7 @@ func main() {
 
 #[test]
 fn scope_async_children_and_plain_helpers_progress_with_one_pool_worker() {
-    let output = run_controlled(
+    let output = run_controlled_one_worker(
         r#"package main
 async func read(values Array<int>) int { return values[0] }
 func helper(values Array<int>) int {

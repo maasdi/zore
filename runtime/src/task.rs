@@ -34,6 +34,16 @@ impl Shared {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
+
+    fn poll_ready(&self, context: &mut super::scheduler::Context) -> bool {
+        let mut state = self.lock();
+        if state.finished {
+            return true;
+        }
+        state.waiter = Some(context.waker().clone().into());
+        context.pending_internal();
+        false
+    }
 }
 
 /// What the task owns: a block holding its closure, then its results.
@@ -157,15 +167,10 @@ pub unsafe extern "C" fn zore_task_poll(
     size: i64,
     out: *mut *mut u8,
 ) -> u8 {
-    if let Some(handle_ref) = unsafe { handle.as_ref() } {
-        let mut state = handle_ref.shared.lock();
-        if !state.finished {
-            // SAFETY: this context is live only for the current poll; its waker is cloned.
-            let context = unsafe { &mut *context };
-            state.waiter = Some(context.waker().clone().into());
-            context.pending_internal();
-            return 0;
-        }
+    if let Some(handle_ref) = unsafe { handle.as_ref() }
+        && !handle_ref.shared.poll_ready(unsafe { &mut *context })
+    {
+        return 0;
     }
     // SAFETY: Ready transfers the uniquely owned handle to the ordinary result retrieval path.
     unsafe { out.write(zore_task_wait(handle, size)) };

@@ -14,9 +14,13 @@ once it does.
   parent storage cleanup on normal, error, loop-transfer and panic exits.
 - Added scoped handle/view bounds, mixed owned/borrowed capture environments,
   deterministic panic priority and reverse result cleanup. Ordinary task APIs
-  and detach behavior are unchanged; direct async scopes remain rejected.
+  and detach behavior are unchanged.
 - Added syntax/tooling, ownership, native lifecycle and runtime regressions,
   a runnable example and the locked plain-function contract.
+- Added direct scopes in async functions/literals under §18.13, with persistent
+  registry/borrow/return storage, pollable joins and `await` retrieval, and
+  resumable unwind cleanup that preserves panic priority across worker migration.
+  Completion-race and one-worker lifecycle tests cover the extension.
 
 ### Performance evidence
 
