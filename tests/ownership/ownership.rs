@@ -1,6 +1,8 @@
 use zore::check::{Checked, check_file};
 use zore::source::SourceMap;
 
+mod map_entries;
+
 struct Case {
     sources: SourceMap,
     checked: Checked,

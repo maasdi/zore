@@ -5,6 +5,7 @@ mod interface;
 mod io;
 mod layout;
 mod llvm;
+mod map_entry;
 mod mutex;
 mod native;
 mod state_machine;

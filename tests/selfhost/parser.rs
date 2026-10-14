@@ -767,16 +767,19 @@ impl Printer<'_> {
             Some(Else::If(nested)) => self.if_stmt(nested),
             Some(Else::Block(block)) => self.block(block),
         };
-        node(
-            "if",
-            Some(if_stmt.span),
-            "",
-            &[
-                self.expr(&if_stmt.condition),
-                self.block(&if_stmt.then_block),
-                otherwise,
-            ],
-        )
+        let mut children = Vec::new();
+        let access = if let Some(binding) = &if_stmt.binding {
+            children.push(self.name(&binding.name));
+            if binding.mutable { "mut" } else { "borrow" }
+        } else {
+            ""
+        };
+        children.extend([
+            self.expr(&if_stmt.condition),
+            self.block(&if_stmt.then_block),
+            otherwise,
+        ]);
+        node("if", Some(if_stmt.span), access, &children)
     }
 }
 
@@ -1285,4 +1288,26 @@ fn invalid_utf8_is_rejected_before_parsing() {
 #[test]
 fn diagnostic_file_handles_preserve_duplicate_paths_and_cross_file_labels() {
     compare(&[Case::text("source identity", IDENTITY, "")]);
+}
+
+#[test]
+fn conditional_entry_binding_headers_and_diagnostics_match() {
+    let cases: Vec<_> = [
+        "if user = users.entry(id) { println(user.Name) }",
+        "if mut user = users.entry(id) { user.Visits += 1 } else { return }",
+        "if user = users.entry(id) {} else if mut user = users.entry(other) {} else if ready {}",
+        "if user == other {}",
+        "if mut user = users.entry(id)\n{}",
+        "if user = users.entry(id) {}\nelse {}",
+        "if mut = users.entry(id) {}",
+        "if mut user users.entry(id) {}",
+        "if mut _ = users.entry(id) {}",
+        "if let user = users.entry(id) {}",
+        "if (user = users.entry(id)) {}",
+    ]
+    .into_iter()
+    .enumerate()
+    .map(|(index, text)| parse_case(format!("entry binding {index}"), &body(text)))
+    .collect();
+    compare(&cases);
 }

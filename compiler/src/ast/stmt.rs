@@ -85,7 +85,14 @@ pub enum AssignOp {
 }
 
 #[derive(Clone, Debug, PartialEq)]
+pub struct EntryBinding {
+    pub name: Name,
+    pub mutable: bool,
+}
+
+#[derive(Clone, Debug, PartialEq)]
 pub struct If {
+    pub binding: Option<Box<EntryBinding>>,
     pub condition: Expr,
     pub then_block: Block,
     pub else_branch: Option<Else>,

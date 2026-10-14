@@ -347,6 +347,22 @@ impl<'a> Analysis<'a> {
                         state[local.0 as usize].clear();
                     }
                 }
+                Statement::EndMapEntry { guard, .. } => {
+                    if let Some(findings) = findings.as_deref_mut() {
+                        let mut accesses = Vec::new();
+                        self.operand_accesses(
+                            &Operand::Ref(Place::local(guard.entry)),
+                            None,
+                            guard.span,
+                            &mut accesses,
+                        );
+                        self.operand_accesses(&guard.key, None, guard.span, &mut accesses);
+                        let live = findings.live.before(block_id, position);
+                        for access in &accesses {
+                            self.check_access(access, live, state, findings);
+                        }
+                    }
+                }
                 Statement::Drop { .. } | Statement::SetGlobal { .. } => {}
             }
         }
@@ -1348,13 +1364,23 @@ impl<'a> Analysis<'a> {
                 loans.extend(inherited);
                 loans
             }
-            Rvalue::Ref(place) | Rvalue::MapValueRef(place, _) => {
+            Rvalue::Ref(place)
+            | Rvalue::RefMut(place)
+            | Rvalue::MapValueRef(place, _)
+            | Rvalue::MapEntryRef { map: place, .. } => {
                 let mut path = Path::of(self.package, self.body, place);
-                if matches!(rvalue, Rvalue::MapValueRef(..)) {
+                if matches!(rvalue, Rvalue::MapValueRef(..) | Rvalue::MapEntryRef { .. }) {
                     path.elems.push(PathElem::Index);
                 }
                 let loan = Loan {
-                    kind: LoanKind::Shared,
+                    kind: if matches!(
+                        rvalue,
+                        Rvalue::RefMut(_) | Rvalue::MapEntryRef { mutable: true, .. }
+                    ) {
+                        LoanKind::Exclusive
+                    } else {
+                        LoanKind::Shared
+                    },
                     target: LoanTarget::Place(path),
                     span: site.span,
                     name: self.describe(place),
@@ -1395,7 +1421,8 @@ impl<'a> Analysis<'a> {
                 }
                 loans
             }
-            Rvalue::Zero
+            Rvalue::ReferencePresent(_)
+            | Rvalue::Zero
             | Rvalue::Global(_)
             | Rvalue::Binary(..)
             | Rvalue::Unary(..)
@@ -1479,18 +1506,32 @@ impl<'a> Analysis<'a> {
                     false,
                 ));
             }
-            Rvalue::Ref(place) => {
+            Rvalue::Ref(place) | Rvalue::RefMut(place) | Rvalue::ReferencePresent(place) => {
                 self.index_accesses(place, span, out);
                 out.push(self.access(
                     place,
-                    AccessKind::Read,
+                    if matches!(rvalue, Rvalue::RefMut(_)) {
+                        AccessKind::Write
+                    } else {
+                        AccessKind::Read
+                    },
                     Depth::Deep,
-                    Action::Borrow,
+                    if matches!(rvalue, Rvalue::RefMut(_)) {
+                        Action::MutBorrow
+                    } else {
+                        Action::Borrow
+                    },
                     span,
                     false,
                 ));
             }
-            Rvalue::MapKeyAt(place, position) | Rvalue::MapValueRef(place, position) => {
+            Rvalue::MapKeyAt(place, position)
+            | Rvalue::MapValueRef(place, position)
+            | Rvalue::MapEntryRef {
+                map: place,
+                key: position,
+                ..
+            } => {
                 out.push(self.access(
                     place,
                     AccessKind::Read,
@@ -1616,6 +1657,13 @@ impl<'a> Analysis<'a> {
                 format!("cannot borrow `{name}` as mutable because it is already borrowed")
             }
             Action::Move => format!("cannot move `{name}` while it is borrowed"),
+            Action::StorageDead if self.body.returns.contains(&holder) => {
+                let owner = match &self.body.locals[access.path.local.0 as usize].name {
+                    Some(name) => format!("local `{name}`"),
+                    None => "a temporary value".to_string(),
+                };
+                format!("cannot return a view of {owner}")
+            }
             Action::StorageDead
                 if self.body.locals[access.path.local.0 as usize]
                     .name
@@ -1889,6 +1937,11 @@ impl Liveness {
                     }
                 }
             }
+            Statement::EndMapEntry { guard, .. } => {
+                Self::use_place(&Place::local(guard.entry), live);
+                Self::use_place(&guard.map, live);
+                Self::use_operand(&guard.key, live);
+            }
             Statement::Drop { .. } => {}
             Statement::SetGlobal { value, .. } => Self::use_operand(value, live),
         }
@@ -1997,8 +2050,17 @@ impl Liveness {
                     Self::use_operand(operand, live);
                 }
             }
-            Rvalue::Length(place) | Rvalue::Ref(place) => Self::use_place(place, live),
-            Rvalue::MapKeyAt(place, position) | Rvalue::MapValueRef(place, position) => {
+            Rvalue::Length(place)
+            | Rvalue::Ref(place)
+            | Rvalue::RefMut(place)
+            | Rvalue::ReferencePresent(place) => Self::use_place(place, live),
+            Rvalue::MapKeyAt(place, position)
+            | Rvalue::MapValueRef(place, position)
+            | Rvalue::MapEntryRef {
+                map: place,
+                key: position,
+                ..
+            } => {
                 Self::use_place(place, live);
                 Self::use_operand(position, live);
             }

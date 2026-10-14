@@ -1231,7 +1231,23 @@ impl<'a> Resolver<'a> {
 
     fn if_stmt(&mut self, if_stmt: &'a ast::If) {
         self.expr(&if_stmt.condition);
-        self.block(&if_stmt.then_block);
+        if let Some(binding) = &if_stmt.binding {
+            self.scopes.push(HashMap::new());
+            self.new_local(
+                &binding.name,
+                LocalKind::Entry(if binding.mutable {
+                    ast::ParamMode::Mut
+                } else {
+                    ast::ParamMode::Borrow
+                }),
+            );
+            for stmt in &if_stmt.then_block.stmts {
+                self.stmt(stmt);
+            }
+            self.scopes.pop();
+        } else {
+            self.block(&if_stmt.then_block);
+        }
         match &if_stmt.else_branch {
             Some(ast::Else::If(inner)) => self.if_stmt(inner),
             Some(ast::Else::Block(block)) => self.block(block),

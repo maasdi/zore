@@ -7,7 +7,7 @@ use crate::ast::{BinaryOp, UnaryOp};
 use crate::diagnostic::{Diagnostic, Severity};
 use crate::hir::{self, Const};
 use crate::mir::{self, AggregateKind, Callee, Local, Operand, Place, Rvalue, Terminator};
-use crate::resolve::{FieldId, FunctionId};
+use crate::resolve::{FieldId, FunctionId, LocalKind};
 use crate::source::{Sources, Span};
 use crate::types::{IntType, TypeId, TypeKind};
 
@@ -450,6 +450,11 @@ impl FunctionBuilder<'_, '_> {
         let entry_allocas_end = self.out.len();
         for index in 0..self.body.locals.len() {
             let local = Local(index as u32);
+            if function.locals.get(index).is_some_and(|local| {
+                matches!(local.kind, LocalKind::Entry(crate::ast::ParamMode::Mut))
+            }) {
+                self.line(format!("store ptr null, ptr %l{index}"));
+            }
             if !self.body.locals[index].by_reference && package.needs_drop(self.local_ty(local)) {
                 self.set_flags(&Place::local(local), false);
             }
@@ -776,7 +781,10 @@ impl FunctionBuilder<'_, '_> {
     /// A by-reference local designates the referent and borrows its drop flags.
     fn bind_reference(&mut self, local: Local, rvalue: &Rvalue) {
         let (address, ty) = match rvalue {
-            Rvalue::Ref(place) => (self.address(place), self.place_ty(place)),
+            Rvalue::Ref(place) | Rvalue::RefMut(place) => {
+                (self.address(place), self.place_ty(place))
+            }
+            Rvalue::MapEntryRef { map, key, .. } => self.map_entry_reference(map, key),
             Rvalue::MapValueRef(map, position) => {
                 let TypeKind::Map { value, .. } =
                     self.module.package.types.kind(self.place_ty(map))
@@ -798,7 +806,7 @@ impl FunctionBuilder<'_, '_> {
         self.line(format!("store ptr {address}, ptr %l{}", local.0));
         if self.module.package.needs_drop(ty) {
             let flags = match rvalue {
-                Rvalue::Ref(place)
+                Rvalue::Ref(place) | Rvalue::RefMut(place)
                     if !place
                         .projections
                         .iter()
@@ -1260,6 +1268,7 @@ impl FunctionBuilder<'_, '_> {
                     self.check_after_drop(abort);
                 }
             }
+            mir::Statement::EndMapEntry { guard, unwind } => self.end_map_entry(guard, *unwind),
             mir::Statement::EndScope(_) => unreachable!("drop insertion replaces scope markers"),
             mir::Statement::SetGlobal { global, value, .. } => {
                 let ty = self.module.package.globals[global.0 as usize].ty;
@@ -1273,7 +1282,11 @@ impl FunctionBuilder<'_, '_> {
     }
 
     pub(super) fn assign_rvalue(&mut self, place: &Place, rvalue: &Rvalue, span: Span) {
-        if let Rvalue::Ref(_) | Rvalue::MapValueRef(..) = rvalue {
+        if let Rvalue::Ref(_)
+        | Rvalue::RefMut(_)
+        | Rvalue::MapValueRef(..)
+        | Rvalue::MapEntryRef { .. } = rvalue
+        {
             self.bind_reference(place.local, rvalue);
             return;
         }
@@ -1317,8 +1330,20 @@ impl FunctionBuilder<'_, '_> {
                 self.line(format!("{next} = add i64 {position}, {width}"));
                 next
             }
+            Rvalue::ReferencePresent(place) => {
+                let reference = self.fresh();
+                self.line(format!("{reference} = load ptr, ptr %l{}", place.local.0));
+                let present = self.fresh();
+                self.line(format!("{present} = icmp ne ptr {reference}, null"));
+                present
+            }
             Rvalue::MapKeyAt(map, position) => self.map_key_at(map, position),
-            Rvalue::Ref(_) | Rvalue::MapValueRef(..) => unreachable!("bound above"),
+            Rvalue::Ref(_)
+            | Rvalue::RefMut(_)
+            | Rvalue::MapValueRef(..)
+            | Rvalue::MapEntryRef { .. } => {
+                unreachable!("bound above")
+            }
             Rvalue::Slice {
                 place, low, high, ..
             } => self.slice(place, low.as_ref(), high.as_ref(), span),

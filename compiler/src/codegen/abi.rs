@@ -429,7 +429,7 @@ impl FunctionBuilder<'_, '_> {
         None
     }
 
-    fn map_key(&mut self, operand: &Operand, ty: TypeId) -> (String, String) {
+    pub(super) fn map_key(&mut self, operand: &Operand, ty: TypeId) -> (String, String) {
         let value = self.value(operand);
         let slot = self.fresh();
         match self.module.package.types.kind(ty) {
@@ -461,7 +461,7 @@ impl FunctionBuilder<'_, '_> {
         }
     }
 
-    fn zeroed_buffer(&mut self, ty: &str) -> String {
+    pub(super) fn zeroed_buffer(&mut self, ty: &str) -> String {
         let buffer = self.fresh();
         self.hoist_alloca(&buffer, ty);
         self.line(format!("store {ty} zeroinitializer, ptr {buffer}"));

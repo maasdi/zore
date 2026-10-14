@@ -1765,3 +1765,41 @@ fn named_type_declarations_keep_their_base_type() {
         matches!(&name.base, Type::Qualified { package, name, .. } if package.text == "pkg" && name.text == "Text")
     );
 }
+
+#[test]
+fn conditional_entry_bindings_keep_modes_names_and_comparison_distinct() {
+    let case = Case::body(
+        "if value = values.entry(1) {} else if mut next = values.entry(2) {}\nif value == 1 {}",
+    );
+    case.assert_clean();
+    let StmtKind::If(branch) = &case.main_stmts()[0].kind else {
+        panic!("expected if")
+    };
+    let binding = branch.binding.as_ref().unwrap();
+    assert_eq!(binding.name.text, "value");
+    assert!(!binding.mutable);
+    assert_eq!(case.text(branch.condition.span), "values.entry(1)");
+    let Some(Else::If(next)) = &branch.else_branch else {
+        panic!("expected else if")
+    };
+    let binding = next.binding.as_ref().unwrap();
+    assert_eq!(binding.name.text, "next");
+    assert!(binding.mutable);
+    let StmtKind::If(comparison) = &case.main_stmts()[1].kind else {
+        panic!("expected comparison")
+    };
+    assert!(comparison.binding.is_none());
+}
+
+#[test]
+fn conditional_entry_bindings_retain_header_and_else_line_rules() {
+    for source in [
+        "if mut value = values.entry(1)\n{}",
+        "if value = values.entry(1) {}\nelse {}",
+        "if mut = values.entry(1) {}",
+        "if mut value values.entry(1) {}",
+    ] {
+        let case = Case::body(source);
+        assert!(!case.errors().is_empty(), "{source}");
+    }
+}

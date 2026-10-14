@@ -1,0 +1,24 @@
+package main
+
+func main() {
+    var documents = map[string]Document{
+        "report": Document{name: "report", data: Array<byte>{104, 105}},
+    }
+
+    if document = documents.entry("report") {
+        println(document.data.len())
+    }
+    if mut document = documents.entry("report") {
+        document.data.push(33)
+    } else {
+        panic("report not found")
+    }
+    if document = documents.entry("report") {
+        println(document.data.len())
+    }
+    if document = documents.entry("missing") {
+        panic("a missing entry must skip the block")
+    } else {
+        println("document not found")
+    }
+}

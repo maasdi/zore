@@ -9,6 +9,10 @@ once it does.
 
 ### Language specification
 
+- Locked conditional borrowed map entries (§13.4): `if name = map.entry(key)`
+  and `if mut name = map.entry(key)`, optional missing branches, ordinary control
+  flow and scoped borrowing/cleanup. Mutable view-containing entries remain excluded.
+
 - Locked application test discovery, signatures, package access, native process
   isolation, failure reporting and cleanup in §45.1. Ordinary builds and imports
   exclude `_test.ore` files.
@@ -96,6 +100,9 @@ once it does.
 - Added `zore fmt <file|directory>` and `--check`, with syntax validation,
   comment/literal and statement-boundary preservation, recursive source
   discovery, and atomic replacement of each changed file.
+- Added conditional map-entry bindings for Copy/Move values, using existing map
+  lookup and ownership checking, with receiver borrows, ordinary block control flow
+  and initialized-part cleanup on mutable panic. Added paired regressions and a Move example.
 - Added `zore test <file|directory>`, using ordinary checking and native linking,
   one build per package and one process per test. Tests can return nothing or
   `error`; errors and panics fail their test while later tests continue.

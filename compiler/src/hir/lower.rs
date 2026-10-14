@@ -5,6 +5,7 @@ mod globals;
 mod http;
 mod interface;
 mod json;
+mod map_entry;
 mod method_value;
 mod spawn;
 
@@ -125,6 +126,7 @@ pub(crate) fn check_with_entry(
         .chain(std::mem::take(&mut checker.generated_functions))
         .collect();
     let struct_methods = checker.instantiate(&mut functions);
+    checker.check_map_entries(&mut functions);
     if let Some(template) = checker.types.take_runaway() {
         let decl = checker.res.structs[template.0 as usize];
         checker.error(
@@ -3110,7 +3112,9 @@ impl<'a> Checker<'a> {
                 let (name, decl_span) = (decl.name.clone(), decl.span);
                 let kind = self.binding_kind(*id);
                 let (what, note) = match kind {
-                    LocalKind::Var | LocalKind::Param(ast::ParamMode::Mut) => {
+                    LocalKind::Var
+                    | LocalKind::Param(ast::ParamMode::Mut)
+                    | LocalKind::Entry(ast::ParamMode::Mut) => {
                         self.mark_exclusive(*id);
                         return true;
                     }
@@ -3125,7 +3129,8 @@ impl<'a> Checker<'a> {
                             MutableUse::Slice => "declare it with `var` to borrow it mutably",
                         },
                     ),
-                    LocalKind::Param(ast::ParamMode::Borrow) => (
+                    LocalKind::Param(ast::ParamMode::Borrow)
+                    | LocalKind::Entry(ast::ParamMode::Borrow) => (
                         "shared parameter",
                         "a parameter is a shared borrow unless declared `mut`",
                     ),
@@ -3133,7 +3138,8 @@ impl<'a> Checker<'a> {
                         "loop item",
                         "a loop item is a shared borrow of the current element",
                     ),
-                    LocalKind::Param(ast::ParamMode::Own) => (
+                    LocalKind::Param(ast::ParamMode::Own)
+                    | LocalKind::Entry(ast::ParamMode::Own) => (
                         "`own` parameter",
                         "only `var` bindings and `mut` parameters are mutable places",
                     ),
@@ -4421,7 +4427,10 @@ impl<'a> Checker<'a> {
     }
 
     fn if_stmt(&mut self, if_stmt: &ast::If) -> Option<hir::StmtKind> {
-        let condition = self.condition(&if_stmt.condition);
+        let condition = match &if_stmt.binding {
+            Some(binding) => self.map_entry(binding, &if_stmt.condition),
+            None => self.condition(&if_stmt.condition),
+        };
         let then_block = self.block(&if_stmt.then_block);
         let else_block = match &if_stmt.else_branch {
             None => None,
@@ -4616,7 +4625,9 @@ impl<'a> Checker<'a> {
         let decl = &self.res.locals[self.current][place.root.0 as usize];
         let (name, decl_span) = (decl.name.clone(), decl.span);
         match self.binding_kind(place.root) {
-            LocalKind::Var | LocalKind::Param(ast::ParamMode::Mut) => {
+            LocalKind::Var
+            | LocalKind::Param(ast::ParamMode::Mut)
+            | LocalKind::Entry(ast::ParamMode::Mut) => {
                 self.mark_exclusive(place.root);
                 true
             }
@@ -4633,7 +4644,7 @@ impl<'a> Checker<'a> {
                 );
                 false
             }
-            LocalKind::Param(ast::ParamMode::Borrow) => {
+            LocalKind::Param(ast::ParamMode::Borrow) | LocalKind::Entry(ast::ParamMode::Borrow) => {
                 self.diagnostics.push(
                     Diagnostic::new(
                         Severity::Error,
@@ -4655,7 +4666,7 @@ impl<'a> Checker<'a> {
                 );
                 false
             }
-            LocalKind::Param(ast::ParamMode::Own) => {
+            LocalKind::Param(ast::ParamMode::Own) | LocalKind::Entry(ast::ParamMode::Own) => {
                 self.unsupported(
                     "assigning to `own` parameters is",
                     expr.span,
@@ -5144,6 +5155,7 @@ fn subexpressions(expr: &hir::Expr) -> Vec<&hir::Expr> {
         ExprKind::ArrayPush { array, value } => vec![array, value],
         ExprKind::ChannelSend { channel, value } => vec![channel, value],
         ExprKind::MutexWithLock { mutex, callback } => vec![mutex, callback],
+        ExprKind::MapEntry { map, key, .. } => vec![map, key],
         ExprKind::MakeMutex(inner) | ExprKind::MutexIsPoisoned(inner) => vec![inner],
         ExprKind::MakeChannel { capacity, .. } => capacity.as_deref().into_iter().collect(),
         ExprKind::ChannelReceive(inner) | ExprKind::ChannelClose(inner) => vec![inner],

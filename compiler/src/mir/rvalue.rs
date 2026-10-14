@@ -28,6 +28,13 @@ pub enum Rvalue {
     Length(Place),
     /// The address of the place, stored into a by-reference local.
     Ref(Place),
+    RefMut(Place),
+    MapEntryRef {
+        map: Place,
+        key: Operand,
+        mutable: bool,
+    },
+    ReferencePresent(Place),
     /// A copy of the key of the map entry at a position below its length.
     MapKeyAt(Place, Operand),
     /// The address of the value of the map entry at a position below its length.

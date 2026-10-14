@@ -41,6 +41,7 @@ struct Builder {
     loops: Vec<LoopTargets>,
     scopes: Vec<Vec<Local>>,
     temp_scopes: Vec<Vec<Local>>,
+    entry_guards: Vec<crate::mir::MapEntryGuard>,
 }
 
 fn lower_function(package: &hir::Package, id: FunctionId, function: &hir::Function) -> Body {
@@ -54,7 +55,7 @@ fn lower_function(package: &hir::Package, id: FunctionId, function: &hir::Functi
                 name: Some(local.name.clone()),
                 by_reference: match local.kind {
                     LocalKind::Param(mode) => passes_by_reference(package, mode, local.ty),
-                    LocalKind::Capture(_) | LocalKind::Item => true,
+                    LocalKind::Capture(_) | LocalKind::Item | LocalKind::Entry(_) => true,
                     LocalKind::Let | LocalKind::Var => false,
                 },
             })
@@ -65,6 +66,7 @@ fn lower_function(package: &hir::Package, id: FunctionId, function: &hir::Functi
         loops: Vec::new(),
         scopes: Vec::new(),
         temp_scopes: Vec::new(),
+        entry_guards: Vec::new(),
     };
     builder.returns = function
         .results
@@ -177,6 +179,19 @@ impl Builder {
 
     fn end_scope(&mut self, locals: Vec<Local>) {
         if !locals.is_empty() && self.blocks[self.current.0 as usize].terminator.is_none() {
+            for guard in self
+                .entry_guards
+                .iter()
+                .rev()
+                .filter(|guard| locals.contains(&guard.entry))
+            {
+                self.blocks[self.current.0 as usize]
+                    .statements
+                    .push(Statement::EndMapEntry {
+                        guard: guard.clone(),
+                        unwind: false,
+                    });
+            }
             self.blocks[self.current.0 as usize]
                 .statements
                 .push(Statement::EndScope(locals));
@@ -188,6 +203,14 @@ impl Builder {
         for scope in scopes {
             self.end_scope(scope);
         }
+    }
+
+    fn end_return_scopes(&mut self) {
+        let temps: Vec<_> = self.temp_scopes.iter().rev().cloned().collect();
+        for scope in temps {
+            self.end_scope(scope);
+        }
+        self.end_exited_scopes(0);
     }
 
     fn terminate(&mut self, terminator: Terminator) {
@@ -236,6 +259,7 @@ impl Builder {
                 | StmtKind::MapAssign { .. }
                 | StmtKind::CompoundAssign { .. }
                 | StmtKind::Expr(_)
+                | StmtKind::Return(_)
                 | StmtKind::ForEach { .. }
         );
         if has_temp_scope {
@@ -391,6 +415,7 @@ impl Builder {
                         );
                     }
                 }
+                self.end_return_scopes();
                 self.diverge(Terminator::Return);
             }
             StmtKind::Break => {
@@ -408,6 +433,16 @@ impl Builder {
                 then_block,
                 else_block,
             } => {
+                if matches!(condition.kind, ExprKind::MapEntry { .. }) {
+                    self.entry_if(
+                        package,
+                        condition,
+                        then_block,
+                        else_block.as_ref(),
+                        stmt.span,
+                    );
+                    return;
+                }
                 self.temp_scopes.push(Vec::new());
                 let condition = self.operand(package, condition);
                 let condition_temps = self.temp_scopes.pop().expect("condition temps");
@@ -510,6 +545,88 @@ impl Builder {
             let temps = self.temp_scopes.pop().expect("statement temps");
             self.end_scope(temps);
         }
+    }
+
+    fn entry_if(
+        &mut self,
+        package: &hir::Package,
+        condition: &hir::Expr,
+        body: &hir::Block,
+        missing: Option<&hir::Block>,
+        span: Span,
+    ) {
+        let ExprKind::MapEntry {
+            map,
+            key,
+            binding,
+            mutable,
+        } = &condition.kind
+        else {
+            unreachable!("an entry branch has an entry header")
+        };
+        let entry = Local(binding.0);
+        let mutable = *mutable;
+        self.temp_scopes.push(Vec::new());
+        let map_place = self
+            .argument_place_opt(package, map)
+            .unwrap_or_else(|| self.base_place(package, map));
+        let anchor = self.reference(map.ty());
+        self.push(
+            Place::local(anchor),
+            if mutable {
+                Rvalue::RefMut(map_place)
+            } else {
+                Rvalue::Ref(map_place)
+            },
+            map.span,
+        );
+        let key_value = self.evaluate_to_temporary(package, key);
+        let map = Place::local(anchor);
+        self.push(
+            Place::local(entry),
+            Rvalue::MapEntryRef {
+                map: map.clone(),
+                key: key_value.clone(),
+                mutable,
+            },
+            span,
+        );
+        let present = self.assign_temp(
+            package,
+            TypeStore::BOOL,
+            Rvalue::ReferencePresent(Place::local(entry)),
+            span,
+        );
+        let mut locals = self.temp_scopes.pop().expect("entry initializer temps");
+        locals.push(anchor);
+        locals.push(entry);
+        self.entry_guards.push(crate::mir::MapEntryGuard {
+            entry,
+            map,
+            key: key_value,
+            mutable,
+            span,
+        });
+        let (hit, miss, join) = (self.new_block(), self.new_block(), self.new_block());
+        self.terminate(Terminator::Branch {
+            condition: present,
+            then_block: hit,
+            else_block: miss,
+            span,
+        });
+        self.current = hit;
+        self.scopes.push(locals.clone());
+        self.block(package, body);
+        let locals = self.scopes.pop().expect("entry scope");
+        self.end_scope(locals.clone());
+        self.terminate(Terminator::Goto(join));
+        self.current = miss;
+        self.end_scope(locals);
+        if let Some(missing) = missing {
+            self.block(package, missing);
+        }
+        self.terminate(Terminator::Goto(join));
+        self.current = join;
     }
 
     /// Evaluates every operand, performs one case that can proceed, then runs that case's body.
@@ -925,6 +1042,7 @@ impl Builder {
             Rvalue::Use(Operand::Copy(Place::local(error_local))),
             expr.span,
         );
+        self.end_return_scopes();
         self.terminate(Terminator::Return);
         self.current = success;
         result_locals[..result_locals.len() - 1]
@@ -1285,6 +1403,7 @@ impl Builder {
                     span,
                 )
             }
+            ExprKind::MapEntry { .. } => unreachable!("entry expressions are conditional headers"),
             ExprKind::Try(_) => {
                 let values = self.try_values(package, expr);
                 debug_assert_eq!(values.len(), 1);

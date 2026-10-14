@@ -48,3 +48,7 @@ progress have no example until they work.
 | [`rest-api`](rest-api) | HTTP/1.1 user API, factory handlers, shared store, bounded JSON body and graceful shutdown | §37.6 |
 | [`json`](json) | Generated JSON codecs, naming, Optional, strict decoding, Value patches and indentation | §37.7 |
 | [`application-tests`](application-tests) | Same-package tests, private helpers, both test signatures, return/error/panic cleanup and continued failure reporting | §45.1 |
+
+The [`map-entries`](map-entries) example demonstrates scoped shared/mutable access
+to Move entries (§13.4), using conditional bindings, optional missing branches
+and deterministic cleanup.

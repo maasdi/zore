@@ -4,6 +4,7 @@ mod conformance;
 mod controlled_runtime;
 mod http;
 mod json;
+mod map_entries;
 mod mixed_bindings;
 mod review_regressions;
 #[cfg(unix)]

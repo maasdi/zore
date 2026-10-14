@@ -1,0 +1,10 @@
+package main
+
+type Document struct {
+    name string
+    data Array<byte>
+}
+
+func (document mut Document) drop() {
+    println("closed " + document.name)
+}

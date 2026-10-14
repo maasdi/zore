@@ -1,5 +1,10 @@
 # Compiler testing
 
+`tests/ownership/map_entries.rs` and `tests/codegen/map_entries.rs` verify scoped
+map-entry bindings, including headers, aliases, escaping views, generic
+constraints, argument evaluation, Copy/Move/interface values, normal/error/panic
+cleanup and unchanged lookup/removal. See [contract coverage](conformance/map-entries.md).
+
 `tests/driver/testing.rs` verifies the application test runner: both signatures,
 discovery and file selection, private helpers, hidden dispatcher imports,
 fresh package initialization, ordinary ownership/error checking, imported-test

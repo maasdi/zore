@@ -110,7 +110,7 @@ fn transfer(
                     }
                 }
             }
-            Statement::Drop { .. } => {}
+            Statement::EndMapEntry { .. } | Statement::Drop { .. } => {}
             Statement::SetGlobal { value, .. } => read_operand(value, state),
         }
     }
@@ -167,10 +167,10 @@ fn read_rvalue(rvalue: &Rvalue, state: &mut [UseState]) {
                 read_operand(value, state);
             }
         }
-        Rvalue::Length(_) | Rvalue::Ref(_) => {}
-        Rvalue::MapKeyAt(_, position) | Rvalue::MapValueRef(_, position) => {
-            read_operand(position, state)
-        }
+        Rvalue::Length(_) | Rvalue::Ref(_) | Rvalue::RefMut(_) | Rvalue::ReferencePresent(_) => {}
+        Rvalue::MapKeyAt(_, position)
+        | Rvalue::MapValueRef(_, position)
+        | Rvalue::MapEntryRef { key: position, .. } => read_operand(position, state),
         Rvalue::Slice { low, high, .. } => {
             for bound in [low, high].into_iter().flatten() {
                 read_operand(bound, state);
@@ -221,7 +221,7 @@ fn write(
         || function.locals[index].ty != TypeStore::ERROR
         || matches!(
             function.locals[index].kind,
-            LocalKind::Capture(_) | LocalKind::Item
+            LocalKind::Capture(_) | LocalKind::Item | LocalKind::Entry(_)
         )
     {
         return;

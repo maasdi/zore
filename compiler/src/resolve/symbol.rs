@@ -52,6 +52,7 @@ pub struct LocalDecl {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum LocalKind {
+    Entry(ParamMode),
     Param(ParamMode),
     Let,
     Var,

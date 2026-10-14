@@ -11,7 +11,7 @@ pub use decl::{
 pub use expr::{BinaryOp, Closure, Expr, ExprKind, FieldInit, MapEntry, UnaryOp};
 pub use node::Name;
 pub use stmt::{
-    AssignOp, AssignTarget, Binding, BindingKind, BindingTarget, Block, Else, For, ForHeader, If,
-    MixedBinding, MixedTarget, Select, SelectArm, SelectComm, Stmt, StmtKind,
+    AssignOp, AssignTarget, Binding, BindingKind, BindingTarget, Block, Else, EntryBinding, For,
+    ForHeader, If, MixedBinding, MixedTarget, Select, SelectArm, SelectComm, Stmt, StmtKind,
 };
 pub use types::{FuncTypeParam, Type};
