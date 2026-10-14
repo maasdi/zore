@@ -3571,7 +3571,8 @@ temporary remains alive through the successful block or until lookup misses.
 Control flow/cleanup: statements have their ordinary meaning, including `return`,
 `?`, `break`, and `continue`; no callback return boundary exists. Normal exits and
 propagated errors retain the entry and completed mutations without rollback.
-Block locals are cleaned up before releasing the entry borrow. On panic during
+Statement temporaries (including failed call results) are cleaned up before older
+block locals, and both before releasing the entry borrow. On panic during
 mutable access, detach the selected entry and destroy its initialized parts
 using the alias's drop flags before owner cleanup. This prevents repeated
 destruction if replacement panics. Other entries remain valid for ordinary

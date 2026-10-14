@@ -196,6 +196,25 @@ fn map_entries_nested_guards_and_scope_destructor_panics_clean_up_in_order() {
         (
             r#"package main
 type Resource struct { id int }
+func (r mut Resource) drop() { println(r.id); if r.id == 9 { panic("return temporary failed") } }
+type Owner struct { values map[int]Resource }
+func (owner mut Owner) drop() { println(owner.values.len()) }
+func finish(temporary Resource) error { return nil }
+func work(values mut map[int]Resource) error {
+    if mut r = values.entry(1) { r.id = 3; return finish(Resource{id: 9}) }
+    return nil
+}
+func main() {
+    var owner = Owner{values: map[int]Resource{1: Resource{id: 1}, 2: Resource{id: 2}}}
+    let err = work(owner.values)
+    println(err == nil)
+}
+"#,
+            "9\n3\n1\n2\n",
+        ),
+        (
+            r#"package main
+type Resource struct { id int }
 func (r mut Resource) drop() { println(r.id) }
 func main() {
     var values = map[int]map[int]Resource{1: map[int]Resource{1: Resource{id: 1}, 2: Resource{id: 2}}, 2: map[int]Resource{1: Resource{id: 3}}}

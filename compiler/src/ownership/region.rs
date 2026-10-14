@@ -1657,6 +1657,13 @@ impl<'a> Analysis<'a> {
                 format!("cannot borrow `{name}` as mutable because it is already borrowed")
             }
             Action::Move => format!("cannot move `{name}` while it is borrowed"),
+            Action::StorageDead if self.body.returns.contains(&holder) => {
+                let owner = match &self.body.locals[access.path.local.0 as usize].name {
+                    Some(name) => format!("local `{name}`"),
+                    None => "a temporary value".to_string(),
+                };
+                format!("cannot return a view of {owner}")
+            }
             Action::StorageDead
                 if self.body.locals[access.path.local.0 as usize]
                     .name

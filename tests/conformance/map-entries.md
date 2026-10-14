@@ -15,7 +15,7 @@ result order and ownership-transferring removal remain unchanged.
 | Receiver/key single evaluation, temporary lifetime, misses and mixed else-if chains | `native::map_entries_misses_evaluate_once_release_borrows_and_select_else_branches` |
 | Return, propagated errors, break and continue cleanup; committed mutations | `native::map_entries_return_errors_break_and_continue_preserve_mutations_and_cleanup` |
 | Body/whole-entry/field replacement panic and exact initialized-part cleanup | `native::map_entries_mutable_panic_and_replacement_panic_drop_each_initialized_part_once` |
-| Nested mutable guards, scope-local destructor panic and panic after scope | `native::map_entries_nested_guards_and_scope_destructor_panics_clean_up_in_order` |
+| Nested mutable guards, return-temporary/scope-local destructor panic and panic after scope | `native::map_entries_nested_guards_and_scope_destructor_panics_clean_up_in_order` |
 | Move cleanup after timer suspension and panic during awaited key | `native::map_entries_async_move_cleanup_survives_timer_suspension_and_key_panics` |
 | Copy/text/view access, unchanged lookup, awaited keys and shared/mutable block bodies | `native::map_entries_copy_text_shared_views_and_awaited_keys_and_bodies_run_normally` |
 

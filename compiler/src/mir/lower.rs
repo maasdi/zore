@@ -205,6 +205,14 @@ impl Builder {
         }
     }
 
+    fn end_return_scopes(&mut self) {
+        let temps: Vec<_> = self.temp_scopes.iter().rev().cloned().collect();
+        for scope in temps {
+            self.end_scope(scope);
+        }
+        self.end_exited_scopes(0);
+    }
+
     fn terminate(&mut self, terminator: Terminator) {
         let block = &mut self.blocks[self.current.0 as usize];
         if block.terminator.is_none() {
@@ -251,6 +259,7 @@ impl Builder {
                 | StmtKind::MapAssign { .. }
                 | StmtKind::CompoundAssign { .. }
                 | StmtKind::Expr(_)
+                | StmtKind::Return(_)
                 | StmtKind::ForEach { .. }
         );
         if has_temp_scope {
@@ -406,7 +415,7 @@ impl Builder {
                         );
                     }
                 }
-                self.end_exited_scopes(0);
+                self.end_return_scopes();
                 self.diverge(Terminator::Return);
             }
             StmtKind::Break => {
@@ -1033,7 +1042,7 @@ impl Builder {
             Rvalue::Use(Operand::Copy(Place::local(error_local))),
             expr.span,
         );
-        self.end_exited_scopes(0);
+        self.end_return_scopes();
         self.terminate(Terminator::Return);
         self.current = success;
         result_locals[..result_locals.len() - 1]
