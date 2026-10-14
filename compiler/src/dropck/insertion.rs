@@ -76,7 +76,9 @@ fn insert_body(package: &hir::Package, body: &mut Body) {
                         }
                     }
                 }
-                end @ Statement::EndMapEntry { .. } => statements.push(end),
+                end @ (Statement::EndMapEntry { .. } | Statement::EndTaskScope { .. }) => {
+                    statements.push(end)
+                }
                 drop @ Statement::Drop { .. } => statements.push(drop),
                 set @ Statement::SetGlobal { .. } => statements.push(set),
             }
@@ -144,18 +146,28 @@ fn insert_body(package: &hir::Package, body: &mut Body) {
         body.blocks[index].statements = statements;
     }
     body.blocks.push(BasicBlock {
-        statements: guards
-            .into_iter()
+        statements: body
+            .task_scopes
+            .iter()
             .rev()
-            .map(|guard| Statement::EndMapEntry {
-                guard,
+            .map(|scope| Statement::EndTaskScope {
+                scope: scope.registry,
                 unwind: true,
             })
-            .chain(owned.into_iter().rev().map(|local| Statement::Drop {
-                place: Place::local(local),
-                replacement: false,
-                before_store: false,
-            }))
+            .chain(
+                guards
+                    .into_iter()
+                    .rev()
+                    .map(|guard| Statement::EndMapEntry {
+                        guard,
+                        unwind: true,
+                    })
+                    .chain(owned.into_iter().rev().map(|local| Statement::Drop {
+                        place: Place::local(local),
+                        replacement: false,
+                        before_store: false,
+                    })),
+            )
             .collect(),
         terminator: Terminator::PanicReturn,
     });

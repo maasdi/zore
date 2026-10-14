@@ -10,6 +10,7 @@ mod map_entries;
 mod mixed_bindings;
 mod performance;
 mod review_regressions;
+mod scoped_tasks;
 #[cfg(unix)]
 mod signal;
 
@@ -4914,11 +4915,10 @@ func main() {
 
 #[test]
 fn a_context_cancels_once_and_reaches_its_children() {
-    prints(
-        "package main
+    let source = "package main
 import \"std/context\"
 import \"std/time\"
-func worker(ctx context.Context, results channel<int>) {
+func worker(ctx context.Context, results channel<int>, ready channel<bool>) {
     var steps = 0
     for {
         select {
@@ -4928,6 +4928,7 @@ func worker(ctx context.Context, results channel<int>) {
             }
             case time.After(10 * time.Millisecond).receive() {
                 steps += 1
+                if steps == 2 { ready.send(true) }
             }
         }
     }
@@ -4936,8 +4937,9 @@ func main() {
     let ctx, cancel = context.WithCancel(context.Background())
     println(ctx.Err() == nil)
     let results = channel<int>(1)
-    go worker(ctx, results)
-    time.Sleep(60 * time.Millisecond)
+    let ready = channel<bool>()
+    go worker(ctx, results, ready)
+    let _, _ = ready.receive()
     cancel()
     cancel()
     println(ctx.Err() == error(\"context canceled\"))
@@ -4970,9 +4972,14 @@ func main() {
     stopGrandchild()
     stopOther()
     stopQuiet()
-}",
-        "true\ntrue\ntrue\ntrue\ntrue\ntrue\ntrue\ntrue\ntrue\ntrue\ntrue\ntrue\nfalse\n",
+}";
+    let output = run_poll_bounded(source, None);
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    assert_eq!(
+        stdout(&output),
+        "true\ntrue\ntrue\ntrue\ntrue\ntrue\ntrue\ntrue\ntrue\ntrue\ntrue\ntrue\nfalse\n"
     );
+    assert!(output.stderr.is_empty(), "{}", stderr(&output));
 }
 
 #[test]

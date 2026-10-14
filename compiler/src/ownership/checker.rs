@@ -203,9 +203,12 @@ fn check_rvalue(
     diagnostics: &mut Vec<Diagnostic>,
 ) {
     match rvalue {
-        Rvalue::Zero | Rvalue::Global(_) => {}
+        Rvalue::Zero | Rvalue::TaskScope | Rvalue::Global(_) => {}
         Rvalue::Use(operand)
         | Rvalue::Spawn(operand)
+        | Rvalue::ScopedSpawn {
+            closure: operand, ..
+        }
         | Rvalue::Unary(_, operand)
         | Rvalue::Convert(operand, _)
         | Rvalue::Error(operand)
@@ -263,9 +266,26 @@ fn check_rvalue(
             }
         }
         Rvalue::Closure {
-            captures, owning, ..
+            captures,
+            owning,
+            capture_modes: borrowed,
+            ..
         } => {
-            for (place, exclusive) in captures {
+            for (index, (place, exclusive)) in captures.iter().enumerate() {
+                if borrowed
+                    .get(index)
+                    .is_some_and(|mode| *mode != crate::ast::ParamMode::Own)
+                {
+                    check_operand(
+                        package,
+                        body,
+                        &Operand::Ref(place.clone()),
+                        span,
+                        state,
+                        diagnostics,
+                    );
+                    continue;
+                }
                 let captured = if *owning {
                     captured_operand(package, &body.locals, place, *exclusive)
                 } else {

@@ -312,6 +312,9 @@ impl Builder<'_> {
                     self.block(block);
                 }
             }
+            StmtKind::TaskScope(block) => {
+                self.block(block);
+            }
             StmtKind::Block(block) => self.block(block),
             StmtKind::Break | StmtKind::Continue => {}
         }

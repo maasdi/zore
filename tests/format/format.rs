@@ -191,3 +191,11 @@ fn conditional_entry_binding_headers_format_without_changing_modes() {
         "package main\n\nfunc main() {\n    if user = users.entry(id) {\n        println(user.Name)\n    } else if mut user = users.entry(other) {\n        user.Visits += 1\n    } else {\n        return\n    }\n}\n"
     );
 }
+
+#[test]
+fn lexical_task_scopes_format_as_blocks_and_keep_their_keyword() {
+    assert_eq!(
+        formatted("package main\nfunc main(){scope{\nlet t=go work()\nt.wait()\n}}\n"),
+        "package main\n\nfunc main() {\n    scope {\n        let t = go work()\n        t.wait()\n    }\n}\n"
+    );
+}

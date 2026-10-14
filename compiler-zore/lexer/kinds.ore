@@ -41,11 +41,11 @@ type Lexed struct {
     Problems Array<Problem>
 }
 
-func keywords() [string; 27] {
-    return [string; 27]{
+func keywords() [string; 28] {
+    return [string; 28]{
         "package", "import", "func", "type", "struct", "interface", "let", "var", "const",
         "mut", "own", "if", "else", "for", "in", "break", "continue", "return",
-        "async", "await", "go", "select", "map", "channel", "true", "false", "nil",
+        "async", "await", "go", "select", "scope", "map", "channel", "true", "false", "nil",
     }
 }
 

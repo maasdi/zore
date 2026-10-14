@@ -309,7 +309,7 @@ fn statement(stmt: &hir::Stmt, found: &mut References) {
                 block(default, found);
             }
         }
-        StmtKind::Block(inner) => block(inner, found),
+        StmtKind::Block(inner) | StmtKind::TaskScope { body: inner, .. } => block(inner, found),
     }
 }
 

@@ -274,6 +274,13 @@ func (p mut Parser) stmt() int {
         inner = p.ifStmt()
     } else if p.atKeyword("for") {
         inner = p.forStmt()
+    } else if p.atKeyword("scope") {
+        _ = p.bump()
+        let block = p.block()
+        if block != failed {
+            inner = p.spanless("taskscope", "")
+            p.tree.Append(inner, block)
+        }
     } else if p.atKeyword("select") {
         inner = p.selectStmt()
     } else if p.at("{") {

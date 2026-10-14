@@ -99,6 +99,7 @@ pub enum ExprKind {
         function: FunctionId,
         captures: Vec<(LocalId, bool)>,
         owning: bool,
+        capture_modes: Vec<crate::ast::ParamMode>,
     },
     /// Runs the call to the closure's result on a new task; the arguments become the closure's captures.
     Spawn {
@@ -107,6 +108,8 @@ pub enum ExprKind {
         closure_ty: TypeId,
         /// The first argument is a function value that the task calls with the others.
         callable: bool,
+        scope: Option<u32>,
+        modes: Box<[crate::ast::ParamMode]>,
         args: Vec<Expr>,
     },
     /// Consumes the task handle and gives its results, raising its panic if it had one.

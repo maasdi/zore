@@ -58,6 +58,24 @@ pub fn emit(
                 })
         })
         .collect();
+    let capture_modes = program
+        .bodies
+        .iter()
+        .flat_map(|body| &body.blocks)
+        .flat_map(|block| &block.statements)
+        .filter_map(|statement| match statement {
+            mir::Statement::Assign {
+                rvalue:
+                    Rvalue::Closure {
+                        function,
+                        capture_modes: borrowed,
+                        ..
+                    },
+                ..
+            } if !borrowed.is_empty() => Some((*function, borrowed.clone())),
+            _ => None,
+        })
+        .collect();
     let mut module = Module {
         package,
         sources,
@@ -66,6 +84,7 @@ pub fn emit(
         globals: String::new(),
         diagnostics: Vec::new(),
         owning_closures,
+        capture_modes,
         async_values,
         task_shapes: HashMap::new(),
         task_code: String::new(),
@@ -136,6 +155,7 @@ pub(super) struct Module<'a> {
     pub(super) globals: String,
     pub(super) diagnostics: Vec<Diagnostic>,
     pub(super) owning_closures: HashSet<FunctionId>,
+    capture_modes: HashMap<FunctionId, Vec<crate::ast::ParamMode>>,
     /// Closures that are values of async function type; their code pointer builds a frame.
     pub(super) async_values: HashSet<FunctionId>,
     /// Result lists that already have a task entry function.
@@ -149,7 +169,7 @@ pub(super) struct Module<'a> {
 pub(super) struct Environment {
     pub(super) ty: String,
     /// Per capture: its type, its value field, and its flags field for a Move value.
-    pub(super) fields: Vec<(TypeId, usize, Option<usize>)>,
+    pub(super) fields: Vec<(TypeId, Option<usize>, Option<usize>)>,
 }
 
 impl Module<'_> {
@@ -186,8 +206,17 @@ impl Module<'_> {
         let mut parts = Vec::new();
         let mut fields = Vec::new();
         let mut pointers = 0;
-        for &capture in &function.captures {
+        for (index, &capture) in function.captures.iter().enumerate() {
             let ty = function.locals[capture.0 as usize].ty;
+            if self
+                .capture_modes
+                .get(&closure)
+                .is_some_and(|modes| modes[index] != crate::ast::ParamMode::Own)
+            {
+                pointers += 1 + usize::from(self.package.needs_drop(ty));
+                fields.push((ty, None, None));
+                continue;
+            }
             parts.push(self.ty(ty));
             let value = parts.len();
             pointers += 1;
@@ -196,7 +225,7 @@ impl Module<'_> {
                 pointers += 1;
                 parts.len()
             });
-            fields.push((ty, value, flags));
+            fields.push((ty, Some(value), flags));
         }
         let mut ty = format!("{{ [{pointers} x ptr]");
         for part in parts {
@@ -326,6 +355,9 @@ impl Module<'_> {
             polling: false,
         };
         for &(ty, value, flags) in environment.fields.iter().rev() {
+            let Some(value) = value else {
+                continue;
+            };
             let Some(flags) = flags else {
                 continue;
             };
@@ -470,6 +502,9 @@ impl FunctionBuilder<'_, '_> {
                 }
             }
         }
+        for scope in &self.body.task_scopes {
+            self.line(format!("store i64 0, ptr %l{}", scope.registry.0));
+        }
         self.load_captures();
         self.line("br label %bb0");
         for (index, block) in self.body.blocks.iter().enumerate() {
@@ -562,6 +597,17 @@ impl FunctionBuilder<'_, '_> {
         self.line(format!("{block} = call ptr @zore_alloc(i64 {size})"));
         let mut pointer = 0;
         for ((place, exclusive), &(ty, value, flags)) in captures.iter().zip(&environment.fields) {
+            let Some(value) = value else {
+                let address = self.address(place);
+                self.store_environment_pointer(&environment, &block, pointer, &address);
+                pointer += 1;
+                if self.module.package.needs_drop(ty) {
+                    let flags = self.flag_address(place);
+                    self.store_environment_pointer(&environment, &block, pointer, &flags);
+                    pointer += 1;
+                }
+                continue;
+            };
             let operand =
                 mir::captured_operand(self.module.package, &self.body.locals, place, *exclusive);
             let loaded = self.owned_value(&operand);
@@ -1268,6 +1314,16 @@ impl FunctionBuilder<'_, '_> {
                     self.check_after_drop(abort);
                 }
             }
+            mir::Statement::EndTaskScope { scope, unwind } => {
+                let value = self.value(&Operand::Copy(Place::local(*scope)));
+                let pointer = self.fresh();
+                self.line(format!("{pointer} = inttoptr i64 {value} to ptr"));
+                self.line(format!("store i64 0, ptr %l{}", scope.0));
+                self.line(format!("call void @zore_scope_join(ptr {pointer})"));
+                if !unwind {
+                    self.check_after_drop(false);
+                }
+            }
             mir::Statement::EndMapEntry { guard, unwind } => self.end_map_entry(guard, *unwind),
             mir::Statement::EndScope(_) => unreachable!("drop insertion replaces scope markers"),
             mir::Statement::SetGlobal { global, value, .. } => {
@@ -1354,8 +1410,17 @@ impl FunctionBuilder<'_, '_> {
                 function,
                 captures,
                 owning,
+                ..
             } => self.closure_value(*function, captures, *owning),
-            Rvalue::Spawn(closure) => self.spawn(closure),
+            Rvalue::Spawn(closure) => self.spawn(closure, None),
+            Rvalue::ScopedSpawn { closure, scope, .. } => self.spawn(closure, Some(*scope)),
+            Rvalue::TaskScope => {
+                let pointer = self.fresh();
+                self.line(format!("{pointer} = call ptr @zore_scope_new()"));
+                let value = self.fresh();
+                self.line(format!("{value} = ptrtoint ptr {pointer} to i64"));
+                value
+            }
             Rvalue::InterfaceView { place, .. } => self.interface_view(place, result_ty),
             Rvalue::InterfaceBox(operand) => self.interface_box(operand, result_ty),
             Rvalue::Aggregate(_, operands) => {
@@ -1658,10 +1723,18 @@ impl FunctionBuilder<'_, '_> {
             TypeKind::Map { value, .. } => self.drop_map(address, value),
             TypeKind::Func(_) => self.drop_closure(address),
             TypeKind::Interface(_) => self.drop_interface(address),
-            TypeKind::Task(_) => {
+            TypeKind::Task(_) | TypeKind::ScopedTask(_, _) => {
                 let handle = self.fresh();
                 self.line(format!("{handle} = load ptr, ptr {address}"));
-                self.line(format!("call void @zore_task_detach(ptr {handle})"));
+                let drop = if matches!(
+                    self.module.package.types.kind(ty),
+                    TypeKind::ScopedTask(_, _)
+                ) {
+                    "zore_scope_handle_drop"
+                } else {
+                    "zore_task_detach"
+                };
+                self.line(format!("call void @{drop}(ptr {handle})"));
             }
             _ => {}
         }
@@ -1852,7 +1925,9 @@ impl FunctionBuilder<'_, '_> {
             TypeKind::DynArray { .. } => unreachable!("dynamic arrays have no operators"),
             TypeKind::Map { .. } => unreachable!("maps have no operators"),
             TypeKind::Func(_) => unreachable!("function values have no operators"),
-            TypeKind::Task(_) => unreachable!("tasks have no operators"),
+            TypeKind::Task(_) | TypeKind::ScopedTask(_, _) => {
+                unreachable!("tasks have no operators")
+            }
             TypeKind::Channel { .. } => unreachable!("channels have no operators"),
             TypeKind::Mutex { .. } => unreachable!("mutexes have no operators"),
             TypeKind::Interface(_) | TypeKind::InterfaceView { .. } => {

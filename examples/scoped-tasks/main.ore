@@ -1,0 +1,24 @@
+package main
+
+func sum(values Array<int>) int {
+    var total = 0
+    for value in values { total += value }
+    return total
+}
+
+func increment(value mut int) { value += 1 }
+
+func main() {
+    let values = Array<int>{1, 2, 3, 4}
+    scope {
+        let first = go sum(values)
+        let second = go sum(values)
+        println(first.wait() + second.wait())
+    }
+
+    var count = 0
+    scope {
+        go increment(count)
+    }
+    println(count)
+}

@@ -786,7 +786,7 @@ The MVP keyword list is:
 | Bindings | `let var const` |
 | Ownership | `mut own` |
 | Control flow | `if else for in break continue return` |
-| Concurrency | `async await go select` |
+| Concurrency | `async await go select scope` |
 | Built-in type syntax | `map channel` |
 | Literal values | `true false nil` |
 
@@ -4191,8 +4191,9 @@ rebinding), is:
   whether by a literal, an assignment to a field or element, a map assignment,
   or `push`;
 - passed to an `own` parameter;
-- the callee of `go`, or a `go` argument passed to an `own` parameter of
-  function type (§18.3).
+- the callee of ordinary `go`, or an ordinary `go` argument passed to an `own`
+  parameter of function type (§18.3). The lexical task-scope extension permits
+  the mixed owning/borrowing captures specified in §18.12.
 
 A call-once closure (§16.6) is also owning.
 
@@ -4601,8 +4602,8 @@ proof that a spawned borrow is valid: normal early return, `?`, panic, handle
 transfer, and handle drop can all leave the work running. The MVP rejects
 spawned borrows of another task's local or temporary storage, including its
 borrowed parameters, even when retrieval immediately follows spawning. There
-is no implicit join on an error or unwind path. Scoped tasks remain a separate
-unresolved extension (Q10), not an exception to this rule.
+is no implicit join on an error or unwind path. The opt-in lexical task-scope extension (§18.12) provides a separate mandatory
+join guarantee; outside that block this rule remains unchanged.
 
 Inputs must instead be independently valid for the spawned computation:
 Copy inputs are materialized in task-owned argument storage before the work
@@ -4825,6 +4826,119 @@ signature and exit-status rules are specified in §3.19.
 
 Compiler impact: none; this is a runtime contract. Pending conformance cases:
 `tests/conformance/concurrency.md`.
+
+---
+
+## 18.12 Lexical task scopes, plain-function stage — LOCKED
+
+`scope { statements }` is an optional lexical block, accepted only in a
+plain `func`, including a plain closure. `scope` is a keyword. Every `go`
+written within its body or nested ordinary blocks registers with the innermost
+lexical task scope. Calls and closure bodies do not inherit that scope. A nested
+task scope has its own registry. Ordinary tasks outside these blocks retain
+§§18.4–18.11, including independent inputs, detach and process-exit behavior.
+
+```ore
+func read(values Array<int>) int { return values[0] }
+func update(value mut int) { value += 1 }
+func main() {
+    let values = Array<int>{7}
+    scope {
+        let first = go read(values)
+        let second = go read(values)
+        println(first.wait() + second.wait())
+    }
+    var count = 0
+    scope {
+        let child = go update(count)
+        child.wait()
+        println(count)
+    }
+}
+```
+
+A scoped `go` returns an inferred Move handle with a distinct scope identity;
+there is no user-written scoped-task type or conversion to ordinary `Task`.
+The handle may be moved between local bindings in that same task scope. A
+contextually assigned nil handle panics on retrieval.
+Only retrieval and explicit drop may consume it: returning it, moving it to an
+outer or nested task scope, storing it in a field/collection/channel, passing
+it to a function, or capturing it in a closure is rejected. Dropping or
+ignoring a handle retains its registered child and its loans until mandatory
+completion. `.wait()` consumes the handle and observes its one-shot results;
+a successful wait ends input loans except provenance carried by the results.
+The initial checker requires unique child identity to end those loans: merged
+handles or several live children from one repeated site retain potentially
+outstanding loans until the boundary. Returned views may conservatively retain
+other input provenance. Unknown callable backing is rejected.
+
+Copy inputs are materialized in child-owned storage and `own` inputs transfer
+ownership. Shared Move inputs and `mut` inputs may borrow eligible parent
+storage. Shared child loans allow other readers; exclusive loans reject parent
+reads, writes, moves, replacement/drop and conflicting children. A directly
+spawned closure may infer shared/exclusive borrowing captures; consumed Move
+captures transfer ownership into its call-once environment. The environment
+must stay stable until child cleanup finishes, including repeated spawn sites.
+
+Eligible referents are parameters, enclosing storage, and initialized locals
+declared directly in the task-scope block. Shorter-lived inner-block/loop
+locals and temporary borrowed referents are rejected, even if an explicit
+normal-path wait appears. Existing region analysis must prove the backing
+storage of borrowed views, composites and callables eligible as well. Unknown
+provenance is rejected. A child's view-bearing result is accepted only when
+ordinary output provenance proves parent-backed storage; child-local and
+child-owned backing remain rejected. Retrieved views stay bounded by the
+originating task scope, including aliases and composite values. Returning them,
+storing them outside that region, or sending them over a channel is rejected.
+
+```ore
+scope {
+    let child = go update(count)
+    drop(child)
+    println(count) // rejected: child remains registered
+}
+scope {
+    if enabled {
+        let short = Array<int>{1}
+        go read(short) // rejected: backing ends before the mandatory join
+    }
+}
+```
+
+Every exit first joins all registered children, including child-owned capture
+and result cleanup, then destroys parent storage in ordinary reverse order.
+Fallthrough, return, crossing `break`/`continue`, non-nil `?`, and panic all obey
+that ordering. Return operands and propagated errors are evaluated once before
+joining; transfers cannot carry scoped handles/views. Transfers staying inside
+the task scope do not trigger a scope-wide join. Nested scopes close innermost
+first. Scope entry and closing create no task/thread and imply no cancellation.
+A child that never completes can keep the boundary waiting indefinitely.
+
+Unretrieved results, including `error`, are discarded in reverse spawn order after joining, as an
+explicitly discarded ordinary task's results are; error propagation requires
+retrieval and ordinary handling or `?`. Child panics are reported at origin.
+An explicit wait re-raises its child panic, then parent unwinding still joins
+the remaining children. An existing parent panic has priority over unobserved
+child panics. Otherwise, after all children finish, the earliest spawned
+unobserved child panic is re-raised, superseding a pending return/error.
+Cleanup destructor panics obey existing panic/double-panic rules. Process abort,
+external termination and fatal deadlock make no cleanup guarantee.
+
+Blocking joins reuse worker compensation and internal deadlock accounting;
+compensation does not solve program-level cycles. Direct scopes in async
+functions are rejected until a separately locked/tested persistent registry,
+pollable join and unwind-cleanup stage exists. A plain helper with its own scope
+may be called from async code and blocks with the usual compensation guarantee.
+Plain and async children are both permitted in a plain task scope. Existing
+generic-body go restrictions remain; direct task-scope blocks in generic bodies
+are rejected in this stage.
+
+Compiler impact: preserve scope identities through AST/HIR/MIR; distinguish
+scoped handles, bounds and child-owned versus borrowed captures; keep child
+loans independently of handle liveness; insert joins before any cleanup on
+all exits, including unwind; preserve source spans and argument evaluation.
+Conformance cases: `tests/conformance/scoped-tasks.md`. This stage adds no
+ordinary task-lifetime exception outside the explicit block and no async scope.
 
 ---
 

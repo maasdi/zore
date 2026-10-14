@@ -3,6 +3,7 @@ use zore::source::SourceMap;
 
 mod async_callables;
 mod map_entries;
+mod scoped_tasks;
 
 struct Case {
     sources: SourceMap,

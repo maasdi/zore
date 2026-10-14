@@ -23,6 +23,7 @@ pub struct Body {
     pub returns: Vec<Local>,
     pub blocks: Vec<BasicBlock>,
     pub unwind: Option<BlockId>,
+    pub task_scopes: Vec<TaskScope>,
 }
 
 #[derive(Debug)]
@@ -32,4 +33,15 @@ pub struct LocalDecl {
     pub name: Option<String>,
     /// The local's places designate the referenced value.
     pub by_reference: bool,
+}
+
+#[derive(Debug)]
+pub struct TaskScope {
+    pub id: u32,
+    pub registry: Local,
+    pub eligible: Vec<Local>,
+    pub children: Vec<Local>,
+    pub span: crate::source::Span,
+    pub temp_start: u32,
+    pub temp_end: u32,
 }

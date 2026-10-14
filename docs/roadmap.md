@@ -53,8 +53,8 @@ The children of maturity tracker [#50](https://github.com/maasdi/zore/issues/50)
 delivered recursive owned types, owning callables, conservative frame storage
 and slot reuse, quadratic interference analysis, cooperative budgets with
 reduced requeue overhead, and focused ownership/runtime regressions. Scoped
-tasks delivered an accepted design direction; Q10 still needs locked semantics
-before implementation. Self-hosting delivered a staged plan and the lexer
+tasks now implement the locked plain-function stage (§18.12); Q10 retains the
+separate direct async-scope stage. Self-hosting delivered a staged plan and the lexer
 comparison milestone, followed by a parser comparison milestone. The Rust
 compiler remains the bootstrap, and full MVP conformance remains separate work.
 
@@ -112,7 +112,7 @@ was demonstrated by this review, and exhaustive MVP conformance is not claimed.
 | 4 | [#118: performance baselines](https://github.com/maasdi/zore/issues/118) | Implemented opt-in compiler, REST/JSON, pinned-frame and settled memory/resource measurements with raw repetitions; see the [baseline](performance.md). Follow-ups #127/#128 implement internal LLVM linkage, cancellable context deadlines and direct HTTP shutdown notification; see the [paired compiler and retention evidence](performance-followups.md). |
 | 5 | [#119: Windows hosts](https://github.com/maasdi/zore/issues/119) | Establish native linking/runtime evidence and honest platform CI; no cross-compilation claim. |
 | 6 | [#117: async callable extensions](https://github.com/maasdi/zore/issues/117) | Implemented under locked §§16.1–16.7: explicit async literals and concrete async method values, reusable capture environments, call-once cleanup and independent spawn inputs; see [design](proposals/async-callables.md). |
-| 7 | [#120: scoped tasks](https://github.com/maasdi/zore/issues/120) | Lock Q10, then plain-function scopes with mandatory join before parent cleanup; async scopes need a later pollable cleanup stage. |
+| 7 | [#120: scoped tasks](https://github.com/maasdi/zore/issues/120) | Implemented locked §18.12: plain lexical task scopes, registry-held child loans and joins before parent cleanup on every exit. See [usage and first-stage limits](scoped-tasks.md); direct async scopes remain rejected pending [#132: pollable join/unwind cleanup](https://github.com/maasdi/zore/issues/132). |
 | Deferred | Further self-hosting | No stage 3 or later implementation in this sequence. |
 
 Package-level `var` is forbidden, not an unfinished MVP feature. Async callable
@@ -135,7 +135,7 @@ functions. Plain tasks that wait hold OS workers, so large sets of them can
 exhaust host thread limits; use `async func` for those workloads. Compiler-inserted
 cooperative budgets now yield CPU-heavy async loops. Still open: forced
 preemption; frame shrinking by general liveness (poll-local storage and same-type
-slot reuse are implemented); scoped tasks (unresolved design work, Q10); and
+slot reuse are implemented); direct async task scopes (separate design/cleanup stage, Q10); and
 broader task-lifetime proofs. Async callable extensions are implemented under §16.7. The next milestone is M32–M34's backend/toolchain
 hardening and MVP coverage audit.
 
@@ -226,7 +226,7 @@ isolate the affected feature and continue unrelated supported work.
 | Borrowed map-entry access, capacity APIs | Before implementing those operations; iteration, `len`, `push`, and `pop` are resolved in §5.10 and §12.7 |
 | Closure types/captures/invocation | Resolved (§16); closures with tasks resolved by §18.4 |
 | Full go grammar, concurrency library APIs | Before affected M25–M31 work; preserve already locked ownership/runtime contracts |
-| Scoped tasks (Q10) | Optional extension, not a current implementation prerequisite |
+| Scoped tasks (Q10) | Plain-function extension implemented under §18.12; direct async scopes deferred |
 | LLVM version/ABI, allocation, scheduler | Internal choices when the relevant backend/runtime stage begins; document and test then |
 
 Deferral does not mean exclusion from the MVP. Unsupported features must receive

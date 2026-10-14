@@ -756,6 +756,7 @@ impl Printer<'_> {
                         .map_or_else(absent, |block| self.block(block)),
                 ],
             ),
+            StmtKind::TaskScope(block) => node("taskscope", None, "", &[self.block(block)]),
             StmtKind::Block(block) => self.block(block),
         };
         node("stmt", Some(stmt.span), "", &[inner])

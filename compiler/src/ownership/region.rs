@@ -1,5 +1,8 @@
 //! A loan stays live exactly while some live local holds it.
 
+#[path = "scoped_tasks.rs"]
+mod scoped_tasks;
+
 use std::collections::{BTreeSet, HashMap, HashSet};
 
 use super::borrow::{
@@ -260,7 +263,9 @@ impl<'a> Analysis<'a> {
                 let owner = match (&loan.target, loan.kind) {
                     (LoanTarget::Place(path), LoanKind::Exclusive) => path.local,
                     (LoanTarget::Param(index), _) => inputs[*index],
-                    (LoanTarget::Place(_), LoanKind::Shared) => continue,
+                    (LoanTarget::Place(_), LoanKind::Shared) | (LoanTarget::Scope { .. }, _) => {
+                        continue;
+                    }
                 };
                 if !holders.contains(&owner) {
                     holders.push(owner);
@@ -345,6 +350,24 @@ impl<'a> Analysis<'a> {
                     }
                     for local in locals {
                         state[local.0 as usize].clear();
+                    }
+                }
+                Statement::EndTaskScope { scope, .. } => {
+                    let record = self
+                        .body
+                        .task_scopes
+                        .iter()
+                        .find(|record| record.registry == *scope)
+                        .expect("scope metadata");
+                    if let Some(findings) = findings.as_deref_mut() {
+                        for (index, held) in state.iter().enumerate() {
+                            if !self.scope_contains(record, Local(index as u32)) && held.iter().any(|&loan| matches!(self.loans[loan].target, LoanTarget::Scope { registry, .. } if registry == *scope)) {
+                                findings.report_once(record.span, Diagnostic::new(Severity::Error, "a scoped task result view cannot escape its task scope", record.span));
+                            }
+                        }
+                    }
+                    for holder in &record.children {
+                        state[holder.0 as usize].clear();
                     }
                 }
                 Statement::EndMapEntry { guard, .. } => {
@@ -446,9 +469,62 @@ impl<'a> Analysis<'a> {
             }
         }
         let loans = self.rvalue_loans(rvalue, site, state);
+        if let Some(findings) = findings.as_deref_mut() {
+            self.check_scope_assignment(place, &loans, site.span, findings);
+            if let Rvalue::ScopedSpawn { scope, closure, .. } = rvalue {
+                let record = self
+                    .body
+                    .task_scopes
+                    .iter()
+                    .find(|record| record.registry == *scope)
+                    .expect("scope metadata");
+                for &id in &loans {
+                    if let LoanTarget::Place(path) = &self.loans[id].target
+                        && !path.goes_through_deref()
+                        && !record.eligible.contains(&path.local)
+                    {
+                        findings.report_once(
+                            site.span,
+                            Diagnostic::new(
+                                Severity::Error,
+                                "a scoped task cannot borrow shorter-lived storage",
+                                site.span,
+                            )
+                            .related(self.loans[id].span, "borrow originated here"),
+                        );
+                    }
+                }
+                self.check_scoped_results(closure, site.span, findings);
+            }
+            if let Rvalue::Closure { captures, .. } = rvalue {
+                for (captured, _) in captures {
+                    if matches!(
+                        self.package.types.kind(self.place_ty(captured)),
+                        TypeKind::ScopedTask(_, _)
+                    ) {
+                        findings.report_once(
+                            site.span,
+                            Diagnostic::new(
+                                Severity::Error,
+                                "a scoped task handle cannot be captured",
+                                site.span,
+                            ),
+                        );
+                    }
+                }
+            }
+        }
+        if let Rvalue::ScopedSpawn { holder, .. } = rvalue {
+            state[holder.0 as usize].extend(loans.iter().copied());
+        }
         let captured = self.owned_captures(rvalue);
         let moved: Vec<&Operand> = match rvalue {
-            Rvalue::Use(operand) | Rvalue::Spawn(operand) | Rvalue::InterfaceBox(operand) => {
+            Rvalue::Use(operand)
+            | Rvalue::Spawn(operand)
+            | Rvalue::ScopedSpawn {
+                closure: operand, ..
+            }
+            | Rvalue::InterfaceBox(operand) => {
                 vec![operand]
             }
             Rvalue::Aggregate(_, operands) => operands.iter().collect(),
@@ -461,14 +537,20 @@ impl<'a> Analysis<'a> {
                 function,
                 captures,
                 owning: false,
+                ..
             } => self.apply_capture_outputs(*function, captures, site, state),
             Rvalue::Closure {
                 function,
+                captures,
+                capture_modes: borrowed,
                 owning: true,
                 ..
             } => {
+                if !borrowed.is_empty() {
+                    self.apply_capture_outputs(*function, captures, site, state);
+                }
                 if let Some(findings) = findings.as_deref_mut() {
-                    self.check_owned_capture_outputs(*function, site.span, findings);
+                    self.check_owned_capture_outputs(*function, borrowed, site.span, findings);
                 }
             }
             _ => {}
@@ -590,10 +672,17 @@ impl<'a> Analysis<'a> {
             Rvalue::Closure {
                 captures,
                 owning: true,
+                capture_modes: borrowed,
                 ..
             } => captures
                 .iter()
-                .map(|(place, exclusive)| {
+                .enumerate()
+                .filter(|(index, _)| {
+                    borrowed
+                        .get(*index)
+                        .is_none_or(|mode| *mode == ParamMode::Own)
+                })
+                .map(|(_, (place, exclusive))| {
                     captured_operand(self.package, &self.body.locals, place, *exclusive)
                 })
                 .collect(),
@@ -605,14 +694,20 @@ impl<'a> Analysis<'a> {
     fn check_owned_capture_outputs(
         &self,
         function: FunctionId,
+        modes: &[ParamMode],
         span: Span,
         findings: &mut Findings,
     ) {
         let contract = &self.contracts[function.0 as usize];
         let skipped = self.package.function(function).params.len();
-        let stores_own_storage = contract.outputs[skipped..]
-            .iter()
-            .any(|origins| origins[skipped..].iter().any(|origin| origin.storage));
+        let stores_own_storage = contract.outputs[skipped..].iter().any(|origins| {
+            origins[skipped..]
+                .iter()
+                .enumerate()
+                .any(|(source, origin)| {
+                    origin.storage && modes.get(source).is_none_or(|mode| *mode == ParamMode::Own)
+                })
+        });
         if stores_own_storage {
             findings.report_once(
                 span,
@@ -872,12 +967,64 @@ impl<'a> Analysis<'a> {
             for access in &accesses {
                 self.check_access(access, live, state, findings);
             }
+            if !matches!(callee, Callee::TaskWait | Callee::Drop)
+                && args.iter().any(|arg| match arg {
+                    Operand::Copy(place) | Operand::Move(place) | Operand::Ref(place) => matches!(
+                        self.package.types.kind(self.place_ty(place)),
+                        TypeKind::ScopedTask(_, _)
+                    ),
+                    _ => false,
+                })
+            {
+                findings.report_once(
+                    site.span,
+                    Diagnostic::new(
+                        Severity::Error,
+                        "a scoped task handle cannot be passed to another function",
+                        site.span,
+                    ),
+                );
+            }
         }
         let clear = |state: &mut Holdings| {
             for local in moved {
                 state[local.0 as usize].clear();
             }
         };
+        if let (Callee::TaskWait, [Operand::Move(task)]) = (callee, args)
+            && matches!(
+                self.package.types.kind(self.place_ty(task)),
+                TypeKind::ScopedTask(_, _)
+            )
+        {
+            let held = state[task.local.0 as usize].clone();
+            let active: HashSet<Local> = held
+                .iter()
+                .filter_map(|&id| match self.loans[id].target {
+                    LoanTarget::Scope { holder, .. } if !state[holder.0 as usize].is_empty() => {
+                        Some(holder)
+                    }
+                    _ => None,
+                })
+                .collect();
+            if active.len() == 1 {
+                let holder = *active.iter().next().expect("one child");
+                let multiple = state[holder.0 as usize].iter().any(|&loan| {
+                    matches!(
+                        self.loans[loan].target,
+                        LoanTarget::Scope { multiple: true, .. }
+                    )
+                });
+                if !multiple {
+                    state[holder.0 as usize].clear();
+                }
+            }
+            clear(state);
+            for destination in destinations.iter().flatten() {
+                self.assign(destination, held.clone(), state);
+            }
+            return;
+        }
         if callee.map_access().is_some() {
             self.map_call(args, destinations, site, state);
             clear(state);
@@ -1306,6 +1453,33 @@ impl<'a> Analysis<'a> {
             Rvalue::Use(operand) => self.operand_loans(operand, site, state),
             // The task owns independent inputs, so its handle borrows nothing.
             Rvalue::Spawn(_) => BTreeSet::new(),
+            Rvalue::ScopedSpawn {
+                closure,
+                scope,
+                holder,
+            } => {
+                let mut loans = self.operand_loans(closure, site, state);
+                for multiple in [false, true] {
+                    let loan = Loan {
+                        kind: LoanKind::Shared,
+                        target: LoanTarget::Scope {
+                            registry: *scope,
+                            holder: *holder,
+                            multiple,
+                        },
+                        span: site.span,
+                        name: "scoped task".into(),
+                        from_slicing: false,
+                        captured: false,
+                        binding: false,
+                    };
+                    let marker = self.intern(site.next_key(), loan);
+                    if !multiple || !state[holder.0 as usize].is_empty() {
+                        loans.insert(marker);
+                    }
+                }
+                loans
+            }
             Rvalue::Aggregate(_, operands) => {
                 let mut loans = BTreeSet::new();
                 for operand in operands {
@@ -1392,8 +1566,13 @@ impl<'a> Analysis<'a> {
                 loans.extend(state[place.local.0 as usize].iter().copied());
                 loans
             }
-            Rvalue::Closure { owning: true, .. } => {
-                let mut loans = BTreeSet::new();
+            Rvalue::Closure {
+                captures,
+                capture_modes: borrowed,
+                owning: true,
+                ..
+            } => {
+                let mut loans = self.borrowed_capture_loans(captures, borrowed, site, state);
                 for operand in self.owned_captures(rvalue) {
                     loans.extend(self.operand_loans(&operand, site, state));
                 }
@@ -1423,6 +1602,7 @@ impl<'a> Analysis<'a> {
             }
             Rvalue::ReferencePresent(_)
             | Rvalue::Zero
+            | Rvalue::TaskScope
             | Rvalue::Global(_)
             | Rvalue::Binary(..)
             | Rvalue::Unary(..)
@@ -1470,9 +1650,12 @@ impl<'a> Analysis<'a> {
 
     fn rvalue_accesses(&self, rvalue: &Rvalue, span: Span, out: &mut Vec<Access>) {
         match rvalue {
-            Rvalue::Zero | Rvalue::Global(_) => {}
+            Rvalue::Zero | Rvalue::TaskScope | Rvalue::Global(_) => {}
             Rvalue::Use(operand)
             | Rvalue::Spawn(operand)
+            | Rvalue::ScopedSpawn {
+                closure: operand, ..
+            }
             | Rvalue::Unary(_, operand)
             | Rvalue::Convert(operand, _)
             | Rvalue::Error(operand)
@@ -1569,7 +1752,34 @@ impl<'a> Analysis<'a> {
                     self.operand_accesses(bound, None, span, out);
                 }
             }
-            Rvalue::Closure { owning: true, .. } => {
+            Rvalue::Closure {
+                captures,
+                capture_modes: borrowed,
+                owning: true,
+                ..
+            } => {
+                for (index, (place, _)) in captures.iter().enumerate() {
+                    if let Some(mode) = borrowed.get(index)
+                        && *mode != ParamMode::Own
+                    {
+                        out.push(self.access(
+                            place,
+                            if *mode == ParamMode::Mut {
+                                AccessKind::Write
+                            } else {
+                                AccessKind::Read
+                            },
+                            Depth::Deep,
+                            if *mode == ParamMode::Mut {
+                                Action::MutBorrow
+                            } else {
+                                Action::Borrow
+                            },
+                            span,
+                            false,
+                        ));
+                    }
+                }
                 for operand in self.owned_captures(rvalue) {
                     self.operand_accesses(&operand, None, span, out);
                 }
@@ -1759,6 +1969,7 @@ impl<'a> Analysis<'a> {
     fn loan_origin(&self, id: LoanId) -> Option<Result<(usize, bool), String>> {
         let path = match &self.loans[id].target {
             LoanTarget::Param(index) => return Some(Ok((*index, false))),
+            LoanTarget::Scope { .. } => return Some(Err("a task scope".into())),
             LoanTarget::Place(path) if path.goes_through_deref() => return None,
             LoanTarget::Place(path) => path,
         };
@@ -1937,6 +2148,16 @@ impl Liveness {
                     }
                 }
             }
+            Statement::EndTaskScope { scope, .. } => {
+                let record = body
+                    .task_scopes
+                    .iter()
+                    .find(|record| record.registry == *scope)
+                    .expect("scope metadata");
+                for holder in &record.children {
+                    live[holder.0 as usize] = true;
+                }
+            }
             Statement::EndMapEntry { guard, .. } => {
                 Self::use_place(&Place::local(guard.entry), live);
                 Self::use_place(&guard.map, live);
@@ -2033,9 +2254,12 @@ impl Liveness {
 
     fn use_rvalue(rvalue: &Rvalue, live: &mut LiveSet) {
         match rvalue {
-            Rvalue::Zero | Rvalue::Global(_) => {}
+            Rvalue::Zero | Rvalue::TaskScope | Rvalue::Global(_) => {}
             Rvalue::Use(operand)
             | Rvalue::Spawn(operand)
+            | Rvalue::ScopedSpawn {
+                closure: operand, ..
+            }
             | Rvalue::Unary(_, operand)
             | Rvalue::Convert(operand, _)
             | Rvalue::Error(operand)

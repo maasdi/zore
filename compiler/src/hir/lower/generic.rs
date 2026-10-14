@@ -1133,7 +1133,7 @@ fn each_stmt_expr(stmt: &mut hir::Stmt, visit: &mut dyn FnMut(&mut hir::Expr)) {
                 each_expr(block, visit);
             }
         }
-        StmtKind::Block(block) => each_expr(block, visit),
+        StmtKind::Block(block) | StmtKind::TaskScope { body: block, .. } => each_expr(block, visit),
         StmtKind::Break | StmtKind::Continue => {}
     }
 }
@@ -1171,7 +1171,9 @@ fn each_stmt_place(stmt: &mut hir::Stmt, visit: &mut dyn FnMut(&mut hir::Place))
             }
             each_place(body, visit);
         }
-        StmtKind::ForEach { body, .. } | StmtKind::Block(body) => each_place(body, visit),
+        StmtKind::ForEach { body, .. }
+        | StmtKind::Block(body)
+        | StmtKind::TaskScope { body, .. } => each_place(body, visit),
         StmtKind::Select { arms, default } => {
             for arm in arms {
                 each_place(&mut arm.body, visit);

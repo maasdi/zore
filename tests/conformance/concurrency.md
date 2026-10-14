@@ -126,7 +126,7 @@ using shared pool workers and persistent async frames.
 | Reply-channel pattern: a request carrying a `channel<Reply>` handle | Valid; no cycle, so ordinary cleanup applies |
 
 These cases do not define the full `go` expression grammar (Q02), the
-entry-point signature or exit status (Q05), or scoped tasks (Q10).
+entry-point signature or exit status (Q05), or direct async task scopes (Q10). Plain scopes have [separate coverage](scoped-tasks.md).
 
 ## Spawn lifetime proof on every exit (§18.4)
 

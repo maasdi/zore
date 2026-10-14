@@ -65,6 +65,10 @@ const RUNTIME_SOURCES: &[(&str, &str)] = &[
     ("sys.rs", include_str!("../../../runtime/src/sys.rs")),
     ("task.rs", include_str!("../../../runtime/src/task.rs")),
     (
+        "task_scope.rs",
+        include_str!("../../../runtime/src/task_scope.rs"),
+    ),
+    (
         "unicode.rs",
         include_str!("../../../runtime/src/unicode.rs"),
     ),

@@ -67,6 +67,11 @@ pub(super) enum LoanTarget {
     Place(Path),
     /// Storage outside the function that parameter `i`'s views already borrow.
     Param(usize),
+    Scope {
+        registry: Local,
+        holder: Local,
+        multiple: bool,
+    },
 }
 
 #[derive(Debug)]

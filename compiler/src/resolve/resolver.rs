@@ -1225,7 +1225,7 @@ impl<'a> Resolver<'a> {
                     self.block(default);
                 }
             }
-            StmtKind::Block(block) => self.block(block),
+            StmtKind::Block(block) | StmtKind::TaskScope(block) => self.block(block),
         }
     }
 

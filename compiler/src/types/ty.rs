@@ -85,6 +85,7 @@ pub enum TypeKind {
     Func(FuncTypeId),
     /// Always Move.
     Task(TaskTypeId),
+    ScopedTask(TaskTypeId, u32),
     /// A Copy handle to one shared queue.
     Channel {
         element: TypeId,

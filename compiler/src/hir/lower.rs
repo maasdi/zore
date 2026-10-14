@@ -53,6 +53,8 @@ pub(crate) fn check_with_entry(
         locals: Vec::new(),
         results: Vec::new(),
         loop_depth: 0,
+        task_scope: None,
+        next_task_scope: 0,
         closures: Vec::new(),
         exclusive_captures: HashSet::new(),
         awaited_call: None,
@@ -204,6 +206,8 @@ struct Checker<'a> {
     locals: Vec<Option<TypeId>>,
     results: Vec<TypeId>,
     loop_depth: usize,
+    task_scope: Option<u32>,
+    next_task_scope: u32,
     /// Indexed like `res.closures`.
     closures: Vec<Option<hir::Function>>,
     exclusive_captures: HashSet<(usize, LocalId)>,
@@ -228,6 +232,7 @@ struct BodyState {
     locals: Vec<Option<TypeId>>,
     results: Vec<TypeId>,
     loop_depth: usize,
+    task_scope: Option<u32>,
 }
 
 fn typed(kind: ExprKind, ty: TypeId, span: Span) -> hir::Expr {
@@ -491,6 +496,17 @@ impl<'a> Checker<'a> {
     }
 
     /// The error result comes last, and a task's results cannot borrow the task's own storage.
+    fn spawn_task_type(&mut self, results: Vec<TypeId>, span: Span) -> Option<TypeId> {
+        if let Some(scope) = self.task_scope {
+            if results.iter().any(|&ty| self.holds_func(ty)) {
+                self.error("a scoped task cannot return function values", span);
+                return None;
+            }
+            return Some(self.types.scoped_task_type(results, scope));
+        }
+        self.task_type(results, span)
+    }
+
     fn task_type(&mut self, results: Vec<TypeId>, span: Span) -> Option<TypeId> {
         let misplaced_error = results
             .split_last()
@@ -645,6 +661,7 @@ impl<'a> Checker<'a> {
                 | TypeKind::Map { .. }
                 | TypeKind::Func(_)
                 | TypeKind::Task(_)
+                | TypeKind::ScopedTask(_, _)
                 | TypeKind::Interface(_) => return false,
                 TypeKind::Param(_)
                     if !matches!(
@@ -1013,6 +1030,7 @@ impl<'a> Checker<'a> {
             locals: std::mem::take(&mut self.locals),
             results: std::mem::take(&mut self.results),
             loop_depth: self.loop_depth,
+            task_scope: self.task_scope.take(),
         }
     }
 
@@ -1021,6 +1039,7 @@ impl<'a> Checker<'a> {
         self.locals = state.locals;
         self.results = state.results;
         self.loop_depth = state.loop_depth;
+        self.task_scope = state.task_scope;
     }
 
     fn closure_parent(&self, function: usize) -> usize {
@@ -1157,6 +1176,7 @@ impl<'a> Checker<'a> {
                 function: id,
                 captures,
                 owning: false,
+                capture_modes: Vec::new(),
             },
             ty,
             span,
@@ -1527,6 +1547,7 @@ impl<'a> Checker<'a> {
                 function,
                 captures: Vec::new(),
                 owning: false,
+                capture_modes: Vec::new(),
             },
             ty,
             span,
@@ -4315,6 +4336,24 @@ impl<'a> Checker<'a> {
                     body,
                 }
             }
+            ast::StmtKind::TaskScope(block) => {
+                if self.in_async_body() {
+                    self.error(
+                        "`scope` is not supported directly in an async function",
+                        span,
+                    );
+                    return None;
+                }
+                if self.reject_in_generic_body("`scope`", span) {
+                    return None;
+                }
+                let id = self.next_task_scope;
+                self.next_task_scope += 1;
+                let previous = self.task_scope.replace(id);
+                let body = self.block(block);
+                self.task_scope = previous;
+                hir::StmtKind::TaskScope { id, body }
+            }
             ast::StmtKind::Block(block) => hir::StmtKind::Block(self.block(block)),
         };
         Some(hir::Stmt { kind, span })
@@ -5239,7 +5278,7 @@ fn stmt_always_exits(stmt: &ast::Stmt) -> bool {
     match &stmt.kind {
         ast::StmtKind::Return(_) => true,
         ast::StmtKind::Expr(expr) => is_panic_call(expr),
-        ast::StmtKind::Block(block) => block_always_exits(block),
+        ast::StmtKind::Block(block) | ast::StmtKind::TaskScope(block) => block_always_exits(block),
         ast::StmtKind::If(if_stmt) => if_always_exits(if_stmt),
         ast::StmtKind::For(for_stmt) => {
             matches!(for_stmt.header, ForHeader::Infinite) && !contains_break(&for_stmt.body)
@@ -5273,7 +5312,7 @@ fn if_always_exits(if_stmt: &ast::If) -> bool {
 fn contains_break(block: &ast::Block) -> bool {
     block.stmts.iter().any(|stmt| match &stmt.kind {
         ast::StmtKind::Break => true,
-        ast::StmtKind::Block(block) => contains_break(block),
+        ast::StmtKind::Block(block) | ast::StmtKind::TaskScope(block) => contains_break(block),
         ast::StmtKind::If(if_stmt) => if_contains_break(if_stmt),
         ast::StmtKind::Select(select) => {
             select.arms.iter().any(|arm| contains_break(&arm.body))

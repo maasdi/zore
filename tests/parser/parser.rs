@@ -387,6 +387,7 @@ fn stmt(case: &Case, s: &Stmt) -> String {
             };
             format!("(for{header} {})", block(case, &f.body))
         }
+        StmtKind::TaskScope(b) => format!("(scope {})", block(case, b)),
         StmtKind::Block(b) => block(case, b),
         StmtKind::Select(select) => {
             let mut out = String::from("(select");
@@ -1822,6 +1823,21 @@ fn conditional_entry_bindings_keep_modes_names_and_comparison_distinct() {
         panic!("expected comparison")
     };
     assert!(comparison.binding.is_none());
+}
+
+#[test]
+fn scope_blocks_reserve_the_lowercase_keyword_without_an_alias() {
+    let case = Case::body("scope\n{ go work(); scope {} }");
+    case.assert_clean();
+    let StmtKind::TaskScope(block) = &case.main_stmts()[0].kind else {
+        panic!("expected task scope")
+    };
+    assert!(matches!(block.stmts[1].kind, StmtKind::TaskScope(_)));
+    Case::body("let taskScope = 1; println(taskScope)").assert_clean();
+    for source in ["let scope = 1", "taskScope { go work() }"] {
+        let case = Case::body(source);
+        assert!(!case.errors().is_empty(), "{source}");
+    }
 }
 
 #[test]

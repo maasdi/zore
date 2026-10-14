@@ -129,6 +129,12 @@ fn live_at_entry(body: &mir::Body) -> Vec<Vec<bool>> {
                         });
                     }
                 }
+                Statement::EndTaskScope { scope, .. } => {
+                    let local = scope.0 as usize;
+                    if !defined[index][local] {
+                        used_before_definition[index][local] = true;
+                    }
+                }
                 Statement::EndMapEntry { guard, .. } => {
                     visit_place(&guard.map, &mut |local| {
                         if !defined[index][local] {
@@ -602,6 +608,7 @@ fn visit_rvalue(rvalue: &Rvalue, visit: &mut impl FnMut(usize)) {
         | Rvalue::Convert(value, _)
         | Rvalue::Error(value)
         | Rvalue::Spawn(value)
+        | Rvalue::ScopedSpawn { closure: value, .. }
         | Rvalue::InterfaceBox(value) => visit_operand(value, visit),
         Rvalue::InterfaceView { place, .. } => visit_place(place, visit),
         Rvalue::Binary(_, left, right)
@@ -649,7 +656,7 @@ fn visit_rvalue(rvalue: &Rvalue, visit: &mut impl FnMut(usize)) {
                 visit_place(place, visit);
             }
         }
-        Rvalue::Zero | Rvalue::Global(_) => {}
+        Rvalue::Zero | Rvalue::TaskScope | Rvalue::Global(_) => {}
     }
 }
 
@@ -658,6 +665,9 @@ fn visit_statement(statement: &Statement, visit: &mut impl FnMut(usize)) {
         Statement::Assign { place, rvalue, .. } => {
             visit_place(place, visit);
             visit_rvalue(rvalue, visit);
+        }
+        Statement::EndTaskScope { scope, .. } => {
+            visit(scope.0 as usize);
         }
         Statement::EndMapEntry { guard, .. } => {
             visit(guard.entry.0 as usize);

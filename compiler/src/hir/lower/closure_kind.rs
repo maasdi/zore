@@ -189,7 +189,9 @@ impl Checker<'_> {
                     self.block_escapes(default, escapes);
                 }
             }
-            StmtKind::Block(block) => self.block_escapes(block, escapes),
+            StmtKind::Block(block) | StmtKind::TaskScope { body: block, .. } => {
+                self.block_escapes(block, escapes)
+            }
         }
     }
 
@@ -252,13 +254,26 @@ impl Checker<'_> {
                 }
             }
             ExprKind::InterfaceBox(source) => self.expr_escapes(source, true, escapes),
-            ExprKind::Spawn { args, callable, .. } => {
-                if *callable && let Some(ExprKind::Local(local)) = args.first().map(|arg| &arg.kind)
+            ExprKind::Spawn {
+                args,
+                callable,
+                scope,
+                modes,
+                ..
+            } => {
+                if scope.is_none()
+                    && *callable
+                    && let Some(ExprKind::Local(local)) = args.first().map(|arg| &arg.kind)
                 {
                     escapes.spawned.insert(*local);
                 }
-                for arg in args {
-                    self.expr_escapes(arg, true, escapes);
+                for (index, arg) in args.iter_mut().enumerate() {
+                    self.expr_escapes(
+                        arg,
+                        scope.is_none()
+                            || modes[index] == ParamMode::Own && !(*callable && index == 0),
+                        escapes,
+                    );
                 }
             }
             _ => {
@@ -289,6 +304,7 @@ impl Checker<'_> {
                     function,
                     captures,
                     owning,
+                    ..
                 } = &mut value.kind
                 && let Some((local, is_let)) = bound
             {
@@ -349,6 +365,7 @@ impl Checker<'_> {
                 if let ExprKind::Spawn {
                     args,
                     callable: true,
+                    scope,
                     ..
                 } = &expr.kind
                     && let Some(first) = args.first()
@@ -357,7 +374,9 @@ impl Checker<'_> {
                     } = &first.kind
                 {
                     spawn_callees.insert(first.span);
-                    spawned_literals.push((*function, captures.clone(), first.span));
+                    if scope.is_none() {
+                        spawned_literals.push((*function, captures.clone(), first.span));
+                    }
                 }
                 if let ExprKind::Closure {
                     function, owning, ..
@@ -419,7 +438,9 @@ impl Checker<'_> {
                     self.bind_closures(default, escaping, spawned, once_locals);
                 }
             }
-            StmtKind::Block(block) => self.bind_closures(block, escaping, spawned, once_locals),
+            StmtKind::Block(block) | StmtKind::TaskScope { body: block, .. } => {
+                self.bind_closures(block, escaping, spawned, once_locals)
+            }
             _ => {}
         }
     }
@@ -527,7 +548,9 @@ impl Checker<'_> {
                     self.block_moves(default, moved);
                 }
             }
-            StmtKind::Block(block) => self.block_moves(block, moved),
+            StmtKind::Block(block) | StmtKind::TaskScope { body: block, .. } => {
+                self.block_moves(block, moved)
+            }
         }
     }
 
@@ -683,9 +706,9 @@ fn once_uses_in_block(block: &mut hir::Block, once: &HashSet<LocalId>, misused: 
                 }
                 once_uses_in_block(body, once, misused);
             }
-            StmtKind::ForEach { body, .. } | StmtKind::Block(body) => {
-                once_uses_in_block(body, once, misused)
-            }
+            StmtKind::ForEach { body, .. }
+            | StmtKind::Block(body)
+            | StmtKind::TaskScope { body, .. } => once_uses_in_block(body, once, misused),
             StmtKind::Select { arms, default } => {
                 for arm in arms {
                     once_uses_in_block(&mut arm.body, once, misused);
@@ -795,7 +818,7 @@ pub(super) fn stmt_exprs(stmt: &mut hir::Stmt) -> Vec<&mut hir::Expr> {
                 }
             }
         }
-        StmtKind::Break | StmtKind::Continue | StmtKind::Block(_) => {}
+        StmtKind::Break | StmtKind::Continue | StmtKind::Block(_) | StmtKind::TaskScope { .. } => {}
     }
     roots
 }
