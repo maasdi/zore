@@ -15,19 +15,14 @@ impl Checker<'_> {
         span: Span,
     ) -> Option<Value> {
         let ty = receiver.ty();
-        let strukt = self.types.struct_id(ty)?;
-        if !self.can_use_member(
-            self.res.struct_package[self.types.struct_origin(strukt).0 as usize],
-            &name.text,
-        ) {
+        let package = self.declaring_package(ty)?;
+        if !self.can_use_member(package, &name.text) {
             self.unexported_member("method", &name.text, ty, name.span);
             return None;
         }
         let declaration = self.res.functions[method.0 as usize];
         let problem = if name.text == "drop" {
             Some("the `drop` method cannot be used as a value")
-        } else if declaration.is_async {
-            Some("an `async` method cannot be used as a value")
         } else if self.is_generic(method) {
             Some("a method of a generic type cannot be used as a value yet")
         } else {
@@ -71,7 +66,7 @@ impl Checker<'_> {
                 )
             });
         let ty = self.types.func_type(FuncSignature {
-            is_async: false,
+            is_async: declaration.is_async,
             params: modes.iter().copied().zip(params.iter().copied()).collect(),
             results: results.clone(),
         });
@@ -164,10 +159,13 @@ impl Checker<'_> {
             results,
             captures: vec![capture],
             is_closure: true,
-            is_async: false,
+            is_async: self.res.functions[method.0 as usize].is_async,
             native: false,
             call_once,
-            type_params: Vec::new(),
+            type_params: self
+                .generic_root(FunctionId(self.current as u32))
+                .map(|root| self.res.type_params[&root].clone())
+                .unwrap_or_default(),
             probe: false,
             locals,
             body,

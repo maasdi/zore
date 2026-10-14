@@ -198,7 +198,16 @@ closure environment, and the frame's own `poll` and `destroy` function pointers.
 A value of async function type is a closure whose code pointer is the
 callee's frame constructor, so an awaited call through the value builds the child
 frame from the value, then polls and destroys it through the child's header
-pointers. This is an internal representation, not a source contract.
+pointers. Async literals and method-value forwarding bodies use this same ABI.
+An awaited callable frame borrows its environment; destroying the child frame
+preserves the callable and its captures for later calls. A generated spawn
+wrapper owns the transferred callable and drops it after its child completes.
+Call-once calls consume the callable and drop its remaining captures on return
+or unwind. Generated plain/polled task entries remember whether the body returned
+before destroying its captures. If that destruction panics, they drop the
+initialized results before completing the task with a panic, preserving the
+runtime invariant that a panicked task has no result values to release.
+This is an internal representation, not a source contract.
 
 The poll ABI returns `0` for Pending and `1` for Ready, including completion through
 panic cleanup. The context pointer is opaque to generated code and borrowed only

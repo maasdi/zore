@@ -82,6 +82,7 @@ pub enum ExprKind {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Closure {
+    pub is_async: bool,
     pub params: Vec<Param>,
     pub results: Vec<Type>,
     pub body: Block,

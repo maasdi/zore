@@ -9,6 +9,13 @@ once it does.
 
 ### Language specification
 
+- Locked async closure literals and receiver-capturing async method values
+  (§16.1–§16.7), with ordinary captures, exclusive awaited calls, independent
+  spawn inputs and deterministic cleanup.
+
+- Fixed concrete method-value capture layouts inside generic factories, and
+  returned-result destruction when a plain or async task's capture cleanup panics.
+
 - Locked conditional borrowed map entries (§13.4): `if name = map.entry(key)`
   and `if mut name = map.entry(key)`, optional missing branches, ordinary control
   flow and scoped borrowing/cleanup. Mutable view-containing entries remain excluded.

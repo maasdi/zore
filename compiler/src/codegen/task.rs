@@ -30,7 +30,7 @@ impl Module<'_> {
                 let entry = self.task_entry(index, results, &block_ty, &slot_ty);
                 let destructor = self.task_drop_results(index, results, &block_ty, &slot_ty, body);
                 self.task_code.push_str(&entry);
-                let poll = self.task_poll_entry(index, &block_ty);
+                let poll = self.task_poll_entry(index, results, &block_ty);
                 self.task_code.push_str(&poll);
                 self.task_code.push_str(&destructor);
                 index
@@ -44,8 +44,8 @@ impl Module<'_> {
         }
     }
 
-    fn task_poll_entry(&self, index: usize, block_ty: &str) -> String {
-        format!(
+    fn task_poll_entry(&self, index: usize, results: &[TypeId], block_ty: &str) -> String {
+        let mut text = format!(
             "define private i8 @zore_task_poll_entry.{index}(ptr %block, ptr %context) {{\nentry:\n\
              \x20 %closure = load {{ ptr, ptr, ptr }}, ptr %block\n\
              \x20 %code = extractvalue {{ ptr, ptr, ptr }} %closure, 0\n\
@@ -55,10 +55,17 @@ impl Module<'_> {
              \x20 %status = call i8 %code(ptr %frame, ptr %context, ptr %out)\n\
              \x20 %ready = icmp ne i8 %status, 0\n\
              \x20 br i1 %ready, label %done, label %pending\npending:\n\
-             \x20 ret i8 0\ndone:\n\
-             \x20 call void %destroy(ptr %frame)\n\
-             \x20 ret i8 1\n}}\n\n"
-        )
+             \x20 ret i8 0\ndone:\n"
+        );
+        if results.iter().any(|&ty| self.package.needs_drop(ty)) {
+            text.push_str(
+                "  %body.panicked = call zeroext i1 @zore_panic_pending()\n  %returned = xor i1 %body.panicked, true\n",
+            );
+        }
+        text.push_str("  call void %destroy(ptr %frame)\n");
+        text.push_str(&self.task_result_cleanup(index, results));
+        text.push_str("  ret i8 1\n}\n\n");
+        text
     }
 
     /// Runs the closure once, keeps its results unless it panicked, then destroys what it still owns.
@@ -89,10 +96,27 @@ impl Module<'_> {
                  \x20 br label %done\n"
             ));
         }
-        text.push_str(
-            "done:\n  call void @zore_enter_drop()\n  call void %destructor(ptr %env)\n  call void @zore_leave_drop()\n  ret void\n}\n\n",
-        );
+        text.push_str("done:\n");
+        if results.iter().any(|&ty| self.package.needs_drop(ty)) {
+            text.push_str("  %returned = phi i1 [ false, %entry ], [ true, %keep ]\n");
+        }
+        text.push_str("  call void @zore_enter_drop()\n  call void %destructor(ptr %env)\n  call void @zore_leave_drop()\n");
+        text.push_str(&self.task_result_cleanup(index, results));
+        text.push_str("  ret void\n}\n\n");
         text
+    }
+
+    fn task_result_cleanup(&self, index: usize, results: &[TypeId]) -> String {
+        if !results.iter().any(|&ty| self.package.needs_drop(ty)) {
+            return String::new();
+        }
+        format!(
+            "  %cleanup.panicked = call zeroext i1 @zore_panic_pending()\n\
+             \x20 %discard = and i1 %returned, %cleanup.panicked\n\
+             \x20 br i1 %discard, label %discard.results, label %finished\ndiscard.results:\n\
+             \x20 call void @zore_task_drop_results.{index}(ptr %block)\n\
+             \x20 br label %finished\nfinished:\n"
+        )
     }
 
     fn task_drop_results(

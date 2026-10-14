@@ -6,6 +6,8 @@ use zore::resolve::LocalKind;
 use zore::source::SourceMap;
 use zore::types::TypeStore;
 
+mod async_callables;
+
 struct Case {
     sources: SourceMap,
     checked: Checked,
@@ -4001,7 +4003,10 @@ println(done())
 let again = Counter{N: 2}
 let spawned = again.read
 let task = go spawned()
-_ = task",
+_ = task
+let load = again.load
+let loaded = go load()
+_ = loaded",
     ));
     for (body, message) in [
         (
@@ -4011,10 +4016,6 @@ _ = task",
         (
             "let f = make().read\n_ = f",
             "the receiver of a method value must be a local or a field of a local",
-        ),
-        (
-            "let c = Counter{N: 1}\nlet f = c.load\n_ = f",
-            "an `async` method cannot be used as a value",
         ),
         (
             "let r = Res{Name: \"a\"}\nlet f = r.drop\n_ = f",

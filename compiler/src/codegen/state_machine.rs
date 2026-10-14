@@ -198,7 +198,9 @@ impl FunctionBuilder<'_, '_> {
         self.out.push_str(&format!(
             "define private void {name}(ptr %frame) {{\nentry:\n"
         ));
-        if self.module.owning_closures.contains(&self.body.function) {
+        if self.module.owning_closures.contains(&self.body.function)
+            && !self.module.async_values.contains(&self.body.function)
+        {
             self.line(format!(
                 "%env.slot = getelementptr inbounds {frame_ty}, ptr %frame, i32 0, i32 2"
             ));

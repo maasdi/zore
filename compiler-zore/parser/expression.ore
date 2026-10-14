@@ -249,7 +249,7 @@ func (p mut Parser) primary() int {
             return p.structLiteral(ast.Absent, name)
         }
         if p.structLiterals && p.at(".") && p.kindAt(1) == lexer.KindIdent &&
-            (p.atPunctAt(2, "{") || p.atTypeArgumentsBeforeBrace(2)) {
+        (p.atPunctAt(2, "{") || p.atTypeArgumentsBeforeBrace(2)) {
             let pkg = p.tree.Add("name", token.Start, token.End, text)
             _ = p.bump()
             let member = p.name("a type name")
@@ -291,7 +291,7 @@ func (p mut Parser) primary() int {
         return node
     } else if kind == lexer.KindUnderscore {
         return p.error("`_` cannot be used as a value", token.Start, token.End)
-    } else if p.atKeyword("func") {
+    } else if p.atKeyword("func") || p.atKeyword("async") {
         return p.closure()
     } else if p.atKeyword("map") {
         return p.mapLiteral()
@@ -313,7 +313,14 @@ func (p mut Parser) primary() int {
 }
 
 func (p mut Parser) closure() int {
+    let isAsync = p.atKeyword("async")
     let start = p.bump()
+    if isAsync {
+        if !p.atKeyword("func") {
+            return p.unexpected("`func`")
+        }
+        _ = p.bump()
+    }
     if p.atKind(lexer.KindIdent) {
         return p.errorAtCurrent("a function literal has no name; declare named functions at package level")
     }
@@ -335,7 +342,11 @@ func (p mut Parser) closure() int {
     if body == failed {
         return failed
     }
-    let node = p.addNode("closure", start.Start, start.End, "")
+    var mode = ""
+    if isAsync {
+        mode = "async"
+    }
+    let node = p.addNode("closure", start.Start, start.End, mode)
     p.tree.Append(node, params)
     p.tree.Append(node, results)
     p.tree.Append(node, body)

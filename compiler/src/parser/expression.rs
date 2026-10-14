@@ -238,7 +238,7 @@ impl Parser<'_> {
             TokenKind::Underscore => {
                 return Err(self.error("`_` cannot be used as a value", span));
             }
-            TokenKind::Keyword(Keyword::Func) => {
+            TokenKind::Keyword(Keyword::Func | Keyword::Async) => {
                 return self.closure();
             }
             TokenKind::Keyword(Keyword::Map) => {
@@ -262,7 +262,14 @@ impl Parser<'_> {
     }
 
     fn closure(&mut self) -> PResult<Expr> {
+        let is_async = self.at_keyword(Keyword::Async);
         let start = self.bump().span;
+        if is_async {
+            if !self.at_keyword(Keyword::Func) {
+                return Err(self.unexpected("`func`"));
+            }
+            self.bump();
+        }
         if *self.peek() == TokenKind::Ident {
             let span = self.current_span();
             return Err(self.error(
@@ -283,6 +290,7 @@ impl Parser<'_> {
         })?;
         Ok(Expr {
             kind: ExprKind::Closure(Box::new(Closure {
+                is_async,
                 params,
                 results,
                 body,

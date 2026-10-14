@@ -438,6 +438,58 @@ func main() {}"
 }
 
 #[test]
+fn async_captured_callables_keep_captures_and_callers_in_persistent_frames() {
+    let source = "package main
+type Counter struct { N int }
+async func (c mut Counter) bump(ch channel<int>) { let n, ok = ch.receive(); if ok { c.N += n } }
+async func work(ch channel<int>) int {
+    var count = 1
+    let f = async func() int { let n, ok = ch.receive(); if ok { count += n }; return count }
+    let n = await f()
+    var counter = Counter{N: n}
+    let bump = counter.bump
+    await bump(ch)
+    return counter.N
+}
+func main() {}";
+    let (package, program, plan) = plan(source);
+    let closures: Vec<_> = package
+        .functions
+        .iter()
+        .enumerate()
+        .filter(|(_, function)| function.is_async && function.is_closure)
+        .collect();
+    assert_eq!(closures.len(), 2);
+    for (index, function) in closures {
+        let id = zore::resolve::FunctionId(index as u32);
+        let body = &program.bodies[index];
+        let machine = &plan.machines[&id];
+        assert!(!machine.suspensions.is_empty());
+        for capture in &function.captures {
+            assert!(body.locals[capture.0 as usize].by_reference);
+            assert_eq!(machine.storage[capture.0 as usize], LocalStorage::Frame);
+        }
+    }
+    let (body, storage) = storage_for(&package, &program, &plan, "work");
+    for name in ["count", "f", "counter", "bump"] {
+        assert_eq!(named_storage(body, storage, name), LocalStorage::Frame);
+    }
+    let work = plan
+        .machines
+        .iter()
+        .find(|(id, _)| package.function(**id).name == "work")
+        .unwrap()
+        .1;
+    assert_eq!(
+        work.suspensions
+            .iter()
+            .filter(|(_, kind)| *kind == Suspension::Value)
+            .count(),
+        2
+    );
+}
+
+#[test]
 fn calls_and_task_awaits_keep_their_cleanup_edges_and_spans() {
     let (package, program, plan) = plan(
         "package main

@@ -3983,8 +3983,13 @@ Parameter names, duplicate checks, shadowing, and the outermost-body scope
 follow §5.7–5.8 and §7.8. `return` exits the closure, not an enclosing function
 (§7.7), and `?` needs a trailing `error` result declared by the closure itself
 (§15.3). `break` and `continue` cannot reach a loop outside the closure.
-`await` is invalid in a closure body (§17.2); `async` closures are not part of
-this decision. A closure literal appears only inside a function body, never in
+An async literal adds `async` before `func`, as in
+`async func(id int) (User, error) { return await fetchUser(id) }`.
+Its type is `async func(int) (User, error)`; it follows the same parameter,
+result, scope, capture, and call-once rules as a plain literal. `await` is valid
+in its body. Each nested literal independently determines whether its body is
+async; a plain literal inside an async body cannot use `await`.
+A closure literal appears only inside a function body, never in
 a constant or a type.
 
 A literal may be called where it is written, as in `func(x int) int { return x }(2)`.
@@ -4033,9 +4038,9 @@ two function types are identical only when they agree on it as well as on the
 parameter types, modes, and results. There is no conversion between `func(T) R`
 and `async func(T) R` in either direction. The name of a declared `async func`,
 including a package-qualified one, is a capture-free Move value of the async
-function type with its signature; evaluating the name has no effect. An `async`
-method, a built-in operation, and a closure literal are not async function
-values (a closure body is never async, §16.1).
+function type with its signature; evaluating the name has no effect. An async
+closure literal and a value of an async method also have async function type.
+A built-in operation cannot be a function value.
 
 A call through a value of async function type is an async call (§17.8): it must
 be the operand of `await` or of `go`. The callee is evaluated first and the
@@ -4069,8 +4074,10 @@ with the method's parameters and results (the receiver is not a parameter). No
 rule is added: the receiver is captured by the ordinary capture rules (§16.3,
 §16.4), and the receiver's mode decides the capture. A shared receiver is
 captured by a shared borrow. A `mut` receiver is captured by an exclusive borrow
-and must be a mutable place (§11.6). An `own` receiver is moved into the
-closure, which is call-once (§16.6). When the value escapes, including being
+and must be a mutable place (§11.6). Passing a captured Move receiver to an
+`own` method moves it into the closure, which is call-once (§16.6). A Copy
+receiver follows the ordinary inferred capture and Copy argument rules.
+When the value escapes, including being
 spawned by `go`, it is owning (§16.4): a Copy receiver is copied and a Move
 receiver is moved when the value is created, and a spawned method value follows
 §18.3 and §18.4.
@@ -4087,15 +4094,20 @@ let read = counter.read           // func() int; shared capture of `counter`
 println(read())                   // 1
 let bump = counter.bump           // func(); exclusive capture of `counter`
 bump()
-let done = counter.finish         // call-once; consumes `counter`
+let done = counter.finish         // func() int; `Counter` is Copy
 println(done())
 ```
 
 The receiver must be a local or a field path rooted at a local, because capture
 is per whole local (§16.3). A call result, an index expression, or a map lookup
 is rejected as the receiver of a method value; bind it to a local first.
-Creating a method value evaluates nothing but the capture. A method declared
-`async` is rejected as a value, for the reason an `async func` name is. A method
+Creating a method value evaluates nothing but the capture. An async method
+value has the method's async function type and means an async literal that
+awaits the method call before returning its results. Receiver capture, field
+paths, exclusivity, ownership and call-once inference follow the same rules as
+for synchronous methods. Methods of generic types and methods reached through
+an interface value remain excluded as values; call the method directly or wrap
+it in an appropriately typed literal. A method
 of another package is usable as a value exactly where a call is allowed
 (§3.20). The `drop` method cannot be used as a value. Method expressions written
 on the type (`Counter.read`) are not part of this decision.
@@ -4224,8 +4236,9 @@ be usable exclusively, as for any call (§16.2).
 Every closure value, borrowing or owning, is checked by the same region
 analysis: a borrowing closure that would outlive a local it captures (by being
 returned, stored, or assigned to an outer place) is rejected, and the
-diagnostic names the captured local. Liveness across `await` remains
-unsupported. Use with `go` is defined in §18.3 and §18.4.
+diagnostic names the captured local. Liveness across suspension follows §17.6:
+the captured storage and its access rights must remain valid for the whole
+call. Use with `go` is defined in §18.3 and §18.4.
 
 A panic or `?` inside a closure runs the closure's own cleanup and then
 continues in its caller as for any call.
@@ -4272,8 +4285,86 @@ consumes the binding as a call does (§18.3).
 
 Ownership, error, and async implications: no new ownership category; an owning
 closure is a Move value that owns its captures, and a call-once call is a move
-of the closure. Panics and `?` inside the body follow §16.4. Async interaction
-remains open.
+of the closure. Panics and `?` inside the body follow §16.4. An async call-once
+closure must be awaited or spawned, consumes its binding before execution,
+and keeps its owned captures until the call finishes. Its remaining captures
+are destroyed exactly once after completion or panic, before caller cleanup.
+
+## 16.7 Async captured callables — LOCKED
+
+Async literals and receiver-capturing async method values extend the existing
+callable model without a new ownership category, capture list, future type,
+or lifetime syntax. Awaiting a reusable callable borrows it exclusively until
+completion, including every suspension. The callable retains its environment
+after that call and may be called again; an owning callable's captures are
+destroyed when the callable is destroyed, not when an awaited child frame is
+released. A borrowing callable keeps loans on its captured whole locals for
+its ordinary inferred lifetime. Owned captures may themselves contain views,
+but their backing must outlive the callable and any awaited call.
+
+```ore
+async func update() int {
+    var count = 0
+    let bump = async func() {
+        time.Sleep(time.Millisecond)
+        count += 1
+    }
+    await bump()
+    await bump()
+    return count                         // accepted: capture's last use ended
+}
+
+async func rejected() {
+    var count = 0
+    let bump = async func() { count += 1 }
+    println(count)                       // rejected: exclusive capture is live
+    await bump()
+}
+
+func start() {
+    let values = Array<int>{1}
+    let job = async func() int { time.Sleep(time.Millisecond); return values[0] }
+    let task = go job()                  // task owns `job` and `values`
+    println(task.wait())
+}
+```
+
+Spawning a callable transfers it into task-owned storage and calls it once.
+The same independent-input and capture restrictions apply to both plain and
+async callables (§18.4): borrowed Move parameters, views into caller storage,
+unknown function parameters, mutable parameters, and mutations of captured
+Copy values cannot become independently valid merely by awaiting later.
+Async bodies may use ordinary waiting operations, which suspend rather than
+block an OS worker; a nested plain body still blocks on such operations.
+Views derived from call-local or temporary storage cannot escape through
+results or captures. A callable cannot store a view of its parameter into a
+capture; the existing conservative capture-writeback restriction remains.
+Package-level mutable globals remain forbidden (§3.21).
+
+Error results and `?` use the callable's own declared trailing error result.
+Early return and error propagation clean up initialized locals and transferred
+parameters before completing the call. Panics clean up the suspended body's
+initialized parts and then propagate through its awaiting caller or task;
+reusable captures keep their ordinary owner, while call-once/task-owned
+environments are destroyed once on completion or unwind. No implicit join,
+rollback, or cancellation is introduced.
+
+If task-owned capture destruction panics after the body has returned its
+results, those initialized results are destroyed before the task finishes
+with a panic. Uninitialized results from a body that panicked are never
+destroyed. A second panic during this result cleanup aborts as in §15.4.
+
+Compiler impact: AST/resolution retain the literal's async flag; typing interns
+its async signature and checks each body's async context independently.
+Method values synthesize async forwarding bodies when appropriate and retain
+enclosing generic parameters, so whole-local capture storage is specialized
+even when the selected field's method is concrete. Existing capture inference,
+region analysis, call-once moves and drop insertion apply.
+MIR async-call lowering shares the existing code/environment/destructor triple
+and pinned heap-frame representation. Awaited child frames borrow callable
+environments; spawn wrapper frames own the transferred callable. Captures,
+their initialized-part flags and borrowing environments remain address-stable
+through suspension. Conformance inventory: `tests/conformance/async-callables.md`.
 
 ---
 
@@ -4296,7 +4387,7 @@ async func fetchUser(id int) (User, error) {
 
 An async function type is written with `async` before `func`, as in
 `async func(int) (User, error)`, and a declared `async func` name is a value of
-that type (§16.2).
+that type (§16.2). An async closure body uses the same rules (§16.7).
 
 ## 17.3 `await` semantics — LOCKED
 
@@ -4311,8 +4402,8 @@ a call suspends the task until it can proceed, exactly as an `await` does, so it
 is a suspension point for §17.5 and §17.6. In a function that is not async, the
 same call blocks the calling thread, as `task.wait()` does (§18.9). `await` still
 applies only to calls of `async func`s and to `Task` values (§17.8). The body of
-a closure is a non-async body even when the closure is written inside an
-`async func`, so a waiting call in it blocks the thread.
+a plain closure is a non-async body even when written inside an async body,
+so a waiting call in it blocks the thread. An explicit async closure suspends.
 
 ## 17.4 Unified ownership — LOCKED
 
@@ -4467,9 +4558,9 @@ it once, and then destroys it, so every captured value is destroyed exactly once
 on a normal return, an error result, or a panic. A callee that is a field,
 element, map value, or the result of a call is rejected: move a closure stored
 in a field of a local struct into a local first, and take one out of an
-`Array<T>` or a map with `pop` or `remove`. A closure body is never
-async (§16.1), so a spawned closure runs as one plain-function task even when it
-is written inside an `async func`. `go` also accepts a call through a value of
+`Array<T>` or a map with `pop` or `remove`. A spawned plain closure runs as one
+plain-function task even when written inside an async body. A spawned async
+closure or async method value runs as a polled task. `go` also accepts a call through a value of
 async function type (§16.2): the callable is moved into the task, and the task
 resumes as for a declared `async func`. `go asyncFn(x)` on the declared name is
 unchanged.

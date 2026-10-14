@@ -1,5 +1,6 @@
 //! Requires clang (LLVM 15+) and rustc 1.98+; a missing toolchain fails rather than skips.
 
+mod async_callables;
 mod conformance;
 mod controlled_runtime;
 mod http;
