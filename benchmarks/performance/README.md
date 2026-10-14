@@ -1,6 +1,7 @@
 # Reproducible performance baselines
 
-See the [recorded Linux baseline and follow-ups](../../docs/performance.md).
+See the [recorded Linux baseline](../../docs/performance.md) and
+[paired compiler/request-retention follow-ups](../../docs/performance-followups.md).
 
 This opt-in Linux runner extends the existing suspended-task, frame-storage and
 cooperative-budget workloads. It changes no compiler or scheduler semantics.
@@ -106,10 +107,12 @@ thread-pool retention; its growth alone neither proves nor disproves a leak.
 Workloads enable ZORE_CHECK_LEAKS=1 and require clean exit after joining/draining.
 That check covers tracked text buffers, channels, mutexes and signal
 subscriptions, not all heap allocations, and skips those checks while tasks
-remain. HTTP request/deadline contexts can leave detached time.After jobs alive
-until their timers expire even after connections drain; a clean REST exit alone
-does not prove that those resource checks executed. This retention is tracked
-separately in issue #128. The existing suspended-task sampler's
+remain. The #118 baseline's request contexts left detached time.After jobs alive
+until their deadlines even after connection drain. The #128 fix cancels private
+deadline registrations; the retention profiler explicitly waits for quiescence
+before exit. A clean exit without that checkpoint does not by itself prove that
+resource checks executed. See the measured follow-up report above.
+The existing suspended-task sampler's
 [readiness/stability limitations](../suspended-tasks/README.md) still apply.
 
 Frame ABI sizes exclude owned payload allocations, callable environments, task

@@ -1,5 +1,9 @@
 # Performance baseline — 2026-10-14
 
+The later [#127/#128 report](performance-followups.md) records internal LLVM
+linkage, cancellable request deadlines and their measured effects. The original
+baseline and raw data below are preserved at their recorded revisions.
+
 Issue [#118](https://github.com/maasdi/zore/issues/118) now has an opt-in
 [runner and measurement guide](../benchmarks/performance/README.md).
 The [raw JSON, compressed with gzip](../benchmarks/performance/baseline-linux-2026-10-14.json.gz)
