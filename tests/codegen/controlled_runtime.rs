@@ -49,12 +49,21 @@ fn runtime() -> &'static Runtime {
 }
 
 pub(super) fn build(source: &str, output: &Path) {
-    assert!(source.contains("waitPending(") || source.contains("waitBlocked("));
+    assert!(
+        source.contains("waitPending(")
+            || source.contains("waitBlocked(")
+            || source.contains("waitIdle(")
+    );
     let timer_hook = source.contains("expireTimers(");
-    let mut source =
-        format!("{source}\nfunc waitPending(n int) {{}}\nfunc waitBlocked(n int) {{}}\n");
+    let mut source = format!(
+        "{source}\nfunc waitPending(n int) {{}}\nfunc waitBlocked(n int) {{}}\nfunc waitIdle(n int) {{}}\n"
+    );
     if timer_hook {
         source.push_str("func expireTimers(n int) {}\n");
+    }
+    let check_timers = source.contains("checkTimers(");
+    if check_timers {
+        source.push_str("func checkTimers(n int) {}\n");
     }
     let mut sources = SourceMap::new();
     let file = sources.add("test.ore", source).unwrap();
@@ -62,17 +71,21 @@ pub(super) fn build(source: &str, output: &Path) {
     let mut hooks = vec![
         ("waitPending", "zore_test_wait_pending"),
         ("waitBlocked", "zore_test_wait_blocked"),
+        ("waitIdle", "zore_test_wait_idle"),
     ];
     if timer_hook {
         hooks.push(("expireTimers", "zore_test_expire_timers"));
     }
+    if check_timers {
+        hooks.push(("checkTimers", "zore_test_check_timers"));
+    }
     for (name, hook) in hooks {
-        let symbol = format!("define void @\"main.{name}\"(");
+        let symbol = format!("define internal void @\"main.{name}\"(");
         let start = llvm.find(&symbol).expect("checkpoint function emitted");
         let end = start + llvm[start..].find("\n}").expect("function end") + 2;
         llvm.replace_range(
             start..end,
-            &format!("define void @\"main.{name}\"(i64 %n) {{\nentry:\n  call void @{hook}(i64 %n)\n  ret void\n}}"),
+            &format!("define internal void @\"main.{name}\"(i64 %n) {{\nentry:\n  call void @{hook}(i64 %n)\n  ret void\n}}"),
         );
         llvm.push_str(&format!("\ndeclare void @{hook}(i64)\n"));
     }
@@ -100,10 +113,19 @@ extern "C" fn zore_test_wait_pending(count: i64) {
 extern "C" fn zore_test_wait_blocked(count: i64) {
     zore_runtime::scheduler::test_support::wait_blocked(usize::try_from(count).unwrap());
 }
+#[unsafe(no_mangle)]
+extern "C" fn zore_test_wait_idle(count: i64) {
+    zore_runtime::scheduler::test_support::wait_idle(usize::try_from(count).unwrap());
+}
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 #[unsafe(no_mangle)]
 extern "C" fn zore_test_expire_timers(count: i64) {
     zore_runtime::scheduler::test_support::expire_timers(usize::try_from(count).unwrap());
+}
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[unsafe(no_mangle)]
+extern "C" fn zore_test_check_timers(count: i64) {
+    zore_runtime::scheduler::test_support::check_timers(usize::try_from(count).unwrap());
 }
 fn main() {
     zore_runtime::scheduler::test_support::install_pool(2);

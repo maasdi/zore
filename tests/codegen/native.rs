@@ -5,6 +5,7 @@ mod conformance;
 mod controlled_runtime;
 mod http;
 mod json;
+mod linkage_timers;
 mod map_entries;
 mod mixed_bindings;
 mod performance;
@@ -1740,7 +1741,7 @@ fn emitted_ir_is_deterministic_and_names_the_entry() {
         ir.contains("%\"main.User\" = type { { ptr, i64 } }"),
         "{ir}"
     );
-    assert!(ir.contains("define void @\"main.greet\""), "{ir}");
+    assert!(ir.contains("define internal void @\"main.greet\""), "{ir}");
     assert!(ir.contains("define void @zore_entry()"), "{ir}");
     assert!(ir.contains("c\"John\""), "{ir}");
 }

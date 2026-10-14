@@ -9,8 +9,9 @@ import threading
 from types import SimpleNamespace
 import unittest
 
-from common import BenchmarkError, line
+from common import BenchmarkError, ROOT, line
 from compile import frame_layouts
+from retention import hook_ir, profiled_source
 from rest_requests import batch
 
 
@@ -32,6 +33,35 @@ class Handler(BaseHTTPRequestHandler):
 
 
 class HarnessTests(unittest.TestCase):
+    def test_profile_hooks_handle_both_linkages_and_keep_the_entry_abi(self):
+        for linkage in ["", "internal "]:
+            source = (
+                "\n".join(
+                    f'define {linkage}void @"main.{name}"(i64 %n) {{\n  ret void\n}}'
+                    for name in ["probe", "quiesce"]
+                )
+                + "\ndefine void @zore_entry() {\n  ret void\n}\n"
+            )
+            instrumented = hook_ir(source)
+            self.assertIn("call void @zore_profile_probe(i64 %n)", instrumented)
+            self.assertIn("call void @zore_profile_quiesce(i64 %n)", instrumented)
+            self.assertIn("define void @zore_entry()", instrumented)
+        with self.assertRaises(BenchmarkError):
+            hook_ir("")
+
+    def test_profile_control_program_passes_the_real_frontend(self):
+        compiler = ROOT / "target/debug/zore"
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "workload.ore"
+            source.write_text(profiled_source())
+            result = subprocess.run(
+                [str(compiler), "check", str(source)],
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_partial_protocol_line_cannot_bypass_the_deadline(self):
         reader, writer = os.pipe()
         try:

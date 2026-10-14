@@ -114,11 +114,9 @@ async func follow(parent Context, child Context) {
 }
 
 async func expire(ctx Context, deadline int) {
-    select {
-        case ctx.done.receive() {
-        }
-        case time.After(time.Until(deadline)).receive() {
-            ctx.cancel(expired)
-        }
+    if waitUntil(ctx.done, deadline) {
+        ctx.cancel(expired)
     }
 }
+
+func waitUntil(done channel<bool>, deadline int) bool

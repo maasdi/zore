@@ -98,6 +98,27 @@ mod imp {
     const WAKE_TOKEN: u64 = 0;
     const BATCH: usize = 64;
 
+    pub(crate) struct Timer {
+        operation: Arc<Operation>,
+        token: u64,
+    }
+
+    impl Timer {
+        pub(crate) fn ready(&self) -> bool {
+            self.operation.is_ready()
+        }
+    }
+
+    impl Drop for Timer {
+        fn drop(&mut self) {
+            let reactor = started();
+            let mut state = reactor.lock();
+            state.cancel_timer(self.token);
+            drop(state);
+            reactor.nudge();
+        }
+    }
+
     #[cfg(target_os = "linux")]
     mod poller {
         use std::io;
@@ -325,6 +346,10 @@ mod imp {
     }
 
     impl State {
+        fn cancel_timer(&mut self, token: u64) {
+            self.waiters.remove(&token);
+            self.compact_timers();
+        }
         fn settle(
             &mut self,
             ready: &[u64],
@@ -420,6 +445,17 @@ mod imp {
         reactor
     }
 
+    #[cfg(any(test, zore_test_hooks))]
+    pub(super) fn snapshot() -> (usize, usize, usize) {
+        let state = started().lock();
+        let live_timers = state
+            .timers
+            .iter()
+            .filter(|Reverse((_, token))| state.waiters.contains_key(token))
+            .count();
+        (state.waiters.len(), state.timers.len(), live_timers)
+    }
+
     fn serve(reactor: &'static Reactor) {
         let mut reader = reactor
             .reader
@@ -480,29 +516,39 @@ mod imp {
         reactor.nudge();
     }
 
-    pub fn start_sleep(milliseconds: u64, waiter: Waiter) -> Arc<Operation> {
+    fn sleep_registration(milliseconds: u64, waiter: Waiter) -> (u64, Arc<Operation>) {
         let reactor = started();
         let operation = Operation::new(waiter);
         // An unrepresentable deadline must not expire early.
         let when = Instant::now().checked_add(Duration::from_millis(milliseconds));
-        let earliest = {
+        let (token, earliest) = {
             let mut state = reactor.lock();
             let token = state.next;
             state.next += 1;
             state.waiters.insert(token, Arc::clone(&operation));
-            when.is_some_and(|when| {
+            let earliest = when.is_some_and(|when| {
                 let earliest = state
                     .timers
                     .peek()
                     .is_none_or(|Reverse((first, _))| when < *first);
                 state.timers.push(Reverse((when, token)));
                 earliest
-            })
+            });
+            (token, earliest)
         };
         if earliest {
             reactor.nudge();
         }
-        operation
+        (token, operation)
+    }
+
+    pub fn start_sleep(milliseconds: u64, waiter: Waiter) -> Arc<Operation> {
+        sleep_registration(milliseconds, waiter).1
+    }
+
+    pub(super) fn start_timer(milliseconds: u64, waiter: Waiter) -> Timer {
+        let (token, operation) = sleep_registration(milliseconds, waiter);
+        Timer { operation, token }
     }
 
     pub fn sleep(milliseconds: u64) {
@@ -555,6 +601,29 @@ mod imp {
         use std::time::{Duration, Instant};
 
         use super::{Operation, Slot, State, poller};
+
+        #[test]
+        fn canceled_timers_release_waiters_and_bound_stale_deadlines() {
+            let mut state = State::default();
+            let first = std::time::Instant::now();
+            let live = Operation::new(Arc::new(Slot::default()).into());
+            state.waiters.insert(1, live);
+            state.timers.push(Reverse((first, 1)));
+            for token in 2..1000 {
+                let operation = Operation::new(Arc::new(Slot::default()).into());
+                let weak = Arc::downgrade(&operation);
+                state.waiters.insert(token, operation);
+                state
+                    .timers
+                    .push(Reverse((first + Duration::from_secs(30), token)));
+                state.cancel_timer(token);
+                assert!(weak.upgrade().is_none());
+                assert_eq!(state.waiters.len(), 1);
+                assert!(state.timers.len() <= 64);
+            }
+            state.cancel_timer(1);
+            assert!(state.waiters.is_empty());
+        }
 
         #[test]
         fn completed_descriptor_deadlines_do_not_accumulate_behind_live_timers() {
@@ -634,6 +703,55 @@ mod imp {
     use std::sync::Arc;
     use std::time::Duration;
 
+    pub(crate) struct Timer {
+        operation: Arc<Operation>,
+        canceled: Arc<(std::sync::Mutex<bool>, std::sync::Condvar)>,
+    }
+
+    impl Timer {
+        pub(crate) fn ready(&self) -> bool {
+            self.operation
+                .ready
+                .load(std::sync::atomic::Ordering::Acquire)
+        }
+    }
+
+    impl Drop for Timer {
+        fn drop(&mut self) {
+            let (state, changed) = &*self.canceled;
+            *state.lock().unwrap_or_else(|error| error.into_inner()) = true;
+            changed.notify_one();
+        }
+    }
+
+    pub(super) fn start_timer(milliseconds: u64, waiter: Waiter) -> Timer {
+        let operation = Operation::new(waiter);
+        let canceled = Arc::new((std::sync::Mutex::new(false), std::sync::Condvar::new()));
+        let signal = Arc::clone(&canceled);
+        let completion = Arc::clone(&operation);
+        if std::thread::Builder::new()
+            .spawn(move || {
+                let (state, changed) = &*signal;
+                let guard = state.lock().unwrap_or_else(|error| error.into_inner());
+                let (guard, _) = changed
+                    .wait_timeout_while(guard, Duration::from_millis(milliseconds), |canceled| {
+                        !*canceled
+                    })
+                    .unwrap_or_else(|error| error.into_inner());
+                if !*guard {
+                    completion.complete();
+                }
+            })
+            .is_err()
+        {
+            super::super::panic::fail(b"cannot start the timer thread");
+        }
+        Timer {
+            operation,
+            canceled,
+        }
+    }
+
     pub fn start_sleep(milliseconds: u64, waiter: Waiter) -> Arc<Operation> {
         let operation = Operation::new(waiter);
         let completion = Arc::clone(&operation);
@@ -681,6 +799,20 @@ pub(super) fn wait_fd(fd: Descriptor, write: bool, deadline: Option<std::time::I
 
 pub(super) fn start_sleep(milliseconds: u64, waiter: Waiter) -> Arc<Operation> {
     imp::start_sleep(milliseconds, waiter)
+}
+
+pub(super) use imp::Timer;
+
+pub(super) fn start_timer(milliseconds: u64, waiter: Waiter) -> Timer {
+    imp::start_timer(milliseconds, waiter)
+}
+
+#[cfg(all(
+    any(test, zore_test_hooks),
+    any(target_os = "linux", target_os = "macos")
+))]
+pub(super) fn snapshot() -> (usize, usize, usize) {
+    imp::snapshot()
 }
 
 #[cfg(all(zore_test_hooks, any(target_os = "linux", target_os = "macos")))]

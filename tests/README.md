@@ -1,5 +1,13 @@
 # Compiler testing
 
+The native linkage/timer module checks optimized symbol visibility, referenced
+initializers/callbacks/interfaces/generics/async cleanup, and diagnostics in
+unused code. Controlled context tests force real Pending states and timer
+expiry, then assert scheduler quiescence and zero live timer registrations after
+cancellation, expiration and parent propagation. Runtime regressions cover
+deadline/channel races, exact reference cleanup, and bounded stale timer records.
+These are state assertions, not wall-time or RSS thresholds.
+
 The performance workloads have behavioral coverage in the new native
 performance module and the REST benchmark case in the HTTP tests. They check
 repeated JSON success/rejection, owned payloads through borrowed async child

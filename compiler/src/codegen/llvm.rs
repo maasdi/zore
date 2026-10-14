@@ -427,7 +427,7 @@ impl FunctionBuilder<'_, '_> {
             }
         }
         let header = format!(
-            "define {} @\"{}.{}\"({}) {{\nentry:\n",
+            "define internal {} @\"{}.{}\"({}) {{\nentry:\n",
             self.module.results_ty(&function.results),
             package.name,
             self.body.name,
