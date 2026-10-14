@@ -55,7 +55,8 @@ func Join(elems []string) string {
     var joined = ""
     for elem in elems {
         if elem.len() == 0 { continue }
-        if joined.len() > 0 && joined[joined.len() - 1] != 58 {
+        let driveOnly = joined.len() == 2 && volumeLength(joined) == 2
+        if joined.len() > 0 && !driveOnly {
             joined += "/"
         }
         joined += elem

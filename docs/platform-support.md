@@ -2,6 +2,8 @@
 
 Zore builds for the host running the compiler. Cross-compilation is outside MVP.
 The frontend (`check` and `fmt`) needs no clang or native linker.
+Native code generation requires a 64-bit host; other pointer widths receive a
+toolchain diagnostic before object generation.
 
 | Host | Rust toolchain | Native linker/toolchain |
 | --- | --- | --- |
@@ -37,6 +39,8 @@ strings validates UTF-8. Windows permission arguments do not establish POSIX
 mode bits, and `Stat.Mode` reports read-only/writable approximations. Process
 arguments and working directories are passed directly without shell expansion;
 run `cmd.exe` or PowerShell explicitly when a shell is required.
+`zore run` forwards full Windows exit statuses, including values outside the
+Unix 0–255 range, after removing its temporary program directory.
 
 Tasks, channels, scoped joins, panic cleanup, and deterministic destruction use
 the same ownership contract on every host. Linux/macOS sockets use the shared
@@ -47,6 +51,9 @@ deadlines produce the same stable timeout errors and preserve partial write
 counts. This implementation does not claim IOCP or Unix reactor performance.
 Windows timers use cancellable timer threads rather than the shared Unix event
 queue, so large populations of simultaneous timers cost additional threads.
+Queued helper jobs reserve idle capacity before those workers wake, preventing
+several dependent operations from relying on the same idle helper. The helper
+pool remains bounded at 512 threads.
 
 `std/path` always uses slash-separated text paths. Windows `std/path/filepath`
 accepts both separators, emits backslashes, preserves drive and UNC volumes,
@@ -67,7 +74,7 @@ Windows HTTP servers. No Windows signal semantics are claimed.
 The CI matrix includes Ubuntu, macOS and Windows. The Windows job configures an
 x64 MSVC developer environment and LLVM clang, then runs formatting, strict
 lint, build, strict documentation checks and all host-applicable Rust tests.
-Windows results are pending the first native host run for issue #119.
+Current runs and per-host results are linked from [PR #134](https://github.com/maasdi/zore/pull/134).
 
 Focused host cases cover source/output/cache paths with spaces and Unicode,
 CLI build/run/test, byte files and close-before-remove destruction, child
@@ -76,6 +83,9 @@ non-UTF-8 bytes, combined output and nonzero exit statuses. Existing native
 tests exercise task/channel progress, scoped cleanup, sockets, deadlines and
 HTTP with explicit shutdown. Windows path rules are also exercised through the
 same Zore implementation on Unix hosts.
+An isolated helper regression fails with the previous queue rule and passes with
+capacity reservation. Repository text checks out with LF endings on every host;
+explicit CRLF lexer/parser/scanner cases still exercise Windows-style input.
 
 Only Unix-specific shell/signal tests are gated by host; Windows has direct
 unsupported-signal coverage. The opt-in measurement harnesses and their Python

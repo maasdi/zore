@@ -128,12 +128,15 @@ func main() {{
     let data, err = os.ReadFile(path)
     if err != nil {{ panic("read") }}
     for octet in data {{ println(octet) }}
+    let info, statErr = os.Stat(path)
+    if statErr != nil {{ panic("stat") }}
+    println(info.Name() == "bytes café with spaces.bin")
     println(os.Remove(path) == nil)
 }}
 "#,
         path = path.to_str().unwrap()
     );
-    prints(&source, "0\n255\n10\n128\ntrue\n");
+    prints(&source, "0\n255\n10\n128\ntrue\ntrue\n");
     assert!(!path.exists());
 }
 

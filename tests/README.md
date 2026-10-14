@@ -1,5 +1,13 @@
 # Compiler testing
 
+CI runs host-applicable Rust checks on Linux, macOS and Windows x64 MSVC.
+`tests/codegen/host_support.rs` covers native paths with spaces/Unicode, CLI
+build/run/test, process arguments and working directories, captured bytes,
+file-handle destruction, Windows exit statuses and filepath behavior. A runtime
+helper test forces competing queued jobs before idle helpers can wake. Unix
+shell/signal cases retain explicit host gates; Windows verifies unsupported
+signal registration instead. See [platform support](../docs/platform-support.md).
+
 `tests/ownership/scoped_tasks.rs` and `tests/codegen/scoped_tasks.rs` cover the
 plain lexical task-scope contract: shared/exclusive inputs, mixed captures,
 dropped/aliased/repeated handles, view and output provenance, shorter storage,

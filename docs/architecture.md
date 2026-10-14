@@ -288,8 +288,8 @@ consume a waiter before arming. An arming error publishes Ready immediately;
 the next socket attempt reports the error as before. Rust `start_wait_fd` provides
 the poll registration foundation used by socket operations, which now
 share an operation engine between blocking and poll forms. Linux uses epoll, macOS uses kqueue. Other targets
-keep blocking socket operations and start a helper timer thread for each polled
-sleep, with the existing compensation guard for plain sleeps. No dependencies or
+retry nonblocking socket operations on helpers and start a timer thread for each polled
+sleep, with the existing compensation guard for plain waits. No dependencies or
 source-language contracts change.
 
 | Area | Responsibility | Spec |
@@ -639,19 +639,26 @@ and the panic cleanup path cover it, and a value of a Copy type that holds text
 field when it is copied. Concatenation extends the buffer in place when the left text ends where
 the buffer's text ends, which is safe because no string reads past its own end. Float
 printing is reported as unsupported by the backend.
-The generated IR contains no target triple, so clang supplies the host's; it
+The generated IR contains no target triple, so clang supplies the host's; Windows
+object generation explicitly selects `x86_64-pc-windows-msvc`. Native layouts
+require a 64-bit host. Clang
 requires LLVM 15 or newer for opaque pointers.
 
 The driver embeds the Rust runtime sources and compiles the LLVM IR to a native
 object with clang. It compiles the runtime once into a Rust library and keeps
 that library in a per-user cache folder (`$XDG_CACHE_HOME/zore`, `~/.cache/zore`,
-`~/Library/Caches/zore` on macOS, or `ZORE_CACHE_DIR`), named by a hash of the
+`~/Library/Caches/zore` on macOS, `%LOCALAPPDATA%/zore/cache` on Windows, or
+`ZORE_CACHE_DIR`), named by a hash of the
 runtime sources and the `rustc -vV` output; a folder that cannot be used leads to
 compiling the runtime for that build alone. Each program then needs only rustc
 1.98+ to compile a small entry shim against that library and link the object.
 Rustc manages its standard-library and system-library dependencies. Runtime
 sources do not need to be installed alongside `zore`. Native builds require both
 tools for the same host; `ZORE_CC` and `ZORE_RUSTC` select their executables.
+Windows validates the selected Rust compiler's MSVC host, uses Rust's MSVC linker
+discovery with the Windows SDK, and gives generated executables an `.exe` suffix.
+Unix linking continues to select clang as the linker. Host-specific APIs and
+validation scope are listed in [platform support](platform-support.md).
 Cache entries are never removed by the compiler; deleting the folder is always
 safe. Rust startup
 provides SIGPIPE handling; output is locked and explicitly flushed before
@@ -735,7 +742,12 @@ the next wait's deadline. Operations retain handles, partial write offsets, and
 incomplete UTF-8 bytes across Pending. Completion restores unread bytes to the
 connection before returning. Socket writes own a copy of their input; borrowed
 byte views used by helper jobs remain live in their caller's pinned frame.
-Other hosts offload blocking socket natives to helpers.
+Other hosts offload nonblocking socket retry loops to helpers. Those loops honor
+absolute deadlines and retain the count of bytes sent. Helper queue depth is
+compared with idle capacity before submitting work, so queued dependent jobs
+cannot reserve one idle worker several times. A controlled regression queues
+blocked work while idle workers cannot yet take jobs, then proves independent
+completion can still run.
 
 Native poll adapters convert completed C-layout results into the same Zore results
 as synchronous shims. Their temporary raw output storage never survives a poll;

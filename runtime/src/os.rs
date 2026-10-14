@@ -18,6 +18,11 @@ enum Handle {
     File(std::fs::File),
 }
 
+#[unsafe(no_mangle)]
+pub extern "C" fn zore_native_os_path_separator(value: u8) -> bool {
+    std::path::is_separator(char::from(value))
+}
+
 static NEXT: AtomicU64 = AtomicU64::new(4);
 static TABLE: Mutex<Option<HashMap<u64, Arc<Handle>>>> = Mutex::new(None);
 
