@@ -7,6 +7,13 @@ once it does.
 
 ## [Unreleased]
 
+### Performance evidence
+
+- Added opt-in compiler check/warm/cold build, REST/JSON latency/throughput,
+  pinned-frame layout and settled memory/resource measurements. Preserved
+  existing comparisons and added raw frame-analysis timings.
+  Behavioral harness checks run in CI without host-sensitive thresholds.
+
 ### Language specification
 
 - Locked async closure literals and receiver-capturing async method values

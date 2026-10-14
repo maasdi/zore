@@ -125,6 +125,7 @@ tests take no parameters and return nothing or `error`. See the
 | [`runtime/`](runtime) | The Rust runtime linked into native programs |
 | [`examples/`](examples/README.md) | One tested, runnable program per supported feature |
 | [`tests/`](tests) | Integration tests and conformance cases |
+| [`benchmarks/`](benchmarks/README.md) | Opt-in compiler, REST/JSON, frame and scheduler measurements |
 | [`docs/`](docs/README.md) | Architecture, roadmap, decision records, open questions |
 
 ## Documentation

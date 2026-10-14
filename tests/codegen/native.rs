@@ -7,6 +7,7 @@ mod http;
 mod json;
 mod map_entries;
 mod mixed_bindings;
+mod performance;
 mod review_regressions;
 #[cfg(unix)]
 mod signal;

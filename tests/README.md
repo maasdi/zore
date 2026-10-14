@@ -1,5 +1,14 @@
 # Compiler testing
 
+The performance workloads have behavioral coverage in the new native
+performance module and the REST benchmark case in the HTTP tests. They check
+repeated JSON success/rejection, owned payloads through borrowed async child
+calls, REST success/error responses and clean drain with resource checks.
+The Python harness tests check real clang layout, warmed connection reuse,
+wrong-response failure and invalid configuration. CI runs these checks without
+performance thresholds. See the
+[opt-in measurement guide](../benchmarks/performance/README.md).
+
 `tests/ownership/map_entries.rs` and `tests/codegen/map_entries.rs` verify scoped
 map-entry bindings, including headers, aliases, escaping views, generic
 constraints, argument evaluation, Copy/Move/interface values, normal/error/panic

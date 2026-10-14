@@ -364,6 +364,89 @@ struct ServerProcess {
     _dir: TempDir,
 }
 
+#[test]
+fn rest_benchmark_checks_success_validation_handler_errors_and_clean_shutdown() {
+    let source = include_str!("../../benchmarks/performance/rest/workload.ore")
+        .replace("\"READY \" + listener.Addr()", "listener.Addr()");
+    let mut server = ServerProcess::start(&source);
+    for _ in 0..3 {
+        for (method, path, content_type, body, expected_status, expected_body) in [
+            (
+                "GET",
+                "/users/1",
+                "",
+                "",
+                200,
+                r#"{"id":1,"name":"Ada Lovelace"}"#,
+            ),
+            (
+                "POST",
+                "/users",
+                "application/json",
+                r#"{"name":"Ada Lovelace"}"#,
+                201,
+                r#"{"id":1,"name":"Ada Lovelace"}"#,
+            ),
+            (
+                "POST",
+                "/users",
+                "application/json",
+                r#"{"name":"Ada","unknown":true}"#,
+                400,
+                r#"{"error":"invalid name"}"#,
+            ),
+            (
+                "POST",
+                "/users",
+                "application/json",
+                r#"{"name":"#,
+                400,
+                r#"{"error":"invalid name"}"#,
+            ),
+            (
+                "POST",
+                "/users",
+                "",
+                "",
+                415,
+                r#"{"error":"expected application/json"}"#,
+            ),
+            (
+                "GET",
+                "/users/2",
+                "",
+                "",
+                404,
+                r#"{"error":"user not found"}"#,
+            ),
+            ("GET", "/failure", "", "", 500, ""),
+        ] {
+            let request = format!(
+                "{method} {path} HTTP/1.1\r\nHost: test\r\nConnection: close\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\n\r\n{body}",
+                body.len()
+            );
+            let response = server.exchange(&request);
+            status(&response, expected_status);
+            let (_, received) = response.split_once("\r\n\r\n").unwrap();
+            if expected_status == 500 {
+                assert_eq!(received, "0\r\n\r\n", "{response}");
+                assert!(response.contains("Transfer-Encoding: chunked\r\n"));
+            } else {
+                assert_eq!(received, expected_body, "{response}");
+            }
+            assert!(!response.contains("private detail"));
+        }
+    }
+    server
+        .child
+        .stdin
+        .as_mut()
+        .unwrap()
+        .write_all(b"stop\n")
+        .unwrap();
+    server.finish("");
+}
+
 impl ServerProcess {
     fn start(source: &str) -> Self {
         let dir = TempDir::new().unwrap();

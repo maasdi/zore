@@ -1,0 +1,61 @@
+package main
+
+import "std/bufio"
+import "std/os"
+import "std/strconv"
+
+async func consume(payload []byte, release channel<bool>) int {
+    let _, ok = release.receive()
+    if !ok {
+        return 0
+    }
+    return int(payload[0]) + int(payload[payload.len() - 1])
+}
+
+async func wait(payload own Array<byte>, ready channel<bool>, release channel<bool>) int {
+    ready.send(true)
+    let checksum = await consume(payload[:], release)
+    if payload.len() != 1024 || checksum != 14 {
+        panic("payload across suspension")
+    }
+    return 1
+}
+
+func main() {
+    var input = bufio.NewScanner(os.Stdin())
+    if !input.Scan() {
+        panic("missing count")
+    }
+    let count, err = strconv.Atoi(input.Text())
+    if err != nil || count < 1 {
+        panic("invalid count")
+    }
+    let ready = channel<bool>()
+    let release = channel<bool>()
+    var tasks = Array<Task<int>>{}
+    for var i = 0; i < count; i += 1 {
+        var payload = Array<byte>{}
+        for var j = 0; j < 1024; j += 1 {
+            payload.push(7)
+        }
+        tasks.push(go wait(payload, ready, release))
+    }
+    for var i = 0; i < count; i += 1 {
+        let _, _ = ready.receive()
+    }
+    println("READY " + strconv.Itoa(count))
+    if !input.Scan() || input.Text() != "release" {
+        panic("missing release")
+    }
+    for var i = 0; i < count; i += 1 {
+        release.send(true)
+    }
+    var completed = 0
+    for tasks.len() > 0 {
+        let found, task = tasks.pop()
+        if found {
+            completed += task.wait()
+        }
+    }
+    println("DONE " + strconv.Itoa(completed))
+}

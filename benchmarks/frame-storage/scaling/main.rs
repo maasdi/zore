@@ -18,11 +18,16 @@ fn probe(locals: usize) -> String {
 }
 
 fn main() {
-    let mut args = std::env::args().skip(1);
+    let mut args = std::env::args().skip(1).peekable();
+    let json = args.peek().is_some_and(|argument| argument == "--json");
+    if json {
+        args.next();
+    }
     let repetitions: usize = match args.next() {
         Some(count) => count.parse().expect("repetitions must be a number"),
         None => 3,
     };
+    assert!(repetitions > 0, "repetitions must be positive");
     let counts: Vec<usize> = {
         let given: Vec<usize> = args
             .map(|count| count.parse().expect("local counts must be numbers"))
@@ -33,7 +38,13 @@ fn main() {
             given
         }
     };
-    println!("declared_locals mir_locals mir_blocks reuse_work median_lower_ms");
+    assert!(
+        counts.iter().all(|&count| count > 0),
+        "counts must be positive"
+    );
+    if !json {
+        println!("declared_locals mir_locals mir_blocks reuse_work median_lower_ms");
+    }
     for count in counts {
         let mut sources = SourceMap::new();
         let id = sources.add("scaling.ore", probe(count)).unwrap();
@@ -57,12 +68,21 @@ fn main() {
                 elapsed
             })
             .collect();
-        times.sort();
-        println!(
-            "{count} {} {} {work} {:.1}",
-            body.locals.len(),
-            body.blocks.len(),
-            times[times.len() / 2].as_secs_f64() * 1000.0
-        );
+        if json {
+            let samples: Vec<f64> = times.iter().map(Duration::as_secs_f64).collect();
+            println!(
+                "{{\"declared_locals\":{count},\"mir_locals\":{},\"mir_blocks\":{},\"reuse_work\":{work},\"lower_seconds\":{samples:?}}}",
+                body.locals.len(),
+                body.blocks.len(),
+            );
+        } else {
+            times.sort();
+            println!(
+                "{count} {} {} {work} {:.1}",
+                body.locals.len(),
+                body.blocks.len(),
+                times[times.len() / 2].as_secs_f64() * 1000.0
+            );
+        }
     }
 }
