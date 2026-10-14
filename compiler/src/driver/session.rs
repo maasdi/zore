@@ -116,6 +116,10 @@ fn run_command(target: &Path) -> ExitCode {
     }
     match std::process::Command::new(&executable).status() {
         Ok(status) => match status.code() {
+            Some(code) if cfg!(windows) && !(0..=255).contains(&code) => {
+                drop(dir);
+                std::process::exit(code);
+            }
             Some(code) => ExitCode::from(code.clamp(0, 255) as u8),
             None => {
                 eprintln!("zore: the program was terminated by a signal");

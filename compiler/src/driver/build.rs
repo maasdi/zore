@@ -206,6 +206,9 @@ pub(crate) fn build_test_project(
 }
 
 fn link(ir: &str, output: &Path, runtime_main: &str) -> Result<(), BuildError> {
+    if cfg!(not(target_pointer_width = "64")) {
+        return Err(BuildError::Toolchain("native builds require a 64-bit host toolchain; check and fmt remain available without native linking".into()));
+    }
     if cfg!(all(
         windows,
         not(all(target_env = "msvc", target_arch = "x86_64"))
@@ -326,6 +329,20 @@ fn runtime_library(rustc: &std::ffi::OsStr, scratch: &Path) -> Result<PathBuf, B
         .arg("-vV")
         .output()
         .map_err(|error| toolchain_error(rustc, &error))?;
+    if !version.status.success() {
+        return Err(BuildError::Toolchain(format!(
+            "`{}` could not report its host toolchain:\n{}",
+            rustc.to_string_lossy(),
+            String::from_utf8_lossy(&version.stderr)
+        )));
+    }
+    if cfg!(windows)
+        && !String::from_utf8_lossy(&version.stdout)
+            .lines()
+            .any(|line| line == "host: x86_64-pc-windows-msvc")
+    {
+        return Err(BuildError::Toolchain("Windows native builds require ZORE_RUSTC to select an x86_64-pc-windows-msvc compiler; GNU and ARM Windows toolchains are not supported".into()));
+    }
     let mut hasher = std::hash::DefaultHasher::new();
     std::hash::Hash::hash(&version.stdout, &mut hasher);
     for &(name, contents) in RUNTIME_SOURCES {

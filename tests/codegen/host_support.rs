@@ -95,7 +95,14 @@ func main() {{
     let executable = directory.executable("parent");
     build_file(&source, &executable).unwrap();
     let output = Command::new(executable)
-        .env("ZORE_PROCESS_DIR", &folder)
+        .env(
+            "ZORE_PROCESS_DIR",
+            if cfg!(unix) {
+                std::fs::canonicalize(&folder).unwrap()
+            } else {
+                folder
+            },
+        )
         .env("ZORE_CHECK_LEAKS", "1")
         .output()
         .unwrap();
@@ -128,6 +135,22 @@ func main() {{
     );
     prints(&source, "0\n255\n10\n128\ntrue\n");
     assert!(!path.exists());
+}
+
+#[cfg(windows)]
+#[test]
+fn native_cli_preserves_full_windows_exit_statuses() {
+    let directory = TempDir::new().unwrap();
+    let source = directory.path().join("main.ore");
+    for code in [4660, -1073741819] {
+        std::fs::write(
+            &source,
+            format!("package main\nimport \"std/os\"\nfunc main() {{ os.Exit({code}) }}\n"),
+        )
+        .unwrap();
+        let output = zore().arg("run").arg(&source).output().unwrap();
+        assert_eq!(output.status.code(), Some(code), "{output:?}");
+    }
 }
 
 fn windows_path_source(main: &str) -> String {

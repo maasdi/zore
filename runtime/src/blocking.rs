@@ -58,19 +58,19 @@ fn worker() {
     }
 }
 
-fn submit(job: Job) {
-    let mut state = pool();
+fn enqueue(state: &mut Pool, job: Job) {
     state.queue.push_back(job);
-    if state.idle == 0 && state.threads < MAX_THREADS {
+    if state.queue.len() > state.idle && state.threads < MAX_THREADS {
         state.threads += 1;
-        drop(state);
         if std::thread::Builder::new().spawn(worker).is_err() {
             super::panic::fail(b"cannot start a helper thread");
         }
-    } else {
-        drop(state);
-        WORK.notify_one();
     }
+    WORK.notify_one();
+}
+
+fn submit(job: Job) {
+    enqueue(&mut pool(), job);
 }
 
 /// Runs `work` on a helper thread and waits for its result; only the calling task waits.
@@ -154,6 +154,46 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::mpsc;
     use std::time::Instant;
+
+    #[test]
+    fn queued_jobs_reserve_idle_helpers_before_they_wake() {
+        run(|| ());
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let mut state = loop {
+            let state = pool();
+            if state.idle > 0 {
+                break state;
+            }
+            drop(state);
+            assert!(Instant::now() < deadline);
+            std::thread::yield_now();
+        };
+        let release = Arc::new((Mutex::new(false), Condvar::new()));
+        for _ in 0..state.idle {
+            let release = Arc::clone(&release);
+            enqueue(
+                &mut state,
+                Box::new(move || {
+                    let (released, changed) = &*release;
+                    let guard = released.lock().unwrap();
+                    drop(changed.wait_while(guard, |released| !*released).unwrap());
+                }),
+            );
+        }
+        let (done, completed) = mpsc::channel();
+        enqueue(
+            &mut state,
+            Box::new(move || {
+                let _ = done.send(());
+            }),
+        );
+        drop(state);
+        let result = completed.recv_timeout(Duration::from_secs(10));
+        let (released, changed) = &*release;
+        *released.lock().unwrap() = true;
+        changed.notify_all();
+        result.expect("the completion job needs a helper beyond the reserved idle workers");
+    }
 
     struct Work {
         started: mpsc::Sender<()>,

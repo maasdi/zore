@@ -3882,8 +3882,8 @@ func main() {{
     let _, failure = os.ReadFile(\"{missing}\")
     println(failure != nil)
 }}",
-        path = path.display(),
-        missing = missing.display()
+        path = path.to_string_lossy().replace('\\', "/"),
+        missing = missing.to_string_lossy().replace('\\', "/")
     );
     prints(&source, "true\nhéllo\nfile\ntrue\nshort\ntrue\n");
     assert_eq!(std::fs::read_to_string(&path).unwrap(), "short");
@@ -3910,8 +3910,8 @@ func main() {{
     let _, missing = os.ReadFile(\"{nowhere}\")
     println(missing != nil)
 }}",
-        binary = binary.display(),
-        nowhere = nowhere.display()
+        binary = binary.to_string_lossy().replace('\\', "/"),
+        nowhere = nowhere.to_string_lossy().replace('\\', "/")
     );
     prints(&source, "true\n3\ntrue\ntrue\ntrue\n");
 }
@@ -5873,7 +5873,11 @@ fn run_bounded_with_workers(source: &str, input: Option<&[u8]>, workers: Option<
         if std::time::Instant::now() >= deadline {
             child.kill().unwrap();
             let output = child.wait_with_output().unwrap();
-            panic!("poll program timed out: {}", stderr(&output));
+            panic!(
+                "poll program timed out; stdout: {}; stderr: {}",
+                stdout(&output),
+                stderr(&output)
+            );
         }
         std::thread::sleep(std::time::Duration::from_millis(5));
     }
