@@ -211,6 +211,82 @@ pub struct Channel {
     queues: Mutex<Queues>,
 }
 
+pub(super) struct ReceiveWait {
+    channel: Option<Arc<Channel>>,
+    waiting: Arc<Waiting>,
+}
+
+impl ReceiveWait {
+    /// # Safety
+    /// The handle must be null or a live bool channel.
+    pub(super) unsafe fn start(channel: *const Channel, waiter: Waiter) -> Self {
+        let waiting = Waiting::new(waiter);
+        let channel = if channel.is_null() {
+            waiting.claim();
+            waiting.complete(0, Outcome::Closed, None);
+            None
+        } else {
+            // SAFETY: retain one reference owned by this registration.
+            let channel = unsafe {
+                Arc::increment_strong_count(channel);
+                Arc::from_raw(channel)
+            };
+            let mut queues = channel.lock();
+            match try_receive(&mut queues) {
+                ReceiveTry::Got(message) => {
+                    waiting.claim();
+                    waiting.complete(0, Outcome::Delivered, Some(message));
+                }
+                ReceiveTry::Closed => {
+                    waiting.claim();
+                    waiting.complete(0, Outcome::Closed, None);
+                }
+                ReceiveTry::Empty => queues.receivers.push_back(Entry {
+                    waiting: Arc::clone(&waiting),
+                    case: 0,
+                    message: None,
+                }),
+            }
+            drop(queues);
+            Some(channel)
+        };
+        Self { channel, waiting }
+    }
+
+    pub(super) fn finish_if(&self, expired: bool) -> Option<bool> {
+        let mut queues = self.channel.as_ref().map(|channel| channel.lock());
+        let mut exchange = self.waiting.exchange();
+        if exchange.outcome != Outcome::Pending {
+            return Some(false);
+        }
+        if !expired {
+            return None;
+        }
+        self.waiting.claim();
+        exchange.outcome = Outcome::Closed;
+        if let Some(queues) = &mut queues {
+            queues
+                .receivers
+                .retain(|entry| !Arc::ptr_eq(&entry.waiting, &self.waiting));
+        }
+        Some(true)
+    }
+}
+
+impl Drop for ReceiveWait {
+    fn drop(&mut self) {
+        if let Some(channel) = &self.channel {
+            channel
+                .lock()
+                .receivers
+                .retain(|entry| !Arc::ptr_eq(&entry.waiting, &self.waiting));
+        }
+        if let Some(message) = self.waiting.exchange().message.take() {
+            message.discard(self.channel.as_ref().and_then(|channel| channel.destroy));
+        }
+    }
+}
+
 impl Channel {
     fn lock(&self) -> MutexGuard<'_, Queues> {
         self.queues
@@ -686,6 +762,47 @@ mod tests {
 
     use super::*;
     use crate::scheduler::{Poll, TestPool};
+
+    #[test]
+    fn deadline_receive_cancellation_removes_the_queue_without_consuming_later_messages() {
+        let raw = zore_channel_make(1, 1, None);
+        // SAFETY: the initial owned reference becomes this Arc.
+        let channel = unsafe { Arc::from_raw(raw) };
+        let slot = Arc::new(Slot::default());
+        let receive = unsafe { ReceiveWait::start(raw, slot.into()) };
+        assert_eq!(channel.lock().receivers.len(), 1);
+        assert_eq!(receive.finish_if(false), None);
+        assert_eq!(receive.finish_if(true), Some(true));
+        let weak = Arc::downgrade(&receive.waiting);
+        drop(receive);
+        assert!(weak.upgrade().is_none());
+        assert!(channel.lock().receivers.is_empty());
+        let mut value = 1u8;
+        // SAFETY: this bool channel receives one initialized byte.
+        unsafe { zore_channel_send(raw, &mut value, None) };
+        assert_eq!(channel.lock().buffer.len(), 1);
+    }
+
+    #[test]
+    fn channel_close_racing_deadline_selection_claims_once_and_releases_the_registration() {
+        for _ in 0..100 {
+            let raw = zore_channel_make(1, 0, None);
+            // SAFETY: the initial owned reference becomes this Arc.
+            let channel = unsafe { Arc::from_raw(raw) };
+            let receive = unsafe { ReceiveWait::start(raw, Arc::new(Slot::default()).into()) };
+            std::thread::scope(|scope| {
+                let closing = Arc::clone(&channel);
+                scope.spawn(move || {
+                    // SAFETY: closing retains a live channel throughout the call.
+                    unsafe { zore_channel_close(Arc::as_ptr(&closing)) };
+                });
+                assert!(receive.finish_if(true).is_some());
+            });
+            drop(receive);
+            assert!(channel.lock().receivers.is_empty());
+            assert_eq!(Arc::strong_count(&channel), 1);
+        }
+    }
 
     #[test]
     fn receive_queue_wakes_both_slot_and_task_waiters_in_order() {

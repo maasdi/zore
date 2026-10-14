@@ -94,8 +94,13 @@ impl Module<'_> {
                     ));
                     declared.push("i1 zeroext, ptr, i64".to_string());
                 }
+                TypeKind::Channel { .. } => {
+                    args.push(format!("ptr %p{index}"));
+                    declared.push("ptr".to_string());
+                    writeln!(release, "  call void @zore_channel_release(ptr %p{index})").unwrap();
+                }
                 _ => unreachable!(
-                    "bundled functions take strings, slices, numbers, runes, booleans, and errors"
+                    "bundled functions take strings, slices, numbers, runes, booleans, errors, and channels"
                 ),
             }
         }
@@ -161,7 +166,7 @@ impl Module<'_> {
         };
         self.intrinsics.insert(declaration);
         let plain = format!(
-            "define {returns} @\"{}.{}\"({}) {{\nentry:\n{prologue}{call}}}\n\n",
+            "define internal {returns} @\"{}.{}\"({}) {{\nentry:\n{prologue}{call}}}\n\n",
             self.package.name,
             function.name,
             header.join(", ")
@@ -204,6 +209,21 @@ impl Module<'_> {
                     adapter.expect("socket results use an out pointer");
                 let poll = format!(
                     "define private i8 {name}$poll\"(ptr %operation, ptr %context, ptr %result) {{\nentry:\n  %out = alloca {layout}\n  %ready = call i8 @zore_native_net_poll(ptr %operation, ptr %context, ptr %out)\n  %finished = icmp ne i8 %ready, 0\n  br i1 %finished, label %done, label %pending\npending:\n  ret i8 0\ndone:\n{conversion}  store {returns} {value}, ptr %result\n  ret i8 1\n}}\n\n"
+                );
+                plain + &start + &poll
+            }
+            Some(crate::async_lowering::NativeWait::Deadline) => {
+                self.intrinsics
+                    .insert(format!("declare ptr @{symbol}_start(ptr, i64, ptr)"));
+                self.intrinsics
+                    .insert(format!("declare i8 @{symbol}_poll(ptr, ptr, ptr)"));
+                let start = format!(
+                    "define private ptr {name}$start\"({}, ptr %context) {{\nentry:\n  %operation = call ptr @{symbol}_start({}, ptr %context)\n{release}  ret ptr %operation\n}}\n\n",
+                    header.join(", "),
+                    args.join(", "),
+                );
+                let poll = format!(
+                    "define private i8 {name}$poll\"(ptr %operation, ptr %context, ptr %result) {{\nentry:\n  %out = alloca i8\n  %ready = call i8 @{symbol}_poll(ptr %operation, ptr %context, ptr %out)\n  %finished = icmp ne i8 %ready, 0\n  br i1 %finished, label %done, label %pending\npending:\n  ret i8 0\ndone:\n  %value = load i8, ptr %out\n  %expired = icmp ne i8 %value, 0\n  store i1 %expired, ptr %result\n  ret i8 1\n}}\n\n"
                 );
                 plain + &start + &poll
             }

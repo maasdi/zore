@@ -26,32 +26,45 @@ def build(compiler, source, directory, cache, capture=None):
 
 def measure_compile(compiler, workloads, directory, arguments):
     measurements = []
+    variants = [("candidate", compiler, arguments.compiler_revision)]
+    if arguments.baseline_compiler:
+        variants.insert(
+            0, ("baseline", arguments.baseline_compiler, arguments.baseline_revision)
+        )
     for name, source in workloads.items():
-        cache = directory / name / "warm-cache"
-        build(compiler, source, directory / name, cache)
+        for variant, executable, _ in variants:
+            workspace = directory / name / variant
+            build(executable, source, workspace, workspace / "warm-cache")
         for repetition in range(1, arguments.repetitions + 1):
-            started = time.perf_counter()
-            command([compiler, "check", source])
-            checked = time.perf_counter() - started
-            capture = directory / name / f"clang-{repetition}"
-            _, warm = build(compiler, source, directory / name, cache, capture)
-            _, cold = build(
-                compiler,
-                source,
-                directory / name,
-                directory / name / f"cold-cache-{repetition}",
-            )
-            measurements.append(
-                {
+            order = variants if repetition % 2 else list(reversed(variants))
+            for variant, executable, revision in order:
+                workspace = directory / name / variant
+                started = time.perf_counter()
+                command([executable, "check", source])
+                checked = time.perf_counter() - started
+                capture = workspace / f"clang-{repetition}"
+                _, warm = build(
+                    executable, source, workspace, workspace / "warm-cache", capture
+                )
+                measurement = {
+                    "variant": variant,
+                    "compiler_revision": revision or "unverified compiler",
                     "workload": name,
                     "repetition": repetition,
                     "check_seconds": checked,
                     "warm_build_seconds": warm,
-                    "cold_runtime_cache_build_seconds": cold,
                     "clang": json.loads(capture.with_suffix(".json").read_text()),
                     "ir_bytes": capture.with_suffix(".ll").stat().st_size,
                 }
-            )
+                if not arguments.warm_builds_only:
+                    _, cold = build(
+                        executable,
+                        source,
+                        workspace,
+                        workspace / f"cold-cache-{repetition}",
+                    )
+                    measurement["cold_runtime_cache_build_seconds"] = cold
+                measurements.append(measurement)
     return measurements
 
 

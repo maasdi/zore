@@ -18,10 +18,12 @@ pub enum Suspension {
 pub enum NativeWait {
     Helper,
     Socket,
+    Deadline,
 }
 
 pub fn native_wait(name: &str) -> Option<NativeWait> {
     match name {
+        "std/context.waitUntil" => Some(NativeWait::Deadline),
         "std/os.ReadFile"
         | "std/os.WriteFile"
         | "std/os.MkdirAll"

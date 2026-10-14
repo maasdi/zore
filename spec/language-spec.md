@@ -6708,7 +6708,11 @@ starts one that waits for the clock or the child. `Wait` and `Do` suspend like
 the channel and mutex operations they use.
 
 Compiler impact: both packages are bundled Zore source built from channels,
-`Mutex<T>`, `select`, and `time.After`. Pending conformance cases:
+`Mutex<T>`, and `select`. The deadline watcher uses a private native wait that
+owns a cancellable timer registration and a receive registration on the child.
+Completing either wait unregisters the other; cancellation leaves no sleeping
+`time.After` task until the old deadline. This changes no public API or task
+cancellation rule. Pending conformance cases:
 `tests/conformance/io.md`.
 
 ## 37.5 Standard packages `std/path`, `std/path/filepath`, `std/sort`, `std/slices`, and `std/maps` — LOCKED

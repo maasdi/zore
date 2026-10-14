@@ -22,6 +22,7 @@ type serverState struct {
     accepting bool
     draining bool
     canceled bool
+    stopped channel<bool>
     connections int
 }
 type Server struct {
@@ -61,7 +62,7 @@ func NewServer(router Router, config Config) (Server, error) {
     if chosen.ShutdownTimeout == 0 { chosen.ShutdownTimeout = defaults.ShutdownTimeout }
     let durations = [int; 6]{chosen.ReadHeaderTimeout, chosen.ReadBodyTimeout, chosen.WriteTimeout, chosen.IdleTimeout, chosen.AcceptPollInterval, chosen.ShutdownTimeout}
     for duration in durations { if duration > 9223372036854775807 - time.Now() { invalid = true } }
-    let server = Server{router: router, config: chosen, state: mutex(serverState{started: false, accepting: false, draining: false, canceled: false, connections: 0}), live: !invalid}
+    let server = Server{router: router, config: chosen, state: mutex(serverState{started: false, accepting: false, draining: false, canceled: false, stopped: channel<bool>(), connections: 0}), live: !invalid}
     if invalid { return server, error("http.NewServer: invalid configuration or router") }
     return server, nil
 }
@@ -82,7 +83,12 @@ func (s Server) Shutdown(ctx context.Context) error {
     for !s.complete() {
         let err = ctx.Err()
         if err != nil {
-            s.state.withLock(func(state mut serverState) { state.canceled = true })
+            s.state.withLock(func(state mut serverState) {
+                if !state.canceled {
+                    state.canceled = true
+                    state.stopped.close()
+                }
+            })
             return err
         }
         time.Sleep(s.config.AcceptPollInterval)
@@ -116,15 +122,13 @@ async func requestContext(ready channel<context.Context>, done channel<bool>, fi
     let guard = contextCompletion{finished: finished}
     let ctx, cancel = context.WithDeadline(context.Background(), deadline)
     ready.send(ctx)
-    for {
-        select {
-            case done.receive() { cancel(); return }
-            case ctx.Done().receive() { cancel(); return }
-            case time.After(s.config.AcceptPollInterval).receive() {
-                if s.canceled() { cancel(); return }
-            }
-        }
+    let stopped = s.state.withLock(func(state mut serverState) channel<bool> { return state.stopped })
+    select {
+        case done.receive() {}
+        case ctx.Done().receive() {}
+        case stopped.receive() {}
     }
+    cancel()
 }
 
 func (s Server) Serve(listener own net.Listener) error {

@@ -17,12 +17,16 @@ def main():
     started = time.perf_counter()
     result = subprocess.run([os.environ["ZORE_BENCH_CC"], *arguments])
     if any(argument.endswith(".ll") for argument in arguments):
+        object_path = Path(arguments[arguments.index("-o") + 1])
         capture.with_suffix(".json").write_text(
             json.dumps(
                 {
                     "command": [os.environ["ZORE_BENCH_CC"], *arguments],
                     "seconds": time.perf_counter() - started,
                     "exit_code": result.returncode,
+                    "object_bytes": (
+                        object_path.stat().st_size if object_path.is_file() else None
+                    ),
                 }
             )
             + "\n",

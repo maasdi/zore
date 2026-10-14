@@ -988,6 +988,41 @@ pub mod test_support {
         until(|| lock(&pool.state).blocked >= count);
     }
 
+    pub fn wait_idle(count: usize) {
+        let pool = POOL.get().expect("test pool installed");
+        until(|| lock(&pool.state).tasks.len() <= count && super::super::task::running() <= count);
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    pub fn check_timers(count: usize) {
+        assert_eq!(
+            super::super::reactor::snapshot().2,
+            count,
+            "live timer registrations"
+        );
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    pub fn snapshot() -> String {
+        let pool = POOL.get().expect("test pool installed");
+        let (tasks, workers, blocked, queued) = {
+            let state = lock(&pool.state);
+            (
+                state.tasks.len(),
+                state.workers,
+                state.blocked,
+                state.queue.len(),
+            )
+        };
+        let (registrations, timer_records, live_timers) = super::super::reactor::snapshot();
+        format!(
+            "{{\"tasks\":{tasks},\"workers\":{workers},\"blocked_workers\":{blocked},\"queued_tasks\":{queued},\"reactor_registrations\":{registrations},\"timer_records\":{timer_records},\"live_timers\":{live_timers},\"channels\":{},\"mutexes\":{},\"text_buffers\":{}}}",
+            super::super::channel::live_channels(),
+            super::super::mutex::live_mutexes(),
+            super::super::string::live_buffers(),
+        )
+    }
+
     #[cfg(all(zore_test_hooks, any(target_os = "linux", target_os = "macos")))]
     pub fn expire_timers(count: usize) {
         super::super::reactor::expire_test_timers(count);

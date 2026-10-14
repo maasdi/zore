@@ -35,7 +35,7 @@ FRAME_WORKLOADS = {
 
 def metadata(arguments):
     compiler = arguments.compiler
-    return {
+    result = {
         "schema_version": 1,
         "runner_commit": command(["git", "rev-parse", "HEAD"]).stdout.strip(),
         "working_tree_dirty": bool(command(["git", "status", "--porcelain"]).stdout),
@@ -88,6 +88,17 @@ def metadata(arguments):
             ]
         },
     }
+    if getattr(arguments, "baseline_compiler", None):
+        result["baseline_compiler"] = {
+            "revision": arguments.baseline_revision or "unverified compiler",
+            "sha256": hashlib.sha256(
+                arguments.baseline_compiler.read_bytes()
+            ).hexdigest(),
+            "version": command(
+                [arguments.baseline_compiler, "--version"]
+            ).stdout.strip(),
+        }
+    return result
 
 
 def measure_frames(directory, arguments):
@@ -143,6 +154,9 @@ def main():
     )
     parser.add_argument("--compiler", type=Path, default=ROOT / "target/release/zore")
     parser.add_argument("--compiler-revision")
+    parser.add_argument("--baseline-compiler", type=Path)
+    parser.add_argument("--baseline-revision")
+    parser.add_argument("--warm-builds-only", action="store_true")
     parser.add_argument(
         "--suites",
         nargs="+",
@@ -172,9 +186,15 @@ def main():
         parser.error("counts and finite timeout must be positive")
     if arguments.requests < max(arguments.concurrency):
         parser.error("requests must be at least the largest concurrency")
+    if arguments.baseline_compiler and "compile" not in arguments.suites:
+        parser.error("baseline compiler requires the compile suite")
+    if arguments.baseline_revision and not arguments.baseline_compiler:
+        parser.error("baseline revision requires a baseline compiler")
     if sys.platform != "linux":
         parser.error("memory/resource sampling requires Linux /proc")
     arguments.compiler = arguments.compiler.resolve()
+    if arguments.baseline_compiler:
+        arguments.baseline_compiler = arguments.baseline_compiler.resolve()
     try:
         result = metadata(arguments)
         with tempfile.TemporaryDirectory(prefix="zore-performance-") as temporary:

@@ -1,6 +1,7 @@
 # Reproducible performance baselines
 
-See the [recorded Linux baseline and follow-ups](../../docs/performance.md).
+See the [recorded Linux baseline](../../docs/performance.md) and
+[paired compiler/request-retention follow-ups](../../docs/performance-followups.md).
 
 This opt-in Linux runner extends the existing suspended-task, frame-storage and
 cooperative-budget workloads. It changes no compiler or scheduler semantics.
@@ -29,6 +30,41 @@ Build/child failures, unexpected results, leak diagnostics and timeouts fail
 the command. Output is written only after all selected suites succeed.
 
 ## Measurements
+
+Compare compiler revisions in alternating order with separate warm caches:
+
+    python3 benchmarks/performance/run.py --suites compile \
+      --baseline-compiler /path/to/baseline/zore --baseline-revision BASE_SHA \
+      --compiler /path/to/candidate/zore --compiler-revision CANDIDATE_SHA \
+      --warm-builds-only --repetitions 3 --output /tmp/compile-comparison.json
+
+Each row identifies its compiler variant/revision and includes the object size.
+The default still measures cold runtime-artifact-cache builds; --warm-builds-only
+omits those builds for a focused comparison of native compilation.
+
+Profile repeated fixed-case REST requests, then observe the original deadlines:
+
+    python3 benchmarks/performance/retention.py \
+      --compiler /path/to/compiler --compiler-revision COMPILER_SHA \
+      --runtime-revision SAME_SHA --case get --rounds 20 --requests 500 \
+      --idle-seconds 35 --output /tmp/rest-retention.json
+
+Repeat with each matching compiler/runtime revision. The profiler reads runtime
+sources from Git, adds read-only test counters to older revisions when needed,
+and links the captured LLVM against that instrumented runtime with a two-worker
+pool. No production counters or public APIs are added. Source hashes identify
+the instrumented runtime and shared control program. Checkpoints record tasks,
+workers, queues, reactor registrations/timer records, channels, mutexes, text
+buffers, and raw process RSS/thread/descriptor samples. These attribute retained
+resources; they are not a complete heap-allocation census or server-only capacity.
+The source control program drains with Background and waits for scheduler
+quiescence before exiting, so its resource checks are not skipped by sleeping
+deadline jobs. Idle duration is a measurement choice, not a CI assertion.
+
+Every round warms one request per client before its measured batch. Checkpoints
+count total requests including warmups and identify measured requests separately.
+The actual response handlers match the normal fixture. Control/snapshot work
+is outside each request batch.
 
 | Suite | Work and raw evidence |
 | --- | --- |
@@ -71,10 +107,12 @@ thread-pool retention; its growth alone neither proves nor disproves a leak.
 Workloads enable ZORE_CHECK_LEAKS=1 and require clean exit after joining/draining.
 That check covers tracked text buffers, channels, mutexes and signal
 subscriptions, not all heap allocations, and skips those checks while tasks
-remain. HTTP request/deadline contexts can leave detached time.After jobs alive
-until their timers expire even after connections drain; a clean REST exit alone
-does not prove that those resource checks executed. This retention is tracked
-separately in issue #128. The existing suspended-task sampler's
+remain. The #118 baseline's request contexts left detached time.After jobs alive
+until their deadlines even after connection drain. The #128 fix cancels private
+deadline registrations; the retention profiler explicitly waits for quiescence
+before exit. A clean exit without that checkpoint does not by itself prove that
+resource checks executed. See the measured follow-up report above.
+The existing suspended-task sampler's
 [readiness/stability limitations](../suspended-tasks/README.md) still apply.
 
 Frame ABI sizes exclude owned payload allocations, callable environments, task

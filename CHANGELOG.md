@@ -9,6 +9,15 @@ once it does.
 
 ### Performance evidence
 
+- Marked generated Zore functions internal to LLVM while preserving the exported
+  entry shim and runtime ABI, allowing unused bodies to be eliminated.
+- Context deadline watchers now own cancellable timer/receive registrations;
+  completed HTTP requests release their deadline waits and shutdown uses a direct
+  notification instead of spawning poll-alarm tasks.
+- Added alternating compiler/object-size comparisons and fixed-case REST
+  retention profiling with test-only runtime counters and deterministic cleanup
+  regressions. Public context, time and HTTP APIs remain unchanged.
+
 - Added opt-in compiler check/warm/cold build, REST/JSON latency/throughput,
   pinned-frame layout and settled memory/resource measurements. Preserved
   existing comparisons and added raw frame-analysis timings.

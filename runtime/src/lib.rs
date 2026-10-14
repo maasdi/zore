@@ -9,6 +9,8 @@ mod alloc;
 mod blocking;
 #[path = "channel.rs"]
 mod channel;
+#[path = "deadline.rs"]
+mod deadline;
 #[path = "deadlock.rs"]
 mod deadlock;
 #[path = "errors.rs"]
