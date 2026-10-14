@@ -1,13 +1,15 @@
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
 import tempfile
 import threading
+from types import SimpleNamespace
 import unittest
 
-from common import BenchmarkError
+from common import BenchmarkError, line
 from compile import frame_layouts
 from rest_requests import batch
 
@@ -30,6 +32,16 @@ class Handler(BaseHTTPRequestHandler):
 
 
 class HarnessTests(unittest.TestCase):
+    def test_partial_protocol_line_cannot_bypass_the_deadline(self):
+        reader, writer = os.pipe()
+        try:
+            with os.fdopen(reader, "rb") as stdout:
+                os.write(writer, b"READY")
+                with self.assertRaisesRegex(BenchmarkError, "timed out"):
+                    line(SimpleNamespace(stdout=stdout), 0.01)
+        finally:
+            os.close(writer)
+
     def test_clang_reports_padded_frame_size_and_constructor_identity(self):
         ir = """%"main.AsyncFrame.17" = type { [3 x i8], i64, ptr }
 define private ptr @"main.wait$async$new"() {

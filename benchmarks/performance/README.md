@@ -1,5 +1,7 @@
 # Reproducible performance baselines
 
+See the [recorded Linux baseline and follow-ups](../../docs/performance.md).
+
 This opt-in Linux runner extends the existing suspended-task, frame-storage and
 cooperative-budget workloads. It changes no compiler or scheduler semantics.
 Use Python 3.9+, Linux with /proc, the pinned Rust toolchain and clang/LLVM 15+.
@@ -68,7 +70,11 @@ thread-pool retention; its growth alone neither proves nor disproves a leak.
 
 Workloads enable ZORE_CHECK_LEAKS=1 and require clean exit after joining/draining.
 That check covers tracked text buffers, channels, mutexes and signal
-subscriptions, not all heap allocations. The existing suspended-task sampler's
+subscriptions, not all heap allocations, and skips those checks while tasks
+remain. HTTP request/deadline contexts can leave detached time.After jobs alive
+until their timers expire even after connections drain; a clean REST exit alone
+does not prove that those resource checks executed. This retention is tracked
+separately in issue #128. The existing suspended-task sampler's
 [readiness/stability limitations](../suspended-tasks/README.md) still apply.
 
 Frame ABI sizes exclude owned payload allocations, callable environments, task

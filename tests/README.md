@@ -3,7 +3,9 @@
 The performance workloads have behavioral coverage in the new native
 performance module and the REST benchmark case in the HTTP tests. They check
 repeated JSON success/rejection, owned payloads through borrowed async child
-calls, REST success/error responses and clean drain with resource checks.
+calls, REST success/error responses and clean drain. Resource checks are enabled;
+they are skipped by the runtime while tasks remain, including detached HTTP
+deadline timers. The performance report records that limitation.
 The Python harness tests check real clang layout, warmed connection reuse,
 wrong-response failure and invalid configuration. CI runs these checks without
 performance thresholds. See the

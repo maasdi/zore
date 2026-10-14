@@ -89,6 +89,10 @@ and the median time over the requested repetitions:
 cargo run --release --locked --example async_frame_scaling -- 5 100 200 400 800
 ```
 
+Pass `--json` before the repetition count to retain every lowering duration as
+JSON lines. The [combined runner](../performance/README.md) records this output
+with host/toolchain identity; the original text output is unchanged.
+
 On Linux 6.18 x86-64 (Intel Xeon at 2.80 GHz, rustc 1.98.1, release build), the
 median `lower` time was:
 

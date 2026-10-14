@@ -50,14 +50,25 @@ def send(process, text):
 
 
 def line(process, timeout):
+    deadline = time.monotonic() + timeout
+    received = bytearray()
     with selectors.DefaultSelector() as selector:
         selector.register(process.stdout, selectors.EVENT_READ)
-        if not selector.select(timeout):
-            raise BenchmarkError("child protocol timed out")
-        result = process.stdout.readline().rstrip("\r\n")
-        if not result:
-            raise BenchmarkError("child exited before protocol response")
-        return result
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0 or not selector.select(remaining):
+                raise BenchmarkError("child protocol timed out")
+            data = os.read(process.stdout.fileno(), 4096)
+            if not data:
+                raise BenchmarkError("child exited before protocol response")
+            received.extend(data)
+            if len(received) > 65536:
+                raise BenchmarkError("child protocol response is too large")
+            if b"\n" in received:
+                result, extra = received.split(b"\n", 1)
+                if extra:
+                    raise BenchmarkError("unexpected extra child protocol output")
+                return result.decode("utf-8").rstrip("\r")
 
 
 def finish(process, final_input, expected, timeout):
