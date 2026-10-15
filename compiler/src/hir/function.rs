@@ -15,6 +15,7 @@ pub struct Function {
     pub is_async: bool,
     /// Declared without a body; the runtime provides its code.
     pub native: bool,
+    pub native_symbol: Option<String>,
     /// The body consumes a captured value, so the closure runs at most once.
     pub call_once: bool,
     /// A generic function's type parameters; it is a template, compiled only through its copies.

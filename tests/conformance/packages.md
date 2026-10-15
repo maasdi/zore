@@ -128,3 +128,10 @@ The locked extension is in §§3.4 and 3.20. Executable cases are in
 Local source files remain mutable even with a lockfile. Exact Git pins and
 install/lock/locked/offline workflows follow §§3.4.1–3.4.2 and are exercised by
 `tests/driver/git_dependencies.rs`; registry/version solving remains excluded.
+
+## Curated native adapters
+
+The locked registration/ABI contract is §3.4.3. `packages/native_adapters.rs`
+checks metadata and privacy without a linker; `driver/native_adapters.rs`
+executes the local/Git adapter proof and native lifetime/error contracts on CI.
+General user FFI and arbitrary native build scripts remain excluded.

@@ -7,6 +7,16 @@ once it does.
 
 ## [Unreleased]
 
+### Curated native libraries
+
+- Added manifest-registered native adapters, generated private bindings and
+  recipe fingerprints in dependency locks, with linker-independent checking.
+- Added statically linked C/Rust Adler-32 proof and an external Zore wrapper,
+  with owned cleanup, validated handles and binary buffers, async/scoped result
+  coverage and local/pinned Git consumption.
+- Arbitrary native project sources, dynamic loading, general FFI, full database
+  and TLS adapters remain separate work.
+
 ### Pinned Git dependencies
 
 - Added exact-commit Git dependencies with repository subdirectories and confined
@@ -22,7 +32,7 @@ once it does.
   transitive package imports, canonical identity and direct import visibility.
 - Added strict manifest validation and dependency/name/cycle/boundary diagnostics,
   plus a multi-project example and native initialization/cleanup coverage.
-- Registry distribution and native library integration remain separate follow-ups.
+- Registry distribution remains a separate follow-up.
 
 ### Native platforms
 

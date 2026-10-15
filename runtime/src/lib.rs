@@ -3,6 +3,9 @@
 
 //! The exported C ABI is internal to the compiler, not a source-language API.
 
+#[cfg(zore_adapter_adler32_v1)]
+mod adler32;
+
 #[path = "alloc.rs"]
 mod alloc;
 #[path = "blocking.rs"]
@@ -65,6 +68,14 @@ pub fn finish() {
         && std::env::var_os("ZORE_CHECK_LEAKS").is_some()
     {
         eprintln!("leak: signal subscriptions still alive at exit");
+        std::process::exit(70);
+    }
+    #[cfg(zore_adapter_adler32_v1)]
+    if adler32::live_states() > 0
+        && !tasks_running
+        && std::env::var_os("ZORE_CHECK_LEAKS").is_some()
+    {
+        eprintln!("leak: native adler32 states still alive at exit");
         std::process::exit(70);
     }
     let leaked = string::live_buffers();

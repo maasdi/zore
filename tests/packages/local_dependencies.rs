@@ -32,7 +32,7 @@ fn outcome(files: &[(&str, &str)]) -> Outcome {
     }
 }
 
-fn accepts_tree(files: &[(&str, &str)]) {
+pub(super) fn accepts_tree(files: &[(&str, &str)]) {
     let result = outcome(files);
     assert!(
         result.checked && result.messages.is_empty(),
@@ -40,7 +40,7 @@ fn accepts_tree(files: &[(&str, &str)]) {
         result.messages
     );
 }
-fn rejects_tree(files: &[(&str, &str)], expected: &str) {
+pub(super) fn rejects_tree(files: &[(&str, &str)], expected: &str) {
     let result = outcome(files);
     assert!(
         !result.checked && result.messages.iter().any(|m| m.contains(expected)),

@@ -1,4 +1,5 @@
 mod local_dependencies;
+mod native_adapters;
 
 use std::path::Path;
 

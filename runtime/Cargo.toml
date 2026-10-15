@@ -12,4 +12,4 @@ autobins = false
 [dependencies]
 
 [lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ["cfg(zore_test_hooks)"] }
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(zore_test_hooks)", "cfg(zore_adapter_adler32_v1)"] }

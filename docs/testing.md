@@ -82,3 +82,13 @@ cache corruption, concurrent publication, credential redaction, unsupported layo
 path confinement and shared nominal identity/initialization. The frontend-only
 check case explicitly selects a nonexistent native compiler. No public server is
 needed. The same suite runs on Linux, macOS and Windows CI.
+
+## Curated native adapters
+
+`cargo test --locked --test native_adapters` validates the C ABI, native recipe
+lock drift, local and pinned Git diamond consumption, linker-independent checks,
+runtime-cache selection and owned async/scoped-result cleanup on normal/error/panic
+paths. It requires Git and the native C/Rust toolchain. `cargo test --locked
+--test packages native_adapters` covers registration, visibility, duplicate/bad
+metadata, root-only private bindings and ordinary move rules without a linker.
+CI also enables `zore_adapter_adler32_v1` when linting the runtime bridge.

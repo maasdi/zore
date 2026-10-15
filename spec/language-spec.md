@@ -185,7 +185,7 @@ name and optional version fields use single-line TOML basic double-quoted or
 literal single-quoted strings. Basic strings support the TOML escapes \b, \t,
 \n, \f, \r, \" and \\, and four/eight-digit Unicode scalar escapes. Raw control
 characters other than tab are rejected. Multiline strings, dotted/quoted keys,
-arrays and other tables are outside this subset and receive explicit errors.
+arrays and other tables except `[native]` (§3.4.3) are outside this subset and receive explicit errors.
 The name is required and follows §3.20; version is metadata, not a constraint.
 Duplicate fields, unknown fields/tables and malformed values are errors naming
 the manifest and line. No manifest may silently ignore a dependency entry.
@@ -305,6 +305,82 @@ populated offline check/build/run/test, missing/corrupt cache, credential redact
 layouts, checkout path confinement, interrupted/concurrent publication and all
 three native hosts. Registry/version solving and native integration remain
 separate work.
+
+## 3.4.3 Curated native adapters — LOCKED
+
+A project may declare one `[native]` table containing exactly one adapter string:
+
+```toml
+name = "adler32"
+[native]
+adapter = "adler32-v1"
+```
+
+The compiler's reviewed registry fixes adapter IDs, required project names,
+private binding signatures, source/ABI recipe and supported hosts. Unknown IDs,
+wrong project names, duplicate tables/fields and unsupported native metadata
+are errors. `[dependencies]` and `[native]` may occur in either order. Arbitrary
+native source paths, artifacts, link flags, build scripts, dynamic loading and
+general user FFI remain excluded. Native-backed libraries are consumed as ordinary
+local or pinned Git project dependencies under §3.20.
+
+For adler32-v1 the root package is adler32. The compiler supplies private native
+bindings `nativeCreate() (int, error)`, `nativeWrite(handle int, data []uint8) error`,
+`nativeSum(handle int) (int, error)` and `nativeClose(handle int)`. Their generated
+declarations participate in ordinary duplicate and visibility checks; user
+functions still require bodies. Only the project's root receives these bindings.
+A maintained Zore wrapper exposes its ordinary public API, e.g. New returning an
+owned Hasher with a private token and a custom drop calling nativeClose. Custom
+drop makes the resource Move; its zero token is harmless to close. Ordinary
+borrowing, type identity, generics, errors, cleanup and async ownership apply.
+
+The first adapter computes a non-cryptographic incremental Adler-32 checksum.
+Create allocates a state and returns a nonzero, never-reused token or an error.
+Write accepts 0–65,536 bytes, including NUL/non-UTF-8; invalid input fails without
+changing state. Sum returns the checksum as a nonnegative int. Invalid/stale tokens
+fail write/sum; close is idempotent. The runtime validates tokens, serializes access
+per resource and holds an operation lease until C completes. C pointers never
+enter Zore values. C owns/frees C state; Rust owns Zore message allocations;
+borrowed inputs are not retained and no callbacks or borrowed outputs are supported.
+
+The native boundary uses registered private C ABI signatures, explicit-width
+integers, byte pointer/length pairs and out-pointer results. C status codes become
+ordinary Zore errors; unwinding never crosses C. Structured Zore panic invokes
+normal cleanup above the boundary. Native bugs, aborts and external termination
+have no cleanup guarantee. First-provider calls are synchronous bounded CPU work,
+with no I/O, waiting or suspension. Async functions may own the wrapper across
+awaits under the existing rules; calls themselves are not interruptible. Future
+blocking providers require a separately registered wait/cancellation/lifetime
+contract before implementation.
+
+Entry lock records for native projects additionally contain adapter and recipe
+strings (ID and SHA-256 fingerprint). The fingerprint includes the reviewed C
+source/header, Rust bridge, binding contract and versioned build recipe. All
+native graphs require a matching lock, including local ones; install/lock use the
+ordinary locked/offline rules. A recipe mismatch is explicit drift, not a silent
+implementation upgrade. The compiler ships the curated sources; dependency
+installation executes no native code or project build scripts. Registry additions
+and adapter recipe changes require compiler/runtime review.
+
+Check validates available source and metadata independently of native toolchains.
+Build/run/test compile selected C providers with ZORE_CC/clang and statically link
+their objects with the Rust bridge. No package-specified external library closure
+is accepted; future providers must pin any such closure in their registered recipe.
+The runtime cache distinguishes selected adapters and embedded sources/toolchain
+identity. C objects are temporary per build, never unchecked reusable artifacts.
+Supported first-provider hosts are Linux GNU/macOS on x86_64/aarch64 and Windows
+x86_64 MSVC; other native host/ABI combinations receive actionable diagnostics.
+Cross-compilation remains excluded. Locks select source/recipes, not toolchains
+or bit-identical binaries. The detailed contract is recorded in
+`docs/design/native-adapters.md`.
+
+Compiler impact: parse/validate registration before package loading, generate only
+registered private bindings in the selected root, carry native selections through
+ordinary and test builds, lock recipe fingerprints and statically link reviewed
+objects. Semantic and ownership stages retain their contracts. Conformance must
+exercise registration rejection, independent checking, local/Git consumption,
+ABI byte handling, errors and invalid tokens, lock/cache selection, normal/error/
+panic cleanup, owned async values and Linux/macOS/Windows native execution.
 
 ## 3.5 Identifiers — LOCKED
 
@@ -2565,6 +2641,7 @@ let total = add(
 User-defined functions and methods require bodies. Signature-only examples
 elsewhere in this specification illustrate contracts; they do not authorize
 bodyless user declarations, FFI declarations, or forward-declaration syntax.
+Registered compiler-generated native bindings follow §3.4.3.
 Package functions and types may reference later declarations in the same package,
 including across its files. Collect declaration identities before resolving
 bodies. This does not settle package variable initialization order or permit
@@ -8177,7 +8254,7 @@ The following features must not be treated as part of the MVP unless this specif
 - raw pointers
 - pointer arithmetic
 - `unsafe`
-- FFI
+- unrestricted user FFI (curated native adapters follow §3.4.3)
 - pattern matching
 - advanced type inference
 - const generics

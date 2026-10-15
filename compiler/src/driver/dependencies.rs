@@ -160,7 +160,8 @@ pub(super) fn resolve(
     let needs_lock = options.mode != Mode::Build
         || options.locked
         || existing.is_some()
-        || !git_projects.is_empty();
+        || !git_projects.is_empty()
+        || projects.values().any(|manifest| manifest.native.is_some());
     if needs_lock {
         let expected = lockfile(&entry, &projects, &git_projects)?;
         if options.mode == Mode::Lock
@@ -232,6 +233,14 @@ fn lockfile(
             text.push_str(&format!(
                 ", path = {}",
                 quote(&portable(&relative(entry, &manifest.root))?)
+            ));
+        }
+        if let Some(id) = &manifest.native {
+            let adapter = super::native::find(id).expect("validated native adapter");
+            text.push_str(&format!(
+                ", adapter = {}, recipe = {}",
+                quote(id),
+                quote(&adapter.fingerprint())
             ));
         }
         text.push_str(" }\n");

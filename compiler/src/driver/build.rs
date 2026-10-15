@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -16,6 +17,10 @@ const RUNTIME_MAIN: &str = include_str!("../../../runtime/src/main.rs");
 
 const RUNTIME_SOURCES: &[(&str, &str)] = &[
     ("lib.rs", include_str!("../../../runtime/src/lib.rs")),
+    (
+        "adler32.rs",
+        include_str!("../../../runtime/src/adler32.rs"),
+    ),
     ("alloc.rs", include_str!("../../../runtime/src/alloc.rs")),
     (
         "blocking.rs",
@@ -179,7 +184,7 @@ pub fn compiler() -> String {
 }
 
 pub fn build(file: &SourceFile, output: &Path) -> Result<(), BuildError> {
-    link(&emit_llvm(file)?, output, RUNTIME_MAIN)
+    link(&emit_llvm(file)?, output, RUNTIME_MAIN, &BTreeSet::new())
 }
 
 pub fn build_project(
@@ -187,7 +192,12 @@ pub fn build_project(
     sources: &dyn Sources,
     output: &Path,
 ) -> Result<(), BuildError> {
-    link(&emit_project_llvm(project, sources)?, output, RUNTIME_MAIN)
+    link(
+        &emit_project_llvm(project, sources)?,
+        output,
+        RUNTIME_MAIN,
+        &project.native_adapters,
+    )
 }
 
 pub(crate) fn build_test_project(
@@ -206,10 +216,16 @@ pub(crate) fn build_test_project(
         &ir,
         output,
         include_str!("../../../runtime/src/test_main.rs"),
+        &project.native_adapters,
     )
 }
 
-fn link(ir: &str, output: &Path, runtime_main: &str) -> Result<(), BuildError> {
+fn link(
+    ir: &str,
+    output: &Path,
+    runtime_main: &str,
+    native_adapters: &BTreeSet<String>,
+) -> Result<(), BuildError> {
     if cfg!(not(target_pointer_width = "64")) {
         return Err(BuildError::Toolchain("native builds require a 64-bit host toolchain; check and fmt remain available without native linking".into()));
     }
@@ -220,6 +236,9 @@ fn link(ir: &str, output: &Path, runtime_main: &str) -> Result<(), BuildError> {
         return Err(BuildError::Toolchain(
             "Windows native builds require x86_64-pc-windows-msvc; install the x64 MSVC Rust toolchain, Visual Studio C++ Build Tools and clang".into(),
         ));
+    }
+    if !native_adapters.is_empty() && !native_host_supported() {
+        return Err(BuildError::Toolchain("curated native adapters support Linux GNU/macOS x86_64 or aarch64 and Windows x86_64 MSVC; use a supported native host (check remains available)".into()));
     }
     let dir = TempDir::new()?;
     let ir_path = dir.path().join("program.ll");
@@ -259,7 +278,8 @@ fn link(ir: &str, output: &Path, runtime_main: &str) -> Result<(), BuildError> {
         )));
     }
     let rustc = std::env::var_os("ZORE_RUSTC").unwrap_or_else(|| "rustc".into());
-    let runtime = runtime_library(&rustc, dir.path())?;
+    let runtime = runtime_library(&rustc, dir.path(), native_adapters)?;
+    let native_objects = native_objects(&cc, dir.path(), native_adapters)?;
     let main_path = dir.path().join("main.rs");
     fs::write(&main_path, runtime_main)
         .map_err(|e| BuildError::Io(format!("{}: {e}", main_path.display())))?;
@@ -270,6 +290,11 @@ fn link(ir: &str, output: &Path, runtime_main: &str) -> Result<(), BuildError> {
     let mut link = Command::new(&rustc);
     if !cfg!(windows) {
         link.arg("-C").arg(format!("linker={cc}"));
+    }
+    for object in native_objects {
+        let mut argument = std::ffi::OsString::from("link-arg=");
+        argument.push(object);
+        link.arg("-C").arg(argument);
     }
     let result = link
         .arg("--edition=2024")
@@ -294,6 +319,63 @@ fn link(ir: &str, output: &Path, runtime_main: &str) -> Result<(), BuildError> {
         )));
     }
     Ok(())
+}
+
+fn native_host_supported() -> bool {
+    cfg!(all(
+        any(target_arch = "x86_64", target_arch = "aarch64"),
+        any(
+            target_os = "macos",
+            all(target_os = "linux", target_env = "gnu")
+        )
+    )) || cfg!(all(windows, target_arch = "x86_64", target_env = "msvc"))
+}
+
+fn native_objects(
+    cc: &str,
+    directory: &Path,
+    selections: &BTreeSet<String>,
+) -> Result<Vec<PathBuf>, BuildError> {
+    let mut objects = Vec::new();
+    for id in selections {
+        let adapter = super::native::find(id).expect("validated adapter");
+        let source = directory.join(format!("{}.c", adapter.project));
+        let header = directory.join(format!("{}.h", adapter.project));
+        let object = directory.join(format!(
+            "{}.{}",
+            adapter.project,
+            if cfg!(windows) { "obj" } else { "o" }
+        ));
+        fs::write(&source, adapter.source)
+            .and_then(|_| fs::write(&header, adapter.header))
+            .map_err(|e| BuildError::Io(format!("{}: {e}", source.display())))?;
+        let mut compile = Command::new(cc);
+        compile.args(super::native::C_FLAGS);
+        if cfg!(windows) {
+            compile.arg("--target=x86_64-pc-windows-msvc");
+        } else {
+            compile.arg("-fPIC");
+        }
+        let result = compile
+            .arg("-c")
+            .arg(&source)
+            .arg("-o")
+            .arg(&object)
+            .output()
+            .map_err(|e| {
+                BuildError::Toolchain(format!(
+                    "could not compile native adapter {id} with ZORE_CC={cc}: {e}"
+                ))
+            })?;
+        if !result.status.success() {
+            return Err(BuildError::Toolchain(format!(
+                "native adapter {id} failed to compile; use the documented host C toolchain:\n{}",
+                String::from_utf8_lossy(&result.stderr)
+            )));
+        }
+        objects.push(object);
+    }
+    Ok(objects)
 }
 
 fn toolchain_error(rustc: &std::ffi::OsStr, error: &std::io::Error) -> BuildError {
@@ -328,7 +410,11 @@ fn cache_root() -> Option<PathBuf> {
 
 /// The runtime compiled as a library, reused across builds with the same sources and `rustc`.
 /// Without a usable cache folder it is compiled into `scratch` and used once.
-fn runtime_library(rustc: &std::ffi::OsStr, scratch: &Path) -> Result<PathBuf, BuildError> {
+fn runtime_library(
+    rustc: &std::ffi::OsStr,
+    scratch: &Path,
+    native_adapters: &BTreeSet<String>,
+) -> Result<PathBuf, BuildError> {
     let version = Command::new(rustc)
         .arg("-vV")
         .output()
@@ -352,6 +438,10 @@ fn runtime_library(rustc: &std::ffi::OsStr, scratch: &Path) -> Result<PathBuf, B
     for &(name, contents) in RUNTIME_SOURCES {
         std::hash::Hash::hash(&(name, contents), &mut hasher);
     }
+    for id in native_adapters {
+        let adapter = super::native::find(id).expect("validated adapter selection");
+        std::hash::Hash::hash(&(adapter.id, adapter.fingerprint()), &mut hasher);
+    }
     let key = std::hash::Hasher::finish(&hasher);
     let cached = cache_root().map(|root| {
         root.join(format!("runtime-{key:016x}"))
@@ -369,7 +459,15 @@ fn runtime_library(rustc: &std::ffi::OsStr, scratch: &Path) -> Result<PathBuf, B
             .map_err(|e| BuildError::Io(format!("{}: {e}", path.display())))?;
     }
     let built = scratch.join("libzore_runtime.rlib");
-    let result = Command::new(rustc)
+    let mut compile = Command::new(rustc);
+    for id in native_adapters {
+        compile.arg("--cfg").arg(
+            super::native::find(id)
+                .expect("validated adapter")
+                .configuration,
+        );
+    }
+    let result = compile
         .arg("--edition=2024")
         .arg("--crate-name=zore_runtime")
         .arg("--crate-type=rlib")

@@ -1,0 +1,5 @@
+version = 1
+
+[projects]
+adler32 = { manifest = "27f4ce75d1e8656884d7b1613de53d5cbdd93feebd345bd988f9de8be49bce09", path = "../adler32", adapter = "adler32-v1", recipe = "9f911dca50e5422f857063f2159eb0a20722779abbe03ebec3676cec55701d56" }
+checksumapp = { manifest = "052023fe66983d863238b558254932f025da8abe965dc1f130a6739e91081a5a", path = "." }

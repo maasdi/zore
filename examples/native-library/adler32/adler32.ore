@@ -1,0 +1,22 @@
+package adler32
+
+type Hasher struct {
+    handle int
+}
+
+func New() (Hasher, error) {
+    let handle = nativeCreate()?
+    return Hasher{handle: handle}, nil
+}
+
+func (h mut Hasher) Write(data []uint8) error {
+    return nativeWrite(h.handle, data)
+}
+
+func (h Hasher) Sum() (int, error) {
+    return nativeSum(h.handle)
+}
+
+func (h mut Hasher) drop() {
+    nativeClose(h.handle)
+}

@@ -40,6 +40,13 @@ pub(crate) fn check_project_with_entry(
     let layered = Layered(sources, project.std_sources());
     let (mut package, mut diagnostics) =
         hir::lower::check_with_entry(resolution, &layered, entry_name);
+    if let Some(checked) = &mut package {
+        for function in &mut checked.functions {
+            if function.native {
+                function.native_symbol = project.native_bindings.get(&function.span).cloned();
+            }
+        }
+    }
     if let Some(checked) = &package {
         let program = mir::lower::lower(checked);
         // Copies of one generic function report the same mistake once.

@@ -162,6 +162,7 @@ impl Checker<'_> {
             is_closure: true,
             is_async: self.res.functions[method.0 as usize].is_async,
             native: false,
+            native_symbol: None,
             call_once,
             type_params: self
                 .generic_root(FunctionId(self.current as u32))

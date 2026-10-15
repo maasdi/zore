@@ -1,0 +1,6 @@
+package adler32
+
+func nativeCreate() (int, error)
+func nativeWrite(handle int, data []uint8) error
+func nativeSum(handle int) (int, error)
+func nativeClose(handle int)
