@@ -101,7 +101,7 @@ follows the completed #121 sequence. Its first increment, [#136](https://github.
 implements local project dependencies, direct dependency visibility, canonical
 identity and conflict/boundary checks under §§3.4 and 3.20. See
 [local dependencies](local-dependencies.md). The next increment, #137, implements
-[pinned Git sources, fetch/update, lockfiles and offline caches](git-dependencies.md)
+[pinned Git sources, install/lock, lockfiles and offline caches](git-dependencies.md)
 under §§3.4.1–3.4.2. Native integration (#138) and distribution (#139) remain
 separate work. Local paths remain mutable references even with a lockfile.
 Further self-hosting remains deferred.

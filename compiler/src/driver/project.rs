@@ -371,7 +371,7 @@ fn load_package_project(
         return Err(LoadError::Source(io_error(
             &dir.join("zore.lock"),
             std::io::Error::other(
-                "--locked requires a project with zore.toml and zore.lock; run `zore fetch` first",
+                "--locked requires a project with zore.toml and zore.lock; run `zore install` first",
             ),
         )));
     }

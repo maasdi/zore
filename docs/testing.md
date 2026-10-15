@@ -77,7 +77,7 @@ failures followed by a passing test. The locked contract is specification §45.1
 
 `cargo test --locked --test git_dependencies` uses temporary local Git repositories
 and isolated caches; it requires Git and the ordinary native toolchain for its
-build/run/test case. It covers exact pin updates, offline validation, lock drift,
+build/run/test case. It covers lock regeneration after pin changes, offline validation, lock drift,
 cache corruption, concurrent publication, credential redaction, unsupported layouts,
 path confinement and shared nominal identity/initialization. The frontend-only
 check case explicitly selects a nonexistent native compiler. No public server is

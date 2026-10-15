@@ -11,7 +11,7 @@ once it does.
 
 - Added exact-commit Git dependencies with repository subdirectories and confined
   path dependencies within fetched repositories.
-- Added explicit fetch/update, deterministic entry lockfiles, cache integrity
+- Added explicit install/lock, deterministic entry lockfiles, cache integrity
   validation and locked/offline options for check/build/run/test.
 - Added atomic concurrent cache publication, lockfile guards, credential-safe
   diagnostics and cross-platform Git workflow regression coverage.

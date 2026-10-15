@@ -265,20 +265,20 @@ Cache metadata alone never overrides a pinned revision or lockfile.
 
 ## 3.4.2 Dependency commands and cache — LOCKED
 
-- zore fetch [--locked] [--offline] <file|directory> resolves the nearest entry
+- zore install [--locked] [--offline] <file|directory> resolves the nearest entry
   manifest and all dependencies, downloads missing Git sources, and creates a
-  missing lockfile. An existing lockfile must match; drift requires update.
-- zore update [--offline] <file|directory> explicitly replaces or creates the
+  missing lockfile. An existing lockfile must match; drift requires zore lock.
+- zore lock [--offline] <file|directory> explicitly replaces or creates the
   entry lockfile using exactly the manifest pins. It never selects a newer
   revision, edits manifests or consults branch/tag tips. --locked is rejected.
 - check/build/run/test accept --locked and --offline. These commands never fetch
   sources or rewrite a lockfile, even without flags. Git graphs require a
-  matching lockfile and complete cache; diagnostics direct users to fetch/update.
+  matching lockfile and complete cache; diagnostics direct users to install/lock.
   Existing locks on local-only graphs are also validated; local-only projects
   without locks retain their ordinary behavior unless --locked is requested.
 - --locked rejects missing or mismatched lockfiles and never writes them. It can
-  be combined with fetch to populate missing cache for an unchanged graph.
-  --offline forbids network, including on fetch/update. Cache misses and corrupt
+  be combined with install to populate missing cache for an unchanged graph.
+  --offline forbids network, including on install/lock. Cache misses and corrupt
   entries are actionable errors. fmt remains independent of dependencies and
   rejects these flags. Repeated flags are usage errors. -- still ends options.
 
@@ -293,15 +293,15 @@ interrupted staging directories are ignored. Lockfile replacement is atomic and
 serialized with a project-local exclusive guard; an abandoned guard produces an
 actionable error and must be removed only after confirming no resolver is active.
 Corrupt cache entries are never silently trusted or overwritten: remove the
-identified entry and run fetch again; offline mode cannot repair missing data.
+identified entry and run install again; offline mode cannot repair missing data.
 Removing the cache is safe when no command is running; refetch requires access
 to the pinned commits. User application/library sources are never modified.
 
 Compiler impact: the manifest graph resolver selects validated cache roots before
 package loading; semantic stages and native linking do not change. Conformance
 coverage must exercise fresh/repeated fetch, transitive diamonds, identity and
-source conflicts, exact update, locked drift without writes, populated offline
-check/build/run/test, missing/corrupt cache, credential redaction, unsupported
+source conflicts, explicit lock regeneration, locked drift without writes,
+populated offline check/build/run/test, missing/corrupt cache, credential redaction, unsupported
 layouts, checkout path confinement, interrupted/concurrent publication and all
 three native hosts. Registry/version solving and native integration remain
 separate work.

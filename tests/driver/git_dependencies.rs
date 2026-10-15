@@ -133,7 +133,7 @@ impl Fixture {
         command
             .arg(action)
             .args(flags)
-            .arg(if matches!(action, "fetch" | "update" | "test") {
+            .arg(if matches!(action, "install" | "lock" | "test") {
                 self.app.clone()
             } else {
                 self.app.join("main.ore")
@@ -148,8 +148,8 @@ impl Fixture {
         self.command(action, flags).output().unwrap()
     }
 
-    fn fetch(&self) {
-        success(self.invoke("fetch", &[]));
+    fn install(&self) {
+        success(self.invoke("install", &[]));
     }
 
     fn lock(&self) -> Vec<u8> {
@@ -180,20 +180,20 @@ fn failure(output: Output, message: &str) {
 }
 
 #[test]
-fn fresh_fetch_is_explicit_repeated_and_offline_check_needs_no_linker() {
+fn fresh_install_is_explicit_repeated_and_offline_check_needs_no_linker() {
     let fixture = Fixture::new();
-    failure(fixture.invoke("check", &[]), "run `zore fetch`");
+    failure(fixture.invoke("check", &[]), "run `zore install`");
     failure(
-        fixture.invoke("fetch", &["--offline"]),
+        fixture.invoke("install", &["--offline"]),
         "missing from the cache",
     );
     assert!(!fixture.app.join("zore.lock").exists());
-    fixture.fetch();
+    fixture.install();
     let lock = fixture.lock();
     assert!(String::from_utf8_lossy(&lock).contains(&fixture.revision));
     assert!(!String::from_utf8_lossy(&lock).contains(fixture.cache.to_str().unwrap()));
     fs::rename(&fixture.repository, fixture.root.join("unavailable")).unwrap();
-    success(fixture.invoke("fetch", &["--locked", "--offline"]));
+    success(fixture.invoke("install", &["--locked", "--offline"]));
     success(
         fixture
             .command("check", &["--locked", "--offline"])
@@ -206,9 +206,9 @@ fn fresh_fetch_is_explicit_repeated_and_offline_check_needs_no_linker() {
 }
 
 #[test]
-fn update_uses_exact_changed_pin_and_builds_never_rewrite_locks() {
+fn lock_uses_exact_changed_pin_and_builds_never_rewrite_locks() {
     let fixture = Fixture::new();
-    fixture.fetch();
+    fixture.install();
     let old_lock = fixture.lock();
     write(
         &fixture.repository,
@@ -216,7 +216,7 @@ fn update_uses_exact_changed_pin_and_builds_never_rewrite_locks() {
         "package auth\nfunc Value() int { return 77 }\n",
     );
     let next = commit(&fixture.repository);
-    success(fixture.invoke("fetch", &[]));
+    success(fixture.invoke("install", &[]));
     assert_eq!(fixture.lock(), old_lock);
     write(
         &fixture.app,
@@ -232,11 +232,11 @@ fn update_uses_exact_changed_pin_and_builds_never_rewrite_locks() {
     );
     assert_eq!(fixture.lock(), old_lock);
     failure(
-        fixture.invoke("fetch", &["--locked"]),
+        fixture.invoke("install", &["--locked"]),
         "mismatched lockfile",
     );
     assert_eq!(fixture.lock(), old_lock);
-    success(fixture.invoke("update", &["--offline"]));
+    success(fixture.invoke("lock", &["--offline"]));
     let new_lock = fixture.lock();
     assert_ne!(new_lock, old_lock);
     assert!(String::from_utf8_lossy(&new_lock).contains(&next));
@@ -250,16 +250,19 @@ fn update_uses_exact_changed_pin_and_builds_never_rewrite_locks() {
         ),
     );
     failure(fixture.invoke("check", &[]), "mismatched lockfile");
-    failure(fixture.invoke("fetch", &[]), "mismatched lockfile");
+    failure(fixture.invoke("install", &[]), "mismatched lockfile");
     assert_eq!(fixture.lock(), new_lock);
-    success(fixture.invoke("update", &["--offline"]));
+    success(fixture.invoke("lock", &["--offline"]));
 }
 
 #[test]
 fn missing_malformed_and_modified_locks_fail_without_writes() {
     let fixture = Fixture::new();
-    failure(fixture.invoke("fetch", &["--locked"]), "--locked requires");
-    fixture.fetch();
+    failure(
+        fixture.invoke("install", &["--locked"]),
+        "--locked requires",
+    );
+    fixture.install();
     for lock in ["version = 99\n", "broken", "version = 1\n\n[projects]\n"] {
         write(&fixture.app, "zore.lock", lock);
         failure(
@@ -267,31 +270,31 @@ fn missing_malformed_and_modified_locks_fail_without_writes() {
             "mismatched lockfile",
         );
         failure(
-            fixture.invoke("fetch", &["--offline"]),
+            fixture.invoke("install", &["--offline"]),
             "mismatched lockfile",
         );
         assert_eq!(fixture.lock(), lock.as_bytes());
     }
-    success(fixture.invoke("update", &["--offline"]));
+    success(fixture.invoke("lock", &["--offline"]));
     fs::remove_file(fixture.app.join("zore.lock")).unwrap();
     failure(
         fixture.invoke("check", &["--offline"]),
         "missing or mismatched lockfile",
     );
     assert!(!fixture.app.join("zore.lock").exists());
-    success(fixture.invoke("fetch", &["--offline"]));
+    success(fixture.invoke("install", &["--offline"]));
     remove_path(&fixture.cache);
     failure(
         fixture.invoke("check", &["--locked", "--offline"]),
         "missing from the cache",
     );
-    success(fixture.invoke("fetch", &["--locked"]));
+    success(fixture.invoke("install", &["--locked"]));
 }
 
 #[test]
 fn corrupt_cache_bytes_metadata_and_extra_paths_are_rejected() {
     let fixture = Fixture::new();
-    fixture.fetch();
+    fixture.install();
     let lock = fixture.lock();
     let entry = fixture.entry();
     let source = entry.join("sources/auth.ore");
@@ -304,7 +307,7 @@ fn corrupt_cache_bytes_metadata_and_extra_paths_are_rejected() {
         fixture.invoke("check", &["--offline"]),
         "cached file bytes differ",
     );
-    failure(fixture.invoke("fetch", &[]), "remove this cache entry");
+    failure(fixture.invoke("install", &[]), "remove this cache entry");
     assert_eq!(fs::read(&source).unwrap(), changed);
     fs::write(&source, &bytes).unwrap();
     write(&entry, "sources/extra/ignored", "extra");
@@ -317,14 +320,14 @@ fn corrupt_cache_bytes_metadata_and_extra_paths_are_rejected() {
     failure(fixture.invoke("check", &["--offline"]), "source identity");
     assert_eq!(fixture.lock(), lock);
     remove_path(&entry);
-    success(fixture.invoke("fetch", &["--locked"]));
+    success(fixture.invoke("install", &["--locked"]));
     success(fixture.invoke("check", &["--locked", "--offline"]));
 }
 
 #[test]
 fn corrupt_git_objects_are_rejected_even_when_checkout_is_unchanged() {
     let fixture = Fixture::new();
-    fixture.fetch();
+    fixture.install();
     let object = fixture
         .entry()
         .join("repository.git/objects")
@@ -370,7 +373,7 @@ fn subdirectories_and_transitive_git_pins_are_resolved() {
             selection(&fixture.repository, &revision, "library")
         ),
     );
-    fixture.fetch();
+    fixture.install();
     assert_eq!(fs::read_dir(&fixture.cache).unwrap().count(), 2);
     let lock = String::from_utf8(fixture.lock()).unwrap();
     assert!(lock.contains("subdir = \"library\""));
@@ -411,7 +414,7 @@ fn fetched_path_dependencies_cannot_escape_or_use_absolute_paths() {
             ),
         );
         failure(
-            fixture.invoke("fetch", &[]),
+            fixture.invoke("install", &[]),
             "must stay inside its Git checkout",
         );
         assert!(!fixture.app.join("zore.lock").exists());
@@ -443,7 +446,7 @@ fn incompatible_pins_and_project_name_mismatches_are_diagnosed() {
             selection(&fixture.repository, &fixture.revision, "")
         ),
     );
-    failure(fixture.invoke("fetch", &[]), "conflicting project `auth`");
+    failure(fixture.invoke("install", &[]), "conflicting project `auth`");
     write(
         &fixture.app,
         "zore.toml",
@@ -452,7 +455,10 @@ fn incompatible_pins_and_project_name_mismatches_are_diagnosed() {
             selection(&fixture.repository, &fixture.revision, "")
         ),
     );
-    failure(fixture.invoke("fetch", &[]), "does not match project name");
+    failure(
+        fixture.invoke("install", &[]),
+        "does not match project name",
+    );
 }
 
 #[test]
@@ -465,13 +471,13 @@ fn incomplete_fetches_are_ignored_and_concurrent_cache_publication_is_safe() {
         &fs::read_to_string(fixture.app.join("zore.toml")).unwrap(),
     );
     let mut first = fixture
-        .command("fetch", &[])
+        .command("install", &[])
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .spawn()
         .unwrap();
     let second = Command::new(env!("CARGO_BIN_EXE_zore"))
-        .arg("fetch")
+        .arg("install")
         .arg(fixture.root.join("second"))
         .env("ZORE_CACHE_DIR", &fixture.cache)
         .output()
@@ -486,11 +492,11 @@ fn incomplete_fetches_are_ignored_and_concurrent_cache_publication_is_safe() {
     success(fixture.invoke("check", &["--locked", "--offline"]));
     write(&fixture.app, ".zore-lock.guard", "");
     failure(
-        fixture.invoke("update", &[]),
+        fixture.invoke("lock", &[]),
         "confirming no resolver is running",
     );
     fs::remove_file(fixture.app.join(".zore-lock.guard")).unwrap();
-    success(fixture.invoke("update", &["--offline"]));
+    success(fixture.invoke("lock", &["--offline"]));
 }
 
 #[test]
@@ -499,9 +505,9 @@ fn dependency_options_are_explicit_and_fmt_stays_independent() {
     for (action, flags) in [
         ("fmt", vec!["--locked"]),
         ("fmt", vec!["--offline"]),
-        ("update", vec!["--locked"]),
+        ("lock", vec!["--locked"]),
         ("check", vec!["--locked", "--locked"]),
-        ("fetch", vec!["--offline", "--offline"]),
+        ("install", vec!["--offline", "--offline"]),
     ] {
         let output = fixture.invoke(action, &flags);
         assert_eq!(output.status.code(), Some(2));
@@ -528,7 +534,7 @@ fn unsupported_pins_layouts_and_credentials_fail_without_echoing_secrets() {
             "zore.toml",
             &format!("name = 'app'\n[dependencies]\nauth = {{ {fields} }}\n"),
         );
-        let output = fixture.invoke("fetch", &["--offline"]);
+        let output = fixture.invoke("install", &["--offline"]);
         assert!(!output.status.success(), "{fields}");
         assert!(
             !String::from_utf8_lossy(&output.stderr).contains("TOP_SECRET"),
@@ -548,7 +554,7 @@ fn local_only_projects_can_lock_manifests_while_sources_remain_mutable() {
     );
     success(fixture.invoke("check", &[]));
     failure(fixture.invoke("check", &["--locked"]), "--locked requires");
-    success(fixture.invoke("fetch", &["--offline"]));
+    success(fixture.invoke("install", &["--offline"]));
     let lock = fixture.lock();
     write(
         &fixture.repository,
@@ -617,7 +623,7 @@ fn populated_offline_diamond_checks_builds_runs_and_tests_with_shared_identity()
         "main_test.ore",
         "package main\nimport \"left\"\nimport \"right\"\nfunc TestShared() { if right.Read(left.New()) != 42 { panic(\"identity\") } }\n",
     );
-    fixture.fetch();
+    fixture.install();
     let lock = String::from_utf8(fixture.lock()).unwrap();
     assert_eq!(lock.matches("shared = {").count(), 1);
     assert_eq!(fs::read_dir(&fixture.cache).unwrap().count(), 1);
@@ -666,7 +672,7 @@ fn gitlinks_are_rejected_without_fetching_submodules() {
         ),
     );
     failure(
-        fixture.invoke("fetch", &[]),
+        fixture.invoke("install", &[]),
         "do not support symlinks or submodules",
     );
     assert!(!fixture.app.join("zore.lock").exists());
@@ -696,7 +702,7 @@ fn fetched_project_cycles_are_reported_and_missing_subdirectories_are_not_guesse
         ),
     );
     failure(
-        fixture.invoke("fetch", &[]),
+        fixture.invoke("install", &[]),
         "dependency cycle: auth -> shared -> auth",
     );
     write(
@@ -708,7 +714,7 @@ fn fetched_project_cycles_are_reported_and_missing_subdirectories_are_not_guesse
         ),
     );
     failure(
-        fixture.invoke("fetch", &[]),
+        fixture.invoke("install", &[]),
         "must name a project root containing zore.toml",
     );
 }
@@ -716,7 +722,7 @@ fn fetched_project_cycles_are_reported_and_missing_subdirectories_are_not_guesse
 #[test]
 fn local_spelling_of_a_cached_git_project_cannot_change_its_source_identity() {
     let fixture = Fixture::new();
-    fixture.fetch();
+    fixture.install();
     let source = fs::canonicalize(fixture.entry().join("sources")).unwrap();
     let path = source.to_str().unwrap();
     write(
@@ -733,7 +739,7 @@ fn local_spelling_of_a_cached_git_project_cannot_change_its_source_identity() {
         ),
     );
     failure(
-        fixture.invoke("update", &["--offline"]),
+        fixture.invoke("lock", &["--offline"]),
         "conflicting local/Git source selections",
     );
 }
@@ -742,7 +748,7 @@ fn local_spelling_of_a_cached_git_project_cannot_change_its_source_identity() {
 #[test]
 fn symlink_sources_and_cached_symlink_replacements_are_rejected() {
     let fixture = Fixture::new();
-    fixture.fetch();
+    fixture.install();
     let source = fixture.entry().join("sources/auth.ore");
     fs::remove_file(&source).unwrap();
     std::os::unix::fs::symlink(fixture.repository.join("auth.ore"), &source).unwrap();
@@ -761,7 +767,7 @@ fn symlink_sources_and_cached_symlink_replacements_are_rejected() {
         ),
     );
     failure(
-        fixture.invoke("update", &[]),
+        fixture.invoke("lock", &[]),
         "do not support symlinks or submodules",
     );
 }
@@ -780,7 +786,7 @@ fn credential_helper_or_server_stderr_is_never_in_diagnostics() {
         "name = 'app'\n[dependencies]\nauth = { git = 'ssh://git@example.invalid/library', rev = '0000000000000000000000000000000000000000' }\n",
     );
     let output = fixture
-        .command("fetch", &[])
+        .command("install", &[])
         .env("GIT_SSH_COMMAND", format!("'{}'", script.display()))
         .output()
         .unwrap();

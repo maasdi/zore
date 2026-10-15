@@ -16,8 +16,8 @@ mod cache;
 pub(super) enum Mode {
     #[default]
     Build,
-    Fetch,
-    Update,
+    Install,
+    Lock,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -106,7 +106,7 @@ pub(super) fn resolve(
     if options.locked && existing.is_none() {
         return Err(error(
             &lock_path,
-            "--locked requires zore.lock; run `zore fetch` first",
+            "--locked requires zore.lock; run `zore install` first",
         ));
     }
     let mut git_projects: HashMap<PathBuf, GitProject> = HashMap::new();
@@ -163,14 +163,14 @@ pub(super) fn resolve(
         || !git_projects.is_empty();
     if needs_lock {
         let expected = lockfile(&entry, &projects, &git_projects)?;
-        if options.mode == Mode::Update
-            || (options.mode == Mode::Fetch && !options.locked && existing.is_none())
+        if options.mode == Mode::Lock
+            || (options.mode == Mode::Install && !options.locked && existing.is_none())
         {
             atomic_write(&lock_path, expected.as_bytes())?;
         } else if existing.as_deref() != Some(&expected) {
             return Err(error(
                 &lock_path,
-                "missing or mismatched lockfile; run `zore fetch` if missing, or `zore update` after reviewing manifest changes",
+                "missing or mismatched lockfile; run `zore install` if missing, or `zore lock` after reviewing manifest changes",
             ));
         }
     }

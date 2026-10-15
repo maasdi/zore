@@ -126,5 +126,5 @@ The locked extension is in §§3.4 and 3.20. Executable cases are in
 | Async normal/error/panic exits with cross-project resources | Drop exactly once and preserve initialization/parent cleanup ordering |
 
 Local source files remain mutable even with a lockfile. Exact Git pins and
-fetch/update/locked/offline workflows follow §§3.4.1–3.4.2 and are exercised by
+install/lock/locked/offline workflows follow §§3.4.1–3.4.2 and are exercised by
 `tests/driver/git_dependencies.rs`; registry/version solving remains excluded.

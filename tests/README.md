@@ -352,6 +352,6 @@ coverage. The REST example codec is also exercised as executable Zore source.
 `codegen/json.rs`, JSON package-checking tests, and the console/REST examples.
 Native JSON programs run with leak checking, including partial-decode errors.
 
-- `driver/git_dependencies.rs`: local Git fixtures exercise fresh/repeated fetch,
-  exact update, locked/offline commands, integrity failures, source conflicts,
+- `driver/git_dependencies.rs`: local Git fixtures exercise fresh/repeated install,
+  explicit lock regeneration, locked/offline commands, integrity failures, source conflicts,
   transitive graphs, confinement, concurrent publication and native diamond reuse.

@@ -22,25 +22,25 @@ backslashes or drive prefixes. Omit `subdir` to select the repository root.
 ## Application workflow
 
 ```sh
-zore fetch ./app
+zore install ./app
 zore check --locked --offline ./app/main.ore
 zore build --locked --offline ./app/main.ore
 zore run --locked --offline ./app/main.ore
 zore test --locked --offline ./app
 ```
 
-`fetch` downloads missing sources and creates the entry project's `zore.lock`.
-Commit that lockfile with your application. A repeated fetch validates an existing
+`install` downloads missing sources and creates the entry project's `zore.lock`.
+Commit that lockfile with your application. A repeated install validates an existing
 lock; it does not overwrite drift. To change dependencies, edit the manifest's
-exact pin, review the change, then run `zore update ./app`. Update resolves exactly
+exact pin, review the change, then run `zore lock ./app`. Lock resolves exactly
 those pins and replaces the lockfile; it never chooses a newer commit or rewrites
-manifests. `fetch --locked` can populate a clean CI machine's cache while retaining
+manifests. `install --locked` can populate a clean CI machine's cache while retaining
 a committed lockfile. Git must be installed for fetching and cache validation.
 
 Check/build/run/test always use available cached sources, even without flags.
 They never download a dependency or write a lockfile. Missing cache entries point
-to `zore fetch`; missing or changed locks point to fetch/update. `--locked` requires
-a matching lockfile and never writes it. `--offline` forbids network; fetch/update
+to `zore install`; missing or changed locks point to install/lock. `--locked` requires
+a matching lockfile and never writes it. `--offline` forbids network; install/lock
 can use it when every source is cached. Flags can appear before or after the
 target; use `--` before a target beginning with `-`. `fmt` needs neither manifests
 nor dependencies and does not accept dependency flags.
@@ -66,7 +66,8 @@ The generated version-1 TOML lock records all project names, source locations,
 exact manifest SHA-256 digests, and Git commit/root-tree IDs. Local paths are
 canonical locations relative to the entry project where possible; moving a
 project tree together preserves relative locations. Moving an external local
-library may require update. Paths on a different Windows volume remain absolute.
+library may require running `zore lock`. Paths on a different Windows volume
+remain absolute.
 Manifest bytes, including comments and line endings, are significant; use the
 same checkout line-ending policy in development and CI. Do not hand-edit locks.
 
@@ -111,15 +112,15 @@ complete repository and validated snapshot, then publishes it atomically.
 Concurrent fetches from different projects reuse the winner. Incomplete
 `.zore-stage-*` directories are ignored and can be deleted when no command runs.
 
-Fetch/update serialize lockfile writes with `.zore-lock.guard` at the entry root.
+Install/lock serialize lockfile writes with `.zore-lock.guard` at the entry root.
 A concurrent resolver reports an error you can retry. After a crash, remove that
 guard only after confirming no resolver is active. Lockfile writes use an atomic
 replacement, so readers see either the previous complete lock or the new one.
 
 To recover a corrupt entry, remove the exact cache directory named by the error
-and run `zore fetch --locked ./app`. You can also remove the entire dependency
-cache while no command uses it, then refetch. Offline builds cannot recover
-missing data; keep the pinned commits available on the server or preserve a
+and run `zore install --locked ./app`. You can also remove the entire dependency
+cache while no command uses it, then run install again. Offline builds cannot
+recover missing data; keep the pinned commits available on the server or preserve a
 validated cache in CI. Cache data is reproducible from pins, not precious source.
 
 For library development, start with [local dependencies](local-dependencies.md),

@@ -106,7 +106,7 @@ pub(super) fn select(
             error(
                 &entry,
                 format!(
-                    "corrupt Git cache: {e}; remove this cache entry and run `zore fetch` again"
+                    "corrupt Git cache: {e}; remove this cache entry and run `zore install` again"
                 ),
             )
         });
@@ -114,7 +114,7 @@ pub(super) fn select(
     if options.offline || options.mode == Mode::Build {
         return Err(error(
             &entry,
-            "Git source is missing from the cache; run `zore fetch` without --offline first",
+            "Git source is missing from the cache; run `zore install` without --offline first",
         ));
     }
     fs::create_dir_all(&root).map_err(|e| error(&root, e))?;
@@ -127,7 +127,7 @@ pub(super) fn select(
         .map_err(|_| {
             error(
                 &entry,
-                "Git is required; install git and retry `zore fetch`",
+                "Git is required; install git and retry `zore install`",
             )
         })?;
     if !status.status.success() {

@@ -65,7 +65,7 @@ are outside the subset. Diagnostics name the manifest and line.
 
 Local dependencies are mutable source references. A lock records their manifests
 and locations, not immutable source contents. See [pinned Git dependencies](git-dependencies.md)
-for fetch/update, application lockfiles and offline caching. Native integration
+for install/lock, application lockfiles and offline caching. Native integration
 is #138, and distribution/registry work is deferred in #139.
 
 ## Commands and tests

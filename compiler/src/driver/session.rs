@@ -31,7 +31,7 @@ pub fn run() -> ExitCode {
             cli::Action::Run => run_command(&target, dependencies),
             cli::Action::Format => super::format::run(&target, format_check),
             cli::Action::Test => super::testing::run(&target, dependencies),
-            cli::Action::Fetch | cli::Action::Update => {
+            cli::Action::Install | cli::Action::Lock => {
                 super::dependencies::run(&target, dependencies)
             }
         },

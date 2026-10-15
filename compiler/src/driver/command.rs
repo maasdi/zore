@@ -9,8 +9,8 @@ pub(crate) enum Action {
     Run,
     Format,
     Test,
-    Fetch,
-    Update,
+    Install,
+    Lock,
 }
 
 impl Action {
@@ -21,8 +21,8 @@ impl Action {
             Self::Run => "run",
             Self::Format => "fmt",
             Self::Test => "test",
-            Self::Fetch => "fetch",
-            Self::Update => "update",
+            Self::Install => "install",
+            Self::Lock => "lock",
         }
     }
 }
@@ -63,8 +63,8 @@ pub(crate) fn parse(args: Vec<OsString>) -> Result<Command, String> {
         Some("run") => Action::Run,
         Some("fmt") => Action::Format,
         Some("test") => Action::Test,
-        Some("fetch") => Action::Fetch,
-        Some("update") => Action::Update,
+        Some("install") => Action::Install,
+        Some("lock") => Action::Lock,
         _ => return Err(format!("unknown command or option {first:?}")),
     };
     let remaining = &args[1..];
@@ -77,8 +77,8 @@ pub(crate) fn parse(args: Vec<OsString>) -> Result<Command, String> {
     let mut format_check = false;
     let mut dependencies = Options {
         mode: match action {
-            Action::Fetch => Mode::Fetch,
-            Action::Update => Mode::Update,
+            Action::Install => Mode::Install,
+            Action::Lock => Mode::Lock,
             _ => Mode::Build,
         },
         ..Default::default()
@@ -96,7 +96,7 @@ pub(crate) fn parse(args: Vec<OsString>) -> Result<Command, String> {
             continue;
         }
         if !literal && action != Action::Format {
-            if arg == "--locked" && !dependencies.locked && action != Action::Update {
+            if arg == "--locked" && !dependencies.locked && action != Action::Lock {
                 dependencies.locked = true;
                 continue;
             }
@@ -144,11 +144,11 @@ pub(crate) fn help(action: Option<Action>) -> String {
                 Build one source file into a temporary directory and run it. The\n\
                 program's exit status is returned. Requires clang, as for build.\n"
             }
-            Action::Fetch => {
-                "Usage: zore fetch [--locked] [--offline] [--] <file|directory>\n\nFetch exact Git pins and create a missing zore.lock. Existing locks must match.\n"
+            Action::Install => {
+                "Usage: zore install [--locked] [--offline] [--] <file|directory>\n\nInstall pinned dependencies and create a missing zore.lock. Existing locks must match.\n"
             }
-            Action::Update => {
-                "Usage: zore update [--offline] [--] <file|directory>\n\nRefresh zore.lock from exact manifest pins; never select newer revisions.\n"
+            Action::Lock => {
+                "Usage: zore lock [--offline] [--] <file|directory>\n\nRegenerate zore.lock from the current manifest pins.\n"
             }
             Action::Format => {
                 "Usage: zore fmt [--check] [--] <file.ore|directory>\n\n\
@@ -169,7 +169,7 @@ pub(crate) fn help(action: Option<Action>) -> String {
             action,
             Action::Check | Action::Build | Action::Run | Action::Test
         ) {
-            "Options: --locked requires a matching zore.lock; --offline forbids network.\nThese commands use cached dependencies only; run zore fetch to populate them.\n"
+            "Options: --locked requires a matching zore.lock; --offline forbids network.\nThese commands use cached dependencies only; run zore install to populate them.\n"
         } else {
             ""
         };
@@ -185,8 +185,8 @@ pub(crate) fn help(action: Option<Action>) -> String {
        run <file.ore>    Build and run a program (requires clang)\n\n\
        fmt <target>      Format a source file or directory (--check for CI)\n\
        test <target>     Run application tests (requires clang and rustc)\n\
-       fetch <target>    Fetch pinned dependencies and create zore.lock\n\
-       update <target>   Refresh zore.lock from manifest pins\n\n\
+       install <target>  Install pinned dependencies and create zore.lock\n\
+       lock <target>     Regenerate zore.lock from manifest pins\n\n\
      Options:\n\
        -h, --help        Show help; also accepted after a command\n\
        -V, --version     Show compiler version\n\n\
