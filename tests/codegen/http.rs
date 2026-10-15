@@ -315,19 +315,25 @@ func main() { let err = run(); if err != nil { panic(errors.Message(err)) } }
         let deadline = std::time::Instant::now() + Duration::from_secs(4);
         let address = server.address.parse().unwrap();
         loop {
-            match TcpStream::connect_timeout(&address, Duration::from_millis(100)) {
-                Ok(probe) => drop(probe),
+            let probe_error = match TcpStream::connect_timeout(&address, Duration::from_secs(2)) {
+                Ok(probe) => {
+                    drop(probe);
+                    None
+                }
                 Err(error) if error.kind() == std::io::ErrorKind::ConnectionRefused => break,
                 Err(error)
                     if matches!(
                         error.kind(),
                         std::io::ErrorKind::ConnectionReset | std::io::ErrorKind::TimedOut
-                    ) => {}
+                    ) =>
+                {
+                    Some(error)
+                }
                 Err(error) => panic!("listener probe failed: {error}"),
-            }
+            };
             assert!(
                 std::time::Instant::now() < deadline,
-                "listener did not stop"
+                "listener did not stop; last probe error: {probe_error:?}"
             );
             std::thread::sleep(Duration::from_millis(10));
         }
