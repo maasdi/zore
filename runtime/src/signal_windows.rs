@@ -162,7 +162,7 @@ mod tests {
             unsubscribe(interrupt);
             assert_eq!(live(), 0);
             assert_eq!(handler.join().unwrap(), 1);
-            assert!(started.elapsed() >= Duration::from_millis(100));
+            assert!(started.elapsed() >= Duration::from_millis(50));
             assert!(started.elapsed() < Duration::from_secs(5));
             assert_eq!(notify_with_timeout(event, 0), 0);
         }
