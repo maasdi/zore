@@ -11,7 +11,7 @@ once it does.
 
 - Added manifest-registered native adapters, generated private bindings and
   recipe fingerprints in dependency locks, with linker-independent checking.
-- Added statically linked C/Rust Adler-32 proof and an external Zore wrapper,
+- Added package-owned, reviewed C/Rust Adler-32 sources and an external Zore wrapper,
   with owned cleanup, validated handles and binary buffers, async/scoped result
   coverage and local/pinned Git consumption.
 - Arbitrary native project sources, dynamic loading, general FFI, full database

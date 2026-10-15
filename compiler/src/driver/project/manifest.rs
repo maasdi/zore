@@ -416,6 +416,9 @@ fn visit(
         }
         return Ok(());
     }
+    if manifest.native.is_some() {
+        crate::driver::native::load(files, &manifest)?;
+    }
     projects.insert(manifest.name.clone(), manifest.clone());
     visiting.push(manifest.name.clone());
     for (name, source) in &manifest.dependencies {

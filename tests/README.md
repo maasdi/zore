@@ -358,6 +358,7 @@ Native JSON programs run with leak checking, including partial-decode errors.
 
 - `packages/native_adapters.rs`: curated registration, root-only private bindings,
   malformed metadata, unchanged bodyless-source rejection and Move/async checking.
-- `driver/native_adapters.rs`: static C ABI, local/Git dependency consumption,
+- `driver/native_adapters.rs`: static C ABI, package-owned source integrity and
+  confinement, missing-source rejection after cache population, local/Git consumption,
   recipe drift, cache selection and owned resource cleanup across async and scoped
   results, including normal/error/panic paths.

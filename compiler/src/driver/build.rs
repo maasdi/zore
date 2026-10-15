@@ -1,10 +1,10 @@
-use std::collections::BTreeSet;
 use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use super::native::Providers;
 use crate::codegen;
 use crate::diagnostic::Diagnostic;
 use crate::driver::check::{check_project, check_project_with_entry};
@@ -17,10 +17,7 @@ const RUNTIME_MAIN: &str = include_str!("../../../runtime/src/main.rs");
 
 const RUNTIME_SOURCES: &[(&str, &str)] = &[
     ("lib.rs", include_str!("../../../runtime/src/lib.rs")),
-    (
-        "adler32.rs",
-        include_str!("../../../runtime/src/adler32.rs"),
-    ),
+    ("native.rs", include_str!("../../../runtime/src/native.rs")),
     ("alloc.rs", include_str!("../../../runtime/src/alloc.rs")),
     (
         "blocking.rs",
@@ -184,7 +181,7 @@ pub fn compiler() -> String {
 }
 
 pub fn build(file: &SourceFile, output: &Path) -> Result<(), BuildError> {
-    link(&emit_llvm(file)?, output, RUNTIME_MAIN, &BTreeSet::new())
+    link(&emit_llvm(file)?, output, RUNTIME_MAIN, &Providers::new())
 }
 
 pub fn build_project(
@@ -224,7 +221,7 @@ fn link(
     ir: &str,
     output: &Path,
     runtime_main: &str,
-    native_adapters: &BTreeSet<String>,
+    native_adapters: &Providers,
 ) -> Result<(), BuildError> {
     if cfg!(not(target_pointer_width = "64")) {
         return Err(BuildError::Toolchain("native builds require a 64-bit host toolchain; check and fmt remain available without native linking".into()));
@@ -334,11 +331,11 @@ fn native_host_supported() -> bool {
 fn native_objects(
     cc: &str,
     directory: &Path,
-    selections: &BTreeSet<String>,
+    selections: &Providers,
 ) -> Result<Vec<PathBuf>, BuildError> {
     let mut objects = Vec::new();
-    for id in selections {
-        let adapter = super::native::find(id).expect("validated adapter");
+    for (id, provider) in selections {
+        let adapter = provider.adapter;
         let source = directory.join(format!("{}.c", adapter.project));
         let header = directory.join(format!("{}.h", adapter.project));
         let object = directory.join(format!(
@@ -346,8 +343,8 @@ fn native_objects(
             adapter.project,
             if cfg!(windows) { "obj" } else { "o" }
         ));
-        fs::write(&source, adapter.source)
-            .and_then(|_| fs::write(&header, adapter.header))
+        fs::write(&source, &provider.source)
+            .and_then(|_| fs::write(&header, &provider.header))
             .map_err(|e| BuildError::Io(format!("{}: {e}", source.display())))?;
         let mut compile = Command::new(cc);
         compile.args(super::native::C_FLAGS);
@@ -413,7 +410,7 @@ fn cache_root() -> Option<PathBuf> {
 fn runtime_library(
     rustc: &std::ffi::OsStr,
     scratch: &Path,
-    native_adapters: &BTreeSet<String>,
+    native_adapters: &Providers,
 ) -> Result<PathBuf, BuildError> {
     let version = Command::new(rustc)
         .arg("-vV")
@@ -438,9 +435,9 @@ fn runtime_library(
     for &(name, contents) in RUNTIME_SOURCES {
         std::hash::Hash::hash(&(name, contents), &mut hasher);
     }
-    for id in native_adapters {
-        let adapter = super::native::find(id).expect("validated adapter selection");
-        std::hash::Hash::hash(&(adapter.id, adapter.fingerprint()), &mut hasher);
+    for provider in native_adapters.values() {
+        let adapter = provider.adapter;
+        std::hash::Hash::hash(&(adapter.id, adapter.fingerprint), &mut hasher);
     }
     let key = std::hash::Hasher::finish(&hasher);
     let cached = cache_root().map(|root| {
@@ -460,12 +457,24 @@ fn runtime_library(
     }
     let built = scratch.join("libzore_runtime.rlib");
     let mut compile = Command::new(rustc);
-    for id in native_adapters {
-        compile.arg("--cfg").arg(
-            super::native::find(id)
-                .expect("validated adapter")
-                .configuration,
-        );
+    if !native_adapters.is_empty() {
+        let mut registration = String::new();
+        let adapters = sources.join("adapters");
+        fs::create_dir_all(&adapters)
+            .map_err(|e| BuildError::Io(format!("{}: {e}", adapters.display())))?;
+        for (index, provider) in native_adapters.values().enumerate() {
+            let bridge = adapters.join(format!("bridge_{index}.rs"));
+            fs::write(&bridge, &provider.bridge)
+                .map_err(|e| BuildError::Io(format!("{}: {e}", bridge.display())))?;
+            registration.push_str(&format!(
+                "#[path = \"adapters/bridge_{index}.rs\"]\nmod native_adapter_{index};\n"
+            ));
+        }
+        let path = sources.join("adapters.rs");
+        fs::write(&path, registration)
+            .map_err(|e| BuildError::Io(format!("{}: {e}", path.display())))?;
+        compile.arg("--cfg").arg("zore_native_adapters");
+        compile.env("ZORE_NATIVE_ADAPTERS", path);
     }
     let result = compile
         .arg("--edition=2024")

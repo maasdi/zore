@@ -317,7 +317,10 @@ adapter = "adler32-v1"
 ```
 
 The compiler's reviewed registry fixes adapter IDs, required project names,
-private binding signatures, source/ABI recipe and supported hosts. Unknown IDs,
+private binding signatures, package-relative source paths, approved source/ABI
+recipe fingerprints and supported hosts. The declaring package owns its native
+C/header, Rust bridge and binding contract; the compiler validates their bytes
+against the reviewed registry before accepting them. Unknown IDs,
 wrong project names, duplicate tables/fields and unsupported native metadata
 are errors. `[dependencies]` and `[native]` may occur in either order. Arbitrary
 native source paths, artifacts, link flags, build scripts, dynamic loading and
@@ -338,8 +341,8 @@ The first adapter computes a non-cryptographic incremental Adler-32 checksum.
 Create allocates a state and returns a nonzero, never-reused token or an error.
 Write accepts 0–65,536 bytes, including NUL/non-UTF-8; invalid input fails without
 changing state. Sum returns the checksum as a nonnegative int. Invalid/stale tokens
-fail write/sum; close is idempotent. The runtime validates tokens, serializes access
-per resource and holds an operation lease until C completes. C pointers never
+fail write/sum; close is idempotent. The package-owned bridge validates tokens,
+serializes access per resource and holds an operation lease until C completes. C pointers never
 enter Zore values. C owns/frees C state; Rust owns Zore message allocations;
 borrowed inputs are not retained and no callbacks or borrowed outputs are supported.
 
@@ -358,16 +361,22 @@ strings (ID and SHA-256 fingerprint). The fingerprint includes the reviewed C
 source/header, Rust bridge, binding contract and versioned build recipe. All
 native graphs require a matching lock, including local ones; install/lock use the
 ordinary locked/offline rules. A recipe mismatch is explicit drift, not a silent
-implementation upgrade. The compiler ships the curated sources; dependency
-installation executes no native code or project build scripts. Registry additions
-and adapter recipe changes require compiler/runtime review.
+implementation upgrade. Native sources are read from the declaring local or
+pinned Git package, confined to its root, with no compiler-owned fallback. Missing,
+escaping or unapproved sources are errors even for unused/transitive projects;
+regenerating a lock cannot approve arbitrary native code. Dependency installation
+executes no native code or project build scripts. Registry additions and adapter
+recipe changes require compiler/runtime review. The runtime provides generic
+registration and resource leak accounting, without provider implementations.
 
 Check validates available source and metadata independently of native toolchains.
 Build/run/test compile selected C providers with ZORE_CC/clang and statically link
 their objects with the Rust bridge. No package-specified external library closure
 is accepted; future providers must pin any such closure in their registered recipe.
-The runtime cache distinguishes selected adapters and embedded sources/toolchain
-identity. C objects are temporary per build, never unchecked reusable artifacts.
+The build compiles validated source snapshots, generating module registration
+without executing package build scripts. The runtime cache distinguishes selected
+provider recipes, generic runtime sources and toolchain identity. C objects are
+temporary per build, never unchecked reusable artifacts.
 Supported first-provider hosts are Linux GNU/macOS on x86_64/aarch64 and Windows
 x86_64 MSVC; other native host/ABI combinations receive actionable diagnostics.
 Cross-compilation remains excluded. Locks select source/recipes, not toolchains
@@ -378,7 +387,8 @@ Compiler impact: parse/validate registration before package loading, generate on
 registered private bindings in the selected root, carry native selections through
 ordinary and test builds, lock recipe fingerprints and statically link reviewed
 objects. Semantic and ownership stages retain their contracts. Conformance must
-exercise registration rejection, independent checking, local/Git consumption,
+exercise registration rejection, source integrity and confinement (including
+unused/transitive projects), independent checking, local/Git consumption,
 ABI byte handling, errors and invalid tokens, lock/cache selection, normal/error/
 panic cleanup, owned async values and Linux/macOS/Windows native execution.
 

@@ -1,4 +1,4 @@
 version = 1
 
 [projects]
-adler32 = { manifest = "27f4ce75d1e8656884d7b1613de53d5cbdd93feebd345bd988f9de8be49bce09", path = ".", adapter = "adler32-v1", recipe = "9f911dca50e5422f857063f2159eb0a20722779abbe03ebec3676cec55701d56" }
+adler32 = { manifest = "27f4ce75d1e8656884d7b1613de53d5cbdd93feebd345bd988f9de8be49bce09", path = ".", adapter = "adler32-v1", recipe = "66280c83962934f0b1937cfc1633458324381c156fc575100d8f145433a871ab" }

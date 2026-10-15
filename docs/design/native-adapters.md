@@ -3,12 +3,15 @@
 Status: locked first integration contract for issue #138.
 
 External Zore packages can register one versioned adapter through `[native]` in
-`zore.toml`. The compiler owns a small reviewed registry, the native bridge, its
-C ABI and build recipe. A registered package supplies an ordinary Zore wrapper
-and tests. Its name must match the registry's package name. This is a curated
-integration route: adding an adapter requires compiler/runtime review and a new
-registry entry. Applications cannot supply native sources, linker flags, shared
-libraries or build scripts through a manifest.
+`zore.toml`. The compiler owns a small reviewed registry, approved source
+fingerprints, private C ABI and build recipe. A registered package supplies its
+native C/header, Rust bridge, binding contract, ordinary Zore wrapper and tests.
+Its name must match the registry's package name. This is a curated integration
+route: adding an adapter requires compiler/runtime review and a new registry
+entry. Applications cannot select arbitrary native source paths, linker flags,
+shared libraries or build scripts through a manifest. The runtime contains only
+generic registration and native resource leak accounting, with no Adler-32
+implementation.
 
 The first provider is `adler32-v1`, for a package named `adler32`. It demonstrates
 a real statically linked C implementation behind a Rust resource bridge. Adler-32
@@ -100,26 +103,35 @@ adapter design requirements, not capabilities established by this checksum proof
 
 ## Build, distribution and integrity
 
-The adapter's C source, header, Rust bridge and generated binding contract ship
-with the compiler. Its recipe fingerprint hashes all four plus the versioned
-build-recipe identity. The entry lockfile records adapter ID and fingerprint on
-each declaring project's record, including transitive/unused projects. Native
-graphs require a matching lockfile; `install`/`lock` generate it. Library sources
-may be local and mutable, or pinned with the Git cache/commit validation from
-#137. The fingerprint prevents silently substituting a different compiler-owned
-implementation under an existing application lock. Reviewing and regenerating
-the lock is necessary after an adapter recipe changes.
+The adapter's C source, header, Rust bridge and binding contract ship with the
+declaring package. For `adler32-v1` these are `native/adler32.c`,
+`native/adler32.h`, `native/bridge.rs` and `native/bindings.abi`. The registry
+fixes these paths and the approved fingerprint of all four, the symbol mapping
+and the versioned build recipe. Sources must stay inside the declaring project
+root. Missing, escaping or modified sources fail validation across the whole
+graph, including unused and transitive dependencies; there is no bundled
+fallback. The binding contract is compiler input, not an ordinary bodyless Zore
+source file. The entry lockfile records adapter ID and fingerprint on each
+declaring project's record, including transitive/unused projects. Native graphs
+require a matching lockfile; `install`/`lock` generate it. Library sources may
+be local and mutable, or pinned with the Git cache/commit validation from #137.
+The fingerprint prevents silently substituting a different native implementation
+under an existing application lock. Regenerating a lock cannot approve arbitrary
+native code: a source change also requires a reviewed registry recipe update.
 
 `check` validates metadata and public Zore APIs without invoking a native
 compiler, linker or native code. `build`, `run` and `test` compile the selected C
-source with the same ZORE_CC/clang used by the native driver and link its object
-statically into the program. No dynamic loading or system-library search is
+source snapshots with the same ZORE_CC/clang used by the native driver and link
+each object statically into the program. No dynamic loading or system-library search is
 performed. Multiple packages using one registry adapter share one build selection;
 existing graph identity rules reject incompatible projects/versions.
 
-The runtime library cache includes selected adapter configuration and embedded
-sources in its key, along with rustc's host/version identity. C objects are built
-in a unique temporary build directory on each build and never reused as unchecked
+The driver generates module registration for validated package-owned bridges.
+It compiles snapshots of the same bytes that passed approval checks, with no
+package registration/build script. The runtime library cache includes selected
+adapter recipes and generic runtime sources in its key, along with rustc's
+host/version identity. C objects are built in a unique temporary build directory
+on each build and never reused as unchecked
 persistent artifacts. Interrupted builds cannot publish partial native objects
 for later reuse. The dependency cache remains immutable and user sources are
 never modified. Locks pin source/recipe selection, not the compiler/toolchain or
@@ -143,9 +155,11 @@ and TLS implementations are outside this first contract.
 
 Conformance covers metadata rejection, root-only/private registration, duplicate
 names, unchanged rejection of user bodyless declarations, native recipe lock
-mismatch, linker-independent checks, local and pinned Git consumption, direct and
-transitive visibility, binary bytes/empty/oversized input, known checksum vectors,
-invalid tokens, normal/error/panic cleanup, resource moves and retention across
-async waits. Native leak checking counts live adapter tokens. Linux/macOS/Windows
-CI builds and exercises the C ABI and statically linked bridge. Curated runtime
-code is linted with its adapter configuration enabled.
+mismatch, missing/modified/escaping package sources, linker-independent checks,
+local and pinned Git consumption, direct and transitive visibility, binary
+bytes/empty/oversized input, known checksum vectors, invalid tokens,
+normal/error/panic cleanup, resource moves and retention across async waits.
+Native leak checking counts live provider allocations through generic runtime
+hooks. Linux/macOS/Windows CI builds and exercises the C ABI and statically
+linked bridge. The package-owned bridge is linted with generic native
+registration enabled.

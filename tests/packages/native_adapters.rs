@@ -1,4 +1,35 @@
-use super::local_dependencies::{accepts_tree, rejects_tree};
+use super::local_dependencies;
+
+const NATIVE_SOURCES: &[(&str, &str)] = &[
+    (
+        "/adler32/native/bindings.abi",
+        include_str!("../../examples/native-library/adler32/native/bindings.abi"),
+    ),
+    (
+        "/adler32/native/adler32.c",
+        include_str!("../../examples/native-library/adler32/native/adler32.c"),
+    ),
+    (
+        "/adler32/native/adler32.h",
+        include_str!("../../examples/native-library/adler32/native/adler32.h"),
+    ),
+    (
+        "/adler32/native/bridge.rs",
+        include_str!("../../examples/native-library/adler32/native/bridge.rs"),
+    ),
+];
+
+fn accepts_tree(files: &[(&str, &str)]) {
+    let mut files = files.to_vec();
+    files.extend_from_slice(NATIVE_SOURCES);
+    local_dependencies::accepts_tree(&files);
+}
+
+fn rejects_tree(files: &[(&str, &str)], expected: &str) {
+    let mut files = files.to_vec();
+    files.extend_from_slice(NATIVE_SOURCES);
+    local_dependencies::rejects_tree(&files, expected);
+}
 
 const APP: &str = "name = 'app'\n[dependencies]\nadler32 = { path = '../adler32' }\n";
 const LIBRARY: &str = include_str!("../../examples/native-library/adler32/adler32.ore");

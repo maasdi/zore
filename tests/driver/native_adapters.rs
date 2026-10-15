@@ -43,6 +43,22 @@ impl Fixture {
                 include_str!("../../examples/native-library/app/main.ore"),
             ),
             (
+                "adler32/native/bindings.abi",
+                include_str!("../../examples/native-library/adler32/native/bindings.abi"),
+            ),
+            (
+                "adler32/native/adler32.c",
+                include_str!("../../examples/native-library/adler32/native/adler32.c"),
+            ),
+            (
+                "adler32/native/adler32.h",
+                include_str!("../../examples/native-library/adler32/native/adler32.h"),
+            ),
+            (
+                "adler32/native/bridge.rs",
+                include_str!("../../examples/native-library/adler32/native/bridge.rs"),
+            ),
+            (
                 "adler32/zore.toml",
                 include_str!("../../examples/native-library/adler32/zore.toml"),
             ),
@@ -168,6 +184,97 @@ fn local_package_checks_builds_runs_and_tests_with_static_native_linking() {
     assert_eq!(
         runtimes, 2,
         "native selections must have distinct runtime cache keys"
+    );
+}
+
+#[test]
+fn modified_native_sources_cannot_be_approved_by_regenerating_the_lock() {
+    let fixture = Fixture::new();
+    fixture.install();
+    let lock_path = fixture.root.join("app/zore.lock");
+    let lock = fs::read(&lock_path).unwrap();
+    for file in ["adler32.c", "adler32.h", "bridge.rs", "bindings.abi"] {
+        let path = fixture.root.join("adler32/native").join(file);
+        let original = fs::read_to_string(&path).unwrap();
+        fs::write(&path, format!("{original}\n")).unwrap();
+        for (action, target) in [
+            ("check", "app/main.ore"),
+            ("install", "app"),
+            ("lock", "app"),
+            ("build", "app/main.ore"),
+        ] {
+            failure(
+                fixture.invoke(action, target),
+                "native sources do not match reviewed adapter",
+            );
+            assert_eq!(fs::read(&lock_path).unwrap(), lock);
+        }
+        fs::write(&path, original).unwrap();
+    }
+    success(fixture.invoke("check", "app/main.ore"));
+}
+
+#[test]
+fn missing_native_sources_have_no_bundled_or_cached_fallback() {
+    let fixture = Fixture::new();
+    fixture.install();
+    success(fixture.invoke("run", "app/main.ore"));
+    for file in ["adler32.c", "adler32.h", "bridge.rs", "bindings.abi"] {
+        let path = fixture.root.join("adler32/native").join(file);
+        let saved = path.with_extension("saved");
+        fs::rename(&path, &saved).unwrap();
+        failure(fixture.invoke("check", "app/main.ore"), file);
+        failure(fixture.invoke("build", "app/main.ore"), file);
+        fs::rename(saved, path).unwrap();
+    }
+}
+
+#[test]
+fn unused_transitive_native_projects_still_validate_package_sources() {
+    let fixture = Fixture::new();
+    write(
+        &fixture.root,
+        "app/zore.toml",
+        "name = 'app'\n[dependencies]\nshared = { path = '../shared' }\n",
+    );
+    write(
+        &fixture.root,
+        "shared/zore.toml",
+        "name = 'shared'\n[dependencies]\nadler32 = { path = '../adler32' }\n",
+    );
+    write(
+        &fixture.root,
+        "app/main.ore",
+        "package main\nfunc main() {}\n",
+    );
+    fixture.install();
+    write(&fixture.root, "adler32/native/bridge.rs", "unapproved");
+    failure(
+        fixture.invoke("check", "app/main.ore"),
+        "native sources do not match reviewed adapter",
+    );
+    failure(
+        fixture.invoke("lock", "app"),
+        "native sources do not match reviewed adapter",
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn native_source_symlinks_cannot_escape_the_declaring_project() {
+    let fixture = Fixture::new();
+    fixture.install();
+    let path = fixture.root.join("adler32/native/bridge.rs");
+    let outside = fixture.root.join("outside.rs");
+    fs::rename(&path, &outside).unwrap();
+    std::os::unix::fs::symlink(&outside, &path).unwrap();
+    failure(
+        fixture.invoke("check", "app/main.ore"),
+        "native source must stay inside its declaring project",
+    );
+    failure(
+        fixture.invoke("lock", "app"),
+        "native source must stay inside its declaring project",
     );
 }
 
@@ -396,12 +503,12 @@ fn curated_c_provider_validates_lengths_and_preserves_state_on_failure() {
     write(
         root,
         "adler32.c",
-        include_str!("../../runtime/native/adler32.c"),
+        include_str!("../../examples/native-library/adler32/native/adler32.c"),
     );
     write(
         root,
         "adler32.h",
-        include_str!("../../runtime/native/adler32.h"),
+        include_str!("../../examples/native-library/adler32/native/adler32.h"),
     );
     write(
         root,

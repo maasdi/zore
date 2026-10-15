@@ -16,7 +16,8 @@ The first supported adapter is a small incremental Adler-32 checksum, implemente
 in C with a Rust lifetime/error bridge. It is a non-cryptographic checksum.
 Its Zore wrapper is a separate project in [the example](../examples/native-library).
 You can maintain that project outside the application tree or consume a committed
-copy through a Git pin. The compiler ships the reviewed native implementation.
+copy through a Git pin. The library owns its reviewed native implementation in
+`native/`; the compiler validates it against the registered recipe.
 
 ## Application usage
 
@@ -75,8 +76,12 @@ code and private binding tests.
 The entry lockfile records the adapter ID and SHA-256 recipe fingerprint, along
 with the graph's ordinary manifest/source metadata. Even a local native graph
 requires its lock. `zore lock` explicitly regenerates it when reviewed native
-recipe changes make an old lock incompatible. A pinned Git wrapper still obeys
-Git source/cache validation; libraries' own locks are ignored when consumed.
+recipe changes make an old lock incompatible. Native sources must match the
+reviewed registry fingerprint; regenerating a lock cannot approve modified
+native code. Missing files and paths escaping the library root fail validation,
+including for unused/transitive native packages. A pinned Git package still
+obeys Git source/cache validation; libraries' own locks are ignored when
+consumed.
 
 C state is allocated/freed by C, Rust owns Zore error allocations, and a validated
 registry token connects them. Operations hold a resource lease and serialize
@@ -85,15 +90,19 @@ runs outside the C call; native bugs, process abort and external termination hav
 the ordinary cleanup limits. The runtime leak checker includes native states.
 
 Builds compile the selected reviewed C sources into temporary objects and link
-statically. Runtime cache keys include the adapter selection and embedded source
-recipe; C objects are never reused from an unchecked persistent artifact cache.
-No source or native object is written into a user's library/dependency checkout.
-Locks select source recipes; fixed compiler/toolchain versions are still needed
-for reproducible machine code.
+statically from validated source snapshots. The driver generates bridge module
+registration; the runtime provides generic resource leak accounting. Runtime
+cache keys include the adapter recipe, generic runtime sources and toolchain; C
+objects are never reused from an unchecked persistent artifact cache. No source
+or native object is written into a user's library/dependency checkout. Locks
+select source recipes; fixed compiler/toolchain versions are still needed for
+reproducible machine code.
 
 This first path supports curated adapters reviewed with the compiler/runtime.
-Adding a registry entry is required for a new native backend. Project-provided
-native source files, link flags, arbitrary build scripts, dynamic loading and a
+Adding a registry entry is required for a new native backend. The registered
+paths are `native/bindings.abi`, `native/adler32.c`, `native/adler32.h` and
+`native/bridge.rs` for this provider. Arbitrary native sources, link flags, build
+scripts, dynamic loading and a
 general third-party ABI SDK are outside this contract. See the
 [design record](design/native-adapters.md) for the ABI and extension requirements.
 

@@ -1,6 +1,6 @@
 //! Finds the packages a program uses: folders of `.ore` files and the bundled standard packages.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 
 use super::stdlib;
@@ -186,7 +186,7 @@ pub struct LoadedPackage {
 /// Every package a program uses, dependencies first and the entry package last.
 pub struct Project {
     pub(crate) packages: Vec<LoadedPackage>,
-    pub(crate) native_adapters: BTreeSet<String>,
+    pub(super) native_adapters: super::native::Providers,
     pub(crate) native_bindings: HashMap<Span, String>,
     /// Holds the text of the bundled standard packages.
     pub(crate) std_sources: SourceMap,
@@ -414,7 +414,7 @@ struct Loader<'a> {
     directories: HashMap<PathBuf, String>,
     entry_dir: Option<PathBuf>,
     packages: Vec<LoadedPackage>,
-    native_adapters: BTreeSet<String>,
+    native_adapters: super::native::Providers,
     native_bindings: HashMap<Span, String>,
     /// Import path to package index.
     done: HashMap<String, usize>,
@@ -433,7 +433,7 @@ impl<'a> Loader<'a> {
             directories: HashMap::new(),
             entry_dir: None,
             packages: Vec::new(),
-            native_adapters: BTreeSet::new(),
+            native_adapters: BTreeMap::new(),
             native_bindings: HashMap::new(),
             done: HashMap::new(),
             stack: Vec::new(),
@@ -475,12 +475,13 @@ impl<'a> Loader<'a> {
                 .is_some_and(|dir| self.files.canonical(dir) == project.root)
             && let Some(id) = &project.native
         {
-            let adapter = super::native::find(id).expect("validated native adapter");
+            let provider = super::native::load(self.files, project).map_err(LoadError::Source)?;
+            let adapter = provider.adapter;
             let sources = self.sources.as_deref_mut().expect("project source map");
             let file = sources
                 .add(
                     format!("<native {}>", adapter.id),
-                    adapter.bindings.to_string(),
+                    provider.bindings.clone(),
                 )
                 .map_err(LoadError::Source)?;
             let bindings = parse_standard(sources.file(file).expect("native bindings"));
@@ -497,7 +498,7 @@ impl<'a> Loader<'a> {
                 }
             }
             parsed.push(bindings);
-            self.native_adapters.insert(id.clone());
+            self.native_adapters.insert(id.clone(), provider);
         }
         Ok(parsed)
     }

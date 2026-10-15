@@ -240,7 +240,7 @@ fn lockfile(
             text.push_str(&format!(
                 ", adapter = {}, recipe = {}",
                 quote(id),
-                quote(&adapter.fingerprint())
+                quote(adapter.fingerprint)
             ));
         }
         text.push_str(" }\n");

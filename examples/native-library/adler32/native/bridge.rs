@@ -1,9 +1,9 @@
 use std::collections::BTreeMap;
 use std::ffi::c_void;
 use std::ptr::NonNull;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
+use super::native;
 use super::strconv::ValueError;
 use super::sys::ErrorOut;
 
@@ -14,8 +14,6 @@ unsafe extern "C" {
     fn zore_adler32_free(state: *mut c_void);
 }
 
-static LIVE_STATES: AtomicUsize = AtomicUsize::new(0);
-
 struct State(NonNull<c_void>);
 
 // C state has no thread affinity and every access holds its resource mutex.
@@ -25,7 +23,7 @@ impl Drop for State {
     fn drop(&mut self) {
         // SAFETY: this is the unique owner of the C allocation.
         unsafe { zore_adler32_free(self.0.as_ptr()) };
-        LIVE_STATES.fetch_sub(1, Ordering::Relaxed);
+        native::resource_released();
     }
 }
 
@@ -55,7 +53,7 @@ fn create() -> Result<i64, &'static str> {
     // SAFETY: the registered C constructor takes no arguments.
     let state = NonNull::new(unsafe { zore_adler32_create() })
         .ok_or("native adler32: allocation failed")?;
-    LIVE_STATES.fetch_add(1, Ordering::Relaxed);
+    native::resource_created();
     let token = registry.next;
     registry.next = next;
     registry
@@ -72,10 +70,6 @@ fn state(token: i64) -> Result<Arc<Mutex<State>>, &'static str> {
         .get(&token)
         .cloned()
         .ok_or("native adler32: invalid or closed handle")
-}
-
-pub(super) fn live_states() -> usize {
-    LIVE_STATES.load(Ordering::Relaxed)
 }
 
 /// # Safety
