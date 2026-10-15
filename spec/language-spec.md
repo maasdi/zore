@@ -7093,8 +7093,8 @@ application tasks requiring cleanup, as with explicit Shutdown.
 
 ListenAndServe is the application entry point with automatic OS-signal shutdown
 and DefaultConfig. ListenAndServeWithConfig accepts explicit configuration. Each
-synchronously subscribes to SIGINT and SIGTERM through std/os/signal, then uses
-ListenAndServeContext with the derived context. Either signal initiates the same
+synchronously subscribes to Interrupt and Terminate through std/os/signal, then
+uses ListenAndServeContext with the derived context. Either selector initiates the same
 bounded graceful drain. Both wait for subscription cleanup on normal return
 and every serving/startup error before returning that result. Signal
 registration errors propagate without opening a listener. Supported hosts and
@@ -7768,9 +7768,11 @@ zero values, sticky errors, round trips, and rejected lifetime/task escapes.
 
 std/os/signal provides Signal (a named int), portable selectors Interrupt = 1
 and Terminate = 2, and NotifyContext(parent context.Context, signals []Signal)
-(context.Context, func(), error). Nonempty selections of SIGINT/SIGTERM are
-supported on Linux and macOS; invalid selectors, empty selection, registration
-failure, and unsupported hosts return an error before publishing a subscription.
+(context.Context, func(), error). Linux/macOS map Interrupt to SIGINT and
+Terminate to SIGTERM. Windows console applications map Interrupt to Ctrl+C and
+Ctrl+Break, and Terminate to delivered close/logoff/shutdown console events.
+Invalid selectors, empty selection, registration failure, and unsupported hosts
+return an error before publishing a subscription.
 Duplicates are harmless. No SIGKILL/SIGSTOP or numeric-OS-signal conversion is
 promised. Registration is synchronous; derived contexts own only Copy control
 handles and retain no signal-slice loan.
@@ -7779,14 +7781,33 @@ A selected signal cancels the derived context. Parent cancellation also ends
 the subscription. The returned stop function cancels and waits for subscription
 cleanup, is idempotent, and is called on startup failure as well as normal exit.
 Signals may coalesce, and each active subscription observes notification
-independently. First/last subscriptions install/restore the previous process
-signal dispositions. Signals racing subscription transitions may coalesce;
-unsubscribing never leaves a language callback installed as an OS handler.
-Signal handlers perform only lock-free atomic publication, never allocations,
-runtime locks, channel operations, or Zore calls. Ordinary tasks poll the
-publication with a bounded ten-millisecond interval and perform cancellation.
-Native registration bookkeeping uses platform sigaction bindings; no new
-third-party runtime dependency is required.
+independently. First/last subscriptions install/restore the previous Unix signal
+dispositions, or add/remove the Windows native console handler. Unselected
+Windows events continue through the prior handler chain. Signals racing
+subscription transitions may coalesce; unsubscribing never leaves a language
+callback installed as an OS handler.
+
+OS handlers publish through lock-free atomics, never allocating or acquiring
+runtime locks, invoking channels, or calling Zore code. A Windows handler for a
+selected close/logoff/shutdown event additionally waits up to five seconds using
+the native OS sleep operation before returning. Windows can terminate the process
+when this callback returns, so unsubscription does not shorten that wait; ordinary
+application cleanup may continue after stop returns. No completion acknowledgement
+or subscription lock is required by the callback. Ctrl+C/Break return immediately
+after publication and suppress default termination while selected. Ordinary tasks
+poll publication with a bounded ten-millisecond interval and perform cancellation.
+Native registration uses sigaction or SetConsoleCtrlHandler bindings without a
+third-party runtime dependency.
+
+Windows close/logoff/shutdown cleanup is best effort: the OS may impose a shorter
+deadline or terminate the process before a configured HTTP drain completes.
+Notification depends on console attachment and Windows delivery rules; attaching,
+detaching, or replacing a console while subscribed is unsupported. Applications
+loading user32/gdi32 may not receive logoff/shutdown console notifications. Windows
+service-control-manager stop events require a separate service adapter, outside
+this console API. Forced termination (including TerminateProcess or taskkill /F)
+promises neither notification nor cleanup. These external termination limits do
+not weaken deterministic cleanup on ordinary return, error, or panic exits.
 
 context.WithCancelOn(parent Context, done channel<bool>) (Context, func())
 derives a context canceled by parent cancellation, a received boolean, or done
@@ -7808,7 +7829,12 @@ builds, and adapt HTTP function registrations in typed HIR before ordinary MIR
 ownership/drop analysis. Conformance must accept Copy-handle callbacks, reject
 unsafe/opaque registrations, exercise response framing and startup failures,
 and deliver real SIGINT/SIGTERM in isolated subprocesses, including overlapping
-subscriptions, parent cancellation, cleanup, and graceful HTTP drain.
+subscriptions, parent cancellation, cleanup, and graceful HTTP drain. Windows
+conformance delivers real Ctrl+C/Ctrl+Break in isolated consoles, verifies handler
+removal and automatic HTTP drain, and directly exercises all three termination
+callback mappings and their bounded wait. Synthetic callback tests do not claim
+real close/logoff/shutdown delivery. No syntax, ownership, or compiler lowering
+changes are introduced by the Windows backend.
 
 # 38. Self-Hosting Constraint
 

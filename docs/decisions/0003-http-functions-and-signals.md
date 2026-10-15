@@ -24,19 +24,20 @@ ten-second timeout, so an already canceled serving context does not abort it.
 Drain expiry requests cooperative cancellation and returns instead of waiting
 indefinitely for arbitrary handler code.
 ListenAndServe(address, router) is the application bootstrap: it uses default
-configuration, registers SIGINT/SIGTERM, calls ListenAndServeContext, and waits
-for subscription cleanup before returning either success or a serving/startup
+configuration, registers Interrupt/Terminate, calls ListenAndServeContext, and
+waits for subscription cleanup before returning either success or a serving/startup
 error. ListenAndServeWithConfig accepts explicit configuration. Both need no
 application signal or context setup. NewServer and ListenAndServeContext retain
 explicit lifecycle control for other shutdown sources. Separate entry points
 preserve the language's fixed-arity calls without optional-parameter syntax.
 
-Signal notification uses platform sigaction bindings and lock-free generation
-counters. The OS callback allocates nothing, acquires no runtime locks, and
-calls no Zore code. Ordinary tasks poll each subscription at bounded intervals;
+Signal notification uses platform sigaction or SetConsoleCtrlHandler bindings
+and lock-free generation counters. The OS callback allocates nothing, acquires
+no runtime locks, and calls no Zore code. Ordinary tasks poll each subscription at bounded intervals;
 independent snapshots let overlapping subscriptions observe the same signal.
-Reference counts preserve and restore full prior dispositions. WithCancelOn
-bridges the notification channel into a context without spawning an opaque
+Reference counts preserve and restore full prior Unix dispositions or remove
+the Windows handler from the existing chain. WithCancelOn bridges the
+notification channel into a context without spawning an opaque
 cancel closure. The returned stop function waits for native unsubscription.
 There are no new dependencies, and the compiler embeds the signal source when
 building standalone executables.
@@ -45,3 +46,15 @@ Tests cover concurrent callbacks, immutable capture snapshots, rejected
 captures, sticky registration, response framing, startup failure, real SIGINT
 and SIGTERM, overlapping subscriptions, default-disposition restoration,
 parent cancellation, repeated stop, and the migrated REST example.
+
+Windows maps Ctrl+C/Break to Interrupt and delivered console close/logoff/shutdown
+to Terminate. Termination callbacks wait for up to five seconds using native
+Sleep after publication: returning would let Windows kill the process before
+ordinary cleanup runs. Unsubscription does not end that wait because application
+cleanup may continue after stop. The OS may enforce a shorter deadline, so these
+events provide best-effort cleanup; forced termination provides none. Ctrl+C/Break
+suppress default termination while selected and allow ordinary graceful drain.
+Service stop controls and changing console attachments are outside this adapter.
+Real Ctrl+C/Break and HTTP drain tests use isolated consoles. Direct callback
+tests check termination mappings and waiting, without claiming real OS shutdown
+event delivery.

@@ -205,14 +205,11 @@ fn windows_path_namespaces_receive_an_explicit_diagnostic() {
 
 #[cfg(windows)]
 #[test]
-fn windows_absolute_paths_and_unsupported_signals_have_honest_results() {
+fn windows_absolute_paths_have_honest_results() {
     prints(
         r#"package main
 import "std/path/filepath"
 import "std/os"
-import "std/os/signal"
-import "std/context"
-import "std/net/http"
 func main() {
     let cwd, cwdErr = os.Getwd()
     if cwdErr != nil { panic("cwd") }
@@ -222,13 +219,8 @@ func main() {
     println(filepath.IsAbs(resolved))
     let _, namespaceErr = filepath.Abs("\\\\?\\C:\\file")
     println(namespaceErr == error("filepath: Windows device and verbatim paths are unsupported"))
-    let signals = [signal.Signal; 2]{signal.Interrupt, signal.Terminate}
-    let _, _, signalErr = signal.NotifyContext(context.Background(), signals[:])
-    println(signalErr == error("signal.NotifyContext: unsupported host"))
-    let router, _ = http.NewRouterBuilder().Build()
-    println(http.ListenAndServe("127.0.0.1:0", router) == error("signal.NotifyContext: unsupported host"))
 }
 "#,
-        "true\ntrue\ntrue\ntrue\ntrue\ntrue\n",
+        "true\ntrue\ntrue\ntrue\n",
     );
 }

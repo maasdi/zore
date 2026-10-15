@@ -61,13 +61,27 @@ and uses the host to resolve `Abs`. `Separator` is `\\` and `ListSeparator` is
 `;`; Linux/macOS retain `/` and `:`. Device/verbatim namespace paths are outside
 the `filepath` subset and receive an explicit panic or `Abs` error.
 
-`std/os/signal.NotifyContext` supports SIGINT/SIGTERM on Linux/macOS. On
-Windows it returns `signal.NotifyContext: unsupported host` without publishing
-a subscription. Consequently, automatic-signal `http.ListenAndServe` and
-`ListenAndServeWithConfig`, including the default REST sample entry point,
-return that error on Windows. Use `http.ListenAndServeContext` with an
-application-owned cancellation context, or `Server.Serve` and `Shutdown`, for
-Windows HTTP servers. No Windows signal semantics are claimed.
+`std/os/signal.NotifyContext` maps `Interrupt`/`Terminate` to SIGINT/SIGTERM
+on Linux/macOS. On Windows, `Interrupt` receives Ctrl+C and Ctrl+Break;
+`Terminate` receives delivered console close/logoff/shutdown events. Registration
+is synchronous, overlapping subscriptions remain independent, and the last
+subscription removes Zore's handler so the existing handler chain resumes.
+Unselected events pass through that chain. The backend uses direct
+`SetConsoleCtrlHandler` bindings without runtime dependencies.
+
+`http.ListenAndServe` and `ListenAndServeWithConfig`, including the REST sample,
+bootstrap this support automatically. Ctrl+C/Break permit orderly HTTP draining.
+Close/logoff/shutdown cleanup is best effort: the callback publishes notification
+and waits up to five seconds without runtime locks while ordinary tasks cancel
+contexts and drain requests. It keeps waiting even after subscriptions stop,
+allowing subsequent application cleanup. Windows may impose a shorter deadline;
+a configured HTTP timeout does not extend the OS deadline.
+
+Console attachment must remain stable while subscribed. Windows delivery rules
+apply; applications loading user32/gdi32 may not receive console logoff/shutdown
+notifications. Windows service stop controls require a separate service adapter.
+Forced termination (`TerminateProcess`, `taskkill /F`) provides no cleanup window.
+Normal return, error and panic cleanup retain their ordinary language guarantees.
 
 ## Validation
 
@@ -87,7 +101,11 @@ An isolated helper regression fails with the previous queue rule and passes with
 capacity reservation. Repository text checks out with LF endings on every host;
 explicit CRLF lexer/parser/scanner cases still exercise Windows-style input.
 
-Only Unix-specific shell/signal tests are gated by host; Windows has direct
-unsupported-signal coverage. The opt-in measurement harnesses and their Python
-pipe/resource checks remain Linux/macOS tools; enabling native Windows CI does
+Real Ctrl+C/Break tests run in isolated Windows consoles and cover overlapping
+subscriptions, restored default exit, automatic HTTP bootstrap and active-request
+drain. Runtime tests directly invoke all three termination callback mappings and
+verify bounded waiting while subscriptions are removed. These synthetic checks
+do not establish real close/logoff/shutdown delivery. Unix-specific shell and
+POSIX signal tests retain host gates. The opt-in measurement harnesses and their
+Python pipe/resource checks remain Linux/macOS tools; enabling native Windows CI does
 not establish Windows benchmark support.

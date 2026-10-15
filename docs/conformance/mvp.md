@@ -46,6 +46,10 @@ their follow-up sections supersede the original missing-test lists.
 checker/package/native suites, including ownership through interfaces,
 generic specialization, `std/io`, JSON, HTTP and signals. Their detailed rules
 include explicit restrictions; the feature list does not erase those rules.
+Windows console signal coverage includes real isolated Ctrl+C/Break, handler
+removal and automatic HTTP drain. Direct termination callback tests verify
+mapping and bounded waiting, not real close/logoff/shutdown delivery; cleanup
+under those OS deadlines remains best effort.
 
 ## Test layers in §46
 

@@ -5,8 +5,10 @@ CI runs host-applicable Rust checks on Linux, macOS and Windows x64 MSVC.
 build/run/test, process arguments and working directories, captured bytes,
 file-handle destruction, Windows exit statuses and filepath behavior. A runtime
 helper test forces competing queued jobs before idle helpers can wake. Unix
-shell/signal cases retain explicit host gates; Windows verifies unsupported
-signal registration instead. See [platform support](../docs/platform-support.md).
+shell and POSIX signal cases retain explicit host gates. Windows signal and HTTP
+tests run real Ctrl+C/Break in isolated consoles; runtime tests invoke termination
+callbacks directly to check mapping and bounded waiting during unsubscription.
+Real close/logoff/shutdown delivery is not established by those synthetic tests. See [platform support](../docs/platform-support.md).
 
 `tests/ownership/scoped_tasks.rs` and `tests/codegen/scoped_tasks.rs` cover the
 plain lexical task-scope contract: shared/exclusive inputs, mixed captures,

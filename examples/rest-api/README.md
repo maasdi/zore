@@ -18,7 +18,7 @@ curl -i http://127.0.0.1:8080/users
 curl -i http://127.0.0.1:8080/users/1
 ```
 
-Press Ctrl-C or send SIGTERM to drain connections and wait for completion.
+Press Ctrl-C (or send SIGTERM on Unix) to drain connections and wait for completion.
 The example uses function handlers and `http.ListenAndServe`, which manages signal
 registration, graceful shutdown, and cleanup automatically. It binds loopback
 and keeps its store in memory. Each request gets a fresh invocation; handlers
@@ -32,7 +32,9 @@ propagate with `?` or an explicit return. No error result is silently ignored.
 
 `http.ListenAndServe(address, router)` uses default limits and deadlines. Use
 `http.ListenAndServeWithConfig(address, router, config)` to customize them;
-both manage SIGINT/SIGTERM automatically. `http.ListenAndServeContext` is the
+both manage SIGINT/SIGTERM on Unix and console signals on Windows automatically.
+Ctrl+C/Break allow orderly draining; Windows close/logoff/shutdown cleanup is best
+effort under OS deadlines. `http.ListenAndServeContext` is the
 entry point for applications that manage their own cancellation.
 An address such as `":8080"` binds all IPv4 interfaces; use `"127.0.0.1:8080"`
 to keep the service local, as this example does.

@@ -25,7 +25,8 @@ adapted to fresh owned per-request invocations; advanced factories use
 views remain checked by the compiler. The native HTTP tests exercise loopback
 framing, routing, capacity, deadlines, panic cleanup, and shutdown. This does not
 implement an HTTP client, TLS, or HTTP/2. `std/os/signal.NotifyContext` supports
-SIGINT/SIGTERM cancellation on Linux/macOS, with idempotent subscription cleanup.
+SIGINT/SIGTERM cancellation on Linux/macOS and Windows console notifications,
+with idempotent subscription cleanup and best-effort Windows termination cleanup.
 The REST example uses function routes, JSON response helpers, and two-argument
 `http.ListenAndServe` with automatic signal registration and bounded graceful
 shutdown. `ListenAndServeWithConfig` accepts custom limits and deadlines;
@@ -119,8 +120,8 @@ was demonstrated by this review, and exhaustive MVP conformance is not claimed.
 Package-level `var` is forbidden, not an unfinished MVP feature. Async callable
 and scoped-task extensions are separate from conformance to today's rules.
 Formatter/test tooling follows §45; it does not establish ownership safety.
-Windows native support targets x64 MSVC; signals and measurement tooling retain
-their explicit Linux/macOS scope. See [platform support](platform-support.md). Existing Linux/macOS tests and benchmark
+Windows native support targets x64 MSVC, including console signals; measurement
+tooling retains its explicit Linux/macOS scope. See [platform support](platform-support.md). Existing Linux/macOS tests and benchmark
 families remain the baseline.
 
 The async state-machine slices 1–6 are implemented. Plain-function tasks use the shared pool, fibers

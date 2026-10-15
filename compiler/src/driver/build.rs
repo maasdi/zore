@@ -35,6 +35,10 @@ const RUNTIME_SOURCES: &[(&str, &str)] = &[
     ),
     ("slot.rs", include_str!("../../../runtime/src/slot.rs")),
     ("signal.rs", include_str!("../../../runtime/src/signal.rs")),
+    (
+        "signal_windows.rs",
+        include_str!("../../../runtime/src/signal_windows.rs"),
+    ),
     ("errors.rs", include_str!("../../../runtime/src/errors.rs")),
     ("exec.rs", include_str!("../../../runtime/src/exec.rs")),
     (

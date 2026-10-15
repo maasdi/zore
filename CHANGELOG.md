@@ -11,8 +11,10 @@ once it does.
 
 - Added Windows x64 MSVC linking, `.exe` output names, a local application cache,
   and native host smoke coverage for paths, process arguments, bytes and cleanup.
-- Added Windows `filepath` drive/UNC rules and explicit unsupported namespace and
-  signal diagnostics; helper-based socket waits now honor deadlines.
+- Added Windows `filepath` drive/UNC rules and explicit unsupported namespace
+  diagnostics; helper-based socket waits now honor deadlines.
+- Added Windows console signals and automatic HTTP signal shutdown: Ctrl+C/Break
+  support orderly draining; close/logoff/shutdown cleanup is best effort.
 - Added Windows host CI; native validation evidence is recorded in the platform guide.
 
 ### Scoped tasks

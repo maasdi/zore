@@ -657,6 +657,11 @@ sources do not need to be installed alongside `zore`. Native builds require both
 tools for the same host; `ZORE_CC` and `ZORE_RUSTC` select their executables.
 Windows validates the selected Rust compiler's MSVC host, uses Rust's MSVC linker
 discovery with the Windows SDK, and gives generated executables an `.exe` suffix.
+Windows console signals publish lock-free generations through a native handler;
+ordinary Zore tasks cancel contexts and drain HTTP. Close/logoff/shutdown callbacks
+wait up to five seconds with native Sleep, independently of subscription cleanup,
+to avoid ending the process immediately on callback return. OS deadlines can
+shorten that best-effort window. Ctrl+C/Break need no callback wait.
 Unix linking continues to select clang as the linker. Host-specific APIs and
 validation scope are listed in [platform support](platform-support.md).
 Cache entries are never removed by the compiler; deleting the folder is always

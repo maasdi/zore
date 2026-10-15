@@ -13,8 +13,9 @@ mod mixed_bindings;
 mod performance;
 mod review_regressions;
 mod scoped_tasks;
-#[cfg(unix)]
 mod signal;
+#[cfg(windows)]
+mod signal_windows;
 
 use std::io::Write;
 use std::path::Path;

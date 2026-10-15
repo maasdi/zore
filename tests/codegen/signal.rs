@@ -1,12 +1,17 @@
 use super::*;
+#[cfg(unix)]
 use std::io::{BufRead, BufReader};
+#[cfg(unix)]
 use std::os::unix::process::ExitStatusExt;
+#[cfg(unix)]
 use std::time::{Duration, Instant};
 
+#[cfg(unix)]
 unsafe extern "C" {
     fn kill(pid: i32, signal: i32) -> i32;
 }
 
+#[cfg(unix)]
 #[test]
 fn signal_subscriptions_overlap_and_restore_default_dispositions() {
     for selected in [2, 15] {
