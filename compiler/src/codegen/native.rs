@@ -43,7 +43,10 @@ enum Result {
 impl Module<'_> {
     pub(super) fn native_function(&mut self, body: &Body) -> String {
         let function = self.package.function(body.function);
-        let symbol = symbol(&function.name);
+        let symbol = function
+            .native_symbol
+            .clone()
+            .unwrap_or_else(|| symbol(&function.name));
         let mut header = Vec::new();
         let mut prologue = String::new();
         let mut release = String::new();

@@ -1,0 +1,82 @@
+package adler32
+
+import "std/strings"
+
+func TestKnownVector() error {
+    var hasher = New()?
+    let data = strings.Bytes("Wikipedia")
+    hasher.Write(data[:])?
+    let value = hasher.Sum()?
+    if value != 300286872 {
+        panic("unexpected Adler-32 checksum")
+    }
+    return nil
+}
+
+func TestInvalidAndClosedHandles() error {
+    let invalid = nativeWrite(-1, Array<uint8>{}[:])
+    if invalid == nil {
+        panic("invalid handle was accepted")
+    }
+    let token = nativeCreate()?
+    nativeClose(token)
+    nativeClose(token)
+    let value, err = nativeSum(token)
+    if err == nil {
+        panic("closed handle was accepted")
+    }
+    return nil
+}
+
+func TestNativeFunctionValue() error {
+    let create = nativeCreate
+    let token = create()?
+    nativeClose(token)
+    let next = nativeCreate()?
+    nativeClose(next)
+    if next <= token {
+        panic("native tokens must not be reused")
+    }
+    nativeClose(0)
+    let missing, err = nativeSum(0)
+    if err == nil {
+        panic("zero token was accepted")
+    }
+    return nil
+}
+
+async func addBytes(token int) error {
+    let data = Array<uint8>{65}
+    for var i = 0; i < 50; i += 1 {
+        nativeWrite(token, data[:])?
+    }
+    return nil
+}
+
+func TestConcurrentNativeAccess() error {
+    let hasher = New()?
+    let first = go addBytes(hasher.handle)
+    let second = go addBytes(hasher.handle)
+    first.wait()?
+    second.wait()?
+    let value = hasher.Sum()?
+    if value != 48830821 {
+        panic("concurrent updates lost bytes")
+    }
+    return nil
+}
+
+func TestBinaryBytesAndUnsignedResult() error {
+    var hasher = New()?
+    hasher.Write(Array<uint8>{}[:])?
+    var data = Array<uint8>{}
+    for var i = 0; i < 256; i += 1 {
+        data.push(uint8(i))
+    }
+    hasher.Write(data[:])?
+    let value = hasher.Sum()?
+    if value != 2918612865 {
+        panic("native byte or unsigned result ABI mismatch")
+    }
+    return nil
+}

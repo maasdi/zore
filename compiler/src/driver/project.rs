@@ -186,6 +186,8 @@ pub struct LoadedPackage {
 /// Every package a program uses, dependencies first and the entry package last.
 pub struct Project {
     pub(crate) packages: Vec<LoadedPackage>,
+    pub(super) native_adapters: super::native::Providers,
+    pub(crate) native_bindings: HashMap<Span, String>,
     /// Holds the text of the bundled standard packages.
     pub(crate) std_sources: SourceMap,
 }
@@ -242,6 +244,8 @@ impl Project {
         let mut loader = Loader::new(&Disk, Some(sources));
         loader.packages = std::mem::take(&mut self.packages);
         loader.std_sources = std::mem::take(&mut self.std_sources);
+        loader.native_adapters = std::mem::take(&mut self.native_adapters);
+        loader.native_bindings = std::mem::take(&mut self.native_bindings);
         let mut entry = loader.packages.pop().expect("a loaded entry package");
         loader.done = loader
             .packages
@@ -391,7 +395,7 @@ fn load_package_project(
         loader.projects = files.projects(manifest).map_err(LoadError::Source)?;
     }
     loader.entry_dir = Some(files.canonical(&dir));
-    let parsed = loader.parse_folder(&paths)?;
+    let parsed = loader.parse_folder(&paths, owner.as_deref())?;
     loader.load_package("main".into(), Kind::Entry, parsed, owner.as_deref());
     loader.finish()
 }
@@ -410,6 +414,8 @@ struct Loader<'a> {
     directories: HashMap<PathBuf, String>,
     entry_dir: Option<PathBuf>,
     packages: Vec<LoadedPackage>,
+    native_adapters: super::native::Providers,
+    native_bindings: HashMap<Span, String>,
     /// Import path to package index.
     done: HashMap<String, usize>,
     /// Import paths of the packages being loaded, outermost first.
@@ -427,6 +433,8 @@ impl<'a> Loader<'a> {
             directories: HashMap::new(),
             entry_dir: None,
             packages: Vec::new(),
+            native_adapters: BTreeMap::new(),
+            native_bindings: HashMap::new(),
             done: HashMap::new(),
             stack: Vec::new(),
             diagnostics: Vec::new(),
@@ -439,11 +447,17 @@ impl<'a> Loader<'a> {
         }
         Ok(Project {
             packages: self.packages,
+            native_adapters: self.native_adapters,
+            native_bindings: self.native_bindings,
             std_sources: self.std_sources,
         })
     }
 
-    fn parse_folder(&mut self, paths: &[PathBuf]) -> Result<Vec<Parsed>, LoadError> {
+    fn parse_folder(
+        &mut self,
+        paths: &[PathBuf],
+        owner: Option<&str>,
+    ) -> Result<Vec<Parsed>, LoadError> {
         let mut parsed = Vec::new();
         for path in paths {
             let text = self.files.read(path).map_err(LoadError::Source)?;
@@ -453,6 +467,38 @@ impl<'a> Loader<'a> {
                 .expect("folders are loaded into a source map");
             let id = sources.add(path, text).map_err(LoadError::Source)?;
             parsed.push(parse(sources.file(id).expect("just added")));
+        }
+        if let Some(project) = owner.and_then(|name| self.projects.get(name))
+            && paths
+                .first()
+                .and_then(|path| path.parent())
+                .is_some_and(|dir| self.files.canonical(dir) == project.root)
+            && let Some(id) = &project.native
+        {
+            let provider = super::native::load(self.files, project).map_err(LoadError::Source)?;
+            let adapter = provider.adapter;
+            let sources = self.sources.as_deref_mut().expect("project source map");
+            let file = sources
+                .add(
+                    format!("<native {}>", adapter.id),
+                    provider.bindings.clone(),
+                )
+                .map_err(LoadError::Source)?;
+            let bindings = parse_standard(sources.file(file).expect("native bindings"));
+            for item in &bindings.file.items {
+                if let ast::Item::Func(function) = item {
+                    let symbol = adapter
+                        .symbols
+                        .iter()
+                        .find(|(name, _)| *name == function.name.text)
+                        .expect("registered binding symbol")
+                        .1;
+                    self.native_bindings
+                        .insert(function.name.span, symbol.to_string());
+                }
+            }
+            parsed.push(bindings);
+            self.native_adapters.insert(id.clone(), provider);
         }
         Ok(parsed)
     }
@@ -662,7 +708,7 @@ impl<'a> Loader<'a> {
             );
         }
         self.directories.insert(dir.clone(), path.to_string());
-        let parsed = match self.parse_folder(&paths) {
+        let parsed = match self.parse_folder(&paths, Some(first)) {
             Ok(parsed) => parsed,
             Err(LoadError::Source(error)) => {
                 return self.import_error(error.to_string(), span);

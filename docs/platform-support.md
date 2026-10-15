@@ -109,3 +109,13 @@ do not establish real close/logoff/shutdown delivery. Unix-specific shell and
 POSIX signal tests retain host gates. The opt-in measurement harnesses and their
 Python pipe/resource checks remain Linux/macOS tools; enabling native Windows CI does
 not establish Windows benchmark support.
+
+## Curated native adapter builds
+
+The first `adler32-v1` adapter supports Linux GNU/macOS x86_64 or aarch64 and
+Windows x86_64 MSVC. It additionally compiles reviewed C11 source with the same
+ZORE_CC/clang, so a complete clang installation with its standard C headers is
+required. Windows uses the existing MSVC Build Tools/SDK setup. Checking available
+Zore wrappers and validating recipe locks invokes no native toolchain. Other
+adapter host/ABI combinations receive an explicit build error. This is host-native
+linking; cross-compilation remains excluded. See [native libraries](native-libraries.md).

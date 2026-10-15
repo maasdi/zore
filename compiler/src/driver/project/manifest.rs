@@ -10,6 +10,7 @@ use crate::source::SourceError;
 pub struct Manifest {
     pub root: PathBuf,
     pub name: String,
+    pub native: Option<String>,
     pub(crate) text: String,
     pub dependencies: BTreeMap<String, Dependency>,
 }
@@ -37,7 +38,10 @@ impl Manifest {
         let mut name = None;
         let mut version = None;
         let mut dependencies = BTreeMap::new();
-        let mut in_dependencies = false;
+        let mut section = "".to_string();
+        let mut seen_dependencies = false;
+        let mut seen_native = false;
+        let mut native = None;
         for (index, raw) in text.split_inclusive('\n').enumerate() {
             let line = raw
                 .strip_suffix('\n')
@@ -56,20 +60,31 @@ impl Manifest {
                 }
                 if input.0.starts_with('[') {
                     input.take('[')?;
-                    if input.key()? != "dependencies" {
-                        return Err("unsupported manifest table".into());
-                    }
+                    let table = input.key()?.to_string();
+                    let seen = match table.as_str() {
+                        "dependencies" => &mut seen_dependencies,
+                        "native" => &mut seen_native,
+                        _ => return Err("unsupported manifest table".into()),
+                    };
                     input.take(']')?;
                     input.finish()?;
-                    if in_dependencies {
-                        return Err("duplicate [dependencies] table".into());
+                    if *seen {
+                        return Err(format!("duplicate [{table}] table"));
                     }
-                    in_dependencies = true;
+                    *seen = true;
+                    section = table;
                     return Ok(());
                 }
                 let key = input.key()?.to_string();
                 input.take('=')?;
-                if in_dependencies {
+                if section == "native" {
+                    if key != "adapter" {
+                        return Err("unsupported native field; expected adapter".into());
+                    }
+                    if native.replace(input.string()?).is_some() {
+                        return Err("duplicate native adapter field".into());
+                    }
+                } else if section == "dependencies" {
                     if !valid_name(&key) {
                         return Err(format!("invalid dependency name `{key}`"));
                     }
@@ -103,10 +118,31 @@ impl Manifest {
         let name = name
             .filter(|name| valid_name(name))
             .ok_or_else(|| manifest_error(&root, "line 1: has no valid `name`".into()))?;
+        if seen_native && native.is_none() {
+            return Err(manifest_error(&root, "[native] requires an adapter".into()));
+        }
+        if let Some(id) = &native {
+            let adapter = crate::driver::native::find(id).ok_or_else(|| {
+                manifest_error(
+                    &root,
+                    format!("unknown native adapter `{id}`; use a registered compiler adapter"),
+                )
+            })?;
+            if name != adapter.project {
+                return Err(manifest_error(
+                    &root,
+                    format!(
+                        "native adapter `{id}` requires project name `{}`",
+                        adapter.project
+                    ),
+                ));
+            }
+        }
         Ok(Self {
             root,
             name,
             dependencies,
+            native,
             text: text.to_string(),
         })
     }
@@ -379,6 +415,9 @@ fn visit(
             ));
         }
         return Ok(());
+    }
+    if manifest.native.is_some() {
+        crate::driver::native::load(files, &manifest)?;
     }
     projects.insert(manifest.name.clone(), manifest.clone());
     visiting.push(manifest.name.clone());

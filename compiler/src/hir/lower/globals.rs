@@ -92,6 +92,7 @@ pub(in crate::hir) fn check(
         is_closure: false,
         is_async: false,
         native: false,
+        native_symbol: None,
         call_once: false,
         type_params: Vec::new(),
         probe: false,

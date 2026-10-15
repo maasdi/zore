@@ -38,6 +38,11 @@ jobs:
         run: cargo fmt --all -- --check
       - name: Lint
         run: cargo clippy --locked --all-targets -- -D warnings
+      - name: Lint native example bridge
+        run: cargo clippy --locked -p zore-runtime --all-targets -- -D warnings
+        env:
+          RUSTFLAGS: --cfg zore_native_adapters
+          ZORE_NATIVE_ADAPTERS: ${{ github.workspace }}/examples/native-library/adler32/native/registration.rs
       - name: Build
         run: cargo build --locked
       - name: Documentation

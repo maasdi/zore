@@ -824,3 +824,20 @@ path/text and a shared cached line index. Labels retain those handles, rather
 than resolving numeric positions in an independently supplied manager. Rendering
 therefore cannot substitute another manager's file at the same index. This is an
 internal self-hosted frontend representation, not a source-language feature.
+
+## Curated native library packages
+
+`driver/native.rs` owns the reviewed adapter registry and hashes the binding,
+symbol map, C/header/Rust sources and versioned recipe flags. A declaring manifest
+is validated during graph loading; dependency locks record its adapter and recipe.
+`driver/project.rs` supplies private root bindings and records span-to-symbol
+provenance. The checked HIR carries each registered C symbol explicitly, including
+when a native library is the entry project under application testing. Default
+standard-package native naming is unchanged.
+
+Builds carry selected adapters through test-runner generation, enable the Rust
+bridge configuration in a distinct runtime cache entry, compile reviewed C sources
+in temporary build storage, and statically link their objects. Runtime resource
+leases keep C allocations alive through calls and free them after the last lease.
+No application-specified build scripts or native artifacts enter this path.
+See [the design record](design/native-adapters.md) and [native libraries](native-libraries.md).

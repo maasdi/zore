@@ -3,6 +3,11 @@
 
 //! The exported C ABI is internal to the compiler, not a source-language API.
 
+#[cfg(zore_native_adapters)]
+include!(env!("ZORE_NATIVE_ADAPTERS"));
+
+mod native;
+
 #[path = "alloc.rs"]
 mod alloc;
 #[path = "blocking.rs"]
@@ -65,6 +70,13 @@ pub fn finish() {
         && std::env::var_os("ZORE_CHECK_LEAKS").is_some()
     {
         eprintln!("leak: signal subscriptions still alive at exit");
+        std::process::exit(70);
+    }
+    if native::live_resources() > 0
+        && !tasks_running
+        && std::env::var_os("ZORE_CHECK_LEAKS").is_some()
+    {
+        eprintln!("leak: native resources still alive at exit");
         std::process::exit(70);
     }
     let leaked = string::live_buffers();

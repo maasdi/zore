@@ -81,3 +81,7 @@ path = "../tests/async/lowering.rs"
 [[test]]
 name = "git_dependencies"
 path = "../tests/driver/git_dependencies.rs"
+
+[[test]]
+name = "native_adapters"
+path = "../tests/driver/native_adapters.rs"

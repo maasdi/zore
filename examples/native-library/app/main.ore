@@ -1,0 +1,20 @@
+package main
+
+import "adler32"
+import "std/strings"
+import "std/errors"
+
+func checksum(text string) (int, error) {
+    var hasher = adler32.New()?
+    let data = strings.Bytes(text)
+    hasher.Write(data[:])?
+    return hasher.Sum()
+}
+
+func main() {
+    let value, err = checksum("Wikipedia")
+    if err != nil {
+        panic(errors.Message(err))
+    }
+    println(value)
+}

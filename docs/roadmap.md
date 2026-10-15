@@ -102,7 +102,9 @@ implements local project dependencies, direct dependency visibility, canonical
 identity and conflict/boundary checks under §§3.4 and 3.20. See
 [local dependencies](local-dependencies.md). The next increment, #137, implements
 [pinned Git sources, install/lock, lockfiles and offline caches](git-dependencies.md)
-under §§3.4.1–3.4.2. Native integration (#138) and distribution (#139) remain
+under §§3.4.1–3.4.2. [Curated native adapter integration](native-libraries.md)
+(#138) adds registered C/Rust sources, private bindings and a native checksum
+package under §3.4.3. Unrestricted native extensions and distribution (#139) remain
 separate work. Local paths remain mutable references even with a lockfile.
 Further self-hosting remains deferred.
 
