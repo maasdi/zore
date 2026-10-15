@@ -1061,9 +1061,12 @@ func main() {
     server.finish("");
 }
 
-#[cfg(unix)]
 #[test]
 fn rest_api_example_serves_requests_and_shuts_down_cleanly() {
+    #[cfg(windows)]
+    if !super::signal_windows::isolated_console() {
+        return;
+    }
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let address = listener.local_addr().unwrap().to_string();
     drop(listener);
@@ -1113,7 +1116,7 @@ fn rest_api_example_serves_requests_and_shuts_down_cleanly() {
         415,
     );
     status(&server.exchange("POST /users HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}"), 400);
-    send_signal(&server.child, 15);
+    send_signal(&server.child, test_signals()[1]);
     server.finish("");
 }
 
