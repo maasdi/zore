@@ -7,14 +7,22 @@ once it does.
 
 ## [Unreleased]
 
+### Pinned Git dependencies
+
+- Added exact-commit Git dependencies with repository subdirectories and confined
+  path dependencies within fetched repositories.
+- Added explicit install/lock, deterministic entry lockfiles, cache integrity
+  validation and locked/offline options for check/build/run/test.
+- Added atomic concurrent cache publication, lockfile guards, credential-safe
+  diagnostics and cross-platform Git workflow regression coverage.
+
 ### Local library dependencies
 
 - Added manifest-declared local project dependencies, including root and
   transitive package imports, canonical identity and direct import visibility.
 - Added strict manifest validation and dependency/name/cycle/boundary diagnostics,
   plus a multi-project example and native initialization/cleanup coverage.
-- Git sources, lockfiles, registry distribution and native library integration
-  remain separate follow-ups.
+- Registry distribution and native library integration remain separate follow-ups.
 
 ### Native platforms
 

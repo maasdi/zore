@@ -100,9 +100,10 @@ The library ecosystem tracker [#135](https://github.com/maasdi/zore/issues/135)
 follows the completed #121 sequence. Its first increment, [#136](https://github.com/maasdi/zore/issues/136),
 implements local project dependencies, direct dependency visibility, canonical
 identity and conflict/boundary checks under §§3.4 and 3.20. See
-[local dependencies](local-dependencies.md). Git pinning/lockfiles (#137), native
-integration (#138) and later distribution (#139) remain separate work. Local
-paths are mutable references and do not establish reproducible remote builds.
+[local dependencies](local-dependencies.md). The next increment, #137, implements
+[pinned Git sources, install/lock, lockfiles and offline caches](git-dependencies.md)
+under §§3.4.1–3.4.2. Native integration (#138) and distribution (#139) remain
+separate work. Local paths remain mutable references even with a lockfile.
 Further self-hosting remains deferred.
 
 The [2026-10-13 MVP inventory](conformance/mvp.md) maps §§39, 46, and 52 to

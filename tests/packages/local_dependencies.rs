@@ -236,7 +236,7 @@ fn malformed_manifest_fields_are_never_silently_ignored() {
         ),
         (
             "name = 'app'\n[dependencies]\nauth = { git = 'url' }",
-            "exactly one path field",
+            "Git URL must use",
         ),
         (
             "name = 'app'\n[dependencies]\nauth = { path = '' }",
@@ -252,7 +252,7 @@ fn malformed_manifest_fields_are_never_silently_ignored() {
         ),
         (
             "name = 'app'\n[dependencies]\nauth = { path = '../auth', path = '../other' }",
-            "expected `}`",
+            "duplicate dependency field",
         ),
         (
             "name = 'app'\n[dependencies]\nauth = { path = '../auth' }\nauth = { path = '../auth' }",

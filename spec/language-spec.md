@@ -165,8 +165,8 @@ import "std/strings"
 
 The meaning of an import path, and how imported names are used, is specified in
 §3.20. Local path dependencies are supported by the locked extension below.
-Remote fetching, registries, version selection and dependency solving remain
-outside this increment.
+Pinned Git sources follow §3.4.1. Registries, version ranges and dependency
+solving remain outside this increment.
 
 ## 3.4 Project file — LOCKED
 
@@ -191,7 +191,8 @@ Duplicate fields, unknown fields/tables and malformed values are errors naming
 the manifest and line. No manifest may silently ignore a dependency entry.
 
 A single optional [dependencies] table maps bare project names to inline tables
-containing exactly one nonempty path string without NUL. Entries fit on one line; a trailing
+containing either exactly one nonempty path string without NUL, or the Git
+selection fields in §3.4.1. Entries fit on one line; a trailing
 comma inside an inline table is not accepted. For example:
 
 ```toml
@@ -206,10 +207,104 @@ Paths use the host's filesystem conventions, relative to the declaring manifest
 unless fully absolute. Windows drive-relative (C:folder) and root-relative
 (\folder without a drive/UNC volume) dependency paths are rejected to avoid
 implicit current-drive/current-directory lookup. Literal strings are useful for Windows backslashes. No tilde,
-environment substitution, network access or automatic discovery is performed.
-Path dependencies are mutable local source references: no lockfile or immutable
-source/reproducible-build guarantee is introduced. Git sources, registries and
-version constraints remain outside this increment.
+environment substitution or automatic discovery is performed. Path dependencies
+are mutable local source references; a lockfile records their manifests and
+locations, not an immutable guarantee for their source files.
+
+## 3.4.1 Pinned Git dependencies and lockfiles — LOCKED
+
+```toml
+name = "myapp"
+[dependencies]
+auth = { git = "https://example.org/team/libraries.git", rev = "0123456789abcdef0123456789abcdef01234567", subdir = "auth" }
+```
+
+A Git entry has exactly git and rev strings and an optional subdir string, in
+any order. It cannot also have path. rev is a full 40-digit hexadecimal SHA-1
+commit ID, normalized to lowercase; branches, tags, abbreviated IDs and SHA-256
+repositories are rejected. git is an explicit https://, ssh:// or file:// URL.
+HTTPS user information, SSH passwords, query strings, fragments, controls and
+embedded credentials are rejected without echoing the supplied URL. SSH user
+names are allowed. Git's ordinary credential helpers and SSH agent are used;
+credentials never enter lockfiles, cache keys or diagnostics. Git subprocess
+stderr is not relayed because helpers/servers may include credentials.
+
+subdir defaults to the repository root (empty string). A nonempty value is a
+portable slash-separated path of ordinary directory names, with no empty, dot,
+parent, backslash or drive components. It must contain its own zore.toml.
+The selected revision's entire repository must be a regular-file/directory tree:
+symlinks, submodules, non-UTF-8 paths and paths not portable to Windows are
+unsupported and diagnosed before publication. Executable file modes are retained
+on Unix. No checkout hooks, build scripts or source filters are executed.
+A fetched manifest's path dependencies must be relative and resolve inside that
+same immutable checkout, including sibling projects. Nested Git dependencies
+use their own explicit URL/revision. Dependency lockfiles inside fetched or local
+libraries are ignored: only the entry project's lockfile governs the graph.
+
+Resolved Git project identity is the exact URL, lowercase revision and selected
+repository-relative project directory. URL spellings are not guessed equivalent.
+Repeated selections share a canonical cache root, package IDs, nominal types and
+initialization. Conflicting project names/sources/revisions and cycles are errors
+as in §3.20. A local project and Git project are distinct selections even when
+contents happen to match. Import visibility and ordinary ownership, errors,
+deterministic cleanup and async semantics are unchanged. Resolution executes no
+Zore code and frontend checking needs no native compiler or linker.
+
+The entry root's zore.lock is version 1 UTF-8, LF, deterministic generated TOML:
+a version = 1 field followed by [projects], with project names in sorted order.
+Each inline project record has a SHA-256 digest of its exact manifest bytes and
+either path (canonical location relative to the entry root where possible), or
+git, rev, subdir and tree (full Git root tree ID). The entry project and every
+direct/transitive project are recorded, including unused dependencies. This
+format records graph edges through manifest digests. Generated field order and
+spelling are canonical; modified, malformed or unsupported lockfiles are errors.
+Local source contents remain mutable. Commit IDs and tree IDs are authoritative
+for Git contents: a cached checkout is validated against the commit's Git objects,
+including every file's bytes, type and executable mode and absence of extra files.
+Cache metadata alone never overrides a pinned revision or lockfile.
+
+## 3.4.2 Dependency commands and cache — LOCKED
+
+- zore install [--locked] [--offline] <file|directory> resolves the nearest entry
+  manifest and all dependencies, downloads missing Git sources, and creates a
+  missing lockfile. An existing lockfile must match; drift requires zore lock.
+- zore lock [--offline] <file|directory> explicitly replaces or creates the
+  entry lockfile using exactly the manifest pins. It never selects a newer
+  revision, edits manifests or consults branch/tag tips. --locked is rejected.
+- check/build/run/test accept --locked and --offline. These commands never fetch
+  sources or rewrite a lockfile, even without flags. Git graphs require a
+  matching lockfile and complete cache; diagnostics direct users to install/lock.
+  Existing locks on local-only graphs are also validated; local-only projects
+  without locks retain their ordinary behavior unless --locked is requested.
+- --locked rejects missing or mismatched lockfiles and never writes them. It can
+  be combined with install to populate missing cache for an unchanged graph.
+  --offline forbids network, including on install/lock. Cache misses and corrupt
+  entries are actionable errors. fmt remains independent of dependencies and
+  rejects these flags. Repeated flags are usage errors. -- still ends options.
+
+ZORE_CACHE_DIR selects the dependency cache root; otherwise use a zore/dependencies
+folder within LOCALAPPDATA on Windows, ~/Library/Caches on macOS, and
+XDG_CACHE_HOME or ~/.cache on other hosts. Cache keys use SHA-256 of the exact
+credential-free URL and revision. Cache entries are immutable after publication.
+Each fetch stages in a unique temporary directory on the cache filesystem,
+validates the commit/tree/source, and atomically publishes
+only complete entries. Concurrent fetches validate and reuse the winning entry;
+interrupted staging directories are ignored. Lockfile replacement is atomic and
+serialized with a project-local exclusive guard; an abandoned guard produces an
+actionable error and must be removed only after confirming no resolver is active.
+Corrupt cache entries are never silently trusted or overwritten: remove the
+identified entry and run install again; offline mode cannot repair missing data.
+Removing the cache is safe when no command is running; refetch requires access
+to the pinned commits. User application/library sources are never modified.
+
+Compiler impact: the manifest graph resolver selects validated cache roots before
+package loading; semantic stages and native linking do not change. Conformance
+coverage must exercise fresh/repeated fetch, transitive diamonds, identity and
+source conflicts, explicit lock regeneration, locked drift without writes,
+populated offline check/build/run/test, missing/corrupt cache, credential redaction, unsupported
+layouts, checkout path confinement, interrupted/concurrent publication and all
+three native hosts. Registry/version solving and native integration remain
+separate work.
 
 ## 3.5 Identifiers — LOCKED
 
@@ -1040,7 +1135,7 @@ type position (`var c shapes.Circle`). The rules are:
 - *No cycles.* A package that imports itself, directly or through other
   packages, is an error that lists the chain.
 - *Outside this increment.* Import aliases, dot imports, blank imports, grouped
-  imports, package-level `var`, init functions, remote dependencies and version
+  imports, package-level `var`, init functions and version
   solving. Package-level let is specified in §3.21.
 
 **Local dependency graph — LOCKED.** Each dependency key must match the target

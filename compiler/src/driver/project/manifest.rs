@@ -1,4 +1,4 @@
-//! Parses local manifests and validates their dependency graph.
+//! Parses manifests and validates their dependency graph.
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
@@ -10,7 +10,18 @@ use crate::source::SourceError;
 pub struct Manifest {
     pub root: PathBuf,
     pub name: String,
-    pub dependencies: BTreeMap<String, PathBuf>,
+    pub(crate) text: String,
+    pub dependencies: BTreeMap<String, Dependency>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum Dependency {
+    Path(PathBuf),
+    Git {
+        url: String,
+        revision: String,
+        subdir: String,
+    },
 }
 
 fn valid_name(name: &str) -> bool {
@@ -62,32 +73,8 @@ impl Manifest {
                     if !valid_name(&key) {
                         return Err(format!("invalid dependency name `{key}`"));
                     }
-                    input.take('{')?;
-                    if input.key()? != "path" {
-                        return Err("a dependency requires exactly one path field".into());
-                    }
-                    input.take('=')?;
-                    let path = input.string()?;
-                    if path.is_empty() {
-                        return Err("dependency path must not be empty".into());
-                    }
-                    if path.contains('\0') {
-                        return Err("dependency path must not contain NUL".into());
-                    }
-                    let path = PathBuf::from(path);
-                    #[cfg(windows)]
-                    if !path.is_absolute()
-                        && (path.has_root()
-                            || path
-                                .components()
-                                .any(|part| matches!(part, std::path::Component::Prefix(_))))
-                    {
-                        return Err(
-                            "Windows dependency paths must be relative or fully absolute".into(),
-                        );
-                    }
-                    input.take('}')?;
-                    if dependencies.insert(key.clone(), path).is_some() {
+                    let dependency = input.dependency()?;
+                    if dependencies.insert(key.clone(), dependency).is_some() {
                         return Err(format!("duplicate dependency `{key}`"));
                     }
                 } else {
@@ -120,6 +107,7 @@ impl Manifest {
             root,
             name,
             dependencies,
+            text: text.to_string(),
         })
     }
 }
@@ -208,6 +196,75 @@ impl<'a> Input<'a> {
             }
         }
     }
+    fn dependency(&mut self) -> Result<Dependency, String> {
+        self.take('{')?;
+        let mut fields = BTreeMap::new();
+        loop {
+            let key = self.key()?.to_string();
+            if !matches!(key.as_str(), "path" | "git" | "rev" | "subdir") {
+                return Err("unsupported dependency field".into());
+            }
+            self.take('=')?;
+            let value = self.string()?;
+            if fields.insert(key, value).is_some() {
+                return Err("duplicate dependency field".into());
+            }
+            self.space();
+            if self.0.starts_with('}') {
+                break;
+            }
+            self.take(',')?;
+            self.space();
+            if self.0.starts_with('}') {
+                return Err(
+                    "expected a field after comma; expected `}` without a trailing comma".into(),
+                );
+            }
+        }
+        self.take('}')?;
+        if let Some(path) = fields.remove("path") {
+            if !fields.is_empty() {
+                return Err("a path dependency requires exactly one path field".into());
+            }
+            if path.is_empty() {
+                return Err("dependency path must not be empty".into());
+            }
+            if path.contains('\0') {
+                return Err("dependency path must not contain NUL".into());
+            }
+            let path = PathBuf::from(path);
+            #[cfg(windows)]
+            if !path.is_absolute()
+                && (path.has_root()
+                    || path
+                        .components()
+                        .any(|part| matches!(part, std::path::Component::Prefix(_))))
+            {
+                return Err("Windows dependency paths must be relative or fully absolute".into());
+            }
+            return Ok(Dependency::Path(path));
+        }
+        let url = fields
+            .remove("git")
+            .ok_or("a dependency requires path or git and rev")?;
+        validate_url(&url)?;
+        let revision = fields
+            .remove("rev")
+            .ok_or("a Git dependency requires a full commit rev")?;
+        if revision.len() != 40 || !revision.bytes().all(|c| c.is_ascii_hexdigit()) {
+            return Err("Git rev must be a full 40-digit hexadecimal commit ID".into());
+        }
+        let subdir = fields.remove("subdir").unwrap_or_default();
+        if !subdir.is_empty() && !portable_path(&subdir) {
+            return Err("Git subdir must be a portable repository-relative directory".into());
+        }
+        Ok(Dependency::Git {
+            url,
+            revision: revision.to_ascii_lowercase(),
+            subdir,
+        })
+    }
+
     fn finish(&mut self) -> Result<(), String> {
         self.space();
         if self.0.is_empty() || self.0.starts_with('#') {
@@ -218,12 +275,78 @@ impl<'a> Input<'a> {
     }
 }
 
+pub(crate) fn validate_url(url: &str) -> Result<(), String> {
+    let invalid = || {
+        "Git URL must use https://, ssh:// or file:// without embedded credentials, query or fragment".to_string()
+    };
+    if url.chars().any(|c| c.is_control()) || url.contains(['?', '#', '\\']) {
+        return Err(invalid());
+    }
+    let (scheme, rest) = url.split_once("://").ok_or_else(invalid)?;
+    if !matches!(scheme, "https" | "ssh" | "file") {
+        return Err(invalid());
+    }
+    let (authority, path) = rest.split_once('/').ok_or_else(invalid)?;
+    if path.is_empty() || (scheme != "file" && authority.is_empty()) {
+        return Err(invalid());
+    }
+    if scheme == "file" {
+        if !authority.is_empty() {
+            return Err(invalid());
+        }
+    } else if let Some((user, host)) = authority.rsplit_once('@')
+        && (scheme != "ssh" || user.is_empty() || user.contains([':', '%', '@']) || host.is_empty())
+    {
+        return Err(invalid());
+    }
+    if authority.contains('%') || authority.starts_with('-') {
+        return Err(invalid());
+    }
+    Ok(())
+}
+
+pub(crate) fn portable_path(path: &str) -> bool {
+    !path.is_empty()
+        && path.split('/').all(|part| {
+            if part.is_empty()
+                || part == "."
+                || part == ".."
+                || part.ends_with(['.', ' '])
+                || part.chars().any(|c| {
+                    c.is_control() || matches!(c, '\\' | ':' | '<' | '>' | '"' | '|' | '?' | '*')
+                })
+            {
+                return false;
+            }
+            let base = part.split('.').next().unwrap().to_ascii_lowercase();
+            !matches!(base.as_str(), ".git" | "con" | "prn" | "aux" | "nul")
+                && !(base.len() == 4
+                    && (base.starts_with("com") || base.starts_with("lpt"))
+                    && matches!(base.as_bytes()[3], b'1'..=b'9'))
+                && !part.eq_ignore_ascii_case(".git")
+        })
+}
+
 pub(super) fn resolve(
     files: &dyn FileSystem,
     root: Manifest,
 ) -> Result<HashMap<String, Manifest>, SourceError> {
+    resolve_with(files, root, &mut |manifest, dependency| match dependency {
+        Dependency::Path(path) => Ok(files.canonical(&manifest.root.join(path))),
+        Dependency::Git { .. } => Err(manifest_error(
+            &manifest.root,
+            "Git dependencies require the disk dependency resolver".into(),
+        )),
+    })
+}
+
+pub(crate) fn resolve_with(
+    files: &dyn FileSystem,
+    root: Manifest,
+    select: &mut dyn FnMut(&Manifest, &Dependency) -> Result<PathBuf, SourceError>,
+) -> Result<HashMap<String, Manifest>, SourceError> {
     let mut projects = HashMap::new();
-    visit(files, root, &mut projects, &mut Vec::new())?;
+    visit(files, root, &mut projects, &mut Vec::new(), select)?;
     Ok(projects)
 }
 
@@ -232,6 +355,7 @@ fn visit(
     mut manifest: Manifest,
     projects: &mut HashMap<String, Manifest>,
     visiting: &mut Vec<String>,
+    select: &mut dyn FnMut(&Manifest, &Dependency) -> Result<PathBuf, SourceError>,
 ) -> Result<(), SourceError> {
     manifest.root = files.canonical(&manifest.root);
     if let Some(previous) = projects.get(&manifest.name) {
@@ -258,8 +382,8 @@ fn visit(
     }
     projects.insert(manifest.name.clone(), manifest.clone());
     visiting.push(manifest.name.clone());
-    for (name, path) in &manifest.dependencies {
-        let target = files.canonical(&manifest.root.join(path));
+    for (name, source) in &manifest.dependencies {
+        let target = select(&manifest, source)?;
         let dependency = files
             .manifest(&target)
             .map_err(|error| {
@@ -285,7 +409,7 @@ fn visit(
                 ),
             ));
         }
-        visit(files, dependency, projects, visiting)?;
+        visit(files, dependency, projects, visiting, select)?;
     }
     visiting.pop();
     Ok(())
@@ -304,7 +428,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             manifest.dependencies["auth"],
-            PathBuf::from(r"C:\work\auth")
+            Dependency::Path(PathBuf::from(r"C:\work\auth"))
         );
         for (encoded, decoded) in [
             (r#""a\\b\"c\t\n\r\b\f""#, "a\\b\"c\t\n\r\u{8}\u{c}"),

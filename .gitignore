@@ -12,3 +12,7 @@
 *.ll
 
 # Cargo.lock is intentionally tracked for the compiler executable.
+
+# Interrupted dependency resolver guards and staging directories.
+.zore-lock.guard
+.zore-stage-*/

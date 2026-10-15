@@ -63,10 +63,10 @@ unsupported tables, malformed strings and extra inline-table fields are errors.
 Multiline strings, dotted/quoted keys, arrays, and inline-table trailing commas
 are outside the subset. Diagnostics name the manifest and line.
 
-Local dependencies are mutable source references. This feature does not fetch
-repositories, access the network, create a lockfile or promise immutable sources.
-Git pinning, lockfiles and offline caching are tracked in issue #137; native
-integration is #138, and distribution/registry work is deferred in #139.
+Local dependencies are mutable source references. A lock records their manifests
+and locations, not immutable source contents. See [pinned Git dependencies](git-dependencies.md)
+for install/lock, application lockfiles and offline caching. Native integration
+is #138, and distribution/registry work is deferred in #139.
 
 ## Commands and tests
 

@@ -16,6 +16,7 @@ publish = false
 autotests = false
 
 [dependencies]
+sha2 = "0.10"
 
 [[example]]
 name = "async_frame_scaling"
@@ -76,3 +77,7 @@ path = "../tests/codegen/native.rs"
 [[test]]
 name = "async_lowering"
 path = "../tests/async/lowering.rs"
+
+[[test]]
+name = "git_dependencies"
+path = "../tests/driver/git_dependencies.rs"
