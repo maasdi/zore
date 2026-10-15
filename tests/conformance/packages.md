@@ -14,7 +14,7 @@ counterpart in `tests/driver/cli.rs`, `tests/typecheck/check.rs`, or
 | Entry folder whose package is not `main` | `check` accepts it; `build` and `run` reject it as not executable |
 | Sibling folders | Separate packages; not part of the entry package |
 | `zore.toml` found in a parent folder | That folder is the project root |
-| No `zore.toml` anywhere above | Project has no name; only `zore/...` imports resolve |
+| No `zore.toml` anywhere above | Project has no name; only `std/...` imports resolve |
 | Package folder with no `.ore` files | Reject the import |
 | Package whose clause differs from its folder name | Reject |
 
@@ -104,3 +104,25 @@ Covered by `tests/typecheck/check.rs`, `tests/packages/packages.rs`, and `tests/
 | `channel<int>(1)`, `Array<int>{1}`, `mutex(0)`, a function value | Reject: not storable in a package-level value |
 | A panic in an initializer | The program ends with status 2; `main` does not run |
 | Text built at run time and held by a package-level value | Not reported as a leak |
+
+## Local project dependencies
+
+The locked extension is in §§3.4 and 3.20. Executable cases are in
+`tests/packages/local_dependencies.rs` and `tests/codegen/local_dependencies.rs`.
+
+| Scenario | Expected result |
+| --- | --- |
+| Direct dependency with matching name and a local path | Root and subpackage imports resolve |
+| Transitive library dependency | Resolve from that library's own manifest |
+| Diamond with one canonical shared project | One nominal type and one initialization |
+| Direct import of an undeclared transitive project, before or after cache population | Reject |
+| Different roots using the same project name | Reject, including unused declared entries |
+| Dependency key/name mismatch, missing root manifest, invalid manifest syntax or duplicate fields | Reject with manifest/path diagnostics |
+| Project dependency cycle or package import cycle | Reject with a chain |
+| Symlink aliases of one project root | Deduplicate canonical identity |
+| Package path escapes its root, crosses a nested project, or aliases another package path | Reject |
+| Imported dependency tests are invalid but unselected | Ordinary app check/build/run/test excludes them; explicitly testing that library rejects them |
+| Cross-project exported generic/interface and Move values | Preserve ordinary typing, visibility and ownership |
+| Async normal/error/panic exits with cross-project resources | Drop exactly once and preserve initialization/parent cleanup ordering |
+
+Local paths do not imply Git fetching, version resolution or lockfiles.

@@ -1,0 +1,10 @@
+package main
+
+import "greeting"
+import "audit"
+
+func main() {
+    let person = greeting.NewPerson("Ada")
+    println(greeting.Message(person))
+    println(audit.Label(person))
+}

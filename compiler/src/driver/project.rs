@@ -10,11 +10,8 @@ use crate::parser::{Parsed, parse, parse_standard};
 use crate::resolve::{FileUnit, ImportBinding, PackageUnit};
 use crate::source::{SourceError, SourceFile, SourceMap, Span};
 
-/// The project's root folder and the name its `zore.toml` gives it.
-pub struct Manifest {
-    pub root: PathBuf,
-    pub name: Option<String>,
-}
+mod manifest;
+pub use manifest::Manifest;
 
 pub trait FileSystem {
     fn read(&self, path: &Path) -> Result<String, SourceError>;
@@ -27,7 +24,7 @@ pub trait FileSystem {
 
     /// A path that two spellings of one folder share.
     fn canonical(&self, path: &Path) -> PathBuf {
-        path.to_path_buf()
+        normalized(path)
     }
 }
 
@@ -78,10 +75,7 @@ impl FileSystem for Disk {
         for folder in start.ancestors() {
             let path = folder.join("zore.toml");
             if path.is_file() {
-                return Ok(Some(Manifest {
-                    root: folder.to_path_buf(),
-                    name: project_name(&self.read(&path)?),
-                }));
+                return Manifest::parse(folder.to_path_buf(), &self.read(&path)?).map(Some);
             }
         }
         Ok(None)
@@ -95,7 +89,7 @@ impl FileSystem for Disk {
 /// Files held in memory, for tests.
 #[derive(Default)]
 pub struct Memory {
-    files: BTreeMap<PathBuf, String>,
+    files: BTreeMap<PathBuf, (PathBuf, String)>,
 }
 
 impl Memory {
@@ -104,57 +98,64 @@ impl Memory {
     }
 
     pub fn with(mut self, path: impl Into<PathBuf>, text: impl Into<String>) -> Self {
-        self.files.insert(path.into(), text.into());
+        let path = path.into();
+        self.files.insert(normalized(&path), (path, text.into()));
         self
     }
 }
 
 impl FileSystem for Memory {
     fn read(&self, path: &Path) -> Result<String, SourceError> {
-        self.files.get(path).cloned().ok_or_else(|| {
-            io_error(
-                path,
-                std::io::Error::new(std::io::ErrorKind::NotFound, "no such file"),
-            )
-        })
+        self.files
+            .get(&normalized(path))
+            .map(|(_, text)| text.clone())
+            .ok_or_else(|| {
+                io_error(
+                    path,
+                    std::io::Error::new(std::io::ErrorKind::NotFound, "no such file"),
+                )
+            })
     }
 
     fn ore_files(&self, dir: &Path) -> Result<Vec<PathBuf>, SourceError> {
+        let dir = normalized(dir);
         Ok(self
             .files
-            .keys()
-            .filter(|path| {
-                path.parent() == Some(dir) && path.extension().is_some_and(|e| e == "ore")
+            .iter()
+            .filter(|(path, _)| {
+                path.parent() == Some(dir.as_path()) && path.extension().is_some_and(|e| e == "ore")
             })
-            .cloned()
+            .map(|(_, (path, _))| path.clone())
             .collect())
     }
 
     fn manifest(&self, dir: &Path) -> Result<Option<Manifest>, SourceError> {
+        let dir = normalized(dir);
         for folder in dir.ancestors() {
-            if let Some(text) = self.files.get(&folder.join("zore.toml")) {
-                return Ok(Some(Manifest {
-                    root: folder.to_path_buf(),
-                    name: project_name(text),
-                }));
+            if let Some((_, text)) = self.files.get(&folder.join("zore.toml")) {
+                return Manifest::parse(folder.to_path_buf(), text).map(Some);
             }
         }
         Ok(None)
     }
 }
 
-/// The `name` of a project file, when it is a valid project name.
-fn project_name(text: &str) -> Option<String> {
-    let value = text.lines().find_map(|line| {
-        let (key, value) = line.split_once('=')?;
-        (key.trim() == "name").then(|| value.trim().trim_matches('"').to_string())
-    })?;
-    let valid = !value.is_empty()
-        && value != "std"
-        && value
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-');
-    valid.then_some(value)
+fn normalized(path: &Path) -> PathBuf {
+    use std::path::Component;
+    let mut result = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir
+                if matches!(result.components().next_back(), Some(Component::Normal(_))) =>
+            {
+                result.pop();
+            }
+            Component::ParentDir if result.has_root() => {}
+            _ => result.push(component.as_os_str()),
+        }
+    }
+    result
 }
 
 pub struct LoadedFile {
@@ -234,7 +235,7 @@ impl Project {
             .enumerate()
             .map(|(index, package)| (package.path.clone(), index))
             .collect();
-        let mut imports = loader.bind_imports(&parsed.file);
+        let mut imports = loader.bind_imports(&parsed.file, None);
         for import in &mut imports {
             import.name = format!("$test_{}", import.name);
         }
@@ -308,7 +309,7 @@ pub enum LoadError {
 pub fn load_file(file: &SourceFile) -> Result<Project, Vec<Diagnostic>> {
     let memory = Memory::new();
     let mut loader = Loader::new(&memory, None);
-    loader.load_package("main".into(), Kind::Entry, vec![parse(file)]);
+    loader.load_package("main".into(), Kind::Entry, vec![parse(file)], None);
     loader.finish().map_err(|error| match error {
         LoadError::Diagnostics(diagnostics) => diagnostics,
         LoadError::Source(_) => unreachable!("an in-memory file reads nothing"),
@@ -363,10 +364,13 @@ fn load_package_project(
         paths.push(entry.to_path_buf());
     }
     let mut loader = Loader::new(files, Some(sources));
-    loader.manifest = manifest;
+    let owner = manifest.as_ref().map(|manifest| manifest.name.clone());
+    if let Some(manifest) = manifest {
+        loader.projects = manifest::resolve(files, manifest).map_err(LoadError::Source)?;
+    }
     loader.entry_dir = Some(files.canonical(&dir));
     let parsed = loader.parse_folder(&paths)?;
-    loader.load_package("main".into(), Kind::Entry, parsed);
+    loader.load_package("main".into(), Kind::Entry, parsed, owner.as_deref());
     loader.finish()
 }
 
@@ -380,7 +384,8 @@ struct Loader<'a> {
     files: &'a dyn FileSystem,
     sources: Option<&'a mut SourceMap>,
     std_sources: SourceMap,
-    manifest: Option<Manifest>,
+    projects: HashMap<String, Manifest>,
+    directories: HashMap<PathBuf, String>,
     entry_dir: Option<PathBuf>,
     packages: Vec<LoadedPackage>,
     /// Import path to package index.
@@ -396,7 +401,8 @@ impl<'a> Loader<'a> {
             files,
             sources,
             std_sources: SourceMap::new(),
-            manifest: None,
+            projects: HashMap::new(),
+            directories: HashMap::new(),
             entry_dir: None,
             packages: Vec::new(),
             done: HashMap::new(),
@@ -429,7 +435,13 @@ impl<'a> Loader<'a> {
         Ok(parsed)
     }
 
-    fn load_package(&mut self, path: String, kind: Kind, parsed: Vec<Parsed>) -> usize {
+    fn load_package(
+        &mut self,
+        path: String,
+        kind: Kind,
+        parsed: Vec<Parsed>,
+        owner: Option<&str>,
+    ) -> usize {
         self.stack.push(path.clone());
         let mut files = Vec::new();
         let mut name: Option<(String, Span)> = None;
@@ -458,7 +470,7 @@ impl<'a> Loader<'a> {
             let imports = if had_errors {
                 Vec::new()
             } else {
-                self.bind_imports(&parsed.file)
+                self.bind_imports(&parsed.file, owner)
             };
             files.push(LoadedFile {
                 file: parsed.file,
@@ -485,7 +497,13 @@ impl<'a> Loader<'a> {
             return;
         }
         let last = path.rsplit('/').next().unwrap_or(path);
-        if name != last {
+        if name == "main" {
+            self.diagnostics.push(Diagnostic::new(
+                Severity::Error,
+                "the `main` package cannot be imported",
+                span,
+            ));
+        } else if name != last {
             self.diagnostics.push(
                 Diagnostic::new(
                     Severity::Error,
@@ -500,10 +518,10 @@ impl<'a> Loader<'a> {
     }
 
     /// Resolves each import of a file to a loaded package.
-    fn bind_imports(&mut self, file: &ast::File) -> Vec<ImportBinding> {
+    fn bind_imports(&mut self, file: &ast::File, owner: Option<&str>) -> Vec<ImportBinding> {
         let mut bindings = Vec::new();
         for import in &file.imports {
-            match self.load_import(&import.path, import.path_span) {
+            match self.load_import(&import.path, import.path_span, owner) {
                 Some(package) => bindings.push(ImportBinding {
                     package,
                     name: import.path.rsplit('/').next().unwrap_or("").to_string(),
@@ -523,17 +541,38 @@ impl<'a> Loader<'a> {
         None
     }
 
-    fn load_import(&mut self, path: &str, span: Span) -> Option<usize> {
-        let valid = !path.is_empty()
-            && path.split('/').all(|segment| {
-                !segment.is_empty()
-                    && segment
-                        .chars()
-                        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+    fn load_import(&mut self, path: &str, span: Span, owner: Option<&str>) -> Option<usize> {
+        let mut segments = path.split('/');
+        let first = segments.next().unwrap_or("");
+        let valid = !first.is_empty()
+            && first
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+            && segments.all(|segment| {
+                let mut chars = segment.chars();
+                chars
+                    .next()
+                    .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+                    && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
             });
         if !valid {
             return self.import_error(format!("`{path}` is not a valid import path"), span);
         }
+        let (_, rest) = path.split_once('/').unwrap_or((path, ""));
+        let target = if first == "std" {
+            None
+        } else {
+            let Some(project) = owner.and_then(|owner| self.projects.get(owner)) else {
+                return self.import_error(
+                    format!("cannot import `{path}`: no `zore.toml` project file was found"),
+                    span,
+                );
+            };
+            if first != project.name && !project.dependencies.contains_key(first) {
+                return self.import_error(format!("package `{path}` was not found: import paths start with `{}` or `std`, or a directly declared dependency", project.name), span);
+            }
+            Some(self.projects.get(first).expect("validated project").clone())
+        };
         if let Some(position) = self.stack.iter().position(|visiting| visiting == path) {
             let mut chain = self.stack[position..].to_vec();
             chain.push(path.to_string());
@@ -542,37 +581,19 @@ impl<'a> Loader<'a> {
         if let Some(&index) = self.done.get(path) {
             return Some(index);
         }
-        let (first, rest) = path.split_once('/').unwrap_or((path, ""));
-        if first == "std" {
+        let Some(target) = target else {
             return self.load_standard(path, rest, span);
-        }
-        let Some(manifest) = &self.manifest else {
-            return self.import_error(
-                format!("cannot import `{path}`: no `zore.toml` project file was found"),
-                span,
-            );
         };
-        let Some(project) = manifest.name.clone() else {
-            return self.import_error(
-                format!("cannot import `{path}`: `zore.toml` has no valid `name`"),
-                span,
-            );
-        };
-        if first != project {
+        let dir = self.files.canonical(&target.root.join(rest));
+        if !dir.starts_with(&target.root) {
             return self.import_error(
                 format!(
-                    "package `{path}` was not found: import paths start with `{project}` or `std`"
+                    "package `{path}` escapes project root {}",
+                    target.root.display()
                 ),
                 span,
             );
         }
-        if rest.is_empty() {
-            return self.import_error(
-                format!("`{path}` names the project, not a package inside it"),
-                span,
-            );
-        }
-        let dir = manifest.root.join(rest);
         if self.entry_dir.as_deref() == Some(self.files.canonical(&dir).as_path()) {
             return self.import_error("the `main` package cannot be imported".into(), span);
         }
@@ -588,12 +609,37 @@ impl<'a> Loader<'a> {
             _ => {
                 return self.import_error(
                     format!(
-                        "package `{path}` was not found: the folder `{rest}` has no `.ore` files"
+                        "package `{path}` was not found: the folder `{rest}` has no `.ore` files ({})", dir.display()
                     ),
                     span,
                 );
             }
         };
+        match self.files.manifest(&dir) {
+            Ok(Some(manifest)) if self.files.canonical(&manifest.root) == target.root => {}
+            Ok(_) => {
+                return self.import_error(
+                    format!(
+                        "package `{path}` crosses a project boundary at {}",
+                        dir.display()
+                    ),
+                    span,
+                );
+            }
+            Err(error) => return self.import_error(error.to_string(), span),
+        }
+        if let Some(previous) = self.directories.get(&dir)
+            && previous != path
+        {
+            return self.import_error(
+                format!(
+                    "canonical package folder {} is already imported as `{previous}`, not `{path}`",
+                    dir.display()
+                ),
+                span,
+            );
+        }
+        self.directories.insert(dir.clone(), path.to_string());
         let parsed = match self.parse_folder(&paths) {
             Ok(parsed) => parsed,
             Err(LoadError::Source(error)) => {
@@ -601,7 +647,7 @@ impl<'a> Loader<'a> {
             }
             Err(LoadError::Diagnostics(_)) => return None,
         };
-        Some(self.load_package(path.to_string(), Kind::Imported, parsed))
+        Some(self.load_package(path.to_string(), Kind::Imported, parsed, Some(first)))
     }
 
     fn load_standard(&mut self, path: &str, name: &str, span: Span) -> Option<usize> {
@@ -618,6 +664,6 @@ impl<'a> Loader<'a> {
                 self.std_sources.file(id).expect("just added"),
             ));
         }
-        Some(self.load_package(path.to_string(), Kind::Imported, parsed))
+        Some(self.load_package(path.to_string(), Kind::Imported, parsed, None))
     }
 }

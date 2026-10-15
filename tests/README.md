@@ -1,5 +1,11 @@
 # Compiler testing
 
+`tests/packages/local_dependencies.rs` checks manifests, transitive and diamond
+graphs, direct visibility before cache reuse, root imports, conflicts, cycles,
+canonical project aliases and package boundaries. `tests/codegen/local_dependencies.rs`
+exercises check/build/run/test on separate projects with Unicode/space paths,
+selected library tests, initialization once and async success/error/panic cleanup.
+
 CI runs host-applicable Rust checks on Linux, macOS and Windows x64 MSVC.
 `tests/codegen/host_support.rs` covers native paths with spaces/Unicode, CLI
 build/run/test, process arguments and working directories, captured bytes,
