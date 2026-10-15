@@ -311,29 +311,28 @@ func main() { let err = run(); if err != nil { panic(errors.Message(err)) } }
             .read_line(&mut entered)
             .unwrap();
         assert_eq!(entered, "handling\n");
+        let address = server.address.parse().unwrap();
+        drop(TcpStream::connect_timeout(&address, Duration::from_secs(2)).unwrap());
         send_signal(&server.child, selected);
         let deadline = std::time::Instant::now() + Duration::from_secs(4);
-        let address = server.address.parse().unwrap();
         loop {
-            let probe_error = match TcpStream::connect_timeout(&address, Duration::from_secs(2)) {
-                Ok(probe) => {
-                    drop(probe);
-                    None
-                }
-                Err(error) if error.kind() == std::io::ErrorKind::ConnectionRefused => break,
+            match TcpStream::connect_timeout(&address, Duration::from_secs(2)) {
+                Ok(probe) => drop(probe),
                 Err(error)
                     if matches!(
                         error.kind(),
-                        std::io::ErrorKind::ConnectionReset | std::io::ErrorKind::TimedOut
+                        std::io::ErrorKind::ConnectionRefused
+                            | std::io::ErrorKind::ConnectionReset
+                            | std::io::ErrorKind::TimedOut
                     ) =>
                 {
-                    Some(error)
+                    break;
                 }
                 Err(error) => panic!("listener probe failed: {error}"),
-            };
+            }
             assert!(
                 std::time::Instant::now() < deadline,
-                "listener did not stop; last probe error: {probe_error:?}"
+                "listener still accepts connections"
             );
             std::thread::sleep(Duration::from_millis(10));
         }
