@@ -36,7 +36,9 @@ A directory recursively selects packages; an ordinary source file selects all
 tests in its package; a test file selects only its own tests. Every selected
 package is checked with all its test files, including unselected helper/test
 functions. Imported packages exclude their tests. External test packages,
-dependency solving, and registries are outside this command's scope.
+remote dependency solving, and registries are outside this command's scope.
+Local dependencies follow [the project dependency rules](local-dependencies.md);
+imported library tests are excluded unless that library is selected directly.
 
 The runner skips symlinks, hidden directories, `target`, and `node_modules`, and
 rejects a symlink named directly as the target. It checks and builds all selected
@@ -64,8 +66,8 @@ failures; forced termination may leave temporary artifacts.
 
 Native tests require clang/LLVM 15 or newer and rustc 1.98 or newer targeting the
 same host, like `zore build`. Set `ZORE_CC` and `ZORE_RUSTC` to choose compilers;
-the ordinary runtime cache is reused. CI verifies Ubuntu and macOS. Windows
-native support remains unverified.
+the ordinary runtime cache is reused. CI verifies Linux, macOS and Windows x64 MSVC; see
+[platform support](platform-support.md) for host requirements.
 
 The [multi-file example](../examples/application-tests) shows private helpers,
 both signatures, cleanup, and opt-in demonstrations of returned-error and panic

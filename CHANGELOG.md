@@ -7,6 +7,15 @@ once it does.
 
 ## [Unreleased]
 
+### Local library dependencies
+
+- Added manifest-declared local project dependencies, including root and
+  transitive package imports, canonical identity and direct import visibility.
+- Added strict manifest validation and dependency/name/cycle/boundary diagnostics,
+  plus a multi-project example and native initialization/cleanup coverage.
+- Git sources, lockfiles, registry distribution and native library integration
+  remain separate follow-ups.
+
 ### Native platforms
 
 - Added Windows x64 MSVC linking, `.exe` output names, a local application cache,

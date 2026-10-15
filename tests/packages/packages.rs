@@ -1,3 +1,5 @@
+mod local_dependencies;
+
 use std::path::Path;
 
 use zore::check::{Checked, check_project};
@@ -260,7 +262,7 @@ fn import_declarations_are_checked() {
         ),
         (
             "import \"myapp\"\n",
-            "names the project, not a package inside it",
+            "the `main` package cannot be imported",
         ),
         ("import \"myapp//shapes\"\n", "is not a valid import path"),
         ("import \"myapp/../shapes\"\n", "is not a valid import path"),
@@ -461,7 +463,9 @@ fn imports_need_a_named_project() {
                 diagnostics.iter().any(|d| d.message().contains(message)),
                 "{message}: {diagnostics:#?}"
             ),
-            Err(LoadError::Source(error)) => panic!("{error}"),
+            Err(LoadError::Source(error)) => {
+                assert!(error.to_string().contains(message), "{message}: {error}")
+            }
             Ok(_) => panic!("{manifest:?} was accepted"),
         }
     }

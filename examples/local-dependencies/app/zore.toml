@@ -1,0 +1,6 @@
+name = "webapp"
+version = "0.1.0"
+
+[dependencies]
+greeting = { path = "../greeting" }
+audit = { path = "../audit" }

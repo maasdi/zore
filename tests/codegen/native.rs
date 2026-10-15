@@ -8,6 +8,7 @@ mod host_support;
 mod http;
 mod json;
 mod linkage_timers;
+mod local_dependencies;
 mod map_entries;
 mod mixed_bindings;
 mod performance;

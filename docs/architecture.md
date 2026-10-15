@@ -389,7 +389,13 @@ type-checks, but its text format is still TBD (§37.1).
 A program is more than one file. `driver/project.rs` loads the entry file's
 folder and every package it imports, through a `FileSystem` trait so tests can
 use memory instead of disk, and hands the resolver a list of packages with
-dependencies first. Spans carry their file, so diagnostics point into any
+dependencies first. `driver/project/manifest.rs` parses the supported manifest
+subset and validates the full local dependency graph. Each package resolves
+imports using its declaring project's direct dependency table before cache reuse.
+Canonical roots and unique project names preserve nominal package identity;
+canonical folder checks reject escaping, nested-project and package-alias imports.
+No fetch, lockfile or runtime dependency is introduced.
+Spans carry their file, so diagnostics point into any
 package; the source text of the bundled standard packages lives in a separate
 map that the checker and code generator read through `Sources`.
 

@@ -1,0 +1,6 @@
+package greeting
+
+func TestMessage() error {
+    if Message(NewPerson("Ada")) != "Hello, Ada!" { return error("unexpected greeting") }
+    return nil
+}

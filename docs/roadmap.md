@@ -96,6 +96,15 @@ linked above.
 
 ## Current implementation and next work
 
+The library ecosystem tracker [#135](https://github.com/maasdi/zore/issues/135)
+follows the completed #121 sequence. Its first increment, [#136](https://github.com/maasdi/zore/issues/136),
+implements local project dependencies, direct dependency visibility, canonical
+identity and conflict/boundary checks under §§3.4 and 3.20. See
+[local dependencies](local-dependencies.md). Git pinning/lockfiles (#137), native
+integration (#138) and later distribution (#139) remain separate work. Local
+paths are mutable references and do not establish reproducible remote builds.
+Further self-hosting remains deferred.
+
 The [2026-10-13 MVP inventory](conformance/mvp.md) maps §§39, 46, and 52 to
 the implementation and named executable assertions at `main` after PR #113.
 Most feature families have evidence; targeted cross-feature conformance gaps

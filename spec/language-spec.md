@@ -164,8 +164,9 @@ import "std/strings"
 ```
 
 The meaning of an import path, and how imported names are used, is specified in
-§3.20. The full package-resolution, registry, version-selection, and
-dependency-solver model is outside the MVP.
+§3.20. Local path dependencies are supported by the locked extension below.
+Remote fetching, registries, version selection and dependency solving remain
+outside this increment.
 
 ## 3.4 Project file — LOCKED
 
@@ -178,7 +179,37 @@ name = "hello"
 version = "0.1.0"
 ```
 
-Additional fields may be added later, but the MVP must not require a package registry or sophisticated dependency solver.
+The supported manifest subset is UTF-8, with LF or CRLF lines, optional blank
+lines, horizontal spaces/tabs and trailing # comments outside strings. Top-level
+name and optional version fields use single-line TOML basic double-quoted or
+literal single-quoted strings. Basic strings support the TOML escapes \b, \t,
+\n, \f, \r, \" and \\, and four/eight-digit Unicode scalar escapes. Raw control
+characters other than tab are rejected. Multiline strings, dotted/quoted keys,
+arrays and other tables are outside this subset and receive explicit errors.
+The name is required and follows §3.20; version is metadata, not a constraint.
+Duplicate fields, unknown fields/tables and malformed values are errors naming
+the manifest and line. No manifest may silently ignore a dependency entry.
+
+A single optional [dependencies] table maps bare project names to inline tables
+containing exactly one nonempty path string without NUL. Entries fit on one line; a trailing
+comma inside an inline table is not accepted. For example:
+
+```toml
+name = "myapp"
+version = "0.1.0"
+
+[dependencies]
+auth = { path = "../auth" }
+```
+
+Paths use the host's filesystem conventions, relative to the declaring manifest
+unless fully absolute. Windows drive-relative (C:folder) and root-relative
+(\folder without a drive/UNC volume) dependency paths are rejected to avoid
+implicit current-drive/current-directory lookup. Literal strings are useful for Windows backslashes. No tilde,
+environment substitution, network access or automatic discovery is performed.
+Path dependencies are mutable local source references: no lockfile or immutable
+source/reproducible-build guarantee is introduced. Git sources, registries and
+version constraints remain outside this increment.
 
 ## 3.5 Identifiers — LOCKED
 
@@ -958,10 +989,15 @@ double-quoted path of segments separated by `/` (§3.3):
 | --- | --- |
 | `"std/<path>"` | The standard package at `<path>` shipped with the compiler, such as `"std/os"` or `"std/os/exec"` (§37.2–§37.5) |
 | `"<project>/<dir>/..."` | The folder `<dir>/...` below the project root, where `<project>` is the project's name |
+| `"<dependency>/<dir>/..."` | A package in a project explicitly listed in the importing project's [dependencies] table |
+| `"<project>"` or `"<dependency>"` | That project's root package, if it is importable and named to match the project |
 
-Anything else is an error that names the path. A project imports only its own
-packages and the standard packages; dependencies on other projects are outside
-the MVP. A path segment, other than the project name, is an ASCII identifier
+Anything else is an error that names the path. Imports may use the importing
+project's own name, std, and its directly declared dependencies. A transitive
+dependency is usable by the library declaring it; the application must declare
+its own direct dependency before importing that project, even if its packages
+have already been loaded through another library. A path segment, other than
+the project name, is an ASCII identifier
 (§3.5), and the last segment of the path is the imported package's name: a
 non-`main` package's package clause must be exactly that name. The `main`
 package cannot be imported.
@@ -1003,17 +1039,46 @@ type position (`var c shapes.Circle`). The rules are:
   declaration or a predeclared name are all errors.
 - *No cycles.* A package that imports itself, directly or through other
   packages, is an error that lists the chain.
-- *Not in the MVP.* Import aliases, dot imports, blank imports, grouped
-  imports, package-level `var`, `init` functions, and imports of other
-  projects. Package-level `let` is specified in §3.21.
+- *Outside this increment.* Import aliases, dot imports, blank imports, grouped
+  imports, package-level `var`, init functions, remote dependencies and version
+  solving. Package-level let is specified in §3.21.
+
+**Local dependency graph — LOCKED.** Each dependency key must match the target
+manifest's project name and must not be std. The path must point to the project
+root itself, with its own zore.toml; finding an ancestor manifest is insufficient.
+All declared dependencies, including unused and transitive entries, are validated
+in deterministic name order before package loading. Dependency cycles are errors
+with a chain. Canonical filesystem roots identify projects: repeated references
+to one root share one identity; different roots using the same project name are
+rejected across the graph, including a conflict with the entry project. Multiple
+versions and renamed dependency aliases are outside this increment.
+
+An imported folder's canonical path must remain within its selected project root,
+and its nearest manifest must still identify that root. Symlinks cannot bypass
+a project boundary or expose an undeclared project. A canonical package folder
+exposed through different package import paths is rejected rather than acquiring
+two nominal identities. Imports of the entry folder or any main package remain
+errors, including through canonical aliases. Import path segments after the
+project name follow the ordinary ASCII identifier rules; traversal segments,
+empty segments and host separators are rejected.
+
+```ore
+// myapp declares auth; auth may declare its own dependencies.
+import "auth/tokens"
+func valid() bool { return tokens.Check("example") }
+```
 
 Each package is checked once, however many files import it. Package-level
 constants are evaluated as in §5.3 and may be used across packages when
 exported. Resource cleanup, borrowing, and `async` rules do not depend on which
 package a function or type came from.
 
-Ownership, error, and async implications: none beyond the rules above; imports
-add names, not new kinds of values.
+Ownership, error, and async implications: imports add names, not new kinds of
+values. Cross-project exported types retain nominal identity, ordinary generic
+and interface behavior, borrowing and cleanup on normal/error/panic exits, and
+ordinary async/task rules. Diamond dependencies initialize each package once in
+dependency order. Manifest/graph errors stop loading before semantic checking;
+no library code runs during dependency resolution.
 
 Compiler impact: load the entry package, parse every file, discover imports,
 and load imported packages (folder or standard) before resolving names;
@@ -1022,7 +1087,13 @@ file its own import table; check visibility at each qualified use and field or
 method access; report cycles during loading; give each declaration a symbol
 that includes its package path so equal names in different packages never
 collide in generated code. Pending conformance cases:
-`tests/conformance/packages.md`.
+`tests/conformance/packages.md`. The local dependency extension parses manifests,
+validates a canonical project graph, resolves imports in their declaring project,
+and rejects boundary/name conflicts before reusing cached package IDs. Existing
+semantic, ownership and native lowering passes retain their contracts. Conformance
+covers transitive/diamond graphs, direct visibility independent of import order,
+cycles, malformed manifests, path aliases/boundaries, imported main packages,
+nominal types, initialization and cleanup across projects, and host CLI commands.
 
 ## 3.21 Package-level values — LOCKED
 
@@ -8474,6 +8545,11 @@ func TestLoad() error {
     return nil
 }
 ```
+
+Dependency loading follows §3.20 in check/build/run/test. Imported dependency
+tests are excluded; explicitly selecting a library tests its own package files.
+Directory traversal does not follow dependency declarations to select library
+tests, though ordinary nested package traversal still applies.
 
 A directory target recursively selects package folders. A source-file target
 selects its folder; an ordinary file selects every test there, whereas a
