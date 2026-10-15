@@ -10,8 +10,8 @@ use crate::parser::{Parsed, parse, parse_standard};
 use crate::resolve::{FileUnit, ImportBinding, PackageUnit};
 use crate::source::{SourceError, SourceFile, SourceMap, Span};
 
-mod manifest;
-pub use manifest::Manifest;
+pub(crate) mod manifest;
+pub use manifest::{Dependency, Manifest};
 
 pub trait FileSystem {
     fn read(&self, path: &Path) -> Result<String, SourceError>;
@@ -21,6 +21,12 @@ pub trait FileSystem {
 
     /// The nearest folder at or above `dir` that holds `zore.toml`.
     fn manifest(&self, dir: &Path) -> Result<Option<Manifest>, SourceError>;
+
+    fn require_lockfile(&self) -> bool {
+        false
+    }
+
+    fn projects(&self, root: Manifest) -> Result<HashMap<String, Manifest>, SourceError>;
 
     /// A path that two spellings of one folder share.
     fn canonical(&self, path: &Path) -> PathBuf {
@@ -43,6 +49,10 @@ fn io_error(path: &Path, source: std::io::Error) -> SourceError {
 }
 
 impl FileSystem for Disk {
+    fn projects(&self, root: Manifest) -> Result<HashMap<String, Manifest>, SourceError> {
+        super::dependencies::resolve(root, Default::default())
+    }
+
     fn read(&self, path: &Path) -> Result<String, SourceError> {
         let bytes = std::fs::read(path).map_err(|source| io_error(path, source))?;
         String::from_utf8(bytes).map_err(|error| SourceError::InvalidUtf8 {
@@ -82,7 +92,7 @@ impl FileSystem for Disk {
     }
 
     fn canonical(&self, path: &Path) -> PathBuf {
-        std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+        std::fs::canonicalize(path).unwrap_or_else(|_| normalized(path))
     }
 }
 
@@ -105,6 +115,10 @@ impl Memory {
 }
 
 impl FileSystem for Memory {
+    fn projects(&self, root: Manifest) -> Result<HashMap<String, Manifest>, SourceError> {
+        manifest::resolve(self, root)
+    }
+
     fn read(&self, path: &Path) -> Result<String, SourceError> {
         self.files
             .get(&normalized(path))
@@ -353,6 +367,14 @@ fn load_package_project(
         _ => PathBuf::from("."),
     };
     let manifest = files.manifest(&dir).map_err(LoadError::Source)?;
+    if manifest.is_none() && files.require_lockfile() {
+        return Err(LoadError::Source(io_error(
+            &dir.join("zore.lock"),
+            std::io::Error::other(
+                "--locked requires a project with zore.toml and zore.lock; run `zore fetch` first",
+            ),
+        )));
+    }
     let mut paths = files.ore_files(&dir).map_err(LoadError::Source)?;
     if !include_tests {
         paths.retain(|path| !is_test_file(path));
@@ -366,7 +388,7 @@ fn load_package_project(
     let mut loader = Loader::new(files, Some(sources));
     let owner = manifest.as_ref().map(|manifest| manifest.name.clone());
     if let Some(manifest) = manifest {
-        loader.projects = manifest::resolve(files, manifest).map_err(LoadError::Source)?;
+        loader.projects = files.projects(manifest).map_err(LoadError::Source)?;
     }
     loader.entry_dir = Some(files.canonical(&dir));
     let parsed = loader.parse_folder(&paths)?;

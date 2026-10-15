@@ -394,7 +394,10 @@ subset and validates the full local dependency graph. Each package resolves
 imports using its declaring project's direct dependency table before cache reuse.
 Canonical roots and unique project names preserve nominal package identity;
 canonical folder checks reject escaping, nested-project and package-alias imports.
-No fetch, lockfile or runtime dependency is introduced.
+The disk dependency resolver adds pinned Git selection, atomic cache publication
+and entry lock validation before package loading. Git objects and source bytes
+are validated even offline. The compiler uses sha2 for manifest/cache hashes; no
+generated-program or runtime dependency is introduced. See [Git dependencies](git-dependencies.md).
 Spans carry their file, so diagnostics point into any
 package; the source text of the bundled standard packages lives in a separate
 map that the checker and code generator read through `Sources`.

@@ -72,3 +72,13 @@ the ordinary runtime cache is reused. CI verifies Linux, macOS and Windows x64 M
 The [multi-file example](../examples/application-tests) shows private helpers,
 both signatures, cleanup, and opt-in demonstrations of returned-error and panic
 failures followed by a passing test. The locked contract is specification §45.1.
+
+## Git dependency workflows
+
+`cargo test --locked --test git_dependencies` uses temporary local Git repositories
+and isolated caches; it requires Git and the ordinary native toolchain for its
+build/run/test case. It covers exact pin updates, offline validation, lock drift,
+cache corruption, concurrent publication, credential redaction, unsupported layouts,
+path confinement and shared nominal identity/initialization. The frontend-only
+check case explicitly selects a nonexistent native compiler. No public server is
+needed. The same suite runs on Linux, macOS and Windows CI.

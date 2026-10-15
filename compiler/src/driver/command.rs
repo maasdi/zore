@@ -1,3 +1,4 @@
+use super::dependencies::{Mode, Options};
 use std::ffi::OsString;
 use std::path::PathBuf;
 
@@ -8,6 +9,8 @@ pub(crate) enum Action {
     Run,
     Format,
     Test,
+    Fetch,
+    Update,
 }
 
 impl Action {
@@ -18,6 +21,8 @@ impl Action {
             Self::Run => "run",
             Self::Format => "fmt",
             Self::Test => "test",
+            Self::Fetch => "fetch",
+            Self::Update => "update",
         }
     }
 }
@@ -29,6 +34,7 @@ pub(crate) enum Command {
         action: Action,
         target: PathBuf,
         format_check: bool,
+        dependencies: Options,
     },
 }
 
@@ -57,6 +63,8 @@ pub(crate) fn parse(args: Vec<OsString>) -> Result<Command, String> {
         Some("run") => Action::Run,
         Some("fmt") => Action::Format,
         Some("test") => Action::Test,
+        Some("fetch") => Action::Fetch,
+        Some("update") => Action::Update,
         _ => return Err(format!("unknown command or option {first:?}")),
     };
     let remaining = &args[1..];
@@ -67,6 +75,14 @@ pub(crate) fn parse(args: Vec<OsString>) -> Result<Command, String> {
     let mut targets = Vec::new();
     let mut literal = false;
     let mut format_check = false;
+    let mut dependencies = Options {
+        mode: match action {
+            Action::Fetch => Mode::Fetch,
+            Action::Update => Mode::Update,
+            _ => Mode::Build,
+        },
+        ..Default::default()
+    };
     for arg in remaining {
         if !literal && arg == "--" {
             if !targets.is_empty() {
@@ -78,6 +94,16 @@ pub(crate) fn parse(args: Vec<OsString>) -> Result<Command, String> {
         if !literal && action == Action::Format && arg == "--check" && !format_check {
             format_check = true;
             continue;
+        }
+        if !literal && action != Action::Format {
+            if arg == "--locked" && !dependencies.locked && action != Action::Update {
+                dependencies.locked = true;
+                continue;
+            }
+            if arg == "--offline" && !dependencies.offline {
+                dependencies.offline = true;
+                continue;
+            }
         }
         if !literal && arg.as_encoded_bytes().starts_with(b"-") {
             return Err(format!("unknown option {arg:?} for {}", action.name()));
@@ -94,6 +120,7 @@ pub(crate) fn parse(args: Vec<OsString>) -> Result<Command, String> {
         action,
         target: PathBuf::from(target),
         format_check,
+        dependencies,
     })
 }
 
@@ -117,6 +144,12 @@ pub(crate) fn help(action: Option<Action>) -> String {
                 Build one source file into a temporary directory and run it. The\n\
                 program's exit status is returned. Requires clang, as for build.\n"
             }
+            Action::Fetch => {
+                "Usage: zore fetch [--locked] [--offline] [--] <file|directory>\n\nFetch exact Git pins and create a missing zore.lock. Existing locks must match.\n"
+            }
+            Action::Update => {
+                "Usage: zore update [--offline] [--] <file|directory>\n\nRefresh zore.lock from exact manifest pins; never select newer revisions.\n"
+            }
             Action::Format => {
                 "Usage: zore fmt [--check] [--] <file.ore|directory>\n\n\
                 Format a source file or recursively format .ore files in a directory.\n\
@@ -132,7 +165,15 @@ pub(crate) fn help(action: Option<Action>) -> String {
                 Requires clang and rustc, as for build. Exits 1 on any failure.\n"
             }
         };
-        return format!("{text}Use -- before a target whose name starts with '-'.\n");
+        let options = if matches!(
+            action,
+            Action::Check | Action::Build | Action::Run | Action::Test
+        ) {
+            "Options: --locked requires a matching zore.lock; --offline forbids network.\nThese commands use cached dependencies only; run zore fetch to populate them.\n"
+        } else {
+            ""
+        };
+        return format!("{text}{options}Use -- before a target whose name starts with '-'.\n");
     }
     "Zore bootstrap compiler\n\n\
      Usage: zore <command> [--] <target>\n\
@@ -143,7 +184,9 @@ pub(crate) fn help(action: Option<Action>) -> String {
        build <file.ore>  Build a native executable (requires clang)\n\
        run <file.ore>    Build and run a program (requires clang)\n\n\
        fmt <target>      Format a source file or directory (--check for CI)\n\
-       test <target>     Run application tests (requires clang and rustc)\n\n\
+       test <target>     Run application tests (requires clang and rustc)\n\
+       fetch <target>    Fetch pinned dependencies and create zore.lock\n\
+       update <target>   Refresh zore.lock from manifest pins\n\n\
      Options:\n\
        -h, --help        Show help; also accepted after a command\n\
        -V, --version     Show compiler version\n\n\

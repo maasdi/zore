@@ -5,6 +5,7 @@ use std::process::{Command, ExitCode};
 
 use super::build::{BuildError, TempDir, build_test_project};
 use super::check::check_project_with_entry;
+use super::dependencies::{DependencyDisk, Options};
 use super::project::{Disk, FileSystem, LoadError, Project, is_test_file, load_test_project};
 use super::session::report;
 use crate::ast::{Item, Type};
@@ -24,8 +25,8 @@ struct Suite {
     tests: Vec<Test>,
 }
 
-pub(super) fn run(target: &Path) -> ExitCode {
-    match test(target) {
+pub(super) fn run(target: &Path, dependencies: Options) -> ExitCode {
+    match test(target, dependencies) {
         Ok(true) => ExitCode::SUCCESS,
         Ok(false) => ExitCode::FAILURE,
         Err(message) => {
@@ -37,7 +38,7 @@ pub(super) fn run(target: &Path) -> ExitCode {
     }
 }
 
-fn test(target: &Path) -> Result<bool, String> {
+fn test(target: &Path, dependencies: Options) -> Result<bool, String> {
     let metadata = fs::symlink_metadata(target).map_err(|error| path_error(target, error))?;
     if metadata.file_type().is_symlink() {
         return Err(format!(
@@ -74,7 +75,7 @@ fn test(target: &Path) -> Result<bool, String> {
             .map_err(|error| error.to_string())?;
         let Some(entry) = paths.first() else { continue };
         let mut sources = SourceMap::new();
-        let mut project = load_test_project(&mut sources, &Disk, entry)
+        let mut project = load_test_project(&mut sources, &DependencyDisk(dependencies), entry)
             .map_err(|error| load_error(&sources, error))?;
         let tests = discover(&project, &sources, selected_file.as_deref())?;
         if tests.is_empty() {
