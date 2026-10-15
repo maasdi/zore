@@ -86,9 +86,12 @@ needed. The same suite runs on Linux, macOS and Windows CI.
 ## Curated native adapters
 
 `cargo test --locked --test native_adapters` validates the C ABI, native recipe
-lock drift, local and pinned Git diamond consumption, linker-independent checks,
+lock drift, package-owned source integrity and confinement, missing-source rejection
+after cache population, local and pinned Git diamond consumption, linker-independent checks,
 runtime-cache selection and owned async/scoped-result cleanup on normal/error/panic
 paths. It requires Git and the native C/Rust toolchain. `cargo test --locked
 --test packages native_adapters` covers registration, visibility, duplicate/bad
 metadata, root-only private bindings and ordinary move rules without a linker.
-CI also enables `zore_adapter_adler32_v1` when linting the runtime bridge.
+CI enables generic `zore_native_adapters` registration with the example
+`native/registration.rs` harness when linting the package-owned bridge. Production
+builds generate registration from validated package sources.
