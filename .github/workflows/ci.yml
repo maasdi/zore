@@ -19,10 +19,19 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        os: [ubuntu-latest, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
+      - name: Configure Windows native toolchain
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+      - name: Select Windows clang
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: '"ZORE_CC=C:\Program Files\LLVM\bin\clang.exe" >> $env:GITHUB_ENV'
       - name: Install repository toolchain
         run: rustup show active-toolchain
       - name: Check formatting
@@ -40,6 +49,7 @@ jobs:
           clang --version
           rustc --version
       - name: Benchmark harness correctness
+        if: runner.os != 'Windows'
         run: python3 -m unittest discover -s benchmarks/performance -p 'test_*.py'
       - name: Test
-        run: cargo test --locked --all-targets
+        run: cargo test --locked --all-targets --no-fail-fast

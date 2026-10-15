@@ -35,8 +35,16 @@ const RUNTIME_SOURCES: &[(&str, &str)] = &[
     ),
     ("slot.rs", include_str!("../../../runtime/src/slot.rs")),
     ("signal.rs", include_str!("../../../runtime/src/signal.rs")),
+    (
+        "signal_windows.rs",
+        include_str!("../../../runtime/src/signal_windows.rs"),
+    ),
     ("errors.rs", include_str!("../../../runtime/src/errors.rs")),
     ("exec.rs", include_str!("../../../runtime/src/exec.rs")),
+    (
+        "filepath.rs",
+        include_str!("../../../runtime/src/filepath.rs"),
+    ),
     ("io.rs", include_str!("../../../runtime/src/io.rs")),
     ("float.rs", include_str!("../../../runtime/src/float.rs")),
     ("map.rs", include_str!("../../../runtime/src/map.rs")),
@@ -152,6 +160,11 @@ impl TempDir {
     pub fn path(&self) -> &Path {
         &self.0
     }
+
+    pub fn executable(&self, name: &str) -> PathBuf {
+        self.0
+            .join(format!("{name}{}", std::env::consts::EXE_SUFFIX))
+    }
 }
 
 impl Drop for TempDir {
@@ -197,15 +210,34 @@ pub(crate) fn build_test_project(
 }
 
 fn link(ir: &str, output: &Path, runtime_main: &str) -> Result<(), BuildError> {
+    if cfg!(not(target_pointer_width = "64")) {
+        return Err(BuildError::Toolchain("native builds require a 64-bit host toolchain; check and fmt remain available without native linking".into()));
+    }
+    if cfg!(all(
+        windows,
+        not(all(target_env = "msvc", target_arch = "x86_64"))
+    )) {
+        return Err(BuildError::Toolchain(
+            "Windows native builds require x86_64-pc-windows-msvc; install the x64 MSVC Rust toolchain, Visual Studio C++ Build Tools and clang".into(),
+        ));
+    }
     let dir = TempDir::new()?;
     let ir_path = dir.path().join("program.ll");
-    let object_path = dir.path().join("program.o");
+    let object_path = dir.path().join(if cfg!(windows) {
+        "program.obj"
+    } else {
+        "program.o"
+    });
     fs::write(&ir_path, ir).map_err(|e| BuildError::Io(format!("{}: {e}", ir_path.display())))?;
     let cc = compiler();
-    let result = Command::new(&cc)
-        .arg("-O2")
-        .arg("-Wno-override-module")
-        .arg("-fPIC")
+    let mut compile = Command::new(&cc);
+    compile.args(["-O2", "-Wno-override-module"]);
+    if cfg!(windows) {
+        compile.arg("--target=x86_64-pc-windows-msvc");
+    } else {
+        compile.arg("-fPIC");
+    }
+    let result = compile
         .arg("-c")
         .arg(&ir_path)
         .arg("-o")
@@ -235,15 +267,17 @@ fn link(ir: &str, output: &Path, runtime_main: &str) -> Result<(), BuildError> {
     link_arg.push(&object_path);
     let mut extern_arg = std::ffi::OsString::from("zore_runtime=");
     extern_arg.push(&runtime);
-    let result = Command::new(&rustc)
+    let mut link = Command::new(&rustc);
+    if !cfg!(windows) {
+        link.arg("-C").arg(format!("linker={cc}"));
+    }
+    let result = link
         .arg("--edition=2024")
         .arg("--crate-name=zore_program")
         .arg("-Copt-level=2")
         .arg("-Cpanic=abort")
         .arg("--extern")
         .arg(extern_arg)
-        .arg("-C")
-        .arg(format!("linker={cc}"))
         .arg("-C")
         .arg(link_arg)
         .arg(&main_path)
@@ -254,7 +288,7 @@ fn link(ir: &str, output: &Path, runtime_main: &str) -> Result<(), BuildError> {
     if !result.status.success() {
         return Err(BuildError::Toolchain(format!(
             "`{}` failed to compile or link the Rust runtime; ensure rustc 1.98 or newer \
-             and clang target the same host:\n{}",
+             and clang target the same host; Windows also requires Visual Studio C++ Build Tools and the Windows SDK:\n{}",
             rustc.to_string_lossy(),
             String::from_utf8_lossy(&result.stderr)
         )));
@@ -276,6 +310,11 @@ fn cache_root() -> Option<PathBuf> {
     if let Some(dir) = std::env::var_os("ZORE_CACHE_DIR") {
         return Some(PathBuf::from(dir).join("zore"));
     }
+    if cfg!(windows) {
+        return std::env::var_os("LOCALAPPDATA")
+            .filter(|directory| !directory.is_empty())
+            .map(|directory| PathBuf::from(directory).join("zore").join("cache"));
+    }
     if let Some(dir) = std::env::var_os("XDG_CACHE_HOME").filter(|dir| !dir.is_empty()) {
         return Some(PathBuf::from(dir).join("zore"));
     }
@@ -294,6 +333,20 @@ fn runtime_library(rustc: &std::ffi::OsStr, scratch: &Path) -> Result<PathBuf, B
         .arg("-vV")
         .output()
         .map_err(|error| toolchain_error(rustc, &error))?;
+    if !version.status.success() {
+        return Err(BuildError::Toolchain(format!(
+            "`{}` could not report its host toolchain:\n{}",
+            rustc.to_string_lossy(),
+            String::from_utf8_lossy(&version.stderr)
+        )));
+    }
+    if cfg!(windows)
+        && !String::from_utf8_lossy(&version.stdout)
+            .lines()
+            .any(|line| line == "host: x86_64-pc-windows-msvc")
+    {
+        return Err(BuildError::Toolchain("Windows native builds require ZORE_RUSTC to select an x86_64-pc-windows-msvc compiler; GNU and ARM Windows toolchains are not supported".into()));
+    }
     let mut hasher = std::hash::DefaultHasher::new();
     std::hash::Hash::hash(&version.stdout, &mut hasher);
     for &(name, contents) in RUNTIME_SOURCES {

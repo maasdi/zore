@@ -13,7 +13,7 @@ The contracts are locked in specification §37.6. Executable tests are in
 | Routing | Literal precedence, decoded path params, crossing ambiguity rejection, HEAD fallback, OPTIONS/Allow, 404/405 |
 | Function callbacks | Declared functions, inline Copy-handle captures, independent immutable snapshots, concurrent invocations; unsafe/opaque captures rejected |
 | Convenience/lifecycle | Sticky registration, Text/JSON framing, serialization failure before commitment, ListenAndServeContext startup failures, default/configured ListenAndServe signal bootstrap, active-request drain, and signal cleanup after startup failure |
-| OS signals | Real SIGINT/SIGTERM, overlapping subscriptions, parent cancellation, idempotent stop, restored default dispositions |
+| OS signals | Real SIGINT/SIGTERM on Unix and isolated Ctrl+C/Break on Windows; overlapping subscriptions, parent cancellation, idempotent stop, restored defaults; direct Windows termination-callback mapping and bounded-wait tests |
 | Framing | CL and chunked echo, valid quoted extensions, repeated CL, TE+CL, unsupported TE, signed/overflowing lengths, missing/repeated Host, invalid fields, version rejection, header overflow, early EOF, trailers rejected |
 | Body/response | Known and streamed limits, sticky body error before commitment, Expect once, empty Read, Read after final commitment, 204/205/304/HEAD, length overrun/underrun, generic handler error, unread-body close |
 | Buffered body spans | Multi-buffer CL and chunked bodies, chunk boundaries across refill, retained pipelined input, partial body EOF |
@@ -30,3 +30,7 @@ a second factory acquisition before the first factory panics, then checks both
 completion guards and a later 503. Shutdown expiry is tested with a handler
 blocked on an application channel: expiry returns before it finishes, request
 cancellation is observable, and a later Shutdown waits successfully.
+
+Windows close/logoff/shutdown cleanup is best effort under OS deadlines. Direct
+callback tests do not claim real delivery of these events. The Ctrl+C/Break HTTP
+cases exercise both convenience entry points and drain active requests before exit.

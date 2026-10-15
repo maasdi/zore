@@ -90,7 +90,7 @@ fn test(target: &Path) -> Result<bool, String> {
         project
             .add_test_runner(&mut sources, runner, ENTRY_NAME)
             .map_err(|error| load_error(&sources, error))?;
-        let executable = scratch.path().join(format!("tests-{index}"));
+        let executable = scratch.executable(&format!("tests-{index}"));
         build_test_project(&project, &sources, &executable, ENTRY_NAME).map_err(
             |error| match error {
                 BuildError::Diagnostics(diagnostics) => {
@@ -125,7 +125,10 @@ fn test(target: &Path) -> Result<bool, String> {
                 }
                 Ok(status) => {
                     failed += 1;
-                    println!("FAIL {label} ({status})");
+                    match status.code() {
+                        Some(code) => println!("FAIL {label} (exit status: {code})"),
+                        None => println!("FAIL {label} ({status})"),
+                    }
                 }
                 Err(error) => {
                     failed += 1;

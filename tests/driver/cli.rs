@@ -361,7 +361,9 @@ fn format_checks_and_writes_a_directory_without_resolving_imports() {
     let checked = invoke(&[OsStr::new("fmt"), OsStr::new("--check"), dir.as_os_str()]);
     assert_eq!(checked.status.code(), Some(1));
     assert!(checked.stderr.is_empty(), "{checked:?}");
-    let listed = String::from_utf8(checked.stdout).unwrap();
+    let listed = String::from_utf8(checked.stdout)
+        .unwrap()
+        .replace('\\', "/");
     assert!(listed.contains("main.ore") && listed.contains("lib/helper.ore"));
     assert_eq!(std::fs::read(&main).unwrap(), before);
     let output = invoke(&[OsStr::new("fmt"), dir.as_os_str()]);

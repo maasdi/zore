@@ -17,6 +17,8 @@ mod deadlock;
 mod errors;
 #[path = "exec.rs"]
 mod exec;
+#[cfg(windows)]
+mod filepath;
 #[path = "float.rs"]
 mod float;
 #[path = "io.rs"]

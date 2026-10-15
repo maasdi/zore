@@ -1,0 +1,108 @@
+package filepath
+
+import "std/path"
+import "std/strings"
+
+const Separator = '\\'
+const ListSeparator = ';'
+
+func normalized(p string) string {
+    let text = strings.ReplaceAll(p, "\\", "/")
+    if strings.HasPrefix(text, "//?/") || strings.HasPrefix(text, "//./") {
+        panic("filepath: Windows device and verbatim paths are unsupported")
+    }
+    return text
+}
+
+func volumeLength(p string) int {
+    if p.len() >= 2 && p[1] == 58 {
+        let letter = p[0]
+        if (letter >= 65 && letter <= 90) || (letter >= 97 && letter <= 122) {
+            return 2
+        }
+    }
+    if p.len() < 5 || !strings.HasPrefix(p, "//") || p[2] == 47 {
+        return 0
+    }
+    let serverEnd = strings.Index(p[2:], "/")
+    if serverEnd <= 0 { return 0 }
+    let shareStart = serverEnd + 3
+    if shareStart >= p.len() || p[shareStart] == 47 { return 0 }
+    let shareEnd = strings.Index(p[shareStart:], "/")
+    if shareEnd < 0 { return p.len() }
+    return shareStart + shareEnd
+}
+
+func Clean(p string) string {
+    let text = normalized(p)
+    let volume = volumeLength(text)
+    let prefix = text[:volume]
+    var rest = text[volume:]
+    let unc = volume > 2
+    if unc && rest.len() == 0 {
+        return strings.ReplaceAll(prefix, "/", "\\")
+    }
+    if unc && !strings.HasPrefix(rest, "/") { rest = "/" + rest }
+    var cleaned = path.Clean(rest)
+    if unc && cleaned == "/" {
+        return strings.ReplaceAll(prefix, "/", "\\")
+    }
+    if volume == 0 && volumeLength(cleaned) > 0 { cleaned = "./" + cleaned }
+    return strings.ReplaceAll(prefix + cleaned, "/", "\\")
+}
+
+func Join(elems []string) string {
+    var joined = ""
+    for elem in elems {
+        if elem.len() == 0 { continue }
+        let driveOnly = joined.len() == 2 && volumeLength(joined) == 2
+        if joined.len() > 0 && !driveOnly {
+            joined += "/"
+        }
+        joined += elem
+    }
+    if joined.len() == 0 { return "" }
+    return Clean(joined)
+}
+
+func Split(p string) (string, string) {
+    let text = normalized(p)
+    let volume = volumeLength(text)
+    let slash = strings.LastIndex(text[volume:], "/") + volume
+    return p[:slash + 1], p[slash + 1:]
+}
+
+func Base(p string) string {
+    if p.len() == 0 { return "." }
+    let text = normalized(p)
+    let volume = volumeLength(text)
+    var end = text.len()
+    for end > volume && text[end - 1] == 47 { end -= 1 }
+    if end == volume { return "\\" }
+    let rest = text[volume:end]
+    return rest[strings.LastIndex(rest, "/") + 1:]
+}
+
+func Dir(p string) string {
+    let dir, _ = Split(p)
+    return Clean(dir)
+}
+
+func Ext(p string) string {
+    let text = normalized(p)
+    return path.Ext(text[volumeLength(text):])
+}
+
+func IsAbs(p string) bool {
+    let text = normalized(p)
+    let volume = volumeLength(text)
+    if volume > 2 { return true }
+    return volume == 2 && text.len() > volume && text[volume] == 47
+}
+
+func Abs(p string) (string, error) {
+    let resolved = absolute(p)?
+    return Clean(resolved), nil
+}
+
+func absolute(p string) (string, error)

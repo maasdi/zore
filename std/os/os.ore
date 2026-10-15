@@ -73,15 +73,16 @@ func Stat(path string) (FileInfo, error) {
 
 func baseName(path string) string {
     var end = path.len()
-    for end > 1 && path[end - 1] == 47 {
+    for end > 1 && pathSeparator(path[end - 1]) {
         end -= 1
     }
     var start = end
-    for start > 0 && path[start - 1] != 47 {
+    for start > 0 && !pathSeparator(path[start - 1]) {
         start -= 1
     }
     return path[start:end]
 }
 
+func pathSeparator(value byte) bool
 func dirNames(path string) (Array<string>, error)
 func statFields(path string) (Array<int>, error)

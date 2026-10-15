@@ -10,12 +10,12 @@ use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
-#[cfg(not(any(target_os = "linux", target_os = "macos")))]
-use super::reactor::Pollable;
+use super::blocking;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+use super::reactor;
 use super::strconv::ValueError;
 use super::string::StringOut;
 use super::sys::{ByteArrayError, ErrorOut, instant_of, text_of};
-use super::{blocking, reactor};
 
 struct Connection {
     stream: TcpStream,
@@ -69,7 +69,7 @@ fn connection(stream: TcpStream) -> Handle {
 
 fn prepare(stream: &TcpStream) -> std::io::Result<()> {
     stream.set_nodelay(true)?;
-    stream.set_nonblocking(reactor::POLLED)
+    stream.set_nonblocking(true)
 }
 
 fn deadline_of(reading: &AtomicI64) -> Option<Instant> {
@@ -95,24 +95,29 @@ fn resolve(family: i64, address: &str) -> std::io::Result<Vec<SocketAddr>> {
     Ok(candidates)
 }
 
-/// Runs `attempt` until it stops reporting that it would block, waiting for the descriptor in
-/// between; gives up with a timeout error once `deadline` passes.
+/// Retries nonblocking sockets on helper hosts until completion or the deadline.
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
 fn until_ready<T>(
-    descriptor: &impl Pollable,
-    write: bool,
     deadline: &AtomicI64,
     mut attempt: impl FnMut() -> std::io::Result<T>,
 ) -> std::io::Result<T> {
-    let _blocking = (!reactor::POLLED).then(super::scheduler::BlockingGuard::enter);
+    let mut blocking = None;
     loop {
+        if deadline_of(deadline).is_some_and(|when| Instant::now() >= when) {
+            return Err(std::io::Error::new(ErrorKind::TimedOut, "timed out"));
+        }
         match attempt() {
             Err(error) if error.kind() == ErrorKind::WouldBlock => {
+                blocking.get_or_insert_with(super::scheduler::BlockingGuard::enter);
                 let deadline = deadline_of(deadline);
                 if deadline.is_some_and(|when| Instant::now() >= when) {
                     return Err(std::io::Error::new(ErrorKind::TimedOut, "timed out"));
                 }
-                reactor::wait_fd(descriptor.descriptor(), write, deadline);
+                let delay = deadline.map_or(Duration::from_millis(2), |when| {
+                    when.saturating_duration_since(Instant::now())
+                        .min(Duration::from_millis(2))
+                });
+                std::thread::sleep(delay);
             }
             Err(error) if error.kind() == ErrorKind::Interrupted => {}
             other => return other,
@@ -133,7 +138,7 @@ pub unsafe extern "C" fn zore_native_net_listen(
     let address = unsafe { text_of(address, address_len) };
     let result: std::io::Result<TcpListener> = blocking::run(move || {
         let listener = TcpListener::bind(&resolve(family, &address)?[..])?;
-        listener.set_nonblocking(reactor::POLLED)?;
+        listener.set_nonblocking(true)?;
         Ok(listener)
     });
     let value = match result {
@@ -156,9 +161,7 @@ pub unsafe extern "C" fn zore_native_net_accept(out: *mut ValueError, id: i64) {
     #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     let value = match lookup(id).as_deref() {
         Some(Handle::Listener(listener)) => {
-            let accepted = until_ready(&listener.socket, false, &listener.deadline, || {
-                listener.socket.accept()
-            });
+            let accepted = until_ready(&listener.deadline, || listener.socket.accept());
             match accepted.and_then(|(stream, _)| prepare(&stream).map(|()| stream)) {
                 Ok(stream) => ValueError::ok(insert(connection(stream))),
                 Err(error) => ValueError::failed_text(&format!("net.Accept: {error}")),
@@ -288,9 +291,7 @@ pub unsafe extern "C" fn zore_native_net_read(out: *mut ByteArrayError, id: i64,
         (Some(Handle::Connection(connection)), Ok(max)) => {
             let mut stream = &connection.stream;
             let mut chunk = vec![0u8; max];
-            match until_ready(&connection.stream, false, &connection.read_deadline, || {
-                stream.read(&mut chunk)
-            }) {
+            match until_ready(&connection.read_deadline, || stream.read(&mut chunk)) {
                 Ok(0) => ByteArrayError::failed("EOF"),
                 Ok(count) => ByteArrayError::ok(&chunk[..count]),
                 Err(error) => ByteArrayError::failed(&format!("net.Read: {error}")),
@@ -324,9 +325,7 @@ pub unsafe extern "C" fn zore_native_net_write(
                 if sent == bytes.len() {
                     break Ok(());
                 }
-                match until_ready(&connection.stream, true, &connection.write_deadline, || {
-                    stream.write(&bytes[sent..])
-                }) {
+                match until_ready(&connection.write_deadline, || stream.write(&bytes[sent..])) {
                     Ok(0) => break Err(std::io::Error::from(ErrorKind::WriteZero)),
                     Ok(count) => sent += count,
                     Err(error) => break Err(error),

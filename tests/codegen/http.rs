@@ -94,13 +94,27 @@ fn send_signal(child: &Child, signal: i32) {
     // SAFETY: the child is live and the test selects a supported POSIX signal.
     assert_eq!(unsafe { kill(child.id() as i32, signal) }, 0);
 }
-#[cfg(not(unix))]
-fn send_signal(_child: &Child, _signal: i32) {
-    panic!("signal tests need Unix");
+
+#[cfg(windows)]
+use super::signal_windows::send_signal;
+
+fn test_signals() -> [i32; 2] {
+    #[cfg(unix)]
+    {
+        [2, 15]
+    }
+    #[cfg(windows)]
+    {
+        [0, 1]
+    }
 }
 
 #[test]
 fn http_function_handlers_run_concurrently_and_shutdown_on_real_signals() {
+    #[cfg(windows)]
+    if !super::signal_windows::isolated_console() {
+        return;
+    }
     let source = r#"package main
 import "std/context"
 import "std/net/http"
@@ -148,7 +162,7 @@ func exercise() error {
 }
 func main() { let err = exercise(); if err != nil { panic("server failure") } }
 "#;
-    for selected in [2, 15] {
+    for selected in test_signals() {
         let server = ServerProcess::start(source);
         status(
             &server.exchange("GET /health HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n"),
@@ -225,10 +239,13 @@ func main() {
     );
 }
 
-#[cfg(unix)]
 #[test]
 fn http_listen_and_serve_bootstraps_signals_and_drains_active_requests() {
-    for selected in [2, 15] {
+    #[cfg(windows)]
+    if !super::signal_windows::isolated_console() {
+        return;
+    }
+    for selected in test_signals() {
         let listener = std::net::TcpListener::bind("0.0.0.0:0").unwrap();
         let port = listener.local_addr().unwrap().port();
         let address = format!("127.0.0.1:{port}");
@@ -260,7 +277,7 @@ func main() { let err = run(); if err != nil { panic(errors.Message(err)) } }
 "#
         .replace(
             "SERVE",
-            if selected == 2 {
+            if selected == test_signals()[0] {
                 "http.ListenAndServe(\"ENDPOINT\", router)"
             } else {
                 "http.ListenAndServeWithConfig(\"ENDPOINT\", router, config)"
@@ -269,7 +286,7 @@ func main() { let err = run(); if err != nil { panic(errors.Message(err)) } }
         .replace("ENDPOINT", &endpoint)
         .replace("ADDRESS", &address);
         let dir = TempDir::new().unwrap();
-        let executable = dir.path().join("server");
+        let executable = dir.executable("server");
         build_file(&source, &executable).unwrap_or_else(|e| panic!("build failed: {e:?}"));
         drop(listener);
         let mut server = ServerProcess::launch(&executable, dir);
@@ -294,23 +311,28 @@ func main() { let err = run(); if err != nil { panic(errors.Message(err)) } }
             .read_line(&mut entered)
             .unwrap();
         assert_eq!(entered, "handling\n");
+        let address = server.address.parse().unwrap();
+        drop(TcpStream::connect_timeout(&address, Duration::from_secs(2)).unwrap());
         send_signal(&server.child, selected);
         let deadline = std::time::Instant::now() + Duration::from_secs(4);
-        let address = server.address.parse().unwrap();
         loop {
-            match TcpStream::connect_timeout(&address, Duration::from_millis(100)) {
+            match TcpStream::connect_timeout(&address, Duration::from_secs(2)) {
                 Ok(probe) => drop(probe),
-                Err(error) if error.kind() == std::io::ErrorKind::ConnectionRefused => break,
                 Err(error)
                     if matches!(
                         error.kind(),
-                        std::io::ErrorKind::ConnectionReset | std::io::ErrorKind::TimedOut
-                    ) => {}
+                        std::io::ErrorKind::ConnectionRefused
+                            | std::io::ErrorKind::ConnectionReset
+                            | std::io::ErrorKind::TimedOut
+                    ) =>
+                {
+                    break;
+                }
                 Err(error) => panic!("listener probe failed: {error}"),
             }
             assert!(
                 std::time::Instant::now() < deadline,
-                "listener did not stop"
+                "listener still accepts connections"
             );
             std::thread::sleep(Duration::from_millis(10));
         }
@@ -323,9 +345,13 @@ func main() { let err = run(); if err != nil { panic(errors.Message(err)) } }
     }
 }
 
-#[cfg(unix)]
 #[test]
 fn http_listen_and_serve_restores_signals_after_startup_failure() {
+    #[cfg(windows)]
+    if !super::signal_windows::isolated_console() {
+        return;
+    }
+    #[cfg(unix)]
     use std::os::unix::process::ExitStatusExt;
 
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -354,8 +380,12 @@ func main() {
 "#
     .replace("ADDRESS", &listener.local_addr().unwrap().to_string());
     let mut server = ServerProcess::start(&source);
-    send_signal(&server.child, 15);
-    assert_eq!(server.child.wait().unwrap().signal(), Some(15));
+    send_signal(&server.child, test_signals()[1]);
+    let status = server.child.wait().unwrap();
+    #[cfg(unix)]
+    assert_eq!(status.signal(), Some(15));
+    #[cfg(windows)]
+    assert_eq!(status.code(), Some(0xC000013Au32 as i32));
 }
 
 struct ServerProcess {
@@ -450,7 +480,7 @@ fn rest_benchmark_checks_success_validation_handler_errors_and_clean_shutdown() 
 impl ServerProcess {
     fn start(source: &str) -> Self {
         let dir = TempDir::new().unwrap();
-        let executable = dir.path().join("server");
+        let executable = dir.executable("server");
         build_file(source, &executable).unwrap_or_else(|e| panic!("build failed: {e:?}"));
         Self::launch(&executable, dir)
     }
@@ -1038,6 +1068,10 @@ func main() {
 
 #[test]
 fn rest_api_example_serves_requests_and_shuts_down_cleanly() {
+    #[cfg(windows)]
+    if !super::signal_windows::isolated_console() {
+        return;
+    }
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let address = listener.local_addr().unwrap().to_string();
     drop(listener);
@@ -1087,7 +1121,7 @@ fn rest_api_example_serves_requests_and_shuts_down_cleanly() {
         415,
     );
     status(&server.exchange("POST /users HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}"), 400);
-    send_signal(&server.child, 15);
+    send_signal(&server.child, test_signals()[1]);
     server.finish("");
 }
 

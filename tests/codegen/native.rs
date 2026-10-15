@@ -4,6 +4,7 @@ mod async_callables;
 mod async_scopes;
 mod conformance;
 mod controlled_runtime;
+mod host_support;
 mod http;
 mod json;
 mod linkage_timers;
@@ -12,8 +13,9 @@ mod mixed_bindings;
 mod performance;
 mod review_regressions;
 mod scoped_tasks;
-#[cfg(unix)]
 mod signal;
+#[cfg(windows)]
+mod signal_windows;
 
 use std::io::Write;
 use std::path::Path;
@@ -24,7 +26,7 @@ use zore::source::SourceMap;
 
 fn run(source: &str) -> Output {
     let dir = TempDir::new().unwrap();
-    let executable = dir.path().join("program");
+    let executable = dir.executable("program");
     build_file(source, &executable).unwrap_or_else(|e| panic!("build failed: {e:?}"));
     Command::new(&executable)
         .env("ZORE_CHECK_LEAKS", "1")
@@ -34,7 +36,7 @@ fn run(source: &str) -> Output {
 
 fn run_with_input(source: &str, input: &[u8]) -> Output {
     let dir = TempDir::new().unwrap();
-    let executable = dir.path().join("program");
+    let executable = dir.executable("program");
     build_file(source, &executable).unwrap_or_else(|e| panic!("build failed: {e:?}"));
     let mut child = Command::new(&executable)
         .env("ZORE_CHECK_LEAKS", "1")
@@ -1639,7 +1641,9 @@ fn cli_build_and_run() {
         .unwrap();
     assert!(output.status.success(), "{}", stderr(&output));
     assert!(output.stdout.is_empty() && output.stderr.is_empty());
-    let built = Command::new(greet_dir.join("greet")).output().unwrap();
+    let built = Command::new(greet_dir.join(format!("greet{}", std::env::consts::EXE_SUFFIX)))
+        .output()
+        .unwrap();
     assert_eq!(stdout(&built), "hi\n");
 
     let output = zore().arg("run").arg(&source).output().unwrap();
@@ -3879,8 +3883,8 @@ func main() {{
     let _, failure = os.ReadFile(\"{missing}\")
     println(failure != nil)
 }}",
-        path = path.display(),
-        missing = missing.display()
+        path = path.to_string_lossy().replace('\\', "/"),
+        missing = missing.to_string_lossy().replace('\\', "/")
     );
     prints(&source, "true\nhéllo\nfile\ntrue\nshort\ntrue\n");
     assert_eq!(std::fs::read_to_string(&path).unwrap(), "short");
@@ -3907,8 +3911,8 @@ func main() {{
     let _, missing = os.ReadFile(\"{nowhere}\")
     println(missing != nil)
 }}",
-        binary = binary.display(),
-        nowhere = nowhere.display()
+        binary = binary.to_string_lossy().replace('\\', "/"),
+        nowhere = nowhere.to_string_lossy().replace('\\', "/")
     );
     prints(&source, "true\n3\ntrue\ntrue\ntrue\n");
 }
@@ -4793,7 +4797,11 @@ func main() {
 #[test]
 fn files_hold_any_bytes() {
     let dir = TempDir::new().unwrap();
-    let path = dir.path().join("data.bin").display().to_string();
+    let path = dir
+        .path()
+        .join("data.bin")
+        .to_string_lossy()
+        .replace('\\', "/");
     let source = format!(
         "package main
 import \"std/os\"
@@ -5126,9 +5134,13 @@ fn the_compiled_runtime_is_cached_and_shared_between_builds() {
     let staged: Vec<_> = std::fs::read_dir(&entries[0]).unwrap().collect();
     assert_eq!(staged.len(), 1, "{staged:?}");
     for name in ["first", "second"] {
-        let run = Command::new(dir.path().join(name).join("main"))
-            .output()
-            .unwrap();
+        let run = Command::new(
+            dir.path()
+                .join(name)
+                .join(format!("main{}", std::env::consts::EXE_SUFFIX)),
+        )
+        .output()
+        .unwrap();
         assert_eq!(stdout(&run), if name == "first" { "1\n" } else { "2\n" });
     }
 }
@@ -5140,9 +5152,13 @@ fn a_cache_folder_that_cannot_be_used_does_not_stop_a_build() {
     std::fs::write(&blocked, "a file, not a folder").unwrap();
     let output = build_in(&dir, "plain", "println(3)", &blocked);
     assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
-    let run = Command::new(dir.path().join("plain").join("main"))
-        .output()
-        .unwrap();
+    let run = Command::new(
+        dir.path()
+            .join("plain")
+            .join(format!("main{}", std::env::consts::EXE_SUFFIX)),
+    )
+    .output()
+    .unwrap();
     assert_eq!(stdout(&run), "3\n");
 }
 
@@ -5830,7 +5846,7 @@ fn run_bounded(source: &str, input: Option<&[u8]>, controlled: bool) -> Output {
 
 fn run_bounded_with_workers(source: &str, input: Option<&[u8]>, workers: Option<usize>) -> Output {
     let dir = TempDir::new().unwrap();
-    let executable = dir.path().join("program");
+    let executable = dir.executable("program");
     if let Some(workers) = workers {
         controlled_runtime::build_with_workers(source, &executable, workers);
     } else {
@@ -5858,7 +5874,11 @@ fn run_bounded_with_workers(source: &str, input: Option<&[u8]>, workers: Option<
         if std::time::Instant::now() >= deadline {
             child.kill().unwrap();
             let output = child.wait_with_output().unwrap();
-            panic!("poll program timed out: {}", stderr(&output));
+            panic!(
+                "poll program timed out; stdout: {}; stderr: {}",
+                stdout(&output),
+                stderr(&output)
+            );
         }
         std::thread::sleep(std::time::Duration::from_millis(5));
     }
@@ -6451,7 +6471,11 @@ fn io_poll_parity(source: &str, expected: &str) {
 #[test]
 fn io_poll_files_and_byte_views_preserve_results_and_cleanup() {
     let dir = TempDir::new().unwrap();
-    let path = dir.path().join("poll.dat").display().to_string();
+    let path = dir
+        .path()
+        .join("poll.dat")
+        .to_string_lossy()
+        .replace('\\', "/");
     let source = r#"package main
 import "std/os"
 import "std/strings"
@@ -6588,8 +6612,8 @@ func main() {
     println(err != nil)
 }
 "#
-    .replace("GOOD", &good.display().to_string())
-    .replace("MISSING", &missing.display().to_string());
+    .replace("GOOD", &good.to_string_lossy().replace('\\', "/"))
+    .replace("MISSING", &missing.to_string_lossy().replace('\\', "/"));
     io_poll_parity(&source, "drop frame\n3\ntrue\ndrop frame\n0\ntrue\n");
 }
 
@@ -6685,7 +6709,7 @@ async func run(path string) int {
 }
 func main() { let t = go run("PATH"); println(t.wait()) }
 "#
-    .replace("PATH", &path.display().to_string());
+    .replace("PATH", &path.to_string_lossy().replace('\\', "/"));
     let output = run_channel_poll_bounded(&source);
     assert_eq!(output.status.code(), Some(2), "{}", stderr(&output));
     assert_eq!(stdout(&output), "drop frame\n");
@@ -7901,8 +7925,7 @@ false
 
 #[test]
 fn paths_sorting_errors_and_byte_buffers_follow_their_documented_results() {
-    prints(
-        r##"package main
+    let source = r##"package main
 
 import "std/bytes"
 import "std/errors"
@@ -7989,8 +8012,8 @@ func main() {
     let copied = bytes.Clone(a[:2])
     println(copied.len())
 }
-"##,
-        r##"[.]
+"##;
+    let expected = r##"[.]
 [a/c]
 [/x/y]
 [..]
@@ -8041,10 +8064,18 @@ true
 0
 true
 2
-"##,
-    );
+"##;
+    if cfg!(windows) {
+        prints(
+            &source.replace("/tmp/../etc", "C:/tmp/../etc"),
+            &expected.replace("usr/lib\n/\n/etc\n", "usr\\lib\n\\\nC:\\etc\n"),
+        );
+    } else {
+        prints(source, expected);
+    }
 }
 
+#[cfg(unix)]
 #[test]
 fn folders_files_environment_processes_and_wait_groups_work_together() {
     let dir = TempDir::new().unwrap();
@@ -8151,8 +8182,8 @@ func main() {
     println("not reached")
 }
 "##
-    .replace("DIR", &dir.path().display().to_string());
-    let executable = dir.path().join("program");
+    .replace("DIR", &dir.path().to_string_lossy().replace('\\', "/"));
+    let executable = dir.executable("program");
     build_file(&source, &executable).unwrap_or_else(|e| panic!("build failed: {e:?}"));
     let output = Command::new(&executable)
         .arg("extra")

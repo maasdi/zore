@@ -97,9 +97,13 @@ pub(super) fn build_with_workers(source: &str, output: &Path, workers: usize) {
     let ir = dir.path().join("program.ll");
     let object = dir.path().join("program.o");
     fs::write(&ir, llvm).unwrap();
+    let mut compile = Command::new(compiler());
+    if !cfg!(windows) {
+        compile.arg("-fPIC");
+    }
     checked(
-        Command::new(compiler())
-            .args(["-Wno-override-module", "-O2", "-fPIC", "-c"])
+        compile
+            .args(["-Wno-override-module", "-O2", "-c"])
             .arg(&ir)
             .arg("-o")
             .arg(&object),

@@ -147,16 +147,20 @@ mod platform {
     }
 }
 
+#[cfg(windows)]
+#[path = "signal_windows.rs"]
+mod platform;
+
 /// # Safety
 /// The caller provides writable result storage.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn zore_native_signal_subscribe(out: *mut ValueError, mask: i64) {
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[cfg(any(target_os = "linux", target_os = "macos", windows))]
     let result = match platform::subscribe(mask) {
         Ok(id) => ValueError::ok(id),
         Err(error) => ValueError::failed_text(&error),
     };
-    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
     let result = {
         let _ = mask;
         ValueError::failed_text("signal.NotifyContext: unsupported host")
@@ -166,11 +170,11 @@ pub unsafe extern "C" fn zore_native_signal_subscribe(out: *mut ValueError, mask
 }
 #[unsafe(no_mangle)]
 pub extern "C" fn zore_native_signal_raised(id: i64) -> bool {
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[cfg(any(target_os = "linux", target_os = "macos", windows))]
     {
         platform::raised(id)
     }
-    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
     {
         let _ = id;
         false
@@ -178,17 +182,17 @@ pub extern "C" fn zore_native_signal_raised(id: i64) -> bool {
 }
 #[unsafe(no_mangle)]
 pub extern "C" fn zore_native_signal_unsubscribe(id: i64) {
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[cfg(any(target_os = "linux", target_os = "macos", windows))]
     platform::unsubscribe(id);
-    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
     let _ = id;
 }
 pub(super) fn live_subscriptions() -> usize {
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[cfg(any(target_os = "linux", target_os = "macos", windows))]
     {
         platform::live()
     }
-    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
     {
         0
     }

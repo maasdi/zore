@@ -39,13 +39,17 @@ their follow-up sections supersede the original missing-test lists.
 | §39.4 Borrowing across await and async I/O | Covered for valid persistent backing and rejected unsafe inputs; plain/polled parity and controlled-pool progress | [Ownership tests](../../tests/ownership/ownership.rs); [native suite](../../tests/codegen/native.rs): `io_poll_files_and_byte_views_preserve_results_and_cleanup`, `pending_async_accepts_leave_workers_for_an_unrelated_task`, `cancelling_from_another_task_wakes_a_pending_done_select_exactly_once` | Conservative safe rejection is explicitly allowed by §17.6. TLS, HTTP client, HTTP/2 and UDP are not delivered by the HTTP server work. |
 | §39.5 Lexer, parser, AST, name resolution, checker and HIR | Covered: recovery, spans, scopes, type/ownership diagnostics and backend-independent checking | [Lexer](../../tests/lexer/lexer.rs), [parser](../../tests/parser/parser.rs), [checker](../../tests/typecheck/check.rs), [packages](../../tests/packages/packages.rs), [CLI](../../tests/driver/cli.rs) tests | Lexical questions remain localized in Q13. No new self-hosting stage is scheduled. |
 | §39.5 Ownership/borrow checking, regions, MIR/CFG, async lowering and drop insertion | Covered for named observable behavior; partial evidence across the combinations above | [Ownership](../../tests/ownership/ownership.rs), [async lowering](../../tests/async/lowering.rs), [native](../../tests/codegen/native.rs) tests; [MIR](../../compiler/src/mir), [ownership](../../compiler/src/ownership), [drop insertion](../../compiler/src/dropck) | Full-MVP completion remains conditional on the remaining evidence inventory and any defects it uncovers. |
-| §39.5 LLVM backend and native executable | Covered on Linux/macOS through check/build/run and native subprocess tests | [Native suite](../../tests/codegen/native.rs); [.github/workflows/ci.yml](../../.github/workflows/ci.yml) | Windows is unverified host support, tracked in #119; cross-compilation remains out of MVP. |
+| §39.5 LLVM backend and native executable | Covered on Linux/macOS and Windows x64 MSVC through check/build/run and native subprocess tests | [Native suite](../../tests/codegen/native.rs); [.github/workflows/ci.yml](../../.github/workflows/ci.yml) | Host/toolchain evidence and Windows API limits are in [platform support](../platform-support.md); cross-compilation remains out of MVP. |
 | §39.5 High-quality diagnostics | Covered for source rendering and named semantic cases; partial as a universal quality claim | [Source diagnostics](../../tests/diagnostics/source_diagnostics.rs): `utf8_spans_are_bytes_but_columns_are_unicode_scalars`, `diagnostics_retain_primary_and_related_locations_in_different_files`; [checker](../../tests/typecheck/check.rs), [ownership](../../tests/ownership/ownership.rs) | Diagnostics must keep pointing to creation/move/loan/conflict when available (§24.2). The illustrative error code is not a locked code registry. |
 
 §22 generics/interfaces and §37 standard-library rules also have executable
 checker/package/native suites, including ownership through interfaces,
 generic specialization, `std/io`, JSON, HTTP and signals. Their detailed rules
 include explicit restrictions; the feature list does not erase those rules.
+Windows console signal coverage includes real isolated Ctrl+C/Break, handler
+removal and automatic HTTP drain. Direct termination callback tests verify
+mapping and bounded waiting, not real close/logoff/shutdown delivery; cleanup
+under those OS deadlines remains best effort.
 
 ## Test layers in §46
 

@@ -14,8 +14,8 @@ The async state-machine implementation and the subsequent socket-test fix passed
 [main CI on 2026-10-08](https://github.com/maasdi/zore/actions/runs/37726483242)
 on Ubuntu and macOS: rustfmt, clippy with warnings denied, build, docs, and
 `cargo test --locked --all-targets`. This validates the tested subset at that
-commit; it does not establish full MVP coverage. Windows native linking has
-not been validated here.
+commit; it does not establish full MVP coverage. That run predates Windows support; current host requirements and CI scope are
+in [platform support](platform-support.md).
 
 HTTP/1.1 server work for issue #105 adds `std/net/http`, request-target
 `std/net/url`, wall-clock HTTP dates, and the runnable `examples/rest-api/`.
@@ -25,7 +25,8 @@ adapted to fresh owned per-request invocations; advanced factories use
 views remain checked by the compiler. The native HTTP tests exercise loopback
 framing, routing, capacity, deadlines, panic cleanup, and shutdown. This does not
 implement an HTTP client, TLS, or HTTP/2. `std/os/signal.NotifyContext` supports
-SIGINT/SIGTERM cancellation on Linux/macOS, with idempotent subscription cleanup.
+SIGINT/SIGTERM cancellation on Linux/macOS and Windows console notifications,
+with idempotent subscription cleanup and best-effort Windows termination cleanup.
 The REST example uses function routes, JSON response helpers, and two-argument
 `http.ListenAndServe` with automatic signal registration and bounded graceful
 shutdown. `ListenAndServeWithConfig` accepts custom limits and deadlines;
@@ -37,7 +38,8 @@ Optional fields, strict decoding, and custom codec interfaces (§37.7, decision
 record 0002). `examples/json/` exercises the public APIs; the REST example uses
 generated response codecs and the token decoder for its single-name request
 contract. JSON-specific native and rejection tests cover the implemented
-contract; full MVP and Windows validation remain separate work.
+contract; full MVP remains a broader claim, and native host evidence is recorded
+in [platform support](platform-support.md).
 
 Canonical M IDs follow specification §43. Detailed phases and their mapping
 to those IDs are below, followed by the active validation work package.
@@ -53,8 +55,8 @@ The children of maturity tracker [#50](https://github.com/maasdi/zore/issues/50)
 delivered recursive owned types, owning callables, conservative frame storage
 and slot reuse, quadratic interference analysis, cooperative budgets with
 reduced requeue overhead, and focused ownership/runtime regressions. Scoped
-tasks now implement the locked plain-function stage (§18.12); Q10 retains the
-separate direct async-scope stage. Self-hosting delivered a staged plan and the lexer
+tasks implement plain and direct async scopes under §§18.12–18.13, including
+pollable joins and suspended unwind cleanup. Self-hosting delivered a staged plan and the lexer
 comparison milestone, followed by a parser comparison milestone. The Rust
 compiler remains the bootstrap, and full MVP conformance remains separate work.
 
@@ -110,7 +112,7 @@ was demonstrated by this review, and exhaustive MVP conformance is not claimed.
 | 2 | [#115: `zore test`](https://github.com/maasdi/zore/issues/115) | Implemented against locked §45.1: same-package `_test.ore` discovery, file/directory selection, both signatures, native process isolation, continued failure reporting and ordinary cleanup. See [application testing](testing.md). |
 | 3 | [#116: borrowed map entries](https://github.com/maasdi/zore/issues/116) | Implemented against locked §13.4: conditional shared/mutable bindings, explicit missing branches, ordinary control flow, receiver/alias exclusivity, and initialized-part panic cleanup; see [design comparison](proposals/borrowed-map-entries.md). |
 | 4 | [#118: performance baselines](https://github.com/maasdi/zore/issues/118) | Implemented opt-in compiler, REST/JSON, pinned-frame and settled memory/resource measurements with raw repetitions; see the [baseline](performance.md). Follow-ups #127/#128 implement internal LLVM linkage, cancellable context deadlines and direct HTTP shutdown notification; see the [paired compiler and retention evidence](performance-followups.md). |
-| 5 | [#119: Windows hosts](https://github.com/maasdi/zore/issues/119) | Establish native linking/runtime evidence and honest platform CI; no cross-compilation claim. |
+| 5 | [#119: Windows hosts](https://github.com/maasdi/zore/issues/119) | Implemented Windows x64 MSVC linking, host paths, deadline-aware helper sockets and native CI; see [platform support](platform-support.md). No cross-compilation claim. |
 | 6 | [#117: async callable extensions](https://github.com/maasdi/zore/issues/117) | Implemented under locked §§16.1–16.7: explicit async literals and concrete async method values, reusable capture environments, call-once cleanup and independent spawn inputs; see [design](proposals/async-callables.md). |
 | 7 | [#120: scoped tasks](https://github.com/maasdi/zore/issues/120) | Implemented locked §§18.12–18.13: plain and direct async lexical scopes, registry-held child loans and joins before parent cleanup on every exit. [#132](https://github.com/maasdi/zore/issues/132) adds persistent storage, pollable joining and resumable unwind cleanup. See [usage and conservative proof limits](scoped-tasks.md). |
 | Deferred | Further self-hosting | No stage 3 or later implementation in this sequence. |
@@ -118,7 +120,8 @@ was demonstrated by this review, and exhaustive MVP conformance is not claimed.
 Package-level `var` is forbidden, not an unfinished MVP feature. Async callable
 and scoped-task extensions are separate from conformance to today's rules.
 Formatter/test tooling follows §45; it does not establish ownership safety.
-Windows is unverified host support. Existing Linux/macOS tests and benchmark
+Windows native support targets x64 MSVC, including console signals; measurement
+tooling retains its explicit Linux/macOS scope. See [platform support](platform-support.md). Existing Linux/macOS tests and benchmark
 families remain the baseline.
 
 The async state-machine slices 1–6 are implemented. Plain-function tasks use the shared pool, fibers
@@ -135,8 +138,8 @@ functions. Plain tasks that wait hold OS workers, so large sets of them can
 exhaust host thread limits; use `async func` for those workloads. Compiler-inserted
 cooperative budgets now yield CPU-heavy async loops. Still open: forced
 preemption; frame shrinking by general liveness (poll-local storage and same-type
-slot reuse are implemented); direct async task scopes (separate design/cleanup stage, Q10); and
-broader task-lifetime proofs. Async callable extensions are implemented under §16.7. The next milestone is M32–M34's backend/toolchain
+slot reuse are implemented); and broader task-lifetime proofs. Direct async
+scopes are implemented under §18.13. Async callable extensions are implemented under §16.7. The next milestone is M32–M34's backend/toolchain
 hardening and MVP coverage audit.
 
 The supported baseline has native validation (see above). The detailed work
@@ -226,7 +229,7 @@ isolate the affected feature and continue unrelated supported work.
 | Borrowed map-entry access, capacity APIs | Before implementing those operations; iteration, `len`, `push`, and `pop` are resolved in §5.10 and §12.7 |
 | Closure types/captures/invocation | Resolved (§16); closures with tasks resolved by §18.4 |
 | Full go grammar, concurrency library APIs | Before affected M25–M31 work; preserve already locked ownership/runtime contracts |
-| Scoped tasks (Q10) | Plain-function extension implemented under §18.12; direct async scopes deferred |
+| Scoped tasks | Plain and direct async extensions implemented under §§18.12–18.13 |
 | LLVM version/ABI, allocation, scheduler | Internal choices when the relevant backend/runtime stage begins; document and test then |
 
 Deferral does not mean exclusion from the MVP. Unsupported features must receive
