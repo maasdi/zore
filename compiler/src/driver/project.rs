@@ -89,7 +89,7 @@ impl FileSystem for Disk {
 /// Files held in memory, for tests.
 #[derive(Default)]
 pub struct Memory {
-    files: BTreeMap<PathBuf, String>,
+    files: BTreeMap<PathBuf, (PathBuf, String)>,
 }
 
 impl Memory {
@@ -98,37 +98,41 @@ impl Memory {
     }
 
     pub fn with(mut self, path: impl Into<PathBuf>, text: impl Into<String>) -> Self {
-        self.files.insert(normalized(&path.into()), text.into());
+        let path = path.into();
+        self.files.insert(normalized(&path), (path, text.into()));
         self
     }
 }
 
 impl FileSystem for Memory {
     fn read(&self, path: &Path) -> Result<String, SourceError> {
-        self.files.get(&normalized(path)).cloned().ok_or_else(|| {
-            io_error(
-                path,
-                std::io::Error::new(std::io::ErrorKind::NotFound, "no such file"),
-            )
-        })
+        self.files
+            .get(&normalized(path))
+            .map(|(_, text)| text.clone())
+            .ok_or_else(|| {
+                io_error(
+                    path,
+                    std::io::Error::new(std::io::ErrorKind::NotFound, "no such file"),
+                )
+            })
     }
 
     fn ore_files(&self, dir: &Path) -> Result<Vec<PathBuf>, SourceError> {
         let dir = normalized(dir);
         Ok(self
             .files
-            .keys()
-            .filter(|path| {
+            .iter()
+            .filter(|(path, _)| {
                 path.parent() == Some(dir.as_path()) && path.extension().is_some_and(|e| e == "ore")
             })
-            .cloned()
+            .map(|(_, (path, _))| path.clone())
             .collect())
     }
 
     fn manifest(&self, dir: &Path) -> Result<Option<Manifest>, SourceError> {
         let dir = normalized(dir);
         for folder in dir.ancestors() {
-            if let Some(text) = self.files.get(&folder.join("zore.toml")) {
+            if let Some((_, text)) = self.files.get(&folder.join("zore.toml")) {
                 return Manifest::parse(folder.to_path_buf(), text).map(Some);
             }
         }

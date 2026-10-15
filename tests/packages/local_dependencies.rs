@@ -586,3 +586,21 @@ fn windows_drive_relative_paths_are_rejected_and_case_aliases_share_identity() {
         result.messages
     );
 }
+
+#[test]
+fn canonical_memory_lookup_preserves_source_paths_in_diagnostics() {
+    let memory = Memory::new()
+        .with("/app/zore.toml", APP)
+        .with("/app/main.ore", MAIN)
+        .with("/auth/zore.toml", AUTH)
+        .with(
+            "/auth/source.ore",
+            "package auth\nfunc Value() int { return missing }\n",
+        );
+    let mut sources = SourceMap::new();
+    let project = load_project(&mut sources, &memory, Path::new("/app/main.ore"))
+        .unwrap_or_else(|_| panic!("valid project"));
+    let checked = check_project(&project, &sources);
+    let rendered = checked.diagnostics[0].render(&sources).unwrap();
+    assert!(rendered.contains("/auth/source.ore:2:"), "{rendered}");
+}
