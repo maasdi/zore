@@ -1,4 +1,4 @@
-//! Parses local manifests and validates their dependency graph.
+//! Parses manifests and validates their dependency graph.
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;

@@ -10,9 +10,13 @@ fn write(root: &Path, path: &str, text: &str) {
     fs::write(path, text).unwrap();
 }
 
-fn remove_tree(path: &Path) {
+fn remove_path(path: &Path) {
     #[cfg(windows)]
     {
+        #[allow(
+            clippy::permissions_set_readonly_false,
+            reason = "Only Windows read-only file attributes are cleared"
+        )]
         fn writable(path: &Path) {
             let metadata = fs::symlink_metadata(path).unwrap();
             if metadata.file_type().is_symlink() {
@@ -30,7 +34,11 @@ fn remove_tree(path: &Path) {
         }
         writable(path);
     }
-    fs::remove_dir_all(path).unwrap();
+    if path.is_dir() {
+        fs::remove_dir_all(path).unwrap();
+    } else {
+        fs::remove_file(path).unwrap();
+    }
 }
 
 fn git(root: &Path, args: &[&str]) -> String {
@@ -272,7 +280,7 @@ fn missing_malformed_and_modified_locks_fail_without_writes() {
     );
     assert!(!fixture.app.join("zore.lock").exists());
     success(fixture.invoke("fetch", &["--offline"]));
-    remove_tree(&fixture.cache);
+    remove_path(&fixture.cache);
     failure(
         fixture.invoke("check", &["--locked", "--offline"]),
         "missing from the cache",
@@ -308,7 +316,7 @@ fn corrupt_cache_bytes_metadata_and_extra_paths_are_rejected() {
     fs::write(entry.join("source"), "wrong identity").unwrap();
     failure(fixture.invoke("check", &["--offline"]), "source identity");
     assert_eq!(fixture.lock(), lock);
-    remove_tree(&entry);
+    remove_path(&entry);
     success(fixture.invoke("fetch", &["--locked"]));
     success(fixture.invoke("check", &["--locked", "--offline"]));
 }
@@ -323,7 +331,7 @@ fn corrupt_git_objects_are_rejected_even_when_checkout_is_unchanged() {
         .join(&fixture.revision[..2])
         .join(&fixture.revision[2..]);
     assert!(object.exists());
-    fs::remove_file(&object).unwrap();
+    remove_path(&object);
     failure(fixture.invoke("check", &["--offline"]), "corrupt Git cache");
 }
 
@@ -381,8 +389,13 @@ fn subdirectories_and_transitive_git_pins_are_resolved() {
 
 #[test]
 fn fetched_path_dependencies_cannot_escape_or_use_absolute_paths() {
-    for path in ["../../outside", "/outside"] {
+    for absolute in [false, true] {
         let fixture = Fixture::new();
+        let path = if absolute {
+            fixture.root.join("outside").to_str().unwrap().to_string()
+        } else {
+            "../../outside".into()
+        };
         write(
             &fixture.repository,
             "zore.toml",

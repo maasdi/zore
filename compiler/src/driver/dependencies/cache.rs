@@ -48,6 +48,10 @@ impl Drop for Staging {
 }
 
 #[cfg(windows)]
+#[allow(
+    clippy::permissions_set_readonly_false,
+    reason = "Only Windows read-only file attributes are cleared"
+)]
 fn make_writable(path: &Path) {
     let Ok(metadata) = fs::symlink_metadata(path) else {
         return;
