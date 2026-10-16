@@ -104,8 +104,10 @@ identity and conflict/boundary checks under §§3.4 and 3.20. See
 [pinned Git sources, install/lock, lockfiles and offline caches](git-dependencies.md)
 under §§3.4.1–3.4.2. [Curated native adapter integration](native-libraries.md)
 (#138) adds registered C/Rust sources, private bindings and a native checksum
-package under §3.4.3. Unrestricted native extensions and distribution (#139) remain
-separate work. Local paths remain mutable references even with a lockfile.
+package under §3.4.3. [Versioned distribution planning](design/package-distribution.md)
+(#139) recommends exact Git-backed releases and staged delivery; catalogs, version
+selection and publishing remain unimplemented. Unrestricted native extensions
+remain separate work. Local paths remain mutable references even with a lockfile.
 Further self-hosting remains deferred.
 
 The [2026-10-13 MVP inventory](conformance/mvp.md) maps §§39, 46, and 52 to

@@ -124,5 +124,8 @@ recover missing data; keep the pinned commits available on the server or preserv
 validated cache in CI. Cache data is reproducible from pins, not precious source.
 
 For library development, start with [local dependencies](local-dependencies.md),
-then pin a committed revision in consuming applications. Registry distribution,
-version solving and native-library integration remain separate milestones.
+then pin a committed revision in consuming applications. Native-backed packages
+can use [curated adapters](native-libraries.md). The
+[versioned distribution proposal](design/package-distribution.md) describes exact
+releases, publishing and later discovery; version selectors and publishing commands
+are not implemented. Full commit pins remain the supported Git workflow.
