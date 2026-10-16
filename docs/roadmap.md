@@ -106,7 +106,9 @@ under §§3.4.1–3.4.2. [Curated native adapter integration](native-libraries.m
 (#138) adds registered C/Rust sources, private bindings and a native checksum
 package under §3.4.3. [Versioned distribution planning](design/package-distribution.md)
 (#139) recommends exact Git-backed releases and staged delivery; catalogs, version
-selection and publishing remain unimplemented. Unrestricted native extensions
+selection and publishing remain unimplemented. Follow-ups #144, #145 and #146
+track release validation, exact-version consumption and publishing/advisories.
+Unrestricted native extensions
 remain separate work. Local paths remain mutable references even with a lockfile.
 Further self-hosting remains deferred.
 

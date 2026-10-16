@@ -245,11 +245,14 @@ application lock continues governing the whole graph.
 
 Deliver the work in independently reviewable increments:
 
-1. Lock release metadata/version grammar and canonical artifact digest; add local
+1. [#144](https://github.com/maasdi/zore/issues/144): lock release metadata/version
+   grammar and canonical artifact digest; add local
    release validation with rejection cases and cross-host digest fixtures.
-2. Lock the Git catalog and lock extension; implement exact-version consumption,
+2. [#145](https://github.com/maasdi/zore/issues/145), after #144: lock the Git catalog
+   and lock extension; implement exact-version consumption,
    conflict/provenance checks and cached offline operation, reusing the Git cache.
-3. Implement checked/atomic publishing and advisory updates with repository-based
+3. [#146](https://github.com/maasdi/zore/issues/146), after #144/#145: implement
+   checked/atomic publishing and advisory updates with repository-based
    authority, including concurrency, interrupted pushes and credential failures.
 4. Add discovery tooling or a hosted service only after real package experience
    establishes a need. Do not declare registry/distribution implemented when only
