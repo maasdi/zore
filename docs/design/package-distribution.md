@@ -1,278 +1,261 @@
 # Versioned package distribution
 
-Status: proposal for [#139](https://github.com/maasdi/zore/issues/139), following
-local dependencies (#136), pinned Git consumption (#137) and curated native
-packages (#138). This is a planning record, not a locked compiler contract.
-Only local paths and full Git commit pins work today. The manifest examples and
-commands marked proposed below must not be presented as implemented features.
+Status: proposal for [#139](https://github.com/maasdi/zore/issues/139), revised after
+[PR #143 review](https://github.com/maasdi/zore/pull/143#pullrequestreview-5548103997).
+This is a planning record, not a locked compiler contract. Today Zore supports
+local paths and full Git commit pins. Version requirements, release metadata
+checks and `outdated` below are proposed features.
 
-## Recommendation
+## A library author releases a version
 
-Start with exact-version releases backed by a package author's Git repository.
-Keep the entry application's lockfile authoritative and permit one selection per
-project name in a graph. Use a repository-local release catalog for version
-lookup and availability status. A hosted global registry is not needed for this
-first distribution path.
+Prepare a committed library with a name, version and license. Run its tests,
+then publish an ordinary Git tag:
 
-| Route | Benefit | Cost or limit |
-| --- | --- | --- |
-| Full Git pins, available today | Immutable selected contents, validated cache, offline consumption | Consumers select commits manually; version is unchecked metadata |
-| Exact versions with a repository-local catalog, proposed first | Named releases, publishing ownership through Git, no new hosted service | New catalog/metadata/publishing support; first lookup trusts the repository |
-| Hosted global registry, later if needed | Cross-repository discovery and centrally enforced name/release policy | Service operation, account recovery, moderation, credentials and availability |
+```sh
+git tag shared/v1.2.3
+git push origin refs/tags/shared/v1.2.3
+```
 
-Git tags alone are insufficient release records: they can move and do not define
-yank status. They can remain human-facing aliases, but a resolver must select an
-explicit catalog record and record its immutable source identity in the lock.
-No floating branches, `latest`, implicit upgrades or general version solver are
-part of the first versioned path.
+The proposed tag convention is `<project-name>/v<MAJOR.MINOR.PATCH>`, including
+for a repository with one project. It also works for monorepos. Lightweight and
+annotated tags are both allowed; each must resolve to a commit. The selected
+project's manifest must declare the same name and version as its tag.
 
-## Experience from the current implementation
+No catalog branch, extra retention refs, atomic multi-ref push or `zore publish`
+command is required. An optional local validation helper can come later without
+becoming a publishing prerequisite. Existing Git permissions and credentials
+control who can push a tag.
 
-- `install` fetches explicit missing sources and creates a missing entry lock;
-  an existing lock must match. `lock` replaces it after reviewed manifest edits.
-  Check/build/run/test neither fetch nor rewrite locks.
-- The cache verifies the full Git source tree, file bytes and supported modes.
-  Git source identity includes the exact URL, commit and project subdirectory.
-  Local and Git copies remain distinct even when their contents match.
-- A graph has one project per name. Diamond dependencies share nominal types and
-  initialization; conflicting selections fail. Direct dependency declarations
-  still control import visibility.
-- Version strings are accepted as metadata, but are not retained as a validated
-  release identity or used for resolution. There is no publishing command,
-  release catalog, metadata compatibility check, yank policy or registry search.
-- Native packages own their reviewed sources. Distribution must retain their
-  approved recipe checks; publishing cannot register an arbitrary C/Rust backend.
-
-These are useful foundations to reuse, not a reason to add another resolver,
-artifact cache or ownership model.
-
-## Identity, names and exact versions
-
-The publishing authority is the explicit repository URL. A logical package is
-identified by that URL, its portable project subdirectory and its manifest name.
-URL spellings are not guessed equivalent. A move to another repository or project
-subdirectory is an explicit source change, not a transparent identity redirect.
-The selected commit determines the physical source identity used by the compiler.
-
-Keep current project names and import paths. There is no global claim on `auth`:
-two repositories may publish it, but one application graph cannot select both
-under that name. Do not silently rename imports, merge nominal types, or load
-multiple incompatible copies. Conflicts should show both dependency paths,
-repository/project selections and requested versions, with an instruction to
-align the declarations or use one compatible library release.
-
-The proposed first selector accepts exact canonical `MAJOR.MINOR.PATCH` versions
-only: decimal components without leading zeroes, except `0` itself. No ranges,
-caret/tilde constraints, wildcards, prereleases or build suffixes initially.
-Version numbers communicate the author's compatibility promise; the compiler
-does not prove API compatibility. A major bump, including a major-zero minor
-bump, still requires an explicit dependency edit. No automatic compatible choice
-or fallback to a different version occurs.
+## An application uses the library
 
 Proposed dependency syntax, not currently accepted:
 
 ```toml
 name = "webapp"
 [dependencies]
-auth = { git = "https://example.org/team/auth.git", version = "1.2.3" }
+shared = { git = "https://example.org/team/shared.git", version = "1.2.3" }
 ```
 
-`git` plus exactly one of `rev` or `version` would be required, with the existing
-optional `subdir`. A selected project's name/version/subdirectory must match the
-release record. Path and full-revision dependencies remain supported and need no
-release catalog. Full-revision and versioned Git declarations can share a project
-only when they resolve to the same repository, project directory and source
-revision; version assertions must still agree. A local path and a Git selection
-remain distinct, including a local spelling of a cached checkout. A repository
-cannot assign one version to two different source identities.
+Here `1.2.3` means **at least 1.2.3 within the same compatibility line**. It is
+not an exact pin and does not mean "download the newest release". A matching
+lockfile pins the exact version and commit that the application uses.
 
-## Release contents and integrity
+The existing install/build workflow remains:
 
-Use the existing supported Git tree as the source artifact: regular files and
-directories, portable UTF-8 paths, no symlinks/submodules/filters/build scripts.
-Include committed source, tests, documentation, examples, license and registered
-native sources. Do not create a second archive inclusion/exclusion language.
-The complete repository snapshot remains the fetched artifact for monorepos.
-Path dependencies in a release must stay inside that snapshot; external libraries
-must use explicit immutable pins or supported exact-version declarations.
+```sh
+zore install ./app
+zore check --locked --offline ./app/main.ore
+zore run --locked --offline ./app/main.ore
+zore test --locked --offline ./app
+```
 
-Each catalog release record binds these identity fields permanently:
+Install would resolve required tags once, verify their source and write the
+application lock. Commit that lock with the app. Repeated install uses the same
+selections. Check/build/run/test remain cache-only and never rewrite a lock.
 
-| Field | Purpose |
+## Compatible requirements work together
+
+Use a simple minimum-version selection model: choose the highest minimum needed
+by the dependency graph, without searching every published version.
+
+| Requirements for shared | Selected version |
 | --- | --- |
-| Project name, exact version and project subdirectory | Match the requested package |
-| Source commit and Git root-tree IDs | Attribute and fetch the exact source |
-| Manifest SHA-256 | Verify the package metadata and dependency declarations |
-| Source-tree SHA-256 | Check the full portable artifact independently of its Git IDs |
+| greeting needs 1.2.3; audit needs 1.2.4 | 1.2.4 |
+| greeting needs 1.2.3; audit needs 1.4.0 | 1.4.0 |
+| the app also requests 1.5.0 | 1.5.0 |
+| 1.2.3 is the only requirement; 1.9.0 also exists remotely | 1.2.3 |
+| one library needs 1.x and another needs 2.x | Conflict; incompatible lines |
+| one library needs 0.3.1 and another needs 0.3.4 | 0.3.4 |
+| one library needs 0.3.x and another needs 0.4.x | Conflict; incompatible pre-1.0 lines |
 
-Define the source digest over a versioned, length-prefixed encoding of sorted
-repository-relative UTF-8 file paths, supported modes and raw contents. Include
-all tracked files, exclude Git administration data, and do not normalize source
-line endings. The byte encoding and catalog schema must be locked before writing
-a resolver; use cross-host digest vectors, not a host directory listing order.
+The `x` notation in this table describes a line; it is not manifest syntax.
+For versions 1.0.0 and later, the major number defines a compatibility line.
+Before 1.0.0, the minor number also matters: `0.3` and `0.4` are separate lines.
+This is an explicit pre-1.0 restriction on the MVS-style model, not a claim that
+all Go module rules apply to Zore. A version number is the author's compatibility
+promise; it cannot prove that an API change is safe.
 
-A released identity cannot be overwritten by normal publishing, including a
-republish with the same name/version but different contents. Corrections need a
-new version. Keep a retention ref for each source commit and never force-update
-or remove it through publishing tools. A content digest proves bytes, not author
-identity, license validity, safety, or long-term availability on a remote server.
+An application author can raise a shared minimum directly, without waiting for
+both library authors. For example, adding shared 1.5.0 to the app's dependencies
+raises the selection in the first example. The app cannot force a version below
+a library's requirement or silently cross an incompatible line. A forced source
+replacement or side-by-side major versions would need a separate design.
 
-## Catalog, resolution and locks
+### Resolution rule
 
-Keep one versioned catalog on a dedicated Git branch per repository. Store release
-identity separately from mutable availability/deprecation advisories. A catalog
-snapshot is itself a Git commit. Its exact branch name and wire encoding belong
-in the implementation's locked protocol, rather than an accidental parser choice.
+Before loading code, construct a requirement graph whose nodes are requested
+releases. Start with the entry project's declarations. For each newly requested
+release, resolve its tag, validate its manifest and visit its dependency
+requirements. Visit each source/version pair once. Include requirements from all
+requested releases, even when another request names a higher version of the same
+library; discovering that higher release may add requirements of its own.
 
-For an unlocked exact-version request, install/lock reads one catalog snapshot per
-repository and selects only the requested version. It verifies the record against
-the fetched source, traverses dependencies in stable order, and reports conflicts
-rather than backtracking. Missing versions, unsupported schemas and incompatible
-metadata fail explicitly; they do not select another version.
+For each project, select the highest minimum appearing in that graph. Do not
+inspect unrequested newer releases. Only the selected sources enter package
+loading and compilation. This graph rule is monotone: discovered requirements
+are not discarded during traversal, and there is no guessing or backtracking.
+The selected package graph must still pass ordinary dependency/import cycle,
+visibility, type and ownership checks.
 
-Extend the lock format in a versioned way. Versioned records need the requested
-version, catalog snapshot, source commit/tree and both SHA-256 digests, alongside
-existing graph manifest records and native recipes. Existing version-1 Git/path
-locks remain valid for their existing dependency forms. Do not silently downgrade
-a new lock or drop provenance fields when reading one.
+Require one repository/project identity and one compatibility line per project
+name. Otherwise report both dependency paths and the conflicting sources or
+requirements. Missing releases and invalid metadata are errors, not invitations
+to choose a different tag. Results must not depend on traversal or fetch order.
 
-Repeated install with a matching lock uses those selections, including on a clean
-machine; it fetches the locked commit rather than consulting a current catalog
-tip. Build/check/run/test remain cache-only. Explicit `lock` preserves an existing
-release identity when its logical request has not changed, while resolving edited
-requests. A newly observed record that reassigns a known name/version is an error,
-not drift that `lock` silently approves.
+The first version grammar is canonical decimal `MAJOR.MINOR.PATCH`, without
+leading zeroes except `0` itself. Compare components numerically. Range operators,
+wildcards, prereleases and build suffixes are deferred.
 
-Cache validated catalog snapshots and source artifacts atomically. Offline
-resolution of a new version needs an already cached catalog record and source;
-otherwise give an actionable cache-miss error. A complete locked graph can be
-checked, built, run and tested offline without the catalog branch or original
-server. Offline operation cannot establish current remote advisory status.
+## Names and full commit pins
 
-## Consumer metadata
+Keep existing project names and import paths. The explicit repository URL,
+portable project subdirectory and project name identify the library. URL
+spellings are not guessed equivalent; a repository move is an explicit change.
+There is no global ownership claim on a short name such as `shared`.
 
-Add a separately specified manifest metadata table, keeping source-selection
-fields distinct from descriptive claims. The publisher validates metadata before
-uploading; consumers cross-check it against the immutable manifest.
+A graph still loads one source selection per project name. The simple source
+rule is: **if two declarations pick the same library, they must land on the same
+commit, or it is an error.** Minimum-version requirements first agree on their
+selected version using the rule above.
 
-| Metadata | Proposed release requirement |
-| --- | --- |
-| Description, readme and source/repository attribution | Required; readme path confined to the project; selected Git URL is authoritative source attribution |
-| SPDX license expression or a confined license-file path | Required; retain corresponding license/notice files in the source artifact |
-| Supported Zore versions | Required, simple explicit lower/upper bounds; evaluate the current compiler, without choosing another package version |
-| Supported platforms | Explicit supported host triples or an explicit portable-source declaration; native recipes remain authoritative |
-| Documentation/examples/tests | Required readme instructions; committed tests/examples when present, with visible coverage limits |
-| Native/toolchain requirements | Derive registered recipe requirements and describe extra prerequisites; never execute package build scripts |
+Existing `path` and `git`/`rev` declarations keep their behavior. A full revision
+is a hard pin, not another minimum: MVS must never replace it. If a hard pin and
+a version-selected source disagree, show the pin and requirement paths and ask
+the developer to align the pin or use a compatible version requirement. Local
+paths and Git selections remain distinct, even for a local spelling of a cached
+checkout. Unsupported source overrides do not happen implicitly.
 
-Metadata bounds are not a proof that every compiler/platform combination works.
-Before 1.0, avoid assuming compatibility across Zore minor releases. Unknown
-required metadata, invalid bounds and an unsupported current host/compiler must
-produce actionable diagnostics. Native toolchain availability remains a build
-concern; checking portable source should not require a C compiler or linker.
-The exact metadata keys, optional fields and grammar need a locked specification
-and parser conformance cases in the implementation PR.
+`git` with exactly one of `rev` or `version`, plus the existing optional `subdir`,
+would be the supported dependency forms. An existing full-pin library needs no
+migration. Libraries choosing version requirements gain compatible patch/minor
+selection instead of requiring every dependent author to synchronize exact pins.
 
-## Publishing, ownership and authentication
+## Locks, cache and moved tags
 
-Proposed maintainer workflow, not currently implemented:
+Reuse the current Git commit/tree verification and source cache. Check each
+file's bytes, supported mode and path against the selected Git objects. Retain
+the existing manifest SHA-256 records and registered native recipe fingerprints.
+Do not add a custom source-tree digest or new artifact encoding in this increment.
+A stronger independent checksum/transparency system can be evaluated separately.
 
-1. Prepare a new exact version in a clean committed project. Run formatting,
-   library tests and the advertised CI matrix. Review license files, dependency
-   closure, native requirements and the artifact contents.
-2. Run `zore publish --check --repository <url> <project>` to validate the release
-   and show the version, source commit, digest and destination. This mode writes
-   nothing remotely and executes no library code or build scripts. Test execution
-   is an explicit maintainer/CI step, not a hidden installer action.
-3. Run `zore publish --repository <url> <project>` to create the retention ref and
-   catalog record atomically, using ordinary Git authentication. No guessed
-   `origin`, registry account, embedded token or installer-side code execution.
-4. A consumer adds the exact version, runs install, reviews and commits the lock.
-   Missing access, bad metadata, missing versions, conflicting selections and
-   existing releases each receive distinct diagnostics without credential output.
+A versioned lock records the selected version, canonical tag and exact commit/tree.
+It also retains version-to-commit bindings for every release manifest used to
+resolve the graph, including unselected minimum releases. That keeps their
+requirements reproducible on another machine without building multiple versions.
+Use the same verified bindings in the cache. Extend the lock format explicitly;
+keep existing version-1 path/revision locks valid for those forms.
 
-All writers authorized by the repository can publish its packages; Zore adds no
-independent name-ownership service. HTTPS credential helpers and SSH agents retain
-their existing role. Public consumption does not require a Zore account; private
-repositories require their normal Git access. Credential values never enter
-manifests, lockfiles, catalog records, hashes, logs or diagnostics.
+A matching lock is authoritative. Install can fetch its exact commits on a new
+machine without resolving current tag tips. Build/check/run/test remain offline
+with respect to dependency discovery. Unchanged locked graphs never upgrade just
+because someone published a tag or because a command was repeated.
 
-Prepare the catalog update on its observed parent and use an atomic Git push of
-the new source-retention ref and fast-forward catalog update. If the server lacks
-atomic ref updates, fail before publishing. Concurrent publication must either
-reuse an identical completed release or fail for review/retry; it cannot leave a
-half-published release or overwrite another publisher. Read-only Git/file sources
-remain consumable, but do not gain a publishing permission bypass.
+After dependency edits, explicit `zore lock` recomputes minimum-version selection.
+It may raise a selected version when requirements rise, or lower it when the
+higher requirement is removed; the lock diff makes that visible. Existing
+version-to-commit bindings remain fixed. A moved tag for a known version is a
+release-identity conflict, not a new implementation that lock regeneration
+silently approves. Correcting source requires a new version/tag.
 
-Git permissions and hosting-side protected refs enforce repository ownership.
-A writer bypassing the publishing tool can alter catalog contents, and an
-administrator can rewrite remote history. A lock/cache can detect replacement of
-an identity it already knows; first-time discovery cannot prove that unseen
-history or mappings were never changed. Stronger independent transparency,
-account recovery, guaranteed retention and globally enforced immutability require
-additional infrastructure. Do not describe a Git catalog as providing them.
+Offline resolution needs cached metadata and source for every requested release
+needed to build the requirement graph, not only the eventual winners. A complete
+locked graph needs no current tags or server. Cache misses/corruption receive the
+existing actionable diagnostics; no installer code or package build script runs.
 
-## Yanks, deprecation and incompatible releases
+The first lookup trusts the repository's tag. Locks protect selected bytes;
+they do not prove that a tag was never moved before the first lookup. Deleting
+refs can also make an uncached commit unavailable after server garbage collection.
+Keep release tags available; use validated caches or source mirrors when needed.
+A catalog would not by itself remove this trust or retention limit.
 
-Yanking changes availability advice, never the source artifact or immutable
-release record. New unlocked resolution rejects a known yanked version. Existing
-locks continue selecting and verifying the original bytes, including when
-repopulating a cache; display a known advisory without silently upgrading.
-Deprecation warns with a reason or replacement suggestion and preserves selection.
-A cached advisory is useful offline but is not evidence of current remote status.
+## Release metadata and contents
 
-Status changes require the same repository publishing authority and a reviewed
-catalog update. They are not deletion or reassignment of the version. Security
-advisories and user-defined denial policy may be added later; a yank must not be
-misrepresented as revocation of already distributed source. An incompatible
-release has a new version; resolving two requested versions in one graph reports
-the conflict instead of loading two nominally different copies under one name.
+Require only **name, version and license** for a versioned release. A license can
+be an SPDX expression or a confined license-file path. Retain the corresponding
+license/notice contents in the committed source. Existing local/full-pin projects
+are not retroactively required to become published releases.
 
-## Discovery, migration and staged delivery
+Description, readme, documentation, examples, test instructions, supported Zore
+versions and supported platforms are optional. Maintainer validation can warn
+about omissions without blocking a first release. Do not repeat missing-readme
+warnings in every application build. When compatibility bounds or confined paths
+are provided, validate and honor them rather than treating them as decoration.
+The metadata keys and grammar must be locked before implementation.
 
-Start discovery with repository readmes, documentation, examples and a browsable
-catalog listing versions, descriptions, license, compatibility and status. A
-curated directory may link to explicit repository identities later. Neither a
-search result nor a repository redirect silently chooses a dependency source.
-Global name registration, hosted search, mirrored artifact hosting, advanced
-solving and prerelease/range selection are separate decisions driven by use.
+Use the committed Git tree as the artifact, including tests/docs/examples/native
+sources that are present. Keep the current portable-path and regular-file rules;
+no archive inclusion language, source filters or arbitrary build scripts. A
+release's path dependencies must stay inside its repository snapshot. Preserve
+curated native recipe validation and build-time toolchain checks. Checking a
+portable API still must not require a native linker.
 
-Local development keeps path dependencies. Commit and test the library, publish a
-release, replace the application's path/full-pin declaration with an exact-version
-request, regenerate the application lock and review the source change. Existing
-Git pins need no migration. Import spelling and the public Zore API do not change.
-A released library's development lock remains useful for its own CI; the consuming
-application lock continues governing the whole graph.
+The selected Git URL is authoritative source attribution. Optional repository
+links are descriptive metadata, not a way to redirect resolution or assume two
+URLs have the same package identity.
 
-Deliver the work in independently reviewable increments:
+## Publishing and finding updates
 
-1. [#144](https://github.com/maasdi/zore/issues/144): lock release metadata/version
-   grammar and canonical artifact digest; add local
-   release validation with rejection cases and cross-host digest fixtures.
-2. [#145](https://github.com/maasdi/zore/issues/145), after #144: lock the Git catalog
-   and lock extension; implement exact-version consumption,
-   conflict/provenance checks and cached offline operation, reusing the Git cache.
-3. [#146](https://github.com/maasdi/zore/issues/146), after #144/#145: implement
-   checked/atomic publishing and advisory updates with repository-based
-   authority, including concurrency, interrupted pushes and credential failures.
-4. Add discovery tooling or a hosted service only after real package experience
-   establishes a need. Do not declare registry/distribution implemented when only
-   this planning record or a metadata validator has landed.
+Publish one tag at a time with ordinary Git. Use the repository's normal HTTPS
+credential helper or SSH agent; no Zore account or embedded credentials. A failed
+push has the usual Git retry path. If a tag already exists, inspect its target
+instead of forcing it; changed contents need a new version. Optional validation
+must not execute library code or upload anything secretly. Library test execution
+is an explicit maintainer/CI action.
 
-Before each implementation, update and lock the relevant specification under §53.
-No source keywords, runtime dependencies or new ownership rules are required by
-this proposal. Loading and native linking still use ordinary package identity,
-visibility, borrowing, Move semantics, errors, async retention and cleanup.
+Proposed update workflow, not implemented:
 
-## Evidence and implementation acceptance
+```sh
+zore outdated ./app
+# Edit a direct minimum, or add a higher minimum for a shared dependency.
+zore lock ./app
+# Review and commit the manifest/lock diff.
+```
 
-The [validation record](package-distribution-validation.md) distinguishes an
-executed workflow using current full Git pins from the unimplemented versioned
-protocol. Existing Git/native conformance provides further source integrity and
-ownership coverage; it is not evidence for catalog/publishing behavior.
+`outdated` would list each locked version, the newest advertised compatible tag
+and newer incompatible lines separately. It would not edit a manifest/lock or
+change a selection. Tags must follow the canonical naming/version convention;
+source metadata is still verified before any advertised version is selected.
+The report needs explicit repository access; offline mode can report cached data
+only and must label it as potentially stale.
 
-Every future increment needs positive and rejection coverage on Linux, macOS and
-Windows: metadata/version grammar; deterministic digest and resolution; diamonds
-and conflicts; native recipe checks; missing/corrupt cache and lock drift; offline
-check/build/run/test; moved/deleted remote refs; yanked/deprecated versions;
-unauthorized or failed publishing; concurrent and interrupted atomic updates;
-and independent-library type identity plus normal/error/panic/async cleanup.
+Repository readmes, examples and hosting release pages provide initial discovery.
+A hosted search service or curated directory can come later. No search result or
+repository redirect silently changes a dependency's source.
+
+## Yanks and later registry work
+
+The first tag-based path has no machine-readable yank/deprecation protocol.
+Authors can publish a corrected version and document warnings in their release
+notes/readme. Deleting a tag makes new resolution fail if it is not cached; it is
+not a reliable yank mechanism and does not revoke existing copies or locks.
+
+If package experience justifies a catalog or advisory service, design it later:
+a yank should block new selections while preserving existing locked bytes;
+deprecation should warn without changing selection. Define offline staleness and
+authority then. Do not build a catalog, multi-ref publisher, global name registry,
+advanced solver or independent transparency system merely to provide those
+future policies in the first release path.
+
+## Delivery and evidence
+
+1. [#144](https://github.com/maasdi/zore/issues/144): lock the release/version
+   grammar and minimal metadata; validate tagged source and compatibility claims.
+   Reuse existing source integrity checks; no new canonical digest format.
+2. [#145](https://github.com/maasdi/zore/issues/145): lock and implement tag lookup,
+   minimum-version graph selection, full-pin conflicts, lock provenance and
+   offline consumption. Cover pre-1.0 lines and newly discovered requirements.
+3. [#146](https://github.com/maasdi/zore/issues/146): validate the complete ordinary
+   Git publishing/consumer workflow and add read-only update discovery. An
+   optional preflight helper is allowed; no mandatory publisher or catalog.
+
+Before implementing each increment, lock its specification under §53 and add
+positive/rejection conformance on Linux, macOS and Windows. No source keywords,
+runtime dependencies or new ownership rules are needed. Preserve nominal type
+identity, visibility, borrowing, Move behavior and normal/error/panic/async cleanup.
+
+The [validation record](package-distribution-validation.md) separates current
+Git-pin experiments from proposal-model checks and still-unimplemented compiler
+behavior. Required implementation cases include multi-pass requirement expansion,
+order independence, compatible upgrades, incompatible lines, hard pins, tag/manifest
+mismatches, moved/deleted tags, lock drift, missing/corrupt caches, offline graphs,
+credential redaction and independent-library identity/cleanup.

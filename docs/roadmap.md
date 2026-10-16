@@ -105,11 +105,12 @@ identity and conflict/boundary checks under §§3.4 and 3.20. See
 under §§3.4.1–3.4.2. [Curated native adapter integration](native-libraries.md)
 (#138) adds registered C/Rust sources, private bindings and a native checksum
 package under §3.4.3. [Versioned distribution planning](design/package-distribution.md)
-(#139) recommends exact Git-backed releases and staged delivery; catalogs, version
-selection and publishing remain unimplemented. Follow-ups #144, #145 and #146
-track release validation, exact-version consumption and publishing/advisories.
-Unrestricted native extensions
-remain separate work. Local paths remain mutable references even with a lockfile.
+(#139) proposes Git tags, compatible minimum-version selection and staged delivery.
+Follow-ups #144, #145 and #146 track minimal release metadata, versioned
+consumption and a tag-publishing/update workflow. Zore version requirements and
+update discovery remain unimplemented.
+Unrestricted native extensions remain separate work. Local paths remain mutable
+references even with a lockfile.
 Further self-hosting remains deferred.
 
 The [2026-10-13 MVP inventory](conformance/mvp.md) maps §§39, 46, and 52 to

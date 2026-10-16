@@ -126,6 +126,7 @@ validated cache in CI. Cache data is reproducible from pins, not precious source
 For library development, start with [local dependencies](local-dependencies.md),
 then pin a committed revision in consuming applications. Native-backed packages
 can use [curated adapters](native-libraries.md). The
-[versioned distribution proposal](design/package-distribution.md) describes exact
-releases, publishing and later discovery; version selectors and publishing commands
-are not implemented. Full commit pins remain the supported Git workflow.
+[versioned distribution proposal](design/package-distribution.md) describes tagged
+releases, minimum-version selection and update discovery. Version requirements
+and `outdated` are not implemented. Ordinary Git remains the publishing tool;
+full commit pins remain the supported Zore dependency workflow.
