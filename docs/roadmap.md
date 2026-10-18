@@ -106,9 +106,12 @@ under §§3.4.1–3.4.2. [Curated native adapter integration](native-libraries.m
 (#138) adds registered C/Rust sources, private bindings and a native checksum
 package under §3.4.3. [Versioned distribution planning](design/package-distribution.md)
 (#139) proposes Git tags, compatible minimum-version selection and staged delivery.
-Follow-ups #144, #145 and #146 track minimal release metadata, versioned
-consumption and a tag-publishing/update workflow. Zore version requirements and
-update discovery remain unimplemented.
+[#144](release-metadata.md) adds canonical release version/tag validation, minimal
+licensing metadata and optional `check --release` preflight under §3.4.4. Supplied
+compiler bounds, platform claims and confined metadata paths are validated;
+legacy local/full-pin versions and version-1 locks remain compatible. #145 and
+#146 track versioned consumption and the publishing/update workflow. Dependency
+version requirements, Git tag lookup and update discovery remain unimplemented.
 Unrestricted native extensions remain separate work. Local paths remain mutable
 references even with a lockfile.
 Further self-hosting remains deferred.

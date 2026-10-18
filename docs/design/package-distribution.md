@@ -2,9 +2,11 @@
 
 Status: proposal for [#139](https://github.com/maasdi/zore/issues/139), revised after
 [PR #143 review](https://github.com/maasdi/zore/pull/143#pullrequestreview-5548103997).
-This is a planning record, not a locked compiler contract. Today Zore supports
-local paths and full Git commit pins. Version requirements, release metadata
-checks and `outdated` below are proposed features.
+This remains the design record for future versioned dependency selection and
+`outdated`. The metadata/version-validation slice (#144) is now locked in spec
+§3.4.4; [release metadata](../release-metadata.md) documents its local helper.
+Dependency selectors still support only local paths and full Git commit pins;
+tag lookup and version resolution below remain proposals.
 
 ## A library author releases a version
 
@@ -22,8 +24,8 @@ annotated tags are both allowed; each must resolve to a commit. The selected
 project's manifest must declare the same name and version as its tag.
 
 No catalog branch, extra retention refs, atomic multi-ref push or `zore publish`
-command is required. An optional local validation helper can come later without
-becoming a publishing prerequisite. Existing Git permissions and credentials
+command is required. The optional `zore check --release` metadata helper is
+available without becoming a publishing prerequisite. Existing Git permissions and credentials
 control who can push a tag.
 
 ## An application uses the library
@@ -180,7 +182,9 @@ versions and supported platforms are optional. Maintainer validation can warn
 about omissions without blocking a first release. Do not repeat missing-readme
 warnings in every application build. When compatibility bounds or confined paths
 are provided, validate and honor them rather than treating them as decoration.
-The metadata keys and grammar must be locked before implementation.
+The metadata keys and grammar are locked in spec §3.4.4. The local helper checks
+one project's metadata and native recipe; Git tag lookup and whole-graph release
+selection remain #145 work.
 
 Use the committed Git tree as the artifact, including tests/docs/examples/native
 sources that are present. Keep the current portable-path and regular-file rules;

@@ -24,8 +24,11 @@ pub fn run() -> ExitCode {
             action,
             target,
             format_check,
+            release,
+            release_tag,
             dependencies,
         }) => match action {
+            cli::Action::Check if release => super::release::run(&target, release_tag.as_deref()),
             cli::Action::Check => check(&target, dependencies),
             cli::Action::Build => build_command(&target, dependencies),
             cli::Action::Run => run_command(&target, dependencies),

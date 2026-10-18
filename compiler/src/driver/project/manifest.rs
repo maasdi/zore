@@ -11,6 +11,8 @@ pub struct Manifest {
     pub root: PathBuf,
     pub name: String,
     pub native: Option<String>,
+    pub version: Option<String>,
+    pub metadata: crate::driver::release::Metadata,
     pub(crate) text: String,
     pub dependencies: BTreeMap<String, Dependency>,
 }
@@ -25,7 +27,7 @@ pub enum Dependency {
     },
 }
 
-fn valid_name(name: &str) -> bool {
+pub(crate) fn valid_name(name: &str) -> bool {
     !name.is_empty()
         && name != "std"
         && name
@@ -37,6 +39,7 @@ impl Manifest {
     pub(super) fn parse(root: PathBuf, text: &str) -> Result<Self, SourceError> {
         let mut name = None;
         let mut version = None;
+        let mut metadata = crate::driver::release::Metadata::default();
         let mut dependencies = BTreeMap::new();
         let mut section = "".to_string();
         let mut seen_dependencies = false;
@@ -93,9 +96,23 @@ impl Manifest {
                         return Err(format!("duplicate dependency `{key}`"));
                     }
                 } else {
+                    if key == "platforms" {
+                        if metadata.platforms.replace(input.strings()?).is_some() {
+                            return Err("duplicate manifest field `platforms`".into());
+                        }
+                        return input.finish();
+                    }
                     let target = match key.as_str() {
                         "name" => &mut name,
                         "version" => &mut version,
+                        "license" => &mut metadata.license,
+                        "license-file" => &mut metadata.license_file,
+                        "description" => &mut metadata.description,
+                        "readme" => &mut metadata.readme,
+                        "repository" => &mut metadata.repository,
+                        "documentation" => &mut metadata.documentation,
+                        "zore-min" => &mut metadata.zore_min,
+                        "zore-max" => &mut metadata.zore_max,
                         _ => return Err(format!("unsupported manifest field `{key}`")),
                     };
                     let value = input.string()?;
@@ -138,7 +155,12 @@ impl Manifest {
                 ));
             }
         }
+        metadata
+            .validate_fields()
+            .map_err(|message| manifest_error(&root, message))?;
         Ok(Self {
+            version,
+            metadata,
             root,
             name,
             dependencies,
@@ -148,7 +170,7 @@ impl Manifest {
     }
 }
 
-fn manifest_error(root: &std::path::Path, message: String) -> SourceError {
+pub(crate) fn manifest_error(root: &std::path::Path, message: String) -> SourceError {
     io_error(
         &root.join("zore.toml"),
         std::io::Error::new(std::io::ErrorKind::InvalidData, message),
@@ -229,6 +251,22 @@ impl<'a> Input<'a> {
                 value.push(escaped);
             } else {
                 value.push(c);
+            }
+        }
+    }
+    fn strings(&mut self) -> Result<Vec<String>, String> {
+        self.take('[')?;
+        let mut values = Vec::new();
+        loop {
+            self.space();
+            if self.0.starts_with(']') {
+                self.take(']')?;
+                return Ok(values);
+            }
+            values.push(self.string()?);
+            self.space();
+            if !self.0.starts_with(']') {
+                self.take(',')?;
             }
         }
     }
@@ -416,6 +454,7 @@ fn visit(
         }
         return Ok(());
     }
+    crate::driver::release::validate_metadata(files, &manifest)?;
     if manifest.native.is_some() {
         crate::driver::native::load(files, &manifest)?;
     }

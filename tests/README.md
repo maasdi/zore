@@ -6,6 +6,14 @@ canonical project aliases and package boundaries. `tests/codegen/local_dependenc
 exercises check/build/run/test on separate projects with Unicode/space paths,
 selected library tests, initialization once and async success/error/panic cleanup.
 
+`tests/driver/release_metadata.rs` covers canonical numeric version/tag identities,
+minimal SPDX/file licensing, optional metadata, compiler/platform compatibility,
+portable/constrained file paths, Unix symlink escape, native recipe reuse and
+metadata-only CLI behavior without Git or native tools. It preserves legacy
+version strings and version-1 locks; ordinary omission warnings remain absent.
+Run `cargo test --locked --test release_metadata`. Full Git and native suites
+continue to cover commit/tree/cache integrity and exact-pin behavior.
+
 CI runs host-applicable Rust checks on Linux, macOS and Windows x64 MSVC.
 `tests/codegen/host_support.rs` covers native paths with spaces/Unicode, CLI
 build/run/test, process arguments and working directories, captured bytes,

@@ -185,8 +185,10 @@ name and optional version fields use single-line TOML basic double-quoted or
 literal single-quoted strings. Basic strings support the TOML escapes \b, \t,
 \n, \f, \r, \" and \\, and four/eight-digit Unicode scalar escapes. Raw control
 characters other than tab are rejected. Multiline strings, dotted/quoted keys,
-arrays and other tables except `[native]` (§3.4.3) are outside this subset and receive explicit errors.
-The name is required and follows §3.20; version is metadata, not a constraint.
+arrays (except `platforms` in §3.4.4) and other tables except `[native]`
+(§3.4.3) are outside this subset and receive explicit errors.
+The name is required and follows §3.20; version remains unchecked metadata for
+local/full-revision workflows. Explicit release validation follows §3.4.4.
 Duplicate fields, unknown fields/tables and malformed values are errors naming
 the manifest and line. No manifest may silently ignore a dependency entry.
 
@@ -391,6 +393,84 @@ exercise registration rejection, source integrity and confinement (including
 unused/transitive projects), independent checking, local/Git consumption,
 ABI byte handling, errors and invalid tokens, lock/cache selection, normal/error/
 panic cleanup, owned async values and Linux/macOS/Windows native execution.
+
+## 3.4.4 Release versions and metadata validation — LOCKED
+
+A release version is exactly three ASCII decimal components `MAJOR.MINOR.PATCH`.
+Each component is `0` or a nonzero digit followed by digits, without a fixed
+integer-width limit. Whitespace, signs, leading zeroes, `v` prefixes, ranges,
+prerelease and build suffixes are rejected. Ordering compares components
+numerically. The canonical Git release tag is `<name>/v<version>`; both parts
+must exactly agree with the selected project's manifest. A future Git resolver
+must resolve lightweight/annotated tags to commits and reuse the existing
+commit/tree verification. Checking a supplied tag string locally does not prove
+that a tag exists or refers to the working tree.
+
+Versioned releases require only `name`, canonical `version` and licensing:
+`license` (a recognized SPDX license expression, including deprecated identifiers)
+or `license-file` (a confined UTF-8 text file), or both. SPDX `AND`, `OR`, `WITH`
+(also their lowercase forms) and parentheses are supported. Custom
+LicenseRef/AdditionRef identifiers use `license-file` instead. Other root
+metadata is optional:
+
+```toml
+name = "greeting"
+version = "1.2.3"
+license = "MIT OR Apache-2.0"
+description = "A small greeting library"
+readme = "README.md"
+repository = "https://example.org/team/libraries.git"
+documentation = "https://example.org/greeting/"
+zore-min = "0.1.0"
+zore-max = "0.2.0"
+platforms = ["linux", "macos", "windows"]
+```
+
+`description` must be nonempty text without control characters. `repository`
+uses the existing credential-free explicit Git URL grammar; `documentation` is
+an explicit HTTPS URL with an ASCII DNS/IPv4 host or bracketed IPv6 address,
+optional numeric port (0–65535), and without credentials, whitespace, controls,
+query or fragment. Neither link changes the dependency's selected Git URL;
+source provenance always comes from the actual selected source. Readme and
+license-file paths use the portable relative-path grammar of Git `subdir`,
+resolve to readable regular UTF-8 files and remain within the canonical project
+root, including after symlink resolution. An empty license file is rejected.
+
+`zore-min` is an inclusive canonical compiler-version bound; `zore-max` is
+exclusive. If both occur, minimum must be strictly below maximum. `platforms`
+is a nonempty single-line array of distinct strings from `linux`, `macos`,
+`windows`; a trailing comma is allowed. Absence imposes no restriction. Supplied
+bounds and platform restrictions are honored for every project in an ordinary
+dependency graph and by the release helper. They describe declared support,
+not a cross-compilation mechanism or proof of successful tests. Native adapter
+host/ABI and reviewed recipe requirements remain independently authoritative.
+Supplied metadata is validated even outside releases; version alone retains its
+old unchecked behavior. No new release metadata is required for local/full-rev
+projects or existing version-1 locks. No warnings are added to ordinary builds.
+
+`zore check --release [--tag <name/vversion>] [--offline] <file|directory>` is an
+optional, local metadata preflight for the nearest manifest. It checks required
+release fields, any supplied metadata and existing native source/recipe rules.
+It reports the canonical tag and may warn about missing optional descriptive
+metadata. `--tag` checks only the supplied string, without Git lookup. The
+helper performs no source typechecking, dependency resolution, fetch, tag/push,
+code execution or lock/cache writes, and requires no C compiler or native linker.
+`--locked` is rejected in this mode. Flags are check-only, cannot repeat, and
+`--tag` requires `--release`; ordinary check behavior remains unchanged.
+
+Compiler impact: retain version and optional metadata in the manifest, expose
+reusable canonical version/tag and metadata validators, and validate supplied
+metadata before project loading. Reuse native recipe validation and the existing
+manifest-byte digest; no new source hash or lock schema is introduced. Ownership,
+error propagation, cleanup and async language semantics are unchanged. Errors
+are explicit manifest/usage diagnostics; validation executes no project code.
+Conformance covers numeric ordering and malformed versions, tag/name/version
+agreement, SPDX/file licensing, optional-field syntax, bound/platform rejection,
+file confinement and symlink escape, native recipe integrity, frontend-only
+preflight and unchanged legacy full-revision/lock behavior on all three hosts.
+Dependency `version` selectors, minimum-version graph resolution, tag fetching
+and release lock provenance remain separate follow-ups; this helper does not
+implement them.
 
 ## 3.5 Identifiers — LOCKED
 
