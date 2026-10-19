@@ -108,9 +108,8 @@ access uses the existing `FileSystem` abstraction. SPDX parsing adds the compile
 and expression parser avoid a separate, incomplete license list or grammar.
 Generated Zore programs and the runtime acquire no dependency.
 
-[#145](https://github.com/maasdi/zore/issues/145) still needs to implement tag lookup,
+[Tagged dependencies](versioned-dependencies.md) (#145) add tag lookup,
 version-to-commit mapping, compatible minimum-version dependency selection and
-release-aware lock/offline coverage. Dependency `version` selectors are not yet
-accepted. [#146](https://github.com/maasdi/zore/issues/146) covers the complete
+version-2 lock/offline support. The helper above stays local and metadata-only. [#146](https://github.com/maasdi/zore/issues/146) covers the complete
 publishing/consumer workflow and read-only update discovery. The local helper
 alone does not establish a hosted release or whole dependency-graph readiness.

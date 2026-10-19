@@ -90,3 +90,7 @@ path = "../tests/driver/native_adapters.rs"
 [[test]]
 name = "release_metadata"
 path = "../tests/driver/release_metadata.rs"
+
+[[test]]
+name = "tagged_dependencies"
+path = "../tests/driver/tagged_dependencies.rs"

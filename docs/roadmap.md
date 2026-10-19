@@ -109,9 +109,12 @@ package under §3.4.3. [Versioned distribution planning](design/package-distribu
 [#144](release-metadata.md) adds canonical release version/tag validation, minimal
 licensing metadata and optional `check --release` preflight under §3.4.4. Supplied
 compiler bounds, platform claims and confined metadata paths are validated;
-legacy local/full-pin versions and version-1 locks remain compatible. #145 and
-#146 track versioned consumption and the publishing/update workflow. Dependency
-version requirements, Git tag lookup and update discovery remain unimplemented.
+legacy local/full-pin versions and version-1 locks remain compatible.
+[#145](versioned-dependencies.md) implements tagged minimum-version selection,
+request-graph expansion, full-pin/source conflicts, version-2 release provenance
+and locked/offline consumption under §3.4.5. Version-1 behavior remains supported.
+#146 retains the complete publishing/consumer workflow and read-only update
+discovery; update reporting remains unimplemented.
 Unrestricted native extensions remain separate work. Local paths remain mutable
 references even with a lockfile.
 Further self-hosting remains deferred.

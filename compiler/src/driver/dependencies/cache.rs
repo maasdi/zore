@@ -72,7 +72,7 @@ fn make_writable(path: &Path) {
     }
 }
 
-fn cache_root() -> Result<PathBuf, SourceError> {
+pub(super) fn cache_root() -> Result<PathBuf, SourceError> {
     if let Some(path) = std::env::var_os("ZORE_CACHE_DIR").filter(|p| !p.is_empty()) {
         return Ok(PathBuf::from(path));
     }
@@ -117,6 +117,12 @@ pub(super) fn select(
             "Git source is missing from the cache; run `zore install` without --offline first",
         ));
     }
+    let staging = fetch(url, revision)?;
+    publish(staging, url, revision)
+}
+
+fn fetch(url: &str, reference: &str) -> Result<Staging, SourceError> {
+    let root = cache_root()?;
     fs::create_dir_all(&root).map_err(|e| error(&root, e))?;
     let staging = Staging::new(&root)?;
     let repository = staging.0.join("repository.git");
@@ -126,12 +132,12 @@ pub(super) fn select(
         .output()
         .map_err(|_| {
             error(
-                &entry,
+                &root,
                 "Git is required; install git and retry `zore install`",
             )
         })?;
     if !status.status.success() {
-        return Err(error(&entry, "could not initialize Git cache staging"));
+        return Err(error(&root, "could not initialize Git cache staging"));
     }
     let status = git(Some(&repository))
         .args([
@@ -141,16 +147,79 @@ pub(super) fn select(
             "--depth=1",
             "--",
             url,
-            revision,
+            reference,
         ])
         .output()
-        .map_err(|_| error(&entry, "could not start Git fetch"))?;
+        .map_err(|_| error(&root, "could not start Git fetch"))?;
     if !status.status.success() {
         return Err(error(
-            &entry,
+            &root,
             "Git fetch failed; check repository access, your normal Git credentials, and whether the pinned commit is available",
         ));
     }
+    Ok(staging)
+}
+
+pub(super) fn tagged(
+    url: &str,
+    tag: &str,
+    expected: Option<&str>,
+) -> Result<(String, PathBuf, String), SourceError> {
+    let staging = fetch(url, &format!("refs/tags/{tag}")).map_err(|source| {
+        error(
+            Path::new("zore.toml"),
+            format!(
+                "release tag `{tag}` is unavailable: {source}; publish the requested minimum tag"
+            ),
+        )
+    })?;
+    let repository = staging.0.join("repository.git");
+    let commit = output(
+        &repository,
+        &["rev-parse", "--verify", "FETCH_HEAD^{commit}"],
+    )
+    .map_err(|_| {
+        error(
+            &repository,
+            format!("release tag `{tag}` must resolve to a commit"),
+        )
+    })?;
+    let revision = String::from_utf8(commit)
+        .map_err(|_| error(&repository, "invalid release commit"))?
+        .trim()
+        .to_string();
+    if revision.len() != 40 || !revision.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err(error(
+            &repository,
+            "release tag must resolve to a SHA-1 commit",
+        ));
+    }
+    if expected.is_some_and(|known| known != revision) {
+        return Err(error(
+            Path::new("zore.lock"),
+            format!(
+                "release identity conflict: tag `{tag}` moved from its known commit; publish a new version instead"
+            ),
+        ));
+    }
+    let (checkout, tree) = publish(staging, url, &revision)?;
+    Ok((revision, checkout, tree))
+}
+
+fn publish(staging: Staging, url: &str, revision: &str) -> Result<(PathBuf, String), SourceError> {
+    let root = cache_root()?;
+    let entry = root.join(digest(format!("{url}\0{revision}").as_bytes()));
+    if entry.exists() {
+        return validate(&entry, url, revision).map_err(|e| {
+            error(
+                &entry,
+                format!(
+                    "corrupt Git cache: {e}; remove this cache entry and run `zore install` again"
+                ),
+            )
+        });
+    }
+    let repository = staging.0.join("repository.git");
     fs::write(staging.0.join("source"), format!("{url}\n{revision}\n"))
         .map_err(|e| error(&entry, e))?;
     let (tree, entries) = inventory(&repository, revision)?;

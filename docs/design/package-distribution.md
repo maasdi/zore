@@ -2,11 +2,11 @@
 
 Status: proposal for [#139](https://github.com/maasdi/zore/issues/139), revised after
 [PR #143 review](https://github.com/maasdi/zore/pull/143#pullrequestreview-5548103997).
-This remains the design record for future versioned dependency selection and
-`outdated`. The metadata/version-validation slice (#144) is now locked in spec
-§3.4.4; [release metadata](../release-metadata.md) documents its local helper.
-Dependency selectors still support only local paths and full Git commit pins;
-tag lookup and version resolution below remain proposals.
+This preserves the design reasoning. Release metadata (#144) is locked in spec
+§3.4.4 and tagged minimum-version resolution (#145) in §3.4.5. The
+[release metadata](../release-metadata.md) and [tagged dependency](../versioned-dependencies.md)
+guides describe implemented behavior. Update discovery below remains proposed
+work for #146.
 
 ## A library author releases a version
 
@@ -30,7 +30,7 @@ control who can push a tag.
 
 ## An application uses the library
 
-Proposed dependency syntax, not currently accepted:
+Supported dependency syntax under §3.4.5:
 
 ```toml
 name = "webapp"
@@ -183,8 +183,8 @@ about omissions without blocking a first release. Do not repeat missing-readme
 warnings in every application build. When compatibility bounds or confined paths
 are provided, validate and honor them rather than treating them as decoration.
 The metadata keys and grammar are locked in spec §3.4.4. The local helper checks
-one project's metadata and native recipe; Git tag lookup and whole-graph release
-selection remain #145 work.
+one project's metadata and native recipe; Git tag lookup and whole-graph minimum selection are implemented under §3.4.5;
+the complete author workflow remains #146 work.
 
 Use the committed Git tree as the artifact, including tests/docs/examples/native
 sources that are present. Keep the current portable-path and regular-file rules;

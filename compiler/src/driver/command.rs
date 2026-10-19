@@ -177,10 +177,10 @@ pub(crate) fn help(action: Option<Action>) -> String {
                 program's exit status is returned. Requires clang, as for build.\n"
             }
             Action::Install => {
-                "Usage: zore install [--locked] [--offline] [--] <file|directory>\n\nInstall pinned dependencies and create a missing zore.lock. Existing locks must match.\n"
+                "Usage: zore install [--locked] [--offline] [--] <file|directory>\n\nInstall Git dependencies and create a missing zore.lock. Existing locks must match.\n"
             }
             Action::Lock => {
-                "Usage: zore lock [--offline] [--] <file|directory>\n\nRegenerate zore.lock from the current manifest pins.\n"
+                "Usage: zore lock [--offline] [--] <file|directory>\n\nRecompute zore.lock from manifest requirements, preserving known release identities.\n"
             }
             Action::Format => {
                 "Usage: zore fmt [--check] [--] <file.ore|directory>\n\n\
@@ -217,8 +217,8 @@ pub(crate) fn help(action: Option<Action>) -> String {
        run <file.ore>    Build and run a program (requires clang)\n\n\
        fmt <target>      Format a source file or directory (--check for CI)\n\
        test <target>     Run application tests (requires clang and rustc)\n\
-       install <target>  Install pinned dependencies and create zore.lock\n\
-       lock <target>     Regenerate zore.lock from manifest pins\n\n\
+       install <target>  Install Git dependencies and create zore.lock\n\
+       lock <target>     Recompute zore.lock from manifest requirements\n\n\
      Options:\n\
        -h, --help        Show help; also accepted after a command\n\
        -V, --version     Show compiler version\n\n\

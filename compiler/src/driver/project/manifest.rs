@@ -20,6 +20,11 @@ pub struct Manifest {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Dependency {
     Path(PathBuf),
+    Release {
+        url: String,
+        version: crate::driver::release::Version,
+        subdir: String,
+    },
     Git {
         url: String,
         revision: String,
@@ -177,13 +182,13 @@ pub(crate) fn manifest_error(root: &std::path::Path, message: String) -> SourceE
     )
 }
 
-struct Input<'a>(&'a str);
+pub(crate) struct Input<'a>(pub(crate) &'a str);
 
 impl<'a> Input<'a> {
-    fn space(&mut self) {
+    pub(crate) fn space(&mut self) {
         self.0 = self.0.trim_start_matches([' ', '\t']);
     }
-    fn take(&mut self, expected: char) -> Result<(), String> {
+    pub(crate) fn take(&mut self, expected: char) -> Result<(), String> {
         self.space();
         self.0 = self
             .0
@@ -191,7 +196,7 @@ impl<'a> Input<'a> {
             .ok_or_else(|| format!("expected `{expected}`"))?;
         Ok(())
     }
-    fn key(&mut self) -> Result<&'a str, String> {
+    pub(crate) fn key(&mut self) -> Result<&'a str, String> {
         self.space();
         let length = self
             .0
@@ -214,7 +219,7 @@ impl<'a> Input<'a> {
         self.0 = &self.0[c.len_utf8()..];
         Ok(c)
     }
-    fn string(&mut self) -> Result<String, String> {
+    pub(crate) fn string(&mut self) -> Result<String, String> {
         self.space();
         let quote = self.next()?;
         if quote != '"' && quote != '\'' {
@@ -275,7 +280,7 @@ impl<'a> Input<'a> {
         let mut fields = BTreeMap::new();
         loop {
             let key = self.key()?.to_string();
-            if !matches!(key.as_str(), "path" | "git" | "rev" | "subdir") {
+            if !matches!(key.as_str(), "path" | "git" | "rev" | "version" | "subdir") {
                 return Err("unsupported dependency field".into());
             }
             self.take('=')?;
@@ -322,6 +327,22 @@ impl<'a> Input<'a> {
             .remove("git")
             .ok_or("a dependency requires path or git and rev")?;
         validate_url(&url)?;
+        let version = fields.remove("version");
+        if let Some(version) = version {
+            if fields.contains_key("rev") {
+                return Err("a Git dependency requires exactly one of rev or version".into());
+            }
+            let version = version.parse::<crate::driver::release::Version>()?;
+            let subdir = fields.remove("subdir").unwrap_or_default();
+            if !subdir.is_empty() && !portable_path(&subdir) {
+                return Err("Git subdir must be a portable repository-relative directory".into());
+            }
+            return Ok(Dependency::Release {
+                url,
+                version,
+                subdir,
+            });
+        }
         let revision = fields
             .remove("rev")
             .ok_or("a Git dependency requires a full commit rev")?;
@@ -339,7 +360,7 @@ impl<'a> Input<'a> {
         })
     }
 
-    fn finish(&mut self) -> Result<(), String> {
+    pub(crate) fn finish(&mut self) -> Result<(), String> {
         self.space();
         if self.0.is_empty() || self.0.starts_with('#') {
             Ok(())
@@ -405,22 +426,36 @@ pub(super) fn resolve(
     files: &dyn FileSystem,
     root: Manifest,
 ) -> Result<HashMap<String, Manifest>, SourceError> {
-    resolve_with(files, root, &mut |manifest, dependency| match dependency {
-        Dependency::Path(path) => Ok(files.canonical(&manifest.root.join(path))),
-        Dependency::Git { .. } => Err(manifest_error(
-            &manifest.root,
-            "Git dependencies require the disk dependency resolver".into(),
-        )),
-    })
+    resolve_with(
+        files,
+        root,
+        &mut |manifest, _, dependency| match dependency {
+            Dependency::Path(path) => Ok(files.canonical(&manifest.root.join(path))),
+            Dependency::Release { .. } | Dependency::Git { .. } => Err(manifest_error(
+                &manifest.root,
+                "Git dependencies require the disk dependency resolver".into(),
+            )),
+        },
+    )
 }
 
 pub(crate) fn resolve_with(
     files: &dyn FileSystem,
     root: Manifest,
-    select: &mut dyn FnMut(&Manifest, &Dependency) -> Result<PathBuf, SourceError>,
+    select: &mut dyn FnMut(&Manifest, &str, &Dependency) -> Result<PathBuf, SourceError>,
+) -> Result<HashMap<String, Manifest>, SourceError> {
+    resolve_roots(files, vec![root], select)
+}
+
+pub(crate) fn resolve_roots(
+    files: &dyn FileSystem,
+    roots: Vec<Manifest>,
+    select: &mut dyn FnMut(&Manifest, &str, &Dependency) -> Result<PathBuf, SourceError>,
 ) -> Result<HashMap<String, Manifest>, SourceError> {
     let mut projects = HashMap::new();
-    visit(files, root, &mut projects, &mut Vec::new(), select)?;
+    for root in roots {
+        visit(files, root, &mut projects, &mut Vec::new(), select)?;
+    }
     Ok(projects)
 }
 
@@ -429,7 +464,7 @@ fn visit(
     mut manifest: Manifest,
     projects: &mut HashMap<String, Manifest>,
     visiting: &mut Vec<String>,
-    select: &mut dyn FnMut(&Manifest, &Dependency) -> Result<PathBuf, SourceError>,
+    select: &mut dyn FnMut(&Manifest, &str, &Dependency) -> Result<PathBuf, SourceError>,
 ) -> Result<(), SourceError> {
     manifest.root = files.canonical(&manifest.root);
     if let Some(previous) = projects.get(&manifest.name) {
@@ -461,7 +496,7 @@ fn visit(
     projects.insert(manifest.name.clone(), manifest.clone());
     visiting.push(manifest.name.clone());
     for (name, source) in &manifest.dependencies {
-        let target = select(&manifest, source)?;
+        let target = select(&manifest, name, source)?;
         let dependency = files
             .manifest(&target)
             .map_err(|error| {
