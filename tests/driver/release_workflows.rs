@@ -663,37 +663,22 @@ fn reported_transitive_updates_require_a_direct_minimum_and_explicit_lock() {
 }
 
 #[test]
+#[ignore = "invoked only as a Git SSH subprocess fixture"]
+fn ssh_failure_fixture() {
+    let marker = std::env::var_os("ZORE_TEST_SSH_FAILURE").expect("SSH fixture marker");
+    fs::write(marker, "ran").unwrap();
+    eprintln!("TOP_SECRET");
+    std::process::exit(1);
+}
+
+#[test]
 fn git_listing_failures_redact_remote_diagnostics_and_embedded_credentials() {
     let fixture = Fixture::new();
     fixture.leaf("1.0.0");
     fixture.app(&fixture.requirement("shared", "1.0.0"));
     success(fixture.invoke("install", &[]));
-    let script = fixture.root.join(if cfg!(windows) {
-        "ssh-failure.cmd"
-    } else {
-        "ssh-failure"
-    });
     let marker = fixture.root.join("ssh-ran");
-    fs::write(
-        &script,
-        if cfg!(windows) {
-            format!(
-                "@echo off\necho ran > \"{}\"\necho TOP_SECRET 1>&2\nexit /b 1\n",
-                marker.display()
-            )
-        } else {
-            format!(
-                "#!/bin/sh\necho ran > \"{}\"\necho TOP_SECRET >&2\nexit 1\n",
-                marker.display()
-            )
-        },
-    )
-    .unwrap();
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(&script, fs::Permissions::from_mode(0o700)).unwrap();
-    }
+    let executable = std::env::current_exe().unwrap();
     let output = fixture
         .command("outdated", &[], &fixture.app)
         .env("GIT_CONFIG_COUNT", "1")
@@ -704,8 +689,12 @@ fn git_listing_failures_redact_remote_diagnostics_and_embedded_credentials() {
         .env("GIT_CONFIG_VALUE_0", url(&fixture.remote("shared")))
         .env(
             "GIT_SSH_COMMAND",
-            format!("\"{}\"", script.to_str().unwrap().replace('\\', "/")),
+            format!(
+                "\"{}\" --ignored --exact ssh_failure_fixture --nocapture --",
+                executable.to_str().unwrap().replace('\\', "/")
+            ),
         )
+        .env("ZORE_TEST_SSH_FAILURE", &marker)
         .env("GIT_SSH_VARIANT", "ssh")
         .output()
         .unwrap();
