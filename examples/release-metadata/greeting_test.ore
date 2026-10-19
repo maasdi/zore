@@ -1,0 +1,7 @@
+package greeting
+
+func TestHello() {
+    if Hello("Ada") != "Hello, Ada!" {
+        panic("unexpected greeting")
+    }
+}

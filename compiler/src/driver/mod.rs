@@ -5,6 +5,7 @@ mod dependencies;
 mod format;
 mod native;
 pub mod project;
+pub mod release;
 mod session;
 mod stdlib;
 mod testing;

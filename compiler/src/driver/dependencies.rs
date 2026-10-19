@@ -30,6 +30,10 @@ pub(super) struct Options {
 pub(super) struct DependencyDisk(pub Options);
 
 impl FileSystem for DependencyDisk {
+    fn read_regular(&self, path: &Path) -> Result<String, SourceError> {
+        Disk.read_regular(path)
+    }
+
     fn require_lockfile(&self) -> bool {
         self.0.locked
     }

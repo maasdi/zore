@@ -34,6 +34,8 @@ pub(crate) enum Command {
         action: Action,
         target: PathBuf,
         format_check: bool,
+        release: bool,
+        release_tag: Option<String>,
         dependencies: Options,
     },
 }
@@ -75,6 +77,8 @@ pub(crate) fn parse(args: Vec<OsString>) -> Result<Command, String> {
     let mut targets = Vec::new();
     let mut literal = false;
     let mut format_check = false;
+    let mut release = false;
+    let mut release_tag = None;
     let mut dependencies = Options {
         mode: match action {
             Action::Install => Mode::Install,
@@ -83,13 +87,29 @@ pub(crate) fn parse(args: Vec<OsString>) -> Result<Command, String> {
         },
         ..Default::default()
     };
-    for arg in remaining {
+    let mut arguments = remaining.iter();
+    while let Some(arg) = arguments.next() {
         if !literal && arg == "--" {
             if !targets.is_empty() {
                 return Err(format!("unknown option {arg:?} for {}", action.name()));
             }
             literal = true;
             continue;
+        }
+        if !literal && action == Action::Check {
+            if arg == "--release" && !release {
+                release = true;
+                continue;
+            }
+            if arg == "--tag" && release_tag.is_none() {
+                let value = arguments
+                    .next()
+                    .and_then(|value| value.to_str())
+                    .filter(|value| !value.is_empty())
+                    .ok_or("--tag requires a UTF-8 <name/vversion> value")?;
+                release_tag = Some(value.to_string());
+                continue;
+            }
         }
         if !literal && action == Action::Format && arg == "--check" && !format_check {
             format_check = true;
@@ -110,6 +130,12 @@ pub(crate) fn parse(args: Vec<OsString>) -> Result<Command, String> {
         }
         targets.push(arg);
     }
+    if release_tag.is_some() && !release {
+        return Err("--tag requires --release".into());
+    }
+    if release && dependencies.locked {
+        return Err("--release validates metadata only and does not accept --locked".into());
+    }
     let [target] = targets.as_slice() else {
         return Err(format!("{} requires exactly one target", action.name()));
     };
@@ -120,6 +146,8 @@ pub(crate) fn parse(args: Vec<OsString>) -> Result<Command, String> {
         action,
         target: PathBuf::from(target),
         format_check,
+        release,
+        release_tag,
         dependencies,
     })
 }
@@ -131,7 +159,11 @@ pub(crate) fn help(action: Option<Action>) -> String {
                 "Usage: zore check [--] <file.ore>\n\n\
                 Check one source file as a complete package. Only part of the\n\
                 language is supported so far; unsupported features are reported\n\
-                as errors. Prints nothing and exits 0 when the file is valid.\n"
+                as errors. Prints nothing and exits 0 when the file is valid.\n\n\
+                Release metadata only: zore check --release [--tag <name/vversion>] [--offline] <file|directory>\n\
+                Checks the nearest manifest and native recipes without typechecking,\n\
+                Git lookup, dependency resolution, execution or lock/cache writes.\n\
+                --tag checks a supplied string only; --locked is rejected with --release.\n"
             }
             Action::Build => {
                 "Usage: zore build [--] <file.ore>\n\n\
@@ -180,7 +212,7 @@ pub(crate) fn help(action: Option<Action>) -> String {
             zore --help\n\
             zore --version\n\n\
      Commands (a subset of the language is supported):\n\
-       check <file.ore>  Check a source file\n\
+       check <file.ore>  Check a source file (--release validates metadata only)\n\
        build <file.ore>  Build a native executable (requires clang)\n\
        run <file.ore>    Build and run a program (requires clang)\n\n\
        fmt <target>      Format a source file or directory (--check for CI)\n\

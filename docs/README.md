@@ -11,6 +11,7 @@
 | [Testing guide](../tests/README.md) | Test suites, conformance documents, and conventions. |
 | [Platform support](platform-support.md) | Native host/toolchain requirements, platform APIs, and Windows validation. |
 | [MVP evidence inventory](conformance/mvp.md) | Current specification coverage, direct test gaps, intentional restrictions, and tracked follow-ups. |
+| [Release metadata](release-metadata.md) | Optional local release preflight, canonical version/tag grammar, licensing and compatibility metadata. |
 | [Formatter](formatter.md) | `zore fmt`, check mode, style, traversal, and write behavior. |
 | [Lexical task scopes](scoped-tasks.md) | Plain-function borrowing tasks, mandatory join/cleanup, failure rules and staged async support. |
 | [Performance baseline](performance.md) | Reproducible compiler, REST/JSON and frame measurements, raw data and measured follow-ups. |

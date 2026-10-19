@@ -16,6 +16,11 @@ pub use manifest::{Dependency, Manifest};
 pub trait FileSystem {
     fn read(&self, path: &Path) -> Result<String, SourceError>;
 
+    /// Reads a regular UTF-8 file, rejecting directories and special files.
+    fn read_regular(&self, path: &Path) -> Result<String, SourceError> {
+        self.read(path)
+    }
+
     /// The `.ore` files directly inside `dir`, sorted by file name.
     fn ore_files(&self, dir: &Path) -> Result<Vec<PathBuf>, SourceError>;
 
@@ -49,6 +54,20 @@ fn io_error(path: &Path, source: std::io::Error) -> SourceError {
 }
 
 impl FileSystem for Disk {
+    fn read_regular(&self, path: &Path) -> Result<String, SourceError> {
+        let metadata = std::fs::metadata(path).map_err(|source| io_error(path, source))?;
+        if !metadata.is_file() {
+            return Err(io_error(
+                path,
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "metadata path must name a regular file",
+                ),
+            ));
+        }
+        self.read(path)
+    }
+
     fn projects(&self, root: Manifest) -> Result<HashMap<String, Manifest>, SourceError> {
         super::dependencies::resolve(root, Default::default())
     }

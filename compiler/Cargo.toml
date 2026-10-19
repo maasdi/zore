@@ -17,6 +17,7 @@ autotests = false
 
 [dependencies]
 sha2 = "0.10"
+spdx = { version = "0.13", default-features = false }
 
 [[example]]
 name = "async_frame_scaling"
@@ -85,3 +86,7 @@ path = "../tests/driver/git_dependencies.rs"
 [[test]]
 name = "native_adapters"
 path = "../tests/driver/native_adapters.rs"
+
+[[test]]
+name = "release_metadata"
+path = "../tests/driver/release_metadata.rs"

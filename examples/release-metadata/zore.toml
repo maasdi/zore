@@ -1,0 +1,9 @@
+name = "greeting"
+version = "1.2.3"
+license = "Apache-2.0"
+description = "A small, portable greeting library"
+readme = "README.md"
+repository = "https://github.com/maasdi/zore.git"
+documentation = "https://github.com/maasdi/zore/"
+zore-min = "0.1.0"
+platforms = ["linux", "macos", "windows"]
