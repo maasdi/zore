@@ -266,3 +266,45 @@ pub(super) fn read(text: Option<&str>) -> Result<Bindings, SourceError> {
     }
     Ok(bindings)
 }
+
+pub(super) fn selected(text: &str) -> Result<Vec<Binding>, SourceError> {
+    let bindings = read(Some(text))?;
+    if text.starts_with("version = 1\n") {
+        return Ok(Vec::new());
+    }
+    let projects = text
+        .strip_prefix("version = 2\n\n[projects]\n")
+        .and_then(|content| content.split_once("\n[releases]\n"))
+        .expect("validated lockfile")
+        .0;
+    let mut selected = Vec::new();
+    for line in projects.lines() {
+        let (name, record) = line.split_once(" = ").expect("validated project");
+        let fields = fields(record)?;
+        let Some(version) = fields.get("version") else {
+            continue;
+        };
+        let key = ReleaseKey {
+            name: name.into(),
+            url: fields["git"].clone(),
+            subdir: fields["subdir"].clone(),
+            version: version.parse().expect("validated version"),
+        };
+        let binding = bindings
+            .get(&key)
+            .ok_or_else(|| invalid("selected release has no locked provenance"))?;
+        if fields["rev"] != binding.revision
+            || fields["tree"] != binding.tree
+            || fields["manifest"] != binding.manifest
+            || fields.get("adapter").zip(fields.get("recipe"))
+                != binding
+                    .native
+                    .as_ref()
+                    .map(|(adapter, recipe)| (adapter, recipe))
+        {
+            return Err(invalid("selected release disagrees with locked provenance"));
+        }
+        selected.push(binding.clone());
+    }
+    Ok(selected)
+}

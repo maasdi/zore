@@ -110,6 +110,7 @@ Generated Zore programs and the runtime acquire no dependency.
 
 [Tagged dependencies](versioned-dependencies.md) (#145) add tag lookup,
 version-to-commit mapping, compatible minimum-version dependency selection and
-version-2 lock/offline support. The helper above stays local and metadata-only. [#146](https://github.com/maasdi/zore/issues/146) covers the complete
-publishing/consumer workflow and read-only update discovery. The local helper
-alone does not establish a hosted release or whole dependency-graph readiness.
+version-2 lock/offline support. The helper above stays local and metadata-only.
+The [release workflow](release-workflow.md) covers ordinary Git publication,
+consumer validation and read-only update discovery. The local helper alone
+does not establish a hosted release or whole dependency-graph readiness.

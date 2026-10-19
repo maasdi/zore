@@ -77,7 +77,9 @@ fn informational_flags_do_not_hide_extra_arguments() {
 
 #[test]
 fn commands_validate_target_count_and_offer_help() {
-    for action in ["check", "build", "run", "fmt", "test", "install", "lock"] {
+    for action in [
+        "check", "build", "run", "fmt", "test", "install", "lock", "outdated",
+    ] {
         for tail in [vec![], vec!["--"], vec!["one.ore", "two.ore"]] {
             let mut args = vec![action];
             args.extend(tail);
@@ -95,7 +97,7 @@ fn commands_validate_target_count_and_offer_help() {
                 "build" | "run" => assert!(stdout.contains("Requires clang")),
                 "fmt" => assert!(stdout.contains("--check")),
                 "test" => assert!(stdout.contains("_test.ore")),
-                "install" | "lock" => assert!(stdout.contains("zore.lock")),
+                "install" | "lock" | "outdated" => assert!(stdout.contains("zore.lock")),
                 _ => unreachable!(),
             }
         }

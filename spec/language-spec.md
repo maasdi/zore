@@ -564,8 +564,72 @@ Conformance includes patch/minor diamonds, root-raised minima, superseded/higher
 release expansion, ordering, missing minima, major/pre-1.0 conflicts, hard pins,
 path/repository identity, cycles, tag/manifest/subdir validation, moved/deleted and
 non-commit tags, cache/lock corruption, native recipes, upgrades/downgrades and
-fully offline consumption/re-resolution on Linux, macOS and Windows. Update
-reporting and the complete author workflow remain #146.
+fully offline consumption/re-resolution on Linux, macOS and Windows.
+
+## 3.4.6 Release publication and update discovery — LOCKED
+
+Authors publish with ordinary Git: commit a project declaring name, canonical
+version and licensing; explicitly run its tests; create the matching
+`<name>/v<version>` lightweight or annotated tag; push that tag. The optional
+local `check --release` helper neither runs tests nor publishes. No catalog,
+account, publisher command, extra retention refs or atomic multi-ref server
+support is required. Git ownership, credential helpers and SSH agents control
+access. Existing-tag/rejected pushes are Git errors: inspect the remote tag before
+retrying, and publish corrections under a new version rather than force-updating
+a known tag. Locks/bindings detect identity changes they have observed; they do
+not enforce server immutability. Deleted refs can leave uncached commits
+unavailable after garbage collection, and do not revoke cached/locked sources.
+
+`zore outdated [--offline] [--] <file|directory>` requires a matching `zore.lock`
+and the verified source cache needed for its complete request graph, as for
+locked checking. It reports every selected tagged dependency, including
+transitive selections, in project-name order. Local/full-revision selections
+have no inferred release line and are omitted. No tagged selections produces an
+explicit message. Extra/duplicate flags and `--locked` are usage errors.
+
+Online discovery uses normal Git tag listing for each exact source/name pair.
+Only exact canonical `<name>/v<MAJOR.MINOR.PATCH>` ref names count; unrelated,
+malformed, prerelease, build-suffixed and peeled pseudo-refs are ignored. Report
+the locked version, numerically newest advertised compatible version (or `-`),
+and the newest version in each newer incompatible line, sorted numerically (or
+`-`). Compatible advertisement may be older than the lock if tags disappeared;
+absence does not revoke a locked version. For example a locked 1.2.3 with tags
+1.4.0, 2.1.0 and 2.3.0 reports compatible 1.4.0 and incompatible 2.3.0. Before
+1.0, a different minor is a different line. Numeric components remain unbounded.
+
+Advertisements are explicitly unverified source metadata, not installable
+selections or proof of compatibility. Discovery does not fetch source or execute
+code. An author may have mistagged a commit or even tagged a non-commit object;
+all existing tag/commit/name/version/license/platform/native validation applies
+before a consumer can select it. To update, edit a direct minimum or add a direct
+requirement with the same source identity to raise a transitive minimum, run
+`zore lock`, review its diff, then explicitly check/test. Incompatible lines
+require coordinated manifest changes. Ordinary install/check/build/run/test
+and committed locks retain their source-selection guarantees.
+
+Offline discovery performs no remote lookup. It uses historical lock bindings
+and the shared cache's immutable release bindings for matching source identities,
+labeling results **stale and incomplete cached releases**, not a current remote
+advertisement. Missing binding-index directories mean no extra known versions;
+malformed published binding records are errors. Discovery never creates or edits
+manifests, locks, guards, cache directories or bindings, online or offline. It
+returns 0 even when updates exist, 1 for validation/access failures and 2 for
+usage errors. Buffer the report until validation/listing succeeds so failures
+cannot print a misleading partial success report; Git subprocess diagnostics
+must not expose credentials or remote-controlled text.
+
+Compiler impact: add the CLI action, reuse cache-only locked graph validation,
+parse selected version-2 records and canonical release tags, list remote tags
+through the existing Git invocation, and read cached bindings without publishing
+them. Ownership, explicit errors, panic cleanup and async semantics are unchanged;
+discovery requires no native toolchain and executes no library code. Conformance
+covers numeric/pre-1.0 lines, canonical filtering, transitive selections, unchanged
+files/cache, stale offline results, mismatched locks/missing caches, redacted Git
+failures, and real independent author/tag/push/consumer repositories on all three
+hosts, including shared-type diamonds, normal/error/panic/async cleanup, rejected
+pushes and moved/deleted tags. Catalogs, global discovery, machine-readable
+yanks/deprecations, automated multi-ref publishing and transparency/retention
+services remain outside this path; release notes may communicate warnings.
 
 ## 3.5 Identifiers — LOCKED
 
