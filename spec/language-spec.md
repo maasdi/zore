@@ -165,8 +165,8 @@ import "std/strings"
 
 The meaning of an import path, and how imported names are used, is specified in
 §3.20. Local path dependencies are supported by the locked extension below.
-Pinned Git sources follow §3.4.1. Registries, version ranges and dependency
-solving remain outside this increment.
+Pinned Git sources follow §3.4.1. Tagged minima follow §3.4.5; registries and general version ranges remain outside
+this increment.
 
 ## 3.4 Project file — LOCKED
 
@@ -221,7 +221,7 @@ name = "myapp"
 auth = { git = "https://example.org/team/libraries.git", rev = "0123456789abcdef0123456789abcdef01234567", subdir = "auth" }
 ```
 
-A Git entry has exactly git and rev strings and an optional subdir string, in
+A pinned Git entry has exactly git and rev strings and an optional subdir string, in
 any order. It cannot also have path. rev is a full 40-digit hexadecimal SHA-1
 commit ID, normalized to lowercase; branches, tags, abbreviated IDs and SHA-256
 repositories are rejected. git is an explicit https://, ssh:// or file:// URL.
@@ -266,6 +266,9 @@ including every file's bytes, type and executable mode and absence of extra file
 Cache metadata alone never overrides a pinned revision or lockfile.
 
 ## 3.4.2 Dependency commands and cache — LOCKED
+
+The full-revision behavior below is retained. Tagged minimum-version graphs use
+the additive selection and lock-provenance rules in §3.4.5.
 
 - zore install [--locked] [--offline] <file|directory> resolves the nearest entry
   manifest and all dependencies, downloads missing Git sources, and creates a
@@ -469,8 +472,100 @@ agreement, SPDX/file licensing, optional-field syntax, bound/platform rejection,
 file confinement and symlink escape, native recipe integrity, frontend-only
 preflight and unchanged legacy full-revision/lock behavior on all three hosts.
 Dependency `version` selectors, minimum-version graph resolution, tag fetching
-and release lock provenance remain separate follow-ups; this helper does not
-implement them.
+and release lock provenance follow §3.4.5; this metadata-only helper does not
+perform those operations.
+
+## 3.4.5 Tagged minimum-version dependencies — LOCKED
+
+A dependency may use `git` with exactly one of `rev` or `version`, and the same
+optional `subdir` as a pinned source. Existing path/revision forms and version-1
+locks remain valid. For example:
+
+```toml
+name = "webapp"
+[dependencies]
+shared = { git = "https://example.org/team/shared.git", version = "1.2.3" }
+```
+
+The version is a canonical §3.4.4 minimum, not an exact pin, range or newest-tag
+request. Versions at or above 1.0.0 share a compatibility line when their major
+components match; 0.x versions additionally require matching minor components.
+One project name has one source identity: either a canonical local root, or an
+exact Git URL and repository-relative project directory. URL spellings are not
+guessed equivalent. Different identities or compatibility lines are errors that
+show both dependency paths. A full revision, including a fetched snapshot's path
+dependency, is a hard pin; it must equal the final selected commit, even when a
+lower requested release would otherwise differ. No source overrides or multiple
+loaded versions are introduced.
+
+Resolution first expands the finite request graph. Each requested release's
+exact `<name>/v<version>` tag is fetched once, peeled through lightweight or
+annotated tags to a commit, and its selected directory must contain its own
+manifest with matching name/version, licensing, compatibility metadata and
+approved native sources/recipe. Tagged subdirectories and `zore.toml` must use
+exact Git path spelling on every host. Git commit/tree, portable paths, confinement and
+manifest-byte checks remain authoritative. Non-commit tags, missing minima and
+invalid source/metadata are errors; a newer available tag is never substituted.
+Local/full-revision manifests are expanded too, without requiring release fields.
+A fetched path dependency must stay in the same repository snapshot.
+
+Visit each source/project/revision once and retain requirements from every
+requested release, including superseded minima and newly discovered higher
+releases. Select the numerically highest requested minimum for each name within
+one compatibility line, without guessing or backtracking. A direct application
+requirement may raise a transitive minimum, but cannot lower it or cross its line.
+Selection and lock output are independent of visit order. Only selected project
+sources are available to the package loader; unselected release manifests affect
+requirements, not imported code or nominal type identity. All selected projects,
+including those introduced only by superseded requirements, are recorded and
+checked for selected-graph cycles. Direct dependency visibility, initialization,
+ownership, errors, cleanup and async behavior retain their existing contracts.
+
+Graphs using tagged requirements use lock version 2. It retains the version-1
+`[projects]` source/manifest/native records, adding `version` and canonical `tag`
+to version-selected Git records. A `[releases]` table records every known release
+binding as numbered inline records, sorted by name, exact URL, subdirectory and
+numeric version. Each record contains `name`, `git`, `subdir`, `version`, `tag`,
+`rev`, `tree`, `manifest` (the existing manifest SHA-256), and optional paired
+`adapter`/`recipe`. All IDs, order, quoting and whitespace are canonical generated
+TOML; malformed, duplicate or noncanonical version-2 records are rejected.
+The bindings include unselected minima, so another machine can reproduce the
+entire request graph. Historical bindings survive explicit lock regeneration but
+do not create requirements or keep otherwise unneeded sources in the build list.
+A version-2 lock remains version 2 when tagged requirements are removed, to retain
+known identities; untouched path/revision workflows continue emitting version 1.
+
+A matching lock is authoritative. Install (including --locked) can populate a
+missing cache from exact commits without querying current tags. Check/build/run/
+test remain cache-only, require a matching lock for tagged graphs, and never
+rewrite it. Manifest changes require explicit `zore lock`. Lock recomputes the
+request graph and can upgrade or downgrade selections after requirements change;
+known version/commit identities cannot change. Online lock checks requested tag
+tips against known bindings and rejects retagging or missing tags. Offline lock
+uses known bindings and needs verified cached snapshots for every requested
+release and selected project. Unchanged locked consumption works with moved or
+deleted tags and an unavailable server when its cache is complete.
+
+The shared cache retains immutable release bindings keyed by exact source/project/
+version, validated against the corresponding commit/tree, manifest and native
+recipe. Cache bindings never override a lock's known identity; inconsistencies
+are corruption/conflicts with actionable removal diagnostics. Bindings are
+published atomically only after graph/lock validation succeeds. Fresh online
+resolution checks exactly the requested tags; fresh offline resolution requires
+known cached bindings. First lookup trusts the repository's tag; no signature,
+retention service, catalog, source-tree digest or transparency claim is added.
+No source, hooks, build scripts or native code execute during resolution, and
+frontend checking still needs no native compiler/linker.
+
+Compiler impact: extend dependency parsing, separate request expansion from
+selected-project validation, add exact tag fetch/peeling to the existing verified
+Git cache, and parse/render version-2 provenance while preserving version 1.
+Conformance includes patch/minor diamonds, root-raised minima, superseded/higher
+release expansion, ordering, missing minima, major/pre-1.0 conflicts, hard pins,
+path/repository identity, cycles, tag/manifest/subdir validation, moved/deleted and
+non-commit tags, cache/lock corruption, native recipes, upgrades/downgrades and
+fully offline consumption/re-resolution on Linux, macOS and Windows. Update
+reporting and the complete author workflow remain #146.
 
 ## 3.5 Identifiers — LOCKED
 

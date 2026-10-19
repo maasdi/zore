@@ -14,6 +14,14 @@ version strings and version-1 locks; ordinary omission warnings remain absent.
 Run `cargo test --locked --test release_metadata`. Full Git and native suites
 continue to cover commit/tree/cache integrity and exact-pin behavior.
 
+`tests/driver/tagged_dependencies.rs` exercises real local Git tags and snapshots:
+minimum-version diamonds, superseded/higher requirements, shared nominal types,
+offline check/build/run/test and re-resolution, upgrades/downgrades, hard pins,
+source/line conflicts, malformed/noncommit/retagged/deleted tags, monorepo paths,
+metadata/native recipes, version-2 provenance/corruption and concurrent publication.
+Run `cargo test --locked --test tagged_dependencies`; the original Git suite
+continues to enforce version-1 lock and full-revision compatibility.
+
 CI runs host-applicable Rust checks on Linux, macOS and Windows x64 MSVC.
 `tests/codegen/host_support.rs` covers native paths with spaces/Unicode, CLI
 build/run/test, process arguments and working directories, captured bytes,

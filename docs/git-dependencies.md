@@ -1,5 +1,8 @@
 # Pinned Git dependencies
 
+For compatible release requirements, see [tagged minimum-version dependencies](versioned-dependencies.md).
+This guide describes full revision pins, which remain supported unchanged.
+
 Declare the library's repository and an exact commit in `zore.toml`:
 
 ```toml

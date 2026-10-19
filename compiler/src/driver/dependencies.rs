@@ -6,11 +6,12 @@ use std::process::ExitCode;
 
 use sha2::{Digest, Sha256};
 
-use super::project::manifest::resolve_with;
-use super::project::{Dependency, Disk, FileSystem, Manifest};
+use super::project::{Disk, FileSystem, Manifest};
 use crate::source::SourceError;
 
 mod cache;
+mod lock;
+mod versioned;
 
 #[derive(Clone, Copy, Default, Eq, PartialEq)]
 pub(super) enum Mode {
@@ -113,100 +114,20 @@ pub(super) fn resolve(
             "--locked requires zore.lock; run `zore install` first",
         ));
     }
-    let mut git_projects: HashMap<PathBuf, GitProject> = HashMap::new();
-    let mut selections = HashMap::from([(entry.clone(), None)]);
-    let mut fetched: HashMap<(String, String), GitProject> = HashMap::new();
-    let projects = resolve_with(&Disk, root, &mut |manifest, dependency| match dependency {
-        Dependency::Path(path) => {
-            let target = Disk.canonical(&manifest.root.join(path));
-            let source = git_projects.get(&manifest.root).cloned();
-            if let Some(source) = &source {
-                if path.is_absolute() || path.has_root() || !target.starts_with(&source.checkout) {
-                    return Err(error(
-                        &manifest.root.join("zore.toml"),
-                        "a fetched project's path dependency must stay inside its Git checkout",
-                    ));
-                }
-                git_projects.insert(target.clone(), source.clone());
-            }
-            claim(&mut selections, &target, source.as_ref())?;
-            Ok(target)
-        }
-        Dependency::Git {
-            url,
-            revision,
-            subdir,
-        } => {
-            let key = (url.clone(), revision.clone());
-            let source = match fetched.get(&key) {
-                Some(source) => source.clone(),
-                None => {
-                    let (checkout, tree) = cache::select(url, revision, options)?;
-                    let source = GitProject {
-                        url: url.clone(),
-                        revision: revision.clone(),
-                        tree,
-                        checkout,
-                    };
-                    fetched.insert(key, source.clone());
-                    source
-                }
-            };
-            let target = Disk.canonical(&source.checkout.join(subdir));
-            if !target.starts_with(&source.checkout) {
-                return Err(error(&manifest.root, "Git subdir escapes its checkout"));
-            }
-            claim(&mut selections, &target, Some(&source))?;
-            git_projects.insert(target.clone(), source);
-            Ok(target)
-        }
-    })?;
-    let needs_lock = options.mode != Mode::Build
-        || options.locked
-        || existing.is_some()
-        || !git_projects.is_empty()
-        || projects.values().any(|manifest| manifest.native.is_some());
-    if needs_lock {
-        let expected = lockfile(&entry, &projects, &git_projects)?;
-        if options.mode == Mode::Lock
-            || (options.mode == Mode::Install && !options.locked && existing.is_none())
-        {
-            atomic_write(&lock_path, expected.as_bytes())?;
-        } else if existing.as_deref() != Some(&expected) {
-            return Err(error(
-                &lock_path,
-                "missing or mismatched lockfile; run `zore install` if missing, or `zore lock` after reviewing manifest changes",
-            ));
-        }
-    }
-    Ok(projects)
-}
-
-type Selections = HashMap<PathBuf, Option<(String, String)>>;
-
-fn claim(
-    selections: &mut Selections,
-    target: &Path,
-    source: Option<&GitProject>,
-) -> Result<(), SourceError> {
-    let identity = source.map(|s| (s.url.clone(), s.revision.clone()));
-    if let Some(previous) = selections.insert(target.to_path_buf(), identity.clone())
-        && previous != identity
-    {
-        return Err(error(
-            target,
-            "conflicting local/Git source selections for one project root",
-        ));
-    }
-    Ok(())
+    versioned::resolve(root, options, existing.as_deref())
 }
 
 fn lockfile(
     entry: &Path,
     projects: &HashMap<String, Manifest>,
     git_projects: &HashMap<PathBuf, GitProject>,
+    versions: &BTreeMap<PathBuf, crate::driver::release::Version>,
+    bindings: &lock::Bindings,
 ) -> Result<String, SourceError> {
-    let mut text = String::from("version = 1\n\n[projects]\n");
+    let mut text = format!(
+        "version = {}\n\n[projects]\n",
+        if bindings.is_empty() { 1 } else { 2 }
+    );
     let sorted: BTreeMap<_, _> = projects.iter().collect();
     for (name, manifest) in sorted {
         let bytes =
@@ -239,6 +160,13 @@ fn lockfile(
                 quote(&portable(&relative(entry, &manifest.root))?)
             ));
         }
+        if let Some(version) = versions.get(&manifest.root) {
+            text.push_str(&format!(
+                ", version = {}, tag = {}",
+                quote(&version.to_string()),
+                quote(&format!("{name}/v{version}"))
+            ));
+        }
         if let Some(id) = &manifest.native {
             let adapter = super::native::find(id).expect("validated native adapter");
             text.push_str(&format!(
@@ -248,6 +176,9 @@ fn lockfile(
             ));
         }
         text.push_str(" }\n");
+    }
+    if !bindings.is_empty() {
+        text.push_str(&lock::render_bindings(bindings));
     }
     Ok(text)
 }

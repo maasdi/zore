@@ -12,6 +12,12 @@ use crate::source::SourceError;
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Version([String; 3]);
 
+impl Version {
+    pub fn compatible_with(&self, other: &Self) -> bool {
+        self.0[0] == other.0[0] && (self.0[0] != "0" || self.0[1] == other.0[1])
+    }
+}
+
 impl FromStr for Version {
     type Err = String;
 
