@@ -18,8 +18,9 @@ build suffixes and ranges are not. Components compare numerically without a
 fixed integer-width limit. The release tag convention is `greeting/v1.2.3`.
 
 The `license` field accepts recognized SPDX identifiers, including deprecated
-ones, `AND`, `OR`, `WITH` (or their lowercase forms) and parentheses. For custom
-terms, use `license-file = "COPYING.txt"` instead. The file must contain nonempty
+GNU forms such as `GPL-2.0+` and `LGPL-2.1+`. Expressions support `AND`, `OR`,
+`WITH` (or their lowercase forms) and parentheses. For custom terms, use
+`license-file = "COPYING.txt"` instead. The file must contain nonempty
 UTF-8 text. Both fields may be supplied; both must validate. Custom LicenseRef
 and AdditionRef expressions use a license file instead. Retain applicable
 license/notice contents in the committed source.

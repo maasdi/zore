@@ -119,6 +119,11 @@ fn spdx_expressions_use_recognized_licenses_and_exceptions() {
         "MIT OR Apache-2.0",
         "MIT and Apache-2.0",
         "GPL-2.0",
+        "GPL-2.0+",
+        "GPL-3.0+",
+        "LGPL-2.1+",
+        "MIT OR GPL-2.0+",
+        "GPL-2.0+ WITH Classpath-exception-2.0",
         "(MIT OR Apache-2.0) AND BSD-3-Clause",
         "GPL-2.0-only WITH Classpath-exception-2.0",
     ] {
@@ -131,6 +136,10 @@ fn spdx_expressions_use_recognized_licenses_and_exceptions() {
         "",
         "made-up-license",
         "MIT OR",
+        "GPL-2.0++",
+        "GPL-3.0-or-later+",
+        "MIT / Apache-2.0",
+        "apache2",
         "MIT WITH made-up-exception",
         "LicenseRef-custom",
         "MIT WITH AdditionRef-custom",
@@ -588,4 +597,46 @@ fn non_utf8_tag_values_are_usage_errors() {
         .output()
         .unwrap();
     failure(output, 2, "--tag requires a UTF-8");
+}
+
+#[test]
+fn deprecated_gnu_licenses_work_in_release_and_ordinary_checks() {
+    let fixture = Fixture::new();
+    fs::write(
+        fixture.root.join("main.ore"),
+        "package main\nfunc main() {}\n",
+    )
+    .unwrap();
+    for license in [
+        "GPL-2.0+",
+        "GPL-3.0+",
+        "LGPL-2.1+",
+        "MIT OR GPL-2.0+",
+        "GPL-2.0+ WITH Classpath-exception-2.0",
+    ] {
+        fs::write(
+            fixture.root.join("zore.toml"),
+            format!("name = 'greeting'\nversion = '1.2.3'\nlicense = '{license}'\ndescription = 'Greeting library'\n"),
+        ).unwrap();
+        for release in [false, true] {
+            let mut command = Command::new(env!("CARGO_BIN_EXE_zore"));
+            command.args(["check", "--offline"]).env("PATH", "");
+            if release {
+                command.arg("--release").arg(&fixture.root);
+            } else {
+                command.arg(fixture.root.join("main.ore"));
+            }
+            let output = command.output().unwrap();
+            assert!(
+                output.status.success(),
+                "{license}, release={release}: {output:?}"
+            );
+            assert!(output.stderr.is_empty(), "{output:?}");
+            if release {
+                assert!(String::from_utf8_lossy(&output.stdout).contains("greeting/v1.2.3"));
+            } else {
+                assert!(output.stdout.is_empty(), "{output:?}");
+            }
+        }
+    }
 }

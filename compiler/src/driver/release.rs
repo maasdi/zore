@@ -143,6 +143,7 @@ impl Metadata {
         if let Some(license) = &self.license {
             let mode = spdx::ParseMode {
                 allow_deprecated: true,
+                allow_postfix_plus_on_gpl: true,
                 ..spdx::ParseMode::STRICT
             };
             let expression = spdx::Expression::parse_mode(license, mode)
