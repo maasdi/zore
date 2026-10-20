@@ -113,8 +113,10 @@ legacy local/full-pin versions and version-1 locks remain compatible.
 [#145](versioned-dependencies.md) implements tagged minimum-version selection,
 request-graph expansion, full-pin/source conflicts, version-2 release provenance
 and locked/offline consumption under §3.4.5. Version-1 behavior remains supported.
-#146 retains the complete publishing/consumer workflow and read-only update
-discovery; update reporting remains unimplemented.
+[#146](release-workflow.md) adds ordinary Git author/tag/push/consumer workflow
+validation and read-only `outdated` reporting under §3.4.6. Online reports separate
+advertised compatible versions from newer incompatible lines; offline reports
+label known cached releases stale and incomplete. Neither changes selections.
 Unrestricted native extensions remain separate work. Local paths remain mutable
 references even with a lockfile.
 Further self-hosting remains deferred.

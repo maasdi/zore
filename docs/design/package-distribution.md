@@ -1,12 +1,13 @@
 # Versioned package distribution
 
-Status: proposal for [#139](https://github.com/maasdi/zore/issues/139), revised after
+Design from [#139](https://github.com/maasdi/zore/issues/139), revised after
 [PR #143 review](https://github.com/maasdi/zore/pull/143#pullrequestreview-5548103997).
 This preserves the design reasoning. Release metadata (#144) is locked in spec
-§3.4.4 and tagged minimum-version resolution (#145) in §3.4.5. The
+§3.4.4, tagged minimum-version resolution (#145) in §3.4.5 and ordinary Git
+publication/read-only update discovery (#146) in §3.4.6. The
 [release metadata](../release-metadata.md) and [tagged dependency](../versioned-dependencies.md)
-guides describe implemented behavior. Update discovery below remains proposed
-work for #146.
+guides describe source selection; the [release workflow](../release-workflow.md)
+describes implemented publication and update reporting.
 
 ## A library author releases a version
 
@@ -18,7 +19,7 @@ git tag shared/v1.2.3
 git push origin refs/tags/shared/v1.2.3
 ```
 
-The proposed tag convention is `<project-name>/v<MAJOR.MINOR.PATCH>`, including
+The locked tag convention is `<project-name>/v<MAJOR.MINOR.PATCH>`, including
 for a repository with one project. It also works for monorepos. Lightweight and
 annotated tags are both allowed; each must resolve to a commit. The selected
 project's manifest must declare the same name and version as its tag.
@@ -184,7 +185,7 @@ warnings in every application build. When compatibility bounds or confined paths
 are provided, validate and honor them rather than treating them as decoration.
 The metadata keys and grammar are locked in spec §3.4.4. The local helper checks
 one project's metadata and native recipe; Git tag lookup and whole-graph minimum selection are implemented under §3.4.5;
-the complete author workflow remains #146 work.
+the complete author workflow and read-only update reporting follow §3.4.6.
 
 Use the committed Git tree as the artifact, including tests/docs/examples/native
 sources that are present. Keep the current portable-path and regular-file rules;
@@ -206,7 +207,7 @@ instead of forcing it; changed contents need a new version. Optional validation
 must not execute library code or upload anything secretly. Library test execution
 is an explicit maintainer/CI action.
 
-Proposed update workflow, not implemented:
+Implemented update workflow:
 
 ```sh
 zore outdated ./app
@@ -215,12 +216,13 @@ zore lock ./app
 # Review and commit the manifest/lock diff.
 ```
 
-`outdated` would list each locked version, the newest advertised compatible tag
-and newer incompatible lines separately. It would not edit a manifest/lock or
-change a selection. Tags must follow the canonical naming/version convention;
+`outdated` lists each locked version, the newest advertised compatible tag
+and newer incompatible lines separately. It does not edit a manifest/lock/cache
+or change a selection. Tags must follow the canonical naming/version convention;
 source metadata is still verified before any advertised version is selected.
-The report needs explicit repository access; offline mode can report cached data
-only and must label it as potentially stale.
+Online reports use normal Git repository access; offline reports use known
+lock/cache bindings and label them stale and incomplete. A matching lock and
+verified source cache are required in both modes.
 
 Repository readmes, examples and hosting release pages provide initial discovery.
 A hosted search service or curated directory can come later. No search result or
@@ -257,9 +259,9 @@ positive/rejection conformance on Linux, macOS and Windows. No source keywords,
 runtime dependencies or new ownership rules are needed. Preserve nominal type
 identity, visibility, borrowing, Move behavior and normal/error/panic/async cleanup.
 
-The [validation record](package-distribution-validation.md) separates current
-Git-pin experiments from proposal-model checks and still-unimplemented compiler
-behavior. Required implementation cases include multi-pass requirement expansion,
+The [validation record](package-distribution-validation.md) separates historical
+Git-pin experiments and proposal-model checks from implemented compiler
+coverage. Implementation cases include multi-pass requirement expansion,
 order independence, compatible upgrades, incompatible lines, hard pins, tag/manifest
 mismatches, moved/deleted tags, lock drift, missing/corrupt caches, offline graphs,
 credential redaction and independent-library identity/cleanup.

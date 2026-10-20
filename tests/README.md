@@ -22,6 +22,15 @@ metadata/native recipes, version-2 provenance/corruption and concurrent publicat
 Run `cargo test --locked --test tagged_dependencies`; the original Git suite
 continues to enforce version-1 lock and full-revision compatibility.
 
+`tests/driver/release_workflows.rs` uses independent author repositories and bare
+remotes with real annotated-tag pushes. It covers canonical/numeric and pre-1.0
+update discovery, locked transitive selections, immutable manifests/locks/caches,
+stale offline binding reports, rejected/retried/forced pushes, deleted tags and
+redacted remote diagnostics. The author workflow explicitly tests each release;
+the consumer diamond preserves one initialization, nominal resource identity and
+normal/error/async panic cleanup while offline. Run
+`cargo test --locked --test release_workflows`; all cases run on all three hosts.
+
 CI runs host-applicable Rust checks on Linux, macOS and Windows x64 MSVC.
 `tests/codegen/host_support.rs` covers native paths with spaces/Unicode, CLI
 build/run/test, process arguments and working directories, captured bytes,

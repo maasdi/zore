@@ -11,7 +11,10 @@ use crate::source::SourceError;
 
 mod cache;
 mod lock;
+mod outdated;
 mod versioned;
+
+pub(super) use outdated::run as outdated;
 
 #[derive(Clone, Copy, Default, Eq, PartialEq)]
 pub(super) enum Mode {
@@ -60,21 +63,7 @@ impl FileSystem for DependencyDisk {
 }
 
 pub(super) fn run(target: &Path, options: Options) -> ExitCode {
-    let result = (|| {
-        fs::metadata(target).map_err(|e| error(target, e))?;
-        let directory = if target.is_dir() {
-            target
-        } else {
-            target
-                .parent()
-                .filter(|p| !p.as_os_str().is_empty())
-                .unwrap_or(Path::new("."))
-        };
-        let root = Disk
-            .manifest(directory)?
-            .ok_or_else(|| error(target, "no zore.toml project was found"))?;
-        resolve(root, options).map(|_| ())
-    })();
+    let result = root_manifest(target).and_then(|root| resolve(root, options).map(|_| ()));
     match result {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
@@ -82,6 +71,20 @@ pub(super) fn run(target: &Path, options: Options) -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+fn root_manifest(target: &Path) -> Result<Manifest, SourceError> {
+    fs::metadata(target).map_err(|e| error(target, e))?;
+    let directory = if target.is_dir() {
+        target
+    } else {
+        target
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .unwrap_or(Path::new("."))
+    };
+    Disk.manifest(directory)?
+        .ok_or_else(|| error(target, "no zore.toml project was found"))
 }
 
 #[derive(Clone)]

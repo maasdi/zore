@@ -11,6 +11,7 @@ pub(crate) enum Action {
     Test,
     Install,
     Lock,
+    Outdated,
 }
 
 impl Action {
@@ -23,6 +24,7 @@ impl Action {
             Self::Test => "test",
             Self::Install => "install",
             Self::Lock => "lock",
+            Self::Outdated => "outdated",
         }
     }
 }
@@ -67,6 +69,7 @@ pub(crate) fn parse(args: Vec<OsString>) -> Result<Command, String> {
         Some("test") => Action::Test,
         Some("install") => Action::Install,
         Some("lock") => Action::Lock,
+        Some("outdated") => Action::Outdated,
         _ => return Err(format!("unknown command or option {first:?}")),
     };
     let remaining = &args[1..];
@@ -116,7 +119,10 @@ pub(crate) fn parse(args: Vec<OsString>) -> Result<Command, String> {
             continue;
         }
         if !literal && action != Action::Format {
-            if arg == "--locked" && !dependencies.locked && action != Action::Lock {
+            if arg == "--locked"
+                && !dependencies.locked
+                && !matches!(action, Action::Lock | Action::Outdated)
+            {
                 dependencies.locked = true;
                 continue;
             }
@@ -182,6 +188,9 @@ pub(crate) fn help(action: Option<Action>) -> String {
             Action::Lock => {
                 "Usage: zore lock [--offline] [--] <file|directory>\n\nRecompute zore.lock from manifest requirements, preserving known release identities.\n"
             }
+            Action::Outdated => {
+                "Usage: zore outdated [--offline] [--] <file|directory>\n\nReport locked selections and advertised compatible/incompatible release tags.\nRequires matching zore.lock and cached sources; changes no files or selections.\nOffline results use stale, incomplete cached releases. --locked is rejected.\n"
+            }
             Action::Format => {
                 "Usage: zore fmt [--check] [--] <file.ore|directory>\n\n\
                 Format a source file or recursively format .ore files in a directory.\n\
@@ -218,7 +227,8 @@ pub(crate) fn help(action: Option<Action>) -> String {
        fmt <target>      Format a source file or directory (--check for CI)\n\
        test <target>     Run application tests (requires clang and rustc)\n\
        install <target>  Install Git dependencies and create zore.lock\n\
-       lock <target>     Recompute zore.lock from manifest requirements\n\n\
+       lock <target>     Recompute zore.lock from manifest requirements\n\
+       outdated <target> Report available release tags without changing selections\n\n\
      Options:\n\
        -h, --help        Show help; also accepted after a command\n\
        -V, --version     Show compiler version\n\n\

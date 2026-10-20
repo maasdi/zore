@@ -106,5 +106,6 @@ Version-2 locks retain historical identities even after tagged requirements are
 removed. Ordinary full-revision behavior, credentials, cache configuration,
 manifest-drift checks and native linking requirements follow the existing
 [Git dependency guide](git-dependencies.md). Dependency resolution executes no
-library code or build scripts and requires no native linker. Read-only update
-reporting and complete author workflow validation remain tracked by #146.
+library code or build scripts and requires no native linker. The
+[release workflow](release-workflow.md) covers ordinary Git publication,
+read-only `zore outdated` discovery and deliberate direct/transitive updates.

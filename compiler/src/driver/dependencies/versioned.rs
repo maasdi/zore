@@ -535,6 +535,48 @@ fn cached_binding(key: &ReleaseKey) -> Result<Option<Binding>, SourceError> {
     }
 }
 
+pub(super) fn cached_bindings() -> Result<Bindings, SourceError> {
+    let directory = cache::cache_root()?.join("releases");
+    let entries = match fs::read_dir(&directory) {
+        Ok(entries) => entries,
+        Err(source) if source.kind() == std::io::ErrorKind::NotFound => return Ok(BTreeMap::new()),
+        Err(source) => return Err(error(&directory, source)),
+    };
+    let mut bindings = BTreeMap::new();
+    for entry in entries {
+        let entry = entry.map_err(|source| error(&directory, source))?;
+        if entry
+            .file_name()
+            .to_string_lossy()
+            .starts_with(".zore-stage-")
+        {
+            continue;
+        }
+        let path = entry.path();
+        let invalid = || {
+            error(
+                &path,
+                "corrupt release binding cache; remove this binding cache entry and retry",
+            )
+        };
+        if !entry.file_type().map_err(|_| invalid())?.is_dir() {
+            return Err(invalid());
+        }
+        let record = path.join("binding");
+        if !fs::symlink_metadata(&record).is_ok_and(|metadata| metadata.file_type().is_file()) {
+            return Err(invalid());
+        }
+        let text = fs::read_to_string(&record).map_err(|_| invalid())?;
+        let binding = lock::parse_binding(text.trim_end_matches('\n')).map_err(|_| invalid())?;
+        if binding_path(&binding.key)? != path {
+            return Err(invalid());
+        }
+        let binding = cached_binding(&binding.key)?.ok_or_else(invalid)?;
+        bindings.insert(binding.key.clone(), binding);
+    }
+    Ok(bindings)
+}
+
 fn publish_binding(binding: &Binding) -> Result<(), SourceError> {
     if let Some(existing) = cached_binding(&binding.key)? {
         if existing != *binding {

@@ -1,9 +1,36 @@
 # Distribution planning validation
 
-This records evidence for the [#139 proposal](package-distribution.md). It does
-not claim that minimum-version selection, tag lookup, release metadata validation
-or update discovery have been implemented. Catalogs, custom source digests and
-automated publishing/advisories are outside the revised first release path.
+This records evidence for the [#139 design](package-distribution.md), including
+the implemented #144–#146 increments. The earlier experiment/model below are
+historical evidence only. Catalogs, custom source digests and automated
+publishing/advisories remain outside the first release path.
+
+## Implemented release workflow coverage
+
+`release_metadata` validates canonical identities, required licensing and optional
+metadata. `tagged_dependencies` exercises actual tag resolution, complete request
+expansion, minimum selection, version-2 lock provenance and offline consumption.
+Their implementation is merged in #147/#148, with final Linux/macOS/Windows CI
+passing 1,039 Rust tests on each Unix host and 1,018 on Windows after #148.
+
+`release_workflows` adds independent author working repositories and bare remotes.
+The author explicitly runs tests/preflight, commits, creates an annotated tag and
+pushes that single tag with normal Git. A separate application resolves a
+compatible diamond using real version selectors. It verifies one shared
+initialization/type identity and normal/error/async panic resource cleanup after
+all remotes become unavailable. Additional cases exercise:
+
+- Read-only online tag listing, canonical-name filtering, numeric/pre-1.0 lines,
+  transitive selections and explicit rejection of invalid advertised source.
+- Offline historical/shared bindings labeled stale and incomplete, with unchanged
+  manifests, locks, cache files and directories; missing/corrupt state never repaired.
+- Successful idempotent push retry, rejected replacement, deliberately forced
+  retag rejection by known bindings, new-version correction and deleted tags.
+- Remote diagnostic/credential redaction and missing native toolchains for reports.
+
+These are local real-Git integration tests, registered in the ordinary three-host
+CI suite. They do not test a hosted service's authentication policy or promise
+server-enforced immutable tags. Final #146 CI results belong in its PR record.
 
 ## Independent-repository experiment
 
@@ -19,9 +46,9 @@ shared repository by full commit ID. The application pinned greeting and audit
 by full commit ID; its added test passed a `shared.Person` returned by greeting
 to audit, checking that the transitive nominal type remained shared.
 
-Tags were manually resolved to commits with Git. The compiler never received a
+Tags in that historical experiment were manually resolved to commits with Git. The compiler never received a
 version selector or resolved a tag. The accepted manifest `version` metadata
-remained unchecked, exactly as in the current implementation.
+remained unchecked in that implementation.
 
 | Step | Observed result |
 | --- | --- |
@@ -66,9 +93,9 @@ Git source verifier or a production resolver.
 | All 24 permutations of four root requests | Same selected versions |
 
 All 12 model cases passed their expected outcomes. They check the proposal's
-internal consistency; compiler implementation still needs its own tag, metadata,
-lock, cache and graph conformance tests. In particular, visiting a higher release
-must add its requirements, and visiting order must not change the final selection.
+internal consistency. The implemented suites above now provide direct tag,
+metadata, lock, cache and graph conformance, including requirements introduced by
+higher releases and visit-order independence.
 
 ## Existing conformance to retain
 
@@ -98,10 +125,10 @@ is Unix-only. The #138 final-head CI passed all 1,000 Rust tests on each Unix ho
 and 981 on Windows, plus the ordinary formatting/lint/build/doc checks. This is
 baseline evidence, not a test result for new versioned-distribution features.
 
-## Required future evidence
+## Acceptance coverage and deferred services
 
-Each implementation increment must add its own conformance cases before being
-marked complete. Existing Git tests and the model do not validate:
+The historical Git tests and model alone do not validate the implemented release
+path. The increments add direct evidence for these acceptance requirements:
 
 - Release metadata/version grammar, compatibility claims, optional-field warnings,
   minimal required fields or tag/manifest name/version mismatches.
@@ -114,8 +141,8 @@ marked complete. Existing Git tests and the model do not validate:
 - The real author/tag-push/consumer workflow, rejected pushes and credential
   redaction on Linux, macOS and Windows.
 
-Repeat the independent-library application proof using the implemented version
-requirements. Keep nominal identity and normal/error/panic/async cleanup checks.
-A manual-tag/full-pin experiment or an in-memory MVS model cannot replace those
-acceptance tests. Catalogs, yanks, automated publishers and hosted discovery need
-separate scope if later package experience warrants them.
+The named suites above repeat the independent-library application proof using
+implemented version requirements and preserve nominal identity and cleanup.
+A manual-tag/full-pin experiment or in-memory MVS model cannot replace those
+acceptance tests. Catalogs, yanks, automated publishers and hosted discovery
+retain separate scope.

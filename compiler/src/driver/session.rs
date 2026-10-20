@@ -37,6 +37,7 @@ pub fn run() -> ExitCode {
             cli::Action::Install | cli::Action::Lock => {
                 super::dependencies::run(&target, dependencies)
             }
+            cli::Action::Outdated => super::dependencies::outdated(&target, dependencies.offline),
         },
         Err(message) => {
             eprintln!("zore: {message}\nTry 'zore --help' for usage.");

@@ -268,6 +268,48 @@ fn git(repository: Option<&Path>) -> Command {
     command
 }
 
+pub(super) fn advertised(
+    url: &str,
+    name: &str,
+) -> Result<Vec<crate::driver::release::Version>, SourceError> {
+    let result = git(None)
+        .args([
+            "ls-remote",
+            "--tags",
+            "--refs",
+            "--",
+            url,
+            &format!("{name}/v*"),
+        ])
+        .output()
+        .map_err(|_| {
+            error(
+                Path::new("zore.toml"),
+                "Git is required to discover release tags",
+            )
+        })?;
+    if !result.status.success() {
+        return Err(error(
+            Path::new("zore.toml"),
+            format!(
+                "Git tag listing failed for `{name}`; check repository access and your normal Git credentials"
+            ),
+        ));
+    }
+    Ok(String::from_utf8_lossy(&result.stdout)
+        .lines()
+        .filter_map(|line| {
+            let (object, reference) = line.split_once('\t')?;
+            if object.len() != 40 || !object.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+                return None;
+            }
+            let tag: crate::driver::release::Tag =
+                reference.strip_prefix("refs/tags/")?.parse().ok()?;
+            (tag.name == name).then_some(tag.version)
+        })
+        .collect())
+}
+
 fn output(repository: &Path, args: &[&str]) -> Result<Vec<u8>, SourceError> {
     let output = git(Some(repository))
         .args(args)
