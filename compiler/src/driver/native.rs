@@ -42,8 +42,27 @@ const CRYPTO: Adapter = Adapter {
     ],
 };
 
+const TLS: Adapter = Adapter {
+    mbedtls: true,
+    id: "tls-mbedtls-v1",
+    project: "tls",
+    fingerprint: "d58348440b793001bd2d794350e4de69245d77f5f7de67a4c7f6b06dca14c0b9",
+    symbols: &[
+        ("nativeConfig", "zore_native_tls_native_config"),
+        ("nativeSession", "zore_native_tls_native_session"),
+        ("nativeHandshake", "zore_native_tls_native_handshake"),
+        ("nativeRead", "zore_native_tls_native_read"),
+        ("nativeWrite", "zore_native_tls_native_write"),
+        ("nativeFeed", "zore_native_tls_native_feed"),
+        ("nativeOutput", "zore_native_tls_native_output"),
+        ("nativeShutdown", "zore_native_tls_native_shutdown"),
+        ("nativeClose", "zore_native_tls_native_close"),
+        ("nativeStatus", "zore_native_tls_native_status"),
+    ],
+};
+
 pub(super) fn find(id: &str) -> Option<&'static Adapter> {
-    [&ADLER32, &CRYPTO]
+    [&ADLER32, &CRYPTO, &TLS]
         .into_iter()
         .find(|adapter| adapter.id == id)
 }

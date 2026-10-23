@@ -24,7 +24,13 @@ adapted to fresh owned per-request invocations; advanced factories use
 `HandleFactory`. Task-local socket
 views remain checked by the compiler. The native HTTP tests exercise loopback
 framing, routing, capacity, deadlines, panic cleanup, and shutdown. This does not
-implement an HTTP client, TLS, or HTTP/2. `std/os/signal.NotifyContext` supports
+implement an HTTP client or HTTP/2. The optional external `tls` package
+(`examples/tls/`) adds verified TLS 1.2 connections using compiler-embedded
+Mbed TLS 3.6.7; explicit roots and DNS identity are required. Its memory-BIO
+engine uses ordinary TCP operations with context/deadline slicing and worker
+compensation for external wrappers. TLS conformance evidence is tracked by the
+provider-present test and host CI; HTTPS consumers use the separate HTTP client
+transport extension. `std/os/signal.NotifyContext` supports
 SIGINT/SIGTERM cancellation on Linux/macOS and Windows console notifications,
 with idempotent subscription cleanup and best-effort Windows termination cleanup.
 The REST example uses function routes, JSON response helpers, and two-argument

@@ -1,0 +1,457 @@
+package tls
+
+import "std/net"
+import "std/context"
+import "std/time"
+import "std/errors"
+
+type ClientConfig struct {
+    handle int
+}
+
+type ServerConfig struct {
+    handle int
+}
+
+type dialResult struct {
+    source net.Conn
+    failure error
+}
+
+type Conn struct {
+    source net.Conn
+    handle int
+    ctx context.Context
+    readDeadline int
+    writeDeadline int
+    failed bool
+    output Array<byte>
+    outputPosition int
+}
+
+func (c mut ClientConfig) drop() {
+    nativeClose(c.handle)
+}
+
+func (c mut ServerConfig) drop() {
+    nativeClose(c.handle)
+}
+
+func (c mut Conn) drop() {
+    nativeClose(c.handle)
+}
+
+func emptyConn() Conn {
+    var values = Array<Conn>{};
+    let _, conn = values.pop();
+    return conn
+}
+
+func zeros(size int) Array<byte> {
+    var data = Array<byte>{};
+    for var i = 0; i < size; i += 1 {
+        data.push(0)
+    };
+    return data
+}
+
+func wrap(source own net.Conn, handle int, ctx context.Context) Conn {
+    return Conn{source: source, handle: handle, ctx: ctx, readDeadline: 0, writeDeadline: 0, failed: false, output: Array<byte>{}, outputPosition: 0}
+}
+
+func NewClientConfig(rootsPEM []byte) (ClientConfig, error) {
+    let empty = Array<byte>{}
+    let handle, err = nativeConfig(false, rootsPEM, empty[:])
+    _ = err
+    return ClientConfig{handle: handle}, errors.Wrap(err, "tls.NewClientConfig")
+}
+
+func NewServerConfig(chainPEM []byte, keyPEM []byte) (ServerConfig, error) {
+    let handle, err = nativeConfig(true, chainPEM, keyPEM)
+    _ = err
+    return ServerConfig{handle: handle}, errors.Wrap(err, "tls.NewServerConfig")
+}
+
+func validName(name string) bool {
+    if name.len() == 0 || name.len() > 253 {
+        return false
+    }
+    var letter = false
+    var label = 0
+    var last byte = 0
+    for var i = 0; i < name.len(); i += 1 {
+        let ch = name[i]
+        if ch == 46 {
+            if label == 0 || last == 45 {
+                return false
+            }
+            label = 0
+        } else {
+            if (ch >= 97 && ch <= 122) || (ch >= 65 && ch <= 90) {
+                letter = true
+            } else if !((ch >= 48 && ch <= 57) || ch == 45) {
+                return false
+            }
+            if label == 0 && ch == 45 {
+                return false
+            }
+            label += 1
+            if label > 63 {
+                return false
+            }
+        }
+        last = ch
+    }
+    return letter && label > 0 && last != 45
+}
+
+async func dialSource(address string, timeout int, result channel<dialResult>) {
+    let source, err = net.DialTimeout("tcp", address, timeout)
+    _ = err
+    result.send(dialResult{source: source, failure: err})
+}
+
+func finishDial(ctx context.Context, result channel<dialResult>, serverName string, config ClientConfig) (Conn, error) {
+    select {
+        case let connected, _ = result.receive() {
+            let contextErr = ctx.Err()
+            _ = contextErr
+            if contextErr != nil {
+                return emptyConn(), contextErr
+            }
+            if connected.failure != nil {
+                return emptyConn(), errors.Wrap(connected.failure, "tls.DialContext")
+            }
+            return Client(ctx, connected.source, serverName, config)
+        }
+        case ctx.Done().receive() {
+            return emptyConn(), ctx.Err()
+        }
+    }
+}
+
+func DialContext(ctx context.Context, address string, serverName string, config ClientConfig) (Conn, error) {
+    if !validName(serverName) {
+        return emptyConn(), error("tls.DialContext: DNS server name required")
+    }
+    let err = ctx.Err()
+    _ = err
+    if err != nil {
+        return emptyConn(), err
+    }
+    let deadline, limited = ctx.Deadline()
+    var timeout = 0
+    if limited {
+        timeout = deadline - time.Now()
+        if timeout <= 0 {
+            return emptyConn(), error("context deadline exceeded")
+        }
+    }
+    let result = channel<dialResult>(1)
+    go dialSource(address, timeout, result)
+    return finishDial(ctx, result, serverName, config)
+}
+
+func Client(ctx context.Context, source own net.Conn, serverName string, config ClientConfig) (Conn, error) {
+    if !validName(serverName) {
+        return emptyConn(), error("tls.Client: DNS server name required")
+    }
+    let handle, err = nativeSession(config.handle, serverName)
+    _ = err
+    if err != nil {
+        return emptyConn(), errors.Wrap(err, "tls.Client")
+    }
+    return handshake(wrap(source, handle, ctx))
+}
+
+func Server(ctx context.Context, source own net.Conn, config ServerConfig) (Conn, error) {
+    let handle, err = nativeSession(config.handle, "")
+    _ = err
+    if err != nil {
+        return emptyConn(), errors.Wrap(err, "tls.Server")
+    }
+    return handshake(wrap(source, handle, ctx))
+}
+
+func handshake(conn own Conn) (Conn, error) {
+    var c = conn
+    for {
+        let waitErr = c.check(false)
+        _ = waitErr
+        if waitErr != nil {
+            return emptyConn(), waitErr
+        }
+        let status, err = nativeHandshake(c.handle)
+        _ = err
+        let flushErr = c.flush(false)
+        _ = flushErr
+        if err != nil {
+            return emptyConn(), errors.Wrap(err, "tls.Handshake")
+        }
+        if flushErr != nil {
+            return emptyConn(), flushErr
+        }
+        if status == 1 {
+            return c, nil
+        }
+        if status == 0 {
+            let receiveErr = c.receive(false)
+            _ = receiveErr
+            if receiveErr != nil {
+                return emptyConn(), receiveErr
+            }
+        }
+    }
+}
+
+func (c Conn) checkOpen() error {
+    if c.handle == 0 || c.failed {
+        return error("tls: closed or failed connection")
+    }
+    return nil
+}
+
+func (c Conn) check(writing bool) error {
+    c.checkOpen()?
+    let err = c.ctx.Err()
+    _ = err
+    if err != nil {
+        return err
+    }
+    var deadline = c.readDeadline
+    if writing {
+        deadline = c.writeDeadline
+    }
+    if deadline > 0 && time.Now() >= deadline {
+        return error("tls: timed out")
+    }
+    return nil
+}
+
+func (c Conn) sliceDeadline(writing bool) int {
+    var deadline = time.Now() + 10 * time.Millisecond
+    var limit = c.readDeadline
+    if writing {
+        limit = c.writeDeadline
+    }
+    if limit > 0 && limit < deadline {
+        deadline = limit
+    }
+    let at, limited = c.ctx.Deadline()
+    if limited && at < deadline {
+        deadline = at
+    }
+    return deadline
+}
+
+func (c mut Conn) flush(writing bool) error {
+    if c.outputPosition == c.output.len() {
+        let output, err = nativeOutput(c.handle)
+        _ = err
+        if err != nil {
+            return errors.Wrap(err, "tls.Output")
+        }
+        c.output = output
+        c.outputPosition = 0
+    }
+    for c.outputPosition < c.output.len() {
+        let waitErr = c.check(writing)
+        _ = waitErr
+        if waitErr != nil {
+            return waitErr
+        }
+        let deadlineErr = c.source.SetWriteDeadline(c.sliceDeadline(writing))
+        _ = deadlineErr
+        if deadlineErr != nil {
+            return deadlineErr
+        }
+        let n, writeErr = c.source.Write(c.output[c.outputPosition:])
+        _ = writeErr
+        c.outputPosition += n
+        if writeErr == error("net.Write: timed out") {
+            continue
+        }
+        if writeErr != nil {
+            return errors.Wrap(writeErr, "tls.Write ciphertext")
+        }
+        if n == 0 {
+            return error("tls: ciphertext write made no progress")
+        }
+    }
+    return nil
+}
+
+func (c mut Conn) receive(writing bool) error {
+    var buffer = zeros(16384)
+    for {
+        let waitErr = c.check(writing)
+        _ = waitErr
+        if waitErr != nil {
+            return waitErr
+        }
+        let deadlineErr = c.source.SetReadDeadline(c.sliceDeadline(writing))
+        _ = deadlineErr
+        if deadlineErr != nil {
+            return deadlineErr
+        }
+        let n, err = c.source.Read(buffer[:])
+        _ = err
+        if n > 0 {
+            return nativeFeed(c.handle, buffer[:n])
+        }
+        if err == error("net.Read: timed out") {
+            continue
+        }
+        if err == error("EOF") {
+            return error("tls: truncated connection without close-notify")
+        }
+        if err != nil {
+            return errors.Wrap(err, "tls.Read ciphertext")
+        }
+        return error("tls: ciphertext read made no progress")
+    }
+}
+
+func (c mut Conn) Read(buf mut []byte) (int, error) {
+    let initialErr = c.check(false)
+    _ = initialErr
+    if initialErr != nil {
+        return 0, initialErr
+    }
+    let pendingErr = c.flush(false)
+    _ = pendingErr
+    if pendingErr != nil {
+        if pendingErr != error("tls: timed out") {
+            c.failed = true
+        };
+        return 0, pendingErr
+    }
+    if buf.len() == 0 {
+        return 0, nil
+    }
+    var maximum = buf.len()
+    if maximum > 16384 {
+        maximum = 16384
+    }
+    for {
+        let data, err = nativeRead(c.handle, maximum)
+        _ = err
+        if err == error("EOF") {
+            return 0, err
+        }
+        if err != nil {
+            c.failed = true;
+            return 0, errors.Wrap(err, "tls.Read")
+        }
+        for var i = 0; i < data.len(); i += 1 {
+            buf[i] = data[i]
+        }
+        let flushErr = c.flush(false)
+        _ = flushErr
+        if flushErr != nil {
+            if flushErr != error("tls: timed out") {
+                c.failed = true
+            };
+            return data.len(), flushErr
+        }
+        if data.len() > 0 {
+            return data.len(), nil
+        }
+        if nativeStatus(c.handle)? == -2 {
+            continue
+        }
+        let receiveErr = c.receive(false)
+        _ = receiveErr
+        if receiveErr != nil {
+            if receiveErr != error("tls: timed out") {
+                c.failed = true
+            };
+            return 0, receiveErr
+        }
+    }
+}
+
+func (c mut Conn) Write(data []byte) (int, error) {
+    let initialErr = c.check(true)
+    _ = initialErr
+    if initialErr != nil {
+        return 0, initialErr
+    }
+    let pendingErr = c.flush(true)
+    _ = pendingErr
+    if pendingErr != nil {
+        if pendingErr != error("tls: timed out") {
+            c.failed = true
+        };
+        return 0, pendingErr
+    }
+    if data.len() == 0 {
+        return 0, nil
+    }
+    var size = data.len()
+    if size > 16384 {
+        size = 16384
+    }
+    for {
+        let n, err = nativeWrite(c.handle, data[:size])
+        _ = err
+        if err != nil {
+            c.failed = true;
+            return 0, errors.Wrap(err, "tls.Write")
+        }
+        let flushErr = c.flush(true)
+        _ = flushErr
+        if flushErr != nil {
+            if flushErr != error("tls: timed out") {
+                c.failed = true
+            };
+            if n > 0 {
+                return n, flushErr
+            };
+            return 0, flushErr
+        }
+        if n > 0 {
+            return n, nil
+        }
+        if n == 0 {
+            let receiveErr = c.receive(true)
+            _ = receiveErr
+            if receiveErr != nil {
+                if receiveErr != error("tls: timed out") {
+                    c.failed = true
+                };
+                return 0, receiveErr
+            }
+        }
+    }
+}
+
+func (c mut Conn) SetDeadline(t int) error {
+    c.checkOpen()?
+    c.readDeadline = t;
+    c.writeDeadline = t;
+    return nil
+}
+
+func (c mut Conn) SetReadDeadline(t int) error {
+    c.checkOpen()?
+    c.readDeadline = t;
+    return nil
+}
+
+func (c mut Conn) SetWriteDeadline(t int) error {
+    c.checkOpen()?
+    c.writeDeadline = t;
+    return nil
+}
+
+func (c own Conn) Close() error {
+    var conn = c
+    conn.flush(true)?
+    let err = nativeShutdown(conn.handle)
+    _ = err
+    if err != nil {
+        return errors.Wrap(err, "tls.Close")
+    }
+    return conn.flush(true)
+}

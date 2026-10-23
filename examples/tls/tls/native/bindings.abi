@@ -1,0 +1,11 @@
+package tls
+func nativeConfig(server bool, certificates []byte, key []byte) (int, error)
+func nativeSession(config int, name string) (int, error)
+func nativeHandshake(handle int) (int, error)
+func nativeRead(handle int, max int) (Array<byte>, error)
+func nativeWrite(handle int, data []byte) (int, error)
+func nativeFeed(handle int, data []byte) error
+func nativeOutput(handle int) (Array<byte>, error)
+func nativeShutdown(handle int) error
+func nativeStatus(handle int) (int, error)
+func nativeClose(handle int)
