@@ -32,8 +32,10 @@ const ADLER32: Adapter = Adapter {
 const SQLITE: Adapter = Adapter {
     id: "sqlite-v1",
     project: "sqlite",
-    fingerprint: "91faf86e0c4f27ee9e04d05c6424372978f8f01821cd3021167b27a7cbd4cf8d",
+    fingerprint: "8a6b32791046796c367c27aecd65df64b1049ffdd1cfa0c22d0facb7a78e2fda",
     c_flags: &[
+        "-Wno-error=sign-compare",
+        "-Wno-error=unused-variable",
         "-DSQLITE_THREADSAFE=1",
         "-DSQLITE_OMIT_LOAD_EXTENSION",
         "-DSQLITE_DQS=0",

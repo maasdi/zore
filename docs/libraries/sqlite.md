@@ -94,7 +94,12 @@ is required. The source archive is:
 The registered static C11 recipe adds `SQLITE_THREADSAFE=1`,
 `SQLITE_OMIT_LOAD_EXTENSION`, `SQLITE_DQS=0`, `SQLITE_DEFAULT_MEMSTATUS=0`,
 `SQLITE_MAX_LENGTH=16777216`, `SQLITE_MAX_SQL_LENGTH=1048576`, and
-`_DEFAULT_SOURCE` to the shared warning/optimization flags. No extension loading,
+`_DEFAULT_SOURCE` to the shared warning/optimization flags. Only this provider
+adds `-Wno-error=sign-compare` and `-Wno-error=unused-variable`: the unmodified
+upstream Windows VFS compares an `int` exception code with a `DWORD` constant
+and declares a debug-only expectation variable in release builds. These warnings
+remain enabled; other warning classes, other providers and the Rust bridge retain
+strict checks. No extension loading,
 SQL callbacks into Zore or arbitrary library linking is available. SQLite may
 use its ordinary OS VFS and host C runtime; Rust's host runtime supplies the
 standard threading/system link closure. The recipe, flags, symbols and all four
