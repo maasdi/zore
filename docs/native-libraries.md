@@ -119,3 +119,11 @@ validation, socket ownership, secret-buffer handling and handshake/read/write
 state machines. Cancellation and deadlines must retain input/resource leases
 until native work finishes. These remain adapter-specific design and validation
 work; the checksum proof establishes registration, ownership and static linking.
+
+## Cryptographic byte utilities
+
+The maintained external [`crypto` package](crypto.md) uses the curated
+`crypto-v1` adapter and the compiler-embedded, pinned mbedTLS 3.6.7 source
+closure. It exposes secure random bytes, SHA-256, HMAC-SHA-256 and constant-time
+byte equality with ordinary borrowed inputs and owned arrays. The guide records
+its bounded scope, offline installation, platform dependencies and provenance.

@@ -88,6 +88,10 @@ name = "native_adapters"
 path = "../tests/driver/native_adapters.rs"
 
 [[test]]
+name = "crypto"
+path = "../tests/driver/crypto.rs"
+
+[[test]]
 name = "release_metadata"
 path = "../tests/driver/release_metadata.rs"
 

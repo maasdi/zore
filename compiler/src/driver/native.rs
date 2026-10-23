@@ -29,8 +29,23 @@ const ADLER32: Adapter = Adapter {
     ],
 };
 
+const CRYPTO: Adapter = Adapter {
+    mbedtls: true,
+    id: "crypto-v1",
+    project: "crypto",
+    fingerprint: "26ed450100d1d5d6cf12de4cad8a9c842f12ea4782891dbdbed31c6b8a99be50",
+    symbols: &[
+        ("nativeRandomBytes", "zore_native_crypto_random_bytes"),
+        ("nativeSHA256", "zore_native_crypto_sha256"),
+        ("nativeHMACSHA256", "zore_native_crypto_hmac_sha256"),
+        ("nativeEqual", "zore_native_crypto_equal"),
+    ],
+};
+
 pub(super) fn find(id: &str) -> Option<&'static Adapter> {
-    (id == ADLER32.id).then_some(&ADLER32)
+    [&ADLER32, &CRYPTO]
+        .into_iter()
+        .find(|adapter| adapter.id == id)
 }
 
 pub(super) struct Provider {
