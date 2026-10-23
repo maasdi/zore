@@ -27,7 +27,8 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - run: rustup show active-toolchain
-      - run: cargo test --locked --test native hardening:: -- --test-threads=1
+      - run: |
+          cargo test --locked --test native hardening:: -- --test-threads=1
       - uses: actions/upload-artifact@v7
         if: failure()
         with:
@@ -50,7 +51,8 @@ jobs:
         env:
           RUSTFLAGS: -Zsanitizer=address
       - name: Instrument generated code and its runtime
-        run: cargo test --locked --test native hardening:: -- --test-threads=1
+        run: |
+          cargo test --locked --test native hardening:: -- --test-threads=1
         env:
           ZORE_HARDENING_ASAN: '1'
       - uses: actions/upload-artifact@v7
