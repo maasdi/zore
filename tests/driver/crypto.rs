@@ -355,7 +355,7 @@ fn real_provider_failure_paths_clear_partial_output_and_delegate_comparison() {
         .arg("-o")
         .arg(&executable);
     if cfg!(windows) {
-        command.arg("bcrypt.lib");
+        command.arg("-l").arg("bcrypt");
     }
     success(command.output().unwrap());
     success(Command::new(executable).output().unwrap());
