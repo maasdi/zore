@@ -244,7 +244,9 @@ fn link(
     } else {
         "program.o"
     });
-    fs::write(&ir_path, ir).map_err(|e| BuildError::Io(format!("{}: {e}", ir_path.display())))?;
+    let ir = codegen::retain_reachable_functions(ir);
+    fs::write(&ir_path, ir.as_bytes())
+        .map_err(|e| BuildError::Io(format!("{}: {e}", ir_path.display())))?;
     let cc = compiler();
     let mut compile = Command::new(&cc);
     compile.args(["-O2", "-Wno-override-module"]);

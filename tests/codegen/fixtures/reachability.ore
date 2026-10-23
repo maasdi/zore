@@ -1,0 +1,37 @@
+package main
+
+import "std/time"
+
+let initial = seed()
+
+func seed() int { println("init"); return 7 }
+func deadA() int { return deadB() }
+func deadB() int { return deadA() }
+func identity<T copyable>(value T) T { return value }
+
+type Reader interface { Read() int }
+type Counter struct { N int }
+func (c Counter) Read() int { return c.N }
+func read(r Reader) int { return r.Read() }
+
+type Resource struct { Values Array<int> }
+func (r mut Resource) drop() { println("drop") }
+func job(value own Resource) async func() int {
+    return async func() int {
+        time.Sleep(time.Millisecond)
+        return value.Values[0]
+    }
+}
+
+func main() {
+    let callback = func(n int) int { return n + initial }
+    println(callback(identity(3)))
+    println(read(Counter{N: 11}))
+    scope {
+        let scoped = go identity(13)
+        println(scoped.wait())
+    }
+    let work = job(Resource{Values: Array<int>{12}})
+    let task = go work()
+    println(task.wait())
+}
