@@ -2100,6 +2100,18 @@ Validate the compiler layout and Rust runtime migration at `39dde45` before
 starting new language functionality. Do not restart the completed skeleton
 implementation or expand ownership while this validation is unresolved.
 
+#### Compiler maintenance boundaries
+
+Issue #159 extracts closure environment/value emission and destruction into
+`codegen/closure.rs`, preserving the existing MIR-to-LLVM stage and closure ABI.
+JSON synthesis now validates its bundled helper and hook signatures; HTTP
+adaptation validates its factory/handler shapes before generating records.
+Paired bundle mutation tests cover contract drift. This is an internal
+maintenance change with no new language feature or claimed performance gain.
+HIR lowering and region analysis remain large; further extraction should follow
+specific change needs rather than file-size targets. Cross-host validation of
+this change is recorded by its PR checks, not inferred from local execution.
+
 #### Required environment
 
 Use the repository-pinned Rust toolchain (including rustfmt and Clippy), plus
