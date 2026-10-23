@@ -8,7 +8,7 @@ import tempfile
 import threading
 from types import SimpleNamespace
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from common import BenchmarkError, ROOT, line
 from compile import frame_layouts, measure_compile, validate_runtime_cache
@@ -44,6 +44,33 @@ class HarnessTests(unittest.TestCase):
                 result = metadata(arguments)
         self.assertEqual(result["stage_profilers"], {})
         self.assertEqual(result["compiler_revision"], "revision")
+
+    def test_metadata_distinguishes_cpu_affinity_from_logical_core_count(self):
+        affinity_cases = [
+            ({"sched_getaffinity": Mock(return_value={2, 7})}, 2),
+            ({}, None),
+            ({"sched_getaffinity": Mock(side_effect=OSError("unavailable"))}, None),
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            compiler = Path(directory) / "compiler"
+            compiler.write_bytes(b"compiler identity")
+            arguments = SimpleNamespace(compiler=compiler, compiler_revision="revision")
+            for affinity_api, expected_count in affinity_cases:
+                with self.subTest(affinity_api=affinity_api):
+                    host_os = SimpleNamespace(
+                        environ=os.environ,
+                        cpu_count=lambda: 64,
+                        getloadavg=lambda: (0.0, 0.0, 0.0),
+                        **affinity_api,
+                    )
+                    with patch("run.os", host_os), patch(
+                        "run.command", return_value=SimpleNamespace(stdout="tool output\n")
+                    ):
+                        host = metadata(arguments)["host"]
+                    self.assertEqual(host["logical_core_count"], 64)
+                    self.assertEqual(host["cpu_affinity_count"], expected_count)
+                    if "sched_getaffinity" in affinity_api:
+                        affinity_api["sched_getaffinity"].assert_called_once_with(0)
 
     def test_compile_pairs_alternate_with_separate_stable_runtime_caches(self):
         def fake_build(compiler, source, directory, cache, capture=None):

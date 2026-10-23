@@ -35,6 +35,13 @@ FRAME_WORKLOADS = {
 }
 
 
+def cpu_affinity_count():
+    try:
+        return len(os.sched_getaffinity(0))
+    except (AttributeError, OSError):
+        return None
+
+
 def metadata(arguments):
     compiler = arguments.compiler
     result = {
@@ -66,7 +73,7 @@ def metadata(arguments):
             "machine": platform.machine(),
             "cpu_model": suspended.cpu_model(),
             "logical_core_count": os.cpu_count(),
-            "cpu_affinity_count": len(os.sched_getaffinity(0)),
+            "cpu_affinity_count": cpu_affinity_count(),
             "load_average": os.getloadavg(),
             "cgroup_limits": {
                 name: Path(f"/sys/fs/cgroup/{name}").read_text().strip()
