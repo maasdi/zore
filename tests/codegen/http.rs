@@ -1144,7 +1144,7 @@ fn rest_sources(sources: &[&str]) -> String {
     )
 }
 
-fn http_sources() -> String {
+pub(super) fn http_sources() -> String {
     let mut imports = std::collections::BTreeSet::new();
     let mut bodies = String::new();
     for source in [

@@ -2,8 +2,11 @@
 
 mod async_callables;
 mod async_scopes;
+#[path = "../hardening/process.rs"]
+mod bounded_process;
 mod conformance;
 mod controlled_runtime;
+mod hardening;
 mod host_support;
 mod http;
 mod json;

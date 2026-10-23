@@ -141,3 +141,7 @@ This review did not demonstrate a new safety defect. It also did not execute
 every Markdown scenario or establish exhaustive conformance for every feature
 combination. The #114 follow-up supplies the named direct assertions; broader
 conformance and other roadmap work remain separate.
+
+The additional [seeded hardening inventory](hardening.md) maps generated ownership,
+plain/async cleanup, protocol fragmentation and quiescent cancellation assertions
+to the earlier executable cases, with replay, process bounds and actual host limits.
