@@ -1,5 +1,4 @@
-//! Timers and descriptor readiness. One thread waits on the operating system's event queue and
-//! wakes the tasks whose timer is due or whose descriptor is ready.
+//! Platform-specific timers and descriptor readiness wake suspended tasks.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -686,6 +685,32 @@ mod imp {
     use std::sync::Arc;
     use std::time::Duration;
 
+    #[cfg(any(test, zore_test_hooks))]
+    static THREADS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    #[cfg(any(test, zore_test_hooks))]
+    static TIMERS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+    #[cfg(any(test, zore_test_hooks))]
+    struct ThreadCount;
+
+    #[cfg(any(test, zore_test_hooks))]
+    impl Drop for ThreadCount {
+        fn drop(&mut self) {
+            THREADS.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+
+    #[cfg(any(test, zore_test_hooks))]
+    pub(super) fn snapshot() -> (usize, usize, usize) {
+        let timers = TIMERS.load(std::sync::atomic::Ordering::SeqCst);
+        (timers, 0, timers)
+    }
+
+    #[cfg(any(test, zore_test_hooks))]
+    pub(super) fn timer_threads() -> usize {
+        THREADS.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
     pub(crate) struct Timer {
         operation: Arc<Operation>,
         canceled: Arc<(std::sync::Mutex<bool>, std::sync::Condvar)>,
@@ -701,6 +726,8 @@ mod imp {
 
     impl Drop for Timer {
         fn drop(&mut self) {
+            #[cfg(any(test, zore_test_hooks))]
+            TIMERS.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
             let (state, changed) = &*self.canceled;
             *state.lock().unwrap_or_else(|error| error.into_inner()) = true;
             changed.notify_one();
@@ -710,10 +737,17 @@ mod imp {
     pub(super) fn start_timer(milliseconds: u64, waiter: Waiter) -> Timer {
         let operation = Operation::new(waiter);
         let canceled = Arc::new((std::sync::Mutex::new(false), std::sync::Condvar::new()));
+        #[cfg(any(test, zore_test_hooks))]
+        {
+            TIMERS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            THREADS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
         let signal = Arc::clone(&canceled);
         let completion = Arc::clone(&operation);
         if std::thread::Builder::new()
             .spawn(move || {
+                #[cfg(any(test, zore_test_hooks))]
+                let _count = ThreadCount;
                 let (state, changed) = &*signal;
                 let guard = state.lock().unwrap_or_else(|error| error.into_inner());
                 let (guard, _) = changed
@@ -738,8 +772,12 @@ mod imp {
     pub fn start_sleep(milliseconds: u64, waiter: Waiter) -> Arc<Operation> {
         let operation = Operation::new(waiter);
         let completion = Arc::clone(&operation);
+        #[cfg(any(test, zore_test_hooks))]
+        THREADS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         if std::thread::Builder::new()
             .spawn(move || {
+                #[cfg(any(test, zore_test_hooks))]
+                let _count = ThreadCount;
                 std::thread::sleep(Duration::from_millis(milliseconds));
                 completion.complete();
             })
@@ -770,12 +808,21 @@ pub(super) fn start_timer(milliseconds: u64, waiter: Waiter) -> Timer {
     imp::start_timer(milliseconds, waiter)
 }
 
-#[cfg(all(
-    any(test, zore_test_hooks),
-    any(target_os = "linux", target_os = "macos")
-))]
+#[cfg(any(test, zore_test_hooks))]
 pub(super) fn snapshot() -> (usize, usize, usize) {
     imp::snapshot()
+}
+
+#[cfg(any(test, zore_test_hooks))]
+pub(super) fn timer_threads() -> usize {
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    {
+        0
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    {
+        imp::timer_threads()
+    }
 }
 
 #[cfg(all(zore_test_hooks, any(target_os = "linux", target_os = "macos")))]
