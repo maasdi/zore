@@ -13,9 +13,11 @@ pub(super) struct Adapter {
     pub project: &'static str,
     pub fingerprint: &'static str,
     pub symbols: &'static [(&'static str, &'static str)],
+    pub mbedtls: bool,
 }
 
 const ADLER32: Adapter = Adapter {
+    mbedtls: false,
     id: "adler32-v1",
     project: "adler32",
     fingerprint: "66280c83962934f0b1937cfc1633458324381c156fc575100d8f145433a871ab",
@@ -108,6 +110,10 @@ impl Provider {
         for (name, symbol) in self.adapter.symbols {
             part(name);
             part(symbol);
+        }
+        if self.adapter.mbedtls {
+            part(super::mbedtls::FINGERPRINT);
+            part(super::mbedtls::RECIPE);
         }
         format!("{:x}", hash.finalize())
     }

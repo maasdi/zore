@@ -288,6 +288,13 @@ fn link(
     if !cfg!(windows) {
         link.arg("-C").arg(format!("linker={cc}"));
     }
+    if cfg!(windows)
+        && native_adapters
+            .values()
+            .any(|provider| provider.adapter.mbedtls)
+    {
+        link.arg("-l").arg("bcrypt");
+    }
     for object in native_objects {
         let mut argument = std::ffi::OsString::from("link-arg=");
         argument.push(object);
@@ -334,6 +341,52 @@ fn native_objects(
     selections: &Providers,
 ) -> Result<Vec<PathBuf>, BuildError> {
     let mut objects = Vec::new();
+    let needs_mbedtls = selections.values().any(|provider| provider.adapter.mbedtls);
+    let vendor = directory.join("mbedtls");
+    if needs_mbedtls {
+        for &(name, contents) in super::mbedtls::SOURCES {
+            let path = vendor.join(name);
+            fs::create_dir_all(path.parent().expect("vendor path"))
+                .and_then(|()| fs::write(&path, contents))
+                .map_err(|error| BuildError::Io(format!("{}: {error}", path.display())))?;
+        }
+        for &(name, _) in super::mbedtls::SOURCES {
+            if !name.ends_with(".c") {
+                continue;
+            }
+            let object = directory.join(format!(
+                "mbedtls-{}.o",
+                Path::new(name)
+                    .file_stem()
+                    .expect("C source")
+                    .to_string_lossy()
+            ));
+            let mut compile = Command::new(cc);
+            compile.args(super::native::C_FLAGS);
+            mbedtls_flags(&mut compile, &vendor);
+            if cfg!(windows) {
+                compile.arg("--target=x86_64-pc-windows-msvc");
+            } else {
+                compile.arg("-fPIC");
+            }
+            let result = compile
+                .arg("-c")
+                .arg(vendor.join(name))
+                .arg("-o")
+                .arg(&object)
+                .output()
+                .map_err(|error| {
+                    BuildError::Toolchain(format!("could not compile Mbed TLS: {error}"))
+                })?;
+            if !result.status.success() {
+                return Err(BuildError::Toolchain(format!(
+                    "Mbed TLS {name} compilation failed:\n{}",
+                    String::from_utf8_lossy(&result.stderr)
+                )));
+            }
+            objects.push(object);
+        }
+    }
     for (id, provider) in selections {
         let adapter = provider.adapter;
         let source = directory.join(format!("{}.c", adapter.project));
@@ -348,6 +401,9 @@ fn native_objects(
             .map_err(|e| BuildError::Io(format!("{}: {e}", source.display())))?;
         let mut compile = Command::new(cc);
         compile.args(super::native::C_FLAGS);
+        if adapter.mbedtls {
+            mbedtls_flags(&mut compile, &vendor);
+        }
         if cfg!(windows) {
             compile.arg("--target=x86_64-pc-windows-msvc");
         } else {
@@ -373,6 +429,18 @@ fn native_objects(
         objects.push(object);
     }
     Ok(objects)
+}
+
+fn mbedtls_flags(command: &mut Command, vendor: &Path) {
+    command
+        .arg("-I")
+        .arg(vendor.join("include"))
+        .arg("-I")
+        .arg(vendor.join("library"))
+        .arg("-I")
+        .arg(vendor)
+        .arg("-DMBEDTLS_CONFIG_FILE=\"zore_config.h\"")
+        .arg("-D_DEFAULT_SOURCE");
 }
 
 fn toolchain_error(rustc: &std::ffi::OsStr, error: &std::io::Error) -> BuildError {

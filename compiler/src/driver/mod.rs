@@ -3,6 +3,7 @@ pub mod check;
 mod command;
 mod dependencies;
 mod format;
+mod mbedtls;
 mod native;
 pub mod project;
 pub mod release;
