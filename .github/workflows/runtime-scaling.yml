@@ -45,12 +45,11 @@ jobs:
       - name: Validate scaling harness
         run: python -m unittest discover -s benchmarks/runtime-scaling -p 'test_*.py'
       - name: Measure populations and cleanup
-        shell: bash
-        run: |
-          python benchmarks/runtime-scaling/run.py \
-            --compiler "${{ github.workspace }}/target/release/zore${{ runner.os == 'Windows' && '.exe' || '' }}" \
-            --compiler-revision "$(git rev-parse HEAD)" \
-            --output "runtime-scaling-${{ runner.os }}.json"
+        run: >-
+          python benchmarks/runtime-scaling/run.py
+          --compiler "${{ github.workspace }}/target/release/zore${{ runner.os == 'Windows' && '.exe' || '' }}"
+          --compiler-revision "${{ github.sha }}"
+          --output "runtime-scaling-${{ runner.os }}.json"
       - uses: actions/upload-artifact@v6
         if: always()
         with:
