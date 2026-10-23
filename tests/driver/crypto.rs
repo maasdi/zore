@@ -135,7 +135,7 @@ fn reviewed_crypto_runs_known_answers_random_and_concurrency_offline() {
             .unwrap(),
     );
     assert!(
-        String::from_utf8_lossy(&output.stdout).contains("Tests: 6 passed, 0 failed"),
+        String::from_utf8_lossy(&output.stdout).contains("Tests: 7 passed, 0 failed"),
         "{output:?}"
     );
     assert_eq!(

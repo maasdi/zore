@@ -80,6 +80,11 @@ runtime dynamic loading is used. The compiler embeds the source bytes so a
 copied compiler executable can build without its original checkout. Selected
 adapters share one statically linked closure. Windows links the OS bcrypt
 entropy API; Linux/macOS use the upstream platform entropy implementation.
+AES uses immutable precomputed tables to avoid first-use initialization races.
+Hardware AES feature detection and acceleration are disabled in this recipe.
+Software AES still uses secret-dependent table lookups: this profile does not
+claim cache-timing protection against hostile local co-tenants or a whole-provider
+constant-time guarantee.
 
 Supported native hosts are Linux GNU and macOS x86_64/aarch64 and Windows x64
 MSVC, with the normal clang/rustc native toolchain. `check` needs neither a C
@@ -91,7 +96,7 @@ compiler/package updates together; a pin is not an automatic security update.
 
 The regression suite exercises NIST SHA-256 and RFC 4231 HMAC vectors, empty,
 binary and long-key inputs, size boundaries, comparison mismatch positions,
-concurrency and cleanup. Test-only wrappers inject failed entropy, a failed
+fresh-process concurrent first random use, concurrency and cleanup. Test-only wrappers inject failed entropy, a failed
 second random chunk and failed digest/MAC calls. Those wrappers are absent from
 production and use no environment-controlled insecure modes. Comparison tests
 check delegation and results; timing measurements do not prove constant time.

@@ -1,6 +1,6 @@
 pub(super) const FINGERPRINT: &str =
-    "cc0d0ddd12704a541c9eba05c68305f4623f000290ceb6a4d06e3b72de19e0b0";
-pub(super) const RECIPE: &str = "mbedtls-3.6.7-c11-config-v1-default-source-windows-bcrypt";
+    "b4c4d85dea0fd2a03dca0ec1b5ac0a9fa088021f67729b7096b89f706b20b205";
+pub(super) const RECIPE: &str = "mbedtls-3.6.7-c11-config-v2-rom-aes-default-source-windows-bcrypt";
 pub(super) const SOURCES: &[(&str, &[u8])] = &[
     (
         "ChangeLog",

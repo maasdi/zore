@@ -8389,7 +8389,10 @@ constant-time memory comparison; it implements no cryptographic algorithms.
 Each nonempty random request creates and seeds its own DRBG state, requests
 bounded chunks, and destroys the state before returning. Provider failures are
 ordinary errors with no partial output. There is no mutable shared crypto state
-or runtime provider loading. Updating the provider requires compiler review,
+or runtime provider loading. AES tables are immutable and precomputed; hardware
+AES feature-detection paths are disabled. Software AES uses secret-dependent
+lookups, so this profile does not claim cache-timing protection against hostile
+local co-tenants. Updating the provider requires compiler review,
 known-answer and host regression tests, recipe fingerprint changes and explicit
 lock regeneration. No external crypto installation or network is needed at
 build/runtime; native tools are needed only for build/run/test. Supported hosts
@@ -8408,7 +8411,8 @@ native slice, array/error and boolean/error bindings suffice. Semantic checking
 remains independent of the native linker and provider. Conformance covers NIST
 SHA-256 and RFC 4231 HMAC vectors, empty/binary/long-key input, size bounds,
 constant-time-provider equality including mismatch positions, failing entropy and
-provider calls, concurrent calls, and ordinary error/panic/async cleanup on
+provider calls, fresh-process concurrent first random use, concurrent calls,
+and ordinary error/panic/async cleanup on
 each supported host. Timing measurements alone are not proof of constant time.
 
 # 38. Self-Hosting Constraint

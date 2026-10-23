@@ -16,3 +16,9 @@ The fixed configuration supports TLS 1.2 ECDHE RSA/ECDSA with AES-GCM,
 SHA-256/384/512, explicit PEM roots/identities, and host entropy. No system TLS
 library is used. Windows links the OS bcrypt entropy API. Upstream LICENSE,
 SECURITY.md and SUPPORT.md retain license and maintenance information.
+
+AES uses immutable precomputed tables, avoiding process-global mutable table
+initialization. Hardware AES feature detection and acceleration are disabled in
+this recipe. Software AES still uses secret-dependent table lookups; this
+profile does not claim protection from cache-timing observation by hostile local
+co-tenants or a whole-provider constant-time guarantee.

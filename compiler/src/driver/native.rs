@@ -33,7 +33,7 @@ const CRYPTO: Adapter = Adapter {
     mbedtls: true,
     id: "crypto-v1",
     project: "crypto",
-    fingerprint: "26ed450100d1d5d6cf12de4cad8a9c842f12ea4782891dbdbed31c6b8a99be50",
+    fingerprint: "c5030f47bb846f722176eb0a9eb062869ac7084d3e802a484b69f51fa4acaaeb",
     symbols: &[
         ("nativeRandomBytes", "zore_native_crypto_random_bytes"),
         ("nativeSHA256", "zore_native_crypto_sha256"),

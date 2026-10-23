@@ -137,3 +137,31 @@ func TestNativeFunctionValues() error {
     }
     return nil
 }
+
+async func firstRandomUse(ready channel<bool>, start channel<bool>) error {
+    ready.send(true)
+    start.receive()
+    let bytes = RandomBytes(64)?
+    if bytes.len() != 64 {
+        panic("first concurrent random output size")
+    }
+    return nil
+}
+
+func TestConcurrentFirstRandomUse() error {
+    let ready = channel<bool>(4)
+    let start = channel<bool>()
+    let first = go firstRandomUse(ready, start)
+    let second = go firstRandomUse(ready, start)
+    let third = go firstRandomUse(ready, start)
+    let fourth = go firstRandomUse(ready, start)
+    for var i = 0; i < 4; i += 1 {
+        ready.receive()
+    }
+    start.close()
+    first.wait()?
+    second.wait()?
+    third.wait()?
+    fourth.wait()?
+    return nil
+}
