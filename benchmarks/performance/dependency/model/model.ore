@@ -1,0 +1,10 @@
+package profilemodel
+
+type Record struct {
+    ID int
+    Name string
+}
+
+func New(id int) Record {
+    return Record{ID: id, Name: "profile"}
+}

@@ -8,11 +8,13 @@ import tempfile
 import threading
 from types import SimpleNamespace
 import unittest
+from unittest.mock import patch
 
 from common import BenchmarkError, ROOT, line
-from compile import frame_layouts
+from compile import frame_layouts, measure_compile, validate_runtime_cache
 from retention import hook_ir, profiled_source
 from rest_requests import batch
+from run import metadata
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -33,6 +35,77 @@ class Handler(BaseHTTPRequestHandler):
 
 
 class HarnessTests(unittest.TestCase):
+    def test_shared_metadata_supports_retention_arguments_without_stage_profilers(self):
+        with tempfile.TemporaryDirectory() as directory:
+            compiler = Path(directory) / "compiler"
+            compiler.write_bytes(b"compiler identity")
+            arguments = SimpleNamespace(compiler=compiler, compiler_revision="revision")
+            with patch("run.command", return_value=SimpleNamespace(stdout="tool output\n")):
+                result = metadata(arguments)
+        self.assertEqual(result["stage_profilers"], {})
+        self.assertEqual(result["compiler_revision"], "revision")
+
+    def test_compile_pairs_alternate_with_separate_stable_runtime_caches(self):
+        def fake_build(compiler, source, directory, cache, capture=None):
+            directory.mkdir(parents=True, exist_ok=True)
+            if capture:
+                capture.with_suffix(".ll").write_text("IR")
+                capture.with_suffix(".json").write_text('{"object_bytes": 1}')
+                artifact = {str(cache): {"sha256": "unchanged"}}
+                capture.with_suffix(".build.json").write_text(json.dumps({
+                    "cache_before": artifact,
+                    "cache_after": artifact,
+                    "commands": [],
+                }))
+            return directory / source.stem, 1.0
+
+        arguments = SimpleNamespace(
+            compiler_revision="candidate-revision",
+            baseline_compiler=Path("baseline"),
+            baseline_revision="baseline-revision",
+            stage_profiler=None,
+            baseline_stage_profiler=None,
+            repetitions=3,
+            warm_builds_only=True,
+            compile_lock_file=None,
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            with patch("compile.build", side_effect=fake_build), patch("compile.command"):
+                rows = measure_compile(
+                    Path("candidate"), {"hello": Path("hello.ore")},
+                    Path(directory), arguments,
+                )
+        self.assertEqual(
+            [row["variant"] for row in rows],
+            ["baseline", "candidate", "candidate", "baseline", "baseline", "candidate"],
+        )
+        self.assertEqual([row["repetition"] for row in rows], [1, 1, 2, 2, 3, 3])
+        for offset in range(0, len(rows), 2):
+            pair = rows[offset:offset + 2]
+            self.assertEqual(pair[0]["variant_order"], [row["variant"] for row in pair])
+            self.assertNotEqual(
+                pair[0]["warm_profile"]["cache_before"],
+                pair[1]["warm_profile"]["cache_before"],
+            )
+
+    def test_cache_evidence_rejects_fallback_and_changed_warm_artifacts(self):
+        artifact = {"runtime/libzore_runtime.rlib": {"bytes": 7, "sha256": "hash", "mtime_ns": 1}}
+        version = {"tool": "rustc", "role": "version"}
+        runtime = {"tool": "rustc", "role": "runtime"}
+        warm = {"cache_before": artifact, "cache_after": artifact, "commands": [version]}
+        cold = {"cache_before": {}, "cache_after": artifact, "commands": [runtime]}
+        validate_runtime_cache(warm, cold=False)
+        validate_runtime_cache(cold, cold=True)
+        for profile, is_cold in [
+            ({**warm, "commands": [version, runtime]}, False),
+            ({**warm, "cache_after": {}}, False),
+            ({**warm, "cache_after": {"runtime/other.rlib": {}}}, False),
+            ({**cold, "cache_after": {}}, True),
+            ({**cold, "commands": [version]}, True),
+        ]:
+            with self.assertRaises(BenchmarkError):
+                validate_runtime_cache(profile, cold=is_cold)
+
     def test_profile_hooks_handle_both_linkages_and_keep_the_entry_abi(self):
         for linkage in ["", "internal "]:
             source = (
