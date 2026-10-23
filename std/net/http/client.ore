@@ -1,0 +1,328 @@
+package http
+
+import "std/context"
+import "std/io"
+import "std/net"
+import "std/net/url"
+import "std/strconv"
+import "std/strings"
+import "std/time"
+
+let ClientPollTimeout = error("http.Client: poll timed out")
+
+type ClientConfig struct {
+    MaxHeaderBytes int
+    MaxBodyBytes int
+    Timeout int
+    DialTimeout int
+    PollInterval int
+}
+type Client struct {
+    config ClientConfig
+    live bool
+    transport Array<ClientTransport>
+}
+type ClientResponse struct {
+    StatusCode int
+    Headers Header
+    Body Array<byte>
+}
+type ClientConn interface {
+    mut Read(buf mut []byte) (int, error)
+    mut Write(data []byte) (int, error)
+    mut SetReadDeadline(deadline int) error
+    mut SetWriteDeadline(deadline int) error
+}
+type ClientTransport interface {
+    Dial(ctx context.Context, scheme string, authority string) (ClientConn, error)
+}
+type clientCancellation struct { cancel func() }
+func (g mut clientCancellation) drop() { (g.cancel)() }
+
+type clientDialResult struct {
+    conn net.Conn
+    failure error
+}
+type clientStream struct {
+    conn ClientConn
+    ctx context.Context
+    config ClientConfig
+    deadline int
+    buffer Array<byte>
+    position int
+    pending error
+    metadata int
+}
+
+func emptyClient() Client { return Client{config: DefaultClientConfig(), live: false, transport: Array<ClientTransport>{}} }
+func emptyClientURL() url.AbsoluteURL { return url.AbsoluteURL{Scheme: "", Hostname: "", Authority: "", Address: "", RequestTarget: ""} }
+func DefaultClientConfig() ClientConfig {
+    return ClientConfig{MaxHeaderBytes: 32768, MaxBodyBytes: 1048576, Timeout: 30 * time.Second, DialTimeout: 10 * time.Second, PollInterval: 10 * time.Millisecond}
+}
+func NewClient(config ClientConfig) (Client, error) {
+    var chosen = config
+    let defaults = DefaultClientConfig()
+    let fields = [int; 5]{config.MaxHeaderBytes, config.MaxBodyBytes, config.Timeout, config.DialTimeout, config.PollInterval}
+    for value in fields { if value < 0 { return emptyClient(), error("http.NewClient: negative configuration") } }
+    if chosen.MaxHeaderBytes == 0 { chosen.MaxHeaderBytes = defaults.MaxHeaderBytes }
+    if chosen.MaxBodyBytes == 0 { chosen.MaxBodyBytes = defaults.MaxBodyBytes }
+    if chosen.Timeout == 0 { chosen.Timeout = defaults.Timeout }
+    if chosen.DialTimeout == 0 { chosen.DialTimeout = defaults.DialTimeout }
+    if chosen.PollInterval == 0 { chosen.PollInterval = defaults.PollInterval }
+    return Client{config: chosen, live: true, transport: Array<ClientTransport>{}}, nil
+}
+func NewClientWithTransport(config ClientConfig, transport own ClientTransport) (Client, error) {
+    var client = NewClient(config)?
+    client.transport.push(transport)
+    return client, nil
+}
+func emptyClientResponse() ClientResponse { return ClientResponse{StatusCode: 0, Headers: NewHeader(), Body: Array<byte>{}} }
+func clientControlled(name string) bool {
+    let names = [string; 8]{"Host", "Content-Length", "Transfer-Encoding", "Connection", "Trailer", "Upgrade", "Expect", "Proxy-Connection"}
+    for controlled in names { if asciiEqual(name, controlled) { return true } }
+    return false
+}
+func clientForbiddenTrailer(name string) bool {
+    if clientControlled(name) || strings.HasPrefix(strings.ToLower(name), "content-") { return true }
+    let forbidden = [string; 13]{"Authorization", "Proxy-Authorization", "WWW-Authenticate", "Proxy-Authenticate", "Authentication-Info", "Proxy-Authentication-Info", "Cache-Control", "Expires", "Location", "Retry-After", "Vary", "Set-Cookie", "Age"}
+    for field in forbidden { if asciiEqual(name, field) { return true } }
+    return false
+}
+func (c Client) prepare(method string, absoluteURL string, headers Header, body []byte) (string, url.AbsoluteURL, error) {
+    if !c.live { return "", emptyClientURL(), error("http.Client: empty client") }
+    if !token(method) || asciiEqual(method, "CONNECT") || asciiEqual(method, "TRACE") { return "", emptyClientURL(), error("http.Client: unsupported or invalid method") }
+    let target = url.ParseAbsolute(absoluteURL)?
+    if body.len() > c.config.MaxBodyBytes { return "", emptyClientURL(), error("http.Client: body too large") }
+    if method.len() > c.config.MaxHeaderBytes || target.RequestTarget.len() > c.config.MaxHeaderBytes - method.len() || target.Authority.len() > c.config.MaxHeaderBytes - method.len() - target.RequestTarget.len() { return "", emptyClientURL(), error("http.Client: metadata too large") }
+    var output = method + " " + target.RequestTarget + " HTTP/1.1\r\nHost: " + target.Authority + "\r\nContent-Length: " + strconv.Itoa(body.len()) + "\r\nConnection: close\r\n"
+    if output.len() > c.config.MaxHeaderBytes { return "", emptyClientURL(), error("http.Client: metadata too large") }
+    for entry in headers.entries {
+        if !token(entry.Name) || !fieldValue(entry.Value) { return "", emptyClientURL(), error("http.Client: invalid header") }
+        if clientControlled(entry.Name) { return "", emptyClientURL(), error("http.Client: client owns transport header") }
+        if entry.Name.len() > c.config.MaxHeaderBytes - output.len() { return "", emptyClientURL(), error("http.Client: metadata too large") }
+        output += entry.Name
+        if entry.Value.len() > c.config.MaxHeaderBytes - output.len() - 4 { return "", emptyClientURL(), error("http.Client: metadata too large") }
+        output += ": " + entry.Value + "\r\n"
+    }
+    if c.config.MaxHeaderBytes - output.len() < 2 { return "", emptyClientURL(), error("http.Client: metadata too large") }
+    return output + "\r\n", target, nil
+}
+async func clientDial(address string, timeout int, result channel<clientDialResult>) {
+    let conn, err = net.DialTimeout("tcp", address, timeout)
+    _ = err
+    result.send(clientDialResult{conn: conn, failure: err})
+}
+func (c Client) Do(ctx context.Context, method string, absoluteURL string, headers Header, body []byte) (ClientResponse, error) {
+    let bounded, cancel = context.WithDeadline(ctx, deadlineAfter(time.Now(), c.config.Timeout))
+    let guard = clientCancellation{cancel: cancel}
+    let output, target, preparationErr = c.prepare(method, absoluteURL, headers, body)
+    if preparationErr != nil { return emptyClientResponse(), preparationErr }
+    if c.transport.len() == 0 && target.Scheme != "http" { return emptyClientResponse(), error("http.Client: HTTPS requires verified TLS transport") }
+    return c.dialAndExchange(bounded, output, target, method, body)
+}
+func clientContextError(ctx context.Context) error {
+    if ctx.Err() != nil { return ctx.Err() }
+    let deadline, limited = ctx.Deadline()
+    if limited && time.Now() >= deadline { return error("context deadline exceeded") }
+    return nil
+}
+func (c Client) dialAndExchange(ctx context.Context, output string, target url.AbsoluteURL, method string, body []byte) (ClientResponse, error) {
+    let contextErr = clientContextError(ctx)
+    if contextErr != nil { return emptyClientResponse(), contextErr }
+    if c.transport.len() != 0 {
+        let conn, err = c.transport[0].Dial(ctx, target.Scheme, target.Authority)
+        _ = err
+        let dialContextErr = clientContextError(ctx)
+        if dialContextErr != nil { return emptyClientResponse(), dialContextErr }
+        if err != nil { return emptyClientResponse(), err }
+        return c.exchangePrepared(ctx, conn, output, method, body)
+    }
+    let result = channel<clientDialResult>(1)
+    let deadline, _ = ctx.Deadline()
+    var dialTimeout = c.config.DialTimeout
+    let remaining = deadline - time.Now()
+    if remaining <= 0 { return emptyClientResponse(), error("context deadline exceeded") }
+    if remaining < dialTimeout { dialTimeout = remaining }
+    go clientDial(target.Address, dialTimeout, result)
+    select {
+        case let connected, _ = result.receive() {
+            let dialContextErr = clientContextError(ctx)
+            if dialContextErr != nil { return emptyClientResponse(), dialContextErr }
+            if connected.failure != nil { return emptyClientResponse(), connected.failure }
+            return c.exchangePrepared(ctx, connected.conn, output, method, body)
+        }
+        case ctx.Done().receive() { return emptyClientResponse(), ctx.Err() }
+    }
+}
+func (c Client) Exchange(ctx context.Context, conn own ClientConn, method string, absoluteURL string, headers Header, body []byte) (ClientResponse, error) {
+    let bounded, cancel = context.WithDeadline(ctx, deadlineAfter(time.Now(), c.config.Timeout))
+    let guard = clientCancellation{cancel: cancel}
+    let output, _, preparationErr = c.prepare(method, absoluteURL, headers, body)
+    if preparationErr != nil { return emptyClientResponse(), preparationErr }
+    return c.exchangePrepared(bounded, conn, output, method, body)
+}
+func (c Client) exchangePrepared(ctx context.Context, conn own ClientConn, output string, method string, body []byte) (ClientResponse, error) {
+    let deadline, _ = ctx.Deadline()
+    var stream = clientStream{conn: conn, ctx: ctx, config: c.config, deadline: deadline, buffer: Array<byte>{}, position: 0, pending: nil, metadata: 0}
+    let head = strings.Bytes(output)
+    let headerErr = stream.send(head[:])
+    if headerErr != nil { return emptyClientResponse(), headerErr }
+    let bodyErr = stream.send(body)
+    if bodyErr != nil { return emptyClientResponse(), bodyErr }
+    return stream.response(method)
+}
+func (s clientStream) ready() error {
+    if s.ctx.Err() != nil { return s.ctx.Err() }
+    if time.Now() >= s.deadline { return error("context deadline exceeded") }
+    return nil
+}
+func (s mut clientStream) send(data []byte) error {
+    var position = 0
+    for position < data.len() {
+        s.ready()?
+        s.conn.SetWriteDeadline(pollDeadline(s.deadline, s.config.PollInterval))?
+        let n, err = s.conn.Write(data[position:])
+        _ = err
+        if n < 0 || n > data.len() - position { return error("http.Client: invalid write count") }
+        position += n
+        if err == error("net.Write: timed out") || err == ClientPollTimeout { continue }
+        if err != nil { return err }
+        if n == 0 { return error("http.Client: write made no progress") }
+    }
+    return s.ready()
+}
+func (s mut clientStream) fill() error {
+    s.ready()?
+    if s.position < s.buffer.len() { return nil }
+    if s.pending != nil { return s.pending }
+    var data = Array<byte>{}
+    for var i = 0; i < 4096; i += 1 { data.push(0) }
+    for {
+        s.ready()?
+        s.conn.SetReadDeadline(pollDeadline(s.deadline, s.config.PollInterval))?
+        let n, err = s.conn.Read(data[:])
+        _ = err
+        if n < 0 || n > data.len() { return error("http.Client: invalid read count") }
+        let timedOut = err == error("net.Read: timed out") || err == ClientPollTimeout
+        if n > 0 {
+            s.buffer = Array<byte>{}
+            for var i = 0; i < n; i += 1 { s.buffer.push(data[i]) }
+            s.position = 0
+            if !timedOut { s.pending = err }
+            return nil
+        }
+        if timedOut { continue }
+        if err != nil { return err }
+        return error("http.Client: read made no progress")
+    }
+}
+func (s mut clientStream) nextByte() (byte, error) {
+    s.fill()?
+    let value = s.buffer[s.position]
+    s.position += 1
+    return value, nil
+}
+func (s mut clientStream) line() (string, error) {
+    var data = Array<byte>{}
+    for {
+        if s.metadata >= s.config.MaxHeaderBytes { return "", error("http.Client: metadata too large") }
+        let c = s.nextByte()?
+        s.metadata += 1
+        if c == 13 {
+            if s.metadata >= s.config.MaxHeaderBytes { return "", error("http.Client: metadata too large") }
+            let lf = s.nextByte()?
+            s.metadata += 1
+            if lf != 10 { return "", error("http.Client: expected CRLF") }
+            return strings.FromBytes(data[:])
+        }
+        if c == 10 || c == 0 || c > 126 || (c < 32 && c != 9) { return "", error("http.Client: invalid line byte") }
+        data.push(c)
+    }
+}
+func (s mut clientStream) headers() (Header, error) {
+    var headers = NewHeader()
+    for {
+        let line = s.line()?
+        if line == "" { return headers, nil }
+        let name, value, found = strings.Cut(line, ":")
+        if !found { return NewHeader(), error("http.Client: invalid header") }
+        let err = headers.Add(name, strings.Trim(value, " \t"))
+        if err != nil { return NewHeader(), err }
+    }
+}
+func (s mut clientStream) appendBody(body mut Array<byte>, count int) error {
+    if count > s.config.MaxBodyBytes - body.len() { return error("http.Client: body too large") }
+    var remaining = count
+    for remaining > 0 {
+        s.fill()?
+        var available = s.buffer.len() - s.position
+        if available > remaining { available = remaining }
+        for var i = 0; i < available; i += 1 { body.push(s.buffer[s.position + i]) }
+        s.position += available
+        remaining -= available
+    }
+    return nil
+}
+func (s mut clientStream) chunkedBody(body mut Array<byte>) error {
+    for {
+        let size = chunkSize(s.line()?)?
+        if size == 0 {
+            let trailers = s.headers()?
+            for entry in trailers.entries {
+                if clientForbiddenTrailer(entry.Name) { return error("http.Client: forbidden trailer") }
+            }
+            return nil
+        }
+        s.appendBody(body, size)?
+        if s.metadata > s.config.MaxHeaderBytes - 2 { return error("http.Client: metadata too large") }
+        let cr = s.nextByte()?
+        let lf = s.nextByte()?
+        s.metadata += 2
+        if cr != 13 || lf != 10 { return error("http.Client: expected chunk CRLF") }
+    }
+}
+func (s mut clientStream) response(method string) (ClientResponse, error) {
+    for {
+        let line = s.line()?
+        if line.len() < 13 || line[:9] != "HTTP/1.1 " || line[12] != 32 { return emptyClientResponse(), error("http.Client: invalid HTTP/1.1 status line") }
+        let status = decimal(line[9:12])?
+        if status < 100 || status > 599 { return emptyClientResponse(), error("http.Client: invalid status code") }
+        let headers = s.headers()?
+        let lengths = headers.Values("Content-Length")
+        let encodings = headers.Values("Transfer-Encoding")
+        if lengths.len() > 1 || encodings.len() > 1 || (lengths.len() > 0 && encodings.len() > 0) { return emptyClientResponse(), error("http.Client: ambiguous framing") }
+        var length = -1
+        if lengths.len() == 1 { length = decimal(lengths[0])? }
+        let chunked = encodings.len() == 1
+        if chunked && !asciiEqual(encodings[0], "chunked") { return emptyClientResponse(), error("http.Client: unsupported transfer encoding") }
+        if status < 200 {
+            if status == 101 { return emptyClientResponse(), error("http.Client: protocol upgrade unsupported") }
+            if length >= 0 || chunked { return emptyClientResponse(), error("http.Client: informational response forbids framing") }
+            continue
+        }
+        if status == 204 && (length >= 0 || chunked) { return emptyClientResponse(), error("http.Client: 204 forbids framing") }
+        var body = Array<byte>{}
+        if method != "HEAD" && status != 204 && status != 304 {
+            if chunked {
+                let err = s.chunkedBody(body)
+                if err != nil { return emptyClientResponse(), err }
+            } else if length >= 0 {
+                let err = s.appendBody(body, length)
+                if err != nil { return emptyClientResponse(), err }
+            } else {
+                for {
+                    let err = s.fill()
+                    if err == io.EOF { break }
+                    if err != nil { return emptyClientResponse(), err }
+                    let available = s.buffer.len() - s.position
+                    let appendErr = s.appendBody(body, available)
+                    if appendErr != nil { return emptyClientResponse(), appendErr }
+                }
+            }
+            if status == 205 && body.len() != 0 { return emptyClientResponse(), error("http.Client: 205 forbids content") }
+        }
+        s.ready()?
+        if s.pending != nil && s.pending != io.EOF { return emptyClientResponse(), s.pending }
+        return ClientResponse{StatusCode: status, Headers: headers, Body: body}, nil
+    }
+}

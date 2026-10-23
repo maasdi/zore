@@ -23,8 +23,8 @@ The router accepts direct handler functions and inline Copy-handle closures,
 adapted to fresh owned per-request invocations; advanced factories use
 `HandleFactory`. Task-local socket
 views remain checked by the compiler. The native HTTP tests exercise loopback
-framing, routing, capacity, deadlines, panic cleanup, and shutdown. This does not
-implement an HTTP client or HTTP/2. The optional external `tls` package
+framing, routing, capacity, deadlines, panic cleanup, and shutdown. HTTP/2 remains
+outside the implemented contract. The optional external `tls` package
 (`examples/tls/`) adds verified TLS 1.2 connections using compiler-embedded
 Mbed TLS 3.6.7; explicit roots and DNS identity are required. Its memory-BIO
 engine uses ordinary TCP operations with context/deadline slicing and worker
@@ -37,6 +37,16 @@ The REST example uses function routes, JSON response helpers, and two-argument
 `http.ListenAndServe` with automatic signal registration and bounded graceful
 shutdown. `ListenAndServeWithConfig` accepts custom limits and deadlines;
 `ListenAndServeContext` keeps explicit cancellation available.
+
+Issue #154 adds bounded HTTP/1.1 clients and absolute HTTP/HTTPS URLs (§37.11).
+Clients buffer owned binary responses, enforce metadata/body/time limits, and
+close each connection after one exchange. `examples/http-client/` composes GET
+and JSON POST; `examples/https-client/` supplies an owned verified TLS transport
+for ordinary `Client.Do` calls with explicit trusted roots. Focused native tests
+cover fragmented/framed responses, malformed peers, cancellation, partial I/O,
+and owned cleanup. The HTTPS fixture checks real certificate verification and
+fragmented binary responses; platform-wide results remain subject to native CI.
+Redirects, retries, proxies, pooling, compression and HTTP/2 are excluded.
 
 Issue #106 adds `std/encoding/json`: Zore token encoding/decoding and an owned
 Value tree, plus compiler-generated concrete codecs with naming policies,

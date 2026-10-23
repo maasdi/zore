@@ -6,6 +6,7 @@ mod conformance;
 mod controlled_runtime;
 mod host_support;
 mod http;
+mod http_client;
 mod json;
 mod linkage_timers;
 mod local_dependencies;
@@ -802,7 +803,7 @@ fn every_example_prints_its_expected_output() {
     let examples = examples();
     assert!(examples.len() >= 15, "{examples:?}");
     for (name, path) in examples {
-        if name == "rest-api" {
+        if matches!(name.as_str(), "rest-api" | "http-client" | "https-client") {
             continue;
         }
         let expected = std::fs::read_to_string(path.join("expected-output.txt"))

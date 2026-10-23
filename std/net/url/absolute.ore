@@ -1,0 +1,141 @@
+package url
+
+import "std/strings"
+
+type AbsoluteURL struct {
+    Scheme string
+    Hostname string
+    Authority string
+    Address string
+    RequestTarget string
+}
+
+func absoluteHex(c byte) bool { return hex(c) >= 0 }
+func absoluteDecimal(text string) (int, error) {
+    if text == "" { return 0, error("url: empty port or octet") }
+    var value = 0
+    for var i = 0; i < text.len(); i += 1 {
+        let digit = int(text[i]) - 48
+        if digit < 0 || digit > 9 || value > (65535 - digit) / 10 { return 0, error("url: invalid port or octet") }
+        value = value * 10 + digit
+    }
+    return value, nil
+}
+
+func absoluteIPv6(text string) bool {
+    if text == "" || text.len() > 45 || strings.Count(text, "::") > 1 { return false }
+    let compressed = strings.Contains(text, "::")
+    if strings.HasPrefix(text, ":") && !strings.HasPrefix(text, "::") { return false }
+    if strings.HasSuffix(text, ":") && !strings.HasSuffix(text, "::") { return false }
+    if strings.Contains(text, ":::") { return false }
+    let parts = strings.Split(text, ":")
+    var groups = 0
+    for var i = 0; i < parts.len(); i += 1 {
+        let part = parts[i]
+        if part == "" { continue }
+        if strings.Contains(part, ".") {
+            if i != parts.len() - 1 { return false }
+            let octets = strings.Split(part, ".")
+            if octets.len() != 4 { return false }
+            for octet in octets {
+                let value, err = absoluteDecimal(octet)
+                if err != nil || value > 255 || octet.len() > 3 { return false }
+                if octet.len() > 1 && octet[0] == 48 { return false }
+            }
+            groups += 2
+        } else {
+            if part.len() > 4 { return false }
+            for var j = 0; j < part.len(); j += 1 { if !absoluteHex(part[j]) { return false } }
+            groups += 1
+        }
+    }
+    if compressed { return groups < 8 }
+    return groups == 8
+}
+
+
+func absoluteHost(host string) bool {
+    if host == "" || host.len() > 253 { return false }
+    var numeric = true
+    for var i = 0; i < host.len(); i += 1 {
+        let c = host[i]
+        if (c < 48 || c > 57) && c != 46 { numeric = false }
+    }
+    let parts = strings.Split(host, ".")
+    if numeric {
+        if parts.len() != 4 { return false }
+        for part in parts {
+            let value, err = absoluteDecimal(part)
+            if err != nil || value > 255 || (part.len() > 1 && part[0] == 48) { return false }
+        }
+        return true
+    }
+    for var i = 0; i < parts.len(); i += 1 {
+        let part = parts[i]
+        if part == "" { if i == parts.len() - 1 && i > 0 { continue }; return false }
+        if part.len() > 63 || part[0] == 45 || part[part.len() - 1] == 45 { return false }
+        for var j = 0; j < part.len(); j += 1 {
+            let c = part[j]
+            if !((c >= 65 && c <= 90) || (c >= 97 && c <= 122) || (c >= 48 && c <= 57) || c == 45) { return false }
+        }
+    }
+    return true
+}
+
+func ParseAbsolute(text string) (AbsoluteURL, error) {
+    let empty = AbsoluteURL{Scheme: "", Hostname: "", Authority: "", Address: "", RequestTarget: ""}
+    let schemeText, rest, found = strings.Cut(text, "://")
+    if !found || schemeText.len() > 5 { return empty, error("url: expected absolute http or https URL") }
+    let scheme = strings.ToLower(schemeText)
+    if scheme != "http" && scheme != "https" { return empty, error("url: expected absolute http or https URL") }
+    for var i = 0; i < text.len(); i += 1 {
+        let c = text[i]
+        if c <= 32 || c >= 127 || c == 92 || c == 35 { return empty, error("url: forbidden absolute URL byte") }
+    }
+    var end = rest.len()
+    for var i = 0; i < rest.len(); i += 1 { if rest[i] == 47 || rest[i] == 63 { end = i; break } }
+    let authority = rest[:end]
+    if authority == "" || strings.Contains(authority, "@") { return empty, error("url: invalid authority or user information") }
+    var hostname = ""
+    var endpointHost = ""
+    var port = ""
+    var hasPort = false
+    if authority[0] == 91 {
+        let bracket = strings.Index(authority, "]")
+        if bracket < 0 { return empty, error("url: invalid IPv6 authority") }
+        hostname = authority[1:bracket]
+        if !absoluteIPv6(hostname) { return empty, error("url: invalid IPv6 address") }
+        endpointHost = authority[:bracket + 1]
+        if bracket + 1 < authority.len() {
+            if authority[bracket + 1] != 58 { return empty, error("url: invalid IPv6 authority") }
+            hasPort = true
+            port = authority[bracket + 2:]
+        }
+    } else {
+        let name, number, explicit = strings.Cut(authority, ":")
+        if !absoluteHost(name) { return empty, error("url: invalid DNS or IPv4 host") }
+        hostname = name
+        endpointHost = name
+        port = number
+        hasPort = explicit
+    }
+    if hasPort {
+        let number, err = absoluteDecimal(port)
+        if err != nil || number == 0 { return empty, error("url: port must be 1 through 65535") }
+    } else {
+        port = "80"
+        if scheme == "https" { port = "443" }
+    }
+    var target = rest[end:]
+    if target == "" || target[0] == 63 { target = "/" + target }
+    for var i = 0; i < target.len(); i += 1 {
+        let c = target[i]
+        if c == 37 {
+            if i + 2 >= target.len() || hex(target[i + 1]) < 0 || hex(target[i + 2]) < 0 { return empty, error("url: invalid escape") }
+            i += 2
+        } else if !((c >= 65 && c <= 90) || (c >= 97 && c <= 122) || (c >= 48 && c <= 57) || strings.Contains("-._~!$&'()*+,;=:@/?", target[i:i + 1])) {
+            return empty, error("url: invalid request-target byte")
+        }
+    }
+    return AbsoluteURL{Scheme: scheme, Hostname: hostname, Authority: authority, Address: endpointHost + ":" + port, RequestTarget: target}, nil
+}

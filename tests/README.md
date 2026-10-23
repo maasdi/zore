@@ -290,7 +290,11 @@ work.
 Resolve examples from `env!("CARGO_MANIFEST_DIR")` plus `../examples/`, not the
 process working directory. Every directory under `examples/` is checked by
 `tests/driver/cli.rs`, and built and run by `tests/codegen/native.rs` against
-its `expected-output.txt`. A directory of fixtures alone is not an executable test.
+its `expected-output.txt`. The REST server and HTTP/HTTPS clients require live
+peers and instead run in dedicated real-loopback fixtures. The HTTP client
+fixture exercises ordinary GET/JSON POST, framing, cancellation, and cleanup;
+the HTTPS driver fixture exercises ordinary Do with authenticated TLS peers.
+A directory of fixtures alone is not an executable test.
 
 Introduce fixture suites as the corresponding stage is implemented:
 

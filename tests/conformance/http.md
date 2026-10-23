@@ -34,3 +34,28 @@ cancellation is observable, and a later Shutdown waits successfully.
 Windows close/logoff/shutdown cleanup is best effort under OS deadlines. Direct
 callback tests do not claim real delivery of these events. The Ctrl+C/Break HTTP
 cases exercise both convenience entry points and drain active requests before exit.
+
+## Bounded outbound client
+
+The client contract is locked under §37.11. `Client` owns an optional transport;
+responses own headers and binary bodies, with no connection retained. `Do`
+uses HTTP by default; a verified owned `ClientTransport` enables HTTPS through
+the same method. `Exchange` consumes an already authenticated connection.
+A custom connection reports only safely resumable poll timeouts as
+`ClientPollTimeout`; all other transport errors terminate the exchange.
+
+| Evidence | Required behavior |
+| --- | --- |
+| `http_client_real_fragmented_binary_framing_and_hostile_peers` | Real fragmented loopback CL/chunked/EOF binary bodies, JSON POST composition, informational/HEAD/204/304/205 handling, returned redirects/status failures, injection/framing/chunk/trailer rejection, body/metadata bounds, cancellation/deadline socket close |
+| `http_client_absolute_urls_and_validation_precede_transport` | Absolute URL authority/default ports/IPv6/escapes, unsupported forms, controlled outbound headers, CRLF and method rejection before I/O |
+| `http_client_partial_io_owned_transport_and_error_cleanup` | Exact partial write offsets, bytes with EOF, normalized retry timeout, terminal/no-progress/invalid-count failures, exactly one owned connection and transport drop |
+| `http_client_panic_drops_owned_connection_and_transport` | Panic unwinds owned transport/connection and cancellation guard without leaks |
+| `http_client_async_calls_suspend_and_cancel_against_real_peer` | Direct async waiting calls and cooperative cancellation |
+| `http_client_frontend_checks_without_native_linker` | GET and JSON POST application type checking without native linker/provider |
+| `http_client_response_cannot_escape_body_borrow` | Owned response body views do not outlive their backing response |
+| `offline_https_do_verifies_peer_and_preserves_fragmented_binary_bytes` | Distributed offline compiler checks the TLS transport without native linkers, then real HTTPS `Do` verifies fragmented binary responses and rejects wrong trust, expired/future validity, and a trusted wrong-host certificate |
+
+HTTPS integration evidence is supplied by the verified external TLS transport
+fixture; the standard HTTP package does not depend on a native TLS provider.
+Linux/macOS/Windows native CI runs the portable real-peer tests. A local run on
+one platform alone does not establish results on the other hosts.

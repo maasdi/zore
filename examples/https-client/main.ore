@@ -1,0 +1,23 @@
+package main
+
+import "std/context"
+import "std/errors"
+import "std/net/http"
+import "std/os"
+import "https-client/securehttp"
+
+func run() error {
+    let args = os.Args()
+    if args.len() != 3 { return error("usage: https-client roots.pem https://localhost:8443/") }
+    let roots = os.ReadFile(args[1])?
+    let transport = securehttp.NewTransport(roots[:])?
+    let client = http.NewClientWithTransport(http.DefaultClientConfig(), transport)?
+    let body = Array<byte>{}
+    let response = client.Do(context.Background(), "GET", args[2], http.NewHeader(), body[:])?
+    println(response.StatusCode)
+    return nil
+}
+func main() {
+    let err = run()
+    if err != nil { println(errors.Message(err)); os.Exit(1) }
+}
