@@ -62,7 +62,8 @@ func TestVerifiedFragmentedHandshakeAndBinaryIO() error {
     memoryHandshake(client.handle, server.handle)?
     let data = Array<byte>{0, 255, 128, 65, 13, 10}
     check(nativeWrite(client.handle, data[:])? == data.len())
-    transfer(client.handle, server.handle)?
+    let encrypted = nativeOutput(client.handle)?
+    nativeFeed(server.handle, encrypted[:])?
     let got = nativeRead(server.handle, 3)?
     check(got.len() == 3 && got[0] == 0 && got[1] == 255 && got[2] == 128)
     let rest = nativeRead(server.handle, 16384)?
@@ -72,6 +73,28 @@ func TestVerifiedFragmentedHandshakeAndBinaryIO() error {
     let closed, closeErr = nativeRead(server.handle, 1)
     _ = closeErr
     check(closed.len() == 0 && closeErr == error("EOF"))
+    for var i = 0; i < 3; i += 1 {
+        let again, eof = nativeRead(server.handle, 1)
+        _ = eof
+        check(again.len() == 0 && eof == error("EOF"))
+    }
+    let written, writeErr = nativeWrite(server.handle, data[:])
+    _ = writeErr
+    check(written == 0 && writeErr != nil)
+    check(nativeFeed(server.handle, encrypted[:]) != nil)
+    nativeShutdown(server.handle)?
+    let response = nativeOutput(server.handle)?
+    check(response.len() > 0)
+    nativeFeed(client.handle, response[:])?
+    let finished, finishErr = nativeRead(client.handle, 1)
+    _ = finishErr
+    check(finished.len() == 0 && finishErr == error("EOF"))
+    nativeShutdown(server.handle)?
+    let duplicateResponse = nativeOutput(server.handle)?
+    check(duplicateResponse.len() == 0)
+    nativeShutdown(client.handle)?
+    let duplicateRequest = nativeOutput(client.handle)?
+    check(duplicateRequest.len() == 0)
     return nil
 }
 
@@ -164,6 +187,11 @@ async func echoServer(listener own net.Listener, config own ServerConfig, ctx co
     let n = conn.Read(data[:])?
     check(n == 3 && data[0] == 0 && data[1] == 255 && data[2] == 128)
     check(conn.Write(data[:n])? == n)
+    nativeShutdown(conn.handle)?
+    conn.flush(true)?
+    let read, err = conn.Read(data[:])
+    _ = err
+    check(read == 0 && err == error("EOF"))
     return conn.Close()
 }
 
@@ -182,6 +210,15 @@ func TestTCPPlainClientAsyncServer() error {
     let n, err = conn.Read(got[:])
     _ = err
     check(n == 0 && err == error("EOF"))
+    conn.SetDeadline(time.Now() - time.Second)?
+    let again, eof = conn.Read(got[:])
+    _ = eof
+    check(again == 0 && eof == error("EOF"))
+    let written, writeErr = conn.Write(data[:])
+    _ = writeErr
+    check(written == 0 && writeErr == error("tls: peer closed connection"))
+    conn.SetDeadline(0)?
+    conn.Close()?
     server.wait()?
     cancel()
     return nil
@@ -198,6 +235,34 @@ func TestUntrustedPeerCertificate() error {
     let err = memoryHandshake(client.handle, server.handle)
     _ = err
     check(err != nil && strings.Contains(errors.Message(err), "not correctly signed"))
+    return nil
+}
+
+async func firstProviderUse(cert own Array<byte>, key own Array<byte>, ready channel<bool>, start channel<bool>) error {
+    ready.send(true)
+    start.receive()
+    let config = NewServerConfig(cert[:], key[:])?
+    let session = ServerConfig{handle: nativeSession(config.handle, "")?}
+    return nil
+}
+
+func TestConcurrentFirstProviderUse() error {
+    let cert = os.ReadFile("testdata/server.pem")?
+    let key = os.ReadFile("testdata/server-key.pem")?
+    let ready = channel<bool>(4)
+    let start = channel<bool>()
+    let first = go firstProviderUse(clone(cert), clone(key), ready, start)
+    let second = go firstProviderUse(clone(cert), clone(key), ready, start)
+    let third = go firstProviderUse(clone(cert), clone(key), ready, start)
+    let fourth = go firstProviderUse(clone(cert), clone(key), ready, start)
+    for var i = 0; i < 4; i += 1 {
+        ready.receive()
+    }
+    start.close()
+    first.wait()?
+    second.wait()?
+    third.wait()?
+    fourth.wait()?
     return nil
 }
 
@@ -312,6 +377,8 @@ func TestAbruptClosureIsTruncation() error {
     let retry, retryErr = conn.Read(data[:])
     _ = retryErr
     check(retry == 0 && retryErr == error("tls: closed or failed connection"))
+    nativeClose(conn.handle)
+    conn.Close()?
     cancel()
     server.wait()?
     return nil
@@ -376,6 +443,17 @@ func TestMalformedCiphertextFailsAndClosedHandlesReject() error {
     let status, err = nativeHandshake(server.handle)
     _ = err
     check(err != nil && status == 0)
+    let retry, retryErr = nativeHandshake(server.handle)
+    _ = retryErr
+    check(retry == 0 && retryErr == error("TLS failed connection"))
+    let data, readErr = nativeRead(server.handle, 1)
+    _ = readErr
+    check(data.len() == 0 && readErr == error("TLS failed connection"))
+    let written, writeErr = nativeWrite(server.handle, bad[:])
+    _ = writeErr
+    check(written == 0 && writeErr == error("TLS failed connection"))
+    check(nativeFeed(server.handle, bad[:]) == error("TLS failed connection"))
+    check(nativeShutdown(server.handle) == error("TLS failed connection"))
     let token = nativeSession(config.handle, "localhost")?
     nativeClose(token)
     nativeClose(token)

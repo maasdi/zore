@@ -46,7 +46,7 @@ const TLS: Adapter = Adapter {
     mbedtls: true,
     id: "tls-mbedtls-v1",
     project: "tls",
-    fingerprint: "d58348440b793001bd2d794350e4de69245d77f5f7de67a4c7f6b06dca14c0b9",
+    fingerprint: "4db75dc006e16f404e5078db3135e245a614305faa4b323066b4ab32a7217bb4",
     symbols: &[
         ("nativeConfig", "zore_native_tls_native_config"),
         ("nativeSession", "zore_native_tls_native_session"),

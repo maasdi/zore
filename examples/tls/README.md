@@ -15,12 +15,19 @@ also SNI. There is no verification bypass or platform root discovery. Only TLS
 1.2 ECDHE RSA/ECDSA with AES-GCM is enabled. Servers accept PEM chains and
 unencrypted PEM private keys; key parsing verifies the matching certificate.
 The fixtures' private keys are public test data, never deployment identities.
+AES uses immutable precomputed tables; hardware acceleration and feature
+detection are disabled. Software AES uses secret-dependent table lookups, so
+this profile does not promise protection from hostile local cache-timing
+observers or whole-provider constant-time execution.
 
 Configs and connections are Move values. Each session owns independent parsed
 certificates and keys, so configs can be shared by borrowing and dropped after
 session creation. Close attempts close-notify within the active context and
 operation deadlines; drop releases immediately without sending. EOF means an
 authenticated close-notify; transport EOF without it is a truncation error.
+Peer close-notify permanently ends application I/O: repeated reads return EOF
+without provider or socket reads, and writes fail. Close sends one reciprocal
+close-notify within the active context/deadline bounds, then releases resources.
 
 The native engine only processes bounded memory buffers. The Zore wrapper drives
 TCP with ten-millisecond deadline slices, checking context cancellation and the
@@ -37,7 +44,8 @@ Read/Write accept call-scoped byte slices. A Write accepts at most 16 KiB per
 call. It reports plaintext accepted, even if later ciphertext flushing times
 out. On timeout pending ciphertext and its offset are retained; retry only the
 unaccepted plaintext suffix. The next Read or Write flushes pending ciphertext
-first. Other transport or provider errors invalidate the session. Cancellation of the stored
+first. Other transport or provider errors invalidate the session; Close then
+only releases resources without another provider operation. Cancellation of the stored
 context ends future operations. Native calls use mutex-protected handle leases;
 there are no Zore pointers or callbacks retained by C.
 

@@ -8461,7 +8461,11 @@ of configs create independent connections. Connection buffers are call-scoped
 borrows; no native output borrows escape. Normal/error/structured panic exits
 release socket, TLS state and configuration exactly once. Drop is nonblocking
 and does not send close-notify. Explicit Close sends close-notify but does not
-wait for peer acknowledgement. External process termination has ordinary
+wait for peer acknowledgement. Receiving close-notify permanently ends application
+I/O: later reads return EOF without provider/socket reads and writes fail. Close
+still sends the reciprocal close-notify once within the context/deadline bounds
+and releases resources; it does not resume provider application reads or writes.
+External process termination has ordinary
 best-effort cleanup limits.
 
 Native calls process memory buffers only, never wait on sockets and never call
@@ -8488,7 +8492,9 @@ retains buffered ciphertext and permits a later read if the stored context is
 still active; cancellation of that context ends future operations. A write timeout retains pending ciphertext and its sent offset; the next Read
 or Write (including an empty Write) drains it before processing more plaintext.
 Callers retry only the unaccepted suffix. Other transport or provider failures invalidate the
-session because its authenticated stream may no longer be usable. The write count is
+session because its authenticated stream may no longer be usable. Close on an
+invalidated session only releases resources without another provider operation.
+The write count is
 plaintext accepted by the TLS engine, not acknowledgement by the peer.
 Explicit errors preserve counts; no ordinary exceptions cross the native ABI.
 

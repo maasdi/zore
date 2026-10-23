@@ -32,6 +32,9 @@ typedef struct {
     size_t output_length;
     Identity *identity;
     int status;
+    int peer_closed;
+    int shutdown_sent;
+    int failed;
 } Session;
 
 static int failure(int status, char *error) {
@@ -173,8 +176,9 @@ static int operation_result(Session *session, int status, char *error) {
     session->status = status == MBEDTLS_ERR_SSL_WANT_READ ? 0 : status == MBEDTLS_ERR_SSL_WANT_WRITE ? -2 : 1;
     if (status == MBEDTLS_ERR_SSL_WANT_READ) return 0;
     if (status == MBEDTLS_ERR_SSL_WANT_WRITE) return -2;
-    if (status == MBEDTLS_ERR_SSL_PEER_CLOSE_NOTIFY) { snprintf(error, ERROR_CAPACITY, "EOF"); return -1; }
+    if (status == MBEDTLS_ERR_SSL_PEER_CLOSE_NOTIFY) { session->peer_closed = 1; snprintf(error, ERROR_CAPACITY, "EOF"); return -1; }
     if (status < 0) {
+        session->failed = 1;
         uint32_t flags = mbedtls_ssl_get_verify_result(&session->ssl);
         if (flags != 0) mbedtls_x509_crt_verify_info(error, ERROR_CAPACITY, "certificate verification: ", flags);
         else failure(status, error);
@@ -185,6 +189,8 @@ static int operation_result(Session *session, int status, char *error) {
 
 int zore_tls_handshake(void *pointer, char *error) {
     Session *session = pointer;
+    if (session->failed) { snprintf(error, ERROR_CAPACITY, "TLS failed connection"); return -1; }
+    if (session->peer_closed) { snprintf(error, ERROR_CAPACITY, "TLS peer closed connection"); return -1; }
     int status = mbedtls_ssl_handshake(&session->ssl);
     if (status == 0) return 1;
     return operation_result(session, status, error);
@@ -192,16 +198,22 @@ int zore_tls_handshake(void *pointer, char *error) {
 
 int zore_tls_read(void *pointer, unsigned char *data, size_t length, char *error) {
     Session *session = pointer;
+    if (session->failed) { snprintf(error, ERROR_CAPACITY, "TLS failed connection"); return -1; }
+    if (session->peer_closed) { snprintf(error, ERROR_CAPACITY, "EOF"); return -1; }
     return operation_result(session, mbedtls_ssl_read(&session->ssl, data, length), error);
 }
 
 int zore_tls_write(void *pointer, const unsigned char *data, size_t length, char *error) {
     Session *session = pointer;
+    if (session->failed) { snprintf(error, ERROR_CAPACITY, "TLS failed connection"); return -1; }
+    if (session->peer_closed) { snprintf(error, ERROR_CAPACITY, "TLS peer closed connection"); return -1; }
     return operation_result(session, mbedtls_ssl_write(&session->ssl, data, length), error);
 }
 
 int zore_tls_feed(void *pointer, const unsigned char *data, size_t length, char *error) {
     Session *session = pointer;
+    if (session->failed) { snprintf(error, ERROR_CAPACITY, "TLS failed connection"); return -1; }
+    if (session->peer_closed) { snprintf(error, ERROR_CAPACITY, "TLS peer closed connection"); return -1; }
     if (length > CAPACITY - session->input_length) {
         snprintf(error, ERROR_CAPACITY, "ciphertext buffer limit exceeded"); return -1;
     }
@@ -220,7 +232,11 @@ int zore_tls_output(void *pointer, unsigned char *data) {
 
 int zore_tls_shutdown(void *pointer, char *error) {
     Session *session = pointer;
-    return operation_result(session, mbedtls_ssl_close_notify(&session->ssl), error);
+    if (session->failed) { snprintf(error, ERROR_CAPACITY, "TLS failed connection"); return -1; }
+    if (session->shutdown_sent) return 0;
+    int status = mbedtls_ssl_close_notify(&session->ssl);
+    if (status == 0) session->shutdown_sent = 1;
+    return operation_result(session, status, error);
 }
 
 int zore_tls_status(void *pointer) { return ((Session *)pointer)->status; }

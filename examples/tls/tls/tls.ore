@@ -25,6 +25,7 @@ type Conn struct {
     readDeadline int
     writeDeadline int
     failed bool
+    peerClosed bool
     output Array<byte>
     outputPosition int
 }
@@ -56,7 +57,7 @@ func zeros(size int) Array<byte> {
 }
 
 func wrap(source own net.Conn, handle int, ctx context.Context) Conn {
-    return Conn{source: source, handle: handle, ctx: ctx, readDeadline: 0, writeDeadline: 0, failed: false, output: Array<byte>{}, outputPosition: 0}
+    return Conn{source: source, handle: handle, ctx: ctx, readDeadline: 0, writeDeadline: 0, failed: false, peerClosed: false, output: Array<byte>{}, outputPosition: 0}
 }
 
 func NewClientConfig(rootsPEM []byte) (ClientConfig, error) {
@@ -313,6 +314,9 @@ func (c mut Conn) receive(writing bool) error {
 }
 
 func (c mut Conn) Read(buf mut []byte) (int, error) {
+    if c.peerClosed {
+        return 0, error("EOF")
+    }
     let initialErr = c.check(false)
     _ = initialErr
     if initialErr != nil {
@@ -337,6 +341,7 @@ func (c mut Conn) Read(buf mut []byte) (int, error) {
         let data, err = nativeRead(c.handle, maximum)
         _ = err
         if err == error("EOF") {
+            c.peerClosed = true;
             return 0, err
         }
         if err != nil {
@@ -372,6 +377,9 @@ func (c mut Conn) Read(buf mut []byte) (int, error) {
 }
 
 func (c mut Conn) Write(data []byte) (int, error) {
+    if c.peerClosed {
+        return 0, error("tls: peer closed connection")
+    }
     let initialErr = c.check(true)
     _ = initialErr
     if initialErr != nil {
@@ -447,6 +455,9 @@ func (c mut Conn) SetWriteDeadline(t int) error {
 
 func (c own Conn) Close() error {
     var conn = c
+    if conn.failed {
+        return nil
+    }
     conn.flush(true)?
     let err = nativeShutdown(conn.handle)
     _ = err
