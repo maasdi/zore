@@ -6,20 +6,31 @@ use crate::mir::{self, Callee, Terminator};
 use super::{Plan, StateMachine, Suspension};
 
 pub fn lower(package: &hir::Package, program: &mir::Program) -> Plan {
+    let sqlite_registered = package.functions.iter().any(|function| {
+        function.native
+            && function.name == "sqlite.nativeOpen"
+            && function.native_symbol.as_deref() == Some("zore_native_sqlite_native_open")
+    });
     let mut waiting_library = HashSet::new();
     loop {
         let before = waiting_library.len();
         for body in &program.bodies {
             let function = package.function(body.function);
-            if function.native || function.is_closure || !function.name.starts_with("std/") {
+            if function.native
+                || function.is_closure
+                || !(function.name.starts_with("std/")
+                    || (sqlite_registered && function.name.starts_with("sqlite.")))
+            {
                 continue;
             }
             if body.blocks.iter().any(|block| match &block.terminator {
                 Terminator::Call { callee, .. } => match callee {
                     Callee::Function(id) => {
+                        let callee = package.function(*id);
                         waiting_library.contains(id)
-                            || super::native_wait(&package.function(*id).name).is_some()
-                            || package.function(*id).name == "std/time.Sleep"
+                            || (callee.native
+                                && (super::native_wait(&callee.name).is_some()
+                                    || callee.name == "std/time.Sleep"))
                     }
                     // What serves the entry may wait.
                     Callee::Interface { .. }

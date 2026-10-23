@@ -348,6 +348,7 @@ fn native_objects(
             .map_err(|e| BuildError::Io(format!("{}: {e}", source.display())))?;
         let mut compile = Command::new(cc);
         compile.args(super::native::C_FLAGS);
+        compile.args(adapter.c_flags);
         if cfg!(windows) {
             compile.arg("--target=x86_64-pc-windows-msvc");
         } else {

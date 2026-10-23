@@ -95,9 +95,13 @@ borrow it under the normal checker, and keep it across awaits. Normal return,
 `?`, explicit drop, task-result cleanup and structured panic run its custom drop.
 Detached tasks retain their ordinary process-lifetime limits.
 
-A later blocking SQLite or TLS adapter must register its wait strategy and retain
-resource/input leases until native completion, including after cancellation. It
-cannot simply label an arbitrary blocking call as async. Pollable I/O, deadline
+The registered SQLite adapter uses helper jobs for its private operations and
+poll-lowered library wrappers; its destructors remain compensated synchronous
+cleanup. Connection and input loans remain live until helper completion. Ordinary
+user plain helpers retain synchronous semantics. The [SQLite guide](../libraries/sqlite.md)
+locks its resource, busy-timeout and transaction boundary. A later TLS adapter
+must register its wait strategy and retain resource/input leases until native
+completion, including after cancellation. Pollable I/O, deadline
 propagation, callback/reentrancy policy and backend-specific shutdown remain
 adapter design requirements, not capabilities established by this checksum proof.
 

@@ -12,6 +12,7 @@ pub(super) struct Adapter {
     pub id: &'static str,
     pub project: &'static str,
     pub fingerprint: &'static str,
+    pub c_flags: &'static [&'static str],
     pub symbols: &'static [(&'static str, &'static str)],
 }
 
@@ -19,6 +20,7 @@ const ADLER32: Adapter = Adapter {
     id: "adler32-v1",
     project: "adler32",
     fingerprint: "66280c83962934f0b1937cfc1633458324381c156fc575100d8f145433a871ab",
+    c_flags: &[],
     symbols: &[
         ("nativeCreate", "zore_native_adler32_native_create"),
         ("nativeWrite", "zore_native_adler32_native_write"),
@@ -27,8 +29,43 @@ const ADLER32: Adapter = Adapter {
     ],
 };
 
+const SQLITE: Adapter = Adapter {
+    id: "sqlite-v1",
+    project: "sqlite",
+    fingerprint: "91faf86e0c4f27ee9e04d05c6424372978f8f01821cd3021167b27a7cbd4cf8d",
+    c_flags: &[
+        "-DSQLITE_THREADSAFE=1",
+        "-DSQLITE_OMIT_LOAD_EXTENSION",
+        "-DSQLITE_DQS=0",
+        "-DSQLITE_DEFAULT_MEMSTATUS=0",
+        "-DSQLITE_MAX_LENGTH=16777216",
+        "-DSQLITE_MAX_SQL_LENGTH=1048576",
+        "-D_DEFAULT_SOURCE",
+    ],
+    symbols: &[
+        ("nativeOpen", "zore_native_sqlite_native_open"),
+        ("nativePrepare", "zore_native_sqlite_native_prepare"),
+        ("nativeBusy", "zore_native_sqlite_native_busy"),
+        ("nativeBegin", "zore_native_sqlite_native_begin"),
+        ("nativeFinish", "zore_native_sqlite_native_finish"),
+        (
+            "nativeDropDatabase",
+            "zore_native_sqlite_native_drop_database",
+        ),
+        ("nativeBind", "zore_native_sqlite_native_bind"),
+        ("nativeStep", "zore_native_sqlite_native_step"),
+        ("nativeReset", "zore_native_sqlite_native_reset"),
+        ("nativeColumn", "zore_native_sqlite_native_column"),
+        ("nativeFloat", "zore_native_sqlite_native_float"),
+        ("nativeBytes", "zore_native_sqlite_native_bytes"),
+        ("nativeFinalize", "zore_native_sqlite_native_finalize"),
+    ],
+};
+
 pub(super) fn find(id: &str) -> Option<&'static Adapter> {
-    (id == ADLER32.id).then_some(&ADLER32)
+    [&ADLER32, &SQLITE]
+        .into_iter()
+        .find(|adapter| adapter.id == id)
 }
 
 pub(super) struct Provider {
@@ -102,7 +139,7 @@ impl Provider {
         ] {
             part(text);
         }
-        for flag in C_FLAGS {
+        for flag in C_FLAGS.iter().chain(self.adapter.c_flags) {
             part(flag);
         }
         for (name, symbol) in self.adapter.symbols {

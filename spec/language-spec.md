@@ -631,6 +631,89 @@ pushes and moved/deleted tags. Catalogs, global discovery, machine-readable
 yanks/deprecations, automated multi-ref publishing and transparency/retention
 services remain outside this path; release notes may communicate warnings.
 
+## 3.4.7 SQLite native library and blocking resources — LOCKED
+
+The curated `sqlite-v1` adapter belongs to the ordinary external package `sqlite`.
+It statically compiles the unmodified SQLite 3.54.1 amalgamation with serialized
+thread support, extension loading disabled, double-quoted string literals disabled,
+a 16 MiB value limit and 1 MiB SQL limit. The package owns the reviewed C/header,
+Rust bridge and private binding contract. Source fingerprints, confinement,
+lock/cache validation and frontend-only checking follow §3.4.3. The provider
+recipe is documented in `docs/libraries/sqlite.md`. No user FFI, arbitrary build
+scripts, system SQLite lookup, ORM or additional database backend is introduced.
+
+The locked public API is the guide's `Database`, `Statement` and `Transaction`
+surface. All three are Move structs with private tokens and custom destructors.
+For example:
+
+```ore
+import "sqlite"
+func persist() error {
+    let db = sqlite.Open("example.db")?
+    var transaction = db.Begin()?
+    {
+        var insert = transaction.Prepare("insert into notes(body) values (?)")?
+        insert.BindText(1, "hello")?
+        insert.Step()?
+    }
+    let reopened = transaction.Commit()?
+    return nil
+}
+```
+
+Opening creates a nonzero never-reused connection token. Preparing borrows the
+connection but returns an independent owned statement with a native connection
+lease; the statement may outlive the Database wrapper. Dropping/closing a
+Database removes its token and defers physical closure until the last statement
+lease ends. Explicit Statement.Close and ordinary drop finalize exactly once.
+Zero/closed/stale resources produce ordinary operation errors; cleanup is harmless.
+No native pointer, borrowed output, callback or SQLite allocation enters Zore.
+Input text/blob data is copied with SQLite's transient-binding contract and may
+be released immediately after binding. Rows expose strict typed access to the
+current Step result; text and blob access returns owned copies. Null, integer,
+float, text and blob retain their distinct SQLite types. Text preserves embedded
+NUL and requires UTF-8; blob preserves every byte. SQL/path text rejects NUL;
+Prepare accepts exactly one nonempty SQL statement with optional whitespace tail.
+
+Database.Begin consumes the database and returns a Transaction, rejecting live
+statements and nesting. Transactions use BEGIN IMMEDIATE. Prepare borrows a
+Transaction, whose statements hold the same connection lease. Commit and
+Rollback consume the Transaction, require all its statements to have closed,
+and return the Database on success. Failed completion and drop roll back and
+close the connection token. Abandonment invalidates escaped transaction
+statements before rollback; they remain safe to finalize. Normal return, `?`,
+explicit close, structured panic and task-frame destruction invoke ordinary
+cleanup. Abort/process termination and native bugs retain ordinary limits.
+
+Native connection access is serialized by one mutex and may migrate between
+threads; no thread-affine connection API is exposed. Operations retain native
+resource/input leases until completion. Plain calls execute synchronously with
+scheduler blocking compensation. In async callers the registered SQLite wrappers
+and private native operations use the existing helper/poll suspension path;
+the caller's frame and input loans remain live until the helper finishes.
+Ordinary user-written plain helper functions remain synchronous. Destructors
+perform synchronous compensated finalization/rollback. Cancellation never releases
+an in-flight input or resource, and dropping a task still detaches it. This
+version has no context, interruption, cancellation or hard query-deadline API.
+SetBusyTimeout accepts 0–60,000 milliseconds (default zero); it bounds SQLite's
+lock retries, not query execution, filesystem latency or total elapsed time.
+
+SQLite and bridge errors become ordinary errors with SQLite numeric status and
+message when available. Native unwinding cannot cross the ABI. C owns/frees its
+allocations; Rust creates Zore output arrays/strings and error storage through the
+existing runtime allocators. SQLite allocation failures are errors; runtime
+allocator exhaustion retains its abort behavior. Linux GNU/macOS x86_64/aarch64
+and Windows x86_64 MSVC use the existing clang/Rust host toolchains; no installed
+SQLite SDK or network access is needed to check/build installed source.
+
+Compiler impact: add one reviewed registry entry and fixed per-adapter C flags,
+private typed bindings, and narrowly include SQLite wrappers/private waits in
+existing helper lowering. No syntax/type/borrow/drop rule changes. Conformance
+covers binary/parameter/row types, file persistence, invalid/closed resources,
+statement leases, transaction completion/abandonment, contention, normal/error/
+panic/async cleanup, source/recipe tampering, linker-independent checks and
+separate tagged Git locked/offline check/build/test on supported native hosts.
+
 ## 3.5 Identifiers — LOCKED
 
 MVP identifiers use ASCII characters only:

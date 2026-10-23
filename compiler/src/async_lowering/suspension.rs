@@ -23,6 +23,18 @@ pub enum NativeWait {
 
 pub fn native_wait(name: &str) -> Option<NativeWait> {
     match name {
+        "sqlite.nativeOpen"
+        | "sqlite.nativePrepare"
+        | "sqlite.nativeBusy"
+        | "sqlite.nativeBegin"
+        | "sqlite.nativeFinish"
+        | "sqlite.nativeBind"
+        | "sqlite.nativeStep"
+        | "sqlite.nativeReset"
+        | "sqlite.nativeColumn"
+        | "sqlite.nativeFloat"
+        | "sqlite.nativeBytes"
+        | "sqlite.nativeFinalize" => Some(NativeWait::Helper),
         "std/context.waitUntil" => Some(NativeWait::Deadline),
         "std/os.ReadFile"
         | "std/os.WriteFile"
