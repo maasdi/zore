@@ -1348,6 +1348,7 @@ func main() {{
     println(handleErr == nil)
     println(writer.status)
     println(server.complete())
+    waitIdle(0)
 }}
 "#
     );
