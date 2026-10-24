@@ -1,0 +1,42 @@
+package main
+
+import "tls"
+import "std/os"
+import "std/time"
+import "std/context"
+import "std/strings"
+import "std/errors"
+
+func exchange(conn own tls.Conn) error {
+    var c = conn
+    c.SetDeadline(time.Now() + 5 * time.Second)?
+    let request = strings.Bytes("GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+    c.Write(request[:])?
+    var response = Array<byte>{};
+    for var i = 0; i < 4096; i += 1 {
+        response.push(0)
+    }
+    let n = c.Read(response[:])?
+    println(strings.FromBytes(response[:n])?)
+    return c.Close()
+}
+
+func request() error {
+    let roots = os.ReadFile("../tls/testdata/roots.pem")?
+    let config = tls.NewClientConfig(roots[:])?
+    let ctx, cancel = context.WithTimeout(context.Background(), 5 * time.Second)
+    let conn, err = tls.DialContext(ctx, "127.0.0.1:8443", "localhost", config)
+    cancel()
+    _ = err
+    if err != nil {
+        return err
+    }
+    return exchange(conn)
+}
+
+func main() {
+    let err = request()
+    if err != nil {
+        println(errors.Message(err))
+    }
+}

@@ -1,0 +1,573 @@
+package tls
+
+import "std/os"
+import "std/net"
+import "std/time"
+import "std/context"
+import "std/strings"
+import "std/errors"
+
+func check(ok bool) {
+    if !ok {
+        panic("TLS conformance failed")
+    }
+}
+
+func configs() (ClientConfig, ServerConfig, error) {
+    let roots = os.ReadFile("testdata/roots.pem")?
+    let cert = os.ReadFile("testdata/server.pem")?
+    let key = os.ReadFile("testdata/server-key.pem")?
+    let client = NewClientConfig(roots[:])?
+    let server = NewServerConfig(cert[:], key[:])?
+    return client, server, nil
+}
+
+func transfer(source int, target int) error {
+    let data = nativeOutput(source)?
+    for var i = 0; i < data.len(); i += 7 {
+        var end = i + 7
+        if end > data.len() {
+            end = data.len()
+        }
+        nativeFeed(target, data[i:end])?
+    }
+    return nil
+}
+
+func memoryHandshake(client int, server int) error {
+    var clientDone = false
+    var serverDone = false
+    for var i = 0; i < 100; i += 1 {
+        if !clientDone {
+            clientDone = nativeHandshake(client)? == 1
+        }
+        transfer(client, server)?
+        if !serverDone {
+            serverDone = nativeHandshake(server)? == 1
+        }
+        transfer(server, client)?
+        if clientDone && serverDone {
+            return nil
+        }
+    }
+    return error("handshake made no progress")
+}
+
+func TestVerifiedFragmentedHandshakeAndBinaryIO() error {
+    let config, serverConfig = configs()?
+    let client = ClientConfig{handle: nativeSession(config.handle, "localhost")?}
+    let server = ClientConfig{handle: nativeSession(serverConfig.handle, "")?}
+    drop(config)
+    drop(serverConfig)
+    memoryHandshake(client.handle, server.handle)?
+    let data = Array<byte>{0, 255, 128, 65, 13, 10}
+    check(nativeWrite(client.handle, data[:])? == data.len())
+    let encrypted = nativeOutput(client.handle)?
+    nativeFeed(server.handle, encrypted[:])?
+    let got = nativeRead(server.handle, 3)?
+    check(got.len() == 3 && got[0] == 0 && got[1] == 255 && got[2] == 128)
+    let rest = nativeRead(server.handle, 16384)?
+    check(rest.len() == 3 && rest[0] == 65)
+    nativeShutdown(client.handle)?
+    transfer(client.handle, server.handle)?
+    let closed, closeErr = nativeRead(server.handle, 1)
+    _ = closeErr
+    check(closed.len() == 0 && closeErr == error("EOF"))
+    for var i = 0; i < 3; i += 1 {
+        let again, eof = nativeRead(server.handle, 1)
+        _ = eof
+        check(again.len() == 0 && eof == error("EOF"))
+    }
+    let written, writeErr = nativeWrite(server.handle, data[:])
+    _ = writeErr
+    check(written == 0 && writeErr != nil)
+    check(nativeFeed(server.handle, encrypted[:]) != nil)
+    nativeShutdown(server.handle)?
+    let response = nativeOutput(server.handle)?
+    check(response.len() > 0)
+    nativeFeed(client.handle, response[:])?
+    let finished, finishErr = nativeRead(client.handle, 1)
+    _ = finishErr
+    check(finished.len() == 0 && finishErr == error("EOF"))
+    nativeShutdown(server.handle)?
+    let duplicateResponse = nativeOutput(server.handle)?
+    check(duplicateResponse.len() == 0)
+    nativeShutdown(client.handle)?
+    let duplicateRequest = nativeOutput(client.handle)?
+    check(duplicateRequest.len() == 0)
+    return nil
+}
+
+func TestIncompleteRecordsResumeAfterWantRead() error {
+    let config, serverConfig = configs()?
+    let client = ClientConfig{handle: nativeSession(config.handle, "localhost")?}
+    let server = ClientConfig{handle: nativeSession(serverConfig.handle, "")?}
+    memoryHandshake(client.handle, server.handle)?
+    let message = Array<byte>{0, 255, 128, 42, 13, 10}
+    check(nativeWrite(client.handle, message[:])? == message.len())
+    let encrypted = nativeOutput(client.handle)?
+    var received = 0
+    for var offset = 0; offset < encrypted.len(); offset += 7 {
+        var end = offset + 7
+        if end > encrypted.len() {
+            end = encrypted.len()
+        }
+        nativeFeed(server.handle, encrypted[offset:end])?
+        let plaintext = nativeRead(server.handle, 128)?
+        if end < encrypted.len() {
+            check(plaintext.len() == 0 && nativeStatus(server.handle)? == 0)
+        } else {
+            check(plaintext.len() == message.len())
+            for var i = 0; i < plaintext.len(); i += 1 {
+                check(plaintext[i] == message[i])
+            }
+        }
+        received += plaintext.len()
+    }
+    check(received == message.len())
+    return nil
+}
+
+func badHandshake(name string, certPath string, keyPath string, expected string) error {
+    let roots = os.ReadFile("testdata/roots.pem")?
+    let cert = os.ReadFile(certPath)?
+    let key = os.ReadFile(keyPath)?
+    let config = NewClientConfig(roots[:])?
+    let serverConfig = NewServerConfig(cert[:], key[:])?
+    let client = ClientConfig{handle: nativeSession(config.handle, name)?}
+    let server = ClientConfig{handle: nativeSession(serverConfig.handle, "")?}
+    let err = memoryHandshake(client.handle, server.handle)
+    _ = err
+    check(err != nil)
+    check(strings.Contains(errors.Message(err), expected))
+    return nil
+}
+
+func TestHostnameAndValidityVerification() error {
+    badHandshake("wrong.example", "testdata/server.pem", "testdata/server-key.pem", "does not match")?
+    badHandshake("localhost", "testdata/expired.pem", "testdata/expired-key.pem", "expired")?
+    badHandshake("localhost", "testdata/future.pem", "testdata/future-key.pem", "future")?
+    return nil
+}
+
+func TestInvalidConfigurationsAndHandles() error {
+    var zero = emptyConn()
+    var buffer = Array<byte>{0}
+    let read, readErr = zero.Read(buffer[:0])
+    _ = readErr
+    let written, writeErr = zero.Write(buffer[:])
+    _ = writeErr
+    check(read == 0 && readErr != nil && written == 0 && writeErr != nil)
+    check(zero.SetDeadline(0) != nil && zero.SetReadDeadline(0) != nil && zero.SetWriteDeadline(0) != nil)
+
+    let empty, emptyErr = NewClientConfig(Array<byte>{}[:])
+    _ = emptyErr
+    check(emptyErr != nil)
+    let bad, badErr = NewClientConfig(Array<byte>{1, 0, 2}[:])
+    _ = badErr
+    check(badErr != nil)
+    let cert = os.ReadFile("testdata/server.pem")?
+    let key = os.ReadFile("testdata/expired-key.pem")?
+    let mismatch, mismatchErr = NewServerConfig(cert[:], key[:])
+    _ = mismatchErr
+    check(mismatchErr != nil)
+    let invalid, invalidErr = nativeHandshake(-1)
+    _ = invalidErr
+    check(invalidErr != nil && invalid == 0)
+    check(!validName("") && !validName("127.0.0.1") && !validName("::1") && !validName("local\u0000host"))
+    nativeClose(0)
+    nativeClose(-1)
+    return nil
+}
+
+async func echoServer(listener own net.Listener, config own ServerConfig, ctx context.Context) error {
+    let source = listener.Accept()?
+    var conn = Server(ctx, source, config)?
+    var data = zeros(32)
+    let n = conn.Read(data[:])?
+    check(n == 3 && data[0] == 0 && data[1] == 255 && data[2] == 128)
+    check(conn.Write(data[:n])? == n)
+    nativeShutdown(conn.handle)?
+    conn.flush(true)?
+    let read, err = conn.Read(data[:])
+    _ = err
+    check(read == 0 && err == error("EOF"))
+    return conn.Close()
+}
+
+func TestTCPPlainClientAsyncServer() error {
+    let clientConfig, serverConfig = configs()?
+    let listener = net.Listen("tcp4", "127.0.0.1:0")?
+    let address = listener.Addr()
+    let ctx, cancel = context.WithTimeout(context.Background(), 5 * time.Second)
+    listener.SetDeadline(time.Now() + 5 * time.Second)?
+    let server = go echoServer(listener, serverConfig, ctx)
+    var conn = DialContext(ctx, address, "localhost", clientConfig)?
+    let data = Array<byte>{0, 255, 128}
+    check(conn.Write(data[:])? == 3)
+    var got = zeros(16)
+    check(conn.Read(got[:])? == 3 && got[0] == 0 && got[1] == 255 && got[2] == 128)
+    let n, err = conn.Read(got[:])
+    _ = err
+    check(n == 0 && err == error("EOF"))
+    conn.SetDeadline(time.Now() - time.Second)?
+    let again, eof = conn.Read(got[:])
+    _ = eof
+    check(again == 0 && eof == error("EOF"))
+    let written, writeErr = conn.Write(data[:])
+    _ = writeErr
+    check(written == 0 && writeErr == error("tls: peer closed connection"))
+    conn.SetDeadline(0)?
+    conn.Close()?
+    server.wait()?
+    cancel()
+    return nil
+}
+
+func TestUntrustedPeerCertificate() error {
+    let roots = os.ReadFile("testdata/future.pem")?
+    let cert = os.ReadFile("testdata/server.pem")?
+    let key = os.ReadFile("testdata/server-key.pem")?
+    let config = NewClientConfig(roots[:])?
+    let serverConfig = NewServerConfig(cert[:], key[:])?
+    let client = ClientConfig{handle: nativeSession(config.handle, "localhost")?}
+    let server = ClientConfig{handle: nativeSession(serverConfig.handle, "")?}
+    let err = memoryHandshake(client.handle, server.handle)
+    _ = err
+    check(err != nil && strings.Contains(errors.Message(err), "not correctly signed"))
+    return nil
+}
+
+async func firstProviderUse(cert own Array<byte>, key own Array<byte>, ready channel<bool>, start channel<bool>) error {
+    ready.send(true)
+    start.receive()
+    let config = NewServerConfig(cert[:], key[:])?
+    let session = ServerConfig{handle: nativeSession(config.handle, "")?}
+    return nil
+}
+
+func TestConcurrentFirstProviderUse() error {
+    let cert = os.ReadFile("testdata/server.pem")?
+    let key = os.ReadFile("testdata/server-key.pem")?
+    let ready = channel<bool>(4)
+    let start = channel<bool>()
+    let first = go firstProviderUse(clone(cert), clone(key), ready, start)
+    let second = go firstProviderUse(clone(cert), clone(key), ready, start)
+    let third = go firstProviderUse(clone(cert), clone(key), ready, start)
+    let fourth = go firstProviderUse(clone(cert), clone(key), ready, start)
+    for var i = 0; i < 4; i += 1 {
+        ready.receive()
+    }
+    start.close()
+    first.wait()?
+    second.wait()?
+    third.wait()?
+    fourth.wait()?
+    return nil
+}
+
+async func concurrentSession(clientToken int, serverToken int) error {
+    let client = ClientConfig{handle: nativeSession(clientToken, "localhost")?}
+    let server = ClientConfig{handle: nativeSession(serverToken, "")?}
+    return memoryHandshake(client.handle, server.handle)
+}
+
+func TestConcurrentSharedConfigurations() error {
+    let config, serverConfig = configs()?
+    let first = go concurrentSession(config.handle, serverConfig.handle)
+    let second = go concurrentSession(config.handle, serverConfig.handle)
+    first.wait()?
+    second.wait()?
+    return nil
+}
+
+async func stalledServer(listener own net.Listener) error {
+    let source = listener.Accept()?
+    time.Sleep(500 * time.Millisecond)
+    return nil
+}
+
+async func cancelLater(done channel<bool>) {
+    time.Sleep(20 * time.Millisecond)
+    done.close()
+}
+
+async func releaseDialResult(source own net.Conn, result channel<dialResult>, release channel<bool>) {
+    release.receive()
+    result.send(dialResult{source: source, failure: nil})
+}
+
+func TestCanceledDialReleasesLateConnection() error {
+    let config, serverConfig = configs()?
+    let listener = net.Listen("tcp4", "127.0.0.1:0")?
+    let source = net.DialTimeout("tcp4", listener.Addr(), time.Second)?
+    let peer = listener.Accept()?
+    if true {
+        let result = channel<dialResult>(1)
+        let release = channel<bool>()
+        let sender = go releaseDialResult(source, result, release)
+        let done = channel<bool>()
+        let ctx, cancel = context.WithCancelOn(context.Background(), done)
+        let trigger = go cancelLater(done)
+        let conn, err = finishDial(ctx, result, "localhost", config)
+        _ = err
+        check(err == error("context canceled"))
+        release.close()
+        sender.wait()
+        trigger.wait()
+        cancel()
+    }
+    peer.SetReadDeadline(time.Now() + time.Second)?
+    var data = zeros(1)
+    let n, err = peer.Read(data[:])
+    _ = err
+    check(n == 0 && err == error("EOF"))
+    return nil
+}
+
+func TestHandshakeDeadlineAndCancellation() error {
+    let config, serverConfig = configs()?
+    let listener = net.Listen("tcp4", "127.0.0.1:0")?
+    let address = listener.Addr()
+    listener.SetDeadline(time.Now() + time.Second)?
+    let server = go stalledServer(listener)
+    let ctx, cancel = context.WithTimeout(context.Background(), 30 * time.Millisecond)
+    let conn, err = DialContext(ctx, address, "localhost", config)
+    _ = err
+    check(err != nil)
+    check(strings.Contains(errors.Message(err), "deadline exceeded"))
+    cancel()
+    server.wait()?
+    let nextListener = net.Listen("tcp4", "127.0.0.1:0")?
+    let nextAddress = nextListener.Addr()
+    nextListener.SetDeadline(time.Now() + time.Second)?
+    let nextServer = go stalledServer(nextListener)
+    let done = channel<bool>()
+    let canceled, stop = context.WithCancelOn(context.Background(), done)
+    let trigger = go cancelLater(done)
+    let next, cancelErr = DialContext(canceled, nextAddress, "localhost", config)
+    _ = cancelErr
+    check(cancelErr == error("context canceled"))
+    stop()
+    trigger.wait()
+    nextServer.wait()?
+    return nil
+}
+
+async func abruptServer(listener own net.Listener, config own ServerConfig) error {
+    let source = listener.Accept()?
+    let ctx, cancel = context.WithTimeout(context.Background(), time.Second)
+    let conn = Server(ctx, source, config)?
+    cancel()
+    return nil
+}
+
+func TestAbruptClosureIsTruncation() error {
+    let config, serverConfig = configs()?
+    let listener = net.Listen("tcp4", "127.0.0.1:0")?
+    let address = listener.Addr()
+    listener.SetDeadline(time.Now() + time.Second)?
+    let server = go abruptServer(listener, serverConfig)
+    let ctx, cancel = context.WithTimeout(context.Background(), time.Second)
+    var conn = DialContext(ctx, address, "localhost", config)?
+    var data = zeros(8)
+    let n, err = conn.Read(data[:])
+    _ = err
+    check(n == 0 && strings.Contains(errors.Message(err), "truncated"))
+    let retry, retryErr = conn.Read(data[:])
+    _ = retryErr
+    check(retry == 0 && retryErr == error("tls: closed or failed connection"))
+    nativeClose(conn.handle)
+    conn.Close()?
+    cancel()
+    server.wait()?
+    return nil
+}
+
+func TestPendingCiphertextSurvivesRepeatedTimeouts() error {
+    let config, serverConfig = configs()?
+    let client = nativeSession(config.handle, "localhost")?
+    let server = ClientConfig{handle: nativeSession(serverConfig.handle, "")?}
+    memoryHandshake(client, server.handle)?
+    let message = Array<byte>{0, 255, 1, 128, 42, 13, 10}
+    check(nativeWrite(client, message[:])? == message.len())
+    let encrypted = nativeOutput(client)?
+    let length = encrypted.len()
+    let listener = net.Listen("tcp4", "127.0.0.1:0")?
+    let source = net.DialTimeout("tcp4", listener.Addr(), time.Second)?
+    let peer = listener.Accept()?
+    source.SetWriteDeadline(time.Now() + time.Second)?
+    var prefix = 0
+    for prefix < 7 {
+        prefix += source.Write(encrypted[prefix:7])?
+    }
+    let ctx, cancel = context.WithTimeout(context.Background(), time.Second)
+    var conn = wrap(source, client, ctx)
+    conn.output = encrypted
+    conn.outputPosition = prefix
+    let empty = Array<byte>{}
+    for var i = 0; i < 3; i += 1 {
+        conn.SetWriteDeadline(time.Now() - 1)?
+        let n, err = conn.Write(empty[:])
+        _ = err
+        check(n == 0 && err == error("tls: timed out") && conn.outputPosition == prefix)
+    }
+    conn.SetReadDeadline(time.Now() + time.Second)?
+    var scratch = zeros(1)
+    let n, readErr = conn.Read(scratch[:0])
+    _ = readErr
+    check(n == 0 && readErr == nil && conn.outputPosition == length)
+    peer.SetReadDeadline(time.Now() + time.Second)?
+    var received = 0
+    var data = zeros(128)
+    for received < length {
+        let count = peer.Read(data[:])?
+        received += count
+        nativeFeed(server.handle, data[:count])?
+    }
+    let plaintext = nativeRead(server.handle, 128)?
+    check(plaintext.len() == message.len())
+    for var i = 0; i < message.len(); i += 1 {
+        check(plaintext[i] == message[i])
+    }
+    check((nativeRead(server.handle, 128)?).len() == 0)
+    cancel()
+    return nil
+}
+
+func TestMalformedCiphertextFailsAndClosedHandlesReject() error {
+    let config, serverConfig = configs()?
+    let server = ClientConfig{handle: nativeSession(serverConfig.handle, "")?}
+    let bad = Array<byte>{255, 3, 3, 0, 3, 1, 2, 3}
+    nativeFeed(server.handle, bad[:])?
+    let status, err = nativeHandshake(server.handle)
+    _ = err
+    check(err != nil && status == 0)
+    let retry, retryErr = nativeHandshake(server.handle)
+    _ = retryErr
+    check(retry == 0 && retryErr == error("TLS failed connection"))
+    let data, readErr = nativeRead(server.handle, 1)
+    _ = readErr
+    check(data.len() == 0 && readErr == error("TLS failed connection"))
+    let written, writeErr = nativeWrite(server.handle, bad[:])
+    _ = writeErr
+    check(written == 0 && writeErr == error("TLS failed connection"))
+    check(nativeFeed(server.handle, bad[:]) == error("TLS failed connection"))
+    check(nativeShutdown(server.handle) == error("TLS failed connection"))
+    let token = nativeSession(config.handle, "localhost")?
+    nativeClose(token)
+    nativeClose(token)
+    let closed, closedErr = nativeRead(token, 1)
+    _ = closedErr
+    check(closed.len() == 0 && closedErr != nil)
+    return nil
+}
+
+func TestProviderWantWriteRetainsSamePlaintext() error {
+    let config, serverConfig = configs()?
+    let client = ClientConfig{handle: nativeSession(config.handle, "localhost")?}
+    let server = ClientConfig{handle: nativeSession(serverConfig.handle, "")?}
+    memoryHandshake(client.handle, server.handle)?
+    var data = zeros(16384)
+    for var i = 0; i < data.len(); i += 1 {
+        data[i] = byte(i % 256)
+    }
+    for var i = 0; i < 3; i += 1 {
+        check(nativeWrite(client.handle, data[:])? == data.len())
+    }
+    check(nativeWrite(client.handle, data[:])? == -2)
+    check(nativeStatus(client.handle)? == -2)
+    transfer(client.handle, server.handle)?
+    for var i = 0; i < 3; i += 1 {
+        let received = nativeRead(server.handle, 16384)?
+        check(received.len() == data.len() && received[0] == 0 && received[255] == 255)
+    }
+    check(nativeWrite(client.handle, data[:])? == data.len())
+    transfer(client.handle, server.handle)?
+    let received = nativeRead(server.handle, 16384)?
+    check(received.len() == data.len() && received[0] == 0 && received[255] == 255)
+    check((nativeRead(server.handle, 16384)?).len() == 0)
+    check(nativeStatus(server.handle)? == 0)
+    return nil
+}
+
+async func sinkServer(listener own net.Listener, config own ServerConfig, size int) error {
+    let source = listener.Accept()?
+    let ctx, cancel = context.WithTimeout(context.Background(), 5 * time.Second)
+    var conn = Server(ctx, source, config)?
+    cancel()
+    conn.SetDeadline(time.Now() + 5 * time.Second)?
+    var data = zeros(size)
+    var received = 0
+    for received < size {
+        let n = conn.Read(data[received:])?
+        check(n > 0)
+        received += n
+    }
+    for var i = 0; i < size; i += 1 {
+        check(data[i] == byte(i % 251))
+    }
+    check(conn.Write(data[:3])? == 3)
+    let n, err = conn.Read(data[:])
+    _ = err
+    check(n == 0 && err == error("EOF"))
+    return conn.Close()
+}
+
+func TestConnectionOutlivesHandshakeContextAndWritesLargeBodies() error {
+    let config, serverConfig = configs()?
+    let listener = net.Listen("tcp4", "127.0.0.1:0")?
+    let address = listener.Addr()
+    listener.SetDeadline(time.Now() + 5 * time.Second)?
+    let size = 3 * 16384 + 1234
+    let server = go sinkServer(listener, serverConfig, size)
+    let ctx, cancel = context.WithTimeout(context.Background(), 5 * time.Second)
+    var conn = DialContext(ctx, address, "localhost", config)?
+    cancel()
+    check(ctx.Err() != nil)
+    var body = zeros(size)
+    for var i = 0; i < size; i += 1 {
+        body[i] = byte(i % 251)
+    }
+    check(conn.Write(body[:])? == size)
+    var got = zeros(8)
+    check(conn.Read(got[:])? == 3 && got[0] == 0 && got[2] == 2)
+    conn.Close()?
+    server.wait()?
+    return nil
+}
+
+func TestFailedReadSendsFatalAlert() error {
+    let config, serverConfig = configs()?
+    let client = ClientConfig{handle: nativeSession(config.handle, "localhost")?}
+    let server = nativeSession(serverConfig.handle, "")?
+    memoryHandshake(client.handle, server)?
+    let message = Array<byte>{1, 2, 3}
+    check(nativeWrite(client.handle, message[:])? == message.len())
+    var encrypted = nativeOutput(client.handle)?
+    let last = encrypted.len() - 1
+    if encrypted[last] == 0 {
+        encrypted[last] = 1
+    } else {
+        encrypted[last] = 0
+    }
+    let listener = net.Listen("tcp4", "127.0.0.1:0")?
+    let source = net.DialTimeout("tcp4", listener.Addr(), time.Second)?
+    let peer = listener.Accept()?
+    source.SetDeadline(time.Now() + time.Second)?
+    var sent = 0
+    for sent < encrypted.len() {
+        sent += source.Write(encrypted[sent:])?
+    }
+    let ctx, cancel = context.WithTimeout(context.Background(), time.Second)
+    var conn = wrap(peer, server, ctx)
+    var data = zeros(16)
+    let n, err = conn.Read(data[:])
+    _ = err
+    check(n == 0 && err != nil && conn.failed)
+    var alert = zeros(64)
+    let count = source.Read(alert[:])?
+    check(count >= 5 && alert[0] == 21)
+    cancel()
+    return nil
+}

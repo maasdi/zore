@@ -1144,7 +1144,7 @@ fn rest_sources(sources: &[&str]) -> String {
     )
 }
 
-fn http_sources() -> String {
+pub(super) fn http_sources() -> String {
     let mut imports = std::collections::BTreeSet::new();
     let mut bodies = String::new();
     for source in [
@@ -1348,6 +1348,7 @@ func main() {{
     println(handleErr == nil)
     println(writer.status)
     println(server.complete())
+    waitIdle(0)
 }}
 "#
     );

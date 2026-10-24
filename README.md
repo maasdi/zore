@@ -55,7 +55,7 @@ John
 | Strings | Length, indexing, slicing, loops by character, `+`, and `string(rune)` work |
 | Collections | `[T; N]`, `Array<T>`, `map[K]V`, and `[]T` work; `clone` works for structs and collections; `len`, `push`, `pop`, and `for … in` loops work; conditional `if [mut] name = map.entry(key)` bindings borrow map entries |
 | Closures and function types | Implemented, including closures that are returned or stored, call-once closures, declared functions and methods as values, and `go` on closures and function-typed locals; async literals and async method values are awaited or spawned; a callee stored in a field, element, or map value cannot be spawned directly |
-| Packages and imports | Folders are packages; project and explicitly declared local and pinned Git dependency imports work, with exports, import checks, canonical identity, and cycle detection; see [local dependencies](docs/local-dependencies.md) and [Git dependencies/lockfiles](docs/git-dependencies.md); bundled packages are `std/strings`, `std/strconv`, `std/bytes`, `std/errors`, `std/fmt`, `std/math`, `std/unicode`, `std/unicode/utf8`, `std/time`, `std/os`, `std/os/exec`, `std/io`, `std/bufio`, `std/net`, `std/context`, `std/sync`, `std/path`, `std/path/filepath`, `std/sort`, `std/slices`, and `std/maps` |
+| Packages and imports | Folders are packages; project and explicitly declared local and pinned Git dependency imports work, with exports, import checks, canonical identity, and cycle detection. Bundled packages: `std/bufio`, `std/bytes`, `std/context`, `std/encoding/json`, `std/errors`, `std/fmt`, `std/io`, `std/maps`, `std/math`, `std/net`, `std/net/http`, `std/net/url`, `std/os`, `std/os/exec`, `std/os/signal`, `std/path`, `std/path/filepath`, `std/slices`, `std/sort`, `std/strconv`, `std/strings`, `std/sync`, `std/time`, `std/unicode`, and `std/unicode/utf8`. See [local dependencies](docs/local-dependencies.md), [Git dependencies and lockfiles](docs/git-dependencies.md), [tagged dependencies](docs/versioned-dependencies.md), and [release workflows](docs/release-workflow.md). |
 | Native library packages | Curated, versioned adapter registration with package-owned C/Rust sources, ordinary Zore wrappers, recipe lockfiles and static linking; see [native libraries](docs/native-libraries.md) |
 | `async`/`await`, tasks, channels, mutexes | Implemented for the supported operations: polled async tasks, channel send/receive and `select`, mutex acquisition, timers, TCP I/O, files, standard input, child processes, and cooperative cancellation. A waiting plain function occupies an OS worker; the runtime starts replacement workers |
 | Self-hosting | Long-term goal; a lexer and a parser written in Zore (`compiler-zore/`) match the Rust frontend in differential tests |
@@ -110,6 +110,13 @@ zore fmt --check .   # check formatting without writing
 zore test .          # run application tests recursively
 zore --help
 ```
+
+For project dependencies, run `zore install` to resolve and write `zore.lock`,
+`zore lock` to refresh it deliberately, and `zore install --locked` in CI to
+consume it unchanged. For a library release, use `zore check --release`, then
+the ordinary Git tag and push workflow; `zore outdated` reports newer releases
+without changing dependency selections. See the [dependency guide](docs/git-dependencies.md),
+[release metadata](docs/release-metadata.md), and [release workflow](docs/release-workflow.md).
 
 `check`, `build`, and `run` take a source file. The file's folder is the program's `main`
 package, so its ordinary `.ore` files are compiled together, and `import` finds

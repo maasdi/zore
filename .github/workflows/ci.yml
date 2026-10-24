@@ -48,6 +48,12 @@ jobs:
         env:
           RUSTFLAGS: --cfg zore_native_adapters
           ZORE_NATIVE_ADAPTERS: ${{ github.workspace }}/examples/crypto/crypto/native/registration.rs
+
+      - name: Lint TLS bridge
+        run: cargo clippy --locked -p zore-runtime --all-targets -- -D warnings
+        env:
+          RUSTFLAGS: --cfg zore_native_adapters
+          ZORE_NATIVE_ADAPTERS: ${{ github.workspace }}/examples/tls/tls/native/registration.rs
       - name: Build
         run: cargo build --locked
       - name: Documentation
@@ -61,5 +67,9 @@ jobs:
       - name: Benchmark harness correctness
         if: runner.os != 'Windows'
         run: python3 -m unittest discover -s benchmarks/performance -p 'test_*.py'
+      - name: Runtime scaling harness correctness
+        run: python -m unittest discover -s benchmarks/runtime-scaling -p 'test_*.py'
+        env:
+          ZORE_SCALING_COMPILER: ${{ github.workspace }}/target/debug/zore${{ runner.os == 'Windows' && '.exe' || '' }}
       - name: Test
         run: cargo test --locked --all-targets --no-fail-fast

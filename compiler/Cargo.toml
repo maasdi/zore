@@ -23,6 +23,10 @@ spdx = { version = "0.13", default-features = false }
 name = "async_frame_scaling"
 path = "../benchmarks/frame-storage/scaling/main.rs"
 
+[[example]]
+name = "compile_profile"
+path = "../benchmarks/performance/stages.rs"
+
 [[test]]
 name = "cli"
 path = "../tests/driver/cli.rs"
@@ -102,3 +106,7 @@ path = "../tests/driver/tagged_dependencies.rs"
 [[test]]
 name = "release_workflows"
 path = "../tests/driver/release_workflows.rs"
+
+[[test]]
+name = "tls"
+path = "../tests/driver/tls.rs"

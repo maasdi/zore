@@ -4,6 +4,14 @@ use std::io::Write;
 /// Every allocation uses this alignment, which covers all element types.
 const ALIGN: usize = 16;
 
+#[cfg(any(test, zore_test_hooks))]
+static LIVE_BYTES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+#[cfg(any(test, zore_test_hooks))]
+pub(super) fn live_bytes() -> usize {
+    LIVE_BYTES.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 fn out_of_memory() -> ! {
     let mut stderr = std::io::stderr().lock();
     let _ = stderr.write_all(b"fatal: out of memory\n");
@@ -30,6 +38,8 @@ pub extern "C" fn zore_alloc(bytes: i64) -> *mut u8 {
     if data.is_null() {
         out_of_memory();
     }
+    #[cfg(any(test, zore_test_hooks))]
+    LIVE_BYTES.fetch_add(layout.size(), std::sync::atomic::Ordering::Relaxed);
     data
 }
 
@@ -46,6 +56,8 @@ pub unsafe extern "C" fn zore_free(data: *mut u8, bytes: i64) {
     if let Some(layout) = layout(bytes) {
         // SAFETY: the caller passes storage allocated with this same layout.
         unsafe { dealloc(data, layout) };
+        #[cfg(any(test, zore_test_hooks))]
+        LIVE_BYTES.fetch_sub(layout.size(), std::sync::atomic::Ordering::Relaxed);
     }
 }
 

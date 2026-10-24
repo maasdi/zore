@@ -377,6 +377,18 @@ Responsible for final MIR to LLVM/native lowering, layout, ABI, calling conventi
 
 Codegen must not parse source or perform front-end semantic analysis.
 
+`codegen/closure.rs` owns closure environment layout, capture loading, closure
+value construction, and environment destruction. `codegen/llvm.rs` retains the
+module/function orchestration and ordinary MIR instruction emission. Moving
+these helpers does not change closure ABI, capture order, drop flags, or async
+frame ownership.
+
+`hir/lower/json/contract.rs` resolves the bundled helper signatures used by JSON
+codec synthesis. `hir/lower/http.rs` validates its factory/handler contract before
+adapting registrations. These checks remain in typed HIR and introduce no LLVM
+dependency. The paired declarations and update procedure are documented in
+[Bundled library compiler contracts](docs/bundled-library-contracts.md).
+
 ## `context/`
 Contains compiler-wide shared context such as source manager, type store, symbol store, metadata, and diagnostics. Do not turn it into a dumping ground.
 

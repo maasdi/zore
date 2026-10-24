@@ -1,0 +1,63 @@
+name: Seeded hardening
+
+on:
+  workflow_dispatch:
+  pull_request:
+    types: [opened, synchronize, reopened, labeled]
+  schedule:
+    - cron: '27 4 * * 1'
+
+permissions:
+  contents: read
+
+jobs:
+  seeds:
+    if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'run-hardening')
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        seed: [158, 159, 4294967295, 1592639710]
+    env:
+      ZORE_HARDENING_SEED: ${{ matrix.seed }}
+      ZORE_HARDENING_OPTIMIZE: '1'
+      ZORE_HARDENING_FAILURES: ${{ github.workspace }}/hardening-failures
+    steps:
+      - uses: actions/checkout@v7
+      - run: rustup show active-toolchain
+      - run: |
+          cargo test --locked --test native hardening:: -- --test-threads=1
+      - uses: actions/upload-artifact@v7
+        if: failure()
+        with:
+          name: hardening-seed-${{ matrix.seed }}
+          path: hardening-failures
+          if-no-files-found: ignore
+  address-sanitizer:
+    if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'run-hardening')
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      RUSTUP_TOOLCHAIN: nightly-2026-10-01
+      ASAN_OPTIONS: detect_leaks=1:halt_on_error=1
+      ZORE_HARDENING_FAILURES: ${{ github.workspace }}/hardening-failures
+    steps:
+      - uses: actions/checkout@v7
+      - run: rustup toolchain install nightly-2026-10-01 --profile minimal
+      - name: Instrument runtime unit tests
+        run: cargo test --locked -p zore-runtime --lib --target x86_64-unknown-linux-gnu
+        env:
+          RUSTFLAGS: -Zsanitizer=address
+      - name: Instrument generated code and its runtime
+        run: |
+          cargo test --locked --test native hardening:: -- --test-threads=1
+        env:
+          ZORE_HARDENING_ASAN: '1'
+      - uses: actions/upload-artifact@v7
+        if: failure()
+        with:
+          name: hardening-address-sanitizer
+          path: hardening-failures
+          if-no-files-found: ignore

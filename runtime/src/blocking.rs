@@ -13,6 +13,27 @@ type Job = Box<dyn FnOnce() + Send>;
 const MAX_THREADS: usize = 512;
 const IDLE_SECONDS: u64 = 5;
 
+#[cfg(test)]
+static TEST_CAPACITY: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+#[cfg(test)]
+static TEST_IDLE: std::sync::OnceLock<Duration> = std::sync::OnceLock::new();
+
+fn capacity() -> usize {
+    #[cfg(test)]
+    if let Some(capacity) = TEST_CAPACITY.get() {
+        return *capacity;
+    }
+    MAX_THREADS
+}
+
+fn idle_timeout() -> Duration {
+    #[cfg(test)]
+    if let Some(timeout) = TEST_IDLE.get() {
+        return *timeout;
+    }
+    Duration::from_secs(IDLE_SECONDS)
+}
+
 #[derive(Default)]
 struct Pool {
     queue: VecDeque<Job>,
@@ -47,7 +68,7 @@ fn worker() {
         }
         state.idle += 1;
         let (guard, timeout) = WORK
-            .wait_timeout(state, Duration::from_secs(IDLE_SECONDS))
+            .wait_timeout(state, idle_timeout())
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         state = guard;
         state.idle -= 1;
@@ -60,7 +81,7 @@ fn worker() {
 
 fn enqueue(state: &mut Pool, job: Job) {
     state.queue.push_back(job);
-    if state.queue.len() > state.idle && state.threads < MAX_THREADS {
+    if state.queue.len() > state.idle && state.threads < capacity() {
         state.threads += 1;
         if std::thread::Builder::new().spawn(worker).is_err() {
             super::panic::fail(b"cannot start a helper thread");
@@ -147,6 +168,12 @@ pub unsafe extern "C" fn zore_blocking_poll(operation: *const Operation) -> u8 {
     1
 }
 
+#[cfg(any(test, zore_test_hooks))]
+pub(super) fn snapshot() -> (usize, usize, usize) {
+    let state = pool();
+    (state.threads, state.idle, state.queue.len())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -154,6 +181,93 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::mpsc;
     use std::time::Instant;
+
+    #[test]
+    fn capacity_one_queue_preserves_progress_expired_deadlines_and_cleanup() {
+        const CHILD: &str = "ZORE_TEST_SMALL_HELPER_POOL";
+        if std::env::var_os(CHILD).is_none() {
+            let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "blocking::tests::capacity_one_queue_preserves_progress_expired_deadlines_and_cleanup", "--nocapture"])
+                .env(CHILD, "1")
+                .spawn()
+                .unwrap();
+            let deadline = Instant::now() + Duration::from_secs(30);
+            loop {
+                if let Some(status) = child.try_wait().unwrap() {
+                    assert!(status.success());
+                    break;
+                }
+                if Instant::now() >= deadline {
+                    child.kill().unwrap();
+                    child.wait().unwrap();
+                    panic!("small helper capacity subprocess timed out");
+                }
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            return;
+        }
+        TEST_CAPACITY.set(1).unwrap();
+        TEST_IDLE.set(Duration::ZERO).unwrap();
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let peer = std::net::TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (stream, _) = listener.accept().unwrap();
+        drop(listener);
+        let handle = crate::net::test_connection(stream);
+        let mut deadline_result = crate::sys::ErrorOut::ok();
+        unsafe { crate::net::zore_native_net_set_deadline(&mut deadline_result, handle, 1, 1) };
+        assert_eq!(deadline_result.failed, 0);
+        let (started, active) = mpsc::channel();
+        let (release, wait) = mpsc::channel();
+        submit(Box::new(move || {
+            started.send(()).unwrap();
+            wait.recv_timeout(Duration::from_secs(10)).unwrap();
+        }));
+        active.recv_timeout(Duration::from_secs(10)).unwrap();
+        let (finished, results) = mpsc::channel();
+        let deadline_finished = finished.clone();
+        let retained = Arc::new(());
+        let queued_payload = Arc::clone(&retained);
+        {
+            let mut state = pool();
+            enqueue(
+                &mut state,
+                Box::new(move || {
+                    let mut result = crate::sys::ByteArrayError::ok(&[]);
+                    unsafe { crate::net::zore_native_net_read(&mut result, handle, 1) };
+                    assert_eq!(result.failed, 1);
+                    assert_eq!(result.array.len, 0);
+                    assert_eq!(
+                        unsafe { crate::bytes(result.message, result.message_len) },
+                        b"net.Read: timed out"
+                    );
+                    crate::net::zore_native_net_close_handle(handle);
+                    drop(queued_payload);
+                    deadline_finished.send(1).unwrap();
+                }),
+            );
+            enqueue(
+                &mut state,
+                Box::new(move || {
+                    assert_eq!(run(|| 42), 42);
+                    finished.send(2).unwrap();
+                }),
+            );
+            assert_eq!((state.threads, state.idle, state.queue.len()), (1, 0, 2));
+        }
+        assert_eq!(Arc::strong_count(&retained), 2);
+        release.send(()).unwrap();
+        assert_eq!(results.recv_timeout(Duration::from_secs(10)).unwrap(), 1);
+        assert_eq!(results.recv_timeout(Duration::from_secs(10)).unwrap(), 2);
+        let cleanup_deadline = Instant::now() + Duration::from_secs(10);
+        while snapshot() != (0, 0, 0) {
+            assert!(Instant::now() < cleanup_deadline);
+            std::thread::yield_now();
+        }
+        assert_eq!(Arc::strong_count(&retained), 1);
+        assert_eq!(crate::net::live_handles(), 0);
+        assert_eq!(crate::reactor::snapshot().0, 0);
+        drop(peer);
+    }
 
     #[test]
     fn queued_jobs_reserve_idle_helpers_before_they_wake() {

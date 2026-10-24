@@ -1,0 +1,5 @@
+version = 1
+
+[projects]
+tls = { manifest = "07d813af80a345305c047b36b200440d66fd99eb3f94d1ca97bc2a5f32741c52", path = "../tls", adapter = "tls-mbedtls-v1", recipe = "77f7d1052830e96a0cb41d6a21d1206aed0a4a60be15e42582ae217c382c5905" }
+tlsclient = { manifest = "ec1f05997613980ff7a4e06b16fa69f4c677bab18029e5d4b0b3ec116d8a76a4", path = "." }
