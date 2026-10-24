@@ -34,6 +34,7 @@ class Handler(BaseHTTPRequestHandler):
         pass
 
 
+@unittest.skipIf(os.name == "nt", "the performance harness does not support Windows")
 class HarnessTests(unittest.TestCase):
     def test_shared_metadata_supports_retention_arguments_without_stage_profilers(self):
         with tempfile.TemporaryDirectory() as directory:
