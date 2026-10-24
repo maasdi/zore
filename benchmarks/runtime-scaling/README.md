@@ -95,6 +95,9 @@ creation as a possible limit. Unix controls use the shared readiness reactor.
 The configured populations and deadlines are experimental limits, not supported
 service capacity promises or Windows/Unix performance parity claims.
 
-Current cross-host results and any measured optimization/follow-up remain pending
-execution of the labeled pull request workflow. Do not infer scaling from native
-correctness tests or mark issue #157 complete from this harness alone.
+The [population report](../../docs/runtime-scaling.md) preserves completed
+Windows/Linux/macOS observations, exact identities, unchanged raw evidence and
+measured follow-ups. All three hosts completed every configured population;
+Windows timer thread cost, socket helper admission and delayed idle-helper
+retirement remain implementation follow-ups. These observations are experimental
+limits, not supported service-capacity promises.

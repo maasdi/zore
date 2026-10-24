@@ -106,9 +106,12 @@ subscriptions, restored default exit, automatic HTTP bootstrap and active-reques
 drain. Runtime tests directly invoke all three termination callback mappings and
 verify bounded waiting while subscriptions are removed. These synthetic checks
 do not establish real close/logoff/shutdown delivery. Unix-specific shell and
-POSIX signal tests retain host gates. The opt-in measurement harnesses and their
-Python pipe/resource checks remain Linux/macOS tools; enabling native Windows CI does
-not establish Windows benchmark support.
+POSIX signal tests retain host gates. The opt-in
+[runtime population harness](../benchmarks/runtime-scaling/README.md) measures
+Windows/Linux/macOS separately from native correctness CI; its
+[measured report and limits](runtime-scaling.md) retain raw timer/socket/task
+populations and cleanup observations. Earlier performance/retention harnesses
+remain Linux/macOS tools.
 
 ## Curated native adapter builds
 
