@@ -22,7 +22,7 @@ impl FunctionBuilder<'_, '_> {
         self.hoist_alloca(&output, &returns);
         let rendered = self.arguments(args);
         let operation = self.fresh();
-        let helper = native_wait(&function.name) == Some(NativeWait::Helper);
+        let helper = native_wait(function) == Some(NativeWait::Helper);
         if helper {
             let types: Vec<_> = function
                 .params

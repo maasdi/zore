@@ -284,6 +284,7 @@ fn make_function(
         is_async: false,
         native: false,
         native_symbol: None,
+        native_wait: None,
         call_once: false,
         type_params: Vec::new(),
         probe: false,

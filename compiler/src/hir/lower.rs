@@ -955,6 +955,7 @@ impl<'a> Checker<'a> {
             is_async: func.is_async,
             native: func.native,
             native_symbol: None,
+            native_wait: None,
             call_once: false,
             type_params: self.res.type_params.get(&id).cloned().unwrap_or_default(),
             probe: false,
@@ -1159,6 +1160,7 @@ impl<'a> Checker<'a> {
             is_async: closure.is_async,
             native: false,
             native_symbol: None,
+            native_wait: None,
             call_once,
             type_params: self
                 .generic_root(id)
@@ -1613,6 +1615,7 @@ impl<'a> Checker<'a> {
             is_async,
             native: false,
             native_symbol: None,
+            native_wait: None,
             call_once: false,
             type_params: Vec::new(),
             probe: false,

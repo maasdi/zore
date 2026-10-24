@@ -303,6 +303,7 @@ impl Checker<'_> {
             is_async,
             native: false,
             native_symbol: None,
+            native_wait: None,
             call_once,
             type_params: Vec::new(),
             probe: false,
