@@ -1,5 +1,4 @@
 from contextlib import contextmanager
-import fcntl
 import hashlib
 import json
 import os
@@ -95,6 +94,8 @@ def compile_lease(arguments):
     if arguments.compile_lock_file is None:
         yield
         return
+    import fcntl
+
     with arguments.compile_lock_file.open("a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
         try:
