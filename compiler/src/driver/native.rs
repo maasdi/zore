@@ -123,7 +123,7 @@ const CRYPTO: Adapter = Adapter {
     mbedtls: true,
     id: "crypto-v1",
     project: "crypto",
-    fingerprint: "a14fcf91b34ceb0e32f786ad84d04b030d476e0325c72b7ae12f00b1f6e97ff4",
+    fingerprint: "9ada99205e00fb5b42c35d9259216f0ad95fad3f78e32cf099457b5557543ed2",
     c_flags: &[],
     symbols: &[
         ("nativeRandomBytes", "zore_native_crypto_random_bytes", None),
@@ -133,8 +133,28 @@ const CRYPTO: Adapter = Adapter {
     ],
 };
 
+const TLS: Adapter = Adapter {
+    mbedtls: true,
+    id: "tls-mbedtls-v1",
+    project: "tls",
+    fingerprint: "77f7d1052830e96a0cb41d6a21d1206aed0a4a60be15e42582ae217c382c5905",
+    c_flags: &[],
+    symbols: &[
+        ("nativeConfig", "zore_native_tls_native_config", None),
+        ("nativeSession", "zore_native_tls_native_session", None),
+        ("nativeHandshake", "zore_native_tls_native_handshake", None),
+        ("nativeRead", "zore_native_tls_native_read", None),
+        ("nativeWrite", "zore_native_tls_native_write", None),
+        ("nativeFeed", "zore_native_tls_native_feed", None),
+        ("nativeOutput", "zore_native_tls_native_output", None),
+        ("nativeShutdown", "zore_native_tls_native_shutdown", None),
+        ("nativeClose", "zore_native_tls_native_close", None),
+        ("nativeStatus", "zore_native_tls_native_status", None),
+    ],
+};
+
 pub(super) fn find(id: &str) -> Option<&'static Adapter> {
-    [&ADLER32, &SQLITE, &CRYPTO]
+    [&ADLER32, &SQLITE, &CRYPTO, &TLS]
         .into_iter()
         .find(|adapter| adapter.id == id)
 }

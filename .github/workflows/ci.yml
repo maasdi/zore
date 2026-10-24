@@ -53,6 +53,12 @@ jobs:
         env:
           RUSTFLAGS: --cfg zore_native_adapters
           ZORE_NATIVE_ADAPTERS: ${{ github.workspace }}/examples/crypto/crypto/native/registration.rs
+
+      - name: Lint TLS bridge
+        run: cargo clippy --locked -p zore-runtime --all-targets -- -D warnings
+        env:
+          RUSTFLAGS: --cfg zore_native_adapters
+          ZORE_NATIVE_ADAPTERS: ${{ github.workspace }}/examples/tls/tls/native/registration.rs
       - name: Build
         run: cargo build --locked
       - name: Documentation

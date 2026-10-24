@@ -106,3 +106,7 @@ path = "../tests/driver/tagged_dependencies.rs"
 [[test]]
 name = "release_workflows"
 path = "../tests/driver/release_workflows.rs"
+
+[[test]]
+name = "tls"
+path = "../tests/driver/tls.rs"
