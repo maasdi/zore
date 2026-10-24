@@ -1,6 +1,6 @@
 use super::*;
 use std::io::Read;
-use std::net::{Shutdown, TcpListener};
+use std::net::{Shutdown, TcpListener, TcpStream};
 use std::time::{Duration, Instant};
 
 const CLIENT: &str = r#"package main
@@ -71,6 +71,39 @@ fn client_prints(source: &str, expected: &str) {
     assert!(output.stderr.is_empty(), "{}", stderr(&output));
 }
 
+fn configure_client_peer(stream: &TcpStream) -> std::io::Result<()> {
+    stream.set_nonblocking(false)?;
+    stream.set_read_timeout(Some(Duration::from_secs(2)))?;
+    stream.set_write_timeout(Some(Duration::from_secs(2)))
+}
+
+#[test]
+fn http_client_peer_uses_blocking_io_after_nonblocking_accept() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+    let (mut stream, _) = listener.accept().unwrap();
+    stream.set_nonblocking(true).unwrap();
+    configure_client_peer(&stream).unwrap();
+    let (started, reading) = std::sync::mpsc::channel();
+    let (finished, result) = std::sync::mpsc::channel();
+    let peer = std::thread::spawn(move || {
+        started.send(()).unwrap();
+        finished.send(stream.read(&mut [0])).unwrap();
+    });
+    reading.recv_timeout(Duration::from_secs(2)).unwrap();
+    assert!(matches!(
+        result.recv_timeout(Duration::from_millis(30)),
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+    ));
+    drop(client);
+    assert!(matches!(
+        result.recv_timeout(Duration::from_secs(2)),
+        Ok(Ok(0))
+    ));
+    peer.join().unwrap();
+}
+
 fn client_peer(executable: &Path, response: &[u8], method: &str, mode: &str) -> (String, Vec<u8>) {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     listener.set_nonblocking(true).unwrap();
@@ -78,6 +111,7 @@ fn client_peer(executable: &Path, response: &[u8], method: &str, mode: &str) -> 
     let bytes = response.to_vec();
     let mode = mode.to_owned();
     let peer_mode = mode.clone();
+    let case = format!("{method} {mode} response={response:?}");
     let peer = std::thread::spawn(move || {
         let deadline = Instant::now() + Duration::from_secs(2);
         let mut stream = loop {
@@ -90,12 +124,7 @@ fn client_peer(executable: &Path, response: &[u8], method: &str, mode: &str) -> 
                 Err(error) => panic!("accept: {error}"),
             }
         };
-        stream
-            .set_read_timeout(Some(Duration::from_secs(2)))
-            .unwrap();
-        stream
-            .set_write_timeout(Some(Duration::from_secs(2)))
-            .unwrap();
+        configure_client_peer(&stream).unwrap();
         let mut request = Vec::new();
         let mut byte = [0];
         while !request.ends_with(b"\r\n\r\n") {
@@ -130,7 +159,7 @@ fn client_peer(executable: &Path, response: &[u8], method: &str, mode: &str) -> 
                         | std::io::ErrorKind::ConnectionAborted
                         | std::io::ErrorKind::BrokenPipe
                 ) => {}
-            other => panic!("client did not close its connection: {other:?}"),
+            other => panic!("{case}: client did not close its connection: {other:?}"),
         }
         request
     });
