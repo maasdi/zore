@@ -59,12 +59,15 @@ type Header struct {
 }
 func NewHeader() Header { return Header{entries: Array<HeaderEntry>{}} }
 
+func tokenByte(c byte) bool {
+    if (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || (c >= 48 && c <= 57) { return true }
+    return strings.IndexByte("!#$%&'*+-.^_`|~", c) >= 0
+}
+
 func token(text string) bool {
     if text == "" { return false }
     for var i = 0; i < text.len(); i += 1 {
-        let c = text[i]
-        if (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || (c >= 48 && c <= 57) { continue }
-        if !strings.Contains("!#$%&'*+-.^_`|~", text[i:i + 1]) { return false }
+        if !tokenByte(text[i]) { return false }
     }
     return true
 }

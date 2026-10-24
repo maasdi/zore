@@ -40,9 +40,10 @@ shutdown. `ListenAndServeWithConfig` accepts custom limits and deadlines;
 
 Issue #154 adds bounded HTTP/1.1 clients and absolute HTTP/HTTPS URLs (§37.11).
 Clients buffer owned binary responses, enforce metadata/body/time limits, and
-close each connection after one exchange. `examples/http-client/` composes GET
-and JSON POST; `examples/https-client/` supplies an owned verified TLS transport
-for ordinary `Client.Do` calls with explicit trusted roots. Focused native tests
+close each connection after one exchange. `examples/http-client/` composes
+`http.Get` and JSON POST; the TLS package's `tls/https` subpackage supplies the
+owned verified transport that `examples/https-client/` uses for ordinary
+`client.Get` calls with explicit trusted roots. Focused native tests
 cover fragmented/framed responses, malformed peers, cancellation, partial I/O,
 and owned cleanup. The HTTPS fixture checks real certificate verification and
 fragmented binary responses; platform-wide results remain subject to native CI.

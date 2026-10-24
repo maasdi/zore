@@ -7,8 +7,8 @@ import "std/net/http"
 import "std/os"
 import "std/strings"
 import "std/time"
-import "https-client/securehttp"
 import "tls"
+import "tls/https"
 
 async func serveHTTPS(listener own net.Listener, config own tls.ServerConfig, ctx context.Context) error {
     let accepted = listener.Accept()?
@@ -36,7 +36,7 @@ func httpsCase(certPath string, keyPath string, rootsPath string, expected strin
     let cert = os.ReadFile(certPath)?
     let key = os.ReadFile(keyPath)?
     let serverConfig = tls.NewServerConfig(cert[:], key[:])?
-    let transport = securehttp.NewTransport(roots[:])?
+    let transport = https.NewTransport(roots[:])?
     var settings = http.DefaultClientConfig()
     settings.Timeout = 3 * time.Second
     settings.PollInterval = time.Millisecond
@@ -47,8 +47,7 @@ func httpsCase(certPath string, keyPath string, rootsPath string, expected strin
     listener.SetDeadline(time.Now() + 3 * time.Second)?
     let ctx, cancel = context.WithTimeout(context.Background(), 3 * time.Second)
     let server = go serveHTTPS(listener, serverConfig, ctx)
-    let empty = Array<byte>{}
-    let response, err = client.Do(ctx, "GET", "https://localhost:" + port + "/binary", http.NewHeader(), empty[:])
+    let response, err = client.Get(ctx, "https://localhost:" + port + "/binary")
     if expected == "" {
         if err != nil { cancel(); return err }
         if response.StatusCode != 200 || response.Body.len() != 3 || response.Body[0] != 0 || response.Body[1] != 255 || response.Body[2] != 128 { panic("HTTPS binary response") }

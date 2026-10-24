@@ -46,8 +46,8 @@ A custom connection reports only safely resumable poll timeouts as
 
 | Evidence | Required behavior |
 | --- | --- |
-| `http_client_real_fragmented_binary_framing_and_hostile_peers` | Real fragmented loopback CL/chunked/EOF binary bodies, JSON POST composition, informational/HEAD/204/304/205 handling, returned redirects/status failures, injection/framing/chunk/trailer rejection, body/metadata bounds, cancellation/deadline socket close |
-| `http_client_absolute_urls_and_validation_precede_transport` | Absolute URL authority/default ports/IPv6/escapes, unsupported forms, controlled outbound headers, CRLF and method rejection before I/O |
+| `http_client_real_fragmented_binary_framing_and_hostile_peers` | Real fragmented loopback CL/chunked/EOF binary bodies, HTTP/1.0 and reason-less status lines, UTF-8 and ISO-8859-1 obs-text header values and reason phrases, `client.Get`, JSON POST composition, informational/HEAD/204/304/205 handling, returned redirects/status failures, injection/framing/chunk/trailer rejection, 7,500 tiny chunks within the metadata bound and oversized chunk lines, unexpected EOF in framed bodies, body/metadata bounds, cancellation/deadline socket close |
+| `http_client_absolute_urls_and_validation_precede_transport` | Absolute URL authority/default ports/IPv6/escapes, underscore hosts, stripped fragments, unsupported forms, controlled outbound headers, CRLF and method rejection, `http.Get`, and the separate request body limit before I/O |
 | `http_client_partial_io_owned_transport_and_error_cleanup` | Exact partial write offsets, bytes with EOF, normalized retry timeout, terminal/no-progress/invalid-count failures, exactly one owned connection and transport drop |
 | `http_client_panic_drops_owned_connection_and_transport` | Panic unwinds owned transport/connection and cancellation guard without leaks |
 | `http_client_async_calls_suspend_and_cancel_against_real_peer` | Direct async waiting calls and cooperative cancellation |

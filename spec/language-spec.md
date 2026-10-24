@@ -7716,6 +7716,8 @@ entry arrival order and original spelling. `Get` returns the first value;
 matching entries and appends the replacement. Reject CR, LF, NUL and forbidden
 controls; version one accepts ASCII values and horizontal tab, trims surrounding
 space/tab on input, and rejects obs-text rather than creating invalid strings.
+The HTTP client's response parser is the exception: it accepts obs-text in
+received values and reason phrases as described for bounded clients.
 This ASCII restriction must be documented as interoperability policy.
 
 Provide `StatusText(code int) string` and integer constants including `StatusOK`,
@@ -8577,6 +8579,7 @@ let ClientPollTimeout = error("http.Client: poll timed out")
 type ClientConfig struct {
     MaxHeaderBytes int
     MaxBodyBytes int
+    MaxRequestBodyBytes int
     Timeout int
     DialTimeout int
     PollInterval int
@@ -8593,11 +8596,13 @@ type ClientConn interface {
     mut SetWriteDeadline(deadline int) error
 }
 type ClientTransport interface {
-    Dial(ctx context.Context, scheme string, authority string) (ClientConn, error)
+    Dial(ctx context.Context, target url.AbsoluteURL) (ClientConn, error)
 }
 func DefaultClientConfig() ClientConfig
 func NewClient(config ClientConfig) (Client, error)
 func NewClientWithTransport(config ClientConfig, transport own ClientTransport) (Client, error)
+func Get(ctx context.Context, absoluteURL string) (ClientResponse, error)
+func (c Client) Get(ctx context.Context, absoluteURL string) (ClientResponse, error)
 func (c Client) Do(ctx context.Context, method string, absoluteURL string,
                    headers Header, body []byte) (ClientResponse, error)
 func (c Client) Exchange(ctx context.Context, conn own ClientConn,
@@ -8605,10 +8610,13 @@ func (c Client) Exchange(ctx context.Context, conn own ClientConn,
                          headers Header, body []byte) (ClientResponse, error)
 ```
 
-Defaults are 32768 metadata bytes, 1048576 request/response body bytes, a
+Defaults are 32768 metadata bytes, 1048576 response body bytes
+(`MaxBodyBytes`), 1048576 request body bytes (`MaxRequestBodyBytes`), a
 30-second total timeout, a 10-second per-address dial timeout, and a
 10-millisecond cancellation poll interval. Zero configuration fields select
-these defaults; negative fields fail. The empty Client fails safely. Timeout
+these defaults; negative fields fail. The empty Client fails safely.
+`Get(ctx, url)` sends a GET with an empty body through a default-configured
+Client; `client.Get(ctx, url)` does the same through `client`. Timeout
 bounds the entire call, including dial, serialization, headers and body; an
 earlier context deadline wins. Cancellation returns `context canceled` and
 expiration returns `context deadline exceeded`. DNS and the underlying dial
@@ -8624,7 +8632,8 @@ a compensated worker under the existing interface-call rules.
 
 `Client` is Move because it owns an optional ClientTransport interface.
 `NewClientWithTransport` configures a transport whose shared Dial receives the
-bounded context, normalized scheme, and URL authority. Dial must honor context
+bounded context and the parsed `url.AbsoluteURL`, with its normalized scheme,
+hostname, authority and dial address. Dial must honor context
 cancellation/deadlines, authenticate HTTPS hostname/certificates, and reject
 unsupported schemes. This allows ordinary Do calls for HTTPS without coupling
 standard HTTP server imports to an external TLS provider. Each successful Dial
@@ -8653,14 +8662,16 @@ Failure returns an empty response, never a partial successful body. Statuses
 400–599 are responses, not transport errors.
 
 `url.ParseAbsolute(text string) (AbsoluteURL, error)` accepts absolute `http`
-and `https` URLs with ASCII DNS/IPv4 hosts or bracketed IPv6 literals, optional
+and `https` URLs with ASCII DNS/IPv4 hosts (DNS labels may contain `_`, as in
+container service names) or bracketed IPv6 literals, optional
 ports 1–65535, and an optional origin-form path/query. `AbsoluteURL` has exported
 `Scheme`, `Hostname` (without brackets/port), `Authority` (for Host), `Address`
 (with explicit default port 80/443), and `RequestTarget` fields. Schemes fold
 ASCII case. Missing paths become `/`; a query-only suffix becomes `/?...`.
 The target preserves valid percent escapes, reserved characters, repeated
-slashes and dot segments without decoding or normalization. A raw space,
-control, non-ASCII byte, backslash, fragment, malformed escape, user information,
+slashes and dot segments without decoding or normalization. A `#fragment` is
+never sent: everything from the first `#` is discarded before validation. A raw
+space, control, non-ASCII byte, backslash, malformed escape, user information,
 zone-qualified IPv6, empty host/port, invalid authority or unsupported scheme
 fails with an explicit `url:` error. Use PathEscape for path segments and
 Values.Encode/QueryEscape for query data; raw Unicode must first be escaped.
@@ -8669,15 +8680,20 @@ Methods are nonempty HTTP tokens; CONNECT and TRACE are excluded. Headers are
 borrowed and validated before dialing/writing. Host, Content-Length,
 Transfer-Encoding, Connection, Trailer, Upgrade, Expect and Proxy-Connection are controlled by
 the client and rejected in supplied headers. The client always emits the URL
-Host and exact byte Content-Length, including zero. Outbound metadata and body
-are bounded by the configured limits. No redirects, credential forwarding,
+Host and exact byte Content-Length, including zero. Outbound metadata is bounded
+by MaxHeaderBytes and the request body by MaxRequestBodyBytes. An invalid
+supplied header error names the field. No redirects, credential forwarding,
 retries, proxy environment variables, CONNECT tunneling, HTTP upgrades,
 compression negotiation or decompression occur. Authorization is sent only to
 the requested peer; redirects are returned unchanged. Content-Encoding bytes
 are returned unchanged. HTTP/2 and WebSockets remain excluded.
 
-Response parsing requires HTTP/1.1, strict CRLF, a three-digit 100–599 status,
-valid header names/values, and unambiguous framing: at most one Content-Length
+Response parsing accepts `HTTP/1.1` and `HTTP/1.0` status lines; framing is the
+same for both because every request closes its connection, except that an
+HTTP/1.0 response with Transfer-Encoding is rejected as faulty framing. Other
+versions fail. Parsing requires strict CRLF, a three-digit 100–599 status
+followed by end of line or a space and an optional reason phrase, header names
+that are tokens, and unambiguous framing: at most one Content-Length
 or one Transfer-Encoding: chunked, never both. Repeated lengths are rejected
 even when equal. Informational responses are skipped within the cumulative
 metadata limit; 101 is rejected. HEAD, 204 and 304 have no body; 204 forbids
@@ -8688,18 +8704,26 @@ forbidden trailers, no progress and peer errors fail. Trailers are validated
 and discarded; reject client-controlled fields, Content-* fields, Authorization,
 Proxy-Authorization, WWW-Authenticate, Proxy-Authenticate, Authentication-Info,
 Proxy-Authentication-Info, Cache-Control, Expires, Location, Retry-After, Vary,
-Set-Cookie and Age. Chunk metadata,
-trailers and informational headers share the metadata bound. Body limits apply
-to decoded transfer bytes, including EOF-delimited responses. Partial I/O and
+Set-Cookie and Age. Reason phrases and received header values accept tab,
+visible ASCII and obs-text bytes 0x80–0xFF; CR, LF, NUL, DEL and other controls
+fail. A received value that is valid UTF-8 is kept as is; otherwise each byte is
+decoded as ISO-8859-1 so the string stays valid. Header values the caller sends
+remain ASCII. Chunk extensions, trailers and informational headers share the
+metadata bound. Chunk-size digits and the CRLFs around chunk data are framing:
+each chunk-size line may use up to 64 bytes before its extensions without
+spending the metadata bound, and every nonzero chunk carries body bytes, so
+framing stays proportional to the body limit and memory stays bounded by the
+longest line. An oversized chunk line fails with `http.Client: chunk line too
+large`, and EOF inside a Content-Length or chunked body fails with
+`http.Client: unexpected EOF in body`. Body limits apply to decoded transfer
+bytes, including EOF-delimited responses. Partial I/O and
 final bytes accompanied by EOF preserve every byte exactly once.
 
 ```ore
-let client = http.NewClient(http.DefaultClientConfig())?
-let empty = Array<byte>{}
-let response = client.Do(context.Background(), "GET", "http://localhost:8080/users",
-                         http.NewHeader(), empty[:])?
+let response = http.Get(context.Background(), "http://localhost:8080/users")?
 println(response.StatusCode)
 
+let client = http.NewClient(http.DefaultClientConfig())?
 let payload = json.Marshal(User{Name: "Ada"})?
 var headers = http.NewHeader()
 headers.Set("Content-Type", "application/json")?
@@ -8716,8 +8740,11 @@ entries, with frontend checking independent of native providers/linkers.
 Conformance includes real loopback binary/fragmented/framed responses,
 malformed inputs, limits, cancellation/deadlines, owned cleanup and JSON
 composition in `tests/codegen/http_client.rs`, URL/frontend rejection cases,
-and the runnable `examples/http-client/`. `examples/https-client/` composes the
-verified TLS package with ordinary Client.Do calls. The offline distributed
+and the runnable `examples/http-client/`. The TLS package ships the reusable
+verified transport as its `tls/https` subpackage (`https.NewTransport` and
+`https.NewClient(rootsPEM, config)`), layered on `tls` and `std/net/http` so
+neither imports the other; `examples/https-client/` uses it with ordinary
+`client.Get` calls. The offline distributed
 compiler fixture checks this composition without native linkers, then exercises
 real fragmented binary HTTPS and rejects wrong trust, expired/future validity,
 and trusted wrong-host certificates. Native CI covers supported hosts; a local

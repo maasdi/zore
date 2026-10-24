@@ -9,10 +9,12 @@ import "std/strings"
 import "std/time"
 
 let ClientPollTimeout = error("http.Client: poll timed out")
+const clientChunkFraming = 66
 
 type ClientConfig struct {
     MaxHeaderBytes int
     MaxBodyBytes int
+    MaxRequestBodyBytes int
     Timeout int
     DialTimeout int
     PollInterval int
@@ -34,7 +36,7 @@ type ClientConn interface {
     mut SetWriteDeadline(deadline int) error
 }
 type ClientTransport interface {
-    Dial(ctx context.Context, scheme string, authority string) (ClientConn, error)
+    Dial(ctx context.Context, target url.AbsoluteURL) (ClientConn, error)
 }
 type clientCancellation struct { cancel func() }
 func (g mut clientCancellation) drop() { (g.cancel)() }
@@ -57,15 +59,16 @@ type clientStream struct {
 func emptyClient() Client { return Client{config: DefaultClientConfig(), live: false, transport: Array<ClientTransport>{}} }
 func emptyClientURL() url.AbsoluteURL { return url.AbsoluteURL{Scheme: "", Hostname: "", Authority: "", Address: "", RequestTarget: ""} }
 func DefaultClientConfig() ClientConfig {
-    return ClientConfig{MaxHeaderBytes: 32768, MaxBodyBytes: 1048576, Timeout: 30 * time.Second, DialTimeout: 10 * time.Second, PollInterval: 10 * time.Millisecond}
+    return ClientConfig{MaxHeaderBytes: 32768, MaxBodyBytes: 1048576, MaxRequestBodyBytes: 1048576, Timeout: 30 * time.Second, DialTimeout: 10 * time.Second, PollInterval: 10 * time.Millisecond}
 }
 func NewClient(config ClientConfig) (Client, error) {
     var chosen = config
     let defaults = DefaultClientConfig()
-    let fields = [int; 5]{config.MaxHeaderBytes, config.MaxBodyBytes, config.Timeout, config.DialTimeout, config.PollInterval}
+    let fields = [int; 6]{config.MaxHeaderBytes, config.MaxBodyBytes, config.MaxRequestBodyBytes, config.Timeout, config.DialTimeout, config.PollInterval}
     for value in fields { if value < 0 { return emptyClient(), error("http.NewClient: negative configuration") } }
     if chosen.MaxHeaderBytes == 0 { chosen.MaxHeaderBytes = defaults.MaxHeaderBytes }
     if chosen.MaxBodyBytes == 0 { chosen.MaxBodyBytes = defaults.MaxBodyBytes }
+    if chosen.MaxRequestBodyBytes == 0 { chosen.MaxRequestBodyBytes = defaults.MaxRequestBodyBytes }
     if chosen.Timeout == 0 { chosen.Timeout = defaults.Timeout }
     if chosen.DialTimeout == 0 { chosen.DialTimeout = defaults.DialTimeout }
     if chosen.PollInterval == 0 { chosen.PollInterval = defaults.PollInterval }
@@ -92,12 +95,11 @@ func (c Client) prepare(method string, absoluteURL string, headers Header, body 
     if !c.live { return "", emptyClientURL(), error("http.Client: empty client") }
     if !token(method) || asciiEqual(method, "CONNECT") || asciiEqual(method, "TRACE") { return "", emptyClientURL(), error("http.Client: unsupported or invalid method") }
     let target = url.ParseAbsolute(absoluteURL)?
-    if body.len() > c.config.MaxBodyBytes { return "", emptyClientURL(), error("http.Client: body too large") }
-    if method.len() > c.config.MaxHeaderBytes || target.RequestTarget.len() > c.config.MaxHeaderBytes - method.len() || target.Authority.len() > c.config.MaxHeaderBytes - method.len() - target.RequestTarget.len() { return "", emptyClientURL(), error("http.Client: metadata too large") }
+    if body.len() > c.config.MaxRequestBodyBytes { return "", emptyClientURL(), error("http.Client: request body too large") }
     var output = method + " " + target.RequestTarget + " HTTP/1.1\r\nHost: " + target.Authority + "\r\nContent-Length: " + strconv.Itoa(body.len()) + "\r\nConnection: close\r\n"
     if output.len() > c.config.MaxHeaderBytes { return "", emptyClientURL(), error("http.Client: metadata too large") }
     for entry in headers.entries {
-        if !token(entry.Name) || !fieldValue(entry.Value) { return "", emptyClientURL(), error("http.Client: invalid header") }
+        if !token(entry.Name) || !fieldValue(entry.Value) { return "", emptyClientURL(), error("http.Client: invalid header " + strconv.Quote(entry.Name)) }
         if clientControlled(entry.Name) { return "", emptyClientURL(), error("http.Client: client owns transport header") }
         if entry.Name.len() > c.config.MaxHeaderBytes - output.len() { return "", emptyClientURL(), error("http.Client: metadata too large") }
         output += entry.Name
@@ -106,6 +108,14 @@ func (c Client) prepare(method string, absoluteURL string, headers Header, body 
     }
     if c.config.MaxHeaderBytes - output.len() < 2 { return "", emptyClientURL(), error("http.Client: metadata too large") }
     return output + "\r\n", target, nil
+}
+func Get(ctx context.Context, absoluteURL string) (ClientResponse, error) {
+    let client = NewClient(DefaultClientConfig())?
+    return client.Get(ctx, absoluteURL)
+}
+func (c Client) Get(ctx context.Context, absoluteURL string) (ClientResponse, error) {
+    let empty = Array<byte>{}
+    return c.Do(ctx, "GET", absoluteURL, NewHeader(), empty[:])
 }
 async func clientDial(address string, timeout int, result channel<clientDialResult>) {
     let conn, err = net.DialTimeout("tcp", address, timeout)
@@ -132,7 +142,7 @@ func (c Client) dialAndExchange(ctx context.Context, output string, target url.A
     let contextErr = clientContextError(ctx)
     if contextErr != nil { return emptyClientResponse(), contextErr }
     if c.transport.len() != 0 {
-        let conn, err = c.transport[0].Dial(ctx, target.Scheme, target.Authority)
+        let conn, err = c.transport[0].Dial(ctx, target)
         _ = err
         let dialContextErr = clientContextError(ctx)
         if dialContextErr != nil { return emptyClientResponse(), dialContextErr }
@@ -227,21 +237,10 @@ func (s mut clientStream) nextByte() (byte, error) {
     return value, nil
 }
 func (s mut clientStream) line() (string, error) {
-    var data = Array<byte>{}
-    for {
-        if s.metadata >= s.config.MaxHeaderBytes { return "", error("http.Client: metadata too large") }
-        let c = s.nextByte()?
-        s.metadata += 1
-        if c == 13 {
-            if s.metadata >= s.config.MaxHeaderBytes { return "", error("http.Client: metadata too large") }
-            let lf = s.nextByte()?
-            s.metadata += 1
-            if lf != 10 { return "", error("http.Client: expected CRLF") }
-            return strings.FromBytes(data[:])
-        }
-        if c == 10 || c == 0 || c > 126 || (c < 32 && c != 9) { return "", error("http.Client: invalid line byte") }
-        data.push(c)
-    }
+    let budget = s.config.MaxHeaderBytes - s.metadata
+    let text, used, err = readLine(s, budget, "http.Client: ", "metadata too large", true)
+    s.metadata += used
+    return text, err
 }
 func (s mut clientStream) headers() (Header, error) {
     var headers = NewHeader()
@@ -249,9 +248,9 @@ func (s mut clientStream) headers() (Header, error) {
         let line = s.line()?
         if line == "" { return headers, nil }
         let name, value, found = strings.Cut(line, ":")
-        if !found { return NewHeader(), error("http.Client: invalid header") }
-        let err = headers.Add(name, strings.Trim(value, " \t"))
-        if err != nil { return NewHeader(), err }
+        if !found { return NewHeader(), error("http.Client: invalid response header line") }
+        if !token(name) { return NewHeader(), error("http.Client: invalid response header " + strconv.Quote(name)) }
+        headers.entries.push(HeaderEntry{Name: name, Value: strings.Trim(value, " \t")})
     }
 }
 func (s mut clientStream) appendBody(body mut Array<byte>, count int) error {
@@ -267,9 +266,18 @@ func (s mut clientStream) appendBody(body mut Array<byte>, count int) error {
     }
     return nil
 }
+func (s mut clientStream) chunkLine() (int, error) {
+    let budget = s.config.MaxHeaderBytes - s.metadata + clientChunkFraming
+    let text, used = readLine(s, budget, "http.Client: ", "chunk line too large", true)?
+    let sizeText, _, _ = strings.Cut(text, ";")
+    if sizeText.len() + 2 > clientChunkFraming { return 0, error("http.Client: chunk line too large") }
+    s.metadata += used - sizeText.len() - 2
+    if s.metadata > s.config.MaxHeaderBytes { return 0, error("http.Client: chunk line too large") }
+    return chunkSize(text)
+}
 func (s mut clientStream) chunkedBody(body mut Array<byte>) error {
     for {
-        let size = chunkSize(s.line()?)?
+        let size = s.chunkLine()?
         if size == 0 {
             let trailers = s.headers()?
             for entry in trailers.entries {
@@ -278,19 +286,18 @@ func (s mut clientStream) chunkedBody(body mut Array<byte>) error {
             return nil
         }
         s.appendBody(body, size)?
-        if s.metadata > s.config.MaxHeaderBytes - 2 { return error("http.Client: metadata too large") }
         let cr = s.nextByte()?
         let lf = s.nextByte()?
-        s.metadata += 2
         if cr != 13 || lf != 10 { return error("http.Client: expected chunk CRLF") }
     }
 }
+func (s mut clientStream) framedBody(body mut Array<byte>, chunked bool, length int) error {
+    if chunked { return s.chunkedBody(body) }
+    return s.appendBody(body, length)
+}
 func (s mut clientStream) response(method string) (ClientResponse, error) {
     for {
-        let line = s.line()?
-        if line.len() < 13 || line[:9] != "HTTP/1.1 " || line[12] != 32 { return emptyClientResponse(), error("http.Client: invalid HTTP/1.1 status line") }
-        let status = decimal(line[9:12])?
-        if status < 100 || status > 599 { return emptyClientResponse(), error("http.Client: invalid status code") }
+        let version, status = clientStatus(s.line()?)?
         let headers = s.headers()?
         let lengths = headers.Values("Content-Length")
         let encodings = headers.Values("Transfer-Encoding")
@@ -298,6 +305,7 @@ func (s mut clientStream) response(method string) (ClientResponse, error) {
         var length = -1
         if lengths.len() == 1 { length = decimal(lengths[0])? }
         let chunked = encodings.len() == 1
+        if chunked && version == "HTTP/1.0" { return emptyClientResponse(), error("http.Client: HTTP/1.0 response forbids Transfer-Encoding") }
         if chunked && !asciiEqual(encodings[0], "chunked") { return emptyClientResponse(), error("http.Client: unsupported transfer encoding") }
         if status < 200 {
             if status == 101 { return emptyClientResponse(), error("http.Client: protocol upgrade unsupported") }
@@ -307,11 +315,9 @@ func (s mut clientStream) response(method string) (ClientResponse, error) {
         if status == 204 && (length >= 0 || chunked) { return emptyClientResponse(), error("http.Client: 204 forbids framing") }
         var body = Array<byte>{}
         if method != "HEAD" && status != 204 && status != 304 {
-            if chunked {
-                let err = s.chunkedBody(body)
-                if err != nil { return emptyClientResponse(), err }
-            } else if length >= 0 {
-                let err = s.appendBody(body, length)
+            if chunked || length >= 0 {
+                let err = s.framedBody(body, chunked, length)
+                if err == io.EOF { return emptyClientResponse(), error("http.Client: unexpected EOF in body") }
                 if err != nil { return emptyClientResponse(), err }
             } else {
                 for {
@@ -329,4 +335,13 @@ func (s mut clientStream) response(method string) (ClientResponse, error) {
         if s.pending != nil && s.pending != io.EOF { return emptyClientResponse(), s.pending }
         return ClientResponse{StatusCode: status, Headers: headers, Body: body}, nil
     }
+}
+func clientStatus(line string) (string, int, error) {
+    let version, rest, found = strings.Cut(line, " ")
+    if !found || (version != "HTTP/1.1" && version != "HTTP/1.0") { return "", 0, error("http.Client: invalid status line") }
+    let code, _, _ = strings.Cut(rest, " ")
+    if code.len() != 3 { return "", 0, error("http.Client: invalid status line") }
+    let status, err = decimal(code)
+    if err != nil || status < 100 || status > 599 { return "", 0, error("http.Client: invalid status code") }
+    return version, status, nil
 }

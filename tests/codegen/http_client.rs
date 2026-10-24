@@ -11,6 +11,10 @@ import "std/net/http"
 import "std/os"
 import "std/time"
 async func cancelSoon(done channel<bool>) { time.Sleep(30 * time.Millisecond); done.close() }
+func send(client http.Client, ctx context.Context, args []string, headers http.Header, payload []byte) (http.ClientResponse, error) {
+    if args[3] == "get" { return client.Get(ctx, args[1]) }
+    return client.Do(ctx, args[2], args[1], headers, payload)
+}
 func request() error {
     let args = os.Args()
     var config = http.DefaultClientConfig()
@@ -30,11 +34,12 @@ func request() error {
     let ctx, cancel = context.WithCancelOn(timed, done)
     if args[3] == "cancel" { go cancelSoon(done) }
     if args[3] == "precancel" { cancel() }
-    let response, err = client.Do(ctx, args[2], args[1], headers, payload[:])
+    let response, err = send(client, ctx, args[:], headers, payload[:])
     cancel()
     stopTimer()
     if err != nil { return err }
     println(response.StatusCode)
+    if args[3] == "header" { for value in response.Headers.Values("X-Name") { println(value) } }
     if args[3] == "json" { var decoded = ""; json.Unmarshal(response.Body[:], decoded)?; println(decoded) } else { for b in response.Body { println(int(b)) } }
     return nil
 }
@@ -178,10 +183,10 @@ fn serve_client_peer(
             return Err("request headers too large".into());
         }
     }
-    let expected_payload: &[u8] = if mode == "json" {
-        b"\"Ada\""
-    } else {
-        &[0, 255, 65]
+    let expected_payload: &[u8] = match mode {
+        "json" => b"\"Ada\"",
+        "get" => b"",
+        _ => &[0, 255, 65],
     };
     let mut payload = vec![0; expected_payload.len()];
     match stream.read_exact(&mut payload) {
@@ -201,11 +206,15 @@ fn serve_client_peer(
     if mode == "delayed" {
         std::thread::sleep(Duration::from_millis(350));
     }
-    for byte in bytes {
-        if stream.write_all(&[*byte]).is_err() {
-            break;
+    if mode == "bulk" {
+        let _ = stream.write_all(bytes);
+    } else {
+        for byte in bytes {
+            if stream.write_all(&[*byte]).is_err() {
+                break;
+            }
+            std::thread::sleep(Duration::from_micros(200));
         }
-        std::thread::sleep(Duration::from_micros(200));
     }
     if expected_client_error(mode).is_none() {
         let _ = stream.shutdown(Shutdown::Write);
@@ -284,6 +293,12 @@ fn http_client_real_fragmented_binary_framing_and_hostile_peers() {
         (b"HTTP/1.1 304 Not Modified\r\nContent-Length: 9999999\r\n\r\n", "GET", "304\n"),
         (b"HTTP/1.1 205 Reset Content\r\nContent-Length: 0\r\n\r\n", "GET", "205\n"),
         (b"HTTP/1.1 302 Found\r\nLocation: https://elsewhere/\r\nContent-Length: 0\r\n\r\n", "GET", "302\n"),
+        (b"HTTP/1.0 200 OK\r\nContent-Length: 3\r\n\r\n\0\xffA", "GET", "200\n0\n255\n65\n"),
+        (b"HTTP/1.0 200 OK\r\nServer: SimpleHTTP/0.6 Python/3.12.3\r\n\r\n\0\xffA", "GET", "200\n0\n255\n65\n"),
+        (b"HTTP/1.1 200\r\nContent-Length: 3\r\n\r\n\0\xffA", "GET", "200\n0\n255\n65\n"),
+        (b"HTTP/1.1 404 \r\nContent-Length: 0\r\n\r\n", "GET", "404\n"),
+        (b"HTTP/1.1 200 Tr\xc3\xa8s bien\r\nContent-Length: 3\r\n\r\n\0\xffA", "GET", "200\n0\n255\n65\n"),
+        (b"HTTP/1.1 200 Caf\xe9\r\nContent-Length: 3\r\n\r\n\0\xffA", "GET", "200\n0\n255\n65\n"),
     ];
     for (response, method, expected) in successes {
         let (output, request) = client_peer(&executable, response, method, "ok");
@@ -310,6 +325,58 @@ fn http_client_real_fragmented_binary_framing_and_hostile_peers() {
         .0,
         "200\n0\n255\n65\n",
         "delayed binary response"
+    );
+    assert_eq!(
+        client_peer(
+            &executable,
+            b"HTTP/1.1 200 OK\r\nX-Name: Zo\xc3\xab \xe2\x9c\x93\r\nX-Name: Zo\xeb\r\nContent-Length: 0\r\n\r\n",
+            "GET",
+            "header"
+        )
+        .0,
+        "200\nZo\u{eb} \u{2713}\nZo\u{eb}\n",
+        "obs-text header values"
+    );
+    let (get_output, get_request) = client_peer(
+        &executable,
+        b"HTTP/1.1 200 OK\r\nContent-Length: 1\r\n\r\nA",
+        "GET",
+        "get",
+    );
+    assert_eq!(get_output, "200\n65\n");
+    let get_text = String::from_utf8(get_request).unwrap();
+    assert!(
+        get_text.starts_with("GET /a%2Fb?q=x%20y HTTP/1.1\r\nHost: 127.0.0.1:")
+            && get_text.contains("\r\nContent-Length: 0\r\n"),
+        "{get_text}"
+    );
+    let mut many_chunks = b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n".to_vec();
+    for _ in 0..7500 {
+        many_chunks.extend_from_slice(b"1\r\nA\r\n");
+    }
+    many_chunks.extend_from_slice(b"0\r\n\r\n");
+    assert_eq!(
+        client_peer(&executable, &many_chunks, "GET", "bulk").0,
+        format!("200\n{}", "65\n".repeat(7500)),
+        "tiny chunks exceed the metadata budget only through framing"
+    );
+    let oversized_extension = format!(
+        "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n1;x={}\r\nA\r\n0\r\n\r\n",
+        "y".repeat(40000)
+    );
+    assert!(
+        client_peer(&executable, oversized_extension.as_bytes(), "GET", "bulk")
+            .0
+            .contains("chunk line too large")
+    );
+    let padded_size = format!(
+        "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n{}1\r\nA\r\n0\r\n\r\n",
+        "0".repeat(100)
+    );
+    assert!(
+        client_peer(&executable, padded_size.as_bytes(), "GET", "bulk")
+            .0
+            .contains("chunk line too large")
     );
     let (json_output, json_request) = client_peer(&executable, b"HTTP/1.1 201 Created\r\nContent-Type: application/json\r\nContent-Length: 5\r\n\r\n\"Ada\"", "POST", "json");
     assert_eq!(json_output, "201\nAda\n");
@@ -351,19 +418,62 @@ fn http_client_real_fragmented_binary_framing_and_hostile_peers() {
             b"HTTP/1.1 205 Reset Content\r\nContent-Length: 1\r\n\r\nx",
             "205 forbids content",
         ),
-        (b"HTTP/1.0 200 OK\r\n\r\n", "invalid HTTP/1.1 status line"),
+        (b"HTTP/2.0 200 OK\r\n\r\n", "invalid status line"),
+        (b"HTTP/1.2 200 OK\r\n\r\n", "invalid status line"),
+        (b"HTTP/1.1  200 OK\r\n\r\n", "invalid status line"),
+        (b"HTTP/1.1 20 OK\r\n\r\n", "invalid status line"),
+        (b"HTTP/1.1 2000\r\n\r\n", "invalid status line"),
+        (b"HTTP/1.1 2x0 OK\r\n\r\n", "invalid status code"),
+        (b"HTTP/1.1 600 OK\r\n\r\n", "invalid status code"),
+        (b"HTTP/1.1\r\n\r\n", "invalid status line"),
+        (
+            b"HTTP/1.0 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n\r\n",
+            "HTTP/1.0 response forbids Transfer-Encoding",
+        ),
         (b"HTTP/1.1 200 OK\n\n", "invalid line byte"),
+        (b"HTTP/1.1 200 O\x01K\r\n\r\n", "invalid line byte"),
+        (
+            b"HTTP/1.1 200 OK\r\nX-Bad: a\x7fb\r\n\r\n",
+            "invalid line byte",
+        ),
+        (
+            b"HTTP/1.1 200 OK\r\nX-Bad: a\0b\r\n\r\n",
+            "invalid line byte",
+        ),
+        (
+            b"HTTP/1.1 200 OK\r\nCaf\xc3\xa9: x\r\n\r\n",
+            "invalid response header \"Caf\u{e9}\"",
+        ),
         (
             b"HTTP/1.1 200 OK\r\n Folded: x\r\n\r\n",
-            "http.Header: invalid field",
+            "invalid response header \" Folded\"",
         ),
-        (b"HTTP/1.1 200 OK\r\nContent-Length: 3\r\n\r\nx", "EOF"),
+        (
+            b"HTTP/1.1 200 OK\r\nNo colon\r\n\r\n",
+            "invalid response header line",
+        ),
+        (
+            b"HTTP/1.1 200 OK\r\nContent-Length: 3\r\n\r\nx",
+            "http.Client: unexpected EOF in body",
+        ),
+        (
+            b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n4\r\nAB",
+            "http.Client: unexpected EOF in body",
+        ),
+        (
+            b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n4\r\nABCD\r\n",
+            "http.Client: unexpected EOF in body",
+        ),
         (
             b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\nq\r\n",
             "invalid chunk size",
         ),
         (
             b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n1;x=\"unterminated\r\n",
+            "invalid chunk extension",
+        ),
+        (
+            b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n1;caf\xc3\xa9\r\nA\r\n0\r\n\r\n",
             "invalid chunk extension",
         ),
         (
@@ -440,19 +550,31 @@ import "std/context"
 import "std/net/http"
 import "std/net/url"
 func main() {
-    let valid = [string; 6]{"HTTP://Example.com", "https://[::1]:8443/a%2Fb?q=x", "http://127.0.0.1?x=1", "http://[::ffff:192.0.2.1]/", "https://a.example./a//../b", "http://localhost:65535/"}
+    let valid = [string; 9]{"HTTP://Example.com", "https://[::1]:8443/a%2Fb?q=x", "http://127.0.0.1?x=1", "http://[::ffff:192.0.2.1]/", "https://a.example./a//../b", "http://localhost:65535/", "http://my_db:5432/health", "http://host/a?b=c#frag ment", "http://host#top"}
     for text in valid {
         let parsed, err = url.ParseAbsolute(text)
         if err != nil { panic("valid URL") }
         println(parsed.Scheme + " " + parsed.Authority + " " + parsed.Address + " " + parsed.RequestTarget)
     }
-    let invalid = [string; 22]{"/relative", "ftp://host/", "http://user@host/", "http://host/#fragment", "http://host/a b", "http://host/%zz", "http://host/%a", "http://host/é", "http://host/\\x", "http:///", "http://host:", "http://host:0", "http://host:65536", "http://host:-1", "http://::1/", "http://[1:2:3]/", "http://[::1%25lo]/", "http://[1::2::3]/", "http://999.1.2.3/", "http://01.2.3.4/", "http://-host/", "http://host..test/"}
+    let invalid = [string; 23]{"/relative", "ftp://host/", "httpss://host/", "HTTP:/host/", "http://user@host/", "http://host/a b", "http://host/%zz", "http://host/%a", "http://host/é", "http://host/\\x", "http:///", "http://host:", "http://host:0", "http://host:65536", "http://host:-1", "http://::1/", "http://[1:2:3]/", "http://[::1%25lo]/", "http://[1::2::3]/", "http://999.1.2.3/", "http://01.2.3.4/", "http://-host/", "http://host..test/"}
     for text in invalid { let _, err = url.ParseAbsolute(text); if err == nil { panic("invalid URL") } }
     let client, err = http.NewClient(http.DefaultClientConfig())
     if err != nil { panic("client") }
     let empty = Array<byte>{}
     let _, httpsErr = client.Do(context.Background(), "GET", "https://localhost/", http.NewHeader(), empty[:])
     println(httpsErr != nil)
+    let _, getErr = http.Get(context.Background(), "https://localhost/")
+    if getErr != error("http.Client: HTTPS requires verified TLS transport") { panic("package Get") }
+    let _, methodGetErr = client.Get(context.Background(), "/relative")
+    if methodGetErr != error("url: expected absolute http or https URL") { panic("client Get") }
+    var limits = http.DefaultClientConfig()
+    limits.MaxRequestBodyBytes = 2
+    limits.MaxBodyBytes = 1
+    let limited, limitsErr = http.NewClient(limits)
+    if limitsErr != nil { panic("limits") }
+    let three = Array<byte>{1, 2, 3}
+    let _, uploadErr = limited.Do(context.Background(), "POST", "http://localhost:1/", http.NewHeader(), three[:])
+    if uploadErr != error("http.Client: request body too large") { panic("request body limit") }
     let controls = [string; 9]{"Host", "Content-Length", "Transfer-Encoding", "Connection", "Trailer", "Upgrade", "Expect", "Proxy-Connection", "Bad Name"}
     for name in controls {
         var headers = http.NewHeader()
@@ -475,7 +597,7 @@ func main() {
     if emptyClientErr != error("http.Client: empty client") { panic("empty client") }
 }
 "#,
-        "http Example.com Example.com:80 /\nhttps [::1]:8443 [::1]:8443 /a%2Fb?q=x\nhttp 127.0.0.1 127.0.0.1:80 /?x=1\nhttp [::ffff:192.0.2.1] [::ffff:192.0.2.1]:80 /\nhttps a.example. a.example.:443 /a//../b\nhttp localhost:65535 localhost:65535 /\ntrue\ntrue\ntrue\n",
+        "http Example.com Example.com:80 /\nhttps [::1]:8443 [::1]:8443 /a%2Fb?q=x\nhttp 127.0.0.1 127.0.0.1:80 /?x=1\nhttp [::ffff:192.0.2.1] [::ffff:192.0.2.1]:80 /\nhttps a.example. a.example.:443 /a//../b\nhttp localhost:65535 localhost:65535 /\nhttp my_db:5432 my_db:5432 /health\nhttp host host:80 /a?b=c\nhttp host host:80 /\ntrue\ntrue\ntrue\n",
     );
 }
 
@@ -488,6 +610,7 @@ const FAULTED_CLIENT: &str = r#"package main
 import "std/context"
 import "std/io"
 import "std/net/http"
+import "std/net/url"
 import "std/strings"
 import "std/time"
 type Conn struct { sent int; cursor int; mode int; drops channel<int>; done channel<bool>; ctx context.Context }
@@ -539,9 +662,9 @@ func (c mut Conn) Read(data mut []byte) (int, error) {
     return 1, nil
 }
 type Transport struct { drops channel<int>; mode int; calls channel<bool>; done channel<bool>; ctx context.Context }
-func (t Transport) Dial(ctx context.Context, scheme string, authority string) (http.ClientConn, error) {
+func (t Transport) Dial(ctx context.Context, target url.AbsoluteURL) (http.ClientConn, error) {
     if t.mode == 12 { panic("stopped caller dialed") }
-    if scheme != "https" || authority != "example.test" || ctx.Err() != nil { panic("dial contract") }
+    if target.Scheme != "https" || target.Authority != "example.test" || target.Hostname != "example.test" || target.Address != "example.test:443" || target.RequestTarget != "/" || ctx.Err() != nil { panic("dial contract") }
     t.calls.send(true)
     if t.mode == 10 {
         let _, _ = ctx.Done().receive()

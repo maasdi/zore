@@ -1,0 +1,39 @@
+package https
+
+import "std/context"
+import "std/net/http"
+import "std/net/url"
+import "tls"
+
+type Transport struct { config tls.ClientConfig }
+type conn struct { source tls.Conn }
+
+func NewTransport(rootsPEM []byte) (Transport, error) {
+    let config = tls.NewClientConfig(rootsPEM)?
+    return Transport{config: config}, nil
+}
+func NewClient(rootsPEM []byte, config http.ClientConfig) (http.Client, error) {
+    let transport = NewTransport(rootsPEM)?
+    return http.NewClientWithTransport(config, transport)
+}
+func requireHTTPS(target url.AbsoluteURL) error {
+    if target.Scheme != "https" { return error("https.Transport: requires an https URL") }
+    return nil
+}
+func (t Transport) Dial(ctx context.Context, target url.AbsoluteURL) (http.ClientConn, error) {
+    requireHTTPS(target)?
+    let source = tls.DialContext(ctx, target.Address, target.Hostname, t.config)?
+    return conn{source: source}, nil
+}
+func (c mut conn) Read(data mut []byte) (int, error) {
+    let n, err = c.source.Read(data)
+    if err == error("tls: timed out") { return n, http.ClientPollTimeout }
+    return n, err
+}
+func (c mut conn) Write(data []byte) (int, error) {
+    let n, err = c.source.Write(data)
+    if err == error("tls: timed out") { return n, http.ClientPollTimeout }
+    return n, err
+}
+func (c mut conn) SetReadDeadline(deadline int) error { return c.source.SetReadDeadline(deadline) }
+func (c mut conn) SetWriteDeadline(deadline int) error { return c.source.SetWriteDeadline(deadline) }
