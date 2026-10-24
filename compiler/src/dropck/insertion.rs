@@ -11,7 +11,12 @@ pub fn insert(package: &hir::Package, program: &mut Program) {
 }
 
 fn insert_body(package: &hir::Package, body: &mut Body) {
-    let unwind = BlockId(body.blocks.len() as u32);
+    let has_return = body
+        .blocks
+        .iter()
+        .any(|block| matches!(block.terminator, Terminator::Return));
+    let exit = has_return.then_some(BlockId(body.blocks.len() as u32));
+    let unwind = BlockId((body.blocks.len() + usize::from(has_return)) as u32);
     let mut guards = Vec::new();
     for block in &body.blocks {
         for statement in &block.statements {
@@ -129,21 +134,26 @@ fn insert_body(package: &hir::Package, body: &mut Body) {
                 unwind: Some(unwind),
                 span,
             },
-            Terminator::Return => {
-                for &local in owned.iter().rev() {
-                    if !body.returns.contains(&local) {
-                        statements.push(Statement::Drop {
-                            place: Place::local(local),
-                            replacement: false,
-                            before_store: false,
-                        });
-                    }
-                }
-                Terminator::Return
-            }
+            Terminator::Return => Terminator::Goto(exit.expect("a return was counted")),
             other => other,
         };
         body.blocks[index].statements = statements;
+    }
+    if has_return {
+        let statements = owned
+            .iter()
+            .rev()
+            .filter(|local| !body.returns.contains(local))
+            .map(|&local| Statement::Drop {
+                place: Place::local(local),
+                replacement: false,
+                before_store: false,
+            })
+            .collect();
+        body.blocks.push(BasicBlock {
+            statements,
+            terminator: Terminator::Return,
+        });
     }
     body.blocks.push(BasicBlock {
         statements: body
