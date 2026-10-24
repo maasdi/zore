@@ -14,7 +14,8 @@ async func cancelSoon(done channel<bool>) { time.Sleep(30 * time.Millisecond); d
 func request() error {
     let args = os.Args()
     var config = http.DefaultClientConfig()
-    config.Timeout = 300 * time.Millisecond
+    config.Timeout = 3 * time.Second
+    if args[3] == "timeout" { config.Timeout = 300 * time.Millisecond }
     if args[3] == "body" { config.MaxBodyBytes = 3 }
     if args[3] == "headers" { config.MaxHeaderBytes = 160 }
     let client = http.NewClient(config)?
@@ -22,7 +23,7 @@ func request() error {
     headers.Add("X-Test", "yes")?
     var payload = Array<byte>{0, 255, 65}
     if args[3] == "json" { payload = json.Marshal("Ada")?; headers.Add("Content-Type", "application/json")? }
-    var contextBudget = time.Second
+    var contextBudget = 4 * time.Second
     if args[3] == "context" { contextBudget = 30 * time.Millisecond }
     let timed, stopTimer = context.WithTimeout(context.Background(), contextBudget)
     let done = channel<bool>()
@@ -140,6 +141,9 @@ fn client_peer(executable: &Path, response: &[u8], method: &str, mode: &str) -> 
         let mut payload = vec![0; expected_payload.len()];
         stream.read_exact(&mut payload).unwrap();
         assert_eq!(payload, expected_payload);
+        if peer_mode == "delayed" {
+            std::thread::sleep(Duration::from_millis(350));
+        }
         for byte in bytes {
             if stream.write_all(&[byte]).is_err() {
                 break;
@@ -194,7 +198,7 @@ fn http_client_real_fragmented_binary_framing_and_hostile_peers() {
     ];
     for (response, method, expected) in successes {
         let (output, request) = client_peer(&executable, response, method, "ok");
-        assert_eq!(output, *expected);
+        assert_eq!(output, *expected, "{method} response={response:?}");
         let text = String::from_utf8(request).unwrap();
         assert!(
             text.starts_with(&format!(
@@ -207,6 +211,17 @@ fn http_client_real_fragmented_binary_framing_and_hostile_peers() {
             "{text}"
         );
     }
+    assert_eq!(
+        client_peer(
+            &executable,
+            b"HTTP/1.1 200 OK\r\nContent-Length: 3\r\n\r\n\0\xffA",
+            "GET",
+            "delayed"
+        )
+        .0,
+        "200\n0\n255\n65\n",
+        "delayed binary response"
+    );
     let (json_output, json_request) = client_peer(&executable, b"HTTP/1.1 201 Created\r\nContent-Type: application/json\r\nContent-Length: 5\r\n\r\n\"Ada\"", "POST", "json");
     assert_eq!(json_output, "201\nAda\n");
     assert!(
@@ -321,7 +336,8 @@ fn http_client_real_fragmented_binary_framing_and_hostile_peers() {
                 mode
             )
             .0,
-            format!("{expected}\n")
+            format!("{expected}\n"),
+            "{mode}"
         );
     }
 }
