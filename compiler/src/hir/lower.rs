@@ -7,6 +7,7 @@ mod interface;
 mod json;
 mod map_entry;
 mod method_value;
+mod signature;
 mod spawn;
 
 use std::collections::{HashMap, HashSet};
@@ -65,6 +66,7 @@ pub(crate) fn check_with_entry(
         inferring_result: false,
         implementations: HashMap::new(),
         call_expected: None,
+        json_contracts: Default::default(),
     };
     checker.closures = checker.res.closures.iter().map(|_| None).collect();
     checker.signatures_and_fields();
@@ -145,6 +147,7 @@ pub(crate) fn check_with_entry(
     let structs = (0..checker.types.struct_count())
         .map(|index| checker.hir_struct(StructId(index as u32), &struct_methods))
         .collect();
+    let declared_types = checker.declared_types();
     let mut package = hir::Package {
         name: checker.res.package.clone(),
         types: std::mem::take(&mut checker.types),
@@ -154,6 +157,7 @@ pub(crate) fn check_with_entry(
         globals,
         init: None,
         implementations: std::mem::take(&mut checker.implementations),
+        declared_types,
     };
     let mut diagnostics = http::adapt(&mut package);
     diagnostics.extend(globals::check(&mut package, &initializers));
@@ -225,6 +229,7 @@ struct Checker<'a> {
     implementations: HashMap<(TypeId, InterfaceId), Vec<hir::Implementation>>,
     /// The type the call being checked is expected to have, which a generic call can infer from.
     call_expected: Option<TypeId>,
+    json_contracts: json::CodecContracts,
 }
 
 struct BodyState {
@@ -290,6 +295,30 @@ fn op_str(op: BinaryOp) -> &'static str {
 }
 
 impl<'a> Checker<'a> {
+    fn declared_types(&self) -> HashMap<(String, String), TypeId> {
+        let package_path = |package: usize| self.res.packages[package].path.clone();
+        let structs = self.res.structs.iter().enumerate().map(|(index, decl)| {
+            (
+                (
+                    package_path(self.res.struct_package[index]),
+                    decl.name.text.clone(),
+                ),
+                self.types.struct_type(StructId(index as u32)),
+            )
+        });
+        let interfaces = self
+            .res
+            .interfaces
+            .iter()
+            .map(|&(decl, package, ty)| ((package_path(package), decl.name.text.clone()), ty));
+        let named = self
+            .res
+            .named
+            .iter()
+            .map(|&(decl, package, ty)| ((package_path(package), decl.name.text.clone()), ty));
+        structs.chain(interfaces).chain(named).collect()
+    }
+
     fn error(&mut self, message: impl Into<String>, span: Span) {
         self.diagnostics
             .push(Diagnostic::new(Severity::Error, message, span));
