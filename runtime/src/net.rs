@@ -380,3 +380,14 @@ pub extern "C" fn zore_native_net_close_handle(id: i64) {
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 #[path = "net_poll.rs"]
 mod poll;
+
+#[cfg(any(test, zore_test_hooks))]
+pub(super) fn live_handles() -> usize {
+    table().as_ref().map_or(0, HashMap::len)
+}
+
+#[cfg(test)]
+pub(super) fn test_connection(stream: TcpStream) -> i64 {
+    prepare(&stream).unwrap();
+    insert(connection(stream))
+}

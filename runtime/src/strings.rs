@@ -541,9 +541,18 @@ mod tests {
                 sep.as_ptr(),
                 sep.len() as i64,
             );
-            (0..out.len as usize)
+            let result = (0..out.len as usize)
                 .map(|index| read(&*out.data.add(index)))
-                .collect()
+                .collect();
+            for index in 0..out.len as usize {
+                let piece = &*out.data.add(index);
+                crate::string::zore_string_release(piece.data, piece.len);
+            }
+            crate::alloc::zore_free(
+                out.data.cast(),
+                out.cap * std::mem::size_of::<StringOut>() as i64,
+            );
+            result
         }
     }
 
