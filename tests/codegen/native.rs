@@ -5052,6 +5052,40 @@ func main() {
 }
 
 #[test]
+fn a_canceled_context_is_visible_in_its_descendants_before_they_run() {
+    let source = "package main
+import \"std/context\"
+import \"std/time\"
+func closed(ctx context.Context) bool {
+    select {
+        case ctx.Done().receive() { return true }
+        default { return false }
+    }
+}
+async func observe() {
+    let parent, cancel = context.WithCancel(context.Background())
+    let child, stopChild = context.WithCancel(parent)
+    let grandchild, stopGrandchild = context.WithTimeout(child, time.Hour)
+    cancel()
+    println(grandchild.Err() == error(\"context canceled\"))
+    println(closed(grandchild))
+    println(child.Err() == error(\"context canceled\"))
+    println(closed(child))
+    stopGrandchild()
+    stopChild()
+}
+func main() {
+    let task = go observe()
+    task.wait()
+    waitIdle(0)
+}";
+    let output = run_controlled_one_worker(source);
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    assert_eq!(stdout(&output), "true\ntrue\ntrue\ntrue\n");
+    assert!(output.stderr.is_empty(), "{}", stderr(&output));
+}
+
+#[test]
 fn reads_and_accepts_give_up_at_their_deadline() {
     let source = format!(
         "package main

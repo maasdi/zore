@@ -7,15 +7,16 @@ const canceled = 1
 const expired = 2
 
 type Context struct {
-    done     channel<bool>
-    state    Mutex<int>
-    live     bool
-    deadline int
-    limited  bool
+    done      channel<bool>
+    state     Mutex<int>
+    ancestors Mutex<Array<Mutex<int>>>
+    live      bool
+    deadline  int
+    limited   bool
 }
 
 func Background() Context {
-    return Context{done: channel<bool>(), state: mutex(active), live: false, deadline: 0, limited: false}
+    return Context{done: channel<bool>(), state: mutex(active), ancestors: mutex(Array<Mutex<int>>{}), live: false, deadline: 0, limited: false}
 }
 
 func TODO() Context {
@@ -82,7 +83,14 @@ func (c Context) Deadline() (int, bool) {
 }
 
 func derive(parent Context, deadline int, limited bool) Context {
-    let ctx = Context{done: channel<bool>(), state: mutex(active), live: true, deadline: deadline, limited: limited}
+    let ancestors = parent.ancestors.withLock(func(states mut Array<Mutex<int>>) Array<Mutex<int>> {
+        var lineage = Array<Mutex<int>>{parent.state}
+        for state in states {
+            lineage.push(state)
+        }
+        return lineage
+    })
+    let ctx = Context{done: channel<bool>(), state: mutex(active), ancestors: mutex(ancestors), live: true, deadline: deadline, limited: limited}
     if parent.live {
         let inherited = parent.reason()
         if inherited != active {
@@ -95,6 +103,20 @@ func derive(parent Context, deadline int, limited bool) Context {
 }
 
 func (c Context) reason() int {
+    let inherited = c.ancestors.withLock(func(states mut Array<Mutex<int>>) int {
+        for ancestor in states {
+            let reason = ancestor.withLock(func(state mut int) int {
+                return state
+            })
+            if reason != active {
+                return reason
+            }
+        }
+        return active
+    })
+    if inherited != active {
+        c.cancel(inherited)
+    }
     return c.state.withLock(func(state mut int) int {
         return state
     })
