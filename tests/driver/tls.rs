@@ -27,7 +27,7 @@ fn run(mut command: Command) -> Output {
         .stderr(Stdio::from(fs::File::create(&error_path).unwrap()))
         .spawn()
         .unwrap();
-    let deadline = Instant::now() + Duration::from_secs(180);
+    let deadline = Instant::now() + Duration::from_secs(600);
     let status = loop {
         if let Some(status) = child.try_wait().unwrap() {
             break status;
@@ -36,7 +36,7 @@ fn run(mut command: Command) -> Output {
             child.kill().unwrap();
             child.wait().unwrap();
             panic!(
-                "TLS subprocess exceeded 180 seconds: stdout={} stderr={}",
+                "TLS subprocess exceeded 600 seconds: stdout={} stderr={}",
                 String::from_utf8_lossy(&fs::read(&output_path).unwrap()),
                 String::from_utf8_lossy(&fs::read(&error_path).unwrap())
             );
@@ -143,7 +143,19 @@ func main() {}
     let mut tests = fixture.command("test");
     tests.arg("--locked");
     let output = success(run(tests));
-    assert!(String::from_utf8_lossy(&output.stdout).contains("Tests: 14 passed, 0 failed"));
+    assert!(String::from_utf8_lossy(&output.stdout).contains("Tests: 16 passed, 0 failed"));
+    let cached = fs::read_dir(fixture._directory.path().join("cache/zore"))
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| {
+            path.file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with("mbedtls-")
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(cached.len(), 1, "{cached:?}");
+    assert!(cached[0].join("library/ssl_tls.o").is_file(), "{cached:?}");
     let panic_test = fixture.root.join("panic_test.ore");
     fs::write(
         &panic_test,

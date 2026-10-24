@@ -30,7 +30,9 @@ typedef struct {
     unsigned char output[CAPACITY];
     size_t input_length;
     size_t output_length;
-    Identity *identity;
+    int server;
+    mbedtls_x509_crt certificates;
+    mbedtls_pk_context key;
     int status;
     int peer_closed;
     int shutdown_sent;
@@ -126,41 +128,50 @@ void zore_tls_session_free(void *pointer) {
     mbedtls_ssl_config_free(&session->config);
     mbedtls_ctr_drbg_free(&session->random);
     mbedtls_entropy_free(&session->entropy);
-    zore_tls_config_free(session->identity);
+    mbedtls_x509_crt_free(&session->certificates);
+    mbedtls_pk_free(&session->key);
     mbedtls_platform_zeroize(session, sizeof(*session));
     free(session);
 }
 
 void *zore_tls_session(void *pointer, const char *name, char *error) {
-    Identity *source = pointer;
-    Identity *identity = zore_tls_config(source->server, source->cert_pem, source->cert_len, source->key_pem, source->key_len, error);
-    if (identity == NULL) return NULL;
+    const Identity *source = pointer;
     Session *session = calloc(1, sizeof(*session));
-    if (session == NULL) { zore_tls_config_free(identity); snprintf(error, ERROR_CAPACITY, "allocation failed"); return NULL; }
-    session->identity = identity;
+    if (session == NULL) { snprintf(error, ERROR_CAPACITY, "allocation failed"); return NULL; }
+    session->server = source->server;
     mbedtls_ssl_init(&session->ssl);
     mbedtls_ssl_config_init(&session->config);
     mbedtls_entropy_init(&session->entropy);
     mbedtls_ctr_drbg_init(&session->random);
+    mbedtls_x509_crt_init(&session->certificates);
+    mbedtls_pk_init(&session->key);
     int status = mbedtls_ctr_drbg_seed(&session->random, mbedtls_entropy_func, &session->entropy,
                                      (const unsigned char *)"zore-tls-v1", 11);
     if (status != 0) goto fail;
+    /* Per-session copies: shared RSA and X.509 objects would need MBEDTLS_THREADING_C. */
+    status = mbedtls_x509_crt_parse(&session->certificates, source->cert_pem, source->cert_len + 1);
+    if (status != 0) goto fail;
+    if (session->server) {
+        status = mbedtls_pk_parse_key(&session->key, source->key_pem, source->key_len + 1, NULL, 0,
+                                      mbedtls_ctr_drbg_random, &session->random);
+        if (status != 0) goto fail;
+    }
     status = mbedtls_ssl_config_defaults(&session->config,
-        identity->server ? MBEDTLS_SSL_IS_SERVER : MBEDTLS_SSL_IS_CLIENT,
+        session->server ? MBEDTLS_SSL_IS_SERVER : MBEDTLS_SSL_IS_CLIENT,
         MBEDTLS_SSL_TRANSPORT_STREAM, MBEDTLS_SSL_PRESET_DEFAULT);
     if (status != 0) goto fail;
     mbedtls_ssl_conf_rng(&session->config, mbedtls_ctr_drbg_random, &session->random);
-    if (identity->server) {
-        status = mbedtls_ssl_conf_own_cert(&session->config, &identity->certificates, &identity->key);
+    if (session->server) {
+        status = mbedtls_ssl_conf_own_cert(&session->config, &session->certificates, &session->key);
         if (status != 0) goto fail;
         mbedtls_ssl_conf_authmode(&session->config, MBEDTLS_SSL_VERIFY_NONE);
     } else {
-        mbedtls_ssl_conf_ca_chain(&session->config, &identity->certificates, NULL);
+        mbedtls_ssl_conf_ca_chain(&session->config, &session->certificates, NULL);
         mbedtls_ssl_conf_authmode(&session->config, MBEDTLS_SSL_VERIFY_REQUIRED);
     }
     status = mbedtls_ssl_setup(&session->ssl, &session->config);
     if (status != 0) goto fail;
-    if (!identity->server) {
+    if (!session->server) {
         status = mbedtls_ssl_set_hostname(&session->ssl, name);
         if (status != 0) goto fail;
     }
@@ -221,6 +232,8 @@ int zore_tls_feed(void *pointer, const unsigned char *data, size_t length, char 
     session->input_length += length;
     return 0;
 }
+
+size_t zore_tls_pending(void *pointer) { return ((Session *)pointer)->output_length; }
 
 int zore_tls_output(void *pointer, unsigned char *data) {
     Session *session = pointer;

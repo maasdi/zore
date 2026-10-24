@@ -17,11 +17,11 @@ require a reviewed recipe fingerprint update. Upstream release notes, security
 policy and support information are in the release archive.
 
 The fixed configuration supports AES, CTR-DRBG, SHA-256/384/512, HMAC through
-the message-digest layer, constant-time comparison and host entropy, plus TLS 1.2
-client and server connections limited to ECDHE RSA/ECDSA key exchange with
-AES-GCM on P-256/P-384, extended master secret, encrypt-then-MAC, SNI and
-explicit PEM roots and identities. SHA-512 is the entropy accumulator. No system
-crypto or TLS library is used. Windows links the OS
+the message-digest layer, constant-time comparison and host entropy, plus TLS
+1.2 client and server connections limited to ECDHE RSA/ECDSA key exchange with
+AES-GCM on P-256/P-384, extended master secret, encrypt-then-MAC, SNI, all fatal
+alerts and explicit PEM roots and identities. SHA-512 is the entropy
+accumulator. No system crypto or TLS library is used. Windows links the OS
 bcrypt entropy API. The compiled objects are cached per closure, compiler and
 flags; vendored sources are compiled without warnings as errors.
 
