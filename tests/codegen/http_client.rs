@@ -41,19 +41,28 @@ func request() error {
 func main() { let err = request(); if err != nil { println(errors.Message(err)) } }
 "#;
 
-fn finish_bounded(mut child: std::process::Child) -> Output {
+fn collect_bounded(mut child: std::process::Child) -> (Output, bool) {
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
         if child.try_wait().unwrap().is_some() {
-            return child.wait_with_output().unwrap();
+            return (child.wait_with_output().unwrap(), false);
         }
         if Instant::now() >= deadline {
             child.kill().unwrap();
-            let output = child.wait_with_output().unwrap();
-            panic!("HTTP client exceeded process deadline: {}", stderr(&output));
+            return (child.wait_with_output().unwrap(), true);
         }
         std::thread::sleep(Duration::from_millis(5));
     }
+}
+
+fn finish_bounded(child: std::process::Child) -> Output {
+    let (output, timed_out) = collect_bounded(child);
+    assert!(
+        !timed_out,
+        "HTTP client exceeded process deadline: {}",
+        stderr(&output)
+    );
+    output
 }
 
 fn client_prints(source: &str, expected: &str) {
@@ -105,79 +114,159 @@ fn http_client_peer_uses_blocking_io_after_nonblocking_accept() {
     peer.join().unwrap();
 }
 
+#[derive(Debug)]
+enum ClientPeerOutcome {
+    NoConnection,
+    ClosedDuringRequest,
+    Request(Vec<u8>),
+}
+
+fn expected_client_error(mode: &str) -> Option<&str> {
+    match mode {
+        "cancel" | "precancel" => Some("context canceled\n"),
+        "timeout" | "context" => Some("context deadline exceeded\n"),
+        _ => None,
+    }
+}
+
+fn connection_closed(error: &std::io::Error) -> bool {
+    matches!(
+        error.kind(),
+        std::io::ErrorKind::ConnectionReset
+            | std::io::ErrorKind::ConnectionAborted
+            | std::io::ErrorKind::BrokenPipe
+    )
+}
+
+fn serve_client_peer(
+    listener: TcpListener,
+    bytes: &[u8],
+    mode: &str,
+    child_done: std::sync::mpsc::Receiver<()>,
+) -> Result<ClientPeerOutcome, String> {
+    let mut stream = loop {
+        match listener.accept() {
+            Ok((stream, _)) => break stream,
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                if child_done.try_recv() != Err(std::sync::mpsc::TryRecvError::Empty) {
+                    match listener.accept() {
+                        Ok((stream, _)) => break stream,
+                        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                            return Ok(ClientPeerOutcome::NoConnection);
+                        }
+                        Err(error) => return Err(format!("final accept: {error}")),
+                    }
+                }
+                std::thread::sleep(Duration::from_millis(2));
+            }
+            Err(error) => return Err(format!("accept: {error}")),
+        }
+    };
+    configure_client_peer(&stream).map_err(|error| format!("configure socket: {error}"))?;
+    let mut request = Vec::new();
+    let mut byte = [0];
+    while !request.ends_with(b"\r\n\r\n") {
+        match stream.read(&mut byte) {
+            Ok(0) => return Ok(ClientPeerOutcome::ClosedDuringRequest),
+            Ok(_) => request.push(byte[0]),
+            Err(error) if connection_closed(&error) => {
+                return Ok(ClientPeerOutcome::ClosedDuringRequest);
+            }
+            Err(error) => return Err(format!("request headers: {error}")),
+        }
+        if request.len() >= 4096 {
+            return Err("request headers too large".into());
+        }
+    }
+    let expected_payload: &[u8] = if mode == "json" {
+        b"\"Ada\""
+    } else {
+        &[0, 255, 65]
+    };
+    let mut payload = vec![0; expected_payload.len()];
+    match stream.read_exact(&mut payload) {
+        Ok(()) => {}
+        Err(error)
+            if error.kind() == std::io::ErrorKind::UnexpectedEof || connection_closed(&error) =>
+        {
+            return Ok(ClientPeerOutcome::ClosedDuringRequest);
+        }
+        Err(error) => return Err(format!("request payload: {error}")),
+    }
+    if payload != expected_payload {
+        return Err(format!(
+            "request payload: {payload:?}, expected {expected_payload:?}"
+        ));
+    }
+    if mode == "delayed" {
+        std::thread::sleep(Duration::from_millis(350));
+    }
+    for byte in bytes {
+        if stream.write_all(&[*byte]).is_err() {
+            break;
+        }
+        std::thread::sleep(Duration::from_micros(200));
+    }
+    if expected_client_error(mode).is_none() {
+        let _ = stream.shutdown(Shutdown::Write);
+    }
+    match stream.read(&mut byte) {
+        Ok(0) => {}
+        Err(error) if connection_closed(&error) => {}
+        other => return Err(format!("connection close: {other:?}")),
+    }
+    Ok(ClientPeerOutcome::Request(request))
+}
+
 fn client_peer(executable: &Path, response: &[u8], method: &str, mode: &str) -> (String, Vec<u8>) {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     listener.set_nonblocking(true).unwrap();
     let url = format!("http://{}/a%2Fb?q=x%20y", listener.local_addr().unwrap());
-    let bytes = response.to_vec();
-    let mode = mode.to_owned();
-    let peer_mode = mode.clone();
-    let case = format!("{method} {mode} response={response:?}");
-    let peer = std::thread::spawn(move || {
-        let deadline = Instant::now() + Duration::from_secs(2);
-        let mut stream = loop {
-            match listener.accept() {
-                Ok((stream, _)) => break stream,
-                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                    assert!(Instant::now() < deadline, "client did not dial");
-                    std::thread::sleep(Duration::from_millis(2));
-                }
-                Err(error) => panic!("accept: {error}"),
-            }
-        };
-        configure_client_peer(&stream).unwrap();
-        let mut request = Vec::new();
-        let mut byte = [0];
-        while !request.ends_with(b"\r\n\r\n") {
-            stream.read_exact(&mut byte).unwrap();
-            request.push(byte[0]);
-            assert!(request.len() < 4096);
-        }
-        let expected_payload: &[u8] = if peer_mode == "json" {
-            b"\"Ada\""
-        } else {
-            &[0, 255, 65]
-        };
-        let mut payload = vec![0; expected_payload.len()];
-        stream.read_exact(&mut payload).unwrap();
-        assert_eq!(payload, expected_payload);
-        if peer_mode == "delayed" {
-            std::thread::sleep(Duration::from_millis(350));
-        }
-        for byte in bytes {
-            if stream.write_all(&[byte]).is_err() {
-                break;
-            }
-            std::thread::sleep(Duration::from_micros(200));
-        }
-        if peer_mode != "cancel" && peer_mode != "timeout" && peer_mode != "context" {
-            let _ = stream.shutdown(Shutdown::Write);
-        }
-        let mut byte = [0];
-        match stream.read(&mut byte) {
-            Ok(0) => {}
-            Err(error)
-                if matches!(
-                    error.kind(),
-                    std::io::ErrorKind::ConnectionReset
-                        | std::io::ErrorKind::ConnectionAborted
-                        | std::io::ErrorKind::BrokenPipe
-                ) => {}
-            other => panic!("{case}: client did not close its connection: {other:?}"),
-        }
-        request
-    });
     let child = Command::new(executable)
-        .args([url.as_str(), method, mode.as_str()])
+        .args([url.as_str(), method, mode])
         .env("ZORE_CHECK_LEAKS", "1")
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
         .unwrap();
-    let output = finish_bounded(child);
-    let request = peer.join().unwrap();
-    assert!(output.status.success(), "{}", stderr(&output));
-    assert!(output.stderr.is_empty(), "{}", stderr(&output));
+    let bytes = response.to_vec();
+    let peer_mode = mode.to_owned();
+    let (completed, child_done) = std::sync::mpsc::channel();
+    let peer =
+        std::thread::spawn(move || serve_client_peer(listener, &bytes, &peer_mode, child_done));
+    let (output, timed_out) = collect_bounded(child);
+    drop(completed);
+    let diagnostic = format!(
+        "{method} {mode} response={response:?}: status={} stdout={:?} stderr={:?}",
+        output.status,
+        stdout(&output),
+        stderr(&output)
+    );
+    let outcome = peer
+        .join()
+        .unwrap_or_else(|_| panic!("{diagnostic}: peer thread panicked"))
+        .unwrap_or_else(|error| panic!("{diagnostic}: {error}"));
+    assert!(!timed_out, "{diagnostic}: exceeded process deadline");
+    assert!(output.status.success(), "{diagnostic}");
+    assert!(output.stderr.is_empty(), "{diagnostic}");
+    if let Some(expected) = expected_client_error(mode) {
+        assert_eq!(stdout(&output), expected, "{diagnostic}: {outcome:?}");
+    }
+    if mode == "precancel" {
+        assert!(
+            matches!(outcome, ClientPeerOutcome::NoConnection),
+            "{diagnostic}: pre-canceled request dialed: {outcome:?}"
+        );
+    }
+    let request = match outcome {
+        ClientPeerOutcome::Request(request) => request,
+        ClientPeerOutcome::NoConnection | ClientPeerOutcome::ClosedDuringRequest
+            if expected_client_error(mode).is_some() =>
+        {
+            Vec::new()
+        }
+        early => panic!("{diagnostic}: expected complete request, got {early:?}"),
+    };
     (stdout(&output), request)
 }
 
@@ -325,6 +414,7 @@ fn http_client_real_fragmented_binary_framing_and_hostile_peers() {
     }
     for (mode, expected) in [
         ("cancel", "context canceled"),
+        ("precancel", "context canceled"),
         ("timeout", "context deadline exceeded"),
         ("context", "context deadline exceeded"),
     ] {
@@ -400,7 +490,9 @@ import "std/io"
 import "std/net/http"
 import "std/strings"
 import "std/time"
-type Conn struct { sent int; cursor int; mode int; drops channel<int> }
+type Conn struct { sent int; cursor int; mode int; drops channel<int>; done channel<bool>; ctx context.Context }
+type Cancellation struct { cancel func() }
+func (c mut Cancellation) drop() { (c.cancel)() }
 func (c mut Conn) drop() { c.drops.send(c.sent) }
 func (c mut Conn) SetReadDeadline(deadline int) error { return nil }
 func (c mut Conn) SetWriteDeadline(deadline int) error {
@@ -425,6 +517,7 @@ func (c mut Conn) Write(data []byte) (int, error) {
     return n, nil
 }
 func (c mut Conn) Read(data mut []byte) (int, error) {
+    if c.mode == 11 { c.done.close(); let _, _ = c.ctx.Done().receive(); return 0, http.ClientPollTimeout }
     if c.mode == 5 { return 0, nil }
     if c.mode == 6 { return data.len() + 1, nil }
     var response = strings.Bytes("HTTP/1.1 200 OK\r\nContent-Length: 3\r\n\r\n")
@@ -439,24 +532,28 @@ func (c mut Conn) Read(data mut []byte) (int, error) {
     }
     return 1, nil
 }
-type Transport struct { drops channel<int>; mode int; calls channel<bool> }
+type Transport struct { drops channel<int>; mode int; calls channel<bool>; done channel<bool>; ctx context.Context }
 func (t Transport) Dial(ctx context.Context, scheme string, authority string) (http.ClientConn, error) {
     if scheme != "https" || authority != "example.test" || ctx.Err() != nil { panic("dial contract") }
     t.calls.send(true)
     if t.mode == 10 {
         let _, _ = ctx.Done().receive()
-        return Conn{sent: 0, cursor: 0, mode: t.mode, drops: t.drops}, ctx.Err()
+        return Conn{sent: 0, cursor: 0, mode: t.mode, drops: t.drops, done: t.done, ctx: t.ctx}, ctx.Err()
     }
-    return Conn{sent: 0, cursor: 0, mode: t.mode, drops: t.drops}, nil
+    return Conn{sent: 0, cursor: 0, mode: t.mode, drops: t.drops, done: t.done, ctx: t.ctx}, nil
 }
 func (t mut Transport) drop() { t.calls.send(false) }
 func exercise(mode int, drops channel<int>, calls channel<bool>) {
     var settings = http.DefaultClientConfig()
     if mode == 10 { settings.Timeout = 30 * time.Millisecond }
-    let client, configErr = http.NewClientWithTransport(settings, Transport{drops: drops, calls: calls, mode: mode})
+    let done = channel<bool>()
+    let ctx, cancel = context.WithCancelOn(context.Background(), done)
+    let cancellation = Cancellation{cancel: cancel}
+    let client, configErr = http.NewClientWithTransport(settings, Transport{drops: drops, calls: calls, mode: mode, done: done, ctx: ctx})
     if configErr != nil { panic("config") }
     let payload = Array<byte>{0, 255, 65}
-    let response, err = client.Do(context.Background(), "POST", "https://example.test/", http.NewHeader(), payload[:])
+    let response, err = client.Do(ctx, "POST", "https://example.test/", http.NewHeader(), payload[:])
+    if mode == 11 && err != error("context canceled") { panic("active read cancellation") }
     if mode == 0 || mode == 8 {
         if err != nil { panic("response") }
         if response.StatusCode != 200 || response.Body.len() != 3 || response.Body[0] != 0 || response.Body[1] != 255 || response.Body[2] != 65 { panic("binary read") }
@@ -482,16 +579,24 @@ func main() {
     let failedDial, _ = calls.receive()
     let failedRetained, _ = calls.receive()
     if !failedDial || failedRetained { panic("canceled dial resources") }
+    exercise(11, drops, calls)
+    let activeCount, _ = drops.receive()
+    let expectedRequest = strings.Bytes("POST / HTTP/1.1\r\nHost: example.test\r\nContent-Length: 3\r\nConnection: close\r\n\r\n")
+    if activeCount != expectedRequest.len() + 3 { panic("active read request") }
+    let activeDial, _ = calls.receive()
+    let activeRetained, _ = calls.receive()
+    if !activeDial || activeRetained { panic("active read resources") }
+    select { case drops.receive() { panic("duplicate active connection drop") }; default {} }
     let client, configErr = http.NewClient(http.DefaultClientConfig())
     if configErr != nil { panic("client") }
     let empty = Array<byte>{}
-    let _, invalid = client.Exchange(context.Background(), Conn{sent: 0, cursor: 0, mode: 0, drops: drops}, "GET", "/relative", http.NewHeader(), empty[:])
+    let _, invalid = client.Exchange(context.Background(), Conn{sent: 0, cursor: 0, mode: 0, drops: drops, done: channel<bool>(), ctx: context.Background()}, "GET", "/relative", http.NewHeader(), empty[:])
     if invalid == nil { panic("URL") }
     let count, _ = drops.receive()
     if count != 0 { panic("write before validation") }
     var negative = http.DefaultClientConfig()
     negative.Timeout = -1
-    let _, configFailure = http.NewClientWithTransport(negative, Transport{drops: drops, calls: calls, mode: 0})
+    let _, configFailure = http.NewClientWithTransport(negative, Transport{drops: drops, calls: calls, mode: 0, done: channel<bool>(), ctx: context.Background()})
     if configFailure == nil { panic("configuration") }
     let dialed, _ = calls.receive()
     if dialed { panic("dialed invalid client") }
