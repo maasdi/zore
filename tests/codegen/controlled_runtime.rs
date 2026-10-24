@@ -11,12 +11,17 @@ struct Runtime {
     library: PathBuf,
 }
 
-fn rustc() -> String {
-    std::env::var("ZORE_RUSTC").unwrap_or_else(|_| "rustc".into())
+fn rustc() -> Command {
+    let mut command = Command::new(std::env::var("ZORE_RUSTC").unwrap_or_else(|_| "rustc".into()));
+    if std::env::var_os("ZORE_HARDENING_ASAN").is_some() {
+        command.arg("-Zsanitizer=address");
+    }
+    command
 }
 
 fn checked(command: &mut Command) {
-    let output = command.output().expect("run native test tool");
+    let output = super::bounded_process::run(command, std::time::Duration::from_secs(120))
+        .expect("run bounded native test tool");
     assert!(
         output.status.success(),
         "{command:?}\n{}",
@@ -31,7 +36,7 @@ fn runtime() -> &'static Runtime {
         let library = dir.path().join("libzore_runtime.rlib");
         let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("../runtime/src/lib.rs");
         checked(
-            Command::new(rustc())
+            rustc()
                 .args([
                     "--edition=2024",
                     "--crate-name=zore_runtime",
@@ -53,6 +58,15 @@ pub(super) fn build(source: &str, output: &Path) {
 }
 
 pub(super) fn build_with_workers(source: &str, output: &Path, workers: usize) {
+    build_with_optimization(source, output, workers, "-O2");
+}
+
+pub(super) fn build_with_optimization(
+    source: &str,
+    output: &Path,
+    workers: usize,
+    optimization: &str,
+) {
     assert!(
         source.contains("waitPending(")
             || source.contains("waitBlocked(")
@@ -98,12 +112,15 @@ pub(super) fn build_with_workers(source: &str, output: &Path, workers: usize) {
     let object = dir.path().join("program.o");
     fs::write(&ir, llvm).unwrap();
     let mut compile = Command::new(compiler());
+    if std::env::var_os("ZORE_HARDENING_ASAN").is_some() {
+        compile.arg("-fsanitize=address");
+    }
     if !cfg!(windows) {
         compile.arg("-fPIC");
     }
     checked(
         compile
-            .args(["-Wno-override-module", "-O2", "-c"])
+            .args(["-Wno-override-module", optimization, "-c"])
             .arg(&ir)
             .arg("-o")
             .arg(&object),
@@ -145,7 +162,7 @@ fn main() {
     )
     .unwrap();
     checked(
-        Command::new(rustc())
+        rustc()
             .args([
                 "--edition=2024",
                 "-Copt-level=2",
