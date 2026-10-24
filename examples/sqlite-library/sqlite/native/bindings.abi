@@ -1,0 +1,15 @@
+package sqlite
+
+func nativeOpen(path string) (int, error)
+func nativePrepare(database int, sql string) (int, error)
+func nativeBusy(database int, milliseconds int) error
+func nativeBegin(database int) error
+func nativeFinish(database int, commit bool) error
+func nativeDropDatabase(database int, abort bool)
+func nativeBind(statement int, index int, kind int, integer int, real float64, data []uint8) error
+func nativeStep(statement int) (bool, error)
+func nativeReset(statement int) error
+func nativeColumn(statement int, column int, kind int) (int, error)
+func nativeFloat(statement int, column int) (float64, error)
+func nativeBytes(statement int, column int, kind int) (Array<uint8>, error)
+func nativeFinalize(statement int) error

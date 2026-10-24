@@ -1,0 +1,105 @@
+package sqlite
+
+import "std/strings"
+
+const Null = 5
+const Integer = 1
+const Real = 2
+const Text = 3
+const Blob = 4
+
+type Database struct { handle int }
+type Statement struct { handle int }
+type Transaction struct { handle int }
+
+func Open(path string) (Database, error) {
+    let token = nativeOpen(path)?
+    return Database{handle: token}, nil
+}
+
+func (db Database) Prepare(sql string) (Statement, error) {
+    let token = nativePrepare(db.handle, sql)?
+    return Statement{handle: token}, nil
+}
+
+func (db Database) SetBusyTimeout(milliseconds int) error {
+    return nativeBusy(db.handle, milliseconds)
+}
+
+func (db mut Database) Close() {
+    nativeDropDatabase(db.handle, false)
+    db.handle = 0
+}
+
+func (db mut Database) drop() { db.Close() }
+
+func (db mut Database) Begin() (Transaction, error) {
+    nativeBegin(db.handle)?
+    let token = db.handle
+    db.handle = 0
+    return Transaction{handle: token}, nil
+}
+
+func (tx Transaction) Prepare(sql string) (Statement, error) {
+    let token = nativePrepare(tx.handle, sql)?
+    return Statement{handle: token}, nil
+}
+
+func (tx mut Transaction) Commit() (Database, error) {
+    nativeFinish(tx.handle, true)?
+    let token = tx.handle
+    tx.handle = 0
+    return Database{handle: token}, nil
+}
+
+func (tx mut Transaction) Rollback() (Database, error) {
+    nativeFinish(tx.handle, false)?
+    let token = tx.handle
+    tx.handle = 0
+    return Database{handle: token}, nil
+}
+
+func (tx mut Transaction) drop() { nativeDropDatabase(tx.handle, true) }
+
+func (s mut Statement) BindNull(index int) error {
+    return nativeBind(s.handle, index, Null, 0, 0.0, Array<uint8>{}[:])
+}
+
+func (s mut Statement) BindInt(index int, value int) error {
+    return nativeBind(s.handle, index, Integer, value, 0.0, Array<uint8>{}[:])
+}
+
+func (s mut Statement) BindFloat(index int, value float64) error {
+    return nativeBind(s.handle, index, Real, 0, value, Array<uint8>{}[:])
+}
+
+func (s mut Statement) BindText(index int, value string) error {
+    let data = strings.Bytes(value)
+    return nativeBind(s.handle, index, Text, 0, 0.0, data[:])
+}
+
+func (s mut Statement) BindBytes(index int, value []uint8) error {
+    return nativeBind(s.handle, index, Blob, 0, 0.0, value)
+}
+
+func (s mut Statement) Step() (bool, error) { return nativeStep(s.handle) }
+func (s mut Statement) Reset() error { return nativeReset(s.handle) }
+func (s Statement) ColumnCount() (int, error) { return nativeColumn(s.handle, 0, 0) }
+func (s Statement) ColumnType(column int) (int, error) { return nativeColumn(s.handle, column, -1) }
+func (s Statement) Int(column int) (int, error) { return nativeColumn(s.handle, column, Integer) }
+func (s Statement) Float(column int) (float64, error) { return nativeFloat(s.handle, column) }
+
+func (s Statement) Text(column int) (string, error) {
+    let data = nativeBytes(s.handle, column, Text)?
+    return strings.FromBytes(data[:])
+}
+
+func (s Statement) Bytes(column int) (Array<uint8>, error) { return nativeBytes(s.handle, column, Blob) }
+
+func (s mut Statement) Close() error {
+    let token = s.handle
+    s.handle = 0
+    return nativeFinalize(token)
+}
+
+func (s mut Statement) drop() { _ = nativeFinalize(s.handle) }

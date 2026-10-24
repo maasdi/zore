@@ -1278,3 +1278,5 @@ func main() {}
         "cannot return a view",
     );
 }
+
+mod sqlite;

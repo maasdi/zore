@@ -1,0 +1,4 @@
+name = "notes"
+
+[dependencies]
+sqlite = { path = "../sqlite" }

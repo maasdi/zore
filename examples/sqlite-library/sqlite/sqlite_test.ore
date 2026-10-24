@@ -1,0 +1,271 @@
+package sqlite
+
+import "std/time"
+import "std/math"
+import "std/os"
+import "std/strconv"
+
+func TestParametersAndOwnedRows() error {
+    let db = Open(":memory:")?
+    var query = db.Prepare("select ?, ?, ?, ?, ?, ?")?
+    query.BindNull(1)?
+    query.BindInt(2, -9223372036854775807)?
+    if query.BindFloat(3, math.NaN()) == nil { panic("NaN was silently accepted") }
+    query.BindFloat(3, 1.25)?
+    query.BindText(4, "hello\u0000world")?
+    var binary = Array<uint8>{0, 255, 128, 1}
+    query.BindBytes(5, binary[:])?
+    query.BindBytes(6, Array<uint8>{}[:])?
+    binary[1] = 2
+    if !query.Step()? { panic("missing row") }
+    if query.ColumnCount()? != 6 || query.ColumnType(0)? != Null { panic("column metadata") }
+    if query.Int(1)? != -9223372036854775807 || query.Float(2)? != 1.25 { panic("numeric binding") }
+    let text = query.Text(3)?
+    let blob = query.Bytes(4)?
+    let empty = query.Bytes(5)?
+    if empty.len() != 0 || blob.len() != 4 || blob[1] != 255 { panic("binary binding") }
+    if text != "hello\u0000world" { panic("text binding") }
+    if query.Step()? { panic("unexpected row") }
+    query.Reset()?
+    if blob[1] != 255 || text != "hello\u0000world" { panic("borrowed result escaped") }
+    query.BindInt(2, 42)?
+    query.BindFloat(3, math.Inf(1))?
+    if !query.Step()? || query.Int(1)? != 42 || query.ColumnType(3)? != Null { panic("reset did not clear bindings") }
+    if !math.IsInf(query.Float(2)?, 1) { panic("real infinity lost") }
+    return nil
+}
+
+func TestConnectionLeaseAndClosedHandles() error {
+    var db = Open(":memory:")?
+    var query = db.Prepare("select 7")?
+    db.Close()
+    db.Close()
+    let unused, closed = db.Prepare("select 1")
+    if closed == nil { panic("closed database accepted") }
+    if !query.Step()? || query.Int(0)? != 7 { panic("connection lease lost") }
+    query.Close()?
+    query.Close()?
+    let row, failure = query.Step()
+    if failure == nil { panic("closed statement accepted") }
+    let value, invalid = nativeColumn(-1, 0, Integer)
+    if invalid == nil { panic("invalid native token accepted") }
+    return nil
+}
+
+func executeSQL(db Database, sql string) error {
+    var statement = db.Prepare(sql)?
+    statement.Step()?
+    return nil
+}
+
+func countRows(db Database) (int, error) {
+    var query = db.Prepare("select count(*) from records")?
+    query.Step()?
+    return query.Int(0)
+}
+
+func executeIn(tx Transaction, sql string) error {
+    var statement = tx.Prepare(sql)?
+    statement.Step()?
+    return nil
+}
+
+func abortTransaction(db own Database) error {
+    var source = db
+    let tx = source.Begin()?
+    var insert = tx.Prepare("insert into records values (2)")?
+    insert.Step()?
+    return nil
+}
+
+func TestTransactions() error {
+    var db = Open(":memory:")?
+    executeSQL(db, "create table records(value integer)")?
+    var tx = db.Begin()?
+    let unused, moved = db.Prepare("select 1")
+    if moved == nil { panic("database token survived Begin") }
+    {
+        var insert = tx.Prepare("insert into records values (?)")?
+        insert.BindInt(1, 1)?
+        insert.Step()?
+    }
+    var committed = tx.Commit()?
+    if countRows(committed)? != 1 { panic("commit lost row") }
+    let again, completed = tx.Rollback()
+    if completed == nil { panic("completed transaction remained usable") }
+    var rollback = committed.Begin()?
+    {
+        var insert = rollback.Prepare("insert into records values (2)")?
+        insert.Step()?
+    }
+    let reverted = rollback.Rollback()?
+    if countRows(reverted)? != 1 { panic("rollback retained row") }
+    return nil
+}
+
+func TestTransactionAbandonmentInvalidatesEscapedStatement() error {
+    let db = nativeOpen(":memory:")?
+    nativeBegin(db)?
+    let statement = nativePrepare(db, "select 1")?
+    nativeDropDatabase(db, true)
+    let row, failure = nativeStep(statement)
+    if failure == nil { panic("abandoned transaction remained usable") }
+    nativeFinalize(statement)?
+    return nil
+}
+
+func TestInvalidQueriesAndPhases() error {
+    let invalidDatabase, invalidPath = Open("bad\u0000path")
+    if invalidPath == nil { panic("NUL path accepted") }
+    let unopened, missingPath = Open(".sqlite-missing-" + strconv.Itoa(time.Now()) + "/data.db")
+    if missingPath == nil { panic("missing parent directory accepted") }
+    let db = Open(":memory:")?
+    for sql in Array<string>{"", " ", "select 1; select 2", "select 1\u0000", "begin", "savepoint x", "not SQL"} {
+        let statement, failure = db.Prepare(sql)
+        if failure == nil { panic("invalid SQL accepted") }
+    }
+    var query = db.Prepare("select ?")?
+    let before, missing = query.Int(0)
+    if missing == nil { panic("read before step accepted") }
+    if query.BindInt(0, 1) == nil || query.BindInt(2, 1) == nil { panic("bad parameter accepted") }
+    query.BindText(1, "value")?
+    query.Step()?
+    let value, wrongType = query.Int(0)
+    let index, wrongIndex = query.ColumnType(1)
+    if wrongType == nil { panic("row type checks bypassed") }
+    if wrongIndex == nil { panic("row bounds checks bypassed") }
+    if query.BindInt(1, 3) == nil { panic("row phase checks bypassed") }
+    query.Step()?
+    let row, done = query.Step()
+    if done == nil { panic("completed query restarted") }
+    if db.SetBusyTimeout(-1) == nil || db.SetBusyTimeout(60001) == nil { panic("bad timeout accepted") }
+    executeSQL(db, "create table unique_values(value integer unique)")?
+    executeSQL(db, "insert into unique_values values (1)")?
+    var duplicate = db.Prepare("insert into unique_values values (1)")?
+    let ignored, constraint = duplicate.Step()
+    if constraint == nil { panic("constraint failure lost") }
+    duplicate.Reset()?
+    let retried, repeated = duplicate.Step()
+    if repeated == nil { panic("retried constraint failure lost") }
+    duplicate.Close()?
+    duplicate.Close()?
+
+    return nil
+}
+
+async func asyncQuery() error {
+    let db = Open(":memory:")?
+    var query = db.Prepare("select ?")?
+    query.BindText(1, "async")?
+    time.Sleep(time.Millisecond)
+    if !query.Step()? || query.Text(0)? != "async" { panic("async resource lost") }
+    return nil
+}
+
+func TestAsyncResourceAcrossWaits() error {
+    let task = go asyncQuery()
+    return task.wait()
+}
+
+func TestPersistenceContentionAndRollbackOnDrop() error {
+    let path = ".sqlite-test-" + strconv.Itoa(time.UnixSeconds()) + "-" + strconv.Itoa(time.Now()) + ".db"
+    var db = Open(path)?
+    executeSQL(db, "create table if not exists records(value integer)")?
+    executeSQL(db, "delete from records")?
+    var tx = db.Begin()?
+    {
+        var insert = tx.Prepare("insert into records values (1)")?
+        insert.Step()?
+    }
+    var second = Open(path)?
+    second.SetBusyTimeout(2)?
+    let blocked, busy = second.Begin()
+    if busy == nil { panic("writer contention was ignored") }
+    let committed = tx.Commit()?
+    if countRows(second)? != 1 { panic("failed Begin lost the database") }
+    {
+        var retried = second.Begin()?
+        let restored = retried.Rollback()?
+    }
+    abortTransaction(committed)?
+    var reopened = Open(path)?
+    if countRows(reopened)? != 1 { panic("abandoned transaction did not roll back") }
+    reopened.Close()
+    os.Remove(path)?
+    return nil
+}
+
+func TestStrictTextAndEmptyValues() error {
+    let db = Open(":memory:")?
+    var query = db.Prepare("select cast(x'ff' as text), '', x''")?
+    query.Step()?
+    let invalid, failure = query.Text(0)
+    if failure == nil { panic("invalid UTF-8 escaped") }
+    if query.Text(1)? != "" || (query.Bytes(2)?).len() != 0 { panic("empty values lost type") }
+    return nil
+}
+
+func TestFailedCompletionKeepsTransaction() error {
+    var db = Open(":memory:")?
+    executeSQL(db, "create table records(value integer)")?
+    var tx = db.Begin()?
+    var insert = tx.Prepare("insert into records values (1)")?
+    let early, failure = tx.Commit()
+    if failure == nil { panic("live statement allowed completion") }
+    if insert.Step()? { panic("insert returned a row") }
+    insert.Close()?
+    let committed = tx.Commit()?
+    if countRows(committed)? != 1 { panic("retried commit lost row") }
+    return nil
+}
+
+func TestFailedSQLiteCommitCanBeRepairedOrRolledBack() error {
+    let path = ".sqlite-commit-test-" + strconv.Itoa(time.UnixSeconds()) + "-" + strconv.Itoa(time.Now()) + ".db"
+    var db = Open(path)?
+    executeSQL(db, "pragma foreign_keys=on")?
+    executeSQL(db, "create table parent(id integer primary key)")?
+    executeSQL(db, "create table child(id integer references parent(id) deferrable initially deferred)")?
+    var repaired = db.Begin()?
+    executeIn(repaired, "insert into child values (1)")?
+    let early, violation = repaired.Commit()
+    if violation == nil { panic("deferred foreign key commit succeeded") }
+    executeIn(repaired, "insert into parent values (1)")?
+    var committed = repaired.Commit()?
+    var reverted = committed.Begin()?
+    executeIn(reverted, "insert into child values (2)")?
+    let late, repeated = reverted.Commit()
+    if repeated == nil { panic("second deferred foreign key commit succeeded") }
+    var restored = reverted.Rollback()?
+    restored.Close()
+    var reopened = Open(path)?
+    {
+        var query = reopened.Prepare("select count(*) from child")?
+        query.Step()?
+        if query.Int(0)? != 1 { panic("failed SQLite commit was not recoverable") }
+    }
+    reopened.Close()
+    os.Remove(path)?
+    return nil
+}
+
+async func sumStatement(input own Statement) (int, error) {
+    var rows = input
+    var total = 0
+    for rows.Step()? {
+        total += rows.Int(0)?
+        time.Sleep(time.Millisecond)
+    }
+    return total, nil
+}
+
+func TestConcurrentStatementsShareSerializedConnection() error {
+    let db = Open(":memory:")?
+    let first = db.Prepare("with recursive n(v) as (values(1) union all select v+1 from n where v<10) select v from n")?
+    let second = db.Prepare("with recursive n(v) as (values(1) union all select v+1 from n where v<10) select v from n")?
+    let left = go sumStatement(first)
+    let right = go sumStatement(second)
+    let leftTotal = left.wait()?
+    let rightTotal = right.wait()?
+    if leftTotal != 55 || rightTotal != 55 { panic("concurrent connection serialization failed") }
+    return nil
+}

@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 
 use super::stdlib;
 use crate::ast;
+use crate::async_lowering::NativeWait;
 use crate::diagnostic::{Diagnostic, Severity};
 use crate::parser::{Parsed, parse, parse_standard};
 use crate::resolve::{FileUnit, ImportBinding, PackageUnit};
@@ -202,11 +203,13 @@ pub struct LoadedPackage {
     pub files: Vec<LoadedFile>,
 }
 
+pub(crate) type NativeBinding = (&'static str, Option<NativeWait>);
+
 /// Every package a program uses, dependencies first and the entry package last.
 pub struct Project {
     pub(crate) packages: Vec<LoadedPackage>,
     pub(super) native_adapters: super::native::Providers,
-    pub(crate) native_bindings: HashMap<Span, String>,
+    pub(crate) native_bindings: HashMap<Span, NativeBinding>,
     /// Holds the text of the bundled standard packages.
     pub(crate) std_sources: SourceMap,
 }
@@ -434,7 +437,7 @@ struct Loader<'a> {
     entry_dir: Option<PathBuf>,
     packages: Vec<LoadedPackage>,
     native_adapters: super::native::Providers,
-    native_bindings: HashMap<Span, String>,
+    native_bindings: HashMap<Span, NativeBinding>,
     /// Import path to package index.
     done: HashMap<String, usize>,
     /// Import paths of the packages being loaded, outermost first.
@@ -506,14 +509,13 @@ impl<'a> Loader<'a> {
             let bindings = parse_standard(sources.file(file).expect("native bindings"));
             for item in &bindings.file.items {
                 if let ast::Item::Func(function) = item {
-                    let symbol = adapter
+                    let (_, symbol, wait) = adapter
                         .symbols
                         .iter()
-                        .find(|(name, _)| *name == function.name.text)
-                        .expect("registered binding symbol")
-                        .1;
+                        .find(|(name, _, _)| *name == function.name.text)
+                        .expect("registered binding symbol");
                     self.native_bindings
-                        .insert(function.name.span, symbol.to_string());
+                        .insert(function.name.span, (symbol, *wait));
                 }
             }
             parsed.push(bindings);
