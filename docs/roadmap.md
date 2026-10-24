@@ -23,9 +23,9 @@ on Ubuntu and macOS: rustfmt, clippy with warnings denied, build, docs, and
 commit; it does not establish full MVP coverage. That run predates Windows support; current host requirements and CI scope are
 in [platform support](platform-support.md).
 
-HTTP/1.1 server work for issue #105 adds `std/net/http`, request-target
-`std/net/url`, wall-clock HTTP dates, and the runnable `examples/rest-api/`.
-The router accepts direct handler functions and inline Copy-handle closures,
+HTTP/1.1 server work for issue #105 (merged 2026-10-12 in PR #108) added
+`std/net/http`, request-target `std/net/url`, wall-clock HTTP dates, and the
+runnable `examples/rest-api/`. The router accepts direct handler functions and inline Copy-handle closures,
 adapted to fresh owned per-request invocations; advanced factories use
 `HandleFactory`. Task-local socket
 views remain checked by the compiler. The native HTTP tests exercise loopback
@@ -44,8 +44,8 @@ The REST example uses function routes, JSON response helpers, and two-argument
 shutdown. `ListenAndServeWithConfig` accepts custom limits and deadlines;
 `ListenAndServeContext` keeps explicit cancellation available.
 
-Issue #154 adds bounded HTTP/1.1 clients and absolute HTTP/HTTPS URLs (§37.11).
-Clients buffer owned binary responses, enforce metadata/body/time limits, and
+Issue #154 (merged 2026-10-24 in PR #168) added bounded HTTP/1.1 clients and
+absolute HTTP/HTTPS URLs (§37.11). Clients buffer owned binary responses, enforce metadata/body/time limits, and
 close each connection after one exchange. `examples/http-client/` composes
 `http.Get` and JSON POST; the TLS package's `tls/https` subpackage supplies the
 owned verified transport that `examples/https-client/` uses for ordinary
@@ -55,8 +55,8 @@ and owned cleanup. The HTTPS fixture checks real certificate verification and
 fragmented binary responses; platform-wide results remain subject to native CI.
 Redirects, retries, proxies, pooling, compression and HTTP/2 are excluded.
 
-Issue #106 adds `std/encoding/json`: Zore token encoding/decoding and an owned
-Value tree, plus compiler-generated concrete codecs with naming policies,
+Issue #106 (merged 2026-10-12 in #109) added `std/encoding/json`: Zore token
+encoding/decoding and an owned Value tree, plus compiler-generated concrete codecs with naming policies,
 Optional fields, strict decoding, and custom codec interfaces (§37.7, decision
 record 0002). `examples/json/` exercises the public APIs; the REST example uses
 generated response codecs and the token decoder for its single-name request
@@ -2129,15 +2129,16 @@ implementation or expand ownership while this validation is unresolved.
 
 #### Compiler maintenance boundaries
 
-Issue #159 extracts closure environment/value emission and destruction into
-`codegen/closure.rs`, preserving the existing MIR-to-LLVM stage and closure ABI.
-JSON synthesis now validates its bundled helper and hook signatures; HTTP
-adaptation validates its factory/handler shapes before generating records.
-Paired bundle mutation tests cover contract drift. This is an internal
-maintenance change with no new language feature or claimed performance gain.
-HIR lowering and region analysis remain large; further extraction should follow
-specific change needs rather than file-size targets. Cross-host validation of
-this change is recorded by its PR checks, not inferred from local execution.
+Issue #159 (merged 2026-10-24 in PR #166) extracted closure environment/value
+emission and destruction into `codegen/closure.rs`, preserving the existing
+MIR-to-LLVM stage and closure ABI. Since then, JSON synthesis validates its
+bundled helper and hook signatures; HTTP adaptation validates its
+factory/handler shapes before generating records. Paired bundle mutation tests
+cover contract drift. That was an internal maintenance change with no new
+language feature or claimed performance gain. HIR lowering and region analysis
+remain large; further extraction should follow specific change needs rather
+than file-size targets. Cross-host validation of that change is recorded by the
+PR #166 checks, not inferred from local execution.
 
 #### Required environment
 
