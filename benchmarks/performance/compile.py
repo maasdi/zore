@@ -67,13 +67,18 @@ def build(compiler, source, directory, cache, capture=None):
                 if item["tool"] == tool and item["role"] == role
             )
 
+        object_started = next(
+            item["started"]
+            for item in commands
+            if item["tool"] == "clang" and item["role"] == "object"
+        )
         profile = {
             "cache_writable": True,
             "build_seconds": elapsed,
             "cache_before": before,
             "cache_after": cache_snapshot(cache),
             "commands": commands,
-            "frontend_and_emit_seconds": commands[0]["started"] - started,
+            "frontend_and_emit_seconds": object_started - started,
             "clang_object_seconds": tool_seconds("clang", "object"),
             "native_link_seconds": tool_seconds("clang", "link"),
             "runtime_build_seconds": tool_seconds("rustc", "runtime"),
