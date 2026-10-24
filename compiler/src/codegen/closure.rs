@@ -55,7 +55,7 @@ impl Module<'_> {
         }
     }
 
-    pub(super) fn closure_name(&self, closure: FunctionId) -> String {
+    fn closure_name(&self, closure: FunctionId) -> String {
         format!(
             "@\"{}.{}\"",
             self.package.name,

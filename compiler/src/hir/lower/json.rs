@@ -158,7 +158,8 @@ impl Checker<'_> {
             TypeKind::Bool | TypeKind::Int(_) | TypeKind::Float(_) | TypeKind::String => true,
             TypeKind::Struct(id) => {
                 let fields = self.struct_fields(id);
-                if self.json_struct(ty, "Optional")
+                let optional = self.json_struct(ty, "Optional");
+                if optional
                     && !(fields.len() == 2
                         && fields[0].0 == "Value"
                         && fields[1].0 == "Set"
@@ -170,7 +171,7 @@ impl Checker<'_> {
                     self.error("bundled JSON codec contract mismatch: Optional needs Value T followed by Set bool", span);
                     return false;
                 }
-                if !self.json_struct(ty, "Optional") {
+                if !optional {
                     for policy in 0..3 {
                         let mut names = HashSet::new();
                         for (name, _, _) in &fields {
