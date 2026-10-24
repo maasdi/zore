@@ -1,2 +1,2 @@
 @echo off
-python "%~dp0cc.py" %*
+"%ZORE_SCALING_PYTHON%" "%~dp0cc.py" %*

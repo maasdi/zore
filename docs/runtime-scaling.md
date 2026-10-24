@@ -5,36 +5,36 @@ Issue [#157](https://github.com/maasdi/zore/issues/157) adds an opt-in
 small-capacity helper/deadline tests. All three hosts completed all eight
 builds and 96 fresh-process measurements. The results identify Windows timer
 thread cost, socket helper admission and delayed helper retirement for linked
-implementation follow-ups. The earlier Windows linker failure produced no
-population measurements and establishes no runtime capacity limit.
+implementation follow-ups.
 
 ## Identity and reproduction
 
-The Unix artifacts come from
-[Actions run 39976671409](https://github.com/maasdi/zore/actions/runs/39976671409),
-whose clean PR checkout and compiler revision were
-`1831d803097fbd627780500c34dc4e45516f2edd`.
-Every recorded runtime and harness source hash matches implementation commit
-`04125fa05f60c0a3ce982f8c2550a6e57e51a164`; subsequent workflow changes preserve
-PowerShell's MSVC linker search path on Windows. This is a comparison of host
-implementations, with no optimization before/after claim.
+The Linux and macOS reports come from hosted CI runners of one pull request
+checkout, and the Windows report from a later run of the same runtime and
+harness sources. All three were produced from a clean checkout and record
+identical runtime source hashes. This is a comparison of host implementations,
+with no optimization before/after claim. Each report records the compiler
+executable SHA-256, source revision, toolchain identities and every runtime and
+harness source hash; the raw reports below are the stable evidence.
 
-Windows comes from the corrected
-[Actions run 40047583603](https://github.com/maasdi/zore/actions/runs/40047583603),
-with clean PR checkout/compiler revision
-`cb199798066697b3b56fde17d056710288a09a11`. Its recorded runtime and harness
-source hashes also match implementation commit `04125fa`. All three jobs in
-the corrected run passed; the preserved Unix reports retain their original
-run identities and bytes rather than substituting duplicate control runs.
+The reports were produced by the previous revision of the harness and runtime
+sources. Their recorded hashes of `run.py`, `cc.cmd`, `test_harness.py`,
+`README.md` and `runtime/src/reactor.rs` no longer match the files in this tree;
+`cc.py`, `workload.py` and the other runtime sources still match. The later
+`run.py`, `cc.cmd` and `README.md` edits change build order (the runtime
+library is compiled once instead of once per variant), portability (POSIX-style
+source keys, the Python interpreter running the harness, an optional
+`--compiler-revision`) and error handling, not the workload, the
+instrumentation or what is measured; `test_harness.py` gained tests. The
+`reactor.rs` difference is its module documentation line only. The reports were
+not regenerated.
 
 Windows host: Windows Server 2025, build 10.0.26100, AMD64, four reported CPUs,
 processor `AMD64 Family 25 Model 1 Stepping 1, AuthenticAMD`, and
 17,174,360,064 reported physical-memory bytes. The hosted runner image was
 `windows-2025-vs2026`, version `20261021.278.1`. Rust targets
 `x86_64-pc-windows-msvc`; clang is 20.1.8 with the same target, using MSVC Build
-Tools 14.51.36231 and Windows SDK 10.0.26100.0, as recorded in the
-[Windows job setup log](https://github.com/maasdi/zore/actions/runs/40047583603/job/120732728085).
-The compiler executable SHA-256 is
+Tools 14.51.36231 and Windows SDK 10.0.26100.0. The compiler executable SHA-256 is
 `64422db55d33964519f08b0c14bafc731921f411d361a2a53f20e95c40b35f6d`.
 
 | Identity | Linux | macOS |
@@ -156,9 +156,7 @@ The experiment does not establish an unbounded leak or a portable host ranking.
 
 Windows completed all 96 processes and 192 cycles, including population 640 in
 both payload variants of every mode. No failed experimental scale point was
-reached. The preceding run's eight Windows build failures came from choosing
-Git Bash's `link.exe`; no runtime workload ran. Those are experiment setup
-errors, not timer/helper capacity measurements.
+reached.
 
 The following active counts at population 640 cover both payload variants,
 three processes each and both cycles. Runtime counts are snapshot ranges; OS
@@ -238,8 +236,6 @@ Correctness checks use a private helper capacity of one, gated work, two queued
 jobs, an expired real socket-read deadline, nested helper submission and idle
 cleanup. They do not require hundreds of threads or assert RSS/latency limits.
 Native correctness CI remains separate from this opt-in measurement workflow.
-Implementation commit `04125fa05f60c0a3ce982f8c2550a6e57e51a164` passed
-[ordinary CI on all three hosts](https://github.com/maasdi/zore/actions/runs/40047583611).
 These linked measured issues satisfy #157's split-follow-up option; this report
 does not itself implement shared Windows infrastructure.
 

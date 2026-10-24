@@ -13,9 +13,21 @@ Only test builds expose that capacity/idle hook; production remains 512 helpers.
 cargo build --locked --release
 python -m pip install psutil==7.2.2
 python benchmarks/runtime-scaling/run.py \
-  --compiler "$PWD/target/release/zore" --compiler-revision "$(git rev-parse HEAD)" \
-  --output /tmp/runtime-scaling.json
+  --compiler "$PWD/target/release/zore" --output /tmp/runtime-scaling.json
 ```
+
+`--compiler-revision` labels the compiler in the report and defaults to
+`git rev-parse HEAD`. The default configuration takes about 25-30 minutes per
+host. For a quick check, narrow it, for example:
+
+```sh
+python benchmarks/runtime-scaling/run.py --compiler "$PWD/target/release/zore" \
+  --modes tasks --populations 32 128 --payloads 0 --repetitions 1 --cycles 1 \
+  --idle-seconds 1 --output /tmp/runtime-scaling-quick.json
+```
+
+Idle seconds below the helper idle policy (five seconds) check protocol and
+cleanup counters only; they do not reproduce the idle-retirement observations.
 
 On Windows use `target/release/zore.exe` with the repository's x64 MSVC toolchain
 and LLVM clang configuration. The harness uses Python reader threads for pipe
@@ -54,8 +66,8 @@ idle and timeout durations explicitly for longer observation.
 
 The JSON records full rustc/clang identities, host/CPU/Python/sampler identities,
 configuration, executable/workload/IR hashes and every runtime/harness source
-hash. The runtime is copied once per invocation so all variants compile the
-same snapshotted runtime bytes. Compiler provenance is the supplied revision plus the actual executable
+hash. The runtime is copied and compiled once per invocation so all variants
+link the same snapshotted runtime library. Compiler provenance is the supplied revision plus the actual executable
 hash; the harness does not claim that a caller-supplied binary matches its label.
 The workflow builds the compiler from the recorded checkout. Dirty source status
 is explicit. Results preserve each repetition and cycle without aggregation.

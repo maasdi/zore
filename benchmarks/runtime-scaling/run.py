@@ -45,7 +45,15 @@ def digest(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def build(directory, compiler, mode, payload, runtime):
+def build_runtime(directory, runtime):
+    library = directory / 'libzore_runtime.rlib'
+    command([os.environ.get('ZORE_RUSTC', 'rustc'), '--edition=2024', '--crate-name=zore_runtime',
+             '--crate-type=rlib', '--cfg=zore_test_hooks', '-Copt-level=2', '-Cpanic=abort',
+             runtime / 'lib.rs', '-o', library])
+    return library
+
+
+def build(directory, compiler, mode, payload, library):
     directory.mkdir()
     workload = directory / 'workload.ore'
     workload.write_text(source(mode, payload))
@@ -53,6 +61,7 @@ def build(directory, compiler, mode, payload, runtime):
     cc = os.environ.get('ZORE_CC', 'clang')
     wrapper = HERE / ('cc.cmd' if os.name == 'nt' else 'cc.py')
     environment = {**os.environ, 'ZORE_CC': str(wrapper), 'ZORE_SCALING_CC': cc,
+                   'ZORE_SCALING_PYTHON': sys.executable,
                    'ZORE_SCALING_IR': str(captured), 'ZORE_CACHE_DIR': str(directory / 'cache')}
     command([compiler, 'build', workload], env=environment, cwd=directory)
     ir = captured.read_text()
@@ -61,10 +70,6 @@ def build(directory, compiler, mode, payload, runtime):
     instrumented.write_text(hook_ir(ir))
     obj = directory / 'workload.o'
     command([cc, '-Wno-override-module', '-O2', '-c', instrumented, '-o', obj])
-    library = directory / 'libzore_runtime.rlib'
-    rustc = os.environ.get('ZORE_RUSTC', 'rustc')
-    command([rustc, '--edition=2024', '--crate-name=zore_runtime', '--crate-type=rlib',
-             '--cfg=zore_test_hooks', '-Copt-level=2', '-Cpanic=abort', runtime / 'lib.rs', '-o', library])
     entry = directory / 'entry.rs'
     entry.write_text('''unsafe extern "C" { fn zore_entry(); }
 #[unsafe(no_mangle)]
@@ -83,7 +88,7 @@ fn main() {
 }
 '''.replace('KIND', str(1 if mode == 'timers' else 2 if mode.startswith('socket') else 0)))
     executable = directory / ('profiled.exe' if os.name == 'nt' else 'profiled')
-    command([rustc, '--edition=2024', '-Copt-level=2', '-Cpanic=abort', '--extern',
+    command([os.environ.get('ZORE_RUSTC', 'rustc'), '--edition=2024', '-Copt-level=2', '-Cpanic=abort', '--extern',
              f'zore_runtime={library}', f'-Clink-arg={obj}', entry, '-o', executable])
     return executable, {'workload_sha256': digest(workload), 'captured_ir_sha256': digest(captured),
                         'executable_sha256': digest(executable), 'frames': layouts,
@@ -173,9 +178,7 @@ def measure(executable, mode, population, timeout, sample_seconds, idle_seconds,
             for peer in sockets:
                 peer.close()
             sockets.clear()
-            deadline = time.monotonic() + idle_seconds
-            while time.monotonic() < deadline:
-                time.sleep(min(0.25, deadline - time.monotonic()))
+            time.sleep(idle_seconds)
             send('snapshot')
             checkpoint('after_idle_cleanup', line())
             counters = result['checkpoints'][-1]['runtime']
@@ -189,7 +192,7 @@ def measure(executable, mode, population, timeout, sample_seconds, idle_seconds,
         if child.returncode:
             raise RuntimeError(f'child exit {child.returncode}')
         result['status'] = 'ok'
-    except (OSError, RuntimeError, TimeoutError, ValueError, subprocess.TimeoutExpired) as error:
+    except (OSError, RuntimeError, TimeoutError, ValueError, KeyError, subprocess.TimeoutExpired) as error:
         result['failure'] = str(error)
         result['exit_code_at_failure'] = child.poll()
     finally:
@@ -217,7 +220,7 @@ def measure(executable, mode, population, timeout, sample_seconds, idle_seconds,
 def main():
     parser = argparse.ArgumentParser(description='Opt-in cross-host runtime population measurements')
     parser.add_argument('--compiler', type=Path, required=True)
-    parser.add_argument('--compiler-revision', required=True)
+    parser.add_argument('--compiler-revision', help='label recorded in the report (default: git rev-parse HEAD)')
     parser.add_argument('--populations', type=int, nargs='+', default=[32, 128, 512, 640])
     parser.add_argument('--payloads', type=int, nargs='+', default=[0, 4096])
     parser.add_argument('--modes', nargs='+', choices=['tasks', 'timers', 'sockets', 'socket-deadline'], default=['tasks', 'timers', 'sockets', 'socket-deadline'])
@@ -228,6 +231,8 @@ def main():
     parser.add_argument('--idle-seconds', type=float, default=6)
     parser.add_argument('--output', type=Path, required=True)
     args = parser.parse_args()
+    source_revision = command(['git', 'rev-parse', 'HEAD']).strip()
+    args.compiler_revision = args.compiler_revision or source_revision
     if min(args.populations) < 1 or min(args.payloads) < 0 or args.repetitions < 1 or args.cycles < 1 or any(not math.isfinite(x) or x <= 0 for x in [args.timeout, args.sample_seconds, args.idle_seconds]):
         parser.error('populations/repetitions and finite durations must be positive; payloads nonnegative')
     import psutil
@@ -236,7 +241,7 @@ def main():
         import resource
         limits['open_files_soft_hard'] = resource.getrlimit(resource.RLIMIT_NOFILE)
         limits['processes_soft_hard'] = resource.getrlimit(resource.RLIMIT_NPROC)
-    report = {'schema': 1, 'host_limits': limits, 'source_revision': command(['git', 'rev-parse', 'HEAD']).strip(),
+    report = {'schema': 1, 'host_limits': limits, 'source_revision': source_revision,
               'source_dirty': bool(command(['git', 'status', '--porcelain']).strip()),
               'compiler_revision': args.compiler_revision, 'compiler_sha256': digest(args.compiler),
               'host': {'platform': platform.platform(), 'machine': platform.machine(), 'processor': platform.processor(),
@@ -256,12 +261,20 @@ def main():
     with tempfile.TemporaryDirectory(prefix='zore-scaling-') as temporary:
         runtime = Path(temporary) / 'runtime'
         shutil.copytree(ROOT / 'runtime/src', runtime)
-        report['runtime_sources'] = {str(Path('runtime/src') / path.name): digest(path) for path in sorted(runtime.glob('*.rs'))}
+        report['runtime_sources'] = {(Path('runtime/src') / path.name).as_posix(): digest(path) for path in sorted(runtime.glob('*.rs'))}
         save()
+        try:
+            library = build_runtime(Path(temporary), runtime)
+        except (OSError, subprocess.SubprocessError) as error:
+            for mode in args.modes:
+                for payload in args.payloads:
+                    report['builds'].append({'mode': mode, 'payload': payload, 'status': 'failed', 'error': str(error), 'stderr': getattr(error, 'stderr', '')})
+            save()
+            return 1
         for mode in args.modes:
             for payload in args.payloads:
                 try:
-                    executable, identity = build(Path(temporary) / f'{mode}-{payload}', args.compiler.resolve(), mode, payload, runtime)
+                    executable, identity = build(Path(temporary) / f'{mode}-{payload}', args.compiler.resolve(), mode, payload, library)
                 except (OSError, RuntimeError, subprocess.SubprocessError) as error:
                     report['builds'].append({'mode': mode, 'payload': payload, 'status': 'failed', 'error': str(error), 'stderr': getattr(error, 'stderr', '')})
                     save()

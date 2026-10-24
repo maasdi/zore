@@ -1,4 +1,5 @@
-//! Platform-specific timers and descriptor readiness wake suspended tasks.
+//! Timers and descriptor readiness. One thread waits on the operating system's event queue and
+//! wakes the tasks whose timer is due or whose descriptor is ready.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
