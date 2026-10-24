@@ -4994,6 +4994,61 @@ func main() {
 }
 
 #[test]
+fn a_context_whose_deadline_already_passed_is_expired_when_created() {
+    let source = "package main
+import \"std/context\"
+import \"std/time\"
+func closed(ctx context.Context) bool {
+    select {
+        case ctx.Done().receive() { return true }
+        default { return false }
+    }
+}
+func main() {
+    let expired, stop = context.WithTimeout(context.Background(), -time.Second)
+    println(expired.Err() == error(\"context deadline exceeded\"))
+    println(closed(expired))
+    let deadline, limited = expired.Deadline()
+    println(limited)
+    println(deadline < time.Now())
+
+    let zero, stopZero = context.WithDeadline(context.Background(), 0)
+    let _, zeroLimited = zero.Deadline()
+    println(zeroLimited)
+    println(zero.Err() == error(\"context deadline exceeded\"))
+
+    let child, stopChild = context.WithCancel(expired)
+    let _, childLimited = child.Deadline()
+    println(childLimited)
+    println(child.Err() == error(\"context deadline exceeded\"))
+    println(closed(child))
+
+    let canceled, cancel = context.WithCancel(context.Background())
+    cancel()
+    let late, stopLate = context.WithTimeout(canceled, -time.Second)
+    println(late.Err() == error(\"context canceled\"))
+
+    let open, stopOpen = context.WithTimeout(context.Background(), time.Hour)
+    let _, openLimited = open.Deadline()
+    println(openLimited)
+    println(open.Err() == nil)
+    println(closed(open))
+    stop()
+    stopZero()
+    stopChild()
+    stopLate()
+    stopOpen()
+}";
+    let output = run_poll_bounded(source, None);
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    assert_eq!(
+        stdout(&output),
+        "true\ntrue\ntrue\ntrue\ntrue\ntrue\ntrue\ntrue\ntrue\ntrue\ntrue\ntrue\nfalse\n"
+    );
+    assert!(output.stderr.is_empty(), "{}", stderr(&output));
+}
+
+#[test]
 fn reads_and_accepts_give_up_at_their_deadline() {
     let source = format!(
         "package main

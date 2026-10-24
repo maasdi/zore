@@ -11,10 +11,11 @@ type Context struct {
     state    Mutex<int>
     live     bool
     deadline int
+    limited  bool
 }
 
 func Background() Context {
-    return Context{done: channel<bool>(), state: mutex(active), live: false, deadline: 0}
+    return Context{done: channel<bool>(), state: mutex(active), live: false, deadline: 0, limited: false}
 }
 
 func TODO() Context {
@@ -22,14 +23,14 @@ func TODO() Context {
 }
 
 func WithCancel(parent Context) (Context, func()) {
-    let ctx = derive(parent, parent.deadline)
+    let ctx = derive(parent, parent.deadline, parent.limited)
     return ctx, func() {
         ctx.cancel(canceled)
     }
 }
 
 func WithCancelOn(parent Context, done channel<bool>) (Context, func()) {
-    let ctx = derive(parent, parent.deadline)
+    let ctx = derive(parent, parent.deadline, parent.limited)
     go cancelOn(ctx, done)
     return ctx, func() { ctx.cancel(canceled) }
 }
@@ -47,11 +48,15 @@ func WithTimeout(parent Context, timeout int) (Context, func()) {
 
 func WithDeadline(parent Context, deadline int) (Context, func()) {
     var at = deadline
-    if parent.deadline > 0 && parent.deadline < at {
+    if parent.limited && parent.deadline < at {
         at = parent.deadline
     }
-    let ctx = derive(parent, at)
-    go expire(ctx, at)
+    let ctx = derive(parent, at, true)
+    if time.Now() >= at {
+        ctx.cancel(expired)
+    } else {
+        go expire(ctx, at)
+    }
     return ctx, func() {
         ctx.cancel(canceled)
     }
@@ -73,13 +78,18 @@ func (c Context) Err() error {
 }
 
 func (c Context) Deadline() (int, bool) {
-    return c.deadline, c.deadline > 0
+    return c.deadline, c.limited
 }
 
-func derive(parent Context, deadline int) Context {
-    let ctx = Context{done: channel<bool>(), state: mutex(active), live: true, deadline: deadline}
+func derive(parent Context, deadline int, limited bool) Context {
+    let ctx = Context{done: channel<bool>(), state: mutex(active), live: true, deadline: deadline, limited: limited}
     if parent.live {
-        go follow(parent, ctx)
+        let inherited = parent.reason()
+        if inherited != active {
+            ctx.cancel(inherited)
+        } else {
+            go follow(parent, ctx)
+        }
     }
     return ctx
 }

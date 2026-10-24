@@ -7321,13 +7321,15 @@ context. A `Context` is a Copy value; every copy refers to the same context.
 | --- | --- |
 | `Background() Context`, `TODO() Context` | A context that is never cancelled and has no deadline |
 | `WithCancel(parent Context) (Context, func())` | A child of `parent` and a function that cancels it; calling the function again does nothing |
-| `WithDeadline(parent Context, deadline int) (Context, func())` | A child that is also cancelled at the deadline (a `time.Now` reading), or at the parent's deadline when that is earlier |
+| `WithDeadline(parent Context, deadline int) (Context, func())` | A child that is also cancelled at the deadline (a `time.Now` reading), or at the parent's deadline when that is earlier; a deadline that has already passed returns a child that is already expired |
 | `WithTimeout(parent Context, timeout int) (Context, func())` | `WithDeadline(parent, time.Now() + timeout)` |
 | `(c Context) Done() channel<bool>` | A channel that is closed when the context is cancelled, for use as a `select` case |
 | `(c Context) Err() error` | `nil` while active; `context canceled` after its cancel function ran or its parent was cancelled that way; `context deadline exceeded` after its deadline passed |
-| `(c Context) Deadline() (int, bool)` | The deadline and `true`, or `0` and `false` when there is none |
+| `(c Context) Deadline() (int, bool)` | The deadline and `true`, or `0` and `false` when there is none; zero and negative readings are valid deadlines because `time.Now` counts from process start |
 
 Cancelling a context cancels every context made from it, with the same error;
+a context made from an already cancelled parent starts cancelled with the
+parent's error;
 cancelling a child does not affect its parent. A cancelled context stays
 cancelled, and its error does not change. Call the cancel function when the
 work is done, so the waiting described below can end early.
