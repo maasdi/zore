@@ -118,6 +118,8 @@ func (c Client) Do(ctx context.Context, method string, absoluteURL string, heade
     let output, target, preparationErr = c.prepare(method, absoluteURL, headers, body)
     if preparationErr != nil { return emptyClientResponse(), preparationErr }
     if c.transport.len() == 0 && target.Scheme != "http" { return emptyClientResponse(), error("http.Client: HTTPS requires verified TLS transport") }
+    let contextErr = clientContextError(ctx)
+    if contextErr != nil { return emptyClientResponse(), contextErr }
     return c.dialAndExchange(bounded, output, target, method, body)
 }
 func clientContextError(ctx context.Context) error {
@@ -159,6 +161,8 @@ func (c Client) Exchange(ctx context.Context, conn own ClientConn, method string
     let guard = clientCancellation{cancel: cancel}
     let output, _, preparationErr = c.prepare(method, absoluteURL, headers, body)
     if preparationErr != nil { return emptyClientResponse(), preparationErr }
+    let contextErr = clientContextError(ctx)
+    if contextErr != nil { return emptyClientResponse(), contextErr }
     return c.exchangePrepared(bounded, conn, output, method, body)
 }
 func (c Client) exchangePrepared(ctx context.Context, conn own ClientConn, output string, method string, body []byte) (ClientResponse, error) {

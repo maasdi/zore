@@ -494,12 +494,17 @@ type Conn struct { sent int; cursor int; mode int; drops channel<int>; done chan
 type Cancellation struct { cancel func() }
 func (c mut Cancellation) drop() { (c.cancel)() }
 func (c mut Conn) drop() { c.drops.send(c.sent) }
-func (c mut Conn) SetReadDeadline(deadline int) error { return nil }
+func (c mut Conn) SetReadDeadline(deadline int) error {
+    if c.mode == 12 { panic("stopped caller set read deadline") }
+    return nil
+}
 func (c mut Conn) SetWriteDeadline(deadline int) error {
+    if c.mode == 12 { panic("stopped caller set write deadline") }
     if c.mode == 4 { return error("deadline failure") }
     return nil
 }
 func (c mut Conn) Write(data []byte) (int, error) {
+    if c.mode == 12 { panic("stopped caller wrote") }
     if c.mode == 9 { panic("injected client panic") }
     let head = strings.Bytes("POST / HTTP/1.1\r\nHost: example.test\r\nContent-Length: 3\r\nConnection: close\r\n\r\n")
     let tail = [byte; 3]{0, 255, 65}
@@ -517,6 +522,7 @@ func (c mut Conn) Write(data []byte) (int, error) {
     return n, nil
 }
 func (c mut Conn) Read(data mut []byte) (int, error) {
+    if c.mode == 12 { panic("stopped caller read") }
     if c.mode == 11 { c.done.close(); let _, _ = c.ctx.Done().receive(); return 0, http.ClientPollTimeout }
     if c.mode == 5 { return 0, nil }
     if c.mode == 6 { return data.len() + 1, nil }
@@ -534,6 +540,7 @@ func (c mut Conn) Read(data mut []byte) (int, error) {
 }
 type Transport struct { drops channel<int>; mode int; calls channel<bool>; done channel<bool>; ctx context.Context }
 func (t Transport) Dial(ctx context.Context, scheme string, authority string) (http.ClientConn, error) {
+    if t.mode == 12 { panic("stopped caller dialed") }
     if scheme != "https" || authority != "example.test" || ctx.Err() != nil { panic("dial contract") }
     t.calls.send(true)
     if t.mode == 10 {
@@ -560,6 +567,39 @@ func exercise(mode int, drops channel<int>, calls channel<bool>) {
     } else {
         if err == nil || response.StatusCode != 0 || response.Body.len() != 0 { panic("partial response escaped") }
     }
+}
+func stoppedCalls(ctx context.Context, expected error, drops channel<int>, calls channel<bool>) {
+    _ = expected
+    let client, clientErr = http.NewClientWithTransport(http.DefaultClientConfig(), Transport{drops: drops, calls: calls, mode: 12, done: channel<bool>(), ctx: ctx})
+    if clientErr != nil { panic("stopped caller client") }
+    let payload = Array<byte>{0, 255, 65}
+    for var mode = 0; mode < 3; mode += 1 {
+        var target = "https://example.test/"
+        var method = "POST"
+        var expectedErr = expected
+        if mode == 1 { target = "/relative"; _ = expectedErr; expectedErr = error("url: expected absolute http or https URL") }
+        if mode == 2 { method = ""; _ = expectedErr; expectedErr = error("http.Client: unsupported or invalid method") }
+        let response, err = client.Do(ctx, method, target, http.NewHeader(), payload[:])
+        if err != expectedErr || response.StatusCode != 0 || response.Body.len() != 0 { panic("stopped caller Do") }
+        let exchanged, exchangeErr = client.Exchange(ctx, Conn{sent: 0, cursor: 0, mode: 12, drops: drops, done: channel<bool>(), ctx: ctx}, method, target, http.NewHeader(), payload[:])
+        if exchangeErr != expectedErr || exchanged.StatusCode != 0 || exchanged.Body.len() != 0 { panic("stopped caller Exchange") }
+        let count, _ = drops.receive()
+        if count != 0 { panic("stopped caller connection drop") }
+    }
+    let plain, plainErr = http.NewClient(http.DefaultClientConfig())
+    if plainErr != nil { panic("stopped caller plain client") }
+    let _, httpsErr = plain.Do(ctx, "GET", "https://example.test/", http.NewHeader(), payload[:])
+    if httpsErr != error("http.Client: HTTPS requires verified TLS transport") { panic("stopped caller HTTPS validation") }
+}
+func verifyStoppedContext(ctx context.Context, expected error) {
+    _ = expected
+    let drops = channel<int>(10)
+    let calls = channel<bool>(20)
+    stoppedCalls(ctx, expected, drops, calls)
+    let dialed, _ = calls.receive()
+    if dialed { panic("stopped caller dial event") }
+    select { case calls.receive() { panic("stopped caller extra transport event") }; default {} }
+    select { case drops.receive() { panic("stopped caller duplicate connection drop") }; default {} }
 }
 func main() {
     let drops = channel<int>(10)
@@ -600,6 +640,13 @@ func main() {
     if configFailure == nil { panic("configuration") }
     let dialed, _ = calls.receive()
     if dialed { panic("dialed invalid client") }
+    let canceled, cancel = context.WithCancel(context.Background())
+    cancel()
+    if canceled.Err() != error("context canceled") { panic("caller not canceled") }
+    for var attempt = 0; attempt < 8; attempt += 1 { verifyStoppedContext(canceled, error("context canceled")) }
+    let expired, stopExpiry = context.WithTimeout(context.Background(), -time.Second)
+    let expiryCleanup = Cancellation{cancel: stopExpiry}
+    verifyStoppedContext(expired, error("context deadline exceeded"))
     println("closed exactly once")
 }
 "#;
