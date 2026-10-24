@@ -1,3 +1,4 @@
+mod bundled_contracts;
 mod local_dependencies;
 mod native_adapters;
 

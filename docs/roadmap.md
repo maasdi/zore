@@ -152,7 +152,7 @@ was demonstrated by this review, and exhaustive MVP conformance is not claimed.
 | 1 | [#114: conformance evidence](https://github.com/maasdi/zore/issues/114) | Covered by the #114 follow-up's paired frontend cases and bounded native tests. See the [evidence inventory](conformance/mvp.md#direct-evidence-added-for-issue-114); broader conformance is not implied. |
 | 2 | [#115: `zore test`](https://github.com/maasdi/zore/issues/115) | Implemented against locked §45.1: same-package `_test.ore` discovery, file/directory selection, both signatures, native process isolation, continued failure reporting and ordinary cleanup. See [application testing](testing.md). |
 | 3 | [#116: borrowed map entries](https://github.com/maasdi/zore/issues/116) | Implemented against locked §13.4: conditional shared/mutable bindings, explicit missing branches, ordinary control flow, receiver/alias exclusivity, and initialized-part panic cleanup; see [design comparison](proposals/borrowed-map-entries.md). |
-| 4 | [#118: performance baselines](https://github.com/maasdi/zore/issues/118) | Implemented opt-in compiler, REST/JSON, pinned-frame and settled memory/resource measurements with raw repetitions; see the [baseline](performance.md). Follow-ups #127/#128 implement internal LLVM linkage, cancellable context deadlines and direct HTTP shutdown notification; see the [paired compiler and retention evidence](performance-followups.md). |
+| 4 | [#118: performance baselines](https://github.com/maasdi/zore/issues/118) | Implemented opt-in compiler, REST/JSON, pinned-frame and settled memory/resource measurements with raw repetitions; see the [baseline](performance.md). Follow-ups #127/#128 implement internal LLVM linkage, cancellable context deadlines and direct HTTP shutdown notification; see the [paired compiler and retention evidence](performance-followups.md). Issue [#156](https://github.com/maasdi/zore/issues/156) profiles current-main native build stages and runtime-cache reuse, with a focused reduction of unreachable internal LLVM function input; see the [native-build report](performance-builds.md). |
 | 5 | [#119: Windows hosts](https://github.com/maasdi/zore/issues/119) | Implemented Windows x64 MSVC linking, host paths, deadline-aware helper sockets and native CI; see [platform support](platform-support.md). No cross-compilation claim. |
 | 6 | [#117: async callable extensions](https://github.com/maasdi/zore/issues/117) | Implemented under locked §§16.1–16.7: explicit async literals and concrete async method values, reusable capture environments, call-once cleanup and independent spawn inputs; see [design](proposals/async-callables.md). |
 | 7 | [#120: scoped tasks](https://github.com/maasdi/zore/issues/120) | Implemented locked §§18.12–18.13: plain and direct async lexical scopes, registry-held child loans and joins before parent cleanup on every exit. [#132](https://github.com/maasdi/zore/issues/132) adds persistent storage, pollable joining and resumable unwind cleanup. See [usage and conservative proof limits](scoped-tasks.md). |
@@ -2115,6 +2115,18 @@ mapping does not imply they are already implemented.
 Validate the compiler layout and Rust runtime migration at `39dde45` before
 starting new language functionality. Do not restart the completed skeleton
 implementation or expand ownership while this validation is unresolved.
+
+#### Compiler maintenance boundaries
+
+Issue #159 extracts closure environment/value emission and destruction into
+`codegen/closure.rs`, preserving the existing MIR-to-LLVM stage and closure ABI.
+JSON synthesis now validates its bundled helper and hook signatures; HTTP
+adaptation validates its factory/handler shapes before generating records.
+Paired bundle mutation tests cover contract drift. This is an internal
+maintenance change with no new language feature or claimed performance gain.
+HIR lowering and region analysis remain large; further extraction should follow
+specific change needs rather than file-size targets. Cross-host validation of
+this change is recorded by its PR checks, not inferred from local execution.
 
 #### Required environment
 

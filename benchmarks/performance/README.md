@@ -1,7 +1,8 @@
 # Reproducible performance baselines
 
 See the [recorded Linux baseline](../../docs/performance.md) and
-[paired compiler/request-retention follow-ups](../../docs/performance-followups.md).
+[paired compiler/request-retention follow-ups](../../docs/performance-followups.md),
+and [current-main native-build profiles](../../docs/performance-builds.md).
 
 This opt-in Linux runner extends the existing suspended-task, frame-storage and
 cooperative-budget workloads. It changes no compiler or scheduler semantics.
@@ -42,6 +43,41 @@ Each row identifies its compiler variant/revision and includes the object size.
 The default still measures cold runtime-artifact-cache builds; --warm-builds-only
 omits those builds for a focused comparison of native compilation.
 
+Build a matching library probe to separate frontend phases without adding timing
+instrumentation to the compiler CLI:
+
+    cargo build --release --locked --example compile_profile
+    python3 benchmarks/performance/run.py --suites compile \
+      --compiler target/release/zore --compiler-revision COMPILER_SHA \
+      --stage-profiler target/release/examples/compile_profile \
+      --compile-workloads rest --repetitions 3 \
+      --work-directory /tmp/zore-build-profile --output /tmp/zore-build-profile.json
+
+The work directory must be new. It preserves IR, command logs, cache artifacts
+and each completed measurement; omit it to use a temporary directory. Select
+individual workloads to keep shared-host lock leases short. For paired runs,
+`--baseline-stage-profiler` must match the baseline compiler's library sources,
+just as `--stage-profiler` must match the candidate. Use
+`--compile-lock-file /path/to/shared.lock` to serialize warmups and individual
+measured variants with other host jobs, releasing between variants. Do not wrap
+the whole runner in the same lock. Probe binary hashes are
+recorded. The probe reports loading, checking (including ownership analysis),
+MIR/drop/async lowering and full IR emission in a separate process. It is not
+part of the timed build and does not include native-input pruning. Full emitted
+IR can therefore be larger than the IR captured at the clang boundary.
+
+Build profiles record every clang/rustc command and elapsed duration, including
+the rustc host-version query, cold runtime-library compilation, Rust entry-shim
+compilation/linking, and its nested native linker. `rustc_link_seconds` includes
+`native_link_seconds`; do not add them. `frontend_and_emit_seconds` ends at the
+first recorded compiler command and includes process/wrapper startup and IR
+capture, so use the separate probe when attributing individual frontend phases.
+
+Each private cache is write-probed before building. Snapshots retain rlib hashes,
+sizes and modification timestamps. Compile measurements fail if a warm cache is
+missing, changed, or rebuilt, or if a cold cache fails to retain its runtime.
+Repeated fallback builds cannot be reported as normal warm builds.
+
 Profile repeated fixed-case REST requests, then observe the original deadlines:
 
     python3 benchmarks/performance/retention.py \
@@ -68,7 +104,7 @@ is outside each request batch.
 
 | Suite | Work and raw evidence |
 | --- | --- |
-| compile | Fresh check/build processes for hello, JSON, REST, the multi-file REST sample, and suspension. Each check/warm/cold build duration, IR byte count, and clang object-compilation duration/command. |
+| compile | Fresh check/build processes for hello, JSON, REST, the multi-file REST sample, a multi-file application with a local JSON dependency, and suspension. Check/warm/cold durations, IR/object bytes, frontend probe phases, command durations and cache-reuse evidence. |
 | json | Encode, strict decode, and late unknown-field rejection for a 60-byte document with an owned string array. Warm process per mode; every batch's elapsed nanoseconds, count, checked checksum and memory/resources. |
 | rest | Stateless user lookup/create, unknown-field and malformed-JSON rejection, media-type rejection, 404 and handler errors. Closed-loop clients warm/reuse connections. Every request's latency/body bytes, reconnections, throughput, nearest-rank p50/p95/p99 and memory/resources. |
 | frames | Existing channel, dead-array, cooperative-loop and disjoint-array workloads, plus a request retaining a 1 KiB owned payload through an awaited child borrowing its slice. Emitted frame types, clang-folded LLVM ABI sizes, and unchanged settled-memory sampler output. |
@@ -83,8 +119,9 @@ Warm builds first populate a dedicated runtime-artifact cache. Cold builds use
 a new empty artifact cache each time, including rustc's runtime build. “Cold”
 does not flush page/filesystem caches. All build times include process startup,
 import loading/checking, IR emission and linking. The clang wrapper records
-LLVM-to-object work, excluding final linking; its startup/capture adds overhead
-to warm wall time. Subtracting check from build does not isolate one stage.
+LLVM-to-object work in `clang`, with final linking separately in `warm_profile`
+and `cold_profile`; wrapper startup/capture adds overhead to build wall time.
+Subtracting check from build does not isolate one stage.
 
 JSON timing includes fixture setup, codec calls, validation and destruction,
 excluding process startup and control I/O. Per-operation means are batch

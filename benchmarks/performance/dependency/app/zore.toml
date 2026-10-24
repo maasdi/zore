@@ -1,0 +1,4 @@
+name = "profileapp"
+
+[dependencies]
+profilemodel = { path = "../model" }
