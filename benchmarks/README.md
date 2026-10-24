@@ -10,3 +10,6 @@
 
 Measurements are opt-in. Correctness belongs in tests; host-sensitive values
 are not CI thresholds.
+
+- [Runtime scaling](runtime-scaling/README.md): opt-in Windows/Linux/macOS socket,
+  timer and suspended-task populations, pinned storage and resource cleanup.

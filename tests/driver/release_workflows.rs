@@ -690,7 +690,7 @@ fn git_listing_failures_redact_remote_diagnostics_and_embedded_credentials() {
         .env(
             "GIT_SSH_COMMAND",
             format!(
-                "\"{}\" --ignored --exact ssh_failure_fixture --nocapture --",
+                "\"{}\" --ignored --exact ssh_failure_fixture --nocapture -- 1>&2",
                 executable.to_str().unwrap().replace('\\', "/")
             ),
         )

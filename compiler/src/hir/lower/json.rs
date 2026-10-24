@@ -1,5 +1,8 @@
+mod contract;
+
 use std::collections::HashSet;
 
+use self::contract::CodecContract;
 use super::{Checker, typed};
 use crate::ast::{BinaryOp, ParamMode};
 use crate::hir::{self, Const, Expr, ExprKind, Stmt, StmtKind};
@@ -41,11 +44,28 @@ impl Checker<'_> {
         if !self.validate_json_type(ty, decode, false, &self.name(ty), span, &mut HashSet::new()) {
             return;
         }
+        let contract = match CodecContract::resolve(
+            functions,
+            self,
+            &functions[copy.0 as usize],
+            ty,
+            decode,
+        ) {
+            Ok(contract) => contract,
+            Err(detail) => {
+                self.diagnostics.push(crate::diagnostic::Diagnostic::new(
+                    crate::diagnostic::Severity::Error,
+                    format!("bundled JSON codec contract mismatch: {detail}"), span,
+                ).note("update the bundled std/encoding/json declarations and compiler codec generator together"));
+                return;
+            }
+        };
         let mut function = functions[copy.0 as usize].clone();
         function.native = false;
         let mut builder = CodecBuilder {
             checker: self,
             functions,
+            contract,
             function,
             template,
             span,
@@ -138,7 +158,20 @@ impl Checker<'_> {
             TypeKind::Bool | TypeKind::Int(_) | TypeKind::Float(_) | TypeKind::String => true,
             TypeKind::Struct(id) => {
                 let fields = self.struct_fields(id);
-                if !self.json_struct(ty, "Optional") {
+                let optional = self.json_struct(ty, "Optional");
+                if optional
+                    && !(fields.len() == 2
+                        && fields[0].0 == "Value"
+                        && fields[1].0 == "Set"
+                        && fields[1].1 == Some(TypeStore::BOOL)
+                        && self.types.instance_of(id).is_some_and(|(_, args)| {
+                            args.len() == 1 && fields[0].1 == Some(args[0])
+                        }))
+                {
+                    self.error("bundled JSON codec contract mismatch: Optional needs Value T followed by Set bool", span);
+                    return false;
+                }
+                if !optional {
                     for policy in 0..3 {
                         let mut names = HashSet::new();
                         for (name, _, _) in &fields {
@@ -274,6 +307,7 @@ fn simple_lower(c: char) -> char {
 struct CodecBuilder<'a, 'b> {
     checker: &'a mut Checker<'b>,
     functions: &'a [hir::Function],
+    contract: CodecContract,
     function: hir::Function,
     template: FunctionId,
     span: Span,
@@ -330,16 +364,10 @@ impl CodecBuilder<'_, '_> {
         )
     }
     fn call(&self, name: &str, args: Vec<Expr>) -> Expr {
-        let index = self
-            .functions
-            .iter()
-            .position(|f| f.name == name)
-            .unwrap_or_else(|| panic!("missing JSON helper {name}"));
+        let function = self.contract.helper(name);
+        let index = function.0 as usize;
         Expr {
-            kind: ExprKind::Call {
-                function: FunctionId(index as u32),
-                args,
-            },
+            kind: ExprKind::Call { function, args },
             types: self.functions[index].results.clone(),
             span: self.span,
         }

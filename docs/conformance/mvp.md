@@ -1,14 +1,18 @@
 # MVP implementation and evidence inventory
 
-Reviewed baseline: `main` at `f76fc7d802f5c6efeb130b7379e4740e74bc758d`
-(2026-10-13, after PR #113). Scope: specification §§39, 46, and 52,
+Historical baseline: `main` at `f76fc7d802f5c6efeb130b7379e4740e74bc758d`
+(2026-10-13, after PR #113). The original coverage counts and conclusions below
+describe that reviewed commit. Current-status corrections and later direct
+evidence are recorded in the follow-up sections; they do not rewrite that
+baseline. Scope: specification §§39, 46, and 52,
 read together with each feature's detailed locked rules. This is a coverage
 inventory, not a proof of soundness for every program or a declaration that
 the entire MVP is complete.
 
 **Covered** identifies executable assertions for the named behavior.
 **Partial** identifies incomplete direct evidence across feature combinations.
-**Design pending** identifies an explicitly unresolved contract.
+**Design pending** identifies an explicitly unresolved contract at the cited
+baseline; later decisions are recorded in dated follow-ups.
 **Extension** identifies behavior excluded from current locked forms.
 Markdown scenarios in `tests/conformance/` are requirements, not executed tests.
 Tests below are identified by their function names so references survive line
@@ -26,9 +30,9 @@ their follow-up sections supersede the original missing-test lists.
 | §39.1 Structs and methods | Covered: nominal types, construction, receiver modes, recursive owners | [Checker tests](../../tests/typecheck/check.rs): `structs_fields_and_literals`, `methods_declare_and_call`, `recursive_owned_types_have_finite_layout_and_move_classification`; [native suite](../../tests/codegen/native.rs): `named_types_compute_with_their_base_representation` | Infinite-size layouts are intentionally rejected; recursive clone/drop remains native-stack bounded. |
 | §39.1 Primitive types and strings | Covered: exact constants, checked conversions/arithmetic, Unicode/byte boundaries and operations | [Checker tests](../../tests/typecheck/check.rs): `untyped_constant_arithmetic_and_conversion`, `float_types_and_conversions`, `strings_have_length_index_slice_loops_and_a_rune_conversion`; [lexer tests](../../tests/lexer/lexer.rs); [native suite](../../tests/codegen/native.rs): `runes_and_integers_convert_with_checks`, `strconv_formats_and_parses_floats` | Q13 records conservative lexical choices; it does not block the implemented forms. |
 | §39.1 Fixed arrays, borrowed slices, `Array<T>` | Covered: construction, indexing, bounds, length, iteration, mutation, push/pop and whole-value ownership | [Checker tests](../../tests/typecheck/check.rs): `fixed_arrays_literals_and_indexing`, `slice_bounds_and_indices_are_checked_statically`, `collections_have_len_push_and_pop`; [ownership tests](../../tests/ownership/ownership.rs): `fixed_arrays_copy_or_move_on_assignment_by_their_element_type`, `push_and_pop_move_values_and_carry_views`; [native suite](../../tests/codegen/native.rs) | Moving an element out through an index remains an explicit safe rejection. |
-| §39.1 Maps | Covered for §13.3's locked construction, Copy lookup, insert/replace, ownership-transferring remove, length and iteration | [Checker tests](../../tests/typecheck/check.rs): `map_lookups_always_produce_presence_then_value`, `map_assignment_targets_a_mutable_map_and_one_entry`; [ownership tests](../../tests/ownership/ownership.rs): `maps_move_whole_and_removed_values_belong_to_the_caller`; [native suite](../../tests/codegen/native.rs) | Borrowed entry access is Q05 design work ([#116](https://github.com/maasdi/zore/issues/116)), not an implicitly specified API. |
-| §39.1 Closures | Covered: borrowing/owning captures, function values, call-once values, receiver-capturing synchronous method values | [Checker tests](../../tests/typecheck/check.rs): `closures_become_functions_that_borrow_their_captures`, `call_once_closures_are_bound_with_let_and_called_directly`; [ownership tests](../../tests/ownership/ownership.rs): `a_closure_cannot_outlive_what_it_captures`, `an_escaping_closure_owns_copies_and_moves_of_its_captures`; [native suite](../../tests/codegen/native.rs): `method_values_destroy_an_owned_receiver_exactly_once` | Async closure literals and concrete async method values are delivered separately by #117 under §16.7; see [coverage](../../tests/conformance/async-callables.md). |
-| §39.2 Copy/Move semantics and derived classification | Covered for every §6.1 primitive and the listed library resources | [Checker tests](../../tests/typecheck/check.rs): `drop_methods_make_structs_move`; [ownership tests](../../tests/ownership/ownership.rs): `move_values_transfer_and_ordinary_calls_borrow`, `fixed_arrays_copy_or_move_on_assignment_by_their_element_type` | The #114 evidence below covers file buffers, metadata, Listener and Conn. No public `os.File` handle is currently defined; these cases do not prove classification for every possible composite. |
+| §39.1 Maps | Covered for construction, Copy lookup, insert/replace, ownership-transferring remove, length, iteration, and conditional borrowed entry access (§13.4) | [Checker tests](../../tests/typecheck/check.rs): `map_lookups_always_produce_presence_then_value`, `map_assignment_targets_a_mutable_map_and_one_entry`; [ownership tests](../../tests/ownership/ownership.rs): `maps_move_whole_and_removed_values_belong_to_the_caller`; [native suite](../../tests/codegen/native.rs); [map entry tests](../../tests/codegen/map_entries.rs): `map_entries_read_and_edit_move_resources_without_removing_or_cloning`, `map_entries_misses_evaluate_once_release_borrows_and_select_else_branches` | Mutable entries whose values contain views remain excluded pending writeback provenance semantics. The earlier Q05/#116 design status was resolved by §13.4. |
+| §39.1 Closures | Covered: borrowing/owning captures, function values, call-once values, receiver-capturing synchronous method values | [Checker tests](../../tests/typecheck/check.rs): `closures_become_functions_that_borrow_their_captures`, `call_once_closures_are_bound_with_let_and_called_directly`; [ownership tests](../../tests/ownership/ownership.rs): `a_closure_cannot_outlive_what_it_captures`, `an_escaping_closure_owns_copies_and_moves_of_its_captures`; [native suite](../../tests/codegen/native.rs): `method_values_destroy_an_owned_receiver_exactly_once` | Async closure literals and concrete async method values are implemented under §16.7; see [Current status corrections](#current-status-corrections-after-the-historical-baseline) and [coverage](../../tests/conformance/async-callables.md). |
+| §39.2 Copy/Move semantics and derived classification | Covered for every §6.1 primitive and the listed library resources | [Checker tests](../../tests/typecheck/check.rs): `drop_methods_make_structs_move`; [ownership tests](../../tests/ownership/ownership.rs): `move_values_transfer_and_ordinary_calls_borrow`, `fixed_arrays_copy_or_move_on_assignment_by_their_element_type` | The #114 evidence below covers file buffers, metadata, Listener, Conn, and `os.File`. Classification of unlisted user-defined composites derives from their fields; this matrix is direct evidence for named standard resources, not every possible composite. |
 | §39.2 Borrow by default, `mut`, `own`, borrow checking | Covered: parameter contracts, places, exclusive loans, captures, partial moves and reinitialization | [Checker tests](../../tests/typecheck/check.rs): `mut_parameters_and_receivers_require_mutable_places`; [ownership tests](../../tests/ownership/ownership.rs): `partial_moves_track_fields_and_reinitialization`, `shared_and_mutable_views_cannot_overlap_while_live`, `backing_owners_cannot_be_moved_replaced_or_dropped_while_viewed` | Only mutable places may be assigned or passed as `mut` (§11.6); ownership alone does not grant mutability. Generic restrictions follow §22.1. |
 | §39.2 Inferred lifetimes | Covered for named loan/provenance cases, including nested returned containers and later calls through clones | [Ownership tests](../../tests/ownership/ownership.rs): `the_owner_is_usable_again_after_the_view_last_use`, `contracts_bind_results_only_to_the_inputs_they_derive_from`, `recursive_functions_get_consistent_contracts`, `an_owner_cannot_be_returned_alongside_its_own_view` | The #114 evidence below adds these direct cases; unproven provenance is still conservatively rejected. |
 | §39.2 Deterministic destruction, automatic/explicit drop, clone | Covered for named normal/error/panic exits and destructor-observed views across channel/timer/mutex/socket waits | [Ownership tests](../../tests/ownership/ownership.rs): `clone_borrows_its_argument_and_never_consumes_it`, `a_custom_drop_cannot_export_the_value_being_destroyed`; [native suite](../../tests/codegen/native.rs): `a_drop_that_reads_a_view_keeps_the_backing_owner_live_across_suspension`, `a_drop_that_reads_a_view_still_runs_when_a_task_panics_after_suspension` | The #114 evidence below adds observed timer/mutex/socket suspensions and collection-field resurrection rejection. Early owned-value destruction is a direction, not a required timing schedule (§14.2). |
@@ -62,7 +66,7 @@ under those OS deadlines remains best effort.
 | §46.5 Code generation | `tests/codegen/native.rs` and its registered HTTP/JSON/signal/mixed-binding modules compile and execute, asserting status/stdout/stderr, cleanup ordering, bounds/arithmetic panics and resource leak checks. |
 | §46.6 Async/concurrency | Async lowering plus runtime/native tests assert persistence, task results/errors/panics, detach and abandonment, channel ownership/close/buffers, wait progress and worker compensation. Controlled two-worker fixtures make the critical pending states observable. |
 
-The supported baseline's [CI run](https://github.com/maasdi/zore/actions/runs/38350681714)
+The historical baseline's [CI run](https://github.com/maasdi/zore/actions/runs/38350681714)
 passed formatting, Clippy with warnings denied, build, documentation and the
 full all-target suite on Ubuntu/macOS: 789 tests passed on each platform.
 The intentionally ignored subprocess fixture is explicitly exercised by the
@@ -111,29 +115,44 @@ it does not measure wall-clock timing. Real elapsed-time timer behavior retains
 its existing runtime/native tests. Socket tests use loopback endpoints; file
 tests use temporary directories. Native runs enable resource leak checks.
 
-The current file API returns owned `Array<byte>` data and Copy `FileInfo`
-metadata. §10.3's illustrative `File` name does not define an additional
-standard-library handle API. A new File abstraction would require its own
-contract, not a guessed conformance fixture.
+The current file API includes the `os.File` handle and owned `Array<byte>` data,
+plus Copy `FileInfo` metadata. The #114 resource matrix names handle and buffer
+ownership evidence; see the current §37.3 API and test references above.
 
 The focused cases demonstrate no new compiler/runtime defect. The only
 runtime additions are excluded unless `zore_test_hooks` is enabled. General
 proofs for all alias shapes, suspension combinations and destructor programs
 are not implied by these named assertions.
 
+## Current status corrections after the historical baseline
+
+These later implementations resolve rows that were still future work at the
+2026-10-13 baseline. The original CI counts above remain tied to that baseline.
+
+| Area | Current implementation and evidence |
+| --- | --- |
+| File API | `std/os/file.ore` defines Move `os.File`, `Open`, `Create`, standard streams, `Read`, `Write`, `WriteString`, and `Close`; `os.ReadFile` and `os.WriteFile` already use `Array<byte>` and `[]byte`. The resource classification case is `primitive_and_library_resource_assignments_follow_copy_move_classification`; native file and socket transfers are covered by `moved_file_buffers_and_socket_handles_keep_their_single_owner` in [conformance tests](../../tests/codegen/conformance.rs). The illustrative `File` in §10.3 is not a substitute for this concrete API. |
+| Borrowed map entries | §13.4 and `if [mut] name = map.entry(key)` are implemented. Mutable entries whose values contain views remain rejected where writeback provenance cannot be proven; this is a conservative boundary, not a pending map-entry design. |
+| Async callables | Async closure literals, concrete async method values, and async function values can be awaited or spawned under §16.7. Evidence is in [async callable tests](../../tests/codegen/async_callables.rs), including `async_borrowing_literals_and_nested_captures_survive_real_waits`, `async_method_values_borrow_field_receivers_and_consume_owned_receivers_once`, and `spawned_async_literals_method_values_and_call_once_jobs_destroy_captures_once`. |
+| Scoped tasks | Plain and direct async lexical task scopes are implemented under §§18.12–18.13; joins precede parent cleanup on all exits. Evidence is in [scoped task tests](../../tests/codegen/scoped_tasks.rs), including `scope_shared_mutable_and_literal_children_join_before_parent_drop`, `scope_parent_panic_joins_borrowing_children_before_parent_drop`, and `scope_async_children_and_plain_helpers_progress_with_one_pool_worker`. |
+| Application tests | `zore test` discovers `_test.ore` functions and checks packages before executing each test in a fresh native process. [Driver tests](../../tests/driver/testing.rs) cover selection, signatures, cleanup, continuation after failure, and no-test checking. |
+| Windows | Windows x64 MSVC builds and native tests run in CI, with host-specific APIs and limits recorded in [platform support](../platform-support.md). This does not claim cross-compilation or full parity for OS-specific notifications and termination callbacks. |
+| Self-hosting | `compiler-zore/` contains a lexer and parser compared with the Rust frontend. Further compiler stages remain deferred; the bootstrap compiler is Rust. |
+
 ## Work classification and next steps
 
 1. The specific direct evidence gaps in #114 are covered by the cases above.
    New demonstrated defects need their own reproducer and implementation work.
-2. `zore fmt` is delivered in PR #122; next is the test-runner contract
-   and implementation in #115. Tooling is §45 direction; it does not prove a
-   language safety invariant.
-3. Resolve borrowed map-entry Q05 in #116. Async closures/method values (#117)
+2. `zore fmt` (#122) and `zore test` (#115) implement their §45 contracts.
+   Application-test behavior is covered by [driver tests](../../tests/driver/testing.rs)
+   and [the testing guide](../testing.md); tooling does not prove a language
+   safety invariant.
+3. Borrowed map entries (#116) are specified in §13.4. Async closures/method values (#117)
    required explicit specification changes. Plain scoped tasks (#120) now use
    locked §§18.12–18.13, including direct async scope cleanup (#132).
-4. Extend existing performance baselines (#118) and establish Windows host
-   evidence (#119). Avoid claiming missing benchmarks: three workload families
-   already exist under `benchmarks/`.
+4. Performance baselines (#118) and Windows x64 MSVC host evidence (#119) are
+   implemented. Three workload families exist under `benchmarks/`; supported
+   host scope remains documented.
 5. Keep further self-hosting deferred. Package-level mutable values remain
    intentionally forbidden; no implementation ticket is created for them.
 
@@ -141,3 +160,7 @@ This review did not demonstrate a new safety defect. It also did not execute
 every Markdown scenario or establish exhaustive conformance for every feature
 combination. The #114 follow-up supplies the named direct assertions; broader
 conformance and other roadmap work remain separate.
+
+The additional [seeded hardening inventory](hardening.md) maps generated ownership,
+plain/async cleanup, protocol fragmentation and quiescent cancellation assertions
+to the earlier executable cases, with replay, process bounds and actual host limits.
