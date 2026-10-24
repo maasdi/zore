@@ -395,6 +395,5 @@ Native JSON programs run with leak checking, including partial-decode errors.
 `codegen/hardening.rs` extends the existing seeded frontend and #114 coverage
 with bounded ownership/view chains, plain/async partial construction and scoped
 cleanup, JSON mutations, parser read fragmentation, real TCP cancellation and
-quiescent timer/resource checks. See [hardening evidence and replay](../docs/conformance/hardening.md)
-for assertion names, seed selection, failure reduction, process bounds, opt-in
-sanitizer/weekly CI and explicit host exclusions.
+quiescent timer/resource checks. See [hardening replay and CI](../docs/conformance/hardening.md)
+for assertion names, seed selection, failure reduction and opt-in sanitizer/weekly CI.
