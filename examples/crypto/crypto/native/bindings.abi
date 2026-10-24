@@ -1,0 +1,6 @@
+package crypto
+
+func nativeRandomBytes(size int) (Array<byte>, error)
+func nativeSHA256(data []byte) (Array<byte>, error)
+func nativeHMACSHA256(key []byte, data []byte) (Array<byte>, error)
+func nativeEqual(left []byte, right []byte) bool

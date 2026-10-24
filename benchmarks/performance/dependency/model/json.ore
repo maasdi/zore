@@ -1,0 +1,7 @@
+package profilemodel
+
+import "std/encoding/json"
+
+func Encode(record Record) (Array<byte>, error) {
+    return json.MarshalWith(record, json.LowerCamel)
+}

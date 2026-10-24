@@ -7,6 +7,7 @@ use crate::async_lowering::NativeWait;
 use crate::source::SourceError;
 
 pub(super) const C_FLAGS: &[&str] = &["-std=c11", "-O2", "-Wall", "-Wextra", "-Werror"];
+pub(super) const VENDORED_C_FLAGS: &[&str] = &["-std=c11", "-O2", "-w"];
 const RECIPE: &str = "zore-native-package-static-c11-v1";
 
 pub(super) struct Adapter {
@@ -15,9 +16,11 @@ pub(super) struct Adapter {
     pub fingerprint: &'static str,
     pub c_flags: &'static [&'static str],
     pub symbols: &'static [(&'static str, &'static str, Option<NativeWait>)],
+    pub mbedtls: bool,
 }
 
 const ADLER32: Adapter = Adapter {
+    mbedtls: false,
     id: "adler32-v1",
     project: "adler32",
     fingerprint: "66280c83962934f0b1937cfc1633458324381c156fc575100d8f145433a871ab",
@@ -31,6 +34,7 @@ const ADLER32: Adapter = Adapter {
 };
 
 const SQLITE: Adapter = Adapter {
+    mbedtls: false,
     id: "sqlite-v1",
     project: "sqlite",
     fingerprint: "39079c16c327f06c66f667782653832f0ce4ac5741453fa8540cc5fda6fa5711",
@@ -115,8 +119,22 @@ const SQLITE: Adapter = Adapter {
     ],
 };
 
+const CRYPTO: Adapter = Adapter {
+    mbedtls: true,
+    id: "crypto-v1",
+    project: "crypto",
+    fingerprint: "a14fcf91b34ceb0e32f786ad84d04b030d476e0325c72b7ae12f00b1f6e97ff4",
+    c_flags: &[],
+    symbols: &[
+        ("nativeRandomBytes", "zore_native_crypto_random_bytes", None),
+        ("nativeSHA256", "zore_native_crypto_sha256", None),
+        ("nativeHMACSHA256", "zore_native_crypto_hmac_sha256", None),
+        ("nativeEqual", "zore_native_crypto_equal", None),
+    ],
+};
+
 pub(super) fn find(id: &str) -> Option<&'static Adapter> {
-    [&ADLER32, &SQLITE]
+    [&ADLER32, &SQLITE, &CRYPTO]
         .into_iter()
         .find(|adapter| adapter.id == id)
 }
@@ -198,6 +216,13 @@ impl Provider {
         for (name, symbol, _) in self.adapter.symbols {
             part(name);
             part(symbol);
+        }
+        if self.adapter.mbedtls {
+            part(super::mbedtls::FINGERPRINT);
+            part(super::mbedtls::RECIPE);
+            for flag in VENDORED_C_FLAGS {
+                part(flag);
+            }
         }
         format!("{:x}", hash.finalize())
     }

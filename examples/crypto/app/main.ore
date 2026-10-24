@@ -1,0 +1,22 @@
+package main
+
+import "crypto"
+import "std/strings"
+import "std/errors"
+
+func example() error {
+    let key = crypto.RandomBytes(32)?
+    let message = strings.Bytes("an application message")
+    let tag = crypto.HMACSHA256(key[:], message[:])?
+    println(crypto.VerifyHMACSHA256(key[:], message[:], tag[:]))
+    let digest = crypto.SHA256(message[:])?
+    println(digest.len())
+    return nil
+}
+
+func main() {
+    let err = example()
+    if err != nil {
+        panic(errors.Message(err))
+    }
+}

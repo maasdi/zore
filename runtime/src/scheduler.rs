@@ -983,6 +983,25 @@ pub mod test_support {
         });
     }
 
+    pub fn wait_population(count: usize, kind: u8) {
+        wait_pending(count);
+        until(|| match kind {
+            1 => super::super::reactor::snapshot().2 == count,
+            2 => {
+                #[cfg(any(target_os = "linux", target_os = "macos"))]
+                {
+                    super::super::reactor::snapshot().0 == count
+                }
+                #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+                {
+                    let (threads, idle, queued) = super::super::blocking::snapshot();
+                    threads - idle + queued >= count
+                }
+            }
+            _ => true,
+        });
+    }
+
     pub fn wait_blocked(count: usize) {
         let pool = POOL.get().expect("test pool installed");
         until(|| lock(&pool.state).blocked >= count);
@@ -1002,7 +1021,6 @@ pub mod test_support {
         );
     }
 
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
     pub fn snapshot() -> String {
         let pool = POOL.get().expect("test pool installed");
         let (tasks, workers, blocked, queued) = {
@@ -1015,8 +1033,12 @@ pub mod test_support {
             )
         };
         let (registrations, timer_records, live_timers) = super::super::reactor::snapshot();
+        let (helper_threads, idle_helpers, queued_helpers) = super::super::blocking::snapshot();
+        let socket_handles = super::super::net::live_handles();
+        let allocated_bytes = super::super::alloc::live_bytes();
+        let timer_threads = super::super::reactor::timer_threads();
         format!(
-            "{{\"tasks\":{tasks},\"workers\":{workers},\"blocked_workers\":{blocked},\"queued_tasks\":{queued},\"reactor_registrations\":{registrations},\"timer_records\":{timer_records},\"live_timers\":{live_timers},\"channels\":{},\"mutexes\":{},\"text_buffers\":{}}}",
+            "{{\"timer_threads\":{timer_threads},\"allocated_bytes\":{allocated_bytes},\"helper_threads\":{helper_threads},\"idle_helpers\":{idle_helpers},\"queued_helpers\":{queued_helpers},\"socket_handles\":{socket_handles},\"tasks\":{tasks},\"workers\":{workers},\"blocked_workers\":{blocked},\"queued_tasks\":{queued},\"reactor_registrations\":{registrations},\"timer_records\":{timer_records},\"live_timers\":{live_timers},\"channels\":{},\"mutexes\":{},\"text_buffers\":{}}}",
             super::super::channel::live_channels(),
             super::super::mutex::live_mutexes(),
             super::super::string::live_buffers(),
