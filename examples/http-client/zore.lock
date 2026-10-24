@@ -1,0 +1,4 @@
+version = 1
+
+[projects]
+http-client = { manifest = "20e341baf43b7a045e252112e7c03e39b2bc90ed6e2b44d655e2a2095716df68", path = "." }

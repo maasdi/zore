@@ -168,22 +168,42 @@ func (r mut Request) nextByte() (byte, error) {
     return value, nil
 }
 
-func (r mut Request) line() (string, error) {
+type lineSource interface {
+    mut nextByte() (byte, error)
+}
+
+func readLine(source mut lineSource, budget int, prefix string, overflow string, obsText bool) (string, int, error) {
     var data = Array<byte>{}
+    var used = 0
     for {
-        if r.metadata >= r.config.MaxHeaderBytes { return "", error("http: metadata too large") }
-        let c = r.nextByte()?
-        r.metadata += 1
+        if used >= budget { return "", used, error(prefix + overflow) }
+        let c = source.nextByte()?
+        used += 1
         if c == 13 {
-            if r.metadata >= r.config.MaxHeaderBytes { return "", error("http: metadata too large") }
-            let lf = r.nextByte()?
-            r.metadata += 1
-            if lf != 10 { return "", error("http: expected CRLF") }
-            return strings.FromBytes(data[:])
+            if used >= budget { return "", used, error(prefix + overflow) }
+            let lf = source.nextByte()?
+            used += 1
+            if lf != 10 { return "", used, error(prefix + "expected CRLF") }
+            return lineText(data[:]), used, nil
         }
-        if c == 10 || c == 0 || c > 126 || (c < 32 && c != 9) { return "", error("http: invalid line byte") }
+        if c == 10 || c == 0 || c == 127 || (c < 32 && c != 9) || (c > 127 && !obsText) { return "", used, error(prefix + "invalid line byte") }
         data.push(c)
     }
+}
+
+func lineText(data []byte) string {
+    let text, err = strings.FromBytes(data)
+    if err == nil { return text }
+    var latin = ""
+    for c in data { latin += string(rune(c)) }
+    return latin
+}
+
+func (r mut Request) line() (string, error) {
+    let budget = r.config.MaxHeaderBytes - r.metadata
+    let text, used, err = readLine(r, budget, "http: ", "metadata too large", false)
+    r.metadata += used
+    return text, err
 }
 
 func (r mut Request) fail(err error) error {
@@ -223,7 +243,7 @@ func validExtensions(text string) bool {
     for {
         for i < text.len() && (text[i] == 32 || text[i] == 9) { i += 1 }
         let start = i
-        for i < text.len() && token(text[i:i + 1]) { i += 1 }
+        for i < text.len() && tokenByte(text[i]) { i += 1 }
         if i == start { return false }
         for i < text.len() && (text[i] == 32 || text[i] == 9) { i += 1 }
         if i == text.len() { return true }
@@ -247,7 +267,7 @@ func validExtensions(text string) bool {
                 if !closed { return false }
             } else {
                 let valueStart = i
-                for i < text.len() && token(text[i:i + 1]) { i += 1 }
+                for i < text.len() && tokenByte(text[i]) { i += 1 }
                 if valueStart == i { return false }
             }
         }

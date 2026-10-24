@@ -7409,13 +7409,15 @@ context. A `Context` is a Copy value; every copy refers to the same context.
 | --- | --- |
 | `Background() Context`, `TODO() Context` | A context that is never cancelled and has no deadline |
 | `WithCancel(parent Context) (Context, func())` | A child of `parent` and a function that cancels it; calling the function again does nothing |
-| `WithDeadline(parent Context, deadline int) (Context, func())` | A child that is also cancelled at the deadline (a `time.Now` reading), or at the parent's deadline when that is earlier |
+| `WithDeadline(parent Context, deadline int) (Context, func())` | A child that is also cancelled at the deadline (a `time.Now` reading), or at the parent's deadline when that is earlier; a deadline that has already passed returns a child that is already expired |
 | `WithTimeout(parent Context, timeout int) (Context, func())` | `WithDeadline(parent, time.Now() + timeout)` |
 | `(c Context) Done() channel<bool>` | A channel that is closed when the context is cancelled, for use as a `select` case |
 | `(c Context) Err() error` | `nil` while active; `context canceled` after its cancel function ran or its parent was cancelled that way; `context deadline exceeded` after its deadline passed |
-| `(c Context) Deadline() (int, bool)` | The deadline and `true`, or `0` and `false` when there is none |
+| `(c Context) Deadline() (int, bool)` | The deadline and `true`, or `0` and `false` when there is none; zero and negative readings are valid deadlines because `time.Now` counts from process start |
 
 Cancelling a context cancels every context made from it, with the same error;
+a context made from an already cancelled parent starts cancelled with the
+parent's error;
 cancelling a child does not affect its parent. A cancelled context stays
 cancelled, and its error does not change. Call the cancel function when the
 work is done, so the waiting described below can end early.
@@ -7802,6 +7804,8 @@ entry arrival order and original spelling. `Get` returns the first value;
 matching entries and appends the replacement. Reject CR, LF, NUL and forbidden
 controls; version one accepts ASCII values and horizontal tab, trims surrounding
 space/tab on input, and rejects obs-text rather than creating invalid strings.
+The HTTP client's response parser is the exception: it accepts obs-text in
+received values and reason phrases as described for bounded clients.
 This ASCII restriction must be documented as interoperability policy.
 
 Provide `StatusText(code int) string` and integer constants including `StatusOK`,
@@ -8652,6 +8656,189 @@ closure, connections outliving their handshake context, fatal alerts on
 authentication failure, deadlines, handshake cancellation, Move rejection, async/plain progress, normal/error/panic resource
 cleanup, source/lock integrity and linker-independent checking. Host CI must
 execute provider-present tests; skipped/unavailable providers are not evidence.
+
+## 37.11 Bounded HTTP/1.1 clients — LOCKED
+
+This additive contract preserves the server `Request` and `ResponseWriter`.
+The client API uses ordinary waiting calls and explicit errors:
+
+```ore
+let ClientPollTimeout = error("http.Client: poll timed out")
+type ClientConfig struct {
+    MaxHeaderBytes int
+    MaxBodyBytes int
+    MaxRequestBodyBytes int
+    Timeout int
+    DialTimeout int
+    PollInterval int
+}
+type ClientResponse struct {
+    StatusCode int
+    Headers Header
+    Body Array<byte>
+}
+type ClientConn interface {
+    mut Read(buf mut []byte) (int, error)
+    mut Write(data []byte) (int, error)
+    mut SetReadDeadline(deadline int) error
+    mut SetWriteDeadline(deadline int) error
+}
+type ClientTransport interface {
+    Dial(ctx context.Context, target url.AbsoluteURL) (ClientConn, error)
+}
+func DefaultClientConfig() ClientConfig
+func NewClient(config ClientConfig) (Client, error)
+func NewClientWithTransport(config ClientConfig, transport own ClientTransport) (Client, error)
+func Get(ctx context.Context, absoluteURL string) (ClientResponse, error)
+func (c Client) Get(ctx context.Context, absoluteURL string) (ClientResponse, error)
+func (c Client) Do(ctx context.Context, method string, absoluteURL string,
+                   headers Header, body []byte) (ClientResponse, error)
+func (c Client) Exchange(ctx context.Context, conn own ClientConn,
+                         method string, absoluteURL string,
+                         headers Header, body []byte) (ClientResponse, error)
+```
+
+Defaults are 32768 metadata bytes, 1048576 response body bytes
+(`MaxBodyBytes`), 1048576 request body bytes (`MaxRequestBodyBytes`), a
+30-second total timeout, a 10-second per-address dial timeout, and a
+10-millisecond cancellation poll interval. Zero configuration fields select
+these defaults; negative fields fail. The empty Client fails safely.
+`Get(ctx, url)` sends a GET with an empty body through a default-configured
+Client; `client.Get(ctx, url)` does the same through `client`. Timeout
+bounds the entire call, including dial, serialization, headers and body; an
+earlier context deadline wins. Cancellation returns `context canceled` and
+expiration returns `context deadline exceeded`. DNS and the underlying dial
+helper may finish in the background after cancellation, closing any result;
+the TCP per-address timeout is capped by the remaining total budget. Platform
+DNS resolution can be noninterruptible, and native address attempts can continue
+after the caller returns. DialTimeout does not bound eventual helper completion
+or cleanup. There is no HTTP retry and the caller does not wait for that helper.
+A late owned connection is dropped with the helper result. Plain callers
+block with worker compensation. Async callers use the ordinary API without
+`await`; built-in TCP waits suspend. Plain custom provider methods can occupy
+a compensated worker under the existing interface-call rules.
+
+`Client` is Move because it owns an optional ClientTransport interface.
+`NewClientWithTransport` configures a transport whose shared Dial receives the
+bounded context and the parsed `url.AbsoluteURL`, with its normalized scheme,
+hostname, authority and dial address. Dial must honor context
+cancellation/deadlines, authenticate HTTPS hostname/certificates, and reject
+unsupported schemes. This allows ordinary Do calls for HTTPS without coupling
+standard HTTP server imports to an external TLS provider. Each successful Dial
+returns a fresh owned connection; each failed Dial arranges cleanup of partial
+resources, including dropping any late connection owned by a background dial.
+Read/Write counts identify bytes returned/accepted even when accompanied by an
+error. A custom connection returns ClientPollTimeout only for a recoverable
+poll timeout: the session remains usable and retrying the remaining byte suffix
+is safe. Other errors are terminal. The standard net.Read/net.Write timeout
+errors have the same recoverable meaning. Deadline setters must bound each
+operation; blocking beyond the deadline violates the transport contract.
+HTTP does not inspect provider-specific error strings.
+
+Without a custom transport, `Do` dials one plain TCP connection for an `http` URL.
+`Exchange` takes ownership
+of an already connected transport, enabling a verified TLS connection from the
+TLS package for an `https` URL. The caller must authenticate the URL hostname
+with that TLS connection and must not supply plain TCP for HTTPS. `Do` without a custom transport rejects
+HTTPS with an explicit TLS-transport-required error. HTTPS acceptance requires
+verified TLS transport integration and real-peer tests.
+Neither entry point pools or reuses connections. Both send `Connection: close`
+and close/drop the transport on success, error and panic. Responses own their
+headers and fully buffered binary body, retain no socket or borrowed views,
+and are Move values. Dropping a response frees its arrays; no Close is needed.
+Failure returns an empty response, never a partial successful body. Statuses
+400–599 are responses, not transport errors.
+
+`url.ParseAbsolute(text string) (AbsoluteURL, error)` accepts absolute `http`
+and `https` URLs with ASCII DNS/IPv4 hosts (DNS labels may contain `_`, as in
+container service names) or bracketed IPv6 literals, optional
+ports 1–65535, and an optional origin-form path/query. `AbsoluteURL` has exported
+`Scheme`, `Hostname` (without brackets/port), `Authority` (for Host), `Address`
+(with explicit default port 80/443), and `RequestTarget` fields. Schemes fold
+ASCII case. Missing paths become `/`; a query-only suffix becomes `/?...`.
+The target preserves valid percent escapes, reserved characters, repeated
+slashes and dot segments without decoding or normalization. A `#fragment` is
+never sent: everything from the first `#` is discarded before validation. A raw
+space, control, non-ASCII byte, backslash, malformed escape, user information,
+zone-qualified IPv6, empty host/port, invalid authority or unsupported scheme
+fails with an explicit `url:` error. Use PathEscape for path segments and
+Values.Encode/QueryEscape for query data; raw Unicode must first be escaped.
+
+Methods are nonempty HTTP tokens; CONNECT and TRACE are excluded. Headers are
+borrowed and validated before dialing/writing. Host, Content-Length,
+Transfer-Encoding, Connection, Trailer, Upgrade, Expect and Proxy-Connection are controlled by
+the client and rejected in supplied headers. The client always emits the URL
+Host and exact byte Content-Length, including zero. Outbound metadata is bounded
+by MaxHeaderBytes and the request body by MaxRequestBodyBytes. An invalid
+supplied header error names the field. No redirects, credential forwarding,
+retries, proxy environment variables, CONNECT tunneling, HTTP upgrades,
+compression negotiation or decompression occur. Authorization is sent only to
+the requested peer; redirects are returned unchanged. Content-Encoding bytes
+are returned unchanged. HTTP/2 and WebSockets remain excluded.
+
+Response parsing accepts `HTTP/1.1` and `HTTP/1.0` status lines; framing is the
+same for both because every request closes its connection, except that an
+HTTP/1.0 response with Transfer-Encoding is rejected as faulty framing. Other
+versions fail. Parsing requires strict CRLF, a three-digit 100–599 status
+followed by end of line or a space and an optional reason phrase, header names
+that are tokens, and unambiguous framing: at most one Content-Length
+or one Transfer-Encoding: chunked, never both. Repeated lengths are rejected
+even when equal. Informational responses are skipped within the cumulative
+metadata limit; 101 is rejected. HEAD, 204 and 304 have no body; 204 forbids
+Content-Length and Transfer-Encoding. A 205 response must have an empty framed
+body. Other bodies use Content-Length, chunked encoding with validated chunk
+extensions/trailers, or EOF delimiting. Premature EOF, malformed chunk syntax,
+forbidden trailers, no progress and peer errors fail. Trailers are validated
+and discarded; reject client-controlled fields, Content-* fields, Authorization,
+Proxy-Authorization, WWW-Authenticate, Proxy-Authenticate, Authentication-Info,
+Proxy-Authentication-Info, Cache-Control, Expires, Location, Retry-After, Vary,
+Set-Cookie and Age. Reason phrases and received header values accept tab,
+visible ASCII and obs-text bytes 0x80–0xFF; CR, LF, NUL, DEL and other controls
+fail. A received value that is valid UTF-8 is kept as is; otherwise each byte is
+decoded as ISO-8859-1 so the string stays valid. Header values the caller sends
+remain ASCII. Chunk extensions, trailers and informational headers share the
+metadata bound. Chunk-size digits and the CRLFs around chunk data are framing:
+each chunk-size line may use up to 64 bytes before its extensions without
+spending the metadata bound, and every nonzero chunk carries body bytes, so
+framing stays proportional to the body limit and memory stays bounded by the
+longest line. An oversized chunk line fails with `http.Client: chunk line too
+large`, and EOF inside a Content-Length or chunked body fails with
+`http.Client: unexpected EOF in body`. Body limits apply to decoded transfer
+bytes, including EOF-delimited responses. Partial I/O and
+final bytes accompanied by EOF preserve every byte exactly once.
+
+```ore
+let response = http.Get(context.Background(), "http://localhost:8080/users")?
+println(response.StatusCode)
+
+let client = http.NewClient(http.DefaultClientConfig())?
+let payload = json.Marshal(User{Name: "Ada"})?
+var headers = http.NewHeader()
+headers.Set("Content-Type", "application/json")?
+let created = client.Do(context.Background(), "POST", "http://localhost:8080/users",
+                        headers, payload[:])?
+var user = User{Name: ""}
+json.Unmarshal(created.Body[:], user)?
+```
+
+Ownership/error/async implications follow ordinary arrays, interfaces, contexts
+and socket rules; there are no optional arguments, new source semantics or
+shared sockets. Compiler impact is additive bundled sources and registry
+entries, with frontend checking independent of native providers/linkers.
+Conformance includes real loopback binary/fragmented/framed responses,
+malformed inputs, limits, cancellation/deadlines, owned cleanup and JSON
+composition in `tests/codegen/http_client.rs`, URL/frontend rejection cases,
+and the runnable `examples/http-client/`. The TLS package ships the reusable
+verified transport as its `tls/https` subpackage (`https.NewTransport` and
+`https.NewClient(rootsPEM, config)`), layered on `tls` and `std/net/http` so
+neither imports the other; `examples/https-client/` uses it with ordinary
+`client.Get` calls. The offline distributed
+compiler fixture checks this composition without native linkers, then exercises
+real fragmented binary HTTPS and rejects wrong trust, expired/future validity,
+and trusted wrong-host certificates. Native CI covers supported hosts; a local
+run establishes evidence only for its own host.
+
+---
 
 # 38. Self-Hosting Constraint
 

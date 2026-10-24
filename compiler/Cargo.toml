@@ -110,3 +110,7 @@ path = "../tests/driver/release_workflows.rs"
 [[test]]
 name = "tls"
 path = "../tests/driver/tls.rs"
+
+[[test]]
+name = "http_client"
+path = "../tests/driver/http_client.rs"

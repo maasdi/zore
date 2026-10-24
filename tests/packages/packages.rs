@@ -1251,4 +1251,32 @@ func main() { var routes = http.NewRouterBuilder(); let f = routes.Handle }
     );
 }
 
+#[test]
+fn http_client_frontend_checks_without_native_linker() {
+    accepts(&[(
+        "main.ore",
+        include_str!("../../examples/http-client/main.ore"),
+    )]);
+}
+
+#[test]
+fn http_client_response_cannot_escape_body_borrow() {
+    rejects(
+        &[(
+            "main.ore",
+            r#"package main
+import "std/context"
+import "std/net/http"
+func escape(client http.Client) ([]byte, error) {
+    let body = Array<byte>{}
+    let response = client.Do(context.Background(), "GET", "http://localhost/", http.NewHeader(), body[:])?
+    return response.Body[:], nil
+}
+func main() {}
+"#,
+        )],
+        "cannot return a view",
+    );
+}
+
 mod sqlite;

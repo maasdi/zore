@@ -1,0 +1,21 @@
+package main
+
+import "std/context"
+import "std/errors"
+import "std/net/http"
+import "std/os"
+import "tls/https"
+
+func run() error {
+    let args = os.Args()
+    if args.len() != 3 { return error("usage: https-client roots.pem https://localhost:8443/") }
+    let roots = os.ReadFile(args[1])?
+    let client = https.NewClient(roots[:], http.DefaultClientConfig())?
+    let response = client.Get(context.Background(), args[2])?
+    println(response.StatusCode)
+    return nil
+}
+func main() {
+    let err = run()
+    if err != nil { println(errors.Message(err)); os.Exit(1) }
+}

@@ -67,8 +67,12 @@ there are no Zore pointers or callbacks retained by C.
 limit, five-second handshake context, five-second I/O deadline and a 4096-byte
 request buffer; it writes a fixed HTTP response and closes with close-notify. `client/` sends one bounded HTTP/1.1 request over
 verified TLS, prints the first response read and closes with close-notify. Run each from its own directory after `zore install --offline`.
-These are protocol examples; HTTP client integration is supplied separately by
-the HTTP client package through its owned transport interface.
+These are protocol examples. For HTTPS with the standard HTTP client, import
+`tls/https`: `https.NewClient(rootsPEM, http.DefaultClientConfig())` returns an
+`http.Client` whose transport verifies each URL's hostname, and
+`https.NewTransport(rootsPEM)` supplies the same transport for
+`http.NewClientWithTransport`. It is ordinary Zore source layered on `tls`, so
+the `tls` package itself does not import HTTP.
 
 Conformance uses local certificates, public test keys and loopback sockets;
 there is no Internet server dependency. The integration test copies the compiler

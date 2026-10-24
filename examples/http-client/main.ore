@@ -1,0 +1,27 @@
+package main
+
+import "std/context"
+import "std/encoding/json"
+import "std/errors"
+import "std/net/http"
+import "std/os"
+
+type User struct { Name string }
+
+func run() error {
+    let args = os.Args()
+    if args.len() != 2 { return error("usage: http-client http://localhost:8080/users") }
+    let response = http.Get(context.Background(), args[1])?
+    println(response.StatusCode)
+    let client = http.NewClient(http.DefaultClientConfig())?
+    let payload = json.Marshal(User{Name: "Ada"})?
+    var headers = http.NewHeader()
+    headers.Set("Content-Type", "application/json")?
+    let created = client.Do(context.Background(), "POST", args[1], headers, payload[:])?
+    println(created.StatusCode)
+    return nil
+}
+func main() {
+    let err = run()
+    if err != nil { println(errors.Message(err)); os.Exit(1) }
+}

@@ -7,14 +7,16 @@ const canceled = 1
 const expired = 2
 
 type Context struct {
-    done     channel<bool>
-    state    Mutex<int>
-    live     bool
-    deadline int
+    done      channel<bool>
+    state     Mutex<int>
+    ancestors Mutex<Array<Mutex<int>>>
+    live      bool
+    deadline  int
+    limited   bool
 }
 
 func Background() Context {
-    return Context{done: channel<bool>(), state: mutex(active), live: false, deadline: 0}
+    return Context{done: channel<bool>(), state: mutex(active), ancestors: mutex(Array<Mutex<int>>{}), live: false, deadline: 0, limited: false}
 }
 
 func TODO() Context {
@@ -22,14 +24,14 @@ func TODO() Context {
 }
 
 func WithCancel(parent Context) (Context, func()) {
-    let ctx = derive(parent, parent.deadline)
+    let ctx = derive(parent, parent.deadline, parent.limited)
     return ctx, func() {
         ctx.cancel(canceled)
     }
 }
 
 func WithCancelOn(parent Context, done channel<bool>) (Context, func()) {
-    let ctx = derive(parent, parent.deadline)
+    let ctx = derive(parent, parent.deadline, parent.limited)
     go cancelOn(ctx, done)
     return ctx, func() { ctx.cancel(canceled) }
 }
@@ -47,11 +49,15 @@ func WithTimeout(parent Context, timeout int) (Context, func()) {
 
 func WithDeadline(parent Context, deadline int) (Context, func()) {
     var at = deadline
-    if parent.deadline > 0 && parent.deadline < at {
+    if parent.limited && parent.deadline < at {
         at = parent.deadline
     }
-    let ctx = derive(parent, at)
-    go expire(ctx, at)
+    let ctx = derive(parent, at, true)
+    if time.Now() >= at {
+        ctx.cancel(expired)
+    } else {
+        go expire(ctx, at)
+    }
     return ctx, func() {
         ctx.cancel(canceled)
     }
@@ -73,18 +79,44 @@ func (c Context) Err() error {
 }
 
 func (c Context) Deadline() (int, bool) {
-    return c.deadline, c.deadline > 0
+    return c.deadline, c.limited
 }
 
-func derive(parent Context, deadline int) Context {
-    let ctx = Context{done: channel<bool>(), state: mutex(active), live: true, deadline: deadline}
+func derive(parent Context, deadline int, limited bool) Context {
+    let ancestors = parent.ancestors.withLock(func(states mut Array<Mutex<int>>) Array<Mutex<int>> {
+        var lineage = Array<Mutex<int>>{parent.state}
+        for state in states {
+            lineage.push(state)
+        }
+        return lineage
+    })
+    let ctx = Context{done: channel<bool>(), state: mutex(active), ancestors: mutex(ancestors), live: true, deadline: deadline, limited: limited}
     if parent.live {
-        go follow(parent, ctx)
+        let inherited = parent.reason()
+        if inherited != active {
+            ctx.cancel(inherited)
+        } else {
+            go follow(parent, ctx)
+        }
     }
     return ctx
 }
 
 func (c Context) reason() int {
+    let inherited = c.ancestors.withLock(func(states mut Array<Mutex<int>>) int {
+        for ancestor in states {
+            let reason = ancestor.withLock(func(state mut int) int {
+                return state
+            })
+            if reason != active {
+                return reason
+            }
+        }
+        return active
+    })
+    if inherited != active {
+        c.cancel(inherited)
+    }
     return c.state.withLock(func(state mut int) int {
         return state
     })

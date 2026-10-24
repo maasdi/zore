@@ -9,6 +9,7 @@ mod controlled_runtime;
 mod hardening;
 mod host_support;
 mod http;
+mod http_client;
 mod json;
 mod linkage_timers;
 mod local_dependencies;
@@ -805,7 +806,7 @@ fn every_example_prints_its_expected_output() {
     let examples = examples();
     assert!(examples.len() >= 15, "{examples:?}");
     for (name, path) in examples {
-        if name == "rest-api" {
+        if matches!(name.as_str(), "rest-api" | "http-client" | "https-client") {
             continue;
         }
         let expected = std::fs::read_to_string(path.join("expected-output.txt"))
@@ -4992,6 +4993,95 @@ func main() {
         stdout(&output),
         "true\ntrue\ntrue\ntrue\ntrue\ntrue\ntrue\ntrue\ntrue\ntrue\ntrue\ntrue\nfalse\n"
     );
+    assert!(output.stderr.is_empty(), "{}", stderr(&output));
+}
+
+#[test]
+fn a_context_whose_deadline_already_passed_is_expired_when_created() {
+    let source = "package main
+import \"std/context\"
+import \"std/time\"
+func closed(ctx context.Context) bool {
+    select {
+        case ctx.Done().receive() { return true }
+        default { return false }
+    }
+}
+func main() {
+    let expired, stop = context.WithTimeout(context.Background(), -time.Second)
+    println(expired.Err() == error(\"context deadline exceeded\"))
+    println(closed(expired))
+    let deadline, limited = expired.Deadline()
+    println(limited)
+    println(deadline < time.Now())
+
+    let zero, stopZero = context.WithDeadline(context.Background(), 0)
+    let _, zeroLimited = zero.Deadline()
+    println(zeroLimited)
+    println(zero.Err() == error(\"context deadline exceeded\"))
+
+    let child, stopChild = context.WithCancel(expired)
+    let _, childLimited = child.Deadline()
+    println(childLimited)
+    println(child.Err() == error(\"context deadline exceeded\"))
+    println(closed(child))
+
+    let canceled, cancel = context.WithCancel(context.Background())
+    cancel()
+    let late, stopLate = context.WithTimeout(canceled, -time.Second)
+    println(late.Err() == error(\"context canceled\"))
+
+    let open, stopOpen = context.WithTimeout(context.Background(), time.Hour)
+    let _, openLimited = open.Deadline()
+    println(openLimited)
+    println(open.Err() == nil)
+    println(closed(open))
+    stop()
+    stopZero()
+    stopChild()
+    stopLate()
+    stopOpen()
+}";
+    let output = run_poll_bounded(source, None);
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    assert_eq!(
+        stdout(&output),
+        "true\ntrue\ntrue\ntrue\ntrue\ntrue\ntrue\ntrue\ntrue\ntrue\ntrue\ntrue\nfalse\n"
+    );
+    assert!(output.stderr.is_empty(), "{}", stderr(&output));
+}
+
+#[test]
+fn a_canceled_context_is_visible_in_its_descendants_before_they_run() {
+    let source = "package main
+import \"std/context\"
+import \"std/time\"
+func closed(ctx context.Context) bool {
+    select {
+        case ctx.Done().receive() { return true }
+        default { return false }
+    }
+}
+async func observe() {
+    let parent, cancel = context.WithCancel(context.Background())
+    let child, stopChild = context.WithCancel(parent)
+    let grandchild, stopGrandchild = context.WithTimeout(child, time.Hour)
+    cancel()
+    println(grandchild.Err() == error(\"context canceled\"))
+    println(closed(grandchild))
+    println(child.Err() == error(\"context canceled\"))
+    println(closed(child))
+    stopGrandchild()
+    stopChild()
+}
+func main() {
+    let task = go observe()
+    task.wait()
+    waitIdle(0)
+}";
+    let output = run_controlled_one_worker(source);
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    assert_eq!(stdout(&output), "true\ntrue\ntrue\ntrue\n");
     assert!(output.stderr.is_empty(), "{}", stderr(&output));
 }
 
