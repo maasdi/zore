@@ -591,3 +591,5 @@ func main() {
     assert!(String::from_utf8_lossy(&output.stderr).contains("parent native panic"));
     assert!(!String::from_utf8_lossy(&output.stderr).contains("leak:"));
 }
+
+mod sqlite;

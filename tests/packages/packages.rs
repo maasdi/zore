@@ -1250,3 +1250,5 @@ func main() { var routes = http.NewRouterBuilder(); let f = routes.Handle }
         "HTTP registration needs a declared function name or inline function literal",
     );
 }
+
+mod sqlite;

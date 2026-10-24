@@ -1,3 +1,4 @@
+use crate::hir;
 use crate::resolve::FunctionId;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -21,7 +22,13 @@ pub enum NativeWait {
     Deadline,
 }
 
-pub fn native_wait(name: &str) -> Option<NativeWait> {
+pub fn native_wait(function: &hir::Function) -> Option<NativeWait> {
+    function
+        .native_wait
+        .or_else(|| standard_wait(&function.name))
+}
+
+fn standard_wait(name: &str) -> Option<NativeWait> {
     match name {
         "std/context.waitUntil" => Some(NativeWait::Deadline),
         "std/os.ReadFile"

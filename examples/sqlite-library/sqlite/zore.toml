@@ -1,0 +1,8 @@
+name = "sqlite"
+version = "0.1.0"
+license = "Apache-2.0 AND blessing"
+description = "Owned SQLite databases, parameterized statements and transactions"
+platforms = ["linux", "macos", "windows"]
+
+[native]
+adapter = "sqlite-v1"
