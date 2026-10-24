@@ -33,11 +33,10 @@ func (db mut Database) Close() {
 
 func (db mut Database) drop() { db.Close() }
 
-func (db own Database) Begin() (Transaction, error) {
-    var source = db
-    nativeBegin(source.handle)?
-    let token = source.handle
-    source.handle = 0
+func (db mut Database) Begin() (Transaction, error) {
+    nativeBegin(db.handle)?
+    let token = db.handle
+    db.handle = 0
     return Transaction{handle: token}, nil
 }
 
@@ -46,19 +45,17 @@ func (tx Transaction) Prepare(sql string) (Statement, error) {
     return Statement{handle: token}, nil
 }
 
-func (tx own Transaction) Commit() (Database, error) {
-    var source = tx
-    nativeFinish(source.handle, true)?
-    let token = source.handle
-    source.handle = 0
+func (tx mut Transaction) Commit() (Database, error) {
+    nativeFinish(tx.handle, true)?
+    let token = tx.handle
+    tx.handle = 0
     return Database{handle: token}, nil
 }
 
-func (tx own Transaction) Rollback() (Database, error) {
-    var source = tx
-    nativeFinish(source.handle, false)?
-    let token = source.handle
-    source.handle = 0
+func (tx mut Transaction) Rollback() (Database, error) {
+    nativeFinish(tx.handle, false)?
+    let token = tx.handle
+    tx.handle = 0
     return Database{handle: token}, nil
 }
 

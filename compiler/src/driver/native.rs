@@ -3,6 +3,7 @@ use std::collections::BTreeMap;
 use sha2::{Digest, Sha256};
 
 use super::project::{FileSystem, Manifest};
+use crate::async_lowering::NativeWait;
 use crate::source::SourceError;
 
 pub(super) const C_FLAGS: &[&str] = &["-std=c11", "-O2", "-Wall", "-Wextra", "-Werror"];
@@ -13,7 +14,7 @@ pub(super) struct Adapter {
     pub project: &'static str,
     pub fingerprint: &'static str,
     pub c_flags: &'static [&'static str],
-    pub symbols: &'static [(&'static str, &'static str)],
+    pub symbols: &'static [(&'static str, &'static str, Option<NativeWait>)],
 }
 
 const ADLER32: Adapter = Adapter {
@@ -22,17 +23,17 @@ const ADLER32: Adapter = Adapter {
     fingerprint: "66280c83962934f0b1937cfc1633458324381c156fc575100d8f145433a871ab",
     c_flags: &[],
     symbols: &[
-        ("nativeCreate", "zore_native_adler32_native_create"),
-        ("nativeWrite", "zore_native_adler32_native_write"),
-        ("nativeSum", "zore_native_adler32_native_sum"),
-        ("nativeClose", "zore_native_adler32_native_close"),
+        ("nativeCreate", "zore_native_adler32_native_create", None),
+        ("nativeWrite", "zore_native_adler32_native_write", None),
+        ("nativeSum", "zore_native_adler32_native_sum", None),
+        ("nativeClose", "zore_native_adler32_native_close", None),
     ],
 };
 
 const SQLITE: Adapter = Adapter {
     id: "sqlite-v1",
     project: "sqlite",
-    fingerprint: "8dcf6ebe611919ff3343eaf641c46fa7d5610ae1a0a2dd1aa0c886bfd50be592",
+    fingerprint: "39079c16c327f06c66f667782653832f0ce4ac5741453fa8540cc5fda6fa5711",
     c_flags: &[
         "-Wno-error=sign-compare",
         "-Wno-error=unused-variable",
@@ -46,22 +47,71 @@ const SQLITE: Adapter = Adapter {
         "-D_DEFAULT_SOURCE",
     ],
     symbols: &[
-        ("nativeOpen", "zore_native_sqlite_native_open"),
-        ("nativePrepare", "zore_native_sqlite_native_prepare"),
-        ("nativeBusy", "zore_native_sqlite_native_busy"),
-        ("nativeBegin", "zore_native_sqlite_native_begin"),
-        ("nativeFinish", "zore_native_sqlite_native_finish"),
+        (
+            "nativeOpen",
+            "zore_native_sqlite_native_open",
+            Some(NativeWait::Helper),
+        ),
+        (
+            "nativePrepare",
+            "zore_native_sqlite_native_prepare",
+            Some(NativeWait::Helper),
+        ),
+        (
+            "nativeBusy",
+            "zore_native_sqlite_native_busy",
+            Some(NativeWait::Helper),
+        ),
+        (
+            "nativeBegin",
+            "zore_native_sqlite_native_begin",
+            Some(NativeWait::Helper),
+        ),
+        (
+            "nativeFinish",
+            "zore_native_sqlite_native_finish",
+            Some(NativeWait::Helper),
+        ),
         (
             "nativeDropDatabase",
             "zore_native_sqlite_native_drop_database",
+            None,
         ),
-        ("nativeBind", "zore_native_sqlite_native_bind"),
-        ("nativeStep", "zore_native_sqlite_native_step"),
-        ("nativeReset", "zore_native_sqlite_native_reset"),
-        ("nativeColumn", "zore_native_sqlite_native_column"),
-        ("nativeFloat", "zore_native_sqlite_native_float"),
-        ("nativeBytes", "zore_native_sqlite_native_bytes"),
-        ("nativeFinalize", "zore_native_sqlite_native_finalize"),
+        (
+            "nativeBind",
+            "zore_native_sqlite_native_bind",
+            Some(NativeWait::Helper),
+        ),
+        (
+            "nativeStep",
+            "zore_native_sqlite_native_step",
+            Some(NativeWait::Helper),
+        ),
+        (
+            "nativeReset",
+            "zore_native_sqlite_native_reset",
+            Some(NativeWait::Helper),
+        ),
+        (
+            "nativeColumn",
+            "zore_native_sqlite_native_column",
+            Some(NativeWait::Helper),
+        ),
+        (
+            "nativeFloat",
+            "zore_native_sqlite_native_float",
+            Some(NativeWait::Helper),
+        ),
+        (
+            "nativeBytes",
+            "zore_native_sqlite_native_bytes",
+            Some(NativeWait::Helper),
+        ),
+        (
+            "nativeFinalize",
+            "zore_native_sqlite_native_finalize",
+            Some(NativeWait::Helper),
+        ),
     ],
 };
 
@@ -145,7 +195,7 @@ impl Provider {
         for flag in C_FLAGS.iter().chain(self.adapter.c_flags) {
             part(flag);
         }
-        for (name, symbol) in self.adapter.symbols {
+        for (name, symbol, _) in self.adapter.symbols {
             part(name);
             part(symbol);
         }

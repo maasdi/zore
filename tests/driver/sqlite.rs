@@ -168,9 +168,9 @@ fn sqlite_resource_contract_and_tagged_offline_application() {
     write(
         &fixture.root,
         "app/main.ore",
-        "package main\nimport \"sqlite\"\nfunc bad() error { let db = sqlite.Open(\":memory:\")?; let tx = db.Begin()?; let statement = db.Prepare(\"select 1\")?; return nil }; func main() {}\n",
+        "package main\nimport \"sqlite\"\nfunc bad() error { let db = sqlite.Open(\":memory:\")?; let tx = db.Begin()?; return nil }; func main() {}\n",
     );
-    failure(fixture.invoke("check", "app/main.ore"), "moved");
+    failure(fixture.invoke("check", "app/main.ore"), "immutable binding");
     write(&fixture.root, "app/main.ore", &main);
     let source = library.join("native/bridge.rs");
     let original = fs::read_to_string(&source).unwrap();
@@ -195,7 +195,8 @@ func runSQL(db sqlite.Database, sql string) error {
     return nil
 }
 async func transaction(db own sqlite.Database, mode string) error {
-    let tx = db.Begin()?
+    var source = db
+    var tx = source.Begin()?
     var statement = tx.Prepare("insert into cleanup values (1)")?
     statement.Step()?
     time.Sleep(time.Millisecond)

@@ -3,12 +3,12 @@ package main
 import "sqlite"
 
 func persist() error {
-    let db = sqlite.Open("notes.db")?
+    var db = sqlite.Open("notes.db")?
     {
         var schema = db.Prepare("create table if not exists notes(body text not null)")?
         schema.Step()?
     }
-    let tx = db.Begin()?
+    var tx = db.Begin()?
     {
         var insert = tx.Prepare("insert into notes(body) values (?)")?
         insert.BindText(1, "hello from SQLite")?

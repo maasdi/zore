@@ -64,25 +64,36 @@ func countRows(db Database) (int, error) {
     return query.Int(0)
 }
 
+func executeIn(tx Transaction, sql string) error {
+    var statement = tx.Prepare(sql)?
+    statement.Step()?
+    return nil
+}
+
 func abortTransaction(db own Database) error {
-    let tx = db.Begin()?
+    var source = db
+    let tx = source.Begin()?
     var insert = tx.Prepare("insert into records values (2)")?
     insert.Step()?
     return nil
 }
 
 func TestTransactions() error {
-    let db = Open(":memory:")?
+    var db = Open(":memory:")?
     executeSQL(db, "create table records(value integer)")?
-    let tx = db.Begin()?
+    var tx = db.Begin()?
+    let unused, moved = db.Prepare("select 1")
+    if moved == nil { panic("database token survived Begin") }
     {
         var insert = tx.Prepare("insert into records values (?)")?
         insert.BindInt(1, 1)?
         insert.Step()?
     }
-    let committed = tx.Commit()?
+    var committed = tx.Commit()?
     if countRows(committed)? != 1 { panic("commit lost row") }
-    let rollback = committed.Begin()?
+    let again, completed = tx.Rollback()
+    if completed == nil { panic("completed transaction remained usable") }
+    var rollback = committed.Begin()?
     {
         var insert = rollback.Prepare("insert into records values (2)")?
         insert.Step()?
@@ -133,7 +144,10 @@ func TestInvalidQueriesAndPhases() error {
     var duplicate = db.Prepare("insert into unique_values values (1)")?
     let ignored, constraint = duplicate.Step()
     if constraint == nil { panic("constraint failure lost") }
-    if duplicate.Close() == nil { panic("finalization failure lost") }
+    duplicate.Reset()?
+    let retried, repeated = duplicate.Step()
+    if repeated == nil { panic("retried constraint failure lost") }
+    duplicate.Close()?
     duplicate.Close()?
 
     return nil
@@ -155,19 +169,24 @@ func TestAsyncResourceAcrossWaits() error {
 
 func TestPersistenceContentionAndRollbackOnDrop() error {
     let path = ".sqlite-test-" + strconv.Itoa(time.UnixSeconds()) + "-" + strconv.Itoa(time.Now()) + ".db"
-    let db = Open(path)?
+    var db = Open(path)?
     executeSQL(db, "create table if not exists records(value integer)")?
     executeSQL(db, "delete from records")?
-    let tx = db.Begin()?
+    var tx = db.Begin()?
     {
         var insert = tx.Prepare("insert into records values (1)")?
         insert.Step()?
     }
-    let second = Open(path)?
+    var second = Open(path)?
     second.SetBusyTimeout(2)?
     let blocked, busy = second.Begin()
     if busy == nil { panic("writer contention was ignored") }
     let committed = tx.Commit()?
+    if countRows(second)? != 1 { panic("failed Begin lost the database") }
+    {
+        var retried = second.Begin()?
+        let restored = retried.Rollback()?
+    }
     abortTransaction(committed)?
     var reopened = Open(path)?
     if countRows(reopened)? != 1 { panic("abandoned transaction did not roll back") }
@@ -186,35 +205,42 @@ func TestStrictTextAndEmptyValues() error {
     return nil
 }
 
-func TestFailedCompletionDestroysTransaction() error {
-    let db = Open(":memory:")?
-    let tx = db.Begin()?
-    var query = tx.Prepare("select 1")?
-    let invalid, failure = tx.Commit()
+func TestFailedCompletionKeepsTransaction() error {
+    var db = Open(":memory:")?
+    executeSQL(db, "create table records(value integer)")?
+    var tx = db.Begin()?
+    var insert = tx.Prepare("insert into records values (1)")?
+    let early, failure = tx.Commit()
     if failure == nil { panic("live statement allowed completion") }
-    let row, abandoned = query.Step()
-    if abandoned == nil { panic("failed completion retained transaction") }
+    if insert.Step()? { panic("insert returned a row") }
+    insert.Close()?
+    let committed = tx.Commit()?
+    if countRows(committed)? != 1 { panic("retried commit lost row") }
     return nil
 }
 
-func TestSQLiteCommitFailureRollsBackAndCloses() error {
+func TestFailedSQLiteCommitCanBeRepairedOrRolledBack() error {
     let path = ".sqlite-commit-test-" + strconv.Itoa(time.UnixSeconds()) + "-" + strconv.Itoa(time.Now()) + ".db"
-    let db = Open(path)?
+    var db = Open(path)?
     executeSQL(db, "pragma foreign_keys=on")?
     executeSQL(db, "create table parent(id integer primary key)")?
     executeSQL(db, "create table child(id integer references parent(id) deferrable initially deferred)")?
-    let tx = db.Begin()?
-    {
-        var insert = tx.Prepare("insert into child values (1)")?
-        insert.Step()?
-    }
-    let lost, failure = tx.Commit()
-    if failure == nil { panic("deferred foreign key commit succeeded") }
+    var repaired = db.Begin()?
+    executeIn(repaired, "insert into child values (1)")?
+    let early, violation = repaired.Commit()
+    if violation == nil { panic("deferred foreign key commit succeeded") }
+    executeIn(repaired, "insert into parent values (1)")?
+    var committed = repaired.Commit()?
+    var reverted = committed.Begin()?
+    executeIn(reverted, "insert into child values (2)")?
+    let late, repeated = reverted.Commit()
+    if repeated == nil { panic("second deferred foreign key commit succeeded") }
+    let restored = reverted.Rollback()?
     var reopened = Open(path)?
     {
         var query = reopened.Prepare("select count(*) from child")?
         query.Step()?
-        if query.Int(0)? != 0 { panic("failed SQLite commit did not roll back") }
+        if query.Int(0)? != 1 { panic("failed SQLite commit was not recoverable") }
     }
     reopened.Close()
     os.Remove(path)?

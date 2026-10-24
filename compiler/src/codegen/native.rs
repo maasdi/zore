@@ -175,7 +175,7 @@ impl Module<'_> {
             header.join(", ")
         );
         let name = format!("@\"{}.{}$io", self.package.name, function.name);
-        match crate::async_lowering::native_wait(&function.name) {
+        match crate::async_lowering::native_wait(function) {
             Some(crate::async_lowering::NativeWait::Helper) => {
                 let mut types: Vec<_> = function
                     .params

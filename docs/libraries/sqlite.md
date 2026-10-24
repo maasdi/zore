@@ -12,10 +12,10 @@ func Open(path string) (Database, error)
 func (db Database) Prepare(sql string) (Statement, error)
 func (db Database) SetBusyTimeout(milliseconds int) error
 func (db mut Database) Close()
-func (db own Database) Begin() (Transaction, error)
+func (db mut Database) Begin() (Transaction, error)
 func (tx Transaction) Prepare(sql string) (Statement, error)
-func (tx own Transaction) Commit() (Database, error)
-func (tx own Transaction) Rollback() (Database, error)
+func (tx mut Transaction) Commit() (Database, error)
+func (tx mut Transaction) Rollback() (Database, error)
 func (s mut Statement) BindNull(index int) error
 func (s mut Statement) BindInt(index int, value int) error
 func (s mut Statement) BindFloat(index int, value float64) error
@@ -42,6 +42,7 @@ Unbound parameters are NULL. Binding is permitted before Step; Reset clears all
 bindings and returns the statement to its initial state. Step returns true for
 a row, false on completion, and an error on failure; call Reset before reuse.
 Binding after stepping and stepping after completion/failure require Reset.
+Reset succeeds after a failed Step, so busy or constraint failures can be retried.
 
 ColumnType returns `sqlite.Null`, `sqlite.Integer`, `sqlite.Real`, `sqlite.Text`,
 or `sqlite.Blob`. Typed accessors require a current row and the exact type;
@@ -54,14 +55,19 @@ NULL; infinities remain real values. The package does not expose row pointers.
 Database, Statement and Transaction are ordinary Move resources. Statement
 ownership includes a connection lease, so a statement may outlive its database
 wrapper. Closing the database prevents new operations using it but preserves
-existing statements. Statements finalize on Close/drop; Close reports SQLite's
-finalize error while still releasing the token. Close is idempotent.
+existing statements. Statements finalize on Close/drop; Close always releases
+the token and does not repeat a failure already reported by Step. Close is
+idempotent.
 
-Begin consumes a Database and requires no live statements. Its BEGIN IMMEDIATE
-transaction may prepare statements; close all statements before consuming the
-transaction with Commit/Rollback. Either returns the Database on success.
-Completion failure destroys the transaction and rolls it back. Dropping an
-uncompleted transaction rolls back, removes its connection token and invalidates
+Begin requires a `var` Database without live statements. On success its BEGIN
+IMMEDIATE transaction takes the database token and the Database becomes empty;
+on failure, such as `SQLITE_BUSY`, the Database is unchanged and remains usable.
+The transaction may prepare statements; close all of them before Commit/Rollback.
+Either returns the Database on success and leaves the Transaction empty. On
+failure the Transaction keeps its token: it can prepare further statements, retry
+Commit, or Rollback. If SQLite itself rolled back after a failed commit, only
+Rollback succeeds. Operations on an empty Database or Transaction fail. Dropping
+an uncompleted transaction rolls back, removes its connection token and invalidates
 escaped statements; their subsequent operations fail safely. Nested transactions
 and savepoints are excluded. SQL transaction-control statements are rejected by
 the provider's authorizer, keeping the resource contract intact.

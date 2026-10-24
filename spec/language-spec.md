@@ -649,7 +649,7 @@ For example:
 ```ore
 import "sqlite"
 func persist() error {
-    let db = sqlite.Open("example.db")?
+    var db = sqlite.Open("example.db")?
     var transaction = db.Begin()?
     {
         var insert = transaction.Prepare("insert into notes(body) values (?)")?
@@ -665,7 +665,8 @@ Opening creates a nonzero never-reused connection token. Preparing borrows the
 connection but returns an independent owned statement with a native connection
 lease; the statement may outlive the Database wrapper. Dropping/closing a
 Database removes its token and defers physical closure until the last statement
-lease ends. Explicit Statement.Close and ordinary drop finalize exactly once.
+lease ends. Explicit Statement.Close and ordinary drop finalize exactly once; Close does not
+repeat a Step failure, and Reset after a failed Step succeeds.
 Zero/closed/stale resources produce ordinary operation errors; cleanup is harmless.
 No native pointer, borrowed output, callback or SQLite allocation enters Zore.
 Input text/blob data is copied with SQLite's transient-binding contract and may
@@ -675,12 +676,16 @@ float, text and blob retain their distinct SQLite types. Text preserves embedded
 NUL and requires UTF-8; blob preserves every byte. SQL/path text rejects NUL;
 Prepare accepts exactly one nonempty SQL statement with optional whitespace tail.
 
-Database.Begin consumes the database and returns a Transaction, rejecting live
-statements and nesting. Transactions use BEGIN IMMEDIATE. Prepare borrows a
-Transaction, whose statements hold the same connection lease. Commit and
-Rollback consume the Transaction, require all its statements to have closed,
-and return the Database on success. Failed completion and drop roll back and
-close the connection token. Abandonment invalidates escaped transaction
+Database.Begin mutably borrows the database, rejecting live statements and
+nesting. On success the returned Transaction takes its token and the Database
+becomes empty; a failed Begin leaves the Database unchanged. Transactions use
+BEGIN IMMEDIATE. Prepare borrows a Transaction, whose statements hold the same
+connection lease. Commit and Rollback mutably borrow the Transaction, require
+all its statements to have closed, and on success return the Database and leave
+the Transaction empty. A failed completion keeps the Transaction usable and
+retryable; when SQLite has already rolled back, only Rollback succeeds. Empty
+resources produce ordinary operation errors. Drop rolls back and closes the
+connection token. Abandonment invalidates escaped transaction
 statements before rollback; they remain safe to finalize. Normal return, `?`,
 explicit close, structured panic and task-frame destruction invoke ordinary
 cleanup. Abort/process termination and native bugs retain ordinary limits.
@@ -707,8 +712,8 @@ and Windows x86_64 MSVC use the existing clang/Rust host toolchains; no installe
 SQLite SDK or network access is needed to check/build installed source.
 
 Compiler impact: add one reviewed registry entry and fixed per-adapter C flags,
-private typed bindings, and narrowly include SQLite wrappers/private waits in
-existing helper lowering. No syntax/type/borrow/drop rule changes. Conformance
+private typed bindings, and per-symbol adapter wait kinds that include the bound
+package's wrappers and private waits in existing helper lowering. No syntax/type/borrow/drop rule changes. Conformance
 covers binary/parameter/row types, file persistence, invalid/closed resources,
 statement leases, transaction completion/abandonment, contention, normal/error/
 panic/async cleanup, source/recipe tampering, linker-independent checks and

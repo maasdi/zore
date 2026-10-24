@@ -1,4 +1,5 @@
 use super::stmt::Block;
+use crate::async_lowering::NativeWait;
 use crate::resolve::{LocalId, LocalKind};
 use crate::source::Span;
 use crate::types::TypeId;
@@ -16,6 +17,7 @@ pub struct Function {
     /// Declared without a body; the runtime provides its code.
     pub native: bool,
     pub native_symbol: Option<String>,
+    pub native_wait: Option<NativeWait>,
     /// The body consumes a captured value, so the closure runs at most once.
     pub call_once: bool,
     /// A generic function's type parameters; it is a template, compiled only through its copies.

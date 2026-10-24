@@ -55,6 +55,7 @@ unsafe extern "C" {
     fn sqlite3_column_blob(stmt: *mut c_void, column: c_int) -> *const c_void;
     fn sqlite3_column_bytes(stmt: *mut c_void, column: c_int) -> c_int;
     fn sqlite3_busy_timeout(db: *mut c_void, milliseconds: c_int) -> c_int;
+    fn sqlite3_get_autocommit(db: *mut c_void) -> c_int;
     fn sqlite3_exec(
         db: *mut c_void,
         sql: *const c_char,
@@ -78,9 +79,49 @@ unsafe extern "C" {
     ) -> c_int;
 }
 
+const SQLITE_OK: c_int = 0;
+const SQLITE_DENY: c_int = 1;
+const SQLITE_NOMEM: c_int = 7;
+const SQLITE_ROW: c_int = 100;
+const SQLITE_DONE: c_int = 101;
+const SQLITE_TRANSACTION: c_int = 22;
+const SQLITE_SAVEPOINT: c_int = 32;
+const SQLITE_OPEN_READWRITE: c_int = 0x2;
+const SQLITE_OPEN_CREATE: c_int = 0x4;
+const SQLITE_OPEN_FULLMUTEX: c_int = 0x10000;
+const SQLITE_TRANSIENT: isize = -1;
+
+const SQLITE_INTEGER: i64 = 1;
+const SQLITE_FLOAT: i64 = 2;
+const SQLITE_TEXT: i64 = 3;
+const SQLITE_BLOB: i64 = 4;
+const SQLITE_NULL: i64 = 5;
+const COLUMN_COUNT: i64 = 0;
+const COLUMN_TYPE: i64 = -1;
+
+const MAX_PATH_LENGTH: i64 = 1048576;
+const MAX_SQL_LENGTH: i64 = 1048576;
+const MAX_VALUE_LENGTH: i64 = 16777216;
+const MAX_BUSY_TIMEOUT_MILLISECONDS: i64 = 60000;
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Phase {
+    Ready,
+    Row,
+    Done,
+    Failed,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum TransactionState {
+    Idle,
+    Active,
+    RolledBack,
+}
+
 struct Statement {
     pointer: *mut c_void,
-    phase: i32,
+    phase: Phase,
 }
 
 struct Connection {
@@ -88,7 +129,7 @@ struct Connection {
     statements: BTreeMap<i64, Statement>,
     live: bool,
     valid: bool,
-    transaction: bool,
+    transaction: TransactionState,
 }
 
 // SQLite serialized mode and the connection mutex cover every native access.
@@ -144,8 +185,8 @@ fn statement(id: i64) -> Result<Lease, String> {
         .ok_or_else(|| "sqlite: invalid or closed statement".into())
 }
 
-fn status(db: *mut c_void, code: i32) -> Result<(), String> {
-    if code == 0 {
+fn status(db: *mut c_void, code: c_int) -> Result<(), String> {
+    if code == SQLITE_OK {
         return Ok(());
     }
     // SAFETY: callers hold a lease and lock for this live connection.
@@ -161,7 +202,11 @@ unsafe extern "C" fn authorize(
     _: *const c_char,
     _: *const c_char,
 ) -> c_int {
-    if action == 22 || action == 32 { 1 } else { 0 }
+    if action == SQLITE_TRANSACTION || action == SQLITE_SAVEPOINT {
+        SQLITE_DENY
+    } else {
+        SQLITE_OK
+    }
 }
 
 fn execute(connection: &Connection, sql: &CStr) -> Result<(), String> {
@@ -194,10 +239,10 @@ unsafe fn input<'a>(data: *const u8, length: i64, limit: i64) -> Result<&'a [u8]
 fn open(path: &[u8]) -> Result<i64, String> {
     let path = CString::new(path).map_err(|_| "sqlite: path contains NUL")?;
     let mut pointer = ptr::null_mut();
+    let flags = SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX;
     // SAFETY: path is terminated and pointer is writable; full mutex mode is requested.
-    let code =
-        unsafe { sqlite3_open_v2(path.as_ptr(), &mut pointer, 2 | 4 | 0x10000, ptr::null()) };
-    if code != 0 {
+    let code = unsafe { sqlite3_open_v2(path.as_ptr(), &mut pointer, flags, ptr::null()) };
+    if code != SQLITE_OK {
         let error = if pointer.is_null() {
             Err(format!("sqlite ({code}): open failed"))
         } else {
@@ -215,7 +260,7 @@ fn open(path: &[u8]) -> Result<i64, String> {
         statements: BTreeMap::new(),
         live: true,
         valid: true,
-        transaction: false,
+        transaction: TransactionState::Idle,
     };
     // SAFETY: this newly opened connection is exclusively owned.
     unsafe { sqlite3_set_authorizer(pointer, Some(authorize), ptr::null_mut()) };
@@ -235,6 +280,9 @@ fn prepare(id: i64, sql: &[u8]) -> Result<i64, String> {
     let mut connection = lease.lock().map_err(|_| "sqlite: connection unavailable")?;
     if !connection.live || !connection.valid {
         return Err("sqlite: closed database".into());
+    }
+    if connection.transaction == TransactionState::RolledBack {
+        return Err("sqlite: transaction was rolled back by a failed commit".into());
     }
     let mut pointer = ptr::null_mut();
     let mut tail = ptr::null();
@@ -278,9 +326,13 @@ fn prepare(id: i64, sql: &[u8]) -> Result<i64, String> {
             return Err(error);
         }
     };
-    connection
-        .statements
-        .insert(id, Statement { pointer, phase: 0 });
+    connection.statements.insert(
+        id,
+        Statement {
+            pointer,
+            phase: Phase::Ready,
+        },
+    );
     registry.statements.insert(id, lease.clone());
     native::resource_created();
     Ok(id)
@@ -288,7 +340,7 @@ fn prepare(id: i64, sql: &[u8]) -> Result<i64, String> {
 
 fn with_statement<T>(
     id: i64,
-    action: impl FnOnce(&mut Connection, *mut c_void, i32) -> Result<T, String>,
+    action: impl FnOnce(&mut Connection, *mut c_void, Phase) -> Result<T, String>,
 ) -> Result<T, String> {
     let lease = statement(id)?;
     let mut connection = lease.lock().map_err(|_| "sqlite: connection unavailable")?;
@@ -306,15 +358,31 @@ fn with_statement<T>(
 fn finish(id: i64, commit: bool) -> Result<(), String> {
     let lease = database(id)?;
     let mut connection = lease.lock().map_err(|_| "sqlite: connection unavailable")?;
-    if !connection.transaction {
-        return Err("sqlite: no active transaction".into());
-    }
     if !connection.statements.is_empty() {
         return Err("sqlite: close statements before transaction completion".into());
     }
-    execute(&connection, if commit { c"COMMIT" } else { c"ROLLBACK" })?;
-    connection.transaction = false;
-    Ok(())
+    match connection.transaction {
+        TransactionState::Idle => Err("sqlite: no active transaction".into()),
+        TransactionState::RolledBack if commit => {
+            Err("sqlite: transaction was rolled back by a failed commit".into())
+        }
+        TransactionState::RolledBack => {
+            connection.transaction = TransactionState::Idle;
+            Ok(())
+        }
+        TransactionState::Active => {
+            let result = execute(&connection, if commit { c"COMMIT" } else { c"ROLLBACK" });
+            // SAFETY: the connection is exclusively locked.
+            if unsafe { sqlite3_get_autocommit(connection.pointer) } != 0 {
+                connection.transaction = if result.is_ok() {
+                    TransactionState::Idle
+                } else {
+                    TransactionState::RolledBack
+                };
+            }
+            result
+        }
+    }
 }
 
 fn drop_database(id: i64, abort: bool) {
@@ -326,10 +394,10 @@ fn drop_database(id: i64, abort: bool) {
     if let Some(lease) = lease {
         let mut connection = lease.lock().unwrap_or_else(|error| error.into_inner());
         connection.live = false;
-        if abort || connection.transaction {
+        if abort || connection.transaction != TransactionState::Idle {
             connection.valid = false;
             let _ = execute(&connection, c"ROLLBACK");
-            connection.transaction = false;
+            connection.transaction = TransactionState::Idle;
         }
     }
 }
@@ -337,30 +405,33 @@ fn drop_database(id: i64, abort: bool) {
 fn finalize(id: i64) -> Result<(), String> {
     let lease = registry()
         .lock()
-        .map_err(|_| "sqlite: registry unavailable")?
+        .unwrap_or_else(|error| error.into_inner())
         .statements
         .remove(&id);
     let Some(lease) = lease else {
         return Ok(());
     };
-    let mut connection = lease.lock().map_err(|_| "sqlite: connection unavailable")?;
+    let mut connection = lease.lock().unwrap_or_else(|error| error.into_inner());
     if let Some(statement) = connection.statements.remove(&id) {
         // SAFETY: removal transfers exclusive ownership of this statement.
         let code = unsafe { sqlite3_finalize(statement.pointer) };
         native::resource_released();
-        status(connection.pointer, code)?;
+        // Finalize repeats a failed Step's code, which Step already reported.
+        if statement.phase != Phase::Failed {
+            status(connection.pointer, code)?;
+        }
     }
     Ok(())
 }
 
-fn column(pointer: *mut c_void, phase: i32, index: i64, kind: i64) -> Result<i32, String> {
+fn column(pointer: *mut c_void, phase: Phase, index: i64, kind: i64) -> Result<i32, String> {
     // SAFETY: the caller holds the statement's connection mutex and lease.
     let count = unsafe { sqlite3_column_count(pointer) } as i64;
-    if phase != 1 || !(0..count).contains(&index) {
+    if phase != Phase::Row || !(0..count).contains(&index) {
         return Err("sqlite: column requires a current row and valid index".into());
     }
     // SAFETY: the index is in range and the statement has a current row.
-    if kind != -1 && unsafe { sqlite3_column_type(pointer, index as i32) } as i64 != kind {
+    if kind != COLUMN_TYPE && unsafe { sqlite3_column_type(pointer, index as i32) } as i64 != kind {
         return Err("sqlite: column type mismatch".into());
     }
     Ok(index as i32)
@@ -400,14 +471,14 @@ macro_rules! error {
 
 value!(zore_native_sqlite_native_open(data: *const u8, length: i64) {
     // SAFETY: the generated caller lends its input buffer for the call.
-    open(unsafe { input(data, length, 1048576) }?)
+    open(unsafe { input(data, length, MAX_PATH_LENGTH) }?)
 });
 value!(zore_native_sqlite_native_prepare(id: i64, data: *const u8, length: i64) {
     // SAFETY: the generated caller lends its input buffer for the call.
-    prepare(id, unsafe { input(data, length, 1048576) }?)
+    prepare(id, unsafe { input(data, length, MAX_SQL_LENGTH) }?)
 });
 error!(zore_native_sqlite_native_busy(id: i64, milliseconds: i64) {
-    if !(0..=60000).contains(&milliseconds) { return Err("sqlite: busy timeout must be 0..60000 milliseconds".into()); }
+    if !(0..=MAX_BUSY_TIMEOUT_MILLISECONDS).contains(&milliseconds) { return Err("sqlite: busy timeout must be 0..60000 milliseconds".into()); }
     let lease = database(id)?;
     let connection = lease.lock().map_err(|_| "sqlite: connection unavailable")?;
     if !connection.live { return Err("sqlite: closed database".into()); }
@@ -417,9 +488,9 @@ error!(zore_native_sqlite_native_busy(id: i64, milliseconds: i64) {
 error!(zore_native_sqlite_native_begin(id: i64) {
     let lease = database(id)?;
     let mut connection = lease.lock().map_err(|_| "sqlite: connection unavailable")?;
-    if !connection.live || connection.transaction || !connection.statements.is_empty() { return Err("sqlite: Begin requires an open database without statements or transaction".into()); }
+    if !connection.live || connection.transaction != TransactionState::Idle || !connection.statements.is_empty() { return Err("sqlite: Begin requires an open database without statements or transaction".into()); }
     execute(&connection, c"BEGIN IMMEDIATE")?;
-    connection.transaction = true;
+    connection.transaction = TransactionState::Active;
     Ok(())
 });
 error!(zore_native_sqlite_native_finish(id: i64, commit: bool) { finish(id, commit) });
@@ -433,29 +504,29 @@ pub extern "C" fn zore_native_sqlite_native_drop_database(id: i64, abort: bool) 
 error!(zore_native_sqlite_native_finalize(id: i64) { finalize(id) });
 error!(zore_native_sqlite_native_reset(id: i64) {
     with_statement(id, |connection, pointer, _| {
-        // SAFETY: this live statement is exclusively locked.
-        let code = unsafe { sqlite3_reset(pointer) };
+        // SAFETY: this live statement is exclusively locked; reset's code repeats a reported Step failure.
+        unsafe { sqlite3_reset(pointer) };
         // SAFETY: clearing bindings is valid after reset, even after a step error.
         let cleared = unsafe { sqlite3_clear_bindings(pointer) };
-        connection.statements.get_mut(&id).unwrap().phase = 0;
-        status(connection.pointer, code).and_then(|()| status(connection.pointer, cleared))
+        connection.statements.get_mut(&id).unwrap().phase = Phase::Ready;
+        status(connection.pointer, cleared)
     })
 });
 error!(zore_native_sqlite_native_bind(id: i64, index: i64, kind: i64, integer: i64, real: f64, data: *const u8, length: i64) {
     // SAFETY: the generated caller lends this buffer through the call.
-    let bytes = unsafe { input(data, length, 16777216) }?;
+    let bytes = unsafe { input(data, length, MAX_VALUE_LENGTH) }?;
     with_statement(id, |connection, pointer, phase| {
         // SAFETY: this live statement is exclusively locked.
         let count = unsafe { sqlite3_bind_parameter_count(pointer) } as i64;
-        if phase != 0 || !(1..=count).contains(&index) { return Err("sqlite: binding requires Reset and a valid parameter index".into()); }
-        if kind == 2 && real.is_nan() { return Err("sqlite: NaN cannot be bound as a real value".into()); }
+        if phase != Phase::Ready || !(1..=count).contains(&index) { return Err("sqlite: binding requires Reset and a valid parameter index".into()); }
+        if kind == SQLITE_FLOAT && real.is_nan() { return Err("sqlite: NaN cannot be bound as a real value".into()); }
         // SAFETY: indexes are checked; TRANSIENT copies all borrowed bytes before returning.
         let code = unsafe { match kind {
-            5 => sqlite3_bind_null(pointer, index as i32),
-            1 => sqlite3_bind_int64(pointer, index as i32, integer),
-            2 => sqlite3_bind_double(pointer, index as i32, real),
-            3 => sqlite3_bind_text(pointer, index as i32, bytes.as_ptr().cast(), bytes.len() as i32, -1),
-            4 => sqlite3_bind_blob(pointer, index as i32, bytes.as_ptr().cast(), bytes.len() as i32, -1),
+            SQLITE_NULL => sqlite3_bind_null(pointer, index as i32),
+            SQLITE_INTEGER => sqlite3_bind_int64(pointer, index as i32, integer),
+            SQLITE_FLOAT => sqlite3_bind_double(pointer, index as i32, real),
+            SQLITE_TEXT => sqlite3_bind_text(pointer, index as i32, bytes.as_ptr().cast(), bytes.len() as i32, SQLITE_TRANSIENT),
+            SQLITE_BLOB => sqlite3_bind_blob(pointer, index as i32, bytes.as_ptr().cast(), bytes.len() as i32, SQLITE_TRANSIENT),
             _ => return Err("sqlite: invalid binding type".into()),
         }};
         status(connection.pointer, code)
@@ -463,27 +534,31 @@ error!(zore_native_sqlite_native_bind(id: i64, index: i64, kind: i64, integer: i
 });
 value!(zore_native_sqlite_native_step(id: i64) {
     with_statement(id, |connection, pointer, phase| {
-        if phase == 2 { return Err("sqlite: Step requires Reset after completion or failure".into()); }
+        if matches!(phase, Phase::Done | Phase::Failed) { return Err("sqlite: Step requires Reset after completion or failure".into()); }
         // SAFETY: this live statement is exclusively locked.
         let code = unsafe { sqlite3_step(pointer) };
-        connection.statements.get_mut(&id).unwrap().phase = if code == 100 { 1 } else { 2 };
-        match code { 100 => Ok(1), 101 => Ok(0), _ => status(connection.pointer, code).map(|()| 0) }
+        connection.statements.get_mut(&id).unwrap().phase = match code {
+            SQLITE_ROW => Phase::Row,
+            SQLITE_DONE => Phase::Done,
+            _ => Phase::Failed,
+        };
+        match code { SQLITE_ROW => Ok(1), SQLITE_DONE => Ok(0), _ => status(connection.pointer, code).map(|()| 0) }
     })
 });
 value!(zore_native_sqlite_native_column(id: i64, index: i64, kind: i64) {
     with_statement(id, |_, pointer, phase| {
-        if kind == 0 {
+        if kind == COLUMN_COUNT {
             // SAFETY: this live statement is exclusively locked.
             return Ok(unsafe { sqlite3_column_count(pointer) } as i64);
         }
         let index = column(pointer, phase, index, kind)?;
         // SAFETY: column validated the row, index and exact type.
-        Ok(unsafe { if kind == -1 { sqlite3_column_type(pointer, index) as i64 } else { sqlite3_column_int64(pointer, index) } })
+        Ok(unsafe { if kind == COLUMN_TYPE { sqlite3_column_type(pointer, index) as i64 } else { sqlite3_column_int64(pointer, index) } })
     })
 });
 value!(zore_native_sqlite_native_float(id: i64, index: i64) {
     with_statement(id, |_, pointer, phase| {
-        let index = column(pointer, phase, index, 2)?;
+        let index = column(pointer, phase, index, SQLITE_FLOAT)?;
         // SAFETY: column validated the row, index and real type.
         Ok(unsafe { sqlite3_column_double(pointer, index) }.to_bits() as i64)
     })
@@ -500,13 +575,13 @@ pub unsafe extern "C" fn zore_native_sqlite_native_bytes(
 ) {
     let _blocking = BlockingGuard::enter();
     let result = with_statement(id, |connection, pointer, phase| {
-        if kind != 3 && kind != 4 {
+        if kind != SQLITE_TEXT && kind != SQLITE_BLOB {
             return Err("sqlite: expected text or blob".into());
         }
         let index = column(pointer, phase, index, kind)?;
         // SAFETY: column validated the current row and exact type; the lock preserves storage.
         let (data, length) = unsafe {
-            let data = if kind == 3 {
+            let data = if kind == SQLITE_TEXT {
                 sqlite3_column_text(pointer, index)
             } else {
                 sqlite3_column_blob(pointer, index).cast()
@@ -514,8 +589,10 @@ pub unsafe extern "C" fn zore_native_sqlite_native_bytes(
             (data, sqlite3_column_bytes(pointer, index))
         };
         // SAFETY: the connection remains locked while inspecting conversion failure.
-        if data.is_null() && (length > 0 || unsafe { sqlite3_errcode(connection.pointer) } == 7) {
-            return status(connection.pointer, 7).map(|()| Vec::new());
+        if data.is_null()
+            && (length > 0 || unsafe { sqlite3_errcode(connection.pointer) } == SQLITE_NOMEM)
+        {
+            return status(connection.pointer, SQLITE_NOMEM).map(|()| Vec::new());
         }
         // SAFETY: SQLite lends length bytes until the next statement operation under this lock.
         let bytes = if length == 0 {
@@ -523,7 +600,7 @@ pub unsafe extern "C" fn zore_native_sqlite_native_bytes(
         } else {
             unsafe { std::slice::from_raw_parts(data, length as usize) }
         };
-        if kind == 3 {
+        if kind == SQLITE_TEXT {
             std::str::from_utf8(bytes).map_err(|_| "sqlite: text is not valid UTF-8")?;
         }
         Ok(bytes.to_vec())

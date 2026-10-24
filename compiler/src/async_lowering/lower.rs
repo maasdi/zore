@@ -6,11 +6,18 @@ use crate::mir::{self, Callee, Terminator};
 use super::{Plan, StateMachine, Suspension};
 
 pub fn lower(package: &hir::Package, program: &mir::Program) -> Plan {
-    let sqlite_registered = package.functions.iter().any(|function| {
-        function.native
-            && function.name == "sqlite.nativeOpen"
-            && function.native_symbol.as_deref() == Some("zore_native_sqlite_native_open")
-    });
+    let adapter_packages: HashSet<&str> = package
+        .functions
+        .iter()
+        .filter(|function| function.native && function.native_wait.is_some())
+        .filter_map(|function| function.name.rsplit_once('.').map(|(path, _)| path))
+        .collect();
+    let in_adapter_package = |name: &str| {
+        adapter_packages.iter().any(|path| {
+            name.strip_prefix(path)
+                .is_some_and(|rest| rest.starts_with('.'))
+        })
+    };
     let mut waiting_library = HashSet::new();
     loop {
         let before = waiting_library.len();
@@ -18,8 +25,7 @@ pub fn lower(package: &hir::Package, program: &mir::Program) -> Plan {
             let function = package.function(body.function);
             if function.native
                 || function.is_closure
-                || !(function.name.starts_with("std/")
-                    || (sqlite_registered && function.name.starts_with("sqlite.")))
+                || !(function.name.starts_with("std/") || in_adapter_package(&function.name))
             {
                 continue;
             }
@@ -29,7 +35,7 @@ pub fn lower(package: &hir::Package, program: &mir::Program) -> Plan {
                         let callee = package.function(*id);
                         waiting_library.contains(id)
                             || (callee.native
-                                && (super::native_wait(&callee.name).is_some()
+                                && (super::native_wait(callee).is_some()
                                     || callee.name == "std/time.Sleep"))
                     }
                     // What serves the entry may wait.
@@ -118,7 +124,7 @@ pub fn lower(package: &hir::Package, program: &mir::Program) -> Plan {
                         }
                         Callee::Function(id)
                             if package.function(*id).native
-                                && super::native_wait(&package.function(*id).name).is_some() =>
+                                && super::native_wait(package.function(*id)).is_some() =>
                         {
                             Suspension::Io(*id)
                         }

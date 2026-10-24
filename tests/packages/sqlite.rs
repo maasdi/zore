@@ -80,25 +80,35 @@ func main() {}
             .iter()
             .any(|(_, suspension)| matches!(suspension, Suspension::Io(_)))
     }));
+    let wait = |name: &str| {
+        async_lowering::native_wait(
+            package
+                .functions
+                .iter()
+                .find(|function| function.name == name)
+                .unwrap(),
+        )
+    };
     assert_eq!(
-        async_lowering::native_wait("sqlite.nativeStep"),
+        wait("sqlite.nativeStep"),
         Some(async_lowering::NativeWait::Helper)
     );
-    assert_eq!(
-        async_lowering::native_wait("sqlite.nativeDropDatabase"),
-        None
-    );
+    assert_eq!(wait("sqlite.nativeDropDatabase"), None);
 }
 
 #[test]
 fn sqlite_resources_preserve_ordinary_move_and_visibility_rules() {
     for (main, error) in [
         (
-            "package main\nimport \"sqlite\"\nfunc f() error { let db = sqlite.Open(\":memory:\")?; let tx = db.Begin()?; let s = db.Prepare(\"select 1\")?; return nil }; func main() {}",
-            "moved",
+            "package main\nimport \"sqlite\"\nfunc f() error { let db = sqlite.Open(\":memory:\")?; var tx = db.Begin()?; return nil }; func main() {}",
+            "cannot pass immutable binding `db`",
         ),
         (
-            "package main\nimport \"sqlite\"\nfunc f() error { let db = sqlite.Open(\":memory:\")?; let tx = db.Begin()?; let finished = tx.Commit()?; let again = tx.Rollback()?; return nil }; func main() {}",
+            "package main\nimport \"sqlite\"\nfunc f() error { var db = sqlite.Open(\":memory:\")?; let tx = db.Begin()?; let finished = tx.Commit()?; return nil }; func main() {}",
+            "cannot pass immutable binding `tx`",
+        ),
+        (
+            "package main\nimport \"sqlite\"\nfunc f() error { var db = sqlite.Open(\":memory:\")?; var tx = db.Begin()?; let s = tx.Prepare(\"select 1\")?; let moved = s; let count = s.ColumnCount()?; return nil }; func main() {}",
             "moved",
         ),
         (

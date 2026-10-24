@@ -1,3 +1,4 @@
+use crate::hir;
 use crate::resolve::FunctionId;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -21,20 +22,14 @@ pub enum NativeWait {
     Deadline,
 }
 
-pub fn native_wait(name: &str) -> Option<NativeWait> {
+pub fn native_wait(function: &hir::Function) -> Option<NativeWait> {
+    function
+        .native_wait
+        .or_else(|| standard_wait(&function.name))
+}
+
+fn standard_wait(name: &str) -> Option<NativeWait> {
     match name {
-        "sqlite.nativeOpen"
-        | "sqlite.nativePrepare"
-        | "sqlite.nativeBusy"
-        | "sqlite.nativeBegin"
-        | "sqlite.nativeFinish"
-        | "sqlite.nativeBind"
-        | "sqlite.nativeStep"
-        | "sqlite.nativeReset"
-        | "sqlite.nativeColumn"
-        | "sqlite.nativeFloat"
-        | "sqlite.nativeBytes"
-        | "sqlite.nativeFinalize" => Some(NativeWait::Helper),
         "std/context.waitUntil" => Some(NativeWait::Deadline),
         "std/os.ReadFile"
         | "std/os.WriteFile"

@@ -111,7 +111,7 @@ general third-party ABI SDK are outside this contract. See the
 The [SQLite package](libraries/sqlite.md) registers SQLite 3.54.1 through
 `sqlite-v1`. Its package-owned amalgamation and direct C ABI bridge supply owned
 databases, statement connection leases, transient parameter copies, owned binary
-rows, and consuming transactions with rollback on abandonment. The fixed build
+rows, and retryable transactions with rollback on abandonment. The fixed build
 flags participate in recipe fingerprints. Its wrappers use helper waits in async
 callers and compensated synchronous calls otherwise. Busy timeout bounds lock
 retries; query cancellation, interrupts and hard deadlines are not exposed.

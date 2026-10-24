@@ -42,8 +42,9 @@ pub(crate) fn check_project_with_entry(
         hir::lower::check_with_entry(resolution, &layered, entry_name);
     if let Some(checked) = &mut package {
         for function in &mut checked.functions {
-            if function.native {
-                function.native_symbol = project.native_bindings.get(&function.span).cloned();
+            if let Some(&(symbol, wait)) = project.native_bindings.get(&function.span) {
+                function.native_symbol = Some(symbol.to_string());
+                function.native_wait = wait;
             }
         }
     }
