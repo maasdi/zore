@@ -519,6 +519,32 @@ func main() {
     }
 }
 
+fn dispatcher_ir_lines(branches: usize) -> usize {
+    let mut source = String::from("package main\nfunc choose(n int) int {\n");
+    for branch in 0..branches {
+        source.push_str(&format!(
+            "if n == {branch} {{\nlet xs = Array<int>{{{branch}}}\nreturn xs[0]\n}}\n"
+        ));
+    }
+    source.push_str("return 0\n}\nfunc main() { println(choose(1)) }\n");
+    let mut sources = SourceMap::new();
+    let id = sources.add("test.ore", source).unwrap();
+    emit_llvm(sources.file(id).unwrap())
+        .unwrap()
+        .lines()
+        .count()
+}
+
+#[test]
+fn many_returns_share_one_cleanup_exit() {
+    let small = dispatcher_ir_lines(20);
+    let large = dispatcher_ir_lines(80);
+    assert!(
+        large < small * 5,
+        "emitted code grows faster than linearly: {small} lines for 20 returns, {large} for 80"
+    );
+}
+
 /// A `Guard` whose destructor prints its id.
 const GUARD: &str = "type Guard struct { id int }
 func (g mut Guard) drop() { println(g.id) }";
