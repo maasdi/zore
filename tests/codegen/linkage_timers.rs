@@ -1,6 +1,14 @@
 use super::*;
 
 #[test]
+fn native_pruning_keeps_initializers_tables_generics_callbacks_scopes_and_cleanup() {
+    prints(
+        include_str!("fixtures/reachability.ore"),
+        "init\n10\n11\n13\ndrop\n12\n",
+    );
+}
+
+#[test]
 fn internal_linkage_keeps_referenced_initializers_callbacks_generics_and_async_cleanup() {
     prints(
         r#"package main

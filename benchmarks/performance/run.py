@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import argparse
+from contextlib import nullcontext
 import hashlib
 import json
 import math
@@ -22,6 +23,7 @@ WORKLOADS = {
     "json": HERE / "json/workload.ore",
     "rest": HERE / "rest/workload.ore",
     "rest_sample": ROOT / "examples/rest-api/main.ore",
+    "dependency": HERE / "dependency/app/main.ore",
     "suspension": HERE / "suspension/workload.ore",
 }
 FRAME_WORKLOADS = {
@@ -33,6 +35,13 @@ FRAME_WORKLOADS = {
 }
 
 
+def cpu_affinity_count():
+    try:
+        return len(os.sched_getaffinity(0))
+    except (AttributeError, OSError):
+        return None
+
+
 def metadata(arguments):
     compiler = arguments.compiler
     result = {
@@ -41,6 +50,14 @@ def metadata(arguments):
         "working_tree_dirty": bool(command(["git", "status", "--porcelain"]).stdout),
         "compiler_revision": arguments.compiler_revision or "unverified compiler",
         "compiler_sha256": hashlib.sha256(compiler.read_bytes()).hexdigest(),
+        "stage_profilers": {
+            key: {"path": str(path), "sha256": hashlib.sha256(path.read_bytes()).hexdigest()}
+            for key, path in [
+                ("candidate", getattr(arguments, "stage_profiler", None)),
+                ("baseline", getattr(arguments, "baseline_stage_profiler", None)),
+            ]
+            if path
+        },
         "toolchain": {
             "zore": command([compiler, "--version"]).stdout.strip(),
             "rustc": command(
@@ -56,7 +73,7 @@ def metadata(arguments):
             "machine": platform.machine(),
             "cpu_model": suspended.cpu_model(),
             "logical_core_count": os.cpu_count(),
-            "cpu_affinity_count": len(os.sched_getaffinity(0)),
+            "cpu_affinity_count": cpu_affinity_count(),
             "load_average": os.getloadavg(),
             "cgroup_limits": {
                 name: Path(f"/sys/fs/cgroup/{name}").read_text().strip()
@@ -75,6 +92,11 @@ def metadata(arguments):
         "runner_sources": {
             path.name: hashlib.sha256(path.read_bytes()).hexdigest()
             for path in sorted(HERE.glob("*.py"))
+        },
+        "dependency_inputs": {
+            str(path.relative_to(ROOT)): hashlib.sha256(path.read_bytes()).hexdigest()
+            for path in sorted((HERE / "dependency").rglob("*"))
+            if path.is_file()
         },
         "existing_measurement_sources": {
             str(path.relative_to(ROOT)): hashlib.sha256(path.read_bytes()).hexdigest()
@@ -156,6 +178,14 @@ def main():
     parser.add_argument("--compiler-revision")
     parser.add_argument("--baseline-compiler", type=Path)
     parser.add_argument("--baseline-revision")
+    parser.add_argument("--stage-profiler", type=Path)
+    parser.add_argument("--baseline-stage-profiler", type=Path)
+    parser.add_argument("--work-directory", type=Path)
+    parser.add_argument("--compile-lock-file", type=Path)
+    parser.add_argument(
+        "--compile-workloads", nargs="+", choices=list(WORKLOADS),
+        default=list(WORKLOADS),
+    )
     parser.add_argument("--warm-builds-only", action="store_true")
     parser.add_argument(
         "--suites",
@@ -197,7 +227,14 @@ def main():
         arguments.baseline_compiler = arguments.baseline_compiler.resolve()
     try:
         result = metadata(arguments)
-        with tempfile.TemporaryDirectory(prefix="zore-performance-") as temporary:
+        if arguments.work_directory:
+            arguments.work_directory.mkdir(parents=True, exist_ok=False)
+        workspace = (
+            nullcontext(arguments.work_directory)
+            if arguments.work_directory
+            else tempfile.TemporaryDirectory(prefix="zore-performance-")
+        )
+        with workspace as temporary:
             directory = Path(temporary)
             if "compile" in arguments.suites:
                 print(
@@ -206,7 +243,10 @@ def main():
                     flush=True,
                 )
                 result["compile"] = measure_compile(
-                    arguments.compiler, WORKLOADS, directory / "compile", arguments
+                    arguments.compiler,
+                    {name: WORKLOADS[name] for name in arguments.compile_workloads},
+                    directory / "compile",
+                    arguments,
                 )
             for suite, measure in [("json", measure_json), ("rest", measure_rest)]:
                 if suite in arguments.suites:
