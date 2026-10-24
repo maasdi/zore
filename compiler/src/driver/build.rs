@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -9,7 +10,7 @@ use sha2::{Digest, Sha256};
 use super::native::Providers;
 use crate::codegen;
 use crate::diagnostic::Diagnostic;
-use crate::driver::check::{check_project, check_project_with_entry};
+use crate::driver::check::check_project_with_entry;
 use crate::driver::project::{Project, load_file};
 use crate::dropck;
 use crate::mir::lower::lower;
@@ -115,31 +116,63 @@ pub fn emit_llvm(file: &SourceFile) -> Result<String, BuildError> {
     emit_project_llvm(&project, file)
 }
 
+pub enum Stage<'a> {
+    Checked,
+    Lowered,
+    Emitted(&'a str),
+}
+
 pub fn emit_project_llvm(project: &Project, sources: &dyn Sources) -> Result<String, BuildError> {
-    let checked = check_project(project, sources);
+    emit_stages(project, sources, None, &mut |_| {})
+}
+
+pub fn native_ir(
+    project: &Project,
+    sources: &dyn Sources,
+    observe: &mut dyn FnMut(Stage<'_>),
+) -> Result<String, BuildError> {
+    native_ir_with_entry(project, sources, None, observe)
+}
+
+fn native_ir_with_entry(
+    project: &Project,
+    sources: &dyn Sources,
+    entry_name: Option<&str>,
+    observe: &mut dyn FnMut(Stage<'_>),
+) -> Result<String, BuildError> {
+    let ir = emit_stages(project, sources, entry_name, observe)?;
+    observe(Stage::Emitted(&ir));
+    let pruned = match codegen::retain_reachable_functions(&ir) {
+        Cow::Owned(pruned) => Some(pruned),
+        Cow::Borrowed(_) => None,
+    };
+    Ok(pruned.unwrap_or(ir))
+}
+
+fn emit_stages(
+    project: &Project,
+    sources: &dyn Sources,
+    entry_name: Option<&str>,
+    observe: &mut dyn FnMut(Stage<'_>),
+) -> Result<String, BuildError> {
+    let checked = check_project_with_entry(project, sources, entry_name);
     if !checked.diagnostics.is_empty() {
         return Err(BuildError::Diagnostics(checked.diagnostics));
     }
     let package = checked
         .package
         .expect("no diagnostics means a checked package");
-    if package.entry.is_none() {
+    if entry_name.is_none() && package.entry.is_none() {
         return Err(BuildError::NotExecutable(format!(
             "package `{}` is not executable; only a `main` package with `func main()` can be built",
             package.name
         )));
     }
-    emit_checked_project_llvm(project, sources, package)
-}
-
-fn emit_checked_project_llvm(
-    project: &Project,
-    sources: &dyn Sources,
-    package: crate::hir::Package,
-) -> Result<String, BuildError> {
+    observe(Stage::Checked);
     let mut program = lower(&package);
     dropck::insert(&package, &mut program);
     let machines = crate::async_lowering::lower(&package, &program);
+    observe(Stage::Lowered);
     let layered = Layered(sources, project.std_sources());
     codegen::emit(&package, &program, &machines, &layered).map_err(BuildError::Diagnostics)
 }
@@ -183,7 +216,13 @@ pub fn compiler() -> String {
 }
 
 pub fn build(file: &SourceFile, output: &Path) -> Result<(), BuildError> {
-    link(&emit_llvm(file)?, output, RUNTIME_MAIN, &Providers::new())
+    let project = load_file(file).map_err(BuildError::Diagnostics)?;
+    link(
+        &native_ir(&project, file, &mut |_| {})?,
+        output,
+        RUNTIME_MAIN,
+        &Providers::new(),
+    )
 }
 
 pub fn build_project(
@@ -192,7 +231,7 @@ pub fn build_project(
     output: &Path,
 ) -> Result<(), BuildError> {
     link(
-        &emit_project_llvm(project, sources)?,
+        &native_ir(project, sources, &mut |_| {})?,
         output,
         RUNTIME_MAIN,
         &project.native_adapters,
@@ -205,14 +244,8 @@ pub(crate) fn build_test_project(
     output: &Path,
     entry_name: &str,
 ) -> Result<(), BuildError> {
-    let checked = check_project_with_entry(project, sources, Some(entry_name));
-    if !checked.diagnostics.is_empty() {
-        return Err(BuildError::Diagnostics(checked.diagnostics));
-    }
-    let package = checked.package.expect("a test project was checked");
-    let ir = emit_checked_project_llvm(project, sources, package)?;
     link(
-        &ir,
+        &native_ir_with_entry(project, sources, Some(entry_name), &mut |_| {})?,
         output,
         include_str!("../../../runtime/src/test_main.rs"),
         &project.native_adapters,
@@ -246,7 +279,6 @@ fn link(
     } else {
         "program.o"
     });
-    let ir = codegen::retain_reachable_functions(ir);
     fs::write(&ir_path, ir.as_bytes())
         .map_err(|e| BuildError::Io(format!("{}: {e}", ir_path.display())))?;
     let cc = compiler();
