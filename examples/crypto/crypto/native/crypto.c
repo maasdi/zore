@@ -10,8 +10,6 @@
 static int32_t random_with_entropy(uint8_t *output, size_t length,
                                   int (*entropy)(void *, unsigned char *, size_t),
                                   void *context) {
-    if (length > 1048576 || (length != 0 && output == NULL)) return -1;
-    if (length == 0) return 0;
     mbedtls_ctr_drbg_context drbg;
     mbedtls_ctr_drbg_init(&drbg);
     const unsigned char personalization[] = "zore-crypto-v1";

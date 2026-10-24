@@ -2,7 +2,9 @@ use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+
+use sha2::{Digest, Sha256};
 
 use super::native::Providers;
 use crate::codegen;
@@ -341,51 +343,11 @@ fn native_objects(
     selections: &Providers,
 ) -> Result<Vec<PathBuf>, BuildError> {
     let mut objects = Vec::new();
-    let needs_mbedtls = selections.values().any(|provider| provider.adapter.mbedtls);
-    let vendor = directory.join("mbedtls");
-    if needs_mbedtls {
-        for &(name, contents) in super::mbedtls::SOURCES {
-            let path = vendor.join(name);
-            fs::create_dir_all(path.parent().expect("vendor path"))
-                .and_then(|()| fs::write(&path, contents))
-                .map_err(|error| BuildError::Io(format!("{}: {error}", path.display())))?;
-        }
-        for &(name, _) in super::mbedtls::SOURCES {
-            if !name.ends_with(".c") {
-                continue;
-            }
-            let object = directory.join(format!(
-                "mbedtls-{}.o",
-                Path::new(name)
-                    .file_stem()
-                    .expect("C source")
-                    .to_string_lossy()
-            ));
-            let mut compile = Command::new(cc);
-            compile.args(super::native::C_FLAGS);
-            mbedtls_flags(&mut compile, &vendor);
-            if cfg!(windows) {
-                compile.arg("--target=x86_64-pc-windows-msvc");
-            } else {
-                compile.arg("-fPIC");
-            }
-            let result = compile
-                .arg("-c")
-                .arg(vendor.join(name))
-                .arg("-o")
-                .arg(&object)
-                .output()
-                .map_err(|error| {
-                    BuildError::Toolchain(format!("could not compile Mbed TLS: {error}"))
-                })?;
-            if !result.status.success() {
-                return Err(BuildError::Toolchain(format!(
-                    "Mbed TLS {name} compilation failed:\n{}",
-                    String::from_utf8_lossy(&result.stderr)
-                )));
-            }
-            objects.push(object);
-        }
+    let mut vendor = None;
+    if selections.values().any(|provider| provider.adapter.mbedtls) {
+        let closure = mbedtls_closure(cc, directory)?;
+        objects.extend(mbedtls_sources().map(|name| closure.join(mbedtls_object(name))));
+        vendor = Some(closure);
     }
     for (id, provider) in selections {
         let adapter = provider.adapter;
@@ -402,14 +364,10 @@ fn native_objects(
         let mut compile = Command::new(cc);
         compile.args(super::native::C_FLAGS);
         if adapter.mbedtls {
-            mbedtls_flags(&mut compile, &vendor);
-        }
-        if cfg!(windows) {
-            compile.arg("--target=x86_64-pc-windows-msvc");
-        } else {
-            compile.arg("-fPIC");
+            mbedtls_flags(&mut compile, vendor.as_deref().expect("Mbed TLS closure"));
         }
         let result = compile
+            .arg(host_c_flag())
             .arg("-c")
             .arg(&source)
             .arg("-o")
@@ -431,6 +389,19 @@ fn native_objects(
     Ok(objects)
 }
 
+fn host_c_flag() -> &'static str {
+    if cfg!(windows) {
+        "--target=x86_64-pc-windows-msvc"
+    } else {
+        "-fPIC"
+    }
+}
+
+const MBEDTLS_DEFINES: &[&str] = &[
+    "-DMBEDTLS_CONFIG_FILE=\"zore_config.h\"",
+    "-D_DEFAULT_SOURCE",
+];
+
 fn mbedtls_flags(command: &mut Command, vendor: &Path) {
     command
         .arg("-I")
@@ -439,8 +410,128 @@ fn mbedtls_flags(command: &mut Command, vendor: &Path) {
         .arg(vendor.join("library"))
         .arg("-I")
         .arg(vendor)
-        .arg("-DMBEDTLS_CONFIG_FILE=\"zore_config.h\"")
-        .arg("-D_DEFAULT_SOURCE");
+        .args(MBEDTLS_DEFINES);
+}
+
+fn mbedtls_sources() -> impl Iterator<Item = &'static str> {
+    super::mbedtls::SOURCES
+        .iter()
+        .map(|&(name, _)| name)
+        .filter(|name| name.ends_with(".c"))
+}
+
+fn mbedtls_object(source: &str) -> PathBuf {
+    Path::new(source).with_extension("o")
+}
+
+/// Cached per closure, compiler and flags; compiled into `scratch` when no cache folder is usable.
+fn mbedtls_closure(cc: &str, scratch: &Path) -> Result<PathBuf, BuildError> {
+    let version = Command::new(cc)
+        .arg("--version")
+        .output()
+        .map_err(|error| BuildError::Toolchain(format!("could not run `{cc}`: {error}")))?;
+    let mut hash = Sha256::new();
+    let parts = [
+        super::mbedtls::FINGERPRINT.as_bytes(),
+        super::mbedtls::RECIPE.as_bytes(),
+        cc.as_bytes(),
+        &version.stdout,
+        host_c_flag().as_bytes(),
+    ];
+    let flags = super::native::VENDORED_C_FLAGS
+        .iter()
+        .chain(MBEDTLS_DEFINES);
+    for part in parts.into_iter().chain(flags.map(|flag| flag.as_bytes())) {
+        hash.update((part.len() as u64).to_le_bytes());
+        hash.update(part);
+    }
+    let Some(cached) = cache_root().map(|root| root.join(format!("mbedtls-{:x}", hash.finalize())))
+    else {
+        return compile_mbedtls(cc, scratch.join("mbedtls"));
+    };
+    if cached.is_dir() {
+        return Ok(cached);
+    }
+    let staged = cached.with_file_name(format!(
+        "staged-{}-{}",
+        std::process::id(),
+        NEXT_DIR.fetch_add(1, Ordering::Relaxed)
+    ));
+    if fs::create_dir_all(&staged).is_err() {
+        return compile_mbedtls(cc, scratch.join("mbedtls"));
+    }
+    match compile_mbedtls(cc, staged.clone()) {
+        Ok(_) if fs::rename(&staged, &cached).is_ok() => Ok(cached),
+        Ok(_) if cached.is_dir() => {
+            let _ = fs::remove_dir_all(&staged);
+            Ok(cached)
+        }
+        Ok(staged) => Ok(staged),
+        Err(error) => {
+            let _ = fs::remove_dir_all(&staged);
+            Err(error)
+        }
+    }
+}
+
+fn compile_mbedtls(cc: &str, vendor: PathBuf) -> Result<PathBuf, BuildError> {
+    for &(name, contents) in super::mbedtls::SOURCES {
+        let path = vendor.join(name);
+        fs::create_dir_all(path.parent().expect("vendor path"))
+            .and_then(|()| fs::write(&path, contents))
+            .map_err(|error| BuildError::Io(format!("{}: {error}", path.display())))?;
+    }
+    let sources: Vec<&str> = mbedtls_sources().collect();
+    let next = AtomicUsize::new(0);
+    let workers = std::thread::available_parallelism()
+        .map_or(1, usize::from)
+        .min(sources.len());
+    let failure = std::thread::scope(|scope| {
+        let workers: Vec<_> = (0..workers)
+            .map(|_| {
+                scope.spawn(|| {
+                    let mut failures = Vec::new();
+                    while let Some(&name) = sources.get(next.fetch_add(1, Ordering::Relaxed)) {
+                        if let Err(error) = compile_mbedtls_source(cc, &vendor, name) {
+                            failures.push((name, error));
+                        }
+                    }
+                    failures
+                })
+            })
+            .collect();
+        workers
+            .into_iter()
+            .flat_map(|worker| worker.join().expect("Mbed TLS compile worker"))
+            .min_by_key(|&(name, _)| name)
+    });
+    match failure {
+        Some((_, error)) => Err(error),
+        None => Ok(vendor),
+    }
+}
+
+fn compile_mbedtls_source(cc: &str, vendor: &Path, name: &str) -> Result<(), BuildError> {
+    let mut compile = Command::new(cc);
+    compile
+        .current_dir(vendor)
+        .args(super::native::VENDORED_C_FLAGS);
+    mbedtls_flags(&mut compile, Path::new("."));
+    let result = compile
+        .arg(host_c_flag())
+        .arg("-c")
+        .arg(name)
+        .arg("-o")
+        .arg(mbedtls_object(name))
+        .output()
+        .map_err(|error| BuildError::Toolchain(format!("could not compile Mbed TLS: {error}")))?;
+    if !result.status.success() {
+        return Err(BuildError::Toolchain(format!(
+            "Mbed TLS {name} compilation failed:\n{}",
+            String::from_utf8_lossy(&result.stderr)
+        )));
+    }
+    Ok(())
 }
 
 fn toolchain_error(rustc: &std::ffi::OsStr, error: &std::io::Error) -> BuildError {

@@ -8340,6 +8340,7 @@ func RandomBytes(size int) (Array<byte>, error)
 func SHA256(data []byte) (Array<byte>, error)
 func HMACSHA256(key []byte, data []byte) (Array<byte>, error)
 func Equal(left []byte, right []byte) bool
+func VerifyHMACSHA256(key []byte, data []byte, tag []byte) bool
 ```
 
 RandomBytes accepts 0 through 1,048,576 bytes inclusive. Negative or larger
@@ -8358,14 +8359,18 @@ for two empty inputs, without consulting the provider. Length is not secret;
 for equal lengths the comparison must not branch on byte contents. This is not
 a general constant-time execution guarantee for source-language programs.
 
+VerifyHMACSHA256 computes the HMAC-SHA-256 tag of data under key and compares it
+with tag through Equal. It returns true only for a matching 32-byte tag; a tag of
+any other length or a provider failure returns false. MAC verification must use
+it (or Equal), never an early-exit comparison.
+
 ```ore
 import "crypto"
 import "std/strings"
 
-func authenticate(key []byte, message string, expected []byte) (bool, error) {
+func authenticate(key []byte, message string, tag []byte) bool {
     let bytes = strings.Bytes(message)
-    let tag = crypto.HMACSHA256(key, bytes[:])?
-    return crypto.Equal(tag[:], expected), nil
+    return crypto.VerifyHMACSHA256(key, bytes[:], tag)
 }
 ```
 

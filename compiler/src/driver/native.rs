@@ -6,6 +6,7 @@ use super::project::{FileSystem, Manifest};
 use crate::source::SourceError;
 
 pub(super) const C_FLAGS: &[&str] = &["-std=c11", "-O2", "-Wall", "-Wextra", "-Werror"];
+pub(super) const VENDORED_C_FLAGS: &[&str] = &["-std=c11", "-O2", "-w"];
 const RECIPE: &str = "zore-native-package-static-c11-v1";
 
 pub(super) struct Adapter {
@@ -33,7 +34,7 @@ const CRYPTO: Adapter = Adapter {
     mbedtls: true,
     id: "crypto-v1",
     project: "crypto",
-    fingerprint: "c5030f47bb846f722176eb0a9eb062869ac7084d3e802a484b69f51fa4acaaeb",
+    fingerprint: "1bd91698340dc26750f9542068e2374da0b2ddfa36db49317fb94a894987ad58",
     symbols: &[
         ("nativeRandomBytes", "zore_native_crypto_random_bytes"),
         ("nativeSHA256", "zore_native_crypto_sha256"),
@@ -46,7 +47,7 @@ const TLS: Adapter = Adapter {
     mbedtls: true,
     id: "tls-mbedtls-v1",
     project: "tls",
-    fingerprint: "4db75dc006e16f404e5078db3135e245a614305faa4b323066b4ab32a7217bb4",
+    fingerprint: "b950322167ded01884282d47eacd309a32b61b42ad794e3711274f6dd53ac181",
     symbols: &[
         ("nativeConfig", "zore_native_tls_native_config"),
         ("nativeSession", "zore_native_tls_native_session"),
@@ -148,6 +149,9 @@ impl Provider {
         if self.adapter.mbedtls {
             part(super::mbedtls::FINGERPRINT);
             part(super::mbedtls::RECIPE);
+            for flag in VENDORED_C_FLAGS {
+                part(flag);
+            }
         }
         format!("{:x}", hash.finalize())
     }
