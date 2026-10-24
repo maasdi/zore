@@ -235,7 +235,8 @@ func TestFailedSQLiteCommitCanBeRepairedOrRolledBack() error {
     executeIn(reverted, "insert into child values (2)")?
     let late, repeated = reverted.Commit()
     if repeated == nil { panic("second deferred foreign key commit succeeded") }
-    let restored = reverted.Rollback()?
+    var restored = reverted.Rollback()?
+    restored.Close()
     var reopened = Open(path)?
     {
         var query = reopened.Prepare("select count(*) from child")?
