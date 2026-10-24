@@ -42,7 +42,6 @@ pub(super) struct Job(Handle);
 
 impl Job {
     pub(super) fn attach(child: &Child) -> Result<Self, String> {
-        // The job owns only the newly spawned test process and its descendants.
         let handle = unsafe { CreateJobObjectW(std::ptr::null(), std::ptr::null()) };
         if handle.is_null() {
             return Err(std::io::Error::last_os_error().to_string());

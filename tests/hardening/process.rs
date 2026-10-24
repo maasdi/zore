@@ -38,7 +38,6 @@ fn terminate_tree(child: &mut Child) {
         fn kill(pid: i32, signal: i32) -> i32;
     }
     if let Ok(pid) = i32::try_from(child.id()) {
-        // Each command owns a fresh process group, including its descendants.
         unsafe { kill(-pid, 9) };
     }
     let _ = child.kill();
@@ -56,13 +55,17 @@ impl Drop for Reap {
     }
 }
 
-fn capture(mut pipe: impl Read, exceeded: Arc<AtomicBool>) -> Vec<u8> {
+fn capture(mut pipe: impl Read, exceeded: Arc<AtomicBool>) -> std::io::Result<Vec<u8>> {
     let mut captured = Vec::new();
     let mut buffer = [0; 4096];
     loop {
-        let count = pipe.read(&mut buffer).expect("read child output");
+        let count = match pipe.read(&mut buffer) {
+            Ok(count) => count,
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(error) => return Err(error),
+        };
         if count == 0 {
-            return captured;
+            return Ok(captured);
         }
         let remaining = OUTPUT_LIMIT - captured.len();
         captured.extend_from_slice(&buffer[..count.min(remaining)]);
@@ -129,10 +132,12 @@ pub fn run(command: &mut Command, timeout: Duration) -> Result<Output, String> {
         status,
         stdout: out_receiver
             .recv_timeout(drain_timeout)
-            .map_err(|_| "stdout pipe held by descendant")?,
+            .map_err(|_| "stdout pipe held by descendant")?
+            .map_err(|error| format!("read stdout: {error}"))?,
         stderr: err_receiver
             .recv_timeout(drain_timeout)
-            .map_err(|_| "stderr pipe held by descendant")?,
+            .map_err(|_| "stderr pipe held by descendant")?
+            .map_err(|error| format!("read stderr: {error}"))?,
     };
     if exceeded.load(Ordering::Acquire) {
         failure = Some("output limit");

@@ -11,7 +11,7 @@ or introduce language semantics.
 | Partial move/reinitialization and error cleanup regressions | `seeded_partial_construction_propagation_matches_plain_and_async`: eight seeded success/error initializations; the Rust oracle independently derives reverse destruction of initialized fields and discarded error-path results. |
 | Named scoped-task cleanup/Pending regressions | `seeded_scoped_captures_match_plain_async_cleanup_after_observed_join`: cloned nested view captures, a moved/reinitialized resource field, normal return, `?`, parent panic and destructor panic. A closed gate releases the child only after observed plain blocking or async Pending at the join. Exact child reads/destruction traces match plain and async execution. |
 | Fixed JSON malformed syntax, value clone and partial-decode tests | `seeded_json_nested_documents_reject_truncation_and_preserve_owned_values`: twelve nested documents with known integer/string leaves, owned clones after original destruction, and three independently invalid mutations per document (truncation, trailing token, trailing comma). |
-| Named HTTP framing/limits tests | `seeded_http_fragment_boundaries_keep_framing_and_rejection_oracles`: eight seeded fragment widths over seven fixed framing/status/body oracles, including chunk extensions, ambiguous framing, signed lengths, body limits and unsupported HTTP version. This fixture substitutes reads in the real parser; it is supplementary parser coverage, not evidence of socket fragmentation or cancellation. |
+| Named HTTP framing/limits tests | `seeded_http_fragment_boundaries_keep_framing_and_rejection_oracles`: eight seeded fragment widths over eight fixed framing/status/body oracles, including chunk extensions, ambiguous framing, signed and overflowing lengths, body limits and unsupported HTTP version. This fixture substitutes reads in the real parser; it is supplementary parser coverage, not evidence of socket fragmentation or cancellation. |
 | Fixed context cancellation/shutdown cases | `seeded_cancellation_trees_release_timers_only_after_quiescence`: eight seeded bounded deadline trees; observe actual Pending and exact live timer registrations, cancel leaf/root repeatedly, wait for zero tasks, then assert zero timers and every cancellation reason. |
 | Real loopback shutdown cases | `seeded_tcp_partial_bodies_cancel_and_quiesce`: three seeded write widths over an incomplete content-length body. Observe blocked accept/body reads, cancel shutdown, assert the request context and handler completion, join Serve, wait for all tasks and assert zero timers. TCP may coalesce writes; the parser fixture independently controls read boundaries. |
 
@@ -31,7 +31,8 @@ are additional checks, not substitutes for quiescence.
 
 ## Reproduction and failure artifacts
 
-The default corpus uses seed `158`. Select any `u64` seed with:
+The default corpus uses seed `158`. Each seed is mixed before generation, so every
+`u64` seed selects a distinct operation stream. Select any `u64` seed with:
 
 ```sh
 ZORE_HARDENING_SEED=159 cargo test --locked --test native hardening:: -- --test-threads=1

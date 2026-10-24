@@ -6,9 +6,17 @@ use std::time::Duration;
 use zore::check::check_file;
 use zore::source::SourceMap;
 
-pub(super) struct Generator(pub u64);
+pub(super) struct Generator(u64);
 
 impl Generator {
+    pub(super) fn seeded(seed: u64) -> Self {
+        let mut mixed = seed.wrapping_add(0x9E37_79B9_7F4A_7C15);
+        mixed = (mixed ^ (mixed >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        mixed = (mixed ^ (mixed >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        mixed ^= mixed >> 31;
+        Self(if mixed == 0 { 1 } else { mixed })
+    }
+
     pub(super) fn next(&mut self, bound: usize) -> usize {
         self.0 ^= self.0 << 13;
         self.0 ^= self.0 >> 7;
@@ -220,7 +228,7 @@ fn success(source: &str, expected: &str) {
 #[test]
 fn seeded_cloned_view_move_chains_preserve_acceptance_and_conflict_rejection() {
     for seed in seeds() {
-        let mut generator = Generator(seed | 1);
+        let mut generator = Generator::seeded(seed);
         for shape in 0..3 {
             let (ty, value, read) = match shape {
                 0 => (
@@ -354,7 +362,7 @@ func main() {{
 #[test]
 fn seeded_scoped_captures_match_plain_async_cleanup_after_observed_join() {
     for seed in seeds() {
-        let mut generator = Generator(seed | 1);
+        let mut generator = Generator::seeded(seed);
         let atoms = (0..1 + generator.next(4))
             .map(|_| generator.next(2))
             .collect::<Vec<_>>();
@@ -413,7 +421,7 @@ fn seeded_scoped_captures_match_plain_async_cleanup_after_observed_join() {
 #[test]
 fn seeded_partial_construction_propagation_matches_plain_and_async() {
     for seed in seeds() {
-        let mut generator = Generator(seed | 1);
+        let mut generator = Generator::seeded(seed);
         let atoms = (0..8).map(|_| generator.next(2)).collect::<Vec<_>>();
         for asynchronous in [false, true] {
             verify(
@@ -471,7 +479,7 @@ func main() {{ let task = go exercise(); task.wait(); waitIdle(0) }}
 #[test]
 fn seeded_json_nested_documents_reject_truncation_and_preserve_owned_values() {
     for seed in seeds() {
-        let mut generator = Generator(seed | 1);
+        let mut generator = Generator::seeded(seed);
         let atoms = (0..12).map(|_| generator.next(1000)).collect::<Vec<_>>();
         verify(
             seed,
@@ -527,27 +535,33 @@ func main() {{ let err = exercise(); if err != nil {{ panic("JSON error") }}; wa
 
 #[test]
 fn seeded_http_fragment_boundaries_keep_framing_and_rejection_oracles() {
-    let original = super::http::http_sources();
-    assert!(original.contains("let n, err = r.conn[0].Read(data[:])"));
-    let fixture = original
-        .replace(
+    let mut fixture = super::http::http_sources();
+    for (pattern, replacement) in [
+        (
             "connections int\n",
-            "connections int\n    wire Array<byte>\n    width int\n",
-        )
-        .replace(
+            "connections int\n    wire Array<byte>\n    width int\n    cursor int\n",
+        ),
+        (
             "connections: 0}",
-            "connections: 0, wire: Array<byte>{}, width: 1}",
-        )
-        .replace(
+            "connections: 0, wire: Array<byte>{}, width: 1, cursor: 0}",
+        ),
+        (
             "r.conn[0].SetReadDeadline(pollDeadline(r.deadline, r.config.AcceptPollInterval))?",
             "",
-        )
-        .replace(
+        ),
+        (
             "let n, err = r.conn[0].Read(data[:])",
             "let n, err = fixtureRead(data[:], r.server)",
+        ),
+    ] {
+        assert!(
+            fixture.contains(pattern),
+            "HTTP fixture pattern missing from the server source: {pattern}"
         );
+        fixture = fixture.replace(pattern, replacement);
+    }
     for seed in seeds() {
-        let mut generator = Generator(seed | 1);
+        let mut generator = Generator::seeded(seed);
         let atoms = (0..8).map(|_| 1 + generator.next(17)).collect::<Vec<_>>();
         verify(
             seed,
@@ -583,6 +597,11 @@ fn seeded_http_fragment_boundaries_keep_framing_and_rejection_oracles() {
                             "",
                         ),
                         (
+                            "POST /echo HTTP/1.1\r\nHost: x\r\nContent-Length: 99999999999999999999\r\n\r\n",
+                            400,
+                            "",
+                        ),
+                        (
                             "POST /echo HTTP/1.1\r\nHost: x\r\nContent-Length: 33\r\n\r\n",
                             413,
                             "",
@@ -600,10 +619,10 @@ func require(ok bool) {{ if !ok {{ panic("HTTP oracle") }} }}
 func fixtureRead(data mut []byte, server Server) (int, error) {{
     let count = server.state.withLock(func(state mut serverState) int {{
         var count = state.width
-        if state.wire.len() - state.connections < count {{ count = state.wire.len() - state.connections }}
+        if state.wire.len() - state.cursor < count {{ count = state.wire.len() - state.cursor }}
         if data.len() < count {{ count = data.len() }}
-        for var i = 0; i < count; i += 1 {{ data[i] = state.wire[state.connections + i] }}
-        state.connections += count
+        for var i = 0; i < count; i += 1 {{ data[i] = state.wire[state.cursor + i] }}
+        state.cursor += count
         return count
     }})
     if count == 0 {{ return 0, io.EOF }}
@@ -643,7 +662,7 @@ func main() {{ let err = all(); if err != nil {{ panic("HTTP error") }}; waitIdl
 #[test]
 fn seeded_cancellation_trees_release_timers_only_after_quiescence() {
     for seed in seeds() {
-        let mut generator = Generator(seed | 1);
+        let mut generator = Generator::seeded(seed);
         let atoms = (0..8).map(|_| 1 + generator.next(4)).collect::<Vec<_>>();
         verify(
             seed,
@@ -687,7 +706,7 @@ fn seeded_cancellation_trees_release_timers_only_after_quiescence() {
 #[test]
 fn seeded_tcp_partial_bodies_cancel_and_quiesce() {
     for seed in seeds() {
-        let mut generator = Generator(seed | 1);
+        let mut generator = Generator::seeded(seed);
         let atoms = (0..3).map(|_| 1 + generator.next(13)).collect::<Vec<_>>();
         verify(
             seed,

@@ -519,11 +519,26 @@ fn publish_in_cache(built: &Path, path: &Path, staged: &Path) -> Option<PathBuf>
         .create_new(true)
         .open(staged)
         .ok()?;
-    let copied = std::io::copy(&mut source, &mut destination);
+    let copied = std::io::copy(&mut source, &mut destination).and_then(|_| destination.sync_all());
     drop(destination);
-    let published = copied.and_then(|_| fs::hard_link(staged, path)).is_ok();
+    let published = copied
+        .and_then(|_| link_without_replacing(staged, path))
+        .is_ok();
     let _ = fs::remove_file(staged);
     published.then(|| path.to_path_buf())
+}
+
+fn link_without_replacing(staged: &Path, path: &Path) -> std::io::Result<()> {
+    match fs::hard_link(staged, path) {
+        Err(error) if error.kind() != std::io::ErrorKind::AlreadyExists => {
+            // Hard links can be unsupported or forbidden; rename only while nothing is published
+            if path.exists() {
+                return Err(std::io::ErrorKind::AlreadyExists.into());
+            }
+            fs::rename(staged, path)
+        }
+        result => result,
+    }
 }
 
 #[cfg(test)]
@@ -580,6 +595,30 @@ mod tests {
         assert_eq!(fs::read(&built).unwrap(), b"private runtime");
         assert_eq!(fs::read(&blocked).unwrap(), b"regular file");
         assert_eq!(fs::read_dir(directory.path()).unwrap().count(), 2);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn runtime_cache_falls_back_to_rename_when_hard_links_are_refused() {
+        let directory = TempDir::new().unwrap();
+        let staged = directory.path().join("staged");
+        let published = directory.path().join("published");
+        fs::create_dir(&staged).unwrap();
+        fs::write(staged.join("marker"), b"runtime").unwrap();
+
+        assert!(fs::hard_link(&staged, &published).is_err());
+        link_without_replacing(&staged, &published).unwrap();
+        assert_eq!(fs::read(published.join("marker")).unwrap(), b"runtime");
+        assert!(!staged.exists());
+
+        let occupied = directory.path().join("occupied");
+        let other = directory.path().join("other");
+        fs::create_dir(&other).unwrap();
+        fs::write(&occupied, b"first runtime").unwrap();
+        let error = link_without_replacing(&other, &occupied).unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::AlreadyExists);
+        assert_eq!(fs::read(&occupied).unwrap(), b"first runtime");
+        assert!(other.exists());
     }
 
     #[test]
