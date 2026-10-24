@@ -26,6 +26,14 @@ fn readable(data: *const u8, length: i64) -> Result<usize, &'static str> {
         .ok_or("crypto: invalid byte buffer")
 }
 
+fn wipe(bytes: &mut [u8]) {
+    for byte in bytes.iter_mut() {
+        // SAFETY: the reference is valid; volatile keeps the wipe from being optimized away.
+        unsafe { std::ptr::write_volatile(byte, 0) };
+    }
+    std::sync::atomic::compiler_fence(std::sync::atomic::Ordering::SeqCst);
+}
+
 fn digest_result(status: i32, bytes: &[u8; 32]) -> ByteArrayError {
     if status == 0 {
         ByteArrayError::ok(bytes)
@@ -50,7 +58,11 @@ pub unsafe extern "C" fn zore_native_crypto_random_bytes(out: *mut ByteArrayErro
             (status == 0).then_some(bytes)
         });
         match generated {
-            Some(bytes) => ByteArrayError::ok(&bytes),
+            Some(mut bytes) => {
+                let result = ByteArrayError::ok(&bytes);
+                wipe(&mut bytes);
+                result
+            }
             None => ByteArrayError::failed("crypto.RandomBytes: entropy or random provider failed"),
         }
     };

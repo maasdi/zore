@@ -37,6 +37,7 @@ unsafe extern "C" {
         length: usize,
         error: *mut c_char,
     ) -> i32;
+    fn zore_tls_pending(session: *mut c_void) -> usize;
     fn zore_tls_output(session: *mut c_void, data: *mut u8) -> i32;
     fn zore_tls_status(session: *mut c_void) -> i32;
     fn zore_tls_shutdown(session: *mut c_void, error: *mut c_char) -> i32;
@@ -46,7 +47,7 @@ struct State {
     pointer: NonNull<c_void>,
     config: bool,
 }
-// Provider objects have no thread affinity and every access holds their mutex.
+// Provider objects have no thread affinity; sessions are used under their mutex, configs are immutable.
 unsafe impl Send for State {}
 impl Drop for State {
     fn drop(&mut self) {
@@ -171,13 +172,17 @@ pub unsafe extern "C" fn zore_native_tls_native_session(
         let name = unsafe { input(name, name_len, 253) }?;
         let name = CString::new(name).map_err(|_| "TLS hostname contains NUL")?;
         let state = state(token)?;
-        let state = state.lock().map_err(|_| "TLS config unavailable")?;
-        if !state.config {
-            return Err("TLS expected configuration handle".into());
-        }
+        let config = {
+            let config = state.lock().map_err(|_| "TLS config unavailable")?;
+            if !config.config {
+                return Err("TLS expected configuration handle".into());
+            }
+            config.pointer
+        };
         let mut error = [0; 512];
+        // The configuration is immutable after creation and `state` keeps it alive.
         let pointer = NonNull::new(unsafe {
-            zore_tls_session(state.pointer.as_ptr(), name.as_ptr(), error.as_mut_ptr())
+            zore_tls_session(config.as_ptr(), name.as_ptr(), error.as_mut_ptr())
         })
         .ok_or_else(|| message(&error))?;
         insert(pointer, false)
@@ -242,8 +247,9 @@ pub unsafe extern "C" fn zore_native_tls_native_read(
 }
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn zore_native_tls_native_output(out: *mut ByteArrayError, token: i64) {
-    let mut data = vec![0; 65536];
+    let mut data = Vec::new();
     let result = operation(token, |p, _| unsafe {
+        data.resize(zore_tls_pending(p), 0);
         zore_tls_output(p, data.as_mut_ptr())
     })
     .map(|count| {

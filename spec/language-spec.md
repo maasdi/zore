@@ -8340,6 +8340,7 @@ func RandomBytes(size int) (Array<byte>, error)
 func SHA256(data []byte) (Array<byte>, error)
 func HMACSHA256(key []byte, data []byte) (Array<byte>, error)
 func Equal(left []byte, right []byte) bool
+func VerifyHMACSHA256(key []byte, data []byte, tag []byte) bool
 ```
 
 RandomBytes accepts 0 through 1,048,576 bytes inclusive. Negative or larger
@@ -8358,14 +8359,18 @@ for two empty inputs, without consulting the provider. Length is not secret;
 for equal lengths the comparison must not branch on byte contents. This is not
 a general constant-time execution guarantee for source-language programs.
 
+VerifyHMACSHA256 computes the HMAC-SHA-256 tag of data under key and compares it
+with tag through Equal. It returns true only for a matching 32-byte tag; a tag of
+any other length or a provider failure returns false. MAC verification must use
+it (or Equal), never an early-exit comparison.
+
 ```ore
 import "crypto"
 import "std/strings"
 
-func authenticate(key []byte, message string, expected []byte) (bool, error) {
+func authenticate(key []byte, message string, tag []byte) bool {
     let bytes = strings.Bytes(message)
-    let tag = crypto.HMACSHA256(key, bytes[:])?
-    return crypto.Equal(tag[:], expected), nil
+    return crypto.VerifyHMACSHA256(key, bytes[:], tag)
 }
 ```
 
@@ -8428,16 +8433,18 @@ all require the ordinary clang/Rust toolchain. Provider maintenance status is
 not an assertion that this integration or every provider release was audited.
 
 This first configuration enables TLS 1.2 with ECDHE RSA/ECDSA authentication and
-AES-128/256-GCM only. TLS 1.0/1.1, static RSA exchange, PSK, DTLS, TLS 1.3,
+AES-128/256-GCM only, with the extended master secret extension and all fatal
+alerts. TLS 1.0/1.1, static RSA exchange, PSK, DTLS, TLS 1.3,
 renegotiation, client certificates, ALPN, session persistence, and certificate
 automation are excluded. Provider defaults never bypass peer verification.
-Clients require a nonempty explicit PEM trust-root bundle and DNS server name;
-there is no insecure flag, platform root discovery, or IP-address certificate
-identity support. Certificate signatures, validity times, trust chain, and DNS
+Trust roots must be supplied explicitly: clients require a nonempty PEM
+trust-root bundle and DNS server name; there is no insecure flag, system or
+platform root discovery, or IP-address certificate identity support. Certificate signatures, validity times, trust chain, and DNS
 name are verified by Mbed TLS; DNS name is also SNI. Empty/malformed roots,
 certificate/key mismatch, unknown authorities, expiry, and name mismatch return
 ordinary errors with operation and provider verification text. Servers take a
-PEM chain and unencrypted PEM private key. Inputs are borrowed for creation and
+PEM chain and unencrypted PEM private key; the pair is checked once at config
+creation, not per session. Inputs are borrowed for creation and
 copied into provider-owned objects, which clear secret state during destruction.
 This does not promise erasure of caller-owned input buffers.
 
@@ -8445,13 +8452,13 @@ This does not promise erasure of caller-owned input buffers.
 | --- | --- |
 | `NewClientConfig(rootsPEM []byte) (ClientConfig, error)` | Parses and owns trusted certificates; empty roots fail |
 | `NewServerConfig(chainPEM []byte, keyPEM []byte) (ServerConfig, error)` | Parses and owns server identity; invalid or mismatched keys fail |
-| `DialContext(ctx context.Context, address string, serverName string, config ClientConfig) (Conn, error)` | Connects then completes a verified handshake |
-| `Client(ctx context.Context, source own net.Conn, serverName string, config ClientConfig) (Conn, error)` | Consumes an already-connected TCP stream and completes a verified handshake |
-| `Server(ctx context.Context, source own net.Conn, config ServerConfig) (Conn, error)` | Consumes a TCP stream and completes a server handshake |
+| `DialContext(ctx context.Context, address string, serverName string, config ClientConfig) (Conn, error)` | Connects then completes a verified handshake; ctx bounds only the dial and handshake |
+| `Client(ctx context.Context, source own net.Conn, serverName string, config ClientConfig) (Conn, error)` | Consumes an already-connected TCP stream and completes a verified handshake bounded by ctx |
+| `Server(ctx context.Context, source own net.Conn, config ServerConfig) (Conn, error)` | Consumes a TCP stream and completes a server handshake bounded by ctx |
 | `(c mut Conn) Read(buf mut []byte) (int, error)` | Drains pending output, then reads authenticated plaintext; empty buffers read no plaintext; clean close-notify is EOF, transport truncation is an error |
-| `(c mut Conn) Write(data []byte) (int, error)` | Sends plaintext, reporting accepted plaintext count even on later transport failure |
+| `(c mut Conn) Write(data []byte) (int, error)` | Sends all plaintext as records of at most 16 KiB, reporting accepted plaintext count even on later transport failure |
 | `(c mut Conn) SetDeadline(t int) error`, `SetReadDeadline(t int) error`, `SetWriteDeadline(t int) error` | Deadlines are monotonic `time.Now()` readings; zero clears |
-| `(c own Conn) Close() error` | Attempts close-notify within the context/deadline bounds, then releases both owners |
+| `(c own Conn) Close() error` | Attempts close-notify within the write deadline, then releases both owners |
 
 Configuration and connection values are Move resources with private state;
 zero values are closed, fail operations, and are safe to drop. A connection owns
@@ -8463,7 +8470,7 @@ release socket, TLS state and configuration exactly once. Drop is nonblocking
 and does not send close-notify. Explicit Close sends close-notify but does not
 wait for peer acknowledgement. Receiving close-notify permanently ends application
 I/O: later reads return EOF without provider/socket reads and writes fail. Close
-still sends the reciprocal close-notify once within the context/deadline bounds
+still sends the reciprocal close-notify once within the write deadline
 and releases resources; it does not resume provider application reads or writes.
 External process termination has ordinary
 best-effort cleanup limits.
@@ -8471,13 +8478,19 @@ best-effort cleanup limits.
 Native calls process memory buffers only, never wait on sockets and never call
 Zore callbacks. Handshake/read/write loops drain ciphertext through `net.Conn`
 and feed received ciphertext into the provider. Native calls retain validated
-resource leases until completion and serialize access. The wrapper retains its
-context and checks cancellation between bounded CPU steps and network waits.
-TCP waits use at most ten-millisecond deadline slices. External TLS wrapper
+session leases until completion and serialize access; configurations are
+immutable and are read without holding their lease. The context bounds only the
+dial and handshake: the wrapper checks its cancellation and deadline between
+bounded CPU steps and handshake waits, which use at most 100-millisecond TCP
+deadline slices. The handshake replaces deadlines already set on the TCP source.
+Canceling the context after the handshake does not affect the connection. Later
+operations are bounded only by the connection's read/write deadlines and wait
+on the socket with those deadlines, without periodic wakeups. External TLS wrapper
 functions block both ordinary and async callers using the existing TCP runtime
 worker compensation; this integration does not add pollable external wrappers.
-The operation deadline/context limit the overall TLS wait, with cancellation
-observation subject to scheduling latency. Dial uses an owned buffered result from a helper and selects against context
+The operation deadline, or the context during the handshake, limits the overall
+TLS wait, with cancellation observation subject to the slice and scheduling
+latency. Dial uses an owned buffered result from a helper and selects against context
 cancellation, so the caller may return before resolution/connect completes.
 The native resolver follows `net.DialTimeout`'s noninterruptible platform
 contract: a timeout does not necessarily bound resolution or helper lifetime.
@@ -8487,26 +8500,32 @@ tasks merely because their Task handles are dropped. Native entropy acquisition
 uses the provider's host entropy facility under worker compensation and retains
 its platform startup availability limits; no provider network calls run on scheduler workers.
 
-Handshake failure consumes and closes the socket. A read timeout/cancellation
-retains buffered ciphertext and permits a later read if the stored context is
-still active; cancellation of that context ends future operations. A write timeout retains pending ciphertext and its sent offset; the next Read
+Handshake failure consumes and closes the socket. A read timeout retains
+buffered ciphertext and permits a later read. A write timeout retains pending ciphertext and its sent offset; the next Read
 or Write (including an empty Write) drains it before processing more plaintext.
 Callers retry only the unaccepted suffix. Other transport or provider failures invalidate the
-session because its authenticated stream may no longer be usable. Close on an
+session because its authenticated stream may no longer be usable; any alert the
+provider queued is flushed on a best-effort basis first. Close on an
 invalidated session only releases resources without another provider operation.
 The write count is
 plaintext accepted by the TLS engine, not acknowledgement by the peer.
 Explicit errors preserve counts; no ordinary exceptions cross the native ABI.
 
 ```ore
-let roots = os.ReadFile("roots.pem")?
-let config = tls.NewClientConfig(roots[:])?
-let ctx, cancel = context.WithTimeout(context.Background(), 5 * time.Second)
-var conn = tls.DialContext(ctx, "example.com:443", "example.com", config)?
-let request = strings.Bytes("GET / HTTP/1.1\r\nHost: example.com\r\nConnection: close\r\n\r\n")
-let _, err = conn.Write(request[:])
-cancel()
-return err
+func get(config tls.ClientConfig) error {
+    let ctx, cancel = context.WithTimeout(context.Background(), 5 * time.Second)
+    let dialed, err = tls.DialContext(ctx, "example.com:443", "example.com", config)
+    cancel()
+    _ = err
+    if err != nil {
+        return err
+    }
+    var conn = dialed
+    conn.SetDeadline(time.Now() + 10 * time.Second)?
+    let request = strings.Bytes("GET / HTTP/1.1\r\nHost: example.com\r\nConnection: close\r\n\r\n")
+    conn.Write(request[:])?
+    return conn.Close()
+}
 ```
 
 A bounded server accepts one connection under a listener deadline:
@@ -8519,16 +8538,20 @@ let listener = net.Listen("tcp4", "127.0.0.1:8443")?
 listener.SetDeadline(time.Now() + 30 * time.Second)?
 let source = listener.Accept()?
 let ctx, cancel = context.WithTimeout(context.Background(), 5 * time.Second)
-var conn = tls.Server(ctx, source, config)?
+let accepted, err = tls.Server(ctx, source, config)
+cancel()
+_ = err
+if err != nil {
+    return err
+}
+var conn = accepted
+conn.SetDeadline(time.Now() + 5 * time.Second)?
 var request = Array<byte>{}
 for var i = 0; i < 4096; i += 1 { request.push(0) }
 let n = conn.Read(request[:])?
 let response = strings.Bytes("HTTP/1.1 200 OK\r\nContent-Length: 3\r\n\r\nok\n")
-var sent = 0
-for sent < response.len() { sent += conn.Write(response[sent:])? }
-let closeErr = conn.Close()
-cancel()
-return closeErr
+conn.Write(response[:])?
+return conn.Close()
 ```
 
 HTTPS consumers can pass `Conn` through the ordinary Reader/Writer interfaces.
@@ -8536,8 +8559,9 @@ No HTTP server or plain TCP behavior changes.
 Compiler impact is curated provider registration, embedded vendor closure and
 fixed native build/link recipe; no syntax, ownership, or async-lowering changes.
 Conformance covers trusted/untrusted chains, DNS mismatch, invalid configuration,
-fragmented records, binary/partial I/O, clean and abrupt closure, deadlines,
-cancellation, Move rejection, async/plain progress, normal/error/panic resource
+fragmented records, binary/partial I/O, multi-record writes, clean and abrupt
+closure, connections outliving their handshake context, fatal alerts on
+authentication failure, deadlines, handshake cancellation, Move rejection, async/plain progress, normal/error/panic resource
 cleanup, source/lock integrity and linker-independent checking. Host CI must
 execute provider-present tests; skipped/unavailable providers are not evidence.
 

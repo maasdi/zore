@@ -283,7 +283,7 @@ func TestConcurrentSharedConfigurations() error {
 
 async func stalledServer(listener own net.Listener) error {
     let source = listener.Accept()?
-    time.Sleep(150 * time.Millisecond)
+    time.Sleep(500 * time.Millisecond)
     return nil
 }
 
@@ -488,5 +488,86 @@ func TestProviderWantWriteRetainsSamePlaintext() error {
     check(received.len() == data.len() && received[0] == 0 && received[255] == 255)
     check((nativeRead(server.handle, 16384)?).len() == 0)
     check(nativeStatus(server.handle)? == 0)
+    return nil
+}
+
+async func sinkServer(listener own net.Listener, config own ServerConfig, size int) error {
+    let source = listener.Accept()?
+    let ctx, cancel = context.WithTimeout(context.Background(), 5 * time.Second)
+    var conn = Server(ctx, source, config)?
+    cancel()
+    conn.SetDeadline(time.Now() + 5 * time.Second)?
+    var data = zeros(size)
+    var received = 0
+    for received < size {
+        let n = conn.Read(data[received:])?
+        check(n > 0)
+        received += n
+    }
+    for var i = 0; i < size; i += 1 {
+        check(data[i] == byte(i % 251))
+    }
+    check(conn.Write(data[:3])? == 3)
+    let n, err = conn.Read(data[:])
+    _ = err
+    check(n == 0 && err == error("EOF"))
+    return conn.Close()
+}
+
+func TestConnectionOutlivesHandshakeContextAndWritesLargeBodies() error {
+    let config, serverConfig = configs()?
+    let listener = net.Listen("tcp4", "127.0.0.1:0")?
+    let address = listener.Addr()
+    listener.SetDeadline(time.Now() + 5 * time.Second)?
+    let size = 3 * 16384 + 1234
+    let server = go sinkServer(listener, serverConfig, size)
+    let ctx, cancel = context.WithTimeout(context.Background(), 5 * time.Second)
+    var conn = DialContext(ctx, address, "localhost", config)?
+    cancel()
+    check(ctx.Err() != nil)
+    var body = zeros(size)
+    for var i = 0; i < size; i += 1 {
+        body[i] = byte(i % 251)
+    }
+    check(conn.Write(body[:])? == size)
+    var got = zeros(8)
+    check(conn.Read(got[:])? == 3 && got[0] == 0 && got[2] == 2)
+    conn.Close()?
+    server.wait()?
+    return nil
+}
+
+func TestFailedReadSendsFatalAlert() error {
+    let config, serverConfig = configs()?
+    let client = ClientConfig{handle: nativeSession(config.handle, "localhost")?}
+    let server = nativeSession(serverConfig.handle, "")?
+    memoryHandshake(client.handle, server)?
+    let message = Array<byte>{1, 2, 3}
+    check(nativeWrite(client.handle, message[:])? == message.len())
+    var encrypted = nativeOutput(client.handle)?
+    let last = encrypted.len() - 1
+    if encrypted[last] == 0 {
+        encrypted[last] = 1
+    } else {
+        encrypted[last] = 0
+    }
+    let listener = net.Listen("tcp4", "127.0.0.1:0")?
+    let source = net.DialTimeout("tcp4", listener.Addr(), time.Second)?
+    let peer = listener.Accept()?
+    source.SetDeadline(time.Now() + time.Second)?
+    var sent = 0
+    for sent < encrypted.len() {
+        sent += source.Write(encrypted[sent:])?
+    }
+    let ctx, cancel = context.WithTimeout(context.Background(), time.Second)
+    var conn = wrap(peer, server, ctx)
+    var data = zeros(16)
+    let n, err = conn.Read(data[:])
+    _ = err
+    check(n == 0 && err != nil && conn.failed)
+    var alert = zeros(64)
+    let count = source.Read(alert[:])?
+    check(count >= 5 && alert[0] == 21)
+    cancel()
     return nil
 }

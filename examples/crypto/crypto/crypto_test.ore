@@ -53,6 +53,30 @@ func TestHMACSHA256KnownAnswers() error {
     return nil
 }
 
+func TestVerifyHMACSHA256() {
+    let key = Array<byte>{74, 101, 102, 101}
+    let data = Array<byte>{119, 104, 97, 116, 32, 100, 111, 32, 121, 97, 32, 119, 97, 110, 116, 32, 102, 111, 114, 32, 110, 111, 116, 104, 105, 110, 103, 63}
+    var tag = Array<byte>{91, 220, 193, 70, 191, 96, 117, 78, 106, 4, 36, 38, 8, 149, 117, 199, 90, 0, 63, 8, 157, 39, 57, 131, 157, 236, 88, 185, 100, 236, 56, 67}
+    if !VerifyHMACSHA256(key[:], data[:], tag[:]) {
+        panic("valid HMAC tag rejected")
+    }
+    for var i = 0; i < tag.len(); i += 1 {
+        tag[i] ^= 1
+        if VerifyHMACSHA256(key[:], data[:], tag[:]) {
+            panic("modified HMAC tag accepted")
+        }
+        tag[i] ^= 1
+    }
+    if VerifyHMACSHA256(key[:3], data[:], tag[:]) || VerifyHMACSHA256(key[:], data[:27], tag[:]) {
+        panic("HMAC tag accepted for different key or data")
+    }
+    let empty = Array<byte>{}
+    let longer = Array<byte>{91, 220, 193, 70, 191, 96, 117, 78, 106, 4, 36, 38, 8, 149, 117, 199, 90, 0, 63, 8, 157, 39, 57, 131, 157, 236, 88, 185, 100, 236, 56, 67, 0}
+    if VerifyHMACSHA256(key[:], data[:], tag[:31]) || VerifyHMACSHA256(key[:], data[:], longer[:]) || VerifyHMACSHA256(key[:], data[:], empty[:]) {
+        panic("wrong-length HMAC tag accepted")
+    }
+}
+
 func TestEqualityCases() {
     let empty = Array<byte>{}
     let left = Array<byte>{0, 128, 255, 0}

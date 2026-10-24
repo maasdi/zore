@@ -11,6 +11,7 @@ int zore_tls_handshake(void *session, char *error);
 int zore_tls_read(void *session, unsigned char *data, size_t length, char *error);
 int zore_tls_write(void *session, const unsigned char *data, size_t length, char *error);
 int zore_tls_feed(void *session, const unsigned char *data, size_t length, char *error);
+size_t zore_tls_pending(void *session);
 int zore_tls_output(void *session, unsigned char *data);
 int zore_tls_status(void *session);
 int zore_tls_shutdown(void *session, char *error);

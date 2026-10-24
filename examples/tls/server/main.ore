@@ -8,6 +8,22 @@ import "std/context"
 import "std/strings"
 import "std/errors"
 
+func respond(conn own tls.Conn) error {
+    var c = conn
+    c.SetDeadline(time.Now() + 5 * time.Second)?
+    var request = Array<byte>{};
+    for var i = 0; i < 4096; i += 1 {
+        request.push(0)
+    }
+    let n = c.Read(request[:])?
+    if n == 0 {
+        return error("empty request")
+    }
+    let response = strings.Bytes("HTTP/1.1 200 OK\r\nContent-Length: 3\r\nConnection: close\r\n\r\nok\n")
+    c.Write(response[:])?
+    return c.Close()
+}
+
 func serveOne() error {
     let cert = os.ReadFile("../tls/testdata/server.pem")?
     let key = os.ReadFile("../tls/testdata/server-key.pem")?
@@ -16,24 +32,13 @@ func serveOne() error {
     listener.SetDeadline(time.Now() + 30 * time.Second)?
     let source = listener.Accept()?
     let ctx, cancel = context.WithTimeout(context.Background(), 5 * time.Second)
-    var conn = tls.Server(ctx, source, config)?
-    var request = Array<byte>{};
-    for var i = 0; i < 4096; i += 1 {
-        request.push(0)
-    }
-    let n = conn.Read(request[:])?
-    if n == 0 {
-        cancel();
-        return error("empty request")
-    }
-    let response = strings.Bytes("HTTP/1.1 200 OK\r\nContent-Length: 3\r\nConnection: close\r\n\r\nok\n")
-    var sent = 0
-    for sent < response.len() {
-        sent += conn.Write(response[sent:])?
-    }
-    let closeErr = conn.Close()
+    let conn, err = tls.Server(ctx, source, config)
     cancel()
-    return closeErr
+    _ = err
+    if err != nil {
+        return err
+    }
+    return respond(conn)
 }
 
 func main() {
