@@ -15,3 +15,11 @@ func HMACSHA256(key []byte, data []byte) (Array<byte>, error) {
 func Equal(left []byte, right []byte) bool {
     return nativeEqual(left, right)
 }
+
+func VerifyHMACSHA256(key []byte, data []byte, tag []byte) bool {
+    let expected, err = HMACSHA256(key, data)
+    if err != nil {
+        return false
+    }
+    return Equal(expected[:], tag)
+}

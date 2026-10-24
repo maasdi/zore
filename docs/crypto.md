@@ -1,7 +1,7 @@
 # Cryptographic byte utilities
 
 The maintained `crypto` package provides secure random bytes, SHA-256,
-HMAC-SHA-256 and constant-time byte comparison through the curated `crypto-v1`
+HMAC-SHA-256, HMAC tag verification and constant-time byte comparison through the curated `crypto-v1`
 adapter. It is an external library, distributed initially at
 [`examples/crypto/crypto`](../examples/crypto/crypto), rather than an implicit
 standard package. It requires the compiler version that registers this adapter.
@@ -35,10 +35,9 @@ its dependency graph and the approved native recipe. See
 import "crypto"
 import "std/strings"
 
-func verify(key []byte, message string, expected []byte) (bool, error) {
+func verify(key []byte, message string, tag []byte) bool {
     let bytes = strings.Bytes(message)
-    let actual = crypto.HMACSHA256(key, bytes[:])?
-    return crypto.Equal(actual[:], expected), nil
+    return crypto.VerifyHMACSHA256(key, bytes[:], tag)
 }
 ```
 
@@ -55,7 +54,10 @@ Failure returns an empty array. Allocation exhaustion follows the runtime's
 ordinary fatal allocation policy. `Equal(left, right)` returns false immediately
 for different lengths, true for two empty inputs and otherwise delegates to
 mbedTLS's constant-time byte comparison. Lengths are public; this does not make
-surrounding source code constant time.
+surrounding source code constant time. Verify MACs with
+`VerifyHMACSHA256(key, data, tag)`, which computes the expected tag and compares
+it through `Equal`; it returns false for a tag of the wrong length or a provider
+failure. Never compare MACs with an early-exit comparison such as `bytes.Equal`.
 
 Calls are thread-safe, synchronous and non-cancellable. Random generation uses
 a runtime helper so entropy waits receive the runtime's ordinary blocking
@@ -71,7 +73,7 @@ arrays or temporary copies are erased.
 
 The provider is mbedTLS 3.6.7 LTS, distributed here under Apache-2.0; upstream
 also offers GPL-2.0-or-later. The compiler embeds the reviewed source closure,
-fixed configuration, notices and source manifest from
+fixed configuration, license and source manifest from
 [`compiler/native/mbedtls`](../compiler/native/mbedtls). Its
 [provenance record](../compiler/native/mbedtls/README.zore.md) gives the upstream
 release URL and archive SHA-256; `SHA256SUMS` records every source/configuration

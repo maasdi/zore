@@ -100,6 +100,37 @@ impl Fixture {
     }
 }
 
+fn cached_mbedtls(cache: &Path) -> PathBuf {
+    let entries: Vec<PathBuf> = fs::read_dir(cache)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| {
+            !path
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with("runtime-")
+        })
+        .collect();
+    assert_eq!(entries.len(), 1, "{entries:?}");
+    let closure = entries[0].clone();
+    assert!(
+        closure
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .starts_with("mbedtls-"),
+        "{closure:?}"
+    );
+    for entry in fs::read_dir(closure.join("library")).unwrap() {
+        let path = entry.unwrap().path();
+        if path.extension().is_some_and(|extension| extension == "c") {
+            assert!(path.with_extension("o").is_file(), "{path:?}");
+        }
+    }
+    closure
+}
+
 #[test]
 fn reviewed_crypto_runs_known_answers_random_and_concurrency_offline() {
     let fixture = Fixture::new();
@@ -126,6 +157,10 @@ fn reviewed_crypto_runs_known_answers_random_and_concurrency_offline() {
         .stdout,
         b"true\n32\n"
     );
+    let closure = cached_mbedtls(&fixture.root.join("cache/zore"));
+    let compiled = fs::metadata(closure.join("library/aes.o"))
+        .and_then(|metadata| metadata.modified())
+        .unwrap();
     success(fixture.invoke("install", "crypto"));
     let output = success(
         fixture
@@ -135,8 +170,15 @@ fn reviewed_crypto_runs_known_answers_random_and_concurrency_offline() {
             .unwrap(),
     );
     assert!(
-        String::from_utf8_lossy(&output.stdout).contains("Tests: 7 passed, 0 failed"),
+        String::from_utf8_lossy(&output.stdout).contains("Tests: 8 passed, 0 failed"),
         "{output:?}"
+    );
+    assert_eq!(cached_mbedtls(&fixture.root.join("cache/zore")), closure);
+    assert_eq!(
+        fs::metadata(closure.join("library/aes.o"))
+            .and_then(|metadata| metadata.modified())
+            .unwrap(),
+        compiled
     );
     assert_eq!(
         fs::read_to_string(fixture.root.join("app/zore.lock")).unwrap(),

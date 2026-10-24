@@ -6,6 +6,7 @@ use super::project::{FileSystem, Manifest};
 use crate::source::SourceError;
 
 pub(super) const C_FLAGS: &[&str] = &["-std=c11", "-O2", "-Wall", "-Wextra", "-Werror"];
+pub(super) const VENDORED_C_FLAGS: &[&str] = &["-std=c11", "-O2", "-w"];
 const RECIPE: &str = "zore-native-package-static-c11-v1";
 
 pub(super) struct Adapter {
@@ -33,7 +34,7 @@ const CRYPTO: Adapter = Adapter {
     mbedtls: true,
     id: "crypto-v1",
     project: "crypto",
-    fingerprint: "c5030f47bb846f722176eb0a9eb062869ac7084d3e802a484b69f51fa4acaaeb",
+    fingerprint: "a14fcf91b34ceb0e32f786ad84d04b030d476e0325c72b7ae12f00b1f6e97ff4",
     symbols: &[
         ("nativeRandomBytes", "zore_native_crypto_random_bytes"),
         ("nativeSHA256", "zore_native_crypto_sha256"),
@@ -129,6 +130,9 @@ impl Provider {
         if self.adapter.mbedtls {
             part(super::mbedtls::FINGERPRINT);
             part(super::mbedtls::RECIPE);
+            for flag in VENDORED_C_FLAGS {
+                part(flag);
+            }
         }
         format!("{:x}", hash.finalize())
     }
