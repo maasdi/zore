@@ -8328,6 +8328,98 @@ callback mappings and their bounded wait. Synthetic callback tests do not claim
 real close/logoff/shutdown delivery. No syntax, ownership, or compiler lowering
 changes are introduced by the Windows backend.
 
+## 37.9 Cryptographic byte utilities — LOCKED
+
+`crypto` is a maintained external package with the curated `crypto-v1` native
+adapter. It is a synchronous, stateless API; the initial package is distributed
+in `examples/crypto/crypto` and consumed by local path or pinned Git dependency.
+These capabilities are not implicitly available in the standard library:
+
+```ore
+func RandomBytes(size int) (Array<byte>, error)
+func SHA256(data []byte) (Array<byte>, error)
+func HMACSHA256(key []byte, data []byte) (Array<byte>, error)
+func Equal(left []byte, right []byte) bool
+func VerifyHMACSHA256(key []byte, data []byte, tag []byte) bool
+```
+
+RandomBytes accepts 0 through 1,048,576 bytes inclusive. Negative or larger
+requests return an error and an empty array. Zero returns an empty array without
+consulting the provider. Nonempty results use a cryptographically secure random
+provider; entropy/provider failures return an error and no partial output.
+SHA256 returns the 32-byte SHA-256 digest; HMACSHA256 returns the 32-byte
+HMAC-SHA-256 tag, accepting empty keys and arbitrary binary input. All array results are fresh owned
+Move values; input slices are borrowed for the duration of the call and are never
+retained or mutated. Digest/MAC failure returns an empty array. Allocation
+exhaustion follows the ordinary fatal allocation policy.
+
+Equal compares bytes with the provider's constant-time comparison for equal,
+nonzero lengths. It returns false immediately for different lengths and true
+for two empty inputs, without consulting the provider. Length is not secret;
+for equal lengths the comparison must not branch on byte contents. This is not
+a general constant-time execution guarantee for source-language programs.
+
+VerifyHMACSHA256 computes the HMAC-SHA-256 tag of data under key and compares it
+with tag through Equal. It returns true only for a matching 32-byte tag; a tag of
+any other length or a provider failure returns false. MAC verification must use
+it (or Equal), never an early-exit comparison.
+
+```ore
+import "crypto"
+import "std/strings"
+
+func authenticate(key []byte, message string, tag []byte) bool {
+    let bytes = strings.Bytes(message)
+    return crypto.VerifyHMACSHA256(key, bytes[:], tag)
+}
+```
+
+Calls are thread-safe, synchronous, and non-cancellable. They may wait for OS
+entropy; use ordinary task execution when that wait must not delay the caller.
+Hashing, MAC and comparison perform synchronous CPU work proportional to input
+size without yielding; applications must bound untrusted or large input. Random
+entropy waits use the runtime helper/blocking compensation and do not create a
+suspending async API. There are no resource handles or close/zero-handle rules. Returned buffers obey
+ordinary cleanup on return, `?`, panic and async frame destruction. No locked
+memory, secure erasure, secret type, side-channel resistance outside Equal, or
+FIPS validation is promised. Callers must not log secrets and must not assume
+dropped arrays, provider temporaries or copies have been erased.
+
+The initial provider is Mbed TLS 3.6.7 LTS, with upstream Apache-2.0 OR GPL-2.0-or-later
+licensing (distributed under Apache-2.0 here). The reviewed compiler-shipped
+source closure is pinned by the registered build recipe, shared with other
+adapters when selected, and statically linked. The bridge delegates to Mbed TLS
+SHA-256, HMAC-SHA-256, CTR-DRBG seeded from its platform entropy provider, and
+constant-time memory comparison; it implements no cryptographic algorithms.
+Each nonempty random request creates and seeds its own DRBG state, requests
+bounded chunks, and destroys the state before returning. Provider failures are
+ordinary errors with no partial output. There is no mutable shared crypto state
+or runtime provider loading. AES tables are immutable and precomputed; hardware
+AES feature-detection paths are disabled. Software AES uses secret-dependent
+lookups, so this profile does not claim cache-timing protection against hostile
+local co-tenants. Updating the provider requires compiler review,
+known-answer and host regression tests, recipe fingerprint changes and explicit
+lock regeneration. No external crypto installation or network is needed at
+build/runtime; native tools are needed only for build/run/test. Supported hosts
+are Linux GNU/macOS x86_64/aarch64 and Windows x64 MSVC. The library guide
+specifies provenance and the bounded initial surface.
+
+This bounded external package supports application tokens, content digests and
+MAC verification. Password KDFs, AEAD, signatures, key formats, certificates,
+streaming state and authentication protocols require separate reviewed designs
+or maintained external packages. TLS may use its own provider independently.
+No hosted registry, unrestricted FFI, syntax, ownership or safety-model change
+is introduced.
+
+Compiler impact: register crypto-v1 and its reviewed source recipe; existing
+native slice, array/error and boolean/error bindings suffice. Semantic checking
+remains independent of the native linker and provider. Conformance covers NIST
+SHA-256 and RFC 4231 HMAC vectors, empty/binary/long-key input, size bounds,
+constant-time-provider equality including mismatch positions, failing entropy and
+provider calls, fresh-process concurrent first random use, concurrent calls,
+and ordinary error/panic/async cleanup on
+each supported host. Timing measurements alone are not proof of constant time.
+
 # 38. Self-Hosting Constraint
 
 ## 38.1 Long-term goal — LOCKED
