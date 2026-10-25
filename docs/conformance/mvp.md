@@ -163,4 +163,4 @@ conformance and other roadmap work remain separate.
 
 The additional [seeded hardening inventory](hardening.md) maps generated ownership,
 plain/async cleanup, protocol fragmentation and quiescent cancellation assertions
-to the earlier executable cases, with replay, process bounds and actual host limits.
+to the earlier executable cases, with replay and CI.

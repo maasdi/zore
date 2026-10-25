@@ -35,6 +35,10 @@ cargo build --locked
 cargo test --locked --all-targets
 ```
 
+If you change Python files, also run `python .github/scripts/import_modules.py`
+and `python -m unittest discover -s benchmarks/<harness> -p 'test_*.py'` for
+each harness you touched. CI runs both on Linux, macOS and Windows.
+
 If you could not run a check, say so in the pull request. Track `Cargo.lock`
 and change it deliberately. A new dependency needs a justification in the pull
 request, and the frontend must stay usable without LLVM.
@@ -83,6 +87,25 @@ conformance cases as passing.
   `tests/README.md`, changelog) when behavior, commands, prerequisites, or
   status change.
 - Fill in the pull request template's checklist.
+
+## Stacked and parallel pull requests
+
+A stacked pull request builds on another open pull request instead of `main`.
+
+- Open it against its parent's branch so the diff shows only its own change,
+  and name the parent pull request in the description.
+- Once the parent merges, base the child on `main`. GitHub retargets it
+  automatically when the parent's branch is deleted on merge; otherwise use
+  **Edit** next to the title or `gh pr edit <number> --base main`. Then merge or
+  rebase current `main` into it and let CI run again.
+- Before merging any pull request, check that its base branch is `main`.
+  Merging into another pull request's branch does not put the change on `main`.
+- If a change was merged into a parent branch by mistake, open a new pull
+  request from the same branch against `main` to re-land it, and link the
+  original.
+- Pull requests that pass CI separately can still fail together. Before merging
+  one that was developed alongside others, update it with current `main` and
+  wait for CI to pass.
 
 ## License
 

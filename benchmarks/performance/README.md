@@ -61,10 +61,13 @@ just as `--stage-profiler` must match the candidate. Use
 `--compile-lock-file /path/to/shared.lock` to serialize warmups and individual
 measured variants with other host jobs, releasing between variants. Do not wrap
 the whole runner in the same lock. Probe binary hashes are
-recorded. The probe reports loading, checking (including ownership analysis),
-MIR/drop/async lowering and full IR emission in a separate process. It is not
-part of the timed build and does not include native-input pruning. Full emitted
-IR can therefore be larger than the IR captured at the clang boundary.
+recorded. The probe runs the same staged pipeline as `zore build` in a separate
+process and reports loading, checking (including ownership analysis),
+MIR/drop/async lowering, full IR emission and native-input pruning
+(`prune_seconds`). It is not part of the timed build. It records both the full
+emitted size (`ir_bytes`) and the pruned size handed to clang
+(`native_ir_bytes`), so `ir_bytes` can be larger than the IR captured at the
+clang boundary.
 
 Build profiles record every clang/rustc command and elapsed duration, including
 the rustc host-version query, cold runtime-library compilation, Rust entry-shim

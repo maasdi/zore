@@ -212,8 +212,10 @@ particular, `conformance/identifiers.md` covers the locked ASCII identifier rule
 `conformance/strings.md` covers quoted and raw string literal forms and the
 string operations of §6.8. `conformance/packages.md` covers projects, packages,
 and imports (§3.20); its executable cases are in `tests/packages/packages.rs`
-(in-memory projects), the driver tests, and the native tests. The runtime
-crate's unit tests cover the native string functions directly.
+(in-memory projects), the driver tests, and the native tests.
+`tests/packages/bundled_inventory.rs` checks that the README's bundled package
+list matches the packages registered in `compiler/src/driver/stdlib.rs`. The
+runtime crate's unit tests cover the native string functions directly.
 `conformance/runes.md` covers single-scalar rune literals and escapes.
 `conformance/integers.md` covers integer bases and prefix validation.
 `conformance/floats.md` covers decimal fractions and scientific notation.
@@ -395,6 +397,5 @@ Native JSON programs run with leak checking, including partial-decode errors.
 `codegen/hardening.rs` extends the existing seeded frontend and #114 coverage
 with bounded ownership/view chains, plain/async partial construction and scoped
 cleanup, JSON mutations, parser read fragmentation, real TCP cancellation and
-quiescent timer/resource checks. See [hardening evidence and replay](../docs/conformance/hardening.md)
-for assertion names, seed selection, failure reduction, process bounds, opt-in
-sanitizer/weekly CI and explicit host exclusions.
+quiescent timer/resource checks. See [hardening replay and CI](../docs/conformance/hardening.md)
+for assertion names, seed selection, failure reduction and opt-in sanitizer/weekly CI.
