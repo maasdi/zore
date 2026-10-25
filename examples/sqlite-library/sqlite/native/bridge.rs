@@ -281,8 +281,9 @@ fn prepare(id: i64, sql: &[u8]) -> Result<i64, String> {
     if !connection.live || !connection.valid {
         return Err("sqlite: closed database".into());
     }
+    observe_rollback(&mut connection);
     if connection.transaction == TransactionState::RolledBack {
-        return Err("sqlite: transaction was rolled back by a failed commit".into());
+        return Err(ROLLED_BACK.into());
     }
     let mut pointer = ptr::null_mut();
     let mut tail = ptr::null();
@@ -355,17 +356,47 @@ fn with_statement<T>(
     action(&mut connection, pointer, phase)
 }
 
+const ROLLED_BACK: &str = "sqlite: SQLite rolled back the transaction; only Rollback is accepted";
+
+fn observe_rollback(connection: &mut Connection) {
+    // SAFETY: callers hold the connection lock.
+    if connection.transaction == TransactionState::Active
+        && unsafe { sqlite3_get_autocommit(connection.pointer) } != 0
+    {
+        connection.transaction = TransactionState::RolledBack;
+    }
+}
+
+fn abort_transaction(id: i64) -> Result<(), String> {
+    let lease = database(id)?;
+    let mut connection = lease.lock().map_err(|_| "sqlite: connection unavailable")?;
+    if connection.transaction == TransactionState::Idle {
+        return Ok(());
+    }
+    for (_, statement) in std::mem::take(&mut connection.statements) {
+        // SAFETY: removal transfers exclusive ownership of this statement.
+        unsafe { sqlite3_finalize(statement.pointer) };
+        native::resource_released();
+    }
+    let result = execute(&connection, c"ROLLBACK");
+    // SAFETY: the connection is exclusively locked.
+    if unsafe { sqlite3_get_autocommit(connection.pointer) } == 0 {
+        return result.and(Err("sqlite: rollback left the transaction open".into()));
+    }
+    connection.transaction = TransactionState::Idle;
+    Ok(())
+}
+
 fn finish(id: i64, commit: bool) -> Result<(), String> {
     let lease = database(id)?;
     let mut connection = lease.lock().map_err(|_| "sqlite: connection unavailable")?;
     if !connection.statements.is_empty() {
         return Err("sqlite: close statements before transaction completion".into());
     }
+    observe_rollback(&mut connection);
     match connection.transaction {
         TransactionState::Idle => Err("sqlite: no active transaction".into()),
-        TransactionState::RolledBack if commit => {
-            Err("sqlite: transaction was rolled back by a failed commit".into())
-        }
+        TransactionState::RolledBack if commit => Err(ROLLED_BACK.into()),
         TransactionState::RolledBack => {
             connection.transaction = TransactionState::Idle;
             Ok(())
@@ -494,6 +525,7 @@ error!(zore_native_sqlite_native_begin(id: i64) {
     Ok(())
 });
 error!(zore_native_sqlite_native_finish(id: i64, commit: bool) { finish(id, commit) });
+error!(zore_native_sqlite_native_abort(id: i64) { abort_transaction(id) });
 
 #[unsafe(no_mangle)]
 pub extern "C" fn zore_native_sqlite_native_drop_database(id: i64, abort: bool) {
@@ -506,10 +538,15 @@ error!(zore_native_sqlite_native_reset(id: i64) {
     with_statement(id, |connection, pointer, _| {
         // SAFETY: this live statement is exclusively locked; reset's code repeats a reported Step failure.
         unsafe { sqlite3_reset(pointer) };
-        // SAFETY: clearing bindings is valid after reset, even after a step error.
-        let cleared = unsafe { sqlite3_clear_bindings(pointer) };
         connection.statements.get_mut(&id).unwrap().phase = Phase::Ready;
-        status(connection.pointer, cleared)
+        Ok(())
+    })
+});
+error!(zore_native_sqlite_native_clear_bindings(id: i64) {
+    with_statement(id, |connection, pointer, phase| {
+        if phase != Phase::Ready { return Err("sqlite: clearing bindings requires Reset".into()); }
+        // SAFETY: this live statement is exclusively locked.
+        status(connection.pointer, unsafe { sqlite3_clear_bindings(pointer) })
     })
 });
 error!(zore_native_sqlite_native_bind(id: i64, index: i64, kind: i64, integer: i64, real: f64, data: *const u8, length: i64) {
@@ -535,6 +572,8 @@ error!(zore_native_sqlite_native_bind(id: i64, index: i64, kind: i64, integer: i
 value!(zore_native_sqlite_native_step(id: i64) {
     with_statement(id, |connection, pointer, phase| {
         if matches!(phase, Phase::Done | Phase::Failed) { return Err("sqlite: Step requires Reset after completion or failure".into()); }
+        observe_rollback(connection);
+        if connection.transaction == TransactionState::RolledBack { return Err(ROLLED_BACK.into()); }
         // SAFETY: this live statement is exclusively locked.
         let code = unsafe { sqlite3_step(pointer) };
         connection.statements.get_mut(&id).unwrap().phase = match code {
@@ -542,6 +581,7 @@ value!(zore_native_sqlite_native_step(id: i64) {
             SQLITE_DONE => Phase::Done,
             _ => Phase::Failed,
         };
+        observe_rollback(connection);
         match code { SQLITE_ROW => Ok(1), SQLITE_DONE => Ok(0), _ => status(connection.pointer, code).map(|()| 0) }
     })
 });

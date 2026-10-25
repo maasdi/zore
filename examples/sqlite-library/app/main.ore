@@ -3,19 +3,18 @@ package main
 import "sqlite"
 
 func persist() error {
-    var db = sqlite.Open("notes.db")?
+    let db = sqlite.Open("notes.db")?
     {
         var schema = db.Prepare("create table if not exists notes(body text not null)")?
         schema.Step()?
     }
-    var tx = db.Begin()?
-    {
+    db.Transaction(func(tx mut sqlite.Transaction) error {
         var insert = tx.Prepare("insert into notes(body) values (?)")?
         insert.BindText(1, "hello from SQLite")?
         insert.Step()?
-    }
-    let committed = tx.Commit()?
-    var rows = committed.Prepare("select body from notes order by rowid desc limit 1")?
+        return nil
+    })?
+    var rows = db.Prepare("select body from notes order by rowid desc limit 1")?
     if rows.Step()? { println(rows.Text(0)?) }
     return nil
 }

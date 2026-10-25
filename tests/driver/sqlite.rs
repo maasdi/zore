@@ -160,7 +160,7 @@ fn sqlite_resource_contract_and_tagged_offline_application() {
     success(fixture.invoke("install", "sqlite"));
     let tests = success(fixture.invoke("test", "sqlite"));
     assert!(
-        String::from_utf8_lossy(&tests.stdout).contains("Tests: 11 passed, 0 failed"),
+        String::from_utf8_lossy(&tests.stdout).contains("Tests: 22 passed, 0 failed"),
         "{tests:?}"
     );
     cleanup_modes(&fixture);
@@ -206,7 +206,17 @@ async func transaction(db own sqlite.Database, mode string) error {
     let finished = tx.Commit()?
     return nil
 }
+func callbackPanic() error {
+    let db = sqlite.Open("cleanup.db")?
+    db.Transaction(func(tx mut sqlite.Transaction) error {
+        var statement = tx.Prepare("delete from cleanup")?
+        statement.Step()?
+        panic("expected SQLite callback panic")
+    })?
+    return nil
+}
 func execute(mode string) error {
+    if mode == "callback-panic" { return callbackPanic() }
     if mode != "inspect" {
         let db = sqlite.Open("cleanup.db")?
         runSQL(db, "create table if not exists cleanup(value integer)")?
@@ -249,4 +259,14 @@ func main() {
     assert!(stderr.contains("expected SQLite task panic"), "{panic:?}");
     assert!(!stderr.contains("leak:"), "{panic:?}");
     assert_eq!(success(run("inspect")).stdout, b"0\n");
+    assert_eq!(success(run("normal")).stdout, b"1\n");
+    let callback_panic = run("callback-panic");
+    assert_eq!(callback_panic.status.code(), Some(2), "{callback_panic:?}");
+    let stderr = String::from_utf8_lossy(&callback_panic.stderr);
+    assert!(
+        stderr.contains("expected SQLite callback panic"),
+        "{callback_panic:?}"
+    );
+    assert!(!stderr.contains("leak:"), "{callback_panic:?}");
+    assert_eq!(success(run("inspect")).stdout, b"1\n");
 }
