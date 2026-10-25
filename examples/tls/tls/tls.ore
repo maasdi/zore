@@ -45,9 +45,7 @@ func (c mut Conn) drop() {
 }
 
 func emptyConn() Conn {
-    var values = Array<Conn>{};
-    let _, conn = values.pop();
-    return conn
+    return wrap(net.EmptyConn(), 0, context.Background())
 }
 
 func zeros(size int) Array<byte> {

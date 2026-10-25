@@ -164,6 +164,8 @@ once it does.
 - Errors can carry a cause (§15.1, Q44): `errors.Wrap`, `errors.Unwrap`,
   `errors.Message`, `fmt.Errorf` with `%w`, and an `errors.Is` that searches
   the whole chain.
+- Added `net.EmptyConn`, a closed connection for packages that need an empty
+  connection value (§37.3).
 - Function literals are allowed inside generic functions and methods (§22.1).
 
 ### Compiler

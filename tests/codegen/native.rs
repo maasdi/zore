@@ -4208,6 +4208,26 @@ func main() {
 }
 
 #[test]
+fn empty_conn_is_closed_fails_operations_and_drops_safely() {
+    let source = "package main
+import \"std/net\"
+func main() {
+    let conn = net.EmptyConn()
+    var buf = Array<byte>{0, 0}
+    let count, err = conn.Read(buf[:])
+    println(count)
+    println(err == error(\"net.Read: not an open connection\"))
+    let _, writeErr = conn.Write(buf[:])
+    println(writeErr == error(\"net.Write: not an open connection\"))
+    println(conn.SetDeadline(1) != nil)
+    println(conn.LocalAddr() == \"\")
+    println(conn.Close() == error(\"net.Close: not an open connection or listener\"))
+    let dropped = net.EmptyConn()
+}";
+    prints(source, "0\ntrue\ntrue\ntrue\ntrue\ntrue\n");
+}
+
+#[test]
 fn bytes_from_a_peer_that_are_not_text_arrive_unchanged() {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();

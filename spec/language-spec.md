@@ -7339,6 +7339,7 @@ unknown network N` or `net.Dial: unknown network N`.
 | `Listen(network string, address string) (Listener, error)` | Listens on `host:port`; port `0` picks a free port |
 | `Dial(network string, address string) (Conn, error)` | Connects to `host:port`, waiting for the connection |
 | `DialTimeout(network string, address string, timeout int) (Conn, error)` | Like `Dial`, but gives up after `timeout` nanoseconds for each address tried; zero or less means no limit |
+| `EmptyConn() Conn` | A closed connection equal to the zero value: every operation fails and dropping it does nothing; for packages that need an empty connection field |
 | `(l Listener) Accept() (Conn, error)` | Waits for and returns the next incoming connection |
 | `(l Listener) Addr() string` | The address the listener is bound to, as `host:port` (`[host]:port` for IPv6), or `""` when closed |
 | `(l Listener) SetDeadline(t int) error` | Makes `Accept` give up at the deadline `t` (§37.3, `std/time`); zero removes it |
