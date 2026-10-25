@@ -570,46 +570,77 @@ fn seeded_http_fragment_boundaries_keep_framing_and_rejection_oracles() {
             |atoms| {
                 let mut cases = String::new();
                 for width in atoms {
-                    for (wire, status, body) in [
+                    for (wire, status, body, read_error) in [
                         (
                             "POST /echo HTTP/1.1\r\nHost: x\r\nContent-Length: 5\r\n\r\nhello",
                             0,
                             "hello",
+                            "",
                         ),
                         (
                             "POST /echo HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n2;key=\"a;b\"\r\nhe\r\n3\r\nllo\r\n0\r\n\r\n",
                             0,
                             "hello",
+                            "",
                         ),
                         (
                             "POST /echo HTTP/1.1\r\nHost: x\r\nContent-Length: 1\r\nContent-Length: 1\r\n\r\na",
                             400,
+                            "",
                             "",
                         ),
                         (
                             "POST /echo HTTP/1.1\r\nHost: x\r\nContent-Length: 1\r\nTransfer-Encoding: chunked\r\n\r\n",
                             400,
                             "",
+                            "",
                         ),
                         (
                             "POST /echo HTTP/1.1\r\nHost: x\r\nContent-Length: +1\r\n\r\n",
                             400,
+                            "",
                             "",
                         ),
                         (
                             "POST /echo HTTP/1.1\r\nHost: x\r\nContent-Length: 99999999999999999999\r\n\r\n",
                             400,
                             "",
+                            "",
                         ),
                         (
                             "POST /echo HTTP/1.1\r\nHost: x\r\nContent-Length: 33\r\n\r\n",
                             413,
                             "",
+                            "",
                         ),
-                        ("GET /echo HTTP/1.0\r\nHost: x\r\n\r\n", 505, ""),
+                        (
+                            "POST /echo HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\nffffffffffffffffff\r\n",
+                            0,
+                            "",
+                            "http: invalid chunk size",
+                        ),
+                        (
+                            "POST /echo HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n\r\n",
+                            0,
+                            "",
+                            "http: invalid chunk size",
+                        ),
+                        (
+                            "POST /echo HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n-1\r\n",
+                            0,
+                            "",
+                            "http: invalid chunk size",
+                        ),
+                        (
+                            "POST /echo HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n7fffffffffffffff\r\n",
+                            0,
+                            "",
+                            "http: body too large",
+                        ),
+                        ("GET /echo HTTP/1.0\r\nHost: x\r\n\r\n", 505, "", ""),
                     ] {
                         cases.push_str(&format!(
-                            "exercise({wire:?}, {width}, {status}, {body:?})?\n"
+                            "exercise({wire:?}, {width}, {status}, {body:?}, {read_error:?})?\n"
                         ));
                     }
                 }
@@ -628,7 +659,7 @@ func fixtureRead(data mut []byte, server Server) (int, error) {{
     if count == 0 {{ return 0, io.EOF }}
     return count, nil
 }}
-func exercise(wire string, width int, expected int, body string) error {{
+func exercise(wire string, width int, expected int, body string, readError string) error {{
     let builder = NewRouterBuilder()
     let router = builder.Build()?
     var config = DefaultConfig()
@@ -643,8 +674,14 @@ func exercise(wire string, width int, expected int, body string) error {{
     require(status == expected)
     require((err == nil) == (expected == 0))
     if expected == 0 {{
-        let bytes = io.ReadAll(request)?
-        require(strings.FromBytes(bytes[:])? == body)
+        let bytes, readErr = io.ReadAll(request)
+        if readError == "" {{
+            require(readErr == nil)
+            require(strings.FromBytes(bytes[:])? == body)
+        }} else {{
+            require(readErr == error(readError))
+            require(bytes.len() == 0)
+        }}
     }}
     return nil
 }}

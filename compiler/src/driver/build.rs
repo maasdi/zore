@@ -694,11 +694,11 @@ fn runtime_library(
         .unwrap_or(built))
 }
 
-/// Publishes a complete runtime without replacing a file another build may be linking.
+/// Publishes a complete runtime directory without replacing one another build may be linking.
 fn keep_in_cache(built: &Path, path: &Path) -> Option<PathBuf> {
-    let folder = path.parent()?;
-    fs::create_dir_all(folder).ok()?;
-    let staged = folder.join(format!(
+    let root = path.parent()?.parent()?;
+    fs::create_dir_all(root).ok()?;
+    let staged = root.join(format!(
         "staged-{}-{}",
         std::process::id(),
         NEXT_DIR.fetch_add(1, Ordering::Relaxed)
@@ -707,32 +707,25 @@ fn keep_in_cache(built: &Path, path: &Path) -> Option<PathBuf> {
 }
 
 fn publish_in_cache(built: &Path, path: &Path, staged: &Path) -> Option<PathBuf> {
-    let mut source = fs::File::open(built).ok()?;
-    let mut destination = fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(staged)
-        .ok()?;
-    let copied = std::io::copy(&mut source, &mut destination).and_then(|_| destination.sync_all());
-    drop(destination);
-    let published = copied
-        .and_then(|_| link_without_replacing(staged, path))
-        .is_ok();
-    let _ = fs::remove_file(staged);
+    let target = path.parent()?;
+    fs::create_dir(staged).ok()?;
+    let published = stage_runtime(built, &staged.join(path.file_name()?)).is_ok()
+        && (fs::rename(staged, target).is_ok()
+            || (fs::remove_dir(target).is_ok() && fs::rename(staged, target).is_ok()));
+    if !published {
+        let _ = fs::remove_dir_all(staged);
+    }
     published.then(|| path.to_path_buf())
 }
 
-fn link_without_replacing(staged: &Path, path: &Path) -> std::io::Result<()> {
-    match fs::hard_link(staged, path) {
-        Err(error) if error.kind() != std::io::ErrorKind::AlreadyExists => {
-            // Hard links can be unsupported or forbidden; rename only while nothing is published
-            if path.exists() {
-                return Err(std::io::ErrorKind::AlreadyExists.into());
-            }
-            fs::rename(staged, path)
-        }
-        result => result,
-    }
+fn stage_runtime(built: &Path, staged: &Path) -> std::io::Result<()> {
+    let mut source = fs::File::open(built)?;
+    let mut destination = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(staged)?;
+    std::io::copy(&mut source, &mut destination)?;
+    destination.sync_all()
 }
 
 #[cfg(test)]
@@ -743,25 +736,33 @@ mod tests {
 
     use super::*;
 
+    fn cache_root(cached: &Path) -> &Path {
+        cached.parent().unwrap().parent().unwrap()
+    }
+
     #[test]
     fn runtime_cache_publishes_complete_files_and_preserves_private_builds() {
         let directory = TempDir::new().unwrap();
         let built = directory.path().join("built.rlib");
-        let cached = directory.path().join("cache/libzore_runtime.rlib");
+        let cached = directory
+            .path()
+            .join("cache/runtime-0/libzore_runtime.rlib");
         let contents = vec![42; 65536];
         fs::write(&built, &contents).unwrap();
 
         assert_eq!(keep_in_cache(&built, &cached), Some(cached.clone()));
         assert_eq!(fs::read(&cached).unwrap(), contents);
         assert_eq!(fs::read(&built).unwrap(), contents);
-        assert_eq!(fs::read_dir(cached.parent().unwrap()).unwrap().count(), 1);
+        assert_eq!(fs::read_dir(cache_root(&cached)).unwrap().count(), 1);
     }
 
     #[test]
     fn runtime_cache_preserves_an_existing_published_file() {
         let directory = TempDir::new().unwrap();
         let built = directory.path().join("built.rlib");
-        let cached = directory.path().join("cache/libzore_runtime.rlib");
+        let cached = directory
+            .path()
+            .join("cache/runtime-0/libzore_runtime.rlib");
         fs::write(&built, b"first runtime").unwrap();
         assert_eq!(keep_in_cache(&built, &cached), Some(cached.clone()));
         let mut published = fs::File::open(&cached).unwrap();
@@ -774,7 +775,7 @@ mod tests {
         published.read_to_end(&mut retained).unwrap();
         assert_eq!(retained, b"first runtime");
         assert_eq!(fs::read(&built).unwrap(), b"later runtime");
-        assert_eq!(fs::read_dir(cached.parent().unwrap()).unwrap().count(), 1);
+        assert_eq!(fs::read_dir(cache_root(&cached)).unwrap().count(), 1);
     }
 
     #[test]
@@ -785,48 +786,49 @@ mod tests {
         fs::write(&built, b"private runtime").unwrap();
         fs::write(&blocked, b"regular file").unwrap();
 
-        assert_eq!(keep_in_cache(&built, &blocked.join("runtime.rlib")), None);
+        assert_eq!(
+            keep_in_cache(&built, &blocked.join("runtime-0/libzore_runtime.rlib")),
+            None
+        );
         assert_eq!(fs::read(&built).unwrap(), b"private runtime");
         assert_eq!(fs::read(&blocked).unwrap(), b"regular file");
         assert_eq!(fs::read_dir(directory.path()).unwrap().count(), 2);
     }
 
-    #[cfg(unix)]
     #[test]
-    fn runtime_cache_falls_back_to_rename_when_hard_links_are_refused() {
+    fn runtime_cache_publishes_over_an_empty_leftover_directory() {
         let directory = TempDir::new().unwrap();
-        let staged = directory.path().join("staged");
-        let published = directory.path().join("published");
-        fs::create_dir(&staged).unwrap();
-        fs::write(staged.join("marker"), b"runtime").unwrap();
+        let built = directory.path().join("built.rlib");
+        let cached = directory
+            .path()
+            .join("cache/runtime-0/libzore_runtime.rlib");
+        fs::write(&built, b"runtime").unwrap();
+        fs::create_dir_all(cached.parent().unwrap()).unwrap();
 
-        assert!(fs::hard_link(&staged, &published).is_err());
-        link_without_replacing(&staged, &published).unwrap();
-        assert_eq!(fs::read(published.join("marker")).unwrap(), b"runtime");
-        assert!(!staged.exists());
-
-        let occupied = directory.path().join("occupied");
-        let other = directory.path().join("other");
-        fs::create_dir(&other).unwrap();
-        fs::write(&occupied, b"first runtime").unwrap();
-        let error = link_without_replacing(&other, &occupied).unwrap_err();
-        assert_eq!(error.kind(), std::io::ErrorKind::AlreadyExists);
-        assert_eq!(fs::read(&occupied).unwrap(), b"first runtime");
-        assert!(other.exists());
+        assert_eq!(keep_in_cache(&built, &cached), Some(cached.clone()));
+        assert_eq!(fs::read(&cached).unwrap(), b"runtime");
+        assert_eq!(fs::read_dir(cache_root(&cached)).unwrap().count(), 1);
     }
 
     #[test]
     fn runtime_cache_staging_collision_cannot_mutate_a_published_file() {
         let directory = TempDir::new().unwrap();
         let built = directory.path().join("built.rlib");
-        let cached = directory.path().join("cache/libzore_runtime.rlib");
+        let cached = directory
+            .path()
+            .join("cache/runtime-0/libzore_runtime.rlib");
         fs::write(&built, b"first runtime").unwrap();
         assert_eq!(keep_in_cache(&built, &cached), Some(cached.clone()));
-        let stale = cached.parent().unwrap().join("stale-staging-file");
+        let stale = cache_root(&cached).join("stale-staging-dir");
+        fs::create_dir(&stale).unwrap();
+        let stale = stale.join("libzore_runtime.rlib");
         fs::hard_link(&cached, &stale).unwrap();
         fs::write(&built, b"later runtime").unwrap();
 
-        assert_eq!(publish_in_cache(&built, &cached, &stale), None);
+        assert_eq!(
+            publish_in_cache(&built, &cached, stale.parent().unwrap()),
+            None
+        );
         assert_eq!(fs::read(&cached).unwrap(), b"first runtime");
         assert_eq!(fs::read(&stale).unwrap(), b"first runtime");
         assert_eq!(fs::read(&built).unwrap(), b"later runtime");
@@ -836,7 +838,9 @@ mod tests {
     fn runtime_cache_readers_keep_the_first_file_during_concurrent_publication() {
         let directory = TempDir::new().unwrap();
         let built = directory.path().join("first.rlib");
-        let cached = directory.path().join("cache/libzore_runtime.rlib");
+        let cached = directory
+            .path()
+            .join("cache/runtime-0/libzore_runtime.rlib");
         let contents = vec![42; 65536];
         fs::write(&built, &contents).unwrap();
         assert_eq!(keep_in_cache(&built, &cached), Some(cached.clone()));
@@ -889,6 +893,6 @@ mod tests {
                 (published.dev(), published.ino())
             );
         }
-        assert_eq!(fs::read_dir(cached.parent().unwrap()).unwrap().count(), 1);
+        assert_eq!(fs::read_dir(cache_root(&cached)).unwrap().count(), 1);
     }
 }

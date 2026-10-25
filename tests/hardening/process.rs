@@ -48,6 +48,40 @@ fn terminate_tree(child: &mut Child) {
     let _ = child.kill();
 }
 
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn exited(child: &mut Child) -> bool {
+    #[repr(C, align(8))]
+    struct SigInfo([i32; 32]);
+    unsafe extern "C" {
+        fn waitid(idtype: i32, id: u32, info: *mut SigInfo, options: i32) -> i32;
+    }
+    const P_PID: i32 = 1;
+    const WNOHANG: i32 = 1;
+    const WEXITED: i32 = 4;
+    #[cfg(target_os = "linux")]
+    const WNOWAIT: i32 = 0x0100_0000;
+    #[cfg(target_os = "macos")]
+    const WNOWAIT: i32 = 0x20;
+    let mut info = SigInfo([0; 32]);
+    loop {
+        if unsafe { waitid(P_PID, child.id(), &mut info, WEXITED | WNOHANG | WNOWAIT) } == 0 {
+            // si_code is CLD_EXITED, CLD_KILLED or CLD_DUMPED; zero means nothing to report
+            return (1..=3).contains(&info.0[2]);
+        }
+        let error = std::io::Error::last_os_error();
+        assert_eq!(
+            error.kind(),
+            std::io::ErrorKind::Interrupted,
+            "poll bounded child: {error}"
+        );
+    }
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+fn exited(child: &mut Child) -> bool {
+    child.try_wait().expect("poll bounded child").is_some()
+}
+
 impl Drop for Reap {
     fn drop(&mut self) {
         self.terminate();
@@ -112,21 +146,20 @@ pub fn run(command: &mut Command, timeout: Duration) -> Result<Output, String> {
     let deadline = Instant::now() + timeout;
     let mut failure = None;
     let status = loop {
-        if exceeded.load(Ordering::Acquire) || Instant::now() >= deadline {
-            failure = Some(if exceeded.load(Ordering::Acquire) {
+        let over_output = exceeded.load(Ordering::Acquire);
+        if over_output || Instant::now() >= deadline {
+            failure = Some(if over_output {
                 "output limit"
             } else {
                 "time limit"
             });
+        }
+        if failure.is_some() || exited(&mut child.child) {
             child.terminate();
             break child.child.wait().expect("reap bounded child");
         }
-        if let Some(status) = child.child.try_wait().expect("poll bounded child") {
-            break status;
-        }
         thread::sleep(Duration::from_millis(5));
     };
-    child.terminate();
     let drain_timeout = Duration::from_secs(2);
     let output = Output {
         status,
@@ -226,4 +259,22 @@ fn timeout_stops_pipe_holding_descendant() {
     let error = run(&mut fixture("descendant-timeout"), Duration::from_secs(1)).unwrap_err();
     assert!(error.contains("time limit"), "{error}");
     assert!(started.elapsed() < Duration::from_secs(5));
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[test]
+fn exit_polling_leaves_the_group_leader_unreaped() {
+    let mut child = Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", "bounded_process::bounded_child_fixture"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !exited(&mut child) {
+        assert!(Instant::now() < deadline, "child did not exit");
+        thread::sleep(Duration::from_millis(5));
+    }
+    assert!(exited(&mut child));
+    assert!(child.wait().unwrap().success());
 }
