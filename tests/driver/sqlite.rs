@@ -160,7 +160,7 @@ fn sqlite_resource_contract_and_tagged_offline_application() {
     success(fixture.invoke("install", "sqlite"));
     let tests = success(fixture.invoke("test", "sqlite"));
     assert!(
-        String::from_utf8_lossy(&tests.stdout).contains("Tests: 22 passed, 0 failed"),
+        String::from_utf8_lossy(&tests.stdout).contains("Tests: 23 passed, 0 failed"),
         "{tests:?}"
     );
     cleanup_modes(&fixture);
@@ -187,6 +187,7 @@ fn cleanup_modes(fixture: &Fixture) {
         "app/main.ore",
         r#"package main
 import "sqlite"
+import "std/errors"
 import "std/os"
 import "std/time"
 func runSQL(db sqlite.Database, sql string) error {
@@ -215,8 +216,42 @@ func callbackPanic() error {
     })?
     return nil
 }
+func panickingChild(db sqlite.Database, ready channel<bool>) error {
+    return db.Transaction(func(tx mut sqlite.Transaction) error {
+        ready.send(true)
+        time.Sleep(300 * time.Millisecond)
+        panic("expected scoped callback panic")
+    })
+}
+func contendingChild(db sqlite.Database, ready channel<bool>) error {
+    ready.receive()
+    var failures = 0
+    for var attempt = 0; attempt < 100; attempt += 1 {
+        let result = db.Transaction(func(tx mut sqlite.Transaction) error { return nil })
+        if result == nil {
+            if failures == 0 { return error("peer began while the panicking transaction was open") }
+            return nil
+        }
+        failures += 1
+        time.Sleep(20 * time.Millisecond)
+    }
+    return error("peer never began after the panic")
+}
+func scopedPanic() error {
+    let db = sqlite.Open(":memory:")?
+    let ready = channel<bool>(1)
+    scope {
+        let panicking = go panickingChild(db, ready)
+        let peer = go contendingChild(db, ready)
+        let failure = peer.wait()
+        if failure != nil { panic("peer failed: " + errors.Message(failure)) }
+        println("peer ok")
+    }
+    return nil
+}
 func execute(mode string) error {
     if mode == "callback-panic" { return callbackPanic() }
+    if mode == "scoped-panic" { return scopedPanic() }
     if mode != "inspect" {
         let db = sqlite.Open("cleanup.db")?
         runSQL(db, "create table if not exists cleanup(value integer)")?
@@ -269,4 +304,14 @@ func main() {
     );
     assert!(!stderr.contains("leak:"), "{callback_panic:?}");
     assert_eq!(success(run("inspect")).stdout, b"1\n");
+    let scoped_panic = run("scoped-panic");
+    assert_eq!(scoped_panic.status.code(), Some(2), "{scoped_panic:?}");
+    assert_eq!(scoped_panic.stdout, b"peer ok\n", "{scoped_panic:?}");
+    let stderr = String::from_utf8_lossy(&scoped_panic.stderr);
+    assert!(
+        stderr.contains("expected scoped callback panic"),
+        "{scoped_panic:?}"
+    );
+    assert!(!stderr.contains("peer failed"), "{scoped_panic:?}");
+    assert!(!stderr.contains("leak:"), "{scoped_panic:?}");
 }

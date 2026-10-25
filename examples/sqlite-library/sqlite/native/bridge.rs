@@ -356,7 +356,7 @@ fn with_statement<T>(
     action(&mut connection, pointer, phase)
 }
 
-const ROLLED_BACK: &str = "sqlite: SQLite rolled back the transaction; only Rollback is accepted";
+const ROLLED_BACK: &str = "sqlite: SQLite rolled back the transaction; roll back or return an error";
 
 fn observe_rollback(connection: &mut Connection) {
     // SAFETY: callers hold the connection lock.

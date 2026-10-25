@@ -37,7 +37,7 @@ const SQLITE: Adapter = Adapter {
     mbedtls: false,
     id: "sqlite-v1",
     project: "sqlite",
-    fingerprint: "8c318525a811cb301bdb6214e9aab7ebac9ec1ad96b4a82043a8f71f3dfd90ce",
+    fingerprint: "b91cc133fee296b6343d0558ceb06d3b4c0a00e6715a6cdf20e283fe33c3dd5b",
     c_flags: &[
         "-Wno-error=sign-compare",
         "-Wno-error=unused-variable",

@@ -302,6 +302,9 @@ func TestTransactionCallbackCommitsOnLetDatabase() error {
         return executeIn(tx, "insert into records values (3)")
     })?
     if calls != 1 || countRows(db)? != 3 { panic("callback transactions did not commit") }
+    var reused = db.Prepare("select count(*) from records where value = 1")?
+    reused.Step()?
+    if reused.Int(0)? != 2 { panic("binding was not reused after Reset") }
     return nil
 }
 
@@ -330,9 +333,20 @@ func TestTransactionRejectsExplicitCompletionInCallback() error {
         let reverted, rollbackFailure = tx.Rollback()
         if commitFailure == nil { panic("callback committed its own transaction") }
         if rollbackFailure == nil { panic("callback rolled back its own transaction") }
+        executeIn(tx, "insert into records values (2)")?
         return nil
     })?
-    if countRows(db)? != 1 { panic("library did not commit") }
+    if countRows(db)? != 2 { panic("library did not commit") }
+    let stop = error("stop")
+    let result = db.Transaction(func(tx mut Transaction) error {
+        let committed, commitFailure = tx.Commit()
+        let reverted, rollbackFailure = tx.Rollback()
+        if commitFailure == nil { panic("callback committed its own transaction") }
+        if rollbackFailure == nil { panic("callback rolled back its own transaction") }
+        executeIn(tx, "insert into records values (3)")?
+        return stop
+    })
+    if result != stop || countRows(db)? != 2 { panic("error after explicit completion did not roll back") }
     return nil
 }
 
@@ -430,9 +444,13 @@ func TestScopedTransactionDropRollsBackAndKeepsDatabase() error {
         executeIn(tx, "insert into records values (1)")?
         escaped = tx.Prepare("select 1")?
     }
+    if countRows(db)? != 1 { panic("scoped Transaction drop completed the transaction") }
+    {
+        let guard = rollbackGuard{handle: db.handle}
+    }
     let row, failure = escaped.Step()
-    if failure == nil { panic("scoped drop left a statement usable") }
-    if countRows(db)? != 0 { panic("scoped drop kept rows") }
+    if failure == nil { panic("guard drop left a statement usable") }
+    if countRows(db)? != 0 { panic("guard drop kept rows") }
     db.Transaction(func(tx mut Transaction) error {
         return executeIn(tx, "insert into records values (1)")
     })?
@@ -486,5 +504,29 @@ func TestTransactionRolledBackBySQLiteAcceptsOnlyRollback() error {
         return executeIn(scoped, "insert into unique_values values (5)")
     })
     if failure == nil || countValues(restored)? != 1 { panic("statements ran outside the rolled back transaction") }
+    return nil
+}
+
+func replaceAndInsert(db Database, failing bool) error {
+    var other = Open(":memory:")?
+    return db.Transaction(func(tx mut Transaction) error {
+        tx = other.Begin()?
+        executeSQL(db, "insert into records values (1)")?
+        if failing { return error("stop") }
+        return nil
+    })
+}
+
+func TestTransactionCallbackReplacingItsTransactionStaysAtomic() error {
+    let db = Open(":memory:")?
+    executeSQL(db, "create table records(value integer)")?
+    replaceAndInsert(db, false)?
+    if countRows(db)? != 1 { panic("replaced transaction lost the committed write") }
+    let failure = replaceAndInsert(db, true)
+    if failure == nil || countRows(db)? != 1 { panic("replaced transaction escaped rollback") }
+    db.Transaction(func(tx mut Transaction) error {
+        return executeIn(tx, "insert into records values (2)")
+    })?
+    if countRows(db)? != 2 { panic("database unusable after replacement") }
     return nil
 }

@@ -174,6 +174,11 @@ func main() {}
             "db.Transaction(func(tx sqlite.Transaction) error { return nil })?",
             "func(mut sqlite.Transaction) error",
         ),
+        (
+            r#"var keep = func() error { return nil }
+    db.Transaction(func(tx mut sqlite.Transaction) error { keep = func() error { var s = tx.Prepare("select 1")?; return nil }; return nil })?"#,
+            "storing a view from a function literal's parameter into captured `keep`",
+        ),
     ] {
         let main = template.replace("BODY", body);
         super::local_dependencies::rejects_tree(&files(&main), error);
