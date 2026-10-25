@@ -50,7 +50,7 @@ jobs:
           --compiler "${{ github.workspace }}/target/release/zore${{ runner.os == 'Windows' && '.exe' || '' }}"
           --compiler-revision "${{ github.sha }}"
           --output "runtime-scaling-${{ runner.os }}.json"
-      - uses: actions/upload-artifact@v6
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: runtime-scaling-${{ runner.os }}-${{ github.sha }}
