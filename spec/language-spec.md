@@ -7497,6 +7497,12 @@ directly. Both types are Copy handles that share their state.
 
 Ownership, error, and async implications: a context or wait group holds
 channel and mutex handles, so copies are free and safe to pass to any task.
+Derived contexts share parent cancellation links instead of copying ancestor
+lists. Active-state checks cache a shared cancellation revision; cancelling a
+context invalidates those checks before its cancel function returns. Cancellation
+releases that context's parent links while preserving its first error. An active
+chain therefore retains linear ancestry storage without delaying ancestor
+cancellation observation until its watcher tasks run.
 Each `WithCancel`, `WithDeadline`, and `WithTimeout` on a cancellable parent
 starts a small task that waits for the parent or the child, and each deadline
 starts one that waits for the clock or the child. `Wait` and `Do` suspend like
@@ -8576,6 +8582,10 @@ the system roots, and explicit roots override them. `NewClientConfig` trusts
 exactly the nonempty PEM bundle it is given and rejects an empty one; an empty
 bundle never means system roots. Clients require a server name that is a DNS name
 or an unbracketed IPv4 or IPv6 address; there is no insecure flag.
+DNS server names may include one trailing root dot, which is removed before
+validation, SNI and certificate matching. The HTTP authority retains its original
+spelling. Empty DNS labels, repeated trailing dots and malformed IP addresses
+remain invalid.
 Certificate signatures, validity times, trust chain, and server name are
 verified by Mbed TLS; a DNS name is also SNI. An IP-address name matches only
 IP-address subjectAltName entries of the same address, never DNS entries or the

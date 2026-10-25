@@ -35,7 +35,10 @@ and a server name: a DNS name or an
 unbracketed IPv4 or IPv6 address. They always verify the chain, certificate
 validity against the host wall clock, and server name; a DNS name is also SNI.
 An IP address matches only IP-address subjectAltName entries of the same
-address, never DNS entries or the common name, and is not sent as SNI. Bracketed
+address, never DNS entries or the common name, and is not sent as SNI.
+DNS names may have one trailing root dot; TLS removes it for SNI and certificate
+matching while the HTTP Host authority keeps its spelling. Repeated trailing dots
+and malformed IP forms are rejected. Bracketed
 forms, zones and ports are rejected, so pass the unbracketed host. There is no
 verification bypass. TLS 1.3 is preferred and TLS 1.2 is accepted. TLS 1.3 uses
 ephemeral ECDHE on P-256/P-384, AES-GCM, ECDSA or RSA-PSS signatures and

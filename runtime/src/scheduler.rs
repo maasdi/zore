@@ -1021,6 +1021,10 @@ pub mod test_support {
         );
     }
 
+    pub fn allocated_bytes() -> usize {
+        super::super::alloc::live_bytes()
+    }
+
     pub fn snapshot() -> String {
         let pool = POOL.get().expect("test pool installed");
         let (tasks, workers, blocked, queued) = {

@@ -96,7 +96,7 @@ func validName(name string) bool {
     if name.len() == 0 || name.len() > 253 {
         return false
     }
-    var letter = false
+    var named = false
     var label = 0
     var last byte = 0
     for var i = 0; i < name.len(); i += 1 {
@@ -108,12 +108,15 @@ func validName(name string) bool {
             label = 0
         } else {
             if (ch >= 97 && ch <= 122) || (ch >= 65 && ch <= 90) {
-                letter = true
+                named = true
             } else if !((ch >= 48 && ch <= 57) || ch == 45) {
                 return false
             }
             if label == 0 && ch == 45 {
                 return false
+            }
+            if ch == 45 {
+                named = true
             }
             label += 1
             if label > 63 {
@@ -122,7 +125,17 @@ func validName(name string) bool {
         }
         last = ch
     }
-    return letter && label > 0 && last != 45
+    return named && label > 0 && last != 45
+}
+
+func canonicalServerName(name string) string {
+    if strings.HasSuffix(name, ".") {
+        let candidate = name[:name.len() - 1]
+        if validName(candidate) {
+            return candidate
+        }
+    }
+    return name
 }
 
 func decimalOctet(part string) bool {
@@ -239,7 +252,8 @@ func finishDial(ctx context.Context, result channel<dialResult>, serverName stri
 }
 
 func DialContext(ctx context.Context, address string, serverName string, config ClientConfig) (Conn, error) {
-    if !validServerName(serverName) {
+    let name = canonicalServerName(serverName)
+    if !validServerName(name) {
         return emptyConn(), error("tls.DialContext: DNS name or IP address required")
     }
     let err = ctx.Err()
@@ -257,14 +271,15 @@ func DialContext(ctx context.Context, address string, serverName string, config 
     }
     let result = channel<dialResult>(1)
     go dialSource(address, timeout, result)
-    return finishDial(ctx, result, serverName, config)
+    return finishDial(ctx, result, name, config)
 }
 
 func Client(ctx context.Context, source own net.Conn, serverName string, config ClientConfig) (Conn, error) {
-    if !validServerName(serverName) {
+    let name = canonicalServerName(serverName)
+    if !validServerName(name) {
         return emptyConn(), error("tls.Client: DNS name or IP address required")
     }
-    let handle, err = nativeSession(config.handle, serverName)
+    let handle, err = nativeSession(config.handle, name)
     _ = err
     if err != nil {
         return emptyConn(), errors.Wrap(err, "tls.Client")

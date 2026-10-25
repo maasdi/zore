@@ -4,6 +4,7 @@ import "std/context"
 import "std/errors"
 import "std/net"
 import "std/net/http"
+import "std/net/url"
 import "std/os"
 import "std/strings"
 import "std/time"
@@ -79,5 +80,19 @@ func TestHTTPSIPAddressURLsMatchOnlyIPEntries() error {
 func TestHTTPSDefaultClientUsesPlatformRoots() error {
     let client = https.NewDefaultClient(http.DefaultClientConfig())?
     let transport = https.NewDefaultTransport()?
+    return nil
+}
+
+func TestHTTPSRootedHostnameReachesContextValidation() error {
+    let roots = os.ReadFile("../tls/tls/testdata/roots.pem")?
+    let transport = https.NewTransport(roots[:])?
+    let target = url.ParseAbsolute("https://localhost.:443/")?
+    let ctx, cancel = context.WithCancel(context.Background())
+    cancel()
+    let conn, err = transport.Dial(ctx, target)
+    _ = err
+    if err != error("context canceled") {
+        panic("rooted HTTPS hostname rejected")
+    }
     return nil
 }
