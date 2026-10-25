@@ -1,15 +1,25 @@
 package crypto
 
+import "std/errors"
+
 func RandomBytes(size int) (Array<byte>, error) {
     return nativeRandomBytes(size)
 }
 
-func SHA256(data []byte) (Array<byte>, error) {
-    return nativeSHA256(data)
+func SHA256(data []byte) Array<byte> {
+    let digest, failure = nativeSHA256(data)
+    if failure != nil {
+        panic("crypto.SHA256: provider failed: " + errors.Message(failure))
+    }
+    return digest
 }
 
-func HMACSHA256(key []byte, data []byte) (Array<byte>, error) {
-    return nativeHMACSHA256(key, data)
+func HMACSHA256(key []byte, data []byte) Array<byte> {
+    let tag, failure = nativeHMACSHA256(key, data)
+    if failure != nil {
+        panic("crypto.HMACSHA256: provider failed: " + errors.Message(failure))
+    }
+    return tag
 }
 
 func Equal(left []byte, right []byte) bool {
@@ -17,9 +27,6 @@ func Equal(left []byte, right []byte) bool {
 }
 
 func VerifyHMACSHA256(key []byte, data []byte, tag []byte) bool {
-    let expected, err = HMACSHA256(key, data)
-    if err != nil {
-        return false
-    }
+    let expected = HMACSHA256(key, data)
     return Equal(expected[:], tag)
 }
