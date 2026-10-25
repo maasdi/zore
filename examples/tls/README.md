@@ -1,4 +1,4 @@
-# TLS 1.2 package
+# TLS 1.3 and 1.2 package
 
 **Trust roots default to the platform's, and explicit roots override them.**
 `tls.DefaultClientConfig()` trusts the system roots, like Go. `tls.NewClientConfig(rootsPEM)`
@@ -34,9 +34,15 @@ validity against the host wall clock, and server name; a DNS name is also SNI.
 An IP address matches only IP-address subjectAltName entries of the same
 address, never DNS entries or the common name, and is not sent as SNI. Bracketed
 forms, zones and ports are rejected, so pass the unbracketed host. There is no
-verification bypass. Only TLS
-1.2 ECDHE RSA/ECDSA with AES-GCM is enabled, with the extended master secret
-extension; fatal errors send their TLS alerts. Servers accept PEM chains and
+verification bypass. TLS 1.3 is preferred and TLS 1.2 is accepted. TLS 1.3 uses
+ephemeral ECDHE on P-256/P-384, AES-GCM, ECDSA or RSA-PSS signatures and
+middlebox compatibility mode, without PSK, 0-RTT, session tickets or KeyUpdate;
+a peer's NewSessionTicket is ignored and a peer KeyUpdate fails the connection.
+TLS 1.2 is limited to ECDHE RSA/ECDSA with AES-GCM and the extended master
+secret extension. Fatal errors send their TLS alerts. Provider calls are
+serialized process-wide because the PSA crypto core that TLS 1.3 needs has
+process-global state, so concurrent connections do not run TLS cryptography in
+parallel. Servers accept PEM chains and
 unencrypted PEM private keys; key parsing verifies the matching certificate.
 The fixtures' private keys are public test data, never deployment identities.
 `testdata/ip.pem`, `ip-dns.pem` and `ip-cn.pem` are public self-signed test
@@ -45,7 +51,9 @@ creation until about 2100: the first has IP entries for 127.0.0.1 and ::1, the
 second only DNS entries spelled like those addresses, the third only a matching
 common name. `unsupported-root.pem` is a public Ed25519 test certificate, whose
 private key was discarded, and `mixed-roots.pem` joins it with `roots.pem`; they
-test skipping of unusable platform certificates.
+test skipping of unusable platform certificates. `rsa.pem` and `rsa-key.pem` are a
+public self-signed RSA test identity for `localhost`, valid from creation until
+about 2100.
 AES uses immutable precomputed tables; hardware acceleration and feature
 detection are disabled. Software AES uses secret-dependent table lookups, so
 this profile does not promise protection from hostile local cache-timing

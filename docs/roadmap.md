@@ -31,7 +31,7 @@ adapted to fresh owned per-request invocations; advanced factories use
 views remain checked by the compiler. The native HTTP tests exercise loopback
 framing, routing, capacity, deadlines, panic cleanup, and shutdown. HTTP/2 remains
 outside the implemented contract. The optional external `tls` package
-(`examples/tls/`) adds verified TLS 1.2 connections using compiler-embedded
+(`examples/tls/`) adds verified TLS 1.3/1.2 connections (1.3 preferred) using compiler-embedded
 Mbed TLS 3.6.7; system roots by default (explicit roots override) and a DNS or IP-address identity apply. Its memory-BIO
 engine uses ordinary TCP operations with a handshake-only context, connection
 deadlines and worker compensation for external wrappers. TLS conformance evidence is tracked by the

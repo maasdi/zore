@@ -2,4 +2,4 @@ version = 1
 
 [projects]
 https-client = { manifest = "a481a49c45c23806c9d7dc7b1dc1d52dbcf77d4d46f09c0d3b759223a667c1c0", path = "." }
-tls = { manifest = "07d813af80a345305c047b36b200440d66fd99eb3f94d1ca97bc2a5f32741c52", path = "../tls/tls", adapter = "tls-mbedtls-v1", recipe = "3081dddda354e3055b565f187267c4013af2f77525aab9bd802265b9b5f0d8c6" }
+tls = { manifest = "07d813af80a345305c047b36b200440d66fd99eb3f94d1ca97bc2a5f32741c52", path = "../tls/tls", adapter = "tls-mbedtls-v1", recipe = "33040dcd4f583caca1bb556e00bdb71088290b8efeb255f78b879284ed2847b4" }

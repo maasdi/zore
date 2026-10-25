@@ -123,7 +123,7 @@ const CRYPTO: Adapter = Adapter {
     mbedtls: true,
     id: "crypto-v1",
     project: "crypto",
-    fingerprint: "a9ce277a13826cd9b135f7f6931453e61677dc8424e42a5e0172596d93d9a385",
+    fingerprint: "dd6bb78dd5d57d5e867f325c316135f1b7b94002904dc3c4343b0fa9ee34c2b4",
     c_flags: &[],
     symbols: &[
         ("nativeRandomBytes", "zore_native_crypto_random_bytes", None),
@@ -137,7 +137,7 @@ const TLS: Adapter = Adapter {
     mbedtls: true,
     id: "tls-mbedtls-v1",
     project: "tls",
-    fingerprint: "3081dddda354e3055b565f187267c4013af2f77525aab9bd802265b9b5f0d8c6",
+    fingerprint: "33040dcd4f583caca1bb556e00bdb71088290b8efeb255f78b879284ed2847b4",
     c_flags: &[],
     symbols: &[
         ("nativeConfig", "zore_native_tls_native_config", None),
@@ -155,6 +155,7 @@ const TLS: Adapter = Adapter {
             "zore_native_tls_native_system_roots",
             None,
         ),
+        ("nativeVersion", "zore_native_tls_native_version", None),
     ],
 };
 

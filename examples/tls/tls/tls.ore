@@ -81,13 +81,13 @@ func DefaultClientConfig() (ClientConfig, error) {
 
 func NewClientConfig(rootsPEM []byte) (ClientConfig, error) {
     let empty = Array<byte>{}
-    let handle, err = nativeConfig(false, rootsPEM, empty[:])
+    let handle, err = nativeConfig(false, rootsPEM, empty[:], 0)
     _ = err
     return ClientConfig{handle: handle}, errors.Wrap(err, "tls.NewClientConfig")
 }
 
 func NewServerConfig(chainPEM []byte, keyPEM []byte) (ServerConfig, error) {
-    let handle, err = nativeConfig(true, chainPEM, keyPEM)
+    let handle, err = nativeConfig(true, chainPEM, keyPEM, 0)
     _ = err
     return ServerConfig{handle: handle}, errors.Wrap(err, "tls.NewServerConfig")
 }

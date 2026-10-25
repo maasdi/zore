@@ -4,15 +4,17 @@ use super::sys::{ByteArrayError, ErrorOut};
 use std::collections::BTreeMap;
 use std::ffi::{CStr, CString, c_char, c_void};
 use std::ptr::NonNull;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
 unsafe extern "C" {
+    fn zore_tls_init() -> i32;
     fn zore_tls_config(
         server: i32,
         cert: *const u8,
         cert_len: usize,
         key: *const u8,
         key_len: usize,
+        versions: i32,
         error: *mut c_char,
     ) -> *mut c_void;
     fn zore_tls_config_free(config: *mut c_void);
@@ -40,9 +42,32 @@ unsafe extern "C" {
     fn zore_tls_pending(session: *mut c_void) -> usize;
     fn zore_tls_output(session: *mut c_void, data: *mut u8) -> i32;
     fn zore_tls_status(session: *mut c_void) -> i32;
+    fn zore_tls_version(session: *mut c_void) -> i32;
     fn zore_tls_shutdown(session: *mut c_void, error: *mut c_char) -> i32;
-    fn zore_tls_system_roots(path: *const c_char, length: *mut usize, error: *mut c_char) -> *mut u8;
+    fn zore_tls_system_roots(
+        path: *const c_char,
+        length: *mut usize,
+        error: *mut c_char,
+    ) -> *mut u8;
     fn zore_tls_free(pointer: *mut c_void);
+}
+
+// The provider's PSA key store and random generator are process-global without threading support.
+fn provider() -> MutexGuard<'static, ()> {
+    static PROVIDER: Mutex<()> = Mutex::new(());
+    PROVIDER.lock().unwrap_or_else(|e| e.into_inner())
+}
+fn initialize() -> Result<(), String> {
+    static INIT: OnceLock<i32> = OnceLock::new();
+    let status = *INIT.get_or_init(|| {
+        let _provider = provider();
+        unsafe { zore_tls_init() }
+    });
+    if status == 0 {
+        Ok(())
+    } else {
+        Err(format!("TLS provider initialization failed ({status})"))
+    }
 }
 
 struct State {
@@ -53,6 +78,7 @@ struct State {
 unsafe impl Send for State {}
 impl Drop for State {
     fn drop(&mut self) {
+        let _provider = provider();
         unsafe {
             if self.config {
                 zore_tls_config_free(self.pointer.as_ptr())
@@ -124,6 +150,7 @@ fn operation(
     if state.config {
         return Err("TLS expected session handle".into());
     }
+    let _provider = provider();
     let mut error = [0; 512];
     let result = call(state.pointer.as_ptr(), error.as_mut_ptr());
     if result == -1 {
@@ -141,22 +168,29 @@ pub unsafe extern "C" fn zore_native_tls_native_config(
     cert_len: i64,
     key: *const u8,
     key_len: i64,
+    versions: i64,
 ) {
     let _blocking = super::scheduler::BlockingGuard::enter();
     let result = (|| {
         let cert = unsafe { input(cert, cert_len, 1048576) }?;
         let key = unsafe { input(key, key_len, 1048576) }?;
+        let versions = i32::try_from(versions).map_err(|_| "TLS invalid protocol version range")?;
+        initialize()?;
         let mut error = [0; 512];
-        let pointer = NonNull::new(unsafe {
-            zore_tls_config(
-                i32::from(server),
-                cert.as_ptr(),
-                cert.len(),
-                key.as_ptr(),
-                key.len(),
-                error.as_mut_ptr(),
-            )
-        })
+        let pointer = {
+            let _provider = provider();
+            NonNull::new(unsafe {
+                zore_tls_config(
+                    i32::from(server),
+                    cert.as_ptr(),
+                    cert.len(),
+                    key.as_ptr(),
+                    key.len(),
+                    versions,
+                    error.as_mut_ptr(),
+                )
+            })
+        }
         .ok_or_else(|| message(&error))?;
         insert(pointer, true)
     })();
@@ -181,11 +215,15 @@ pub unsafe extern "C" fn zore_native_tls_native_session(
             }
             config.pointer
         };
+        initialize()?;
         let mut error = [0; 512];
         // The configuration is immutable after creation and `state` keeps it alive.
-        let pointer = NonNull::new(unsafe {
-            zore_tls_session(config.as_ptr(), name.as_ptr(), error.as_mut_ptr())
-        })
+        let pointer = {
+            let _provider = provider();
+            NonNull::new(unsafe {
+                zore_tls_session(config.as_ptr(), name.as_ptr(), error.as_mut_ptr())
+            })
+        }
         .ok_or_else(|| message(&error))?;
         insert(pointer, false)
     })();
@@ -281,6 +319,11 @@ pub extern "C" fn zore_native_tls_native_close(token: i64) {
 }
 
 #[unsafe(no_mangle)]
+pub unsafe extern "C" fn zore_native_tls_native_version(out: *mut ValueError, token: i64) {
+    unsafe { out.write(value(operation(token, |p, _| zore_tls_version(p)))) };
+}
+
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn zore_native_tls_native_status(out: *mut ValueError, token: i64) {
     unsafe { out.write(value(operation(token, |p, _| zore_tls_status(p)))) };
 }
@@ -295,9 +338,13 @@ pub unsafe extern "C" fn zore_native_tls_native_system_roots(
     let result = (|| {
         let path = unsafe { input(path, path_len, 4096) }?;
         let path = CString::new(path).map_err(|_| "TLS path contains NUL")?;
+        initialize()?;
         let mut length = 0;
         let mut error = [0; 512];
-        let pointer = unsafe { zore_tls_system_roots(path.as_ptr(), &mut length, error.as_mut_ptr()) };
+        let pointer = {
+            let _provider = provider();
+            unsafe { zore_tls_system_roots(path.as_ptr(), &mut length, error.as_mut_ptr()) }
+        };
         if pointer.is_null() {
             return Err(message(&error));
         }

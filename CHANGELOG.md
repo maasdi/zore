@@ -22,6 +22,11 @@ once it does.
   Explicit roots (`NewClientConfig`, `https.NewClient`) override them, and empty
   roots are still rejected. The roots are loaded into Mbed TLS, so OS trust
   settings are not applied.
+- The curated `tls` package negotiates TLS 1.3 by default and still accepts
+  TLS 1.2 peers. TLS 1.3 uses ephemeral ECDHE, AES-GCM and ECDSA or RSA-PSS
+  signatures, without PSK, 0-RTT, session tickets or KeyUpdate. The pinned Mbed
+  TLS closure adds the PSA crypto core, HKDF and the TLS 1.3 sources, and TLS
+  provider calls are serialized process-wide.
 - Arbitrary native project sources, dynamic loading, general FFI, full database
   and TLS adapters remain separate work.
 

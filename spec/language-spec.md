@@ -8525,11 +8525,15 @@ Linux GNU and macOS x86_64/aarch64 and Windows x64 MSVC are supported host ABIs;
 all require the ordinary clang/Rust toolchain. Provider maintenance status is
 not an assertion that this integration or every provider release was audited.
 
-This first configuration enables TLS 1.2 with ECDHE RSA/ECDSA authentication and
-AES-128/256-GCM only, with the extended master secret extension and all fatal
-alerts. TLS 1.0/1.1, static RSA exchange, PSK, DTLS, TLS 1.3,
-renegotiation, client certificates, ALPN, session persistence, and certificate
-automation are excluded. Provider defaults never bypass peer verification.
+The configuration enables TLS 1.3 and TLS 1.2, and both sides prefer TLS 1.3.
+TLS 1.3 uses ephemeral ECDHE on P-256/P-384, AES-128/256-GCM, ECDSA or RSA-PSS
+CertificateVerify signatures and middlebox compatibility mode. TLS 1.2 uses
+ECDHE RSA/ECDSA authentication and AES-128/256-GCM only, with the extended master
+secret extension. All fatal alerts are sent; in TLS 1.3 they are encrypted
+records. TLS 1.0/1.1, static RSA exchange, PSK and PSK key exchange modes, 0-RTT
+early data, session tickets and resumption, KeyUpdate, DTLS, renegotiation,
+client certificates, ALPN, and certificate automation are excluded. A TLS 1.3
+NewSessionTicket from a peer is ignored; a peer KeyUpdate fails the connection. Provider defaults never bypass peer verification.
 Trust roots default to the platform's, like Go: `DefaultClientConfig` trusts
 the system roots, and explicit roots override them. `NewClientConfig` trusts
 exactly the nonempty PEM bundle it is given and rejects an empty one; an empty
@@ -8577,7 +8581,11 @@ External process termination has ordinary
 best-effort cleanup limits.
 
 Native calls process memory buffers only, never wait on sockets and never call
-Zore callbacks. Handshake/read/write loops drain ciphertext through `net.Conn`
+Zore callbacks. The provider's PSA crypto core, which TLS 1.3 needs, keeps a
+process-global key store and random generator without threading support, so it
+is initialized once and all provider calls of the integration are serialized
+process-wide; concurrent connections make progress but do not run TLS
+cryptography in parallel. Handshake/read/write loops drain ciphertext through `net.Conn`
 and feed received ciphertext into the provider. Native calls retain validated
 session leases until completion and serialize access; configurations are
 immutable and are read without holding their lease. The context bounds only the
@@ -8690,7 +8698,9 @@ HTTPS consumers can pass `Conn` through the ordinary Reader/Writer interfaces.
 No HTTP server or plain TCP behavior changes.
 Compiler impact is curated provider registration, embedded vendor closure and
 fixed native build/link recipe; no syntax, ownership, or async-lowering changes.
-Conformance covers default platform and explicit root configuration, filtering of unusable
+Conformance covers TLS 1.3 preference, TLS 1.2 fallback with 1.2-only peers and
+rejection of disjoint version ranges, ECDSA and RSA identities and verification
+failures under each version, default platform and explicit root configuration, filtering of unusable
 platform certificates, `SSL_CERT_FILE` handling, trusted/untrusted chains, DNS mismatch, IP-address identity
 matching only IP entries (not DNS entries or the common name) without SNI,
 invalid configuration,

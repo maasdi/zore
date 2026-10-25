@@ -5,6 +5,7 @@
 #include "tls.h"
 #include "mbedtls/ssl.h"
 #include "mbedtls/base64.h"
+#include "psa/crypto.h"
 #include "mbedtls/entropy.h"
 #include "mbedtls/ctr_drbg.h"
 #include "mbedtls/error.h"
@@ -26,6 +27,7 @@
 
 typedef struct {
     int server;
+    int versions;
     mbedtls_x509_crt certificates;
     mbedtls_pk_context key;
     unsigned char *cert_pem;
@@ -96,8 +98,14 @@ void zore_tls_config_free(void *pointer) {
     free(identity);
 }
 
+int zore_tls_init(void) { return (int) psa_crypto_init(); }
+
 void *zore_tls_config(int server, const unsigned char *cert, size_t cert_len,
-                      const unsigned char *key, size_t key_len, char *error) {
+                      const unsigned char *key, size_t key_len, int versions, char *error) {
+    if (versions != 0 && versions != 12 && versions != 13) {
+        snprintf(error, ERROR_CAPACITY, "TLS invalid protocol version range");
+        return NULL;
+    }
     mbedtls_entropy_context entropy;
     mbedtls_ctr_drbg_context random;
     mbedtls_entropy_init(&entropy);
@@ -110,6 +118,7 @@ void *zore_tls_config(int server, const unsigned char *cert, size_t cert_len,
         goto fail;
     }
     identity->server = server;
+    identity->versions = versions;
     mbedtls_x509_crt_init(&identity->certificates);
     mbedtls_pk_init(&identity->key);
     int status = mbedtls_x509_crt_parse(&identity->certificates, cert_pem, cert_len + 1);
@@ -195,6 +204,11 @@ void *zore_tls_session(void *pointer, const char *name, char *error) {
         session->server ? MBEDTLS_SSL_IS_SERVER : MBEDTLS_SSL_IS_CLIENT,
         MBEDTLS_SSL_TRANSPORT_STREAM, MBEDTLS_SSL_PRESET_DEFAULT);
     if (status != 0) goto fail;
+    mbedtls_ssl_conf_min_tls_version(&session->config,
+        source->versions == 13 ? MBEDTLS_SSL_VERSION_TLS1_3 : MBEDTLS_SSL_VERSION_TLS1_2);
+    mbedtls_ssl_conf_max_tls_version(&session->config,
+        source->versions == 12 ? MBEDTLS_SSL_VERSION_TLS1_2 : MBEDTLS_SSL_VERSION_TLS1_3);
+    mbedtls_ssl_conf_tls13_key_exchange_modes(&session->config, MBEDTLS_SSL_TLS1_3_KEY_EXCHANGE_MODE_EPHEMERAL);
     mbedtls_ssl_conf_rng(&session->config, mbedtls_ctr_drbg_random, &session->random);
     if (session->server) {
         status = mbedtls_ssl_conf_own_cert(&session->config, &session->certificates, &session->key);
@@ -233,7 +247,8 @@ static int operation_result(Session *session, int status, char *error) {
     if (status < 0) {
         session->failed = 1;
         uint32_t flags = mbedtls_ssl_get_verify_result(&session->ssl);
-        if (flags != 0) mbedtls_x509_crt_verify_info(error, ERROR_CAPACITY, "certificate verification: ", flags);
+        if (flags != 0xFFFFFFFF && (flags & ~(uint32_t) MBEDTLS_X509_BADCERT_SKIP_VERIFY) != 0)
+            mbedtls_x509_crt_verify_info(error, ERROR_CAPACITY, "certificate verification: ", flags);
         else failure(status, error);
         return -1;
     }
@@ -295,6 +310,8 @@ int zore_tls_shutdown(void *pointer, char *error) {
 }
 
 int zore_tls_status(void *pointer) { return ((Session *)pointer)->status; }
+
+int zore_tls_version(void *pointer) { return (int) mbedtls_ssl_get_version_number(&((Session *)pointer)->ssl); }
 
 void zore_tls_free(void *pointer) { free(pointer); }
 

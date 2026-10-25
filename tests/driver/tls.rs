@@ -146,7 +146,7 @@ func main() {}
     let mut tests = fixture.command("test");
     tests.arg("--locked").env_remove("SSL_CERT_FILE");
     let output = success(run(tests));
-    assert!(String::from_utf8_lossy(&output.stdout).contains("Tests: 25 passed, 0 failed"));
+    assert!(String::from_utf8_lossy(&output.stdout).contains("Tests: 28 passed, 0 failed"));
     let cached = fs::read_dir(fixture._directory.path().join("cache/zore"))
         .unwrap()
         .map(|entry| entry.unwrap().path())
@@ -159,6 +159,10 @@ func main() {}
         .collect::<Vec<_>>();
     assert_eq!(cached.len(), 1, "{cached:?}");
     assert!(cached[0].join("library/ssl_tls.o").is_file(), "{cached:?}");
+    assert!(
+        cached[0].join("library/ssl_tls13_client.o").is_file(),
+        "{cached:?}"
+    );
     let environment_test = fixture.root.join("system_roots_env_test.ore");
     fs::write(
         &environment_test,
