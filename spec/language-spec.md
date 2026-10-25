@@ -714,8 +714,10 @@ statement) it can prepare statements and retry Commit or Rollback. If SQLite
 itself rolled back (a failed commit, or a statement failure such as an
 `OR ROLLBACK` conflict), Prepare, Step and Commit fail and only Rollback
 succeeds. Empty resources produce ordinary operation errors. Dropping a Begin
-transaction rolls back and closes the connection token; dropping a callback
-transaction rolls back and keeps the connection. Abandonment invalidates escaped
+transaction rolls back and closes the connection token; a callback transaction
+is never dropped early: replacing the callback's Transaction leaves the
+transaction open, and a panic in the body rolls back during unwinding and keeps
+the connection. Abandonment invalidates escaped
 transaction statements before rollback; they remain safe to finalize. Normal
 return, `?`, explicit close, structured panic and task-frame destruction invoke
 ordinary cleanup. Abort/process termination and native bugs retain ordinary limits.

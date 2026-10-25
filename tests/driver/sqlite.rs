@@ -216,23 +216,24 @@ func callbackPanic() error {
     })?
     return nil
 }
-func panickingChild(db sqlite.Database, ready channel<bool>) error {
-    return db.Transaction(func(tx mut sqlite.Transaction) error {
+func panickingChild(db sqlite.Database, ready channel<bool>, acknowledged channel<bool>) error {
+    let failure = db.Transaction(func(tx mut sqlite.Transaction) error {
         ready.send(true)
-        time.Sleep(300 * time.Millisecond)
+        acknowledged.receive()
         panic("expected scoped callback panic")
     })
+    ready.send(false)
+    return failure
 }
-func contendingChild(db sqlite.Database, ready channel<bool>) error {
-    ready.receive()
-    var failures = 0
+func contendingChild(db sqlite.Database, ready channel<bool>, acknowledged channel<bool>) error {
+    let began, received = ready.receive()
+    if !began || !received { return error("panicking transaction never began") }
+    let overlapping = db.Transaction(func(tx mut sqlite.Transaction) error { return nil })
+    acknowledged.send(true)
+    if overlapping == nil { return error("peer began while the panicking transaction was open") }
     for var attempt = 0; attempt < 100; attempt += 1 {
         let result = db.Transaction(func(tx mut sqlite.Transaction) error { return nil })
-        if result == nil {
-            if failures == 0 { return error("peer began while the panicking transaction was open") }
-            return nil
-        }
-        failures += 1
+        if result == nil { return nil }
         time.Sleep(20 * time.Millisecond)
     }
     return error("peer never began after the panic")
@@ -240,9 +241,10 @@ func contendingChild(db sqlite.Database, ready channel<bool>) error {
 func scopedPanic() error {
     let db = sqlite.Open(":memory:")?
     let ready = channel<bool>(1)
+    let acknowledged = channel<bool>(1)
     scope {
-        let panicking = go panickingChild(db, ready)
-        let peer = go contendingChild(db, ready)
+        let panicking = go panickingChild(db, ready, acknowledged)
+        let peer = go contendingChild(db, ready, acknowledged)
         let failure = peer.wait()
         if failure != nil { panic("peer failed: " + errors.Message(failure)) }
         println("peer ok")

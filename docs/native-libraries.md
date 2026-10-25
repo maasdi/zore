@@ -114,8 +114,8 @@ databases, statement connection leases, transient parameter copies, owned binary
 rows, and callback-scoped and retryable low-level transactions with rollback on
 abandonment. The fixed build flags participate in recipe fingerprints. Its
 wrappers use helper waits in async callers and compensated synchronous calls
-otherwise. Busy timeout bounds lock
-retries; query cancellation, interrupts and hard deadlines are not exposed.
+otherwise. Busy timeout bounds lock retries; query cancellation, interrupts and
+hard deadlines are not exposed.
 
 An audited TLS backend would similarly register its complete reviewed source and
 link closure, expose owned session/configuration values, and define certificate
