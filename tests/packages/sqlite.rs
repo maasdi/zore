@@ -46,6 +46,7 @@ fn sqlite_wrappers_suspend_through_helpers_and_plain_user_helpers_stay_synchrono
 import "sqlite"
 func plain(db sqlite.Database) error { var statement = db.Prepare("select 1")?; statement.Step()?; return nil }
 async func query(db own sqlite.Database) error { var statement = db.Prepare("select 1")?; statement.Step()?; return nil }
+async func scoped(db own sqlite.Database) error { db.Transaction(func(tx mut sqlite.Transaction) error { return nil })?; return nil }
 func main() {}
 "#,
     );
@@ -72,6 +73,12 @@ func main() {}
         names
             .iter()
             .any(|name| name.starts_with("sqlite.") && name.ends_with(".Prepare")),
+        "{names:?}"
+    );
+    assert!(
+        names
+            .iter()
+            .any(|name| name.starts_with("sqlite.") && name.ends_with(".Transaction")),
         "{names:?}"
     );
     assert!(plan.machines.values().any(|machine| {
@@ -121,6 +128,60 @@ fn sqlite_resources_preserve_ordinary_move_and_visibility_rules() {
         ),
     ] {
         super::local_dependencies::rejects_tree(&files(main), error);
+    }
+}
+
+#[test]
+fn sqlite_transaction_callbacks_borrow_let_databases_and_keep_transactions_inside() {
+    let accepted = r#"package main
+import "sqlite"
+func run() error {
+    let db = sqlite.Open(":memory:")?
+    var inserted = 0
+    db.Transaction(func(tx mut sqlite.Transaction) error {
+        var statement = tx.Prepare("select 1")?
+        statement.Step()?
+        inserted += 1
+        return nil
+    })?
+    db.Transaction(func(tx mut sqlite.Transaction) error { return nil })?
+    println(inserted)
+    return nil
+}
+func main() {}
+"#;
+    super::local_dependencies::accepts_tree(&files(accepted));
+    let template = r#"package main
+import "sqlite"
+func keep(tx own sqlite.Transaction) {}
+func run() error {
+    let db = sqlite.Open(":memory:")?
+    BODY
+    return nil
+}
+func main() {}
+"#;
+    for (body, error) in [
+        (
+            "db.Transaction(func(tx mut sqlite.Transaction) error { let kept = tx; return nil })?",
+            "cannot move borrowed value `tx`",
+        ),
+        (
+            "db.Transaction(func(tx mut sqlite.Transaction) error { keep(tx); return nil })?",
+            "cannot move borrowed value `tx`",
+        ),
+        (
+            "db.Transaction(func(tx sqlite.Transaction) error { return nil })?",
+            "func(mut sqlite.Transaction) error",
+        ),
+        (
+            r#"var keep = func() error { return nil }
+    db.Transaction(func(tx mut sqlite.Transaction) error { keep = func() error { var s = tx.Prepare("select 1")?; return nil }; return nil })?"#,
+            "storing a view from a function literal's parameter into captured `keep`",
+        ),
+    ] {
+        let main = template.replace("BODY", body);
+        super::local_dependencies::rejects_tree(&files(&main), error);
     }
 }
 

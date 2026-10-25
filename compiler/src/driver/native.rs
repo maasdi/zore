@@ -37,7 +37,7 @@ const SQLITE: Adapter = Adapter {
     mbedtls: false,
     id: "sqlite-v1",
     project: "sqlite",
-    fingerprint: "39079c16c327f06c66f667782653832f0ce4ac5741453fa8540cc5fda6fa5711",
+    fingerprint: "b91cc133fee296b6343d0558ceb06d3b4c0a00e6715a6cdf20e283fe33c3dd5b",
     c_flags: &[
         "-Wno-error=sign-compare",
         "-Wno-error=unused-variable",
@@ -77,6 +77,11 @@ const SQLITE: Adapter = Adapter {
             Some(NativeWait::Helper),
         ),
         (
+            "nativeAbort",
+            "zore_native_sqlite_native_abort",
+            Some(NativeWait::Helper),
+        ),
+        (
             "nativeDropDatabase",
             "zore_native_sqlite_native_drop_database",
             None,
@@ -94,6 +99,11 @@ const SQLITE: Adapter = Adapter {
         (
             "nativeReset",
             "zore_native_sqlite_native_reset",
+            Some(NativeWait::Helper),
+        ),
+        (
+            "nativeClearBindings",
+            "zore_native_sqlite_native_clear_bindings",
             Some(NativeWait::Helper),
         ),
         (

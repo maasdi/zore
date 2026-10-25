@@ -170,7 +170,7 @@ fn reviewed_crypto_runs_known_answers_random_and_concurrency_offline() {
             .unwrap(),
     );
     assert!(
-        String::from_utf8_lossy(&output.stdout).contains("Tests: 8 passed, 0 failed"),
+        String::from_utf8_lossy(&output.stdout).contains("Tests: 9 passed, 0 failed"),
         "{output:?}"
     );
     assert_eq!(cached_mbedtls(&fixture.root.join("cache/zore")), closure);
@@ -249,7 +249,7 @@ import "crypto"
 import "adler32"
 func example() error {
     let data = crypto.RandomBytes(32)?
-    let digest = crypto.SHA256(data[:])?
+    let digest = crypto.SHA256(data[:])
     var checksum = adler32.New()?
     checksum.Write(digest[:])?
     let sum = checksum.Sum()?
@@ -288,11 +288,11 @@ import "std/time"
 async func make() (Array<byte>, error) {
     let bytes = crypto.RandomBytes(64)?
     time.Sleep(time.Millisecond)
-    return crypto.SHA256(bytes[:])
+    return crypto.SHA256(bytes[:]), nil
 }
 async func consume(mode string) error {
     let bytes = crypto.RandomBytes(64)?
-    let hash = crypto.SHA256(bytes[:])?
+    let hash = crypto.SHA256(bytes[:])
     time.Sleep(time.Millisecond)
     if mode == "panic" { panic("crypto task panic") }
     if mode == "error" { let invalid = crypto.RandomBytes(-1)? }
