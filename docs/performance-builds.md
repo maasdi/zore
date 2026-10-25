@@ -1,5 +1,9 @@
 # Native application builds — 2026-10-23
 
+The later [2026-10-25 scheduling report](performance-build-scheduling.md)
+remeasures current main and records overlapping runtime/object compilation.
+The historical measurements below retain their original source identities.
+
 Issue [#156](https://github.com/maasdi/zore/issues/156) profiles current main
 before choosing a focused native-build improvement. These measurements follow
 [#127/#128](performance-followups.md); their internal-linkage change is already

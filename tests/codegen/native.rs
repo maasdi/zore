@@ -5,6 +5,7 @@ mod async_scopes;
 #[path = "../hardening/process.rs"]
 mod bounded_process;
 mod buffer;
+mod build_parallel;
 mod conformance;
 mod controlled_runtime;
 mod hardening;

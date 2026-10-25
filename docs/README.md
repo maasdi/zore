@@ -19,6 +19,7 @@
 | [Performance baseline](performance.md) | Reproducible compiler, REST/JSON and frame measurements, raw data and measured follow-ups. |
 | [Performance follow-ups](performance-followups.md) | Internal LLVM linkage and cancellable request deadlines, paired compiler measurements and long REST retention runs. |
 | [Runtime population measurements](runtime-scaling.md) | Cross-host suspended-task, socket and timer populations, pinned storage, cleanup and experimental limits. |
+| [Native build scheduling](performance-build-scheduling.md) | Current-main stage profiles and alternating Linux warm/cold measurements for overlapping runtime preparation and object compilation. |
 
 ## Decision records
 

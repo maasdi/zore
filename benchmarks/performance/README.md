@@ -3,6 +3,8 @@
 See the [recorded Linux baseline](../../docs/performance.md) and
 [paired compiler/request-retention follow-ups](../../docs/performance-followups.md),
 and [current-main native-build profiles](../../docs/performance-builds.md).
+The [build-scheduling comparison](../../docs/performance-build-scheduling.md)
+records overlapping runtime/object compilation with warm and cold caches.
 
 This opt-in Linux runner extends the existing suspended-task, frame-storage and
 cooperative-budget workloads. It changes no compiler or scheduler semantics.
@@ -72,8 +74,11 @@ clang boundary.
 Build profiles record every clang/rustc command and elapsed duration, including
 the rustc host-version query, cold runtime-library compilation, Rust entry-shim
 compilation/linking, and its nested native linker. `rustc_link_seconds` includes
-`native_link_seconds`; do not add them. `frontend_and_emit_seconds` ends at the
-first recorded compiler command and includes process/wrapper startup and IR
+`native_link_seconds`; do not add them. Cold runtime preparation can run
+concurrently with clang object generation; their command intervals can overlap
+and their elapsed durations must not be added to estimate build wall time.
+`frontend_and_emit_seconds` ends when clang object compilation starts and includes
+process/wrapper startup and IR
 capture, so use the separate probe when attributing individual frontend phases.
 
 Each private cache is write-probed before building. Snapshots retain rlib hashes,

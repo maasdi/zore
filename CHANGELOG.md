@@ -85,6 +85,9 @@ once it does.
 
 ### Performance evidence
 
+- Overlapped clang object generation with runtime-library preparation while
+  preserving optimization flags, cache publication and compiler error priority.
+  Published alternating Linux warm/cold measurements and raw evidence.
 - Marked generated Zore functions internal to LLVM while preserving the exported
   entry shim and runtime ABI, allowing unused bodies to be eliminated.
 - Context deadline watchers now own cancellable timer/receive registrations;
