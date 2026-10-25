@@ -152,6 +152,8 @@ class HarnessTests(unittest.TestCase):
 
     def test_profile_control_program_passes_the_real_frontend(self):
         compiler = ROOT / "target/debug/zore"
+        if not compiler.is_file():
+            self.skipTest(f"{compiler} is missing; build it with cargo build --locked")
         with tempfile.TemporaryDirectory() as directory:
             source = Path(directory) / "workload.ore"
             source.write_text(profiled_source())

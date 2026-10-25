@@ -80,7 +80,12 @@ fn references(text: &str, indices: &HashMap<Vec<u8>, usize>) -> Option<Vec<usize
 }
 
 pub(crate) fn retain_reachable_functions(ir: &str) -> Cow<'_, str> {
-    reachable_functions(ir).unwrap_or(Cow::Borrowed(ir))
+    let retained = reachable_functions(ir);
+    debug_assert!(
+        retained.is_some(),
+        "native-input pruning could not parse the emitted module"
+    );
+    retained.unwrap_or(Cow::Borrowed(ir))
 }
 
 fn reachable_functions(ir: &str) -> Option<Cow<'_, str>> {
@@ -139,15 +144,31 @@ mod tests {
                 include_str!("../../../tests/codegen/fixtures/reachability.ore").into(),
             )
             .unwrap();
-        let ir = crate::driver::build::emit_llvm(sources.file(file).unwrap()).unwrap();
+        let file = sources.file(file).unwrap();
+        let ir = crate::driver::build::emit_llvm(file).unwrap();
         assert!(ir.contains("define internal i64 @\"main.deadA\""));
         let pruned = retain_reachable_functions(&ir);
+        assert!(matches!(pruned, Cow::Owned(_)));
         assert!(!pruned.contains("@\"main.deadA\""));
         assert!(!pruned.contains("@\"main.deadB\""));
         assert!(pruned.contains("define void @zore_entry()"));
         assert!(pruned.contains("@\"main.seed\""));
         assert!(pruned.contains("@\"main.job"));
         assert_eq!(pruned, retain_reachable_functions(&ir));
+
+        let project = crate::driver::project::load_file(file).unwrap();
+        let mut stages = Vec::new();
+        let native = crate::driver::build::native_ir(&project, file, &mut |stage| match stage {
+            crate::driver::build::Stage::Checked => stages.push("check"),
+            crate::driver::build::Stage::Lowered => stages.push("lower"),
+            crate::driver::build::Stage::Emitted(emitted) => {
+                assert_eq!(emitted, ir);
+                stages.push("emit");
+            }
+        })
+        .unwrap();
+        assert_eq!(stages, ["check", "lower", "emit"]);
+        assert_eq!(native, pruned);
     }
 
     #[test]
@@ -205,7 +226,7 @@ define private void @dead() {\n  ret void\n}\n";
             "define private void @same() {\n}\ndefine private void @same() {\n}\n",
             "define private void @\"bad\\GG\"() {\n}\n",
         ] {
-            assert!(matches!(retain_reachable_functions(ir), Cow::Borrowed(_)));
+            assert!(reachable_functions(ir).is_none());
         }
     }
 }
