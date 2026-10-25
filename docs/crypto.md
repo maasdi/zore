@@ -47,17 +47,17 @@ empty owned array. Every nonempty request creates a private CTR-DRBG, seeds it
 from the operating system through mbedTLS entropy, generates bounded chunks and
 frees the state. An OS entropy failure has no insecure fallback.
 
-`SHA256(data)` and `HMACSHA256(key, data)` return a fresh owned 32-byte array
-and an error. They accept empty and arbitrary binary input; HMAC accepts an
-empty key. Inputs are borrowed for the call and never retained or changed.
-Failure returns an empty array. Allocation exhaustion follows the runtime's
+`SHA256(data)` and `HMACSHA256(key, data)` return a fresh owned 32-byte array.
+They accept empty and arbitrary binary input; HMAC accepts an empty key. Inputs
+are borrowed for the call and never retained or changed. A digest or MAC
+provider failure, which only a broken build can produce, panics with a message
+naming the function. Allocation exhaustion follows the runtime's
 ordinary fatal allocation policy. `Equal(left, right)` returns false immediately
 for different lengths, true for two empty inputs and otherwise delegates to
 mbedTLS's constant-time byte comparison. Lengths are public; this does not make
 surrounding source code constant time. Verify MACs with
 `VerifyHMACSHA256(key, data, tag)`, which computes the expected tag and compares
-it through `Equal`; it returns false for a tag of the wrong length or a provider
-failure. Never compare MACs with an early-exit comparison such as `bytes.Equal`.
+it through `Equal`; it returns false for a tag of the wrong length. Never compare MACs with an early-exit comparison such as `bytes.Equal`.
 
 Calls are thread-safe, synchronous and non-cancellable. Random generation uses
 a runtime helper so entropy waits receive the runtime's ordinary blocking
@@ -102,6 +102,9 @@ fresh-process concurrent first random use, concurrency and cleanup. Test-only wr
 second random chunk and failed digest/MAC calls. Those wrappers are absent from
 production and use no environment-controlled insecure modes. Comparison tests
 check delegation and results; timing measurements do not prove constant time.
+The injected digest and MAC failure tests run at the C and bridge level; the
+Zore panic path for a provider failure cannot be triggered from Zore code and is
+not exercised.
 
 This package supports tokens, content digests and MAC verification. Password
 KDFs, AEAD, signatures, key encodings, certificate handling, streaming state and

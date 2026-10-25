@@ -128,8 +128,8 @@ identity and conflict/boundary checks under §§3.4 and 3.20. See
 under §§3.4.1–3.4.2. [Curated native adapter integration](native-libraries.md)
 (#138) adds registered C/Rust sources, private bindings and a native checksum
 package under §3.4.3. [SQLite](libraries/sqlite.md) (#155) extends that path
-with a pinned amalgamation, statement leases, parameter binding, consuming
-transactions and registered helper waits under §3.4.7. [Versioned distribution planning](design/package-distribution.md)
+with a pinned amalgamation, statement leases, parameter binding, callback-scoped and
+retryable transactions and registered helper waits under §3.4.7. [Versioned distribution planning](design/package-distribution.md)
 (#139) proposes Git tags, compatible minimum-version selection and staged delivery.
 [#144](release-metadata.md) adds canonical release version/tag validation, minimal
 licensing metadata and optional `check --release` preflight under §3.4.4. Supplied
