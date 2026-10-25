@@ -1,0 +1,42 @@
+{
+  "baseline": "46e66e076c5a0e57d984d2304ddcd48d96c8175b",
+  "candidate": "e9ee2cad12f3505c7d0abeaf2040d31dd91ccc20",
+  "inputs": [
+    {
+      "workload": "hello",
+      "llvm_sha256": "69148e90dda2e2accf8881725a915e724be16062e6d5dd7941fffff6c224512b",
+      "native_ir_bytes": 3566,
+      "object_bytes": 1200
+    },
+    {
+      "workload": "json",
+      "llvm_sha256": "9c0acf068c4a06a360550008605489fdfe175096f142676ffcaafa1254fb52ce",
+      "native_ir_bytes": 1196780,
+      "object_bytes": 133536
+    },
+    {
+      "workload": "rest",
+      "llvm_sha256": "2121a6b3fb3b55ccc2b1fff5adf37186d6e7735818091aec7ddb97ee1df6cdbe",
+      "native_ir_bytes": 6161573,
+      "object_bytes": 880416
+    },
+    {
+      "workload": "rest_sample",
+      "llvm_sha256": "edebf06c54c056187d515fd8efc0bf4e34c53814837be90ed6abe29f3043c304",
+      "native_ir_bytes": 6624584,
+      "object_bytes": 1107936
+    },
+    {
+      "workload": "dependency",
+      "llvm_sha256": "65d38d9bb7fab066671e653699d6d66d384dc4bbfe452f65d0ee6653228cb3aa",
+      "native_ir_bytes": 286245,
+      "object_bytes": 29952
+    },
+    {
+      "workload": "suspension",
+      "llvm_sha256": "2a4b4e4d259b2eb84e8a80f71401653aed8121d1930d650adde3d24a4a8cddc0",
+      "native_ir_bytes": 315279,
+      "object_bytes": 39512
+    }
+  ]
+}

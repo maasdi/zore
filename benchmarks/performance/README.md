@@ -3,6 +3,8 @@
 See the [recorded Linux baseline](../../docs/performance.md) and
 [paired compiler/request-retention follow-ups](../../docs/performance-followups.md),
 and [current-main native-build profiles](../../docs/performance-builds.md).
+The [build-scheduling comparison](../../docs/performance-build-scheduling.md)
+records overlapping runtime/object compilation with warm and cold caches.
 
 This opt-in Linux runner extends the existing suspended-task, frame-storage and
 cooperative-budget workloads. It changes no compiler or scheduler semantics.

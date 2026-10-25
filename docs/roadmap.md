@@ -147,6 +147,11 @@ Unrestricted native extensions remain separate work. Local paths remain mutable
 references even with a lockfile.
 Further self-hosting remains deferred.
 
+Issue [#195](https://github.com/maasdi/zore/issues/195) overlaps runtime-library
+preparation with clang object generation. Its [Linux build-scheduling report](performance-build-scheduling.md)
+records current-main stage profiles, alternating warm/cold measurements and raw
+evidence; Windows performance work remains deferred.
+
 The [MVP evidence inventory](conformance/mvp.md) preserves its 2026-10-13
 reviewed baseline and maps later direct assertions in dated follow-ups. Its
 original counts and conclusions apply only to the recorded commit and CI run.
