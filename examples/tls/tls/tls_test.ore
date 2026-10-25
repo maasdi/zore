@@ -174,7 +174,16 @@ func TestInvalidConfigurationsAndHandles() error {
     let invalid, invalidErr = nativeHandshake(-1)
     _ = invalidErr
     check(invalidErr != nil && invalid == 0)
+    let clientConfig, serverConfig = configs()?
+    let malformedAddresses = Array<string>{"1.2.3", "256.1.1.1", "1::2::3", "12345::1"}
+    for name in malformedAddresses {
+        let session, sessionErr = nativeSession(clientConfig.handle, name)
+        _ = sessionErr
+        check(session == 0 && sessionErr != nil && strings.Contains(errors.Message(sessionErr), "invalid IP address"))
+    }
     check(!validName("") && !validName("127.0.0.1") && !validName("::1") && !validName("local\u0000host"))
+    check(validServerName("127.0.0.1") && validServerName("::1") && validServerName("localhost"))
+    check(!validServerName("") && !validServerName("[::1]") && !validServerName("local\u0000host"))
     nativeClose(0)
     nativeClose(-1)
     return nil
@@ -568,6 +577,124 @@ func TestFailedReadSendsFatalAlert() error {
     var alert = zeros(64)
     let count = source.Read(alert[:])?
     check(count >= 5 && alert[0] == 21)
+    cancel()
+    return nil
+}
+
+func TestServerNameForms() error {
+    let accepted = Array<string>{"localhost", "127.0.0.1", "::1", "2001:db8::1", "FE80::1", "::ffff:127.0.0.1", "0:0:0:0:0:0:0:1"}
+    for name in accepted {
+        check(validServerName(name))
+    }
+    let rejected = Array<string>{"", "[::1]", "fe80::1%eth0", "1.2.3", "256.1.1.1", "01.2.3.4", "1::2::3", ":::1", "12345::1", "1:2:3:4:5:6:7:8:9", "127.0.0.1:443", "local\u0000host"}
+    for name in rejected {
+        check(!validServerName(name))
+    }
+    return nil
+}
+
+func configsFor(certPath string) (ClientConfig, ServerConfig, error) {
+    let cert = os.ReadFile(certPath)?
+    let key = os.ReadFile("testdata/server-key.pem")?
+    let client = NewClientConfig(cert[:])?
+    let server = NewServerConfig(cert[:], key[:])?
+    return client, server, nil
+}
+
+func ipHandshake(name string, certPath string, expected string) error {
+    let config, serverConfig = configsFor(certPath)?
+    let client = ClientConfig{handle: nativeSession(config.handle, name)?}
+    let server = ClientConfig{handle: nativeSession(serverConfig.handle, "")?}
+    let err = memoryHandshake(client.handle, server.handle)
+    _ = err
+    if expected == "" {
+        check(err == nil)
+    } else {
+        check(err != nil)
+        check(strings.Contains(errors.Message(err), expected))
+    }
+    return nil
+}
+
+func TestIPServerNamesMatchOnlyIPAddressEntries() error {
+    ipHandshake("127.0.0.1", "testdata/ip.pem", "")?
+    ipHandshake("::1", "testdata/ip.pem", "")?
+    ipHandshake("0000:0000:0000:0000:0000:0000:0000:0001", "testdata/ip.pem", "")?
+    ipHandshake("127.0.0.2", "testdata/ip.pem", "does not match")?
+    ipHandshake("::2", "testdata/ip.pem", "does not match")?
+    ipHandshake("::ffff:127.0.0.1", "testdata/ip.pem", "does not match")?
+    ipHandshake("localhost", "testdata/ip.pem", "does not match")?
+    ipHandshake("127.0.0.1", "testdata/ip-dns.pem", "does not match")?
+    ipHandshake("::1", "testdata/ip-dns.pem", "does not match")?
+    ipHandshake("127.0.0.1", "testdata/ip-cn.pem", "does not match")?
+    return nil
+}
+
+func containsText(data []byte, text string) bool {
+    for var i = 0; i + text.len() <= data.len(); i += 1 {
+        var matched = true
+        for var j = 0; j < text.len(); j += 1 {
+            if data[i + j] != text[j] {
+                matched = false
+                break
+            }
+        }
+        if matched {
+            return true
+        }
+    }
+    return false
+}
+
+func clientHello(name string) (Array<byte>, error) {
+    let config, serverConfig = configsFor("testdata/ip.pem")?
+    let client = ClientConfig{handle: nativeSession(config.handle, name)?}
+    check(nativeHandshake(client.handle)? == 0)
+    return nativeOutput(client.handle)
+}
+
+func TestIPServerNamesSendNoSNI() error {
+    let ipHello = clientHello("127.0.0.1")?
+    check(ipHello.len() > 0 && !containsText(ipHello[:], "127.0.0.1"))
+    let ipv6Hello = clientHello("::1")?
+    check(ipv6Hello.len() > 0)
+    let dnsHello = clientHello("localhost")?
+    check(containsText(dnsHello[:], "localhost"))
+    return nil
+}
+
+async func closingServer(listener own net.Listener, config own ServerConfig, ctx context.Context) error {
+    let source = listener.Accept()?
+    var conn = Server(ctx, source, config)?
+    return conn.Close()
+}
+
+func ipDial(name string) error {
+    let clientConfig, serverConfig = configsFor("testdata/ip.pem")?
+    let listener = net.Listen("tcp4", "127.0.0.1:0")?
+    let address = listener.Addr()
+    let ctx, cancel = context.WithTimeout(context.Background(), 5 * time.Second)
+    listener.SetDeadline(time.Now() + 5 * time.Second)?
+    let server = go closingServer(listener, serverConfig, ctx)
+    var conn = DialContext(ctx, address, name, clientConfig)?
+    var data = zeros(8)
+    let n, err = conn.Read(data[:])
+    _ = err
+    check(n == 0 && err == error("EOF"))
+    conn.Close()?
+    server.wait()?
+    cancel()
+    return nil
+}
+
+func TestTCPIPAddressServerNames() error {
+    ipDial("127.0.0.1")?
+    ipDial("::1")?
+    let clientConfig, serverConfig = configsFor("testdata/ip.pem")?
+    let ctx, cancel = context.WithTimeout(context.Background(), time.Second)
+    let conn, err = DialContext(ctx, "127.0.0.1:1", "[::1]", clientConfig)
+    _ = err
+    check(err == error("tls.DialContext: DNS name or IP address required"))
     cancel()
     return nil
 }

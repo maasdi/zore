@@ -37,7 +37,29 @@ typedef struct {
     int peer_closed;
     int shutdown_sent;
     int failed;
+    unsigned char ip[16];
+    size_t ip_length;
 } Session;
+
+static int verify_ip(void *pointer, mbedtls_x509_crt *certificate, int depth, uint32_t *flags) {
+    const Session *session = pointer;
+    if (depth != 0) return 0;
+    for (const mbedtls_x509_sequence *name = &certificate->subject_alt_names; name != NULL; name = name->next) {
+        if ((name->buf.tag & MBEDTLS_ASN1_TAG_VALUE_MASK) == MBEDTLS_X509_SAN_IP_ADDRESS &&
+            name->buf.len == session->ip_length && memcmp(name->buf.p, session->ip, session->ip_length) == 0) return 0;
+    }
+    *flags |= MBEDTLS_X509_BADCERT_CN_MISMATCH;
+    return 0;
+}
+
+static int looks_like_ip(const char *name) {
+    int numeric = *name != 0;
+    for (const char *c = name; *c != 0; c += 1) {
+        if (*c == ':') return 1;
+        if (*c != '.' && (*c < '0' || *c > '9')) numeric = 0;
+    }
+    return numeric;
+}
 
 static int failure(int status, char *error) {
     mbedtls_strerror(status, error, ERROR_CAPACITY);
@@ -172,8 +194,15 @@ void *zore_tls_session(void *pointer, const char *name, char *error) {
     status = mbedtls_ssl_setup(&session->ssl, &session->config);
     if (status != 0) goto fail;
     if (!session->server) {
-        status = mbedtls_ssl_set_hostname(&session->ssl, name);
+        session->ip_length = mbedtls_x509_crt_parse_cn_inet_pton(name, session->ip);
+        if (session->ip_length == 0 && looks_like_ip(name)) {
+            snprintf(error, ERROR_CAPACITY, "TLS invalid IP address server name");
+            zore_tls_session_free(session);
+            return NULL;
+        }
+        status = mbedtls_ssl_set_hostname(&session->ssl, session->ip_length != 0 ? NULL : name);
         if (status != 0) goto fail;
+        if (session->ip_length != 0) mbedtls_ssl_set_verify(&session->ssl, verify_ip, session);
     }
     mbedtls_ssl_set_bio(&session->ssl, session, send_bytes, receive_bytes, NULL);
     return session;

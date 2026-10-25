@@ -1,5 +1,5 @@
 version = 1
 
 [projects]
-tls = { manifest = "07d813af80a345305c047b36b200440d66fd99eb3f94d1ca97bc2a5f32741c52", path = "../tls", adapter = "tls-mbedtls-v1", recipe = "440941adddbcef8f22ed95e1d7c6f7cf99d928f31ad6da78d34e7099f452c0f4" }
+tls = { manifest = "07d813af80a345305c047b36b200440d66fd99eb3f94d1ca97bc2a5f32741c52", path = "../tls", adapter = "tls-mbedtls-v1", recipe = "438a68f791fa4fb6cec97b63054c5ac2a4cf44388a147bc705ef76ad2ad365a9" }
 tlsclient = { manifest = "ec1f05997613980ff7a4e06b16fa69f4c677bab18029e5d4b0b3ec116d8a76a4", path = "." }

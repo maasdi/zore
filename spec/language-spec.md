@@ -8531,9 +8531,13 @@ alerts. TLS 1.0/1.1, static RSA exchange, PSK, DTLS, TLS 1.3,
 renegotiation, client certificates, ALPN, session persistence, and certificate
 automation are excluded. Provider defaults never bypass peer verification.
 Trust roots must be supplied explicitly: clients require a nonempty PEM
-trust-root bundle and DNS server name; there is no insecure flag, system or
-platform root discovery, or IP-address certificate identity support. Certificate signatures, validity times, trust chain, and DNS
-name are verified by Mbed TLS; DNS name is also SNI. Empty/malformed roots,
+trust-root bundle and a server name that is a DNS name or an unbracketed IPv4 or
+IPv6 address; there is no insecure flag or system or platform root discovery.
+Certificate signatures, validity times, trust chain, and server name are
+verified by Mbed TLS; a DNS name is also SNI. An IP-address name matches only
+IP-address subjectAltName entries of the same address, never DNS entries or the
+subject common name, and sends no SNI. Bracketed forms such as `[::1]`, zone
+suffixes and ports are rejected; URL consumers pass the unbracketed host. Empty/malformed roots,
 certificate/key mismatch, unknown authorities, expiry, and name mismatch return
 ordinary errors with operation and provider verification text. Servers take a
 PEM chain and unencrypted PEM private key; the pair is checked once at config
@@ -8545,8 +8549,8 @@ This does not promise erasure of caller-owned input buffers.
 | --- | --- |
 | `NewClientConfig(rootsPEM []byte) (ClientConfig, error)` | Parses and owns trusted certificates; empty roots fail |
 | `NewServerConfig(chainPEM []byte, keyPEM []byte) (ServerConfig, error)` | Parses and owns server identity; invalid or mismatched keys fail |
-| `DialContext(ctx context.Context, address string, serverName string, config ClientConfig) (Conn, error)` | Connects then completes a verified handshake; ctx bounds only the dial and handshake |
-| `Client(ctx context.Context, source own net.Conn, serverName string, config ClientConfig) (Conn, error)` | Consumes an already-connected TCP stream and completes a verified handshake bounded by ctx |
+| `DialContext(ctx context.Context, address string, serverName string, config ClientConfig) (Conn, error)` | Connects then completes a verified handshake for a DNS name or IP address; ctx bounds only the dial and handshake |
+| `Client(ctx context.Context, source own net.Conn, serverName string, config ClientConfig) (Conn, error)` | Consumes an already-connected TCP stream and completes a verified handshake for a DNS name or IP address bounded by ctx |
 | `Server(ctx context.Context, source own net.Conn, config ServerConfig) (Conn, error)` | Consumes a TCP stream and completes a server handshake bounded by ctx |
 | `(c mut Conn) Read(buf mut []byte) (int, error)` | Drains pending output, then reads authenticated plaintext; empty buffers read no plaintext; clean close-notify is EOF, transport truncation is an error |
 | `(c mut Conn) Write(data []byte) (int, error)` | Sends all plaintext as records of at most 16 KiB, reporting accepted plaintext count even on later transport failure |
@@ -8651,7 +8655,9 @@ HTTPS consumers can pass `Conn` through the ordinary Reader/Writer interfaces.
 No HTTP server or plain TCP behavior changes.
 Compiler impact is curated provider registration, embedded vendor closure and
 fixed native build/link recipe; no syntax, ownership, or async-lowering changes.
-Conformance covers trusted/untrusted chains, DNS mismatch, invalid configuration,
+Conformance covers trusted/untrusted chains, DNS mismatch, IP-address identity
+matching only IP entries (not DNS entries or the common name) without SNI,
+invalid configuration,
 fragmented records, binary/partial I/O, multi-record writes, clean and abrupt
 closure, connections outliving their handshake context, fatal alerts on
 authentication failure, deadlines, handshake cancellation, Move rejection, async/plain progress, normal/error/panic resource

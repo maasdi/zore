@@ -13,13 +13,22 @@ zore install --offline examples/tls/tls
 zore test --locked --offline examples/tls/tls
 ```
 
-Clients require explicit PEM roots and a DNS name. They always verify the chain,
-certificate validity against the host wall clock, and hostname; the DNS name is
-also SNI. There is no verification bypass or platform root discovery. Only TLS
+Clients require explicit PEM roots and a server name: a DNS name or an
+unbracketed IPv4 or IPv6 address. They always verify the chain, certificate
+validity against the host wall clock, and server name; a DNS name is also SNI.
+An IP address matches only IP-address subjectAltName entries of the same
+address, never DNS entries or the common name, and is not sent as SNI. Bracketed
+forms, zones and ports are rejected, so pass the unbracketed host. There is no
+verification bypass or platform root discovery. Only TLS
 1.2 ECDHE RSA/ECDSA with AES-GCM is enabled, with the extended master secret
 extension; fatal errors send their TLS alerts. Servers accept PEM chains and
 unencrypted PEM private keys; key parsing verifies the matching certificate.
 The fixtures' private keys are public test data, never deployment identities.
+`testdata/ip.pem`, `ip-dns.pem` and `ip-cn.pem` are public self-signed test
+certificates for the IP-address tests, using that public key and valid from their
+creation until about 2100: the first has IP entries for 127.0.0.1 and ::1, the
+second only DNS entries spelled like those addresses, the third only a matching
+common name.
 AES uses immutable precomputed tables; hardware acceleration and feature
 detection are disabled. Software AES uses secret-dependent table lookups, so
 this profile does not promise protection from hostile local cache-timing

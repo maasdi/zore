@@ -146,7 +146,7 @@ func main() {}
     let mut tests = fixture.command("test");
     tests.arg("--locked");
     let output = success(run(tests));
-    assert!(String::from_utf8_lossy(&output.stdout).contains("Tests: 16 passed, 0 failed"));
+    assert!(String::from_utf8_lossy(&output.stdout).contains("Tests: 20 passed, 0 failed"));
     let cached = fs::read_dir(fixture._directory.path().join("cache/zore"))
         .unwrap()
         .map(|entry| entry.unwrap().path())

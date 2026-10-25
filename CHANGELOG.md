@@ -14,6 +14,8 @@ once it does.
 - Added package-owned, reviewed C/Rust Adler-32 sources and an external Zore wrapper,
   with owned cleanup, validated handles and binary buffers, async/scoped result
   coverage and local/pinned Git consumption.
+- The curated `tls` package accepts IPv4 and IPv6 server names, matched only
+  against IP-address certificate entries and sent without SNI.
 - Arbitrary native project sources, dynamic loading, general FFI, full database
   and TLS adapters remain separate work.
 
