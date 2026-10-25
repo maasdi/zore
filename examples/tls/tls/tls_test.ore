@@ -503,7 +503,11 @@ func wantWriteCase(versions int) error {
     let client = ClientConfig{handle: nativeSession(config.handle, "localhost")?}
     let server = ClientConfig{handle: nativeSession(serverConfig.handle, "")?}
     memoryHandshake(client.handle, server.handle)?
-    var data = zeros(16383)
+    var chunk = 16384
+    if versions == 13 {
+        chunk = 16383
+    }
+    var data = zeros(chunk)
     for var i = 0; i < data.len(); i += 1 {
         data[i] = byte(i % 256)
     }
@@ -696,7 +700,7 @@ func TestIPServerNamesSendNoSNI() error {
     let ipHello = clientHello("127.0.0.1")?
     check(ipHello.len() > 0 && !containsText(ipHello[:], "127.0.0.1"))
     let ipv6Hello = clientHello("::1")?
-    check(ipv6Hello.len() > 0)
+    check(ipv6Hello.len() > 0 && !containsText(ipv6Hello[:], "::1"))
     let dnsHello = clientHello("localhost")?
     check(containsText(dnsHello[:], "localhost"))
     return nil
@@ -767,6 +771,8 @@ func TestDefaultClientConfigUsesPlatformRoots() error {
 func TestSystemRootsFileSkipsUnusableCertificates() error {
     let roots = nativeSystemRoots("testdata/mixed-roots.pem")?
     check(certificateCount(roots[:]) == 1)
+    let deduplicated = nativeSystemRoots("testdata/duplicate-roots.pem")?
+    check(certificateCount(deduplicated[:]) == 1 && deduplicated.len() == roots.len())
     let clientConfig = NewClientConfig(roots[:])?
     let cert = os.ReadFile("testdata/server.pem")?
     let key = os.ReadFile("testdata/server-key.pem")?

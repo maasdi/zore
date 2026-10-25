@@ -188,6 +188,30 @@ func TestSystemRootsHonorsCertificateFileVariable() error {
         .arg("--locked")
         .env("SSL_CERT_FILE", "testdata/roots.pem");
     success(run(environment));
+    let missing_test = fixture.root.join("system_roots_missing_test.ore");
+    fs::write(
+        &missing_test,
+        r#"package tls
+import "std/errors"
+import "std/strings"
+func TestDefaultClientConfigDoesNotFallBack() error {
+    let config, err = DefaultClientConfig()
+    _ = err
+    check(config.handle == 0 && err != nil && strings.Contains(errors.Message(err), "cannot read"))
+    return nil
+}
+"#,
+    )
+    .unwrap();
+    let mut missing = fixture.target("test", &missing_test);
+    missing
+        .arg("--locked")
+        .env("SSL_CERT_FILE", "testdata/missing.pem");
+    let output = success(run(missing));
+    assert!(
+        String::from_utf8_lossy(&output.stdout).contains("Tests: 1 passed, 0 failed"),
+        "{output:?}"
+    );
     let panic_test = fixture.root.join("panic_test.ore");
     fs::write(
         &panic_test,

@@ -4,7 +4,7 @@
 `tls.DefaultClientConfig()` trusts the system roots, like Go. `tls.NewClientConfig(rootsPEM)`
 trusts exactly the PEM certificates passed to it and rejects an empty bundle, so a
 mistakenly empty file never means "trust the system". `tls.SystemRoots()` returns
-the platform roots as PEM. If `SSL_CERT_FILE` is set, only that file is read and
+the platform roots as PEM. If `SSL_CERT_FILE` is set to a nonempty path, only that file is read and
 failure is an error; otherwise Linux and other Unix hosts try
 `/etc/ssl/certs/ca-certificates.crt`, `/etc/pki/tls/certs/ca-bundle.crt`,
 `/etc/ssl/ca-bundle.pem`, `/etc/pki/tls/cacert.pem`,
@@ -15,9 +15,11 @@ is a follow-up. Windows reads the `ROOT` system store through crypt32 and may la
 roots Windows installs on demand. On every platform the certificates are loaded
 into Mbed TLS, which verifies the chain, not the OS verifier, so OS distrust and
 trust settings are not applied. `SSL_CERT_DIR` is not supported. Certificates the
-provider cannot use, such as Ed25519 roots, are skipped. The snapshot is taken at
+provider cannot use, such as Ed25519 roots, and duplicate certificates are
+skipped. The result is limited to 4 MiB, like explicit PEM inputs. The snapshot is taken at
 call time, and since every session parses the configured roots again, large
-bundles cost parse time and memory per connection.
+bundles cost parse time and memory per connection; sharing one parsed root chain
+per configuration is a follow-up.
 
 `tls/` is an external curated package, registered as `tls-mbedtls-v1`.
 It statically links compiler-embedded Mbed TLS 3.6.7, without OpenSSL or network
@@ -28,7 +30,8 @@ zore install --offline examples/tls/tls
 zore test --locked --offline examples/tls/tls
 ```
 
-Clients require explicit PEM roots and a server name: a DNS name or an
+Clients need trust roots (the system roots by default, or explicit PEM roots)
+and a server name: a DNS name or an
 unbracketed IPv4 or IPv6 address. They always verify the chain, certificate
 validity against the host wall clock, and server name; a DNS name is also SNI.
 An IP address matches only IP-address subjectAltName entries of the same
@@ -49,7 +52,8 @@ The fixtures' private keys are public test data, never deployment identities.
 certificates for the IP-address tests, using that public key and valid from their
 creation until about 2100: the first has IP entries for 127.0.0.1 and ::1, the
 second only DNS entries spelled like those addresses, the third only a matching
-common name. `unsupported-root.pem` is a public Ed25519 test certificate, whose
+common name. `duplicate-roots.pem` repeats `roots.pem` twice.
+`unsupported-root.pem` is a public Ed25519 test certificate, whose
 private key was discarded, and `mixed-roots.pem` joins it with `roots.pem`; they
 test skipping of unusable platform certificates. `rsa.pem` and `rsa-key.pem` are a
 public self-signed RSA test identity for `localhost`, valid from creation until

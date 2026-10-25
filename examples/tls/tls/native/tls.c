@@ -21,8 +21,7 @@
 
 #define CAPACITY 65536
 #define ERROR_CAPACITY 512
-#define ROOTS_OUTPUT_LIMIT (1024 * 1024)
-#define ROOTS_FILE_LIMIT (4 * 1024 * 1024)
+#define PEM_LIMIT (4 * 1024 * 1024)
 #define PEM_LINE_BYTES 48
 
 typedef struct {
@@ -60,7 +59,7 @@ static int verify_ip(void *pointer, mbedtls_x509_crt *certificate, int depth, ui
     const Session *session = pointer;
     if (depth != 0) return 0;
     for (const mbedtls_x509_sequence *name = &certificate->subject_alt_names; name != NULL; name = name->next) {
-        if ((name->buf.tag & MBEDTLS_ASN1_TAG_VALUE_MASK) == MBEDTLS_X509_SAN_IP_ADDRESS &&
+        if (name->buf.tag == (MBEDTLS_ASN1_CONTEXT_SPECIFIC | MBEDTLS_X509_SAN_IP_ADDRESS) &&
             name->buf.len == session->ip_length && memcmp(name->buf.p, session->ip, session->ip_length) == 0) return 0;
     }
     *flags |= MBEDTLS_X509_BADCERT_CN_MISMATCH;
@@ -82,7 +81,7 @@ static int failure(int status, char *error) {
 }
 
 static unsigned char *pem(const unsigned char *data, size_t length) {
-    if (length == 0 || length > 1024 * 1024 || memchr(data, 0, length) != NULL) return NULL;
+    if (length == 0 || length > PEM_LIMIT || memchr(data, 0, length) != NULL) return NULL;
     unsigned char *result = malloc(length + 1);
     if (result != NULL) { memcpy(result, data, length); result[length] = 0; }
     return result;
@@ -114,7 +113,7 @@ void *zore_tls_config(int server, const unsigned char *cert, size_t cert_len,
     unsigned char *cert_pem = pem(cert, cert_len);
     unsigned char *key_pem = server ? pem(key, key_len) : NULL;
     if (identity == NULL || cert_pem == NULL || (server && key_pem == NULL)) {
-        snprintf(error, ERROR_CAPACITY, "PEM input must be nonempty, NUL-free and at most 1 MiB, or allocation failed");
+        snprintf(error, ERROR_CAPACITY, "PEM input must be nonempty, NUL-free and at most 4 MiB, or allocation failed");
         goto fail;
     }
     identity->server = server;
@@ -227,9 +226,13 @@ void *zore_tls_session(void *pointer, const char *name, char *error) {
             zore_tls_session_free(session);
             return NULL;
         }
-        status = mbedtls_ssl_set_hostname(&session->ssl, session->ip_length != 0 ? NULL : name);
+        if (session->ip_length != 0) {
+            status = mbedtls_ssl_set_hostname(&session->ssl, NULL);
+            mbedtls_ssl_set_verify(&session->ssl, verify_ip, session);
+        } else {
+            status = mbedtls_ssl_set_hostname(&session->ssl, name);
+        }
         if (status != 0) goto fail;
-        if (session->ip_length != 0) mbedtls_ssl_set_verify(&session->ssl, verify_ip, session);
     }
     mbedtls_ssl_set_bio(&session->ssl, session, send_bytes, receive_bytes, NULL);
     return session;
@@ -328,10 +331,10 @@ static FILE *open_bundle(const char *path) {
 static int parse_bundle(mbedtls_x509_crt *chain, const char *path) {
     FILE *file = open_bundle(path);
     if (file == NULL) return 1;
-    unsigned char *data = malloc(ROOTS_FILE_LIMIT + 2);
+    unsigned char *data = malloc(PEM_LIMIT + 2);
     if (data == NULL) { fclose(file); return 1; }
-    size_t length = fread(data, 1, ROOTS_FILE_LIMIT + 1, file);
-    int failed = ferror(file) || length > ROOTS_FILE_LIMIT;
+    size_t length = fread(data, 1, PEM_LIMIT + 1, file);
+    int failed = ferror(file) || length > PEM_LIMIT;
     fclose(file);
     if (failed) { free(data); return 1; }
     data[length] = 0;
@@ -395,6 +398,13 @@ static int load_platform_store(mbedtls_x509_crt *chain, char *error) {
 }
 #endif
 
+static int duplicate(const mbedtls_x509_crt *chain, const mbedtls_x509_crt *certificate) {
+    for (const mbedtls_x509_crt *earlier = chain; earlier != certificate; earlier = earlier->next) {
+        if (earlier->raw.len == certificate->raw.len && memcmp(earlier->raw.p, certificate->raw.p, certificate->raw.len) == 0) return 1;
+    }
+    return 0;
+}
+
 unsigned char *zore_tls_system_roots(const char *path, size_t *length, char *error) {
     mbedtls_x509_crt chain;
     mbedtls_x509_crt_init(&chain);
@@ -409,9 +419,10 @@ unsigned char *zore_tls_system_roots(const char *path, size_t *length, char *err
     }
     size_t total = 0;
     for (const mbedtls_x509_crt *certificate = &chain; certificate != NULL && certificate->raw.len > 0; certificate = certificate->next) {
+        if (duplicate(&chain, certificate)) continue;
         total += pem_size(certificate->raw.len);
-        if (total > ROOTS_OUTPUT_LIMIT) {
-            snprintf(error, ERROR_CAPACITY, "system root certificates exceed 1 MiB");
+        if (total > PEM_LIMIT) {
+            snprintf(error, ERROR_CAPACITY, "system root certificates exceed 4 MiB");
             goto done;
         }
     }
@@ -419,7 +430,7 @@ unsigned char *zore_tls_system_roots(const char *path, size_t *length, char *err
     if (result == NULL) { snprintf(error, ERROR_CAPACITY, "allocation failed"); goto done; }
     size_t used = 0;
     for (const mbedtls_x509_crt *certificate = &chain; certificate != NULL && certificate->raw.len > 0; certificate = certificate->next) {
-        used += write_pem(result + used, certificate);
+        if (!duplicate(&chain, certificate)) used += write_pem(result + used, certificate);
     }
     *length = used;
 done:

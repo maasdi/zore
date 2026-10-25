@@ -145,6 +145,7 @@ fn operation(
     token: i64,
     call: impl FnOnce(*mut c_void, *mut c_char) -> i32,
 ) -> Result<i64, String> {
+    let _blocking = super::scheduler::BlockingGuard::enter();
     let state = state(token)?;
     let state = state.lock().map_err(|_| "TLS resource unavailable")?;
     if state.config {
@@ -172,7 +173,7 @@ pub unsafe extern "C" fn zore_native_tls_native_config(
 ) {
     let _blocking = super::scheduler::BlockingGuard::enter();
     let result = (|| {
-        let cert = unsafe { input(cert, cert_len, 1048576) }?;
+        let cert = unsafe { input(cert, cert_len, 4194304) }?;
         let key = unsafe { input(key, key_len, 1048576) }?;
         let versions = i32::try_from(versions).map_err(|_| "TLS invalid protocol version range")?;
         initialize()?;
@@ -310,6 +311,7 @@ pub unsafe extern "C" fn zore_native_tls_native_shutdown(out: *mut ErrorOut, tok
 }
 #[unsafe(no_mangle)]
 pub extern "C" fn zore_native_tls_native_close(token: i64) {
+    let _blocking = super::scheduler::BlockingGuard::enter();
     let removed = registry()
         .lock()
         .unwrap_or_else(|e| e.into_inner())

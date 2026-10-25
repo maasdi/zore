@@ -8652,8 +8652,9 @@ The `tls/https` package mirrors this: `NewDefaultTransport` and
 roots.
 
 `SystemRoots` takes a snapshot at call time and returns only certificates the
-provider can use, so unsupported keys or curves in a platform bundle are skipped.
-If the `SSL_CERT_FILE` environment variable is set, only that PEM file is read and
+provider can use, so unsupported keys or curves in a platform bundle are skipped,
+as are duplicate certificates. If the `SSL_CERT_FILE` environment variable is set
+to a nonempty path, only that PEM file is read and
 a failure to read it is an error. Otherwise Linux and other Unix hosts use the
 first readable bundle among `/etc/ssl/certs/ca-certificates.crt`,
 `/etc/pki/tls/certs/ca-bundle.crt`, `/etc/ssl/ca-bundle.pem`,
@@ -8665,8 +8666,10 @@ lack roots that Windows fetches on demand. `SSL_CERT_DIR` is not
 supported. On every platform the operating system's root certificates are
 loaded into Mbed TLS, which does the verification; the operating system's
 verifier is not used, so its distrust and trust settings are not applied. The
-result is limited to 1 MiB, and because each session parses its configuration's
-roots again, a large bundle costs parse time and memory per connection.
+result is limited to 4 MiB, the same limit as explicit PEM certificate inputs.
+Because each session parses its configuration's roots again, a large bundle costs
+parse time and memory per connection; sharing one parsed root chain per
+configuration is a follow-up.
 
 A bounded server accepts one connection under a listener deadline:
 
