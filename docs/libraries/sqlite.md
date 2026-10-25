@@ -89,9 +89,12 @@ when the callback returns makes the commit fail and is finalized; its later
 operations fail safely. Commit and Rollback called inside the callback fail
 without effect. A panic in the callback rolls back during unwinding and keeps the
 connection. The callback is a plain function value: it cannot await, and its
-SQLite calls block with compensation even in async callers. Do not run
-Transaction on one Database from concurrently running tasks. Begin, Commit and
-Rollback remain the low-level API for transactions that must outlive one call.
+SQLite calls block with compensation even in async callers. While a Transaction
+callback runs, a concurrent Begin or Transaction on the same Database fails.
+Statements other tasks run on that Database join the transaction, are committed
+or rolled back with it, and are finalized if still open when it rolls back.
+Begin, Commit and Rollback remain the low-level API for transactions that must
+outlive one call.
 
 Begin requires a `var` Database without live statements. On success its BEGIN
 IMMEDIATE transaction takes the database token and the Database becomes empty;

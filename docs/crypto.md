@@ -50,14 +50,16 @@ frees the state. An OS entropy failure has no insecure fallback.
 `SHA256(data)` and `HMACSHA256(key, data)` return a fresh owned 32-byte array.
 They accept empty and arbitrary binary input; HMAC accepts an empty key. Inputs
 are borrowed for the call and never retained or changed. A digest or MAC
-provider failure, which only a broken build can produce, panics with a message
-naming the function. Allocation exhaustion follows the runtime's
-ordinary fatal allocation policy. `Equal(left, right)` returns false immediately
-for different lengths, true for two empty inputs and otherwise delegates to
-mbedTLS's constant-time byte comparison. Lengths are public; this does not make
-surrounding source code constant time. Verify MACs with
-`VerifyHMACSHA256(key, data, tag)`, which computes the expected tag and compares
-it through `Equal`; it returns false for a tag of the wrong length. Never compare MACs with an early-exit comparison such as `bytes.Equal`.
+provider failure, which only a broken build or an allocation failure inside the
+provider can produce, panics with a message naming the function. Allocation
+exhaustion follows the runtime's ordinary fatal allocation policy.
+`Equal(left, right)` returns false immediately for different lengths, true for
+two empty inputs and otherwise delegates to mbedTLS's constant-time byte
+comparison. Lengths are public; this does not make surrounding source code
+constant time. Verify MACs with `VerifyHMACSHA256(key, data, tag)`, which
+computes the expected tag and compares it through `Equal`; it returns false for
+a tag of the wrong length. Never compare MACs with an early-exit comparison such
+as `bytes.Equal`.
 
 Calls are thread-safe, synchronous and non-cancellable. Random generation uses
 a runtime helper so entropy waits receive the runtime's ordinary blocking

@@ -697,8 +697,10 @@ open when the body returns make the commit fail and are finalized; their later
 operations fail safely. Commit and Rollback called on the callback's Transaction
 fail without effect. A panic in the body rolls back during unwinding and keeps the
 connection. The body is a plain function value: it cannot await, and its SQLite
-calls block with compensation even in async callers. Concurrently running tasks
-must not use Transaction on one Database at the same time.
+calls block with compensation even in async callers. While a Transaction
+callback runs, a concurrent Begin or Transaction on the same Database fails.
+Statements other tasks run on that Database join the transaction, are committed
+or rolled back with it, and are finalized if still open when it rolls back.
 
 Database.Begin mutably borrows the database, rejecting live statements and
 nesting. On success the returned Transaction takes its token and the Database
@@ -714,9 +716,9 @@ itself rolled back (a failed commit, or a statement failure such as an
 succeeds. Empty resources produce ordinary operation errors. Dropping a Begin
 transaction rolls back and closes the connection token; dropping a callback
 transaction rolls back and keeps the connection. Abandonment invalidates escaped
-transaction statements before rollback; they remain safe to finalize. Normal return, `?`,
-explicit close, structured panic and task-frame destruction invoke ordinary
-cleanup. Abort/process termination and native bugs retain ordinary limits.
+transaction statements before rollback; they remain safe to finalize. Normal
+return, `?`, explicit close, structured panic and task-frame destruction invoke
+ordinary cleanup. Abort/process termination and native bugs retain ordinary limits.
 
 Native connection access is serialized by one mutex and may migrate between
 threads; no thread-affine connection API is exposed. Operations retain native
@@ -746,8 +748,9 @@ covers binary/parameter/row types, file persistence, invalid/closed resources,
 statement leases, binding retention and clearing, callback commit, callback error,
 busy and failed commits, escaped statements, callback panic, async callers, `let`
 databases and rejected transaction escapes, transaction completion/abandonment,
-contention, normal/error/panic/async cleanup, source/recipe tampering, linker-independent checks and
-separate tagged Git locked/offline check/build/test on supported native hosts.
+contention, normal/error/panic/async cleanup, source/recipe tampering,
+linker-independent checks and separate tagged Git locked/offline
+check/build/test on supported native hosts.
 
 ## 3.5 Identifiers — LOCKED
 
@@ -8473,8 +8476,9 @@ SHA256 returns the 32-byte SHA-256 digest; HMACSHA256 returns the 32-byte
 HMAC-SHA-256 tag, accepting empty keys and arbitrary binary input. All array results are fresh owned
 Move values; input slices are borrowed for the duration of the call and are never
 retained or mutated. A digest/MAC provider failure, which only a broken build
-can produce, panics with a message naming the function. Allocation exhaustion
-follows the ordinary fatal allocation policy.
+or an allocation failure inside the provider can produce, panics with a message
+naming the function. Allocation exhaustion follows the ordinary fatal allocation
+policy.
 
 Equal compares bytes with the provider's constant-time comparison for equal,
 nonzero lengths. It returns false immediately for different lengths and true
