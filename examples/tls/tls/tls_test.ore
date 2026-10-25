@@ -698,3 +698,55 @@ func TestTCPIPAddressServerNames() error {
     cancel()
     return nil
 }
+
+func certificateCount(roots []byte) int {
+    let text, err = strings.FromBytes(roots)
+    _ = err
+    return strings.Count(text, "BEGIN CERTIFICATE")
+}
+
+func TestSystemRootsLoadPlatformStore() error {
+    let roots = nativeSystemRoots("")?
+    check(certificateCount(roots[:]) > 0)
+    let config = NewClientConfig(roots[:])?
+    return nil
+}
+
+func TestSystemRootsPublicAPI() error {
+    let roots = SystemRoots()?
+    check(certificateCount(roots[:]) > 0)
+    let config = NewClientConfig(roots[:])?
+    return nil
+}
+
+func TestDefaultClientConfigUsesPlatformRoots() error {
+    let config = DefaultClientConfig()?
+    check(config.handle != 0)
+    return nil
+}
+
+func TestSystemRootsFileSkipsUnusableCertificates() error {
+    let roots = nativeSystemRoots("testdata/mixed-roots.pem")?
+    check(certificateCount(roots[:]) == 1)
+    let clientConfig = NewClientConfig(roots[:])?
+    let cert = os.ReadFile("testdata/server.pem")?
+    let key = os.ReadFile("testdata/server-key.pem")?
+    let serverConfig = NewServerConfig(cert[:], key[:])?
+    let client = ClientConfig{handle: nativeSession(clientConfig.handle, "localhost")?}
+    let server = ClientConfig{handle: nativeSession(serverConfig.handle, "")?}
+    return memoryHandshake(client.handle, server.handle)
+}
+
+func systemRootsRejection(path string, expected string) error {
+    let roots, err = nativeSystemRoots(path)
+    _ = err
+    check(roots.len() == 0 && err != nil && strings.Contains(errors.Message(err), expected))
+    return nil
+}
+
+func TestSystemRootsFileRejections() error {
+    systemRootsRejection("testdata/missing.pem", "cannot read")?
+    systemRootsRejection("testdata/unsupported-root.pem", "no usable")?
+    systemRootsRejection("testdata/server-key.pem", "no usable")?
+    return nil
+}

@@ -8530,9 +8530,11 @@ AES-128/256-GCM only, with the extended master secret extension and all fatal
 alerts. TLS 1.0/1.1, static RSA exchange, PSK, DTLS, TLS 1.3,
 renegotiation, client certificates, ALPN, session persistence, and certificate
 automation are excluded. Provider defaults never bypass peer verification.
-Trust roots must be supplied explicitly: clients require a nonempty PEM
-trust-root bundle and a server name that is a DNS name or an unbracketed IPv4 or
-IPv6 address; there is no insecure flag or system or platform root discovery.
+Trust roots default to the platform's, like Go: `DefaultClientConfig` trusts
+the system roots, and explicit roots override them. `NewClientConfig` trusts
+exactly the nonempty PEM bundle it is given and rejects an empty one; an empty
+bundle never means system roots. Clients require a server name that is a DNS name
+or an unbracketed IPv4 or IPv6 address; there is no insecure flag.
 Certificate signatures, validity times, trust chain, and server name are
 verified by Mbed TLS; a DNS name is also SNI. An IP-address name matches only
 IP-address subjectAltName entries of the same address, never DNS entries or the
@@ -8547,7 +8549,9 @@ This does not promise erasure of caller-owned input buffers.
 
 | API | Contract |
 | --- | --- |
-| `NewClientConfig(rootsPEM []byte) (ClientConfig, error)` | Parses and owns trusted certificates; empty roots fail |
+| `DefaultClientConfig() (ClientConfig, error)` | `SystemRoots` then `NewClientConfig`; errors are wrapped as `tls.DefaultClientConfig` |
+| `SystemRoots() (Array<byte>, error)` | Reads the platform trust roots as PEM |
+| `NewClientConfig(rootsPEM []byte) (ClientConfig, error)` | Parses and owns exactly the given trusted certificates; empty roots fail |
 | `NewServerConfig(chainPEM []byte, keyPEM []byte) (ServerConfig, error)` | Parses and owns server identity; invalid or mismatched keys fail |
 | `DialContext(ctx context.Context, address string, serverName string, config ClientConfig) (Conn, error)` | Connects then completes a verified handshake for a DNS name or IP address; ctx bounds only the dial and handshake |
 | `Client(ctx context.Context, source own net.Conn, serverName string, config ClientConfig) (Conn, error)` | Consumes an already-connected TCP stream and completes a verified handshake for a DNS name or IP address bounded by ctx |
@@ -8625,6 +8629,37 @@ func get(config tls.ClientConfig) error {
 }
 ```
 
+Platform roots are the default and explicit roots override them:
+
+```ore
+let config = tls.DefaultClientConfig()?
+
+let roots = os.ReadFile("roots.pem")?
+let pinned = tls.NewClientConfig(roots[:])?
+```
+
+The `tls/https` package mirrors this: `NewDefaultTransport` and
+`NewDefaultClient(config http.ClientConfig)` use the system roots, while
+`NewTransport(rootsPEM)` and `NewClient(rootsPEM, config)` use only the given
+roots.
+
+`SystemRoots` takes a snapshot at call time and returns only certificates the
+provider can use, so unsupported keys or curves in a platform bundle are skipped.
+If the `SSL_CERT_FILE` environment variable is set, only that PEM file is read and
+a failure to read it is an error. Otherwise Linux and other Unix hosts use the
+first readable bundle among `/etc/ssl/certs/ca-certificates.crt`,
+`/etc/pki/tls/certs/ca-bundle.crt`, `/etc/ssl/ca-bundle.pem`,
+`/etc/pki/tls/cacert.pem`, `/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem`
+and `/etc/ssl/cert.pem`; macOS reads `/etc/ssl/cert.pem`, which omits roots added
+to the keychain and trust settings; Windows reads the `ROOT` system certificate
+store through crypt32, which the Windows link then includes and which may
+lack roots that Windows fetches on demand. `SSL_CERT_DIR` is not
+supported. On every platform the operating system's root certificates are
+loaded into Mbed TLS, which does the verification; the operating system's
+verifier is not used, so its distrust and trust settings are not applied. The
+result is limited to 1 MiB, and because each session parses its configuration's
+roots again, a large bundle costs parse time and memory per connection.
+
 A bounded server accepts one connection under a listener deadline:
 
 ```ore
@@ -8655,7 +8690,8 @@ HTTPS consumers can pass `Conn` through the ordinary Reader/Writer interfaces.
 No HTTP server or plain TCP behavior changes.
 Compiler impact is curated provider registration, embedded vendor closure and
 fixed native build/link recipe; no syntax, ownership, or async-lowering changes.
-Conformance covers trusted/untrusted chains, DNS mismatch, IP-address identity
+Conformance covers default platform and explicit root configuration, filtering of unusable
+platform certificates, `SSL_CERT_FILE` handling, trusted/untrusted chains, DNS mismatch, IP-address identity
 matching only IP entries (not DNS entries or the common name) without SNI,
 invalid configuration,
 fragmented records, binary/partial I/O, multi-record writes, clean and abrupt

@@ -76,3 +76,8 @@ func TestHTTPSIPAddressURLsMatchOnlyIPEntries() error {
     httpsCase("127.0.0.1", "../tls/tls/testdata/ip.pem", "../tls/tls/testdata/server-key.pem", "../tls/tls/testdata/ip.pem", "")?
     return httpsCase("127.0.0.1", "../tls/tls/testdata/server.pem", "../tls/tls/testdata/server-key.pem", "../tls/tls/testdata/roots.pem", "does not match")
 }
+func TestHTTPSDefaultClientUsesPlatformRoots() error {
+    let client = https.NewDefaultClient(http.DefaultClientConfig())?
+    let transport = https.NewDefaultTransport()?
+    return nil
+}

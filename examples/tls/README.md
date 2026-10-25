@@ -1,8 +1,23 @@
 # TLS 1.2 package
 
-**Trust roots must be supplied explicitly.** There are no system or platform
-roots: a client trusts exactly the PEM certificates passed to
-`NewClientConfig`, and an empty bundle is an error.
+**Trust roots default to the platform's, and explicit roots override them.**
+`tls.DefaultClientConfig()` trusts the system roots, like Go. `tls.NewClientConfig(rootsPEM)`
+trusts exactly the PEM certificates passed to it and rejects an empty bundle, so a
+mistakenly empty file never means "trust the system". `tls.SystemRoots()` returns
+the platform roots as PEM. If `SSL_CERT_FILE` is set, only that file is read and
+failure is an error; otherwise Linux and other Unix hosts try
+`/etc/ssl/certs/ca-certificates.crt`, `/etc/pki/tls/certs/ca-bundle.crt`,
+`/etc/ssl/ca-bundle.pem`, `/etc/pki/tls/cacert.pem`,
+`/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem` and `/etc/ssl/cert.pem` in
+order and use the first with a usable certificate. macOS reads `/etc/ssl/cert.pem`,
+which omits keychain-added and administrator roots; using the Security framework
+is a follow-up. Windows reads the `ROOT` system store through crypt32 and may lack
+roots Windows installs on demand. On every platform the certificates are loaded
+into Mbed TLS, which verifies the chain, not the OS verifier, so OS distrust and
+trust settings are not applied. `SSL_CERT_DIR` is not supported. Certificates the
+provider cannot use, such as Ed25519 roots, are skipped. The snapshot is taken at
+call time, and since every session parses the configured roots again, large
+bundles cost parse time and memory per connection.
 
 `tls/` is an external curated package, registered as `tls-mbedtls-v1`.
 It statically links compiler-embedded Mbed TLS 3.6.7, without OpenSSL or network
@@ -19,7 +34,7 @@ validity against the host wall clock, and server name; a DNS name is also SNI.
 An IP address matches only IP-address subjectAltName entries of the same
 address, never DNS entries or the common name, and is not sent as SNI. Bracketed
 forms, zones and ports are rejected, so pass the unbracketed host. There is no
-verification bypass or platform root discovery. Only TLS
+verification bypass. Only TLS
 1.2 ECDHE RSA/ECDSA with AES-GCM is enabled, with the extended master secret
 extension; fatal errors send their TLS alerts. Servers accept PEM chains and
 unencrypted PEM private keys; key parsing verifies the matching certificate.
@@ -28,7 +43,9 @@ The fixtures' private keys are public test data, never deployment identities.
 certificates for the IP-address tests, using that public key and valid from their
 creation until about 2100: the first has IP entries for 127.0.0.1 and ::1, the
 second only DNS entries spelled like those addresses, the third only a matching
-common name.
+common name. `unsupported-root.pem` is a public Ed25519 test certificate, whose
+private key was discarded, and `mixed-roots.pem` joins it with `roots.pem`; they
+test skipping of unusable platform certificates.
 AES uses immutable precomputed tables; hardware acceleration and feature
 detection are disabled. Software AES uses secret-dependent table lookups, so
 this profile does not promise protection from hostile local cache-timing
@@ -75,12 +92,15 @@ there are no Zore pointers or callbacks retained by C.
 `server/` accepts one loopback connection on port 8443, with a 30-second accept
 limit, five-second handshake context, five-second I/O deadline and a 4096-byte
 request buffer; it writes a fixed HTTP response and closes with close-notify. `client/` sends one bounded HTTP/1.1 request over
-verified TLS, prints the first response read and closes with close-notify. Run each from its own directory after `zore install --offline`.
+verified TLS, prints the first response read and closes with close-notify. Run each from its own directory after `zore install --offline`. The client
+uses the system roots unless given a roots file, so pair it with the fixture
+server as `main ../tls/testdata/roots.pem` after `zore build`.
 These are protocol examples. For HTTPS with the standard HTTP client, import
-`tls/https`: `https.NewClient(rootsPEM, http.DefaultClientConfig())` returns an
-`http.Client` whose transport verifies each URL's hostname, and
-`https.NewTransport(rootsPEM)` supplies the same transport for
-`http.NewClientWithTransport`. It is ordinary Zore source layered on `tls`, so
+`tls/https`: `https.NewDefaultClient(http.DefaultClientConfig())` returns an
+`http.Client` that trusts the system roots and verifies each URL's hostname, and
+`https.NewClient(rootsPEM, ...)` does the same with only the given roots.
+`https.NewDefaultTransport()` and `https.NewTransport(rootsPEM)` supply the same
+transports for `http.NewClientWithTransport`. It is ordinary Zore source layered on `tls`, so
 the `tls` package itself does not import HTTP.
 
 Conformance uses local certificates, public test keys and loopback sockets;

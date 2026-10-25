@@ -12,6 +12,14 @@ func NewTransport(rootsPEM []byte) (Transport, error) {
     let config = tls.NewClientConfig(rootsPEM)?
     return Transport{config: config}, nil
 }
+func NewDefaultTransport() (Transport, error) {
+    let config = tls.DefaultClientConfig()?
+    return Transport{config: config}, nil
+}
+func NewDefaultClient(config http.ClientConfig) (http.Client, error) {
+    let transport = NewDefaultTransport()?
+    return http.NewClientWithTransport(config, transport)
+}
 func NewClient(rootsPEM []byte, config http.ClientConfig) (http.Client, error) {
     let transport = NewTransport(rootsPEM)?
     return http.NewClientWithTransport(config, transport)

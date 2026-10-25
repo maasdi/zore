@@ -15,4 +15,6 @@ size_t zore_tls_pending(void *session);
 int zore_tls_output(void *session, unsigned char *data);
 int zore_tls_status(void *session);
 int zore_tls_shutdown(void *session, char *error);
+unsigned char *zore_tls_system_roots(const char *path, size_t *length, char *error);
+void zore_tls_free(void *pointer);
 #endif

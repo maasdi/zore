@@ -1,5 +1,10 @@
+#if defined(_WIN32)
+#define _CRT_SECURE_NO_WARNINGS
+#define WIN32_LEAN_AND_MEAN
+#endif
 #include "tls.h"
 #include "mbedtls/ssl.h"
+#include "mbedtls/base64.h"
 #include "mbedtls/entropy.h"
 #include "mbedtls/ctr_drbg.h"
 #include "mbedtls/error.h"
@@ -7,9 +12,17 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
+#if defined(_WIN32)
+#include <windows.h>
+#include <wincrypt.h>
+#pragma comment(lib, "crypt32.lib")
+#endif
 
 #define CAPACITY 65536
 #define ERROR_CAPACITY 512
+#define ROOTS_OUTPUT_LIMIT (1024 * 1024)
+#define ROOTS_FILE_LIMIT (4 * 1024 * 1024)
+#define PEM_LINE_BYTES 48
 
 typedef struct {
     int server;
@@ -282,3 +295,117 @@ int zore_tls_shutdown(void *pointer, char *error) {
 }
 
 int zore_tls_status(void *pointer) { return ((Session *)pointer)->status; }
+
+void zore_tls_free(void *pointer) { free(pointer); }
+
+static FILE *open_bundle(const char *path) {
+#if defined(_WIN32)
+    wchar_t wide[4096];
+    if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, path, -1, wide, 4096) == 0) return NULL;
+    return _wfopen(wide, L"rb");
+#else
+    return fopen(path, "rb");
+#endif
+}
+
+static int parse_bundle(mbedtls_x509_crt *chain, const char *path) {
+    FILE *file = open_bundle(path);
+    if (file == NULL) return 1;
+    unsigned char *data = malloc(ROOTS_FILE_LIMIT + 2);
+    if (data == NULL) { fclose(file); return 1; }
+    size_t length = fread(data, 1, ROOTS_FILE_LIMIT + 1, file);
+    int failed = ferror(file) || length > ROOTS_FILE_LIMIT;
+    fclose(file);
+    if (failed) { free(data); return 1; }
+    data[length] = 0;
+    int status = mbedtls_x509_crt_parse(chain, data, length + 1);
+    free(data);
+    return status >= 0 && chain->raw.len > 0 ? 0 : 2;
+}
+
+static size_t pem_size(size_t raw_length) {
+    size_t encoded = (raw_length + 2) / 3 * 4;
+    return 28 + encoded + (encoded + 63) / 64 + 26;
+}
+
+static size_t write_pem(unsigned char *out, const mbedtls_x509_crt *certificate) {
+    unsigned char *cursor = out;
+    memcpy(cursor, "-----BEGIN CERTIFICATE-----\n", 28);
+    cursor += 28;
+    for (size_t offset = 0; offset < certificate->raw.len; offset += PEM_LINE_BYTES) {
+        size_t chunk = certificate->raw.len - offset;
+        if (chunk > PEM_LINE_BYTES) chunk = PEM_LINE_BYTES;
+        size_t written = 0;
+        unsigned char line[PEM_LINE_BYTES / 3 * 4 + 1];
+        mbedtls_base64_encode(line, sizeof(line), &written, certificate->raw.p + offset, chunk);
+        memcpy(cursor, line, written);
+        cursor += written;
+        *cursor++ = '\n';
+    }
+    memcpy(cursor, "-----END CERTIFICATE-----\n", 26);
+    return (size_t)(cursor - out) + 26;
+}
+
+#if defined(_WIN32)
+static int load_platform_store(mbedtls_x509_crt *chain, char *error) {
+    HCERTSTORE store = CertOpenSystemStoreW(0, L"ROOT");
+    if (store == NULL) { snprintf(error, ERROR_CAPACITY, "cannot open the Windows ROOT certificate store"); return 1; }
+    const CERT_CONTEXT *context = NULL;
+    while ((context = CertEnumCertificatesInStore(store, context)) != NULL) {
+        mbedtls_x509_crt_parse_der(chain, context->pbCertEncoded, context->cbCertEncoded);
+    }
+    CertCloseStore(store, 0);
+    if (chain->raw.len == 0) { snprintf(error, ERROR_CAPACITY, "no usable system root certificates"); return 1; }
+    return 0;
+}
+#else
+static int load_platform_store(mbedtls_x509_crt *chain, char *error) {
+    static const char *const bundles[] = {
+        "/etc/ssl/certs/ca-certificates.crt",
+        "/etc/pki/tls/certs/ca-bundle.crt",
+        "/etc/ssl/ca-bundle.pem",
+        "/etc/pki/tls/cacert.pem",
+        "/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem",
+        "/etc/ssl/cert.pem",
+    };
+    for (size_t i = 0; i < sizeof(bundles) / sizeof(bundles[0]); i += 1) {
+        if (parse_bundle(chain, bundles[i]) == 0) return 0;
+        mbedtls_x509_crt_free(chain);
+        mbedtls_x509_crt_init(chain);
+    }
+    snprintf(error, ERROR_CAPACITY, "no system root certificate bundle found");
+    return 1;
+}
+#endif
+
+unsigned char *zore_tls_system_roots(const char *path, size_t *length, char *error) {
+    mbedtls_x509_crt chain;
+    mbedtls_x509_crt_init(&chain);
+    unsigned char *result = NULL;
+    if (path[0] != 0) {
+        int status = parse_bundle(&chain, path);
+        if (status == 1) snprintf(error, ERROR_CAPACITY, "cannot read %.400s", path);
+        else if (status == 2) snprintf(error, ERROR_CAPACITY, "no usable certificates in %.400s", path);
+        if (status != 0) goto done;
+    } else if (load_platform_store(&chain, error) != 0) {
+        goto done;
+    }
+    size_t total = 0;
+    for (const mbedtls_x509_crt *certificate = &chain; certificate != NULL && certificate->raw.len > 0; certificate = certificate->next) {
+        total += pem_size(certificate->raw.len);
+        if (total > ROOTS_OUTPUT_LIMIT) {
+            snprintf(error, ERROR_CAPACITY, "system root certificates exceed 1 MiB");
+            goto done;
+        }
+    }
+    result = malloc(total + 1);
+    if (result == NULL) { snprintf(error, ERROR_CAPACITY, "allocation failed"); goto done; }
+    size_t used = 0;
+    for (const mbedtls_x509_crt *certificate = &chain; certificate != NULL && certificate->raw.len > 0; certificate = certificate->next) {
+        used += write_pem(result + used, certificate);
+    }
+    *length = used;
+done:
+    mbedtls_x509_crt_free(&chain);
+    return result;
+}

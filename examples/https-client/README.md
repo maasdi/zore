@@ -1,12 +1,13 @@
 # Verified HTTPS client
 
 From this directory, run `zore install --offline`, then `zore build --locked main.ore`.
-Run `./main roots.pem https://localhost:8443/` (`main.exe` on Windows) with
-explicit trusted PEM roots. The local dependency is the reviewed TLS example
+Run `./main https://example.com/` (`main.exe` on Windows) to trust the system
+roots, or `./main roots.pem https://localhost:8443/` to trust only the given PEM
+roots, which override the system roots. The local dependency is the reviewed TLS example
 package; no system TLS library or network dependency installation is required.
 
-`https.NewClient(roots, config)` from the TLS package's `tls/https` package
-returns an `http.Client` whose `https.Transport` implements the standard HTTP
+`https.NewDefaultClient(config)` and `https.NewClient(roots, config)` from the TLS
+package's `tls/https` package return an `http.Client` whose `https.Transport` implements the standard HTTP
 client's owned transport interface. It verifies the URL hostname, certificate
 chain, and validity time, and maps resumable TLS poll timeouts to
 `http.ClientPollTimeout`. Use `https.NewTransport` with

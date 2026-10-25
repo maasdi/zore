@@ -144,9 +144,9 @@ func main() {}
         success(run(fixture.target("check", &app.join("main.ore"))));
     }
     let mut tests = fixture.command("test");
-    tests.arg("--locked");
+    tests.arg("--locked").env_remove("SSL_CERT_FILE");
     let output = success(run(tests));
-    assert!(String::from_utf8_lossy(&output.stdout).contains("Tests: 20 passed, 0 failed"));
+    assert!(String::from_utf8_lossy(&output.stdout).contains("Tests: 25 passed, 0 failed"));
     let cached = fs::read_dir(fixture._directory.path().join("cache/zore"))
         .unwrap()
         .map(|entry| entry.unwrap().path())
@@ -159,6 +159,31 @@ func main() {}
         .collect::<Vec<_>>();
     assert_eq!(cached.len(), 1, "{cached:?}");
     assert!(cached[0].join("library/ssl_tls.o").is_file(), "{cached:?}");
+    let environment_test = fixture.root.join("system_roots_env_test.ore");
+    fs::write(
+        &environment_test,
+        r#"package tls
+import "std/os"
+func TestSystemRootsHonorsCertificateFileVariable() error {
+    let roots = SystemRoots()?
+    let expected = nativeSystemRoots("testdata/roots.pem")?
+    check(roots.len() > 0 && roots.len() == expected.len())
+    let config = DefaultClientConfig()?
+    let cert = os.ReadFile("testdata/server.pem")?
+    let key = os.ReadFile("testdata/server-key.pem")?
+    let serverConfig = NewServerConfig(cert[:], key[:])?
+    let client = ClientConfig{handle: nativeSession(config.handle, "localhost")?}
+    let server = ClientConfig{handle: nativeSession(serverConfig.handle, "")?}
+    return memoryHandshake(client.handle, server.handle)
+}
+"#,
+    )
+    .unwrap();
+    let mut environment = fixture.target("test", &environment_test);
+    environment
+        .arg("--locked")
+        .env("SSL_CERT_FILE", "testdata/roots.pem");
+    success(run(environment));
     let panic_test = fixture.root.join("panic_test.ore");
     fs::write(
         &panic_test,

@@ -41,6 +41,8 @@ unsafe extern "C" {
     fn zore_tls_output(session: *mut c_void, data: *mut u8) -> i32;
     fn zore_tls_status(session: *mut c_void) -> i32;
     fn zore_tls_shutdown(session: *mut c_void, error: *mut c_char) -> i32;
+    fn zore_tls_system_roots(path: *const c_char, length: *mut usize, error: *mut c_char) -> *mut u8;
+    fn zore_tls_free(pointer: *mut c_void);
 }
 
 struct State {
@@ -281,4 +283,27 @@ pub extern "C" fn zore_native_tls_native_close(token: i64) {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn zore_native_tls_native_status(out: *mut ValueError, token: i64) {
     unsafe { out.write(value(operation(token, |p, _| zore_tls_status(p)))) };
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn zore_native_tls_native_system_roots(
+    out: *mut ByteArrayError,
+    path: *const u8,
+    path_len: i64,
+) {
+    let _blocking = super::scheduler::BlockingGuard::enter();
+    let result = (|| {
+        let path = unsafe { input(path, path_len, 4096) }?;
+        let path = CString::new(path).map_err(|_| "TLS path contains NUL")?;
+        let mut length = 0;
+        let mut error = [0; 512];
+        let pointer = unsafe { zore_tls_system_roots(path.as_ptr(), &mut length, error.as_mut_ptr()) };
+        if pointer.is_null() {
+            return Err(message(&error));
+        }
+        let roots = unsafe { std::slice::from_raw_parts(pointer, length) }.to_vec();
+        unsafe { zore_tls_free(pointer.cast()) };
+        Ok(roots)
+    })();
+    unsafe { out.write(ByteArrayError::from_bytes(result)) };
 }

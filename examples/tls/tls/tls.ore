@@ -4,6 +4,7 @@ import "std/net"
 import "std/context"
 import "std/time"
 import "std/errors"
+import "std/os"
 import "std/strings"
 
 type ClientConfig struct {
@@ -59,6 +60,23 @@ func zeros(size int) Array<byte> {
 
 func wrap(source own net.Conn, handle int, ctx context.Context) Conn {
     return Conn{source: source, handle: handle, ctx: ctx, established: false, readDeadline: 0, writeDeadline: 0, failed: false, peerClosed: false, output: Array<byte>{}, outputPosition: 0, input: Array<byte>{}}
+}
+
+func SystemRoots() (Array<byte>, error) {
+    let roots, err = nativeSystemRoots(os.Getenv("SSL_CERT_FILE"))
+    _ = err
+    return roots, errors.Wrap(err, "tls.SystemRoots")
+}
+
+func DefaultClientConfig() (ClientConfig, error) {
+    let roots, rootsErr = SystemRoots()
+    _ = rootsErr
+    if rootsErr != nil {
+        return ClientConfig{handle: 0}, errors.Wrap(rootsErr, "tls.DefaultClientConfig")
+    }
+    let config, configErr = NewClientConfig(roots[:])
+    _ = configErr
+    return config, errors.Wrap(configErr, "tls.DefaultClientConfig")
 }
 
 func NewClientConfig(rootsPEM []byte) (ClientConfig, error) {
