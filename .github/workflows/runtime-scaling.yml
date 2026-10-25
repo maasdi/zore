@@ -33,7 +33,7 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: '"ZORE_CC=C:\Program Files\LLVM\bin\clang.exe" >> $env:GITHUB_ENV'
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         with:
           python-version: '3.13'
       - name: Install sampler
