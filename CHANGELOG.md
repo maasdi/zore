@@ -155,6 +155,8 @@ once it does.
 
 ### Standard library
 
+- Fixed `bytes.Buffer` retaining consumed history across repeated writes and
+  reads. Writes now compact consumed prefixes and reuse existing capacity.
 - Refactored the standard packages to one naming and signature pattern
   (§37.2–§37.5): `strings.ToUpper`/`ToLower`/`ReplaceAll`, byte-based
   `os.ReadFile`/`WriteFile`, `net.Conn.Read`/`Write` into byte buffers,
