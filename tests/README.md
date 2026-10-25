@@ -379,6 +379,11 @@ The filesystem fixture uses its allocated temporary directory and tests that
 requested permissions are not widened, allowing the inherited umask to remove
 permission bits.
 
+`codegen/buffer.rs` checks byte-buffer ordering, counts, EOF, snapshots and reuse
+after compaction, truncation and reset. Controlled allocation checks cover every
+write path with drained buffers and a fixed unread backlog, then verify all
+storage is released on drop. They impose no timing or RSS thresholds.
+
 `conformance/http.md` maps the HTTP/URL contract to native loopback and ownership
 regressions. It distinguishes tested behavior from additional fault-injection
 coverage. The REST example codec is also exercised as executable Zore source.

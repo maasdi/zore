@@ -18,6 +18,7 @@ func NewBufferString(s string) Buffer {
 }
 
 func (b mut Buffer) Write(p []byte) (int, error) {
+    b.compact()
     for value in p {
         b.data.push(value)
     }
@@ -25,11 +26,13 @@ func (b mut Buffer) Write(p []byte) (int, error) {
 }
 
 func (b mut Buffer) WriteByte(c byte) error {
+    b.compact()
     b.data.push(c)
     return nil
 }
 
 func (b mut Buffer) WriteString(s string) (int, error) {
+    b.compact()
     for var i = 0; i < s.len(); i += 1 {
         b.data.push(s[i])
     }
@@ -38,6 +41,20 @@ func (b mut Buffer) WriteString(s string) (int, error) {
 
 func (b mut Buffer) WriteRune(r rune) (int, error) {
     return b.WriteString(string(r))
+}
+
+func (b mut Buffer) compact() {
+    let remaining = b.Len()
+    if b.read == 0 || b.read < remaining {
+        return
+    }
+    for var i = 0; i < remaining; i += 1 {
+        b.data[i] = b.data[b.read + i]
+    }
+    for b.data.len() > remaining {
+        let _, _ = b.data.pop()
+    }
+    b.read = 0
 }
 
 func (b mut Buffer) Read(p mut []byte) (int, error) {
