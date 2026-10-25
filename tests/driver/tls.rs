@@ -5,6 +5,8 @@ use std::time::{Duration, Instant};
 
 use zore::build::TempDir;
 
+const SUBPROCESS_LIMIT: Duration = Duration::from_secs(180);
+
 fn copy_tree(source: &Path, destination: &Path) {
     fs::create_dir_all(destination).unwrap();
     for entry in fs::read_dir(source).unwrap() {
@@ -27,7 +29,7 @@ fn run(mut command: Command) -> Output {
         .stderr(Stdio::from(fs::File::create(&error_path).unwrap()))
         .spawn()
         .unwrap();
-    let deadline = Instant::now() + Duration::from_secs(180);
+    let deadline = Instant::now() + SUBPROCESS_LIMIT;
     let status = loop {
         if let Some(status) = child.try_wait().unwrap() {
             break status;
@@ -36,7 +38,8 @@ fn run(mut command: Command) -> Output {
             child.kill().unwrap();
             child.wait().unwrap();
             panic!(
-                "TLS subprocess exceeded 180 seconds: stdout={} stderr={}",
+                "TLS subprocess exceeded {} seconds: stdout={} stderr={}",
+                SUBPROCESS_LIMIT.as_secs(),
                 String::from_utf8_lossy(&fs::read(&output_path).unwrap()),
                 String::from_utf8_lossy(&fs::read(&error_path).unwrap())
             );

@@ -537,11 +537,12 @@ fn dispatcher_ir_lines(branches: usize) -> usize {
 
 #[test]
 fn many_returns_share_one_cleanup_exit() {
-    let small = dispatcher_ir_lines(20);
-    let large = dispatcher_ir_lines(80);
+    let [small, medium, large] = [20, 40, 80].map(dispatcher_ir_lines);
+    let first = medium - small;
+    let second = large - medium;
     assert!(
-        large < small * 5,
-        "emitted code grows faster than linearly: {small} lines for 20 returns, {large} for 80"
+        second * 2 < first * 5,
+        "emitted code grows faster than linearly: {small}, {medium} and {large} lines for 20, 40 and 80 returns"
     );
 }
 
