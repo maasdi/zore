@@ -1,5 +1,6 @@
 package sqlite
 
+import "std/errors"
 import "std/strings"
 
 const Null = 5
@@ -10,7 +11,11 @@ const Blob = 4
 
 type Database struct { handle int }
 type Statement struct { handle int }
-type Transaction struct { handle int }
+type Transaction struct {
+    handle int
+    scoped bool
+}
+type rollbackGuard struct { handle int }
 
 func Open(path string) (Database, error) {
     let token = nativeOpen(path)?
@@ -37,7 +42,29 @@ func (db mut Database) Begin() (Transaction, error) {
     nativeBegin(db.handle)?
     let token = db.handle
     db.handle = 0
-    return Transaction{handle: token}, nil
+    return Transaction{handle: token, scoped: false}, nil
+}
+
+func (db Database) Transaction(body func(mut Transaction) error) error {
+    nativeBegin(db.handle)?
+    var guard = rollbackGuard{handle: db.handle}
+    var tx = Transaction{handle: db.handle, scoped: true}
+    let failure = body(tx)
+    guard.handle = 0
+    if failure != nil { return rollbackAfter(db.handle, failure) }
+    let commitFailure = nativeFinish(db.handle, true)
+    if commitFailure != nil { return rollbackAfter(db.handle, commitFailure) }
+    return nil
+}
+
+func rollbackAfter(database int, cause error) error {
+    let rollback = nativeAbort(database)
+    if rollback != nil { return errors.Wrap(cause, "sqlite: rollback failed: " + errors.Message(rollback)) }
+    return cause
+}
+
+func scopedCompletion() (Database, error) {
+    return Database{handle: 0}, error("sqlite: a Transaction callback commits or rolls back by returning")
 }
 
 func (tx Transaction) Prepare(sql string) (Statement, error) {
@@ -46,6 +73,7 @@ func (tx Transaction) Prepare(sql string) (Statement, error) {
 }
 
 func (tx mut Transaction) Commit() (Database, error) {
+    if tx.scoped { return scopedCompletion() }
     nativeFinish(tx.handle, true)?
     let token = tx.handle
     tx.handle = 0
@@ -53,13 +81,20 @@ func (tx mut Transaction) Commit() (Database, error) {
 }
 
 func (tx mut Transaction) Rollback() (Database, error) {
+    if tx.scoped { return scopedCompletion() }
     nativeFinish(tx.handle, false)?
     let token = tx.handle
     tx.handle = 0
     return Database{handle: token}, nil
 }
 
-func (tx mut Transaction) drop() { nativeDropDatabase(tx.handle, true) }
+func (tx mut Transaction) drop() {
+    if !tx.scoped { nativeDropDatabase(tx.handle, true) }
+}
+
+func (g mut rollbackGuard) drop() {
+    if g.handle != 0 { _ = nativeAbort(g.handle) }
+}
 
 func (s mut Statement) BindNull(index int) error {
     return nativeBind(s.handle, index, Null, 0, 0.0, Array<uint8>{}[:])
@@ -84,6 +119,7 @@ func (s mut Statement) BindBytes(index int, value []uint8) error {
 
 func (s mut Statement) Step() (bool, error) { return nativeStep(s.handle) }
 func (s mut Statement) Reset() error { return nativeReset(s.handle) }
+func (s mut Statement) ClearBindings() error { return nativeClearBindings(s.handle) }
 func (s Statement) ColumnCount() (int, error) { return nativeColumn(s.handle, 0, 0) }
 func (s Statement) ColumnType(column int) (int, error) { return nativeColumn(s.handle, column, -1) }
 func (s Statement) Int(column int) (int, error) { return nativeColumn(s.handle, column, Integer) }

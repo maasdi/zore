@@ -13,6 +13,7 @@ func (db Database) Prepare(sql string) (Statement, error)
 func (db Database) SetBusyTimeout(milliseconds int) error
 func (db mut Database) Close()
 func (db mut Database) Begin() (Transaction, error)
+func (db Database) Transaction(body func(mut Transaction) error) error
 func (tx Transaction) Prepare(sql string) (Statement, error)
 func (tx mut Transaction) Commit() (Database, error)
 func (tx mut Transaction) Rollback() (Database, error)
@@ -23,6 +24,7 @@ func (s mut Statement) BindText(index int, value string) error
 func (s mut Statement) BindBytes(index int, value []uint8) error
 func (s mut Statement) Step() (bool, error)
 func (s mut Statement) Reset() error
+func (s mut Statement) ClearBindings() error
 func (s Statement) ColumnCount() (int, error)
 func (s Statement) ColumnType(column int) (int, error)
 func (s Statement) Int(column int) (int, error)
@@ -38,8 +40,10 @@ Paths and SQL reject NUL. Prepare accepts one statement only, including trailing
 whitespace, with at most 1 MiB SQL. SQL comments after the final statement are
 outside this conservative surface. Use parameters for values, never SQL assembly.
 Parameter indexes are SQLite's one-based indexes; columns are zero-based.
-Unbound parameters are NULL. Binding is permitted before Step; Reset clears all
-bindings and returns the statement to its initial state. Step returns true for
+Unbound parameters are NULL. Binding and ClearBindings are permitted before Step
+or after Reset. Reset returns the statement to its initial state and keeps every
+bound value, as SQLite does. A value that is not rebound is reused, so call
+ClearBindings after Reset to set every parameter to NULL. Step returns true for
 a row, false on completion, and an error on failure; call Reset before reuse.
 Binding after stepping and stepping after completion/failure require Reset.
 Reset succeeds after a failed Step, so busy or constraint failures can be retried.
@@ -59,14 +63,49 @@ existing statements. Statements finalize on Close/drop; Close always releases
 the token and does not repeat a failure already reported by Step. Close is
 idempotent.
 
+Transaction runs a callback inside a transaction and is the usual way to use one:
+
+```ore
+func record(db sqlite.Database, body string) error {
+    return db.Transaction(func(tx mut sqlite.Transaction) error {
+        var insert = tx.Prepare("insert into notes(body) values (?)")?
+        insert.BindText(1, body)?
+        insert.Step()?
+        return nil
+    })
+}
+```
+
+Transaction borrows the Database, so a `let` Database works and the Database is
+never emptied. It uses BEGIN IMMEDIATE under Begin's rules: no live statements
+and no nesting. The compiler rejects moving `tx` out of the callback, so a
+transaction cannot stay open outside it. It commits when the callback returns nil;
+SQLite retries a busy commit for up to the busy timeout. When the callback returns
+an error, or the commit fails (still busy, deferred constraint, statement still
+open, SQLite already rolled back), it rolls back and returns that error unchanged.
+If the rollback fails, the returned error wraps the original and names the
+rollback failure; dropping the Database still rolls back. A statement left open
+when the callback returns makes the commit fail and is finalized; its later
+operations fail safely. Commit and Rollback called inside the callback fail
+without effect. A panic in the callback rolls back during unwinding and keeps the
+connection. The callback is a plain function value: it cannot await, and its
+SQLite calls block with compensation even in async callers. While a Transaction
+callback runs, a concurrent Begin or Transaction on the same Database fails.
+Statements other tasks run on that Database join the transaction, are committed
+or rolled back with it, and are finalized if still open when it rolls back.
+Begin, Commit and Rollback remain the low-level API for transactions that must
+outlive one call.
+
 Begin requires a `var` Database without live statements. On success its BEGIN
 IMMEDIATE transaction takes the database token and the Database becomes empty;
 on failure, such as `SQLITE_BUSY`, the Database is unchanged and remains usable.
 The transaction may prepare statements; close all of them before Commit/Rollback.
-Either returns the Database on success and leaves the Transaction empty. On
-failure the Transaction keeps its token: it can prepare further statements, retry
-Commit, or Rollback. If SQLite itself rolled back after a failed commit, only
-Rollback succeeds. Operations on an empty Database or Transaction fail. Dropping
+Either returns the Database on success and leaves the Transaction empty. A failed
+Commit/Rollback keeps the token. While SQLite keeps the transaction open (busy,
+deferred constraint, live statement) it can prepare, retry Commit or Rollback.
+If SQLite itself rolled back (a failed commit, or a statement failure such as an
+`OR ROLLBACK` conflict), Prepare, Step and Commit fail and only Rollback
+succeeds. Operations on an empty Database or Transaction fail. Dropping
 an uncompleted transaction rolls back, removes its connection token and invalidates
 escaped statements; their subsequent operations fail safely. Nested transactions
 and savepoints are excluded. SQL transaction-control statements are rejected by

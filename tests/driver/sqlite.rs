@@ -160,7 +160,7 @@ fn sqlite_resource_contract_and_tagged_offline_application() {
     success(fixture.invoke("install", "sqlite"));
     let tests = success(fixture.invoke("test", "sqlite"));
     assert!(
-        String::from_utf8_lossy(&tests.stdout).contains("Tests: 11 passed, 0 failed"),
+        String::from_utf8_lossy(&tests.stdout).contains("Tests: 23 passed, 0 failed"),
         "{tests:?}"
     );
     cleanup_modes(&fixture);
@@ -187,6 +187,7 @@ fn cleanup_modes(fixture: &Fixture) {
         "app/main.ore",
         r#"package main
 import "sqlite"
+import "std/errors"
 import "std/os"
 import "std/time"
 func runSQL(db sqlite.Database, sql string) error {
@@ -206,7 +207,53 @@ async func transaction(db own sqlite.Database, mode string) error {
     let finished = tx.Commit()?
     return nil
 }
+func callbackPanic() error {
+    let db = sqlite.Open("cleanup.db")?
+    db.Transaction(func(tx mut sqlite.Transaction) error {
+        var statement = tx.Prepare("delete from cleanup")?
+        statement.Step()?
+        panic("expected SQLite callback panic")
+    })?
+    return nil
+}
+func panickingChild(db sqlite.Database, ready channel<bool>, acknowledged channel<bool>) error {
+    let failure = db.Transaction(func(tx mut sqlite.Transaction) error {
+        ready.send(true)
+        acknowledged.receive()
+        panic("expected scoped callback panic")
+    })
+    ready.send(false)
+    return failure
+}
+func contendingChild(db sqlite.Database, ready channel<bool>, acknowledged channel<bool>) error {
+    let began, received = ready.receive()
+    if !began || !received { return error("panicking transaction never began") }
+    let overlapping = db.Transaction(func(tx mut sqlite.Transaction) error { return nil })
+    acknowledged.send(true)
+    if overlapping == nil { return error("peer began while the panicking transaction was open") }
+    for var attempt = 0; attempt < 100; attempt += 1 {
+        let result = db.Transaction(func(tx mut sqlite.Transaction) error { return nil })
+        if result == nil { return nil }
+        time.Sleep(20 * time.Millisecond)
+    }
+    return error("peer never began after the panic")
+}
+func scopedPanic() error {
+    let db = sqlite.Open(":memory:")?
+    let ready = channel<bool>(1)
+    let acknowledged = channel<bool>(1)
+    scope {
+        let panicking = go panickingChild(db, ready, acknowledged)
+        let peer = go contendingChild(db, ready, acknowledged)
+        let failure = peer.wait()
+        if failure != nil { panic("peer failed: " + errors.Message(failure)) }
+        println("peer ok")
+    }
+    return nil
+}
 func execute(mode string) error {
+    if mode == "callback-panic" { return callbackPanic() }
+    if mode == "scoped-panic" { return scopedPanic() }
     if mode != "inspect" {
         let db = sqlite.Open("cleanup.db")?
         runSQL(db, "create table if not exists cleanup(value integer)")?
@@ -249,4 +296,24 @@ func main() {
     assert!(stderr.contains("expected SQLite task panic"), "{panic:?}");
     assert!(!stderr.contains("leak:"), "{panic:?}");
     assert_eq!(success(run("inspect")).stdout, b"0\n");
+    assert_eq!(success(run("normal")).stdout, b"1\n");
+    let callback_panic = run("callback-panic");
+    assert_eq!(callback_panic.status.code(), Some(2), "{callback_panic:?}");
+    let stderr = String::from_utf8_lossy(&callback_panic.stderr);
+    assert!(
+        stderr.contains("expected SQLite callback panic"),
+        "{callback_panic:?}"
+    );
+    assert!(!stderr.contains("leak:"), "{callback_panic:?}");
+    assert_eq!(success(run("inspect")).stdout, b"1\n");
+    let scoped_panic = run("scoped-panic");
+    assert_eq!(scoped_panic.status.code(), Some(2), "{scoped_panic:?}");
+    assert_eq!(scoped_panic.stdout, b"peer ok\n", "{scoped_panic:?}");
+    let stderr = String::from_utf8_lossy(&scoped_panic.stderr);
+    assert!(
+        stderr.contains("expected scoped callback panic"),
+        "{scoped_panic:?}"
+    );
+    assert!(!stderr.contains("peer failed"), "{scoped_panic:?}");
+    assert!(!stderr.contains("leak:"), "{scoped_panic:?}");
 }

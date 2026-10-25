@@ -649,17 +649,19 @@ For example:
 ```ore
 import "sqlite"
 func persist() error {
-    var db = sqlite.Open("example.db")?
-    var transaction = db.Begin()?
-    {
-        var insert = transaction.Prepare("insert into notes(body) values (?)")?
+    let db = sqlite.Open("example.db")?
+    db.Transaction(func(tx mut sqlite.Transaction) error {
+        var insert = tx.Prepare("insert into notes(body) values (?)")?
         insert.BindText(1, "hello")?
         insert.Step()?
-    }
-    let reopened = transaction.Commit()?
+        return nil
+    })?
     return nil
 }
 ```
+
+The low-level `var db` / `db.Begin()` / `tx.Commit()` sequence remains available
+for transactions that must outlive one call.
 
 Opening creates a nonzero never-reused connection token. Preparing borrows the
 connection but returns an independent owned statement with a native connection
@@ -675,6 +677,30 @@ current Step result; text and blob access returns owned copies. Null, integer,
 float, text and blob retain their distinct SQLite types. Text preserves embedded
 NUL and requires UTF-8; blob preserves every byte. SQL/path text rejects NUL;
 Prepare accepts exactly one nonempty SQL statement with optional whitespace tail.
+Unbound parameters are NULL. Reset returns a statement to its initial state and
+keeps every bound value, as SQLite does. ClearBindings sets all parameters to NULL
+and, like binding, requires the statement to be in its initial state.
+
+`Database.Transaction(body func(mut Transaction) error) error` borrows the
+Database, so a `let` Database suffices and the Database is never emptied. The
+function-typed parameter is an ordinary borrowed parameter; the callback's own
+`mut` parameter is the transaction. It begins as Begin does (BEGIN IMMEDIATE, no
+live statements, no nesting), calls the body, and commits when the body returns
+nil. SQLite retries a busy commit for up to the busy timeout. When the body
+returns an error, or the commit fails (still busy, deferred constraint, statement
+still open, SQLite already rolled back), the transaction is rolled back and that
+error is returned unchanged. If the rollback itself fails, the returned error
+wraps the original and names the rollback failure; dropping the Database still
+rolls back. The ordinary borrowing rules reject moving the callback's Transaction
+out, so a transaction cannot remain open after the call returns. Statements left
+open when the body returns make the commit fail and are finalized; their later
+operations fail safely. Commit and Rollback called on the callback's Transaction
+fail without effect. A panic in the body rolls back during unwinding and keeps the
+connection. The body is a plain function value: it cannot await, and its SQLite
+calls block with compensation even in async callers. While a Transaction
+callback runs, a concurrent Begin or Transaction on the same Database fails.
+Statements other tasks run on that Database join the transaction, are committed
+or rolled back with it, and are finalized if still open when it rolls back.
 
 Database.Begin mutably borrows the database, rejecting live statements and
 nesting. On success the returned Transaction takes its token and the Database
@@ -682,13 +708,19 @@ becomes empty; a failed Begin leaves the Database unchanged. Transactions use
 BEGIN IMMEDIATE. Prepare borrows a Transaction, whose statements hold the same
 connection lease. Commit and Rollback mutably borrow the Transaction, require
 all its statements to have closed, and on success return the Database and leave
-the Transaction empty. A failed completion keeps the Transaction usable and
-retryable; when SQLite has already rolled back, only Rollback succeeds. Empty
-resources produce ordinary operation errors. Drop rolls back and closes the
-connection token. Abandonment invalidates escaped transaction
-statements before rollback; they remain safe to finalize. Normal return, `?`,
-explicit close, structured panic and task-frame destruction invoke ordinary
-cleanup. Abort/process termination and native bugs retain ordinary limits.
+the Transaction empty. A failed Commit or Rollback keeps the Transaction's
+token. While SQLite keeps the transaction open (busy, deferred constraint, live
+statement) it can prepare statements and retry Commit or Rollback. If SQLite
+itself rolled back (a failed commit, or a statement failure such as an
+`OR ROLLBACK` conflict), Prepare, Step and Commit fail and only Rollback
+succeeds. Empty resources produce ordinary operation errors. Dropping a Begin
+transaction rolls back and closes the connection token; a callback transaction
+is never dropped early: replacing the callback's Transaction leaves the
+transaction open, and a panic in the body rolls back during unwinding and keeps
+the connection. Abandonment invalidates escaped
+transaction statements before rollback; they remain safe to finalize. Normal
+return, `?`, explicit close, structured panic and task-frame destruction invoke
+ordinary cleanup. Abort/process termination and native bugs retain ordinary limits.
 
 Native connection access is serialized by one mutex and may migrate between
 threads; no thread-affine connection API is exposed. Operations retain native
@@ -715,9 +747,12 @@ Compiler impact: add one reviewed registry entry and fixed per-adapter C flags,
 private typed bindings, and per-symbol adapter wait kinds that include the bound
 package's wrappers and private waits in existing helper lowering. No syntax/type/borrow/drop rule changes. Conformance
 covers binary/parameter/row types, file persistence, invalid/closed resources,
-statement leases, transaction completion/abandonment, contention, normal/error/
-panic/async cleanup, source/recipe tampering, linker-independent checks and
-separate tagged Git locked/offline check/build/test on supported native hosts.
+statement leases, binding retention and clearing, callback commit, callback error,
+busy and failed commits, escaped statements, callback panic, async callers, `let`
+databases and rejected transaction escapes, transaction completion/abandonment,
+contention, normal/error/panic/async cleanup, source/recipe tampering,
+linker-independent checks and separate tagged Git locked/offline
+check/build/test on supported native hosts.
 
 ## 3.5 Identifiers — LOCKED
 
@@ -8429,8 +8464,8 @@ These capabilities are not implicitly available in the standard library:
 
 ```ore
 func RandomBytes(size int) (Array<byte>, error)
-func SHA256(data []byte) (Array<byte>, error)
-func HMACSHA256(key []byte, data []byte) (Array<byte>, error)
+func SHA256(data []byte) Array<byte>
+func HMACSHA256(key []byte, data []byte) Array<byte>
 func Equal(left []byte, right []byte) bool
 func VerifyHMACSHA256(key []byte, data []byte, tag []byte) bool
 ```
@@ -8442,8 +8477,10 @@ provider; entropy/provider failures return an error and no partial output.
 SHA256 returns the 32-byte SHA-256 digest; HMACSHA256 returns the 32-byte
 HMAC-SHA-256 tag, accepting empty keys and arbitrary binary input. All array results are fresh owned
 Move values; input slices are borrowed for the duration of the call and are never
-retained or mutated. Digest/MAC failure returns an empty array. Allocation
-exhaustion follows the ordinary fatal allocation policy.
+retained or mutated. A digest/MAC provider failure, which only a broken build
+or an allocation failure inside the provider can produce, panics with a message
+naming the function. Allocation exhaustion follows the ordinary fatal allocation
+policy.
 
 Equal compares bytes with the provider's constant-time comparison for equal,
 nonzero lengths. It returns false immediately for different lengths and true
@@ -8453,7 +8490,7 @@ a general constant-time execution guarantee for source-language programs.
 
 VerifyHMACSHA256 computes the HMAC-SHA-256 tag of data under key and compares it
 with tag through Equal. It returns true only for a matching 32-byte tag; a tag of
-any other length or a provider failure returns false. MAC verification must use
+any other length returns false. MAC verification must use
 it (or Equal), never an early-exit comparison.
 
 ```ore
@@ -8484,7 +8521,7 @@ adapters when selected, and statically linked. The bridge delegates to Mbed TLS
 SHA-256, HMAC-SHA-256, CTR-DRBG seeded from its platform entropy provider, and
 constant-time memory comparison; it implements no cryptographic algorithms.
 Each nonempty random request creates and seeds its own DRBG state, requests
-bounded chunks, and destroys the state before returning. Provider failures are
+bounded chunks, and destroys the state before returning. Random provider failures are
 ordinary errors with no partial output. There is no mutable shared crypto state
 or runtime provider loading. AES tables are immutable and precomputed; hardware
 AES feature-detection paths are disabled. Software AES uses secret-dependent

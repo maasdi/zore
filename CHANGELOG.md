@@ -14,6 +14,15 @@ once it does.
 - Added package-owned, reviewed C/Rust Adler-32 sources and an external Zore wrapper,
   with owned cleanup, validated handles and binary buffers, async/scoped result
   coverage and local/pinned Git consumption.
+- Added SQLite `Database.Transaction` callback transactions: they work on `let`
+  databases, commit on success, roll back on callback errors, failed commits and
+  panics, and rely on SQLite's busy timeout to retry a busy commit.
+- SQLite `Reset` now keeps bound values; the new `ClearBindings` sets every
+  parameter to NULL.
+- SQLite transactions that SQLite rolled back by itself now reject further
+  statements until `Rollback`.
+- Breaking: crypto `SHA256` and `HMACSHA256` return only the digest or tag and
+  panic on a provider failure.
 - Arbitrary native project sources, dynamic loading, general FFI, full database
   and TLS adapters remain separate work.
 
