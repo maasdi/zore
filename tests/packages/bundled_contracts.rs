@@ -135,12 +135,14 @@ fn json_reports_optional_field_order_drift() {
             }
         }
     });
-    assert!(
-        diagnostics.iter().any(|d| d
-            .message()
-            .contains("Optional needs Value T followed by Set bool")),
-        "{diagnostics:#?}"
-    );
+    let count = diagnostics
+        .iter()
+        .filter(|d| {
+            d.message()
+                == "bundled JSON codec contract mismatch: Optional needs Value T followed by Set bool"
+        })
+        .count();
+    assert_eq!(count, 2, "{diagnostics:#?}");
 }
 
 #[test]
@@ -170,9 +172,138 @@ fn http_reports_hook_ownership_drift() {
             }
         }
     });
-    assert!(
-        diagnostics.iter().any(|diagnostic| diagnostic.message()
-            == "bundled HTTP adapter contract mismatch: RouterBuilder.Handle/register signature"),
-        "{diagnostics:#?}"
+    assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
+    assert_eq!(
+        diagnostics[0].message(),
+        "bundled HTTP adapter contract mismatch: RouterBuilder.Handle: parameter 3 is `func(mut http.ResponseWriter, mut http.Request) error`, expected `own func(mut http.ResponseWriter, mut http.Request) error`"
     );
+}
+
+const JSON_MANY_TYPES: &str = r#"package main
+import "std/encoding/json"
+type Row struct { N int }
+func main() {
+    var row = Row{N: 3}
+    let first, firstErr = json.Marshal(1)
+    _ = first
+    _ = firstErr
+    let second, secondErr = json.Marshal("x")
+    _ = second
+    _ = secondErr
+    let third, thirdErr = json.MarshalWith(row, json.SnakeCase)
+    _ = third
+    _ = thirdErr
+    var count = 0
+    var text = ""
+    let decodeFirst = json.Unmarshal(first[:], count)
+    _ = decodeFirst
+    let decodeSecond = json.Unmarshal(second[:], text)
+    _ = decodeSecond
+    let decodeThird = json.Unmarshal(third[:], row)
+    _ = decodeThird
+}
+"#;
+
+fn rename_json_function(source: &str, name: &'static str) -> Vec<Diagnostic> {
+    check_mutated_bundle(source, "std/encoding/json", |file| {
+        for item in &mut file.items {
+            if let Item::Func(function) = item
+                && function.name.text == name
+            {
+                function.name.text = format!("renamed{name}");
+            }
+        }
+    })
+}
+
+#[test]
+fn json_contract_drift_is_reported_once() {
+    for name in ["sortedNames", "fieldIndex"] {
+        let diagnostics = rename_json_function(JSON_MANY_TYPES, name);
+        let expected =
+            format!("bundled JSON codec contract mismatch: missing std/encoding/json.{name}");
+        let count = diagnostics
+            .iter()
+            .filter(|diagnostic| diagnostic.message() == expected)
+            .count();
+        assert_eq!(count, 1, "{name}: {diagnostics:#?}");
+    }
+}
+
+const USER_HTTP: &str = r#"package http
+
+type Request struct { target string }
+type ResponseWriter struct { status int }
+type Handler interface { Handle(w mut ResponseWriter, r mut Request) error }
+type HandlerFactory interface { NewHandler() (Handler, error) }
+type RouterBuilder struct { count int }
+
+func NewRouterBuilder() RouterBuilder { return RouterBuilder{count: 0} }
+
+func (b mut RouterBuilder) Handle(pattern string, handler own func(mut ResponseWriter, mut Request) error) {
+    b.count += 1
+}
+
+func (b mut RouterBuilder) register(pattern string, factory own HandlerFactory) {
+    b.count += 1
+}
+
+func (b RouterBuilder) Count() int { return b.count }
+"#;
+
+const USER_HTTP_MAIN: &str = r#"package main
+import "myapp/http"
+func main() {
+    var builder = http.NewRouterBuilder()
+    builder.Handle("GET /", func(w mut http.ResponseWriter, r mut http.Request) error { return nil })
+    println(builder.Count())
+    println(routes())
+}
+"#;
+
+const STD_HTTP_ROUTES: &str = r#"package main
+import "std/net/http"
+func routes() int {
+    var builder = http.NewRouterBuilder()
+    builder.Handle("GET /", func(w mut http.ResponseWriter, r mut http.Request) error { return w.Text(200, "ok") })
+    return 1
+}
+"#;
+
+#[test]
+fn user_package_named_http_is_not_bundled_http() {
+    let memory = Memory::new()
+        .with("/p/zore.toml", MANIFEST)
+        .with("/p/http/http.ore", USER_HTTP)
+        .with("/p/main.ore", USER_HTTP_MAIN)
+        .with("/p/routes.ore", STD_HTTP_ROUTES);
+    let mut sources = SourceMap::new();
+    let project = load_project(&mut sources, &memory, Path::new("/p/main.ore"))
+        .unwrap_or_else(|_| panic!("load user http package fixture"));
+    let Checked {
+        package,
+        diagnostics,
+    } = check_project(&project, &sources);
+    assert!(diagnostics.is_empty(), "{diagnostics:#?}");
+    let package = package.expect("a checked package");
+    let bundled = package.declared_type("std/net/http", "Handler").unwrap();
+    let user = package.declared_type("myapp/http", "Handler").unwrap();
+    assert_ne!(bundled, user);
+    assert_eq!(package.types.display(bundled).to_string(), "http.Handler");
+    assert_eq!(package.types.display(user).to_string(), "http.Handler");
+    let adapters = |prefix: &str| {
+        package
+            .functions
+            .iter()
+            .filter(|function| function.name.starts_with(prefix))
+            .count()
+    };
+    assert_eq!(adapters("http$invoke"), 1);
+    assert_eq!(adapters("http$factory"), 1);
+    let user_handle = package
+        .functions
+        .iter()
+        .find(|function| function.name == "myapp/http.RouterBuilder.Handle")
+        .expect("the user's Handle method");
+    assert!(!user_handle.probe);
 }
