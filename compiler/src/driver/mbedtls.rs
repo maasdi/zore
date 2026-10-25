@@ -1,5 +1,5 @@
 pub(super) const FINGERPRINT: &str =
-    "9d29940fd65225a2e6b9d50d7500da5aeb749eacea38ff9db309b8ad53ec96b4";
+    "4e1dcf756d7036489fc1177430283ab7a0cd9436a75dfe83e2a25ed440e4e2df";
 pub(super) const RECIPE: &str = "mbedtls-3.6.7-c11-config-v4-rom-aes-default-source-windows-bcrypt";
 pub(super) const SOURCES: &[(&str, &[u8])] = &[
     ("LICENSE", include_bytes!("../../native/mbedtls/LICENSE")),

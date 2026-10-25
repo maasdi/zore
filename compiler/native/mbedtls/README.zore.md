@@ -25,6 +25,10 @@ accumulator. No system crypto or TLS library is used. Windows links the OS
 bcrypt entropy API. The compiled objects are cached per closure, compiler and
 flags; vendored sources are compiled without warnings as errors.
 
+`MBEDTLS_SSL_ALL_ALERT_MESSAGES` is kept deliberately: it only makes the provider
+send fatal alerts such as `bad_record_mac` after a corrupted record, which TLS
+conformance tests check, and enables no protocol feature.
+
 AES uses immutable precomputed tables, avoiding process-global mutable table
 initialization. Hardware AES feature detection and acceleration are disabled in
 this recipe. Software AES still uses secret-dependent table lookups; this

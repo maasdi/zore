@@ -10,6 +10,7 @@
 #define MBEDTLS_SSL_SERVER_NAME_INDICATION
 #define MBEDTLS_SSL_EXTENDED_MASTER_SECRET
 #define MBEDTLS_SSL_ENCRYPT_THEN_MAC
+/* Kept so a corrupted record gets a fatal bad_record_mac alert; it adds no protocol. */
 #define MBEDTLS_SSL_ALL_ALERT_MESSAGES
 #define MBEDTLS_SSL_KEEP_PEER_CERTIFICATE
 #define MBEDTLS_AES_C

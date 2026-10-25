@@ -1,4 +1,4 @@
 version = 1
 
 [projects]
-crypto = { manifest = "d59d24778d6aa9281f29640a4b35e3fc694f1588510d0010ec7145023478a93b", path = ".", adapter = "crypto-v1", recipe = "9ada99205e00fb5b42c35d9259216f0ad95fad3f78e32cf099457b5557543ed2" }
+crypto = { manifest = "d59d24778d6aa9281f29640a4b35e3fc694f1588510d0010ec7145023478a93b", path = ".", adapter = "crypto-v1", recipe = "a9ce277a13826cd9b135f7f6931453e61677dc8424e42a5e0172596d93d9a385" }
