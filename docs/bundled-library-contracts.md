@@ -24,8 +24,15 @@ order. Naming is an integer type; the public AsWritten/LowerCamel/SnakeCase
 values remain 0/1/2, as specified and covered by behavioral tests.
 
 `json/contract.rs` resolves every helper used by the selected encode/decode
-builder before synthesis. It checks exact parameter IDs/types, parameter modes,
-result types, synchronous execution, and absence of remaining generic parameters:
+builder before synthesis. The contract is resolved once per direction for the
+whole compilation, so a drifted helper or Optional layout is reported once per
+direction rather than once per specialization; only the hook check runs for each
+specialization. It checks exact parameter IDs/types, parameter modes,
+result types, synchronous execution, and absence of remaining generic parameters,
+and a mismatch names the helper and the condition that failed (for example
+`parameter 1 is ... expected ...`, `returns ... expected ...`, or `must be
+synchronous`). Optional must be a one-parameter generic struct with `Value T`
+then `Set bool`, and it is required to exist in `std/encoding/json`:
 
 - Both directions use Begin/EndObject, Begin/EndArray, Null, Bool, String, Value.
   Receivers are mutable. Encoder value arguments borrow and return nothing;
@@ -47,7 +54,13 @@ ordinary ownership, MIR, cleanup, and async processing.
 ## HTTP direct-handler adaptation
 
 `hir/lower/http.rs` activates when the bundled RouterBuilder.Handle hook exists.
-It validates the following before modifying any function body:
+RouterBuilder, HandlerFactory, Handler, ResponseWriter, and Request are
+identified by declaring package path and name (`std/net/http`), never by their
+display text, so a user package named `http` that declares look-alike types is
+not mistaken for the bundled one. Each diagnostic names the failed condition,
+such as a missing type, a non-interface, a wrong receiver, or the first
+parameter or result that differs. It validates the following before modifying
+any function body:
 
 - Handle and register are synchronous, return no values, and take a mutable
   RouterBuilder receiver, borrowed string pattern, and owned callback/factory.

@@ -1,5 +1,6 @@
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -8,7 +9,7 @@ import unittest
 from unittest import mock
 
 from workload import source
-from run import ROOT, hook_ir
+from run import ROOT, frame_layouts, hook_ir
 
 
 class HarnessTests(unittest.TestCase):
@@ -96,3 +97,28 @@ class HarnessTests(unittest.TestCase):
         self.assertTrue(all('\\' not in key for key in report['runtime_sources']))
         self.assertIn('runtime/src/lib.rs', report['runtime_sources'])
         self.assertEqual(report['compiler_revision'], report['source_revision'])
+
+    def test_frame_layouts_reject_ir_without_async_frames(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            with self.assertRaises(RuntimeError):
+                frame_layouts('', Path(temporary))
+
+    def test_clang_reports_padded_frame_size_and_constructor_identity(self):
+        if shutil.which(os.environ.get('ZORE_CC', 'clang')) is None:
+            self.skipTest('clang is required for frame layouts')
+        ir = '''%"main.AsyncFrame.17" = type { [3 x i8], i64, ptr }
+define private ptr @"main.wait$async$new"() {
+  %frame = alloca %"main.AsyncFrame.17"
+  ret ptr null
+}
+'''
+        with tempfile.TemporaryDirectory() as temporary:
+            frames = frame_layouts(ir, Path(temporary))
+        self.assertEqual(frames[0]['bytes'], 24)
+        self.assertEqual(frames[0]['constructors'], ['@"main.wait$async$new"'])
+
+    def test_runner_does_not_load_the_performance_harness(self):
+        performance = (ROOT / 'benchmarks/performance').resolve()
+        self.assertNotIn('compile', sys.modules)
+        self.assertNotIn('common', sys.modules)
+        self.assertFalse([entry for entry in sys.path if entry and Path(entry).resolve() == performance])

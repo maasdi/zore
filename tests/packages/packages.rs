@@ -1,4 +1,5 @@
 mod bundled_contracts;
+mod bundled_inventory;
 mod local_dependencies;
 mod native_adapters;
 

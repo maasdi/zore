@@ -3,7 +3,9 @@ use crate::diagnostic::{Diagnostic, Severity};
 use crate::hir::{self, Const, Expr, ExprKind, StmtKind};
 use crate::resolve::{FieldId, FunctionId, LocalId, LocalKind};
 use crate::source::Span;
-use crate::types::{FuncSignature, InterfaceId, TypeId, TypeKind, TypeStore};
+use crate::types::{FuncSignature, InterfaceId, TypeId, TypeStore};
+
+use super::signature::{function_mismatch, method_mismatch};
 
 pub(super) fn adapt(package: &mut hir::Package) -> Vec<Diagnostic> {
     let Some(hook) = package
@@ -47,15 +49,11 @@ pub(super) fn adapt(package: &mut hir::Package) -> Vec<Diagnostic> {
             if function.0 as usize != hook {
                 return;
             }
-            let Some(callback_argument) = args.get(2) else {
-                diagnostics.push(contract_error("RouterBuilder.Handle call", expr.span));
-                return;
-            };
             let ExprKind::Closure {
                 function: callback,
                 captures,
                 ..
-            } = &callback_argument.kind
+            } = &args[2].kind
             else {
                 diagnostics.push(
                     Diagnostic::new(
@@ -129,10 +127,11 @@ pub(super) fn adapt(package: &mut hir::Package) -> Vec<Diagnostic> {
                 expr.span,
             ));
             let invoke = FunctionId(package.functions.len() as u32);
-            let Some(signature) = package.types.func_signature(callable_type).cloned() else {
-                diagnostics.push(contract_error("handler callback", expr.span));
-                return;
-            };
+            let signature = package
+                .types
+                .func_signature(callable_type)
+                .cloned()
+                .expect("a function literal or name has a function type");
             let mut invocation_locals = vec![parameter(
                 "self",
                 adapter_type,
@@ -310,100 +309,86 @@ fn contract_error(member: &str, span: Span) -> Diagnostic {
     .note("update the bundled std/net/http declarations and compiler adapter together")
 }
 
+const HTTP: &str = "std/net/http";
+
 impl HandlerContract {
-    fn resolve(package: &hir::Package, hook: usize) -> Result<Self, Box<Diagnostic>> {
-        let hook = &package.functions[hook];
-        let fail = |member: &str| Box::new(contract_error(member, hook.span));
+    fn resolve(package: &mut hir::Package, hook: usize) -> Result<Self, Box<Diagnostic>> {
+        let span = package.functions[hook].span;
+        let fail = |member: &str| Box::new(contract_error(member, span));
         let registration = package
             .functions
             .iter()
             .position(|function| function.name == "std/net/http.RouterBuilder.register")
             .ok_or_else(|| fail("missing RouterBuilder.register"))?;
-        let register = &package.functions[registration];
-        let factory_type = parameter_at(register, 2)
-            .ok_or_else(|| fail("RouterBuilder.register parameters"))?
-            .ty;
-        if !matches!(package.types.kind(factory_type), TypeKind::Interface(_))
-            || package.types.display(factory_type).to_string() != "http.HandlerFactory"
-        {
-            return Err(fail("owned HandlerFactory interface"));
-        }
-        let factory_interface = package
-            .types
-            .interface_of(factory_type)
-            .ok_or_else(|| fail("HandlerFactory interface"))?;
-        let [factory] = package.types.interface_methods(factory_interface) else {
-            return Err(fail("HandlerFactory needs exactly NewHandler"));
+        let declared = |name: &str| {
+            package
+                .declared_type(HTTP, name)
+                .ok_or_else(|| fail(&format!("missing {HTTP}.{name}")))
         };
-        let [handler_type, error] = factory.results.as_slice() else {
-            return Err(fail("HandlerFactory.NewHandler results"));
+        let router = declared("RouterBuilder")?;
+        let factory_type = declared("HandlerFactory")?;
+        let handler_type = declared("Handler")?;
+        let response_writer = declared("ResponseWriter")?;
+        let request = declared("Request")?;
+        let interface = |ty: TypeId, name: &str| {
+            package
+                .types
+                .interface_of(ty)
+                .ok_or_else(|| fail(&format!("{HTTP}.{name} is not an interface")))
         };
-        if factory.name != "NewHandler"
-            || factory.receiver != ParamMode::Borrow
-            || factory.is_async
-            || !factory.params.is_empty()
-            || *error != TypeStore::ERROR
-        {
-            return Err(fail("HandlerFactory.NewHandler signature"));
+        let factory_interface = interface(factory_type, "HandlerFactory")?;
+        let handler_interface = interface(handler_type, "Handler")?;
+        if let Some(detail) = interface_method_mismatch(
+            &package.types,
+            factory_interface,
+            "HandlerFactory",
+            "NewHandler",
+            &FuncSignature {
+                is_async: false,
+                params: Vec::new(),
+                results: vec![handler_type, TypeStore::ERROR],
+            },
+        ) {
+            return Err(fail(&detail));
         }
-        let handler_type = *handler_type;
-        if !matches!(package.types.kind(handler_type), TypeKind::Interface(_))
-            || package.types.display(handler_type).to_string() != "http.Handler"
-        {
-            return Err(fail("owned Handler interface"));
-        }
-        let handler_interface = package
-            .types
-            .interface_of(handler_type)
-            .ok_or_else(|| fail("Handler interface"))?;
-        let [handler] = package.types.interface_methods(handler_interface) else {
-            return Err(fail("Handler needs exactly Handle"));
-        };
-        if handler.name != "Handle"
-            || handler.receiver != ParamMode::Borrow
-            || handler.is_async
-            || handler.results != [TypeStore::ERROR]
-            || handler.params.len() != 2
-            || handler
-                .params
-                .iter()
-                .any(|(mode, _)| *mode != ParamMode::Mut)
-            || handler
-                .params
-                .iter()
-                .zip(["ResponseWriter", "Request"])
-                .any(|((_, ty), name)| {
-                    package.types.display(*ty).to_string() != format!("http.{name}")
-                })
-        {
-            return Err(fail("Handler.Handle signature"));
-        }
-        let signature = FuncSignature {
+        let handle_signature = FuncSignature {
             is_async: false,
-            params: handler.params.clone(),
-            results: handler.results.clone(),
+            params: vec![(ParamMode::Mut, response_writer), (ParamMode::Mut, request)],
+            results: vec![TypeStore::ERROR],
         };
-        let Some(callback) = parameter_at(hook, 2) else {
-            return Err(fail("RouterBuilder.Handle parameters"));
+        if let Some(detail) = interface_method_mismatch(
+            &package.types,
+            handler_interface,
+            "Handler",
+            "Handle",
+            &handle_signature,
+        ) {
+            return Err(fail(&detail));
+        }
+        let handler_function = package.types.func_type(handle_signature);
+        let package = &*package;
+        let registration_shape = |callback: TypeId| FuncSignature {
+            is_async: false,
+            params: vec![
+                (ParamMode::Mut, router),
+                (ParamMode::Borrow, TypeStore::STRING),
+                (ParamMode::Own, callback),
+            ],
+            results: Vec::new(),
         };
-        if hook.params.len() != 3
-            || register.params.len() != 3
-            || hook.is_async
-            || register.is_async
-            || !hook.results.is_empty()
-            || !register.results.is_empty()
-            || callback.kind != LocalKind::Param(ParamMode::Own)
-            || package.types.func_signature(callback.ty) != Some(&signature)
-            || parameter_at(register, 2).is_none_or(|p| p.kind != LocalKind::Param(ParamMode::Own))
-            || [hook, register].iter().any(|function| {
-                parameter_at(function, 0).is_none_or(|p| p.kind != LocalKind::Param(ParamMode::Mut))
-                    || parameter_at(function, 1).is_none_or(|p| {
-                        p.ty != TypeStore::STRING || p.kind != LocalKind::Param(ParamMode::Borrow)
-                    })
-            })
-            || parameter_at(hook, 0).map(|p| p.ty) != parameter_at(register, 0).map(|p| p.ty)
-        {
-            return Err(fail("RouterBuilder.Handle/register signature"));
+        if let Some(detail) = function_mismatch(
+            &package.types,
+            &package.functions[hook],
+            &registration_shape(handler_function),
+        ) {
+            return Err(fail(&format!("RouterBuilder.Handle: {detail}")));
+        }
+        if let Some(detail) = function_mismatch(
+            &package.types,
+            &package.functions[registration],
+            &registration_shape(factory_type),
+        ) {
+            return Err(fail(&format!("RouterBuilder.register: {detail}")));
         }
         Ok(Self {
             registration,
@@ -415,11 +400,30 @@ impl HandlerContract {
     }
 }
 
-fn parameter_at(function: &hir::Function, index: usize) -> Option<&hir::Local> {
-    function
-        .params
-        .get(index)
-        .and_then(|id| function.locals.get(id.0 as usize))
+fn interface_method_mismatch(
+    types: &TypeStore,
+    interface: InterfaceId,
+    interface_name: &str,
+    method_name: &str,
+    expected: &FuncSignature,
+) -> Option<String> {
+    let [method] = types.interface_methods(interface) else {
+        return Some(format!(
+            "{interface_name} must declare exactly one method, {method_name}"
+        ));
+    };
+    if method.name != method_name {
+        return Some(format!(
+            "{interface_name} must declare exactly one method, {method_name}"
+        ));
+    }
+    if method.receiver != ParamMode::Borrow {
+        return Some(format!(
+            "{interface_name}.{method_name}: receiver must be a shared borrow"
+        ));
+    }
+    method_mismatch(types, method, expected)
+        .map(|detail| format!("{interface_name}.{method_name}: {detail}"))
 }
 
 #[cfg(test)]
@@ -451,7 +455,7 @@ mod tests {
         for mutation in 0..8 {
             let (mut package, hook) = bundled();
             let contract =
-                HandlerContract::resolve(&package, hook).unwrap_or_else(|d| panic!("{d:?}"));
+                HandlerContract::resolve(&mut package, hook).unwrap_or_else(|d| panic!("{d:?}"));
             let interface = if mutation < 4 {
                 contract.factory_interface
             } else {
@@ -480,7 +484,8 @@ mod tests {
     #[test]
     fn registration_factory_is_selected_by_parameter_id() {
         let (mut package, hook) = bundled();
-        let contract = HandlerContract::resolve(&package, hook).unwrap_or_else(|d| panic!("{d:?}"));
+        let contract =
+            HandlerContract::resolve(&mut package, hook).unwrap_or_else(|d| panic!("{d:?}"));
         let register = &mut package.functions[contract.registration];
         let original = register.params[2];
         let replacement = LocalId(register.locals.len() as u32);
@@ -489,6 +494,144 @@ mod tests {
             .push(register.locals[original.0 as usize].clone());
         register.locals[original.0 as usize].ty = TypeStore::BOOL;
         register.params[2] = replacement;
-        assert!(HandlerContract::resolve(&package, hook).is_ok());
+        assert!(HandlerContract::resolve(&mut package, hook).is_ok());
+    }
+
+    #[test]
+    fn lookalike_types_with_the_same_display_name_are_rejected() {
+        let (mut package, hook) = bundled();
+        let contract =
+            HandlerContract::resolve(&mut package, hook).unwrap_or_else(|d| panic!("{d:?}"));
+        let methods = package
+            .types
+            .interface_methods(contract.factory_interface)
+            .to_vec();
+        let (lookalike, lookalike_type) = package.types.add_interface("http.HandlerFactory");
+        package.types.set_interface_methods(lookalike, methods);
+        let register = &mut package.functions[contract.registration];
+        let factory_parameter = register.params[2].0 as usize;
+        register.locals[factory_parameter].ty = lookalike_type;
+        let diagnostics = adapt(&mut package);
+        assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
+        assert_eq!(
+            diagnostics[0].message(),
+            "bundled HTTP adapter contract mismatch: RouterBuilder.register: parameter 3 is a different type named `own http.HandlerFactory`"
+        );
+
+        let (mut package, hook) = bundled();
+        let contract =
+            HandlerContract::resolve(&mut package, hook).unwrap_or_else(|d| panic!("{d:?}"));
+        let mut methods = package
+            .types
+            .interface_methods(contract.handler_interface)
+            .to_vec();
+        let (_, lookalike_request) = package.types.add_struct("http.Request");
+        methods[0].params[1].1 = lookalike_request;
+        package
+            .types
+            .set_interface_methods(contract.handler_interface, methods);
+        let diagnostics = adapt(&mut package);
+        assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
+        assert_eq!(
+            diagnostics[0].message(),
+            "bundled HTTP adapter contract mismatch: Handler.Handle: parameter 2 is a different type named `mut http.Request`"
+        );
+    }
+
+    #[test]
+    fn contract_drift_names_the_failed_condition() {
+        type Mutation = fn(&mut hir::Package, usize, usize);
+        let cases: [(Mutation, &str); 9] = [
+            (
+                |package, _, _| {
+                    package
+                        .declared_types
+                        .remove(&(HTTP.to_owned(), "Handler".to_owned()));
+                },
+                "missing std/net/http.Handler",
+            ),
+            (
+                |package, _, _| {
+                    package.declared_types.insert(
+                        (HTTP.to_owned(), "HandlerFactory".to_owned()),
+                        TypeStore::BOOL,
+                    );
+                },
+                "std/net/http.HandlerFactory is not an interface",
+            ),
+            (
+                |package, _, _| {
+                    let interface = handler_interface(package);
+                    let mut methods = package.types.interface_methods(interface).to_vec();
+                    methods[0].receiver = ParamMode::Mut;
+                    package.types.set_interface_methods(interface, methods);
+                },
+                "Handler.Handle: receiver must be a shared borrow",
+            ),
+            (
+                |package, _, _| {
+                    let interface = handler_interface(package);
+                    let mut methods = package.types.interface_methods(interface).to_vec();
+                    methods[0].params.swap(0, 1);
+                    package.types.set_interface_methods(interface, methods);
+                },
+                "Handler.Handle: parameter 1 is `mut http.Request`, expected `mut http.ResponseWriter`",
+            ),
+            (
+                |package, _, register| package.functions[register].is_async = true,
+                "RouterBuilder.register: must be synchronous",
+            ),
+            (
+                |package, hook, _| package.functions[hook].results.push(TypeStore::ERROR),
+                "RouterBuilder.Handle: returns `error`, expected `nothing`",
+            ),
+            (
+                |package, _, register| {
+                    let function = &mut package.functions[register];
+                    let local = function.params[2].0 as usize;
+                    function.locals[local].kind = LocalKind::Param(ParamMode::Borrow);
+                },
+                "RouterBuilder.register: parameter 3 is `http.HandlerFactory`, expected `own http.HandlerFactory`",
+            ),
+            (
+                |package, hook, _| {
+                    let function = &mut package.functions[hook];
+                    let local = function.params[0].0 as usize;
+                    function.locals[local].kind = LocalKind::Param(ParamMode::Borrow);
+                },
+                "RouterBuilder.Handle: parameter 1 is `http.RouterBuilder`, expected `mut http.RouterBuilder`",
+            ),
+            (
+                |package, hook, _| {
+                    let function = &mut package.functions[hook];
+                    let local = function.params[1].0 as usize;
+                    function.locals[local].ty = TypeStore::INT64;
+                },
+                "RouterBuilder.Handle: parameter 2 is `int64`, expected `string`",
+            ),
+        ];
+        for (mutate, expected) in cases {
+            let (mut package, hook) = bundled();
+            let register = package
+                .functions
+                .iter()
+                .position(|f| f.name == "std/net/http.RouterBuilder.register")
+                .unwrap();
+            mutate(&mut package, hook, register);
+            let diagnostics = adapt(&mut package);
+            assert_eq!(diagnostics.len(), 1, "{expected}: {diagnostics:?}");
+            assert_eq!(
+                diagnostics[0].message(),
+                format!("bundled HTTP adapter contract mismatch: {expected}")
+            );
+            assert_eq!(diagnostics[0].span(), package.functions[hook].span);
+        }
+    }
+
+    fn handler_interface(package: &hir::Package) -> InterfaceId {
+        package
+            .types
+            .interface_of(package.declared_type(HTTP, "Handler").unwrap())
+            .unwrap()
     }
 }

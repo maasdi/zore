@@ -26,6 +26,7 @@ pub struct Package {
     pub init: Option<FunctionId>,
     /// For each type converted to an interface, what serves each entry, in entry order.
     pub implementations: HashMap<(TypeId, InterfaceId), Vec<Implementation>>,
+    pub declared_types: HashMap<(String, String), TypeId>,
 }
 
 /// What serves one interface entry for a type converted to the interface.
@@ -46,6 +47,12 @@ pub struct Global {
 impl Package {
     pub fn function(&self, id: FunctionId) -> &Function {
         &self.functions[id.0 as usize]
+    }
+
+    pub fn declared_type(&self, package: &str, name: &str) -> Option<TypeId> {
+        self.declared_types
+            .get(&(package.to_owned(), name.to_owned()))
+            .copied()
     }
 
     /// A borrowed interface value is already a view, so it is passed as it is.

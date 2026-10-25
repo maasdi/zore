@@ -1,10 +1,12 @@
 mod contract;
 
 use std::collections::HashSet;
+use std::rc::Rc;
 
 use self::contract::CodecContract;
 use super::{Checker, typed};
 use crate::ast::{BinaryOp, ParamMode};
+use crate::diagnostic::{Diagnostic, Severity};
 use crate::hir::{self, Const, Expr, ExprKind, Stmt, StmtKind};
 use crate::resolve::{FieldId, FunctionId, LocalId, LocalKind};
 use crate::source::Span;
@@ -44,22 +46,15 @@ impl Checker<'_> {
         if !self.validate_json_type(ty, decode, false, &self.name(ty), span, &mut HashSet::new()) {
             return;
         }
-        let contract = match CodecContract::resolve(
-            functions,
-            self,
-            &functions[copy.0 as usize],
-            ty,
-            decode,
-        ) {
-            Ok(contract) => contract,
-            Err(detail) => {
-                self.diagnostics.push(crate::diagnostic::Diagnostic::new(
-                    crate::diagnostic::Severity::Error,
-                    format!("bundled JSON codec contract mismatch: {detail}"), span,
-                ).note("update the bundled std/encoding/json declarations and compiler codec generator together"));
-                return;
-            }
+        let Some(contract) = self.json_contract(functions, decode, span) else {
+            return;
         };
+        if let Some(detail) = contract.hook_mismatch(&self.types, &functions[copy.0 as usize], ty) {
+            let name = &functions[copy.0 as usize].name;
+            self.diagnostics
+                .push(codec_contract_error(&format!("{name}: {detail}"), span));
+            return;
+        }
         let mut function = functions[copy.0 as usize].clone();
         function.native = false;
         let mut builder = CodecBuilder {
@@ -83,6 +78,26 @@ impl Checker<'_> {
                 .push(builder.statement(StmtKind::Return(vec![nil])));
         }
         functions[copy.0 as usize] = builder.function;
+    }
+
+    fn json_contract(
+        &mut self,
+        functions: &[hir::Function],
+        decode: bool,
+        span: Span,
+    ) -> Option<Rc<CodecContract>> {
+        if let Some(resolved) = &self.json_contracts.resolved[decode as usize] {
+            return resolved.clone();
+        }
+        let resolved = match CodecContract::resolve(functions, self, decode) {
+            Ok(contract) => Some(Rc::new(contract)),
+            Err(detail) => {
+                self.diagnostics.push(codec_contract_error(&detail, span));
+                None
+            }
+        };
+        self.json_contracts.resolved[decode as usize] = Some(resolved.clone());
+        resolved
     }
 
     fn json_struct(&self, ty: TypeId, name: &str) -> bool {
@@ -158,20 +173,7 @@ impl Checker<'_> {
             TypeKind::Bool | TypeKind::Int(_) | TypeKind::Float(_) | TypeKind::String => true,
             TypeKind::Struct(id) => {
                 let fields = self.struct_fields(id);
-                let optional = self.json_struct(ty, "Optional");
-                if optional
-                    && !(fields.len() == 2
-                        && fields[0].0 == "Value"
-                        && fields[1].0 == "Set"
-                        && fields[1].1 == Some(TypeStore::BOOL)
-                        && self.types.instance_of(id).is_some_and(|(_, args)| {
-                            args.len() == 1 && fields[0].1 == Some(args[0])
-                        }))
-                {
-                    self.error("bundled JSON codec contract mismatch: Optional needs Value T followed by Set bool", span);
-                    return false;
-                }
-                if !optional {
+                if !self.json_struct(ty, "Optional") {
                     for policy in 0..3 {
                         let mut names = HashSet::new();
                         for (name, _, _) in &fields {
@@ -268,6 +270,20 @@ impl Checker<'_> {
     }
 }
 
+#[derive(Default)]
+pub(super) struct CodecContracts {
+    resolved: [Option<Option<Rc<CodecContract>>>; 2],
+}
+
+fn codec_contract_error(detail: &str, span: Span) -> Diagnostic {
+    Diagnostic::new(
+        Severity::Error,
+        format!("bundled JSON codec contract mismatch: {detail}"),
+        span,
+    )
+    .note("update the bundled std/encoding/json declarations and compiler codec generator together")
+}
+
 fn field_name(name: &str, policy: u8) -> String {
     if policy == 0 {
         return name.into();
@@ -307,7 +323,7 @@ fn simple_lower(c: char) -> char {
 struct CodecBuilder<'a, 'b> {
     checker: &'a mut Checker<'b>,
     functions: &'a [hir::Function],
-    contract: CodecContract,
+    contract: Rc<CodecContract>,
     function: hir::Function,
     template: FunctionId,
     span: Span,

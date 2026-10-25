@@ -69,12 +69,31 @@ jobs:
         run: |
           clang --version
           rustc --version
-      - name: Benchmark harness correctness
-        if: runner.os != 'Windows'
-        run: python3 -m unittest discover -s benchmarks/performance -p 'test_*.py'
-      - name: Runtime scaling harness correctness
-        run: python -m unittest discover -s benchmarks/runtime-scaling -p 'test_*.py'
+      - name: Python harness tests
+        shell: bash
+        run: |
+          status=0
+          for directory in benchmarks/*/; do
+            compgen -G "${directory}test_*.py" > /dev/null || continue
+            python -m unittest discover -s "$directory" -p 'test_*.py' || status=1
+          done
+          exit $status
         env:
           ZORE_SCALING_COMPILER: ${{ github.workspace }}/target/debug/zore${{ runner.os == 'Windows' && '.exe' || '' }}
       - name: Test
         run: cargo test --locked --all-targets --no-fail-fast
+
+  imports:
+    name: Python imports (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+      - name: Import every Python module
+        run: python .github/scripts/import_modules.py

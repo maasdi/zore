@@ -20,8 +20,6 @@ from workload import source
 
 ROOT = Path(__file__).resolve().parents[2]
 HERE = Path(__file__).resolve().parent
-sys.path.insert(0, str(ROOT / 'benchmarks/performance'))
-from compile import frame_layouts
 
 
 def hook_ir(source):
@@ -39,6 +37,27 @@ def hook_ir(source):
 def command(arguments, **options):
     return subprocess.run(list(map(str, arguments)), capture_output=True, text=True,
                           check=True, timeout=300, cwd=options.pop('cwd', ROOT), **options).stdout
+
+
+def frame_layouts(ir, directory):
+    frames = re.findall(r'^(%"[^"\n]+\.AsyncFrame\.\d+") = type (.+)$', ir, re.M)
+    if not frames:
+        raise RuntimeError('no async frame types in captured IR')
+    probes = [f'define i64 @zore_bench_size_{index}() {{\n'
+              f'  ret i64 ptrtoint (ptr getelementptr ({name}, ptr null, i64 1) to i64)\n}}\n'
+              for index, (name, _) in enumerate(frames)]
+    probe = directory / 'frame-probes.ll'
+    probe.write_text(ir + '\n' + '\n'.join(probes), encoding='utf-8')
+    optimized = command([os.environ.get('ZORE_CC', 'clang'), '-O2', '-S', '-emit-llvm', '-x', 'ir', probe, '-o', '-'])
+    constructors = re.findall(r'define private ptr (@"[^"\n]+\$async\$new")\([^\n]*\) \{(.*?)^}', ir, re.M | re.S)
+    result = []
+    for index, (name, fields) in enumerate(frames):
+        match = re.search(rf'define[^\n]*@zore_bench_size_{index}\(\)[^{{]*{{[^}}]*ret i64 (\d+)', optimized)
+        if not match:
+            raise RuntimeError(f'clang did not fold frame size for {name}')
+        result.append({'llvm_type': name, 'constructors': [function for function, body in constructors if name in body],
+                       'fields': fields, 'bytes': int(match[1])})
+    return result
 
 
 def digest(path):

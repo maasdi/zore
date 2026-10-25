@@ -2,39 +2,24 @@ use std::collections::HashMap;
 
 use crate::ast::ParamMode;
 use crate::hir;
-use crate::resolve::{FunctionId, LocalKind};
-use crate::types::{StructId, TypeId, TypeStore};
+use crate::resolve::FunctionId;
+use crate::types::{FuncSignature, StructId, TypeId, TypeStore};
 
 use super::super::Checker;
+use super::super::signature::function_mismatch;
 
 pub(super) struct CodecContract {
     helpers: HashMap<String, FunctionId>,
-}
-
-pub(super) fn signature_matches(
-    function: &hir::Function,
-    params: &[(ParamMode, TypeId)],
-    results: &[TypeId],
-) -> bool {
-    !function.is_async
-        && !function.call_once
-        && function.type_params.is_empty()
-        && function.results == results
-        && function.params.len() == params.len()
-        && function.params.iter().zip(params).all(|(id, &(mode, ty))| {
-            function
-                .locals
-                .get(id.0 as usize)
-                .is_some_and(|local| local.kind == LocalKind::Param(mode) && local.ty == ty)
-        })
+    decode: bool,
+    stream: TypeId,
+    naming: TypeId,
+    errors: Vec<TypeId>,
 }
 
 impl CodecContract {
     pub(super) fn resolve(
         functions: &[hir::Function],
         checker: &mut Checker<'_>,
-        function: &hir::Function,
-        value: TypeId,
         decode: bool,
     ) -> Result<Self, String> {
         use ParamMode::{Borrow, Mut, Own};
@@ -47,48 +32,69 @@ impl CodecContract {
         let encoder = strukt("Encoder")?;
         let decoder = strukt("Decoder")?;
         let tree = strukt("Value")?;
-        let naming = function
-            .params
-            .get(2)
-            .and_then(|id| function.locals.get(id.0 as usize))
-            .map(|local| local.ty)
-            .filter(|&ty| {
-                checker.res.named.iter().any(|(decl, package, named)| {
-                    *named == ty
-                        && decl.name.text == "Naming"
-                        && checker.res.packages[*package].path == "std/encoding/json"
-                }) && checker.types.kind(ty) == checker.types.kind(TypeStore::INT)
+        let optional = strukt("Optional")?;
+        let optional_id = checker
+            .types
+            .struct_id(optional)
+            .ok_or("Optional needs Value T followed by Set bool")?;
+        let fields = checker.struct_fields(optional_id);
+        let optional_layout = match checker.types.template_params(optional_id) {
+            Some(&[element]) => matches!(
+                fields.as_slice(),
+                [(first, Some(value), _), (second, Some(flag), _)]
+                    if first == "Value"
+                        && *value == element
+                        && second == "Set"
+                        && *flag == TypeStore::BOOL
+            ),
+            _ => false,
+        };
+        if !optional_layout {
+            return Err("Optional needs Value T followed by Set bool".into());
+        }
+        let naming = checker
+            .res
+            .named
+            .iter()
+            .find(|(decl, package, _)| {
+                decl.name.text == "Naming"
+                    && checker.res.packages[*package].path == "std/encoding/json"
             })
-            .ok_or("codec Naming parameter")?;
+            .map(|&(_, _, ty)| ty)
+            .ok_or("missing Naming")?;
+        if checker.types.kind(naming) != checker.types.kind(TypeStore::INT) {
+            return Err("Naming must be an integer type".into());
+        }
         let stream = if decode { decoder } else { encoder };
         let errors = if decode {
             vec![TypeStore::ERROR]
         } else {
             vec![]
         };
-        if !signature_matches(
-            function,
-            &[
-                (if decode { Mut } else { Borrow }, value),
-                (Mut, stream),
-                (Borrow, naming),
-            ],
-            &errors,
-        ) {
-            return Err("encode/decode hook signature".into());
-        }
         let string_array = checker.types.dyn_array_type(TypeStore::STRING);
         let strings = checker.types.slice_type(TypeStore::STRING, false);
         let mut contract = Self {
             helpers: HashMap::new(),
+            decode,
+            stream,
+            naming,
+            errors: errors.clone(),
         };
         let mut require = |name: &str, params: Vec<(ParamMode, TypeId)>, results: Vec<TypeId>| {
             let Some((index, helper)) = functions.iter().enumerate().find(|(_, f)| f.name == name)
             else {
                 return Err(format!("missing {name}"));
             };
-            if !signature_matches(helper, &params, &results) {
-                return Err(format!("{name} signature"));
+            if let Some(detail) = function_mismatch(
+                &checker.types,
+                helper,
+                &FuncSignature {
+                    is_async: false,
+                    params,
+                    results,
+                },
+            ) {
+                return Err(format!("{name}: {detail}"));
             }
             contract
                 .helpers
@@ -209,6 +215,28 @@ impl CodecContract {
             )?;
         }
         Ok(contract)
+    }
+
+    pub(super) fn hook_mismatch(
+        &self,
+        types: &TypeStore,
+        hook: &hir::Function,
+        value: TypeId,
+    ) -> Option<String> {
+        use ParamMode::{Borrow, Mut};
+        function_mismatch(
+            types,
+            hook,
+            &FuncSignature {
+                is_async: false,
+                params: vec![
+                    (if self.decode { Mut } else { Borrow }, value),
+                    (Mut, self.stream),
+                    (Borrow, self.naming),
+                ],
+                results: self.errors.clone(),
+            },
+        )
     }
 
     pub(super) fn helper(&self, name: &str) -> FunctionId {

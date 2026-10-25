@@ -1,9 +1,9 @@
 use std::path::Path;
 use std::time::Instant;
 
+use zore::driver::build::{Stage, native_ir};
 use zore::driver::project::{Disk, load_project};
-use zore::source::{Layered, SourceMap};
-use zore::{async_lowering, codegen, driver, dropck, mir};
+use zore::source::SourceMap;
 
 fn main() {
     let source = std::env::args_os().nth(1).expect("source path required");
@@ -11,23 +11,28 @@ fn main() {
     let start = Instant::now();
     let project = load_project(&mut sources, &Disk, Path::new(&source))
         .unwrap_or_else(|_| panic!("project failed to load"));
-    let loaded = start.elapsed().as_secs_f64();
-    let start = Instant::now();
-    let checked = driver::check::check_project(&project, &sources);
-    assert!(checked.diagnostics.is_empty(), "{:?}", checked.diagnostics);
-    let package = checked.package.expect("checked package");
-    let checked = start.elapsed().as_secs_f64();
-    let start = Instant::now();
-    let mut program = mir::lower::lower(&package);
-    dropck::insert(&package, &mut program);
-    let machines = async_lowering::lower(&package, &program);
-    let lowered = start.elapsed().as_secs_f64();
-    let start = Instant::now();
-    let layered = Layered(&sources, project.std_sources());
-    let ir = codegen::emit(&package, &program, &machines, &layered).expect("IR emission succeeds");
-    let emitted = start.elapsed().as_secs_f64();
-    println!(
-        "{{\"load_seconds\":{loaded},\"check_seconds\":{checked},\"lower_seconds\":{lowered},\"emit_seconds\":{emitted},\"ir_bytes\":{}}}",
-        ir.len()
-    );
+    let mut fields = vec![format!(
+        "\"load_seconds\":{}",
+        start.elapsed().as_secs_f64()
+    )];
+    let mut start = Instant::now();
+    let native = native_ir(&project, &sources, &mut |stage| {
+        let elapsed = start.elapsed().as_secs_f64();
+        match stage {
+            Stage::Checked => fields.push(format!("\"check_seconds\":{elapsed}")),
+            Stage::Lowered => fields.push(format!("\"lower_seconds\":{elapsed}")),
+            Stage::Emitted(ir) => {
+                fields.push(format!("\"emit_seconds\":{elapsed}"));
+                fields.push(format!("\"ir_bytes\":{}", ir.len()));
+            }
+        }
+        start = Instant::now();
+    })
+    .unwrap_or_else(|error| panic!("{error:?}"));
+    fields.push(format!(
+        "\"prune_seconds\":{}",
+        start.elapsed().as_secs_f64()
+    ));
+    fields.push(format!("\"native_ir_bytes\":{}", native.len()));
+    println!("{{{}}}", fields.join(","));
 }
