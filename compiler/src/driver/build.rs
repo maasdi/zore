@@ -2,7 +2,7 @@ use std::borrow::Cow;
 use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
 use sha2::{Digest, Sha256};
@@ -289,14 +289,17 @@ fn link(
     } else {
         compile.arg("-fPIC");
     }
-    let result = compile
+    let compilation = compile
         .arg("-c")
         .arg(&ir_path)
         .arg("-o")
         .arg(&object_path)
-        .output();
-    let result = match result {
-        Ok(result) => result,
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn();
+    let compilation = match compilation {
+        Ok(compilation) => compilation,
         Err(error) => {
             return Err(BuildError::Toolchain(format!(
                 "could not run `{cc}` ({error}); `zore build` requires clang with LLVM 15 or \
@@ -304,14 +307,25 @@ fn link(
             )));
         }
     };
+    let rustc = std::env::var_os("ZORE_RUSTC").unwrap_or_else(|| "rustc".into());
+    let (result, runtime) = std::thread::scope(|scope| {
+        let runtime = scope.spawn(|| runtime_library(&rustc, dir.path(), native_adapters));
+        let result = compilation.wait_with_output();
+        (
+            result,
+            runtime.join().expect("runtime build worker panicked"),
+        )
+    });
+    let result = result.map_err(|error| {
+        BuildError::Toolchain(format!("could not collect `{cc}` output: {error}"))
+    })?;
     if !result.status.success() {
         return Err(BuildError::Toolchain(format!(
             "`{cc}` failed to compile the generated program; this is a compiler bug:\n{}",
             String::from_utf8_lossy(&result.stderr)
         )));
     }
-    let rustc = std::env::var_os("ZORE_RUSTC").unwrap_or_else(|| "rustc".into());
-    let runtime = runtime_library(&rustc, dir.path(), native_adapters)?;
+    let runtime = runtime?;
     let native_objects = native_objects(&cc, dir.path(), native_adapters)?;
     let main_path = dir.path().join("main.rs");
     fs::write(&main_path, runtime_main)

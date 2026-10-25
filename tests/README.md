@@ -384,6 +384,11 @@ after compaction, truncation and reset. Controlled allocation checks cover every
 write path with drained buffers and a fixed unread backlog, then verify all
 storage is released on drop. They impose no timing or RSS thresholds.
 
+`codegen/build_parallel.rs` uses real compiler wrappers with bounded state
+barriers to require cold object/runtime compilation overlap, check warm runtime
+reuse, and verify both stages finish before reporting single or combined
+compiler failures. These are process-order assertions, not speed thresholds.
+
 `conformance/http.md` maps the HTTP/URL contract to native loopback and ownership
 regressions. It distinguishes tested behavior from additional fault-injection
 coverage. The REST example codec is also exercised as executable Zore source.

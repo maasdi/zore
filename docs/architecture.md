@@ -664,6 +664,13 @@ compiling the runtime for that build alone. Each program then needs only rustc
 Rustc manages its standard-library and system-library dependencies. Runtime
 sources do not need to be installed alongside `zore`. Native builds require both
 tools for the same host; `ZORE_CC` and `ZORE_RUSTC` select their executables.
+After clang starts, a scoped worker prepares the runtime library while the main
+thread collects clang's output. Both stages finish before linking or reporting a
+compiler failure; clang diagnostics take precedence when both stages fail.
+Cold runtime compilation can overlap object generation. Warm builds retain the
+same cache selection and publication rules, and LLVM optimization flags remain
+unchanged. Concurrent compilers can compete for CPU and memory on constrained
+hosts.
 Windows validates the selected Rust compiler's MSVC host, uses Rust's MSVC linker
 discovery with the Windows SDK, and gives generated executables an `.exe` suffix.
 Windows console signals publish lock-free generations through a native handler;
