@@ -34,8 +34,11 @@ and LLVM clang configuration. The harness uses Python reader threads for pipe
 control, including Windows; it does not rely on Unix pipe selectors. The sampler
 requires `psutil==7.2.2` on all hosts. The workload/runtime have no new dependency.
 
-The separate `Runtime scaling measurements` workflow runs on manual dispatch or
-pull requests labeled `run-scaling-benchmarks`. It builds that checkout's compiler,
+The separate `Runtime scaling measurements` workflow runs Linux and macOS on
+manual dispatch or pull requests labeled `run-scaling-benchmarks`. Windows
+measurements are deferred until a suitable host is available; a manual dispatch
+can explicitly enable `include_windows` to capture all three hosts. Ordinary
+correctness CI continues to test Windows. The workflow builds that checkout's compiler,
 records its hash and source revision, and uploads a separate raw JSON artifact
 per host even when a measurement fails. Unlabeled pull requests skip the job.
 A job timeout, build failure or child failure is evidence of a failed experiment,

@@ -2,6 +2,11 @@ name: Runtime scaling measurements
 
 on:
   workflow_dispatch:
+    inputs:
+      include_windows:
+        description: Include Windows measurements when a suitable host is available
+        type: boolean
+        default: false
   pull_request:
     types: [opened, synchronize, reopened, labeled]
 
@@ -19,7 +24,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        os: ${{ fromJSON(inputs.include_windows && '["ubuntu-latest", "macos-latest", "windows-latest"]' || '["ubuntu-latest", "macos-latest"]') }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     steps:
