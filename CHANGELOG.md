@@ -14,6 +14,19 @@ once it does.
 - Added package-owned, reviewed C/Rust Adler-32 sources and an external Zore wrapper,
   with owned cleanup, validated handles and binary buffers, async/scoped result
   coverage and local/pinned Git consumption.
+- The curated `tls` package accepts IPv4 and IPv6 server names, matched only
+  against IP-address certificate entries and sent without SNI.
+- The `tls` package now trusts the platform roots by default through
+  `tls.DefaultClientConfig()` and `https.NewDefaultClient`, using
+  `tls.SystemRoots()` on Linux, macOS and Windows and honoring `SSL_CERT_FILE`.
+  Explicit roots (`NewClientConfig`, `https.NewClient`) override them, and empty
+  roots are still rejected. The roots are loaded into Mbed TLS, so OS trust
+  settings are not applied.
+- The curated `tls` package negotiates TLS 1.3 by default and still accepts
+  TLS 1.2 peers. TLS 1.3 uses ephemeral ECDHE, AES-GCM and ECDSA or RSA-PSS
+  signatures, without PSK, 0-RTT, session tickets or KeyUpdate. The pinned Mbed
+  TLS closure adds the PSA crypto core, HKDF and the TLS 1.3 sources, and TLS
+  provider calls are serialized process-wide.
 - Added SQLite `Database.Transaction` callback transactions: they work on `let`
   databases, commit on success, roll back on callback errors, failed commits and
   panics, and rely on SQLite's busy timeout to retry a busy commit.
@@ -173,6 +186,8 @@ once it does.
 - Errors can carry a cause (§15.1, Q44): `errors.Wrap`, `errors.Unwrap`,
   `errors.Message`, `fmt.Errorf` with `%w`, and an `errors.Is` that searches
   the whole chain.
+- Added `net.EmptyConn`, a closed connection for packages that need an empty
+  connection value (§37.3).
 - Function literals are allowed inside generic functions and methods (§22.1).
 
 ### Compiler

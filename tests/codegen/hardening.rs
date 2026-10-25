@@ -666,8 +666,7 @@ func exercise(wire string, width int, expected int, body string, readError strin
     config.MaxBodyBytes = 32
     let server = NewServer(router, config)?
     server.state.withLock(func(state mut serverState) {{ state.wire = strings.Bytes(wire); state.width = width }})
-    var empty = Array<net.Conn>{{}}
-    let _, zero = empty.pop()
+    let zero = net.EmptyConn()
     let sockets = [net.Conn; 1]{{zero}}
     var request = newRequest(sockets[:], server, Array<byte>{{}}, time.Now() + time.Hour)
     let status, err = request.parseHeaders()

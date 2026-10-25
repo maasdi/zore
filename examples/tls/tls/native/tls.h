@@ -2,8 +2,9 @@
 #define ZORE_TLS_H
 #include <stddef.h>
 #include <stdint.h>
+int zore_tls_init(void);
 void *zore_tls_config(int server, const unsigned char *cert, size_t cert_len,
-                      const unsigned char *key, size_t key_len, char *error);
+                      const unsigned char *key, size_t key_len, int versions, char *error);
 void zore_tls_config_free(void *config);
 void *zore_tls_session(void *config, const char *name, char *error);
 void zore_tls_session_free(void *session);
@@ -14,5 +15,8 @@ int zore_tls_feed(void *session, const unsigned char *data, size_t length, char 
 size_t zore_tls_pending(void *session);
 int zore_tls_output(void *session, unsigned char *data);
 int zore_tls_status(void *session);
+int zore_tls_version(void *session);
 int zore_tls_shutdown(void *session, char *error);
+unsigned char *zore_tls_system_roots(const char *path, size_t *length, char *error);
+void zore_tls_free(void *pointer);
 #endif

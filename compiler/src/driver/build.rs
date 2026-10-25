@@ -330,6 +330,7 @@ fn link(
             .any(|provider| provider.adapter.mbedtls)
     {
         link.arg("-l").arg("bcrypt");
+        link.arg("-l").arg("crypt32");
     }
     for object in native_objects {
         let mut argument = std::ffi::OsString::from("link-arg=");

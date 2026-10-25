@@ -7374,6 +7374,7 @@ unknown network N` or `net.Dial: unknown network N`.
 | `Listen(network string, address string) (Listener, error)` | Listens on `host:port`; port `0` picks a free port |
 | `Dial(network string, address string) (Conn, error)` | Connects to `host:port`, waiting for the connection |
 | `DialTimeout(network string, address string, timeout int) (Conn, error)` | Like `Dial`, but gives up after `timeout` nanoseconds for each address tried; zero or less means no limit |
+| `EmptyConn() Conn` | A closed connection equal to the zero value: every operation fails and dropping it does nothing; for packages that need an empty connection field |
 | `(l Listener) Accept() (Conn, error)` | Waits for and returns the next incoming connection |
 | `(l Listener) Addr() string` | The address the listener is bound to, as `host:port` (`[host]:port` for IPv6), or `""` when closed |
 | `(l Listener) SetDeadline(t int) error` | Makes `Accept` give up at the deadline `t` (§37.3, `std/time`); zero removes it |
@@ -8561,15 +8562,25 @@ Linux GNU and macOS x86_64/aarch64 and Windows x64 MSVC are supported host ABIs;
 all require the ordinary clang/Rust toolchain. Provider maintenance status is
 not an assertion that this integration or every provider release was audited.
 
-This first configuration enables TLS 1.2 with ECDHE RSA/ECDSA authentication and
-AES-128/256-GCM only, with the extended master secret extension and all fatal
-alerts. TLS 1.0/1.1, static RSA exchange, PSK, DTLS, TLS 1.3,
-renegotiation, client certificates, ALPN, session persistence, and certificate
-automation are excluded. Provider defaults never bypass peer verification.
-Trust roots must be supplied explicitly: clients require a nonempty PEM
-trust-root bundle and DNS server name; there is no insecure flag, system or
-platform root discovery, or IP-address certificate identity support. Certificate signatures, validity times, trust chain, and DNS
-name are verified by Mbed TLS; DNS name is also SNI. Empty/malformed roots,
+The configuration enables TLS 1.3 and TLS 1.2, and both sides prefer TLS 1.3.
+TLS 1.3 uses ephemeral ECDHE on P-256/P-384, AES-128/256-GCM, ECDSA or RSA-PSS
+CertificateVerify signatures and middlebox compatibility mode. TLS 1.2 uses
+ECDHE RSA/ECDSA authentication and AES-128/256-GCM only, with the extended master
+secret extension. All fatal alerts are sent; in TLS 1.3 they are encrypted
+records. TLS 1.0/1.1, static RSA exchange, PSK and PSK key exchange modes, 0-RTT
+early data, session tickets and resumption, KeyUpdate, DTLS, renegotiation,
+client certificates, ALPN, and certificate automation are excluded. A TLS 1.3
+NewSessionTicket from a peer is ignored; a peer KeyUpdate fails the connection. Provider defaults never bypass peer verification.
+Trust roots default to the platform's, like Go: `DefaultClientConfig` trusts
+the system roots, and explicit roots override them. `NewClientConfig` trusts
+exactly the nonempty PEM bundle it is given and rejects an empty one; an empty
+bundle never means system roots. Clients require a server name that is a DNS name
+or an unbracketed IPv4 or IPv6 address; there is no insecure flag.
+Certificate signatures, validity times, trust chain, and server name are
+verified by Mbed TLS; a DNS name is also SNI. An IP-address name matches only
+IP-address subjectAltName entries of the same address, never DNS entries or the
+subject common name, and sends no SNI. Bracketed forms such as `[::1]`, zone
+suffixes and ports are rejected; URL consumers pass the unbracketed host. Empty/malformed roots,
 certificate/key mismatch, unknown authorities, expiry, and name mismatch return
 ordinary errors with operation and provider verification text. Servers take a
 PEM chain and unencrypted PEM private key; the pair is checked once at config
@@ -8579,10 +8590,12 @@ This does not promise erasure of caller-owned input buffers.
 
 | API | Contract |
 | --- | --- |
-| `NewClientConfig(rootsPEM []byte) (ClientConfig, error)` | Parses and owns trusted certificates; empty roots fail |
+| `DefaultClientConfig() (ClientConfig, error)` | `SystemRoots` then `NewClientConfig`; errors are wrapped as `tls.DefaultClientConfig` |
+| `SystemRoots() (Array<byte>, error)` | Reads the platform trust roots as PEM |
+| `NewClientConfig(rootsPEM []byte) (ClientConfig, error)` | Parses and owns exactly the given trusted certificates; empty roots fail |
 | `NewServerConfig(chainPEM []byte, keyPEM []byte) (ServerConfig, error)` | Parses and owns server identity; invalid or mismatched keys fail |
-| `DialContext(ctx context.Context, address string, serverName string, config ClientConfig) (Conn, error)` | Connects then completes a verified handshake; ctx bounds only the dial and handshake |
-| `Client(ctx context.Context, source own net.Conn, serverName string, config ClientConfig) (Conn, error)` | Consumes an already-connected TCP stream and completes a verified handshake bounded by ctx |
+| `DialContext(ctx context.Context, address string, serverName string, config ClientConfig) (Conn, error)` | Connects then completes a verified handshake for a DNS name or IP address; ctx bounds only the dial and handshake |
+| `Client(ctx context.Context, source own net.Conn, serverName string, config ClientConfig) (Conn, error)` | Consumes an already-connected TCP stream and completes a verified handshake for a DNS name or IP address bounded by ctx |
 | `Server(ctx context.Context, source own net.Conn, config ServerConfig) (Conn, error)` | Consumes a TCP stream and completes a server handshake bounded by ctx |
 | `(c mut Conn) Read(buf mut []byte) (int, error)` | Drains pending output, then reads authenticated plaintext; empty buffers read no plaintext; clean close-notify is EOF, transport truncation is an error |
 | `(c mut Conn) Write(data []byte) (int, error)` | Sends all plaintext as records of at most 16 KiB, reporting accepted plaintext count even on later transport failure |
@@ -8605,7 +8618,11 @@ External process termination has ordinary
 best-effort cleanup limits.
 
 Native calls process memory buffers only, never wait on sockets and never call
-Zore callbacks. Handshake/read/write loops drain ciphertext through `net.Conn`
+Zore callbacks. The provider's PSA crypto core, which TLS 1.3 needs, keeps a
+process-global key store and random generator without threading support, so it
+is initialized once and all provider calls of the integration are serialized
+process-wide; concurrent connections make progress but do not run TLS
+cryptography in parallel. Handshake/read/write loops drain ciphertext through `net.Conn`
 and feed received ciphertext into the provider. Native calls retain validated
 session leases until completion and serialize access; configurations are
 immutable and are read without holding their lease. The context bounds only the
@@ -8657,6 +8674,40 @@ func get(config tls.ClientConfig) error {
 }
 ```
 
+Platform roots are the default and explicit roots override them:
+
+```ore
+let config = tls.DefaultClientConfig()?
+
+let roots = os.ReadFile("roots.pem")?
+let pinned = tls.NewClientConfig(roots[:])?
+```
+
+The `tls/https` package mirrors this: `NewDefaultTransport` and
+`NewDefaultClient(config http.ClientConfig)` use the system roots, while
+`NewTransport(rootsPEM)` and `NewClient(rootsPEM, config)` use only the given
+roots.
+
+`SystemRoots` takes a snapshot at call time and returns only certificates the
+provider can use, so unsupported keys or curves in a platform bundle are skipped,
+as are duplicate certificates. If the `SSL_CERT_FILE` environment variable is set
+to a nonempty path, only that PEM file is read and
+a failure to read it is an error. Otherwise Linux and other Unix hosts use the
+first readable bundle among `/etc/ssl/certs/ca-certificates.crt`,
+`/etc/pki/tls/certs/ca-bundle.crt`, `/etc/ssl/ca-bundle.pem`,
+`/etc/pki/tls/cacert.pem`, `/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem`
+and `/etc/ssl/cert.pem`; macOS reads `/etc/ssl/cert.pem`, which omits roots added
+to the keychain and trust settings; Windows reads the `ROOT` system certificate
+store through crypt32, which the Windows link then includes and which may
+lack roots that Windows fetches on demand. `SSL_CERT_DIR` is not
+supported. On every platform the operating system's root certificates are
+loaded into Mbed TLS, which does the verification; the operating system's
+verifier is not used, so its distrust and trust settings are not applied. The
+result is limited to 4 MiB, the same limit as explicit PEM certificate inputs.
+Because each session parses its configuration's roots again, a large bundle costs
+parse time and memory per connection; sharing one parsed root chain per
+configuration is a follow-up.
+
 A bounded server accepts one connection under a listener deadline:
 
 ```ore
@@ -8687,7 +8738,12 @@ HTTPS consumers can pass `Conn` through the ordinary Reader/Writer interfaces.
 No HTTP server or plain TCP behavior changes.
 Compiler impact is curated provider registration, embedded vendor closure and
 fixed native build/link recipe; no syntax, ownership, or async-lowering changes.
-Conformance covers trusted/untrusted chains, DNS mismatch, invalid configuration,
+Conformance covers TLS 1.3 preference, TLS 1.2 fallback with 1.2-only peers and
+rejection of disjoint version ranges, ECDSA and RSA identities and verification
+failures under each version, default platform and explicit root configuration, filtering of unusable
+platform certificates, `SSL_CERT_FILE` handling, trusted/untrusted chains, DNS mismatch, IP-address identity
+matching only IP entries (not DNS entries or the common name) without SNI,
+invalid configuration,
 fragmented records, binary/partial I/O, multi-record writes, clean and abrupt
 closure, connections outliving their handshake context, fatal alerts on
 authentication failure, deadlines, handshake cancellation, Move rejection, async/plain progress, normal/error/panic resource

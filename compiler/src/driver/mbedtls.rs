@@ -1,6 +1,7 @@
 pub(super) const FINGERPRINT: &str =
-    "9d29940fd65225a2e6b9d50d7500da5aeb749eacea38ff9db309b8ad53ec96b4";
-pub(super) const RECIPE: &str = "mbedtls-3.6.7-c11-config-v4-rom-aes-default-source-windows-bcrypt";
+    "2ac497cacf5bf7df539f7845446f0fcb95cc23fad08235a1a467b3d145629f01";
+pub(super) const RECIPE: &str =
+    "mbedtls-3.6.7-c11-config-v5-tls13-psa-rom-aes-default-source-windows-bcrypt";
 pub(super) const SOURCES: &[(&str, &[u8])] = &[
     ("LICENSE", include_bytes!("../../native/mbedtls/LICENSE")),
     (
@@ -436,6 +437,10 @@ pub(super) const SOURCES: &[(&str, &[u8])] = &[
         include_bytes!("../../native/mbedtls/library/bn_mul.h"),
     ),
     (
+        "library/check_crypto_config.h",
+        include_bytes!("../../native/mbedtls/library/check_crypto_config.h"),
+    ),
+    (
         "library/cipher.c",
         include_bytes!("../../native/mbedtls/library/cipher.c"),
     ),
@@ -524,6 +529,10 @@ pub(super) const SOURCES: &[(&str, &[u8])] = &[
         include_bytes!("../../native/mbedtls/library/gcm.c"),
     ),
     (
+        "library/hkdf.c",
+        include_bytes!("../../native/mbedtls/library/hkdf.c"),
+    ),
+    (
         "library/md.c",
         include_bytes!("../../native/mbedtls/library/md.c"),
     ),
@@ -534,6 +543,26 @@ pub(super) const SOURCES: &[(&str, &[u8])] = &[
     (
         "library/md_wrap.h",
         include_bytes!("../../native/mbedtls/library/md_wrap.h"),
+    ),
+    (
+        "library/mps_common.h",
+        include_bytes!("../../native/mbedtls/library/mps_common.h"),
+    ),
+    (
+        "library/mps_error.h",
+        include_bytes!("../../native/mbedtls/library/mps_error.h"),
+    ),
+    (
+        "library/mps_reader.c",
+        include_bytes!("../../native/mbedtls/library/mps_reader.c"),
+    ),
+    (
+        "library/mps_reader.h",
+        include_bytes!("../../native/mbedtls/library/mps_reader.h"),
+    ),
+    (
+        "library/mps_trace.h",
+        include_bytes!("../../native/mbedtls/library/mps_trace.h"),
     ),
     (
         "library/oid.c",
@@ -580,8 +609,124 @@ pub(super) const SOURCES: &[(&str, &[u8])] = &[
         include_bytes!("../../native/mbedtls/library/platform_util.c"),
     ),
     (
+        "library/psa_crypto.c",
+        include_bytes!("../../native/mbedtls/library/psa_crypto.c"),
+    ),
+    (
+        "library/psa_crypto_aead.c",
+        include_bytes!("../../native/mbedtls/library/psa_crypto_aead.c"),
+    ),
+    (
+        "library/psa_crypto_aead.h",
+        include_bytes!("../../native/mbedtls/library/psa_crypto_aead.h"),
+    ),
+    (
+        "library/psa_crypto_cipher.c",
+        include_bytes!("../../native/mbedtls/library/psa_crypto_cipher.c"),
+    ),
+    (
+        "library/psa_crypto_cipher.h",
+        include_bytes!("../../native/mbedtls/library/psa_crypto_cipher.h"),
+    ),
+    (
+        "library/psa_crypto_client.c",
+        include_bytes!("../../native/mbedtls/library/psa_crypto_client.c"),
+    ),
+    (
         "library/psa_crypto_core.h",
         include_bytes!("../../native/mbedtls/library/psa_crypto_core.h"),
+    ),
+    (
+        "library/psa_crypto_core_common.h",
+        include_bytes!("../../native/mbedtls/library/psa_crypto_core_common.h"),
+    ),
+    (
+        "library/psa_crypto_driver_wrappers.h",
+        include_bytes!("../../native/mbedtls/library/psa_crypto_driver_wrappers.h"),
+    ),
+    (
+        "library/psa_crypto_driver_wrappers_no_static.c",
+        include_bytes!("../../native/mbedtls/library/psa_crypto_driver_wrappers_no_static.c"),
+    ),
+    (
+        "library/psa_crypto_driver_wrappers_no_static.h",
+        include_bytes!("../../native/mbedtls/library/psa_crypto_driver_wrappers_no_static.h"),
+    ),
+    (
+        "library/psa_crypto_ecp.c",
+        include_bytes!("../../native/mbedtls/library/psa_crypto_ecp.c"),
+    ),
+    (
+        "library/psa_crypto_ecp.h",
+        include_bytes!("../../native/mbedtls/library/psa_crypto_ecp.h"),
+    ),
+    (
+        "library/psa_crypto_ffdh.h",
+        include_bytes!("../../native/mbedtls/library/psa_crypto_ffdh.h"),
+    ),
+    (
+        "library/psa_crypto_hash.c",
+        include_bytes!("../../native/mbedtls/library/psa_crypto_hash.c"),
+    ),
+    (
+        "library/psa_crypto_hash.h",
+        include_bytes!("../../native/mbedtls/library/psa_crypto_hash.h"),
+    ),
+    (
+        "library/psa_crypto_invasive.h",
+        include_bytes!("../../native/mbedtls/library/psa_crypto_invasive.h"),
+    ),
+    (
+        "library/psa_crypto_mac.c",
+        include_bytes!("../../native/mbedtls/library/psa_crypto_mac.c"),
+    ),
+    (
+        "library/psa_crypto_mac.h",
+        include_bytes!("../../native/mbedtls/library/psa_crypto_mac.h"),
+    ),
+    (
+        "library/psa_crypto_pake.h",
+        include_bytes!("../../native/mbedtls/library/psa_crypto_pake.h"),
+    ),
+    (
+        "library/psa_crypto_random.c",
+        include_bytes!("../../native/mbedtls/library/psa_crypto_random.c"),
+    ),
+    (
+        "library/psa_crypto_random.h",
+        include_bytes!("../../native/mbedtls/library/psa_crypto_random.h"),
+    ),
+    (
+        "library/psa_crypto_random_impl.h",
+        include_bytes!("../../native/mbedtls/library/psa_crypto_random_impl.h"),
+    ),
+    (
+        "library/psa_crypto_rsa.c",
+        include_bytes!("../../native/mbedtls/library/psa_crypto_rsa.c"),
+    ),
+    (
+        "library/psa_crypto_rsa.h",
+        include_bytes!("../../native/mbedtls/library/psa_crypto_rsa.h"),
+    ),
+    (
+        "library/psa_crypto_se.h",
+        include_bytes!("../../native/mbedtls/library/psa_crypto_se.h"),
+    ),
+    (
+        "library/psa_crypto_slot_management.c",
+        include_bytes!("../../native/mbedtls/library/psa_crypto_slot_management.c"),
+    ),
+    (
+        "library/psa_crypto_slot_management.h",
+        include_bytes!("../../native/mbedtls/library/psa_crypto_slot_management.h"),
+    ),
+    (
+        "library/psa_crypto_storage.h",
+        include_bytes!("../../native/mbedtls/library/psa_crypto_storage.h"),
+    ),
+    (
+        "library/psa_util.c",
+        include_bytes!("../../native/mbedtls/library/psa_util.c"),
     ),
     (
         "library/psa_util_internal.h",
@@ -652,8 +797,32 @@ pub(super) const SOURCES: &[(&str, &[u8])] = &[
         include_bytes!("../../native/mbedtls/library/ssl_tls12_server.c"),
     ),
     (
+        "library/ssl_tls13_client.c",
+        include_bytes!("../../native/mbedtls/library/ssl_tls13_client.c"),
+    ),
+    (
+        "library/ssl_tls13_generic.c",
+        include_bytes!("../../native/mbedtls/library/ssl_tls13_generic.c"),
+    ),
+    (
+        "library/ssl_tls13_invasive.h",
+        include_bytes!("../../native/mbedtls/library/ssl_tls13_invasive.h"),
+    ),
+    (
+        "library/ssl_tls13_keys.c",
+        include_bytes!("../../native/mbedtls/library/ssl_tls13_keys.c"),
+    ),
+    (
         "library/ssl_tls13_keys.h",
         include_bytes!("../../native/mbedtls/library/ssl_tls13_keys.h"),
+    ),
+    (
+        "library/ssl_tls13_server.c",
+        include_bytes!("../../native/mbedtls/library/ssl_tls13_server.c"),
+    ),
+    (
+        "library/threading_internal.h",
+        include_bytes!("../../native/mbedtls/library/threading_internal.h"),
     ),
     (
         "library/x509.c",

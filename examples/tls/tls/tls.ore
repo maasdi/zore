@@ -4,6 +4,8 @@ import "std/net"
 import "std/context"
 import "std/time"
 import "std/errors"
+import "std/os"
+import "std/strings"
 
 type ClientConfig struct {
     handle int
@@ -45,9 +47,7 @@ func (c mut Conn) drop() {
 }
 
 func emptyConn() Conn {
-    var values = Array<Conn>{};
-    let _, conn = values.pop();
-    return conn
+    return wrap(net.EmptyConn(), 0, context.Background())
 }
 
 func zeros(size int) Array<byte> {
@@ -62,15 +62,32 @@ func wrap(source own net.Conn, handle int, ctx context.Context) Conn {
     return Conn{source: source, handle: handle, ctx: ctx, established: false, readDeadline: 0, writeDeadline: 0, failed: false, peerClosed: false, output: Array<byte>{}, outputPosition: 0, input: Array<byte>{}}
 }
 
+func SystemRoots() (Array<byte>, error) {
+    let roots, err = nativeSystemRoots(os.Getenv("SSL_CERT_FILE"))
+    _ = err
+    return roots, errors.Wrap(err, "tls.SystemRoots")
+}
+
+func DefaultClientConfig() (ClientConfig, error) {
+    let roots, rootsErr = SystemRoots()
+    _ = rootsErr
+    if rootsErr != nil {
+        return ClientConfig{handle: 0}, errors.Wrap(rootsErr, "tls.DefaultClientConfig")
+    }
+    let config, configErr = NewClientConfig(roots[:])
+    _ = configErr
+    return config, errors.Wrap(configErr, "tls.DefaultClientConfig")
+}
+
 func NewClientConfig(rootsPEM []byte) (ClientConfig, error) {
     let empty = Array<byte>{}
-    let handle, err = nativeConfig(false, rootsPEM, empty[:])
+    let handle, err = nativeConfig(false, rootsPEM, empty[:], 0)
     _ = err
     return ClientConfig{handle: handle}, errors.Wrap(err, "tls.NewClientConfig")
 }
 
 func NewServerConfig(chainPEM []byte, keyPEM []byte) (ServerConfig, error) {
-    let handle, err = nativeConfig(true, chainPEM, keyPEM)
+    let handle, err = nativeConfig(true, chainPEM, keyPEM, 0)
     _ = err
     return ServerConfig{handle: handle}, errors.Wrap(err, "tls.NewServerConfig")
 }
@@ -108,6 +125,94 @@ func validName(name string) bool {
     return letter && label > 0 && last != 45
 }
 
+func decimalOctet(part string) bool {
+    if part.len() == 0 || part.len() > 3 || (part.len() > 1 && part[0] == 48) {
+        return false
+    }
+    var value = 0
+    for var i = 0; i < part.len(); i += 1 {
+        let ch = part[i]
+        if ch < 48 || ch > 57 {
+            return false
+        }
+        value = value * 10 + int(ch) - 48
+    }
+    return value <= 255
+}
+
+func ipv4(name string) bool {
+    let parts = strings.Split(name, ".")
+    if parts.len() != 4 {
+        return false
+    }
+    for part in parts {
+        if !decimalOctet(part) {
+            return false
+        }
+    }
+    return true
+}
+
+func hexGroup(part string) bool {
+    if part.len() == 0 || part.len() > 4 {
+        return false
+    }
+    for var i = 0; i < part.len(); i += 1 {
+        let ch = part[i]
+        if !((ch >= 48 && ch <= 57) || (ch >= 97 && ch <= 102) || (ch >= 65 && ch <= 70)) {
+            return false
+        }
+    }
+    return true
+}
+
+func ipv6(name string) bool {
+    if name.len() < 2 || name.len() > 45 || strings.Count(name, "::") > 1 || strings.Contains(name, ":::") {
+        return false
+    }
+    let compressed = strings.Contains(name, "::")
+    if strings.HasPrefix(name, ":") && !strings.HasPrefix(name, "::") {
+        return false
+    }
+    if strings.HasSuffix(name, ":") && !strings.HasSuffix(name, "::") {
+        return false
+    }
+    let parts = strings.Split(name, ":")
+    var groups = 0
+    for var i = 0; i < parts.len(); i += 1 {
+        let part = parts[i]
+        if part == "" {
+            continue
+        }
+        if strings.Contains(part, ".") {
+            if i != parts.len() - 1 || !ipv4(part) {
+                return false
+            }
+            groups += 2
+        } else {
+            if !hexGroup(part) {
+                return false
+            }
+            groups += 1
+        }
+    }
+    if compressed {
+        return groups < 8
+    }
+    return groups == 8
+}
+
+func ipAddress(name string) bool {
+    if strings.Contains(name, ":") {
+        return ipv6(name)
+    }
+    return ipv4(name)
+}
+
+func validServerName(name string) bool {
+    return validName(name) || ipAddress(name)
+}
+
 async func dialSource(address string, timeout int, result channel<dialResult>) {
     let source, err = net.DialTimeout("tcp", address, timeout)
     _ = err
@@ -134,8 +239,8 @@ func finishDial(ctx context.Context, result channel<dialResult>, serverName stri
 }
 
 func DialContext(ctx context.Context, address string, serverName string, config ClientConfig) (Conn, error) {
-    if !validName(serverName) {
-        return emptyConn(), error("tls.DialContext: DNS server name required")
+    if !validServerName(serverName) {
+        return emptyConn(), error("tls.DialContext: DNS name or IP address required")
     }
     let err = ctx.Err()
     _ = err
@@ -156,8 +261,8 @@ func DialContext(ctx context.Context, address string, serverName string, config 
 }
 
 func Client(ctx context.Context, source own net.Conn, serverName string, config ClientConfig) (Conn, error) {
-    if !validName(serverName) {
-        return emptyConn(), error("tls.Client: DNS server name required")
+    if !validServerName(serverName) {
+        return emptyConn(), error("tls.Client: DNS name or IP address required")
     }
     let handle, err = nativeSession(config.handle, serverName)
     _ = err

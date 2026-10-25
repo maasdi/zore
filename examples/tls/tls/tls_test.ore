@@ -22,6 +22,18 @@ func configs() (ClientConfig, ServerConfig, error) {
     return client, server, nil
 }
 
+func clientConfigFor(rootsPath string, versions int) (ClientConfig, error) {
+    let roots = os.ReadFile(rootsPath)?
+    let empty = Array<byte>{}
+    return ClientConfig{handle: nativeConfig(false, roots[:], empty[:], versions)?}, nil
+}
+
+func serverConfigFor(certPath string, keyPath string, versions int) (ServerConfig, error) {
+    let cert = os.ReadFile(certPath)?
+    let key = os.ReadFile(keyPath)?
+    return ServerConfig{handle: nativeConfig(true, cert[:], key[:], versions)?}, nil
+}
+
 func transfer(source int, target int) error {
     let data = nativeOutput(source)?
     for var i = 0; i < data.len(); i += 7 {
@@ -129,17 +141,16 @@ func TestIncompleteRecordsResumeAfterWantRead() error {
 }
 
 func badHandshake(name string, certPath string, keyPath string, expected string) error {
-    let roots = os.ReadFile("testdata/roots.pem")?
-    let cert = os.ReadFile(certPath)?
-    let key = os.ReadFile(keyPath)?
-    let config = NewClientConfig(roots[:])?
-    let serverConfig = NewServerConfig(cert[:], key[:])?
-    let client = ClientConfig{handle: nativeSession(config.handle, name)?}
-    let server = ClientConfig{handle: nativeSession(serverConfig.handle, "")?}
-    let err = memoryHandshake(client.handle, server.handle)
-    _ = err
-    check(err != nil)
-    check(strings.Contains(errors.Message(err), expected))
+    for versions in Array<int>{12, 13} {
+        let config = clientConfigFor("testdata/roots.pem", versions)?
+        let serverConfig = serverConfigFor(certPath, keyPath, versions)?
+        let client = ClientConfig{handle: nativeSession(config.handle, name)?}
+        let server = ClientConfig{handle: nativeSession(serverConfig.handle, "")?}
+        let err = memoryHandshake(client.handle, server.handle)
+        _ = err
+        check(err != nil)
+        check(strings.Contains(errors.Message(err), expected))
+    }
     return nil
 }
 
@@ -174,7 +185,23 @@ func TestInvalidConfigurationsAndHandles() error {
     let invalid, invalidErr = nativeHandshake(-1)
     _ = invalidErr
     check(invalidErr != nil && invalid == 0)
+    let clientConfig, serverConfig = configs()?
+    let malformedAddresses = Array<string>{"1.2.3", "256.1.1.1", "1::2::3", "12345::1"}
+    for name in malformedAddresses {
+        let session, sessionErr = nativeSession(clientConfig.handle, name)
+        _ = sessionErr
+        check(session == 0 && sessionErr != nil && strings.Contains(errors.Message(sessionErr), "invalid IP address"))
+    }
     check(!validName("") && !validName("127.0.0.1") && !validName("::1") && !validName("local\u0000host"))
+    check(validServerName("127.0.0.1") && validServerName("::1") && validServerName("localhost"))
+    check(!validServerName("") && !validServerName("[::1]") && !validServerName("local\u0000host"))
+    let noKey = Array<byte>{}
+    let roots = os.ReadFile("testdata/roots.pem")?
+    for versions in Array<int>{-1, 11, 14} {
+        let unsupported, unsupportedErr = nativeConfig(false, roots[:], noKey[:], versions)
+        _ = unsupportedErr
+        check(unsupported == 0 && unsupportedErr == error("TLS invalid protocol version range"))
+    }
     nativeClose(0)
     nativeClose(-1)
     return nil
@@ -203,6 +230,7 @@ func TestTCPPlainClientAsyncServer() error {
     listener.SetDeadline(time.Now() + 5 * time.Second)?
     let server = go echoServer(listener, serverConfig, ctx)
     var conn = DialContext(ctx, address, "localhost", clientConfig)?
+    check(nativeVersion(conn.handle)? == 772)
     let data = Array<byte>{0, 255, 128}
     check(conn.Write(data[:])? == 3)
     var got = zeros(16)
@@ -225,16 +253,15 @@ func TestTCPPlainClientAsyncServer() error {
 }
 
 func TestUntrustedPeerCertificate() error {
-    let roots = os.ReadFile("testdata/future.pem")?
-    let cert = os.ReadFile("testdata/server.pem")?
-    let key = os.ReadFile("testdata/server-key.pem")?
-    let config = NewClientConfig(roots[:])?
-    let serverConfig = NewServerConfig(cert[:], key[:])?
-    let client = ClientConfig{handle: nativeSession(config.handle, "localhost")?}
-    let server = ClientConfig{handle: nativeSession(serverConfig.handle, "")?}
-    let err = memoryHandshake(client.handle, server.handle)
-    _ = err
-    check(err != nil && strings.Contains(errors.Message(err), "not correctly signed"))
+    for versions in Array<int>{12, 13} {
+        let config = clientConfigFor("testdata/future.pem", versions)?
+        let serverConfig = serverConfigFor("testdata/server.pem", "testdata/server-key.pem", versions)?
+        let client = ClientConfig{handle: nativeSession(config.handle, "localhost")?}
+        let server = ClientConfig{handle: nativeSession(serverConfig.handle, "")?}
+        let err = memoryHandshake(client.handle, server.handle)
+        _ = err
+        check(err != nil && strings.Contains(errors.Message(err), "not correctly signed"))
+    }
     return nil
 }
 
@@ -464,11 +491,23 @@ func TestMalformedCiphertextFailsAndClosedHandlesReject() error {
 }
 
 func TestProviderWantWriteRetainsSamePlaintext() error {
-    let config, serverConfig = configs()?
+    for versions in Array<int>{12, 13} {
+        wantWriteCase(versions)?
+    }
+    return nil
+}
+
+func wantWriteCase(versions int) error {
+    let config = clientConfigFor("testdata/roots.pem", versions)?
+    let serverConfig = serverConfigFor("testdata/server.pem", "testdata/server-key.pem", versions)?
     let client = ClientConfig{handle: nativeSession(config.handle, "localhost")?}
     let server = ClientConfig{handle: nativeSession(serverConfig.handle, "")?}
     memoryHandshake(client.handle, server.handle)?
-    var data = zeros(16384)
+    var chunk = 16384
+    if versions == 13 {
+        chunk = 16383
+    }
+    var data = zeros(chunk)
     for var i = 0; i < data.len(); i += 1 {
         data[i] = byte(i % 256)
     }
@@ -538,7 +577,13 @@ func TestConnectionOutlivesHandshakeContextAndWritesLargeBodies() error {
 }
 
 func TestFailedReadSendsFatalAlert() error {
-    let config, serverConfig = configs()?
+    fatalAlertCase(12, 21)?
+    return fatalAlertCase(13, 23)
+}
+
+func fatalAlertCase(versions int, recordType byte) error {
+    let config = clientConfigFor("testdata/roots.pem", versions)?
+    let serverConfig = serverConfigFor("testdata/server.pem", "testdata/server-key.pem", versions)?
     let client = ClientConfig{handle: nativeSession(config.handle, "localhost")?}
     let server = nativeSession(serverConfig.handle, "")?
     memoryHandshake(client.handle, server)?
@@ -567,7 +612,253 @@ func TestFailedReadSendsFatalAlert() error {
     check(n == 0 && err != nil && conn.failed)
     var alert = zeros(64)
     let count = source.Read(alert[:])?
-    check(count >= 5 && alert[0] == 21)
+    check(count >= 5 && alert[0] == recordType)
+    nativeFeed(client.handle, alert[:count])?
+    let received, alertErr = nativeRead(client.handle, 16)
+    _ = alertErr
+    check(received.len() == 0 && alertErr != nil && strings.Contains(errors.Message(alertErr), "fatal alert message"))
     cancel()
+    return nil
+}
+
+func TestServerNameForms() error {
+    let accepted = Array<string>{"localhost", "127.0.0.1", "::1", "2001:db8::1", "FE80::1", "::ffff:127.0.0.1", "0:0:0:0:0:0:0:1"}
+    for name in accepted {
+        check(validServerName(name))
+    }
+    let rejected = Array<string>{"", "[::1]", "fe80::1%eth0", "1.2.3", "256.1.1.1", "01.2.3.4", "1::2::3", ":::1", "12345::1", "1:2:3:4:5:6:7:8:9", "127.0.0.1:443", "local\u0000host"}
+    for name in rejected {
+        check(!validServerName(name))
+    }
+    return nil
+}
+
+func configsFor(certPath string) (ClientConfig, ServerConfig, error) {
+    let cert = os.ReadFile(certPath)?
+    let key = os.ReadFile("testdata/server-key.pem")?
+    let client = NewClientConfig(cert[:])?
+    let server = NewServerConfig(cert[:], key[:])?
+    return client, server, nil
+}
+
+func ipHandshake(name string, certPath string, expected string) error {
+    for versions in Array<int>{12, 13} {
+        let config = clientConfigFor(certPath, versions)?
+        let serverConfig = serverConfigFor(certPath, "testdata/server-key.pem", versions)?
+        let client = ClientConfig{handle: nativeSession(config.handle, name)?}
+        let server = ClientConfig{handle: nativeSession(serverConfig.handle, "")?}
+        let err = memoryHandshake(client.handle, server.handle)
+        _ = err
+        if expected == "" {
+            check(err == nil)
+        } else {
+            check(err != nil)
+            check(strings.Contains(errors.Message(err), expected))
+        }
+    }
+    return nil
+}
+
+func TestIPServerNamesMatchOnlyIPAddressEntries() error {
+    ipHandshake("127.0.0.1", "testdata/ip.pem", "")?
+    ipHandshake("::1", "testdata/ip.pem", "")?
+    ipHandshake("0000:0000:0000:0000:0000:0000:0000:0001", "testdata/ip.pem", "")?
+    ipHandshake("127.0.0.2", "testdata/ip.pem", "does not match")?
+    ipHandshake("::2", "testdata/ip.pem", "does not match")?
+    ipHandshake("::ffff:127.0.0.1", "testdata/ip.pem", "does not match")?
+    ipHandshake("localhost", "testdata/ip.pem", "does not match")?
+    ipHandshake("127.0.0.1", "testdata/ip-dns.pem", "does not match")?
+    ipHandshake("::1", "testdata/ip-dns.pem", "does not match")?
+    ipHandshake("127.0.0.1", "testdata/ip-cn.pem", "does not match")?
+    return nil
+}
+
+func containsText(data []byte, text string) bool {
+    for var i = 0; i + text.len() <= data.len(); i += 1 {
+        var matched = true
+        for var j = 0; j < text.len(); j += 1 {
+            if data[i + j] != text[j] {
+                matched = false
+                break
+            }
+        }
+        if matched {
+            return true
+        }
+    }
+    return false
+}
+
+func clientHello(name string) (Array<byte>, error) {
+    let config, serverConfig = configsFor("testdata/ip.pem")?
+    let client = ClientConfig{handle: nativeSession(config.handle, name)?}
+    check(nativeHandshake(client.handle)? == 0)
+    return nativeOutput(client.handle)
+}
+
+func TestIPServerNamesSendNoSNI() error {
+    let ipHello = clientHello("127.0.0.1")?
+    check(ipHello.len() > 0 && !containsText(ipHello[:], "127.0.0.1"))
+    let ipv6Hello = clientHello("::1")?
+    check(ipv6Hello.len() > 0 && !containsText(ipv6Hello[:], "::1"))
+    let dnsHello = clientHello("localhost")?
+    check(containsText(dnsHello[:], "localhost"))
+    return nil
+}
+
+async func closingServer(listener own net.Listener, config own ServerConfig, ctx context.Context) error {
+    let source = listener.Accept()?
+    var conn = Server(ctx, source, config)?
+    return conn.Close()
+}
+
+func ipDial(name string) error {
+    let clientConfig, serverConfig = configsFor("testdata/ip.pem")?
+    let listener = net.Listen("tcp4", "127.0.0.1:0")?
+    let address = listener.Addr()
+    let ctx, cancel = context.WithTimeout(context.Background(), 5 * time.Second)
+    listener.SetDeadline(time.Now() + 5 * time.Second)?
+    let server = go closingServer(listener, serverConfig, ctx)
+    var conn = DialContext(ctx, address, name, clientConfig)?
+    var data = zeros(8)
+    let n, err = conn.Read(data[:])
+    _ = err
+    check(n == 0 && err == error("EOF"))
+    conn.Close()?
+    server.wait()?
+    cancel()
+    return nil
+}
+
+func TestTCPIPAddressServerNames() error {
+    ipDial("127.0.0.1")?
+    ipDial("::1")?
+    let clientConfig, serverConfig = configsFor("testdata/ip.pem")?
+    let ctx, cancel = context.WithTimeout(context.Background(), time.Second)
+    let conn, err = DialContext(ctx, "127.0.0.1:1", "[::1]", clientConfig)
+    _ = err
+    check(err == error("tls.DialContext: DNS name or IP address required"))
+    cancel()
+    return nil
+}
+
+func certificateCount(roots []byte) int {
+    let text, err = strings.FromBytes(roots)
+    _ = err
+    return strings.Count(text, "BEGIN CERTIFICATE")
+}
+
+func TestSystemRootsLoadPlatformStore() error {
+    let roots = nativeSystemRoots("")?
+    check(certificateCount(roots[:]) > 0)
+    let config = NewClientConfig(roots[:])?
+    return nil
+}
+
+func TestSystemRootsPublicAPI() error {
+    let roots = SystemRoots()?
+    check(certificateCount(roots[:]) > 0)
+    let config = NewClientConfig(roots[:])?
+    return nil
+}
+
+func TestDefaultClientConfigUsesPlatformRoots() error {
+    let config = DefaultClientConfig()?
+    check(config.handle != 0)
+    return nil
+}
+
+func TestSystemRootsFileSkipsUnusableCertificates() error {
+    let roots = nativeSystemRoots("testdata/mixed-roots.pem")?
+    check(certificateCount(roots[:]) == 1)
+    let deduplicated = nativeSystemRoots("testdata/duplicate-roots.pem")?
+    check(certificateCount(deduplicated[:]) == 1 && deduplicated.len() == roots.len())
+    let clientConfig = NewClientConfig(roots[:])?
+    let cert = os.ReadFile("testdata/server.pem")?
+    let key = os.ReadFile("testdata/server-key.pem")?
+    let serverConfig = NewServerConfig(cert[:], key[:])?
+    let client = ClientConfig{handle: nativeSession(clientConfig.handle, "localhost")?}
+    let server = ClientConfig{handle: nativeSession(serverConfig.handle, "")?}
+    return memoryHandshake(client.handle, server.handle)
+}
+
+func systemRootsRejection(path string, expected string) error {
+    let roots, err = nativeSystemRoots(path)
+    _ = err
+    check(roots.len() == 0 && err != nil && strings.Contains(errors.Message(err), expected))
+    return nil
+}
+
+func TestSystemRootsFileRejections() error {
+    systemRootsRejection("testdata/missing.pem", "cannot read")?
+    systemRootsRejection("testdata/unsupported-root.pem", "no usable")?
+    systemRootsRejection("testdata/server-key.pem", "no usable")?
+    return nil
+}
+
+func handshakeVersions(clientVersions int, serverVersions int) (int, int, error) {
+    let config = clientConfigFor("testdata/roots.pem", clientVersions)?
+    let serverConfig = serverConfigFor("testdata/server.pem", "testdata/server-key.pem", serverVersions)?
+    let client = ClientConfig{handle: nativeSession(config.handle, "localhost")?}
+    let server = ClientConfig{handle: nativeSession(serverConfig.handle, "")?}
+    memoryHandshake(client.handle, server.handle)?
+    let clientVersion = nativeVersion(client.handle)?
+    let serverVersion = nativeVersion(server.handle)?
+    return clientVersion, serverVersion, nil
+}
+
+func TestTLS13PreferredAndTLS12Accepted() error {
+    let defaultClient, defaultServer = handshakeVersions(0, 0)?
+    check(defaultClient == 772 && defaultServer == 772)
+    let fallbackClient, fallbackServer = handshakeVersions(0, 12)?
+    check(fallbackClient == 771 && fallbackServer == 771)
+    let olderClient, olderServer = handshakeVersions(12, 0)?
+    check(olderClient == 771 && olderServer == 771)
+    let onlyClient, anyServer = handshakeVersions(13, 0)?
+    check(onlyClient == 772 && anyServer == 772)
+    let anyClient, onlyServer = handshakeVersions(0, 13)?
+    check(anyClient == 772 && onlyServer == 772)
+    let _, _, newerErr = handshakeVersions(13, 12)
+    _ = newerErr
+    check(newerErr != nil && !strings.Contains(errors.Message(newerErr), "certificate verification"))
+    let _, _, olderErr = handshakeVersions(12, 13)
+    _ = olderErr
+    check(olderErr != nil && !strings.Contains(errors.Message(olderErr), "certificate verification"))
+    return nil
+}
+
+func TestTCPTLS12ServerStillAccepted() error {
+    let clientConfig = clientConfigFor("testdata/roots.pem", 0)?
+    let serverConfig = serverConfigFor("testdata/server.pem", "testdata/server-key.pem", 12)?
+    let listener = net.Listen("tcp4", "127.0.0.1:0")?
+    let address = listener.Addr()
+    let ctx, cancel = context.WithTimeout(context.Background(), 5 * time.Second)
+    listener.SetDeadline(time.Now() + 5 * time.Second)?
+    let server = go echoServer(listener, serverConfig, ctx)
+    var conn = DialContext(ctx, address, "localhost", clientConfig)?
+    check(nativeVersion(conn.handle)? == 771)
+    let data = Array<byte>{0, 255, 128}
+    check(conn.Write(data[:])? == 3)
+    var got = zeros(16)
+    check(conn.Read(got[:])? == 3 && got[0] == 0 && got[1] == 255 && got[2] == 128)
+    let n, err = conn.Read(got[:])
+    _ = err
+    check(n == 0 && err == error("EOF"))
+    conn.Close()?
+    server.wait()?
+    cancel()
+    return nil
+}
+
+func TestRSAIdentityAcrossVersions() error {
+    for versions in Array<int>{12, 13} {
+        let config = clientConfigFor("testdata/rsa.pem", versions)?
+        let serverConfig = serverConfigFor("testdata/rsa.pem", "testdata/rsa-key.pem", versions)?
+        let client = ClientConfig{handle: nativeSession(config.handle, "localhost")?}
+        let server = ClientConfig{handle: nativeSession(serverConfig.handle, "")?}
+        memoryHandshake(client.handle, server.handle)?
+        check(nativeVersion(client.handle)? == 759 + versions)
+        check(nativeVersion(server.handle)? == 759 + versions)
+    }
     return nil
 }

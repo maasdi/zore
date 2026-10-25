@@ -1,5 +1,11 @@
+#if defined(_WIN32)
+#define _CRT_SECURE_NO_WARNINGS
+#define WIN32_LEAN_AND_MEAN
+#endif
 #include "tls.h"
 #include "mbedtls/ssl.h"
+#include "mbedtls/base64.h"
+#include "psa/crypto.h"
 #include "mbedtls/entropy.h"
 #include "mbedtls/ctr_drbg.h"
 #include "mbedtls/error.h"
@@ -7,12 +13,20 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
+#if defined(_WIN32)
+#include <windows.h>
+#include <wincrypt.h>
+#pragma comment(lib, "crypt32.lib")
+#endif
 
 #define CAPACITY 65536
 #define ERROR_CAPACITY 512
+#define PEM_LIMIT (4 * 1024 * 1024)
+#define PEM_LINE_BYTES 48
 
 typedef struct {
     int server;
+    int versions;
     mbedtls_x509_crt certificates;
     mbedtls_pk_context key;
     unsigned char *cert_pem;
@@ -37,7 +51,29 @@ typedef struct {
     int peer_closed;
     int shutdown_sent;
     int failed;
+    unsigned char ip[16];
+    size_t ip_length;
 } Session;
+
+static int verify_ip(void *pointer, mbedtls_x509_crt *certificate, int depth, uint32_t *flags) {
+    const Session *session = pointer;
+    if (depth != 0) return 0;
+    for (const mbedtls_x509_sequence *name = &certificate->subject_alt_names; name != NULL; name = name->next) {
+        if (name->buf.tag == (MBEDTLS_ASN1_CONTEXT_SPECIFIC | MBEDTLS_X509_SAN_IP_ADDRESS) &&
+            name->buf.len == session->ip_length && memcmp(name->buf.p, session->ip, session->ip_length) == 0) return 0;
+    }
+    *flags |= MBEDTLS_X509_BADCERT_CN_MISMATCH;
+    return 0;
+}
+
+static int looks_like_ip(const char *name) {
+    int numeric = *name != 0;
+    for (const char *c = name; *c != 0; c += 1) {
+        if (*c == ':') return 1;
+        if (*c != '.' && (*c < '0' || *c > '9')) numeric = 0;
+    }
+    return numeric;
+}
 
 static int failure(int status, char *error) {
     mbedtls_strerror(status, error, ERROR_CAPACITY);
@@ -45,7 +81,7 @@ static int failure(int status, char *error) {
 }
 
 static unsigned char *pem(const unsigned char *data, size_t length) {
-    if (length == 0 || length > 1024 * 1024 || memchr(data, 0, length) != NULL) return NULL;
+    if (length == 0 || length > PEM_LIMIT || memchr(data, 0, length) != NULL) return NULL;
     unsigned char *result = malloc(length + 1);
     if (result != NULL) { memcpy(result, data, length); result[length] = 0; }
     return result;
@@ -61,8 +97,14 @@ void zore_tls_config_free(void *pointer) {
     free(identity);
 }
 
+int zore_tls_init(void) { return (int) psa_crypto_init(); }
+
 void *zore_tls_config(int server, const unsigned char *cert, size_t cert_len,
-                      const unsigned char *key, size_t key_len, char *error) {
+                      const unsigned char *key, size_t key_len, int versions, char *error) {
+    if (versions != 0 && versions != 12 && versions != 13) {
+        snprintf(error, ERROR_CAPACITY, "TLS invalid protocol version range");
+        return NULL;
+    }
     mbedtls_entropy_context entropy;
     mbedtls_ctr_drbg_context random;
     mbedtls_entropy_init(&entropy);
@@ -71,10 +113,11 @@ void *zore_tls_config(int server, const unsigned char *cert, size_t cert_len,
     unsigned char *cert_pem = pem(cert, cert_len);
     unsigned char *key_pem = server ? pem(key, key_len) : NULL;
     if (identity == NULL || cert_pem == NULL || (server && key_pem == NULL)) {
-        snprintf(error, ERROR_CAPACITY, "PEM input must be nonempty, NUL-free and at most 1 MiB, or allocation failed");
+        snprintf(error, ERROR_CAPACITY, "PEM input must be nonempty, NUL-free and at most 4 MiB, or allocation failed");
         goto fail;
     }
     identity->server = server;
+    identity->versions = versions;
     mbedtls_x509_crt_init(&identity->certificates);
     mbedtls_pk_init(&identity->key);
     int status = mbedtls_x509_crt_parse(&identity->certificates, cert_pem, cert_len + 1);
@@ -160,6 +203,11 @@ void *zore_tls_session(void *pointer, const char *name, char *error) {
         session->server ? MBEDTLS_SSL_IS_SERVER : MBEDTLS_SSL_IS_CLIENT,
         MBEDTLS_SSL_TRANSPORT_STREAM, MBEDTLS_SSL_PRESET_DEFAULT);
     if (status != 0) goto fail;
+    mbedtls_ssl_conf_min_tls_version(&session->config,
+        source->versions == 13 ? MBEDTLS_SSL_VERSION_TLS1_3 : MBEDTLS_SSL_VERSION_TLS1_2);
+    mbedtls_ssl_conf_max_tls_version(&session->config,
+        source->versions == 12 ? MBEDTLS_SSL_VERSION_TLS1_2 : MBEDTLS_SSL_VERSION_TLS1_3);
+    mbedtls_ssl_conf_tls13_key_exchange_modes(&session->config, MBEDTLS_SSL_TLS1_3_KEY_EXCHANGE_MODE_EPHEMERAL);
     mbedtls_ssl_conf_rng(&session->config, mbedtls_ctr_drbg_random, &session->random);
     if (session->server) {
         status = mbedtls_ssl_conf_own_cert(&session->config, &session->certificates, &session->key);
@@ -172,7 +220,18 @@ void *zore_tls_session(void *pointer, const char *name, char *error) {
     status = mbedtls_ssl_setup(&session->ssl, &session->config);
     if (status != 0) goto fail;
     if (!session->server) {
-        status = mbedtls_ssl_set_hostname(&session->ssl, name);
+        session->ip_length = mbedtls_x509_crt_parse_cn_inet_pton(name, session->ip);
+        if (session->ip_length == 0 && looks_like_ip(name)) {
+            snprintf(error, ERROR_CAPACITY, "TLS invalid IP address server name");
+            zore_tls_session_free(session);
+            return NULL;
+        }
+        if (session->ip_length != 0) {
+            status = mbedtls_ssl_set_hostname(&session->ssl, NULL);
+            mbedtls_ssl_set_verify(&session->ssl, verify_ip, session);
+        } else {
+            status = mbedtls_ssl_set_hostname(&session->ssl, name);
+        }
         if (status != 0) goto fail;
     }
     mbedtls_ssl_set_bio(&session->ssl, session, send_bytes, receive_bytes, NULL);
@@ -191,7 +250,8 @@ static int operation_result(Session *session, int status, char *error) {
     if (status < 0) {
         session->failed = 1;
         uint32_t flags = mbedtls_ssl_get_verify_result(&session->ssl);
-        if (flags != 0) mbedtls_x509_crt_verify_info(error, ERROR_CAPACITY, "certificate verification: ", flags);
+        if (flags != 0xFFFFFFFF && (flags & ~(uint32_t) MBEDTLS_X509_BADCERT_SKIP_VERIFY) != 0)
+            mbedtls_x509_crt_verify_info(error, ERROR_CAPACITY, "certificate verification: ", flags);
         else failure(status, error);
         return -1;
     }
@@ -253,3 +313,127 @@ int zore_tls_shutdown(void *pointer, char *error) {
 }
 
 int zore_tls_status(void *pointer) { return ((Session *)pointer)->status; }
+
+int zore_tls_version(void *pointer) { return (int) mbedtls_ssl_get_version_number(&((Session *)pointer)->ssl); }
+
+void zore_tls_free(void *pointer) { free(pointer); }
+
+static FILE *open_bundle(const char *path) {
+#if defined(_WIN32)
+    wchar_t wide[4096];
+    if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, path, -1, wide, 4096) == 0) return NULL;
+    return _wfopen(wide, L"rb");
+#else
+    return fopen(path, "rb");
+#endif
+}
+
+static int parse_bundle(mbedtls_x509_crt *chain, const char *path) {
+    FILE *file = open_bundle(path);
+    if (file == NULL) return 1;
+    unsigned char *data = malloc(PEM_LIMIT + 2);
+    if (data == NULL) { fclose(file); return 1; }
+    size_t length = fread(data, 1, PEM_LIMIT + 1, file);
+    int failed = ferror(file) || length > PEM_LIMIT;
+    fclose(file);
+    if (failed) { free(data); return 1; }
+    data[length] = 0;
+    int status = mbedtls_x509_crt_parse(chain, data, length + 1);
+    free(data);
+    return status >= 0 && chain->raw.len > 0 ? 0 : 2;
+}
+
+static size_t pem_size(size_t raw_length) {
+    size_t encoded = (raw_length + 2) / 3 * 4;
+    return 28 + encoded + (encoded + 63) / 64 + 26;
+}
+
+static size_t write_pem(unsigned char *out, const mbedtls_x509_crt *certificate) {
+    unsigned char *cursor = out;
+    memcpy(cursor, "-----BEGIN CERTIFICATE-----\n", 28);
+    cursor += 28;
+    for (size_t offset = 0; offset < certificate->raw.len; offset += PEM_LINE_BYTES) {
+        size_t chunk = certificate->raw.len - offset;
+        if (chunk > PEM_LINE_BYTES) chunk = PEM_LINE_BYTES;
+        size_t written = 0;
+        unsigned char line[PEM_LINE_BYTES / 3 * 4 + 1];
+        mbedtls_base64_encode(line, sizeof(line), &written, certificate->raw.p + offset, chunk);
+        memcpy(cursor, line, written);
+        cursor += written;
+        *cursor++ = '\n';
+    }
+    memcpy(cursor, "-----END CERTIFICATE-----\n", 26);
+    return (size_t)(cursor - out) + 26;
+}
+
+#if defined(_WIN32)
+static int load_platform_store(mbedtls_x509_crt *chain, char *error) {
+    HCERTSTORE store = CertOpenSystemStoreW(0, L"ROOT");
+    if (store == NULL) { snprintf(error, ERROR_CAPACITY, "cannot open the Windows ROOT certificate store"); return 1; }
+    const CERT_CONTEXT *context = NULL;
+    while ((context = CertEnumCertificatesInStore(store, context)) != NULL) {
+        mbedtls_x509_crt_parse_der(chain, context->pbCertEncoded, context->cbCertEncoded);
+    }
+    CertCloseStore(store, 0);
+    if (chain->raw.len == 0) { snprintf(error, ERROR_CAPACITY, "no usable system root certificates"); return 1; }
+    return 0;
+}
+#else
+static int load_platform_store(mbedtls_x509_crt *chain, char *error) {
+    static const char *const bundles[] = {
+        "/etc/ssl/certs/ca-certificates.crt",
+        "/etc/pki/tls/certs/ca-bundle.crt",
+        "/etc/ssl/ca-bundle.pem",
+        "/etc/pki/tls/cacert.pem",
+        "/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem",
+        "/etc/ssl/cert.pem",
+    };
+    for (size_t i = 0; i < sizeof(bundles) / sizeof(bundles[0]); i += 1) {
+        if (parse_bundle(chain, bundles[i]) == 0) return 0;
+        mbedtls_x509_crt_free(chain);
+        mbedtls_x509_crt_init(chain);
+    }
+    snprintf(error, ERROR_CAPACITY, "no system root certificate bundle found");
+    return 1;
+}
+#endif
+
+static int duplicate(const mbedtls_x509_crt *chain, const mbedtls_x509_crt *certificate) {
+    for (const mbedtls_x509_crt *earlier = chain; earlier != certificate; earlier = earlier->next) {
+        if (earlier->raw.len == certificate->raw.len && memcmp(earlier->raw.p, certificate->raw.p, certificate->raw.len) == 0) return 1;
+    }
+    return 0;
+}
+
+unsigned char *zore_tls_system_roots(const char *path, size_t *length, char *error) {
+    mbedtls_x509_crt chain;
+    mbedtls_x509_crt_init(&chain);
+    unsigned char *result = NULL;
+    if (path[0] != 0) {
+        int status = parse_bundle(&chain, path);
+        if (status == 1) snprintf(error, ERROR_CAPACITY, "cannot read %.400s", path);
+        else if (status == 2) snprintf(error, ERROR_CAPACITY, "no usable certificates in %.400s", path);
+        if (status != 0) goto done;
+    } else if (load_platform_store(&chain, error) != 0) {
+        goto done;
+    }
+    size_t total = 0;
+    for (const mbedtls_x509_crt *certificate = &chain; certificate != NULL && certificate->raw.len > 0; certificate = certificate->next) {
+        if (duplicate(&chain, certificate)) continue;
+        total += pem_size(certificate->raw.len);
+        if (total > PEM_LIMIT) {
+            snprintf(error, ERROR_CAPACITY, "system root certificates exceed 4 MiB");
+            goto done;
+        }
+    }
+    result = malloc(total + 1);
+    if (result == NULL) { snprintf(error, ERROR_CAPACITY, "allocation failed"); goto done; }
+    size_t used = 0;
+    for (const mbedtls_x509_crt *certificate = &chain; certificate != NULL && certificate->raw.len > 0; certificate = certificate->next) {
+        if (!duplicate(&chain, certificate)) used += write_pem(result + used, certificate);
+    }
+    *length = used;
+done:
+    mbedtls_x509_crt_free(&chain);
+    return result;
+}

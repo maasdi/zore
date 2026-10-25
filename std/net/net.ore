@@ -51,6 +51,10 @@ func DialTimeout(network string, address string, timeout int) (Conn, error) {
     return Conn{id: id}, err
 }
 
+func EmptyConn() Conn {
+    return Conn{id: 0}
+}
+
 func (l Listener) Accept() (Conn, error) {
     let id, err = accept(l.id)
     return Conn{id: id}, err
