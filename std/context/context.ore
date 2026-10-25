@@ -6,17 +6,28 @@ const active = 0
 const canceled = 1
 const expired = 2
 
+type cancellationState struct {
+    reason int
+    revision int
+}
+
+type ancestor struct {
+    state Mutex<cancellationState>
+    parents Mutex<Array<ancestor>>
+}
+
 type Context struct {
-    done      channel<bool>
-    state     Mutex<int>
-    ancestors Mutex<Array<Mutex<int>>>
-    live      bool
-    deadline  int
-    limited   bool
+    done channel<bool>
+    state Mutex<cancellationState>
+    parents Mutex<Array<ancestor>>
+    revision Mutex<int>
+    live bool
+    deadline int
+    limited bool
 }
 
 func Background() Context {
-    return Context{done: channel<bool>(), state: mutex(active), ancestors: mutex(Array<Mutex<int>>{}), live: false, deadline: 0, limited: false}
+    return Context{done: channel<bool>(), state: mutex(cancellationState{reason: active, revision: 0}), parents: mutex(Array<ancestor>{}), revision: mutex(0), live: false, deadline: 0, limited: false}
 }
 
 func TODO() Context {
@@ -83,54 +94,82 @@ func (c Context) Deadline() (int, bool) {
 }
 
 func derive(parent Context, deadline int, limited bool) Context {
-    let ancestors = parent.ancestors.withLock(func(states mut Array<Mutex<int>>) Array<Mutex<int>> {
-        var lineage = Array<Mutex<int>>{parent.state}
-        for state in states {
-            lineage.push(state)
-        }
-        return lineage
+    // Snapshot first so a racing cancellation cannot validate an active child.
+    let revision = parent.revision.withLock(func(value mut int) int {
+        return value
     })
-    let ctx = Context{done: channel<bool>(), state: mutex(active), ancestors: mutex(ancestors), live: true, deadline: deadline, limited: limited}
-    if parent.live {
-        let inherited = parent.reason()
-        if inherited != active {
-            ctx.cancel(inherited)
-        } else {
-            go follow(parent, ctx)
-        }
+    let inherited = parent.reason()
+    var parents = Array<ancestor>{}
+    if parent.live && inherited == active {
+        parents.push(ancestor{state: parent.state, parents: parent.parents})
+    }
+    let ctx = Context{done: channel<bool>(), state: mutex(cancellationState{reason: active, revision: revision}), parents: mutex(parents), revision: parent.revision, live: true, deadline: deadline, limited: limited}
+    if inherited != active {
+        ctx.cancel(inherited)
+    } else if parent.live {
+        go follow(parent, ctx)
     }
     return ctx
 }
 
 func (c Context) reason() int {
-    let inherited = c.ancestors.withLock(func(states mut Array<Mutex<int>>) int {
-        for ancestor in states {
-            let reason = ancestor.withLock(func(state mut int) int {
-                return state
-            })
-            if reason != active {
-                return reason
-            }
-        }
-        return active
+    let revision = c.revision.withLock(func(value mut int) int {
+        return value
     })
-    if inherited != active {
-        c.cancel(inherited)
-    }
-    return c.state.withLock(func(state mut int) int {
+    let local = c.state.withLock(func(state mut cancellationState) cancellationState {
         return state
+    })
+    if local.reason != active || local.revision == revision {
+        return local.reason
+    }
+    var current = ancestor{state: c.state, parents: c.parents}
+    for {
+        let parent, found = current.parents.withLock(func(parents mut Array<ancestor>) (ancestor, bool) {
+            if parents.len() == 0 {
+                return current, false
+            }
+            return parents[0], true
+        })
+        if !found {
+            break
+        }
+        let inherited = parent.state.withLock(func(state mut cancellationState) cancellationState {
+            return state
+        })
+        if inherited.reason != active {
+            c.cancel(inherited.reason)
+            return c.state.withLock(func(state mut cancellationState) int {
+                return state.reason
+            })
+        }
+        if inherited.revision == revision {
+            break
+        }
+        current = parent
+    }
+    return c.state.withLock(func(state mut cancellationState) int {
+        if state.reason == active {
+            state.revision = revision
+        }
+        return state.reason
     })
 }
 
 func (c Context) cancel(reason int) {
-    let first = c.state.withLock(func(state mut int) bool {
-        if state != active {
+    let first = c.state.withLock(func(state mut cancellationState) bool {
+        if state.reason != active {
             return false
         }
-        state = reason
+        state.reason = reason
         return true
     })
     if first {
+        c.revision.withLock(func(value mut int) {
+            value += 1
+        })
+        c.parents.withLock(func(parents mut Array<ancestor>) {
+            parents = Array<ancestor>{}
+        })
         c.done.close()
     }
 }

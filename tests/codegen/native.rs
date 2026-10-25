@@ -5133,6 +5133,80 @@ func main() {
 }
 
 #[test]
+fn context_ancestry_storage_grows_linearly_and_releases_deep_chains() {
+    let source = r#"package main
+import "std/context"
+func chainBytes(depth int) int {
+    let root, cancel = context.WithCancel(context.Background())
+    let baseline = allocatedBytes()
+    var current = root
+    for var i = 0; i < depth; i += 1 {
+        let child, stop = context.WithCancel(current)
+        current = child
+    }
+    waitPending(depth)
+    let bytes = allocatedBytes() - baseline
+    if current.Err() != nil { panic("active context") }
+    cancel()
+    if current.Err() != error("context canceled") { panic("deep cancellation") }
+    waitIdle(0)
+    return bytes
+}
+func main() {
+    let small = chainBytes(256)
+    let large = chainBytes(512)
+    let deep = chainBytes(4096)
+    println(small > 0 && large < small * 3 && deep < small * 24)
+    waitIdle(0)
+}
+"#;
+    let output = run_controlled_one_worker(source);
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    assert_eq!(stdout(&output), "true\n");
+    assert!(output.stderr.is_empty(), "{}", stderr(&output));
+}
+
+#[test]
+fn context_cancellation_cache_keeps_siblings_and_sticky_errors_independent() {
+    let source = r#"package main
+import "std/context"
+async func observe() {
+    let root, cancel = context.WithCancel(context.Background())
+    let parent, stopParent = context.WithCancel(root)
+    let child, stopChild = context.WithCancel(parent)
+    let sibling, stopSibling = context.WithCancel(root)
+    println(child.Err() == nil)
+    stopSibling()
+    println(child.Err() == nil && parent.Err() == nil)
+    cancel()
+    println(child.Err() == error("context canceled"))
+    println(parent.Err() == error("context canceled"))
+    let late, stopLate = context.WithCancel(child)
+    println(late.Err() == error("context canceled"))
+    select { case late.Done().receive() { println(true) }; default { println(false) } }
+    let expired, stopExpired = context.WithDeadline(sibling, 0)
+    println(expired.Err() == error("context canceled"))
+    stopExpired()
+    stopLate()
+    stopChild()
+    stopParent()
+}
+func main() {
+    let task = go observe()
+    task.wait()
+    waitIdle(0)
+}
+"#;
+    let output = run_controlled_one_worker(source);
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    assert_eq!(
+        stdout(&output),
+        "true\ntrue\ntrue\ntrue\ntrue\ntrue\ntrue\n"
+    );
+    assert!(output.stderr.is_empty(), "{}", stderr(&output));
+}
+
+#[test]
 fn reads_and_accepts_give_up_at_their_deadline() {
     let source = format!(
         "package main

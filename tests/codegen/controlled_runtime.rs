@@ -83,6 +83,10 @@ pub(super) fn build_with_optimization(
     if check_timers {
         source.push_str("func checkTimers(n int) {}\n");
     }
+    let allocations = source.contains("allocatedBytes(");
+    if allocations {
+        source.push_str("func allocatedBytes() int { return 0 }\n");
+    }
     let mut sources = SourceMap::new();
     let file = sources.add("test.ore", source).unwrap();
     let mut llvm = emit_llvm(sources.file(file).unwrap()).expect("check controlled test program");
@@ -106,6 +110,16 @@ pub(super) fn build_with_optimization(
             &format!("define internal void @\"main.{name}\"(i64 %n) {{\nentry:\n  call void @{hook}(i64 %n)\n  ret void\n}}"),
         );
         llvm.push_str(&format!("\ndeclare void @{hook}(i64)\n"));
+    }
+    if allocations {
+        let symbol = "define internal i64 @\"main.allocatedBytes\"(";
+        let start = llvm.find(symbol).expect("allocation checkpoint emitted");
+        let end = start + llvm[start..].find("\n}").expect("function end") + 2;
+        llvm.replace_range(
+            start..end,
+            "define internal i64 @\"main.allocatedBytes\"() {\nentry:\n  %bytes = call i64 @zore_test_allocated_bytes()\n  ret i64 %bytes\n}",
+        );
+        llvm.push_str("\ndeclare i64 @zore_test_allocated_bytes()\n");
     }
     let dir = TempDir::new().unwrap();
     let ir = dir.path().join("program.ll");
@@ -139,6 +153,10 @@ extern "C" fn zore_test_wait_blocked(count: i64) {
 #[unsafe(no_mangle)]
 extern "C" fn zore_test_wait_idle(count: i64) {
     zore_runtime::scheduler::test_support::wait_idle(usize::try_from(count).unwrap());
+}
+#[unsafe(no_mangle)]
+extern "C" fn zore_test_allocated_bytes() -> i64 {
+    i64::try_from(zore_runtime::scheduler::test_support::allocated_bytes()).unwrap()
 }
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 #[unsafe(no_mangle)]

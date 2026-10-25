@@ -146,7 +146,7 @@ func main() {}
     let mut tests = fixture.command("test");
     tests.arg("--locked").env_remove("SSL_CERT_FILE");
     let output = success(run(tests));
-    assert!(String::from_utf8_lossy(&output.stdout).contains("Tests: 28 passed, 0 failed"));
+    assert!(String::from_utf8_lossy(&output.stdout).contains("Tests: 30 passed, 0 failed"));
     let cached = fs::read_dir(fixture._directory.path().join("cache/zore"))
         .unwrap()
         .map(|entry| entry.unwrap().path())

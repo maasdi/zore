@@ -82,7 +82,7 @@ fn offline_https_do_verifies_peer_and_preserves_fragmented_binary_bytes() {
     tests.arg("--locked").env_remove("SSL_CERT_FILE");
     let output = success(tests);
     assert!(
-        String::from_utf8_lossy(&output.stdout).contains("Tests: 5 passed, 0 failed"),
+        String::from_utf8_lossy(&output.stdout).contains("Tests: 6 passed, 0 failed"),
         "{output:?}"
     );
 }

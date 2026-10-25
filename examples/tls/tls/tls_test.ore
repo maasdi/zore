@@ -622,7 +622,7 @@ func fatalAlertCase(versions int, recordType byte) error {
 }
 
 func TestServerNameForms() error {
-    let accepted = Array<string>{"localhost", "127.0.0.1", "::1", "2001:db8::1", "FE80::1", "::ffff:127.0.0.1", "0:0:0:0:0:0:0:1"}
+    let accepted = Array<string>{"localhost", "1-2", "127.0.0.1", "::1", "2001:db8::1", "FE80::1", "::ffff:127.0.0.1", "0:0:0:0:0:0:0:1"}
     for name in accepted {
         check(validServerName(name))
     }
@@ -630,6 +630,18 @@ func TestServerNameForms() error {
     for name in rejected {
         check(!validServerName(name))
     }
+    return nil
+}
+
+func TestCanonicalDNSServerNames() error {
+    check(canonicalServerName("localhost.") == "localhost")
+    check(canonicalServerName("LOCALHOST.") == "LOCALHOST")
+    check(canonicalServerName("1-2.") == "1-2")
+    for name in Array<string>{"localhost..", ".localhost", "bad-.local.", "127.0.0.1.", "1.2.3."} {
+        check(!validServerName(canonicalServerName(name)))
+    }
+    let hello = clientHello(canonicalServerName("localhost."))?
+    check(containsText(hello[:], "localhost") && !containsText(hello[:], "localhost."))
     return nil
 }
 
@@ -710,6 +722,34 @@ async func closingServer(listener own net.Listener, config own ServerConfig, ctx
     let source = listener.Accept()?
     var conn = Server(ctx, source, config)?
     return conn.Close()
+}
+
+func dnsClient(ctx context.Context, address string, name string, config ClientConfig, connected bool) (Conn, error) {
+    if connected {
+        let source = net.DialTimeout("tcp4", address, 5 * time.Second)?
+        return Client(ctx, source, name, config)
+    }
+    return DialContext(ctx, address, name, config)
+}
+
+func TestRootedDNSServerNamesVerifyThroughBothClientEntryPoints() error {
+    for connected in Array<bool>{false, true} {
+        let clientConfig, serverConfig = configs()?
+        let listener = net.Listen("tcp4", "127.0.0.1:0")?
+        let address = listener.Addr()
+        let ctx, cancel = context.WithTimeout(context.Background(), 5 * time.Second)
+        listener.SetDeadline(time.Now() + 5 * time.Second)?
+        let server = go closingServer(listener, serverConfig, ctx)
+        var conn = dnsClient(ctx, address, "LOCALHOST.", clientConfig, connected)?
+        var data = zeros(8)
+        let n, err = conn.Read(data[:])
+        _ = err
+        check(n == 0 && err == error("EOF"))
+        conn.Close()?
+        server.wait()?
+        cancel()
+    }
+    return nil
 }
 
 func ipDial(name string) error {

@@ -61,6 +61,9 @@ expiry, then assert scheduler quiescence and zero live timer registrations after
 cancellation, expiration and parent propagation. Runtime regressions cover
 deadline/channel races, exact reference cleanup, and bounded stale timer records.
 These are state assertions, not wall-time or RSS thresholds.
+Context-chain regressions also compare tracked allocation growth at increasing
+depths, check immediate cancellation before watchers run, and drain every watcher
+before leak-checked exit.
 
 The performance workloads have behavioral coverage in the new native
 performance module and the REST benchmark case in the HTTP tests. They check
@@ -358,8 +361,9 @@ and parent-following tasks.
 
 `codegen/controlled_runtime.rs` builds a separate `cfg(test)` runtime once for
 focused native regressions. Each generated program runs in its own process with
-a two-worker pool. Only the bodies of the test fixture's `waitPending` and
-`waitBlocked` functions are replaced in emitted LLVM, to call bounded Rust state
+a two-worker pool, or one worker when a test needs to control watcher progress.
+The fixture's `waitPending`, `waitBlocked`, `waitIdle`, timer checkpoints and
+`allocatedBytes` functions are replaced in emitted LLVM with test-only Rust
 observers. Generated async bodies, ownership/drop lowering, and wait operations
 remain the compiler's real output. These hooks do not exist in production builds
 and add no Zore builtin or runtime configuration option.
