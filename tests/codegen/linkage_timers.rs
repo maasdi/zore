@@ -95,7 +95,6 @@ fn unused_source_keeps_full_type_and_ownership_diagnostics() {
     }
 }
 
-#[cfg(any(target_os = "linux", target_os = "macos"))]
 #[test]
 fn canceled_context_deadlines_unregister_timers_before_the_original_deadline() {
     let output = run_controlled(
@@ -124,7 +123,6 @@ func main() {
     assert!(output.stderr.is_empty(), "{}", stderr(&output));
 }
 
-#[cfg(any(target_os = "linux", target_os = "macos"))]
 #[test]
 fn context_deadline_expiration_and_parent_cancellation_release_every_timer() {
     let output = run_controlled(

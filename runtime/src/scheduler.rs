@@ -1012,7 +1012,6 @@ pub mod test_support {
         until(|| lock(&pool.state).tasks.len() <= count && super::super::task::running() <= count);
     }
 
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
     pub fn check_timers(count: usize) {
         assert_eq!(
             super::super::reactor::snapshot().2,
@@ -1049,7 +1048,7 @@ pub mod test_support {
         )
     }
 
-    #[cfg(all(zore_test_hooks, any(target_os = "linux", target_os = "macos")))]
+    #[cfg(zore_test_hooks)]
     pub fn expire_timers(count: usize) {
         super::super::reactor::expire_test_timers(count);
     }

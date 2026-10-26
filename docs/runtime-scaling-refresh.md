@@ -172,6 +172,10 @@ defaults to Linux/macOS on manual dispatch; the `run-scaling-benchmarks` PR
 label or `include_windows` manual input runs all three hosts. Ordinary Windows
 correctness CI remains enabled.
 
+This capture predates the shared Windows timer service from #169. Its
+640-thread timer result is the before measurement; the implementation's
+after-measurement is pending.
+
 ## Raw evidence
 
 These gzip archives preserve the original JSON bytes from workflow run

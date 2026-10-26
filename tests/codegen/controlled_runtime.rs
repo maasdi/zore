@@ -158,12 +158,10 @@ extern "C" fn zore_test_wait_idle(count: i64) {
 extern "C" fn zore_test_allocated_bytes() -> i64 {
     i64::try_from(zore_runtime::scheduler::test_support::allocated_bytes()).unwrap()
 }
-#[cfg(any(target_os = "linux", target_os = "macos"))]
 #[unsafe(no_mangle)]
 extern "C" fn zore_test_expire_timers(count: i64) {
     zore_runtime::scheduler::test_support::expire_timers(usize::try_from(count).unwrap());
 }
-#[cfg(any(target_os = "linux", target_os = "macos"))]
 #[unsafe(no_mangle)]
 extern "C" fn zore_test_check_timers(count: i64) {
     zore_runtime::scheduler::test_support::check_timers(usize::try_from(count).unwrap());

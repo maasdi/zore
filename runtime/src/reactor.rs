@@ -479,7 +479,7 @@ mod imp {
         }
     }
 
-    #[cfg(zore_test_hooks)]
+    #[cfg(any(test, zore_test_hooks))]
     pub(super) fn expire_test_timers(count: usize) {
         let reactor = started();
         let mut completed = Vec::new();
@@ -683,28 +683,134 @@ mod imp {
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
 mod imp {
     use super::{Operation, Waiter};
+    use std::cmp::Reverse;
+    use std::collections::{BinaryHeap, HashMap};
     use std::sync::Arc;
-    use std::time::Duration;
+    use std::sync::{Condvar, Mutex, MutexGuard, Once, OnceLock};
+    use std::time::{Duration, Instant};
 
     #[cfg(any(test, zore_test_hooks))]
     static THREADS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-    #[cfg(any(test, zore_test_hooks))]
-    static TIMERS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
-    #[cfg(any(test, zore_test_hooks))]
-    struct ThreadCount;
+    #[derive(Default)]
+    struct State {
+        next: u64,
+        operations: HashMap<u64, Arc<Operation>>,
+        deadlines: BinaryHeap<Reverse<(Instant, u64)>>,
+    }
 
-    #[cfg(any(test, zore_test_hooks))]
-    impl Drop for ThreadCount {
-        fn drop(&mut self) {
-            THREADS.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+    impl State {
+        fn cancel(&mut self, token: u64) {
+            self.operations.remove(&token);
+            self.compact();
+        }
+
+        fn take_expired(&mut self, now: Instant) -> Vec<Arc<Operation>> {
+            let mut expired = Vec::new();
+            while let Some(&Reverse((deadline, token))) = self.deadlines.peek() {
+                if deadline > now {
+                    break;
+                }
+                self.deadlines.pop();
+                if let Some(operation) = self.operations.remove(&token) {
+                    expired.push(operation);
+                }
+            }
+            self.compact();
+            expired
+        }
+
+        fn compact(&mut self) {
+            let limit = self.operations.len().saturating_mul(2).max(64);
+            if self.deadlines.len() > limit {
+                self.deadlines
+                    .retain(|Reverse((_, token))| self.operations.contains_key(token));
+                self.deadlines.shrink_to(limit);
+            }
+        }
+    }
+
+    struct Timers {
+        state: Mutex<State>,
+        changed: Condvar,
+    }
+
+    static TIMER_STATE: OnceLock<Timers> = OnceLock::new();
+    static TIMER_THREAD: Once = Once::new();
+
+    impl Timers {
+        fn lock(&self) -> MutexGuard<'_, State> {
+            self.state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+        }
+    }
+
+    fn started() -> &'static Timers {
+        let timers = TIMER_STATE.get_or_init(|| Timers {
+            state: Mutex::new(State {
+                next: 1,
+                ..State::default()
+            }),
+            changed: Condvar::new(),
+        });
+        TIMER_THREAD.call_once(|| {
+            if std::thread::Builder::new()
+                .name("zore-timers".into())
+                .spawn(|| serve(timers))
+                .is_err()
+            {
+                super::super::panic::fail(b"cannot start the timer thread");
+            }
+            #[cfg(any(test, zore_test_hooks))]
+            THREADS.store(1, std::sync::atomic::Ordering::SeqCst);
+        });
+        timers
+    }
+
+    fn serve(timers: &'static Timers) {
+        loop {
+            let expired = {
+                let mut state = timers.lock();
+                loop {
+                    while let Some(&Reverse((_, token))) = state.deadlines.peek() {
+                        if state.operations.contains_key(&token) {
+                            break;
+                        }
+                        state.deadlines.pop();
+                    }
+                    let Some(&Reverse((deadline, _))) = state.deadlines.peek() else {
+                        state = timers
+                            .changed
+                            .wait(state)
+                            .unwrap_or_else(|poisoned| poisoned.into_inner());
+                        continue;
+                    };
+                    let remaining = deadline.saturating_duration_since(Instant::now());
+                    if remaining.is_zero() {
+                        break state.take_expired(Instant::now());
+                    }
+                    let (next, _) = timers
+                        .changed
+                        .wait_timeout(state, remaining)
+                        .unwrap_or_else(|poisoned| poisoned.into_inner());
+                    state = next;
+                }
+            };
+            for operation in expired {
+                operation.complete();
+            }
         }
     }
 
     #[cfg(any(test, zore_test_hooks))]
     pub(super) fn snapshot() -> (usize, usize, usize) {
-        let timers = TIMERS.load(std::sync::atomic::Ordering::SeqCst);
-        (timers, 0, timers)
+        let Some(timers) = TIMER_STATE.get() else {
+            return (0, 0, 0);
+        };
+        let state = timers.lock();
+        let live = state.operations.len();
+        (live, state.deadlines.len(), live)
     }
 
     #[cfg(any(test, zore_test_hooks))]
@@ -714,7 +820,7 @@ mod imp {
 
     pub(crate) struct Timer {
         operation: Arc<Operation>,
-        canceled: Arc<(std::sync::Mutex<bool>, std::sync::Condvar)>,
+        token: u64,
     }
 
     impl Timer {
@@ -727,71 +833,87 @@ mod imp {
 
     impl Drop for Timer {
         fn drop(&mut self) {
-            #[cfg(any(test, zore_test_hooks))]
-            TIMERS.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
-            let (state, changed) = &*self.canceled;
-            *state.lock().unwrap_or_else(|error| error.into_inner()) = true;
-            changed.notify_one();
+            let timers = started();
+            let mut state = timers.lock();
+            state.cancel(self.token);
+            drop(state);
+            timers.changed.notify_one();
         }
     }
 
     pub(super) fn start_timer(milliseconds: u64, waiter: Waiter) -> Timer {
+        let timers = started();
         let operation = Operation::new(waiter);
-        let canceled = Arc::new((std::sync::Mutex::new(false), std::sync::Condvar::new()));
-        #[cfg(any(test, zore_test_hooks))]
-        {
-            TIMERS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            THREADS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        }
-        let signal = Arc::clone(&canceled);
-        let completion = Arc::clone(&operation);
-        if std::thread::Builder::new()
-            .spawn(move || {
-                #[cfg(any(test, zore_test_hooks))]
-                let _count = ThreadCount;
-                let (state, changed) = &*signal;
-                let guard = state.lock().unwrap_or_else(|error| error.into_inner());
-                let (guard, _) = changed
-                    .wait_timeout_while(guard, Duration::from_millis(milliseconds), |canceled| {
-                        !*canceled
-                    })
-                    .unwrap_or_else(|error| error.into_inner());
-                if !*guard {
-                    completion.complete();
-                }
-            })
-            .is_err()
-        {
-            super::super::panic::fail(b"cannot start the timer thread");
-        }
-        Timer {
-            operation,
-            canceled,
-        }
+        let deadline = Instant::now().checked_add(Duration::from_millis(milliseconds));
+        let token = {
+            let mut state = timers.lock();
+            let token = state.next;
+            state.next = state.next.wrapping_add(1).max(1);
+            state.operations.insert(token, Arc::clone(&operation));
+            if let Some(deadline) = deadline {
+                state.deadlines.push(Reverse((deadline, token)));
+            }
+            token
+        };
+        timers.changed.notify_one();
+        Timer { operation, token }
     }
 
     pub fn start_sleep(milliseconds: u64, waiter: Waiter) -> Arc<Operation> {
+        let timers = started();
         let operation = Operation::new(waiter);
-        let completion = Arc::clone(&operation);
-        #[cfg(any(test, zore_test_hooks))]
-        THREADS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        if std::thread::Builder::new()
-            .spawn(move || {
-                #[cfg(any(test, zore_test_hooks))]
-                let _count = ThreadCount;
-                std::thread::sleep(Duration::from_millis(milliseconds));
-                completion.complete();
-            })
-            .is_err()
+        let deadline = Instant::now().checked_add(Duration::from_millis(milliseconds));
         {
-            super::super::panic::fail(b"cannot start the timer thread");
+            let mut state = timers.lock();
+            let token = state.next;
+            state.next = state.next.wrapping_add(1).max(1);
+            state.operations.insert(token, Arc::clone(&operation));
+            if let Some(deadline) = deadline {
+                state.deadlines.push(Reverse((deadline, token)));
+            }
         }
+        timers.changed.notify_one();
         operation
     }
 
     pub fn sleep(milliseconds: u64) {
         let _blocking = super::super::scheduler::BlockingGuard::enter();
         std::thread::sleep(Duration::from_millis(milliseconds));
+    }
+
+    #[cfg(zore_test_hooks)]
+    pub(super) fn expire_test_timers(count: usize) {
+        let mut state = started().lock();
+        let deadline = state
+            .deadlines
+            .iter()
+            .map(|Reverse((deadline, _))| *deadline)
+            .max()
+            .expect("a timer is registered");
+        let expired = state.take_expired(deadline);
+        drop(state);
+        assert_eq!(expired.len(), count, "registered timer count");
+        for operation in expired {
+            operation.complete();
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use crate::slot::Slot;
+
+        #[test]
+        fn concurrent_deadlines_share_one_timer_thread() {
+            let timers = (0..640)
+                .map(|_| start_timer(3_600_000, Arc::new(Slot::default()).into()))
+                .collect::<Vec<_>>();
+
+            assert_eq!(timer_threads(), 1);
+            assert!(timers.iter().all(|timer| !timer.ready()));
+
+            drop(timers);
+        }
     }
 }
 
@@ -826,7 +948,7 @@ pub(super) fn timer_threads() -> usize {
     }
 }
 
-#[cfg(all(zore_test_hooks, any(target_os = "linux", target_os = "macos")))]
+#[cfg(zore_test_hooks)]
 pub(super) fn expire_test_timers(count: usize) {
     imp::expire_test_timers(count);
 }
