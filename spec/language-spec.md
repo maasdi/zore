@@ -1572,8 +1572,9 @@ type position (`var c shapes.Circle`). The rules are:
   only inside its package, which offers constructor functions instead.
 - *Types are nominal.* A struct or named type (§8.5) is identified by its
   package and name; `a.T` and `b.T` are different types.
-- *Methods.* A method may be declared only on a struct or named type (§8.5)
-  defined in the same package, so imported types cannot be extended. Calling an exported method on a
+- *Methods.* Apart from the fixed standard string methods (§9.2), a method may
+  be declared only on a struct or named type (§8.5) defined in the same package,
+  so imported types cannot be extended. Calling an exported method on a
   value of an imported type is allowed. Custom `drop` and `clone` methods are
   honored wherever such a value is created, copied, or destroyed.
 - *Unused or conflicting imports are errors.* An import that is never used in
@@ -6268,8 +6269,9 @@ the entry allows:
 | `mut` | shared or `mut` |
 | `own` | shared, `mut`, or `own` |
 
-Only struct and named types (§8.5) have methods, so only they satisfy an
-interface; predeclared types satisfy none. An entry whose name is not exported
+Struct and named types (§8.5), and the built-in `string` type with its fixed
+standard methods (§9.2), can satisfy interfaces. The other predeclared types
+satisfy none. An entry whose name is not exported
 is satisfied only by a method declared in the interface's package. An interface
 type `J` satisfies `I` when `J` has an entry for every entry of `I` under the
 same rules, with `J`'s entry in place of the method.

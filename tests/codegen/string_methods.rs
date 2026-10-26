@@ -101,8 +101,12 @@ async func create() string { return "  " + "héllo  " }
 async func transform() string { let child = go create(); return (await child).TrimSpace().ToUpper() }
 func TrimSpace(text string) string { return "wrong provider" }
 func main() {
-    let strings = "hé" + "llo"
+    let strings = "héllo".ToUpper().ToLower()
     println(describe(strings))
+    let boxed TextOps = strings
+    println(describe(boxed))
+    let values = Array<TextOps>{strings}
+    println(values[0].ToUpper())
     let holder = Holder{Text: strings}
     let upper = holder.Text.ToUpper
     let contains = holder.Text.Contains
@@ -115,7 +119,7 @@ func main() {
     println("  canonical  ".TrimSpace())
 }
 "#,
-        "HÉLLO\nHÉLLO\ntrue\nHÉLLO\nHÉLLO\ncanonical\n",
+        "HÉLLO\nHÉLLO\nHÉLLO\nHÉLLO\ntrue\nHÉLLO\nHÉLLO\ncanonical\n",
     );
 }
 
