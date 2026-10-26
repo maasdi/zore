@@ -5,40 +5,33 @@ import "std/strings"
 
 func total(line string) (int, error) {
     var sum = 0
-    for _, field in strings.Split(line, ",") {
-        let value, err = strconv.Atoi(strings.TrimSpace(field))
-        if err != nil {
-            return 0, err
-        }
+    for field in line.Split(",") {
+        let value = strconv.Atoi(field.TrimSpace())?
         sum += value
     }
     return sum, nil
 }
 
 func main() {
-    // Text helpers come from `std/strings`.
     let title = "  Zore standard packages  "
-    println(strings.ToUpper(strings.TrimSpace(title)))
-    println(strings.Contains(title, "standard"))
-    println(strings.ReplaceAll("a-b-c", "-", "+"))
-    let key, value, found = strings.Cut("lang=zore", "=")
+    println(title.TrimSpace().ToUpper())
+    println(title.Contains("standard"))
+    println("a-b-c".ReplaceAll("-", "+"))
+    let key, value, found = "lang=zore".Cut("=")
     if found {
         println(key + " is " + value)
     }
 
-    // `Split` gives an `Array<string>`, and `Join` puts one back together.
-    let words = strings.Split("one two three", " ")
+    let words = "one two three".Split(" ")
     println(words.len())
     println(strings.Join(words[:], ", "))
 
-    // A `Builder` collects pieces and joins them once.
     var line = strings.NewBuilder()
-    for _, word in words {
-        line.WriteString(strings.ToUpper(word[:1]))
+    for word in words {
+        line.WriteString(word[:1].ToUpper())
     }
     println(line.String())
 
-    // `std/strconv` converts between numbers and text; `Atoi` can fail.
     let sum, err = total("10, 20, 12")
     if err == nil {
         println("sum is " + strconv.Itoa(sum))

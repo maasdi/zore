@@ -217,8 +217,15 @@ string operations of §6.8. `conformance/packages.md` covers projects, packages,
 and imports (§3.20); its executable cases are in `tests/packages/packages.rs`
 (in-memory projects), the driver tests, and the native tests.
 `tests/packages/bundled_inventory.rs` checks that the README's bundled package
-list matches the packages registered in `compiler/src/driver/stdlib.rs`. The
+list matches the packages registered in `compiler/src/stdlib.rs`. The
 runtime crate's unit tests cover the native string functions directly.
+
+`tests/typecheck/string_methods.rs` and `tests/codegen/string_methods.rs` cover
+the fixed standard string methods: import-free discovery, package-call
+compatibility, Unicode/empty values, argument evaluation order, owned array
+cleanup, method-value borrowing, interface dispatch and async/task use. Rejection
+cases preserve named-type identity, nil rules and primitive-method declaration
+restrictions. See [string method conformance](conformance/string-methods.md).
 `conformance/runes.md` covers single-scalar rune literals and escapes.
 `conformance/integers.md` covers integer bases and prefix validation.
 `conformance/floats.md` covers decimal fractions and scientific notation.

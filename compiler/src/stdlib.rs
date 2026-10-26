@@ -3,7 +3,7 @@
 macro_rules! bundled {
     ($($path:literal => [$($file:literal),+ $(,)?]),+ $(,)?) => {
         const PACKAGES: &[(&str, &[(&str, &str)])] = &[
-            $(($path, &[$(($file, include_str!(concat!("../../../std/", $path, "/", $file)))),+])),+
+            $(($path, &[$(($file, include_str!(concat!("../../std/", $path, "/", $file)))),+])),+
         ];
     };
 }
@@ -29,7 +29,7 @@ bundled! {
     "slices" => ["slices.ore"],
     "sort" => ["sort.ore"],
     "strconv" => ["strconv.ore"],
-    "strings" => ["strings.ore", "builder.ore"],
+    "strings" => ["strings.ore", "builder.ore", "methods.ore"],
     "sync" => ["sync.ore"],
     "time" => ["time.ore"],
     "unicode" => ["unicode.ore"],
@@ -40,11 +40,43 @@ pub fn package(path: &str) -> Option<&'static [(&'static str, &'static str)]> {
     if cfg!(windows) && path == "path/filepath" {
         return Some(&[(
             "windows.ore",
-            include_str!("../../../std/path/filepath/windows.ore"),
+            include_str!("../../std/path/filepath/windows.ore"),
         )]);
     }
     PACKAGES
         .iter()
         .find(|(name, _)| *name == path)
         .map(|(_, files)| *files)
+}
+
+pub(crate) fn string_method(name: &str) -> bool {
+    matches!(
+        name,
+        "Contains"
+            | "ContainsRune"
+            | "HasPrefix"
+            | "HasSuffix"
+            | "Index"
+            | "LastIndex"
+            | "IndexByte"
+            | "IndexRune"
+            | "Count"
+            | "EqualFold"
+            | "ToUpper"
+            | "ToLower"
+            | "TrimSpace"
+            | "Trim"
+            | "TrimLeft"
+            | "TrimRight"
+            | "TrimPrefix"
+            | "TrimSuffix"
+            | "Cut"
+            | "Repeat"
+            | "Replace"
+            | "ReplaceAll"
+            | "Split"
+            | "SplitN"
+            | "Fields"
+            | "Bytes"
+    )
 }

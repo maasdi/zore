@@ -10,7 +10,7 @@ fn read(relative: &str) -> String {
 
 #[test]
 fn readme_lists_exactly_the_bundled_packages() {
-    let stdlib = read("compiler/src/driver/stdlib.rs");
+    let stdlib = read("compiler/src/stdlib.rs");
     let mut bundled: Vec<String> = stdlib
         .lines()
         .filter_map(|line| {

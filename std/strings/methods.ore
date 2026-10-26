@@ -1,0 +1,105 @@
+package strings
+
+func (s string) Contains(sub string) bool {
+    return Contains(s, sub)
+}
+
+func (s string) HasPrefix(prefix string) bool {
+    return HasPrefix(s, prefix)
+}
+
+func (s string) HasSuffix(suffix string) bool {
+    return HasSuffix(s, suffix)
+}
+
+func (s string) Index(sub string) int {
+    return Index(s, sub)
+}
+
+func (s string) LastIndex(sub string) int {
+    return LastIndex(s, sub)
+}
+
+func (s string) Count(sub string) int {
+    return Count(s, sub)
+}
+
+func (s string) ToUpper() string {
+    return ToUpper(s)
+}
+
+func (s string) ToLower() string {
+    return ToLower(s)
+}
+
+func (s string) EqualFold(t string) bool {
+    return EqualFold(s, t)
+}
+
+func (s string) TrimSpace() string {
+    return TrimSpace(s)
+}
+
+func (s string) Trim(cutset string) string {
+    return Trim(s, cutset)
+}
+
+func (s string) TrimLeft(cutset string) string {
+    return TrimLeft(s, cutset)
+}
+
+func (s string) TrimRight(cutset string) string {
+    return TrimRight(s, cutset)
+}
+
+func (s string) Repeat(count int) string {
+    return Repeat(s, count)
+}
+
+func (s string) Replace(old string, new string, n int) string {
+    return Replace(s, old, new, n)
+}
+
+func (s string) ReplaceAll(old string, new string) string {
+    return ReplaceAll(s, old, new)
+}
+
+func (s string) Split(sep string) Array<string> {
+    return Split(s, sep)
+}
+
+func (s string) SplitN(sep string, n int) Array<string> {
+    return SplitN(s, sep, n)
+}
+
+func (s string) Fields() Array<string> {
+    return Fields(s)
+}
+
+func (s string) Bytes() Array<byte> {
+    return Bytes(s)
+}
+
+func (s string) IndexByte(c byte) int {
+    return IndexByte(s, c)
+}
+
+func (s string) IndexRune(r rune) int {
+    return IndexRune(s, r)
+}
+
+func (s string) ContainsRune(r rune) bool {
+    return ContainsRune(s, r)
+}
+
+func (s string) TrimPrefix(prefix string) string {
+    return TrimPrefix(s, prefix)
+}
+
+func (s string) TrimSuffix(suffix string) string {
+    return TrimSuffix(s, suffix)
+}
+
+func (s string) Cut(sep string) (string, string, bool) {
+    return Cut(s, sep)
+}

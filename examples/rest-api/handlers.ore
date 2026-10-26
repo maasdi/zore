@@ -4,7 +4,6 @@ import "std/encoding/json"
 import "std/io"
 import "std/net/http"
 import "std/strconv"
-import "std/strings"
 
 const statusUnsupportedMediaType = 415
 
@@ -36,7 +35,7 @@ func getUser(store UserStore, w mut http.ResponseWriter, r mut http.Request) err
 func createUser(store UserStore, w mut http.ResponseWriter, r mut http.Request) error {
     let headers = r.Headers()
     let types = headers.Values(http.HeaderContentType)
-    if types.len() != 1 || !strings.EqualFold(strings.TrimSpace(types[0]), "application/json") {
+    if types.len() != 1 || !types[0].TrimSpace().EqualFold("application/json") {
         return problem(w, statusUnsupportedMediaType, "expected application/json")
     }
     let body = io.ReadAll(r)?

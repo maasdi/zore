@@ -7,6 +7,7 @@ use zore::source::SourceMap;
 use zore::types::TypeStore;
 
 mod async_callables;
+mod string_methods;
 
 struct Case {
     sources: SourceMap,

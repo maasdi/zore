@@ -569,6 +569,14 @@ impl<'a> Resolver<'a> {
                 }
                 (ty, None)
             }
+            Some(Res::Primitive(ty))
+                if ty == TypeStore::STRING
+                    && self.out.packages[self.current_package].path == "std/strings"
+                    && receiver.mode == ast::ParamMode::Borrow
+                    && crate::stdlib::string_method(&func.name.text) =>
+            {
+                (ty, None)
+            }
             Some(Res::Primitive(_)) => {
                 self.error(
                     "methods can be declared only on struct or named types defined in this package",

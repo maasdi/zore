@@ -3,15 +3,16 @@
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 
-use super::stdlib;
 use crate::ast;
 use crate::async_lowering::NativeWait;
 use crate::diagnostic::{Diagnostic, Severity};
 use crate::parser::{Parsed, parse, parse_standard};
 use crate::resolve::{FileUnit, ImportBinding, PackageUnit};
 use crate::source::{SourceError, SourceFile, SourceMap, Span};
+use crate::stdlib;
 
 pub(crate) mod manifest;
+mod string_methods;
 pub use manifest::{Dependency, Manifest};
 
 pub trait FileSystem {
@@ -532,6 +533,14 @@ impl<'a> Loader<'a> {
         owner: Option<&str>,
     ) -> usize {
         self.stack.push(path.clone());
+        if !self.done.contains_key("std/strings")
+            && !self.stack.iter().any(|path| path == "std/strings")
+            && let Some(span) = parsed
+                .iter()
+                .find_map(|parsed| string_methods::used(&parsed.file))
+        {
+            self.load_standard("std/strings", "strings", span);
+        }
         let mut files = Vec::new();
         let mut name: Option<(String, Span)> = None;
         for parsed in parsed {

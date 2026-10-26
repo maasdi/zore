@@ -5,6 +5,7 @@
 | [Language specification](../spec/language-spec.md) | The authoritative definition of the Zore MVP. Normative rules override examples; changes follow §53. |
 | [Architecture](architecture.md) | How the bootstrap compiler is structured: stages, intermediate representations, constant evaluation, and code generation. |
 | [Roadmap](roadmap.md) | Canonical milestones, current status, detailed phases, and active validation work package. |
+| [String methods](string-methods.md) | Value-first string operations, explicit presence and errors, ownership and package-call compatibility. |
 | [Compiler structure](../compiler-structure.md) | Target compiler and runtime organization; add only implemented modules. |
 | [Specification questions](spec-questions.md) | Open language questions. Decided rules are in the specification. |
 | [Decision records](decisions/) | Substantial implementation choices with context, alternatives, and consequences. |

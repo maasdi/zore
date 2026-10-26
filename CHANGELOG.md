@@ -7,6 +7,14 @@ once it does.
 
 ## [Unreleased]
 
+### Standard string methods
+
+- Added import-free string methods such as `text.TrimSpace().ToUpper()` with
+  ordinary borrowing, method values, interfaces and task behavior. Existing
+  package functions, explicit presence/error handling and nil rules are unchanged.
+- Updated the standard-packages and REST API examples to use value-first text
+  operations and documented the fixed method set and allocation behavior.
+
 ### Curated native libraries
 
 - Added manifest-registered native adapters, generated private bindings and

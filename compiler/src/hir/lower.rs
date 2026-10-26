@@ -1032,7 +1032,6 @@ impl<'a> Checker<'a> {
         if index < declared {
             let func = self.res.functions[index];
             let prefix = self.symbol_prefix(self.res.function_package[index]);
-            // Resolution already rejects any receiver that isn't a named struct type.
             return match func.receiver.as_ref().map(|receiver| &receiver.ty) {
                 Some(ast::Type::Named(type_name)) => {
                     format!("{prefix}{}.{}", type_name.text, func.name.text)
@@ -3355,8 +3354,15 @@ impl<'a> Checker<'a> {
         self.method_of(ty, "clone")
     }
 
-    /// The package that declares a struct or named type.
+    /// The package that provides a type's methods and fields.
     fn declaring_package(&self, ty: TypeId) -> Option<usize> {
+        if ty == TypeStore::STRING {
+            return self
+                .res
+                .packages
+                .iter()
+                .position(|package| package.path == "std/strings");
+        }
         if let Some(strukt) = self.types.struct_id(ty) {
             return Some(self.res.struct_package[self.types.struct_origin(strukt).0 as usize]);
         }

@@ -29,8 +29,9 @@ at the repository root. The layout follows
 when existing code belongs in it (rule 11: no empty scaffolding):
 
 - `driver/`: `command.rs`, `session.rs`, plus `check.rs` and `build.rs`, the
-  frontend and native pass orchestration, and `stdlib.rs`, which embeds the
-  standard packages. Their Zore source lives in the top-level `std/` folder, one
+  frontend and native pass orchestration. `stdlib.rs` at the compiler module root
+  embeds the standard packages and identifies the fixed string methods. Their
+  Zore source lives in the top-level `std/` folder, one
   folder per import path (`std/strings/`, `std/os/exec/`, and so on).
 - `source/` (`span.rs`, `source_file.rs`, `source_map.rs`), `diagnostic/`
   (`diagnostic.rs`, `label.rs`, `renderer.rs`).
@@ -410,6 +411,15 @@ generation emits a shim that calls the runtime symbol
 package path (`HasPrefix` in `strings` is `zore_native_strings_has_prefix`, and
 `run` in `os/exec` is `zore_native_exec_run`). Native parameters are strings,
 slices, integers of any width, runes, and booleans.
+
+Fixed string methods are ordinary Zore methods in `std/strings/methods.ore`.
+The loader discovers potential string selectors and interface entries in the
+AST and loads their canonical provider without adding an import binding. Only
+that bundled package may declare the fixed shared methods on primitive strings.
+Calls, method values, interface dispatch and task use then follow the existing
+typed lowering and ownership paths. Named string types keep separate method
+sets. Programs without relevant selectors or interfaces do not load this
+provider implicitly. No runtime ABI or new IR expression kind is introduced.
 
 AST preserves written structure; HIR records resolved meaning; MIR describes
 execution. Source identity and spans survive transformations. Use typed IDs for

@@ -16,6 +16,12 @@ cleanup edges for checked operations and calls. The runtime propagates panic
 status through synchronous frames and reports an initial-task panic after
 cleanup.
 
+Issue [#201](https://github.com/maasdi/zore/issues/201) adds
+[fixed standard string methods](string-methods.md) for value-first operations
+without imports, preserving package functions, non-nullable strings, explicit
+presence flags, errors and existing ownership rules. General optional types and
+numeric/JSON API naming remain separate work.
+
 The async state-machine implementation and the subsequent socket-test fix passed
 [main CI on 2026-10-08](https://github.com/maasdi/zore/actions/runs/37726483242)
 on Ubuntu and macOS: rustfmt, clippy with warnings denied, build, docs, and

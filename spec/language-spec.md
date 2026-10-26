@@ -3294,12 +3294,69 @@ Receiver semantics follow the same ownership model as function parameters:
 
 There is no separate method ownership model.
 
-The receiver type is a struct type or a named type (§8.5) declared in the same
-package. Custom `drop` and `clone` methods (§14.3, §10.7) may be declared only
+Except for the fixed standard string methods (§9.2), the receiver type is a
+struct type or a named type (§8.5) declared in the same package.
+Custom `drop` and `clone` methods (§14.3, §10.7) may be declared only
 on struct types.
 
 A method used as a value, `value.Method` without a call, is a function value
 defined in §16.2.
+
+## 9.2 Standard string methods — LOCKED
+
+The built-in `string` type has the following fixed shared-borrow methods:
+`Contains`, `ContainsRune`, `HasPrefix`, `HasSuffix`, `Index`, `LastIndex`,
+`IndexByte`, `IndexRune`, `Count`, `EqualFold`, `ToUpper`, `ToLower`, `TrimSpace`,
+`Trim`, `TrimLeft`, `TrimRight`, `TrimPrefix`, `TrimSuffix`, `Cut`, `Repeat`,
+`Replace`, `ReplaceAll`, `Split`, `SplitN`, `Fields`, and `Bytes`.
+
+Each method has the signature and behavior of the identically named
+`std/strings` function (§37.2), with its first `s string` parameter replaced by
+the receiver. These methods are available without an import. The package
+functions remain supported; `strings.Join`, `strings.FromBytes` and
+`strings.NewBuilder` remain package functions because they do not take a string
+as their first argument. Importing a package does not add or replace methods.
+
+```ore
+let title = "  Zore  ".TrimSpace().ToUpper()
+let parts = "one,two".Split(",")
+let key, value, found = "name=Ada".Cut("=")
+let upper = title.ToUpper
+println(upper())
+```
+
+The receiver is evaluated once, followed by arguments left to right. All
+methods are synchronous and share-borrow the receiver; they never mutate or
+consume it. String results retain their ordinary Copy/storage-sharing rules;
+`Split`, `SplitN`, `Fields`, and `Bytes` return owned Move arrays. Chaining does
+not promise allocation fusion or change Unicode, byte-indexing, panic, or
+cleanup behavior. Panics preserve the corresponding package function's
+diagnostic. `Cut` preserves its explicit presence flag. Strings remain
+non-nullable; absence checks, error results and `?` retain their existing rules.
+
+Method values follow §16.2: their receiver must be a local or a field rooted in
+a local, with ordinary inferred capture, escape and owning-task rules. Direct
+calls also accept literals, computed strings, indexed strings and temporaries.
+The fixed methods participate in interface satisfaction as synchronous shared
+methods under §22.2. Named string types do not inherit these methods; an explicit
+`string(value)` conversion exposes them, while named types keep their own
+declared methods.
+
+Only the compiler-bundled `std/strings` implementation may declare these fixed
+methods on the built-in type. User packages, including a package named
+`strings`, cannot declare primitive methods. Existing struct/named-type method
+rules and built-in `len` remain unchanged. General extension methods, optional
+chaining, an optional type and changes to JSON missing/null handling are outside
+this increment.
+
+Compiler impact: discover the fixed standard provider independently of import
+names, resolve methods by semantic receiver type and package identity, and reuse
+ordinary typed method calls, method values, interfaces, ownership checking and
+native lowering. Frontend checking stays independent of LLVM. Conformance must
+cover import-free and package-call equivalence, every method's signature,
+Unicode/empty strings, receiver evaluation order, temporaries, owned results,
+method-value lifetimes, task/async use, interface dispatch and rejection of
+wrong types, wrong arity, nil strings and primitive-method declarations.
 
 ---
 
@@ -6936,7 +6993,9 @@ paths (§3.20): `"std/strings"`, `"std/strconv"`, `"std/unicode"`,
 `"std/unicode/utf8"`, `"std/bytes"`, `"std/errors"`, `"std/fmt"`, and `"std/math"` here. They are
 ordinary packages as far as users can tell: names are used with the qualifier
 (the last segment of the path) and every function, type, method, and constant
-listed is exported. A package whose path has several segments, such as
+listed is exported. The fixed string methods (§9.2) are also available directly
+on string values without an import; package-level names remain qualified.
+A package whose path has several segments, such as
 `"std/unicode/utf8"`, is used as `utf8.Name`; it is a separate package from
 `"std/unicode"` and is imported on its own.
 
