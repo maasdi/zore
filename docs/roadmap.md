@@ -155,8 +155,10 @@ evidence; Windows performance work remains deferred.
 Issue [#177](https://github.com/maasdi/zore/issues/177) refreshes
 [Linux/macOS/Windows runtime population evidence](runtime-scaling-refresh.md)
 with the maintained harness and recorded source identities. The original
-three-host report remains historical. Windows runtime follow-ups #169–#171 now
-have current host measurements to guide implementation.
+three-host report remains historical. Issue #169's shared Windows timer
+implementation and before/after capture are recorded in
+[the runtime report](runtime-scaling-refresh.md); #170 and #171 remain
+measurement-informed follow-ups.
 
 The [MVP evidence inventory](conformance/mvp.md) preserves its 2026-10-13
 reviewed baseline and maps later direct assertions in dated follow-ups. Its

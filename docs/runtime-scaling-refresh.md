@@ -172,21 +172,64 @@ defaults to Linux/macOS on manual dispatch; the `run-scaling-benchmarks` PR
 label or `include_windows` manual input runs all three hosts. Ordinary Windows
 correctness CI remains enabled.
 
-This capture predates the shared Windows timer service from #169. Its
-640-thread timer result is the before measurement; the implementation's
-after-measurement is pending.
+## Windows timer follow-up (#169) — 2026-10-26
+
+The [labeled after-run](https://github.com/maasdi/zore/actions/runs/40294003728)
+measured PR #200's shared timer service on Windows, Linux and macOS. Each host
+completed all eight builds, 96 fresh-process measurements and 192 create/release
+cycles. All reports record clean source trees and matching runtime/harness
+manifests. The Windows host was Server 2025 build 10.0.26100 (AMD64 Family 25
+Model 17), Rust 1.98.1 and LLVM clang 20.1.8. The measured source revision is
+`573da4b85ddeecbc7b72cdfd60c980d325c7a217`, from PR head
+`013b2c1c5e3bd80b0a15b93ac4dec12cee607daa`.
+
+At 640 simultaneous deadlines, the before run registered 640 timer threads and
+647 OS threads. The after run registered 640 timers on one shared service
+thread, with eight OS threads. After six seconds idle, all timer registrations
+and task work were gone; the shared timer service remained as one idle thread.
+The timer service adds one idle OS thread compared with the seven-thread before
+checkpoint. Both runs returned live ABI allocations to 4,136 bytes. These
+counts matched for zero payload and 4,096-int payload runs.
+
+| State | Live timers, before / after | Timer threads, before / after | OS threads, before / after | Live ABI bytes, before / after |
+| --- | ---: | ---: | ---: | ---: |
+| Active at 640 | 640 / 640 | 640 / 1 | 647 / 8 | 2,178,216 / 2,178,216 (zero payload); 23,149,736 / 23,149,736 (4,096 ints) |
+| Six-second idle | 0 / 0 | 0 / 1 | 7 / 8 | 4,136 / 4,136 |
+
+The table below gives RSS increments over each cycle's baseline in KiB. Each
+cell is min / median / max of the six per-cycle baseline-subtracted medians.
+Thread stacks and allocator caching make RSS a host-specific observation.
+
+| Payload | Active RSS before | Active RSS after | Idle RSS before | Idle RSS after |
+| --- | ---: | ---: | ---: | ---: |
+| Zero | 15,208 / 15,576 / 16,196 | 3,636 / 4,206 / 4,664 | 136 / 692 / 1,160 | -28 / 542 / 1,108 |
+| 4,096 ints | 36,400 / 37,494 / 38,616 | 24,864 / 26,104 / 26,832 | 412 / 1,336 / 2,252 | -104 / 1,066 / 1,876 |
+
+The runs matched workloads and configuration but used distinct runtime/compiler
+revisions and hosted runner allocations. These observations provide resource
+evidence; they are not portable performance guarantees. The exact before and
+after reports preserve all process samples, checkpoints, compiler identities
+and source manifests.
 
 ## Raw evidence
 
-These gzip archives preserve the original JSON bytes from workflow run
-`40278626042`, including every sample, cycle, result, source manifest and frame
-layout. SHA-256 values below refer to decompressed JSON.
+These gzip archives preserve the original JSON bytes from their workflow runs,
+including every sample, cycle, result, source manifest and frame layout. SHA-256
+values below refer to decompressed JSON.
 
 | Report | Workflow artifact ID | Decompressed SHA-256 |
 | --- | --- | --- |
 | [Linux](../benchmarks/runtime-scaling/linux-2026-10-26.json.gz) | `12633131837` | `42a9f4c246972306cca789f120be04f5b775d309b2fa9b18ebfa964806664bcb` |
 | [macOS](../benchmarks/runtime-scaling/macos-2026-10-26.json.gz) | `12632797264` | `7e0f0543ecb4ae83f998b07fce99bf7ae1971149e8d0490f50bbd926369236bb` |
 | [Windows](../benchmarks/runtime-scaling/windows-2026-10-26.json.gz) | `12633084222` | `ae683b2a3a16e70fba8f33b9a27d371d9194f6f2fa721e5639bbbf0409a0fa0` |
+
+The Windows timer after-run reports are from workflow run `40294003728`:
+
+| Report | Workflow artifact ID | Decompressed SHA-256 |
+| --- | --- | --- |
+| [Linux after #169](../benchmarks/runtime-scaling/linux-2026-10-26-after-169.json.gz) | `12639956998` | `515e05d20073d94ad027c4c71c41e3cd70a6e2b1e86abb6dc63229cc1abb174c` |
+| [macOS after #169](../benchmarks/runtime-scaling/macos-2026-10-26-after-169.json.gz) | `12640151882` | `2ac2b852bd903aae8270b0ba55a93f0947882bbff17a9b0c98468b8be70976bd` |
+| [Windows after #169](../benchmarks/runtime-scaling/windows-2026-10-26-after-169.json.gz) | `12639224441` | `6a158ac8bcc9753f7d12f14fd188cd20469660910e49f8d9c2c79376c412445b` |
 
 For example, `gzip -dc benchmarks/runtime-scaling/linux-2026-10-26.json.gz`
 recovers the original Linux JSON bytes from this capture. The historical
