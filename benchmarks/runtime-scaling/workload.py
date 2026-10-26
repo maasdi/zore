@@ -1,4 +1,4 @@
-def source(mode, payload):
+def source(mode, payload, socket_deadline_seconds=30):
     imports = ['bufio', 'os', 'strconv']
     if mode == 'timers':
         imports += ['context', 'time']
@@ -46,6 +46,7 @@ def source(mode, payload):
     {'if err != error("net.Read: timed out") || n != 0 { panic("missing timeout") }' if mode == 'socket-deadline' else 'if err != nil || n != 1 || data[0] != 120 { panic("read result") }'}
 {tail}
 }}'''
+        deadline_seconds = socket_deadline_seconds if mode == 'socket-deadline' else 120
         setup = common + f'''
     let listener, listenError = net.Listen("tcp", "127.0.0.1:0")
     if listenError != nil {{ panic("listen") }}
@@ -53,7 +54,7 @@ def source(mode, payload):
     for var i = 0; i < count; i += 1 {{
         let conn, err = listener.Accept()
         if err != nil {{ panic("accept") }}
-        let deadlineError = conn.SetReadDeadline(time.Now() + {'5' if mode == 'socket-deadline' else '120'} * time.Second)
+        let deadlineError = conn.SetReadDeadline(time.Now() + {deadline_seconds} * time.Second)
         if deadlineError != nil {{ panic("deadline") }}
         tasks.push(go wait(ready, conn))
     }}

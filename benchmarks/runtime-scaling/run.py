@@ -72,10 +72,10 @@ def build_runtime(directory, runtime):
     return library
 
 
-def build(directory, compiler, mode, payload, library):
+def build(directory, compiler, mode, payload, library, socket_deadline_seconds=30):
     directory.mkdir()
     workload = directory / 'workload.ore'
-    workload.write_text(source(mode, payload))
+    workload.write_text(source(mode, payload, socket_deadline_seconds))
     captured = directory / 'captured.ll'
     cc = os.environ.get('ZORE_CC', 'clang')
     wrapper = HERE / ('cc.cmd' if os.name == 'nt' else 'cc.py')
@@ -113,7 +113,7 @@ fn main() {
                         'executable_sha256': digest(executable), 'frames': layouts,
                         'requested_live_payload_bytes': payload * 8, 'scheduler_capacity': 2,
                         'helper_capacity': 512, 'socket_read_max_bytes': 1,
-                        'socket_deadline_seconds': 5 if mode == 'socket-deadline' else 120}
+                        'socket_deadline_seconds': socket_deadline_seconds if mode == 'socket-deadline' else 120}
 
 
 def resource_sample(process):
@@ -248,12 +248,13 @@ def main():
     parser.add_argument('--timeout', type=float, default=120)
     parser.add_argument('--sample-seconds', type=float, default=0.3)
     parser.add_argument('--idle-seconds', type=float, default=6)
+    parser.add_argument('--socket-deadline-seconds', type=int, default=30)
     parser.add_argument('--output', type=Path, required=True)
     args = parser.parse_args()
     source_revision = command(['git', 'rev-parse', 'HEAD']).strip()
     args.compiler_revision = args.compiler_revision or source_revision
-    if min(args.populations) < 1 or min(args.payloads) < 0 or args.repetitions < 1 or args.cycles < 1 or any(not math.isfinite(x) or x <= 0 for x in [args.timeout, args.sample_seconds, args.idle_seconds]):
-        parser.error('populations/repetitions and finite durations must be positive; payloads nonnegative')
+    if min(args.populations) < 1 or min(args.payloads) < 0 or args.repetitions < 1 or args.cycles < 1 or args.socket_deadline_seconds < 1 or any(not math.isfinite(x) or x <= 0 for x in [args.timeout, args.sample_seconds, args.idle_seconds]):
+        parser.error('populations, repetitions and durations must be positive; payloads must be nonnegative')
     import psutil
     limits = {'production_helper_threads': 512, 'total_memory_bytes': psutil.virtual_memory().total}
     if os.name != 'nt':
@@ -293,7 +294,7 @@ def main():
         for mode in args.modes:
             for payload in args.payloads:
                 try:
-                    executable, identity = build(Path(temporary) / f'{mode}-{payload}', args.compiler.resolve(), mode, payload, library)
+                    executable, identity = build(Path(temporary) / f'{mode}-{payload}', args.compiler.resolve(), mode, payload, library, args.socket_deadline_seconds)
                 except (OSError, RuntimeError, subprocess.SubprocessError) as error:
                     report['builds'].append({'mode': mode, 'payload': payload, 'status': 'failed', 'error': str(error), 'stderr': getattr(error, 'stderr', '')})
                     save()
