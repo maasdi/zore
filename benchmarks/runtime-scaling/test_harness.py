@@ -9,10 +9,28 @@ import unittest
 from unittest import mock
 
 from workload import source
-from run import ROOT, frame_layouts, hook_ir
+from run import ROOT, frame_layouts, hook_ir, validate_idle_runtime
 
 
 class HarnessTests(unittest.TestCase):
+    def test_idle_windows_timer_service_is_bounded_and_mode_specific(self):
+        counters = {
+            'tasks': 0,
+            'queued_tasks': 0,
+            'blocked_workers': 0,
+            'queued_helpers': 0,
+            'socket_handles': 0,
+            'reactor_registrations': 0,
+            'live_timers': 0,
+            'timer_threads': 1,
+        }
+        validate_idle_runtime('timers', counters, True)
+        validate_idle_runtime('timers', {**counters, 'timer_threads': 0}, False)
+        with self.assertRaisesRegex(RuntimeError, 'unexpected idle timer threads'):
+            validate_idle_runtime('tasks', counters, True)
+        with self.assertRaisesRegex(RuntimeError, 'unexpected idle timer threads'):
+            validate_idle_runtime('timers', {**counters, 'timer_threads': 2}, True)
+
     def test_payload_is_read_after_suspension_in_every_variant(self):
         for mode in ['tasks', 'timers', 'sockets', 'socket-deadline']:
             text = source(mode, 4096)

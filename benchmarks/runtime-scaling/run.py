@@ -130,6 +130,16 @@ def reader(stream, output):
         output.put(None)
 
 
+def validate_idle_runtime(mode, counters, windows):
+    retained = ['tasks', 'queued_tasks', 'blocked_workers', 'queued_helpers', 'socket_handles',
+                'reactor_registrations', 'live_timers']
+    if any(counters[key] for key in retained):
+        raise RuntimeError(f'nonquiescent runtime: {counters}')
+    expected_timer_threads = int(windows and mode == 'timers')
+    if counters['timer_threads'] != expected_timer_threads:
+        raise RuntimeError(f'unexpected idle timer threads: {counters}')
+
+
 def measure(executable, mode, population, timeout, sample_seconds, idle_seconds, cycles=2):
     import psutil
     started = time.monotonic()
@@ -201,8 +211,7 @@ def measure(executable, mode, population, timeout, sample_seconds, idle_seconds,
             send('snapshot')
             checkpoint('after_idle_cleanup', line())
             counters = result['checkpoints'][-1]['runtime']
-            if any(counters[key] for key in ['tasks', 'queued_tasks', 'blocked_workers', 'queued_helpers', 'socket_handles', 'reactor_registrations', 'live_timers', 'timer_threads']):
-                raise RuntimeError(f'nonquiescent runtime: {counters}')
+            validate_idle_runtime(mode, counters, os.name == 'nt')
             if cycle < cycles:
                 send('next')
         send('stop')
