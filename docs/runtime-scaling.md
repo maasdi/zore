@@ -1,8 +1,8 @@
 # Runtime population measurements — 2026-10-24
 
 This is the historical three-host capture. See the
-[2026-10-26 Linux/macOS recapture](runtime-scaling-refresh.md) for current harness
-evidence. Windows recapture remains deferred.
+[2026-10-26 all-host recapture](runtime-scaling-refresh.md) for current harness
+evidence. The original Windows archive remains here as historical evidence.
 
 Issue [#157](https://github.com/maasdi/zore/issues/157) adds an opt-in
 [cross-host harness](../benchmarks/runtime-scaling/README.md) and deterministic
