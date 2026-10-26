@@ -479,7 +479,7 @@ mod imp {
         }
     }
 
-    #[cfg(any(test, zore_test_hooks))]
+    #[cfg(zore_test_hooks)]
     pub(super) fn expire_test_timers(count: usize) {
         let reactor = started();
         let mut completed = Vec::new();
