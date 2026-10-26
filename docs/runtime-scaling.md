@@ -1,5 +1,9 @@
 # Runtime population measurements — 2026-10-24
 
+This is the historical three-host capture. See the
+[2026-10-26 Linux/macOS recapture](runtime-scaling-refresh.md) for current harness
+evidence. Windows recapture remains deferred.
+
 Issue [#157](https://github.com/maasdi/zore/issues/157) adds an opt-in
 [cross-host harness](../benchmarks/runtime-scaling/README.md) and deterministic
 small-capacity helper/deadline tests. All three hosts completed all eight
@@ -17,17 +21,17 @@ with no optimization before/after claim. Each report records the compiler
 executable SHA-256, source revision, toolchain identities and every runtime and
 harness source hash; the raw reports below are the stable evidence.
 
-The reports were produced by the previous revision of the harness and runtime
-sources. Their recorded hashes of `run.py`, `cc.cmd`, `test_harness.py`,
-`README.md` and `runtime/src/reactor.rs` no longer match the files in this tree;
-`cc.py`, `workload.py` and the other runtime sources still match. The later
+The reports were produced by earlier revisions of the harness and runtime
+sources. Their embedded source manifests identify those historical versions;
+they do not identify the current tree. The initial post-capture
 `run.py`, `cc.cmd` and `README.md` edits change build order (the runtime
 library is compiled once instead of once per variant), portability (POSIX-style
 source keys, the Python interpreter running the harness, an optional
 `--compiler-revision`) and error handling, not the workload, the
 instrumentation or what is measured; `test_harness.py` gained tests. The
-`reactor.rs` difference is its module documentation line only. The reports were
-not regenerated.
+`reactor.rs` difference was its module documentation line only. Subsequent
+runtime and harness changes are covered by the separate recapture above; these
+original report bytes remain unchanged.
 
 Windows host: Windows Server 2025, build 10.0.26100, AMD64, four reported CPUs,
 processor `AMD64 Family 25 Model 1 Stepping 1, AuthenticAMD`, and

@@ -85,6 +85,9 @@ once it does.
 
 ### Performance evidence
 
+- Refreshed Linux/macOS runtime population evidence with compiler and source
+  identities. Preserved the original three-host reports; Windows recapture is
+  deferred and requires an explicit opt-in in the measurement workflow.
 - Overlapped clang object generation with runtime-library preparation while
   preserving optimization flags, cache publication and compiler error priority.
   Published alternating Linux warm/cold measurements and raw evidence.

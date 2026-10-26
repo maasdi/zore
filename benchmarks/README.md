@@ -16,5 +16,5 @@ platform-specific modules such as `fcntl` or `resource` inside the functions
 that need them. CI imports each module on all three hosts and runs each
 harness's `test_*.py` there; Unix-only harness tests skip themselves on Windows.
 
-- [Runtime scaling](runtime-scaling/README.md): opt-in Windows/Linux/macOS socket,
+- [Runtime scaling](runtime-scaling/README.md): opt-in Linux/macOS and optional Windows socket,
   timer and suspended-task populations, pinned storage and resource cleanup.

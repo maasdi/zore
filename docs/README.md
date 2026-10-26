@@ -18,7 +18,8 @@
 | [Lexical task scopes](scoped-tasks.md) | Plain-function borrowing tasks, mandatory join/cleanup, failure rules and staged async support. |
 | [Performance baseline](performance.md) | Reproducible compiler, REST/JSON and frame measurements, raw data and measured follow-ups. |
 | [Performance follow-ups](performance-followups.md) | Internal LLVM linkage and cancellable request deadlines, paired compiler measurements and long REST retention runs. |
-| [Runtime population measurements](runtime-scaling.md) | Cross-host suspended-task, socket and timer populations, pinned storage, cleanup and experimental limits. |
+| [Runtime population recapture](runtime-scaling-refresh.md) | Current Linux/macOS task, socket and timer populations, source identities and cleanup; Windows recapture deferred. |
+| [Historical runtime populations](runtime-scaling.md) | Original three-host capture, pinned storage and Windows follow-ups. |
 | [Native build scheduling](performance-build-scheduling.md) | Current-main stage profiles and alternating Linux warm/cold measurements for overlapping runtime preparation and object compilation. |
 
 ## Decision records
