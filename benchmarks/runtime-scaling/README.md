@@ -104,8 +104,12 @@ the same process helps distinguish one-time initialization from repeated growth.
 The production helper cap remains 512; queued jobs are unbounded. Windows socket
 waits occupy helpers and retry nonblocking operations; a population above 512
 exercises queuing, rather than establishing 640 concurrent active helper calls.
-Windows cancellable deadlines still use individual timer threads, with OS thread
-creation as a possible limit. Unix controls use the shared readiness reactor.
+The recaptured Windows baseline used one thread per cancellable deadline. The
+#169 implementation uses one shared timer service: its 640-deadline capture
+used one timer thread and eight OS threads, compared with 640 timer threads and
+647 OS threads before. The [paired report](../../docs/runtime-scaling-refresh.md)
+includes idle and RSS observations. Unix controls use the shared readiness
+reactor.
 The configured populations and deadlines are experimental limits, not supported
 service capacity promises or Windows/Unix performance parity claims.
 
