@@ -211,7 +211,7 @@ evidence; they are not portable performance guarantees. The exact before and
 after reports preserve all process samples, checkpoints, compiler identities
 and source manifests.
 
-## Windows socket readiness follow-up (#170)
+## Windows socket readiness follow-up (#170) — 2026-10-27
 
 The implementation replaces helper-held accept/read/write waits on Windows
 with one shared `WSAPoll` service. The compiler uses the same pollable socket
@@ -226,8 +226,64 @@ zero live tasks, socket handles, timers and readiness registrations. Correctness
 tests cover a saturated one-helper pool, more than 64 simultaneous sockets,
 readiness/deadline races, registration cancellation and partial writes.
 
-Hosted correctness and repeated-cycle capture results are pending; no completed
-Windows optimization measurement is claimed for this implementation yet.
+The [three-host capture](https://github.com/maasdi/zore/actions/runs/40433590332)
+completed eight builds, 96 fresh-process measurements and 192 create/release
+cycles on each host. All source trees were clean. Runtime and harness manifest
+hashes match recorded source/compiler revision
+`334ef49efe16cbfbbbbcba7384e2a4bd96879246`, the GitHub merge tree for PR #203
+at head `d550fdb0aa39948813743d7e7b535837e60cb9b8`. That tree matches the
+implementation head. The Windows host was Server 2025 build 10.0.26100, AMD64
+Family 25 Model 1, with Rust 1.98.1 and LLVM clang 20.1.8.
+
+The before run is the Windows after-#169 archive from workflow `40294003728`.
+Both runs use populations 32/128/512/640, zero and 4,096-int payloads, three
+repetitions, two cycles and six-second idle checkpoints. At 640 sockets, helper
+threads fell from 512 busy helpers to one idle helper; pending socket work uses
+one readiness thread instead. Queued helper work fell from 170–385 jobs in
+ordinary socket mode and 192–366 in deadline mode to zero. Socket handles were
+640 in both runs. Each after-run registers 640 readiness waits and 640 socket
+deadlines; the helper-based before run did not expose those waits as reactor
+registrations or timers.
+
+| Mode / state at 640 | Helpers, before / after | OS threads, before / after | Live ABI bytes, before / after (zero payload) | Live ABI bytes, before / after (4,096 ints) |
+| --- | ---: | ---: | ---: | ---: |
+| Sockets, active | 512 / 1 | 518 / 8 | 760,488 / 745,128 | 21,732,008 / 21,716,648 |
+| Socket deadline, active | 512 / 1 | 515–518 / 5–8 | 770,728 / 755,368 | 21,742,248 / 21,726,888 |
+| Sockets, six-second idle | 364–494 / 1 | 370–500 / 8 | 4,136 / 4,136 | 4,136 / 4,136 |
+| Socket deadline, six-second idle | 494–510 / 1 | 497–513 / 5 | 4,136 / 4,136 | 4,136 / 4,136 |
+
+The after-run helper is idle at these runtime snapshots. The separate readiness
+service remains as one thread and its loopback wake connection after socket work
+finishes. Every host's after-idle checkpoints returned to 4,136 live ABI bytes,
+with zero tasks, queued work, socket handles, readiness registrations and live
+timers. Socket modes did not start the separate Windows timer service. OS thread
+samples and runtime counters are sequential observations; their transient
+combinations are not one atomic scheduler snapshot.
+
+RSS increments below are KiB over each cycle's baseline. Each cell is min /
+median / max of the six per-cycle baseline-subtracted sample medians at 640.
+
+| Mode / payload | Active RSS before | Active RSS after | Idle RSS before | Idle RSS after |
+| --- | ---: | ---: | ---: | ---: |
+| Sockets / zero | 1,636 / 7,222 / 12,004 | 1,312 / 1,902 / 2,400 | -1,324 / 5,134 / 10,328 | -76 / 646 / 1,184 |
+| Sockets / 4,096 ints | 22,056 / 27,604 / 32,620 | 21,936 / 22,460 / 23,160 | -612 / 5,344 / 11,096 | 312 / 1,008 / 1,488 |
+| Socket deadline / zero | 1,112 / 6,496 / 11,852 | 1,324 / 1,976 / 2,508 | 200 / 5,612 / 10,828 | 228 / 808 / 1,360 |
+| Socket deadline / 4,096 ints | 21,648 / 27,198 / 32,496 | 21,864 / 22,432 / 23,096 | -200 / 5,642 / 11,012 | 412 / 1,084 / 1,880 |
+
+The runs have matching workload configuration but different source revisions
+and hosted allocations; the before Windows CPU was Family 25 Model 17.
+These are resource observations, not throughput guarantees, isolated allocator
+effects or a portable Windows/Unix comparison. The helper pool still serves
+other blocking operations, so these socket results do not complete #171.
+
+[Correctness CI](https://github.com/maasdi/zore/actions/runs/40433590322) passed
+on Linux, macOS and Windows, including 98 Windows runtime tests. Linux's first
+attempt hit an unrelated crypto-fixture compiler launch with `Text file busy`;
+the Linux job passed on rerun without a code change. The Windows regressions
+include writable readiness, exact resumed-write bytes, saturated-helper
+independence and owner release before wake. Local runtime type/lint and test-hook
+checks passed; executable validation used hosted toolchains because local MSVC
+`link.exe` and clang are absent. PR #203 remains pending merge.
 
 ## Raw evidence
 
@@ -248,6 +304,14 @@ The Windows timer after-run reports are from workflow run `40294003728`:
 | [Linux after #169](../benchmarks/runtime-scaling/linux-2026-10-26-after-169.json.gz) | `12639956998` | `515e05d20073d94ad027c4c71c41e3cd70a6e2b1e86abb6dc63229cc1abb174c` |
 | [macOS after #169](../benchmarks/runtime-scaling/macos-2026-10-26-after-169.json.gz) | `12640151882` | `2ac2b852bd903aae8270b0ba55a93f0947882bbff17a9b0c98468b8be70976bd` |
 | [Windows after #169](../benchmarks/runtime-scaling/windows-2026-10-26-after-169.json.gz) | `12639224441` | `6a158ac8bcc9753f7d12f14fd188cd20469660910e49f8d9c2c79376c412445b` |
+
+The Windows socket-readiness after-run reports are from workflow `40433590332`:
+
+| Report | Workflow artifact ID | Decompressed SHA-256 |
+| --- | --- | --- |
+| [Linux after #170](../benchmarks/runtime-scaling/linux-2026-10-27-after-170.json.gz) | `12705215817` | `b5cc88cf2dc2d64418191cf313aad9bf1b7cc2609dca7ae7f76101e09f3e960c` |
+| [macOS after #170](../benchmarks/runtime-scaling/macos-2026-10-27-after-170.json.gz) | `12705345587` | `0e53fd50d2ac61d1746c2256bea8f361bb6e0593aec5d0bca1d5c641189b1c57` |
+| [Windows after #170](../benchmarks/runtime-scaling/windows-2026-10-27-after-170.json.gz) | `12704962555` | `05a9bf95d8ee8421c30e03dc848bd003496df90a451aafd7c54a90121073ce9e` |
 
 For example, `gzip -dc benchmarks/runtime-scaling/linux-2026-10-26.json.gz`
 recovers the original Linux JSON bytes from this capture. The historical

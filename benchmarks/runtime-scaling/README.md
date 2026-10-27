@@ -19,7 +19,7 @@ python benchmarks/runtime-scaling/run.py \
 ```
 
 `--compiler-revision` labels the compiler in the report and defaults to
-`git rev-parse HEAD`. The default configuration takes about 25-30 minutes per
+`git rev-parse HEAD`. The default configuration takes about 45-55 minutes per
 host. For a quick check, narrow it, for example:
 
 ```sh
@@ -113,7 +113,12 @@ populations above 512 exercised queuing, rather than establishing 640 concurrent
 active helper calls. The #170 implementation registers accept/read/write waits
 with one shared `WSAPoll` service. The service retains one idle thread and its
 loopback wake connection; these are separate from live socket handles and
-registrations. Helper idle retirement remains tracked in #171.
+registrations. At 640 ordinary sockets, the #170 capture used one idle helper,
+one readiness thread and eight OS threads, compared with 512 busy helpers and
+518 OS threads before. All hosts completed 96 measurements and 192 cleanup
+cycles; the [report](../../docs/runtime-scaling-refresh.md) includes raw archives,
+deadline-mode results, ABI counts, RSS observations and limits.
+Helper idle retirement remains tracked in #171.
 The recaptured Windows baseline used one thread per cancellable deadline. The
 #169 implementation uses one shared timer service: its 640-deadline capture
 used one timer thread and eight OS threads, compared with 640 timer threads and
@@ -125,7 +130,7 @@ service capacity promises or Windows/Unix performance parity claims.
 
 The [population report](../../docs/runtime-scaling.md) preserves completed
 Windows/Linux/macOS observations, exact identities, unchanged raw evidence and
-measured follow-ups. All three hosts completed every configured population;
-Windows timer thread cost, socket helper admission and delayed idle-helper
-retirement remain implementation follow-ups. These observations are experimental
-limits, not supported service-capacity promises.
+measured follow-ups. All three hosts completed every configured population.
+The shared timer (#169) and socket readiness (#170) follow-ups have separate
+before/after captures; helper idle retirement remains #171. These observations
+are experimental limits, not supported service-capacity promises.
