@@ -39,14 +39,32 @@ struct Pool {
     queue: VecDeque<Job>,
     idle: usize,
     threads: usize,
+    #[cfg(any(test, zore_test_hooks))]
+    active_jobs: usize,
+    #[cfg(any(test, zore_test_hooks))]
+    starts: usize,
+    #[cfg(any(test, zore_test_hooks))]
+    retirements: usize,
+    #[cfg(any(test, zore_test_hooks))]
+    empty_wakes: usize,
 }
 
 static POOL: Mutex<Pool> = Mutex::new(Pool {
     queue: VecDeque::new(),
     idle: 0,
     threads: 0,
+    #[cfg(any(test, zore_test_hooks))]
+    active_jobs: 0,
+    #[cfg(any(test, zore_test_hooks))]
+    starts: 0,
+    #[cfg(any(test, zore_test_hooks))]
+    retirements: 0,
+    #[cfg(any(test, zore_test_hooks))]
+    empty_wakes: 0,
 });
 static WORK: Condvar = Condvar::new();
+#[cfg(any(test, zore_test_hooks))]
+static CHANGED: Condvar = Condvar::new();
 
 fn pool() -> MutexGuard<'static, Pool> {
     POOL.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -61,9 +79,19 @@ fn worker() {
     let mut state = pool();
     loop {
         if let Some(job) = state.queue.pop_front() {
+            #[cfg(any(test, zore_test_hooks))]
+            {
+                state.active_jobs += 1;
+                CHANGED.notify_all();
+            }
             drop(state);
             job();
             state = pool();
+            #[cfg(any(test, zore_test_hooks))]
+            {
+                state.active_jobs -= 1;
+                CHANGED.notify_all();
+            }
             continue;
         }
         state.idle += 1;
@@ -72,8 +100,18 @@ fn worker() {
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         state = guard;
         state.idle -= 1;
+        #[cfg(any(test, zore_test_hooks))]
+        if !timeout.timed_out() && state.queue.is_empty() {
+            state.empty_wakes += 1;
+            CHANGED.notify_all();
+        }
         if timeout.timed_out() && state.queue.is_empty() {
             state.threads -= 1;
+            #[cfg(any(test, zore_test_hooks))]
+            {
+                state.retirements += 1;
+                CHANGED.notify_all();
+            }
             return;
         }
     }
@@ -85,6 +123,10 @@ fn enqueue(state: &mut Pool, job: Job) {
         state.threads += 1;
         if std::thread::Builder::new().spawn(worker).is_err() {
             super::panic::fail(b"cannot start a helper thread");
+        }
+        #[cfg(any(test, zore_test_hooks))]
+        {
+            state.starts += 1;
         }
     }
     WORK.notify_one();
@@ -174,6 +216,124 @@ pub(super) fn snapshot() -> (usize, usize, usize) {
     (state.threads, state.idle, state.queue.len())
 }
 
+#[cfg(any(test, zore_test_hooks))]
+pub(super) struct LifecycleSnapshot {
+    pub threads: usize,
+    pub idle: usize,
+    pub queued: usize,
+    pub active_jobs: usize,
+    pub starts: usize,
+    pub retirements: usize,
+    pub empty_wakes: usize,
+}
+
+#[cfg(any(test, zore_test_hooks))]
+pub(super) fn lifecycle_snapshot() -> LifecycleSnapshot {
+    let state = pool();
+    LifecycleSnapshot {
+        threads: state.threads,
+        idle: state.idle,
+        queued: state.queue.len(),
+        active_jobs: state.active_jobs,
+        starts: state.starts,
+        retirements: state.retirements,
+        empty_wakes: state.empty_wakes,
+    }
+}
+
+#[cfg(any(test, zore_test_hooks))]
+#[derive(Default)]
+struct BurstState {
+    released: bool,
+    completed: usize,
+}
+
+#[cfg(any(test, zore_test_hooks))]
+pub(super) struct HelperBurst {
+    count: usize,
+    gate: Arc<(Mutex<BurstState>, Condvar)>,
+}
+
+#[cfg(any(test, zore_test_hooks))]
+impl HelperBurst {
+    pub fn start(count: usize) -> Self {
+        assert!(count > 0);
+        let burst = Self {
+            count,
+            gate: Arc::default(),
+        };
+        let mut state = pool();
+        assert_eq!(state.active_jobs, 0, "helper jobs must be drained");
+        assert!(state.queue.is_empty(), "helper queue must be drained");
+        for _ in 0..count {
+            let gate = Arc::clone(&burst.gate);
+            enqueue(
+                &mut state,
+                Box::new(move || {
+                    let (state, changed) = &*gate;
+                    let guard = state.lock().unwrap();
+                    drop(changed.wait_while(guard, |state| !state.released).unwrap());
+                    assert_eq!(run(|| 42), 42);
+                    state.lock().unwrap().completed += 1;
+                    changed.notify_all();
+                }),
+            );
+        }
+        drop(state);
+        burst.wait_active();
+        burst
+    }
+
+    pub fn wait_active(&self) {
+        wait_pool(|state| {
+            let active = self.count.min(capacity());
+            state.active_jobs == active && state.queue.len() == self.count - active
+        });
+    }
+
+    pub fn release(&self) {
+        let (state, changed) = &*self.gate;
+        state.lock().unwrap().released = true;
+        changed.notify_all();
+    }
+
+    pub fn wait_completed(&self) {
+        let (state, changed) = &*self.gate;
+        let (guard, _) = changed
+            .wait_timeout_while(state.lock().unwrap(), Duration::from_secs(30), |state| {
+                state.completed != self.count
+            })
+            .unwrap();
+        assert!(
+            guard.completed == self.count,
+            "helper burst completion timed out"
+        );
+        drop(guard);
+        wait_pool(|state| state.active_jobs == 0 && state.queue.is_empty());
+    }
+}
+
+#[cfg(any(test, zore_test_hooks))]
+impl Drop for HelperBurst {
+    fn drop(&mut self) {
+        self.release();
+    }
+}
+
+#[cfg(any(test, zore_test_hooks))]
+fn wait_pool(mut ready: impl FnMut(&Pool) -> bool) {
+    let (state, _) = CHANGED
+        .wait_timeout_while(pool(), Duration::from_secs(30), |state| !ready(state))
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    assert!(ready(&state), "helper checkpoint timed out");
+}
+
+#[cfg(any(test, zore_test_hooks))]
+pub(super) fn wake_idle_helpers() {
+    let _state = pool();
+    WORK.notify_all();
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -181,6 +341,59 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::mpsc;
     use std::time::Instant;
+
+    #[test]
+    fn helper_bursts_track_active_queued_completed_and_retired_jobs() {
+        const CHILD: &str = "ZORE_TEST_HELPER_BURST_LIFECYCLE";
+        if std::env::var_os(CHILD).is_none() {
+            let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "blocking::tests::helper_bursts_track_active_queued_completed_and_retired_jobs",
+                    "--nocapture",
+                ])
+                .env(CHILD, "1")
+                .spawn()
+                .unwrap();
+            let deadline = Instant::now() + Duration::from_secs(40);
+            loop {
+                if let Some(status) = child.try_wait().unwrap() {
+                    assert!(status.success());
+                    break;
+                }
+                if Instant::now() >= deadline {
+                    child.kill().unwrap();
+                    child.wait().unwrap();
+                    panic!("helper burst lifecycle subprocess timed out");
+                }
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            return;
+        }
+        TEST_CAPACITY.set(2).unwrap();
+        TEST_IDLE.set(Duration::ZERO).unwrap();
+        let burst = crate::scheduler::test_support::HelperBurst::start(3);
+        burst.wait_active();
+        let state = lifecycle_snapshot();
+        assert_eq!((state.threads, state.active_jobs, state.queued), (2, 2, 1));
+        assert_eq!(
+            (state.starts, state.retirements, state.empty_wakes),
+            (2, 0, 0)
+        );
+        assert_eq!(snapshot(), (2, 0, 1));
+        burst.release();
+        burst.wait_completed();
+        wait_pool(|state| state.threads == 0);
+        let state = lifecycle_snapshot();
+        assert_eq!((state.active_jobs, state.queued), (0, 0));
+        assert_eq!((state.starts, state.retirements), (2, 2));
+        let dropped = crate::scheduler::test_support::HelperBurst::start(3);
+        dropped.wait_active();
+        drop(dropped);
+        wait_pool(|state| state.threads == 0 && state.active_jobs == 0 && state.queue.is_empty());
+        let state = lifecycle_snapshot();
+        assert_eq!((state.starts, state.retirements), (4, 4));
+    }
 
     #[cfg(target_os = "windows")]
     #[test]

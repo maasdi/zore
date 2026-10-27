@@ -966,6 +966,34 @@ mod tests {
 pub mod test_support {
     use super::*;
 
+    pub struct HelperBurst(super::super::blocking::HelperBurst);
+
+    impl HelperBurst {
+        pub fn start(count: usize) -> Self {
+            Self(super::super::blocking::HelperBurst::start(count))
+        }
+
+        pub fn wait_active(&self) {
+            self.0.wait_active();
+        }
+
+        pub fn release(&self) {
+            self.0.release();
+        }
+
+        pub fn wait_completed(&self) {
+            self.0.wait_completed();
+        }
+    }
+
+    pub fn wake_idle_helpers() {
+        super::super::blocking::wake_idle_helpers();
+    }
+
+    pub fn helper_snapshot() -> (usize, usize, usize) {
+        super::super::blocking::snapshot()
+    }
+
     pub fn install_pool(capacity: usize) {
         assert!(capacity > 0);
         assert!(POOL.set(Pool::new(capacity)).is_ok());
@@ -1036,13 +1064,20 @@ pub mod test_support {
             )
         };
         let (registrations, timer_records, live_timers) = super::super::reactor::snapshot();
-        let (helper_threads, idle_helpers, queued_helpers) = super::super::blocking::snapshot();
+        let helpers = super::super::blocking::lifecycle_snapshot();
+        let helper_threads = helpers.threads;
+        let idle_helpers = helpers.idle;
+        let queued_helpers = helpers.queued;
+        let helper_active_jobs = helpers.active_jobs;
+        let helper_starts = helpers.starts;
+        let helper_retirements = helpers.retirements;
+        let helper_empty_wakes = helpers.empty_wakes;
         let socket_handles = super::super::net::live_handles();
         let allocated_bytes = super::super::alloc::live_bytes();
         let timer_threads = super::super::reactor::timer_threads();
         let readiness_threads = super::super::reactor::readiness_threads();
         format!(
-            "{{\"readiness_threads\":{readiness_threads},\"timer_threads\":{timer_threads},\"allocated_bytes\":{allocated_bytes},\"helper_threads\":{helper_threads},\"idle_helpers\":{idle_helpers},\"queued_helpers\":{queued_helpers},\"socket_handles\":{socket_handles},\"tasks\":{tasks},\"workers\":{workers},\"blocked_workers\":{blocked},\"queued_tasks\":{queued},\"reactor_registrations\":{registrations},\"timer_records\":{timer_records},\"live_timers\":{live_timers},\"channels\":{},\"mutexes\":{},\"text_buffers\":{}}}",
+            "{{\"readiness_threads\":{readiness_threads},\"timer_threads\":{timer_threads},\"allocated_bytes\":{allocated_bytes},\"helper_threads\":{helper_threads},\"idle_helpers\":{idle_helpers},\"queued_helpers\":{queued_helpers},\"helper_active_jobs\":{helper_active_jobs},\"helper_starts\":{helper_starts},\"helper_retirements\":{helper_retirements},\"helper_empty_wakes\":{helper_empty_wakes},\"socket_handles\":{socket_handles},\"tasks\":{tasks},\"workers\":{workers},\"blocked_workers\":{blocked},\"queued_tasks\":{queued},\"reactor_registrations\":{registrations},\"timer_records\":{timer_records},\"live_timers\":{live_timers},\"channels\":{},\"mutexes\":{},\"text_buffers\":{}}}",
             super::super::channel::live_channels(),
             super::super::mutex::live_mutexes(),
             super::super::string::live_buffers(),
