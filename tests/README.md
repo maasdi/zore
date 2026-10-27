@@ -41,6 +41,13 @@ tests run real Ctrl+C/Break in isolated consoles; runtime tests invoke terminati
 callbacks directly to check mapping and bounded waiting during unsubscription.
 Real close/logoff/shutdown delivery is not established by those synthetic tests. See [platform support](../docs/platform-support.md).
 
+Windows socket runtime tests cover more than 64 readiness registrations on one
+service thread, cancellation with in-flight owner retention, stale token
+rejection, and readiness/deadline wake coalescing. A subprocess-isolated helper
+capacity of one proves socket reads and deadlines progress while the only helper
+remains gated. The shared socket state-machine tests cover partial writes,
+expired deadlines with ready data, empty reads and one-worker async progress.
+
 `tests/ownership/scoped_tasks.rs` and `tests/codegen/scoped_tasks.rs` cover the
 plain lexical task-scope contract: shared/exclusive inputs, mixed captures,
 dropped/aliased/repeated handles, view and output provenance, shorter storage,

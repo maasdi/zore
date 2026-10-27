@@ -46,13 +46,13 @@ fn standard_wait(name: &str) -> Option<NativeWait> {
         | "std/os/exec.run"
         | "std/net.listen"
         | "std/net.dial" => Some(NativeWait::Helper),
-        "std/net.accept" | "std/net.read" | "std/net.write" => {
-            Some(if cfg!(any(target_os = "linux", target_os = "macos")) {
+        "std/net.accept" | "std/net.read" | "std/net.write" => Some(
+            if cfg!(any(target_os = "linux", target_os = "macos", windows)) {
                 NativeWait::Socket
             } else {
                 NativeWait::Helper
-            })
-        }
+            },
+        ),
         _ => None,
     }
 }

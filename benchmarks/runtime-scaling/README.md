@@ -8,6 +8,8 @@ Correctness CI validates the harness frontend/protocol generation and exercises 
 subprocess-isolated helper capacity of one: a gated active job, two queued jobs,
 an already expired real socket read deadline, nested helper work and idle cleanup.
 Only test builds expose that capacity/idle hook; production remains 512 helpers.
+On Windows, another isolated capacity-one test holds that helper busy while
+socket readiness and a read deadline complete independently of helper admission.
 
 ```sh
 cargo build --locked --release
@@ -90,8 +92,12 @@ It excludes Rust scheduler/helper/reactor allocations and thread stacks.
 Scheduler tasks/queues/blocked workers, helper threads/idle workers/queued jobs,
 registered timers, timer threads, socket handle-table entries, channels, mutexes
 and text buffers are counted separately. On Linux/macOS `timer_records` counts
-heap deadline records, including bounded stale records; on Windows it is zero
-and `timer_threads` counts actual live timer workers. OS RSS and threads plus
+heap deadline records, including bounded stale records. On Windows it includes
+shared timer heap records and live socket deadlines; `timer_threads` counts the
+separate shared timer service and excludes the socket readiness service.
+`readiness_threads` counts the Windows socket service separately; idle validation
+allows exactly one in Windows socket modes and none in other modes or on Unix.
+OS RSS and threads plus
 Unix open descriptor or Windows process handle counts include all components.
 Windows handles and Unix descriptors are different units.
 
@@ -101,9 +107,13 @@ cleanup. A flat allocation/resource count with retained RSS may reflect allocato
 or thread-stack caching; RSS alone cannot establish a leak. The next baseline in
 the same process helps distinguish one-time initialization from repeated growth.
 
-The production helper cap remains 512; queued jobs are unbounded. Windows socket
-waits occupy helpers and retry nonblocking operations; a population above 512
-exercises queuing, rather than establishing 640 concurrent active helper calls.
+The production helper cap remains 512; queued jobs are unbounded. Historical
+Windows socket waits occupied helpers and retried nonblocking operations;
+populations above 512 exercised queuing, rather than establishing 640 concurrent
+active helper calls. The #170 implementation registers accept/read/write waits
+with one shared `WSAPoll` service. The service retains one idle thread and its
+loopback wake connection; these are separate from live socket handles and
+registrations. Helper idle retirement remains tracked in #171.
 The recaptured Windows baseline used one thread per cancellable deadline. The
 #169 implementation uses one shared timer service: its 640-deadline capture
 used one timer thread and eight OS threads, compared with 640 timer threads and

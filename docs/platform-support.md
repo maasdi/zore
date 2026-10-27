@@ -44,13 +44,18 @@ Unix 0–255 range, after removing its temporary program directory.
 
 Tasks, channels, scoped joins, panic cleanup, and deterministic destruction use
 the same ownership contract on every host. Linux/macOS sockets use the shared
-readiness reactor. Windows sockets use nonblocking operations retried on helpers
-at intervals up to two milliseconds; async callers suspend while those helpers
-wait. Plain waits permit replacement pool workers. Read, write and accept
+readiness reactor. Windows accept, read and write operations use nonblocking
+sockets and one shared `WSAPoll` service, with a loopback wake connection for
+registration changes. Async callers suspend without occupying helper threads;
+plain waits permit replacement pool workers. Read, write and accept
 deadlines produce the same stable timeout errors and preserve partial write
-counts. This implementation does not claim IOCP or Unix reactor performance.
-Windows timers use cancellable timer threads rather than the shared Unix event
-queue, so large populations of simultaneous timers cost additional threads.
+counts. Registrations and in-flight poll snapshots retain the socket owner until
+polling finishes. Dropping a registration removes it and wakes the service;
+readiness and deadline completion wake each registration at most once.
+This implementation does not claim IOCP or Unix reactor performance.
+Windows cancellable deadlines and async sleeps use a separate shared timer
+service. Both Windows services retain one idle thread after first use.
+Files, standard input, connects and name resolution still use helpers.
 Queued helper jobs reserve idle capacity before those workers wake, preventing
 several dependent operations from relying on the same idle helper. The helper
 pool remains bounded at 512 threads.

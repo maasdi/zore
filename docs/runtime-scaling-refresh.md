@@ -211,6 +211,24 @@ evidence; they are not portable performance guarantees. The exact before and
 after reports preserve all process samples, checkpoints, compiler identities
 and source manifests.
 
+## Windows socket readiness follow-up (#170)
+
+The implementation replaces helper-held accept/read/write waits on Windows
+with one shared `WSAPoll` service. The compiler uses the same pollable socket
+state machine on Windows, Linux and macOS. Windows registrations and in-flight
+poll snapshots retain the socket owner, and cancellation removes registrations
+without allowing descriptor reuse during polling. Files, connects, DNS and
+standard input still use helpers; helper retirement remains separate in #171.
+
+The harness counts `readiness_threads` separately from `timer_threads` and
+requires exactly one idle readiness service in Windows socket workloads, with
+zero live tasks, socket handles, timers and readiness registrations. Correctness
+tests cover a saturated one-helper pool, more than 64 simultaneous sockets,
+readiness/deadline races, registration cancellation and partial writes.
+
+Hosted correctness and repeated-cycle capture results are pending; no completed
+Windows optimization measurement is claimed for this implementation yet.
+
 ## Raw evidence
 
 These gzip archives preserve the original JSON bytes from their workflow runs,

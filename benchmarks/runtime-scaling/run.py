@@ -138,6 +138,9 @@ def validate_idle_runtime(mode, counters, windows):
     expected_timer_threads = int(windows and mode == 'timers')
     if counters['timer_threads'] != expected_timer_threads:
         raise RuntimeError(f'unexpected idle timer threads: {counters}')
+    expected_readiness_threads = int(windows and mode.startswith('socket'))
+    if counters['readiness_threads'] != expected_readiness_threads:
+        raise RuntimeError(f'unexpected idle readiness threads: {counters}')
 
 
 def measure(executable, mode, population, timeout, sample_seconds, idle_seconds, cycles=2):
