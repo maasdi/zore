@@ -3,7 +3,7 @@
 use std::cell::Cell;
 use std::collections::VecDeque;
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use super::slot::Slot;
 use super::waiter::Waiter;
@@ -47,6 +47,10 @@ struct Pool {
     retirements: usize,
     #[cfg(any(test, zore_test_hooks))]
     empty_wakes: usize,
+    #[cfg(test)]
+    now: Option<Instant>,
+    #[cfg(test)]
+    wait_generation: usize,
 }
 
 static POOL: Mutex<Pool> = Mutex::new(Pool {
@@ -61,6 +65,10 @@ static POOL: Mutex<Pool> = Mutex::new(Pool {
     retirements: 0,
     #[cfg(any(test, zore_test_hooks))]
     empty_wakes: 0,
+    #[cfg(test)]
+    now: None,
+    #[cfg(test)]
+    wait_generation: 0,
 });
 static WORK: Condvar = Condvar::new();
 #[cfg(any(test, zore_test_hooks))]
@@ -70,6 +78,14 @@ fn pool() -> MutexGuard<'static, Pool> {
     POOL.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
+fn now(_state: &Pool) -> Instant {
+    #[cfg(test)]
+    if let Some(now) = _state.now {
+        return now;
+    }
+    Instant::now()
+}
+
 thread_local! {
     static HELPER: Cell<bool> = const { Cell::new(false) };
 }
@@ -77,6 +93,7 @@ thread_local! {
 fn worker() {
     HELPER.set(true);
     let mut state = pool();
+    let mut idle_deadline = None;
     loop {
         if let Some(job) = state.queue.pop_front() {
             #[cfg(any(test, zore_test_hooks))]
@@ -87,6 +104,7 @@ fn worker() {
             drop(state);
             job();
             state = pool();
+            idle_deadline = None;
             #[cfg(any(test, zore_test_hooks))]
             {
                 state.active_jobs -= 1;
@@ -94,18 +112,10 @@ fn worker() {
             }
             continue;
         }
-        state.idle += 1;
-        let (guard, timeout) = WORK
-            .wait_timeout(state, idle_timeout())
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        state = guard;
-        state.idle -= 1;
-        #[cfg(any(test, zore_test_hooks))]
-        if !timeout.timed_out() && state.queue.is_empty() {
-            state.empty_wakes += 1;
-            CHANGED.notify_all();
-        }
-        if timeout.timed_out() && state.queue.is_empty() {
+        let current = now(&state);
+        let deadline = *idle_deadline.get_or_insert_with(|| current + idle_timeout());
+        let remaining = deadline.saturating_duration_since(current);
+        if remaining.is_zero() {
             state.threads -= 1;
             #[cfg(any(test, zore_test_hooks))]
             {
@@ -113,6 +123,22 @@ fn worker() {
                 CHANGED.notify_all();
             }
             return;
+        }
+        state.idle += 1;
+        #[cfg(test)]
+        {
+            state.wait_generation += 1;
+            CHANGED.notify_all();
+        }
+        let (guard, _timeout) = WORK
+            .wait_timeout(state, remaining)
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        state = guard;
+        state.idle -= 1;
+        #[cfg(any(test, zore_test_hooks))]
+        if !_timeout.timed_out() && state.queue.is_empty() {
+            state.empty_wakes += 1;
+            CHANGED.notify_all();
         }
     }
 }
@@ -341,6 +367,125 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::mpsc;
     use std::time::Instant;
+
+    fn advance_idle_clock(duration: Duration) {
+        let generation = {
+            let mut state = pool();
+            assert_eq!((state.threads, state.idle, state.active_jobs), (1, 1, 0));
+            state.now = Some(state.now.unwrap() + duration);
+            WORK.notify_all();
+            state.wait_generation
+        };
+        wait_pool(|state| state.wait_generation > generation && state.idle == 1);
+        let state = lifecycle_snapshot();
+        assert_eq!((state.threads, state.active_jobs, state.queued), (1, 0, 0));
+    }
+
+    fn expire_idle_clock(duration: Duration) {
+        {
+            let mut state = pool();
+            state.now = Some(state.now.unwrap() + duration);
+            WORK.notify_all();
+        }
+        wait_pool(|state| state.threads == 0);
+        assert_eq!(snapshot(), (0, 0, 0));
+        assert_eq!(lifecycle_snapshot().active_jobs, 0);
+    }
+
+    #[test]
+    fn idle_deadlines_survive_empty_wakes_reset_after_work_and_admit_expired_queue() {
+        const CHILD: &str = "ZORE_TEST_HELPER_IDLE_DEADLINE";
+        if std::env::var_os(CHILD).is_none() {
+            let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "blocking::tests::idle_deadlines_survive_empty_wakes_reset_after_work_and_admit_expired_queue",
+                    "--nocapture",
+                ])
+                .env(CHILD, "1")
+                .spawn()
+                .unwrap();
+            let deadline = Instant::now() + Duration::from_secs(40);
+            loop {
+                if let Some(status) = child.try_wait().unwrap() {
+                    assert!(status.success());
+                    break;
+                }
+                if Instant::now() >= deadline {
+                    child.kill().unwrap();
+                    child.wait().unwrap();
+                    panic!("helper idle deadline subprocess timed out");
+                }
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            return;
+        }
+        TEST_CAPACITY.set(1).unwrap();
+        pool().now = Some(Instant::now());
+        assert_eq!(run(|| run(|| 42)), 42);
+        wait_pool(|state| state.idle == 1);
+        for _ in 0..4 {
+            advance_idle_clock(Duration::from_secs(1));
+        }
+        assert!(lifecycle_snapshot().empty_wakes >= 4);
+        expire_idle_clock(Duration::from_secs(1));
+        let state = lifecycle_snapshot();
+        assert_eq!((state.starts, state.retirements), (1, 1));
+
+        assert_eq!(run(|| run(|| 42)), 42);
+        wait_pool(|state| state.idle == 1);
+        advance_idle_clock(Duration::from_secs(4));
+        let generation = pool().wait_generation;
+        assert_eq!(run(|| run(|| 42)), 42);
+        wait_pool(|state| state.wait_generation > generation && state.idle == 1);
+        advance_idle_clock(Duration::from_secs(1));
+        advance_idle_clock(Duration::from_secs(3));
+
+        let (started, active) = mpsc::channel();
+        let (release, held) = mpsc::channel();
+        let (finished, completed) = mpsc::channel();
+        let retained = Arc::new(());
+        let payload = Arc::clone(&retained);
+        let generation = {
+            let mut state = pool();
+            state.now = Some(state.now.unwrap() + Duration::from_secs(1));
+            enqueue(
+                &mut state,
+                Box::new(move || {
+                    assert_eq!(run(|| 42), 42);
+                    started.send(()).unwrap();
+                    held.recv_timeout(Duration::from_secs(10)).unwrap();
+                    drop(payload);
+                }),
+            );
+            enqueue(
+                &mut state,
+                Box::new(move || finished.send(run(|| 42)).unwrap()),
+            );
+            state.wait_generation
+        };
+        active.recv_timeout(Duration::from_secs(10)).unwrap();
+        assert_eq!(snapshot(), (1, 0, 1));
+        let state = lifecycle_snapshot();
+        assert_eq!(
+            (state.starts, state.retirements, state.active_jobs),
+            (2, 1, 1)
+        );
+        assert_eq!(Arc::strong_count(&retained), 2);
+        release.send(()).unwrap();
+        assert_eq!(completed.recv_timeout(Duration::from_secs(10)).unwrap(), 42);
+        wait_pool(|state| {
+            state.wait_generation > generation
+                && state.idle == 1
+                && state.active_jobs == 0
+                && state.queue.is_empty()
+        });
+        assert_eq!(Arc::strong_count(&retained), 1);
+        advance_idle_clock(Duration::from_secs(4));
+        expire_idle_clock(Duration::from_secs(1));
+        let state = lifecycle_snapshot();
+        assert_eq!((state.starts, state.retirements), (2, 2));
+    }
 
     #[test]
     fn helper_bursts_track_active_queued_completed_and_retired_jobs() {

@@ -48,6 +48,14 @@ capacity of one proves socket reads and deadlines progress while the only helper
 remains gated. The shared socket state-machine tests cover partial writes,
 expired deadlines with ready data, empty reads and one-worker async progress.
 
+Helper retirement has a subprocess-isolated capacity-one test with a controlled
+monotonic clock and observed wait generations. Empty wakes preserve the original
+deadline, real work renews grace, work queued at expiry runs before retirement,
+and retired helpers can restart and complete nested work. Separate burst-hook
+tests check active/queued/lifecycle accounting and gate cleanup. The component
+harness has protocol, sampling-error cleanup and native two-job smoke coverage;
+large populations and long idle observations stay outside correctness CI.
+
 `tests/ownership/scoped_tasks.rs` and `tests/codegen/scoped_tasks.rs` cover the
 plain lexical task-scope contract: shared/exclusive inputs, mixed captures,
 dropped/aliased/repeated handles, view and output provenance, shorter storage,
