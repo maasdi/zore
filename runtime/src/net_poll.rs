@@ -475,54 +475,78 @@ mod tests {
             assert!(received.iter().all(|&byte| byte == 0x5a));
         });
         let mut operation = 0usize;
+        let mut signalled = false;
         pool.spawn(move |context| unsafe {
             if operation == 0 {
                 operation =
                     zore_native_net_write_start(id, data.as_ptr(), data.len() as i64, context)
                         as usize;
-                let mut output = std::mem::MaybeUninit::<ValueError>::uninit();
-                assert_eq!(
-                    zore_native_net_poll(
-                        operation as *mut Operation,
-                        context,
-                        output.as_mut_ptr().cast()
-                    ),
-                    0
-                );
-                let Kind::Write { sent, .. } = (&*(operation as *const Operation)).kind else {
-                    panic!()
-                };
-                assert!(sent > 0 && sent < bytes);
-                for _ in 0..20 {
-                    assert_eq!(
-                        zore_native_net_poll(
-                            operation as *mut Operation,
-                            context,
-                            output.as_mut_ptr().cast()
-                        ),
-                        0
-                    );
-                }
-                started.send(()).unwrap();
-                Poll::Pending
-            } else {
-                let mut output = std::mem::MaybeUninit::<ValueError>::uninit();
-                if zore_native_net_poll(
-                    operation as *mut Operation,
-                    context,
-                    output.as_mut_ptr().cast(),
-                ) == 0
-                {
-                    return Poll::Pending;
-                }
-                let output = output.assume_init();
-                assert_eq!((output.failed, output.value), (0, bytes as i64));
-                zore_native_net_close_handle(id);
-                Poll::Ready
             }
+            let mut output = std::mem::MaybeUninit::<ValueError>::uninit();
+            let ready = zore_native_net_poll(
+                operation as *mut Operation,
+                context,
+                output.as_mut_ptr().cast(),
+            );
+            if !signalled {
+                started.send(()).unwrap();
+                signalled = true;
+            }
+            if ready == 0 {
+                return Poll::Pending;
+            }
+            let output = output.assume_init();
+            assert_eq!((output.failed, output.value), (0, bytes as i64));
+            zore_native_net_close_handle(id);
+            Poll::Ready
         });
         pool.idle();
         reader.join().unwrap();
+    }
+
+    #[test]
+    fn resumed_writes_send_only_the_suffix_after_write_readiness() {
+        let _serial = crate::string::serial();
+        let (id, mut peer) = pair();
+        let handle = lookup(id).unwrap();
+        let Handle::Connection(connection) = handle.as_ref() else {
+            panic!()
+        };
+        (&connection.stream).write_all(b"prefix-").unwrap();
+        let mut operation = Operation::new(
+            id,
+            Kind::Write {
+                data: b"prefix-suffix".to_vec(),
+                sent: 7,
+            },
+            0,
+        );
+        let (waiter, received) = signal();
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        let waiting =
+            reactor::start_wait_fd(connection.stream.descriptor(), true, None, waiter.clone());
+        #[cfg(windows)]
+        let waiting = reactor::start_wait_fd(
+            connection.stream.descriptor(),
+            true,
+            None,
+            waiter.clone(),
+            handle.clone(),
+        );
+        operation.waiting = Some(waiting);
+        received.recv_timeout(Duration::from_secs(10)).unwrap();
+        let Output::Value(output) = operation.poll(waiter).unwrap() else {
+            panic!()
+        };
+        assert_eq!((output.failed, output.value), (0, 13));
+        drop(operation);
+        drop(handle);
+        zore_native_net_close_handle(id);
+        peer.set_read_timeout(Some(Duration::from_secs(10)))
+            .unwrap();
+        let mut received = Vec::new();
+        peer.read_to_end(&mut received).unwrap();
+        assert_eq!(received, b"prefix-suffix");
     }
 
     #[test]
