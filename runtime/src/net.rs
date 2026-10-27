@@ -3,7 +3,7 @@
 
 use std::collections::HashMap;
 use std::io::ErrorKind;
-#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
 use std::io::{Read, Write};
 use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream, ToSocketAddrs};
 use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
@@ -11,7 +11,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 use super::blocking;
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 use super::reactor;
 use super::strconv::ValueError;
 use super::string::StringOut;
@@ -96,7 +96,7 @@ fn resolve(family: i64, address: &str) -> std::io::Result<Vec<SocketAddr>> {
 }
 
 /// Retries nonblocking sockets on helper hosts until completion or the deadline.
-#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
 fn until_ready<T>(
     deadline: &AtomicI64,
     mut attempt: impl FnMut() -> std::io::Result<T>,
@@ -156,9 +156,9 @@ pub unsafe extern "C" fn zore_native_net_listen(
 /// `out` must be writable.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn zore_native_net_accept(out: *mut ValueError, id: i64) {
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[cfg(any(target_os = "linux", target_os = "macos", windows))]
     let value = poll::accept(id);
-    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
     let value = match lookup(id).as_deref() {
         Some(Handle::Listener(listener)) => {
             let accepted = until_ready(&listener.deadline, || listener.socket.accept());
@@ -283,9 +283,9 @@ pub unsafe extern "C" fn zore_native_net_set_deadline(
 /// `out` must be writable.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn zore_native_net_read(out: *mut ByteArrayError, id: i64, max: i64) {
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[cfg(any(target_os = "linux", target_os = "macos", windows))]
     let result = poll::read(id, max);
-    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
     let result = match (lookup(id).as_deref(), usize::try_from(max)) {
         (Some(Handle::Connection(_)), Ok(0)) => ByteArrayError::ok(&[]),
         (Some(Handle::Connection(connection)), Ok(max)) => {
@@ -314,9 +314,9 @@ pub unsafe extern "C" fn zore_native_net_write(
 ) {
     // SAFETY: guaranteed by the caller.
     let bytes = unsafe { super::bytes(data, data_len) };
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[cfg(any(target_os = "linux", target_os = "macos", windows))]
     let result = poll::write(id, bytes);
-    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
     let result = match lookup(id).as_deref() {
         Some(Handle::Connection(connection)) => {
             let mut stream = &connection.stream;
@@ -377,7 +377,7 @@ pub extern "C" fn zore_native_net_close_handle(id: i64) {
     drop(remove(id));
 }
 
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 #[path = "net_poll.rs"]
 mod poll;
 

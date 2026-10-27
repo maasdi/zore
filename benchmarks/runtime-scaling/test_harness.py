@@ -23,6 +23,7 @@ class HarnessTests(unittest.TestCase):
             'reactor_registrations': 0,
             'live_timers': 0,
             'timer_threads': 1,
+            'readiness_threads': 0,
         }
         validate_idle_runtime('timers', counters, True)
         validate_idle_runtime('timers', {**counters, 'timer_threads': 0}, False)
@@ -30,6 +31,19 @@ class HarnessTests(unittest.TestCase):
             validate_idle_runtime('tasks', counters, True)
         with self.assertRaisesRegex(RuntimeError, 'unexpected idle timer threads'):
             validate_idle_runtime('timers', {**counters, 'timer_threads': 2}, True)
+
+    def test_idle_windows_readiness_service_is_bounded_and_mode_specific(self):
+        counters = dict.fromkeys(['tasks', 'queued_tasks', 'blocked_workers', 'queued_helpers',
+                                  'socket_handles', 'reactor_registrations', 'live_timers',
+                                  'timer_threads', 'readiness_threads'], 0)
+        for mode in ['sockets', 'socket-deadline']:
+            validate_idle_runtime(mode, {**counters, 'readiness_threads': 1}, True)
+            validate_idle_runtime(mode, counters, False)
+            for count in [0, 2]:
+                with self.assertRaisesRegex(RuntimeError, 'unexpected idle readiness threads'):
+                    validate_idle_runtime(mode, {**counters, 'readiness_threads': count}, True)
+        with self.assertRaisesRegex(RuntimeError, 'unexpected idle readiness threads'):
+            validate_idle_runtime('tasks', {**counters, 'readiness_threads': 1}, True)
 
     def test_payload_is_read_after_suspension_in_every_variant(self):
         for mode in ['tasks', 'timers', 'sockets', 'socket-deadline']:

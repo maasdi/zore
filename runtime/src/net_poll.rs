@@ -7,7 +7,7 @@ pub struct Operation {
     handle: Option<Arc<Handle>>,
     kind: Kind,
     buffer: Vec<u8>,
-    waiting: Option<Arc<reactor::Operation>>,
+    waiting: Option<reactor::SocketWait>,
 }
 
 enum Kind {
@@ -64,6 +64,9 @@ impl Operation {
         loop {
             let (fd, write, deadline, attempted) = match (&mut self.kind, handle.as_ref()) {
                 (Kind::Accept, Handle::Listener(listener)) => {
+                    if deadline_of(&listener.deadline).is_some_and(|when| Instant::now() >= when) {
+                        return Some(self.failed("net.Accept: timed out"));
+                    }
                     let result = listener
                         .socket
                         .accept()
@@ -81,6 +84,11 @@ impl Operation {
                 (Kind::Read, Handle::Connection(connection)) => {
                     if self.buffer.is_empty() {
                         return Some(Output::Bytes(ByteArrayError::ok(&[])));
+                    }
+                    if deadline_of(&connection.read_deadline)
+                        .is_some_and(|when| Instant::now() >= when)
+                    {
+                        return Some(self.failed("net.Read: timed out"));
                     }
                     let mut stream = &connection.stream;
                     let result = match stream.read(&mut self.buffer) {
@@ -100,6 +108,11 @@ impl Operation {
                 (Kind::Write { data, sent }, Handle::Connection(connection)) => {
                     if *sent == data.len() {
                         return Some(Output::Value(ValueError::ok(*sent as i64)));
+                    }
+                    if deadline_of(&connection.write_deadline)
+                        .is_some_and(|when| Instant::now() >= when)
+                    {
+                        return Some(self.failed("net.Write: timed out"));
                     }
                     let mut stream = &connection.stream;
                     let result = match stream.write(&data[*sent..]) {
@@ -128,7 +141,12 @@ impl Operation {
                     if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
                         return Some(self.failed(&format!("{}: timed out", self.name())));
                     }
-                    self.waiting = Some(reactor::start_wait_fd(fd, write, deadline, waiter));
+                    #[cfg(any(target_os = "linux", target_os = "macos"))]
+                    let waiting = reactor::start_wait_fd(fd, write, deadline, waiter);
+                    #[cfg(windows)]
+                    let waiting =
+                        reactor::start_wait_fd(fd, write, deadline, waiter, handle.clone());
+                    self.waiting = Some(waiting);
                     return None;
                 }
                 Err(error) => return Some(self.failed(&format!("{}: {error}", self.name()))),
@@ -368,14 +386,20 @@ mod tests {
             panic!()
         };
         connection.read_deadline.store(1, Ordering::SeqCst);
+        peer.write_all(b"ok").unwrap();
         let mut operation = Operation::new(id, Kind::Read, 4);
         let (waiter, _) = signal();
         assert_eq!(
             error(operation.poll(waiter).unwrap()),
             "net.Read: timed out"
         );
+        let mut empty = Operation::new(id, Kind::Read, 0);
+        let (waiter, _) = signal();
+        let Output::Bytes(output) = empty.poll(waiter).unwrap() else {
+            panic!()
+        };
+        assert_eq!((output.failed, output.array.len), (0, 0));
         connection.read_deadline.store(0, Ordering::SeqCst);
-        peer.write_all(b"ok").unwrap();
         let output = read(id, 4);
         assert_eq!(output.failed, 0);
         assert_eq!(
@@ -383,6 +407,53 @@ mod tests {
             b"ok"
         );
         unsafe { crate::alloc::zore_free(output.array.data, output.array.cap) };
+        zore_native_net_close_handle(id);
+    }
+
+    #[test]
+    fn expired_accept_and_write_deadlines_prevent_ready_io() {
+        let _serial = crate::string::serial();
+        let socket = TcpListener::bind("127.0.0.1:0").unwrap();
+        let _client = TcpStream::connect(socket.local_addr().unwrap()).unwrap();
+        socket.set_nonblocking(true).unwrap();
+        let id = insert(Handle::Listener(Listener {
+            socket,
+            deadline: AtomicI64::new(1),
+        }));
+        let (waiter, _) = signal();
+        let mut operation = Operation::new(id, Kind::Accept, 0);
+        assert_eq!(
+            error(operation.poll(waiter).unwrap()),
+            "net.Accept: timed out"
+        );
+        zore_native_net_close_handle(id);
+
+        let (id, mut peer) = pair();
+        let handle = lookup(id).unwrap();
+        let Handle::Connection(connection) = handle.as_ref() else {
+            panic!()
+        };
+        connection.write_deadline.store(1, Ordering::SeqCst);
+        let mut operation = Operation::new(
+            id,
+            Kind::Write {
+                data: b"prefix-tail".to_vec(),
+                sent: 6,
+            },
+            0,
+        );
+        let (waiter, _) = signal();
+        let output = operation.poll(waiter).unwrap();
+        let Output::Value(value) = &output else {
+            panic!()
+        };
+        assert_eq!((value.failed, value.value), (1, 6));
+        assert_eq!(error(output), "net.Write: timed out");
+        peer.set_nonblocking(true).unwrap();
+        assert_eq!(
+            peer.read(&mut [0; 16]).unwrap_err().kind(),
+            ErrorKind::WouldBlock
+        );
         zore_native_net_close_handle(id);
     }
 
@@ -404,54 +475,78 @@ mod tests {
             assert!(received.iter().all(|&byte| byte == 0x5a));
         });
         let mut operation = 0usize;
+        let mut signalled = false;
         pool.spawn(move |context| unsafe {
             if operation == 0 {
                 operation =
                     zore_native_net_write_start(id, data.as_ptr(), data.len() as i64, context)
                         as usize;
-                let mut output = std::mem::MaybeUninit::<ValueError>::uninit();
-                assert_eq!(
-                    zore_native_net_poll(
-                        operation as *mut Operation,
-                        context,
-                        output.as_mut_ptr().cast()
-                    ),
-                    0
-                );
-                let Kind::Write { sent, .. } = (&*(operation as *const Operation)).kind else {
-                    panic!()
-                };
-                assert!(sent > 0 && sent < bytes);
-                for _ in 0..20 {
-                    assert_eq!(
-                        zore_native_net_poll(
-                            operation as *mut Operation,
-                            context,
-                            output.as_mut_ptr().cast()
-                        ),
-                        0
-                    );
-                }
-                started.send(()).unwrap();
-                Poll::Pending
-            } else {
-                let mut output = std::mem::MaybeUninit::<ValueError>::uninit();
-                if zore_native_net_poll(
-                    operation as *mut Operation,
-                    context,
-                    output.as_mut_ptr().cast(),
-                ) == 0
-                {
-                    return Poll::Pending;
-                }
-                let output = output.assume_init();
-                assert_eq!((output.failed, output.value), (0, bytes as i64));
-                zore_native_net_close_handle(id);
-                Poll::Ready
             }
+            let mut output = std::mem::MaybeUninit::<ValueError>::uninit();
+            let ready = zore_native_net_poll(
+                operation as *mut Operation,
+                context,
+                output.as_mut_ptr().cast(),
+            );
+            if !signalled {
+                started.send(()).unwrap();
+                signalled = true;
+            }
+            if ready == 0 {
+                return Poll::Pending;
+            }
+            let output = output.assume_init();
+            assert_eq!((output.failed, output.value), (0, bytes as i64));
+            zore_native_net_close_handle(id);
+            Poll::Ready
         });
         pool.idle();
         reader.join().unwrap();
+    }
+
+    #[test]
+    fn resumed_writes_send_only_the_suffix_after_write_readiness() {
+        let _serial = crate::string::serial();
+        let (id, mut peer) = pair();
+        let handle = lookup(id).unwrap();
+        let Handle::Connection(connection) = handle.as_ref() else {
+            panic!()
+        };
+        (&connection.stream).write_all(b"prefix-").unwrap();
+        let mut operation = Operation::new(
+            id,
+            Kind::Write {
+                data: b"prefix-suffix".to_vec(),
+                sent: 7,
+            },
+            0,
+        );
+        let (waiter, received) = signal();
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        let waiting =
+            reactor::start_wait_fd(connection.stream.descriptor(), true, None, waiter.clone());
+        #[cfg(windows)]
+        let waiting = reactor::start_wait_fd(
+            connection.stream.descriptor(),
+            true,
+            None,
+            waiter.clone(),
+            handle.clone(),
+        );
+        operation.waiting = Some(waiting);
+        received.recv_timeout(Duration::from_secs(10)).unwrap();
+        let Output::Value(output) = operation.poll(waiter).unwrap() else {
+            panic!()
+        };
+        assert_eq!((output.failed, output.value), (0, 13));
+        drop(operation);
+        drop(handle);
+        zore_native_net_close_handle(id);
+        peer.set_read_timeout(Some(Duration::from_secs(10)))
+            .unwrap();
+        let mut received = Vec::new();
+        peer.read_to_end(&mut received).unwrap();
+        assert_eq!(received, b"prefix-suffix");
     }
 
     #[test]

@@ -81,7 +81,7 @@ jobs:
         env:
           ZORE_SCALING_COMPILER: ${{ github.workspace }}/target/debug/zore${{ runner.os == 'Windows' && '.exe' || '' }}
       - name: Test
-        run: cargo test --locked --all-targets --no-fail-fast
+        run: cargo test --locked --all-targets --no-fail-fast -- --nocapture
 
   imports:
     name: Python imports (${{ matrix.os }})

@@ -19,7 +19,7 @@ impl Operation {
         })
     }
 
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[cfg(any(target_os = "linux", target_os = "macos", windows))]
     pub(super) fn is_ready(&self) -> bool {
         self.ready.load(Ordering::Acquire)
     }
@@ -50,7 +50,10 @@ pub unsafe extern "C" fn zore_reactor_poll(operation: *const Operation) -> u8 {
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 pub(super) type Descriptor = std::os::fd::RawFd;
 
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(windows)]
+pub(super) type Descriptor = std::os::windows::io::RawSocket;
+
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 pub(super) trait Pollable {
     fn descriptor(&self) -> Descriptor;
 }
@@ -61,6 +64,23 @@ impl<T: std::os::fd::AsRawFd> Pollable for T {
         self.as_raw_fd()
     }
 }
+
+#[cfg(windows)]
+impl<T: std::os::windows::io::AsRawSocket> Pollable for T {
+    fn descriptor(&self) -> Descriptor {
+        self.as_raw_socket()
+    }
+}
+
+#[cfg(windows)]
+#[path = "reactor_windows.rs"]
+mod windows;
+
+#[cfg(windows)]
+pub(super) use windows::Registration as SocketWait;
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub(super) type SocketWait = Arc<Operation>;
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 fn fail(message: &[u8]) -> ! {
@@ -933,7 +953,18 @@ pub(super) fn start_timer(milliseconds: u64, waiter: Waiter) -> Timer {
 
 #[cfg(any(test, zore_test_hooks))]
 pub(super) fn snapshot() -> (usize, usize, usize) {
-    imp::snapshot()
+    let counts = imp::snapshot();
+    #[cfg(windows)]
+    {
+        let sockets = windows::snapshot();
+        (
+            counts.0 + sockets.0,
+            counts.1 + sockets.1,
+            counts.2 + sockets.2,
+        )
+    }
+    #[cfg(not(windows))]
+    counts
 }
 
 #[cfg(any(test, zore_test_hooks))]
@@ -945,6 +976,18 @@ pub(super) fn timer_threads() -> usize {
     #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     {
         imp::timer_threads()
+    }
+}
+
+#[cfg(any(test, zore_test_hooks))]
+pub(super) fn readiness_threads() -> usize {
+    #[cfg(windows)]
+    {
+        windows::service_threads()
+    }
+    #[cfg(not(windows))]
+    {
+        0
     }
 }
 
@@ -961,6 +1004,17 @@ pub(super) fn start_wait_fd(
     waiter: Waiter,
 ) -> Arc<Operation> {
     imp::start_wait_fd(fd, write, deadline, waiter)
+}
+
+#[cfg(windows)]
+pub(super) fn start_wait_fd(
+    fd: Descriptor,
+    write: bool,
+    deadline: Option<std::time::Instant>,
+    waiter: Waiter,
+    owner: Arc<dyn Send + Sync>,
+) -> SocketWait {
+    windows::start_wait_fd(fd, write, deadline, waiter, owner)
 }
 
 #[cfg(test)]

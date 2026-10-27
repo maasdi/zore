@@ -988,11 +988,11 @@ pub mod test_support {
         until(|| match kind {
             1 => super::super::reactor::snapshot().2 == count,
             2 => {
-                #[cfg(any(target_os = "linux", target_os = "macos"))]
+                #[cfg(any(target_os = "linux", target_os = "macos", windows))]
                 {
                     super::super::reactor::snapshot().0 == count
                 }
-                #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+                #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
                 {
                     let (threads, idle, queued) = super::super::blocking::snapshot();
                     threads - idle + queued >= count
@@ -1040,8 +1040,9 @@ pub mod test_support {
         let socket_handles = super::super::net::live_handles();
         let allocated_bytes = super::super::alloc::live_bytes();
         let timer_threads = super::super::reactor::timer_threads();
+        let readiness_threads = super::super::reactor::readiness_threads();
         format!(
-            "{{\"timer_threads\":{timer_threads},\"allocated_bytes\":{allocated_bytes},\"helper_threads\":{helper_threads},\"idle_helpers\":{idle_helpers},\"queued_helpers\":{queued_helpers},\"socket_handles\":{socket_handles},\"tasks\":{tasks},\"workers\":{workers},\"blocked_workers\":{blocked},\"queued_tasks\":{queued},\"reactor_registrations\":{registrations},\"timer_records\":{timer_records},\"live_timers\":{live_timers},\"channels\":{},\"mutexes\":{},\"text_buffers\":{}}}",
+            "{{\"readiness_threads\":{readiness_threads},\"timer_threads\":{timer_threads},\"allocated_bytes\":{allocated_bytes},\"helper_threads\":{helper_threads},\"idle_helpers\":{idle_helpers},\"queued_helpers\":{queued_helpers},\"socket_handles\":{socket_handles},\"tasks\":{tasks},\"workers\":{workers},\"blocked_workers\":{blocked},\"queued_tasks\":{queued},\"reactor_registrations\":{registrations},\"timer_records\":{timer_records},\"live_timers\":{live_timers},\"channels\":{},\"mutexes\":{},\"text_buffers\":{}}}",
             super::super::channel::live_channels(),
             super::super::mutex::live_mutexes(),
             super::super::string::live_buffers(),

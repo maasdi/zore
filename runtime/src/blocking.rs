@@ -182,6 +182,136 @@ mod tests {
     use std::sync::mpsc;
     use std::time::Instant;
 
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn socket_reads_and_deadlines_progress_while_the_only_helper_is_held() {
+        use std::io::Write;
+
+        unsafe extern "C" {
+            #[link_name = "zore_native_net_read_start"]
+            fn socket_read_start(id: i64, max: i64, context: *mut u8) -> *mut u8;
+
+            #[link_name = "zore_native_net_poll"]
+            fn socket_poll(operation: *mut u8, context: *mut u8, output: *mut u8) -> u8;
+        }
+
+        const CHILD: &str = "ZORE_TEST_SOCKET_PROGRESS_WITH_HELD_HELPER";
+        if std::env::var_os(CHILD).is_none() {
+            let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "blocking::tests::socket_reads_and_deadlines_progress_while_the_only_helper_is_held", "--nocapture"])
+                .env(CHILD, "1")
+                .spawn()
+                .unwrap();
+            let deadline = Instant::now() + Duration::from_secs(30);
+            loop {
+                if let Some(status) = child.try_wait().unwrap() {
+                    assert!(status.success());
+                    break;
+                }
+                if Instant::now() >= deadline {
+                    child.kill().unwrap();
+                    child.wait().unwrap();
+                    panic!("socket progress subprocess timed out");
+                }
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            return;
+        }
+        TEST_CAPACITY.set(1).unwrap();
+        TEST_IDLE.set(Duration::ZERO).unwrap();
+
+        let (started, active) = mpsc::channel();
+        let (release, held) = mpsc::channel();
+        submit(Box::new(move || {
+            started.send(()).unwrap();
+            held.recv_timeout(Duration::from_secs(20)).unwrap();
+        }));
+        active.recv_timeout(Duration::from_secs(10)).unwrap();
+        let (sentinel, queued) = mpsc::channel();
+        submit(Box::new(move || sentinel.send(()).unwrap()));
+        assert_eq!(snapshot(), (1, 0, 1));
+
+        let scheduler = TestPool::new(1);
+        let (registered, registrations) = mpsc::channel();
+        let (finished, completions) = mpsc::channel();
+        let mut peers = Vec::new();
+        for timed in [false, true] {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let peer = std::net::TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+            let (stream, _) = listener.accept().unwrap();
+            let handle = crate::net::test_connection(stream);
+            peers.push(peer);
+            let registered = registered.clone();
+            let finished = finished.clone();
+            let mut operation = 0usize;
+            scheduler.spawn(move |context| unsafe {
+                let mut output = std::mem::MaybeUninit::<crate::sys::ByteArrayError>::uninit();
+                if operation == 0 {
+                    if timed {
+                        let mut deadline_result = crate::sys::ErrorOut::ok();
+                        crate::net::zore_native_net_set_deadline(
+                            &mut deadline_result,
+                            handle,
+                            1,
+                            crate::sys::zore_native_time_now() + 100_000_000,
+                        );
+                        assert_eq!(deadline_result.failed, 0);
+                    }
+                    operation =
+                        socket_read_start(handle, 1, std::ptr::from_mut(context).cast()) as usize;
+                    registered.send(()).unwrap();
+                }
+                if socket_poll(
+                    operation as *mut u8,
+                    std::ptr::from_mut(context).cast(),
+                    output.as_mut_ptr().cast(),
+                ) == 0
+                {
+                    return Poll::Pending;
+                }
+                let output = output.assume_init();
+                if timed {
+                    assert_eq!((output.failed, output.array.len), (1, 0));
+                    assert_eq!(
+                        crate::bytes(output.message, output.message_len),
+                        b"net.Read: timed out"
+                    );
+                } else {
+                    assert_eq!(output.failed, 0);
+                    assert_eq!(crate::bytes(output.array.data, output.array.len), b"x");
+                }
+                crate::alloc::zore_free(output.array.data, output.array.cap);
+                crate::string::zore_string_release(output.message, output.message_len);
+                crate::net::zore_native_net_close_handle(handle);
+                finished.send(timed).unwrap();
+                Poll::Ready
+            });
+        }
+        for _ in 0..2 {
+            registrations.recv_timeout(Duration::from_secs(10)).unwrap();
+        }
+        peers[0].write_all(b"x").unwrap();
+        let mut completed = [
+            completions.recv_timeout(Duration::from_secs(10)).unwrap(),
+            completions.recv_timeout(Duration::from_secs(10)).unwrap(),
+        ];
+        completed.sort_unstable();
+        assert_eq!(completed, [false, true]);
+        assert_eq!(queued.try_recv(), Err(mpsc::TryRecvError::Empty));
+        assert_eq!(snapshot(), (1, 0, 1));
+        scheduler.idle();
+        assert_eq!(crate::net::live_handles(), 0);
+        assert_eq!(crate::reactor::snapshot().0, 0);
+
+        release.send(()).unwrap();
+        queued.recv_timeout(Duration::from_secs(10)).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while snapshot() != (0, 0, 0) {
+            assert!(Instant::now() < deadline, "helper did not finish");
+            std::thread::yield_now();
+        }
+    }
+
     #[test]
     fn capacity_one_queue_preserves_progress_expired_deadlines_and_cleanup() {
         const CHILD: &str = "ZORE_TEST_SMALL_HELPER_POOL";
