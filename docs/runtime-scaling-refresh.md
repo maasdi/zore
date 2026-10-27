@@ -279,7 +279,11 @@ other blocking operations, so these socket results do not complete #171.
 [Correctness CI](https://github.com/maasdi/zore/actions/runs/40433590322) passed
 on Linux, macOS and Windows, including 98 Windows runtime tests. Linux's first
 attempt hit an unrelated crypto-fixture compiler launch with `Text file busy`;
-the Linux job passed on rerun without a code change. The Windows regressions
+the Linux job passed on rerun without a code change. A later report-commit run
+reproduced that launch error in another crypto case. The fixture now retries
+only `ExecutableFileBusy` launch failures for at most five seconds; child exit
+results and other launch errors retain their existing assertions. This test-only
+change does not alter the captured compiler or runtime. The Windows regressions
 include writable readiness, exact resumed-write bytes, saturated-helper
 independence and owner release before wake. Local runtime type/lint and test-hook
 checks passed; executable validation used hosted toolchains because local MSVC

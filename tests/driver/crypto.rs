@@ -1,6 +1,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
+use std::time::{Duration, Instant};
 
 use zore::build::TempDir;
 
@@ -96,7 +97,18 @@ impl Fixture {
     }
 
     fn invoke(&self, action: &str, target: &str) -> Output {
-        self.command(action, target).output().unwrap()
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            match self.command(action, target).output() {
+                Err(error)
+                    if error.kind() == std::io::ErrorKind::ExecutableFileBusy
+                        && Instant::now() < deadline =>
+                {
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                output => return output.unwrap(),
+            }
+        }
     }
 }
 
