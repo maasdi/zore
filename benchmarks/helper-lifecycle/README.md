@@ -29,6 +29,8 @@ Each runtime is extracted from its exact Git commit, hashed and compiled with
 `zore_test_hooks`; both executables use the same probe source and Rust toolchain.
 No Zore compiler or clang is involved. Windows requires the x64 MSVC Rust linker
 environment; Linux and macOS use their native Rust toolchains.
+When `VCToolsInstallDir` is set, the probe build selects its native x64 MSVC
+linker explicitly, so Git Bash's unrelated `link.exe` cannot shadow it.
 
 The default natural-burst matrix has populations 32, 512 and 640, two repetitions,
 and four cycles per fresh process. Each cycle admits gated jobs, captures the

@@ -21,9 +21,12 @@ HERE = Path(__file__).resolve().parent
 
 
 def command(arguments, **options):
-    return subprocess.run(list(map(str, arguments)), cwd=options.pop('cwd', ROOT),
-                          capture_output=True, text=True, check=True,
-                          timeout=300, **options).stdout
+    try:
+        return subprocess.run(list(map(str, arguments)), cwd=options.pop('cwd', ROOT),
+                              capture_output=True, text=True, check=True,
+                              timeout=300, **options).stdout
+    except subprocess.CalledProcessError as error:
+        raise RuntimeError(f'{error}\n{error.stderr}') from error
 
 
 def digest(path):
@@ -52,15 +55,22 @@ def runtime_sources(revision, directory):
 
 def build(directory, runtime):
     rustc = os.environ.get('ZORE_RUSTC', 'rustc')
+    linker_arguments = []
+    if os.name == 'nt' and os.environ.get('VCToolsInstallDir'):
+        linker = Path(os.environ['VCToolsInstallDir']) / 'bin/Hostx64/x64/link.exe'
+        if not linker.is_file():
+            raise RuntimeError(f'native MSVC linker is absent: {linker}')
+        linker_arguments.append(f'-Clinker={linker}')
     library = directory / 'libzore_runtime.rlib'
     command([rustc, '--edition=2024', '--crate-name=zore_runtime', '--crate-type=rlib',
              '--cfg=zore_test_hooks', '-Dwarnings', '-Copt-level=2', '-Cpanic=abort',
              runtime / 'lib.rs', '-o', library])
     executable = directory / ('probe.exe' if os.name == 'nt' else 'probe')
     command([rustc, '--edition=2024', '-Dwarnings', '-Copt-level=2', '-Cpanic=abort',
-             '--extern', f'zore_runtime={library}', HERE / 'probe.rs', '-o', executable])
+             *linker_arguments, '--extern', f'zore_runtime={library}', HERE / 'probe.rs', '-o', executable])
     return executable, {'runtime_library_sha256': digest(library),
-                        'executable_sha256': digest(executable), 'probe_sha256': digest(HERE / 'probe.rs')}
+                        'executable_sha256': digest(executable), 'probe_sha256': digest(HERE / 'probe.rs'),
+                        'linker_arguments': linker_arguments}
 
 
 def read_lines(stream, output):
