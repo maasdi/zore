@@ -231,7 +231,9 @@ fn serve(reactor: &'static Reactor) {
             .settle(&snapshot, &descriptors[1..], Instant::now());
         drop(snapshot);
         for entry in completed {
-            entry.operation.complete();
+            let operation = Arc::clone(&entry.operation);
+            drop(entry);
+            operation.complete();
         }
     }
 }
@@ -245,6 +247,7 @@ pub(crate) fn start_wait_fd(
 ) -> Registration {
     let operation = Operation::new(waiter);
     if fd == RawSocket::MAX {
+        drop(owner);
         operation.complete();
         return Registration {
             operation,
@@ -432,6 +435,46 @@ mod tests {
         assert!(registration.is_ready());
         assert!(weak.upgrade().is_none());
         assert_eq!(signal.wakes.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn readiness_and_deadline_release_socket_owner_before_waking() {
+        struct OwnerReleasedAtWake {
+            owner: std::sync::Weak<TcpStream>,
+            sender: mpsc::Sender<bool>,
+        }
+
+        impl Wake for OwnerReleasedAtWake {
+            fn wake(self: Arc<Self>) {
+                self.wake_by_ref();
+            }
+
+            fn wake_by_ref(self: &Arc<Self>) {
+                let _ = self.sender.send(self.owner.upgrade().is_none());
+            }
+        }
+
+        for expires in [false, true] {
+            let (owner, mut peer) = pair();
+            let (sender, received) = mpsc::channel();
+            let waiter = Waker::from(Arc::new(OwnerReleasedAtWake {
+                owner: Arc::downgrade(&owner),
+                sender,
+            }))
+            .into();
+            let registration = start_wait_fd(
+                owner.as_raw_socket(),
+                false,
+                expires.then(Instant::now),
+                waiter,
+                owner,
+            );
+            if !expires {
+                peer.write_all(&[42]).unwrap();
+            }
+            assert!(received.recv_timeout(Duration::from_secs(10)).unwrap());
+            assert!(registration.is_ready());
+        }
     }
 
     #[test]

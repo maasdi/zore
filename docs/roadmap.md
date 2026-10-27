@@ -157,7 +157,9 @@ Issue [#177](https://github.com/maasdi/zore/issues/177) refreshes
 with the maintained harness and recorded source identities. The original
 three-host report remains historical. Issue #169's shared Windows timer
 implementation and before/after capture are recorded in
-[the runtime report](runtime-scaling-refresh.md). The #170 implementation adds shared Windows socket readiness; its validation and capture status are recorded there. Helper retirement in #171 remains a
+[the runtime report](runtime-scaling-refresh.md). The #170 implementation adds
+shared Windows socket readiness; its validation and capture status are recorded
+there. Helper retirement in #171 remains a
 measurement-informed follow-up.
 
 The [MVP evidence inventory](conformance/mvp.md) preserves its 2026-10-13

@@ -66,6 +66,10 @@ const RUNTIME_SOURCES: &[(&str, &str)] = &[
         "reactor.rs",
         include_str!("../../../runtime/src/reactor.rs"),
     ),
+    (
+        "reactor_windows.rs",
+        include_str!("../../../runtime/src/reactor_windows.rs"),
+    ),
     ("string.rs", include_str!("../../../runtime/src/string.rs")),
     (
         "strconv.rs",
