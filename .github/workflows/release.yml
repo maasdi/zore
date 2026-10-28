@@ -102,11 +102,20 @@ jobs:
           if [ "$RUNNER_OS" = Windows ]; then binary+=.exe; fi
           python .github/scripts/package_release.py create --binary "$binary" --target "$TARGET" --output dist "${arguments[@]}"
       - name: Validate installed archive outside checkout
-        shell: bash
+        shell: python
         run: |
-          suffix=tar.gz
-          if [ "$RUNNER_OS" = Windows ]; then suffix=zip; fi
-          python .github/scripts/smoke_release.py --archive "dist/zore-$VERSION-$TARGET.$suffix" --target "$TARGET" --version "$VERSION"
+          import os
+          import subprocess
+          import sys
+
+          target = os.environ["TARGET"]
+          version = os.environ["VERSION"]
+          suffix = "zip" if os.environ["RUNNER_OS"] == "Windows" else "tar.gz"
+          subprocess.run([
+              sys.executable, ".github/scripts/smoke_release.py",
+              "--archive", f"dist/zore-{version}-{target}.{suffix}",
+              "--target", target, "--version", version,
+          ], check=True)
       - uses: actions/upload-artifact@v7
         with:
           name: archive-${{ matrix.target }}
