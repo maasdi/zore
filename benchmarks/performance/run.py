@@ -12,7 +12,10 @@ import sys
 import tempfile
 
 from common import BenchmarkError, ROOT, command, suspended
-from compile import build, frame_layouts, measure_compile, source_identity
+from compile import (
+    build, frame_layouts, measure_compile, prepare_tool_wrappers,
+    source_identity, wrapper_identity,
+)
 from json_batches import measure_json
 from legacy import measure_legacy
 from rest_requests import measure_rest
@@ -40,6 +43,19 @@ def cpu_affinity_count():
         return len(os.sched_getaffinity(0))
     except (AttributeError, OSError):
         return None
+
+
+def load_average():
+    try:
+        return os.getloadavg()
+    except (AttributeError, OSError):
+        return None
+
+
+def supports_suites(platform_name, suites):
+    return platform_name == "linux" or (
+        platform_name == "win32" and set(suites) == {"compile"}
+    )
 
 
 def metadata(arguments):
@@ -74,7 +90,7 @@ def metadata(arguments):
             "cpu_model": suspended.cpu_model(),
             "logical_core_count": os.cpu_count(),
             "cpu_affinity_count": cpu_affinity_count(),
-            "load_average": os.getloadavg(),
+            "load_average": load_average(),
             "cgroup_limits": {
                 name: Path(f"/sys/fs/cgroup/{name}").read_text().strip()
                 for name in ["cpu.max", "memory.max"]
@@ -172,9 +188,12 @@ def measure_frames(directory, arguments):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Opt-in Linux compiler, REST/JSON and frame baselines."
+        description="Opt-in Linux performance baselines and Windows compile measurements."
     )
-    parser.add_argument("--compiler", type=Path, default=ROOT / "target/release/zore")
+    parser.add_argument(
+        "--compiler", type=Path,
+        default=ROOT / "target/release" / ("zore.exe" if os.name == "nt" else "zore"),
+    )
     parser.add_argument("--compiler-revision")
     parser.add_argument("--baseline-compiler", type=Path)
     parser.add_argument("--baseline-revision")
@@ -220,8 +239,10 @@ def main():
         parser.error("baseline compiler requires the compile suite")
     if arguments.baseline_revision and not arguments.baseline_compiler:
         parser.error("baseline revision requires a baseline compiler")
-    if sys.platform != "linux":
-        parser.error("memory/resource sampling requires Linux /proc")
+    if not supports_suites(sys.platform, arguments.suites):
+        parser.error(
+            "Windows supports only --suites compile; memory/resource sampling requires Linux /proc"
+        )
     arguments.compiler = arguments.compiler.resolve()
     if arguments.baseline_compiler:
         arguments.baseline_compiler = arguments.baseline_compiler.resolve()
@@ -236,6 +257,9 @@ def main():
         )
         with workspace as temporary:
             directory = Path(temporary)
+            if os.name == "nt":
+                os.environ.update(prepare_tool_wrappers(directory / "tool-wrappers"))
+            result["instrumentation"] = wrapper_identity()
             if "compile" in arguments.suites:
                 print(
                     "Measuring compiler check and warm/cold builds",

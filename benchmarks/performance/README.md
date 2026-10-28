@@ -6,10 +6,12 @@ and [current-main native-build profiles](../../docs/performance-builds.md).
 The [build-scheduling comparison](../../docs/performance-build-scheduling.md)
 records overlapping runtime/object compilation with warm and cold caches.
 
-This opt-in Linux runner extends the existing suspended-task, frame-storage and
-cooperative-budget workloads. It changes no compiler or scheduler semantics.
-Use Python 3.9+, Linux with /proc, the pinned Rust toolchain and clang/LLVM 15+.
-No package dependencies are added.
+This opt-in runner supports compiler measurements on Linux and Windows x64 MSVC.
+The request, memory and runtime suites extend the existing suspended-task,
+frame-storage and cooperative-budget workloads and require Linux with /proc.
+Use Python 3.9+, the pinned Rust toolchain and clang/LLVM 15+; the Windows
+capture workflow uses Python 3.13 and the MSVC native tools environment.
+It changes no compiler or scheduler semantics. No package dependencies are added.
 
 From the repository root:
 
@@ -85,6 +87,46 @@ Each private cache is write-probed before building. Snapshots retain rlib hashes
 sizes and modification timestamps. Compile measurements fail if a warm cache is
 missing, changed, or rebuilt, or if a cold cache fails to retain its runtime.
 Repeated fallback builds cannot be reported as normal warm builds.
+
+## Windows build capture
+
+The opt-in `Windows native build measurements` workflow runs with the
+`run-windows-build-benchmarks` pull request label or manual dispatch. The
+workflow selects an exact current-main source revision, builds matching release
+compilers and stage probes, and records an initial six-workload profile followed
+by three alternating repetitions per scheduling variant.
+
+Both variants use the same source snapshot. An isolated worktree replaces only
+the known runtime-preparation scheduling block with sequential preparation;
+the generated local commit, exact patch and tracked-file hashes are retained.
+The production compiler keeps its existing overlapping implementation.
+This control measures scheduling at the recorded source revision, independently
+of the historical Linux comparison. Run on an idle Windows x64 MSVC host with:
+
+```powershell
+$env:ZORE_CC = 'C:\Program Files\LLVM\bin\clang.exe'
+python benchmarks/performance/windows_capture.py `
+  --source-revision SOURCE_SHA `
+  --host-description C:\capture\host.json `
+  --directory C:\capture\new-run
+```
+
+The host-description JSON records OS/CPU/memory, process affinity, runner image
+and native toolchain versions as in the workflow. The capture directory must be
+new. `VCToolsInstallDir` must identify native x64 MSVC tools. Compiler and native
+tool failures fail the capture; `capture.json` and completed per-row reports
+remain available, including on failure. The workflow uploads these artifacts.
+
+Only `--suites compile` is supported on Windows. Executable Rust launchers invoke
+Python instrumentation without shell parsing; they are built before timed
+measurements. The rustc wrapper selects a separately instrumented real MSVC
+linker for entry-shim linking. Per-command files prevent concurrent log writes
+from interleaving, then merge into each build's command log. LLVM and object
+hashes identify each captured input/output; the paired verifier rejects LLVM
+input drift. Wall time includes launcher/Python startup and capture overhead.
+Nested linker time remains inside rustc entry/link time. Physical hosted-runner
+scheduling is uncontrolled, and no portable timing or cross-host parity claim
+follows from these trials. See the [Windows report](../../docs/performance-build-windows.md).
 
 Profile repeated fixed-case REST requests, then observe the original deadlines:
 

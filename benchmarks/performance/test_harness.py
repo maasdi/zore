@@ -2,6 +2,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -34,7 +35,6 @@ class Handler(BaseHTTPRequestHandler):
         pass
 
 
-@unittest.skipIf(os.name == "nt", "the performance harness does not support Windows")
 class HarnessTests(unittest.TestCase):
     def test_shared_metadata_supports_retention_arguments_without_stage_profilers(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -151,7 +151,7 @@ class HarnessTests(unittest.TestCase):
             hook_ir("")
 
     def test_profile_control_program_passes_the_real_frontend(self):
-        compiler = ROOT / "target/debug/zore"
+        compiler = ROOT / "target/debug" / ("zore.exe" if os.name == "nt" else "zore")
         if not compiler.is_file():
             self.skipTest(f"{compiler} is missing; build it with cargo build --locked")
         with tempfile.TemporaryDirectory() as directory:
@@ -165,6 +165,7 @@ class HarnessTests(unittest.TestCase):
             )
             self.assertEqual(result.returncode, 0, result.stderr)
 
+    @unittest.skipIf(os.name == "nt", "pipe selectors require Unix")
     def test_partial_protocol_line_cannot_bypass_the_deadline(self):
         reader, writer = os.pipe()
         try:
@@ -176,6 +177,8 @@ class HarnessTests(unittest.TestCase):
             os.close(writer)
 
     def test_clang_reports_padded_frame_size_and_constructor_identity(self):
+        if not shutil.which(os.environ.get("ZORE_CC", "clang")):
+            self.skipTest("clang is unavailable")
         ir = """%"main.AsyncFrame.17" = type { [3 x i8], i64, ptr }
 define private ptr @"main.wait$async$new"() {
   %frame = alloca %"main.AsyncFrame.17"

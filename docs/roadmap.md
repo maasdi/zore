@@ -150,8 +150,9 @@ Further self-hosting remains deferred.
 Issue [#195](https://github.com/maasdi/zore/issues/195) overlaps runtime-library
 preparation with clang object generation. Its [Linux build-scheduling report](performance-build-scheduling.md)
 records current-main stage profiles, alternating warm/cold measurements and raw
-evidence; optional Windows build-performance measurements are tracked in
-[#205](https://github.com/maasdi/zore/issues/205).
+evidence. Issue [#205](https://github.com/maasdi/zore/issues/205) records
+[Windows native build profiles and isolated scheduling tradeoffs](performance-build-windows.md)
+with raw paired evidence; the production build scheduler is unchanged.
 
 Issue [#177](https://github.com/maasdi/zore/issues/177) refreshes
 [Linux/macOS/Windows runtime population evidence](runtime-scaling-refresh.md)
@@ -164,8 +165,8 @@ there. Helper retirement in #171 now has fixed idle deadlines, explicit lifecycl
 counters and a [paired component capture](helper-idle-retirement.md); that report
 records completed validation and raw evidence. These implementation and
 measurement follow-ups complete the scope of tracker
-[#150](https://github.com/maasdi/zore/issues/150); optional Windows
-build-performance measurements continue separately in #205.
+[#150](https://github.com/maasdi/zore/issues/150). The separate Windows
+build-performance measurement scope is recorded in #205.
 
 The [MVP evidence inventory](conformance/mvp.md) preserves its 2026-10-13
 reviewed baseline and maps later direct assertions in dated follow-ups. Its
