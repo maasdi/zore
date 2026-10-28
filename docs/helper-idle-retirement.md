@@ -214,5 +214,8 @@ The bounded reuse follow-up preserves the original JSON bytes separately:
 | [macOS reuse](../benchmarks/helper-lifecycle/macos-reuse-2026-10-28.json.gz) | `12787181338` | `d4dd1ff99acefda41cb26a235681fbc8bd4346d68c11ca65f27f4f80581a25c8` |
 | [Windows reuse](../benchmarks/helper-lifecycle/windows-reuse-2026-10-28.json.gz) | `12786997774` | `d016e9e9df1bf40ced4cd02f13382a80b890ae2f2dcec8a4774c8eb1714ef32c` |
 
-Implementation and measurement validation are complete. PR #204 awaits review
-and merge; #171 remains open until merge.
+Implementation and measurement validation are complete.
+[PR #204](https://github.com/maasdi/zore/pull/204) merged on 2026-10-28 as
+`0d245084ad9971ac67d63c76cd3bb151a668c9db`, closing #171. Final pre-merge
+[correctness CI](https://github.com/maasdi/zore/actions/runs/40622265707) passed
+on Linux, macOS and Windows.

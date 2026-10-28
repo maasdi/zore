@@ -20,8 +20,10 @@ Host: Linux-6.18.55-x86_64-with-glibc2.41, AMD EPYC 9V74 80-Core Processor;
 three CPUs in affinity, two-CPU cgroup quota, 8 GiB memory limit.
 Toolchain: rustc 1.98.1 (48a229cea 2026-09-01), Debian clang version 19.1.7 (3+b1),
 Python 3.12.14. No Windows/macOS performance run is claimed.
-Windows-specific performance work remains deferred until a Windows machine is
-available. Existing correctness CI still covers Linux, macOS and Windows.
+Optional Windows build-performance measurements are tracked separately in
+[#205](https://github.com/maasdi/zore/issues/205); the Linux implementation and
+measurement scope in #195 is complete. Existing correctness CI still covers
+Linux, macOS and Windows.
 
 The initial baseline has one fresh check, warm build and cold runtime-cache
 build per workload. The final alternating comparison contains 36 rows: six
