@@ -119,6 +119,13 @@ linked above.
 
 ## Current implementation and next work
 
+Beta distribution work prepares `v0.1.0-beta.1` compiler archives, checksums and
+a Linux amd64 builder image for independent application repositories. The
+[beta guide](beta.md) records installation, toolchain requirements and release
+gates. Packaging validation includes an independent HTTP project and a minimal
+runtime image; it does not complete the MVP acceptance backlog or schedule
+website implementation in this compiler repository.
+
 The library ecosystem tracker [#135](https://github.com/maasdi/zore/issues/135)
 follows the completed #121 sequence. Its first increment, [#136](https://github.com/maasdi/zore/issues/136),
 implements local project dependencies, direct dependency visibility, canonical

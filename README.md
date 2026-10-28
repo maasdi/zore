@@ -74,7 +74,12 @@ records covered behavior and remaining conformance gaps; see the
 
 ## Getting started
 
-You need:
+The [beta installation guide](docs/beta.md) covers prebuilt compiler archives,
+checksums and the Linux builder image. Prebuilt archives remove the compiler
+source-build step; native application builds still require Rust and clang,
+which the builder image supplies.
+
+To build the compiler from source, you need:
 
 - **Rust**, installed through [rustup](https://rustup.rs/). The repository pins
   the toolchain in `rust-toolchain.toml`, so rustup selects it automatically.

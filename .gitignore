@@ -1,4 +1,5 @@
 /target/
+__pycache__/
 
 # Editors and operating systems
 .DS_Store

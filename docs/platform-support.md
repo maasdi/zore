@@ -1,5 +1,10 @@
 # Native host support
 
+For prebuilt beta archives and the Linux builder image, see
+[beta distribution](beta.md). Archive host baselines are narrower than the
+source-build host families below; a compiler download does not remove native
+application toolchain requirements.
+
 Zore builds for the host running the compiler. Cross-compilation is outside MVP.
 The frontend (`check` and `fmt`) needs no clang or native linker.
 Native code generation requires a 64-bit host; other pointer widths receive a

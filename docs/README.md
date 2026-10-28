@@ -10,6 +10,7 @@
 | [Decision records](decisions/) | Substantial implementation choices with context, alternatives, and consequences. |
 | [Testing guide](../tests/README.md) | Test suites, conformance documents, and conventions. |
 | [Platform support](platform-support.md) | Native host/toolchain requirements, platform APIs, and Windows validation. |
+| [Beta distribution](beta.md) | Prebuilt compiler archives, checksums, Linux builder image, installation and release validation. |
 | [MVP evidence inventory](conformance/mvp.md) | Current specification coverage, direct test gaps, intentional restrictions, and tracked follow-ups. |
 | [Tagged dependencies](versioned-dependencies.md) | Compatible minimum versions, tagged source verification, lock provenance and offline consumption. |
 | [Release metadata](release-metadata.md) | Optional local release preflight, canonical version/tag grammar, licensing and compatibility metadata. |

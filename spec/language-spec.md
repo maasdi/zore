@@ -440,7 +440,15 @@ resolve to readable regular UTF-8 files and remain within the canonical project
 root, including after symlink resolution. An empty license file is rejected.
 
 `zore-min` is an inclusive canonical compiler-version bound; `zore-max` is
-exclusive. If both occur, minimum must be strictly below maximum. `platforms`
+exclusive. Compiler distributions may carry a prerelease or build suffix;
+these bounds compare the compiler's numeric `MAJOR.MINOR.PATCH` core, not its
+distribution suffix. For example, `0.1.0-beta.1` satisfies `zore-min = "0.1.0"`
+and fails `zore-max = "0.1.0"`. This comparison does not declare a prerelease
+stable or extend the canonical project-version grammar above. No source
+syntax, ownership, error, cleanup or async behavior changes. The loader must
+derive the compiler core separately from its display version; conformance
+covers acceptance at the inclusive core and rejection at the exclusive core.
+If both occur, minimum must be strictly below maximum. `platforms`
 is a nonempty single-line array of distinct strings from `linux`, `macos`,
 `windows`; a trailing comma is allowed. Absence imposes no restriction. Supplied
 bounds and platform restrictions are honored for every project in an ordinary

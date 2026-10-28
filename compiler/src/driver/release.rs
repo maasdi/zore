@@ -266,9 +266,11 @@ pub fn validate_metadata(files: &dyn FileSystem, manifest: &Manifest) -> Result<
     manifest
         .metadata
         .validate_support(
-            &env!("CARGO_PKG_VERSION")
-                .parse()
-                .expect("canonical compiler version"),
+            &Version([
+                env!("CARGO_PKG_VERSION_MAJOR").into(),
+                env!("CARGO_PKG_VERSION_MINOR").into(),
+                env!("CARGO_PKG_VERSION_PATCH").into(),
+            ]),
             std::env::consts::OS,
         )
         .map_err(|message| manifest_error(&manifest.root, message))?;
