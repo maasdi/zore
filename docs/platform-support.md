@@ -59,6 +59,11 @@ Files, standard input, connects and name resolution still use helpers.
 Queued helper jobs reserve idle capacity before those workers wake, preventing
 several dependent operations from relying on the same idle helper. The helper
 pool remains bounded at 512 threads.
+Idle helpers retain one monotonic grace deadline across empty wakeups; completed
+work renews it, and queued work takes priority over retirement. The internal
+five-second policy does not impose an OS scheduling or thread-destruction
+deadline. [Helper lifecycle validation](helper-idle-retirement.md) separates
+logical retirement, reuse and raw OS memory/thread observations.
 
 `std/path` always uses slash-separated text paths. Windows `std/path/filepath`
 accepts both separators, emits backslashes, preserves drive and UNC volumes,

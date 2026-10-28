@@ -1,0 +1,70 @@
+name: Helper lifecycle measurements
+
+on:
+  workflow_dispatch:
+    inputs:
+      baseline_revision:
+        description: Instrumented runtime revision before the retirement policy change
+        type: string
+        default: 153dfc7d24b03be844c174f55b5a272209248b5c
+      reuse_confirmation:
+        description: Run only the bounded probe-side reuse confirmation
+        type: boolean
+        default: false
+  pull_request:
+    types: [opened, synchronize, reopened, labeled]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: helper-lifecycle-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  measure:
+    if: github.event_name == 'workflow_dispatch' || contains(github.event.pull_request.labels.*.name, 'run-helper-lifecycle-benchmarks') || contains(github.event.pull_request.labels.*.name, 'run-helper-reuse-benchmarks')
+    name: Helper lifecycle (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Configure Windows native toolchain
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.13'
+      - name: Install sampler
+        run: python -m pip install psutil==7.2.2
+      - name: Install repository toolchain
+        run: rustup show active-toolchain
+      - name: Validate lifecycle harness
+        run: python -m unittest discover -s benchmarks/helper-lifecycle -p 'test_*.py'
+      - name: Capture paired helper lifecycles
+        shell: bash
+        env:
+          HELPER_BASELINE_REVISION: ${{ inputs.baseline_revision || '153dfc7d24b03be844c174f55b5a272209248b5c' }}
+          HELPER_REUSE_CONFIRMATION: ${{ inputs.reuse_confirmation || contains(github.event.pull_request.labels.*.name, 'run-helper-reuse-benchmarks') }}
+        run: |
+          helper_capture_arguments=(--baseline-revision "$HELPER_BASELINE_REVISION" --after-revision "${{ github.sha }}")
+          if [ "$HELPER_REUSE_CONFIRMATION" = "true" ]; then
+            helper_capture_arguments+=(--reuse-confirmation --output "helper-reuse-${{ runner.os }}.json")
+          else
+            helper_capture_arguments+=(--output "helper-lifecycle-${{ runner.os }}.json")
+          fi
+          python benchmarks/helper-lifecycle/run.py "${helper_capture_arguments[@]}"
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: helper-lifecycle-${{ runner.os }}-${{ github.sha }}
+          path: helper-*.json
+          if-no-files-found: warn

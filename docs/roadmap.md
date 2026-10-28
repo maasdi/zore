@@ -159,8 +159,9 @@ three-host report remains historical. Issue #169's shared Windows timer
 implementation and before/after capture are recorded in
 [the runtime report](runtime-scaling-refresh.md). The #170 implementation adds
 shared Windows socket readiness; its validation and capture status are recorded
-there. Helper retirement in #171 remains a
-measurement-informed follow-up.
+there. Helper retirement in #171 now has fixed idle deadlines, explicit lifecycle
+counters and a [paired component capture](helper-idle-retirement.md); that report
+tracks validation and measurement status.
 
 The [MVP evidence inventory](conformance/mvp.md) preserves its 2026-10-13
 reviewed baseline and maps later direct assertions in dated follow-ups. Its
