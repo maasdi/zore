@@ -172,8 +172,8 @@ the PR merge tree for head `1b4f1542c37c9e232a24f8d47601806b9c9e7695`.
 Across both policies and all populations, release-to-drained intervals ranged
 from 0.141 to 3.808 ms on Linux, 0.170 to 31.632 ms on macOS, and 0.143 to
 9.595 ms on Windows. Drained-to-submission boundaries were at most 0.000208 ms;
-submission-to-all-active intervals were at most 11.221 ms. OS sampling occurred
-only while the next burst was gated active, outside these intervals.
+submission-to-all-active intervals were at most 11.221 ms. No OS sampling
+occurred within these restart intervals.
 
 ### RSS observations
 
