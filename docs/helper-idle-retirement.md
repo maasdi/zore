@@ -60,8 +60,133 @@ will finish destroying every helper thread at a particular wall-clock instant.
 
 ## Validation status
 
-Local runtime checks and strict Clippy passed in normal and test-hook builds.
-The Rust probe typechecks, and Python protocol/invariant/error-cleanup checks
-passed. Native probe execution is skipped locally because MSVC `link.exe` is
-absent. Hosted correctness CI and paired three-host lifecycle capture are
-pending; this report does not yet claim an observed retirement improvement.
+[Correctness CI](https://github.com/maasdi/zore/actions/runs/40462446168) passed on
+Linux, macOS and Windows, including 100 Windows runtime tests and the native
+two-job probe. Local normal/hook checks, strict Clippy, formatting, probe
+typechecking, Python protocol/invariant/error-cleanup checks and imports passed.
+Native execution used hosted toolchains because local MSVC `link.exe` is absent.
+The harness explicitly selects the native MSVC linker when the developer-tools
+directory is present, avoiding Git Bash's unrelated executable of the same name.
+
+## Paired capture — 2026-10-27
+
+[Run 40462446032](https://github.com/maasdi/zore/actions/runs/40462446032) passed
+on all three hosts. Each host completed two runtime/probe builds, 14 successful
+fresh-process trials, 52 cycles and 104 gated bursts. Every child exited with
+status zero and empty stderr, without harness termination. Source trees were
+clean. All runtime and harness manifest hashes match their recorded commits.
+
+The before runtime is `153dfc7d24b03be844c174f55b5a272209248b5c`; the after
+runtime and harness are `e1c0b13145b02d53f2432ed99de965225c2bb948`, the PR #204
+merge tree at head `60fd0cb74ec32616e7ff60b3855e374573377606`. Rust 1.98.1 and
+psutil 7.2.2 were used on Linux x86_64, macOS arm64 and Windows x64 MSVC. The
+Windows host was Server 2025 build 10.0.26100, AMD64 Family 25 Model 1, four CPUs.
+These are paired component results on each host, not comparisons of application
+throughput across hosts.
+
+At 640 submitted jobs, both policies admitted 512 active helper jobs and kept
+128 queued; every job completed its nested inline work. At every quiet
+checkpoint, active jobs and queued jobs were zero. Tracked Zore ABI bytes,
+tasks, socket handles, timers and readiness registrations were zero throughout
+this synthetic workload. Lifecycle balances held at every checkpoint.
+
+### Natural bursts
+
+Linux and macOS recorded zero helpers at the requested six-second checkpoint
+and all later checkpoints with both policies, at all three populations.
+Windows exposed a longer tail with the relative-wait policy. Each range below
+covers eight cycles: two fresh-process repetitions with four cycles each.
+
+| Windows submitted jobs | Helpers at 6 s, before / after | At 15 s | At 30 s | At 60 s |
+| --- | ---: | ---: | ---: | ---: |
+| 32 | 17–27 / 0 | 6–19 / 0 | 0–5 / 0 | 0 / 0 |
+| 512 | 512 / 0 | 280–512 / 0 | 70–300 / 0 | 0–36 / 0 |
+| 640 | 368–512 / 0 | 145–512 / 0 | 29–323 / 0 | 0–107 / 0 |
+
+The after policy recorded zero helpers at every six-second and later checkpoint
+on every host. These are checkpoint observations, not an exact OS retirement
+deadline. Offsets are measured from the parent's receipt of completion
+acknowledgement. Windows observations sometimes ran late: the before 640-job
+six-second checkpoints were observed at 6.000–12.692 seconds, whereas after
+observations were at 6.000–6.001 seconds. The reports preserve every requested
+offset, observed offset and OS-sample timestamp.
+
+For 640-job Windows bursts, OS thread samples ranged from 302–518 before to
+3–6 after at the requested six-second checkpoint, and 3–110 before to 3 after
+at 60 seconds. The process baseline includes two scheduler workers and the main
+thread; other OS activity and thread-exit lag are not identity-mapped to helpers.
+Unix snapshots also initialize the existing reactor, producing a four-thread
+idle baseline.
+
+### Empty-notification control
+
+This separate control issues twenty notifications over ten seconds in each
+cycle. Both policies recorded 32 helpers at one second. At six and fifteen
+seconds, every host's before run still recorded 32 helpers; every after run
+recorded zero. Linux/macOS before runs reached zero by 30 seconds. Windows
+before runs recorded 4–13 helpers at 30 seconds and zero at 60 seconds.
+
+This directly exercises the relative-timeout rearming weakness with known empty
+notifications. Natural Windows trials also recorded very large empty-wake
+counts with both policies. Their underlying cause was not isolated, and this
+experiment does not establish that the patch introduced a wake storm or that
+one mechanism explains every historical socket observation.
+
+### Reuse and sampling limits
+
+Every Linux/macOS reuse burst started zero new helpers. Windows 32-job trials
+also reused their helpers with both policies. High-capacity Windows observations
+need a timing qualification: the harness sampled OS resources between completion
+and the next request. Nominal 0.2-second sample windows sometimes had samples
+about 4.4 seconds apart, consuming the five-second grace period.
+
+Across the sixteen after cycles at 512/640 jobs, twelve recreated helpers and
+had completion-to-reuse-response intervals of 5.030–5.096 seconds; the other four
+started no helpers and had intervals of 0.599–4.698 seconds. Before runs reused
+helpers across intervals of 4.470–12.547 seconds, consistent with prolonged
+retention. Command-send times were not recorded in this capture, so these gaps
+cannot be attributed exclusively to runtime response time. The configuration's
+short reuse gap does not establish actual immediate reuse in those trials.
+
+The deterministic clock test verifies that work admitted before expiry reuses
+the worker and renews grace. A bounded follow-up now requests release and restart
+inside the probe, with no OS sampling or parent round trip between them. It
+records probe release, whole-burst drained, submission and all-active times,
+plus parent send/receive times. Earlier workers can use part of their grace
+while the rest of the burst drains; these are batch times, not individual
+workers' idle origins. Those
+confirmation results are pending; the current capture supports retirement-tail
+improvement without claiming universal warm-reuse behavior under contention.
+
+### RSS observations
+
+Values below are KiB over each cycle's baseline, reported as min / median / max
+of eight differences of OS-sample medians at 640 submitted jobs. A cycle can
+begin with retained resources from the previous cycle, especially in the before
+Windows run. These baseline differences do not isolate allocator or stack costs.
+
+| Host / requested idle point | RSS increment before | RSS increment after |
+| --- | ---: | ---: |
+| Linux / 6 s | 4 / 28 / 1,328 | 4 / 26 / 1,324 |
+| Linux / 60 s | 4 / 28 / 1,328 | 4 / 26 / 1,324 |
+| macOS / 6 s | 0 / 24 / 1,392 | 0 / 16 / 1,408 |
+| macOS / 60 s | 0 / 24 / 1,408 | 0 / 16 / 1,424 |
+| Windows / 6 s | 6,124 / 8,286 / 9,368 | -184 / -8 / 444 |
+| Windows / 60 s | -2,080 / 506 / 2,504 | -184 / -8 / 400 |
+
+Flat or elevated RSS after jobs and helpers retire remains a process-level
+retention observation. Four cycles and a 60-second tail do not establish a
+whole-process leak bound or a portable memory/performance guarantee.
+
+## Raw evidence
+
+These gzip archives preserve the original artifact JSON bytes, including both
+runtime variants and every checkpoint. SHA-256 values refer to decompressed JSON.
+
+| Host | Artifact ID | Decompressed SHA-256 |
+| --- | --- | --- |
+| [Linux](../benchmarks/helper-lifecycle/linux-2026-10-27.json.gz) | `12717411007` | `ceb321bd200202d7e4a3a65da390667f924f336eff821ba37e80bfb5660dc86e` |
+| [macOS](../benchmarks/helper-lifecycle/macos-2026-10-27.json.gz) | `12716734475` | `66f924e84b0cd75bf29ec91d7f385e8f1805447b42b38ee8fbe43588cf2ae5ba` |
+| [Windows](../benchmarks/helper-lifecycle/windows-2026-10-27.json.gz) | `12717546368` | `a378faf9a99ec8c9f3c46198d8ced37205f23a9dc04c5bf41a21713f26ccd9cf` |
+
+PR #204 remains pending review and merge; #171 is not closed by this report.

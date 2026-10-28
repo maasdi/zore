@@ -40,8 +40,9 @@ including at the 512-thread capacity. Population 640 exercises queued admission.
 Active jobs and the queue must settle at the expected counts before capture.
 
 After the reuse burst, snapshots occur at elapsed offsets 1, 6, 15, 30 and 60
-seconds. These offsets share one completion origin; they are not cumulative
-sleeps. The report records requested and observed offsets. Before/after order
+seconds after the parent receives completion acknowledgement. These offsets
+share one origin; they are not cumulative sleeps. The report records requested
+and observed offsets. Before/after order
 alternates between cases on the same host. Each side starts with a fresh process.
 
 A separate 32-job control uses two cycles and deliberately notifies idle helpers
@@ -57,6 +58,29 @@ Linux, macOS and Windows separately from correctness CI. Failed experiments
 retain their raw artifacts and remain failures. Ordinary correctness CI runs
 small deterministic lifecycle tests and a two-job probe smoke test, without
 retirement-duration or RSS thresholds.
+
+OS sampling can overrun its requested window. In the first Windows capture,
+sampling between completion and reuse sometimes consumed the five-second grace
+period; the configured short gap therefore did not establish immediate reuse.
+Keep those timing observations separate from a direct reuse confirmation:
+
+```sh
+python benchmarks/helper-lifecycle/run.py \
+  --baseline-revision 153dfc7d24b03be844c174f55b5a272209248b5c \
+  --after-revision HEAD --reuse-confirmation --output /tmp/helper-reuse.json
+```
+
+This mode asks the probe itself to release, await completion and start the next
+burst without OS sampling or a parent round trip between those operations.
+It records probe-side release, whole-burst drained, submission and all-active
+times, parent send/receive times and new helper starts. Earlier workers can use
+part of their grace while the rest of the burst drains; these are batch times,
+not individual workers' idle origins. Sampling occurs only after the next burst
+is gated active.
+Three populations, two repetitions and four restarts give 12 processes, 48
+restart observations and 60 bursts per host. The dedicated
+`run-helper-reuse-benchmarks` label or manual `reuse_confirmation` input selects
+this bounded follow-up instead of repeating the long retirement capture.
 
 `helper_active_jobs` counts closures popped but not returned, including their
 nested inline work. Starting and transitioning workers are not active jobs.

@@ -118,6 +118,42 @@ class HarnessTests(unittest.TestCase):
             child.wait.assert_called_once()
             self.assertTrue(child.stdin.closed and child.stdout.closed and child.stderr.closed)
 
+    def test_reuse_confirmation_records_restarts_and_samples_only_gated_bursts(self):
+        child = mock.Mock()
+        child.pid = 1
+        child.returncode = 0
+        child.stdin = io.StringIO()
+        child.stdout = io.StringIO()
+        child.stderr = io.StringIO()
+        child.poll.return_value = 0
+        active = counters(helper_threads=2, helper_active_jobs=2, helper_starts=2)
+        restarted = {'released_ns': 10, 'completed_ns': 20, 'submitted_ns': 21,
+                     'active_ns': 30, 'runtime': active}
+        responses = [counters(), active, restarted, restarted, counters(helper_threads=2,
+                     idle_helpers=2, helper_starts=2)]
+        sampled_commands = []
+
+        def sample(_process):
+            sampled_commands.append(child.stdin.getvalue().splitlines())
+            return {'rss_bytes': 1, 'threads': 3}
+
+        sampler = types.SimpleNamespace(Error=RuntimeError, Process=mock.Mock())
+        with mock.patch.dict(sys.modules, {'psutil': sampler}), \
+                mock.patch('run.subprocess.Popen', return_value=child), \
+                mock.patch('run.snapshot', side_effect=responses), \
+                mock.patch('run.resource_sample', side_effect=sample):
+            result = measure(Path('unused'), 2, 2, [1], 0, 5, 0.01, reuse_confirmation=True)
+        self.assertEqual(result['status'], 'ok', result.get('failure'))
+        self.assertEqual(sampled_commands, [[], ['start 2'], ['start 2', 'restart'],
+                         ['start 2', 'restart', 'restart'], ['start 2', 'restart', 'restart', 'release']])
+        self.assertEqual([event['new_helper_starts'] for event in result['reuse_events']], [0, 0])
+        self.assertEqual(result['reuse_events'][0]['submitted_ns'], 21)
+        self.assertEqual([point['phase'] for point in result['checkpoints']],
+                         ['initial', 'active', 'reuse_active', 'reuse_active', 'completed'])
+        self.assertFalse(result['terminated_by_harness'])
+        child.kill.assert_not_called()
+        self.assertTrue(child.stdin.closed and child.stdout.closed and child.stderr.closed)
+
     @unittest.skipUnless(shutil.which('rustfmt'), 'rustfmt is required')
     def test_rust_probe_is_formatted(self):
         subprocess.run(['rustfmt', '--check', '--edition', '2024', str(HERE / 'probe.rs')],
@@ -142,6 +178,14 @@ class HarnessTests(unittest.TestCase):
                     active = snapshot(output, 10)
                     validate(active)
                     self.assertEqual((active['helper_active_jobs'], active['queued_helpers']), (2, 0))
+                    child.stdin.write('restart\n')
+                    child.stdin.flush()
+                    restarted = snapshot(output, 10)
+                    validate(restarted['runtime'])
+                    self.assertEqual(restarted['runtime']['helper_active_jobs'], 2)
+                    self.assertLessEqual(restarted['released_ns'], restarted['completed_ns'])
+                    self.assertLessEqual(restarted['completed_ns'], restarted['submitted_ns'])
+                    self.assertLessEqual(restarted['submitted_ns'], restarted['active_ns'])
                     child.stdin.write('release\n')
                     child.stdin.flush()
                     validate(snapshot(output, 10), True)

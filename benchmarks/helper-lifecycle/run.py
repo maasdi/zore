@@ -114,7 +114,7 @@ def resource_sample(process):
 
 
 def measure(executable, population, cycles, checkpoints, sample_seconds, timeout,
-            reuse_gap, empty_wake_seconds=0, wake_interval=0.5):
+            reuse_gap, empty_wake_seconds=0, wake_interval=0.5, reuse_confirmation=False):
     import psutil
 
     started = time.monotonic()
@@ -125,7 +125,7 @@ def measure(executable, population, cycles, checkpoints, sample_seconds, timeout
     errors = []
     error_reader = None
     result = {'population': population, 'cycles': cycles, 'empty_wake_seconds': empty_wake_seconds,
-              'checkpoints': [], 'notifications': [], 'status': 'failed'}
+              'checkpoints': [], 'notifications': [], 'reuse_events': [], 'status': 'failed'}
 
     def response():
         remaining = timeout - (time.monotonic() - started)
@@ -169,7 +169,29 @@ def measure(executable, population, cycles, checkpoints, sample_seconds, timeout
         error_reader = threading.Thread(target=lambda: errors.append(child.stderr.read()), daemon=True)
         error_reader.start()
         record('initial', response(), 0)
-        for cycle in range(1, cycles + 1):
+        if reuse_confirmation:
+            send(f'start {population}')
+            previous = response()
+            record('active', previous, 0)
+            for cycle in range(1, cycles + 1):
+                sent = time.monotonic() - started
+                send('restart')
+                restarted = response()
+                received = time.monotonic() - started
+                current = restarted['runtime']
+                result['reuse_events'].append({
+                    'cycle': cycle, 'request_elapsed_seconds': sent, 'response_elapsed_seconds': received,
+                    'released_ns': restarted['released_ns'], 'completed_ns': restarted['completed_ns'],
+                    'submitted_ns': restarted['submitted_ns'], 'active_ns': restarted['active_ns'],
+                    'new_helper_starts': current['helper_starts'] - previous['helper_starts'],
+                    'runtime': current,
+                })
+                record('reuse_active', current, cycle)
+                previous = current
+            send('release')
+            record('completed', response(), cycles)
+        retirement_cycles = 0 if reuse_confirmation else cycles
+        for cycle in range(1, retirement_cycles + 1):
             send('snapshot')
             record('baseline', response(), cycle)
             send(f'start {population}')
@@ -249,6 +271,7 @@ def main():
     parser.add_argument('--control-cycles', type=int, default=2)
     parser.add_argument('--control-wake-seconds', type=float, default=10)
     parser.add_argument('--wake-interval', type=float, default=0.5)
+    parser.add_argument('--reuse-confirmation', action='store_true')
     parser.add_argument('--output', type=Path, required=True)
     args = parser.parse_args()
     durations = [*args.checkpoints, args.sample_seconds, args.timeout, args.reuse_gap,
@@ -259,14 +282,14 @@ def main():
         parser.error('populations, counts and finite durations must be positive; checkpoints must be distinct')
     args.checkpoints.sort()
     minimum_timeout = max(args.cycles, args.control_cycles) * args.checkpoints[-1]
-    if args.timeout <= minimum_timeout or args.control_wake_seconds >= args.checkpoints[-1]:
+    if not args.reuse_confirmation and (args.timeout <= minimum_timeout or args.control_wake_seconds >= args.checkpoints[-1]):
         parser.error('timeout must exceed cycle idle waits and controls must finish before the last checkpoint')
     import psutil
 
     revisions = {name: command(['git', 'rev-parse', '--verify', '--end-of-options', f'{revision}^{{commit}}']).strip()
                  for name, revision in [('before', args.baseline_revision), ('after', args.after_revision)]}
     report = {
-        'schema': 1, 'benchmark': 'synthetic-helper-pool-lifecycle',
+        'schema': 1, 'benchmark': 'synthetic-helper-pool-reuse' if args.reuse_confirmation else 'synthetic-helper-pool-lifecycle',
         'source_revision': command(['git', 'rev-parse', 'HEAD']).strip(),
         'source_dirty': bool(command(['git', 'status', '--porcelain']).strip()),
         'host': {'platform': platform.platform(), 'machine': platform.machine(),
@@ -304,16 +327,18 @@ def main():
             save()
         if len(executables) != 2:
             return 1
-        cases = [(population, repetition, 'burst', args.cycles, 0)
+        workload = 'probe-side-reuse' if args.reuse_confirmation else 'burst'
+        cases = [(population, repetition, workload, args.cycles, 0)
                  for population in args.populations for repetition in range(1, args.repetitions + 1)]
-        cases.append((args.populations[0], 1, 'empty-wakes', args.control_cycles, args.control_wake_seconds))
+        if not args.reuse_confirmation:
+            cases.append((args.populations[0], 1, 'empty-wakes', args.control_cycles, args.control_wake_seconds))
         for index, (population, repetition, workload, cycles, wakes) in enumerate(cases):
             order = ['before', 'after'] if index % 2 == 0 else ['after', 'before']
             for name in order:
                 print(f'{name} {workload} n={population} repetition={repetition}', flush=True)
                 measurement = measure(executables[name], population, cycles, args.checkpoints,
                                       args.sample_seconds, args.timeout, args.reuse_gap,
-                                      wakes, args.wake_interval)
+                                      wakes, args.wake_interval, args.reuse_confirmation)
                 report['measurements'].append({'variant': name, 'workload': workload,
                                                'repetition': repetition, **measurement})
                 save()

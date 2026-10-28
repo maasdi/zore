@@ -7,6 +7,10 @@ on:
         description: Instrumented runtime revision before the retirement policy change
         type: string
         default: 153dfc7d24b03be844c174f55b5a272209248b5c
+      reuse_confirmation:
+        description: Run only the bounded probe-side reuse confirmation
+        type: boolean
+        default: false
   pull_request:
     types: [opened, synchronize, reopened, labeled]
 
@@ -19,7 +23,7 @@ concurrency:
 
 jobs:
   measure:
-    if: github.event_name == 'workflow_dispatch' || contains(github.event.pull_request.labels.*.name, 'run-helper-lifecycle-benchmarks')
+    if: github.event_name == 'workflow_dispatch' || contains(github.event.pull_request.labels.*.name, 'run-helper-lifecycle-benchmarks') || contains(github.event.pull_request.labels.*.name, 'run-helper-reuse-benchmarks')
     name: Helper lifecycle (${{ matrix.os }})
     strategy:
       fail-fast: false
@@ -49,14 +53,18 @@ jobs:
         shell: bash
         env:
           HELPER_BASELINE_REVISION: ${{ inputs.baseline_revision || '153dfc7d24b03be844c174f55b5a272209248b5c' }}
-        run: >-
-          python benchmarks/helper-lifecycle/run.py
-          --baseline-revision "$HELPER_BASELINE_REVISION"
-          --after-revision "${{ github.sha }}"
-          --output "helper-lifecycle-${{ runner.os }}.json"
+          HELPER_REUSE_CONFIRMATION: ${{ inputs.reuse_confirmation || contains(github.event.pull_request.labels.*.name, 'run-helper-reuse-benchmarks') }}
+        run: |
+          helper_capture_arguments=(--baseline-revision "$HELPER_BASELINE_REVISION" --after-revision "${{ github.sha }}")
+          if [ "$HELPER_REUSE_CONFIRMATION" = "true" ]; then
+            helper_capture_arguments+=(--reuse-confirmation --output "helper-reuse-${{ runner.os }}.json")
+          else
+            helper_capture_arguments+=(--output "helper-lifecycle-${{ runner.os }}.json")
+          fi
+          python benchmarks/helper-lifecycle/run.py "${helper_capture_arguments[@]}"
       - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: helper-lifecycle-${{ runner.os }}-${{ github.sha }}
-          path: helper-lifecycle-*.json
+          path: helper-*.json
           if-no-files-found: warn
