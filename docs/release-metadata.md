@@ -52,9 +52,9 @@ No link is fetched during metadata validation.
 
 `zore-min` is inclusive; `zore-max` is exclusive. Both use canonical versions;
 compiler prerelease/build suffixes are excluded from this comparison. For
-example, compiler `0.1.0-beta.1` satisfies minimum `0.1.0` and fails exclusive
+example, compiler `0.1.0-alpha.1` satisfies minimum `0.1.0` and fails exclusive
 maximum `0.1.0`. This does not extend the package-version grammar or declare
-beta compatibility stable. If both occur, minimum must be less than maximum.
+alpha compatibility stable. If both occur, minimum must be less than maximum.
 Platforms are a nonempty list
 of distinct `linux`, `macos`, `windows` names; omission imposes no restriction.
 Supplied bounds and platforms are enforced against the current compiler/host

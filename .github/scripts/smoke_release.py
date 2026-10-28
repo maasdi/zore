@@ -21,7 +21,7 @@ import "std/os"
 import "std/strings"
 
 func greeting() string {
-    return strings.ToUpper("beta ready")
+    return strings.ToUpper("alpha ready")
 }
 
 func health(w mut http.ResponseWriter, r mut http.Request) error {
@@ -46,7 +46,7 @@ func main() {
 TEST = '''package main
 
 func TestBundledStandardLibrary() {
-    if greeting() != "BETA READY" {
+    if greeting() != "ALPHA READY" {
         panic("bundled standard library failed")
     }
 }
@@ -84,7 +84,7 @@ def smoke_http(executable, directory, environment, port):
                     break
                 try:
                     with opener.open(f"http://127.0.0.1:{port}/health", timeout=1) as response:
-                        if response.status != 200 or response.read() != b"BETA READY":
+                        if response.status != 200 or response.read() != b"ALPHA READY":
                             raise RuntimeError("native HTTP smoke returned an unexpected response")
                     print("native HTTP smoke passed", flush=True)
                     return
@@ -113,7 +113,7 @@ def smoke(archive, version, target):
         with socket.socket() as reserved:
             reserved.bind(("127.0.0.1", 0))
             port = reserved.getsockname()[1]
-        (project / "zore.toml").write_text('name = "beta_smoke"\nversion = "0.1.0"\n', encoding="utf-8")
+        (project / "zore.toml").write_text('name = "alpha_smoke"\nversion = "0.1.0"\n', encoding="utf-8")
         (project / "main.ore").write_text(MAIN.replace("ADDRESS", f"127.0.0.1:{port}"), encoding="utf-8")
         (project / "main_test.ore").write_text(TEST, encoding="utf-8")
         environment = clean_environment(directory)

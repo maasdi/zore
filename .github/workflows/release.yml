@@ -1,16 +1,16 @@
-name: Beta distribution
+name: Alpha distribution
 
 on:
   pull_request:
   push:
-    tags: ['v*-beta.*']
+    tags: ['v*-alpha.*']
   workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: beta-distribution-${{ github.ref }}
+  group: alpha-distribution-${{ github.ref }}
   cancel-in-progress: false
 
 env:
@@ -223,7 +223,7 @@ jobs:
           path: dist
       - name: Verify complete release checksums
         run: python .github/scripts/package_release.py checksums --directory dist
-      - name: Create draft beta prerelease
+      - name: Create draft alpha prerelease
         shell: bash
         run: |
           printf '%s\n' "Builder image: ghcr.io/maasdi/zore-builder:$VERSION" '' 'If anonymous registry access is unavailable, download and verify the builder image release asset, then load it locally:' '' '```sh' "sha256sum --check zore-builder-$VERSION-linux-amd64.tar.gz.sha256" "docker load --input zore-builder-$VERSION-linux-amd64.tar.gz" '```' > "$RUNNER_TEMP/release-notes.txt"

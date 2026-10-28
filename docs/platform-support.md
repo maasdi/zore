@@ -1,7 +1,7 @@
 # Native host support
 
-For prebuilt beta archives and the Linux builder image, see
-[beta distribution](beta.md). Archive host baselines are narrower than the
+For prebuilt alpha archives and the Linux builder image, see
+[alpha distribution](alpha.md). Archive host baselines are narrower than the
 source-build host families below; a compiler download does not remove native
 application toolchain requirements.
 

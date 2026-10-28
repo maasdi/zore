@@ -442,7 +442,7 @@ root, including after symlink resolution. An empty license file is rejected.
 `zore-min` is an inclusive canonical compiler-version bound; `zore-max` is
 exclusive. Compiler distributions may carry a prerelease or build suffix;
 these bounds compare the compiler's numeric `MAJOR.MINOR.PATCH` core, not its
-distribution suffix. For example, `0.1.0-beta.1` satisfies `zore-min = "0.1.0"`
+distribution suffix. For example, `0.1.0-alpha.1` satisfies `zore-min = "0.1.0"`
 and fails `zore-max = "0.1.0"`. This comparison does not declare a prerelease
 stable or extend the canonical project-version grammar above. No source
 syntax, ownership, error, cleanup or async behavior changes. The loader must

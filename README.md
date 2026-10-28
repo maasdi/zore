@@ -74,7 +74,7 @@ records covered behavior and remaining conformance gaps; see the
 
 ## Getting started
 
-The [beta installation guide](docs/beta.md) covers prebuilt compiler archives,
+The [alpha installation guide](docs/alpha.md) covers prebuilt compiler archives,
 checksums and the Linux builder image. Prebuilt archives remove the compiler
 source-build step; native application builds still require Rust and clang,
 which the builder image supplies.

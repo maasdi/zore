@@ -119,9 +119,9 @@ linked above.
 
 ## Current implementation and next work
 
-Beta distribution work prepares `v0.1.0-beta.1` compiler archives, checksums and
+Alpha distribution work prepares `v0.1.0-alpha.1` compiler archives, checksums and
 a Linux amd64 builder image for independent application repositories. The
-[beta guide](beta.md) records installation, toolchain requirements and release
+[alpha guide](alpha.md) records installation, toolchain requirements and release
 gates. Packaging validation includes an independent HTTP project and a minimal
 runtime image; it does not complete the MVP acceptance backlog or schedule
 website implementation in this compiler repository.

@@ -20,8 +20,8 @@ TARGETS = (
 
 
 def validate_version(version, tag=None):
-    if not re.fullmatch(r"(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)-beta\.(?:0|[1-9][0-9]*)", version):
-        raise ValueError("release version must be an exact beta version")
+    if not re.fullmatch(r"(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)-alpha\.(?:0|[1-9][0-9]*)", version):
+        raise ValueError("release version must be an exact alpha version")
     if tag is not None and tag != f"v{version}":
         raise ValueError("release tag must match compiler/Cargo.toml version")
     return version

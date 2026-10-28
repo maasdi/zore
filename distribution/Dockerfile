@@ -1,7 +1,7 @@
 FROM ubuntu:24.04
 
 ARG RUST_VERSION=1.98.1
-ARG ZORE_VERSION=0.1.0-beta.1
+ARG ZORE_VERSION=0.1.0-alpha.1
 ARG ZORE_REVISION
 ARG ZORE_SOURCE=https://github.com/maasdi/zore
 

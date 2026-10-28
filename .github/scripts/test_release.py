@@ -14,7 +14,7 @@ from package_release import (
 )
 
 
-VERSION = "0.1.0-beta.1"
+VERSION = "0.1.0-alpha.1"
 COMMIT = "a" * 40
 
 
@@ -62,11 +62,12 @@ class ReleasePackagingTests(unittest.TestCase):
                         self.assertEqual(source.getmember("zore").mode, 0o755)
 
     def test_version_tag_host_and_commit_rejections(self):
-        for version in ("0.1.0", "0.1.0-rc.1", "0.1.0-beta.01", "../0.1.0-beta.1", "0.1.0-beta.1+build"):
+        for version in ("0.1.0", "0.1.0-beta.1", "0.1.0-rc.1", "0.1.0-alpha.01", "../0.1.0-alpha.1", "0.1.0-alpha.1+build"):
             with self.subTest(version=version), self.assertRaises(ValueError):
                 validate_version(version)
-        with self.assertRaises(ValueError):
-            validate_version(VERSION, "v0.1.0-beta.2")
+        for tag in ("v0.1.0-alpha.2", "v0.1.0-beta.1"):
+            with self.subTest(tag=tag), self.assertRaises(ValueError):
+                validate_version(VERSION, tag)
         self.assertEqual(validate_version(VERSION, f"v{VERSION}"), VERSION)
         for rustc in ("rustc 1.98.1", "host: x86_64-apple-darwin", f"host: {TARGETS[0]}\nhost: {TARGETS[0]}"):
             with self.subTest(rustc=rustc), self.assertRaises(ValueError):
