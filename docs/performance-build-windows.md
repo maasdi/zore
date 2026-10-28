@@ -24,8 +24,8 @@ code-generation optimization remain unchanged.
 [Workflow 40643702712](https://github.com/maasdi/zore/actions/runs/40643702712)
 passed. Current-main compiler/runtime sources are
 `113bcb81dd92accbecc41bbd2f857e0d3c1856bc`. The serial control is generated
-commit `b025e129b0ad5f5fae86b5b817810d7cd0f0f85b`; this local measurement commit
-is reproducible from the public base and committed patch below. Its tracked-file
+commit `b025e129b0ad5f5fae86b5b817810d7cd0f0f85b`; its source tree is
+reproducible from the public base and committed patch below. Its tracked-file
 manifest differs from current main only in `compiler/src/driver/build.rs`.
 Both worktrees were clean after their release builds. The capture harness is
 `c43b54b96b9adf30156556fe4a5ae38964bfeb9d`, the PR merge tree for code head
@@ -102,8 +102,8 @@ the ratio of the two medians, not the median of paired percentages.
 
 Every cold REST pair improved: 17.7–22.8% for the fixture and 11.9–20.5% for
 the full sample. Their cold medians fell about 2.10 and 1.59 seconds. This is
-smaller than their recorded overlap: simultaneous stages compete for resources,
-and elapsed stage times cannot be added as sequential work. Cold clang-object
+smaller than their recorded overlap, while cold stage durations also changed;
+elapsed stage times cannot be added as sequential work. Cold clang-object
 medians increased from 4.675 to 6.667 seconds for REST and from 7.347 to 9.249
 seconds for the full sample. Runtime medians were 3.772 / 3.530 and
 3.311 / 3.665 seconds respectively. The capture does not isolate CPU, storage
@@ -139,6 +139,8 @@ The provenance file preserves exact commands, source manifests, the serial
 control's generated commit identity, native tool paths/hashes and overlap
 verification. Initial and paired reports preserve every row, compiler/profiler
 and launcher hash, runner-source hash, command interval and runtime-cache snapshot.
+Binary hashes are identities recorded during the run; the tool/compiler binaries
+are not preserved in these archives for independent rehashing.
 The original JSON bytes from artifact `12796289036` are gzip-compressed below;
 SHA-256 values refer to decompressed JSON.
 
