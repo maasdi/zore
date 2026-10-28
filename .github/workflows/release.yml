@@ -178,9 +178,17 @@ jobs:
           sha256sum --check "zore-builder-$VERSION-linux-amd64.tar.gz.sha256"
           docker load --input "zore-builder-$VERSION-linux-amd64.tar.gz"
           printf '%s' "$GH_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+          if docker manifest inspect "ghcr.io/maasdi/zore-builder:$VERSION" > existing-manifest.json 2> registry-error.txt; then
+            echo "Refusing to overwrite an existing builder version"
+            exit 1
+          fi
           if existing_tags=$(gh api --paginate "users/$GITHUB_REPOSITORY_OWNER/packages/container/zore-builder/versions" --jq '.[].metadata.container.tags[]' 2> package-error.txt); then
             if grep -Fxq "$VERSION" <<< "$existing_tags"; then
               echo "Refusing to overwrite an existing builder version"
+              exit 1
+            fi
+            if ! grep -Eiq 'manifest unknown|no such manifest' registry-error.txt; then
+              cat registry-error.txt
               exit 1
             fi
           elif ! grep -Fq '(HTTP 404)' package-error.txt; then
