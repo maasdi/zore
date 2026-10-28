@@ -1,10 +1,15 @@
 # Zero value and `nil` conformance cases
 
 Authority: spec §41.4, with cross-references §5.4, §8.4, §15.6, §18.9, §19.8,
-§19.12, §13.3. These are mostly pending type-checking, lowering, and runtime
-cases, not executable tests. The `Array<T>` and slice zero values produced by
-`?` result filling are covered in `tests/codegen/native.rs`: an empty array
-drops safely, and a zero slice has no backing loan and panics on indexing.
+§19.12, §13.3. These scenarios describe requirements, not executable tests.
+`tests/codegen/native.rs` includes
+`recursive_zero_values_are_empty_and_destructible` for recursive empty results
+and `propagation_cleans_failed_move_results_and_returns_zero_move_value` for
+cleanup and zero-filled Move results. Array and slice propagation cases also
+assert safe empty-array destruction and bounds failure on a zero slice.
+These named assertions do not mark every row below as executed; remaining
+coverage is reconciled through the
+[MVP acceptance audit](../../docs/roadmap.md#mvp-acceptance-backlog).
 
 | Scenario | Expected result |
 | --- | --- |

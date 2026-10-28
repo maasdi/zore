@@ -139,6 +139,31 @@ These later implementations resolve rows that were still future work at the
 | Windows | Windows x64 MSVC builds and native tests run in CI, with host-specific APIs and limits recorded in [platform support](../platform-support.md). This does not claim cross-compilation or full parity for OS-specific notifications and termination callbacks. |
 | Self-hosting | `compiler-zore/` contains a lexer and parser compared with the Rust frontend. Further compiler stages remain deferred; the bootstrap compiler is Rust. |
 
+## Status review — 2026-10-28
+
+Reviewed source baseline: `59f02f59ef7e9aa1a2fad74e286c92251dbe000b`.
+[Its CI run](https://github.com/maasdi/zore/actions/runs/40649646425) passed
+formatting, strict Clippy, build, strict documentation checks and host-applicable
+tests on Ubuntu, macOS and Windows. These results do not replace the historical
+counts above or establish exhaustive conformance. The review did not demonstrate
+a new compiler/runtime defect.
+
+Scoped tasks support checked shared/mutable child borrowing; the restriction on
+borrowed spawn inputs applies to ordinary unscoped tasks. Optional verified TLS
+and bounded HTTP/1.1 clients are delivered under §§37.10–37.11, separately from
+the original HTTP server increment. Windows shared timer and socket-readiness
+services and helper retirement are delivered; see the current
+[platform guide](../platform-support.md) and
+[helper lifecycle evidence](../helper-idle-retirement.md).
+
+The [MVP acceptance backlog](../roadmap.md#mvp-acceptance-backlog) defines the
+next audit and its exit criteria. Generic exceptional cleanup, non-empty
+interface dispatch cleanup and semantic diagnostic provenance are candidate
+coverage audits, not confirmed defects or claims that existing tests are
+absent. Their status remains unreviewed until existing assertions are mapped
+and any concrete gaps are recorded. The #114 and seeded-hardening cases remain
+delivered evidence, and further self-hosting remains deferred.
+
 ## Work classification and next steps
 
 1. The specific direct evidence gaps in #114 are covered by the cases above.
@@ -155,6 +180,9 @@ These later implementations resolve rows that were still future work at the
    host scope remains documented.
 5. Keep further self-hosting deferred. Package-level mutable values remain
    intentionally forbidden; no implementation ticket is created for them.
+6. Execute A0 of the roadmap acceptance backlog before treating its candidate
+   audits as missing coverage. Record assertion references, confirmed gaps and
+   validation results here as each bounded slice is completed.
 
 This review did not demonstrate a new safety defect. It also did not execute
 every Markdown scenario or establish exhaustive conformance for every feature

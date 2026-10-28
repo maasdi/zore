@@ -75,11 +75,11 @@ not a porting contract (`docs/architecture.md`).
 The standard package surface above is defined in `std/`; runtime backing lives
 in `runtime/src/` (`os.rs`, `exec.rs`, `net.rs`, `strings.rs`, `strconv.rs`,
 `unicode.rs`, `sys.rs`) and native bindings in `compiler/src/codegen/native.rs`.
-The Rust driver has `fmt` and `test` command names, but
-`compiler/src/driver/command.rs` reports them as unimplemented. A formatter and
-Zore-native test runner are useful after the compiler works; neither blocks
-the first lexer, frontend, or bootstrap comparison. Rust/Cargo tests remain
-the test harness meanwhile.
+The Rust driver implements [`zore fmt`](../formatter.md) and
+[`zore test`](../testing.md). The latter discovers application tests and runs
+each in a fresh native process. The compiler's differential lexer/parser suites
+still use the Rust/Cargo harness; these tools do not implement another
+self-hosting stage.
 
 Immutable package-level `let` values of permitted Copy types are supported;
 package-level `var`, Move values, slices, function values, tasks, channels, and

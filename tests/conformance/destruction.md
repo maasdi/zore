@@ -6,8 +6,12 @@ classification have executable type-checking coverage in
 rejection are covered in `tests/ownership/ownership.rs`. Clone
 availability, the built-in clones, and cleanup after a panicking clone have
 coverage in `tests/typecheck/check.rs`, `tests/ownership/ownership.rs`, and
-`tests/codegen/native.rs`. Automatic cleanup and panic unwinding remain pending
-runtime coverage. Field-level
+`tests/codegen/native.rs`. Automatic cleanup and panic unwinding have native
+coverage, including the observed-suspension cases in `tests/codegen/conformance.rs`
+and generated plain/async cleanup cases in `tests/codegen/hardening.rs`.
+See the [evidence inventory](../../docs/conformance/mvp.md) for named assertions;
+the scenarios below are requirements, not a claim that every row is executed.
+Field-level
 partial-move cleanup — dropping only still-available fields, skipping a
 moved-out field that was never reinitialized, and rejecting a move that would
 leave a custom-`drop`-bearing value incomplete — has coverage in
