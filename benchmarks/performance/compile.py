@@ -4,9 +4,52 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
+import sys
 import time
 
 from common import BenchmarkError, ROOT, command
+
+
+def prepare_tool_wrappers(directory):
+    directory = directory.resolve()
+    directory.mkdir(parents=True, exist_ok=False)
+    source = Path(__file__).with_name("tool_launcher.rs")
+    executable = directory / "cc.exe"
+    arguments = [
+        os.environ.get("ZORE_RUSTC", "rustc"),
+        "--edition=2024", source, "-o", executable,
+    ]
+    if os.environ.get("ZORE_BENCH_LINK"):
+        arguments.extend(["-C", f"linker={os.environ['ZORE_BENCH_LINK']}"])
+    command(arguments)
+    for name in ["rustc", "link"]:
+        shutil.copyfile(executable, directory / f"{name}.exe")
+    return {
+        "ZORE_BENCH_WRAPPER_DIRECTORY": str(directory),
+        "ZORE_BENCH_SCRIPT_DIRECTORY": str(source.parent.resolve()),
+        "ZORE_BENCH_PYTHON": sys.executable,
+    }
+
+
+def wrapper_identity():
+    directory = os.environ.get("ZORE_BENCH_WRAPPER_DIRECTORY")
+    return {
+        "sources": {
+            name: hashlib.sha256(Path(__file__).with_name(name).read_bytes()).hexdigest()
+            for name in ["cc.py", "rustc.py", "link.py", "tool_launcher.rs"]
+        },
+        "executables": {
+            name: {
+                "path": str(path),
+                "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+            }
+            for name in ["cc", "rustc", "link"]
+            if directory and (path := Path(directory) / f"{name}.exe").is_file()
+        },
+        "python": sys.executable,
+        "timing_scope": "Build wall time includes launcher/Python startup, IR capture and command instrumentation; stage probes run separately.",
+    }
 
 
 def cache_snapshot(cache):
@@ -36,12 +79,25 @@ def build(compiler, source, directory, cache, capture=None):
     directory.mkdir(parents=True, exist_ok=True)
     environment = {**os.environ, "ZORE_CACHE_DIR": str(cache)}
     if capture:
+        if os.name == "nt":
+            wrappers = os.environ.get("ZORE_BENCH_WRAPPER_DIRECTORY")
+            if not wrappers or not os.environ.get("ZORE_BENCH_LINK"):
+                raise BenchmarkError(
+                    "Windows capture requires prepared executable wrappers and ZORE_BENCH_LINK"
+                )
+            cc, rustc = [
+                Path(wrappers) / f"{name}.exe" for name in ["cc", "rustc"]
+            ]
+        else:
+            cc, rustc = [
+                Path(__file__).with_name(f"{name}.py") for name in ["cc", "rustc"]
+            ]
         environment.update(
             {
-                "ZORE_CC": str(Path(__file__).with_name("cc.py")),
+                "ZORE_CC": str(cc),
                 "ZORE_BENCH_CC": os.environ.get("ZORE_CC", "clang"),
                 "ZORE_BENCH_CAPTURE": str(capture),
-                "ZORE_RUSTC": str(Path(__file__).with_name("rustc.py")),
+                "ZORE_RUSTC": str(rustc),
                 "ZORE_BENCH_RUSTC": os.environ.get("ZORE_RUSTC", "rustc"),
             }
         )
@@ -54,10 +110,19 @@ def build(compiler, source, directory, cache, capture=None):
     command([compiler, "build", source], directory, environment)
     elapsed = time.perf_counter() - started
     if capture:
-        commands = [
-            json.loads(line)
-            for line in capture.with_suffix(".commands.jsonl").read_text().splitlines()
-        ]
+        commands = sorted(
+            [
+                json.loads(path.read_text(encoding="utf-8"))
+                for path in capture.parent.glob(capture.name + ".command-*.json")
+            ],
+            key=lambda item: item["started"],
+        )
+        capture.with_suffix(".commands.jsonl").write_text(
+            "".join(json.dumps(item) + "\n" for item in commands), encoding="utf-8"
+        )
+        object_profile = json.loads(
+            capture.with_suffix(".json").read_text(encoding="utf-8")
+        )
 
         def tool_seconds(tool, role):
             return sum(
@@ -79,14 +144,36 @@ def build(compiler, source, directory, cache, capture=None):
             "commands": commands,
             "frontend_and_emit_seconds": object_started - started,
             "clang_object_seconds": tool_seconds("clang", "object"),
-            "native_link_seconds": tool_seconds("clang", "link"),
+            "native_link_seconds": tool_seconds("clang", "link")
+            + tool_seconds("link", "link"),
             "runtime_build_seconds": tool_seconds("rustc", "runtime"),
             "rustc_link_seconds": tool_seconds("rustc", "link"),
+            "ir_sha256": object_profile["ir_sha256"],
+            "ir_bytes": capture.with_suffix(".ll").stat().st_size,
+            "object_sha256": object_profile["object_sha256"],
+            "object_bytes": object_profile["object_bytes"],
         }
         capture.with_suffix(".build.json").write_text(
             json.dumps(profile) + "\n", encoding="utf-8"
         )
-    return directory / source.stem, elapsed
+    return directory / (source.stem + (".exe" if os.name == "nt" else "")), elapsed
+
+
+def acquire_windows_lock(lock, timeout=900):
+    import msvcrt
+
+    deadline = time.monotonic() + timeout
+    while True:
+        lock.seek(0)
+        try:
+            msvcrt.locking(lock.fileno(), msvcrt.LK_NBLCK, 1)
+            return
+        except OSError as error:
+            if error.errno not in {11, 13, 36}:
+                raise
+            if time.monotonic() >= deadline:
+                raise BenchmarkError("timed out waiting for Windows compile lease") from error
+            time.sleep(0.05)
 
 
 @contextmanager
@@ -94,14 +181,27 @@ def compile_lease(arguments):
     if arguments.compile_lock_file is None:
         yield
         return
-    import fcntl
+    with arguments.compile_lock_file.open("a+b") as lock:
+        if os.name == "nt":
+            import msvcrt
 
-    with arguments.compile_lock_file.open("a") as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX)
-        try:
-            yield
-        finally:
-            fcntl.flock(lock, fcntl.LOCK_UN)
+            if lock.seek(0, 2) == 0:
+                lock.write(b"\0")
+                lock.flush()
+            acquire_windows_lock(lock)
+            try:
+                yield
+            finally:
+                lock.seek(0)
+                msvcrt.locking(lock.fileno(), msvcrt.LK_UNLCK, 1)
+        else:
+            import fcntl
+
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(lock, fcntl.LOCK_UN)
 
 
 def measure_compile(compiler, workloads, directory, arguments):

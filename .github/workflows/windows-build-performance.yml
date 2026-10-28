@@ -1,0 +1,75 @@
+name: Windows native build measurements
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_revision:
+        description: Current-main compiler revision for both scheduling variants
+        type: string
+        default: main
+  pull_request:
+    types: [opened, synchronize, reopened, labeled]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-build-performance-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  measure:
+    if: github.event_name == 'workflow_dispatch' || contains(github.event.pull_request.labels.*.name, 'run-windows-build-benchmarks')
+    runs-on: windows-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.13'
+      - name: Install repository toolchain
+        run: rustup show active-toolchain
+      - name: Record host and select native tools
+        shell: pwsh
+        run: |
+          "ZORE_CC=C:\Program Files\LLVM\bin\clang.exe" >> $env:GITHUB_ENV
+          $computer = Get-CimInstance Win32_ComputerSystem
+          $hostInformation = @{
+            os = [Environment]::OSVersion.VersionString
+            processor = $env:PROCESSOR_IDENTIFIER
+            logical_processors = $computer.NumberOfLogicalProcessors
+            memory_bytes = $computer.TotalPhysicalMemory
+            process_affinity_mask = [Diagnostics.Process]::GetCurrentProcess().ProcessorAffinity.ToInt64()
+            image_version = $env:ImageVersion
+            msvc_tools_version = $env:VCToolsVersion
+            windows_sdk_version = $env:WindowsSDKVersion
+            scheduling_control = "Dedicated workflow job; hosted physical scheduling is uncontrolled"
+          }
+          $hostInformation | ConvertTo-Json | Set-Content -Encoding utf8 "$env:RUNNER_TEMP/windows-build-host.json"
+      - name: Validate capture harness
+        run: python -m unittest discover -s benchmarks/performance -p 'test_*.py'
+      - name: Capture current-main and isolated scheduling variants
+        env:
+          BUILD_SOURCE_REVISION: ${{ inputs.source_revision || github.event.pull_request.base.sha }}
+        run: >-
+          python benchmarks/performance/windows_capture.py
+          --source-revision "$env:BUILD_SOURCE_REVISION"
+          --host-description "$env:RUNNER_TEMP/windows-build-host.json"
+          --directory "$env:RUNNER_TEMP/windows-build-capture"
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: windows-build-performance-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/windows-build-capture/*.json
+            ${{ runner.temp }}/windows-build-capture/*.patch
+            ${{ runner.temp }}/windows-build-capture/initial-work/**/*.json
+            ${{ runner.temp }}/windows-build-capture/initial-work/**/*.jsonl
+            ${{ runner.temp }}/windows-build-capture/paired-work/**/*.json
+            ${{ runner.temp }}/windows-build-capture/paired-work/**/*.jsonl
+          if-no-files-found: warn

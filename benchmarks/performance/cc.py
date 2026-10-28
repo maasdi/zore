@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -6,6 +7,7 @@ import shutil
 import subprocess
 import sys
 import time
+import uuid
 
 
 def recorded_command(executable, arguments, tool):
@@ -28,8 +30,8 @@ def recorded_command(executable, arguments, tool):
         "seconds": time.perf_counter() - started,
         "exit_code": result.returncode,
     }
-    with capture.with_suffix(".commands.jsonl").open("a", encoding="utf-8") as output:
-        output.write(json.dumps(record) + "\n")
+    record_path = capture.parent / f"{capture.name}.command-{uuid.uuid4().hex}.json"
+    record_path.write_text(json.dumps(record) + "\n", encoding="utf-8")
     return result.returncode
 
 
@@ -52,6 +54,13 @@ def main():
                     "object_bytes": (
                         object_path.stat().st_size if object_path.is_file() else None
                     ),
+                    "object_sha256": (
+                        hashlib.sha256(object_path.read_bytes()).hexdigest()
+                        if object_path.is_file() else None
+                    ),
+                    "ir_sha256": hashlib.sha256(
+                        capture.with_suffix(".ll").read_bytes()
+                    ).hexdigest(),
                 }
             )
             + "\n",

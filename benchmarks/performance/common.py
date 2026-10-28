@@ -3,6 +3,7 @@ import math
 import os
 from pathlib import Path
 import selectors
+import signal
 import statistics
 import subprocess
 import time
@@ -16,20 +17,38 @@ spec.loader.exec_module(suspended)
 BenchmarkError = suspended.BenchmarkError
 
 
+def run_process(args, directory=ROOT, environment=None, timeout=300):
+    arguments = list(map(str, args))
+    process = subprocess.Popen(arguments, cwd=directory, env=environment,
+                               stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                               text=True, start_new_session=os.name != 'nt')
+    try:
+        stdout, stderr = process.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired as error:
+        if os.name == 'nt':
+            subprocess.run(['taskkill', '/PID', str(process.pid), '/T', '/F'],
+                           capture_output=True, timeout=15)
+        else:
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+        if process.poll() is None:
+            process.kill()
+        stdout, stderr = process.communicate(timeout=15)
+        raise subprocess.TimeoutExpired(arguments, error.timeout, output=stdout, stderr=stderr) from error
+    return subprocess.CompletedProcess(arguments, process.returncode, stdout, stderr)
+
+
 def command(args, directory=ROOT, environment=None, timeout=300):
     try:
-        return subprocess.run(
-            list(map(str, args)),
-            cwd=directory,
-            env=environment,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-            check=True,
-        )
+        result = run_process(args, directory, environment, timeout)
+        result.check_returncode()
+        return result
     except (OSError, subprocess.TimeoutExpired, subprocess.CalledProcessError) as error:
-        details = getattr(error, "stderr", "") or getattr(error, "stdout", "")
-        raise BenchmarkError(f"command failed: {args}: {error}\n{details}") from error
+        stdout = getattr(error, "stdout", "") or ""
+        stderr = getattr(error, "stderr", "") or ""
+        raise BenchmarkError(f"command failed: {args}: {error}\nstdout:\n{stdout}\nstderr:\n{stderr}") from error
 
 
 def start(executable):
