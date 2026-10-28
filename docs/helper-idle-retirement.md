@@ -60,10 +60,12 @@ will finish destroying every helper thread at a particular wall-clock instant.
 
 ## Validation status
 
-[Correctness CI](https://github.com/maasdi/zore/actions/runs/40462446168) passed on
-Linux, macOS and Windows, including 100 Windows runtime tests and the native
-two-job probe. Local normal/hook checks, strict Clippy, formatting, probe
-typechecking, Python protocol/invariant/error-cleanup checks and imports passed.
+[Correctness CI](https://github.com/maasdi/zore/actions/runs/40620397025) passed on
+Linux, macOS and Windows at head `1b4f154`, including the native two-job restart
+probe, strict Clippy, formatting, builds, documentation and full test suites.
+Local formatting, runtime/probe typechecking, seven Python harness checks and
+imports passed; the local native smoke test was skipped. Local Cargo build,
+Clippy and tests were blocked by the missing MSVC linker.
 Native execution used hosted toolchains because local MSVC `link.exe` is absent.
 The harness explicitly selects the native MSVC linker when the developer-tools
 directory is present, avoiding Git Bash's unrelated executable of the same name.
@@ -154,9 +156,24 @@ inside the probe, with no OS sampling or parent round trip between them. It
 records probe release, whole-burst drained, submission and all-active times,
 plus parent send/receive times. Earlier workers can use part of their grace
 while the rest of the burst drains; these are batch times, not individual
-workers' idle origins. Those
-confirmation results are pending; the current capture supports retirement-tail
-improvement without claiming universal warm-reuse behavior under contention.
+workers' idle origins.
+
+[Follow-up run 40620433793](https://github.com/maasdi/zore/actions/runs/40620433793)
+passed on Linux, macOS and Windows on 2026-10-28. Each host completed 12 fresh
+processes, 48 restart observations and 60 bursts at populations 32, 512 and 640.
+Both policies recorded zero new helper starts in every restart. All children
+exited successfully with empty stderr, without harness termination; source trees
+were clean and lifecycle/resource invariants held. This confirms immediate
+batch reuse in these trials without making a universal contention guarantee.
+
+The runtime baseline remains `153dfc7d24b03be844c174f55b5a272209248b5c`.
+The after runtime and harness are `440e131995dabebf0e97a954482320a22a7b1061`,
+the PR merge tree for head `1b4f1542c37c9e232a24f8d47601806b9c9e7695`.
+Across both policies and all populations, release-to-drained intervals ranged
+from 0.141 to 3.808 ms on Linux, 0.170 to 31.632 ms on macOS, and 0.143 to
+9.595 ms on Windows. Drained-to-submission boundaries were at most 0.000208 ms;
+submission-to-all-active intervals were at most 11.221 ms. OS sampling occurred
+only while the next burst was gated active, outside these intervals.
 
 ### RSS observations
 
@@ -189,4 +206,13 @@ runtime variants and every checkpoint. SHA-256 values refer to decompressed JSON
 | [macOS](../benchmarks/helper-lifecycle/macos-2026-10-27.json.gz) | `12716734475` | `66f924e84b0cd75bf29ec91d7f385e8f1805447b42b38ee8fbe43588cf2ae5ba` |
 | [Windows](../benchmarks/helper-lifecycle/windows-2026-10-27.json.gz) | `12717546368` | `a378faf9a99ec8c9f3c46198d8ced37205f23a9dc04c5bf41a21713f26ccd9cf` |
 
-PR #204 remains pending review and merge; #171 is not closed by this report.
+The bounded reuse follow-up preserves the original JSON bytes separately:
+
+| Host | Artifact ID | Decompressed SHA-256 |
+| --- | --- | --- |
+| [Linux reuse](../benchmarks/helper-lifecycle/linux-reuse-2026-10-28.json.gz) | `12786977434` | `a0e04b03e9fd2593a002f75c3be00477d46db3a9a3531db5d1236fa2e29d417b` |
+| [macOS reuse](../benchmarks/helper-lifecycle/macos-reuse-2026-10-28.json.gz) | `12787181338` | `d4dd1ff99acefda41cb26a235681fbc8bd4346d68c11ca65f27f4f80581a25c8` |
+| [Windows reuse](../benchmarks/helper-lifecycle/windows-reuse-2026-10-28.json.gz) | `12786997774` | `d016e9e9df1bf40ced4cd02f13382a80b890ae2f2dcec8a4774c8eb1714ef32c` |
+
+Implementation and measurement validation are complete. PR #204 awaits review
+and merge; #171 remains open until merge.
