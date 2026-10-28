@@ -163,11 +163,13 @@ allocator and stack caching. Host, toolchain, runtime and harness revisions
 differ from the historical capture; these results are not a paired optimization
 comparison or a portable host ranking. Correctness CI has no performance limits.
 
-Issue #177's all-host recapture is complete. The Windows evidence unblocks the
-measurement-informed runtime work in
+Issue #177's all-host recapture is complete. The Windows evidence informed the
+runtime improvements subsequently delivered in
 [#169](https://github.com/maasdi/zore/issues/169),
 [#170](https://github.com/maasdi/zore/issues/170) and
-[#171](https://github.com/maasdi/zore/issues/171). The measurement workflow
+[#171](https://github.com/maasdi/zore/issues/171), all now merged and closed.
+Helper-retirement validation and raw evidence are recorded in the
+[lifecycle report](helper-idle-retirement.md). The measurement workflow
 defaults to Linux/macOS on manual dispatch; the `run-scaling-benchmarks` PR
 label or `include_windows` manual input runs all three hosts. Ordinary Windows
 correctness CI remains enabled.
@@ -287,7 +289,9 @@ change does not alter the captured compiler or runtime. The Windows regressions
 include writable readiness, exact resumed-write bytes, saturated-helper
 independence and owner release before wake. Local runtime type/lint and test-hook
 checks passed; executable validation used hosted toolchains because local MSVC
-`link.exe` and clang are absent. PR #203 remains pending merge.
+`link.exe` and clang are absent.
+[PR #203](https://github.com/maasdi/zore/pull/203) merged on 2026-10-27 as
+`3bfc65fc9b70234162eae60c35d70bf99b28a2b2`, closing #170.
 
 ## Raw evidence
 
