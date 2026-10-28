@@ -1,0 +1,21 @@
+diff --git a/compiler/src/driver/build.rs b/compiler/src/driver/build.rs
+index a8ef976..7c1f053 100644
+--- a/compiler/src/driver/build.rs
++++ b/compiler/src/driver/build.rs
+@@ -312,14 +312,8 @@ fn link(
+         }
+     };
+     let rustc = std::env::var_os("ZORE_RUSTC").unwrap_or_else(|| "rustc".into());
+-    let (result, runtime) = std::thread::scope(|scope| {
+-        let runtime = scope.spawn(|| runtime_library(&rustc, dir.path(), native_adapters));
+-        let result = compilation.wait_with_output();
+-        (
+-            result,
+-            runtime.join().expect("runtime build worker panicked"),
+-        )
+-    });
++    let result = compilation.wait_with_output();
++    let runtime = runtime_library(&rustc, dir.path(), native_adapters);
+     let result = result.map_err(|error| {
+         BuildError::Toolchain(format!("could not collect `{cc}` output: {error}"))
+     })?;

@@ -52,8 +52,11 @@ class WindowsCaptureTests(unittest.TestCase):
                     kernel.CloseHandle(handle)
         elif sys.platform == 'linux':
             state = Path(f'/proc/{pid}/stat')
-            if state.exists():
-                self.assertEqual(state.read_text().split(') ')[1].split()[0], 'Z')
+            try:
+                status = state.read_text()
+            except (FileNotFoundError, ProcessLookupError):
+                return
+            self.assertEqual(status.split(') ')[1].split()[0], 'Z')
 
     def test_serial_control_replaces_only_the_known_current_scheduling_block(self):
         source = (ROOT / 'compiler/src/driver/build.rs').read_text(encoding='utf-8')
