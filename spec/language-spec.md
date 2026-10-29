@@ -6883,8 +6883,9 @@ At minimum, the architecture must leave room for:
 
 Packages and imports are specified in §3.20. The standard packages are
 specified in §37.2 (text, bytes, and errors), §37.3 (time, the operating
-system, buffered I/O, and TCP), §37.4 (cancellation and task coordination), and
-§37.5 (paths and sorting). Further packages are TBD.
+system, buffered I/O, and TCP), §37.4 (cancellation and task coordination),
+§37.5 (paths and sorting), and §37.12 (structured logging). Further packages
+are TBD.
 
 ## 37.1 `println` — LOCKED
 
@@ -8948,6 +8949,135 @@ compiler fixture checks this composition without native linkers, then exercises
 real fragmented binary HTTPS and rejects wrong trust, expired/future validity,
 and trusted wrong-host certificates. Native CI covers supported hosts; a local
 run establishes evidence only for its own host.
+
+## 37.12 Structured logging — LOCKED
+
+`"std/log"` writes leveled records with key-value fields to any `io.Writer`
+(§37.3). It needs no reflection, no package-level variable, and no
+configuration framework: a `Logger` is an ordinary value made by `New` and
+passed to the code that logs.
+
+| Name | Behavior |
+| --- | --- |
+| `type Level int` | A record's severity (§8.5) |
+| `const LevelDebug Level = 0`, `LevelInfo = 1`, `LevelWarn = 2`, `LevelError = 3` | The four levels, least to most severe |
+| `(l Level) String() string` | `DEBUG`, `INFO`, `WARN`, `ERROR`, and `LEVEL(n)` for any other value `n` |
+| `type Field struct { ... }` | One key and its value text; the fields are not exported |
+| `String(key string, value string) Field` | The value unchanged |
+| `Int(key string, value int) Field`, `Bool(key string, value bool) Field` | `strconv.Itoa(value)`, `strconv.FormatBool(value)` |
+| `Float(key string, value float64) Field` | `strconv.FormatFloat(value, 'g', -1, 64)` |
+| `Err(err error) Field` | Key `error` with `errors.Message(err)`, or `<nil>` for `nil` |
+| `New(sink own io.Writer, level Level) Logger` | A logger that writes records of `level` and above to `sink`, with timestamps |
+| `(l Logger) WithLevel(level Level) Logger` | A copy with a different minimum level |
+| `(l Logger) WithoutTime() Logger` | A copy whose records have no `time` field |
+| `(l Logger) With(fields []Field) Logger` | A copy that adds `fields` to every record, after those `l` already adds |
+| `(l Logger) Enabled(level Level) bool` | Whether a record at `level` would be written |
+| `(l Logger) Log(level Level, message string, fields []Field)` | Writes one record when `level` is enabled; otherwise does nothing |
+| `(l Logger) Debug(message string)`, `Info`, `Warn`, `Error` | `Log` at that level with no fields |
+| `(l Logger) Err() error` | The first output failure of this logger's sink, or `nil` |
+| `FormatTime(seconds int) string` | The timestamp text for Unix time `seconds`, described below |
+
+```ore
+import "std/log"
+import "std/os"
+
+func main() {
+    let logger = log.New(os.Stderr(), log.LevelInfo)
+    let server = logger.With(Array<log.Field>{log.String("addr", "127.0.0.1:8080")}[:])
+    server.Info("listening")
+    server.Log(log.LevelWarn, "slow request", Array<log.Field>{log.Int("ms", 950)}[:])
+    logger.Debug("not written")
+    if logger.Err() != nil { os.Exit(1) }
+}
+```
+
+writes to standard error:
+
+```text
+time=2026-10-29T10:40:29Z level=INFO msg=listening addr=127.0.0.1:8080
+time=2026-10-29T10:40:29Z level=WARN msg="slow request" addr=127.0.0.1:8080 ms=950
+```
+
+**Records.** A record is one line: optionally `time=` and the timestamp, then
+`level=` and the level text, `msg=` and the message, the logger's `With` fields
+in the order they were added, and the fields given to `Log` in order, separated
+by single spaces and ended by a line feed (U+000A). Every key is followed by `=`
+and its value. Keys are not checked for duplicates and are written as given,
+except that a byte outside the plain set below becomes `_` and an empty key is
+`_`.
+
+**Escaping.** The plain bytes are `!` through `~` (0x21–0x7E) other than `"`,
+`=`, and `\`. A non-empty value made only of plain bytes is written bare.
+Any other value, including the empty one, is written in double quotes, with
+`"` as `\"`, `\` as `\\`, line feed as `\n`, carriage return as `\r`, tab as
+`\t`, other bytes below 0x20 and 0x7F as `\u00` and two lowercase hex digits,
+and every other byte, including UTF-8 sequences, unchanged. A record therefore
+never contains a line feed before its end, and `"` never appears unescaped
+inside a quoted value.
+
+| Value | Written as |
+| --- | --- |
+| `ready` | `ready` |
+| (empty) | `""` |
+| `hello world` | `"hello world"` |
+| `a="b"` | `"a=\"b\""` |
+| `line1` + line feed + `line2` | `"line1\nline2"` |
+| `héllo` | `"héllo"` |
+
+**Timestamps.** The `time` field is `FormatTime(time.UnixSeconds())`, read when
+the record is made, before it waits for the sink. `FormatTime` writes UTC with
+second precision in the RFC 3339 form `YYYY-MM-DDTHH:MM:SSZ` for
+`0001-01-01T00:00:00Z` through `9999-12-31T23:59:59Z`, and the decimal Unix
+seconds (`strconv.Itoa`) outside that range. The wall clock may move backwards,
+so timestamps are not promised to increase. A later calendar package does not
+change this format.
+
+**Sharing and order.** `Logger` is a Copy struct whose copies, including those
+made by `WithLevel`, `WithoutTime`, and `With`, share one sink behind a
+`Mutex` (§20.2). Copies may be passed to any number of tasks. Each record is
+written while the lock is held, so records from copies of one logger never
+interleave and each appears whole, except a record whose write fails, which may
+be left partly written. Records are written in the order their writers took the lock. Loggers made
+by separate `New` calls do not share a lock even when their sinks reach the
+same file.
+
+**Blocking and suspension.** `Log` and the level methods are ordinary calls,
+written without `await`, like the waiting calls of §37.3. Waiting for another
+task's record suspends an `async` caller and blocks a plain one. The record is
+written to the sink inside the lock callback, which is an ordinary closure, so
+a sink that waits blocks the calling thread in both cases (§20.2). A slow sink
+therefore delays every task that logs through that logger.
+
+**Output failure.** Methods that write return nothing; failures are reported
+by `Err`. The record is passed to the sink's `Write` as one byte view. A
+positive count below its length with `nil` is retried with the unwritten
+suffix. A non-nil error stops the record with that error; a zero count with
+`nil` stops it with `log: no write progress`; a count below zero or past the
+remaining bytes stops it with `log: invalid write count`. The first such error
+is kept: from then on every record of that logger and its copies is dropped
+without calling the sink, and `Err` returns that error unchanged, so it can be
+compared with the sink's own error values. A disabled record never calls the
+sink and is never an error.
+
+**Zero value.** The zero `Logger` (§41.4) has no sink: `Enabled` is `false`,
+records are dropped, and `Err` returns `log: no output`.
+
+Ownership, error, and async implications: `New` takes the sink with `own`, so a
+file or connection moves into the logger; the sink is dropped, closing it, when
+the last copy of the logger is gone, exactly once, like any value guarded by a
+`Mutex`. `Field` and `Logger` hold only strings, a level, a flag, and a mutex
+handle, so they are Copy and contain no views; the `fields` slice is only
+borrowed for the call. A panic in the sink's `Write` poisons the logger's
+mutex, after which every enabled record and `Err` panic (§20.2). There is no
+`Close`, `Flush`, or buffering: a record has been handed to the sink when
+`Log` returns. A buffering sink such as `bufio.Writer` is owned by the logger
+and nothing flushes it, so its pending bytes are lost when it is dropped; use
+an unbuffered sink.
+
+Compiler impact: none. `std/log` is bundled Zore source built from `std/io`,
+`std/strings`, `std/strconv`, `std/errors`, `std/time`, and `Mutex<T>`; it adds
+no runtime function. Conformance cases: `tests/conformance/log.md`, with native
+tests in `tests/codegen/log.rs`.
 
 ---
 

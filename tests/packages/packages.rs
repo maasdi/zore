@@ -530,6 +530,52 @@ fn the_time_os_bufio_and_net_packages_type_check_their_uses() {
 }
 
 #[test]
+fn the_log_package_accepts_values_and_rejects_misuse() {
+    let imports = "import \"std/log\"\nimport \"std/os\"";
+    accepts(&[(
+        "main.ore",
+        &main_with(
+            imports,
+            "let logger = log.New(os.Stderr(), log.LevelInfo)\nlet copy = logger\nlogger.Info(\"a\")\ncopy.Log(log.LevelWarn, \"b\", Array<log.Field>{log.Int(\"n\", 1)}[:])",
+        ),
+    )]);
+    rejects(
+        &[(
+            "main.ore",
+            &main_with(imports, "let logger = log.New(\"text\", log.LevelInfo)"),
+        )],
+        "`string` does not satisfy `io.Writer`",
+    );
+    rejects(
+        &[(
+            "main.ore",
+            &main_with(
+                imports,
+                "let level = 1\nlet logger = log.New(os.Stderr(), level)",
+            ),
+        )],
+        "mismatched types",
+    );
+    rejects(
+        &[(
+            "main.ore",
+            &main_with(imports, "let field = log.Field{key: \"k\", value: \"v\"}"),
+        )],
+        "not exported",
+    );
+    rejects(
+        &[(
+            "main.ore",
+            &main_with(
+                imports,
+                "let logger = log.New(os.Stderr(), log.LevelInfo)\nlet failed bool = logger.Info(\"a\")",
+            ),
+        )],
+        "this call has no value",
+    );
+}
+
+#[test]
 fn the_io_packages_reject_misuse() {
     let net = "import \"std/net\"";
     rejects(

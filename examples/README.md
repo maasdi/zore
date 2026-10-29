@@ -46,7 +46,8 @@ progress have no example until they work.
 | [`bytes`](bytes) | `Array<byte>` made from a string and turned back with a UTF-8 check, a sum over a byte view, and raw bytes sent over a loopback connection and read back reversed | §37.2, §37.3 |
 | [`timeouts`](timeouts) | A `select` that gives up after `time.After`, a worker stopped by a `context.WithTimeout` context, and a `Listener` whose `Accept` reaches its deadline | §37.3, §37.4 |
 | [`mutex`](mutex) | `Mutex<T>`: forty tasks updating one shared counter, a guarded struct with a custom `drop`, results from `withLock`, and `isPoisoned` | §20.2 |
-| [`rest-api`](rest-api) | HTTP/1.1 user API, factory handlers, shared store, bounded JSON body and graceful shutdown | §37.6 |
+| [`logging`](logging) | `std/log`: levels and filtering, fields added with `With`, quoted values, a failing output reported by `Err`, and timestamps | §37.12 |
+| [`rest-api`](rest-api) | HTTP/1.1 user API, factory handlers, shared store, structured request logs, bounded JSON body and graceful shutdown | §37.6, §37.12 |
 | [`json`](json) | Generated JSON codecs, naming, Optional, strict decoding, Value patches and indentation | §37.7 |
 | [`application-tests`](application-tests) | Same-package tests, private helpers, both test signatures, return/error/panic cleanup and continued failure reporting | §45.1 |
 

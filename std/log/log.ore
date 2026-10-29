@@ -1,0 +1,261 @@
+package log
+
+import "std/errors"
+import "std/io"
+import "std/strconv"
+import "std/strings"
+import "std/time"
+
+type Level int
+
+const LevelDebug Level = 0
+const LevelInfo Level = 1
+const LevelWarn Level = 2
+const LevelError Level = 3
+
+func (l Level) String() string {
+    if l == LevelDebug { return "DEBUG" }
+    if l == LevelInfo { return "INFO" }
+    if l == LevelWarn { return "WARN" }
+    if l == LevelError { return "ERROR" }
+    return "LEVEL(" + strconv.Itoa(int(l)) + ")"
+}
+
+type Field struct {
+    key   string
+    value string
+}
+
+func String(key string, value string) Field {
+    return Field{key: key, value: value}
+}
+
+func Int(key string, value int) Field {
+    return Field{key: key, value: strconv.Itoa(value)}
+}
+
+func Bool(key string, value bool) Field {
+    return Field{key: key, value: strconv.FormatBool(value)}
+}
+
+func Float(key string, value float64) Field {
+    return Field{key: key, value: strconv.FormatFloat(value, 'g', -1, 64)}
+}
+
+func Err(err error) Field {
+    if err == nil {
+        return Field{key: "error", value: "<nil>"}
+    }
+    return Field{key: "error", value: errors.Message(err)}
+}
+
+type output struct {
+    sink io.Writer
+    err  error
+}
+
+type Logger struct {
+    out     Mutex<output>
+    level   Level
+    context string
+    stamped bool
+    open    bool
+}
+
+func New(sink own io.Writer, level Level) Logger {
+    return Logger{out: mutex(output{sink: sink, err: nil}), level: level, context: "", stamped: true, open: true}
+}
+
+func (l Logger) Enabled(level Level) bool {
+    return l.open && level >= l.level
+}
+
+func (l Logger) WithLevel(level Level) Logger {
+    var next = l
+    next.level = level
+    return next
+}
+
+func (l Logger) WithoutTime() Logger {
+    var next = l
+    next.stamped = false
+    return next
+}
+
+func (l Logger) With(fields []Field) Logger {
+    var next = l
+    next.context = l.context + render(fields)
+    return next
+}
+
+func (l Logger) Debug(message string) {
+    l.Log(LevelDebug, message, Array<Field>{}[:])
+}
+
+func (l Logger) Info(message string) {
+    l.Log(LevelInfo, message, Array<Field>{}[:])
+}
+
+func (l Logger) Warn(message string) {
+    l.Log(LevelWarn, message, Array<Field>{}[:])
+}
+
+func (l Logger) Error(message string) {
+    l.Log(LevelError, message, Array<Field>{}[:])
+}
+
+func (l Logger) Log(level Level, message string, fields []Field) {
+    if !l.Enabled(level) {
+        return
+    }
+    var record = strings.NewBuilder()
+    if l.stamped {
+        record.WriteString("time=" + FormatTime(time.UnixSeconds()) + " ")
+    }
+    record.WriteString("level=" + text(level.String()) + " msg=" + text(message))
+    record.WriteString(l.context)
+    record.WriteString(render(fields))
+    record.WriteString("\n")
+    let data = strings.Bytes(record.String())
+    l.out.withLock(func(out mut output) {
+        if out.err != nil {
+            return
+        }
+        let size = data.len()
+        var offset = 0
+        for offset < size {
+            let count, err = out.sink.Write(data[offset:])
+            if count < 0 || count > size - offset {
+                _ = err
+                out.err = error("log: invalid write count")
+                return
+            }
+            offset += count
+            if err != nil {
+                out.err = err
+                return
+            }
+            if count == 0 {
+                out.err = error("log: no write progress")
+                return
+            }
+        }
+    })
+}
+
+func (l Logger) Err() error {
+    if !l.open {
+        return error("log: no output")
+    }
+    return l.out.withLock(func(out mut output) error {
+        return out.err
+    })
+}
+
+func render(fields []Field) string {
+    var line = strings.NewBuilder()
+    for field in fields {
+        line.WriteString(" " + key(field.key) + "=" + text(field.value))
+    }
+    return line.String()
+}
+
+func plain(c byte) bool {
+    return c > 32 && c < 127 && c != 34 && c != 61 && c != 92
+}
+
+func key(name string) string {
+    if name.len() == 0 {
+        return "_"
+    }
+    var clean = true
+    for var i = 0; i < name.len(); i += 1 {
+        if !plain(name[i]) { clean = false }
+    }
+    if clean {
+        return name
+    }
+    var replaced = Array<byte>{}
+    for var i = 0; i < name.len(); i += 1 {
+        if plain(name[i]) {
+            replaced.push(name[i])
+        } else {
+            replaced.push(95)
+        }
+    }
+    let result, _ = strings.FromBytes(replaced[:])
+    return result
+}
+
+func text(value string) string {
+    var clean = value.len() > 0
+    for var i = 0; i < value.len(); i += 1 {
+        if !plain(value[i]) { clean = false }
+    }
+    if clean {
+        return value
+    }
+    var quoted = strings.NewBuilder()
+    quoted.WriteString("\"")
+    var start = 0
+    for var i = 0; i < value.len(); i += 1 {
+        let c = value[i]
+        var escape = ""
+        if c == 34 {
+            escape = "\\\""
+        } else if c == 92 {
+            escape = "\\\\"
+        } else if c == 10 {
+            escape = "\\n"
+        } else if c == 13 {
+            escape = "\\r"
+        } else if c == 9 {
+            escape = "\\t"
+        } else if c < 32 || c == 127 {
+            escape = "\\u00" + hex(c / 16) + hex(c % 16)
+        }
+        if escape != "" {
+            quoted.WriteString(value[start:i])
+            quoted.WriteString(escape)
+            start = i + 1
+        }
+    }
+    quoted.WriteString(value[start:])
+    quoted.WriteString("\"")
+    return quoted.String()
+}
+
+func hex(digit byte) string {
+    let digits = "0123456789abcdef"
+    return digits[int(digit):int(digit) + 1]
+}
+
+func FormatTime(seconds int) string {
+    if seconds < -62135596800 || seconds > 253402300799 {
+        return strconv.Itoa(seconds)
+    }
+    var days = seconds / 86400
+    var remainder = seconds % 86400
+    if remainder < 0 { days -= 1; remainder += 86400 }
+    let shifted = days + 719468
+    var era = shifted / 146097
+    if shifted < 0 { era = (shifted - 146096) / 146097 }
+    let dayOfEra = shifted - era * 146097
+    let yearOfEra = (dayOfEra - dayOfEra / 1460 + dayOfEra / 36524 - dayOfEra / 146096) / 365
+    let dayOfYear = dayOfEra - (365 * yearOfEra + yearOfEra / 4 - yearOfEra / 100)
+    let shiftedMonth = (5 * dayOfYear + 2) / 153
+    let day = dayOfYear - (153 * shiftedMonth + 2) / 5 + 1
+    var month = shiftedMonth + 3
+    if shiftedMonth >= 10 { month = shiftedMonth - 9 }
+    var year = yearOfEra + era * 400
+    if month <= 2 { year += 1 }
+    return pad(year, 4) + "-" + pad(month, 2) + "-" + pad(day, 2) + "T" + pad(remainder / 3600, 2) + ":" + pad(remainder / 60 % 60, 2) + ":" + pad(remainder % 60, 2) + "Z"
+}
+
+func pad(value int, width int) string {
+    var digits = strconv.Itoa(value)
+    for digits.len() < width {
+        digits = "0" + digits
+    }
+    return digits
+}

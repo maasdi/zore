@@ -161,6 +161,12 @@ once it does.
 
 ### Standard library
 
+- Added `std/log` (§37.12): a Copy `Logger` over any `io.Writer` with
+  `DEBUG`/`INFO`/`WARN`/`ERROR` levels, `String`/`Int`/`Bool`/`Float`/`Err`
+  fields, `With` context fields, and one-line `key=value` records with stable
+  quoting and UTC RFC 3339 second timestamps (`FormatTime`). Copies share one
+  lock, so records from different tasks never interleave; the first output
+  failure is kept, stops later records, and is reported by `Err`.
 - Fixed `bytes.Buffer` retaining consumed history across repeated writes and
   reads. Writes now compact consumed prefixes and reuse existing capacity.
 - Refactored the standard packages to one naming and signature pattern

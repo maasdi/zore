@@ -1,6 +1,7 @@
 package main
 
 import "std/errors"
+import "std/log"
 import "std/net/http"
 import "std/os"
 
@@ -15,13 +16,17 @@ func main() {
 }
 
 func run() error {
+    let logger = log.New(os.Stderr(), log.LevelInfo)
     let store = NewUserStore()
-    let router = newRouter(store)?
+    let router = newRouter(store, logger)?
     println("Starting http://" + listenAddress + "; Ctrl-C shuts down gracefully")
-    return http.ListenAndServe(listenAddress, router)
+    logger.Log(log.LevelInfo, "listening", Array<log.Field>{log.String("addr", listenAddress)}[:])
+    http.ListenAndServe(listenAddress, router)?
+    logger.Info("stopped")
+    return logger.Err()
 }
 
-func newRouter(store UserStore) (http.Router, error) {
+func newRouter(store UserStore, logger log.Logger) (http.Router, error) {
     var routes = http.NewRouterBuilder()
     routes.Handle("GET /users", func(w mut http.ResponseWriter, r mut http.Request) error {
         return listUsers(store, w, r)
@@ -30,7 +35,7 @@ func newRouter(store UserStore) (http.Router, error) {
         return getUser(store, w, r)
     })
     routes.Handle("POST /users", func(w mut http.ResponseWriter, r mut http.Request) error {
-        return createUser(store, w, r)
+        return createUser(store, logger, w, r)
     })
     return routes.Build()
 }

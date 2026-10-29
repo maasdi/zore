@@ -559,7 +559,16 @@ impl ServerProcess {
         self.finish(expected_error);
     }
 
-    fn finish(mut self, expected_error: &str) {
+    fn finish(self, expected_error: &str) {
+        let errors = self.finish_with_errors();
+        if expected_error.is_empty() {
+            assert!(errors.is_empty(), "{errors}");
+        } else {
+            assert!(errors.contains(expected_error), "{errors}");
+        }
+    }
+
+    fn finish_with_errors(mut self) -> String {
         let deadline = std::time::Instant::now() + Duration::from_secs(8);
         loop {
             if let Some(status) = self.child.try_wait().unwrap() {
@@ -576,12 +585,8 @@ impl ServerProcess {
             .unwrap()
             .read_to_string(&mut errors)
             .unwrap();
-        if expected_error.is_empty() {
-            assert!(errors.is_empty(), "{errors}");
-        } else {
-            assert!(errors.contains(expected_error), "{errors}");
-        }
         assert!(!errors.contains("leak"), "{errors}");
+        errors
     }
 }
 
@@ -1122,7 +1127,27 @@ fn rest_api_example_serves_requests_and_shuts_down_cleanly() {
     );
     status(&server.exchange("POST /users HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}"), 400);
     send_signal(&server.child, test_signals()[1]);
-    server.finish("");
+    let logs = server.finish_with_errors();
+    let records: Vec<&str> = logs
+        .lines()
+        .map(|line| {
+            let (stamp, record) = line.split_at("time=2026-10-29T10:40:29Z ".len());
+            assert!(
+                stamp.starts_with("time=") && stamp.ends_with("Z "),
+                "{line}"
+            );
+            record
+        })
+        .collect();
+    assert_eq!(
+        records,
+        [
+            format!("level=INFO msg=listening addr={address}").as_str(),
+            "level=INFO msg=\"user created\" id=1 name=Ada",
+            "level=INFO msg=stopped",
+        ],
+        "{logs}"
+    );
 }
 
 fn rest_sources(sources: &[&str]) -> String {
