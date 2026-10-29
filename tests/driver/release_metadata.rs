@@ -186,6 +186,22 @@ fn optional_fields_parse_and_validate_without_becoming_required() {
 }
 
 #[test]
+fn compiler_distribution_suffixes_do_not_change_numeric_support_bounds() {
+    let core = format!(
+        "{}.{}.{}",
+        env!("CARGO_PKG_VERSION_MAJOR"),
+        env!("CARGO_PKG_VERSION_MINOR"),
+        env!("CARGO_PKG_VERSION_PATCH")
+    );
+    assert!(validate_text(&format!("{MINIMAL}zore-min = '{core}'\n"), None).is_ok());
+    let failure = validate_text(&format!("{MINIMAL}zore-max = '{core}'\n"), None).unwrap_err();
+    assert!(
+        failure.contains(&format!("requires Zore < {core}")),
+        "{failure}"
+    );
+}
+
+#[test]
 fn optional_links_cannot_embed_credentials_or_redirect_source_selection() {
     for field in [
         "documentation = 'http://example.org/'",

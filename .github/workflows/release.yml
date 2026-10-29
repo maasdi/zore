@@ -1,0 +1,239 @@
+name: Alpha distribution
+
+on:
+  pull_request:
+  push:
+    tags: ['v*-alpha.*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: alpha-distribution-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  RELEASE_TAG: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
+
+jobs:
+  metadata:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.13'
+      - name: Validate version and tag
+        id: version
+        shell: bash
+        run: |
+          arguments=()
+          if [ -n "$RELEASE_TAG" ]; then arguments+=(--tag "$RELEASE_TAG"); fi
+          python .github/scripts/package_release.py metadata "${arguments[@]}" --github-output "$GITHUB_OUTPUT"
+      - name: Test release packaging
+        run: python -m unittest discover -s .github/scripts -p test_release.py
+      - name: Require merged source and successful CI
+        if: github.event_name == 'push' && github.ref_type == 'tag'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          git fetch origin main
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/main
+          successful_runs=$(gh run list --workflow ci.yml --commit "$GITHUB_SHA" --branch main --event push --status success --json databaseId --jq length)
+          test "$successful_runs" -gt 0
+
+  archives:
+    needs: metadata
+    name: Archive (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+          - os: macos-15
+            target: aarch64-apple-darwin
+          - os: macos-15-intel
+            target: x86_64-apple-darwin
+          - os: windows-2025
+            target: x86_64-pc-windows-msvc
+    env:
+      VERSION: ${{ needs.metadata.outputs.version }}
+      TARGET: ${{ matrix.target }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.13'
+      - name: Configure Windows native toolchain
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+      - name: Select Windows clang
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $clang = 'C:\Program Files\LLVM\bin\clang.exe'
+          if (!(Test-Path -LiteralPath $clang)) { throw "Windows clang is missing" }
+          "ZORE_CC=$clang" >> $env:GITHUB_ENV
+      - name: Install pinned compiler toolchain
+        run: rustup show active-toolchain
+      - name: Verify native Rust target
+        shell: bash
+        run: python .github/scripts/package_release.py host --target "$TARGET"
+      - name: Build release compiler
+        run: cargo build --locked --release -p zore
+      - name: Package release archive
+        shell: bash
+        run: |
+          arguments=()
+          if [ -n "$RELEASE_TAG" ]; then arguments+=(--tag "$RELEASE_TAG"); fi
+          binary=target/release/zore
+          if [ "$RUNNER_OS" = Windows ]; then binary+=.exe; fi
+          python .github/scripts/package_release.py create --binary "$binary" --target "$TARGET" --output dist "${arguments[@]}"
+      - name: Validate installed archive outside checkout
+        shell: python
+        run: |
+          import os
+          import subprocess
+          import sys
+
+          target = os.environ["TARGET"]
+          version = os.environ["VERSION"]
+          suffix = "zip" if os.environ["RUNNER_OS"] == "Windows" else "tar.gz"
+          subprocess.run([
+              sys.executable, ".github/scripts/smoke_release.py",
+              "--archive", f"dist/zore-{version}-{target}.{suffix}",
+              "--target", target, "--version", version,
+          ], check=True)
+      - uses: actions/upload-artifact@v7
+        with:
+          name: archive-${{ matrix.target }}
+          path: dist/*
+          if-no-files-found: error
+
+  builder:
+    needs: [metadata, archives]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    env:
+      VERSION: ${{ needs.metadata.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.13'
+      - uses: actions/download-artifact@v8
+        with:
+          name: archive-x86_64-unknown-linux-gnu
+          path: dist
+      - name: Extract validated compiler
+        shell: bash
+        run: |
+          python .github/scripts/package_release.py extract --archive "dist/zore-$VERSION-x86_64-unknown-linux-gnu.tar.gz" --destination "$RUNNER_TEMP/builder-context" --version "$VERSION" --target x86_64-unknown-linux-gnu
+      - name: Build builder image
+        shell: bash
+        run: |
+          docker build --file distribution/Dockerfile --build-arg "ZORE_VERSION=$VERSION" --build-arg "ZORE_REVISION=$GITHUB_SHA" --tag zore-builder:validated "$RUNNER_TEMP/builder-context"
+      - name: Validate independent container build and runtime
+        shell: bash
+        run: python .github/scripts/smoke_builder.py --image zore-builder:validated --version "$VERSION"
+      - name: Save validated image
+        if: github.event_name == 'push' && github.ref_type == 'tag'
+        shell: bash
+        working-directory: ${{ runner.temp }}
+        run: |
+          image="zore-builder-$VERSION-linux-amd64.tar.gz"
+          docker tag zore-builder:validated "ghcr.io/maasdi/zore-builder:$VERSION"
+          docker save "ghcr.io/maasdi/zore-builder:$VERSION" | gzip > "$image"
+          sha256sum "$image" > "$image.sha256"
+      - uses: actions/upload-artifact@v7
+        if: github.event_name == 'push' && github.ref_type == 'tag'
+        with:
+          name: validated-builder-image
+          path: ${{ runner.temp }}/zore-builder-*.tar.gz*
+          compression-level: 0
+          if-no-files-found: error
+
+  publish-image:
+    if: github.event_name == 'push' && github.ref_type == 'tag'
+    needs: [metadata, archives, builder]
+    runs-on: ubuntu-24.04
+    permissions:
+      packages: write
+    env:
+      VERSION: ${{ needs.metadata.outputs.version }}
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: validated-builder-image
+          path: image
+      - name: Publish validated version tag
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cd image
+          sha256sum --check "zore-builder-$VERSION-linux-amd64.tar.gz.sha256"
+          docker load --input "zore-builder-$VERSION-linux-amd64.tar.gz"
+          printf '%s' "$GH_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+          if docker manifest inspect "ghcr.io/maasdi/zore-builder:$VERSION" > existing-manifest.json 2> registry-error.txt; then
+            echo "Refusing to overwrite an existing builder version"
+            exit 1
+          fi
+          if existing_tags=$(gh api --paginate "users/$GITHUB_REPOSITORY_OWNER/packages/container/zore-builder/versions" --jq '.[].metadata.container.tags[]' 2> package-error.txt); then
+            if grep -Fxq "$VERSION" <<< "$existing_tags"; then
+              echo "Refusing to overwrite an existing builder version"
+              exit 1
+            fi
+            if ! grep -Eiq 'manifest unknown|no such manifest' registry-error.txt; then
+              cat registry-error.txt
+              exit 1
+            fi
+          elif ! grep -Fq '(HTTP 404)' package-error.txt; then
+            cat package-error.txt
+            exit 1
+          fi
+          docker push "ghcr.io/maasdi/zore-builder:$VERSION"
+          docker logout ghcr.io
+
+  draft-release:
+    if: github.event_name == 'push' && github.ref_type == 'tag'
+    needs: [metadata, archives, builder, publish-image]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    env:
+      VERSION: ${{ needs.metadata.outputs.version }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.13'
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: archive-*
+          path: dist
+          merge-multiple: true
+      - uses: actions/download-artifact@v8
+        with:
+          name: validated-builder-image
+          path: dist
+      - name: Verify complete release checksums
+        run: python .github/scripts/package_release.py checksums --directory dist
+      - name: Create draft alpha prerelease
+        shell: bash
+        run: |
+          printf '%s\n' "Builder image: ghcr.io/maasdi/zore-builder:$VERSION" '' 'If anonymous registry access is unavailable, download and verify the builder image release asset, then load it locally:' '' '```sh' "sha256sum --check zore-builder-$VERSION-linux-amd64.tar.gz.sha256" "docker load --input zore-builder-$VERSION-linux-amd64.tar.gz" '```' > "$RUNNER_TEMP/release-notes.txt"
+          gh release create "$RELEASE_TAG" dist/* --verify-tag --draft --prerelease --latest=false --title "Zore $VERSION" --generate-notes --notes-file "$RUNNER_TEMP/release-notes.txt"

@@ -11,6 +11,9 @@ are cleaned up deterministically, errors are explicit values, and one ownership
 model covers synchronous code, `async`/`await`, lightweight tasks, and
 channels.
 
+**Zore** is pronounced **"zor"**. Its source-file extension, **`.ore`**, is
+pronounced **"or"**. See the [official naming rules](spec/language-spec.md#21-naming--locked).
+
 ```ore
 package main
 
@@ -74,7 +77,12 @@ records covered behavior and remaining conformance gaps; see the
 
 ## Getting started
 
-You need:
+The [alpha installation guide](docs/alpha.md) covers prebuilt compiler archives,
+checksums and the Linux builder image. Prebuilt archives remove the compiler
+source-build step; native application builds still require Rust and clang,
+which the builder image supplies.
+
+To build the compiler from source, you need:
 
 - **Rust**, installed through [rustup](https://rustup.rs/). The repository pins
   the toolchain in `rust-toolchain.toml`, so rustup selects it automatically.
