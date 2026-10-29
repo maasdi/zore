@@ -5,20 +5,23 @@ Authority: spec §37.12, §20.2, §22.2. Native cases are in
 `tests/packages/packages.rs`; `examples/logging` and `examples/rest-api` use
 the package end to end.
 
-## Records and escaping
+## Templates, records, and escaping
 
 | Scenario | Expected result |
 | --- | --- |
 | `Info("ready")` on a logger at `LevelInfo` without time | `level=INFO msg=ready` and a line feed |
-| `Debug` on a logger at `LevelInfo` | Nothing is written; `Enabled(LevelDebug)` is `false` |
+| `Info("listening on {addr} port {port}", "127.0.0.1", 8080)` | `msg="listening on 127.0.0.1 port 8080" addr=127.0.0.1 port=8080` |
+| `Debug` on a logger at `LevelInfo` | Nothing is written, but its values are still evaluated; `Enabled(LevelDebug)` is `false` |
 | `WithLevel(LevelDebug).Debug(...)` | The record is written at `DEBUG` |
-| `With` fields, then `With` again, then `Log` with fields | Context fields in the order added, then the call's fields |
+| `With` pairs, then `With` again, then a template | Context fields in the order added, then one field per hole |
 | The parent of a `With` copy | Its records do not gain the copy's fields |
-| `String`, `Int`, `Bool`, `Float`, `Err(error)`, `Err(nil)` | `v`, decimal, `true`/`false`, shortest float text, the message, `<nil>` |
+| `int8`, `uint64`, `float32`, `rune`, a `String() string` type, a nil `error` | Their `fmt` `%v` text, `<nil>` for the error |
+| Two calls with side effects as values | Each evaluated once, left to right |
+| `{{` and `}}`, including around a hole | Literal braces in the message |
+| A hole name used twice | Two fields with that key |
 | An empty message or value | `""` |
-| Values with space, `=`, `"`, `\`, line feed, carriage return, tab, other control bytes, or UTF-8 | Quoted with `\"`, `\\`, `\n`, `\r`, `\t`, `\u00xx`, and UTF-8 unchanged |
+| Values with space, `=`, `"`, `\`, line feed, carriage return, tab, other control bytes, or UTF-8 | Quoted with `\"`, `\\`, `\n`, `\r`, `\t`, `\u00xx`, and UTF-8 unchanged, in both the message and the field |
 | Plain punctuation such as `!#$~` | Bare |
-| An empty key, a key with a space, `=`, `"`, or UTF-8 | `_`, and each such byte replaced by `_` |
 | `Level(7)`, `Level(-1)` | `LEVEL(7)`, `LEVEL(-1)` |
 
 ## Timestamps
@@ -56,8 +59,15 @@ the package end to end.
 
 | Scenario | Expected result |
 | --- | --- |
-| `New(os.Stderr(), LevelInfo)`, a copy, `Info`, and `Log` with fields | Accepted |
+| `With` pairs, templates with holes and `{{c}}`, `Log` with a `Level` and an untyped constant | Accepted |
 | `New("text", LevelInfo)` | Reject: `string` does not satisfy `io.Writer` |
-| An `int` variable as the level | Reject: mismatched types |
-| `log.Field{key: ..., value: ...}` | Reject: not exported |
+| An `int` variable as the `Log` level | Reject: mismatched types |
+| More holes than values, or more values than holes | Reject: the counts are named |
+| A template or `With` key that is not a constant string | Reject: must be a constant string |
+| `{1x}`, an unclosed `{`, a lone `}` | Reject: not a hole name; not closed; must be written `}}` |
+| An `Array<int>` value | Reject: cannot format a value of that type |
+| No template, or an odd number of `With` arguments | Reject: needs a message template; takes keys and values in pairs |
+| A `With` key with a space | Reject: not a log key |
+| `logger.Info` as a value | Reject: a logging method cannot be used as a value |
 | Using the result of `Info` | Reject: the call has no value |
+| Calling the private `emit` helper | Reject: not exported |

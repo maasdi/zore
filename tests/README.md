@@ -408,10 +408,10 @@ compiler failures. These are process-order assertions, not speed thresholds.
 regressions. It distinguishes tested behavior from additional fault-injection
 coverage. The REST example codec is also exercised as executable Zore source.
 
-`conformance/log.md` maps the `std/log` contract to `codegen/log.rs`: exact
-record text and escaping, timestamps, records from plain and async tasks that
+`conformance/log.md` maps the `std/log` contract to `codegen/log.rs`: message
+templates, exact record text and escaping, timestamps, records from plain and async tasks that
 never interleave, retried short writes, sticky output failures, sink cleanup,
-and poisoning. The package-checking cases are in `packages/packages.rs`.
+and poisoning. The template and value checks are in `packages/packages.rs`.
 
 `conformance/json.md` maps the JSON token, tree, and generated-codec contract to
 `codegen/json.rs`, JSON package-checking tests, and the console/REST examples.

@@ -23,6 +23,8 @@ impl Checker<'_> {
         let declaration = self.res.functions[method.0 as usize];
         let problem = if name.text == "drop" {
             Some("the `drop` method cannot be used as a value")
+        } else if self.log_kind(method).is_some() {
+            Some("a logging method cannot be used as a value")
         } else if self.is_generic(method) {
             Some("a method of a generic type cannot be used as a value yet")
         } else {

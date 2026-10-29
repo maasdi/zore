@@ -1142,8 +1142,8 @@ fn rest_api_example_serves_requests_and_shuts_down_cleanly() {
     assert_eq!(
         records,
         [
-            format!("level=INFO msg=listening addr={address}").as_str(),
-            "level=INFO msg=\"user created\" id=1 name=Ada",
+            format!("level=INFO msg=\"listening on {address}\" addr={address}").as_str(),
+            "level=INFO msg=\"created user 1 named Ada\" id=1 name=Ada",
             "level=INFO msg=stopped",
         ],
         "{logs}"

@@ -530,49 +530,84 @@ fn the_time_os_bufio_and_net_packages_type_check_their_uses() {
 }
 
 #[test]
-fn the_log_package_accepts_values_and_rejects_misuse() {
+fn the_log_package_checks_templates_and_values() {
     let imports = "import \"std/log\"\nimport \"std/os\"";
+    let with_logger = |body: &str| {
+        main_with(
+            imports,
+            &format!(
+                "let logger = log.New(os.Stderr(), log.LevelInfo)\nlet text = \"t\"\n_ = text\n{body}"
+            ),
+        )
+    };
     accepts(&[(
         "main.ore",
-        &main_with(
-            imports,
-            "let logger = log.New(os.Stderr(), log.LevelInfo)\nlet copy = logger\nlogger.Info(\"a\")\ncopy.Log(log.LevelWarn, \"b\", Array<log.Field>{log.Int(\"n\", 1)}[:])",
+        &with_logger(
+            "let copy = logger.With(\"id\", 7, \"ok\", true)\nlogger.Info(\"a {b} {{c}}\", 1)\ncopy.Log(log.LevelWarn, \"{text}\", text)\nlogger.Log(2, \"untyped level\")",
         ),
     )]);
-    rejects(
-        &[(
-            "main.ore",
-            &main_with(imports, "let logger = log.New(\"text\", log.LevelInfo)"),
-        )],
-        "`string` does not satisfy `io.Writer`",
-    );
-    rejects(
-        &[(
-            "main.ore",
-            &main_with(
-                imports,
-                "let level = 1\nlet logger = log.New(os.Stderr(), level)",
-            ),
-        )],
-        "mismatched types",
-    );
-    rejects(
-        &[(
-            "main.ore",
-            &main_with(imports, "let field = log.Field{key: \"k\", value: \"v\"}"),
-        )],
-        "not exported",
-    );
-    rejects(
-        &[(
-            "main.ore",
-            &main_with(
-                imports,
-                "let logger = log.New(os.Stderr(), log.LevelInfo)\nlet failed bool = logger.Info(\"a\")",
-            ),
-        )],
-        "this call has no value",
-    );
+    for (body, message) in [
+        (
+            "let bad = log.New(\"text\", log.LevelInfo)",
+            "`string` does not satisfy `io.Writer`",
+        ),
+        (
+            "let level = 1\nlogger.Log(level, \"x\")",
+            "mismatched types",
+        ),
+        (
+            "logger.Info(\"one {a}\")",
+            "template has 1 hole but 0 values were given",
+        ),
+        (
+            "logger.Info(\"none\", 1)",
+            "template has 0 holes but 1 value was given",
+        ),
+        (
+            "logger.Info(text)",
+            "the template of `log.Logger.Info` must be a constant string",
+        ),
+        ("logger.Info(\"{1x}\", 1)", "is not a hole name"),
+        (
+            "logger.Info(\"open {a\", 1)",
+            "a `{` hole is not closed by `}`",
+        ),
+        ("logger.Info(\"lone }\")", "a lone `}` must be written `}}`"),
+        (
+            "logger.Info(\"{a}\", Array<int>{1})",
+            "`log.Logger.Info` cannot format a value of type",
+        ),
+        (
+            "logger.Info()",
+            "`log.Logger.Info` needs a message template",
+        ),
+        (
+            "let w = logger.With(\"k\")",
+            "`log.Logger.With` takes keys and values in pairs",
+        ),
+        (
+            "let w = logger.With(text, 1)",
+            "the key of `log.Logger.With` must be a constant string",
+        ),
+        (
+            "let w = logger.With(\"bad key\", 1)",
+            "`bad key` is not a log key",
+        ),
+        (
+            "let f = logger.Info",
+            "a logging method cannot be used as a value",
+        ),
+        (
+            "let failed bool = logger.Info(\"a\")",
+            "this call has no value",
+        ),
+        (
+            "logger.emit(log.LevelInfo, \"a\", Array<string>{})",
+            "not exported",
+        ),
+    ] {
+        rejects(&[("main.ore", &with_logger(body))], message);
+    }
 }
 
 #[test]

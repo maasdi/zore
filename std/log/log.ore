@@ -1,6 +1,6 @@
 package log
 
-import "std/errors"
+import "std/fmt"
 import "std/io"
 import "std/strconv"
 import "std/strings"
@@ -18,35 +18,7 @@ func (l Level) String() string {
     if l == LevelInfo { return "INFO" }
     if l == LevelWarn { return "WARN" }
     if l == LevelError { return "ERROR" }
-    return "LEVEL(" + strconv.Itoa(int(l)) + ")"
-}
-
-type Field struct {
-    key   string
-    value string
-}
-
-func String(key string, value string) Field {
-    return Field{key: key, value: value}
-}
-
-func Int(key string, value int) Field {
-    return Field{key: key, value: strconv.Itoa(value)}
-}
-
-func Bool(key string, value bool) Field {
-    return Field{key: key, value: strconv.FormatBool(value)}
-}
-
-func Float(key string, value float64) Field {
-    return Field{key: key, value: strconv.FormatFloat(value, 'g', -1, 64)}
-}
-
-func Err(err error) Field {
-    if err == nil {
-        return Field{key: "error", value: "<nil>"}
-    }
-    return Field{key: "error", value: errors.Message(err)}
+    return fmt.Sprintf("LEVEL(%d)", int(l))
 }
 
 type output struct {
@@ -82,39 +54,72 @@ func (l Logger) WithoutTime() Logger {
     return next
 }
 
-func (l Logger) With(fields []Field) Logger {
+func (l Logger) With(key string) Logger {
+    return l
+}
+
+func (l Logger) Debug(template string) {
+    l.emit(LevelDebug, template, Array<string>{})
+}
+
+func (l Logger) Info(template string) {
+    l.emit(LevelInfo, template, Array<string>{})
+}
+
+func (l Logger) Warn(template string) {
+    l.emit(LevelWarn, template, Array<string>{})
+}
+
+func (l Logger) Error(template string) {
+    l.emit(LevelError, template, Array<string>{})
+}
+
+func (l Logger) Log(level Level, template string) {
+    l.emit(level, template, Array<string>{})
+}
+
+func (l Logger) withPairs(pairs own Array<string>) Logger {
     var next = l
-    next.context = l.context + render(fields)
+    for var i = 0; i + 1 < pairs.len(); i += 2 {
+        next.context = next.context + " " + pairs[i] + "=" + text(pairs[i + 1])
+    }
     return next
 }
 
-func (l Logger) Debug(message string) {
-    l.Log(LevelDebug, message, Array<Field>{}[:])
-}
-
-func (l Logger) Info(message string) {
-    l.Log(LevelInfo, message, Array<Field>{}[:])
-}
-
-func (l Logger) Warn(message string) {
-    l.Log(LevelWarn, message, Array<Field>{}[:])
-}
-
-func (l Logger) Error(message string) {
-    l.Log(LevelError, message, Array<Field>{}[:])
-}
-
-func (l Logger) Log(level Level, message string, fields []Field) {
+func (l Logger) emit(level Level, template string, values own Array<string>) {
     if !l.Enabled(level) {
         return
+    }
+    var message = strings.NewBuilder()
+    var fields = strings.NewBuilder()
+    var next = 0
+    var i = 0
+    for i < template.len() {
+        let c = template[i]
+        if (c == 123 || c == 125) && i + 1 < template.len() && template[i + 1] == c {
+            message.WriteString(template[i:i + 1])
+            i += 2
+        } else if c == 123 {
+            var end = i + 1
+            for template[end] != 125 { end += 1 }
+            message.WriteString(values[next])
+            fields.WriteString(" " + template[i + 1:end] + "=" + text(values[next]))
+            next += 1
+            i = end + 1
+        } else {
+            var end = i + 1
+            for end < template.len() && template[end] != 123 && template[end] != 125 { end += 1 }
+            message.WriteString(template[i:end])
+            i = end
+        }
     }
     var record = strings.NewBuilder()
     if l.stamped {
         record.WriteString("time=" + FormatTime(time.UnixSeconds()) + " ")
     }
-    record.WriteString("level=" + text(level.String()) + " msg=" + text(message))
+    record.WriteString("level=" + text(level.String()) + " msg=" + text(message.String()))
     record.WriteString(l.context)
-    record.WriteString(render(fields))
+    record.WriteString(fields.String())
     record.WriteString("\n")
     let data = strings.Bytes(record.String())
     l.out.withLock(func(out mut output) {
@@ -152,39 +157,8 @@ func (l Logger) Err() error {
     })
 }
 
-func render(fields []Field) string {
-    var line = strings.NewBuilder()
-    for field in fields {
-        line.WriteString(" " + key(field.key) + "=" + text(field.value))
-    }
-    return line.String()
-}
-
 func plain(c byte) bool {
     return c > 32 && c < 127 && c != 34 && c != 61 && c != 92
-}
-
-func key(name string) string {
-    if name.len() == 0 {
-        return "_"
-    }
-    var clean = true
-    for var i = 0; i < name.len(); i += 1 {
-        if !plain(name[i]) { clean = false }
-    }
-    if clean {
-        return name
-    }
-    var replaced = Array<byte>{}
-    for var i = 0; i < name.len(); i += 1 {
-        if plain(name[i]) {
-            replaced.push(name[i])
-        } else {
-            replaced.push(95)
-        }
-    }
-    let result, _ = strings.FromBytes(replaced[:])
-    return result
 }
 
 func text(value string) string {

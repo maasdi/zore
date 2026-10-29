@@ -5,6 +5,7 @@ mod globals;
 mod http;
 mod interface;
 mod json;
+mod log_template;
 mod map_entry;
 mod method_value;
 mod signature;
@@ -2917,6 +2918,11 @@ impl<'a> Checker<'a> {
             && let Some(kind) = self.format_kind(id)
         {
             return self.format_call(kind, args, span);
+        }
+        if let Some(kind) = self.log_kind(id)
+            && let Some(receiver) = receiver
+        {
+            return self.log_call(kind, id, receiver, args, span);
         }
         if self.is_generic(id) {
             return match receiver {

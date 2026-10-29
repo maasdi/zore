@@ -28,33 +28,42 @@ fn program(imports: &str, body: &str) -> String {
 }
 
 #[test]
-fn log_records_have_levels_fields_and_stable_escaping() {
+fn log_templates_fill_the_message_and_add_one_field_per_hole() {
     let source = program(
         "import \"std/os\"",
         r#"
+type Color int
+
+func (c Color) String() string { return "red" }
+
+func tick(counter mut int) int {
+    counter += 1
+    return counter
+}
+
 func main() {
+    var counter = 0
     let data = mutex(Array<byte>{})
     let logger = log.New(Capture{data: data}, log.LevelInfo).WithoutTime()
-    logger.Debug("filtered")
+    logger.Debug("filtered {n}", tick(counter))
     logger.Info("ready")
     logger.Warn("hello world")
     logger.Error("")
-    let request = logger.With(Array<log.Field>{log.String("method", "GET"), log.Int("id", -7)}[:])
-    let nested = request.With(Array<log.Field>{log.Bool("cached", true)}[:])
-    nested.Log(log.LevelWarn, "slow", Array<log.Field>{log.Float("ratio", 0.25), log.Err(error("disk \"full\"")), log.Err(nil)}[:])
+    logger.Info("listening on {addr} port {port}", "127.0.0.1", 8080)
+    let request = logger.With("method", "GET", "id", -7)
+    let nested = request.With("cached", true)
+    nested.Log(log.LevelWarn, "slow at {ratio}: {error}", 0.25, error("disk \"full\""))
     request.Info("parent unchanged")
-    logger.Log(log.LevelInfo, "values", Array<log.Field>{
-        log.String("empty", ""),
-        log.String("equals", "a=b"),
-        log.String("slash", "c:\\tmp"),
-        log.String("lines", "one\ntwo\r\tthree"),
-        log.String("control", "\u0001\u001f\u007f"),
-        log.String("utf8", "héllo"),
-        log.String("bare", "!#$~"),
-    }[:])
-    logger.Log(log.LevelError, "keys", Array<log.Field>{log.String("", "x"), log.String("a key", "y"), log.String("k=\"é", "z")}[:])
-    logger.Log(log.Level(7), "custom", Array<log.Field>{}[:])
+    var missing error = nil
+    logger.Info("kinds {small} {big} {f32} {letter} {color} {missing}", int8(-5), uint64(18446744073709551615), float32(0.1), 'é', Color(3), missing)
+    logger.Info("order {first} {second}", tick(counter), tick(counter))
+    logger.Info("braces {{literal}} and {{{inside}}}", "x")
+    logger.Info("repeat {id} {id}", 1, 2)
+    logger.Info("text {empty} {equals} {slash} {lines} {control} {utf8} {bare}",
+        "", "a=b", "c:\\tmp", "one\ntwo\r\tthree", "\u0001\u001f\u007f", "héllo", "!#$~")
+    logger.Log(log.Level(7), "custom")
     logger.WithLevel(log.LevelDebug).Debug("now enabled")
+    println(counter)
     println(logger.Enabled(log.LevelDebug))
     println(logger.Enabled(log.LevelInfo))
     println(logger.WithLevel(log.LevelError).Enabled(log.LevelWarn))
@@ -67,14 +76,18 @@ func main() {
     prints(
         &source,
         concat!(
-            "false\ntrue\nfalse\nLEVEL(-1)\ntrue\n",
+            "3\nfalse\ntrue\nfalse\nLEVEL(-1)\ntrue\n",
             "level=INFO msg=ready\n",
             "level=WARN msg=\"hello world\"\n",
             "level=ERROR msg=\"\"\n",
-            "level=WARN msg=slow method=GET id=-7 cached=true ratio=0.25 error=\"disk \\\"full\\\"\" error=<nil>\n",
+            "level=INFO msg=\"listening on 127.0.0.1 port 8080\" addr=127.0.0.1 port=8080\n",
+            "level=WARN msg=\"slow at 0.25: disk \\\"full\\\"\" method=GET id=-7 cached=true ratio=0.25 error=\"disk \\\"full\\\"\"\n",
             "level=INFO msg=\"parent unchanged\" method=GET id=-7\n",
-            "level=INFO msg=values empty=\"\" equals=\"a=b\" slash=\"c:\\\\tmp\" lines=\"one\\ntwo\\r\\tthree\" control=\"\\u0001\\u001f\\u007f\" utf8=\"héllo\" bare=!#$~\n",
-            "level=ERROR msg=keys _=x a_key=y k____=z\n",
+            "level=INFO msg=\"kinds -5 18446744073709551615 0.1 é red <nil>\" small=-5 big=18446744073709551615 f32=0.1 letter=\"é\" color=red missing=<nil>\n",
+            "level=INFO msg=\"order 2 3\" first=2 second=3\n",
+            "level=INFO msg=\"braces {literal} and {x}\" inside=x\n",
+            "level=INFO msg=\"repeat 1 2\" id=1 id=2\n",
+            "level=INFO msg=\"text  a=b c:\\\\tmp one\\ntwo\\r\\tthree \\u0001\\u001f\\u007f héllo !#$~\" empty=\"\" equals=\"a=b\" slash=\"c:\\\\tmp\" lines=\"one\\ntwo\\r\\tthree\" control=\"\\u0001\\u001f\\u007f\" utf8=\"héllo\" bare=!#$~\n",
             "level=LEVEL(7) msg=custom\n",
             "level=DEBUG msg=\"now enabled\"\n",
         ),
@@ -142,14 +155,14 @@ func (t Trickle) Write(p []byte) (int, error) {
 
 func plainWorker(logger log.Logger, id int, done channel<bool>) {
     for var i = 0; i < 25; i += 1 {
-        logger.Log(log.LevelInfo, "plain step", Array<log.Field>{log.Int("task", id), log.Int("i", i)}[:])
+        logger.Info("plain step {task} {i}", id, i)
     }
     done.send(true)
 }
 
 async func asyncWorker(logger log.Logger, id int) int {
     for var i = 0; i < 25; i += 1 {
-        logger.Log(log.LevelWarn, "async step", Array<log.Field>{log.Int("task", id), log.Int("i", i)}[:])
+        logger.Warn("async step {task} {i}", id, i)
     }
     return id
 }
@@ -161,7 +174,7 @@ func main() {
     var tasks = Array<Task<int>>{}
     for var t = 0; t < 4; t += 1 {
         go plainWorker(logger, t, done)
-        tasks.push(go asyncWorker(logger.With(Array<log.Field>{log.String("kind", "async")}[:]), t + 4))
+        tasks.push(go asyncWorker(logger.With("kind", "async"), t + 4))
     }
     for var t = 0; t < 4; t += 1 { let _, _ = done.receive() }
     for tasks.len() > 0 {
@@ -179,16 +192,22 @@ func main() {
     assert!(text.ends_with('\n'));
     let mut next = [0usize; 8];
     for line in text.lines() {
-        let (task, i) = if let Some(rest) = line.strip_prefix("level=INFO msg=\"plain step\" task=")
-        {
-            rest.split_once(" i=").unwrap()
-        } else if let Some(rest) =
-            line.strip_prefix("level=WARN msg=\"async step\" kind=async task=")
-        {
-            rest.split_once(" i=").unwrap()
+        let (level, words, extra) = if line.starts_with("level=INFO") {
+            ("INFO", "plain step", "")
         } else {
-            panic!("interleaved record: {line:?}");
+            ("WARN", "async step", " kind=async")
         };
+        let numbers = line
+            .strip_prefix(&format!("level={level} msg=\"{words} "))
+            .and_then(|rest| rest.split_once('"'))
+            .map(|(numbers, _)| numbers)
+            .unwrap_or_else(|| panic!("interleaved record: {line:?}"));
+        let (task, i) = numbers.split_once(' ').unwrap();
+        assert_eq!(
+            line,
+            format!("level={level} msg=\"{words} {task} {i}\"{extra} task={task} i={i}"),
+            "interleaved record"
+        );
         let task: usize = task.parse().unwrap();
         assert_eq!(i.parse::<usize>().unwrap(), next[task], "{line}");
         next[task] += 1;
@@ -330,7 +349,7 @@ func main() {
 
 func write(file own os.File) {
     let logger = log.New(file, log.LevelInfo).WithoutTime()
-    logger.With(Array<log.Field>{log.String("sink", "file")}[:]).Info("saved")
+    logger.With("sink", "file").Info("saved")
     if logger.Err() != nil { panic("file write") }
 }
 "#,

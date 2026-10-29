@@ -46,7 +46,7 @@ func createUser(store UserStore, logger log.Logger, w mut http.ResponseWriter, r
         return problem(w, http.StatusBadRequest, "expected a nonempty name string")
     }
     let user = store.Create(input)
-    logger.Log(log.LevelInfo, "user created", Array<log.Field>{log.Int("id", user.ID), log.String("name", user.Name)}[:])
+    logger.Info("created user {id} named {name}", user.ID, user.Name)
     w.SetHeader(http.HeaderLocation, "/users/" + strconv.Itoa(user.ID))?
     return http.JSONWith(w, http.StatusCreated, user, json.LowerCamel)
 }

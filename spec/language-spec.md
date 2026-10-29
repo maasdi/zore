@@ -8953,7 +8953,9 @@ run establishes evidence only for its own host.
 ## 37.12 Structured logging — LOCKED
 
 `"std/log"` writes leveled records with key-value fields to any `io.Writer`
-(§37.3). It needs no reflection, no package-level variable, and no
+(§37.3). A record's message is a *message template*: each `{name}` hole is
+filled with the next value, and the value is also written as the field
+`name`. It needs no reflection, no package-level variable, and no
 configuration framework: a `Logger` is an ordinary value made by `New` and
 passed to the code that logs.
 
@@ -8962,18 +8964,13 @@ passed to the code that logs.
 | `type Level int` | A record's severity (§8.5) |
 | `const LevelDebug Level = 0`, `LevelInfo = 1`, `LevelWarn = 2`, `LevelError = 3` | The four levels, least to most severe |
 | `(l Level) String() string` | `DEBUG`, `INFO`, `WARN`, `ERROR`, and `LEVEL(n)` for any other value `n` |
-| `type Field struct { ... }` | One key and its value text; the fields are not exported |
-| `String(key string, value string) Field` | The value unchanged |
-| `Int(key string, value int) Field`, `Bool(key string, value bool) Field` | `strconv.Itoa(value)`, `strconv.FormatBool(value)` |
-| `Float(key string, value float64) Field` | `strconv.FormatFloat(value, 'g', -1, 64)` |
-| `Err(err error) Field` | Key `error` with `errors.Message(err)`, or `<nil>` for `nil` |
 | `New(sink own io.Writer, level Level) Logger` | A logger that writes records of `level` and above to `sink`, with timestamps |
+| `(l Logger) Debug(template, values...)`, `Info`, `Warn`, `Error` | Writes one record at that level when it is enabled |
+| `(l Logger) Log(level Level, template, values...)` | The same with the level as a value |
+| `(l Logger) With(key, value, ...) Logger` | A copy that adds these fields to every record, after those `l` already adds |
 | `(l Logger) WithLevel(level Level) Logger` | A copy with a different minimum level |
 | `(l Logger) WithoutTime() Logger` | A copy whose records have no `time` field |
-| `(l Logger) With(fields []Field) Logger` | A copy that adds `fields` to every record, after those `l` already adds |
 | `(l Logger) Enabled(level Level) bool` | Whether a record at `level` would be written |
-| `(l Logger) Log(level Level, message string, fields []Field)` | Writes one record when `level` is enabled; otherwise does nothing |
-| `(l Logger) Debug(message string)`, `Info`, `Warn`, `Error` | `Log` at that level with no fields |
 | `(l Logger) Err() error` | The first output failure of this logger's sink, or `nil` |
 | `FormatTime(seconds int) string` | The timestamp text for Unix time `seconds`, described below |
 
@@ -8983,9 +8980,9 @@ import "std/os"
 
 func main() {
     let logger = log.New(os.Stderr(), log.LevelInfo)
-    let server = logger.With(Array<log.Field>{log.String("addr", "127.0.0.1:8080")}[:])
-    server.Info("listening")
-    server.Log(log.LevelWarn, "slow request", Array<log.Field>{log.Int("ms", 950)}[:])
+    let server = logger.With("service", "users")
+    server.Info("listening on {addr} port {port}", "127.0.0.1", 8080)
+    server.Warn("slow request took {ms} ms", 950)
     logger.Debug("not written")
     if logger.Err() != nil { os.Exit(1) }
 }
@@ -8994,26 +8991,44 @@ func main() {
 writes to standard error:
 
 ```text
-time=2026-10-29T10:40:29Z level=INFO msg=listening addr=127.0.0.1:8080
-time=2026-10-29T10:40:29Z level=WARN msg="slow request" addr=127.0.0.1:8080 ms=950
+time=2026-10-29T10:40:29Z level=INFO msg="listening on 127.0.0.1 port 8080" service=users addr=127.0.0.1 port=8080
+time=2026-10-29T10:40:29Z level=WARN msg="slow request took 950 ms" service=users ms=950
 ```
 
+**Checked calls.** `Debug`, `Info`, `Warn`, `Error`, `Log`, and `With` are
+checked by the compiler at each call, like the `std/fmt` calls of §37.2; the
+`...` above is not a source-level variadic parameter (§7.8). The template, and
+each key of `With`, must be a constant string. In a template, `{{` and `}}`
+stand for `{` and `}`, and `{name}` is a hole; a `{` with no closing `}`, a lone
+`}`, a call whose number of holes differs from its number of values, and a
+`With` with an odd number of arguments are errors. Hole names and `With` keys
+are an ASCII letter or `_` followed by ASCII letters, digits, `_`, `.`, or `-`.
+The same name may appear more than once. Values may have the types `std/fmt`
+prints: `bool`, integer and float types, `rune`, `string`, `error`, and types
+with a `String() string` method. A value's text is its `fmt` `%v` text: `<nil>`
+for a nil `error`, the method's result for a `String` type. The `Log` level is
+an ordinary `Level` operand. These methods cannot be used as function values
+(§16.2); wrap the call in a function literal. Text that changes at run time is
+passed as a value: `logger.Info("request failed: {reason}", reason)`.
+
+Each value is evaluated exactly once, left to right, before the logger checks
+whether the level is enabled, so a disabled record still evaluates its values.
+
 **Records.** A record is one line: optionally `time=` and the timestamp, then
-`level=` and the level text, `msg=` and the message, the logger's `With` fields
-in the order they were added, and the fields given to `Log` in order, separated
-by single spaces and ended by a line feed (U+000A). Every key is followed by `=`
-and its value. Keys are not checked for duplicates and are written as given,
-except that a byte outside the plain set below becomes `_` and an empty key is
-`_`.
+`level=` and the level text, `msg=` and the filled-in message, the logger's
+`With` fields in the order they were added, and one field per hole in template
+order, separated by single spaces and ended by a line feed (U+000A). Every key
+is followed by `=` and its value. Keys are not checked for duplicates, so a
+hole named `msg` or a repeated `With` key is written as given.
 
 **Escaping.** The plain bytes are `!` through `~` (0x21–0x7E) other than `"`,
-`=`, and `\`. A non-empty value made only of plain bytes is written bare.
-Any other value, including the empty one, is written in double quotes, with
-`"` as `\"`, `\` as `\\`, line feed as `\n`, carriage return as `\r`, tab as
-`\t`, other bytes below 0x20 and 0x7F as `\u00` and two lowercase hex digits,
-and every other byte, including UTF-8 sequences, unchanged. A record therefore
-never contains a line feed before its end, and `"` never appears unescaped
-inside a quoted value.
+`=`, and `\`. A non-empty value, the message included, made only of plain
+bytes is written bare. Any other value, including the empty one, is written in
+double quotes, with `"` as `\"`, `\` as `\\`, line feed as `\n`, carriage
+return as `\r`, tab as `\t`, other bytes below 0x20 and 0x7F as `\u00` and two
+lowercase hex digits, and every other byte, including UTF-8 sequences,
+unchanged. A record therefore never contains a line feed before its end, and
+`"` never appears unescaped inside a quoted value.
 
 | Value | Written as |
 | --- | --- |
@@ -9033,19 +9048,19 @@ so timestamps are not promised to increase. A later calendar package does not
 change this format.
 
 **Sharing and order.** `Logger` is a Copy struct whose copies, including those
-made by `WithLevel`, `WithoutTime`, and `With`, share one sink behind a
-`Mutex` (§20.2). Copies may be passed to any number of tasks. Each record is
-written while the lock is held, so records from copies of one logger never
-interleave and each appears whole, except a record whose write fails, which may
-be left partly written. Records are written in the order their writers took the lock. Loggers made
-by separate `New` calls do not share a lock even when their sinks reach the
-same file.
+made by `With`, `WithLevel`, and `WithoutTime`, share one sink behind a `Mutex`
+(§20.2). Copies may be passed to any number of tasks. Each record is written
+while the lock is held, so records from copies of one logger never interleave
+and each appears whole, except a record whose write fails, which may be left
+partly written. Records are written in the order their writers took the lock.
+Loggers made by separate `New` calls do not share a lock even when their sinks
+reach the same file.
 
-**Blocking and suspension.** `Log` and the level methods are ordinary calls,
-written without `await`, like the waiting calls of §37.3. Waiting for another
-task's record suspends an `async` caller and blocks a plain one. The record is
-written to the sink inside the lock callback, which is an ordinary closure, so
-a sink that waits blocks the calling thread in both cases (§20.2). A slow sink
+**Blocking and suspension.** A logging call is an ordinary call, written
+without `await`, like the waiting calls of §37.3. Waiting for another task's
+record suspends an `async` caller and blocks a plain one. The record is written
+to the sink inside the lock callback, which is an ordinary closure, so a sink
+that waits blocks the calling thread in both cases (§20.2). A slow sink
 therefore delays every task that logs through that logger.
 
 **Output failure.** Methods that write return nothing; failures are reported
@@ -9065,19 +9080,24 @@ records are dropped, and `Err` returns `log: no output`.
 Ownership, error, and async implications: `New` takes the sink with `own`, so a
 file or connection moves into the logger; the sink is dropped, closing it, when
 the last copy of the logger is gone, exactly once, like any value guarded by a
-`Mutex`. `Field` and `Logger` hold only strings, a level, a flag, and a mutex
-handle, so they are Copy and contain no views; the `fields` slice is only
-borrowed for the call. A panic in the sink's `Write` poisons the logger's
-mutex, after which every enabled record and `Err` panic (§20.2). There is no
-`Close`, `Flush`, or buffering: a record has been handed to the sink when
-`Log` returns. A buffering sink such as `bufio.Writer` is owned by the logger
-and nothing flushes it, so its pending bytes are lost when it is dropped; use
-an unbuffered sink.
+`Mutex`. A `Logger` holds only strings, a level, flags, and a mutex handle, so
+it is Copy and contains no views. Values are borrowed for the call and turned
+into text; nothing a call is given is kept. A panic in the sink's `Write`
+poisons the logger's mutex, after which every enabled record and `Err` panic
+(§20.2). There is no `Close`, `Flush`, or buffering: a record has been handed
+to the sink when the call returns. A buffering sink such as `bufio.Writer` is
+owned by the logger and nothing flushes it, so its pending bytes are lost when
+it is dropped; use an unbuffered sink.
 
-Compiler impact: none. `std/log` is bundled Zore source built from `std/io`,
-`std/strings`, `std/strconv`, `std/errors`, `std/time`, and `Mutex<T>`; it adds
-no runtime function. Conformance cases: `tests/conformance/log.md`, with native
-tests in `tests/codegen/log.rs`.
+Compiler impact: the checker recognizes calls of the six methods on
+`std/log.Logger`, parses and checks the constant template or keys, checks each
+value's type, and replaces the call with a call of a private package method
+that receives the level, the template, and an `Array<string>` of the values'
+`fmt` texts. Everything else is bundled Zore source built from `std/io`,
+`std/strings`, `std/strconv`, `std/fmt`, `std/time`, and `Mutex<T>`; no
+runtime function is added. Conformance cases: `tests/conformance/log.md`, with
+native tests in `tests/codegen/log.rs` and checking tests in
+`tests/packages/packages.rs`.
 
 ---
 

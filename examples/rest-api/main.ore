@@ -20,7 +20,7 @@ func run() error {
     let store = NewUserStore()
     let router = newRouter(store, logger)?
     println("Starting http://" + listenAddress + "; Ctrl-C shuts down gracefully")
-    logger.Log(log.LevelInfo, "listening", Array<log.Field>{log.String("addr", listenAddress)}[:])
+    logger.Info("listening on {addr}", listenAddress)
     http.ListenAndServe(listenAddress, router)?
     logger.Info("stopped")
     return logger.Err()
