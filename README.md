@@ -11,6 +11,9 @@ are cleaned up deterministically, errors are explicit values, and one ownership
 model covers synchronous code, `async`/`await`, lightweight tasks, and
 channels.
 
+**Zore** is pronounced **"zor"**. Its source-file extension, **`.ore`**, is
+pronounced **"or"**. See the [official naming rules](spec/language-spec.md#21-naming--locked).
+
 ```ore
 package main
 

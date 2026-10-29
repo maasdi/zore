@@ -1,5 +1,8 @@
 # Zore documentation
 
+**Zore** is pronounced **"zor"**; **`.ore`** is pronounced **"or"**.
+See the [official naming rules](../spec/language-spec.md#21-naming--locked).
+
 | Document | Purpose |
 | --- | --- |
 | [Language specification](../spec/language-spec.md) | The authoritative definition of the Zore MVP. Normative rules override examples; changes follow §53. |

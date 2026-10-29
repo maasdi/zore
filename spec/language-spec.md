@@ -2,8 +2,8 @@
 
 **Document status:** Locked MVP language specification\
 **Audience:** Compiler implementers, coding agents, tooling authors\
-**Language:** Zore\
-**Source extension:** `.ore`\
+**Language:** Zore (pronounced "zor")\
+**Source extension:** `.ore` (pronounced "or")\
 **Compiler / CLI:** `zore`\
 **Project configuration:** `zore.toml`\
 **Tagline:** **Simple code. Strong guarantees.**
@@ -91,8 +91,8 @@ The language should avoid source-level complexity that exists only to expose com
 
 | Item | Value |
 |---|---|
-| Language name | `Zore` |
-| Source extension | `.ore` |
+| Language name | `Zore`, pronounced "zor" |
+| Source extension | `.ore`, pronounced "or" |
 | Compiler executable | `zore` |
 | Project configuration | `zore.toml` |
 | Tagline | `Simple code. Strong guarantees.` |

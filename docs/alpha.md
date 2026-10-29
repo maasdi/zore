@@ -1,5 +1,8 @@
 # Alpha compiler distribution
 
+**Zore** is pronounced **"zor"**; its **`.ore`** source-file extension is
+pronounced **"or"**. See the [official naming rules](../spec/language-spec.md#21-naming--locked).
+
 The first alpha is `v0.1.0-alpha.1`. It distributes the supported compiler subset;
 it does not declare full MVP conformance or stable language/API compatibility.
 Known boundaries and executable evidence remain in the
