@@ -5157,8 +5157,12 @@ func chainBytes(depth int) int {
 func main() {
     let small = chainBytes(256)
     let large = chainBytes(512)
-    let deep = chainBytes(4096)
-    println(small > 0 && large < small * 3 && deep < small * 24)
+    if small <= 0 || large >= small * 3 { panic("context storage growth") }
+    for var attempt = 0; attempt < 8; attempt += 1 {
+        let deep = chainBytes(4096)
+        if deep >= small * 24 { panic("deep context storage growth") }
+    }
+    println(true)
     waitIdle(0)
 }
 "#;

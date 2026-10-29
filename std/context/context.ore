@@ -130,9 +130,6 @@ func (c Context) reason() int {
             }
             return parents[0], true
         })
-        if !found {
-            break
-        }
         let inherited = parent.state.withLock(func(state mut cancellationState) cancellationState {
             return state
         })
@@ -142,7 +139,7 @@ func (c Context) reason() int {
                 return state.reason
             })
         }
-        if inherited.revision == revision {
+        if !found || inherited.revision == revision {
             break
         }
         current = parent
