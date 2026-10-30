@@ -298,10 +298,34 @@ impl FreeList {
 /// How many free slots of a class move between a thread and the shared lists at once.
 const BATCH: usize = 64;
 
-static SHARED: [std::sync::Mutex<FreeList>; CLASSES.len()] =
-    [const { std::sync::Mutex::new(FreeList::EMPTY) }; CLASSES.len()];
+/// The free slots of a class that no thread holds, and the span remainders ended threads left.
+struct Shared {
+    free: FreeList,
+    spans: Vec<(*mut u8, *mut u8)>,
+}
 
-fn shared(class: usize) -> std::sync::MutexGuard<'static, FreeList> {
+// SAFETY: like `FreeList`, the remainders are untouched storage that nobody reads.
+unsafe impl Send for Shared {}
+
+impl Shared {
+    fn take_span(&mut self, class: usize, list: &mut FreeList) {
+        if has_room(&self.free, class) {
+            (list.next, list.end) = (self.free.next, self.free.end);
+            (self.free.next, self.free.end) = (std::ptr::null_mut(), std::ptr::null_mut());
+        } else if let Some(span) = self.spans.pop() {
+            (list.next, list.end) = span;
+        }
+    }
+}
+
+static SHARED: [std::sync::Mutex<Shared>; CLASSES.len()] = [const {
+    std::sync::Mutex::new(Shared {
+        free: FreeList::EMPTY,
+        spans: Vec::new(),
+    })
+}; CLASSES.len()];
+
+fn shared(class: usize) -> std::sync::MutexGuard<'static, Shared> {
     SHARED[class]
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -315,15 +339,11 @@ impl Drop for Cache {
         for (class, list) in self.0.iter_mut().enumerate() {
             let list = list.get_mut();
             let mut shared = shared(class);
-            if carve(&mut shared, class).is_none() {
-                std::mem::swap(&mut shared.next, &mut list.next);
-                std::mem::swap(&mut shared.end, &mut list.end);
-            }
-            while let Some(slot) = carve(list, class) {
-                list.push(slot);
-            }
             let len = list.len;
-            list.move_to(&mut shared, len);
+            list.move_to(&mut shared.free, len);
+            if has_room(list, class) {
+                shared.spans.push((list.next, list.end));
+            }
         }
     }
 }
@@ -332,29 +352,18 @@ thread_local! {
     static CACHE: Cache = const { Cache([const { std::cell::UnsafeCell::new(FreeList::EMPTY) }; CLASSES.len()]) };
 }
 
-/// Runs `f` on this thread's free list of `class`, or on the shared one once the thread is ending.
-fn with_free_list<R>(class: usize, f: impl FnOnce(&mut FreeList) -> R) -> R {
-    let mut f = Some(f);
-    let result = CACHE.try_with(|cache| {
-        // SAFETY: only this thread reaches its cache, and `f` does not reenter it.
-        let list = unsafe { &mut *cache.0[class].get() };
-        (f.take().expect("runs once"))(list)
-    });
-    match result {
-        Ok(result) => result,
-        Err(_) => (f.take().expect("runs once"))(&mut shared(class)),
-    }
-}
-
 /// The next untouched slot of the list's span, if one is left.
 fn carve(list: &mut FreeList, class: usize) -> Option<*mut u8> {
-    let size = CLASSES[class];
-    if list.next.is_null() || list.end.addr() - list.next.addr() < size {
+    if !has_room(list, class) {
         return None;
     }
     let slot = list.next;
-    list.next = slot.wrapping_add(size);
+    list.next = slot.wrapping_add(CLASSES[class]);
     Some(slot)
+}
+
+fn has_room(list: &FreeList, class: usize) -> bool {
+    !list.next.is_null() && list.end.addr() - list.next.addr() >= CLASSES[class]
 }
 
 /// A fresh zeroed span of `class`: every slot in it reads zero owners, so it counts as free.
@@ -368,35 +377,61 @@ fn new_span(class: usize, list: &mut FreeList) {
 }
 
 fn alloc_slot(class: usize) -> *mut u8 {
-    let slot = with_free_list(class, |list| {
-        if let Some(slot) = list.pop().or_else(|| carve(list, class)) {
-            return slot;
-        }
-        let mut shared = shared(class);
-        shared.move_to(list, BATCH);
-        if list.len == 0 {
-            std::mem::swap(&mut shared.next, &mut list.next);
-            std::mem::swap(&mut shared.end, &mut list.end);
-        }
-        drop(shared);
-        if let Some(slot) = list.pop().or_else(|| carve(list, class)) {
-            return slot;
-        }
-        new_span(class, list);
-        carve(list, class).expect("a fresh span has a slot")
-    });
+    let slot = CACHE
+        .try_with(|cache| {
+            // SAFETY: only this thread reaches its cache, and nothing here reenters it.
+            alloc_cached(class, unsafe { &mut *cache.0[class].get() })
+        })
+        .unwrap_or_else(|_| alloc_shared(class));
     super::alloc::count_live(CLASSES[class], true);
     slot
 }
 
+fn alloc_cached(class: usize, list: &mut FreeList) -> *mut u8 {
+    if let Some(slot) = list.pop().or_else(|| carve(list, class)) {
+        return slot;
+    }
+    let mut shared = shared(class);
+    shared.free.move_to(list, BATCH);
+    if list.len == 0 {
+        shared.take_span(class, list);
+    }
+    drop(shared);
+    if let Some(slot) = list.pop().or_else(|| carve(list, class)) {
+        return slot;
+    }
+    new_span(class, list);
+    carve(list, class).expect("a fresh span has a slot")
+}
+
+/// Allocates once this thread's cache is gone, holding the shared lock throughout.
+fn alloc_shared(class: usize) -> *mut u8 {
+    let mut guard = shared(class);
+    let shared = &mut *guard;
+    if let Some(slot) = shared.free.pop().or_else(|| carve(&mut shared.free, class)) {
+        return slot;
+    }
+    if let Some(span) = shared.spans.pop() {
+        (shared.free.next, shared.free.end) = span;
+    } else {
+        new_span(class, &mut shared.free);
+    }
+    carve(&mut shared.free, class).expect("a span has a slot")
+}
+
 fn free_slot(slot: *mut u8, class: usize) {
     super::alloc::count_live(CLASSES[class], false);
-    with_free_list(class, |list| {
+    let cached = CACHE.try_with(|cache| {
+        // SAFETY: only this thread reaches its cache, and nothing here reenters it.
+        let list = unsafe { &mut *cache.0[class].get() };
         list.push(slot);
         if list.len > 2 * BATCH {
-            list.move_to(&mut shared(class), BATCH);
+            list.move_to(&mut shared(class).free, BATCH);
         }
     });
+    if cached.is_err() {
+        shared(class).free.push(slot);
+    }
 }
 
 /// Adds a buffer with one owner holding `used` bytes of at least `capacity`, copied from the given pieces.
@@ -1258,6 +1293,46 @@ mod tests {
         );
         for data in again {
             release(std::ptr::with_exposed_provenance(data), 8);
+        }
+        assert_eq!(live_buffers(), 0);
+        assert_eq!(crate::alloc::live_bytes(), bytes_before);
+    }
+
+    #[test]
+    fn text_built_and_freed_after_the_thread_cache_is_gone_takes_the_lock_once() {
+        static RAN_AFTER_CACHE: std::sync::atomic::AtomicBool =
+            std::sync::atomic::AtomicBool::new(false);
+        struct AfterCache;
+        impl Drop for AfterCache {
+            fn drop(&mut self) {
+                RAN_AFTER_CACHE.store(CACHE.try_with(|_| ()).is_err(), Ordering::Relaxed);
+                let large = "x".repeat(CLASSES[CLASSES.len() - 1] - HEADER);
+                let texts: Vec<StringOut> = (0..3 * SPAN / CLASSES[CLASSES.len() - 1])
+                    .map(|_| StringOut::built(large.as_bytes()))
+                    .chain(
+                        (0..3 * BATCH).map(|i| StringOut::built(format!("late {i:03}").as_bytes())),
+                    )
+                    .collect();
+                for text in texts {
+                    release(text.data, text.len as usize);
+                }
+            }
+        }
+        thread_local! {
+            static AFTER_CACHE: AfterCache = const { AfterCache };
+        }
+        let _serial = crate::string::serial();
+        release_all();
+        let bytes_before = crate::alloc::live_bytes();
+        std::thread::spawn(|| {
+            AFTER_CACHE.with(|_| ());
+            release(StringOut::built(b"cached").data, 6);
+        })
+        .join()
+        .unwrap();
+        // Thread-local destructor order is only promised to be last-in, first-out on Linux.
+        if cfg!(target_os = "linux") {
+            assert!(RAN_AFTER_CACHE.load(Ordering::Relaxed));
         }
         assert_eq!(live_buffers(), 0);
         assert_eq!(crate::alloc::live_bytes(), bytes_before);
