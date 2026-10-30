@@ -36,15 +36,11 @@ const ROOT_LEN: usize = 1 << (ADDRESS_BITS - PAGE_BITS - LEAF_BITS - MIDDLE_BITS
 const LEAF_LEN: usize = 1 << LEAF_BITS;
 const MIDDLE_LEN: usize = 1 << MIDDLE_BITS;
 
-/// For each page: zero when no buffer covers it; `SLAB | class << CLASS_SHIFT | index` when it
-/// is page `index` of a span of slots of that class; otherwise one more than its distance in
-/// pages from the start of the large buffer that covers it. Static text lies in no buffer, so
-/// it always reads zero.
+/// Per page: zero, a `SLAB` entry with class and span index, or 1 + pages into a large buffer.
 type Leaf = [AtomicU32; LEAF_LEN];
 type Middle = [AtomicPtr<Leaf>; MIDDLE_LEN];
 
-/// Shared by every task without a lock: a page is marked before any text on it is shared,
-/// and a large buffer's pages are cleared only after its last owner lets go.
+/// Read without a lock: pages are marked before their text is shared, cleared after its last owner.
 static PAGES: [AtomicPtr<Middle>; ROOT_LEN] =
     [const { AtomicPtr::new(std::ptr::null_mut()) }; ROOT_LEN];
 
@@ -249,8 +245,7 @@ fn buffer_of(data: *const u8, len: usize) -> Option<Buffer> {
     NonNull::new(header).map(Buffer)
 }
 
-/// Free slots of one class, linked through the word where each slot's text starts, and
-/// the untouched rest of the span slots are carved from next, from `next` to `end`.
+/// Free slots linked through their text, plus the uncarved span from `next` to `end`.
 struct FreeList {
     head: *mut u8,
     len: usize,
@@ -284,7 +279,6 @@ impl FreeList {
         Some(slot)
     }
 
-    /// Moves up to `count` slots from the front of this list onto `other`.
     fn move_to(&mut self, other: &mut Self, count: usize) {
         for _ in 0..count {
             let Some(slot) = self.pop() else {
@@ -352,7 +346,6 @@ thread_local! {
     static CACHE: Cache = const { Cache([const { std::cell::UnsafeCell::new(FreeList::EMPTY) }; CLASSES.len()]) };
 }
 
-/// The next untouched slot of the list's span, if one is left.
 fn carve(list: &mut FreeList, class: usize) -> Option<*mut u8> {
     if !has_room(list, class) {
         return None;
@@ -481,10 +474,9 @@ unsafe fn free_buffer(buffer: Buffer, release_cause: bool) {
     }
     let cause = buffer.cause.load(Ordering::Acquire);
     let size = HEADER + buffer.capacity;
-    let entry = page_entry(buffer.base().addr());
-    if entry & SLAB != 0 {
+    if let Some(class) = class_for(size) {
         buffer.owners.store(0, Ordering::Relaxed);
-        free_slot(buffer.base(), slab_class(entry));
+        free_slot(buffer.base(), class);
     } else {
         mark(buffer.base().addr(), size, |_| 0);
         // SAFETY: the buffer came from `alloc_aligned(size, PAGE)`, and nothing reads it now.
