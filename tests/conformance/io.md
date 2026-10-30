@@ -13,6 +13,7 @@ Authority: spec §37.3–§37.4. The cases below are covered by executable tests
 | `Since(start)` after `Sleep(25 * time.Millisecond)` | At least `25 * time.Millisecond` |
 | A task sleeping while another computes | The computing task finishes first |
 | `Sleep("soon")`, `Sleep()` | Rejected: argument type and count |
+| Durations, instants, calendar times, and timers | See `time.md` |
 | `time.After(60 * time.Millisecond).receive()` | `true, true` after at least 60 ms; a second receive gives `false, false` |
 | `time.After(0)` | Fires at once |
 | `select` over `After(5 * time.Second)` and `After(20 * time.Millisecond)` | The 20 ms case runs; the program does not wait 5 s |
@@ -115,9 +116,9 @@ Authority: spec §37.3–§37.4. The cases below are covered by executable tests
 
 | Scenario | Expected result |
 | --- | --- |
-| `Listener.SetDeadline(now + 40 ms)` then `Accept()` with no client | `error("net.Accept: timed out")` after at least 40 ms |
-| `SetReadDeadline(now + 50 ms)` then `Read` on a silent peer, twice | `error("net.Read: timed out")` both times |
-| `SetDeadline(0)` after a timeout, then the peer sends | The next `Read` returns the data; nothing was lost |
+| `Listener.SetDeadline(now.Add(40 ms))` then `Accept()` with no client | `error("net.Accept: timed out")` after at least 40 ms |
+| `SetReadDeadline(now.Add(50 ms))` then `Read` on a silent peer, twice | `error("net.Read: timed out")` both times |
+| `ClearDeadline()` after a timeout, then the peer sends | The next `Read` returns the data; nothing was lost |
 | A deadline already in the past | The next wait fails at once |
 | Writing 64 KiB chunks to a peer that never reads, with a write deadline | Eventually `error("net.Write: timed out")`, with the bytes sent so far |
 | `SetDeadline` on a zero-value `Conn` | `error("net.SetDeadline: not an open connection or listener")` |
@@ -131,6 +132,7 @@ Authority: spec §37.3–§37.4. The cases below are covered by executable tests
 | A worker waiting on `Done()` in a `select`, then the cancel function | The worker ends |
 | `WithTimeout(30 ms)` with a child and a grandchild | All three report `context deadline exceeded`; an unrelated context is still active |
 | `Deadline()` of a child of a timed context; of `Background()` | The deadline and `true`; `false` |
+| `WithDeadline` at `time.Now()` | Already expired when created |
 | Cancelling a child | The parent stays active |
 | 1000 children of one timed context | All are cancelled when it expires |
 | A task cancelling a context while another waits on `Done()`, 200 times | The waiter wakes exactly once each time |

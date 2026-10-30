@@ -83,6 +83,74 @@ pub unsafe extern "C" fn zore_native_context_wait_until_poll(
     1
 }
 
+/// # Safety
+/// The handle must be null or a live bool channel.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn zore_native_time_wait_until(
+    channel: *const Channel,
+    deadline: i64,
+) -> bool {
+    unsafe { zore_native_context_wait_until(channel, deadline) }
+}
+
+/// # Safety
+/// The channel must be null or live; context must be current.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn zore_native_time_wait_until_start(
+    channel: *const Channel,
+    deadline: i64,
+    context: *mut Context,
+) -> *mut DeadlineWait {
+    unsafe { zore_native_context_wait_until_start(channel, deadline, context) }
+}
+
+/// # Safety
+/// Poll one owned operation serially with current context and a writable byte; Ready consumes it.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn zore_native_time_wait_until_poll(
+    operation: *mut DeadlineWait,
+    context: *mut Context,
+    out: *mut u8,
+) -> u8 {
+    unsafe { zore_native_context_wait_until_poll(operation, context, out) }
+}
+
+fn deadline_after(remaining: i64) -> i64 {
+    super::sys::zore_native_time_now().saturating_add(remaining)
+}
+
+/// # Safety
+/// The handle must be null or a live bool channel.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn zore_native_context_wait_for(
+    channel: *const Channel,
+    remaining: i64,
+) -> bool {
+    unsafe { zore_native_context_wait_until(channel, deadline_after(remaining)) }
+}
+
+/// # Safety
+/// The channel must be null or live; context must be current.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn zore_native_context_wait_for_start(
+    channel: *const Channel,
+    remaining: i64,
+    context: *mut Context,
+) -> *mut DeadlineWait {
+    unsafe { zore_native_context_wait_until_start(channel, deadline_after(remaining), context) }
+}
+
+/// # Safety
+/// Poll one owned operation serially with current context and a writable byte; Ready consumes it.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn zore_native_context_wait_for_poll(
+    operation: *mut DeadlineWait,
+    context: *mut Context,
+    out: *mut u8,
+) -> u8 {
+    unsafe { zore_native_context_wait_until_poll(operation, context, out) }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

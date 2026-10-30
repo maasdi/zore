@@ -168,8 +168,8 @@ func dropped(path string) {
 }
 
 func waitFor(path string, text string) bool {
-    let deadline = time.Now() + 5 * time.Second
-    for time.Now() < deadline {
+    let deadline = time.Now().Add(5 * time.Second)
+    for time.Now().Before(deadline) {
         if read(path) == text { return true }
         time.Sleep(5 * time.Millisecond)
     }
@@ -497,9 +497,9 @@ func session(count int, maxBytes int) {
 }
 
 func main() {
-    let before = log.FormatTime(time.UnixSeconds())[:10]
+    let before = time.UTC().RFC3339()[:10]
     session(6, 60)
-    let after = log.FormatTime(time.UnixSeconds())[:10]
+    let after = time.UTC().RFC3339()[:10]
     if before != after { panic("the test crossed midnight; run it again") }
     println(before)
 }

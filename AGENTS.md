@@ -63,6 +63,13 @@
 - Report what changed, what was verified, and any unresolved blockers. Never
   describe unrun tests or pending conformance examples as passing.
 
+## Package boundaries
+
+- Apply `.agents/skills/package-boundaries/SKILL.md` before adding, moving, or
+  removing a public name in `std/`, or changing what a `std` package imports.
+  This is required, also for work delegated to other agents: include it in
+  every implementation or review task that touches `std/`.
+
 ## Code style
 
 - Apply `.agents/skills/code-style/SKILL.md` when writing or reviewing code.

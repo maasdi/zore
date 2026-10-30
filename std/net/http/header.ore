@@ -1,6 +1,8 @@
 package http
 
+import "std/strconv"
 import "std/strings"
+import "std/time"
 
 const HeaderContentType = "Content-Type"
 const HeaderContentLength = "Content-Length"
@@ -124,4 +126,17 @@ func (h mut Header) Set(name string, value string) error {
     if !token(name) || !fieldValue(value) { return error("http.Header: invalid field") }
     h.Del(name)?
     return h.Add(name, value)
+}
+
+func FormatDate(t time.Timestamp) string {
+    let utc = t.UTC()
+    let weekdays = [string; 7]{"Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"}
+    let months = [string; 12]{"Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"}
+    return weekdays[utc.Weekday()] + ", " + digits(utc.Day(), 2) + " " + months[utc.Month() - 1] + " " + digits(utc.Year(), 4) + " " + digits(utc.Hour(), 2) + ":" + digits(utc.Minute(), 2) + ":" + digits(utc.Second(), 2) + " GMT"
+}
+
+func digits(value int, width int) string {
+    var text = strconv.Itoa(value)
+    for text.len() < width { text = "0" + text }
+    return text
 }

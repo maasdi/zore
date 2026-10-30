@@ -28,12 +28,9 @@ the package end to end.
 
 | Scenario | Expected result |
 | --- | --- |
-| `FormatTime(0)`, `FormatTime(-1)` | `1970-01-01T00:00:00Z`, `1969-12-31T23:59:59Z` |
-| A leap day and a 2026 time | `2000-02-29T00:00:00Z`, `2026-10-29T11:23:49Z` |
-| The first and last representable seconds | `0001-01-01T00:00:00Z`, `9999-12-31T23:59:59Z` |
-| One second outside either end | The decimal Unix seconds |
-| A record from `New` | Starts with `time=` and `FormatTime(time.UnixSeconds())` read around the call |
-| `WithLocalTime().Info(...)` under `UTC0`, `<+07>-7`, `<+0530>-5:30`, `<-0330>3:30`, and `EST5EDT,M3.2.0,M11.1.0`, next to a default logger | `time=` is the local wall time of the moment followed by its offset (`+00:00`, `+07:00`, `+05:30`, `-03:30`, `-04:00` or `-05:00`); the default record still ends in `Z` (`codegen/local_time.rs`) |
+| A record from `New` | Starts with `time=` and `time.UTC().RFC3339()` read around the call; calendar text itself is covered in `time.md` |
+| `log.FormatTime(0)` | Rejected: the package no longer declares it (`packages/packages.rs`) |
+| `WithLocalTime().Info(...)` under `UTC0`, `<+07>-7`, `<+0530>-5:30`, `<-0330>3:30`, and `EST5EDT,M3.2.0,M11.1.0`, next to a default logger | `time=` is the local wall time of the moment followed by its offset (`Z` for a zero offset, `+07:00`, `+05:30`, `-03:30`, `-04:00` or `-05:00`); the default record still ends in `Z` (`codegen/local_time.rs`) |
 
 ## Sharing, blocking, and cleanup
 

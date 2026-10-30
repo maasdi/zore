@@ -25,8 +25,10 @@ type Conn struct {
     handle int
     ctx context.Context
     established bool
-    readDeadline int
-    writeDeadline int
+    readDeadline time.Instant
+    writeDeadline time.Instant
+    readLimited bool
+    writeLimited bool
     failed bool
     peerClosed bool
     output Array<byte>
@@ -59,7 +61,7 @@ func zeros(size int) Array<byte> {
 }
 
 func wrap(source own net.Conn, handle int, ctx context.Context) Conn {
-    return Conn{source: source, handle: handle, ctx: ctx, established: false, readDeadline: 0, writeDeadline: 0, failed: false, peerClosed: false, output: Array<byte>{}, outputPosition: 0, input: Array<byte>{}}
+    return Conn{source: source, handle: handle, ctx: ctx, established: false, readDeadline: time.Now(), writeDeadline: time.Now(), readLimited: false, writeLimited: false, failed: false, peerClosed: false, output: Array<byte>{}, outputPosition: 0, input: Array<byte>{}}
 }
 
 func SystemRoots() (Array<byte>, error) {
@@ -226,7 +228,7 @@ func validServerName(name string) bool {
     return validName(name) || ipAddress(name)
 }
 
-async func dialSource(address string, timeout int, result channel<dialResult>) {
+async func dialSource(address string, timeout time.Duration, result channel<dialResult>) {
     let source, err = net.DialTimeout("tcp", address, timeout)
     _ = err
     result.send(dialResult{source: source, failure: err})
@@ -262,9 +264,9 @@ func DialContext(ctx context.Context, address string, serverName string, config 
         return emptyConn(), err
     }
     let deadline, limited = ctx.Deadline()
-    var timeout = 0
+    var timeout = time.Duration(0)
     if limited {
-        timeout = deadline - time.Now()
+        timeout = time.Until(deadline)
         if timeout <= 0 {
             return emptyConn(), error("context deadline exceeded")
         }
@@ -335,11 +337,11 @@ func (c Conn) checkOpen() error {
     return nil
 }
 
-func (c Conn) deadline(writing bool) int {
+func (c Conn) deadline(writing bool) (time.Instant, bool) {
     if writing {
-        return c.writeDeadline
+        return c.writeDeadline, c.writeLimited
     }
-    return c.readDeadline
+    return c.readDeadline, c.readLimited
 }
 
 func (c Conn) check(writing bool) error {
@@ -351,32 +353,40 @@ func (c Conn) check(writing bool) error {
             return err
         }
         let at, limited = c.ctx.Deadline()
-        if limited && time.Now() >= at {
+        if limited && !time.Now().Before(at) {
             return error("context deadline exceeded")
         }
     }
-    let deadline = c.deadline(writing)
-    if deadline > 0 && time.Now() >= deadline {
+    let deadline, set = c.deadline(writing)
+    if set && !time.Now().Before(deadline) {
         return error("tls: timed out")
     }
     return nil
 }
 
-func (c Conn) waitDeadline(writing bool) int {
-    var deadline = c.deadline(writing)
+func (c Conn) waitDeadline(writing bool) (time.Instant, bool) {
+    var deadline, set = c.deadline(writing)
     if c.established {
-        return deadline
+        return deadline, set
     }
     let at, limited = c.ctx.Deadline()
-    if limited && (deadline == 0 || at < deadline) {
+    if limited && (!set || at.Before(deadline)) {
         deadline = at
+        set = true
     }
     // Handshake waits wake periodically because cancellation cannot interrupt a socket wait.
-    let slice = time.Now() + 100 * time.Millisecond
-    if deadline == 0 || slice < deadline {
+    let slice = time.Now().Add(100 * time.Millisecond)
+    if !set || slice.Before(deadline) {
         deadline = slice
     }
-    return deadline
+    return deadline, true
+}
+
+func (c Conn) armSource(writing bool) error {
+    let deadline, set = c.waitDeadline(writing)
+    if !set { return c.source.ClearDeadline() }
+    if writing { return c.source.SetWriteDeadline(deadline) }
+    return c.source.SetReadDeadline(deadline)
 }
 
 func (c mut Conn) flush(writing bool) error {
@@ -395,7 +405,7 @@ func (c mut Conn) flush(writing bool) error {
         if waitErr != nil {
             return waitErr
         }
-        let deadlineErr = c.source.SetWriteDeadline(c.waitDeadline(writing))
+        let deadlineErr = c.armSource(true)
         _ = deadlineErr
         if deadlineErr != nil {
             return deadlineErr
@@ -426,7 +436,7 @@ func (c mut Conn) receive(writing bool) error {
         if waitErr != nil {
             return waitErr
         }
-        let deadlineErr = c.source.SetReadDeadline(c.waitDeadline(writing))
+        let deadlineErr = c.armSource(false)
         _ = deadlineErr
         if deadlineErr != nil {
             return deadlineErr
@@ -568,22 +578,33 @@ func (c mut Conn) Write(data []byte) (int, error) {
     return accepted, nil
 }
 
-func (c mut Conn) SetDeadline(t int) error {
+func (c mut Conn) SetDeadline(t time.Instant) error {
     c.checkOpen()?
-    c.readDeadline = t;
-    c.writeDeadline = t;
+    c.readDeadline = t
+    c.writeDeadline = t
+    c.readLimited = true
+    c.writeLimited = true
     return nil
 }
 
-func (c mut Conn) SetReadDeadline(t int) error {
+func (c mut Conn) SetReadDeadline(t time.Instant) error {
     c.checkOpen()?
-    c.readDeadline = t;
+    c.readDeadline = t
+    c.readLimited = true
     return nil
 }
 
-func (c mut Conn) SetWriteDeadline(t int) error {
+func (c mut Conn) SetWriteDeadline(t time.Instant) error {
     c.checkOpen()?
-    c.writeDeadline = t;
+    c.writeDeadline = t
+    c.writeLimited = true
+    return nil
+}
+
+func (c mut Conn) ClearDeadline() error {
+    c.checkOpen()?
+    c.readLimited = false
+    c.writeLimited = false
     return nil
 }
 

@@ -247,7 +247,7 @@ pub unsafe extern "C" fn zore_native_net_remote_addr(out: *mut StringOut, id: i6
     // SAFETY: guaranteed by the caller.
     unsafe { out.write(StringOut::built(text.as_bytes())) };
 }
-
+/// Sets the read deadline (`which` 1), the write deadline (2), or both (0) `remaining` nanoseconds from now.
 /// Sets the read deadline (`which` 1), the write deadline (2), or both (0).
 ///
 /// # Safety
@@ -257,8 +257,24 @@ pub unsafe extern "C" fn zore_native_net_set_deadline(
     out: *mut ErrorOut,
     id: i64,
     which: i64,
-    reading: i64,
+    remaining: i64,
 ) {
+    let reading = crate::sys::zore_native_time_now()
+        .saturating_add(remaining)
+        .max(1);
+    // SAFETY: guaranteed by the caller.
+    unsafe { store_deadline(out, id, which, reading) };
+}
+
+/// # Safety
+/// `out` must be writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn zore_native_net_clear_deadline(out: *mut ErrorOut, id: i64, which: i64) {
+    // SAFETY: guaranteed by the caller.
+    unsafe { store_deadline(out, id, which, 0) };
+}
+
+unsafe fn store_deadline(out: *mut ErrorOut, id: i64, which: i64, reading: i64) {
     let result = match lookup(id).as_deref() {
         Some(Handle::Connection(connection)) => {
             if which != 2 {

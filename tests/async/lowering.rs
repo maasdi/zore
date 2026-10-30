@@ -679,8 +679,8 @@ fn native_sleep_is_a_suspension_and_nonwaiting_time_calls_stay_ordinary() {
     let (package, program, plan) = plan(
         "package main
 import \"std/time\"
-async func sleeper(d int) int { let start = time.Now(); time.Sleep(d); return time.Since(start) }
-async func parent() int { return await sleeper(1) }
+async func sleeper(d time.Duration) time.Duration { let start = time.Now(); time.Sleep(d); return time.Since(start) }
+async func parent() time.Duration { return await sleeper(1) }
 func plain() { time.Sleep(1) }
 func main() {}",
     );

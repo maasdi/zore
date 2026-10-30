@@ -408,6 +408,13 @@ compiler failures. These are process-order assertions, not speed thresholds.
 regressions. It distinguishes tested behavior from additional fault-injection
 coverage. The REST example codec is also exercised as executable Zore source.
 
+`conformance/time.md` maps the `std/time` types to `codegen/std_time.rs`:
+duration text and units, saturating instants, calendar fields, leap days and
+pre-epoch times, range ends, rejected fields, RFC 3339 text accepted and
+rejected, local times across daylight saving, and timers and tickers that fire,
+stop, reset, drain, and leave no waiting task once dropped. That the types do
+not mix is checked in `packages/packages.rs`.
+
 `conformance/log.md` also maps `std/log/rolling` to `codegen/rolling.rs`:
 rolling and backup removal, restarts, buffering and background flushing,
 failures, and records from many tasks across rolls.

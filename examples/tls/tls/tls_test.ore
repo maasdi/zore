@@ -169,7 +169,7 @@ func TestInvalidConfigurationsAndHandles() error {
     let written, writeErr = zero.Write(buffer[:])
     _ = writeErr
     check(read == 0 && readErr != nil && written == 0 && writeErr != nil)
-    check(zero.SetDeadline(0) != nil && zero.SetReadDeadline(0) != nil && zero.SetWriteDeadline(0) != nil)
+    check(zero.ClearDeadline() != nil && zero.SetReadDeadline(time.Now()) != nil && zero.SetWriteDeadline(time.Now()) != nil)
 
     let empty, emptyErr = NewClientConfig(Array<byte>{}[:])
     _ = emptyErr
@@ -227,7 +227,7 @@ func TestTCPPlainClientAsyncServer() error {
     let listener = net.Listen("tcp4", "127.0.0.1:0")?
     let address = listener.Addr()
     let ctx, cancel = context.WithTimeout(context.Background(), 5 * time.Second)
-    listener.SetDeadline(time.Now() + 5 * time.Second)?
+    listener.SetDeadline(time.Now().Add(5 * time.Second))?
     let server = go echoServer(listener, serverConfig, ctx)
     var conn = DialContext(ctx, address, "localhost", clientConfig)?
     check(nativeVersion(conn.handle)? == 772)
@@ -245,7 +245,7 @@ func TestTCPPlainClientAsyncServer() error {
     let written, writeErr = conn.Write(data[:])
     _ = writeErr
     check(written == 0 && writeErr == error("tls: peer closed connection"))
-    conn.SetDeadline(0)?
+    conn.ClearDeadline()?
     conn.Close()?
     server.wait()?
     cancel()
@@ -344,7 +344,7 @@ func TestCanceledDialReleasesLateConnection() error {
         trigger.wait()
         cancel()
     }
-    peer.SetReadDeadline(time.Now() + time.Second)?
+    peer.SetReadDeadline(time.Now().Add(time.Second))?
     var data = zeros(1)
     let n, err = peer.Read(data[:])
     _ = err
@@ -356,7 +356,7 @@ func TestHandshakeDeadlineAndCancellation() error {
     let config, serverConfig = configs()?
     let listener = net.Listen("tcp4", "127.0.0.1:0")?
     let address = listener.Addr()
-    listener.SetDeadline(time.Now() + time.Second)?
+    listener.SetDeadline(time.Now().Add(time.Second))?
     let server = go stalledServer(listener)
     let ctx, cancel = context.WithTimeout(context.Background(), 30 * time.Millisecond)
     let conn, err = DialContext(ctx, address, "localhost", config)
@@ -367,7 +367,7 @@ func TestHandshakeDeadlineAndCancellation() error {
     server.wait()?
     let nextListener = net.Listen("tcp4", "127.0.0.1:0")?
     let nextAddress = nextListener.Addr()
-    nextListener.SetDeadline(time.Now() + time.Second)?
+    nextListener.SetDeadline(time.Now().Add(time.Second))?
     let nextServer = go stalledServer(nextListener)
     let done = channel<bool>()
     let canceled, stop = context.WithCancelOn(context.Background(), done)
@@ -393,7 +393,7 @@ func TestAbruptClosureIsTruncation() error {
     let config, serverConfig = configs()?
     let listener = net.Listen("tcp4", "127.0.0.1:0")?
     let address = listener.Addr()
-    listener.SetDeadline(time.Now() + time.Second)?
+    listener.SetDeadline(time.Now().Add(time.Second))?
     let server = go abruptServer(listener, serverConfig)
     let ctx, cancel = context.WithTimeout(context.Background(), time.Second)
     var conn = DialContext(ctx, address, "localhost", config)?
@@ -423,7 +423,7 @@ func TestPendingCiphertextSurvivesRepeatedTimeouts() error {
     let listener = net.Listen("tcp4", "127.0.0.1:0")?
     let source = net.DialTimeout("tcp4", listener.Addr(), time.Second)?
     let peer = listener.Accept()?
-    source.SetWriteDeadline(time.Now() + time.Second)?
+    source.SetWriteDeadline(time.Now().Add(time.Second))?
     var prefix = 0
     for prefix < 7 {
         prefix += source.Write(encrypted[prefix:7])?
@@ -439,12 +439,12 @@ func TestPendingCiphertextSurvivesRepeatedTimeouts() error {
         _ = err
         check(n == 0 && err == error("tls: timed out") && conn.outputPosition == prefix)
     }
-    conn.SetReadDeadline(time.Now() + time.Second)?
+    conn.SetReadDeadline(time.Now().Add(time.Second))?
     var scratch = zeros(1)
     let n, readErr = conn.Read(scratch[:0])
     _ = readErr
     check(n == 0 && readErr == nil && conn.outputPosition == length)
-    peer.SetReadDeadline(time.Now() + time.Second)?
+    peer.SetReadDeadline(time.Now().Add(time.Second))?
     var received = 0
     var data = zeros(128)
     for received < length {
@@ -535,7 +535,7 @@ async func sinkServer(listener own net.Listener, config own ServerConfig, size i
     let ctx, cancel = context.WithTimeout(context.Background(), 5 * time.Second)
     var conn = Server(ctx, source, config)?
     cancel()
-    conn.SetDeadline(time.Now() + 5 * time.Second)?
+    conn.SetDeadline(time.Now().Add(5 * time.Second))?
     var data = zeros(size)
     var received = 0
     for received < size {
@@ -557,7 +557,7 @@ func TestConnectionOutlivesHandshakeContextAndWritesLargeBodies() error {
     let config, serverConfig = configs()?
     let listener = net.Listen("tcp4", "127.0.0.1:0")?
     let address = listener.Addr()
-    listener.SetDeadline(time.Now() + 5 * time.Second)?
+    listener.SetDeadline(time.Now().Add(5 * time.Second))?
     let size = 3 * 16384 + 1234
     let server = go sinkServer(listener, serverConfig, size)
     let ctx, cancel = context.WithTimeout(context.Background(), 5 * time.Second)
@@ -599,7 +599,7 @@ func fatalAlertCase(versions int, recordType byte) error {
     let listener = net.Listen("tcp4", "127.0.0.1:0")?
     let source = net.DialTimeout("tcp4", listener.Addr(), time.Second)?
     let peer = listener.Accept()?
-    source.SetDeadline(time.Now() + time.Second)?
+    source.SetDeadline(time.Now().Add(time.Second))?
     var sent = 0
     for sent < encrypted.len() {
         sent += source.Write(encrypted[sent:])?
@@ -738,7 +738,7 @@ func TestRootedDNSServerNamesVerifyThroughBothClientEntryPoints() error {
         let listener = net.Listen("tcp4", "127.0.0.1:0")?
         let address = listener.Addr()
         let ctx, cancel = context.WithTimeout(context.Background(), 5 * time.Second)
-        listener.SetDeadline(time.Now() + 5 * time.Second)?
+        listener.SetDeadline(time.Now().Add(5 * time.Second))?
         let server = go closingServer(listener, serverConfig, ctx)
         var conn = dnsClient(ctx, address, "LOCALHOST.", clientConfig, connected)?
         var data = zeros(8)
@@ -757,7 +757,7 @@ func ipDial(name string) error {
     let listener = net.Listen("tcp4", "127.0.0.1:0")?
     let address = listener.Addr()
     let ctx, cancel = context.WithTimeout(context.Background(), 5 * time.Second)
-    listener.SetDeadline(time.Now() + 5 * time.Second)?
+    listener.SetDeadline(time.Now().Add(5 * time.Second))?
     let server = go closingServer(listener, serverConfig, ctx)
     var conn = DialContext(ctx, address, name, clientConfig)?
     var data = zeros(8)
@@ -873,7 +873,7 @@ func TestTCPTLS12ServerStillAccepted() error {
     let listener = net.Listen("tcp4", "127.0.0.1:0")?
     let address = listener.Addr()
     let ctx, cancel = context.WithTimeout(context.Background(), 5 * time.Second)
-    listener.SetDeadline(time.Now() + 5 * time.Second)?
+    listener.SetDeadline(time.Now().Add(5 * time.Second))?
     let server = go echoServer(listener, serverConfig, ctx)
     var conn = DialContext(ctx, address, "localhost", clientConfig)?
     check(nativeVersion(conn.handle)? == 771)

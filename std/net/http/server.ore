@@ -10,12 +10,12 @@ type Config struct {
     MaxHeaderBytes int
     MaxBodyBytes int
     MaxConnections int
-    ReadHeaderTimeout int
-    ReadBodyTimeout int
-    WriteTimeout int
-    IdleTimeout int
-    AcceptPollInterval int
-    ShutdownTimeout int
+    ReadHeaderTimeout time.Duration
+    ReadBodyTimeout time.Duration
+    WriteTimeout time.Duration
+    IdleTimeout time.Duration
+    AcceptPollInterval time.Duration
+    ShutdownTimeout time.Duration
 }
 type serverState struct {
     started bool
@@ -48,9 +48,11 @@ func DefaultConfig() Config {
 func NewServer(router Router, config Config) (Server, error) {
     var chosen = config
     let defaults = DefaultConfig()
-    let values = [int; 9]{config.MaxHeaderBytes, config.MaxBodyBytes, config.MaxConnections, config.ReadHeaderTimeout, config.ReadBodyTimeout, config.WriteTimeout, config.IdleTimeout, config.AcceptPollInterval, config.ShutdownTimeout}
+    let values = [int; 3]{config.MaxHeaderBytes, config.MaxBodyBytes, config.MaxConnections}
+    let durations = [time.Duration; 6]{config.ReadHeaderTimeout, config.ReadBodyTimeout, config.WriteTimeout, config.IdleTimeout, config.AcceptPollInterval, config.ShutdownTimeout}
     var invalid = !router.live
     for value in values { if value < 0 { invalid = true } }
+    for duration in durations { if duration < 0 { invalid = true } }
     if chosen.MaxHeaderBytes == 0 { chosen.MaxHeaderBytes = defaults.MaxHeaderBytes }
     if chosen.MaxBodyBytes == 0 { chosen.MaxBodyBytes = defaults.MaxBodyBytes }
     if chosen.MaxConnections == 0 { chosen.MaxConnections = defaults.MaxConnections }
@@ -60,8 +62,6 @@ func NewServer(router Router, config Config) (Server, error) {
     if chosen.IdleTimeout == 0 { chosen.IdleTimeout = defaults.IdleTimeout }
     if chosen.AcceptPollInterval == 0 { chosen.AcceptPollInterval = defaults.AcceptPollInterval }
     if chosen.ShutdownTimeout == 0 { chosen.ShutdownTimeout = defaults.ShutdownTimeout }
-    let durations = [int; 6]{chosen.ReadHeaderTimeout, chosen.ReadBodyTimeout, chosen.WriteTimeout, chosen.IdleTimeout, chosen.AcceptPollInterval, chosen.ShutdownTimeout}
-    for duration in durations { if duration > 9223372036854775807 - time.Now() { invalid = true } }
     let server = Server{router: router, config: chosen, state: mutex(serverState{started: false, accepting: false, draining: false, canceled: false, stopped: channel<bool>(), connections: 0}), live: !invalid}
     if invalid { return server, error("http.NewServer: invalid configuration or router") }
     return server, nil
@@ -118,7 +118,7 @@ type contextCompletion struct {
 }
 func (g mut contextCompletion) drop() { g.finished.close() }
 
-async func requestContext(ready channel<context.Context>, done channel<bool>, finished channel<bool>, s Server, deadline int) {
+async func requestContext(ready channel<context.Context>, done channel<bool>, finished channel<bool>, s Server, deadline time.Instant) {
     let guard = contextCompletion{finished: finished}
     let ctx, cancel = context.WithDeadline(context.Background(), deadline)
     ready.send(ctx)
@@ -143,13 +143,13 @@ func (s Server) Serve(listener own net.Listener) error {
     let guard = acceptance{server: s}
     var failure error = nil
     for !s.draining() {
-        let deadlineErr = listener.SetDeadline(deadlineAfter(time.Now(), s.config.AcceptPollInterval))
+        let deadlineErr = listener.SetDeadline(time.Now().Add(s.config.AcceptPollInterval))
         if deadlineErr != nil { _ = failure; failure = deadlineErr; break }
         let conn, err = listener.Accept()
         if err == error("net.Accept: timed out") { continue }
         if err != nil { _ = failure; failure = err; break }
         let accepted = time.Now()
-        let headerDeadlineErr = conn.SetReadDeadline(deadlineAfter(accepted, s.config.ReadHeaderTimeout))
+        let headerDeadlineErr = conn.SetReadDeadline(accepted.Add(s.config.ReadHeaderTimeout))
         if headerDeadlineErr != nil { continue }
         let permit = s.state.withLock(func(state mut serverState) bool {
             if state.draining || state.connections >= s.config.MaxConnections { return false }
@@ -165,7 +165,7 @@ func (s Server) Serve(listener own net.Listener) error {
     return failure
 }
 
-func newRequest(conn []net.Conn, s Server, buffer own Array<byte>, deadline int) Request {
+func newRequest(conn []net.Conn, s Server, buffer own Array<byte>, deadline time.Instant) Request {
     return Request{
         conn: conn,
         server: s,
@@ -182,7 +182,7 @@ func newRequest(conn []net.Conn, s Server, buffer own Array<byte>, deadline int)
         buffer: buffer,
         position: 0,
         deadline: deadline,
-        writeDeadline: 0,
+        writeDeadline: deadline,
         remaining: 0,
         chunked: false,
         chunkRemaining: 0,
@@ -198,7 +198,7 @@ func newRequest(conn []net.Conn, s Server, buffer own Array<byte>, deadline int)
     }
 }
 
-func newWriter(conn []net.Conn, s Server, control Mutex<exchangeControl>, deadline int, head bool, close bool) ResponseWriter {
+func newWriter(conn []net.Conn, s Server, control Mutex<exchangeControl>, deadline time.Instant, head bool, close bool) ResponseWriter {
     return ResponseWriter{
         conn: conn,
         server: s,
@@ -221,7 +221,7 @@ func (r mut Request) beginHeaders(initial bool) error {
     let _, err = r.nextByte()
     if err != nil { return err }
     r.position -= 1
-    if !initial { r.deadline = deadlineAfter(time.Now(), r.config.ReadHeaderTimeout) }
+    if !initial { r.deadline = time.Now().Add(r.config.ReadHeaderTimeout) }
     return nil
 }
 
@@ -279,7 +279,7 @@ func (r mut Request) parseHeaders() (int, error) {
             if strings.EqualFold(name, "close") { r.close = true }
         }
     }
-    r.deadline = deadlineAfter(time.Now(), r.config.ReadBodyTimeout)
+    r.deadline = time.Now().Add(r.config.ReadBodyTimeout)
     r.metadata = 0
     r.waiting = false
     return 0, nil
@@ -358,20 +358,20 @@ func validIPv6(text string) bool {
     return groups == 8
 }
 
-async func (s Server) connection(conn own net.Conn, accepted int) {
+async func (s Server) connection(conn own net.Conn, accepted time.Instant) {
     let guard = completion{server: s}
     let sockets = [net.Conn; 1]{conn}
     var pending = Array<byte>{}
     var initial = true
     for !s.draining() {
-        var deadline = deadlineAfter(accepted, s.config.ReadHeaderTimeout)
-        if !initial { deadline = deadlineAfter(time.Now(), s.config.IdleTimeout) }
+        var deadline = accepted.Add(s.config.ReadHeaderTimeout)
+        if !initial { deadline = time.Now().Add(s.config.IdleTimeout) }
         var handler Handler = automatic{status: 500, allow: ""}
         var r = newRequest(sockets[:], s, pending, deadline)
         let firstErr = r.beginHeaders(initial)
         if firstErr != nil { return }
         let status, parseErr = r.parseHeaders()
-        let writeDeadline = deadlineAfter(time.Now(), s.config.WriteTimeout)
+        let writeDeadline = time.Now().Add(s.config.WriteTimeout)
         var w = newWriter(sockets[:], s, r.control, writeDeadline, r.method == "HEAD", r.close)
         if parseErr != nil {
             w.close = true

@@ -29,6 +29,7 @@ mod scoped_tasks;
 mod signal;
 #[cfg(windows)]
 mod signal_windows;
+mod std_time;
 mod string_ownership;
 
 use std::io::Write;
@@ -3851,7 +3852,7 @@ fn many_sleeping_tasks_wait_together() {
     let source = "package main
 import \"std/time\"
 async func nap(ms int) int {
-    time.Sleep(ms * time.Millisecond)
+    time.Sleep(time.Duration(ms) * time.Millisecond)
     return ms
 }
 func main() {
@@ -3863,13 +3864,13 @@ func main() {
         let found, task = tasks.pop()
         if found { total += task.wait() }
     }
-    let elapsed = time.Since(start) / time.Millisecond
+    let elapsed = time.Since(start).Milliseconds()
     println(total)
     println(elapsed >= 250)
     println(elapsed < 2000)
     time.Sleep(0)
     time.Sleep(-5)
-    println(time.Now() >= start)
+    println(!time.Now().Before(start))
 }";
     prints(source, "75000\ntrue\ntrue\ntrue\n");
 }
@@ -4188,7 +4189,7 @@ func main() {
     println(writeErr == error(\"net.Write: not an open connection\"))
     println(zero.CloseWrite() != nil)
     println(zero.LocalAddr().len() + zero.RemoteAddr().len())
-    println(zero.SetDeadline(1) != nil)
+    println(zero.ClearDeadline() != nil)
     let listeners = channel<net.Listener>(1)
     listeners.close()
     let closed, _ = listeners.receive()
@@ -4228,7 +4229,7 @@ func main() {
     println(err == error(\"net.Read: not an open connection\"))
     let _, writeErr = conn.Write(buf[:])
     println(writeErr == error(\"net.Write: not an open connection\"))
-    println(conn.SetDeadline(1) != nil)
+    println(conn.ClearDeadline() != nil)
     println(conn.LocalAddr() == \"\")
     println(conn.Close() == error(\"net.Close: not an open connection or listener\"))
     let dropped = net.EmptyConn()
@@ -5027,7 +5028,7 @@ func main() {
     println(other.Err() == nil)
     let deadline, has = child.Deadline()
     println(has)
-    println(deadline > 0)
+    println(!deadline.After(time.Now()))
     stop()
     println(limit.Err() == error(\"context deadline exceeded\"))
 
@@ -5069,9 +5070,9 @@ func main() {
     println(closed(expired))
     let deadline, limited = expired.Deadline()
     println(limited)
-    println(deadline < time.Now())
+    println(deadline.Before(time.Now()))
 
-    let zero, stopZero = context.WithDeadline(context.Background(), 0)
+    let zero, stopZero = context.WithDeadline(context.Background(), time.Now())
     let _, zeroLimited = zero.Deadline()
     println(zeroLimited)
     println(zero.Err() == error(\"context deadline exceeded\"))
@@ -5183,6 +5184,7 @@ func main() {
 fn context_cancellation_cache_keeps_siblings_and_sticky_errors_independent() {
     let source = r#"package main
 import "std/context"
+import "std/time"
 async func observe() {
     let root, cancel = context.WithCancel(context.Background())
     let parent, stopParent = context.WithCancel(root)
@@ -5197,7 +5199,7 @@ async func observe() {
     let late, stopLate = context.WithCancel(child)
     println(late.Err() == error("context canceled"))
     select { case late.Done().receive() { println(true) }; default { println(false) } }
-    let expired, stopExpired = context.WithDeadline(sibling, 0)
+    let expired, stopExpired = context.WithDeadline(sibling, time.Now())
     println(expired.Err() == error("context canceled"))
     stopExpired()
     stopLate()
@@ -5236,18 +5238,18 @@ func main() {{
     if err != nil {{ println(\"listen failed\"); return }}
     let address = listener.Addr()
     let started = time.Now()
-    println(listener.SetDeadline(started + 40 * time.Millisecond) == nil)
+    println(listener.SetDeadline(started.Add(40 * time.Millisecond)) == nil)
     let _, acceptErr = listener.Accept()
     println(acceptErr == error(\"net.Accept: timed out\"))
     println(time.Since(started) >= 40 * time.Millisecond)
-    println(listener.SetDeadline(0) == nil)
+    println(listener.ClearDeadline() == nil)
 
     let release = channel<bool>(1)
     let server = go quiet(listener, release)
     let conn, dialErr = net.DialTimeout(\"tcp\", address, 2 * time.Second)
     if dialErr != nil {{ println(\"dial failed\"); return }}
     let first = time.Now()
-    println(conn.SetReadDeadline(first + 50 * time.Millisecond) == nil)
+    println(conn.SetReadDeadline(first.Add(50 * time.Millisecond)) == nil)
     var buf = buffer(16)
     let _, readErr = conn.Read(buf[:])
     println(readErr == error(\"net.Read: timed out\"))
@@ -5255,7 +5257,7 @@ func main() {{
     let _, againErr = conn.Read(buf[:])
     println(againErr == error(\"net.Read: timed out\"))
     release.send(true)
-    println(conn.SetDeadline(0) == nil)
+    println(conn.ClearDeadline() == nil)
     let count, laterErr = conn.Read(buf[:])
     let text, _ = strings.FromBytes(buf[:count])
     println(text)
@@ -5299,7 +5301,7 @@ func main() {{
     let server = go hold(listener, release)
     let conn, dialErr = net.Dial(\"tcp\", address)
     if dialErr != nil {{ println(\"dial failed\"); return }}
-    println(conn.SetWriteDeadline(time.Now() + 100 * time.Millisecond) == nil)
+    println(conn.SetWriteDeadline(time.Now().Add(100 * time.Millisecond)) == nil)
     let total, floodErr = flood(conn)
     println(floodErr == error(\"net.Write: timed out\"))
     println(total > 0)
@@ -6383,7 +6385,7 @@ MODE func run() {
     time.Sleep(0)
     time.Sleep(-5)
     time.Sleep(-9223372036854775808)
-    println(time.Now() >= start)
+    println(!time.Now().Before(start))
 }
 func main() { let t = go run(); t.wait() }
 "#,
@@ -6421,7 +6423,7 @@ fn timer_poll_evaluates_sleep_arguments_once_across_loop_resumptions() {
     timer_poll_parity(
         r#"package main
 import "std/time"
-func next(counter Mutex<int>) int { return counter.withLock(func(n mut int) int { n += 1; return 1 }) }
+func next(counter Mutex<int>) time.Duration { return counter.withLock(func(n mut int) time.Duration { n += 1; return 1 }) }
 func count(counter Mutex<int>) int { return counter.withLock(func(n mut int) int { return n }) }
 MODE func run(counter Mutex<int>) int {
     var total = 0
@@ -6439,7 +6441,7 @@ fn timer_poll_after_select_and_internal_waits_are_not_false_deadlocks() {
     timer_poll_parity(
         r#"package main
 import "std/time"
-MODE func produce(ch channel<int>, ms int) { time.Sleep(ms * time.Millisecond); ch.send(7); ch.close() }
+MODE func produce(ch channel<int>, ms int) { time.Sleep(time.Duration(ms) * time.Millisecond); ch.send(7); ch.close() }
 MODE func run() {
     let ch = channel<int>()
     let t = go produce(ch, 10)
@@ -6852,7 +6854,7 @@ fn io_poll_socket_deadlines_and_byte_results_match_plain_execution() {
 import "std/net"
 import "std/time"
 MODE func run(listener own net.Listener) int {
-    _ = listener.SetDeadline(time.Now() + 10 * time.Millisecond)
+    _ = listener.SetDeadline(time.Now().Add(10 * time.Millisecond))
     let _, timed = listener.Accept()
     println(timed == error("net.Accept: timed out"))
     return 1

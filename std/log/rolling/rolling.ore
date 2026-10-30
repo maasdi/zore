@@ -1,6 +1,5 @@
 package rolling
 
-import "std/log"
 import "std/os"
 import "std/path/filepath"
 import "std/sort"
@@ -14,7 +13,7 @@ type Config struct {
     MaxBytes      int
     MaxBackups    int
     BufferBytes   int
-    FlushInterval int
+    FlushInterval time.Duration
     Perm          int
     Daily         bool
     Local         bool
@@ -173,7 +172,7 @@ func (sink Sink) Write(data []byte) (int, error) {
     })
 }
 
-async func flushEvery(shared Mutex<state>, interval int, stop channel<bool>, done channel<bool>) {
+async func flushEvery(shared Mutex<state>, interval time.Duration, stop channel<bool>, done channel<bool>) {
     for {
         select {
             case stop.receive() {
@@ -272,8 +271,13 @@ func dayOf(config Config, seconds int) int {
     return day
 }
 
+func dateName(day int) string {
+    let stamp, _ = time.Unix(day * 86400, 0)
+    return stamp.RFC3339()[:10]
+}
+
 func shiftDated(path string, day int, backups int) error {
-    let dated = path + "." + log.FormatTime(day * 86400)[:10]
+    let dated = path + "." + dateName(day)
     var target = dated
     for var n = 1; exists(target); n += 1 {
         target = dated + "." + strconv.Itoa(n)

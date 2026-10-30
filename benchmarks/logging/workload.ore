@@ -22,7 +22,7 @@ func measure(name string, logger log.Logger) {
     for var i = 0; i < records; i += 1 {
         logger.Info("request {id} took {ms} ms", i, 42)
     }
-    let perRecord = time.Since(start) / records
+    let perRecord = time.Since(start).Nanoseconds() / records
     if logger.Err() != nil {
         println(name + ": failed")
         return

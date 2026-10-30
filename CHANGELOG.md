@@ -170,6 +170,21 @@ once it does.
 
 ### Standard library
 
+- **Breaking:** `std/time` has separate types (§37.3). `Duration` is a
+  length of time (`5 * time.Second` keeps working), `time.Now()` returns an
+  `Instant` (a stopwatch reading used for deadlines: `time.Now().Add(d)`,
+  `Before`, `Sub`), and `time.UTC()` returns a `Timestamp`, a calendar time in
+  a fixed-offset `Zone` with `Date`, `Unix`, `ParseRFC3339`, `RFC3339`,
+  `RFC3339Nano`, calendar fields, `In`, and `Local`. `time.NewTimer` and
+  `time.NewTicker` can be stopped and reset, and dropping one ends its task at
+  once. `context.WithTimeout`, `context.WithDeadline`, `Context.Deadline`,
+  `net.DialTimeout`, the `net` deadline setters, `http.Config`,
+  `http.ClientConfig`, `http.ClientConn`, and `rolling.Config.FlushInterval`
+  use the new types; `net` gains `ClearDeadline()` in place of a zero deadline.
+  `time.FormatHTTPDate` became `http.FormatDate(t time.Timestamp)`, and
+  `log.FormatTime` was removed in favor of `time.Unix(seconds, 0).RFC3339()`.
+- Added the `package-boundaries` agent skill, required by `AGENTS.md` for any
+  change to the public names or imports of `std/`.
 - Local time (§37.3, §37.12, §37.13): `time.LocalOffset` reports the operating
   system's offset from UTC at any instant, daylight saving included, following
   `TZ` on Linux and macOS and the system zone on Windows.
