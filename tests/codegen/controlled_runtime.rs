@@ -29,6 +29,30 @@ fn checked(command: &mut Command) {
     );
 }
 
+fn instrument_address_sanitizer(llvm: &str) -> String {
+    let mut instrumented = String::with_capacity(llvm.len());
+    let mut definitions = 0;
+    for line in llvm.split_inclusive('\n') {
+        if line.split_whitespace().next() == Some("define") {
+            let header = line.trim_end_matches('\n');
+            assert!(
+                header.starts_with("define ") && header.ends_with(" {"),
+                "cannot instrument unexpected LLVM definition header: {header}"
+            );
+            instrumented.push_str(header.strip_suffix(" {").unwrap());
+            instrumented.push_str(" sanitize_address {");
+            if line.ends_with('\n') {
+                instrumented.push('\n');
+            }
+            definitions += 1;
+        } else {
+            instrumented.push_str(line);
+        }
+    }
+    assert!(definitions > 0, "no LLVM definitions found to instrument");
+    instrumented
+}
+
 fn runtime() -> &'static Runtime {
     static RUNTIME: OnceLock<Runtime> = OnceLock::new();
     RUNTIME.get_or_init(|| {
@@ -121,6 +145,9 @@ pub(super) fn build_with_optimization(
         );
         llvm.push_str("\ndeclare i64 @zore_test_allocated_bytes()\n");
     }
+    if std::env::var_os("ZORE_HARDENING_ASAN").is_some() {
+        llvm = instrument_address_sanitizer(&llvm);
+    }
     let dir = TempDir::new().unwrap();
     let ir = dir.path().join("program.ll");
     let object = dir.path().join("program.o");
@@ -191,4 +218,71 @@ fn main() {
             .arg("-o")
             .arg(output),
     );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+#[ignore = "requires nightly Rust, clang ASAN, and ZORE_HARDENING_ASAN=1"]
+fn asan_reports_generated_heap_overflow() {
+    assert!(
+        std::env::var_os("ZORE_HARDENING_ASAN").is_some(),
+        "set ZORE_HARDENING_ASAN=1 to instrument the Rust entry"
+    );
+    let llvm = r#"declare ptr @malloc(i64)
+declare void @free(ptr)
+define internal void @trigger() {
+entry:
+  %p = call ptr @malloc(i64 1)
+  %bad = getelementptr i8, ptr %p, i64 1
+  store volatile i8 7, ptr %bad
+  call void @free(ptr %p)
+  ret void
+}
+define void @zore_entry() {
+entry:
+  call void @trigger()
+  ret void
+}
+"#;
+    let dir = TempDir::new().unwrap();
+    let ir = dir.path().join("overflow.ll");
+    let object = dir.path().join("overflow.o");
+    let entry = dir.path().join("main.rs");
+    let executable = dir.executable("overflow");
+    fs::write(&ir, instrument_address_sanitizer(llvm)).unwrap();
+    checked(
+        Command::new(compiler())
+            .args([
+                "-Wno-override-module",
+                "-O1",
+                "-fsanitize=address",
+                "-fPIC",
+                "-c",
+            ])
+            .arg(&ir)
+            .arg("-o")
+            .arg(&object),
+    );
+    fs::write(
+        &entry,
+        "unsafe extern \"C\" { fn zore_entry(); }\nfn main() { unsafe { zore_entry() }; }\n",
+    )
+    .unwrap();
+    checked(
+        rustc()
+            .args(["--edition=2024", "-Copt-level=1", "-Cpanic=abort"])
+            .arg(format!("-Clink-arg={}", object.display()))
+            .arg(&entry)
+            .arg("-o")
+            .arg(&executable),
+    );
+    let output = super::bounded_process::run(
+        Command::new(&executable).env("ASAN_OPTIONS", "detect_leaks=1:halt_on_error=1"),
+        std::time::Duration::from_secs(20),
+    )
+    .expect("run generated heap overflow probe");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!output.status.success(), "probe unexpectedly succeeded");
+    assert!(stderr.contains("AddressSanitizer"), "{stderr}");
+    assert!(stderr.contains("heap-buffer-overflow"), "{stderr}");
 }

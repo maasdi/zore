@@ -3,6 +3,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use zore::diagnostic::{Diagnostic, Severity};
 use zore::source::{LineColumn, SourceError, SourceMap};
 
+mod semantic_provenance;
+
 static NEXT_PATH: AtomicUsize = AtomicUsize::new(0);
 
 fn temporary_path() -> std::path::PathBuf {

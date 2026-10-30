@@ -2336,3 +2336,27 @@ fn indirect_calls_keep_opaque_receiver_storage_alive() {
         "borrow",
     );
 }
+
+#[test]
+fn branch_joined_views_keep_each_possible_backing_borrowed_until_last_use() {
+    let declarations = "func use(flag bool) {
+        var left = [int; 2]{1, 2}
+        var right = [int; 2]{3, 4}
+        var view []int = left[:]
+        if flag {
+            view = left[:]
+        } else {
+            view = right[:]
+        }";
+    for owner in ["left", "right"] {
+        rejects(
+            &slice_program(&format!(
+                "{declarations}\n{owner}[0] = 9\n_ = inspect(view) }}"
+            )),
+            &format!("cannot assign to `{owner}[_]` while it is borrowed"),
+        );
+    }
+    accepts(&slice_program(&format!(
+        "{declarations}\n_ = inspect(view)\nleft[0] = 9\nright[0] = 9 }}"
+    )));
+}

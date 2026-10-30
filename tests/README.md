@@ -437,3 +437,12 @@ with bounded ownership/view chains, plain/async partial construction and scoped
 cleanup, JSON mutations, parser read fragmentation, real TCP cancellation and
 quiescent timer/resource checks. See [hardening replay and CI](../docs/conformance/hardening.md)
 for assertion names, seed selection, failure reduction and opt-in sanitizer/weekly CI.
+
+`codegen/generic_acceptance.rs`, `codegen/interface_acceptance.rs` and
+`codegen/channel_acceptance.rs` add 32 controlled native scenarios for the bounded
+[MVP acceptance audit](../docs/conformance/mvp-acceptance.md). They check cleanup
+and result ownership across success, propagation and panic, actual Pending and
+full-buffer blocking, and quiescence before retrieval. Run
+`cargo test --locked --test native acceptance::`. Diagnostic provenance in
+`diagnostics/semantic_provenance.rs` uses disk-loaded multifile Unicode/CRLF
+projects and the real CLI; run `cargo test --locked --test source_diagnostics`.
