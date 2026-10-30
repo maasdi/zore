@@ -52,7 +52,9 @@ jobs:
           RUSTFLAGS: -Zsanitizer=address
       - name: Instrument generated code and its runtime
         run: |
+          cargo test --locked --test native controlled_runtime::asan_reports_generated_heap_overflow -- --ignored
           cargo test --locked --test native hardening:: -- --test-threads=1
+          cargo test --locked --test native acceptance:: -- --test-threads=1
         env:
           ZORE_HARDENING_ASAN: '1'
       - uses: actions/upload-artifact@v7

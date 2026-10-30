@@ -15,6 +15,8 @@ See the [official naming rules](../spec/language-spec.md#21-naming--locked).
 | [Platform support](platform-support.md) | Native host/toolchain requirements, platform APIs, and Windows validation. |
 | [Alpha distribution](alpha.md) | Prebuilt compiler archives, checksums, Linux builder image, installation and release validation. |
 | [MVP evidence inventory](conformance/mvp.md) | Current specification coverage, direct test gaps, intentional restrictions, and tracked follow-ups. |
+| [MVP acceptance audit](conformance/mvp-acceptance.md) | Requirement-to-assertion mapping, bounded cleanup and diagnostic cases, and validation gates. |
+| [Standard-library evidence](conformance/standard-library-evidence.md) | Executable assertions for bundled and maintained external library contracts. |
 | [Tagged dependencies](versioned-dependencies.md) | Compatible minimum versions, tagged source verification, lock provenance and offline consumption. |
 | [Release metadata](release-metadata.md) | Optional local release preflight, canonical version/tag grammar, licensing and compatibility metadata. |
 | [Release workflow](release-workflow.md) | Ordinary Git author/tag/push publication, read-only update reports and explicit application upgrades. |

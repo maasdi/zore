@@ -164,6 +164,25 @@ absent. Their status remains unreviewed until existing assertions are mapped
 and any concrete gaps are recorded. The #114 and seeded-hardening cases remain
 delivered evidence, and further self-hosting remains deferred.
 
+## Acceptance audit — 2026-10-29
+
+Issue [#211](https://github.com/maasdi/zore/issues/211) follows the dated review
+above with a [per-requirement acceptance ledger](mvp-acceptance.md) for §§39,
+46 and 52, plus [standard-library executable evidence](standard-library-evidence.md)
+for the referenced §37 contracts. Historical results and counts above remain
+tied to their original baselines.
+
+The audit adds bounded assertions for generic and populated consuming-interface
+cleanup across return, propagated error and panic, including observed Pending
+and task quiescence before result retrieval. Disk-loaded Unicode/CRLF fixtures
+check actual compiler-produced ownership spans and CLI rendering. Focused cases
+also observe full-buffer sender blocking and branch-merged slice loans. These
+are evidence additions, not new language semantics or demonstrated safety fixes.
+
+Exact tested revisions, supported-host gates and separately scoped seeded/ASan
+results are recorded in the #211 validation ledger. The bounded conclusions do
+not establish exhaustive soundness or complete every possible feature combination.
+
 ## Work classification and next steps
 
 1. The specific direct evidence gaps in #114 are covered by the cases above.
@@ -180,9 +199,9 @@ delivered evidence, and further self-hosting remains deferred.
    host scope remains documented.
 5. Keep further self-hosting deferred. Package-level mutable values remain
    intentionally forbidden; no implementation ticket is created for them.
-6. Execute A0 of the roadmap acceptance backlog before treating its candidate
-   audits as missing coverage. Record assertion references, confirmed gaps and
-   validation results here as each bounded slice is completed.
+6. Use the #211 acceptance ledger for the current requirement mappings and
+   bounded additions. Record new assertion references, confirmed gaps and
+   revision-specific validation before advancing its acceptance claims.
 
 This review did not demonstrate a new safety defect. It also did not execute
 every Markdown scenario or establish exhaustive conformance for every feature
