@@ -78,17 +78,17 @@ pub unsafe extern "C" fn zore_native_os_read_file(
 fn create_with(path: &str, perm: i64) -> std::io::Result<std::fs::File> {
     let mut options = std::fs::OpenOptions::new();
     options.write(true).create(true).truncate(true);
-    open_with(options, path, perm)
+    open_with(&mut options, path, perm)
 }
 
 fn append_with(path: &str, perm: i64) -> std::io::Result<std::fs::File> {
     let mut options = std::fs::OpenOptions::new();
     options.append(true).create(true);
-    open_with(options, path, perm)
+    open_with(&mut options, path, perm)
 }
 
 fn open_with(
-    mut options: std::fs::OpenOptions,
+    options: &mut std::fs::OpenOptions,
     path: &str,
     perm: i64,
 ) -> std::io::Result<std::fs::File> {
