@@ -97,18 +97,25 @@ only.
 | 200,000 short strings in one task | 101–112 ms | 86–126 ms |
 | the same in four tasks at once (six alternating runs) | 174–243 ms | 188–211 ms |
 
-The logging benchmark, three alternating runs each:
+The logging benchmark, four alternating runs each on an otherwise idle host:
 
 | Sink | Before | After |
 | --- | --- | --- |
-| Record filtered by level | 1.4–1.7 µs | 1.5–2.5 µs |
-| Discarding writer, no timestamp | 8.9–10.3 µs | 9.1–9.6 µs |
-| Discarding writer, with timestamp | 10.8–12.3 µs | 11.0–11.4 µs |
-| `os.File` | 61.8–65.9 µs | 59.9–63.2 µs |
-| `rolling`, 64 KiB buffer | 10.2–12.7 µs | 10.2–11.0 µs |
-| `rolling`, 64 KiB buffer, `Daily` | 9.7–11.5 µs | 10.1–12.7 µs |
-| `rolling`, unbuffered | 60.3–67.6 µs | 59.1–64.0 µs |
+| Record filtered by level | 1.2–2.0 µs | 1.4–1.6 µs |
+| Discarding writer, no timestamp | 8.1–8.6 µs | 8.3–9.4 µs |
+| Discarding writer, with timestamp | 10.1–11.7 µs | 9.9–11.7 µs |
+| `os.File` | 59.7–74.7 µs | 59.2–65.4 µs |
+| `rolling`, 64 KiB buffer | 9.1–11.5 µs | 10.3–12.0 µs |
+| `rolling`, 64 KiB buffer, `Daily` | 9.3–11.5 µs | 10.0–11.1 µs |
+| `rolling`, unbuffered | 58.7–65.2 µs | 60.1–66.8 µs |
 
 The logging and four-task differences are within run-to-run spread. Freed
 slots and spans stay with the program for reuse rather than returning to the
 system, and table nodes are never freed, as before.
+
+The 20 runtime string tests, including slot lookup from every byte, large
+multi-page buffers, and slots freed on one thread and reused on another, pass
+under Miri (`MIRIFLAGS=-Zmiri-permissive-provenance cargo +nightly miri test
+-p zore-runtime --lib string::`, about 7 minutes) with no undefined behavior
+reported; the heaviest loops run fewer rounds under Miri. The flag permits the
+exposed-address round trips the table relies on, as before.
