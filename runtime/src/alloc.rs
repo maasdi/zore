@@ -12,7 +12,7 @@ pub(super) fn live_bytes() -> usize {
     LIVE_BYTES.load(std::sync::atomic::Ordering::Relaxed)
 }
 
-fn out_of_memory() -> ! {
+pub(super) fn out_of_memory() -> ! {
     let mut stderr = std::io::stderr().lock();
     let _ = stderr.write_all(b"fatal: out of memory\n");
     let _ = stderr.flush();
@@ -33,6 +33,18 @@ pub extern "C" fn zore_alloc(bytes: i64) -> *mut u8 {
     let Some(layout) = layout(bytes) else {
         out_of_memory();
     };
+    alloc_layout(layout)
+}
+
+/// Storage for `bytes` bytes aligned to `align`; aborts if memory is unavailable.
+pub(super) fn alloc_aligned(bytes: usize, align: usize) -> *mut u8 {
+    match Layout::from_size_align(bytes, align) {
+        Ok(layout) if layout.size() > 0 => alloc_layout(layout),
+        _ => out_of_memory(),
+    }
+}
+
+fn alloc_layout(layout: Layout) -> *mut u8 {
     // SAFETY: `layout` has a nonzero size.
     let data = unsafe { alloc(layout) };
     if data.is_null() {
@@ -55,10 +67,28 @@ pub unsafe extern "C" fn zore_free(data: *mut u8, bytes: i64) {
     }
     if let Some(layout) = layout(bytes) {
         // SAFETY: the caller passes storage allocated with this same layout.
-        unsafe { dealloc(data, layout) };
-        #[cfg(any(test, zore_test_hooks))]
-        LIVE_BYTES.fetch_sub(layout.size(), std::sync::atomic::Ordering::Relaxed);
+        unsafe { free_layout(data, layout) };
     }
+}
+
+/// Frees storage from `alloc_aligned(bytes, align)`.
+///
+/// # Safety
+/// `data` must come from `alloc_aligned(bytes, align)` and must not be used afterwards.
+pub(super) unsafe fn free_aligned(data: *mut u8, bytes: usize, align: usize) {
+    if let Ok(layout) = Layout::from_size_align(bytes, align) {
+        // SAFETY: the caller passes storage allocated with this same layout.
+        unsafe { free_layout(data, layout) };
+    }
+}
+
+/// # Safety
+/// `data` must come from `alloc_layout(layout)` and must not be used afterwards.
+unsafe fn free_layout(data: *mut u8, layout: Layout) {
+    // SAFETY: guaranteed by the caller.
+    unsafe { dealloc(data, layout) };
+    #[cfg(any(test, zore_test_hooks))]
+    LIVE_BYTES.fetch_sub(layout.size(), std::sync::atomic::Ordering::Relaxed);
 }
 
 /// Moves storage from `zore_alloc(old_bytes)` to a new `new_bytes` allocation.

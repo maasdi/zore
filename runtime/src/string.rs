@@ -1,87 +1,237 @@
-use std::collections::BTreeMap;
-use std::sync::{Mutex, MutexGuard};
+use std::alloc::Layout;
+use std::ptr::NonNull;
+use std::sync::atomic::{AtomicIsize, AtomicPtr, AtomicU32, AtomicUsize, Ordering, fence};
 
-use super::alloc::{zore_alloc, zore_free};
+use super::alloc::{alloc_aligned, free_aligned, out_of_memory};
 
-/// Built text lives in a buffer. No string reads past `used`, so appending at the end
-/// never changes the text any existing string shows. The buffer is freed when its last
-/// owner lets go.
-struct Buffer {
-    data: *mut u8,
+/// Built text lives in a buffer: this header, then `capacity` bytes. No string reads
+/// past `used`, so appending at the end never changes the text any existing string
+/// shows. The buffer is freed when its last owner lets go.
+#[repr(C)]
+struct Header {
+    /// How many strings read the buffer, with `PINNED` set once a package-level value
+    /// holds it until the program ends, so it is not a leak.
+    owners: AtomicUsize,
+    used: AtomicUsize,
     capacity: usize,
-    used: usize,
-    owners: usize,
-    /// Held by a package-level value until the program ends, so it is not a leak.
-    pinned: bool,
-    /// The error a wrapped error's text was made from, and the length of that text.
-    cause: Option<Cause>,
+    /// The error a wrapped error's text was made from, set before the text is shared.
+    cause: AtomicPtr<Cause>,
 }
 
-#[derive(Clone, Copy)]
 struct Cause {
-    data: usize,
+    data: *const u8,
     len: usize,
     text_len: usize,
 }
 
-struct Registry(BTreeMap<usize, Buffer>);
+const PINNED: usize = 1 << (usize::BITS - 1);
+const HEADER: usize = size_of::<Header>();
 
-// SAFETY: a buffer is only reached through the lock, and its storage is not tied to a thread.
-unsafe impl Send for Registry {}
+/// Buffers start on a granule and cover whole granules, so no granule holds two buffers.
+const GRANULE_BITS: u32 = 5;
+const GRANULE: usize = 1 << GRANULE_BITS;
+const LEAF_BITS: u32 = 14;
+const MIDDLE_BITS: u32 = 14;
+const ADDRESS_BITS: u32 = 48;
+const ROOT_LEN: usize = 1 << (ADDRESS_BITS - GRANULE_BITS - LEAF_BITS - MIDDLE_BITS);
+const LEAF_LEN: usize = 1 << LEAF_BITS;
+const MIDDLE_LEN: usize = 1 << MIDDLE_BITS;
 
-/// Every task shares one table, so text can move between tasks.
-static OWNED: Mutex<Registry> = Mutex::new(Registry(BTreeMap::new()));
+/// For each granule, one more than its distance in granules from the start of the buffer
+/// that covers it, or zero. Static text lies in no buffer, so it always reads zero.
+type Leaf = [AtomicU32; LEAF_LEN];
+type Middle = [AtomicPtr<Leaf>; MIDDLE_LEN];
 
-impl std::ops::Deref for Registry {
-    type Target = BTreeMap<usize, Buffer>;
+/// Shared by every task without a lock: a buffer marks its granules before its text is
+/// shared and clears them only after its last owner lets go.
+static GRANULES: [AtomicPtr<Middle>; ROOT_LEN] =
+    [const { AtomicPtr::new(std::ptr::null_mut()) }; ROOT_LEN];
 
-    fn deref(&self) -> &Self::Target {
-        &self.0
+/// Unpinned buffers counted per thread group, so tasks on different workers do not
+/// contend for one counter; the sum is the count.
+#[repr(align(128))]
+struct Stripe(AtomicIsize);
+
+const STRIPES: usize = 16;
+static UNPINNED_BUFFERS: [Stripe; STRIPES] = [const { Stripe(AtomicIsize::new(0)) }; STRIPES];
+
+fn count_unpinned(change: isize) {
+    static NEXT_STRIPE: AtomicUsize = AtomicUsize::new(0);
+    thread_local! {
+        static STRIPE: usize = NEXT_STRIPE.fetch_add(1, Ordering::Relaxed) % STRIPES;
     }
-}
-
-impl std::ops::DerefMut for Registry {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.0
-    }
+    let stripe = STRIPE.try_with(|stripe| *stripe).unwrap_or(0);
+    UNPINNED_BUFFERS[stripe]
+        .0
+        .fetch_add(change, Ordering::Relaxed);
 }
 
 /// Tests that count buffers cannot overlap with any test that makes text.
 #[cfg(test)]
-pub(super) fn serial() -> MutexGuard<'static, ()> {
-    static SERIAL: Mutex<()> = Mutex::new(());
+pub(super) fn serial() -> std::sync::MutexGuard<'static, ()> {
+    static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
     SERIAL
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
-fn owned() -> MutexGuard<'static, Registry> {
-    OWNED
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
+/// The node in `slot`, made zeroed first when `create` is set.
+fn child<T>(slot: &AtomicPtr<T>, create: bool) -> Option<&'static T> {
+    let mut node = slot.load(Ordering::Acquire);
+    if node.is_null() {
+        if !create {
+            return None;
+        }
+        let layout = Layout::new::<T>();
+        // SAFETY: the layout is nonzero, and all-zero bytes are valid empty atomics.
+        let fresh = unsafe { std::alloc::alloc_zeroed(layout) }.cast::<T>();
+        if fresh.is_null() {
+            out_of_memory();
+        }
+        node = match slot.compare_exchange(
+            std::ptr::null_mut(),
+            fresh,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ) {
+            Ok(_) => fresh,
+            Err(installed) => {
+                // SAFETY: `fresh` came from `alloc_zeroed(layout)` and was never shared.
+                unsafe { std::alloc::dealloc(fresh.cast(), layout) };
+                installed
+            }
+        };
+    }
+    // SAFETY: installed nodes are never freed.
+    Some(unsafe { &*node })
 }
 
-/// Adds a buffer with one owner holding `used` bytes of `capacity`, copied from the given pieces.
+fn leaf(granule: usize, create: bool) -> Option<&'static Leaf> {
+    let root = GRANULES.get(granule >> (LEAF_BITS + MIDDLE_BITS))?;
+    let middle = child(root, create)?;
+    child(&middle[(granule >> LEAF_BITS) % MIDDLE_LEN], create)
+}
+
+/// Points each granule of `size` bytes at `base` to the buffer there, or clears them.
+fn mark(base: usize, size: usize, marked: bool) {
+    let first = base >> GRANULE_BITS;
+    let count = size >> GRANULE_BITS;
+    let mut offset = 0;
+    while offset < count {
+        let granule = first + offset;
+        let Some(leaf) = leaf(granule, marked) else {
+            unsupported_address();
+        };
+        let start = granule % LEAF_LEN;
+        let run = (LEAF_LEN - start).min(count - offset);
+        for (step, entry) in leaf[start..start + run].iter().enumerate() {
+            let distance = if marked { offset + step + 1 } else { 0 };
+            entry.store(distance as u32, Ordering::Relaxed);
+        }
+        offset += run;
+    }
+}
+
+fn unsupported_address() -> ! {
+    use std::io::Write;
+    let mut stderr = std::io::stderr().lock();
+    let _ = stderr.write_all(b"fatal: text storage outside the supported address range\n");
+    let _ = stderr.flush();
+    std::process::abort();
+}
+
+/// A live buffer, reached through a string that keeps it alive.
+#[derive(Clone, Copy)]
+struct Buffer(NonNull<Header>);
+
+impl std::ops::Deref for Buffer {
+    type Target = Header;
+
+    fn deref(&self) -> &Header {
+        // SAFETY: the buffer is live while a caller holds a string that reads it.
+        unsafe { self.0.as_ref() }
+    }
+}
+
+impl Buffer {
+    fn base(self) -> *mut u8 {
+        self.0.as_ptr().cast()
+    }
+
+    fn text(self) -> *mut u8 {
+        self.base().wrapping_add(HEADER)
+    }
+
+    fn cause_text(&self) -> Option<&Cause> {
+        // SAFETY: a cause lives as long as the buffer that points at it.
+        unsafe { self.cause.load(Ordering::Acquire).as_ref() }
+    }
+}
+
+/// The buffer that holds this text; none for static or empty text.
+fn buffer_of(data: *const u8, len: usize) -> Option<Buffer> {
+    if len == 0 {
+        return None;
+    }
+    let granule = data.addr() >> GRANULE_BITS;
+    let distance = leaf(granule, false)?[granule % LEAF_LEN].load(Ordering::Relaxed) as usize;
+    if distance == 0 {
+        return None;
+    }
+    let base = (granule + 1 - distance) << GRANULE_BITS;
+    let header = data.cast_mut().wrapping_byte_sub(data.addr() - base).cast();
+    NonNull::new(header).map(Buffer)
+}
+
+/// Adds a buffer with one owner holding `used` bytes of at least `capacity`, copied from the given pieces.
 fn new_buffer(pieces: &[&[u8]], capacity: usize) -> *mut u8 {
-    let data = zore_alloc(capacity as i64);
+    let size = HEADER
+        .checked_add(capacity)
+        .and_then(|size| size.checked_next_multiple_of(GRANULE))
+        .filter(|size| size >> GRANULE_BITS < u32::MAX as usize)
+        .unwrap_or_else(|| out_of_memory());
+    let base = alloc_aligned(size, GRANULE);
+    let data = base.wrapping_add(HEADER);
     let mut used = 0;
     for piece in pieces {
         // SAFETY: `data` has room for every piece and does not overlap them.
         unsafe { std::ptr::copy_nonoverlapping(piece.as_ptr(), data.add(used), piece.len()) };
         used += piece.len();
     }
-    owned().insert(
-        data as usize,
-        Buffer {
-            data,
-            capacity,
-            used,
-            owners: 1,
-            pinned: false,
-            cause: None,
-        },
-    );
+    // SAFETY: `base` is aligned for a header and has room for one before the text.
+    unsafe {
+        base.cast::<Header>().write(Header {
+            owners: AtomicUsize::new(1),
+            used: AtomicUsize::new(used),
+            capacity: size - HEADER,
+            cause: AtomicPtr::new(std::ptr::null_mut()),
+        })
+    };
+    mark(base.expose_provenance(), size, true);
+    count_unpinned(1);
     data
+}
+
+/// Frees a buffer nobody reads any more, and lets go of its cause when `release_cause` is set.
+///
+/// # Safety
+/// No string may read the buffer afterwards.
+unsafe fn free_buffer(buffer: Buffer, release_cause: bool) {
+    if buffer.owners.load(Ordering::Relaxed) & PINNED == 0 {
+        count_unpinned(-1);
+    }
+    let cause = buffer.cause.load(Ordering::Acquire);
+    let size = HEADER + buffer.capacity;
+    mark(buffer.base().addr(), size, false);
+    // SAFETY: the buffer came from `alloc_aligned(size, GRANULE)`, and nothing reads it now.
+    unsafe { free_aligned(buffer.base(), size, GRANULE) };
+    if !cause.is_null() {
+        // SAFETY: the cause was boxed for this buffer alone.
+        let cause = unsafe { Box::from_raw(cause) };
+        if release_cause {
+            release(cause.data, cause.len);
+        }
+    }
 }
 
 /// Where a compiler-produced `string` descriptor is written.
@@ -122,46 +272,38 @@ impl StringOut {
     }
 }
 
-fn with_buffer<R>(data: *const u8, len: usize, act: impl FnOnce(&mut Buffer) -> R) -> Option<R> {
-    if len == 0 {
-        return None;
-    }
-    let mut owned = owned();
-    let start = data as usize;
-    let (_, buffer) = owned.range_mut(..=start).next_back()?;
-    (start < buffer.data as usize + buffer.capacity).then(|| act(buffer))
-}
-
 /// Another owner now reads these bytes. Static text and empty text have no buffer.
 pub(super) fn retain(data: *const u8, len: usize) {
-    with_buffer(data, len, |buffer| buffer.owners += 1);
+    if let Some(buffer) = buffer_of(data, len) {
+        buffer.owners.fetch_add(1, Ordering::Relaxed);
+    }
 }
 
 /// One owner stops reading these bytes; the last one frees the buffer.
 pub(super) fn release(data: *const u8, len: usize) {
-    let freed = with_buffer(data, len, |buffer| {
-        buffer.owners -= 1;
-        (buffer.owners == 0).then_some((buffer.data, buffer.capacity, buffer.cause))
-    });
-    if let Some(Some((base, capacity, cause))) = freed {
-        owned().remove(&(base as usize));
-        // SAFETY: the buffer came from `zore_alloc(capacity)` and had no owners left.
-        unsafe { zore_free(base, capacity as i64) };
-        if let Some(cause) = cause {
-            release(cause.data as *const u8, cause.len);
-        }
+    let Some(buffer) = buffer_of(data, len) else {
+        return;
+    };
+    if buffer.owners.fetch_sub(1, Ordering::Release) & !PINNED != 1 {
+        return;
     }
+    fence(Ordering::Acquire);
+    // SAFETY: that was the last owner.
+    unsafe { free_buffer(buffer, true) };
 }
 
 /// A package-level value holds this string for the rest of the program.
 #[unsafe(no_mangle)]
 pub extern "C" fn zore_string_pin(data: *const u8, len: i64) {
-    let cause = with_buffer(data, usize::try_from(len).unwrap_or(0), |buffer| {
-        buffer.pinned = true;
-        buffer.cause
-    });
-    if let Some(Some(cause)) = cause {
-        zore_string_pin(cause.data as *const u8, cause.len as i64);
+    let Some(buffer) = buffer_of(data, usize::try_from(len).unwrap_or(0)) else {
+        return;
+    };
+    if buffer.owners.fetch_or(PINNED, Ordering::Relaxed) & PINNED != 0 {
+        return;
+    }
+    count_unpinned(-1);
+    if let Some(cause) = buffer.cause_text() {
+        zore_string_pin(cause.data, cause.len as i64);
     }
 }
 
@@ -172,25 +314,25 @@ pub(super) fn with_cause(text: &[u8], cause: Option<(*const u8, usize)>) -> Stri
         return built;
     };
     retain(cause, cause_len);
-    with_buffer(built.data, text.len(), |buffer| {
-        buffer.cause = Some(Cause {
-            data: cause as usize,
+    if let Some(buffer) = buffer_of(built.data, text.len()) {
+        let cause = Box::new(Cause {
+            data: cause,
             len: cause_len,
             text_len: text.len(),
         });
-    });
+        buffer.cause.store(Box::into_raw(cause), Ordering::Release);
+    }
     built
 }
 
 /// The text of the error that this exact text wraps, with a new owner.
 pub(super) fn cause_of(data: *const u8, len: usize) -> Option<(*const u8, usize)> {
-    let cause = with_buffer(data, len, |buffer| {
-        buffer
-            .cause
-            .filter(|cause| std::ptr::eq(buffer.data, data) && cause.text_len == len)
-    })??;
-    retain(cause.data as *const u8, cause.len);
-    Some((cause.data as *const u8, cause.len))
+    let buffer = buffer_of(data, len)?;
+    let cause = buffer
+        .cause_text()
+        .filter(|cause| std::ptr::eq(buffer.text(), data) && cause.text_len == len)?;
+    retain(cause.data, cause.len);
+    Some((cause.data, cause.len))
 }
 
 /// Another owner now reads this string.
@@ -206,14 +348,38 @@ pub extern "C" fn zore_string_release(data: *const u8, len: i64) {
 }
 
 pub(super) fn live_buffers() -> usize {
-    owned().values().filter(|buffer| !buffer.pinned).count()
+    let total: isize = UNPINNED_BUFFERS
+        .iter()
+        .map(|stripe| stripe.0.load(Ordering::Relaxed))
+        .sum();
+    total.max(0) as usize
 }
 
+/// Frees every buffer; only for when no task can read text any more.
 pub(super) fn release_all() {
-    let buffers = std::mem::take(&mut owned().0);
-    for buffer in buffers.into_values() {
-        // SAFETY: each buffer came from `zore_alloc(capacity)` and is released once.
-        unsafe { zore_free(buffer.data, buffer.capacity as i64) };
+    let mut bases = Vec::new();
+    for (root, middle) in GRANULES.iter().enumerate() {
+        let Some(middle) = child(middle, false) else {
+            continue;
+        };
+        for (index, leaf) in middle.iter().enumerate() {
+            let Some(leaf) = child(leaf, false) else {
+                continue;
+            };
+            let first = ((root << MIDDLE_BITS) + index) << LEAF_BITS;
+            for (offset, entry) in leaf.iter().enumerate() {
+                if entry.load(Ordering::Relaxed) == 1 {
+                    bases.push((first + offset) << GRANULE_BITS);
+                }
+            }
+        }
+    }
+    for base in bases {
+        let header = std::ptr::with_exposed_provenance_mut::<Header>(base);
+        if let Some(header) = NonNull::new(header) {
+            // SAFETY: each marked buffer start holds a live header, and no task reads text now.
+            unsafe { free_buffer(Buffer(header), false) };
+        }
     }
 }
 
@@ -228,22 +394,27 @@ enum Append {
 }
 
 fn plan_append(left: *const u8, left_len: usize, right_len: usize) -> Append {
-    let mut owned = owned();
-    let start = left as usize;
-    let Some((_, buffer)) = owned.range_mut(..=start).next_back() else {
+    let Some(buffer) = buffer_of(left, left_len) else {
         return Append::Copy;
     };
-    let base = buffer.data as usize;
-    if start >= base + buffer.capacity || start + left_len != base + buffer.used {
+    let Some(end) = (left.addr() + left_len).checked_sub(buffer.text().addr()) else {
+        return Append::Copy;
+    };
+    if buffer.used.load(Ordering::Relaxed) != end {
         return Append::Copy;
     }
-    if buffer.used + right_len <= buffer.capacity {
-        buffer.used += right_len;
-        buffer.owners += 1;
-        Append::InPlace
-    } else {
-        Append::Grow
+    if end + right_len > buffer.capacity {
+        return Append::Grow;
     }
+    let claimed =
+        buffer
+            .used
+            .compare_exchange(end, end + right_len, Ordering::Relaxed, Ordering::Relaxed);
+    if claimed.is_err() {
+        return Append::Copy;
+    }
+    buffer.owners.fetch_add(1, Ordering::Relaxed);
+    Append::InPlace
 }
 
 /// The two strings joined, with one owner for the caller; an empty operand shares the other's storage.
@@ -596,5 +767,131 @@ mod tests {
         assert_eq!(read(&abcd), "abcd");
         assert!(live_buffers() >= 1);
         release_all();
+    }
+
+    fn piece_at(text: &StringOut, start: usize, len: usize) -> StringOut {
+        StringOut::shared(text.data.wrapping_add(start), len)
+    }
+
+    #[test]
+    fn a_buffer_shared_by_threads_is_freed_once_by_its_last_owner() {
+        let _serial = crate::string::serial();
+        release_all();
+        let text = StringOut::built(b"shared between threads");
+        let (address, len) = (text.data.addr(), text.len as usize);
+        std::thread::scope(|scope| {
+            for _ in 0..4 {
+                scope.spawn(move || {
+                    let data = std::ptr::with_exposed_provenance::<u8>(address);
+                    for _ in 0..10_000 {
+                        retain(data, len);
+                        retain(data.wrapping_add(7), 7);
+                        release(data, len);
+                        release(data.wrapping_add(7), 7);
+                    }
+                });
+            }
+        });
+        assert_eq!(live_buffers(), 1);
+        assert_eq!(read(&text), "shared between threads");
+        release(text.data, len);
+        assert_eq!(live_buffers(), 0);
+    }
+
+    #[test]
+    fn racing_appends_to_one_text_each_build_their_own_result() {
+        let _serial = crate::string::serial();
+        release_all();
+        let base = append(&StringOut::shared(b"a".as_ptr(), 1), "b");
+        let (address, len) = (base.data.addr(), base.len);
+        let results: Vec<(usize, i64)> = std::thread::scope(|scope| {
+            let handles: Vec<_> = ["c", "d", "e", "f", "g", "h"]
+                .into_iter()
+                .map(|tail| {
+                    scope.spawn(move || {
+                        let left = StringOut {
+                            data: std::ptr::with_exposed_provenance(address),
+                            len,
+                        };
+                        let joined = append(&left, tail);
+                        (joined.data.expose_provenance(), joined.len)
+                    })
+                })
+                .collect();
+            handles
+                .into_iter()
+                .map(|handle| handle.join().unwrap())
+                .collect()
+        });
+        let texts: Vec<String> = results
+            .iter()
+            .map(|&(data, len)| {
+                read(&StringOut {
+                    data: std::ptr::with_exposed_provenance(data),
+                    len,
+                })
+            })
+            .collect();
+        assert_eq!(texts, ["abc", "abd", "abe", "abf", "abg", "abh"]);
+        let in_place = results.iter().filter(|&&(data, _)| data == address).count();
+        assert_eq!(
+            in_place, 1,
+            "exactly one append claims the room after the text"
+        );
+        assert_eq!(read(&base), "ab");
+        for (data, len) in results {
+            release(std::ptr::with_exposed_provenance(data), len as usize);
+        }
+        release(base.data, 2);
+        assert_eq!(live_buffers(), 0);
+    }
+
+    #[test]
+    fn a_piece_far_inside_a_large_buffer_keeps_it_alive() {
+        let _serial = crate::string::serial();
+        release_all();
+        let large = vec![b'x'; 3 << 20];
+        let text = StringOut::built(&large);
+        let piece = piece_at(&text, (5 << 19) + 3, 4);
+        let start = piece_at(&text, 0, 2);
+        release(text.data, large.len());
+        assert_eq!(live_buffers(), 1);
+        assert_eq!(read(&piece), "xxxx");
+        release(start.data, 2);
+        assert_eq!(live_buffers(), 1);
+        release(piece.data, 4);
+        assert_eq!(live_buffers(), 0);
+        assert!(buffer_of(piece.data, 4).is_none());
+    }
+
+    #[test]
+    fn unreleased_text_counts_as_live_unless_pinned() {
+        let _serial = crate::string::serial();
+        release_all();
+        let kept = StringOut::built(b"kept");
+        let pinned = with_cause(b"wrapped", Some((kept.data, 4)));
+        zore_string_pin(pinned.data, pinned.len);
+        assert_eq!(live_buffers(), 0, "pinning also pins the cause");
+        let leaked = StringOut::built(b"leaked");
+        assert_eq!(live_buffers(), 1);
+        release_all();
+        assert_eq!(live_buffers(), 0);
+        assert!(buffer_of(leaked.data, 6).is_none());
+    }
+
+    #[test]
+    fn a_wrapped_error_lets_go_of_its_cause_when_freed() {
+        let _serial = crate::string::serial();
+        release_all();
+        let cause = StringOut::built(b"cause");
+        let wrapped = with_cause(b"wrapped: cause", Some((cause.data, 5)));
+        release(cause.data, 5);
+        assert_eq!(live_buffers(), 2);
+        let unwrapped = cause_of(wrapped.data, 14).expect("the exact text knows its cause");
+        assert_eq!(unwrapped, (cause.data, 5));
+        assert!(cause_of(wrapped.data, 7).is_none());
+        release(unwrapped.0, unwrapped.1);
+        release(wrapped.data, 14);
+        assert_eq!(live_buffers(), 0);
     }
 }

@@ -85,6 +85,15 @@ once it does.
 
 ### Performance evidence
 
+- String retain and release no longer take a process-wide lock or search a
+  shared map: each text buffer keeps an atomic owner count in a header, and a
+  lock-free granule table finds that header from any address inside the buffer,
+  including slices. Static text is still never freed, the last owner still
+  frees exactly once, and `ZORE_CHECK_LEAKS` still reports unreleased text.
+  On one Linux host the discarding `std/log` benchmark fell from about 13 to
+  8 µs per record, and four tasks building strings no longer serialize
+  (see `benchmarks/logging/README.md`).
+
 - Refreshed Linux/macOS runtime population evidence with compiler and source
   identities. Preserved the original three-host reports; Windows recapture is
   deferred and requires an explicit opt-in in the measurement workflow.
