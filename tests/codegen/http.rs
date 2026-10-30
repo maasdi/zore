@@ -871,16 +871,16 @@ func main() {
     _ = header.Add("K", "ascii")
     let _, unicodeMatch = header.Get("K")
     println(unicodeMatch)
-    let date, dateErr = time.FormatHTTPDate(0)
-    println(dateErr == nil); println(date)
-    let leap, _ = time.FormatHTTPDate(951782400)
-    println(leap)
-    let firstDate, _ = time.FormatHTTPDate(-11644473600)
-    println(firstDate)
-    let lastDate, _ = time.FormatHTTPDate(253402300799)
-    println(lastDate)
-    let _, outside = time.FormatHTTPDate(253402300800)
-    println(outside != nil); println(time.UnixSeconds() > 0)
+    let epoch, epochErr = time.Unix(0, 0)
+    println(epochErr == nil); println(http.FormatDate(epoch))
+    let leap, _ = time.Unix(951782400, 0)
+    println(http.FormatDate(leap))
+    let firstMoment, _ = time.Unix(-62135596800, 0)
+    println(http.FormatDate(firstMoment))
+    let lastMoment, _ = time.Unix(253402300799, 999999999)
+    let jakarta, _ = time.Offset(7 * time.Hour)
+    println(http.FormatDate(lastMoment.In(jakarta)))
+    println(http.FormatDate(time.UTC()).len() == 29); println(time.UnixSeconds() > 0)
     var builder = http.NewRouterBuilder()
     _ = builder.HandleFactory("GET /a/{x}", F{n: 0})
     _ = builder.HandleFactory("GET /{y}/b", F{n: 0})
@@ -888,7 +888,7 @@ func main() {
     println(ambiguous != nil)
 }
 "#,
-        "a%20%2F%2B%C3%A9\na+%2B\ntrue\na=1&a=2&bare=&x=a+b&semi=%3B\n5\ntrue\n0\ntrue\ntrue\ntrue\ntrue\ntrue\ntrue\ntrue\n/a//b/\nx=%FF\n2\ntrue\nfirst\nfalse\ntrue\nThu, 01 Jan 1970 00:00:00 GMT\nTue, 29 Feb 2000 00:00:00 GMT\nMon, 01 Jan 1601 00:00:00 GMT\nFri, 31 Dec 9999 23:59:59 GMT\ntrue\ntrue\ntrue\n",
+        "a%20%2F%2B%C3%A9\na+%2B\ntrue\na=1&a=2&bare=&x=a+b&semi=%3B\n5\ntrue\n0\ntrue\ntrue\ntrue\ntrue\ntrue\ntrue\ntrue\n/a//b/\nx=%FF\n2\ntrue\nfirst\nfalse\ntrue\nThu, 01 Jan 1970 00:00:00 GMT\nTue, 29 Feb 2000 00:00:00 GMT\nMon, 01 Jan 0001 00:00:00 GMT\nFri, 31 Dec 9999 23:59:59 GMT\ntrue\ntrue\ntrue\n",
     );
 }
 
@@ -1230,7 +1230,7 @@ func main() {{
     let conn, _ = net.Dial("invalid", "")
     let sockets = [net.Conn; 1]{{conn}}
     let data = strings.Bytes("abcdef")
-    let deadline = time.Now() + time.Second
+    let deadline = time.Now().Add(time.Second)
     let count, err = writeBytes(sockets[:], testServer(1), data[:], deadline, time.Millisecond)
     println(count)
     println(err == error("injected failure"))
@@ -1289,7 +1289,8 @@ fn http_first_byte_preserves_initial_deadline_and_starts_subsequent_budget() {
     }
     let source = format!(
         r#"{source}
-func (s Server) readClock() int {{ return s.state.withLock(func(state mut serverState) int {{ return state.connections }}) }}
+let clockBase = time.Now()
+func (s Server) readClock() time.Instant {{ return clockBase.Add(time.Duration(s.state.withLock(func(state mut serverState) int {{ return state.connections }}))) }}
 func (s Server) setClock(value int) {{ s.state.withLock(func(state mut serverState) {{ state.connections = value }}) }}
 func main() {{
     let builder = NewRouterBuilder()
@@ -1300,18 +1301,18 @@ func main() {{
     let conn, _ = net.Dial("invalid", "")
     let sockets = [net.Conn; 1]{{conn}}
     server.setClock(14)
-    var first = newRequest(sockets[:], server, strings.Bytes("GET / HTTP/1.1\r\n"), deadlineAfter(10, config.ReadHeaderTimeout))
+    var first = newRequest(sockets[:], server, strings.Bytes("GET / HTTP/1.1\r\n"), clockBase.Add(10).Add(config.ReadHeaderTimeout))
     let firstErr = first.beginHeaders(true)
     println(firstErr == nil)
-    println(first.deadline)
+    println(first.deadline.Sub(clockBase).Nanoseconds())
     server.setClock(15)
     let _, expired = first.line()
     println(expired == error("http: read timed out"))
     server.setClock(14)
-    var next = newRequest(sockets[:], server, strings.Bytes("GET / HTTP/1.1\r\n"), 100)
+    var next = newRequest(sockets[:], server, strings.Bytes("GET / HTTP/1.1\r\n"), clockBase.Add(100))
     let nextErr = next.beginHeaders(false)
     println(nextErr == nil)
-    println(next.deadline)
+    println(next.deadline.Sub(clockBase).Nanoseconds())
     server.setClock(18)
     let line, lineErr = next.line()
     println(lineErr == nil)
@@ -1366,7 +1367,7 @@ func main() {{
     println(err == nil)
     let conn, _ = net.Dial("invalid", "")
     let sockets = [net.Conn; 1]{{conn}}
-    let deadline = time.Now() + time.Second
+    let deadline = time.Now().Add(time.Second)
     var request = newRequest(sockets[:], server, Array<byte>{{}}, deadline)
     var writer = newWriter(sockets[:], server, request.control, deadline, false, false)
     let handleErr = handler.Handle(writer, request)

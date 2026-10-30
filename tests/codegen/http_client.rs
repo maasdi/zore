@@ -617,11 +617,11 @@ type Conn struct { sent int; cursor int; mode int; drops channel<int>; done chan
 type Cancellation struct { cancel func() }
 func (c mut Cancellation) drop() { (c.cancel)() }
 func (c mut Conn) drop() { c.drops.send(c.sent) }
-func (c mut Conn) SetReadDeadline(deadline int) error {
+func (c mut Conn) SetReadDeadline(deadline time.Instant) error {
     if c.mode == 12 { panic("stopped caller set read deadline") }
     return nil
 }
-func (c mut Conn) SetWriteDeadline(deadline int) error {
+func (c mut Conn) SetWriteDeadline(deadline time.Instant) error {
     if c.mode == 12 { panic("stopped caller set write deadline") }
     if c.mode == 4 { return error("deadline failure") }
     return nil

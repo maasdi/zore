@@ -1,5 +1,7 @@
 package net
 
+import "std/time"
+
 type Listener struct {
     id int
 }
@@ -42,12 +44,12 @@ func Dial(network string, address string) (Conn, error) {
     return DialTimeout(network, address, 0)
 }
 
-func DialTimeout(network string, address string, timeout int) (Conn, error) {
+func DialTimeout(network string, address string, timeout time.Duration) (Conn, error) {
     let kind = family(network)
     if kind < 0 {
         return Conn{id: 0}, error("net.Dial: unknown network " + network)
     }
-    let id, err = dial(kind, address, timeout)
+    let id, err = dial(kind, address, int(timeout))
     return Conn{id: id}, err
 }
 
@@ -64,8 +66,12 @@ func (l Listener) Addr() string {
     return localAddr(l.id)
 }
 
-func (l Listener) SetDeadline(t int) error {
-    return setDeadline(l.id, 0, t)
+func (l Listener) SetDeadline(t time.Instant) error {
+    return setDeadline(l.id, 0, remaining(t))
+}
+
+func (l Listener) ClearDeadline() error {
+    return clearDeadline(l.id, 0)
 }
 
 func (l own Listener) Close() error {
@@ -92,16 +98,24 @@ func (c Conn) RemoteAddr() string {
     return remoteAddr(c.id)
 }
 
-func (c Conn) SetDeadline(t int) error {
-    return setDeadline(c.id, 0, t)
+func (c Conn) SetDeadline(t time.Instant) error {
+    return setDeadline(c.id, 0, remaining(t))
 }
 
-func (c Conn) SetReadDeadline(t int) error {
-    return setDeadline(c.id, 1, t)
+func (c Conn) SetReadDeadline(t time.Instant) error {
+    return setDeadline(c.id, 1, remaining(t))
 }
 
-func (c Conn) SetWriteDeadline(t int) error {
-    return setDeadline(c.id, 2, t)
+func (c Conn) SetWriteDeadline(t time.Instant) error {
+    return setDeadline(c.id, 2, remaining(t))
+}
+
+func (c Conn) ClearDeadline() error {
+    return clearDeadline(c.id, 0)
+}
+
+func remaining(t time.Instant) int {
+    return int(time.Until(t))
 }
 
 func (c Conn) CloseWrite() error {
@@ -119,7 +133,8 @@ func read(id int, max int) (Array<byte>, error)
 func write(id int, data []byte) (int, error)
 func localAddr(id int) string
 func remoteAddr(id int) string
-func setDeadline(id int, which int, t int) error
+func setDeadline(id int, which int, remaining int) error
+func clearDeadline(id int, which int) error
 func closeWrite(id int) error
 func close(id int) error
 func closeHandle(id int)

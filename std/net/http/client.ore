@@ -15,9 +15,9 @@ type ClientConfig struct {
     MaxHeaderBytes int
     MaxBodyBytes int
     MaxRequestBodyBytes int
-    Timeout int
-    DialTimeout int
-    PollInterval int
+    Timeout time.Duration
+    DialTimeout time.Duration
+    PollInterval time.Duration
 }
 type Client struct {
     config ClientConfig
@@ -32,8 +32,8 @@ type ClientResponse struct {
 type ClientConn interface {
     mut Read(buf mut []byte) (int, error)
     mut Write(data []byte) (int, error)
-    mut SetReadDeadline(deadline int) error
-    mut SetWriteDeadline(deadline int) error
+    mut SetReadDeadline(deadline time.Instant) error
+    mut SetWriteDeadline(deadline time.Instant) error
 }
 type ClientTransport interface {
     Dial(ctx context.Context, target url.AbsoluteURL) (ClientConn, error)
@@ -49,7 +49,7 @@ type clientStream struct {
     conn ClientConn
     ctx context.Context
     config ClientConfig
-    deadline int
+    deadline time.Instant
     buffer Array<byte>
     position int
     pending error
@@ -64,8 +64,10 @@ func DefaultClientConfig() ClientConfig {
 func NewClient(config ClientConfig) (Client, error) {
     var chosen = config
     let defaults = DefaultClientConfig()
-    let fields = [int; 6]{config.MaxHeaderBytes, config.MaxBodyBytes, config.MaxRequestBodyBytes, config.Timeout, config.DialTimeout, config.PollInterval}
+    let fields = [int; 3]{config.MaxHeaderBytes, config.MaxBodyBytes, config.MaxRequestBodyBytes}
+    let durations = [time.Duration; 3]{config.Timeout, config.DialTimeout, config.PollInterval}
     for value in fields { if value < 0 { return emptyClient(), error("http.NewClient: negative configuration") } }
+    for value in durations { if value < 0 { return emptyClient(), error("http.NewClient: negative configuration") } }
     if chosen.MaxHeaderBytes == 0 { chosen.MaxHeaderBytes = defaults.MaxHeaderBytes }
     if chosen.MaxBodyBytes == 0 { chosen.MaxBodyBytes = defaults.MaxBodyBytes }
     if chosen.MaxRequestBodyBytes == 0 { chosen.MaxRequestBodyBytes = defaults.MaxRequestBodyBytes }
@@ -117,13 +119,13 @@ func (c Client) Get(ctx context.Context, absoluteURL string) (ClientResponse, er
     let empty = Array<byte>{}
     return c.Do(ctx, "GET", absoluteURL, NewHeader(), empty[:])
 }
-async func clientDial(address string, timeout int, result channel<clientDialResult>) {
+async func clientDial(address string, timeout time.Duration, result channel<clientDialResult>) {
     let conn, err = net.DialTimeout("tcp", address, timeout)
     _ = err
     result.send(clientDialResult{conn: conn, failure: err})
 }
 func (c Client) Do(ctx context.Context, method string, absoluteURL string, headers Header, body []byte) (ClientResponse, error) {
-    let bounded, cancel = context.WithDeadline(ctx, deadlineAfter(time.Now(), c.config.Timeout))
+    let bounded, cancel = context.WithDeadline(ctx, time.Now().Add(c.config.Timeout))
     let guard = clientCancellation{cancel: cancel}
     let output, target, preparationErr = c.prepare(method, absoluteURL, headers, body)
     if preparationErr != nil { return emptyClientResponse(), preparationErr }
@@ -135,7 +137,7 @@ func (c Client) Do(ctx context.Context, method string, absoluteURL string, heade
 func clientContextError(ctx context.Context) error {
     if ctx.Err() != nil { return ctx.Err() }
     let deadline, limited = ctx.Deadline()
-    if limited && time.Now() >= deadline { return error("context deadline exceeded") }
+    if limited && !time.Now().Before(deadline) { return error("context deadline exceeded") }
     return nil
 }
 func (c Client) dialAndExchange(ctx context.Context, output string, target url.AbsoluteURL, method string, body []byte) (ClientResponse, error) {
@@ -152,7 +154,7 @@ func (c Client) dialAndExchange(ctx context.Context, output string, target url.A
     let result = channel<clientDialResult>(1)
     let deadline, _ = ctx.Deadline()
     var dialTimeout = c.config.DialTimeout
-    let remaining = deadline - time.Now()
+    let remaining = time.Until(deadline)
     if remaining <= 0 { return emptyClientResponse(), error("context deadline exceeded") }
     if remaining < dialTimeout { dialTimeout = remaining }
     go clientDial(target.Address, dialTimeout, result)
@@ -167,7 +169,7 @@ func (c Client) dialAndExchange(ctx context.Context, output string, target url.A
     }
 }
 func (c Client) Exchange(ctx context.Context, conn own ClientConn, method string, absoluteURL string, headers Header, body []byte) (ClientResponse, error) {
-    let bounded, cancel = context.WithDeadline(ctx, deadlineAfter(time.Now(), c.config.Timeout))
+    let bounded, cancel = context.WithDeadline(ctx, time.Now().Add(c.config.Timeout))
     let guard = clientCancellation{cancel: cancel}
     let output, _, preparationErr = c.prepare(method, absoluteURL, headers, body)
     if preparationErr != nil { return emptyClientResponse(), preparationErr }
@@ -187,7 +189,7 @@ func (c Client) exchangePrepared(ctx context.Context, conn own ClientConn, outpu
 }
 func (s clientStream) ready() error {
     if s.ctx.Err() != nil { return s.ctx.Err() }
-    if time.Now() >= s.deadline { return error("context deadline exceeded") }
+    if !time.Now().Before(s.deadline) { return error("context deadline exceeded") }
     return nil
 }
 func (s mut clientStream) send(data []byte) error {

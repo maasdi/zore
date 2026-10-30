@@ -45,7 +45,7 @@ func httpsCase(host string, certPath string, keyPath string, rootsPath string, e
     let listener = net.Listen("tcp4", "127.0.0.1:0")?
     let _, port, found = strings.Cut(listener.Addr(), ":")
     if !found { return error("listener port") }
-    listener.SetDeadline(time.Now() + 3 * time.Second)?
+    listener.SetDeadline(time.Now().Add(3 * time.Second))?
     let ctx, cancel = context.WithTimeout(context.Background(), 3 * time.Second)
     let server = go serveHTTPS(listener, serverConfig, ctx, host)
     let response, err = client.Get(ctx, "https://" + host + ":" + port + "/binary")

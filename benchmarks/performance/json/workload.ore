@@ -69,6 +69,6 @@ func main() {
         if batchError != nil {
             panic("JSON batch")
         }
-        println("DONE " + strconv.Itoa(count) + " " + strconv.Itoa(elapsed) + " " + strconv.Itoa(checksum))
+        println("DONE " + strconv.Itoa(count) + " " + strconv.Itoa(elapsed.Nanoseconds()) + " " + strconv.Itoa(checksum))
     }
 }

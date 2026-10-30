@@ -43,7 +43,7 @@ func main() {
         println("listen failed")
         return
     }
-    _ = listener.SetDeadline(time.Now() + 50 * time.Millisecond)
+    _ = listener.SetDeadline(time.Now().Add(50 * time.Millisecond))
     let _, acceptErr = listener.Accept()
     println(acceptErr == error("net.Accept: timed out"))
 }

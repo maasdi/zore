@@ -44,7 +44,7 @@ func ListenAndServeContext(ctx context.Context, address string, router Router, c
         case let err, _ = outcome.receive() { serving.wait(); return err }
         case ctx.Done().receive() {}
     }
-    let drain, cancel = context.WithDeadline(context.Background(), deadlineAfter(time.Now(), server.config.ShutdownTimeout))
+    let drain, cancel = context.WithDeadline(context.Background(), time.Now().Add(server.config.ShutdownTimeout))
     let err = server.Shutdown(drain)
     cancel()
     if err != nil { return err }

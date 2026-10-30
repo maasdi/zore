@@ -22,12 +22,12 @@ type Context struct {
     parents Mutex<Array<ancestor>>
     revision Mutex<int>
     live bool
-    deadline int
+    deadline time.Instant
     limited bool
 }
 
 func Background() Context {
-    return Context{done: channel<bool>(), state: mutex(cancellationState{reason: active, revision: 0}), parents: mutex(Array<ancestor>{}), revision: mutex(0), live: false, deadline: 0, limited: false}
+    return Context{done: channel<bool>(), state: mutex(cancellationState{reason: active, revision: 0}), parents: mutex(Array<ancestor>{}), revision: mutex(0), live: false, deadline: time.Now(), limited: false}
 }
 
 func TODO() Context {
@@ -54,17 +54,17 @@ async func cancelOn(ctx Context, done channel<bool>) {
     }
 }
 
-func WithTimeout(parent Context, timeout int) (Context, func()) {
-    return WithDeadline(parent, time.Now() + timeout)
+func WithTimeout(parent Context, timeout time.Duration) (Context, func()) {
+    return WithDeadline(parent, time.Now().Add(timeout))
 }
 
-func WithDeadline(parent Context, deadline int) (Context, func()) {
+func WithDeadline(parent Context, deadline time.Instant) (Context, func()) {
     var at = deadline
-    if parent.limited && parent.deadline < at {
+    if parent.limited && parent.deadline.Before(at) {
         at = parent.deadline
     }
     let ctx = derive(parent, at, true)
-    if time.Now() >= at {
+    if !time.Now().Before(at) {
         ctx.cancel(expired)
     } else {
         go expire(ctx, at)
@@ -89,11 +89,11 @@ func (c Context) Err() error {
     return nil
 }
 
-func (c Context) Deadline() (int, bool) {
+func (c Context) Deadline() (time.Instant, bool) {
     return c.deadline, c.limited
 }
 
-func derive(parent Context, deadline int, limited bool) Context {
+func derive(parent Context, deadline time.Instant, limited bool) Context {
     // Snapshot first so a racing cancellation cannot validate an active child.
     let revision = parent.revision.withLock(func(value mut int) int {
         return value
@@ -181,10 +181,10 @@ async func follow(parent Context, child Context) {
     }
 }
 
-async func expire(ctx Context, deadline int) {
-    if waitUntil(ctx.done, deadline) {
+async func expire(ctx Context, deadline time.Instant) {
+    if waitFor(ctx.done, int(time.Until(deadline))) {
         ctx.cancel(expired)
     }
 }
 
-func waitUntil(done channel<bool>, deadline int) bool
+func waitFor(done channel<bool>, remaining int) bool

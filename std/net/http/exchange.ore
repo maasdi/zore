@@ -28,8 +28,8 @@ type Request struct {
     params url.Values
     buffer Array<byte>
     position int
-    deadline int
-    writeDeadline int
+    deadline time.Instant
+    writeDeadline time.Instant
     remaining int
     chunked bool
     chunkRemaining int
@@ -48,8 +48,8 @@ type ResponseWriter struct {
     server Server
     control Mutex<exchangeControl>
     headers Header
-    deadline int
-    poll int
+    deadline time.Instant
+    poll time.Duration
     head bool
     close bool
     committed bool
@@ -96,28 +96,23 @@ func decimal(text string) (int, error) {
     return value, nil
 }
 
-func deadlineAfter(now int, duration int) int {
-    if duration > 9223372036854775807 - now { return 9223372036854775807 }
-    return now + duration
-}
-
-func pollDeadline(deadline int, interval int) int {
+func pollDeadline(deadline time.Instant, interval time.Duration) time.Instant {
     let now = time.Now()
-    if deadline - now <= interval { return deadline }
-    return now + interval
+    if deadline.Sub(now) <= interval { return deadline }
+    return now.Add(interval)
 }
 
-func writeAll(conn []net.Conn, server Server, data []byte, deadline int, interval int) error {
+func writeAll(conn []net.Conn, server Server, data []byte, deadline time.Instant, interval time.Duration) error {
     let _, err = writeBytes(conn, server, data, deadline, interval)
     return err
 }
 
-func writeBytes(conn []net.Conn, server Server, data []byte, deadline int, interval int) (int, error) {
+func writeBytes(conn []net.Conn, server Server, data []byte, deadline time.Instant, interval time.Duration) (int, error) {
     if conn.len() == 0 { return 0, error("http: empty connection") }
     var position = 0
     for position < data.len() {
         if server.canceled() { return position, error("http: server canceled") }
-        if time.Now() >= deadline { return position, error("http: write timed out") }
+        if !time.Now().Before(deadline) { return position, error("http: write timed out") }
         let deadlineErr = conn[0].SetWriteDeadline(pollDeadline(deadline, interval))
         if deadlineErr != nil { return position, deadlineErr }
         let n, err = conn[0].Write(data[position:])
@@ -135,7 +130,7 @@ func (r Request) readReady() error {
         if err != nil { return err }
     }
     if r.server.canceled() || (r.waiting && r.server.draining()) { return error("http: server draining") }
-    if time.Now() >= r.deadline { return error("http: read timed out") }
+    if !time.Now().Before(r.deadline) { return error("http: read timed out") }
     return nil
 }
 
@@ -376,7 +371,7 @@ func (w mut ResponseWriter) WriteHeader(status int) error {
     w.status = status
     w.length = length
     w.chunked = !w.head && status != 204 && status != 205 && status != 304 && length < 0
-    w.headers.Set("Date", time.FormatHTTPDate(time.UnixSeconds())?)?
+    w.headers.Set("Date", FormatDate(time.UTC()))?
     var output = "HTTP/1.1 " + strconv.Itoa(status) + " " + StatusText(status) + "\r\n"
     let entries = w.headers.Entries()
     for entry in entries { output += entry.Name + ": " + entry.Value + "\r\n" }

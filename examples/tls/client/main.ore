@@ -9,7 +9,7 @@ import "std/errors"
 
 func exchange(conn own tls.Conn) error {
     var c = conn
-    c.SetDeadline(time.Now() + 5 * time.Second)?
+    c.SetDeadline(time.Now().Add(5 * time.Second))?
     let request = strings.Bytes("GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
     c.Write(request[:])?
     var response = Array<byte>{};

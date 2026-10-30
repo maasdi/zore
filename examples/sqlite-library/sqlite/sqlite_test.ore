@@ -117,7 +117,7 @@ func TestTransactionAbandonmentInvalidatesEscapedStatement() error {
 func TestInvalidQueriesAndPhases() error {
     let invalidDatabase, invalidPath = Open("bad\u0000path")
     if invalidPath == nil { panic("NUL path accepted") }
-    let unopened, missingPath = Open(".sqlite-missing-" + strconv.Itoa(time.Now()) + "/data.db")
+    let unopened, missingPath = Open(".sqlite-missing-" + strconv.Itoa(time.UTC().Nanosecond()) + "/data.db")
     if missingPath == nil { panic("missing parent directory accepted") }
     let db = Open(":memory:")?
     for sql in Array<string>{"", " ", "select 1; select 2", "select 1\u0000", "begin", "savepoint x", "not SQL"} {
@@ -168,7 +168,7 @@ func TestAsyncResourceAcrossWaits() error {
 }
 
 func TestPersistenceContentionAndRollbackOnDrop() error {
-    let path = ".sqlite-test-" + strconv.Itoa(time.UnixSeconds()) + "-" + strconv.Itoa(time.Now()) + ".db"
+    let path = ".sqlite-test-" + strconv.Itoa(time.UnixSeconds()) + "-" + strconv.Itoa(time.UTC().Nanosecond()) + ".db"
     var db = Open(path)?
     executeSQL(db, "create table if not exists records(value integer)")?
     executeSQL(db, "delete from records")?
@@ -220,7 +220,7 @@ func TestFailedCompletionKeepsTransaction() error {
 }
 
 func TestFailedSQLiteCommitCanBeRepairedOrRolledBack() error {
-    let path = ".sqlite-commit-test-" + strconv.Itoa(time.UnixSeconds()) + "-" + strconv.Itoa(time.Now()) + ".db"
+    let path = ".sqlite-commit-test-" + strconv.Itoa(time.UnixSeconds()) + "-" + strconv.Itoa(time.UTC().Nanosecond()) + ".db"
     var db = Open(path)?
     executeSQL(db, "pragma foreign_keys=on")?
     executeSQL(db, "create table parent(id integer primary key)")?
@@ -383,7 +383,7 @@ func TestTransactionRequiresNoLiveStatementsAndRejectsNesting() error {
 }
 
 func TestTransactionBusyCommitRollsBackAfterTimeout() error {
-    let path = ".sqlite-busy-test-" + strconv.Itoa(time.UnixSeconds()) + "-" + strconv.Itoa(time.Now()) + ".db"
+    let path = ".sqlite-busy-test-" + strconv.Itoa(time.UnixSeconds()) + "-" + strconv.Itoa(time.UTC().Nanosecond()) + ".db"
     {
         let db = Open(path)?
         executeSQL(db, "create table records(value integer)")?
@@ -414,7 +414,7 @@ async func releaseReader(rows own Statement) error {
 }
 
 func TestTransactionCommitWaitsForReaderWithinBusyTimeout() error {
-    let path = ".sqlite-busy-wait-test-" + strconv.Itoa(time.UnixSeconds()) + "-" + strconv.Itoa(time.Now()) + ".db"
+    let path = ".sqlite-busy-wait-test-" + strconv.Itoa(time.UnixSeconds()) + "-" + strconv.Itoa(time.UTC().Nanosecond()) + ".db"
     {
         let db = Open(path)?
         executeSQL(db, "create table records(value integer)")?
