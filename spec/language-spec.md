@@ -9003,12 +9003,14 @@ stand for `{` and `}`, and `{name}` is a hole; a `{` with no closing `}`, a lone
 `}`, a call whose number of holes differs from its number of values, and a
 `With` with an odd number of arguments are errors. Hole names and `With` keys
 are an ASCII letter or `_` followed by ASCII letters, digits, `_`, `.`, or `-`.
-The same name may appear more than once. Values may have the types `std/fmt`
+They cannot be `time`, `level`, or `msg`, which every record writes, and one
+call cannot use the same name twice. Values may have the types `std/fmt`
 prints: `bool`, integer and float types, `rune`, `string`, `error`, and types
 with a `String() string` method. A value's text is its `fmt` `%v` text: `<nil>`
 for a nil `error`, the method's result for a `String` type. The `Log` level is
 an ordinary `Level` operand. These methods cannot be used as function values
-(§16.2); wrap the call in a function literal. Text that changes at run time is
+(§16.2) and do not satisfy interface entries (§22.2), since either would skip
+the check; wrap the call in a function literal, or pass the `Logger` itself. Text that changes at run time is
 passed as a value: `logger.Info("request failed: {reason}", reason)`.
 
 Each value is evaluated exactly once, left to right, before the logger checks
@@ -9018,8 +9020,8 @@ whether the level is enabled, so a disabled record still evaluates its values.
 `level=` and the level text, `msg=` and the filled-in message, the logger's
 `With` fields in the order they were added, and one field per hole in template
 order, separated by single spaces and ended by a line feed (U+000A). Every key
-is followed by `=` and its value. Keys are not checked for duplicates, so a
-hole named `msg` or a repeated `With` key is written as given.
+is followed by `=` and its value. A key added by one `With` call may match one
+added by an earlier `With` or a hole; both fields are written, in order.
 
 **Escaping.** The plain bytes are `!` through `~` (0x21–0x7E) other than `"`,
 `=`, and `\`. A non-empty value, the message included, made only of plain
@@ -9068,7 +9070,8 @@ by `Err`. The record is passed to the sink's `Write` as one byte view. A
 positive count below its length with `nil` is retried with the unwritten
 suffix. A non-nil error stops the record with that error; a zero count with
 `nil` stops it with `log: no write progress`; a count below zero or past the
-remaining bytes stops it with `log: invalid write count`. The first such error
+remaining bytes stops it with the error the sink returned with it, or
+`log: invalid write count` when that is `nil`. The first such error
 is kept: from then on every record of that logger and its copies is dropped
 without calling the sink, and `Err` returns that error unchanged, so it can be
 compared with the sink's own error values. A disabled record never calls the
@@ -9092,8 +9095,11 @@ it is dropped; use an unbuffered sink.
 Compiler impact: the checker recognizes calls of the six methods on
 `std/log.Logger`, parses and checks the constant template or keys, checks each
 value's type, and replaces the call with a call of a private package method
-that receives the level, the template, and an `Array<string>` of the values'
-`fmt` texts. Everything else is bundled Zore source built from `std/io`,
+that receives the level (the package's own `Level` constant for `Debug`
+through `Error`), the template, and an `Array<string>` of the values' `fmt`
+texts. Interface satisfaction rejects the six methods. The private method
+writes an unmatched brace literally, so it stays safe for a template no check
+has seen. Everything else is bundled Zore source built from `std/io`,
 `std/strings`, `std/strconv`, `std/fmt`, `std/time`, and `Mutex<T>`; no
 runtime function is added. Conformance cases: `tests/conformance/log.md`, with
 native tests in `tests/codegen/log.rs` and checking tests in

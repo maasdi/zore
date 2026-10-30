@@ -1,17 +1,19 @@
-use super::{Checker, Value, typed};
+use super::{Checker, ConstValue, Value, typed};
 use crate::ast;
 use crate::diagnostic::{Diagnostic, Severity};
 use crate::hir::{self, Const, ExprKind};
-use crate::resolve::FunctionId;
+use crate::resolve::{ConstId, FunctionId};
 use crate::source::Span;
 use crate::types::{TypeId, TypeStore};
 
 #[derive(Clone, Copy, PartialEq)]
 pub(super) enum LogKind {
-    Level(i128),
+    Level(&'static str),
     Log,
     With,
 }
+
+const RESERVED_KEYS: [&str; 3] = ["time", "level", "msg"];
 
 fn valid_key(name: &str) -> bool {
     let mut chars = name.chars();
@@ -72,11 +74,20 @@ impl Checker<'_> {
         {
             return None;
         }
+        let receiver = self.signatures[index].as_ref()?.params.first().copied()?;
+        let strukt = self.types.struct_id(receiver)?;
+        if self.res.structs[self.types.struct_origin(strukt).0 as usize]
+            .name
+            .text
+            != "Logger"
+        {
+            return None;
+        }
         Some(match self.res.functions[index].name.text.as_str() {
-            "Debug" => LogKind::Level(0),
-            "Info" => LogKind::Level(1),
-            "Warn" => LogKind::Level(2),
-            "Error" => LogKind::Level(3),
+            "Debug" => LogKind::Level("LevelDebug"),
+            "Info" => LogKind::Level("LevelInfo"),
+            "Warn" => LogKind::Level("LevelWarn"),
+            "Error" => LogKind::Level("LevelError"),
             "Log" => LogKind::Log,
             "With" => LogKind::With,
             _ => return None,
@@ -101,7 +112,38 @@ impl Checker<'_> {
             .params[1]
     }
 
-    /// A call of a logger's `Info`, `Log`, `With`, and the others, checked against its template.
+    fn level_constant(&mut self, name: &str, span: Span) -> Option<hir::Expr> {
+        let index = (0..self.res.consts.len()).find(|&index| {
+            self.res.packages[self.res.const_package[index]].path == "std/log"
+                && self.res.consts[index].name.text == name
+        })?;
+        match self.eval_const(ConstId(index as u32))? {
+            ConstValue::Typed(ty, value) => Some(typed(ExprKind::Const(value), ty, span)),
+            ConstValue::Untyped(_) => None,
+        }
+    }
+
+    fn check_keys(&mut self, name: &str, keys: &[(String, Span)]) -> bool {
+        let mut ok = true;
+        for (index, (key, span)) in keys.iter().enumerate() {
+            if RESERVED_KEYS.contains(&key.as_str()) {
+                self.diagnostics.push(
+                    Diagnostic::new(
+                        Severity::Error,
+                        format!("`{name}` cannot use the key `{key}`"),
+                        *span,
+                    )
+                    .note("`time`, `level`, and `msg` are written by every record"),
+                );
+                ok = false;
+            } else if keys[..index].iter().any(|(earlier, _)| earlier == key) {
+                self.error(format!("`{name}` uses the key `{key}` twice"), *span);
+                ok = false;
+            }
+        }
+        ok
+    }
+
     pub(super) fn log_call(
         &mut self,
         kind: LogKind,
@@ -154,6 +196,13 @@ impl Checker<'_> {
                 return None;
             }
         };
+        let keys: Vec<_> = holes
+            .iter()
+            .map(|hole| (hole.clone(), template.span))
+            .collect();
+        if !self.check_keys(&name, &keys) {
+            return None;
+        }
         if holes.len() != values.len() {
             let message = format!(
                 "`{name}` template has {} hole{} but {} value{} {} given",
@@ -171,11 +220,7 @@ impl Checker<'_> {
         }
         let texts = self.log_texts(&name, values, span)?;
         let level = match (kind, level) {
-            (LogKind::Level(value), _) => typed(
-                ExprKind::Const(Const::Int(value)),
-                self.level_type(self.log_helper("emit")),
-                span,
-            ),
+            (LogKind::Level(constant), _) => self.level_constant(constant, span)?,
             (_, Some(level)) => level,
             _ => unreachable!("`Log` checked its level above"),
         };
@@ -213,6 +258,7 @@ impl Checker<'_> {
             return None;
         }
         let mut texts = Vec::new();
+        let mut keys = Vec::new();
         let mut ok = true;
         for (index, value) in values.into_iter().enumerate() {
             if index % 2 == 1 {
@@ -223,7 +269,10 @@ impl Checker<'_> {
                 continue;
             }
             match self.log_constant(name, "key", &value) {
-                Some(key) if valid_key(&key) => texts.push(plain_text(key, value.span)),
+                Some(key) if valid_key(&key) => {
+                    keys.push((key.clone(), value.span));
+                    texts.push(plain_text(key, value.span));
+                }
                 Some(key) => {
                     self.error(
                         format!(
@@ -236,7 +285,7 @@ impl Checker<'_> {
                 None => ok = false,
             }
         }
-        if !ok {
+        if !ok || !self.check_keys(name, &keys) {
             return None;
         }
         let array = self.string_array(texts, span);

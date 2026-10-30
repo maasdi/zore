@@ -58,7 +58,7 @@ func main() {
     logger.Info("kinds {small} {big} {f32} {letter} {color} {missing}", int8(-5), uint64(18446744073709551615), float32(0.1), 'é', Color(3), missing)
     logger.Info("order {first} {second}", tick(counter), tick(counter))
     logger.Info("braces {{literal}} and {{{inside}}}", "x")
-    logger.Info("repeat {id} {id}", 1, 2)
+    logger.With("id", 1).Info("closing }} and {id}", 2)
     logger.Info("text {empty} {equals} {slash} {lines} {control} {utf8} {bare}",
         "", "a=b", "c:\\tmp", "one\ntwo\r\tthree", "\u0001\u001f\u007f", "héllo", "!#$~")
     logger.Log(log.Level(7), "custom")
@@ -86,7 +86,7 @@ func main() {
             "level=INFO msg=\"kinds -5 18446744073709551615 0.1 é red <nil>\" small=-5 big=18446744073709551615 f32=0.1 letter=\"é\" color=red missing=<nil>\n",
             "level=INFO msg=\"order 2 3\" first=2 second=3\n",
             "level=INFO msg=\"braces {literal} and {x}\" inside=x\n",
-            "level=INFO msg=\"repeat 1 2\" id=1 id=2\n",
+            "level=INFO msg=\"closing } and 2\" id=1 id=2\n",
             "level=INFO msg=\"text  a=b c:\\\\tmp one\\ntwo\\r\\tthree \\u0001\\u001f\\u007f héllo !#$~\" empty=\"\" equals=\"a=b\" slash=\"c:\\\\tmp\" lines=\"one\\ntwo\\r\\tthree\" control=\"\\u0001\\u001f\\u007f\" utf8=\"héllo\" bare=!#$~\n",
             "level=LEVEL(7) msg=custom\n",
             "level=DEBUG msg=\"now enabled\"\n",
@@ -234,6 +234,7 @@ func (f Faulty) Write(p []byte) (int, error) {
     if f.mode == 1 { return 0, nil }
     if f.mode == 2 { return p.len() + 1, nil }
     if f.mode == 3 { return -1, nil }
+    if f.mode == 4 { return -1, errFull }
     let stored = f.data.withLock(func(d mut Array<byte>) int { return d.len() })
     var count = p.len()
     if count > 3 { count = 3 }
@@ -282,6 +283,7 @@ func main() {
     check(1, "log: no write progress")
     check(2, "log: invalid write count")
     check(3, "log: invalid write count")
+    check(4, "sink full")
     let empty = channel<log.Logger>(1)
     empty.close()
     let zero, _ = empty.receive()
@@ -296,7 +298,7 @@ func main() {
         concat!(
             "true\n10\ntrue\ntrue\ntrue\n",
             "level=INFO msg=\"short writes\"\nlevel=INFO\n",
-            "true\n1\ntrue\n1\ntrue\n1\n",
+            "true\n1\ntrue\n1\ntrue\n1\ntrue\n1\n",
             "false\nlog: no output\n",
         ),
     );

@@ -605,9 +605,33 @@ fn the_log_package_checks_templates_and_values() {
             "logger.emit(log.LevelInfo, \"a\", Array<string>{})",
             "not exported",
         ),
+        (
+            "logger.Info(\"{msg}\", 1)",
+            "`log.Logger.Info` cannot use the key `msg`",
+        ),
+        (
+            "let w = logger.With(\"level\", 1)",
+            "`log.Logger.With` cannot use the key `level`",
+        ),
+        (
+            "logger.Info(\"{id} {id}\", 1, 2)",
+            "`log.Logger.Info` uses the key `id` twice",
+        ),
+        (
+            "let w = logger.With(\"id\", 1, \"id\", 2)",
+            "`log.Logger.With` uses the key `id` twice",
+        ),
     ] {
         rejects(&[("main.ore", &with_logger(body))], message);
     }
+    let through_interface = format!(
+        "{}\ntype Infoer interface {{\n    Info(template string)\n}}\n",
+        with_logger("let i Infoer = logger")
+    );
+    rejects(
+        &[("main.ore", &through_interface)],
+        "its method `Info` is a checked logging call",
+    );
 }
 
 #[test]

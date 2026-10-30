@@ -18,7 +18,7 @@ the package end to end.
 | `int8`, `uint64`, `float32`, `rune`, a `String() string` type, a nil `error` | Their `fmt` `%v` text, `<nil>` for the error |
 | Two calls with side effects as values | Each evaluated once, left to right |
 | `{{` and `}}`, including around a hole | Literal braces in the message |
-| A hole name used twice | Two fields with that key |
+| A `With` key and a later hole with the same name | Both fields, in order |
 | An empty message or value | `""` |
 | Values with space, `=`, `"`, `\`, line feed, carriage return, tab, other control bytes, or UTF-8 | Quoted with `\"`, `\\`, `\n`, `\r`, `\t`, `\u00xx`, and UTF-8 unchanged, in both the message and the field |
 | Plain punctuation such as `!#$~` | Bare |
@@ -52,7 +52,8 @@ the package end to end.
 | Records after a failure, at any enabled level | The sink is not called again |
 | A disabled record after a failure | Not written, and not an error |
 | `0` with `nil` | `log: no write progress`; later records do not call the sink |
-| A count past the input or below zero | `log: invalid write count` |
+| A count past the input or below zero with `nil` | `log: invalid write count` |
+| A count below zero with the sink's own error | That error |
 | The zero `Logger` | `Enabled` is `false`, records are dropped, `Err` is `log: no output` |
 
 ## Checking
@@ -71,3 +72,6 @@ the package end to end.
 | `logger.Info` as a value | Reject: a logging method cannot be used as a value |
 | Using the result of `Info` | Reject: the call has no value |
 | Calling the private `emit` helper | Reject: not exported |
+| A hole or `With` key named `msg` or `level` | Reject: cannot use the key |
+| The same hole twice, or the same key twice in one `With` | Reject: uses the key twice |
+| A `log.Logger` converted to a user interface with `Info(template string)` | Reject: a checked logging call |

@@ -89,68 +89,82 @@ impl Checker<'_> {
         let mut served = Vec::new();
         for entry in &entries {
             let exported = entry.name.starts_with(|c: char| c.is_ascii_uppercase());
-            let (implementation, receiver, is_async, params, results, package) =
-                match self.types.interface_of(source) {
-                    Some(other) => {
-                        let methods = self.types.interface_methods(other);
-                        let Some(index) = methods.iter().position(|m| m.name == entry.name) else {
-                            return Err(Unsatisfied {
-                                reason: format!("it has no method `{}`", entry.name),
-                                note: None,
+            let (implementation, receiver, is_async, params, results, package) = match self
+                .types
+                .interface_of(source)
+            {
+                Some(other) => {
+                    let methods = self.types.interface_methods(other);
+                    let Some(index) = methods.iter().position(|m| m.name == entry.name) else {
+                        return Err(Unsatisfied {
+                            reason: format!("it has no method `{}`", entry.name),
+                            note: None,
+                        });
+                    };
+                    let method = methods[index].clone();
+                    (
+                        Implementation::Entry(index),
+                        method.receiver,
+                        method.is_async,
+                        method.params,
+                        method.results,
+                        self.interface_package(other),
+                    )
+                }
+                None => {
+                    let Some(id) = self.method_of(source, &entry.name) else {
+                        return Err(Unsatisfied {
+                            reason: format!("it has no method `{}`", entry.name),
+                            note: None,
+                        });
+                    };
+                    if self.log_kind(id).is_some() {
+                        return Err(Unsatisfied {
+                                reason: format!(
+                                    "its method `{}` is a checked logging call",
+                                    entry.name
+                                ),
+                                note: Some(
+                                    "the compiler checks each logging call against its template; pass the `log.Logger` itself"
+                                        .to_string(),
+                                ),
                             });
-                        };
-                        let method = methods[index].clone();
-                        (
-                            Implementation::Entry(index),
-                            method.receiver,
-                            method.is_async,
-                            method.params,
-                            method.results,
-                            self.interface_package(other),
-                        )
                     }
-                    None => {
-                        let Some(id) = self.method_of(source, &entry.name) else {
-                            return Err(Unsatisfied {
-                                reason: format!("it has no method `{}`", entry.name),
-                                note: None,
-                            });
-                        };
-                        let declaration = self.res.functions[id.0 as usize];
-                        let Some(signature) = &self.signatures[id.0 as usize] else {
-                            return Err(Unsatisfied {
-                                reason: format!("method `{}` has errors", entry.name),
-                                note: None,
-                            });
-                        };
-                        let (signature_params, signature_results) =
-                            (signature.params.clone(), signature.results.clone());
-                        let bound = self.receiver_type_arguments(id, &signature_params[0], source);
-                        let params = declaration
-                            .params
-                            .iter()
-                            .map(|param| param.mode)
-                            .zip(signature_params[1..].iter().copied())
-                            .map(|(mode, ty)| (mode, self.types.substitute(ty, &bound)))
-                            .collect();
-                        let results = signature_results
-                            .iter()
-                            .map(|&ty| self.types.substitute(ty, &bound))
-                            .collect();
-                        let receiver = declaration
-                            .receiver
-                            .as_ref()
-                            .map_or(ParamMode::Borrow, |param| param.mode);
-                        (
-                            Implementation::Method(id),
-                            receiver,
-                            declaration.is_async,
-                            params,
-                            results,
-                            self.package_of(id.0 as usize),
-                        )
-                    }
-                };
+                    let declaration = self.res.functions[id.0 as usize];
+                    let Some(signature) = &self.signatures[id.0 as usize] else {
+                        return Err(Unsatisfied {
+                            reason: format!("method `{}` has errors", entry.name),
+                            note: None,
+                        });
+                    };
+                    let (signature_params, signature_results) =
+                        (signature.params.clone(), signature.results.clone());
+                    let bound = self.receiver_type_arguments(id, &signature_params[0], source);
+                    let params = declaration
+                        .params
+                        .iter()
+                        .map(|param| param.mode)
+                        .zip(signature_params[1..].iter().copied())
+                        .map(|(mode, ty)| (mode, self.types.substitute(ty, &bound)))
+                        .collect();
+                    let results = signature_results
+                        .iter()
+                        .map(|&ty| self.types.substitute(ty, &bound))
+                        .collect();
+                    let receiver = declaration
+                        .receiver
+                        .as_ref()
+                        .map_or(ParamMode::Borrow, |param| param.mode);
+                    (
+                        Implementation::Method(id),
+                        receiver,
+                        declaration.is_async,
+                        params,
+                        results,
+                        self.package_of(id.0 as usize),
+                    )
+                }
+            };
             if !exported && package != home {
                 return Err(Unsatisfied {
                     reason: format!(

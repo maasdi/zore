@@ -99,9 +99,8 @@ func (l Logger) emit(level Level, template string, values own Array<string>) {
         if (c == 123 || c == 125) && i + 1 < template.len() && template[i + 1] == c {
             message.WriteString(template[i:i + 1])
             i += 2
-        } else if c == 123 {
-            var end = i + 1
-            for template[end] != 125 { end += 1 }
+        } else if c == 123 && hole(template, i) > 0 && next < values.len() {
+            let end = hole(template, i)
             message.WriteString(values[next])
             fields.WriteString(" " + template[i + 1:end] + "=" + text(values[next]))
             next += 1
@@ -131,8 +130,8 @@ func (l Logger) emit(level Level, template string, values own Array<string>) {
         for offset < size {
             let count, err = out.sink.Write(data[offset:])
             if count < 0 || count > size - offset {
-                _ = err
-                out.err = error("log: invalid write count")
+                out.err = err
+                if err == nil { out.err = error("log: invalid write count") }
                 return
             }
             offset += count
@@ -146,6 +145,14 @@ func (l Logger) emit(level Level, template string, values own Array<string>) {
             }
         }
     })
+}
+
+func hole(template string, start int) int {
+    for var i = start + 1; i < template.len(); i += 1 {
+        if template[i] == 125 { return i }
+        if template[i] == 123 { return 0 }
+    }
+    return 0
 }
 
 func (l Logger) Err() error {

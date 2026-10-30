@@ -23,7 +23,7 @@ func run() error {
     logger.Info("listening on {addr}", listenAddress)
     http.ListenAndServe(listenAddress, router)?
     logger.Info("stopped")
-    return logger.Err()
+    return nil
 }
 
 func newRouter(store UserStore, logger log.Logger) (http.Router, error) {
