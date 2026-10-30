@@ -456,3 +456,123 @@ func main() {
         "level=INFO msg=serving\nlevel=INFO msg=\"stopped by interrupt\" signal=interrupt\n"
     );
 }
+
+fn set_modified(path: &std::path::Path, unix_seconds: u64) {
+    let file = std::fs::OpenOptions::new().write(true).open(path).unwrap();
+    file.set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(unix_seconds))
+        .unwrap();
+}
+
+#[test]
+fn daily_rolling_names_files_by_day_and_prunes_the_oldest() {
+    let dir = TempDir::new().unwrap();
+    let october = |day: u64| 1_793_145_600 + (day - 28) * 86_400 + 43_200;
+    for (name, text) in [
+        ("app.log", "old line\n"),
+        ("app.log.2026-10-20", "a\n"),
+        ("app.log.2026-10-25.9", "b\n"),
+        ("app.log.2026-10-25.10", "c\n"),
+        ("app.log.notes", "unrelated\n"),
+        ("app.log.2026-10-01.01", "leading zero\n"),
+        ("app.log.1", "numbered\n"),
+        ("other.log", "other\n"),
+    ] {
+        std::fs::write(dir.path().join(name), text).unwrap();
+    }
+    set_modified(&dir.path().join("app.log"), october(28));
+    let source = program(
+        &dir,
+        &["errors", "log", "time"],
+        r#"
+func session(count int, maxBytes int) {
+    var config = config(dir + "/app.log", maxBytes, 4, 0)
+    config.Daily = true
+    var output, err = rolling.Open(config)
+    if err != nil { panic(errors.Message(err)) }
+    let logger = log.New(output.Sink(), log.LevelInfo).WithoutTime()
+    for var i = 0; i < count; i += 1 {
+        logger.Info("today {i}", i)
+    }
+    if output.Close() != nil || logger.Err() != nil { panic("close") }
+}
+
+func main() {
+    let before = log.FormatTime(time.UnixSeconds())[:10]
+    session(6, 60)
+    let after = log.FormatTime(time.UnixSeconds())[:10]
+    if before != after { panic("the test crossed midnight; run it again") }
+    println(before)
+}
+"#,
+    );
+    let output = run(&source);
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    let today = stdout(&output).trim().to_string();
+    let read = |name: &str| std::fs::read_to_string(dir.path().join(name)).ok();
+    let line = |i: usize| format!("level=INFO msg=\"today {i}\" i={i}\n");
+    assert_eq!(read("app.log"), Some(line(4) + &line(5)));
+    assert_eq!(read("app.log.2026-10-28").as_deref(), Some("old line\n"));
+    assert_eq!(read(&format!("app.log.{today}")), Some(line(0) + &line(1)));
+    assert_eq!(
+        read(&format!("app.log.{today}.1")),
+        Some(line(2) + &line(3))
+    );
+    assert_eq!(read("app.log.2026-10-25.10").as_deref(), Some("c\n"));
+    for removed in ["app.log.2026-10-20", "app.log.2026-10-25.9"] {
+        assert_eq!(read(removed), None, "{removed} should be pruned");
+    }
+    for kept in [
+        "app.log.notes",
+        "app.log.1",
+        "other.log",
+        "app.log.2026-10-01.01",
+    ] {
+        assert!(read(kept).is_some(), "{kept} is not a dated backup");
+    }
+
+    let source = source.replace("session(6, 60)", "session(1, 1000)");
+    let output = run(&source);
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    assert_eq!(
+        read("app.log"),
+        Some(line(4) + &line(5) + &line(0)),
+        "a restart on the same day keeps appending"
+    );
+    assert_eq!(read(&format!("app.log.{today}.2")), None);
+}
+
+#[test]
+fn os_stat_reports_the_modification_time() {
+    let dir = TempDir::new().unwrap();
+    let source = program(
+        &dir,
+        &["time"],
+        r#"
+func main() {
+    let path = dir + "/stamp.txt"
+    let before = time.UnixSeconds()
+    if os.WriteFile(path, strings.Bytes("x")[:], 0o644) != nil { panic("write") }
+    let after = time.UnixSeconds()
+    let info, err = os.Stat(path)
+    if err != nil { panic("stat") }
+    println(info.ModTime() >= before - 2 && info.ModTime() <= after + 2)
+    println(rolling.DefaultConfig(path).Daily)
+}
+"#,
+    );
+    prints(&source, "true\nfalse\n");
+    set_modified(&dir.path().join("stamp.txt"), 86_400 * 3 + 5);
+    let source = program(
+        &dir,
+        &[],
+        r#"
+func main() {
+    let info, err = os.Stat(dir + "/stamp.txt")
+    if err != nil { panic("stat") }
+    println(info.ModTime())
+    println(rolling.DefaultConfig("").MaxBackups)
+}
+"#,
+    );
+    prints(&source, "259205\n5\n");
+}

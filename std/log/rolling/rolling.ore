@@ -1,6 +1,9 @@
 package rolling
 
+import "std/log"
 import "std/os"
+import "std/path/filepath"
+import "std/sort"
 import "std/strconv"
 import "std/time"
 
@@ -13,6 +16,7 @@ type Config struct {
     BufferBytes   int
     FlushInterval int
     Perm          int
+    Daily         bool
 }
 
 func DefaultConfig(path string) Config {
@@ -23,6 +27,7 @@ func DefaultConfig(path string) Config {
         BufferBytes: 64 * 1024,
         FlushInterval: time.Second,
         Perm: 0o644,
+        Daily: false,
     }
 }
 
@@ -33,6 +38,7 @@ type state struct {
     pending Array<byte>
     err     error
     closed  bool
+    day     int
 }
 
 type Writer struct {
@@ -65,7 +71,11 @@ func Open(config Config) (Writer, error) {
     }
     var files = Array<os.File>{}
     files.push(file)
-    let shared = mutex(state{config: config, files: files, size: info.Size(), pending: Array<byte>{}, err: nil, closed: false})
+    var day = today()
+    if info.Size() > 0 {
+        day = dayOf(info.ModTime())
+    }
+    let shared = mutex(state{config: config, files: files, size: info.Size(), pending: Array<byte>{}, err: nil, closed: false, day: day})
     let stop = channel<bool>()
     let done = channel<bool>(1)
     let flushing = config.BufferBytes > 0
@@ -87,7 +97,7 @@ func check(config Config) error {
 }
 
 func failed(config Config, err error) Writer {
-    let shared = mutex(state{config: config, files: Array<os.File>{}, size: 0, pending: Array<byte>{}, err: err, closed: true})
+    let shared = mutex(state{config: config, files: Array<os.File>{}, size: 0, pending: Array<byte>{}, err: err, closed: true, day: 0})
     return Writer{shared: shared, stop: channel<bool>(), done: channel<bool>(1), flushing: false}
 }
 
@@ -132,6 +142,14 @@ func (sink Sink) Write(data []byte) (int, error) {
     return sink.shared.withLock(func(s mut state) (int, error) {
         if s.err != nil { return 0, s.err }
         if s.closed { return 0, errClosed }
+        if s.config.Daily {
+            let current = today()
+            if s.size > 0 && current != s.day {
+                roll(s)
+                if s.err != nil { return 0, s.err }
+            }
+            s.day = current
+        }
         if s.size > 0 && s.size + data.len() > s.config.MaxBytes {
             roll(s)
             if s.err != nil { return 0, s.err }
@@ -201,6 +219,8 @@ func roll(s mut state) {
     let path = s.config.Path
     if s.config.MaxBackups == 0 {
         s.err = os.Remove(path)
+    } else if s.config.Daily {
+        s.err = shiftDated(path, s.day, s.config.MaxBackups)
     } else {
         s.err = shift(path, s.config.MaxBackups)
     }
@@ -234,4 +254,78 @@ func backup(path string, index int) string {
 func exists(path string) bool {
     let _, err = os.Stat(path)
     return err == nil
+}
+
+func today() int {
+    return dayOf(time.UnixSeconds())
+}
+
+func dayOf(seconds int) int {
+    var day = seconds / 86400
+    if seconds % 86400 < 0 { day -= 1 }
+    return day
+}
+
+func shiftDated(path string, day int, backups int) error {
+    let dated = path + "." + log.FormatTime(day * 86400)[:10]
+    var target = dated
+    for var n = 1; exists(target); n += 1 {
+        target = dated + "." + strconv.Itoa(n)
+    }
+    let err = os.Rename(path, target)
+    if err != nil { return err }
+    return prune(path, backups)
+}
+
+func prune(path string, backups int) error {
+    let entries = os.ReadDir(filepath.Dir(path))?
+    let prefix = filepath.Base(path) + "."
+    var keys = Array<string>{}
+    for entry in entries {
+        let name = entry.Name()
+        if !entry.IsDir() && name.len() > prefix.len() && name[:prefix.len()] == prefix {
+            let key = datedKey(name[prefix.len():])
+            if key != "" { keys.push(key) }
+        }
+    }
+    sort.Strings(keys[:])
+    for var i = 0; i + backups < keys.len(); i += 1 {
+        os.Remove(path + "." + suffixOf(keys[i]))?
+    }
+    return nil
+}
+
+func datedKey(suffix string) string {
+    if suffix.len() < 10 || !date(suffix[:10]) {
+        return ""
+    }
+    if suffix.len() == 10 {
+        return suffix + ".000000000"
+    }
+    let count = suffix[11:]
+    if suffix[10] != 46 || count.len() == 0 || count.len() > 9 || count[0] == 48 || !digits(count) {
+        return ""
+    }
+    var padded = count
+    for padded.len() < 9 { padded = "0" + padded }
+    return suffix[:10] + "." + padded
+}
+
+func suffixOf(key string) string {
+    let count, err = strconv.Atoi(key[11:])
+    if err != nil || count == 0 {
+        return key[:10]
+    }
+    return key[:10] + "." + strconv.Itoa(count)
+}
+
+func date(text string) bool {
+    return digits(text[0:4]) && text[4] == 45 && digits(text[5:7]) && text[7] == 45 && digits(text[8:10])
+}
+
+func digits(text string) bool {
+    for var i = 0; i < text.len(); i += 1 {
+        if text[i] < 48 || text[i] > 57 { return false }
+    }
+    return true
 }

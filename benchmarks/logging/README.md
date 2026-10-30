@@ -18,18 +18,20 @@ analysis.
 
 | Sink | Time per record |
 | --- | --- |
-| Record filtered by level | 3.1–3.2 µs |
-| Discarding writer, no timestamp | 13.2–13.5 µs |
-| Discarding writer, with timestamp | 18.6–19.2 µs |
-| `os.File` | 72.1–72.3 µs |
-| `rolling`, 64 KiB buffer | 14.1–15.2 µs |
-| `rolling`, unbuffered | 73.6–76.7 µs |
+| Record filtered by level | 3.1–3.6 µs |
+| Discarding writer, no timestamp | 12.7–14.5 µs |
+| Discarding writer, with timestamp | 19.4–20.4 µs |
+| `os.File` | 75.8–79.2 µs |
+| `rolling`, 64 KiB buffer | 13.8–14.8 µs |
+| `rolling`, 64 KiB buffer, `Daily` | 14.1–15.4 µs |
+| `rolling`, unbuffered | 75.8–79.3 µs |
 
 Each `os.File` write waits for a helper thread, roughly 45–60 µs per call on
 this host, so an unbuffered file sink is bound by that hand-off. The buffered
 rolling writer makes one file write per 64 KiB, about 1,400 records here, and
 costs within about 2 µs of discarding the records: roughly five times faster
-than writing each record to a file.
+than writing each record to a file. `Daily` reads the wall clock for each
+record; its cost is within the run-to-run spread here, at most about 1 µs.
 
 The remaining cost is building the record. A callgrind profile of the
 discarding case attributes about half of its instructions to the runtime's

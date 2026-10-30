@@ -161,6 +161,11 @@ once it does.
 
 ### Standard library
 
+- `std/log/rolling` can also roll daily (§37.13): with `Config.Daily`, a new
+  file starts when the UTC day changes, older files are named by day
+  (`app.log.2026-10-29`, `app.log.2026-10-29.1` for a second file that day),
+  and the oldest dated backups beyond `MaxBackups` are removed. A restart
+  continues the current day's file. `os.FileInfo` has `ModTime()` (§37.3).
 - Added `std/log/rolling` (§37.13): a size-limited log file that rolls into
   numbered backups, keeps the newest `MaxBackups`, and collects records in a
   64 KiB buffer flushed by a background task every second. `Writer` owns the

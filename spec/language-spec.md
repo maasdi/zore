@@ -7241,7 +7241,7 @@ println(time.Since(started) < time.Second)
 | `ReadFile(path string) (Array<byte>, error)` | The whole contents of the file |
 | `WriteFile(path string, data []byte, perm int) error` | Creates or truncates the file and writes `data`; a new file gets the permission bits `perm`, such as `0o644`, on systems that have them |
 | `ReadDir(path string) (Array<DirEntry>, error)` | The entries of a folder, sorted by name; `(e DirEntry) Name() string` and `(e DirEntry) IsDir() bool` describe each |
-| `Stat(path string) (FileInfo, error)` | Facts about a file or folder, following links: `(i FileInfo) Name() string` (the last element of `path`), `Size() int` in bytes, `Mode() int` (the permission bits), and `IsDir() bool` |
+| `Stat(path string) (FileInfo, error)` | Facts about a file or folder, following links: `(i FileInfo) Name() string` (the last element of `path`), `Size() int` in bytes, `Mode() int` (the permission bits), `IsDir() bool`, and `ModTime() int`, the time of the last change in whole Unix seconds (`0` when the system does not report one) |
 | `MkdirAll(path string, perm int) error` | Creates the folder and any missing parents with the permission bits `perm`; nothing to do when it exists |
 | `Remove(path string) error` | Removes a file or an empty folder |
 | `RemoveAll(path string) error` | Removes a file or a folder and everything in it; a missing path is not an error |
@@ -9130,9 +9130,9 @@ func run() error {
 
 | Name | Behavior |
 | --- | --- |
-| `type Config struct { Path string; MaxBytes int; MaxBackups int; BufferBytes int; FlushInterval int; Perm int }` | Where to write, the size limit, how many older files to keep, how many bytes to collect before writing, how often to write what is collected (nanoseconds, §37.3), and the permission bits of new files |
-| `DefaultConfig(path string) Config` | `MaxBytes` 100 MiB (`100 * 1024 * 1024`), `MaxBackups` 5, `BufferBytes` 64 KiB, `FlushInterval` one second, `Perm` `0o644` |
-| `Open(config Config) (Writer, error)` | Opens `Path` with `os.Append`, keeping what it holds, and starts counting from its current size |
+| `type Config struct { Path string; MaxBytes int; MaxBackups int; BufferBytes int; FlushInterval int; Perm int; Daily bool }` | Where to write, the size limit, how many older files to keep, how many bytes to collect before writing, how often to write what is collected (nanoseconds, §37.3), the permission bits of new files, and whether to also roll when the UTC day changes |
+| `DefaultConfig(path string) Config` | `MaxBytes` 100 MiB (`100 * 1024 * 1024`), `MaxBackups` 5, `BufferBytes` 64 KiB, `FlushInterval` one second, `Perm` `0o644`, `Daily` `false` |
+| `Open(config Config) (Writer, error)` | Opens `Path` with `os.Append`, keeping what it holds, and starts counting from its current size; a non-empty file belongs to the UTC day of its `ModTime`, an empty one to the current day |
 | `(w Writer) Sink() Sink` | A handle that writes to `w`; give it to `log.New` |
 | `(s Sink) Write(data []byte) (int, error)` | Writes `data` as one piece (below) |
 | `(w Writer) Flush() error` | Writes everything collected now |
@@ -9161,6 +9161,31 @@ app.log      newest records
 app.log.1    the file before it
 ...
 app.log.5    the oldest kept; removed at the next roll
+```
+
+**Daily rolling.** With `Daily`, each `Write` first reads `time.UnixSeconds`
+(§37.3). When the file holds bytes and the UTC day differs from the day of the
+file, the writer rolls before accepting the piece, and the file then belongs
+to the current day; the size rule above still applies afterwards. A day is
+`floor(seconds / 86400)`, so days change at midnight UTC, and a clock that moves
+backwards also starts a new file. With `Daily`, every roll, by day or by size,
+renames `Path` to `Path.D`, where `D` is the file's day as `YYYY-MM-DD` (the
+first 10 characters of `log.FormatTime`, §37.12), or to `Path.D.N` with the
+smallest `N` from `1` up whose name is free when that day was already rolled.
+The backups are then pruned: the folder of `Path` is listed, names of the form
+`Path.YYYY-MM-DD` or `Path.YYYY-MM-DD.N` (with `N` of one to nine digits and
+no leading zero) are
+ordered by date and then by `N`, a name without `N` first, and the oldest are
+removed until at most `MaxBackups` remain. Other names, including numbered
+backups from a writer without `Daily`, are left alone. With `MaxBackups` zero,
+`Path` is removed instead, as without `Daily`. A failure to list the folder or
+remove a backup is kept like any other failure.
+
+```text
+app.log                 records of the current day
+app.log.2026-10-30.1    the second file of October 30
+app.log.2026-10-30      the first file of October 30
+app.log.2026-10-29      October 29
 ```
 
 **Buffering.** With `BufferBytes` above zero, `Write` copies the piece into
@@ -9207,7 +9232,8 @@ error. The file is closed by `Close` or drop even while
 writer cannot be used again.
 
 Compiler impact: none for the package, which is bundled Zore source built from
-`std/os`, `std/time`, `Mutex<T>`, channels, and `select`. `os.Append` and
+`std/os`, `std/path/filepath`, `std/sort`, `std/time`, `std/log`, `Mutex<T>`,
+channels, and `select`. `os.Append` and
 `os.Rename` are runtime functions that wait for a helper like the other file
 operations (§37.3). Conformance cases: `tests/conformance/log.md`, with native
 tests in `tests/codegen/rolling.rs`.

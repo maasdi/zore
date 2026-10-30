@@ -95,5 +95,9 @@ Native cases are in `tests/codegen/rolling.rs`; checking cases are in
 | Each invalid config field | `rolling.Open: ...` from `Open` and from the closed writer's `Write` |
 | A roll whose oldest backup is a non-empty folder | `Err` starts `os.Remove: `; `Flush` and `Close` return the same error; the file keeps its records |
 | Four plain and four async tasks through two loggers sharing one sink, 2,000-byte files | 400 whole, distinct records across more than five files; no file over 2,000 bytes |
+| `Daily`, an existing file last changed on October 28, dated backups of October 20 and 25 (`.9`, `.10`), `MaxBytes` 60, four backups | The old file becomes `app.log.2026-10-28`; today's size rolls become `app.log.TODAY` and `.1`; October 20 and `.9` are pruned before `.10` |
+| `Daily` with `app.log.notes`, numbered `app.log.1`, another file, and `.01` | Left alone; not dated backups |
+| `Daily`, a restart on the same day under the size limit | The record is appended; nothing rolls |
+| `DefaultConfig` | `Daily` is `false` |
 | `Open` given a string, `Close` then `Flush`, copying a `Writer` twice | Reject: mismatched types; use of moved value |
 | `rolling.Sink{...}` | Reject: not exported |

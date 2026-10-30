@@ -53,6 +53,12 @@ func main() {
     if bufferedErr != nil { os.Exit(1) }
     measure("rolling, 64 KiB buffer", log.New(buffered.Sink(), log.LevelInfo).WithoutTime())
     let _ = buffered.Close()
+    var dailyConfig = rollingConfig("daily.log", 64 * 1024)
+    dailyConfig.Daily = true
+    var daily, dailyErr = rolling.Open(dailyConfig)
+    if dailyErr != nil { os.Exit(1) }
+    measure("rolling, 64 KiB buffer, daily", log.New(daily.Sink(), log.LevelInfo).WithoutTime())
+    let _ = daily.Close()
     var direct, directErr = rolling.Open(rollingConfig("direct.log", 0))
     if directErr != nil { os.Exit(1) }
     measure("rolling, unbuffered", log.New(direct.Sink(), log.LevelInfo).WithoutTime())

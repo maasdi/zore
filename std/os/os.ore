@@ -42,10 +42,11 @@ func ReadDir(path string) (Array<DirEntry>, error) {
 }
 
 type FileInfo struct {
-    name string
-    size int
-    mode int
-    dir  bool
+    name     string
+    size     int
+    mode     int
+    dir      bool
+    modified int
 }
 
 func (i FileInfo) Name() string {
@@ -64,12 +65,16 @@ func (i FileInfo) IsDir() bool {
     return i.dir
 }
 
+func (i FileInfo) ModTime() int {
+    return i.modified
+}
+
 func Stat(path string) (FileInfo, error) {
     let fields, err = statFields(path)
     if err != nil {
-        return FileInfo{name: "", size: 0, mode: 0, dir: false}, err
+        return FileInfo{name: "", size: 0, mode: 0, dir: false, modified: 0}, err
     }
-    return FileInfo{name: baseName(path), size: fields[0], mode: fields[1], dir: fields[2] == 1}, nil
+    return FileInfo{name: baseName(path), size: fields[0], mode: fields[1], dir: fields[2] == 1, modified: fields[3]}, nil
 }
 
 func baseName(path string) string {

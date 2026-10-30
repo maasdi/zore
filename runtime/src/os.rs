@@ -301,12 +301,29 @@ pub unsafe extern "C" fn zore_native_os_stat_fields(
                 0o666
             };
             let size = i64::try_from(metadata.len()).unwrap_or(i64::MAX);
-            WordArrayError::ok(WordArray::ints(&[size, mode, i64::from(metadata.is_dir())]))
+            let modified = metadata.modified().map_or(0, unix_seconds);
+            WordArrayError::ok(WordArray::ints(&[
+                size,
+                mode,
+                i64::from(metadata.is_dir()),
+                modified,
+            ]))
         }
         Err(error) => WordArrayError::failed(&format!("os.Stat: {error}")),
     };
     // SAFETY: guaranteed by the caller.
     unsafe { out.write(value) };
+}
+
+fn unix_seconds(time: std::time::SystemTime) -> i64 {
+    match time.duration_since(std::time::UNIX_EPOCH) {
+        Ok(duration) => i64::try_from(duration.as_secs()).unwrap_or(i64::MAX),
+        Err(error) => {
+            let duration = error.duration();
+            -i64::try_from(duration.as_secs()).unwrap_or(i64::MAX)
+                - i64::from(duration.subsec_nanos() != 0)
+        }
+    }
 }
 
 /// # Safety
