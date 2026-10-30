@@ -1,0 +1,237 @@
+package rolling
+
+import "std/os"
+import "std/strconv"
+import "std/time"
+
+let errClosed = error("rolling: closed")
+
+type Config struct {
+    Path          string
+    MaxBytes      int
+    MaxBackups    int
+    BufferBytes   int
+    FlushInterval int
+    Perm          int
+}
+
+func DefaultConfig(path string) Config {
+    return Config{
+        Path: path,
+        MaxBytes: 100 * 1024 * 1024,
+        MaxBackups: 5,
+        BufferBytes: 64 * 1024,
+        FlushInterval: time.Second,
+        Perm: 0o644,
+    }
+}
+
+type state struct {
+    config  Config
+    files   Array<os.File>
+    size    int
+    pending Array<byte>
+    err     error
+    closed  bool
+}
+
+type Writer struct {
+    shared   Mutex<state>
+    stop     channel<bool>
+    done     channel<bool>
+    flushing bool
+}
+
+type Sink struct {
+    shared Mutex<state>
+}
+
+func (w mut Writer) drop() {
+    let _ = w.finish()
+}
+
+func Open(config Config) (Writer, error) {
+    let invalid = check(config)
+    if invalid != nil {
+        return failed(config, invalid), invalid
+    }
+    let file, err = os.Append(config.Path, config.Perm)
+    if err != nil {
+        return failed(config, err), err
+    }
+    let info, statErr = os.Stat(config.Path)
+    if statErr != nil {
+        return failed(config, statErr), statErr
+    }
+    var files = Array<os.File>{}
+    files.push(file)
+    let shared = mutex(state{config: config, files: files, size: info.Size(), pending: Array<byte>{}, err: nil, closed: false})
+    let stop = channel<bool>()
+    let done = channel<bool>(1)
+    let flushing = config.BufferBytes > 0
+    if flushing {
+        go flushEvery(shared, config.FlushInterval, stop, done)
+    }
+    return Writer{shared: shared, stop: stop, done: done, flushing: flushing}, nil
+}
+
+func check(config Config) error {
+    if config.Path == "" { return error("rolling.Open: empty path") }
+    if config.MaxBytes <= 0 { return error("rolling.Open: MaxBytes must be positive") }
+    if config.MaxBackups < 0 { return error("rolling.Open: MaxBackups must not be negative") }
+    if config.BufferBytes < 0 { return error("rolling.Open: BufferBytes must not be negative") }
+    if config.BufferBytes > 0 && config.FlushInterval <= 0 {
+        return error("rolling.Open: FlushInterval must be positive when buffering")
+    }
+    return nil
+}
+
+func failed(config Config, err error) Writer {
+    let shared = mutex(state{config: config, files: Array<os.File>{}, size: 0, pending: Array<byte>{}, err: err, closed: true})
+    return Writer{shared: shared, stop: channel<bool>(), done: channel<bool>(1), flushing: false}
+}
+
+func (w Writer) Sink() Sink {
+    return Sink{shared: w.shared}
+}
+
+func (w Writer) Flush() error {
+    return w.shared.withLock(func(s mut state) error {
+        if s.closed && s.err == nil { return errClosed }
+        flush(s)
+        return s.err
+    })
+}
+
+func (w own Writer) Close() error {
+    return w.finish()
+}
+
+func (w Writer) finish() error {
+    let open = w.shared.withLock(func(s mut state) bool { return !s.closed })
+    if !open {
+        return nil
+    }
+    if w.flushing {
+        w.stop.close()
+        let _, _ = w.done.receive()
+    }
+    return w.shared.withLock(func(s mut state) error {
+        flush(s)
+        if s.err == nil {
+            s.err = closeFile(s)
+        } else {
+            _ = closeFile(s)
+        }
+        s.closed = true
+        return s.err
+    })
+}
+
+func (sink Sink) Write(data []byte) (int, error) {
+    return sink.shared.withLock(func(s mut state) (int, error) {
+        if s.err != nil { return 0, s.err }
+        if s.closed { return 0, errClosed }
+        if s.size > 0 && s.size + data.len() > s.config.MaxBytes {
+            roll(s)
+            if s.err != nil { return 0, s.err }
+        }
+        if s.config.BufferBytes == 0 {
+            let count, err = s.files[0].Write(data)
+            s.size += count
+            if err != nil { s.err = err }
+            return count, err
+        }
+        for b in data {
+            s.pending.push(b)
+        }
+        s.size += data.len()
+        if s.pending.len() >= s.config.BufferBytes {
+            flush(s)
+        }
+        return data.len(), s.err
+    })
+}
+
+async func flushEvery(shared Mutex<state>, interval int, stop channel<bool>, done channel<bool>) {
+    for {
+        select {
+            case stop.receive() {
+                done.send(true)
+                return
+            }
+            case time.After(interval).receive() {
+                shared.withLock(func(s mut state) {
+                    if !s.closed { flush(s) }
+                })
+            }
+        }
+    }
+}
+
+func flush(s mut state) {
+    if s.err != nil || s.pending.len() == 0 || s.files.len() == 0 {
+        return
+    }
+    let count, err = s.files[0].Write(s.pending[:])
+    if err != nil {
+        s.err = err
+        return
+    }
+    if count != s.pending.len() {
+        s.err = error("rolling: short write")
+        return
+    }
+    s.pending = Array<byte>{}
+}
+
+func closeFile(s mut state) error {
+    if s.files.len() == 0 {
+        return nil
+    }
+    let _, file = s.files.pop()
+    return file.Close()
+}
+
+func roll(s mut state) {
+    flush(s)
+    if s.err != nil { return }
+    s.err = closeFile(s)
+    if s.err != nil { return }
+    let path = s.config.Path
+    if s.config.MaxBackups == 0 {
+        s.err = os.Remove(path)
+    } else {
+        s.err = shift(path, s.config.MaxBackups)
+    }
+    if s.err != nil { return }
+    let file, err = os.Append(path, s.config.Perm)
+    if err != nil { s.err = err; return }
+    s.files.push(file)
+    s.size = 0
+}
+
+func shift(path string, backups int) error {
+    let oldest = backup(path, backups)
+    if exists(oldest) {
+        let err = os.Remove(oldest)
+        if err != nil { return err }
+    }
+    for var i = backups - 1; i >= 1; i -= 1 {
+        let from = backup(path, i)
+        if exists(from) {
+            let err = os.Rename(from, backup(path, i + 1))
+            if err != nil { return err }
+        }
+    }
+    return os.Rename(path, backup(path, 1))
+}
+
+func backup(path string, index int) string {
+    return path + "." + strconv.Itoa(index)
+}
+
+func exists(path string) bool {
+    let _, err = os.Stat(path)
+    return err == nil
+}

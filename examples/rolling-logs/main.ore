@@ -1,0 +1,45 @@
+package main
+
+import "std/errors"
+import "std/log"
+import "std/log/rolling"
+import "std/os"
+import "std/strings"
+
+const folder = "rolling-logs-demo"
+
+func main() {
+    let err = run()
+    let _ = os.RemoveAll(folder)
+    if err != nil {
+        println(errors.Message(err))
+        os.Exit(1)
+    }
+}
+
+func run() error {
+    let _ = os.RemoveAll(folder)
+    os.MkdirAll(folder, 0o755)?
+    let path = folder + "/app.log"
+    var config = rolling.DefaultConfig(path)
+    config.MaxBytes = 120
+    config.MaxBackups = 2
+    var output = rolling.Open(config)?
+    let logger = log.New(output.Sink(), log.LevelInfo).WithoutTime()
+    for var order = 1; order <= 8; order += 1 {
+        logger.Info("shipped order {order}", order)
+    }
+    output.Close()?
+    logger.Err()?
+    for name in Array<string>{path + ".2", path + ".1", path}[:] {
+        let data = os.ReadFile(name)?
+        let text = strings.FromBytes(data[:])?
+        println("== " + name)
+        print(text)
+    }
+    return nil
+}
+
+func print(text string) {
+    let _, _ = os.Stdout().WriteString(text)
+}

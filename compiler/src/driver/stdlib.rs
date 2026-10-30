@@ -17,6 +17,7 @@ bundled! {
     "fmt" => ["fmt.ore"],
     "io" => ["io.ore"],
     "log" => ["log.ore"],
+    "log/rolling" => ["rolling.ore"],
     "maps" => ["maps.ore"],
     "math" => ["math.ore"],
     "net" => ["net.ore"],

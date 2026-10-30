@@ -1,0 +1,61 @@
+package main
+
+import "std/log"
+import "std/log/rolling"
+import "std/os"
+import "std/strconv"
+import "std/time"
+
+const records = 200000
+const folder = "logging-benchmark-files"
+
+type Discard struct {
+    count int
+}
+
+func (d Discard) Write(data []byte) (int, error) {
+    return data.len(), nil
+}
+
+func measure(name string, logger log.Logger) {
+    let start = time.Now()
+    for var i = 0; i < records; i += 1 {
+        logger.Info("request {id} took {ms} ms", i, 42)
+    }
+    let perRecord = time.Since(start) / records
+    if logger.Err() != nil {
+        println(name + ": failed")
+        return
+    }
+    println(name + ": " + strconv.Itoa(perRecord) + " ns/record")
+}
+
+func rollingConfig(name string, buffer int) rolling.Config {
+    var config = rolling.DefaultConfig(folder + "/" + name)
+    config.MaxBytes = 4 * 1024 * 1024
+    config.BufferBytes = buffer
+    return config
+}
+
+func main() {
+    let _ = os.RemoveAll(folder)
+    if os.MkdirAll(folder, 0o755) != nil {
+        println("cannot create " + folder)
+        os.Exit(1)
+    }
+    measure("filtered", log.New(Discard{count: 0}, log.LevelError).WithoutTime())
+    measure("discard", log.New(Discard{count: 0}, log.LevelInfo).WithoutTime())
+    measure("discard with time", log.New(Discard{count: 0}, log.LevelInfo))
+    let file, err = os.Create(folder + "/plain.log")
+    if err != nil { os.Exit(1) }
+    measure("os.File", log.New(file, log.LevelInfo).WithoutTime())
+    var buffered, bufferedErr = rolling.Open(rollingConfig("buffered.log", 64 * 1024))
+    if bufferedErr != nil { os.Exit(1) }
+    measure("rolling, 64 KiB buffer", log.New(buffered.Sink(), log.LevelInfo).WithoutTime())
+    let _ = buffered.Close()
+    var direct, directErr = rolling.Open(rollingConfig("direct.log", 0))
+    if directErr != nil { os.Exit(1) }
+    measure("rolling, unbuffered", log.New(direct.Sink(), log.LevelInfo).WithoutTime())
+    let _ = direct.Close()
+    let _ = os.RemoveAll(folder)
+}

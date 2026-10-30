@@ -5,6 +5,7 @@ func WriteFile(path string, data []byte, perm int) error
 func MkdirAll(path string, perm int) error
 func Remove(path string) error
 func RemoveAll(path string) error
+func Rename(oldPath string, newPath string) error
 func Getenv(key string) string
 func Getwd() (string, error)
 func Args() Array<string>

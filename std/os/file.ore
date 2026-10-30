@@ -18,6 +18,11 @@ func Create(path string) (File, error) {
     return File{id: id}, err
 }
 
+func Append(path string, perm int) (File, error) {
+    let id, err = fileAppend(path, perm)
+    return File{id: id}, err
+}
+
 func Stdin() File {
     return File{id: 1}
 }
@@ -51,6 +56,7 @@ func (f own File) Close() error {
 }
 
 func fileOpen(path string, create bool) (int, error)
+func fileAppend(path string, perm int) (int, error)
 func fileRead(id int, max int) (Array<byte>, error)
 func fileWrite(id int, data []byte) (int, error)
 func fileWriteString(id int, text string) (int, error)

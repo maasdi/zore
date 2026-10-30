@@ -635,6 +635,50 @@ fn the_log_package_checks_templates_and_values() {
 }
 
 #[test]
+fn the_rolling_package_owns_its_writer() {
+    let imports = "import \"std/log\"\nimport \"std/log/rolling\"\nimport \"std/os\"";
+    accepts(&[(
+        "main.ore",
+        &main_with(
+            imports,
+            "var output, err = rolling.Open(rolling.DefaultConfig(\"app.log\"))\n_ = err\nlet logger = log.New(output.Sink(), log.LevelInfo)\nlogger.Info(\"a\")\n_ = output.Flush()\n_ = output.Close()\nlet file, appendErr = os.Append(\"b.log\", 0o644)\n_ = appendErr\ndrop(file)\n_ = os.Rename(\"b.log\", \"c.log\")",
+        ),
+    )]);
+    let rolling = "import \"std/log/rolling\"";
+    let os = "import \"std/os\"";
+    for (imports, body, message) in [
+        (
+            rolling,
+            "let output = rolling.Open(\"app.log\")",
+            "mismatched types",
+        ),
+        (
+            rolling,
+            "var output, err = rolling.Open(rolling.DefaultConfig(\"a\"))\n_ = err\n_ = output.Close()\n_ = output.Flush()",
+            "use of moved value",
+        ),
+        (
+            rolling,
+            "var output, err = rolling.Open(rolling.DefaultConfig(\"a\"))\n_ = err\nlet other = output\nlet again = output",
+            "use of moved value",
+        ),
+        (
+            rolling,
+            "let sink = rolling.Sink{shared: mutex(0)}",
+            "not exported",
+        ),
+        (
+            os,
+            "os.Rename(\"a\", \"b\")",
+            "must be used or explicitly discarded",
+        ),
+        (os, "let file = os.Append(\"a\")", "takes 2 arguments"),
+    ] {
+        rejects(&[("main.ore", &main_with(imports, body))], message);
+    }
+}
+
+#[test]
 fn the_io_packages_reject_misuse() {
     let net = "import \"std/net\"";
     rejects(

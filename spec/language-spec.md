@@ -6884,8 +6884,8 @@ At minimum, the architecture must leave room for:
 Packages and imports are specified in §3.20. The standard packages are
 specified in §37.2 (text, bytes, and errors), §37.3 (time, the operating
 system, buffered I/O, and TCP), §37.4 (cancellation and task coordination),
-§37.5 (paths and sorting), and §37.12 (structured logging). Further packages
-are TBD.
+§37.5 (paths and sorting), §37.12 (structured logging), and §37.13 (rolling
+log files). Further packages are TBD.
 
 ## 37.1 `println` — LOCKED
 
@@ -7245,6 +7245,7 @@ println(time.Since(started) < time.Second)
 | `MkdirAll(path string, perm int) error` | Creates the folder and any missing parents with the permission bits `perm`; nothing to do when it exists |
 | `Remove(path string) error` | Removes a file or an empty folder |
 | `RemoveAll(path string) error` | Removes a file or a folder and everything in it; a missing path is not an error |
+| `Rename(oldPath string, newPath string) error` | Moves a file or folder to `newPath`; an existing file at `newPath` is replaced, on Windows as well |
 | `Getenv(key string) string` | The value of the environment variable, or `""` when it is not set |
 | `Getwd() (string, error)` | The current folder |
 | `Args() Array<string>` | The program's command-line arguments, starting with the program name |
@@ -7258,12 +7259,14 @@ value is closed, so every operation on it fails.
 | --- | --- |
 | `Open(path string) (File, error)` | Opens a file for reading |
 | `Create(path string) (File, error)` | Creates or truncates a file and opens it for reading and writing |
+| `Append(path string, perm int) (File, error)` | Opens a file for writing at its end, creating it with the permission bits `perm` when it is missing; every write goes to the current end, and existing contents are kept |
 | `Stdin() File`, `Stdout() File`, `Stderr() File` | Standard input, output, and error; closing or dropping these does nothing |
 | `(f File) Read(buf mut []byte) (int, error)` | Waits for at least one byte and moves up to `buf.len()` bytes into `buf`; at end of input, `0` and `EOF`; an empty `buf` gives `0` and `nil` at once |
 | `(f File) Write(data []byte) (int, error)`, `(f File) WriteString(s string) (int, error)` | Writes everything and returns the byte count; on failure, the bytes written before it |
 | `(f own File) Close() error` | Closes the file |
 
 Error messages begin with the function name (`os.ReadFile: `, `os.Open: `,
+`os.Append: `, `os.Rename: `,
 `os.Read: `, `os.Write: `, `os.Stat: `, `os.ReadDir: `, and so on) and continue
 with system-defined text.
 
@@ -9104,6 +9107,110 @@ has seen. Everything else is bundled Zore source built from `std/io`,
 runtime function is added. Conformance cases: `tests/conformance/log.md`, with
 native tests in `tests/codegen/log.rs` and checking tests in
 `tests/packages/packages.rs`.
+
+## 37.13 Rolling log files — LOCKED
+
+`"std/log/rolling"` writes to a file that is renamed aside and started over
+when it would grow past a size limit, keeping a fixed number of older files.
+It is an `io.Writer` for `log.New` (§37.12) and needs no change to the logger.
+Records are collected in memory and written in large pieces, because each
+file write waits for a helper (§37.3).
+
+```ore
+import "std/log"
+import "std/log/rolling"
+
+func run() error {
+    var output = rolling.Open(rolling.DefaultConfig("app.log"))?
+    let logger = log.New(output.Sink(), log.LevelInfo)
+    logger.Info("started")
+    return output.Close()
+}
+```
+
+| Name | Behavior |
+| --- | --- |
+| `type Config struct { Path string; MaxBytes int; MaxBackups int; BufferBytes int; FlushInterval int; Perm int }` | Where to write, the size limit, how many older files to keep, how many bytes to collect before writing, how often to write what is collected (nanoseconds, §37.3), and the permission bits of new files |
+| `DefaultConfig(path string) Config` | `MaxBytes` 100 MiB (`100 * 1024 * 1024`), `MaxBackups` 5, `BufferBytes` 64 KiB, `FlushInterval` one second, `Perm` `0o644` |
+| `Open(config Config) (Writer, error)` | Opens `Path` with `os.Append`, keeping what it holds, and starts counting from its current size |
+| `(w Writer) Sink() Sink` | A handle that writes to `w`; give it to `log.New` |
+| `(s Sink) Write(data []byte) (int, error)` | Writes `data` as one piece (below) |
+| `(w Writer) Flush() error` | Writes everything collected now |
+| `(w own Writer) Close() error` | Writes everything collected, stops the background flush, closes the file, and returns the first failure |
+
+**Validation.** `Open` fails, before touching any file, with
+`rolling.Open: empty path`, `rolling.Open: MaxBytes must be positive`,
+`rolling.Open: MaxBackups must not be negative`,
+`rolling.Open: BufferBytes must not be negative`, or
+`rolling.Open: FlushInterval must be positive when buffering`. A failure to
+open or measure the file returns the `os.Append` or `os.Stat` error. A
+`Writer` returned with an error is already closed.
+
+**Rolling.** Each `Write` is one piece: it goes into a single file and is never
+split. Before a piece is accepted, if the file already holds bytes (counting
+those still collected) and the piece would take it past `MaxBytes`, the writer
+rolls: it writes what is collected, closes the file, removes `Path.N` for
+`N = MaxBackups`, renames `Path.(i)` to `Path.(i+1)` from `N - 1` down to `1`,
+skipping names that do not exist, renames `Path` to `Path.1`, and opens a new,
+empty `Path`. With `MaxBackups` zero, `Path` is removed instead. A piece larger
+than `MaxBytes` goes into a fresh file of its own. A logger writes each record
+with one `Write` (§37.12), so a record is never split between files.
+
+```text
+app.log      newest records
+app.log.1    the file before it
+...
+app.log.5    the oldest kept; removed at the next roll
+```
+
+**Buffering.** With `BufferBytes` above zero, `Write` copies the piece into
+memory and returns its length; the collected bytes are written to the file when
+they reach `BufferBytes`, before a roll, every `FlushInterval` by a background
+task, on `Flush`, and on `Close` or drop. With `BufferBytes` zero, each piece is
+written to the file before `Write` returns, and no background task runs. A
+collected record has been accepted but is not yet in the file: a crash, or
+`os.Exit`, which runs no cleanup (§37.3), loses up to `BufferBytes` or
+`FlushInterval` of records. Call `Flush` before `os.Exit`.
+
+**Failures.** The first failure of a write, rename, remove, open, or close is
+kept: from then on `Write` returns `0` and that error without touching the
+file, so a logger stops and reports it through `log.Logger.Err` (§37.12);
+`Flush` and `Close` return it. A failure found by the background task is
+reported by the next `Write`, `Flush`, or `Close`. After `Close`, `Write` and
+`Flush` return the kept failure, or `rolling: closed` when there was none.
+Failures are not retried.
+
+**Sharing.** `Sink` is a Copy handle; every copy, and the background task,
+share one state behind a `Mutex` (§20.2), so pieces from several loggers or
+tasks never interleave. A process must not open two writers for one path, and
+other processes must not rename the files while it runs; the renames are not
+coordinated between them.
+
+**Blocking and suspension.** `Write`, `Flush`, and `Close` are ordinary calls.
+Waiting for the state's lock suspends an `async` caller and blocks a plain one.
+A `Write` that only collects bytes does not touch the file. One that writes
+the collection, rolls, or writes unbuffered blocks the calling thread while
+the file operations run, because they run inside the lock callback (§20.2);
+inside a logger this happens while the logger's lock is held, so other tasks
+logging through it wait as well. The background task writes under the same
+lock. `Close` waits for the background task to stop.
+
+Ownership, error, and async implications: `Writer` is a struct type with a
+custom `drop` (§8.3), so it is a Move value owned by one place, usually
+`main`. It owns the file. Dropping it does what `Close` does and discards the
+error, so returning from `main` writes the collected records, as does a panic
+that unwinds the owner (§15.4) and a shutdown that returns from `main` after
+`std/os/signal` cancellation (§37.8); `Close` is the way to see the final
+error. The file is closed by `Close` or drop even while
+`Sink` handles remain; their later writes return `rolling: closed`. `Sink` and
+`Config` hold no views. `Close` takes its receiver with `own`, so a closed
+writer cannot be used again.
+
+Compiler impact: none for the package, which is bundled Zore source built from
+`std/os`, `std/time`, `Mutex<T>`, channels, and `select`. `os.Append` and
+`os.Rename` are runtime functions that wait for a helper like the other file
+operations (§37.3). Conformance cases: `tests/conformance/log.md`, with native
+tests in `tests/codegen/rolling.rs`.
 
 ---
 

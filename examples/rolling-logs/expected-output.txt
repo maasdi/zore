@@ -1,0 +1,9 @@
+== rolling-logs-demo/app.log.2
+level=INFO msg="shipped order 3" order=3
+level=INFO msg="shipped order 4" order=4
+== rolling-logs-demo/app.log.1
+level=INFO msg="shipped order 5" order=5
+level=INFO msg="shipped order 6" order=6
+== rolling-logs-demo/app.log
+level=INFO msg="shipped order 7" order=7
+level=INFO msg="shipped order 8" order=8

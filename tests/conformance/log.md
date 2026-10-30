@@ -75,3 +75,25 @@ the package end to end.
 | A hole or `With` key named `msg` or `level` | Reject: cannot use the key |
 | The same hole twice, or the same key twice in one `With` | Reject: uses the key twice |
 | A `log.Logger` converted to a user interface with `Info(template string)` | Reject: a checked logging call |
+
+## `std/log/rolling`
+
+Native cases are in `tests/codegen/rolling.rs`; checking cases are in
+`tests/packages/packages.rs`; `examples/rolling-logs` rolls a small file.
+
+| Scenario | Expected result |
+| --- | --- |
+| Ten 28-byte records with `MaxBytes` 100 and two backups | `app.log` holds record 9, `.1` records 6–8, `.2` records 3–5; there is no `.3` |
+| `MaxBackups` zero, and a record longer than `MaxBytes` | The old file is removed; the long record gets a fresh file of its own |
+| Three runs writing to one path, the third past the limit | The first two runs share a file; the third rolls it to `.1` |
+| A 64-byte buffer with a one-hour interval | Nothing in the file until the buffer fills; `Flush` and `Close` write the rest |
+| A 10 ms flush interval | The record reaches the file without `Flush` |
+| A writer dropped at the end of a function | Its collected records are in the file |
+| `main` panics while a record is only collected | The record is in the file after the panic |
+| SIGINT through `signal.NotifyContext`, then `main` returns (Linux and macOS) | The file is empty before the signal and holds both records after exit |
+| A logger writing after `Close` | `Err` is `rolling: closed` |
+| Each invalid config field | `rolling.Open: ...` from `Open` and from the closed writer's `Write` |
+| A roll whose oldest backup is a non-empty folder | `Err` starts `os.Remove: `; `Flush` and `Close` return the same error; the file keeps its records |
+| Four plain and four async tasks through two loggers sharing one sink, 2,000-byte files | 400 whole, distinct records across more than five files; no file over 2,000 bytes |
+| `Open` given a string, `Close` then `Flush`, copying a `Writer` twice | Reject: mismatched types; use of moved value |
+| `rolling.Sink{...}` | Reject: not exported |

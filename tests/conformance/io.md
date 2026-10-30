@@ -45,6 +45,10 @@ Authority: spec §37.3–§37.4. The cases below are covered by executable tests
 | `Getenv` of a set and an unset variable, `Args()` with one argument | Its value and `""`; two elements, the second the argument |
 | `Stdout().WriteString` | The text on standard output and its byte count |
 | `Exit(4)` | The process ends with status 4; later statements do not run |
+| `Append` twice to a new path, writing a line each time | The file holds both lines (`codegen/rolling.rs`) |
+| `Rename` onto an existing file | The target holds the source's contents; the source is gone |
+| `Rename` of a missing path, `Append` into a missing folder | Errors beginning `os.Rename: ` and `os.Append: ` |
+| `os.Rename(...)` as a statement, `os.Append` with one argument | Rejected: the error must be used; two arguments (`packages/packages.rs`) |
 
 ## `std/os/exec`
 
