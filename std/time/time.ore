@@ -33,6 +33,7 @@ async func fire(ready channel<bool>, d int) {
 }
 
 func UnixSeconds() int
+func LocalOffset(seconds int) int
 
 func FormatHTTPDate(seconds int) (string, error) {
     if seconds < -11644473600 || seconds > 253402300799 {

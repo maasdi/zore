@@ -170,6 +170,13 @@ once it does.
 
 ### Standard library
 
+- Local time (§37.3, §37.12, §37.13): `time.LocalOffset` reports the operating
+  system's offset from UTC at any instant, daylight saving included, following
+  `TZ` on Linux and macOS and the system zone on Windows.
+  `log.FormatLocalTime` writes RFC 3339 with a numeric offset
+  (`2026-11-01T01:00:00-05:00`), `Logger.WithLocalTime()` opts records into
+  local stamps, and `rolling.Config.Local` makes daily rolling split at local
+  midnight with backups named by local date. UTC stays the default.
 - `std/log/rolling` can also roll daily (§37.13): with `Config.Daily`, a new
   file starts when the UTC day changes, older files are named by day
   (`app.log.2026-10-29`, `app.log.2026-10-29.1` for a second file that day),

@@ -17,6 +17,10 @@ Authority: spec §37.3–§37.4. The cases below are covered by executable tests
 | `time.After(0)` | Fires at once |
 | `select` over `After(5 * time.Second)` and `After(20 * time.Millisecond)` | The 20 ms case runs; the program does not wait 5 s |
 | `select` on a silent channel and `After(40 * time.Millisecond)` | `After` wins; a pending timer is not a deadlock |
+| `LocalOffset` at five instants under `TZ` `UTC0`, `<+07>-7`, `<+0530>-5:30`, `<-0330>3:30` (Linux, macOS) | `0`, `25200`, `19800`, `-12600` at every instant (`codegen/local_time.rs`) |
+| `LocalOffset` under `TZ=EST5EDT,M3.2.0,M11.1.0` one second before and at 2026-03-08 07:00 UTC and 2026-11-01 06:00 UTC | `-18000` then `-14400`; `-14400` then `-18000` |
+| `LocalOffset` at the same instants on Windows | The offsets PowerShell's `TimeZoneInfo.Local` reports |
+| `LocalOffset("now")`, `LocalOffset()` | Rejected: argument type and count (`packages/packages.rs`) |
 
 ## Bytes
 
