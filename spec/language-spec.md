@@ -9198,8 +9198,10 @@ lock. `Close` waits for the background task to stop.
 Ownership, error, and async implications: `Writer` is a struct type with a
 custom `drop` (§8.3), so it is a Move value owned by one place, usually
 `main`. It owns the file. Dropping it does what `Close` does and discards the
-error, so returning from `main` writes the collected records; `Close` is the
-way to see the final error. The file is closed by `Close` or drop even while
+error, so returning from `main` writes the collected records, as does a panic
+that unwinds the owner (§15.4) and a shutdown that returns from `main` after
+`std/os/signal` cancellation (§37.8); `Close` is the way to see the final
+error. The file is closed by `Close` or drop even while
 `Sink` handles remain; their later writes return `rolling: closed`. `Sink` and
 `Config` hold no views. `Close` takes its receiver with `own`, so a closed
 writer cannot be used again.

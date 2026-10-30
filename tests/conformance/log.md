@@ -89,6 +89,8 @@ Native cases are in `tests/codegen/rolling.rs`; checking cases are in
 | A 64-byte buffer with a one-hour interval | Nothing in the file until the buffer fills; `Flush` and `Close` write the rest |
 | A 10 ms flush interval | The record reaches the file without `Flush` |
 | A writer dropped at the end of a function | Its collected records are in the file |
+| `main` panics while a record is only collected | The record is in the file after the panic |
+| SIGINT through `signal.NotifyContext`, then `main` returns (Linux and macOS) | The file is empty before the signal and holds both records after exit |
 | A logger writing after `Close` | `Err` is `rolling: closed` |
 | Each invalid config field | `rolling.Open: ...` from `Open` and from the closed writer's `Write` |
 | A roll whose oldest backup is a non-empty folder | `Err` starts `os.Remove: `; `Flush` and `Close` return the same error; the file keeps its records |

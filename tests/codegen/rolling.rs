@@ -372,3 +372,87 @@ func main() {
     assert_eq!(seen.len(), 400);
     assert!(files > 5, "expected several rolled files, found {files}");
 }
+
+#[test]
+fn rolling_writes_collected_records_when_main_panics() {
+    let dir = TempDir::new().unwrap();
+    let source = program(
+        &dir,
+        &["errors", "log", "time"],
+        r#"
+func main() {
+    var slow = config(dir + "/panic.log", 1000000, 1, 4096)
+    slow.FlushInterval = time.Hour
+    var output, err = rolling.Open(slow)
+    if err != nil { panic(errors.Message(err)) }
+    let logger = log.New(output.Sink(), log.LevelInfo).WithoutTime()
+    logger.Error("about to fail")
+    panic("boom")
+}
+"#,
+    );
+    panics(&source, "boom", "");
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("panic.log")).unwrap(),
+        "level=ERROR msg=\"about to fail\"\n"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn rolling_writes_collected_records_after_a_signal_shutdown() {
+    use std::io::BufRead;
+
+    let dir = TempDir::new().unwrap();
+    let source = program(
+        &dir,
+        &["context", "errors", "log", "os/signal", "time"],
+        r#"
+func main() {
+    let ctx, stop, err = signal.NotifyContext(context.Background(), Array<signal.Signal>{signal.Interrupt}[:])
+    if err != nil { panic(errors.Message(err)) }
+    var slow = config(dir + "/signal.log", 1000000, 1, 4096)
+    slow.FlushInterval = time.Hour
+    var output, openErr = rolling.Open(slow)
+    if openErr != nil { panic(errors.Message(openErr)) }
+    let logger = log.New(output.Sink(), log.LevelInfo).WithoutTime()
+    logger.Info("serving")
+    println("ready")
+    let _, _ = ctx.Done().receive()
+    stop()
+    logger.Info("stopped by {signal}", "interrupt")
+}
+"#,
+    );
+    let exe_dir = TempDir::new().unwrap();
+    let executable = exe_dir.executable("program");
+    build_file(&source, &executable).unwrap_or_else(|e| panic!("build failed: {e:?}"));
+    let mut child = Command::new(&executable)
+        .env("ZORE_CHECK_LEAKS", "1")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut ready = String::new();
+    std::io::BufReader::new(child.stdout.as_mut().unwrap())
+        .read_line(&mut ready)
+        .unwrap();
+    assert_eq!(ready, "ready\n");
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("signal.log")).unwrap(),
+        "",
+        "records are still collected before shutdown"
+    );
+    unsafe extern "C" {
+        fn kill(pid: i32, signal: i32) -> i32;
+    }
+    // SAFETY: the child is live and SIGINT is a supported POSIX signal.
+    assert_eq!(unsafe { kill(child.id() as i32, 2) }, 0);
+    let output = child.wait_with_output().unwrap();
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    assert!(output.stderr.is_empty(), "{}", stderr(&output));
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("signal.log")).unwrap(),
+        "level=INFO msg=serving\nlevel=INFO msg=\"stopped by interrupt\" signal=interrupt\n"
+    );
+}
