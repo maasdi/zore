@@ -33,7 +33,7 @@ func serve(listener own net.Listener, clients int) {
     }
 }
 
-func ask(address string, message string, delay int, answers channel<string>) {
+func ask(address string, message string, delay time.Duration, answers channel<string>) {
     time.Sleep(delay)
     let conn, err = net.Dial("tcp", address)
     if err != nil {

@@ -6959,7 +6959,8 @@ The packages follow one set of conventions:
   message `EOF`, which every reading function uses for the end of its input.
 - A function that parses text names the text it rejected, quoted by
   `strconv.Quote`: `strconv.Atoi: parsing "x": invalid syntax`.
-- Durations and instants are `int` nanoseconds (§37.3).
+- Lengths of time are `time.Duration`, deadlines are `time.Instant`, and
+  calendar times are `time.Timestamp` (§37.3).
 - A type whose fields are unexported is made with a constructor, `NewName`,
   since a struct literal needs every field (§8.4).
 
@@ -7216,18 +7217,120 @@ Files, standard input, and connections carry bytes. Turning bytes into text is
 passed to a `[]byte` parameter as a view, `data[:]`, and to a `mut []byte`
 parameter the same way (§12.1–§12.2).
 
-**`std/time`** measures time in `int` nanoseconds.
+**`std/time`** keeps three kinds of time apart, so the compiler rejects mixing
+them: a `Duration` is a length of time, an `Instant` is a stopwatch reading for
+measuring and deadlines, and a `Timestamp` is a date and time on the calendar.
 
 | Name | Behavior |
 | --- | --- |
-| `const Nanosecond`, `Microsecond`, `Millisecond`, `Second`, `Minute`, `Hour` | `1`, `1000`, `1000000`, `1000000000`, `60 * Second`, and `60 * Minute` |
-| `Sleep(d int)` | Suspends the calling task for at least `d` nanoseconds; zero or less returns at once |
-| `Now() int` | A reading of a monotonic clock in nanoseconds; its starting point is unspecified, but every reading is positive and none is smaller than an earlier one |
-| `Since(start int) int`, `Until(t int) int` | `Now() - start` and `t - Now()` |
+| `type Duration int` | A length of time in nanoseconds; negative means backwards |
+| `const Nanosecond Duration = 1`, `Microsecond`, `Millisecond`, `Second`, `Minute`, `Hour` | `1`, `1000`, `1000000`, `1000000000`, `60 * Second`, and `60 * Minute` |
+| `(d Duration) Nanoseconds() int`, `Microseconds()`, `Milliseconds()`, `Seconds()`, `Minutes()`, `Hours()` | `d` in that unit, rounded toward zero |
+| `(d Duration) String() string` | Text such as `1.5s`, `250ms`, `1h30m0s`, `-2µs`, and `0s`, described below |
+| `type Instant` | A reading of a monotonic clock, unaffected by changes to the computer's clock |
+| `Now() Instant` | The current reading; no reading is earlier than one taken before it |
+| `Since(start Instant) Duration`, `Until(t Instant) Duration` | `Now().Sub(start)` and `t.Sub(Now())` |
+| `(t Instant) Add(d Duration) Instant`, `(t Instant) Sub(u Instant) Duration` | The reading `d` later, and the time from `u` to `t`; both stop at the largest or smallest value instead of overflowing |
+| `(t Instant) Elapsed() Duration` | `Since(t)` |
+| `(t Instant) Before(u Instant) bool`, `After(u)`, `Equal(u)` | Order of two readings |
+| `Sleep(d Duration)` | Suspends the calling task for at least `d`; zero or less returns at once |
+| `After(d Duration) channel<bool>` | A channel that receives `true` once after at least `d` and is then closed; zero or less fires at once. The wait is a task that sleeps until `d` passes even if nobody receives, so it is not a deadlock while it is pending. Use it as a `select` case to put a time limit on a channel operation; use a `Timer` when the wait may be called off |
+| `type Timestamp` | A Unix time with nanoseconds, from `0001-01-01T00:00:00Z` through `9999-12-31T23:59:59.999999999Z`, shown in a zone |
+| `UTC() Timestamp` | The computer's current calendar time, in UTC |
+| `Unix(seconds int, nanoseconds int) (Timestamp, error)` | That Unix time in UTC; an error when `nanoseconds` is outside `0..999999999` or the time is outside the range |
+| `Date(year int, month int, day int, hour int, minute int, second int, nanosecond int, zone Zone) (Timestamp, error)` | The time with those calendar fields in `zone`; every field must be in range (month `1..12`, a day the month has, hour `0..23`, minute and second `0..59`), and the result in the range above |
+| `ParseRFC3339(text string) (Timestamp, error)` | Reads the RFC 3339 form described below, keeping its offset |
+| `(t Timestamp) Year() int`, `Month()`, `Day()`, `Hour()`, `Minute()`, `Second()`, `Nanosecond()` | The calendar fields in `t`'s zone; `Month` is `1..12` |
+| `(t Timestamp) Weekday() int`, `YearDay() int` | `0` for Sunday through `6` for Saturday, and the day of the year from `1` |
+| `(t Timestamp) Unix() int` | Whole seconds since `1970-01-01T00:00:00Z`, rounded down |
+| `(t Timestamp) Zone() Zone`, `Offset() Duration` | The zone it is shown in, and that zone's offset |
+| `(t Timestamp) In(zone Zone) Timestamp`, `UTC() Timestamp`, `Local() Timestamp` | The same moment shown in `zone`, in UTC, or in the computer's local time |
+| `(t Timestamp) Add(d Duration) Timestamp`, `(t Timestamp) Sub(u Timestamp) Duration` | The moment `d` later, kept in `t`'s zone, and the time from `u` to `t`; both stop at the ends of their range instead of overflowing |
+| `(t Timestamp) Before(u Timestamp) bool`, `After(u)`, `Equal(u)` | Order of two moments, whatever zones they are shown in |
+| `(t Timestamp) RFC3339() string`, `RFC3339Nano() string` | The RFC 3339 text in `t`'s zone, without and with the fraction of a second |
+| `type Zone` | A fixed offset from UTC |
+| `let UTCZone Zone` | The zone with offset zero |
+| `Offset(d Duration) (Zone, error)` | The zone `d` ahead of UTC (negative when behind); an error unless `d` is whole minutes strictly between `-24 * Hour` and `24 * Hour` |
+| `(z Zone) Offset() Duration` | The zone's offset |
+| `type Timer` | A one-time alarm, described below |
+| `NewTimer(d Duration) Timer` | A timer that fires once after `d`; zero or less fires at once |
+| `(t Timer) C() channel<bool>`, `Stop() bool`, `Reset(d Duration) bool` | Where it fires; calls it off; sets it to fire after `d` from now. Both report whether it was still waiting to fire |
+| `type Ticker` | A repeating alarm, described below |
+| `NewTicker(d Duration) (Ticker, error)` | A ticker that fires every `d`; an error when `d` is not positive |
+| `(t Ticker) C() channel<bool>`, `Stop()`, `Reset(d Duration) error` | Where it fires; stops it; restarts it with period `d` from now, an error when `d` is not positive |
+| `UnixSeconds() int` | `UTC().Unix()` |
 | `LocalOffset(seconds int) int` | How many seconds the computer's local time is ahead of UTC (negative when behind) at the Unix time `seconds`, daylight saving included; `0` when the system cannot say |
-| `After(d int) channel<bool>` | A channel that receives `true` once after at least `d` and is then closed; zero or less fires at once. The wait is a task that sleeps, so it is not a deadlock while it is pending. Use it as a `select` case to put a time limit on a channel operation |
 
-A deadline is a `Now()` reading; zero means none.
+`Duration`, `Instant`, `Timestamp`, and `Zone` are Copy values. `Instant`,
+`Timestamp`, and `Zone` are structs with private fields, so they are made only
+by the functions above, and they have no operators: compare them with
+`Before`, `After`, and `Equal`. `Duration` is a named `int` (§8.5), so
+`5 * time.Second` is a `Duration`, durations add, subtract, and compare with
+the usual operators, and integer overflow panics as for `int` (§6.6).
+`int(d)` and `time.Duration(n)` convert to and from nanoseconds.
+
+```ore
+let started = time.Now()
+time.Sleep(250 * time.Millisecond)
+println(started.Elapsed() < time.Second)       // true
+let deadline = time.Now().Add(5 * time.Second)
+println(time.Until(deadline).String())         // e.g. 4.999998s
+```
+
+**Instants.** `Now` reads a monotonic clock whose starting point is
+unspecified; a reading means something only next to another one from the same
+run of the program. A deadline is an `Instant` (§37.4, `std/net`). The
+computer's clock may be corrected while a program runs; that changes `UTC()`
+but not `Now()`, which is why deadlines and measurements use `Instant`.
+
+**Durations as text.** `String` writes `0s` for zero. Below one microsecond it
+writes the nanoseconds with `ns`, below one millisecond the microseconds with
+`µs`, and below one second the milliseconds with `ms`, each with up to the
+needed decimal places and no trailing zeros (`1.5µs`, `250ms`). From one second
+it writes hours with `h` when there are any, minutes with `m` when there are
+hours or minutes, and seconds with `s`, again with only the needed decimals:
+`1s`, `1m0s`, `1h30m0.000000001s`. A negative duration starts with `-`.
+
+**Calendar.** A `Timestamp` is one moment, stored as Unix seconds and
+nanoseconds, plus the zone it is shown in. The calendar is the proleptic
+Gregorian calendar without leap seconds: every day has 86400 seconds, and the
+fields of a moment are those of the moment plus the zone's offset. Construction
+never adjusts an invalid field: `Date(2026, 2, 30, ...)` is an error rather than
+March 2. A failed `Unix`, `Date`, or `ParseRFC3339` returns
+`1970-01-01T00:00:00Z` with the error. Messages start with the function name
+(`time.Date: day outside the month`, `time.Unix: outside years 0001..9999 UTC`,
+`time.ParseRFC3339: parsing "2026-13-01T00:00:00Z": month outside 1..12`,
+`time.ParseRFC3339: parsing "noon": not an RFC 3339 timestamp`).
+
+**RFC 3339.** `RFC3339` writes `YYYY-MM-DDTHH:MM:SS` followed by `Z` when the
+zone's offset is zero and by `+HH:MM` or `-HH:MM` otherwise; `RFC3339Nano` adds
+`.` and the fraction of a second, without trailing zeros, when it is not zero.
+Near the ends of the range a zone may move the shown date to year `0000` or
+`10000`, which is written with as many digits as it needs. `ParseRFC3339` reads
+exactly that form: four digits of year, two each of month, day, hour, minute,
+and second, `T` or `t` between date and time, an optional `.` and one to nine
+digits of fraction, and `Z`, `z`, or an offset `±HH:MM` with hours `00..23`
+and minutes `00..59`. The whole text must match. Second `60` (a leap second) is
+rejected, like any field out of range. The result is shown in a zone with the
+parsed offset, so `RFC3339Nano` writes back text that names the same moment.
+
+```ore
+let launch, err = time.ParseRFC3339("2026-11-01T01:30:00-05:00")
+println(launch.UTC().RFC3339())                // 2026-11-01T06:30:00Z
+let jakarta, _ = time.Offset(7 * time.Hour)
+println(launch.In(jakarta).RFC3339())          // 2026-11-01T13:30:00+07:00
+let first, _ = time.Date(2028, 2, 29, 0, 0, 0, 0, time.UTCZone)
+println(first.Weekday())                       // 2, a Tuesday
+```
+
+**Time zones.** A `Zone` is a fixed offset. `Local` shows a moment in the
+computer's local time: it takes `m = LocalOffset(t.Unix()) / 60` whole minutes
+(rounded toward zero) at that moment, so a daylight-saving change is followed
+and the repeated hour when it ends stays distinct (`01:59:59-04:00`, then
+`01:00:00-05:00`). The result is a fixed-offset `Timestamp`: adding to it keeps
+that offset rather than following later daylight-saving changes; call `Local`
+again for the new moment. Named zones such as `America/New_York` and their
+rules are not part of this package.
 
 **Local time.** `LocalOffset` asks the operating system at every call and
 returns quickly, without waiting for a helper. On Linux and macOS it uses the C
@@ -7240,11 +7343,65 @@ system reports it. Instants the system cannot convert give `0`, which is UTC.
 Offsets are seconds: historical zones may have offsets that are not whole
 minutes.
 
+**Timers and tickers.** A `Timer` or `Ticker` is a Move value (it has a `drop`,
+§14.3) that owns a small task waiting for the next alarm. When an alarm comes,
+`true` is sent on `C()`, whose buffer holds one value; if that value has not
+been received yet, the new alarm is skipped rather than queued. A timer fires
+once and then waits for `Reset`; a ticker fires every period, measured from the
+first alarm rather than from when each value is received, and skips alarms it
+was too late for instead of firing several at once. `Stop` and `Reset` also
+empty `C()`, so a value from before the call is never received after it.
+`Stop` on a stopped timer, or a second `Stop`, is harmless. Dropping a timer or
+ticker stops it and ends its task without waiting for the next alarm, so no
+called-off wait is kept until its old deadline; a value already in `C()` can
+still be received, and no further values come. `C()` is not closed, so a task
+still waiting on it after the drop waits forever unless it also waits on
+something else. A failed `NewTicker` gives a ticker that never fires.
+
 ```ore
-time.Sleep(250 * time.Millisecond)
-let started = time.Now()
-println(time.Since(started) < time.Second)
+var timer = time.NewTimer(2 * time.Second)
+select {
+    case let line, _ = lines.receive() {
+        _ = timer.Stop()
+        println(line)
+    }
+    case timer.C().receive() {
+        println("no answer")
+    }
+}
+
+let ticker, _ = time.NewTicker(time.Second)
+for var i = 0; i < 3; i += 1 {
+    let _, _ = ticker.C().receive()
+    println("tick")
+}
 ```
+
+**Migration from integer time.** Earlier versions used `int` nanoseconds for
+lengths of time and `int` monotonic readings for deadlines. Code that writes
+`5 * time.Second` keeps working, now as a `Duration`. Code that adds to a
+reading writes `time.Now().Add(d)`, and code that compares readings writes
+`Before`, `After`, or `Sub`. A zero deadline no longer means "none":
+`context` reports a missing deadline with `false`, and `net` removes one with
+`ClearDeadline`. `time.FormatHTTPDate(seconds)` became
+`http.FormatDate(t)` (§37.6), and `log.FormatTime(seconds)` became
+`time.Unix(seconds, 0)` and `RFC3339()`. `os.FileInfo.ModTime()` and
+`time.LocalOffset` still use `int` seconds; `time.Unix` turns those into a
+`Timestamp`.
+
+Ownership, error, and async implications: `Duration`, `Instant`, `Timestamp`,
+and `Zone` are Copy and own nothing. Construction and parsing report bad input
+through `error`, never by adjusting it. `Timer` and `Ticker` are Move values
+whose `drop` stops their task on every exit path, including panics and early
+returns; `Stop`, `Reset`, and `C()` may be called from any task. `Sleep`, a
+receive from `After` or `C()`, and the waits inside a timer suspend only the
+waiting task.
+
+Compiler impact: the package is bundled Zore source over native functions for
+the monotonic reading, the wall clock in nanoseconds, the local offset, sleeping,
+and a wait that ends on a channel value or a deadline, which a timer's task
+uses so that stopping it unregisters its clock wait at once. Pending
+conformance cases: `tests/conformance/time.md`.
 
 **`std/os`**
 
@@ -7397,20 +7554,22 @@ unknown network N` or `net.Dial: unknown network N`.
 | --- | --- |
 | `Listen(network string, address string) (Listener, error)` | Listens on `host:port`; port `0` picks a free port |
 | `Dial(network string, address string) (Conn, error)` | Connects to `host:port`, waiting for the connection |
-| `DialTimeout(network string, address string, timeout int) (Conn, error)` | Like `Dial`, but gives up after `timeout` nanoseconds for each address tried; zero or less means no limit |
+| `DialTimeout(network string, address string, timeout time.Duration) (Conn, error)` | Like `Dial`, but gives up after `timeout` for each address tried; zero or less means no limit |
 | `EmptyConn() Conn` | A closed connection equal to the zero value: every operation fails and dropping it does nothing; for packages that need an empty connection field |
 | `(l Listener) Accept() (Conn, error)` | Waits for and returns the next incoming connection |
 | `(l Listener) Addr() string` | The address the listener is bound to, as `host:port` (`[host]:port` for IPv6), or `""` when closed |
-| `(l Listener) SetDeadline(t int) error` | Makes `Accept` give up at the deadline `t` (§37.3, `std/time`); zero removes it |
+| `(l Listener) SetDeadline(t time.Instant) error` | Makes `Accept` give up at the deadline `t` (§37.3, `std/time`) |
+| `(l Listener) ClearDeadline() error` | Removes the deadline |
 | `(c Conn) Read(buf mut []byte) (int, error)` | Waits until at least one byte is available and moves up to `buf.len()` bytes into `buf`; at end of stream, `0` and `EOF`; an empty `buf` gives `0` and `nil` at once |
 | `(c Conn) Write(data []byte) (int, error)` | Waits until all of `data` is sent and returns its length; on failure, the bytes sent before it |
 | `(c Conn) LocalAddr() string`, `(c Conn) RemoteAddr() string` | The two ends of the connection, or `""` when closed |
-| `(c Conn) SetDeadline(t int) error` | Sets the read and the write deadline |
-| `(c Conn) SetReadDeadline(t int) error`, `(c Conn) SetWriteDeadline(t int) error` | Makes `Read`, or `Write`, give up at the deadline `t`; zero removes it |
+| `(c Conn) SetDeadline(t time.Instant) error` | Sets the read and the write deadline |
+| `(c Conn) SetReadDeadline(t time.Instant) error`, `(c Conn) SetWriteDeadline(t time.Instant) error` | Makes `Read`, or `Write`, give up at the deadline `t` |
+| `(c Conn) ClearDeadline() error` | Removes the read and the write deadline |
 | `(c Conn) CloseWrite() error` | Ends the sending side so the peer reads `EOF`; reading continues to work |
 | `(l own Listener) Close() error`, `(c own Conn) Close() error` | Closes the listener or connection |
 
-Setting a deadline fails only for a closed handle. A wait that reaches its
+Setting or clearing a deadline fails only for a closed handle. A wait that reaches its
 deadline fails with `net.Accept: timed out`, `net.Read: timed out`, or
 `net.Write: timed out`, and so does any later wait until the deadline is moved;
 a deadline in the past makes the next wait fail at once. The connection stays
@@ -7469,11 +7628,11 @@ context. A `Context` is a Copy value; every copy refers to the same context.
 | --- | --- |
 | `Background() Context`, `TODO() Context` | A context that is never cancelled and has no deadline |
 | `WithCancel(parent Context) (Context, func())` | A child of `parent` and a function that cancels it; calling the function again does nothing |
-| `WithDeadline(parent Context, deadline int) (Context, func())` | A child that is also cancelled at the deadline (a `time.Now` reading), or at the parent's deadline when that is earlier; a deadline that has already passed returns a child that is already expired |
-| `WithTimeout(parent Context, timeout int) (Context, func())` | `WithDeadline(parent, time.Now() + timeout)` |
+| `WithDeadline(parent Context, deadline time.Instant) (Context, func())` | A child that is also cancelled at the deadline, or at the parent's deadline when that is earlier; a deadline that has already passed returns a child that is already expired |
+| `WithTimeout(parent Context, timeout time.Duration) (Context, func())` | `WithDeadline(parent, time.Now().Add(timeout))` |
 | `(c Context) Done() channel<bool>` | A channel that is closed when the context is cancelled, for use as a `select` case |
 | `(c Context) Err() error` | `nil` while active; `context canceled` after its cancel function ran or its parent was cancelled that way; `context deadline exceeded` after its deadline passed |
-| `(c Context) Deadline() (int, bool)` | The deadline and `true`, or `0` and `false` when there is none; zero and negative readings are valid deadlines because `time.Now` counts from process start |
+| `(c Context) Deadline() (time.Instant, bool)` | The deadline and `true`, or an unspecified `Instant` and `false` when there is none |
 
 Cancelling a context cancels every context made from it, with the same error;
 a context made from an already cancelled parent starts cancelled with the
@@ -7957,7 +8116,8 @@ cannot emit a second 100. Informational responses precede final responses
 this library restriction also avoids interleaving request reads with a partially
 written final response.
 
-Config has these exported integer fields; construct it with DefaultConfig.
+Config has these exported fields: the three limits are `int`, and the six
+times are `time.Duration`. Construct it with DefaultConfig.
 Zero selects the default; negative values are configuration errors. No unlimited
 mode is part of this initial safety contract.
 
@@ -7973,7 +8133,8 @@ mode is part of this initial safety contract.
 | `AcceptPollInterval` | 100 milliseconds | Bounded shutdown/cancellation observation |
 | `ShutdownTimeout` | 10 seconds | Graceful-drain budget for the ListenAndServe entry points |
 
-Durations are nanoseconds; the constructor checks range and deadline overflow.
+Deadlines are `time.Instant` values (§37.3); a deadline far in the future stops
+at the largest `Instant` instead of overflowing.
 For the first request, record the acceptance time and set the read deadline
 before any socket read or task scheduling delay. The entire header block must
 arrive by acceptance plus ReadHeaderTimeout; receiving the first byte does not
@@ -8068,10 +8229,11 @@ dropping handles or returning from main is not graceful shutdown (§18.11).
 
 ### Wall-clock HTTP dates — LOCKED
 
-`time.UnixSeconds() int` reads wall-clock seconds since the Unix epoch, rounded
-down. `time.FormatHTTPDate(seconds int) (string, error)` formats UTC IMF-fixdate
-for years 1601 through 9999, and returns an error outside that interval.
-Neither function supplies monotonic deadlines; those continue to use `time.Now`.
+`http.FormatDate(t time.Timestamp) string` writes `t` in UTC as an
+IMF-fixdate ([RFC 9110 §5.6.7](https://www.rfc-editor.org/rfc/rfc9110.html#section-5.6.7)),
+such as `Sun, 06 Nov 1994 08:49:37 GMT`, for every `Timestamp` (§37.3). The
+calendar comes from `std/time`; the HTTP syntax belongs to `std/net/http`.
+Deadlines do not use the wall clock; they use `time.Instant`.
 HTTP supplies Date from the wall clock, replacing any application Date value.
 
 Ownership/error/async implications: URL/header collections own their entries;
@@ -8079,8 +8241,7 @@ request/writer facades carry task-local socket loans. Parsing and configuration
 fail through error values. Socket waits retain the existing task suspension and
 worker compensation behavior. Shutdown is cooperative, not preemptive.
 Compiler impact: bundle both packages and preserve type-compatible provenance
-through indirect calls. Add wall-clock native functions without changing the
-monotonic clock. Conformance covers URL/framing/routing/deadlines/shutdown and
+through indirect calls. Conformance covers URL/framing/routing/deadlines/shutdown and
 accepted/rejected facade lifetimes. JSON and OS signals are defined in the
 following sections.
 
@@ -8633,7 +8794,7 @@ This does not promise erasure of caller-owned input buffers.
 | `Server(ctx context.Context, source own net.Conn, config ServerConfig) (Conn, error)` | Consumes a TCP stream and completes a server handshake bounded by ctx |
 | `(c mut Conn) Read(buf mut []byte) (int, error)` | Drains pending output, then reads authenticated plaintext; empty buffers read no plaintext; clean close-notify is EOF, transport truncation is an error |
 | `(c mut Conn) Write(data []byte) (int, error)` | Sends all plaintext as records of at most 16 KiB, reporting accepted plaintext count even on later transport failure |
-| `(c mut Conn) SetDeadline(t int) error`, `SetReadDeadline(t int) error`, `SetWriteDeadline(t int) error` | Deadlines are monotonic `time.Now()` readings; zero clears |
+| `(c mut Conn) SetDeadline(t time.Instant) error`, `SetReadDeadline(t time.Instant) error`, `SetWriteDeadline(t time.Instant) error`, `ClearDeadline() error` | Deadlines are `time.Instant` values (§37.3); `ClearDeadline` removes both |
 | `(c own Conn) Close() error` | Attempts close-notify within the write deadline, then releases both owners |
 
 Configuration and connection values are Move resources with private state;
@@ -8701,7 +8862,7 @@ func get(config tls.ClientConfig) error {
         return err
     }
     var conn = dialed
-    conn.SetDeadline(time.Now() + 10 * time.Second)?
+    conn.SetDeadline(time.Now().Add(10 * time.Second))?
     let request = strings.Bytes("GET / HTTP/1.1\r\nHost: example.com\r\nConnection: close\r\n\r\n")
     conn.Write(request[:])?
     return conn.Close()
@@ -8749,7 +8910,7 @@ let cert = os.ReadFile("server.pem")?
 let key = os.ReadFile("server-key.pem")?
 let config = tls.NewServerConfig(cert[:], key[:])?
 let listener = net.Listen("tcp4", "127.0.0.1:8443")?
-listener.SetDeadline(time.Now() + 30 * time.Second)?
+listener.SetDeadline(time.Now().Add(30 * time.Second))?
 let source = listener.Accept()?
 let ctx, cancel = context.WithTimeout(context.Background(), 5 * time.Second)
 let accepted, err = tls.Server(ctx, source, config)
@@ -8759,7 +8920,7 @@ if err != nil {
     return err
 }
 var conn = accepted
-conn.SetDeadline(time.Now() + 5 * time.Second)?
+conn.SetDeadline(time.Now().Add(5 * time.Second))?
 var request = Array<byte>{}
 for var i = 0; i < 4096; i += 1 { request.push(0) }
 let n = conn.Read(request[:])?
@@ -8795,9 +8956,9 @@ type ClientConfig struct {
     MaxHeaderBytes int
     MaxBodyBytes int
     MaxRequestBodyBytes int
-    Timeout int
-    DialTimeout int
-    PollInterval int
+    Timeout time.Duration
+    DialTimeout time.Duration
+    PollInterval time.Duration
 }
 type ClientResponse struct {
     StatusCode int
@@ -8807,8 +8968,8 @@ type ClientResponse struct {
 type ClientConn interface {
     mut Read(buf mut []byte) (int, error)
     mut Write(data []byte) (int, error)
-    mut SetReadDeadline(deadline int) error
-    mut SetWriteDeadline(deadline int) error
+    mut SetReadDeadline(deadline time.Instant) error
+    mut SetWriteDeadline(deadline time.Instant) error
 }
 type ClientTransport interface {
     Dial(ctx context.Context, target url.AbsoluteURL) (ClientConn, error)
@@ -8988,7 +9149,6 @@ passed to the code that logs.
 | `(l Logger) WithLocalTime() Logger` | A copy whose `time` field is local time with a numeric offset, described below |
 | `(l Logger) Enabled(level Level) bool` | Whether a record at `level` would be written |
 | `(l Logger) Err() error` | The first output failure of this logger's sink, or `nil` |
-| `FormatTime(seconds int) string` | The UTC timestamp text for Unix time `seconds`, described below |
 
 ```ore
 import "std/log"
@@ -9057,23 +9217,14 @@ unchanged. A record therefore never contains a line feed before its end, and
 | `line1` + line feed + `line2` | `"line1\nline2"` |
 | `héllo` | `"héllo"` |
 
-**Timestamps.** The `time` field is `FormatTime(time.UnixSeconds())`, read when
-the record is made, before it waits for the sink. `FormatTime` writes UTC with
-second precision in the RFC 3339 form `YYYY-MM-DDTHH:MM:SSZ` for
-`0001-01-01T00:00:00Z` through `9999-12-31T23:59:59Z`, and the decimal Unix
-seconds (`strconv.Itoa`) outside that range. The wall clock may move backwards,
-so timestamps are not promised to increase. A later calendar package does not
-change this format.
-
-With `WithLocalTime`, for `t = time.UnixSeconds()` the `time` field takes
-`m = time.LocalOffset(t) / 60` whole minutes (§37.3, rounded toward zero) and
-writes the time `t + 60 * m` in the
-`FormatTime` form with the final `Z` replaced by the offset `+HH:MM` or
-`-HH:MM` of `m`, so `2026-11-01T01:59:59-04:00` and the next second
-`2026-11-01T01:00:00-05:00` stay distinct when daylight saving ends. When that
-local time is outside years 0001 through 9999, it writes the decimal Unix
-seconds. UTC remains the default; local stamps are opt-in. Formatting a
-local timestamp outside a record is left to the calendar types of `std/time`.
+**Timestamps.** The `time` field is `time.UTC().RFC3339()` (§37.3), read when
+the record is made, before it waits for the sink: UTC with second precision,
+such as `2026-10-29T11:23:49Z`. The wall clock may move backwards, so
+timestamps are not promised to increase. With `WithLocalTime` it is
+`time.UTC().Local().RFC3339()`, which ends in the local offset instead of `Z`,
+so `2026-11-01T01:59:59-04:00` and the next second `2026-11-01T01:00:00-05:00`
+stay distinct when daylight saving ends. UTC remains the default; local stamps
+are opt-in. Formatting other times is `std/time`'s job, not `std/log`'s.
 
 **Sharing and order.** `Logger` is a Copy struct whose copies, including those
 made by `With`, `WithLevel`, and `WithoutTime`, share one sink behind a `Mutex`
@@ -9153,7 +9304,7 @@ func run() error {
 
 | Name | Behavior |
 | --- | --- |
-| `type Config struct { Path string; MaxBytes int; MaxBackups int; BufferBytes int; FlushInterval int; Perm int; Daily bool; Local bool }` | Where to write, the size limit, how many older files to keep, how many bytes to collect before writing, how often to write what is collected (nanoseconds, §37.3), the permission bits of new files, whether to also roll when the day changes, and whether days follow local time instead of UTC |
+| `type Config struct { Path string; MaxBytes int; MaxBackups int; BufferBytes int; FlushInterval time.Duration; Perm int; Daily bool; Local bool }` | Where to write, the size limit, how many older files to keep, how many bytes to collect before writing, how often to write what is collected (§37.3), the permission bits of new files, whether to also roll when the day changes, and whether days follow local time instead of UTC |
 | `DefaultConfig(path string) Config` | `MaxBytes` 100 MiB (`100 * 1024 * 1024`), `MaxBackups` 5, `BufferBytes` 64 KiB, `FlushInterval` one second, `Perm` `0o644`, `Daily` `false`, `Local` `false` |
 | `Open(config Config) (Writer, error)` | Opens `Path` with `os.Append`, keeping what it holds, and starts counting from its current size; a non-empty file belongs to the day of its `ModTime`, an empty one to the current day |
 | `(w Writer) Sink() Sink` | A handle that writes to `w`; give it to `log.New` |
@@ -9198,8 +9349,8 @@ lasts 23 or 25 hours. Any change of day starts a new file, including a clock or
 zone that moves the day backwards; the backup names below never repeat, and no
 piece is lost or split. Without `Daily`, `Local` has no effect. With `Daily`, every roll, by day or by size,
 renames `Path` to `Path.D`, where `D` is the file's day as `YYYY-MM-DD` (the
-first 10 characters of `log.FormatTime` of the day's start, §37.12, which is
-the local date with `Local`), or to `Path.D.N` with the
+first 10 characters of `RFC3339()` of the day's start in UTC, §37.3, which
+is the local date with `Local`), or to `Path.D.N` with the
 smallest `N` from `1` up whose name is free when that day was already rolled.
 The backups are then pruned: the folder of `Path` is listed, names of the form
 `Path.YYYY-MM-DD` or `Path.YYYY-MM-DD.N` (with `N` of one to nine digits and

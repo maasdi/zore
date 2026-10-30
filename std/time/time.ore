@@ -2,31 +2,123 @@ package time
 
 import "std/strconv"
 
-const Nanosecond = 1
-const Microsecond = 1000 * Nanosecond
-const Millisecond = 1000 * Microsecond
-const Second = 1000 * Millisecond
-const Minute = 60 * Second
-const Hour = 60 * Minute
+type Duration int
 
-func Sleep(d int)
-func Now() int
+const Nanosecond Duration = 1
+const Microsecond Duration = 1000
+const Millisecond Duration = 1000000
+const Second Duration = 1000000000
+const Minute Duration = 60000000000
+const Hour Duration = 3600000000000
 
-func Since(start int) int {
-    return Now() - start
+const maxInt = 9223372036854775807
+const minInt = -9223372036854775807 - 1
+const minUnix = -62135596800
+const maxUnix = 253402300799
+
+func (d Duration) Nanoseconds() int { return int(d) }
+func (d Duration) Microseconds() int { return int(d / Microsecond) }
+func (d Duration) Milliseconds() int { return int(d / Millisecond) }
+func (d Duration) Seconds() int { return int(d / Second) }
+func (d Duration) Minutes() int { return int(d / Minute) }
+func (d Duration) Hours() int { return int(d / Hour) }
+
+func (d Duration) String() string {
+    var n = int(d)
+    if n == 0 { return "0s" }
+    if n == minInt { return "-2562047h47m16.854775808s" }
+    var sign = ""
+    if n < 0 {
+        sign = "-"
+        n = -n
+    }
+    if n < 1000 { return sign + strconv.Itoa(n) + "ns" }
+    if n < 1000000 { return sign + decimal(n, 1000, 3) + "µs" }
+    if n < 1000000000 { return sign + decimal(n, 1000000, 6) + "ms" }
+    let hours = n / 3600000000000
+    let minutes = n / 60000000000 % 60
+    var text = sign
+    if hours > 0 { text = text + strconv.Itoa(hours) + "h" }
+    if hours > 0 || minutes > 0 { text = text + strconv.Itoa(minutes) + "m" }
+    return text + decimal(n % 60000000000, 1000000000, 9) + "s"
 }
 
-func Until(t int) int {
-    return t - Now()
+func decimal(value int, unit int, places int) string {
+    let whole = strconv.Itoa(value / unit)
+    let fraction = trimmed(value % unit, places)
+    if fraction == "" { return whole }
+    return whole + "." + fraction
 }
 
-func After(d int) channel<bool> {
+func trimmed(fraction int, places int) string {
+    if fraction == 0 { return "" }
+    let digits = pad(fraction, places)
+    var end = digits.len()
+    for digits[end - 1] == 48 { end -= 1 }
+    return digits[:end]
+}
+
+func pad(value int, width int) string {
+    var digits = strconv.Itoa(value)
+    for digits.len() < width { digits = "0" + digits }
+    return digits
+}
+
+func saturatingAdd(a int, b int) int {
+    if b > 0 && a > maxInt - b { return maxInt }
+    if b < 0 && a < minInt - b { return minInt }
+    return a + b
+}
+
+func saturatingSub(a int, b int) int {
+    if b < 0 && a > maxInt + b { return maxInt }
+    if b > 0 && a < minInt + b { return minInt }
+    return a - b
+}
+
+type Instant struct {
+    reading int
+}
+
+func now() int
+
+func Now() Instant {
+    return Instant{reading: now()}
+}
+
+func Since(start Instant) Duration {
+    return Now().Sub(start)
+}
+
+func Until(t Instant) Duration {
+    return t.Sub(Now())
+}
+
+func (t Instant) Add(d Duration) Instant {
+    return Instant{reading: saturatingAdd(t.reading, int(d))}
+}
+
+func (t Instant) Sub(u Instant) Duration {
+    return Duration(saturatingSub(t.reading, u.reading))
+}
+
+func (t Instant) Elapsed() Duration {
+    return Since(t)
+}
+
+func (t Instant) Before(u Instant) bool { return t.reading < u.reading }
+func (t Instant) After(u Instant) bool { return t.reading > u.reading }
+func (t Instant) Equal(u Instant) bool { return t.reading == u.reading }
+
+func Sleep(d Duration)
+
+func After(d Duration) channel<bool> {
     let ready = channel<bool>(1)
     go fire(ready, d)
     return ready
 }
 
-async func fire(ready channel<bool>, d int) {
+async func fire(ready channel<bool>, d Duration) {
     Sleep(d)
     ready.send(true)
     ready.close()
@@ -34,40 +126,453 @@ async func fire(ready channel<bool>, d int) {
 
 func UnixSeconds() int
 func LocalOffset(seconds int) int
+func unixNanoseconds() int
 
-func FormatHTTPDate(seconds int) (string, error) {
-    if seconds < -11644473600 || seconds > 253402300799 {
-        return "", error("time.FormatHTTPDate: year outside 1601..9999")
+type Zone struct {
+    offset int
+}
+
+let UTCZone = Zone{offset: 0}
+
+func Offset(d Duration) (Zone, error) {
+    if d % Minute != 0 || d <= -24 * Hour || d >= 24 * Hour {
+        return UTCZone, error("time.Offset: an offset is whole minutes within 24 hours")
     }
-    var days = seconds / 86400
-    var remainder = seconds % 86400
-    if remainder < 0 { days -= 1; remainder += 86400 }
-    let weekdays = [string; 7]{"Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"}
-    let months = [string; 12]{"Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"}
-    let lengths = [int; 12]{31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31}
-    let weekday = ((days + 4) % 7 + 7) % 7
-    var year = 1601
-    days += 134774
-    for {
-        var count = 365
-        if leap(year) { count = 366 }
-        if days < count { break }
-        days -= count
-        year += 1
+    return Zone{offset: int(d / Second)}, nil
+}
+
+func (z Zone) epoch() Timestamp {
+    return Timestamp{seconds: 0, nanos: 0, offset: z.offset}
+}
+
+func (z Zone) Offset() Duration {
+    return Duration(z.offset) * Second
+}
+
+type Timestamp struct {
+    seconds int
+    nanos   int
+    offset  int
+}
+
+func UTC() Timestamp {
+    let total = unixNanoseconds()
+    var seconds = total / 1000000000
+    var nanos = total % 1000000000
+    if nanos < 0 {
+        seconds -= 1
+        nanos += 1000000000
     }
-    var month = 0
-    for {
-        var count = lengths[month]
-        if month == 1 && leap(year) { count += 1 }
-        if days < count { break }
-        days -= count
-        month += 1
+    return Timestamp{seconds: seconds, nanos: nanos, offset: 0}
+}
+
+func Unix(seconds int, nanoseconds int) (Timestamp, error) {
+    if nanoseconds < 0 || nanoseconds > 999999999 {
+        return UTCZone.epoch(), error("time.Unix: nanoseconds outside 0..999999999")
     }
-    return weekdays[weekday] + ", " + two(days + 1) + " " + months[month] + " " + strconv.Itoa(year) + " " + two(remainder / 3600) + ":" + two(remainder / 60 % 60) + ":" + two(remainder % 60) + " GMT", nil
+    if seconds < minUnix || seconds > maxUnix {
+        return UTCZone.epoch(), error("time.Unix: outside years 0001..9999 UTC")
+    }
+    return Timestamp{seconds: seconds, nanos: nanoseconds, offset: 0}, nil
+}
+
+func Date(year int, month int, day int, hour int, minute int, second int, nanosecond int, zone Zone) (Timestamp, error) {
+    let t, problem = civil(year, month, day, hour, minute, second, nanosecond, zone.offset)
+    if problem != "" { return t, error("time.Date: " + problem) }
+    return t, nil
+}
+
+func civil(year int, month int, day int, hour int, minute int, second int, nanosecond int, offset int) (Timestamp, string) {
+    let zero = UTCZone.epoch()
+    if year < 1 || year > 9999 { return zero, "year outside 1..9999" }
+    if month < 1 || month > 12 { return zero, "month outside 1..12" }
+    if day < 1 || day > daysIn(year, month) { return zero, "day outside the month" }
+    if hour < 0 || hour > 23 { return zero, "hour outside 0..23" }
+    if minute < 0 || minute > 59 { return zero, "minute outside 0..59" }
+    if second < 0 || second > 59 { return zero, "second outside 0..59" }
+    if nanosecond < 0 || nanosecond > 999999999 { return zero, "nanosecond outside 0..999999999" }
+    let seconds = daysFromCivil(year, month, day) * 86400 + hour * 3600 + minute * 60 + second - offset
+    if seconds < minUnix || seconds > maxUnix { return zero, "outside years 0001..9999 UTC" }
+    return Timestamp{seconds: seconds, nanos: nanosecond, offset: offset}, ""
 }
 
 func leap(year int) bool { return year % 4 == 0 && (year % 100 != 0 || year % 400 == 0) }
-func two(value int) string {
-    if value < 10 { return "0" + strconv.Itoa(value) }
-    return strconv.Itoa(value)
+
+func daysIn(year int, month int) int {
+    if month == 2 {
+        if leap(year) { return 29 }
+        return 28
+    }
+    if month == 4 || month == 6 || month == 9 || month == 11 { return 30 }
+    return 31
+}
+
+func daysFromCivil(year int, month int, day int) int {
+    var y = year
+    if month <= 2 { y -= 1 }
+    var era = y / 400
+    if y < 0 { era = (y - 399) / 400 }
+    let yearOfEra = y - era * 400
+    var shifted = month - 3
+    if month <= 2 { shifted = month + 9 }
+    let dayOfYear = (153 * shifted + 2) / 5 + day - 1
+    let dayOfEra = yearOfEra * 365 + yearOfEra / 4 - yearOfEra / 100 + dayOfYear
+    return era * 146097 + dayOfEra - 719468
+}
+
+func civilFromDays(days int) (int, int, int) {
+    let shifted = days + 719468
+    var era = shifted / 146097
+    if shifted < 0 { era = (shifted - 146096) / 146097 }
+    let dayOfEra = shifted - era * 146097
+    let yearOfEra = (dayOfEra - dayOfEra / 1460 + dayOfEra / 36524 - dayOfEra / 146096) / 365
+    let dayOfYear = dayOfEra - (365 * yearOfEra + yearOfEra / 4 - yearOfEra / 100)
+    let shiftedMonth = (5 * dayOfYear + 2) / 153
+    let day = dayOfYear - (153 * shiftedMonth + 2) / 5 + 1
+    var month = shiftedMonth + 3
+    if shiftedMonth >= 10 { month = shiftedMonth - 9 }
+    var year = yearOfEra + era * 400
+    if month <= 2 { year += 1 }
+    return year, month, day
+}
+
+func (t Timestamp) wall() int { return t.seconds + t.offset }
+
+func (t Timestamp) days() int {
+    let wall = t.wall()
+    var days = wall / 86400
+    if wall % 86400 < 0 { days -= 1 }
+    return days
+}
+
+func (t Timestamp) clockSeconds() int {
+    return t.wall() - t.days() * 86400
+}
+
+func (t Timestamp) Unix() int { return t.seconds }
+func (t Timestamp) Nanosecond() int { return t.nanos }
+
+func (t Timestamp) Year() int {
+    let year, _, _ = civilFromDays(t.days())
+    return year
+}
+
+func (t Timestamp) Month() int {
+    let _, month, _ = civilFromDays(t.days())
+    return month
+}
+
+func (t Timestamp) Day() int {
+    let _, _, day = civilFromDays(t.days())
+    return day
+}
+
+func (t Timestamp) Hour() int { return t.clockSeconds() / 3600 }
+func (t Timestamp) Minute() int { return t.clockSeconds() / 60 % 60 }
+func (t Timestamp) Second() int { return t.clockSeconds() % 60 }
+
+func (t Timestamp) Weekday() int {
+    return ((t.days() + 4) % 7 + 7) % 7
+}
+
+func (t Timestamp) YearDay() int {
+    let year, _, _ = civilFromDays(t.days())
+    return t.days() - daysFromCivil(year, 1, 1) + 1
+}
+
+func (t Timestamp) Offset() Duration { return Duration(t.offset) * Second }
+func (t Timestamp) Zone() Zone { return Zone{offset: t.offset} }
+
+func (t Timestamp) In(zone Zone) Timestamp {
+    return Timestamp{seconds: t.seconds, nanos: t.nanos, offset: zone.offset}
+}
+
+func (t Timestamp) UTC() Timestamp {
+    return t.In(UTCZone)
+}
+
+func (t Timestamp) Local() Timestamp {
+    var offset = LocalOffset(t.seconds) / 60 * 60
+    if offset <= -86400 || offset >= 86400 { offset = 0 }
+    return Timestamp{seconds: t.seconds, nanos: t.nanos, offset: offset}
+}
+
+func (t Timestamp) Add(d Duration) Timestamp {
+    var seconds = t.seconds + int(d / Second)
+    var nanos = t.nanos + int(d % Second)
+    if nanos < 0 {
+        seconds -= 1
+        nanos += 1000000000
+    } else if nanos >= 1000000000 {
+        seconds += 1
+        nanos -= 1000000000
+    }
+    if seconds < minUnix { return Timestamp{seconds: minUnix, nanos: 0, offset: t.offset} }
+    if seconds > maxUnix { return Timestamp{seconds: maxUnix, nanos: 999999999, offset: t.offset} }
+    return Timestamp{seconds: seconds, nanos: nanos, offset: t.offset}
+}
+
+func (t Timestamp) Sub(u Timestamp) Duration {
+    let seconds = t.seconds - u.seconds
+    if seconds > 9223372035 { return Duration(maxInt) }
+    if seconds < -9223372035 { return Duration(minInt) }
+    return Duration(seconds * 1000000000 + t.nanos - u.nanos)
+}
+
+func (t Timestamp) Before(u Timestamp) bool {
+    return t.seconds < u.seconds || (t.seconds == u.seconds && t.nanos < u.nanos)
+}
+
+func (t Timestamp) After(u Timestamp) bool {
+    return u.Before(t)
+}
+
+func (t Timestamp) Equal(u Timestamp) bool {
+    return t.seconds == u.seconds && t.nanos == u.nanos
+}
+
+func (t Timestamp) RFC3339() string {
+    return t.text("")
+}
+
+func (t Timestamp) RFC3339Nano() string {
+    let fraction = trimmed(t.nanos, 9)
+    if fraction == "" { return t.text("") }
+    return t.text("." + fraction)
+}
+
+func (t Timestamp) text(fraction string) string {
+    let year, month, day = civilFromDays(t.days())
+    let clock = t.clockSeconds()
+    return pad(year, 4) + "-" + pad(month, 2) + "-" + pad(day, 2) + "T" + pad(clock / 3600, 2) + ":" + pad(clock / 60 % 60, 2) + ":" + pad(clock % 60, 2) + fraction + zoneText(t.offset)
+}
+
+func zoneText(offset int) string {
+    if offset == 0 { return "Z" }
+    var sign = "+"
+    var minutes = offset / 60
+    if minutes < 0 {
+        sign = "-"
+        minutes = -minutes
+    }
+    return sign + pad(minutes / 60, 2) + ":" + pad(minutes % 60, 2)
+}
+
+func ParseRFC3339(text string) (Timestamp, error) {
+    if text.len() < 20 || text[4] != 45 || text[7] != 45 || (text[10] != 84 && text[10] != 116) || text[13] != 58 || text[16] != 58 {
+        return rejected(text, "not an RFC 3339 timestamp")
+    }
+    let year = number(text, 0, 4)
+    let month = number(text, 5, 7)
+    let day = number(text, 8, 10)
+    let hour = number(text, 11, 13)
+    let minute = number(text, 14, 16)
+    let second = number(text, 17, 19)
+    if year < 0 || month < 0 || day < 0 || hour < 0 || minute < 0 || second < 0 {
+        return rejected(text, "not an RFC 3339 timestamp")
+    }
+    var position = 19
+    var nanosecond = 0
+    if text[position] == 46 {
+        var end = position + 1
+        for end < text.len() && text[end] >= 48 && text[end] <= 57 { end += 1 }
+        let places = end - position - 1
+        if places < 1 || places > 9 { return rejected(text, "not an RFC 3339 timestamp") }
+        nanosecond = number(text, position + 1, end)
+        for var i = places; i < 9; i += 1 { nanosecond *= 10 }
+        position = end
+    }
+    var offset = 0
+    let rest = text[position:]
+    if rest == "Z" || rest == "z" {
+        offset = 0
+    } else if rest.len() == 6 && (rest[0] == 43 || rest[0] == 45) && rest[3] == 58 {
+        let hours = number(rest, 1, 3)
+        let minutes = number(rest, 4, 6)
+        if hours < 0 || hours > 23 || minutes < 0 || minutes > 59 { return rejected(text, "not an RFC 3339 timestamp") }
+        offset = hours * 3600 + minutes * 60
+        if rest[0] == 45 { offset = -offset }
+    } else {
+        return rejected(text, "not an RFC 3339 timestamp")
+    }
+    let parsed, problem = civil(year, month, day, hour, minute, second, nanosecond, offset)
+    if problem != "" { return rejected(text, problem) }
+    return parsed, nil
+}
+
+func rejected(text string, problem string) (Timestamp, error) {
+    return UTCZone.epoch(), error("time.ParseRFC3339: parsing " + strconv.Quote(text) + ": " + problem)
+}
+
+func number(text string, start int, end int) int {
+    var value = 0
+    for var i = start; i < end; i += 1 {
+        let c = text[i]
+        if c < 48 || c > 57 { return -1 }
+        value = value * 10 + int(c - 48)
+    }
+    return value
+}
+
+type schedule struct {
+    armed      bool
+    deadline   int
+    period     int
+    generation int
+    closed     bool
+}
+
+type clock struct {
+    shared Mutex<schedule>
+    wake   channel<bool>
+    fired  channel<bool>
+}
+
+func startClock(deadline int, period int, running bool) clock {
+    let shared = mutex(schedule{armed: running, deadline: deadline, period: period, generation: 0, closed: !running})
+    let c = clock{shared: shared, wake: channel<bool>(1), fired: channel<bool>(1)}
+    if running {
+        go run(c)
+    }
+    return c
+}
+
+func (c clock) poke() {
+    select {
+        case c.wake.send(true) {}
+        default {}
+    }
+}
+
+func (c clock) arm(deadline int, period int) bool {
+    let fired = c.fired
+    let was = c.shared.withLock(func(s mut schedule) bool {
+        if s.closed { return false }
+        let was = s.armed
+        s.armed = true
+        s.deadline = deadline
+        s.period = period
+        s.generation += 1
+        drain(fired)
+        return was
+    })
+    c.poke()
+    return was
+}
+
+func (c clock) stop() bool {
+    let fired = c.fired
+    let was = c.shared.withLock(func(s mut schedule) bool {
+        let was = s.armed
+        s.armed = false
+        s.generation += 1
+        drain(fired)
+        return was
+    })
+    c.poke()
+    return was
+}
+
+func (c clock) close() {
+    let open = c.shared.withLock(func(s mut schedule) bool {
+        let open = !s.closed
+        s.closed = true
+        s.armed = false
+        return open
+    })
+    if open {
+        c.wake.close()
+    }
+}
+
+func drain(fired channel<bool>) {
+    select {
+        case fired.receive() {}
+        default {}
+    }
+}
+
+func waitUntil(wake channel<bool>, deadline int) bool
+
+async func run(c clock) {
+    let fired = c.fired
+    for {
+        let current = c.shared.withLock(func(s mut schedule) schedule { return s })
+        if current.closed { return }
+        if !current.armed {
+            let _, open = c.wake.receive()
+            if !open { return }
+        } else if waitUntil(c.wake, current.deadline) {
+            c.shared.withLock(func(s mut schedule) {
+                if s.closed || !s.armed || s.generation != current.generation { return }
+                select {
+                    case fired.send(true) {}
+                    default {}
+                }
+                if s.period > 0 {
+                    s.deadline = nextTick(s.deadline, s.period)
+                } else {
+                    s.armed = false
+                }
+            })
+        }
+    }
+}
+
+func nextTick(deadline int, period int) int {
+    let next = saturatingAdd(deadline, period)
+    let current = now()
+    if next > current { return next }
+    return saturatingAdd(current, period - saturatingSub(current, deadline) % period)
+}
+
+type Timer struct {
+    c clock
+}
+
+func NewTimer(d Duration) Timer {
+    return Timer{c: startClock(saturatingAdd(now(), int(d)), 0, true)}
+}
+
+func (t mut Timer) drop() {
+    t.c.close()
+}
+
+func (t Timer) C() channel<bool> { return t.c.fired }
+
+func (t Timer) Stop() bool {
+    return t.c.stop()
+}
+
+func (t Timer) Reset(d Duration) bool {
+    return t.c.arm(saturatingAdd(now(), int(d)), 0)
+}
+
+type Ticker struct {
+    c clock
+}
+
+let errPeriod = error("time.NewTicker: the period must be positive")
+
+func NewTicker(d Duration) (Ticker, error) {
+    if d <= 0 {
+        return Ticker{c: startClock(0, 0, false)}, errPeriod
+    }
+    return Ticker{c: startClock(saturatingAdd(now(), int(d)), int(d), true)}, nil
+}
+
+func (t mut Ticker) drop() {
+    t.c.close()
+}
+
+func (t Ticker) C() channel<bool> { return t.c.fired }
+
+func (t Ticker) Stop() {
+    let _ = t.c.stop()
+}
+
+func (t Ticker) Reset(d Duration) error {
+    if d <= 0 { return error("time.Ticker.Reset: the period must be positive") }
+    let _ = t.c.arm(saturatingAdd(now(), int(d)), int(d))
+    return nil
 }

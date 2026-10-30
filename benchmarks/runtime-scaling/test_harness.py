@@ -56,8 +56,8 @@ class HarnessTests(unittest.TestCase):
 
     def test_socket_deadline_and_success_have_distinct_result_oracles(self):
         self.assertIn('err != error("net.Read: timed out") || n != 0', source('socket-deadline', 0))
-        self.assertIn('SetReadDeadline(time.Now() + 30 * time.Second)', source('socket-deadline', 0))
-        self.assertIn('SetReadDeadline(time.Now() + 17 * time.Second)', source('socket-deadline', 0, 17))
+        self.assertIn('SetReadDeadline(time.Now().Add(30 * time.Second))', source('socket-deadline', 0))
+        self.assertIn('SetReadDeadline(time.Now().Add(17 * time.Second))', source('socket-deadline', 0, 17))
         self.assertIn('err != nil || n != 1 || data[0] != 120', source('sockets', 0))
         self.assertIn('3600 * time.Second', source('timers', 0))
         self.assertIn('cancel()', source('timers', 0))

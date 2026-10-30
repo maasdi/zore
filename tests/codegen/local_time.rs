@@ -11,14 +11,18 @@ const INSTANTS: [i64; 5] = [
 
 const OFFSETS: &str = r#"package main
 
-import "std/log"
 import "std/strconv"
 import "std/time"
+
+func stamp(seconds int) string {
+    let t, _ = time.Unix(seconds, 0)
+    return t.RFC3339()[:19]
+}
 
 func main() {
     for t in Array<int>{0, 1772953199, 1772953200, 1793512799, 1793512800}[:] {
         let offset = time.LocalOffset(t)
-        println(strconv.Itoa(t) + " " + strconv.Itoa(offset) + " " + log.FormatTime(t + offset)[:19])
+        println(strconv.Itoa(t) + " " + strconv.Itoa(offset) + " " + stamp(t + offset))
     }
 }
 "#;
@@ -106,6 +110,9 @@ fn local_offsets_follow_the_zone_across_daylight_saving() {
 #[cfg(unix)]
 fn suffix(offset: i64) -> String {
     let minutes = offset / 60;
+    if minutes == 0 {
+        return "Z".into();
+    }
     format!(
         "{}{:02}:{:02}",
         if minutes < 0 { '-' } else { '+' },
@@ -125,9 +132,14 @@ import "std/os"
 import "std/strconv"
 import "std/time"
 
+func stamp(seconds int) string {
+    let t, _ = time.Unix(seconds, 0)
+    return t.RFC3339()[:19]
+}
+
 func wall(t int) {
     let offset = time.LocalOffset(t)
-    println(strconv.Itoa(offset) + " " + log.FormatTime(t + offset / 60 * 60)[:19])
+    println(strconv.Itoa(offset) + " " + stamp(t + offset / 60 * 60))
 }
 
 func main() {
@@ -141,7 +153,7 @@ func main() {
 "#;
     let executable = build(source, &dir);
     for (zone, suffixes) in [
-        ("UTC0", &["+00:00"][..]),
+        ("UTC0", &["Z"][..]),
         ("<+07>-7", &["+07:00"]),
         ("<+0530>-5:30", &["+05:30"]),
         ("<-0330>3:30", &["-03:30"]),
@@ -208,7 +220,8 @@ func session(name string, local bool) {{
 
 func localDate() string {{
     let now = time.UnixSeconds()
-    return log.FormatTime(now + time.LocalOffset(now) / 60 * 60)[:10]
+    let local, _ = time.Unix(now + time.LocalOffset(now) / 60 * 60, 0)
+    return local.RFC3339()[:10]
 }}
 
 func main() {{

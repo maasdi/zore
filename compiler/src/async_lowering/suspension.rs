@@ -30,7 +30,7 @@ pub fn native_wait(function: &hir::Function) -> Option<NativeWait> {
 
 fn standard_wait(name: &str) -> Option<NativeWait> {
     match name {
-        "std/context.waitUntil" => Some(NativeWait::Deadline),
+        "std/context.waitFor" | "std/time.waitUntil" => Some(NativeWait::Deadline),
         "std/os.ReadFile"
         | "std/os.WriteFile"
         | "std/os.MkdirAll"

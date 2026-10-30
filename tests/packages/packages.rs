@@ -519,11 +519,11 @@ fn the_time_os_bufio_and_net_packages_type_check_their_uses() {
             _ = sendErr
             let closed = conn.CloseWrite()
             _ = closed
-            _ = conn.SetReadDeadline(time.Now() + time.Second)
+            _ = conn.SetReadDeadline(time.Now().Add(time.Second))
             let address string = listener.Addr()
             println(address + line)
             println(more)
-            println(sent + time.Since(started))
+            println(sent + time.Since(started).Nanoseconds())
             _ = conn.Close()",
         ),
     )]);
@@ -679,6 +679,59 @@ fn the_rolling_package_owns_its_writer() {
 }
 
 #[test]
+fn time_types_do_not_mix() {
+    accepts(&[(
+        "main.ore",
+        &main_with(
+            "import \"std/time\"",
+            "let d time.Duration = 5 * time.Second + 250 * time.Millisecond\nlet start = time.Now()\nlet deadline = start.Add(d)\nlet left time.Duration = time.Until(deadline)\n_ = left\nlet stamp, err = time.Date(2026, 10, 30, 12, 0, 0, 0, time.UTCZone)\n_ = err\nlet later time.Timestamp = stamp.Add(time.Hour)\n_ = later.Before(stamp)\nlet timer = time.NewTimer(d)\n_ = timer.Reset(time.Duration(10) * time.Millisecond)\nlet raw int = int(d)\n_ = raw",
+        ),
+    )]);
+    for (body, message) in [
+        (
+            "let deadline = time.Now() + time.Second",
+            "found `time.Duration`",
+        ),
+        ("let n int = 5\nlet d = time.Second * n", "mismatched types"),
+        ("let n int = 5\ntime.Sleep(n)", "mismatched types"),
+        ("let early = time.Now() < time.Now()", "cannot be applied"),
+        ("let a = time.UTC()\nlet same = a == a", "cannot be applied"),
+        ("let t = time.Instant{reading: 1}", "not exported"),
+        (
+            "let d time.Duration = time.Now().Sub(time.Now())\nlet t time.Instant = d",
+            "mismatched types",
+        ),
+        ("let s time.Timestamp = time.Now()", "mismatched types"),
+        (
+            "let text = time.FormatHTTPDate(0)",
+            "does not declare `FormatHTTPDate`",
+        ),
+    ] {
+        rejects(
+            &[("main.ore", &main_with("import \"std/time\"", body))],
+            message,
+        );
+    }
+    rejects(
+        &[(
+            "main.ore",
+            &main_with("import \"std/log\"", "let text = log.FormatTime(0)"),
+        )],
+        "does not declare `FormatTime`",
+    );
+    rejects(
+        &[(
+            "main.ore",
+            &main_with(
+                "import \"std/net\"",
+                "let conn = net.EmptyConn()\n_ = conn.SetDeadline(0)",
+            ),
+        )],
+        "mismatched types",
+    );
+}
+
+#[test]
 fn local_time_functions_check_their_arguments() {
     accepts(&[(
         "main.ore",
@@ -700,8 +753,8 @@ fn local_time_functions_check_their_arguments() {
         ),
         (
             "import \"std/log\"",
-            "let stamp = log.localTime(0)",
-            "`localTime` is not exported by package `log`",
+            "let stamp = log.FormatLocalTime(0)",
+            "does not declare `FormatLocalTime`",
         ),
         (
             "import \"std/log/rolling\"",

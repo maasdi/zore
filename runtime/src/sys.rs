@@ -197,6 +197,14 @@ pub extern "C" fn zore_native_time_unix_seconds() -> i64 {
     }
 }
 
+#[unsafe(no_mangle)]
+pub extern "C" fn zore_native_time_unix_nanoseconds() -> i64 {
+    match std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
+        Ok(duration) => i64::try_from(duration.as_nanos()).unwrap_or(i64::MAX),
+        Err(error) => i64::try_from(error.duration().as_nanos()).map_or(i64::MIN, |n| -n),
+    }
+}
+
 /// Where an `Array<string>` or an `Array<int>` descriptor is written.
 #[repr(C)]
 pub struct WordArray {

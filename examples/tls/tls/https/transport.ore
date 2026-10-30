@@ -3,6 +3,7 @@ package https
 import "std/context"
 import "std/net/http"
 import "std/net/url"
+import "std/time"
 import "tls"
 
 type Transport struct { config tls.ClientConfig }
@@ -43,5 +44,5 @@ func (c mut conn) Write(data []byte) (int, error) {
     if err == error("tls: timed out") { return n, http.ClientPollTimeout }
     return n, err
 }
-func (c mut conn) SetReadDeadline(deadline int) error { return c.source.SetReadDeadline(deadline) }
-func (c mut conn) SetWriteDeadline(deadline int) error { return c.source.SetWriteDeadline(deadline) }
+func (c mut conn) SetReadDeadline(deadline time.Instant) error { return c.source.SetReadDeadline(deadline) }
+func (c mut conn) SetWriteDeadline(deadline time.Instant) error { return c.source.SetWriteDeadline(deadline) }

@@ -10,7 +10,7 @@ import "std/errors"
 
 func respond(conn own tls.Conn) error {
     var c = conn
-    c.SetDeadline(time.Now() + 5 * time.Second)?
+    c.SetDeadline(time.Now().Add(5 * time.Second))?
     var request = Array<byte>{};
     for var i = 0; i < 4096; i += 1 {
         request.push(0)
@@ -29,7 +29,7 @@ func serveOne() error {
     let key = os.ReadFile("../tls/testdata/server-key.pem")?
     let config = tls.NewServerConfig(cert[:], key[:])?
     let listener = net.Listen("tcp4", "127.0.0.1:8443")?
-    listener.SetDeadline(time.Now() + 30 * time.Second)?
+    listener.SetDeadline(time.Now().Add(30 * time.Second))?
     let source = listener.Accept()?
     let ctx, cancel = context.WithTimeout(context.Background(), 5 * time.Second)
     let conn, err = tls.Server(ctx, source, config)

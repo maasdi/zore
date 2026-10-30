@@ -159,8 +159,7 @@ tracker #210, adds `std/log` under §37.12: a value-based structured logger over
 any `io.Writer` with levels, compiler-checked message templates whose holes
 become fields, stable record escaping, UTC second
 timestamps, serialized shared use and sticky output errors. Its cases are in
-[the log conformance list](../tests/conformance/log.md). Sub-second or local-time
-timestamps wait for a calendar package and do not change the locked format.
+[the log conformance list](../tests/conformance/log.md).
 Issue [#230](https://github.com/maasdi/zore/issues/230) adds `std/log/rolling`
 under §37.13 with `os.Append` and `os.Rename`: size-based rolling with numbered
 backups and a buffered writer flushed in the background, and optional daily
@@ -169,6 +168,13 @@ rolling into dated backups at midnight UTC. Its
 Issue [#233](https://github.com/maasdi/zore/issues/233) adds opt-in local
 time: `time.LocalOffset`, `Logger.WithLocalTime`, and
 `rolling.Config.Local` for daily rolling at local midnight.
+Issue [#213](https://github.com/maasdi/zore/issues/213) gives `std/time`
+separate types under §37.3: `Duration` for lengths of time, `Instant` for
+stopwatch readings and deadlines, `Timestamp` and `Zone` for calendar times
+with fixed offsets, RFC 3339 text, and stoppable `Timer` and `Ticker` owners.
+`context`, `net`, `net/http`, `log`, and `log/rolling` use them, and the HTTP
+date format moved to `http.FormatDate`. Named time zones and their rules remain
+outside the package; see [the time conformance list](../tests/conformance/time.md).
 
 Issue [#195](https://github.com/maasdi/zore/issues/195) overlaps runtime-library
 preparation with clang object generation. Its [Linux build-scheduling report](performance-build-scheduling.md)

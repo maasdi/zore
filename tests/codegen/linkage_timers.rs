@@ -41,7 +41,7 @@ func main() {
 
 #[test]
 fn internal_linkage_exposes_only_the_entry_shim_and_removes_unreferenced_bodies() {
-    let source = "package main\nimport \"std/time\"\nfunc unused() int { return 99 }\nfunc main() { println(time.Now() > 0) }\n";
+    let source = "package main\nimport \"std/time\"\nfunc unused() int { return 99 }\nfunc main() { println(time.Now().After(time.Now())) }\n";
     let mut sources = SourceMap::new();
     let file = sources.add("test.ore", source.into()).unwrap();
     let llvm = emit_llvm(sources.file(file).unwrap()).unwrap();

@@ -668,7 +668,7 @@ func exercise(wire string, width int, expected int, body string, readError strin
     server.state.withLock(func(state mut serverState) {{ state.wire = strings.Bytes(wire); state.width = width }})
     let zero = net.EmptyConn()
     let sockets = [net.Conn; 1]{{zero}}
-    var request = newRequest(sockets[:], server, Array<byte>{{}}, time.Now() + time.Hour)
+    var request = newRequest(sockets[:], server, Array<byte>{{}}, time.Now().Add(time.Hour))
     let status, err = request.parseHeaders()
     require(status == expected)
     require((err == nil) == (expected == 0))

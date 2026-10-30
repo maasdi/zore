@@ -2,7 +2,6 @@ package log
 
 import "std/fmt"
 import "std/io"
-import "std/strconv"
 import "std/strings"
 import "std/time"
 
@@ -121,12 +120,9 @@ func (l Logger) emit(level Level, template string, values own Array<string>) {
     }
     var record = strings.NewBuilder()
     if l.stamped {
-        let now = time.UnixSeconds()
-        if l.local {
-            record.WriteString("time=" + localTime(now) + " ")
-        } else {
-            record.WriteString("time=" + FormatTime(now) + " ")
-        }
+        var now = time.UTC()
+        if l.local { now = now.Local() }
+        record.WriteString("time=" + now.RFC3339() + " ")
     }
     record.WriteString("level=" + text(level.String()) + " msg=" + text(message.String()))
     record.WriteString(l.context)
@@ -221,49 +217,4 @@ func text(value string) string {
 func hex(digit byte) string {
     let digits = "0123456789abcdef"
     return digits[int(digit):int(digit) + 1]
-}
-
-func FormatTime(seconds int) string {
-    if seconds < -62135596800 || seconds > 253402300799 {
-        return strconv.Itoa(seconds)
-    }
-    var days = seconds / 86400
-    var remainder = seconds % 86400
-    if remainder < 0 { days -= 1; remainder += 86400 }
-    let shifted = days + 719468
-    var era = shifted / 146097
-    if shifted < 0 { era = (shifted - 146096) / 146097 }
-    let dayOfEra = shifted - era * 146097
-    let yearOfEra = (dayOfEra - dayOfEra / 1460 + dayOfEra / 36524 - dayOfEra / 146096) / 365
-    let dayOfYear = dayOfEra - (365 * yearOfEra + yearOfEra / 4 - yearOfEra / 100)
-    let shiftedMonth = (5 * dayOfYear + 2) / 153
-    let day = dayOfYear - (153 * shiftedMonth + 2) / 5 + 1
-    var month = shiftedMonth + 3
-    if shiftedMonth >= 10 { month = shiftedMonth - 9 }
-    var year = yearOfEra + era * 400
-    if month <= 2 { year += 1 }
-    return pad(year, 4) + "-" + pad(month, 2) + "-" + pad(day, 2) + "T" + pad(remainder / 3600, 2) + ":" + pad(remainder / 60 % 60, 2) + ":" + pad(remainder % 60, 2) + "Z"
-}
-
-func localTime(seconds int) string {
-    let minutes = time.LocalOffset(seconds) / 60
-    let local = FormatTime(seconds + minutes * 60)
-    if local.len() != 20 {
-        return strconv.Itoa(seconds)
-    }
-    var sign = "+"
-    var shift = minutes
-    if shift < 0 {
-        sign = "-"
-        shift = -shift
-    }
-    return local[:19] + sign + pad(shift / 60, 2) + ":" + pad(shift % 60, 2)
-}
-
-func pad(value int, width int) string {
-    var digits = strconv.Itoa(value)
-    for digits.len() < width {
-        digits = "0" + digits
-    }
-    return digits
 }

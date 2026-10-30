@@ -54,7 +54,7 @@ def source(mode, payload, socket_deadline_seconds=30):
     for var i = 0; i < count; i += 1 {{
         let conn, err = listener.Accept()
         if err != nil {{ panic("accept") }}
-        let deadlineError = conn.SetReadDeadline(time.Now() + {deadline_seconds} * time.Second)
+        let deadlineError = conn.SetReadDeadline(time.Now().Add({deadline_seconds} * time.Second))
         if deadlineError != nil {{ panic("deadline") }}
         tasks.push(go wait(ready, conn))
     }}
