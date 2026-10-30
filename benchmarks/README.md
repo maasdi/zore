@@ -16,5 +16,7 @@ platform-specific modules such as `fcntl` or `resource` inside the functions
 that need them. CI imports each module on all three hosts and runs each
 harness's `test_*.py` there; Unix-only harness tests skip themselves on Windows.
 
+- [Logging](logging/README.md): `std/log` time per record into discarding,
+  file, and buffered or unbuffered rolling sinks.
 - [Runtime scaling](runtime-scaling/README.md): opt-in Linux/macOS and optional Windows socket,
   timer and suspended-task populations, pinned storage and resource cleanup.

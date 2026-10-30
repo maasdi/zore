@@ -78,6 +78,20 @@ pub unsafe extern "C" fn zore_native_os_read_file(
 fn create_with(path: &str, perm: i64) -> std::io::Result<std::fs::File> {
     let mut options = std::fs::OpenOptions::new();
     options.write(true).create(true).truncate(true);
+    open_with(options, path, perm)
+}
+
+fn append_with(path: &str, perm: i64) -> std::io::Result<std::fs::File> {
+    let mut options = std::fs::OpenOptions::new();
+    options.append(true).create(true);
+    open_with(options, path, perm)
+}
+
+fn open_with(
+    mut options: std::fs::OpenOptions,
+    path: &str,
+    perm: i64,
+) -> std::io::Result<std::fs::File> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
@@ -327,6 +341,46 @@ pub unsafe extern "C" fn zore_native_os_file_open(
     };
     // SAFETY: guaranteed by the caller.
     unsafe { out.write(value) };
+}
+
+/// # Safety
+/// `out` must be writable and the path must satisfy the storage rule of `bytes`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn zore_native_os_file_append(
+    out: *mut ValueError,
+    path: *const u8,
+    path_len: i64,
+    perm: i64,
+) {
+    // SAFETY: guaranteed by the caller.
+    let path = unsafe { text_of(path, path_len) };
+    let value = match blocking::run(move || append_with(&path, perm)) {
+        Ok(file) => ValueError::ok(insert(file)),
+        Err(error) => ValueError::failed_text(&format!("os.Append: {error}")),
+    };
+    // SAFETY: guaranteed by the caller.
+    unsafe { out.write(value) };
+}
+
+/// # Safety
+/// `out` must be writable and both paths must satisfy the storage rule of `bytes`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn zore_native_os_rename(
+    out: *mut ErrorOut,
+    old_path: *const u8,
+    old_len: i64,
+    new_path: *const u8,
+    new_len: i64,
+) {
+    // SAFETY: guaranteed by the caller.
+    let (old_path, new_path) = unsafe { (text_of(old_path, old_len), text_of(new_path, new_len)) };
+    let failure = blocking::run(move || {
+        std::fs::rename(&old_path, &new_path)
+            .err()
+            .map(|error| format!("os.Rename: {error}"))
+    });
+    // SAFETY: guaranteed by the caller.
+    unsafe { out.write(ErrorOut::from_failure(failure)) };
 }
 
 /// # Safety

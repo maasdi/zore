@@ -161,6 +161,15 @@ once it does.
 
 ### Standard library
 
+- Added `std/log/rolling` (§37.13): a size-limited log file that rolls into
+  numbered backups, keeps the newest `MaxBackups`, and collects records in a
+  64 KiB buffer flushed by a background task every second. `Writer` owns the
+  file and flushes and closes it on `Close` or drop; `Sink()` gives the logger a
+  shared handle. In the recorded benchmark a buffered rolling sink costs about
+  the same as discarding records, roughly five times faster than writing each
+  record to a file.
+- Added `os.Append` to open a file for writing at its end and `os.Rename`
+  (§37.3).
 - Added `std/log` (§37.12): a Copy `Logger` over any `io.Writer` with
   `DEBUG`/`INFO`/`WARN`/`ERROR` levels and compiler-checked message templates:
   `logger.Info("listening on {addr}", addr)` fills the message and adds the

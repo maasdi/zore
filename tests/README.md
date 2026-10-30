@@ -408,6 +408,10 @@ compiler failures. These are process-order assertions, not speed thresholds.
 regressions. It distinguishes tested behavior from additional fault-injection
 coverage. The REST example codec is also exercised as executable Zore source.
 
+`conformance/log.md` also maps `std/log/rolling` to `codegen/rolling.rs`:
+rolling and backup removal, restarts, buffering and background flushing,
+failures, and records from many tasks across rolls.
+
 `conformance/log.md` maps the `std/log` contract to `codegen/log.rs`: message
 templates, exact record text and escaping, timestamps, records from plain and async tasks that
 never interleave, retried short writes, sticky output failures, sink cleanup,
