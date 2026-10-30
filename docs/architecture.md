@@ -643,7 +643,13 @@ panic runs pending drops before the runtime reports it. Runtime strings are
 which allocates the text in a counted buffer, and slices share their source's
 storage after a bounds and character-boundary check. A copy that is kept adds an
 owner (`zore_string_retain`) and ending its life removes one
-(`zore_string_release`); the last owner frees the buffer. Text counts as a
+(`zore_string_release`); the last owner frees the buffer. The owner count is
+an atomic in a header in front of the text, so retain and release take no lock.
+A slice can point into the middle of a buffer, so each buffer marks the 32-byte
+granules it covers in a lock-free three-level table over 48-bit addresses (the
+runtime aborts if a buffer lands higher), and any address inside it
+finds the header with a few loads; static text lies in no buffer and is never
+counted or freed. Text counts as a
 value that needs cleanup even though it is Copy: drop flags, scope-end drops,
 and the panic cleanup path cover it, and a value of a Copy type that holds text
 (a struct or fixed array with a `string` or `error` inside) is retained field by

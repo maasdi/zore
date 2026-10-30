@@ -28,6 +28,7 @@ mod scoped_tasks;
 mod signal;
 #[cfg(windows)]
 mod signal_windows;
+mod string_ownership;
 
 use std::io::Write;
 use std::path::Path;
