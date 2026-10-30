@@ -28,6 +28,8 @@ mod filepath;
 mod float;
 #[path = "io.rs"]
 mod io;
+#[path = "local_time.rs"]
+mod local_time;
 #[path = "map.rs"]
 mod map;
 #[path = "math.rs"]

@@ -17,6 +17,7 @@ type Config struct {
     FlushInterval int
     Perm          int
     Daily         bool
+    Local         bool
 }
 
 func DefaultConfig(path string) Config {
@@ -28,6 +29,7 @@ func DefaultConfig(path string) Config {
         FlushInterval: time.Second,
         Perm: 0o644,
         Daily: false,
+        Local: false,
     }
 }
 
@@ -71,9 +73,9 @@ func Open(config Config) (Writer, error) {
     }
     var files = Array<os.File>{}
     files.push(file)
-    var day = today()
+    var day = today(config)
     if info.Size() > 0 {
-        day = dayOf(info.ModTime())
+        day = dayOf(config, info.ModTime())
     }
     let shared = mutex(state{config: config, files: files, size: info.Size(), pending: Array<byte>{}, err: nil, closed: false, day: day})
     let stop = channel<bool>()
@@ -143,7 +145,7 @@ func (sink Sink) Write(data []byte) (int, error) {
         if s.err != nil { return 0, s.err }
         if s.closed { return 0, errClosed }
         if s.config.Daily {
-            let current = today()
+            let current = today(s.config)
             if s.size > 0 && current != s.day {
                 roll(s)
                 if s.err != nil { return 0, s.err }
@@ -256,13 +258,17 @@ func exists(path string) bool {
     return err == nil
 }
 
-func today() int {
-    return dayOf(time.UnixSeconds())
+func today(config Config) int {
+    return dayOf(config, time.UnixSeconds())
 }
 
-func dayOf(seconds int) int {
-    var day = seconds / 86400
-    if seconds % 86400 < 0 { day -= 1 }
+func dayOf(config Config, seconds int) int {
+    var shifted = seconds
+    if config.Local {
+        shifted += time.LocalOffset(seconds) / 60 * 60
+    }
+    var day = shifted / 86400
+    if shifted % 86400 < 0 { day -= 1 }
     return day
 }
 

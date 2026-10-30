@@ -33,6 +33,7 @@ the package end to end.
 | The first and last representable seconds | `0001-01-01T00:00:00Z`, `9999-12-31T23:59:59Z` |
 | One second outside either end | The decimal Unix seconds |
 | A record from `New` | Starts with `time=` and `FormatTime(time.UnixSeconds())` read around the call |
+| `WithLocalTime().Info(...)` under `UTC0`, `<+07>-7`, `<+0530>-5:30`, `<-0330>3:30`, and `EST5EDT,M3.2.0,M11.1.0`, next to a default logger | `time=` is the local wall time of the moment followed by its offset (`+00:00`, `+07:00`, `+05:30`, `-03:30`, `-04:00` or `-05:00`); the default record still ends in `Z` (`codegen/local_time.rs`) |
 
 ## Sharing, blocking, and cleanup
 
@@ -98,6 +99,7 @@ Native cases are in `tests/codegen/rolling.rs`; checking cases are in
 | `Daily`, an existing file last changed on October 28, dated backups of October 20 and 25 (`.9`, `.10`), `MaxBytes` 60, four backups | The old file becomes `app.log.2026-10-28`; today's size rolls become `app.log.TODAY` and `.1`; October 20 and `.9` are pruned before `.10` |
 | `Daily` with `app.log.notes`, numbered `app.log.1`, another file, and `.01` | Left alone; not dated backups |
 | `Daily`, a restart on the same day under the size limit | The record is appended; nothing rolls |
-| `DefaultConfig` | `Daily` is `false` |
+| `DefaultConfig` | `Daily` and `Local` are `false` |
+| `Daily` with `Local` under `TZ=EST5EDT,M3.2.0,M11.1.0`, an existing file last changed 2026-11-01 03:30 UTC (23:30 local the evening before) | It becomes `local.log.2026-10-31`; the same file without `Local` becomes `utc.log.2026-11-01` |
 | `Open` given a string, `Close` then `Flush`, copying a `Writer` twice | Reject: mismatched types; use of moved value |
 | `rolling.Sink{...}` | Reject: not exported |

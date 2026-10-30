@@ -7224,9 +7224,21 @@ parameter the same way (§12.1–§12.2).
 | `Sleep(d int)` | Suspends the calling task for at least `d` nanoseconds; zero or less returns at once |
 | `Now() int` | A reading of a monotonic clock in nanoseconds; its starting point is unspecified, but every reading is positive and none is smaller than an earlier one |
 | `Since(start int) int`, `Until(t int) int` | `Now() - start` and `t - Now()` |
+| `LocalOffset(seconds int) int` | How many seconds the computer's local time is ahead of UTC (negative when behind) at the Unix time `seconds`, daylight saving included; `0` when the system cannot say |
 | `After(d int) channel<bool>` | A channel that receives `true` once after at least `d` and is then closed; zero or less fires at once. The wait is a task that sleeps, so it is not a deadlock while it is pending. Use it as a `select` case to put a time limit on a channel operation |
 
 A deadline is a `Now()` reading; zero means none.
+
+**Local time.** `LocalOffset` asks the operating system at every call and
+returns quickly, without waiting for a helper. On Linux and macOS it uses the C
+library's local time conversion, so it follows the `TZ` environment variable
+when that is set (an IANA name such as `America/New_York`, or a POSIX rule such
+as `EST5EDT,M3.2.0,M11.1.0`) and the system zone otherwise. On Windows it uses
+the active system time zone and its daylight-saving rules; `TZ` is not read. A
+zone change made while the program runs is seen by later calls as soon as the
+system reports it. Instants the system cannot convert give `0`, which is UTC.
+Offsets are seconds: historical zones may have offsets that are not whole
+minutes.
 
 ```ore
 time.Sleep(250 * time.Millisecond)
@@ -8973,9 +8985,10 @@ passed to the code that logs.
 | `(l Logger) With(key, value, ...) Logger` | A copy that adds these fields to every record, after those `l` already adds |
 | `(l Logger) WithLevel(level Level) Logger` | A copy with a different minimum level |
 | `(l Logger) WithoutTime() Logger` | A copy whose records have no `time` field |
+| `(l Logger) WithLocalTime() Logger` | A copy whose `time` field is local time with a numeric offset, described below |
 | `(l Logger) Enabled(level Level) bool` | Whether a record at `level` would be written |
 | `(l Logger) Err() error` | The first output failure of this logger's sink, or `nil` |
-| `FormatTime(seconds int) string` | The timestamp text for Unix time `seconds`, described below |
+| `FormatTime(seconds int) string` | The UTC timestamp text for Unix time `seconds`, described below |
 
 ```ore
 import "std/log"
@@ -9051,6 +9064,16 @@ second precision in the RFC 3339 form `YYYY-MM-DDTHH:MM:SSZ` for
 seconds (`strconv.Itoa`) outside that range. The wall clock may move backwards,
 so timestamps are not promised to increase. A later calendar package does not
 change this format.
+
+With `WithLocalTime`, for `t = time.UnixSeconds()` the `time` field takes
+`m = time.LocalOffset(t) / 60` whole minutes (§37.3, rounded toward zero) and
+writes the time `t + 60 * m` in the
+`FormatTime` form with the final `Z` replaced by the offset `+HH:MM` or
+`-HH:MM` of `m`, so `2026-11-01T01:59:59-04:00` and the next second
+`2026-11-01T01:00:00-05:00` stay distinct when daylight saving ends. When that
+local time is outside years 0001 through 9999, it writes the decimal Unix
+seconds. UTC remains the default; local stamps are opt-in. Formatting a
+local timestamp outside a record is left to the calendar types of `std/time`.
 
 **Sharing and order.** `Logger` is a Copy struct whose copies, including those
 made by `With`, `WithLevel`, and `WithoutTime`, share one sink behind a `Mutex`
@@ -9130,9 +9153,9 @@ func run() error {
 
 | Name | Behavior |
 | --- | --- |
-| `type Config struct { Path string; MaxBytes int; MaxBackups int; BufferBytes int; FlushInterval int; Perm int; Daily bool }` | Where to write, the size limit, how many older files to keep, how many bytes to collect before writing, how often to write what is collected (nanoseconds, §37.3), the permission bits of new files, and whether to also roll when the UTC day changes |
-| `DefaultConfig(path string) Config` | `MaxBytes` 100 MiB (`100 * 1024 * 1024`), `MaxBackups` 5, `BufferBytes` 64 KiB, `FlushInterval` one second, `Perm` `0o644`, `Daily` `false` |
-| `Open(config Config) (Writer, error)` | Opens `Path` with `os.Append`, keeping what it holds, and starts counting from its current size; a non-empty file belongs to the UTC day of its `ModTime`, an empty one to the current day |
+| `type Config struct { Path string; MaxBytes int; MaxBackups int; BufferBytes int; FlushInterval int; Perm int; Daily bool; Local bool }` | Where to write, the size limit, how many older files to keep, how many bytes to collect before writing, how often to write what is collected (nanoseconds, §37.3), the permission bits of new files, whether to also roll when the day changes, and whether days follow local time instead of UTC |
+| `DefaultConfig(path string) Config` | `MaxBytes` 100 MiB (`100 * 1024 * 1024`), `MaxBackups` 5, `BufferBytes` 64 KiB, `FlushInterval` one second, `Perm` `0o644`, `Daily` `false`, `Local` `false` |
+| `Open(config Config) (Writer, error)` | Opens `Path` with `os.Append`, keeping what it holds, and starts counting from its current size; a non-empty file belongs to the day of its `ModTime`, an empty one to the current day |
 | `(w Writer) Sink() Sink` | A handle that writes to `w`; give it to `log.New` |
 | `(s Sink) Write(data []byte) (int, error)` | Writes `data` as one piece (below) |
 | `(w Writer) Flush() error` | Writes everything collected now |
@@ -9164,13 +9187,19 @@ app.log.5    the oldest kept; removed at the next roll
 ```
 
 **Daily rolling.** With `Daily`, each `Write` first reads `time.UnixSeconds`
-(§37.3). When the file holds bytes and the UTC day differs from the day of the
+(§37.3). When the file holds bytes and the day differs from the day of the
 file, the writer rolls before accepting the piece, and the file then belongs
-to the current day; the size rule above still applies afterwards. A day is
-`floor(seconds / 86400)`, so days change at midnight UTC, and a clock that moves
-backwards also starts a new file. With `Daily`, every roll, by day or by size,
+to the current day; the size rule above still applies afterwards. The day of
+an instant `t` is `floor(t / 86400)`, so days change at midnight UTC. With
+`Local`, it is `floor((t + 60 * m) / 86400)` for `m = time.LocalOffset(t) / 60`
+read at that instant, so days change at local midnight and follow
+the local stamps of `WithLocalTime`: a day on which daylight saving starts or ends simply
+lasts 23 or 25 hours. Any change of day starts a new file, including a clock or
+zone that moves the day backwards; the backup names below never repeat, and no
+piece is lost or split. Without `Daily`, `Local` has no effect. With `Daily`, every roll, by day or by size,
 renames `Path` to `Path.D`, where `D` is the file's day as `YYYY-MM-DD` (the
-first 10 characters of `log.FormatTime`, §37.12), or to `Path.D.N` with the
+first 10 characters of `log.FormatTime` of the day's start, §37.12, which is
+the local date with `Local`), or to `Path.D.N` with the
 smallest `N` from `1` up whose name is free when that day was already rolled.
 The backups are then pruned: the folder of `Path` is listed, names of the form
 `Path.YYYY-MM-DD` or `Path.YYYY-MM-DD.N` (with `N` of one to nine digits and

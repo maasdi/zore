@@ -679,6 +679,41 @@ fn the_rolling_package_owns_its_writer() {
 }
 
 #[test]
+fn local_time_functions_check_their_arguments() {
+    accepts(&[(
+        "main.ore",
+        &main_with(
+            "import \"std/log\"\nimport \"std/log/rolling\"\nimport \"std/os\"\nimport \"std/time\"",
+            "let offset int = time.LocalOffset(time.UnixSeconds())\n_ = offset\nlog.New(os.Stderr(), log.LevelInfo).WithLocalTime().Info(\"x\")\nvar config = rolling.DefaultConfig(\"a.log\")\nconfig.Local = true\n_ = config",
+        ),
+    )]);
+    for (imports, body, message) in [
+        (
+            "import \"std/time\"",
+            "let offset = time.LocalOffset(\"now\")",
+            "mismatched types",
+        ),
+        (
+            "import \"std/time\"",
+            "let offset = time.LocalOffset()",
+            "takes 1 argument",
+        ),
+        (
+            "import \"std/log\"",
+            "let stamp = log.localTime(0)",
+            "`localTime` is not exported by package `log`",
+        ),
+        (
+            "import \"std/log/rolling\"",
+            "var config = rolling.DefaultConfig(\"a\")\nconfig.Local = 1",
+            "mismatched types",
+        ),
+    ] {
+        rejects(&[("main.ore", &main_with(imports, body))], message);
+    }
+}
+
+#[test]
 fn the_io_packages_reject_misuse() {
     let net = "import \"std/net\"";
     rejects(

@@ -166,7 +166,9 @@ under §37.13 with `os.Append` and `os.Rename`: size-based rolling with numbered
 backups and a buffered writer flushed in the background, and optional daily
 rolling into dated backups at midnight UTC. Its
 [benchmark](../benchmarks/logging/README.md) records the per-record cost.
-Local-time days wait for a calendar package.
+Issue [#233](https://github.com/maasdi/zore/issues/233) adds opt-in local
+time: `time.LocalOffset`, `Logger.WithLocalTime`, and
+`rolling.Config.Local` for daily rolling at local midnight.
 
 Issue [#195](https://github.com/maasdi/zore/issues/195) overlaps runtime-library
 preparation with clang object generation. Its [Linux build-scheduling report](performance-build-scheduling.md)

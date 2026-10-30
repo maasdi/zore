@@ -31,11 +31,12 @@ type Logger struct {
     level   Level
     context string
     stamped bool
+    local   bool
     open    bool
 }
 
 func New(sink own io.Writer, level Level) Logger {
-    return Logger{out: mutex(output{sink: sink, err: nil}), level: level, context: "", stamped: true, open: true}
+    return Logger{out: mutex(output{sink: sink, err: nil}), level: level, context: "", stamped: true, local: false, open: true}
 }
 
 func (l Logger) Enabled(level Level) bool {
@@ -51,6 +52,12 @@ func (l Logger) WithLevel(level Level) Logger {
 func (l Logger) WithoutTime() Logger {
     var next = l
     next.stamped = false
+    return next
+}
+
+func (l Logger) WithLocalTime() Logger {
+    var next = l
+    next.local = true
     return next
 }
 
@@ -114,7 +121,12 @@ func (l Logger) emit(level Level, template string, values own Array<string>) {
     }
     var record = strings.NewBuilder()
     if l.stamped {
-        record.WriteString("time=" + FormatTime(time.UnixSeconds()) + " ")
+        let now = time.UnixSeconds()
+        if l.local {
+            record.WriteString("time=" + localTime(now) + " ")
+        } else {
+            record.WriteString("time=" + FormatTime(now) + " ")
+        }
     }
     record.WriteString("level=" + text(level.String()) + " msg=" + text(message.String()))
     record.WriteString(l.context)
@@ -231,6 +243,21 @@ func FormatTime(seconds int) string {
     var year = yearOfEra + era * 400
     if month <= 2 { year += 1 }
     return pad(year, 4) + "-" + pad(month, 2) + "-" + pad(day, 2) + "T" + pad(remainder / 3600, 2) + ":" + pad(remainder / 60 % 60, 2) + ":" + pad(remainder % 60, 2) + "Z"
+}
+
+func localTime(seconds int) string {
+    let minutes = time.LocalOffset(seconds) / 60
+    let local = FormatTime(seconds + minutes * 60)
+    if local.len() != 20 {
+        return strconv.Itoa(seconds)
+    }
+    var sign = "+"
+    var shift = minutes
+    if shift < 0 {
+        sign = "-"
+        shift = -shift
+    }
+    return local[:19] + sign + pad(shift / 60, 2) + ":" + pad(shift % 60, 2)
 }
 
 func pad(value int, width int) string {

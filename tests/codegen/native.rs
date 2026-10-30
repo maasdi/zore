@@ -18,6 +18,7 @@ mod interface_acceptance;
 mod json;
 mod linkage_timers;
 mod local_dependencies;
+mod local_time;
 mod log;
 mod map_entries;
 mod mixed_bindings;
