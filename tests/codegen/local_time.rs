@@ -17,7 +17,8 @@ import "std/time"
 
 func main() {
     for t in Array<int>{0, 1772953199, 1772953200, 1793512799, 1793512800}[:] {
-        println(strconv.Itoa(t) + " " + strconv.Itoa(time.LocalOffset(t)) + " " + log.FormatLocalTime(t))
+        let offset = time.LocalOffset(t)
+        println(strconv.Itoa(t) + " " + strconv.Itoa(offset) + " " + log.FormatTime(t + offset)[:19])
     }
 }
 "#;
@@ -49,57 +50,68 @@ fn local_offsets_follow_the_zone_across_daylight_saving() {
         (
             "UTC0",
             [
-                "0 0 1970-01-01T00:00:00+00:00",
-                "1772953199 0 2026-03-08T06:59:59+00:00",
-                "1772953200 0 2026-03-08T07:00:00+00:00",
-                "1793512799 0 2026-11-01T05:59:59+00:00",
-                "1793512800 0 2026-11-01T06:00:00+00:00",
+                "0 0 1970-01-01T00:00:00",
+                "1772953199 0 2026-03-08T06:59:59",
+                "1772953200 0 2026-03-08T07:00:00",
+                "1793512799 0 2026-11-01T05:59:59",
+                "1793512800 0 2026-11-01T06:00:00",
             ],
         ),
         (
             "<+07>-7",
             [
-                "0 25200 1970-01-01T07:00:00+07:00",
-                "1772953199 25200 2026-03-08T13:59:59+07:00",
-                "1772953200 25200 2026-03-08T14:00:00+07:00",
-                "1793512799 25200 2026-11-01T12:59:59+07:00",
-                "1793512800 25200 2026-11-01T13:00:00+07:00",
+                "0 25200 1970-01-01T07:00:00",
+                "1772953199 25200 2026-03-08T13:59:59",
+                "1772953200 25200 2026-03-08T14:00:00",
+                "1793512799 25200 2026-11-01T12:59:59",
+                "1793512800 25200 2026-11-01T13:00:00",
             ],
         ),
         (
             "EST5EDT,M3.2.0,M11.1.0",
             [
-                "0 -18000 1969-12-31T19:00:00-05:00",
-                "1772953199 -18000 2026-03-08T01:59:59-05:00",
-                "1772953200 -14400 2026-03-08T03:00:00-04:00",
-                "1793512799 -14400 2026-11-01T01:59:59-04:00",
-                "1793512800 -18000 2026-11-01T01:00:00-05:00",
+                "0 -18000 1969-12-31T19:00:00",
+                "1772953199 -18000 2026-03-08T01:59:59",
+                "1772953200 -14400 2026-03-08T03:00:00",
+                "1793512799 -14400 2026-11-01T01:59:59",
+                "1793512800 -18000 2026-11-01T01:00:00",
             ],
         ),
         (
             "<+0530>-5:30",
             [
-                "0 19800 1970-01-01T05:30:00+05:30",
-                "1772953199 19800 2026-03-08T12:29:59+05:30",
-                "1772953200 19800 2026-03-08T12:30:00+05:30",
-                "1793512799 19800 2026-11-01T11:29:59+05:30",
-                "1793512800 19800 2026-11-01T11:30:00+05:30",
+                "0 19800 1970-01-01T05:30:00",
+                "1772953199 19800 2026-03-08T12:29:59",
+                "1772953200 19800 2026-03-08T12:30:00",
+                "1793512799 19800 2026-11-01T11:29:59",
+                "1793512800 19800 2026-11-01T11:30:00",
             ],
         ),
         (
             "<-0330>3:30",
             [
-                "0 -12600 1969-12-31T20:30:00-03:30",
-                "1772953199 -12600 2026-03-08T03:29:59-03:30",
-                "1772953200 -12600 2026-03-08T03:30:00-03:30",
-                "1793512799 -12600 2026-11-01T02:29:59-03:30",
-                "1793512800 -12600 2026-11-01T02:30:00-03:30",
+                "0 -12600 1969-12-31T20:30:00",
+                "1772953199 -12600 2026-03-08T03:29:59",
+                "1772953200 -12600 2026-03-08T03:30:00",
+                "1793512799 -12600 2026-11-01T02:29:59",
+                "1793512800 -12600 2026-11-01T02:30:00",
             ],
         ),
     ] {
         let expected: String = lines.iter().map(|line| format!("{line}\n")).collect();
         assert_eq!(run_in_zone(&executable, zone), expected, "TZ={zone}");
     }
+}
+
+#[cfg(unix)]
+fn suffix(offset: i64) -> String {
+    let minutes = offset / 60;
+    format!(
+        "{}{:02}:{:02}",
+        if minutes < 0 { '-' } else { '+' },
+        minutes.abs() / 60,
+        minutes.abs() % 60
+    )
 }
 
 #[cfg(unix)]
@@ -110,31 +122,55 @@ fn local_log_stamps_carry_the_zone_offset() {
 
 import "std/log"
 import "std/os"
+import "std/strconv"
 import "std/time"
+
+func wall(t int) {
+    let offset = time.LocalOffset(t)
+    println(strconv.Itoa(offset) + " " + log.FormatTime(t + offset / 60 * 60)[:19])
+}
 
 func main() {
     let before = time.UnixSeconds()
     log.New(os.Stdout(), log.LevelInfo).WithLocalTime().Info("local")
     log.New(os.Stdout(), log.LevelInfo).Info("utc")
     let after = time.UnixSeconds()
-    println(log.FormatLocalTime(before))
-    println(log.FormatLocalTime(after))
+    wall(before)
+    wall(after)
 }
 "#;
     let executable = build(source, &dir);
-    let output = run_in_zone(&executable, "<+07>-7");
-    let lines: Vec<&str> = output.lines().collect();
-    assert_eq!(lines.len(), 4, "{output}");
-    let local = lines[0]
-        .strip_suffix(" level=INFO msg=local")
-        .and_then(|rest| rest.strip_prefix("time="))
-        .unwrap_or_else(|| panic!("{output}"));
-    assert!(local == lines[2] || local == lines[3], "{output}");
-    assert!(local.ends_with("+07:00"), "{output}");
-    assert!(
-        lines[1].starts_with("time=") && lines[1].contains("Z level=INFO msg=utc"),
-        "{output}"
-    );
+    for (zone, suffixes) in [
+        ("UTC0", &["+00:00"][..]),
+        ("<+07>-7", &["+07:00"]),
+        ("<+0530>-5:30", &["+05:30"]),
+        ("<-0330>3:30", &["-03:30"]),
+        ("EST5EDT,M3.2.0,M11.1.0", &["-04:00", "-05:00"]),
+    ] {
+        let output = run_in_zone(&executable, zone);
+        let lines: Vec<&str> = output.lines().collect();
+        assert_eq!(lines.len(), 4, "{zone}: {output}");
+        let local = lines[0]
+            .strip_suffix(" level=INFO msg=local")
+            .and_then(|rest| rest.strip_prefix("time="))
+            .unwrap_or_else(|| panic!("{zone}: {output}"));
+        let expected: Vec<String> = lines[2..]
+            .iter()
+            .map(|line| {
+                let (offset, wall) = line.split_once(' ').unwrap();
+                format!("{wall}{}", suffix(offset.parse().unwrap()))
+            })
+            .collect();
+        assert!(expected.iter().any(|e| e == local), "{zone}: {output}");
+        assert!(
+            suffixes.iter().any(|s| local.ends_with(s)),
+            "{zone}: {output}"
+        );
+        assert!(
+            lines[1].starts_with("time=") && lines[1].contains("Z level=INFO msg=utc"),
+            "{zone}: {output}"
+        );
+    }
 }
 
 #[cfg(unix)]
@@ -170,11 +206,16 @@ func session(name string, local bool) {{
     if output.Close() != nil || logger.Err() != nil {{ panic("close") }}
 }}
 
+func localDate() string {{
+    let now = time.UnixSeconds()
+    return log.FormatTime(now + time.LocalOffset(now) / 60 * 60)[:10]
+}}
+
 func main() {{
-    let before = log.FormatLocalTime(time.UnixSeconds())[:10]
+    let before = localDate()
     session("local.log", true)
     session("utc.log", false)
-    let after = log.FormatLocalTime(time.UnixSeconds())[:10]
+    let after = localDate()
     if before != after {{ panic("the test crossed local midnight; run it again") }}
     let _, _ = os.Stdout().WriteString(before)
 }}
@@ -228,13 +269,6 @@ fn local_offsets_match_the_windows_time_zone() {
         let fields: Vec<&str> = line.split(' ').collect();
         assert_eq!(fields[0], t.to_string(), "{text}");
         assert_eq!(fields[1], offset.to_string(), "{text}");
-        let minutes = offset / 60;
-        let suffix = format!(
-            "{}{:02}:{:02}",
-            if minutes < 0 { '-' } else { '+' },
-            minutes.abs() / 60,
-            minutes.abs() % 60
-        );
-        assert!(fields[2].ends_with(&suffix), "{text}");
+        assert_eq!(fields[2].len(), 19, "{text}");
     }
 }

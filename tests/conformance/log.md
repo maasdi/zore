@@ -33,9 +33,7 @@ the package end to end.
 | The first and last representable seconds | `0001-01-01T00:00:00Z`, `9999-12-31T23:59:59Z` |
 | One second outside either end | The decimal Unix seconds |
 | A record from `New` | Starts with `time=` and `FormatTime(time.UnixSeconds())` read around the call |
-| `FormatLocalTime` at `0` and one second before and at each 2026 New York switch, under `TZ=EST5EDT,M3.2.0,M11.1.0` | `1969-12-31T19:00:00-05:00`, `2026-03-08T01:59:59-05:00`, `2026-03-08T03:00:00-04:00`, `2026-11-01T01:59:59-04:00`, `2026-11-01T01:00:00-05:00` (`codegen/local_time.rs`) |
-| `FormatLocalTime` under `<+0530>-5:30` and `<-0330>3:30` | Offsets `+05:30` and `-03:30` |
-| `WithLocalTime().Info(...)` under `TZ=<+07>-7`, next to a default logger | `time=` is `FormatLocalTime` of the moment and ends `+07:00`; the default record still ends in `Z` |
+| `WithLocalTime().Info(...)` under `UTC0`, `<+07>-7`, `<+0530>-5:30`, `<-0330>3:30`, and `EST5EDT,M3.2.0,M11.1.0`, next to a default logger | `time=` is the local wall time of the moment followed by its offset (`+00:00`, `+07:00`, `+05:30`, `-03:30`, `-04:00` or `-05:00`); the default record still ends in `Z` (`codegen/local_time.rs`) |
 
 ## Sharing, blocking, and cleanup
 

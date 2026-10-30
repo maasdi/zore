@@ -8985,11 +8985,10 @@ passed to the code that logs.
 | `(l Logger) With(key, value, ...) Logger` | A copy that adds these fields to every record, after those `l` already adds |
 | `(l Logger) WithLevel(level Level) Logger` | A copy with a different minimum level |
 | `(l Logger) WithoutTime() Logger` | A copy whose records have no `time` field |
-| `(l Logger) WithLocalTime() Logger` | A copy whose `time` field is `FormatLocalTime` instead of `FormatTime` |
+| `(l Logger) WithLocalTime() Logger` | A copy whose `time` field is local time with a numeric offset, described below |
 | `(l Logger) Enabled(level Level) bool` | Whether a record at `level` would be written |
 | `(l Logger) Err() error` | The first output failure of this logger's sink, or `nil` |
 | `FormatTime(seconds int) string` | The UTC timestamp text for Unix time `seconds`, described below |
-| `FormatLocalTime(seconds int) string` | The local timestamp text for Unix time `seconds`, described below |
 
 ```ore
 import "std/log"
@@ -9066,14 +9065,15 @@ seconds (`strconv.Itoa`) outside that range. The wall clock may move backwards,
 so timestamps are not promised to increase. A later calendar package does not
 change this format.
 
-With `WithLocalTime` the `time` field is `FormatLocalTime(time.UnixSeconds())`.
-`FormatLocalTime` takes `m = time.LocalOffset(seconds) / 60` whole minutes
-(§37.3, rounded toward zero) and writes the time `seconds + 60 * m` in the
+With `WithLocalTime`, for `t = time.UnixSeconds()` the `time` field takes
+`m = time.LocalOffset(t) / 60` whole minutes (§37.3, rounded toward zero) and
+writes the time `t + 60 * m` in the
 `FormatTime` form with the final `Z` replaced by the offset `+HH:MM` or
 `-HH:MM` of `m`, so `2026-11-01T01:59:59-04:00` and the next second
 `2026-11-01T01:00:00-05:00` stay distinct when daylight saving ends. When that
 local time is outside years 0001 through 9999, it writes the decimal Unix
-seconds. UTC remains the default; local stamps are opt-in.
+seconds. UTC remains the default; local stamps are opt-in. Formatting a
+local timestamp outside a record is left to the calendar types of `std/time`.
 
 **Sharing and order.** `Logger` is a Copy struct whose copies, including those
 made by `With`, `WithLevel`, and `WithoutTime`, share one sink behind a `Mutex`
@@ -9193,7 +9193,7 @@ to the current day; the size rule above still applies afterwards. The day of
 an instant `t` is `floor(t / 86400)`, so days change at midnight UTC. With
 `Local`, it is `floor((t + 60 * m) / 86400)` for `m = time.LocalOffset(t) / 60`
 read at that instant, so days change at local midnight and follow
-`log.FormatLocalTime`: a day on which daylight saving starts or ends simply
+the local stamps of `WithLocalTime`: a day on which daylight saving starts or ends simply
 lasts 23 or 25 hours. Any change of day starts a new file, including a clock or
 zone that moves the day backwards; the backup names below never repeat, and no
 piece is lost or split. Without `Daily`, `Local` has no effect. With `Daily`, every roll, by day or by size,

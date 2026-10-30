@@ -123,7 +123,7 @@ func (l Logger) emit(level Level, template string, values own Array<string>) {
     if l.stamped {
         let now = time.UnixSeconds()
         if l.local {
-            record.WriteString("time=" + FormatLocalTime(now) + " ")
+            record.WriteString("time=" + localTime(now) + " ")
         } else {
             record.WriteString("time=" + FormatTime(now) + " ")
         }
@@ -245,7 +245,7 @@ func FormatTime(seconds int) string {
     return pad(year, 4) + "-" + pad(month, 2) + "-" + pad(day, 2) + "T" + pad(remainder / 3600, 2) + ":" + pad(remainder / 60 % 60, 2) + ":" + pad(remainder % 60, 2) + "Z"
 }
 
-func FormatLocalTime(seconds int) string {
+func localTime(seconds int) string {
     let minutes = time.LocalOffset(seconds) / 60
     let local = FormatTime(seconds + minutes * 60)
     if local.len() != 20 {

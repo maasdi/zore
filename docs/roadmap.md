@@ -167,7 +167,7 @@ backups and a buffered writer flushed in the background, and optional daily
 rolling into dated backups at midnight UTC. Its
 [benchmark](../benchmarks/logging/README.md) records the per-record cost.
 Issue [#233](https://github.com/maasdi/zore/issues/233) adds opt-in local
-time: `time.LocalOffset`, `log.FormatLocalTime` and `WithLocalTime`, and
+time: `time.LocalOffset`, `Logger.WithLocalTime`, and
 `rolling.Config.Local` for daily rolling at local midnight.
 
 Issue [#195](https://github.com/maasdi/zore/issues/195) overlaps runtime-library
