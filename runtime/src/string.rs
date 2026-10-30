@@ -941,10 +941,11 @@ mod tests {
         let _serial = crate::string::serial();
         release_all();
         let mut text = StringOut::shared(b"x".as_ptr(), 1);
-        for _ in 0..10_000 {
+        let appends = if cfg!(miri) { 300 } else { 10_000 };
+        for _ in 0..appends {
             text = append(&text, "y");
         }
-        assert_eq!(text.len, 10_001);
+        assert_eq!(text.len, appends + 1);
         assert!(buffer_count() <= 16, "{} buffers", buffer_count());
         release_all();
     }
@@ -1024,10 +1025,10 @@ mod tests {
         let text = StringOut::built(b"shared between threads");
         let (address, len) = (text.data.addr(), text.len as usize);
         std::thread::scope(|scope| {
-            for _ in 0..4 {
+            for _ in 0..if cfg!(miri) { 2 } else { 4 } {
                 scope.spawn(move || {
                     let data = std::ptr::with_exposed_provenance::<u8>(address);
-                    for _ in 0..10_000 {
+                    for _ in 0..if cfg!(miri) { 100 } else { 10_000 } {
                         retain(data, len);
                         retain(data.wrapping_add(7), 7);
                         release(data, len);
@@ -1094,9 +1095,9 @@ mod tests {
     fn a_piece_far_inside_a_large_buffer_keeps_it_alive() {
         let _serial = crate::string::serial();
         release_all();
-        let large = vec![b'x'; 3 << 20];
+        let large = vec![b'x'; if cfg!(miri) { 3 << 16 } else { 3 << 20 }];
         let text = StringOut::built(&large);
-        let piece = piece_at(&text, (5 << 19) + 3, 4);
+        let piece = piece_at(&text, large.len() * 5 / 6 + 3, 4);
         let start = piece_at(&text, 0, 2);
         release(text.data, large.len());
         assert_eq!(live_buffers(), 1);
