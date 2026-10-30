@@ -382,10 +382,10 @@ func (c Conn) waitDeadline(writing bool) (time.Instant, bool) {
     return deadline, true
 }
 
-func (c Conn) armSource(writing bool) error {
+func (c Conn) armSource(writing bool, sourceWrite bool) error {
     let deadline, set = c.waitDeadline(writing)
     if !set { return c.source.ClearDeadline() }
-    if writing { return c.source.SetWriteDeadline(deadline) }
+    if sourceWrite { return c.source.SetWriteDeadline(deadline) }
     return c.source.SetReadDeadline(deadline)
 }
 
@@ -405,7 +405,7 @@ func (c mut Conn) flush(writing bool) error {
         if waitErr != nil {
             return waitErr
         }
-        let deadlineErr = c.armSource(true)
+        let deadlineErr = c.armSource(writing, true)
         _ = deadlineErr
         if deadlineErr != nil {
             return deadlineErr
@@ -436,7 +436,7 @@ func (c mut Conn) receive(writing bool) error {
         if waitErr != nil {
             return waitErr
         }
-        let deadlineErr = c.armSource(false)
+        let deadlineErr = c.armSource(writing, false)
         _ = deadlineErr
         if deadlineErr != nil {
             return deadlineErr

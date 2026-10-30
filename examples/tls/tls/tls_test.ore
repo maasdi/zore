@@ -238,7 +238,7 @@ func TestTCPPlainClientAsyncServer() error {
     let n, err = conn.Read(got[:])
     _ = err
     check(n == 0 && err == error("EOF"))
-    conn.SetDeadline(time.Now() - time.Second)?
+    conn.SetDeadline(time.Now().Add(-time.Second))?
     let again, eof = conn.Read(got[:])
     _ = eof
     check(again == 0 && eof == error("EOF"))
@@ -434,7 +434,7 @@ func TestPendingCiphertextSurvivesRepeatedTimeouts() error {
     conn.outputPosition = prefix
     let empty = Array<byte>{}
     for var i = 0; i < 3; i += 1 {
-        conn.SetWriteDeadline(time.Now() - 1)?
+        conn.SetWriteDeadline(time.Now().Add(-1))?
         let n, err = conn.Write(empty[:])
         _ = err
         check(n == 0 && err == error("tls: timed out") && conn.outputPosition == prefix)
