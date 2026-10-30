@@ -163,9 +163,10 @@ timestamps, serialized shared use and sticky output errors. Its cases are in
 timestamps wait for a calendar package and do not change the locked format.
 Issue [#230](https://github.com/maasdi/zore/issues/230) adds `std/log/rolling`
 under §37.13 with `os.Append` and `os.Rename`: size-based rolling with numbered
-backups and a buffered writer flushed in the background. Its
-[benchmark](../benchmarks/logging/README.md) records the per-record cost;
-date-based rolling remains future work.
+backups and a buffered writer flushed in the background, and optional daily
+rolling into dated backups at midnight UTC. Its
+[benchmark](../benchmarks/logging/README.md) records the per-record cost.
+Local-time days wait for a calendar package.
 
 Issue [#195](https://github.com/maasdi/zore/issues/195) overlaps runtime-library
 preparation with clang object generation. Its [Linux build-scheduling report](performance-build-scheduling.md)

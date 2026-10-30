@@ -47,6 +47,7 @@ Authority: spec §37.3–§37.4. The cases below are covered by executable tests
 | `Exit(4)` | The process ends with status 4; later statements do not run |
 | `Append` twice to a new path, writing a line each time | The file holds both lines (`codegen/rolling.rs`) |
 | `Rename` onto an existing file | The target holds the source's contents; the source is gone |
+| `Stat(...).ModTime()` after `WriteFile`, and after the test sets the time to `259205` | Within two seconds of `time.UnixSeconds`; then `259205` |
 | `Rename` of a missing path, `Append` into a missing folder | Errors beginning `os.Rename: ` and `os.Append: ` |
 | `os.Rename(...)` as a statement, `os.Append` with one argument | Rejected: the error must be used; two arguments (`packages/packages.rs`) |
 
