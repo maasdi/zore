@@ -26,3 +26,9 @@ The default seed is `158`. A failure names its seed and a `hardening[class/asser
 ## CI
 
 [`hardening.yml`](../../.github/workflows/hardening.yml) runs weekly, manually, or on a PR labeled `run-hardening`: four seeds at `-O1` (`ZORE_HARDENING_OPTIMIZE`), plus a Linux x86-64 AddressSanitizer job (`ZORE_HARDENING_ASAN=1`). It is not a coverage-guided fuzzer.
+
+The ASan job instruments runtime unit tests, then the controlled native harness's
+generated LLVM functions and runtime. An opt-in heap-overflow canary requires an
+actual ASan memory-access report before running the hardening and 32 bounded
+[acceptance scenarios](mvp-acceptance.md). This job does not instrument every
+native test or establish sanitizer coverage on macOS or Windows.
