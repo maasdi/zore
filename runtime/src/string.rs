@@ -27,25 +27,81 @@ struct Cause {
 const PINNED: usize = 1 << (usize::BITS - 1);
 const HEADER: usize = size_of::<Header>();
 
-/// Buffers start on a granule and cover whole granules, so no granule holds two buffers.
-const GRANULE_BITS: u32 = 5;
-const GRANULE: usize = 1 << GRANULE_BITS;
+const PAGE_BITS: u32 = 12;
+const PAGE: usize = 1 << PAGE_BITS;
 const LEAF_BITS: u32 = 14;
 const MIDDLE_BITS: u32 = 14;
 const ADDRESS_BITS: u32 = 48;
-const ROOT_LEN: usize = 1 << (ADDRESS_BITS - GRANULE_BITS - LEAF_BITS - MIDDLE_BITS);
+const ROOT_LEN: usize = 1 << (ADDRESS_BITS - PAGE_BITS - LEAF_BITS - MIDDLE_BITS);
 const LEAF_LEN: usize = 1 << LEAF_BITS;
 const MIDDLE_LEN: usize = 1 << MIDDLE_BITS;
 
-/// For each granule, one more than its distance in granules from the start of the buffer
-/// that covers it, or zero. Static text lies in no buffer, so it always reads zero.
+/// For each page: zero when no buffer covers it; `SLAB | class << CLASS_SHIFT | index` when it
+/// is page `index` of a span of slots of that class; otherwise one more than its distance in
+/// pages from the start of the large buffer that covers it. Static text lies in no buffer, so
+/// it always reads zero.
 type Leaf = [AtomicU32; LEAF_LEN];
 type Middle = [AtomicPtr<Leaf>; MIDDLE_LEN];
 
-/// Shared by every task without a lock: a buffer marks its granules before its text is
-/// shared and clears them only after its last owner lets go.
-static GRANULES: [AtomicPtr<Middle>; ROOT_LEN] =
+/// Shared by every task without a lock: a page is marked before any text on it is shared,
+/// and a large buffer's pages are cleared only after its last owner lets go.
+static PAGES: [AtomicPtr<Middle>; ROOT_LEN] =
     [const { AtomicPtr::new(std::ptr::null_mut()) }; ROOT_LEN];
+
+const SLAB: u32 = 1 << 31;
+const CLASS_SHIFT: u32 = 8;
+const INDEX_MASK: u32 = (1 << CLASS_SHIFT) - 1;
+
+/// Small buffers, header included, are slots of one of these sizes, about a quarter apart.
+const CLASSES: [usize; 38] = [
+    48, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 384, 448, 512, 640, 768, 896, 1024, 1280,
+    1536, 1792, 2048, 2560, 3072, 3584, 4096, 5120, 6144, 7168, 8192, 10240, 12288, 14336, 16384,
+    20480, 24576, 28672, 32768,
+];
+const LARGEST_SLOT: usize = CLASSES[CLASSES.len() - 1];
+
+/// Slots are carved from spans of whole pages, each page knowing its index in the span.
+const SPAN: usize = 64 * PAGE;
+
+const RECIPROCAL_SHIFT: u32 = 40;
+
+/// `offset * RECIPROCALS[class] >> RECIPROCAL_SHIFT` is `offset / CLASSES[class]` within a span.
+const RECIPROCALS: [u64; CLASSES.len()] = {
+    let mut reciprocals = [0; CLASSES.len()];
+    let mut class = 0;
+    while class < CLASSES.len() {
+        reciprocals[class] = (1u64 << RECIPROCAL_SHIFT).div_ceil(CLASSES[class] as u64);
+        class += 1;
+    }
+    reciprocals
+};
+
+fn slab_entry(class: usize, index: usize) -> u32 {
+    SLAB | (class as u32) << CLASS_SHIFT | index as u32
+}
+
+fn slab_class(entry: u32) -> usize {
+    ((entry & !SLAB) >> CLASS_SHIFT) as usize
+}
+
+/// The smallest class that holds `(size - 1) / 16 + 1` sixteen-byte units.
+const CLASS_OF_UNITS: [u8; LARGEST_SLOT / 16] = {
+    let mut table = [0; LARGEST_SLOT / 16];
+    let mut units = 0;
+    let mut class = 0;
+    while units < table.len() {
+        while CLASSES[class] < (units + 1) * 16 {
+            class += 1;
+        }
+        table[units] = class as u8;
+        units += 1;
+    }
+    table
+};
+
+fn class_for(size: usize) -> Option<usize> {
+    (size <= LARGEST_SLOT).then(|| CLASS_OF_UNITS[(size.max(1) - 1) / 16] as usize)
+}
 
 /// Unpinned buffers counted per thread group, so tasks on different workers do not
 /// contend for one counter; the sum is the count.
@@ -106,30 +162,34 @@ fn child<T>(slot: &AtomicPtr<T>, create: bool) -> Option<&'static T> {
     Some(unsafe { &*node })
 }
 
-fn leaf(granule: usize, create: bool) -> Option<&'static Leaf> {
-    let root = GRANULES.get(granule >> (LEAF_BITS + MIDDLE_BITS))?;
+fn leaf(page: usize, create: bool) -> Option<&'static Leaf> {
+    let root = PAGES.get(page >> (LEAF_BITS + MIDDLE_BITS))?;
     let middle = child(root, create)?;
-    child(&middle[(granule >> LEAF_BITS) % MIDDLE_LEN], create)
+    child(&middle[(page >> LEAF_BITS) % MIDDLE_LEN], create)
 }
 
-/// Points each granule of `size` bytes at `base` to the buffer there, or clears them.
-fn mark(base: usize, size: usize, marked: bool) {
-    let first = base >> GRANULE_BITS;
-    let count = size >> GRANULE_BITS;
+/// Sets each page of `size` bytes at `base` to `entry(offset)`, its offset in pages.
+fn mark(base: usize, size: usize, entry: impl Fn(usize) -> u32) {
+    let first = base >> PAGE_BITS;
+    let count = size >> PAGE_BITS;
     let mut offset = 0;
     while offset < count {
-        let granule = first + offset;
-        let Some(leaf) = leaf(granule, marked) else {
+        let page = first + offset;
+        let Some(leaf) = leaf(page, true) else {
             unsupported_address();
         };
-        let start = granule % LEAF_LEN;
+        let start = page % LEAF_LEN;
         let run = (LEAF_LEN - start).min(count - offset);
-        for (step, entry) in leaf[start..start + run].iter().enumerate() {
-            let distance = if marked { offset + step + 1 } else { 0 };
-            entry.store(distance as u32, Ordering::Relaxed);
+        for (step, slot) in leaf[start..start + run].iter().enumerate() {
+            slot.store(entry(offset + step), Ordering::Relaxed);
         }
         offset += run;
     }
+}
+
+fn page_entry(address: usize) -> u32 {
+    let page = address >> PAGE_BITS;
+    leaf(page, false).map_or(0, |leaf| leaf[page % LEAF_LEN].load(Ordering::Relaxed))
 }
 
 fn unsupported_address() -> ! {
@@ -173,24 +233,189 @@ fn buffer_of(data: *const u8, len: usize) -> Option<Buffer> {
     if len == 0 {
         return None;
     }
-    let granule = data.addr() >> GRANULE_BITS;
-    let distance = leaf(granule, false)?[granule % LEAF_LEN].load(Ordering::Relaxed) as usize;
-    if distance == 0 {
+    let address = data.addr();
+    let entry = page_entry(address);
+    let base = if entry & SLAB != 0 {
+        let class = slab_class(entry);
+        let span = ((address >> PAGE_BITS) - (entry & INDEX_MASK) as usize) << PAGE_BITS;
+        let slot = ((address - span) as u64 * RECIPROCALS[class]) >> RECIPROCAL_SHIFT;
+        span + slot as usize * CLASSES[class]
+    } else if entry != 0 {
+        ((address >> PAGE_BITS) + 1 - entry as usize) << PAGE_BITS
+    } else {
+        return None;
+    };
+    let header = data.cast_mut().wrapping_byte_sub(address - base).cast();
+    NonNull::new(header).map(Buffer)
+}
+
+/// Free slots of one class, linked through the word where each slot's text starts, and
+/// the untouched rest of the span slots are carved from next, from `next` to `end`.
+struct FreeList {
+    head: *mut u8,
+    len: usize,
+    next: *mut u8,
+    end: *mut u8,
+}
+
+// SAFETY: a list only links slots that nobody reads, and moves with whoever holds it.
+unsafe impl Send for FreeList {}
+
+impl FreeList {
+    const EMPTY: Self = Self {
+        head: std::ptr::null_mut(),
+        len: 0,
+        next: std::ptr::null_mut(),
+        end: std::ptr::null_mut(),
+    };
+
+    fn push(&mut self, slot: *mut u8) {
+        // SAFETY: a free slot is ours, with room for a link after its header.
+        unsafe { slot.add(HEADER).cast::<*mut u8>().write(self.head) };
+        self.head = slot;
+        self.len += 1;
+    }
+
+    fn pop(&mut self) -> Option<*mut u8> {
+        let slot = NonNull::new(self.head)?.as_ptr();
+        // SAFETY: a listed slot holds the link written by `push`.
+        self.head = unsafe { slot.add(HEADER).cast::<*mut u8>().read() };
+        self.len -= 1;
+        Some(slot)
+    }
+
+    /// Moves up to `count` slots from the front of this list onto `other`.
+    fn move_to(&mut self, other: &mut Self, count: usize) {
+        for _ in 0..count {
+            let Some(slot) = self.pop() else {
+                return;
+            };
+            other.push(slot);
+        }
+    }
+}
+
+/// How many free slots of a class move between a thread and the shared lists at once.
+const BATCH: usize = 64;
+
+static SHARED: [std::sync::Mutex<FreeList>; CLASSES.len()] =
+    [const { std::sync::Mutex::new(FreeList::EMPTY) }; CLASSES.len()];
+
+fn shared(class: usize) -> std::sync::MutexGuard<'static, FreeList> {
+    SHARED[class]
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// Each thread keeps its own free slots, so most allocations and frees take no lock.
+struct Cache([std::cell::UnsafeCell<FreeList>; CLASSES.len()]);
+
+impl Drop for Cache {
+    fn drop(&mut self) {
+        for (class, list) in self.0.iter_mut().enumerate() {
+            let list = list.get_mut();
+            let mut shared = shared(class);
+            if carve(&mut shared, class).is_none() {
+                std::mem::swap(&mut shared.next, &mut list.next);
+                std::mem::swap(&mut shared.end, &mut list.end);
+            }
+            while let Some(slot) = carve(list, class) {
+                list.push(slot);
+            }
+            let len = list.len;
+            list.move_to(&mut shared, len);
+        }
+    }
+}
+
+thread_local! {
+    static CACHE: Cache = const { Cache([const { std::cell::UnsafeCell::new(FreeList::EMPTY) }; CLASSES.len()]) };
+}
+
+/// Runs `f` on this thread's free list of `class`, or on the shared one once the thread is ending.
+fn with_free_list<R>(class: usize, f: impl FnOnce(&mut FreeList) -> R) -> R {
+    let mut f = Some(f);
+    let result = CACHE.try_with(|cache| {
+        // SAFETY: only this thread reaches its cache, and `f` does not reenter it.
+        let list = unsafe { &mut *cache.0[class].get() };
+        (f.take().expect("runs once"))(list)
+    });
+    match result {
+        Ok(result) => result,
+        Err(_) => (f.take().expect("runs once"))(&mut shared(class)),
+    }
+}
+
+/// The next untouched slot of the list's span, if one is left.
+fn carve(list: &mut FreeList, class: usize) -> Option<*mut u8> {
+    let size = CLASSES[class];
+    if list.next.is_null() || list.end.addr() - list.next.addr() < size {
         return None;
     }
-    let base = (granule + 1 - distance) << GRANULE_BITS;
-    let header = data.cast_mut().wrapping_byte_sub(data.addr() - base).cast();
-    NonNull::new(header).map(Buffer)
+    let slot = list.next;
+    list.next = slot.wrapping_add(size);
+    Some(slot)
+}
+
+/// A fresh zeroed span of `class`: every slot in it reads zero owners, so it counts as free.
+fn new_span(class: usize, list: &mut FreeList) {
+    let span = super::alloc::alloc_kept(SPAN, PAGE);
+    mark(span.expose_provenance(), SPAN, |index| {
+        slab_entry(class, index)
+    });
+    list.next = span;
+    list.end = span.wrapping_add(SPAN);
+}
+
+fn alloc_slot(class: usize) -> *mut u8 {
+    let slot = with_free_list(class, |list| {
+        if let Some(slot) = list.pop().or_else(|| carve(list, class)) {
+            return slot;
+        }
+        let mut shared = shared(class);
+        shared.move_to(list, BATCH);
+        if list.len == 0 {
+            std::mem::swap(&mut shared.next, &mut list.next);
+            std::mem::swap(&mut shared.end, &mut list.end);
+        }
+        drop(shared);
+        if let Some(slot) = list.pop().or_else(|| carve(list, class)) {
+            return slot;
+        }
+        new_span(class, list);
+        carve(list, class).expect("a fresh span has a slot")
+    });
+    super::alloc::count_live(CLASSES[class], true);
+    slot
+}
+
+fn free_slot(slot: *mut u8, class: usize) {
+    super::alloc::count_live(CLASSES[class], false);
+    with_free_list(class, |list| {
+        list.push(slot);
+        if list.len > 2 * BATCH {
+            list.move_to(&mut shared(class), BATCH);
+        }
+    });
 }
 
 /// Adds a buffer with one owner holding `used` bytes of at least `capacity`, copied from the given pieces.
 fn new_buffer(pieces: &[&[u8]], capacity: usize) -> *mut u8 {
-    let size = HEADER
+    let wanted = HEADER
         .checked_add(capacity)
-        .and_then(|size| size.checked_next_multiple_of(GRANULE))
-        .filter(|size| size >> GRANULE_BITS < u32::MAX as usize)
         .unwrap_or_else(|| out_of_memory());
-    let base = alloc_aligned(size, GRANULE);
+    let (base, size) = match class_for(wanted) {
+        Some(class) => (alloc_slot(class), CLASSES[class]),
+        None => {
+            let size = wanted
+                .checked_next_multiple_of(PAGE)
+                .filter(|size| size >> PAGE_BITS < SLAB as usize)
+                .unwrap_or_else(|| out_of_memory());
+            let base = alloc_aligned(size, PAGE);
+            mark(base.expose_provenance(), size, |page| page as u32 + 1);
+            (base, size)
+        }
+    };
     let data = base.wrapping_add(HEADER);
     let mut used = 0;
     for piece in pieces {
@@ -207,7 +432,6 @@ fn new_buffer(pieces: &[&[u8]], capacity: usize) -> *mut u8 {
             cause: AtomicPtr::new(std::ptr::null_mut()),
         })
     };
-    mark(base.expose_provenance(), size, true);
     count_unpinned(1);
     data
 }
@@ -222,9 +446,15 @@ unsafe fn free_buffer(buffer: Buffer, release_cause: bool) {
     }
     let cause = buffer.cause.load(Ordering::Acquire);
     let size = HEADER + buffer.capacity;
-    mark(buffer.base().addr(), size, false);
-    // SAFETY: the buffer came from `alloc_aligned(size, GRANULE)`, and nothing reads it now.
-    unsafe { free_aligned(buffer.base(), size, GRANULE) };
+    let entry = page_entry(buffer.base().addr());
+    if entry & SLAB != 0 {
+        buffer.owners.store(0, Ordering::Relaxed);
+        free_slot(buffer.base(), slab_class(entry));
+    } else {
+        mark(buffer.base().addr(), size, |_| 0);
+        // SAFETY: the buffer came from `alloc_aligned(size, PAGE)`, and nothing reads it now.
+        unsafe { free_aligned(buffer.base(), size, PAGE) };
+    }
     if !cause.is_null() {
         // SAFETY: the cause was boxed for this buffer alone.
         let cause = unsafe { Box::from_raw(cause) };
@@ -358,7 +588,7 @@ pub(super) fn live_buffers() -> usize {
 /// Frees every buffer; only for when no task can read text any more.
 pub(super) fn release_all() {
     let mut bases = Vec::new();
-    for (root, middle) in GRANULES.iter().enumerate() {
+    for (root, middle) in PAGES.iter().enumerate() {
         let Some(middle) = child(middle, false) else {
             continue;
         };
@@ -368,17 +598,26 @@ pub(super) fn release_all() {
             };
             let first = ((root << MIDDLE_BITS) + index) << LEAF_BITS;
             for (offset, entry) in leaf.iter().enumerate() {
-                if entry.load(Ordering::Relaxed) == 1 {
-                    bases.push((first + offset) << GRANULE_BITS);
+                let entry = entry.load(Ordering::Relaxed);
+                let base = (first + offset) << PAGE_BITS;
+                if entry == 1 {
+                    bases.push(base);
+                } else if entry & SLAB != 0 && entry & INDEX_MASK == 0 {
+                    let size = CLASSES[slab_class(entry)];
+                    bases.extend((0..SPAN / size).map(|slot| base + slot * size));
                 }
             }
         }
     }
     for base in bases {
         let header = std::ptr::with_exposed_provenance_mut::<Header>(base);
-        if let Some(header) = NonNull::new(header) {
-            // SAFETY: each marked buffer start holds a live header, and no task reads text now.
-            unsafe { free_buffer(Buffer(header), false) };
+        let Some(header) = NonNull::new(header) else {
+            continue;
+        };
+        let buffer = Buffer(header);
+        if buffer.owners.load(Ordering::Relaxed) != 0 {
+            // SAFETY: a slot or large buffer with owners holds a live header, and no task reads text now.
+            unsafe { free_buffer(buffer, false) };
         }
     }
 }
@@ -646,6 +885,11 @@ mod tests {
         }
     }
 
+    /// Freed text has no buffer, or lies in a slot that waits for reuse.
+    fn freed(data: *const u8, len: usize) -> bool {
+        buffer_of(data, len).is_none_or(|buffer| buffer.owners.load(Ordering::Relaxed) == 0)
+    }
+
     fn buffer_count() -> usize {
         live_buffers()
     }
@@ -876,7 +1120,7 @@ mod tests {
         assert_eq!(live_buffers(), 1);
         release_all();
         assert_eq!(live_buffers(), 0);
-        assert!(buffer_of(leaked.data, 6).is_none());
+        assert!(freed(leaked.data, 6));
     }
 
     #[test]
@@ -892,6 +1136,151 @@ mod tests {
         assert!(cause_of(wrapped.data, 7).is_none());
         release(unwrapped.0, unwrapped.1);
         release(wrapped.data, 14);
+        assert_eq!(live_buffers(), 0);
+    }
+
+    #[test]
+    fn every_small_size_gets_the_smallest_class_and_slot_division_is_exact() {
+        let mut previous = 0;
+        for (class, &size) in CLASSES.iter().enumerate() {
+            assert_eq!(size % 16, 0);
+            for wanted in previous + 1..=size {
+                assert_eq!(class_for(wanted), Some(class), "{wanted} bytes");
+            }
+            previous = size;
+            let step = if cfg!(miri) { 4093 } else { 1 };
+            for offset in (0..SPAN).step_by(step) {
+                assert_eq!(
+                    ((offset as u64 * RECIPROCALS[class]) >> RECIPROCAL_SHIFT) as usize,
+                    offset / size
+                );
+            }
+        }
+        assert_eq!(class_for(LARGEST_SLOT + 1), None);
+    }
+
+    #[test]
+    fn every_byte_of_a_slot_finds_its_own_header() {
+        let _serial = crate::string::serial();
+        release_all();
+        let texts: Vec<StringOut> = (0..40u8).map(|i| StringOut::built(&[i; 70])).collect();
+        for text in &texts {
+            let buffer = buffer_of(text.data, 70).expect("built text has a buffer");
+            assert_eq!(buffer.text().cast_const(), text.data);
+            assert!(page_entry(buffer.base().addr()) & SLAB != 0);
+            for offset in 0..70 {
+                let inside = buffer_of(text.data.wrapping_add(offset), 1).expect("inside the slot");
+                assert_eq!(inside.base(), buffer.base());
+            }
+        }
+        let pieces: Vec<StringOut> = texts.iter().map(|text| piece_at(text, 69, 1)).collect();
+        for text in &texts {
+            release(text.data, 70);
+        }
+        assert_eq!(live_buffers(), 40);
+        for (i, piece) in pieces.iter().enumerate() {
+            assert_eq!(read(piece).as_bytes(), [i as u8]);
+            release(piece.data, 1);
+        }
+        assert_eq!(live_buffers(), 0);
+        assert!(texts.iter().all(|text| freed(text.data, 70)));
+    }
+
+    #[test]
+    fn a_large_buffer_covers_whole_pages_and_clears_them_when_freed() {
+        let _serial = crate::string::serial();
+        release_all();
+        let large = vec![b'y'; 10 * PAGE];
+        let text = StringOut::built(&large);
+        let buffer = buffer_of(text.data, large.len()).expect("built text has a buffer");
+        assert_eq!(buffer.base().addr() % PAGE, 0);
+        assert_eq!((HEADER + buffer.capacity) % PAGE, 0);
+        for page in 0..=10 {
+            let inside = text.data.wrapping_add((page * PAGE).min(large.len() - 1));
+            assert_eq!(buffer_of(inside, 1).expect("inside").base(), buffer.base());
+        }
+        release(text.data, large.len());
+        assert_eq!(live_buffers(), 0);
+        for page in 0..=10 {
+            assert_eq!(page_entry(buffer.base().addr() + page * PAGE), 0);
+        }
+    }
+
+    #[test]
+    fn slots_freed_on_another_thread_are_reused_and_counted() {
+        let _serial = crate::string::serial();
+        release_all();
+        let count = if cfg!(miri) { 3 * BATCH } else { 8 * BATCH };
+        let bytes_before = crate::alloc::live_bytes();
+        let addresses: Vec<usize> = std::thread::spawn(move || {
+            (0..count)
+                .map(|i| {
+                    StringOut::built(format!("slot {i:04}").as_bytes())
+                        .data
+                        .expose_provenance()
+                })
+                .collect()
+        })
+        .join()
+        .unwrap();
+        assert_eq!(live_buffers(), count);
+        assert_eq!(
+            crate::alloc::live_bytes() - bytes_before,
+            count * CLASSES[0]
+        );
+        let sent = addresses.clone();
+        std::thread::spawn(move || {
+            for data in sent {
+                release(std::ptr::with_exposed_provenance(data), 9);
+            }
+        })
+        .join()
+        .unwrap();
+        assert_eq!(live_buffers(), 0);
+        assert_eq!(crate::alloc::live_bytes(), bytes_before);
+        let freed: std::collections::HashSet<usize> = addresses.into_iter().collect();
+        let again: Vec<usize> = std::thread::spawn(|| {
+            (0..BATCH)
+                .map(|i| {
+                    let text = StringOut::built(format!("again {i:02}").as_bytes());
+                    assert_eq!(read(&text), format!("again {i:02}"));
+                    text.data.expose_provenance()
+                })
+                .collect()
+        })
+        .join()
+        .unwrap();
+        let reused = again.iter().filter(|data| freed.contains(data)).count();
+        assert_eq!(
+            reused, BATCH,
+            "a new thread takes the slots the last thread gave back"
+        );
+        for data in again {
+            release(std::ptr::with_exposed_provenance(data), 8);
+        }
+        assert_eq!(live_buffers(), 0);
+        assert_eq!(crate::alloc::live_bytes(), bytes_before);
+    }
+
+    #[test]
+    fn appending_fills_the_slot_and_then_moves_to_a_larger_class() {
+        let _serial = crate::string::serial();
+        release_all();
+        let mut text = StringOut::built(b"ab");
+        let first = buffer_of(text.data, 2).unwrap();
+        assert_eq!(HEADER + first.capacity, CLASSES[0]);
+        for _ in 0..7 {
+            let next = append(&text, "cd");
+            release(text.data, text.len as usize);
+            text = next;
+        }
+        assert_eq!(text.len, 16);
+        assert_eq!(buffer_of(text.data, 16).unwrap().base(), first.base());
+        let grown = append(&text, "e");
+        assert_ne!(buffer_of(grown.data, 17).unwrap().base(), first.base());
+        assert_eq!(read(&grown), "abcdcdcdcdcdcdcde");
+        release(text.data, 16);
+        release(grown.data, 17);
         assert_eq!(live_buffers(), 0);
     }
 }

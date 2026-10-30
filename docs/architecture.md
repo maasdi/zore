@@ -645,11 +645,16 @@ storage after a bounds and character-boundary check. A copy that is kept adds an
 owner (`zore_string_retain`) and ending its life removes one
 (`zore_string_release`); the last owner frees the buffer. The owner count is
 an atomic in a header in front of the text, so retain and release take no lock.
-A slice can point into the middle of a buffer, so each buffer marks the 32-byte
-granules it covers in a lock-free three-level table over 48-bit addresses (the
-runtime aborts if a buffer lands higher), and any address inside it
-finds the header with a few loads; static text lies in no buffer and is never
-counted or freed. Text counts as a
+A slice can point into the middle of a buffer, so a lock-free three-level table
+over 48-bit addresses (the runtime aborts if a buffer lands higher) keeps one
+entry per 4 KiB page, and any address inside a buffer finds the header with a
+few loads. Buffers up to 32 KiB, header included, are slots of 38 sizes about a
+quarter apart, carved from 256 KiB spans whose page entries name the size and
+the page's place in the span, so the slot follows from one multiplication;
+larger buffers cover whole pages of their own. Freed slots go to a per-thread
+free list, spilling to and refilling from a shared list per size in batches of
+64, so most allocations and frees take no lock; spans are kept for reuse. Static
+text lies in no buffer and is never counted or freed. Text counts as a
 value that needs cleanup even though it is Copy: drop flags, scope-end drops,
 and the panic cleanup path cover it, and a value of a Copy type that holds text
 (a struct or fixed array with a `string` or `error` inside) is retained field by

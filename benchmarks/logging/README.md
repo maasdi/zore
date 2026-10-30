@@ -73,3 +73,42 @@ then in four tasks at the same time:
 
 Before, four tasks took about twenty times as long as one because every
 retain and release waited for the same lock; after, they run side by side.
+
+## String storage by page — 2026-10-30
+
+Issue #237 replaces the one-entry-per-32-byte-granule table with one entry per
+4 KiB page, and puts buffers up to 32 KiB (header included) in slots of 38
+sizes carved from 256 KiB spans, reused through per-thread free lists. The
+table itself drops from 4 bytes per 32 bytes of text (12.5%) to 4 bytes per
+4 KiB (about 0.1%); a slot rounds a buffer up by less than a quarter, and a
+buffer over 32 KiB by less than one page.
+
+Same host as above (four CPUs in process affinity this time), a release `zore`
+binary of each build, three runs each (lowest–highest), from the same checkout.
+Peak resident memory is the process's maximum RSS. Local evidence for one host
+only.
+
+| Workload | Before | After |
+| --- | --- | --- |
+| 1,000,000 strings `"key-" + strconv.Itoa(i)` held in an array, peak RSS | 157.2 MiB | 64.8–64.9 MiB |
+| the same, wall time | 484–2,203 ms | 233–330 ms |
+| 4,000 strings of 20,005 bytes held in an array, peak RSS | 90.2–90.3 MiB | 88.2–88.3 MiB |
+| the same, wall time | 94–117 ms | 94–98 ms |
+| 200,000 short strings in one task | 101–112 ms | 86–126 ms |
+| the same in four tasks at once (six alternating runs) | 174–243 ms | 188–211 ms |
+
+The logging benchmark, three alternating runs each:
+
+| Sink | Before | After |
+| --- | --- | --- |
+| Record filtered by level | 1.4–1.7 µs | 1.5–2.5 µs |
+| Discarding writer, no timestamp | 8.9–10.3 µs | 9.1–9.6 µs |
+| Discarding writer, with timestamp | 10.8–12.3 µs | 11.0–11.4 µs |
+| `os.File` | 61.8–65.9 µs | 59.9–63.2 µs |
+| `rolling`, 64 KiB buffer | 10.2–12.7 µs | 10.2–11.0 µs |
+| `rolling`, 64 KiB buffer, `Daily` | 9.7–11.5 µs | 10.1–12.7 µs |
+| `rolling`, unbuffered | 60.3–67.6 µs | 59.1–64.0 µs |
+
+The logging and four-task differences are within run-to-run spread. Freed
+slots and spans stay with the program for reuse rather than returning to the
+system, and table nodes are never freed, as before.

@@ -55,6 +55,31 @@ fn alloc_layout(layout: Layout) -> *mut u8 {
     data
 }
 
+/// Zeroed storage that stays for the rest of the program, outside the live byte count.
+pub(super) fn alloc_kept(bytes: usize, align: usize) -> *mut u8 {
+    let Ok(layout) = Layout::from_size_align(bytes, align) else {
+        out_of_memory();
+    };
+    // SAFETY: callers pass a nonzero size.
+    let data = unsafe { std::alloc::alloc_zeroed(layout) };
+    if data.is_null() {
+        out_of_memory();
+    }
+    data
+}
+
+/// Counts `bytes` carved from kept storage as live or no longer live.
+pub(super) fn count_live(bytes: usize, live: bool) {
+    #[cfg(any(test, zore_test_hooks))]
+    if live {
+        LIVE_BYTES.fetch_add(bytes, std::sync::atomic::Ordering::Relaxed);
+    } else {
+        LIVE_BYTES.fetch_sub(bytes, std::sync::atomic::Ordering::Relaxed);
+    }
+    #[cfg(not(any(test, zore_test_hooks)))]
+    let _ = (bytes, live);
+}
+
 /// Frees storage from `zore_alloc(bytes)`; null or zero-byte storage is a no-op.
 ///
 /// # Safety
