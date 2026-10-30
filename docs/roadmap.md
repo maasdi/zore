@@ -154,6 +154,14 @@ Unrestricted native extensions remain separate work. Local paths remain mutable
 references even with a lockfile.
 Further self-hosting remains deferred.
 
+Issue [#212](https://github.com/maasdi/zore/issues/212), under the foundations
+tracker #210, adds `std/log` under §37.12: a value-based structured logger over
+any `io.Writer` with levels, compiler-checked message templates whose holes
+become fields, stable record escaping, UTC second
+timestamps, serialized shared use and sticky output errors. Its cases are in
+[the log conformance list](../tests/conformance/log.md). Sub-second or local-time
+timestamps wait for a calendar package and do not change the locked format.
+
 Issue [#195](https://github.com/maasdi/zore/issues/195) overlaps runtime-library
 preparation with clang object generation. Its [Linux build-scheduling report](performance-build-scheduling.md)
 records current-main stage profiles, alternating warm/cold measurements and raw

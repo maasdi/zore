@@ -43,7 +43,9 @@ when existing code belongs in it (rule 11: no empty scaffolding):
   constant evaluation), `hir/` (`expr.rs`, `stmt.rs`, `function.rs`, `lower.rs`,
   `lower/closure_kind.rs`, which decides which closures own their captures,
   `lower/format.rs`, which checks `std/fmt` calls against their formats and
-  turns them into string building, `lower/interface.rs`, which checks interface satisfaction, conversions, and
+  turns them into string building, `lower/log_template.rs`, which checks
+  `std/log` message templates and `With` pairs and passes the values' text to
+  the package, `lower/interface.rs`, which checks interface satisfaction, conversions, and
   calls through interfaces, and `lower/generic.rs`, which infers type arguments,
   checks them against constraints, and makes one copy of a generic function or
   method per set of type arguments plus a never-compiled copy that checks

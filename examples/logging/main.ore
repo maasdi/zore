@@ -1,0 +1,47 @@
+package main
+
+import "std/errors"
+import "std/log"
+import "std/os"
+
+let errDiskFull = error("disk full")
+
+type FullDisk struct {}
+
+func (d FullDisk) Write(data []byte) (int, error) {
+    return 0, errDiskFull
+}
+
+func copyFiles(logger log.Logger, names []string) int {
+    var copied = 0
+    for name in names {
+        let file = logger.With("file", name)
+        file.Debug("copying")
+        if name == "" {
+            file.Warn("skipped an empty name")
+            continue
+        }
+        copied += 1
+    }
+    return copied
+}
+
+func main() {
+    let logger = log.New(os.Stdout(), log.LevelInfo).WithoutTime()
+    logger.Info("starting")
+    let names = Array<string>{"notes.txt", "", "photo of us.jpg"}
+    let copied = copyFiles(logger.With("job", "backup"), names[:])
+    logger.Info("copied {copied} of {total} files", copied, names.len())
+
+    _ = copyFiles(logger.WithLevel(log.LevelDebug), Array<string>{"a.txt"}[:])
+
+    let broken = log.New(FullDisk{}, log.LevelInfo)
+    broken.Error("this record is lost")
+    let err = broken.Err()
+    logger.Error("log output failed: {error}", err)
+    println(err == errDiskFull)
+    println(errors.Message(err))
+
+    println(log.FormatTime(0))
+    println(log.FormatTime(1767225600))
+}

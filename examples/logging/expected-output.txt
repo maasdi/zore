@@ -1,0 +1,9 @@
+level=INFO msg=starting
+level=WARN msg="skipped an empty name" job=backup file=""
+level=INFO msg="copied 2 of 3 files" copied=2 total=3
+level=DEBUG msg=copying file=a.txt
+level=ERROR msg="log output failed: disk full" error="disk full"
+true
+disk full
+1970-01-01T00:00:00Z
+2026-01-01T00:00:00Z

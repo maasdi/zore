@@ -16,6 +16,7 @@ bundled! {
     "encoding/json" => ["encoder.ore", "decoder.ore", "value.ore", "codec.ore"],
     "fmt" => ["fmt.ore"],
     "io" => ["io.ore"],
+    "log" => ["log.ore"],
     "maps" => ["maps.ore"],
     "math" => ["math.ore"],
     "net" => ["net.ore"],

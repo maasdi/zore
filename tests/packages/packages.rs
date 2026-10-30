@@ -530,6 +530,111 @@ fn the_time_os_bufio_and_net_packages_type_check_their_uses() {
 }
 
 #[test]
+fn the_log_package_checks_templates_and_values() {
+    let imports = "import \"std/log\"\nimport \"std/os\"";
+    let with_logger = |body: &str| {
+        main_with(
+            imports,
+            &format!(
+                "let logger = log.New(os.Stderr(), log.LevelInfo)\nlet text = \"t\"\n_ = text\n{body}"
+            ),
+        )
+    };
+    accepts(&[(
+        "main.ore",
+        &with_logger(
+            "let copy = logger.With(\"id\", 7, \"ok\", true)\nlogger.Info(\"a {b} {{c}}\", 1)\ncopy.Log(log.LevelWarn, \"{text}\", text)\nlogger.Log(2, \"untyped level\")",
+        ),
+    )]);
+    for (body, message) in [
+        (
+            "let bad = log.New(\"text\", log.LevelInfo)",
+            "`string` does not satisfy `io.Writer`",
+        ),
+        (
+            "let level = 1\nlogger.Log(level, \"x\")",
+            "mismatched types",
+        ),
+        (
+            "logger.Info(\"one {a}\")",
+            "template has 1 hole but 0 values were given",
+        ),
+        (
+            "logger.Info(\"none\", 1)",
+            "template has 0 holes but 1 value was given",
+        ),
+        (
+            "logger.Info(text)",
+            "the template of `log.Logger.Info` must be a constant string",
+        ),
+        ("logger.Info(\"{1x}\", 1)", "is not a hole name"),
+        (
+            "logger.Info(\"open {a\", 1)",
+            "a `{` hole is not closed by `}`",
+        ),
+        ("logger.Info(\"lone }\")", "a lone `}` must be written `}}`"),
+        (
+            "logger.Info(\"{a}\", Array<int>{1})",
+            "`log.Logger.Info` cannot format a value of type",
+        ),
+        (
+            "logger.Info()",
+            "`log.Logger.Info` needs a message template",
+        ),
+        (
+            "let w = logger.With(\"k\")",
+            "`log.Logger.With` takes keys and values in pairs",
+        ),
+        (
+            "let w = logger.With(text, 1)",
+            "the key of `log.Logger.With` must be a constant string",
+        ),
+        (
+            "let w = logger.With(\"bad key\", 1)",
+            "`bad key` is not a log key",
+        ),
+        (
+            "let f = logger.Info",
+            "a logging method cannot be used as a value",
+        ),
+        (
+            "let failed bool = logger.Info(\"a\")",
+            "this call has no value",
+        ),
+        (
+            "logger.emit(log.LevelInfo, \"a\", Array<string>{})",
+            "not exported",
+        ),
+        (
+            "logger.Info(\"{msg}\", 1)",
+            "`log.Logger.Info` cannot use the key `msg`",
+        ),
+        (
+            "let w = logger.With(\"level\", 1)",
+            "`log.Logger.With` cannot use the key `level`",
+        ),
+        (
+            "logger.Info(\"{id} {id}\", 1, 2)",
+            "`log.Logger.Info` uses the key `id` twice",
+        ),
+        (
+            "let w = logger.With(\"id\", 1, \"id\", 2)",
+            "`log.Logger.With` uses the key `id` twice",
+        ),
+    ] {
+        rejects(&[("main.ore", &with_logger(body))], message);
+    }
+    let through_interface = format!(
+        "{}\ntype Infoer interface {{\n    Info(template string)\n}}\n",
+        with_logger("let i Infoer = logger")
+    );
+    rejects(
+        &[("main.ore", &through_interface)],
+        "its method `Info` is a checked logging call",
+    );
+}
+
+#[test]
 fn the_io_packages_reject_misuse() {
     let net = "import \"std/net\"";
     rejects(

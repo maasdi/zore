@@ -51,7 +51,7 @@ struct Verb {
 
 /// How a value of one type is turned into text.
 #[derive(Clone, Copy, PartialEq)]
-enum Shape {
+pub(super) enum Shape {
     Stringer(FunctionId),
     Bool,
     Signed,
@@ -397,6 +397,21 @@ impl Checker<'_> {
     }
 
     fn shape(&mut self, ty: TypeId, span: Span, kind: FormatKind) -> Option<Shape> {
+        self.shape_for(
+            ty,
+            span,
+            kind.name(),
+            "fmt formats bool, numbers, rune, string, error, and types with a `String() string` method",
+        )
+    }
+
+    pub(super) fn shape_for(
+        &mut self,
+        ty: TypeId,
+        span: Span,
+        caller: &str,
+        note: &str,
+    ) -> Option<Shape> {
         if let Some(method) = self.method_of(ty, "String")
             && self.is_string_method(method)
         {
@@ -412,13 +427,11 @@ impl Checker<'_> {
             TypeKind::Error => Shape::Error,
             _ => {
                 let message = format!(
-                    "`{}` cannot format a value of type `{}`",
-                    kind.name(),
+                    "`{caller}` cannot format a value of type `{}`",
                     self.name(ty)
                 );
-                self.diagnostics.push(Diagnostic::new(Severity::Error, message, span).note(
-                    "fmt formats bool, numbers, rune, string, error, and types with a `String() string` method",
-                ));
+                self.diagnostics
+                    .push(Diagnostic::new(Severity::Error, message, span).note(note));
                 return None;
             }
         };
@@ -437,6 +450,20 @@ impl Checker<'_> {
                 .receiver
                 .as_ref()
                 .is_some_and(|receiver| receiver.mode == ParamMode::Borrow)
+    }
+
+    pub(super) fn plain_value_text(&mut self, value: hir::Expr, shape: Shape) -> hir::Expr {
+        self.value_text(
+            value,
+            shape,
+            Verb {
+                letter: 'v',
+                width: None,
+                precision: None,
+                left: false,
+                zero: false,
+            },
+        )
     }
 
     fn value_text(&mut self, value: hir::Expr, shape: Shape, verb: Verb) -> hir::Expr {

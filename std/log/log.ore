@@ -1,0 +1,242 @@
+package log
+
+import "std/fmt"
+import "std/io"
+import "std/strconv"
+import "std/strings"
+import "std/time"
+
+type Level int
+
+const LevelDebug Level = 0
+const LevelInfo Level = 1
+const LevelWarn Level = 2
+const LevelError Level = 3
+
+func (l Level) String() string {
+    if l == LevelDebug { return "DEBUG" }
+    if l == LevelInfo { return "INFO" }
+    if l == LevelWarn { return "WARN" }
+    if l == LevelError { return "ERROR" }
+    return fmt.Sprintf("LEVEL(%d)", int(l))
+}
+
+type output struct {
+    sink io.Writer
+    err  error
+}
+
+type Logger struct {
+    out     Mutex<output>
+    level   Level
+    context string
+    stamped bool
+    open    bool
+}
+
+func New(sink own io.Writer, level Level) Logger {
+    return Logger{out: mutex(output{sink: sink, err: nil}), level: level, context: "", stamped: true, open: true}
+}
+
+func (l Logger) Enabled(level Level) bool {
+    return l.open && level >= l.level
+}
+
+func (l Logger) WithLevel(level Level) Logger {
+    var next = l
+    next.level = level
+    return next
+}
+
+func (l Logger) WithoutTime() Logger {
+    var next = l
+    next.stamped = false
+    return next
+}
+
+func (l Logger) With(key string) Logger {
+    return l
+}
+
+func (l Logger) Debug(template string) {
+    l.emit(LevelDebug, template, Array<string>{})
+}
+
+func (l Logger) Info(template string) {
+    l.emit(LevelInfo, template, Array<string>{})
+}
+
+func (l Logger) Warn(template string) {
+    l.emit(LevelWarn, template, Array<string>{})
+}
+
+func (l Logger) Error(template string) {
+    l.emit(LevelError, template, Array<string>{})
+}
+
+func (l Logger) Log(level Level, template string) {
+    l.emit(level, template, Array<string>{})
+}
+
+func (l Logger) withPairs(pairs own Array<string>) Logger {
+    var next = l
+    for var i = 0; i + 1 < pairs.len(); i += 2 {
+        next.context = next.context + " " + pairs[i] + "=" + text(pairs[i + 1])
+    }
+    return next
+}
+
+func (l Logger) emit(level Level, template string, values own Array<string>) {
+    if !l.Enabled(level) {
+        return
+    }
+    var message = strings.NewBuilder()
+    var fields = strings.NewBuilder()
+    var next = 0
+    var i = 0
+    for i < template.len() {
+        let c = template[i]
+        if (c == 123 || c == 125) && i + 1 < template.len() && template[i + 1] == c {
+            message.WriteString(template[i:i + 1])
+            i += 2
+        } else if c == 123 && hole(template, i) > 0 && next < values.len() {
+            let end = hole(template, i)
+            message.WriteString(values[next])
+            fields.WriteString(" " + template[i + 1:end] + "=" + text(values[next]))
+            next += 1
+            i = end + 1
+        } else {
+            var end = i + 1
+            for end < template.len() && template[end] != 123 && template[end] != 125 { end += 1 }
+            message.WriteString(template[i:end])
+            i = end
+        }
+    }
+    var record = strings.NewBuilder()
+    if l.stamped {
+        record.WriteString("time=" + FormatTime(time.UnixSeconds()) + " ")
+    }
+    record.WriteString("level=" + text(level.String()) + " msg=" + text(message.String()))
+    record.WriteString(l.context)
+    record.WriteString(fields.String())
+    record.WriteString("\n")
+    let data = strings.Bytes(record.String())
+    l.out.withLock(func(out mut output) {
+        if out.err != nil {
+            return
+        }
+        let size = data.len()
+        var offset = 0
+        for offset < size {
+            let count, err = out.sink.Write(data[offset:])
+            if count < 0 || count > size - offset {
+                out.err = err
+                if err == nil { out.err = error("log: invalid write count") }
+                return
+            }
+            offset += count
+            if err != nil {
+                out.err = err
+                return
+            }
+            if count == 0 {
+                out.err = error("log: no write progress")
+                return
+            }
+        }
+    })
+}
+
+func hole(template string, start int) int {
+    for var i = start + 1; i < template.len(); i += 1 {
+        if template[i] == 125 { return i }
+        if template[i] == 123 { return 0 }
+    }
+    return 0
+}
+
+func (l Logger) Err() error {
+    if !l.open {
+        return error("log: no output")
+    }
+    return l.out.withLock(func(out mut output) error {
+        return out.err
+    })
+}
+
+func plain(c byte) bool {
+    return c > 32 && c < 127 && c != 34 && c != 61 && c != 92
+}
+
+func text(value string) string {
+    var clean = value.len() > 0
+    for var i = 0; i < value.len(); i += 1 {
+        if !plain(value[i]) { clean = false }
+    }
+    if clean {
+        return value
+    }
+    var quoted = strings.NewBuilder()
+    quoted.WriteString("\"")
+    var start = 0
+    for var i = 0; i < value.len(); i += 1 {
+        let c = value[i]
+        var escape = ""
+        if c == 34 {
+            escape = "\\\""
+        } else if c == 92 {
+            escape = "\\\\"
+        } else if c == 10 {
+            escape = "\\n"
+        } else if c == 13 {
+            escape = "\\r"
+        } else if c == 9 {
+            escape = "\\t"
+        } else if c < 32 || c == 127 {
+            escape = "\\u00" + hex(c / 16) + hex(c % 16)
+        }
+        if escape != "" {
+            quoted.WriteString(value[start:i])
+            quoted.WriteString(escape)
+            start = i + 1
+        }
+    }
+    quoted.WriteString(value[start:])
+    quoted.WriteString("\"")
+    return quoted.String()
+}
+
+func hex(digit byte) string {
+    let digits = "0123456789abcdef"
+    return digits[int(digit):int(digit) + 1]
+}
+
+func FormatTime(seconds int) string {
+    if seconds < -62135596800 || seconds > 253402300799 {
+        return strconv.Itoa(seconds)
+    }
+    var days = seconds / 86400
+    var remainder = seconds % 86400
+    if remainder < 0 { days -= 1; remainder += 86400 }
+    let shifted = days + 719468
+    var era = shifted / 146097
+    if shifted < 0 { era = (shifted - 146096) / 146097 }
+    let dayOfEra = shifted - era * 146097
+    let yearOfEra = (dayOfEra - dayOfEra / 1460 + dayOfEra / 36524 - dayOfEra / 146096) / 365
+    let dayOfYear = dayOfEra - (365 * yearOfEra + yearOfEra / 4 - yearOfEra / 100)
+    let shiftedMonth = (5 * dayOfYear + 2) / 153
+    let day = dayOfYear - (153 * shiftedMonth + 2) / 5 + 1
+    var month = shiftedMonth + 3
+    if shiftedMonth >= 10 { month = shiftedMonth - 9 }
+    var year = yearOfEra + era * 400
+    if month <= 2 { year += 1 }
+    return pad(year, 4) + "-" + pad(month, 2) + "-" + pad(day, 2) + "T" + pad(remainder / 3600, 2) + ":" + pad(remainder / 60 % 60, 2) + ":" + pad(remainder % 60, 2) + "Z"
+}
+
+func pad(value int, width int) string {
+    var digits = strconv.Itoa(value)
+    for digits.len() < width {
+        digits = "0" + digits
+    }
+    return digits
+}

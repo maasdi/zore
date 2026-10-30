@@ -24,6 +24,9 @@ registration, graceful shutdown, and cleanup automatically. It binds loopback
 and keeps its store in memory. Each request gets a fresh invocation; handlers
 share a mutex and release it before reading or writing the network.
 Startup or listener failure prints an error and exits with a nonzero status.
+A `std/log` logger writes `listening`, `user created`, and `stopped` records
+to standard error; copies of it are captured by the route handlers and share one
+lock, so records from concurrent requests never mix.
 
 The lookup handler uses `(let id, var err)` to declare an immutable ID and
 a reusable error, then `(let user, err)` to declare the user and assign the next

@@ -2,6 +2,7 @@ package main
 
 import "std/encoding/json"
 import "std/io"
+import "std/log"
 import "std/net/http"
 import "std/strconv"
 import "std/strings"
@@ -33,7 +34,7 @@ func getUser(store UserStore, w mut http.ResponseWriter, r mut http.Request) err
     return http.JSONWith(w, http.StatusOK, user, json.LowerCamel)
 }
 
-func createUser(store UserStore, w mut http.ResponseWriter, r mut http.Request) error {
+func createUser(store UserStore, logger log.Logger, w mut http.ResponseWriter, r mut http.Request) error {
     let headers = r.Headers()
     let types = headers.Values(http.HeaderContentType)
     if types.len() != 1 || !strings.EqualFold(strings.TrimSpace(types[0]), "application/json") {
@@ -45,6 +46,7 @@ func createUser(store UserStore, w mut http.ResponseWriter, r mut http.Request) 
         return problem(w, http.StatusBadRequest, "expected a nonempty name string")
     }
     let user = store.Create(input)
+    logger.Info("created user {id} named {name}", user.ID, user.Name)
     w.SetHeader(http.HeaderLocation, "/users/" + strconv.Itoa(user.ID))?
     return http.JSONWith(w, http.StatusCreated, user, json.LowerCamel)
 }

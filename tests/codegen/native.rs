@@ -15,6 +15,7 @@ mod http_client;
 mod json;
 mod linkage_timers;
 mod local_dependencies;
+mod log;
 mod map_entries;
 mod mixed_bindings;
 mod performance;

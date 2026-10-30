@@ -161,6 +161,14 @@ once it does.
 
 ### Standard library
 
+- Added `std/log` (§37.12): a Copy `Logger` over any `io.Writer` with
+  `DEBUG`/`INFO`/`WARN`/`ERROR` levels and compiler-checked message templates:
+  `logger.Info("listening on {addr}", addr)` fills the message and adds the
+  field `addr`, and `logger.With("key", value)` adds fields to every record.
+  Records are one-line `key=value` text with stable quoting and UTC RFC 3339
+  second timestamps (`FormatTime`). Copies share one
+  lock, so records from different tasks never interleave; the first output
+  failure is kept, stops later records, and is reported by `Err`.
 - Fixed `bytes.Buffer` retaining consumed history across repeated writes and
   reads. Writes now compact consumed prefixes and reuse existing capacity.
 - Refactored the standard packages to one naming and signature pattern
