@@ -33,26 +33,56 @@ pub extern "C" fn zore_alloc(bytes: i64) -> *mut u8 {
     let Some(layout) = layout(bytes) else {
         out_of_memory();
     };
-    alloc_layout(layout)
+    alloc_layout(layout, false, true)
 }
 
 /// Storage for `bytes` bytes aligned to `align`; aborts if memory is unavailable.
 pub(super) fn alloc_aligned(bytes: usize, align: usize) -> *mut u8 {
+    alloc_layout(aligned_layout(bytes, align), false, true)
+}
+
+/// Zeroed storage that stays for the rest of the program, outside the live byte count.
+pub(super) fn alloc_kept(bytes: usize, align: usize) -> *mut u8 {
+    alloc_layout(aligned_layout(bytes, align), true, false)
+}
+
+fn aligned_layout(bytes: usize, align: usize) -> Layout {
     match Layout::from_size_align(bytes, align) {
-        Ok(layout) if layout.size() > 0 => alloc_layout(layout),
+        Ok(layout) if layout.size() > 0 => layout,
         _ => out_of_memory(),
     }
 }
 
-fn alloc_layout(layout: Layout) -> *mut u8 {
+fn alloc_layout(layout: Layout, zeroed: bool, counted: bool) -> *mut u8 {
     // SAFETY: `layout` has a nonzero size.
-    let data = unsafe { alloc(layout) };
+    let data = unsafe {
+        if zeroed {
+            std::alloc::alloc_zeroed(layout)
+        } else {
+            alloc(layout)
+        }
+    };
     if data.is_null() {
         out_of_memory();
     }
     #[cfg(any(test, zore_test_hooks))]
-    LIVE_BYTES.fetch_add(layout.size(), std::sync::atomic::Ordering::Relaxed);
+    if counted {
+        LIVE_BYTES.fetch_add(layout.size(), std::sync::atomic::Ordering::Relaxed);
+    }
+    #[cfg(not(any(test, zore_test_hooks)))]
+    let _ = counted;
     data
+}
+
+pub(super) fn count_live(bytes: usize, live: bool) {
+    #[cfg(any(test, zore_test_hooks))]
+    if live {
+        LIVE_BYTES.fetch_add(bytes, std::sync::atomic::Ordering::Relaxed);
+    } else {
+        LIVE_BYTES.fetch_sub(bytes, std::sync::atomic::Ordering::Relaxed);
+    }
+    #[cfg(not(any(test, zore_test_hooks)))]
+    let _ = (bytes, live);
 }
 
 /// Frees storage from `zore_alloc(bytes)`; null or zero-byte storage is a no-op.

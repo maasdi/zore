@@ -93,6 +93,12 @@ once it does.
   On one Linux host the discarding `std/log` benchmark fell from about 13 to
   8 µs per record, and four tasks building strings no longer serialize
   (see `benchmarks/logging/README.md`).
+- The string table keeps one entry per 4 KiB page instead of one per 32-byte
+  granule (about 0.1% of text memory instead of 12.5%). Buffers up to 32 KiB
+  are slots of 38 sizes carved from shared spans and reused through per-thread
+  free lists. On one Linux host, holding a million short strings took 65 MiB
+  instead of 157 MiB and 4,000 strings of 20 KB took 88 MiB instead of 90 MiB,
+  with logging and four-task string building within noise of before (#237).
 
 - Refreshed Linux/macOS runtime population evidence with compiler and source
   identities. Preserved the original three-host reports; Windows recapture is
