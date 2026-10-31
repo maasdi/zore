@@ -176,6 +176,18 @@ once it does.
 
 ### Standard library
 
+- Completed common file work in `std/os`, `std/io`, and `std/path/filepath`
+  (§37.15). `os.OpenFile` takes an access mode and the `OpenAppend`,
+  `OpenCreate`, `OpenExclusive`, and `OpenTruncate` flags, rejecting unclear
+  combinations before touching the disk. `File` gains `Name`, `Seek` (with
+  `io.SeekStart`, `io.SeekCurrent`, `io.SeekEnd`, and the `io.Seeker`
+  interface), and `Sync`. `os.TempDir`, `os.CreateTemp`, and `os.MkdirTemp`
+  create files and folders under random names that are never reused; the caller
+  removes them. `filepath.Walk` visits a folder tree one entry at a time in name
+  order, never follows links, keeps no folder open between steps, and reports
+  each error with the entry it belongs to. `os.Lstat`, `FileInfo.IsSymlink`, and
+  `DirEntry.IsSymlink` describe links. The spec now states what `os.Rename`
+  does and does not promise on each system.
 - Added `std/encoding/hex`, `std/encoding/base64`, and `std/encoding/binary`
   (§37.14). Hex and the four RFC 4648 base64 encodings (`Standard`, `URL`, and
   unpadded `RawStandard` and `RawURL`) decode strictly: anything their encoder

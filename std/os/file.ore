@@ -1,7 +1,18 @@
 package os
 
+const OpenReadOnly = 0
+const OpenWriteOnly = 1
+const OpenReadWrite = 2
+const OpenAppend = 4
+const OpenCreate = 8
+const OpenExclusive = 16
+const OpenTruncate = 32
+
+const alreadyExists = -1
+
 type File struct {
-    id int
+    id   int
+    name string
 }
 
 func (f mut File) drop() {
@@ -9,30 +20,67 @@ func (f mut File) drop() {
 }
 
 func Open(path string) (File, error) {
-    let id, err = fileOpen(path, false)
-    return File{id: id}, err
+    return openAs(path, OpenReadOnly, 0, "os.Open")
 }
 
 func Create(path string) (File, error) {
-    let id, err = fileOpen(path, true)
-    return File{id: id}, err
+    return openAs(path, OpenReadWrite | OpenCreate | OpenTruncate, 0o666, "os.Create")
 }
 
 func Append(path string, perm int) (File, error) {
-    let id, err = fileAppend(path, perm)
-    return File{id: id}, err
+    return openAs(path, OpenWriteOnly | OpenAppend | OpenCreate, perm, "os.Append")
+}
+
+func OpenFile(path string, flags int, perm int) (File, error) {
+    let invalid = checkFlags(flags)
+    if invalid != nil {
+        return File{id: 0, name: ""}, invalid
+    }
+    return openAs(path, flags, perm, "os.OpenFile")
+}
+
+func checkFlags(flags int) error {
+    if flags & ^63 != 0 {
+        return error("os.OpenFile: unknown flag")
+    }
+    let access = flags & 3
+    if access == 3 {
+        return error("os.OpenFile: more than one access mode")
+    }
+    if access == OpenReadOnly && flags & (OpenAppend | OpenCreate | OpenExclusive | OpenTruncate) != 0 {
+        return error("os.OpenFile: append, create, exclusive, and truncate need write access")
+    }
+    if flags & OpenExclusive != 0 && flags & OpenCreate == 0 {
+        return error("os.OpenFile: exclusive needs create")
+    }
+    if flags & OpenAppend != 0 && flags & OpenTruncate != 0 {
+        return error("os.OpenFile: append and truncate together")
+    }
+    return nil
+}
+
+func openAs(path string, flags int, perm int, op string) (File, error) {
+    let id, err = fileOpenWith(path, flags, perm, op)
+    if err != nil {
+        return File{id: 0, name: ""}, err
+    }
+    return File{id: id, name: path}, nil
 }
 
 func Stdin() File {
-    return File{id: 1}
+    return File{id: 1, name: ""}
 }
 
 func Stdout() File {
-    return File{id: 2}
+    return File{id: 2, name: ""}
 }
 
 func Stderr() File {
-    return File{id: 3}
+    return File{id: 3, name: ""}
+}
+
+func (f File) Name() string {
+    return f.name
 }
 
 func (f File) Read(buf mut []byte) (int, error) {
@@ -51,14 +99,26 @@ func (f File) WriteString(s string) (int, error) {
     return fileWriteString(f.id, s)
 }
 
+func (f File) Seek(offset int, whence int) (int, error) {
+    if whence < 0 || whence > 2 {
+        return 0, error("os.Seek: invalid whence")
+    }
+    return fileSeek(f.id, offset, whence)
+}
+
+func (f File) Sync() error {
+    return fileSync(f.id)
+}
+
 func (f own File) Close() error {
     return fileClose(f.id)
 }
 
-func fileOpen(path string, create bool) (int, error)
-func fileAppend(path string, perm int) (int, error)
+func fileOpenWith(path string, flags int, perm int, op string) (int, error)
 func fileRead(id int, max int) (Array<byte>, error)
 func fileWrite(id int, data []byte) (int, error)
 func fileWriteString(id int, text string) (int, error)
+func fileSeek(id int, offset int, whence int) (int, error)
+func fileSync(id int) error
 func fileClose(id int) error
 func fileDrop(id int)

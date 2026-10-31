@@ -730,6 +730,39 @@ fn the_rolling_package_owns_its_writer() {
 }
 
 #[test]
+fn file_handles_temporary_storage_and_walks_check_their_types() {
+    let imports = "import \"std/io\"\nimport \"std/os\"\nimport \"std/path/filepath\"";
+    accepts(&[(
+        "main.ore",
+        &main_with(
+            imports,
+            "var file, err = os.OpenFile(\"a\", os.OpenReadWrite | os.OpenCreate, 0o644)\n_ = err\nlet position, seekErr = file.Seek(0, io.SeekEnd)\n_ = position\n_ = seekErr\n_ = file.Sync()\nlet name string = file.Name()\n_ = name\nvar seeker io.Seeker = file\nlet _, _ = seeker.Seek(0, io.SeekStart)\nlet temp, tempErr = os.CreateTemp(os.TempDir(), \"x-*\")\n_ = tempErr\ndrop(temp)\nlet dir, dirErr = os.MkdirTemp(\"\", \"d-*\")\n_ = dir\n_ = dirErr\nlet info, infoErr = os.Lstat(\"a\")\n_ = infoErr\n_ = info.IsSymlink()\nvar walk = filepath.Walk(\".\")\nfor walk.Next() {\nif walk.IsSymlink() || walk.Err() != nil { walk.SkipDir() }\n_ = walk.Path()\n_ = walk.IsDir()\n}",
+        ),
+    )]);
+    for (body, message) in [
+        (
+            "let file, err = os.OpenFile(\"a\", os.OpenReadOnly)",
+            "takes 3 arguments",
+        ),
+        (
+            "let walk = filepath.Walk(\".\")\n_ = walk.Next()",
+            "mutable",
+        ),
+        (
+            "let file, err = os.Create(\"a\")\n_ = err\nlet position = file.Seek(0, io.SeekStart)",
+            "this call returns 2 values",
+        ),
+        (
+            "os.CreateTemp(\"\", \"x\")",
+            "must be used or explicitly discarded",
+        ),
+        ("let walk = filepath.Walker{root: \".\"}", "not exported"),
+    ] {
+        rejects(&[("main.ore", &main_with(imports, body))], message);
+    }
+}
+
+#[test]
 fn time_types_do_not_mix() {
     accepts(&[(
         "main.ore",

@@ -26,11 +26,11 @@ bundled! {
     "net" => ["net.ore"],
     "net/url" => ["url.ore", "absolute.ore"],
     "net/http" => ["header.ore", "router.ore", "exchange.ore", "server.ore", "convenience.ore", "client.ore"],
-    "os" => ["os.ore", "file.ore"],
+    "os" => ["os.ore", "file.ore", "temp.ore"],
     "os/exec" => ["exec.ore"],
     "os/signal" => ["signal.ore"],
     "path" => ["path.ore"],
-    "path/filepath" => ["filepath.ore"],
+    "path/filepath" => ["filepath.ore", "walk.ore"],
     "slices" => ["slices.ore"],
     "sort" => ["sort.ore"],
     "strconv" => ["strconv.ore"],
@@ -43,10 +43,16 @@ bundled! {
 
 pub fn package(path: &str) -> Option<&'static [(&'static str, &'static str)]> {
     if cfg!(windows) && path == "path/filepath" {
-        return Some(&[(
-            "windows.ore",
-            include_str!("../../../std/path/filepath/windows.ore"),
-        )]);
+        return Some(&[
+            (
+                "windows.ore",
+                include_str!("../../../std/path/filepath/windows.ore"),
+            ),
+            (
+                "walk.ore",
+                include_str!("../../../std/path/filepath/walk.ore"),
+            ),
+        ]);
     }
     PACKAGES
         .iter()

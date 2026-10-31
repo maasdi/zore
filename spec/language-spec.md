@@ -6891,8 +6891,9 @@ Packages and imports are specified in §3.20. The standard packages are
 specified in §37.2 (text, bytes, and errors), §37.3 (time, the operating
 system, buffered I/O, and TCP), §37.4 (cancellation and task coordination),
 §37.5 (paths and sorting), §37.7 (JSON), §37.12 (structured logging), §37.13
-(rolling log files), and §37.14 (hex, base64, and byte order). Further packages
-are TBD.
+(rolling log files), §37.14 (hex, base64, and byte order), and §37.15 (file
+handles, temporary storage, renames, and folder walks). Further packages are
+TBD.
 
 ## 37.1 `println` — LOCKED
 
@@ -7416,19 +7417,21 @@ conformance cases: `tests/conformance/time.md`.
 | --- | --- |
 | `ReadFile(path string) (Array<byte>, error)` | The whole contents of the file |
 | `WriteFile(path string, data []byte, perm int) error` | Creates or truncates the file and writes `data`; a new file gets the permission bits `perm`, such as `0o644`, on systems that have them |
-| `ReadDir(path string) (Array<DirEntry>, error)` | The entries of a folder, sorted by name; `(e DirEntry) Name() string` and `(e DirEntry) IsDir() bool` describe each |
-| `Stat(path string) (FileInfo, error)` | Facts about a file or folder, following links: `(i FileInfo) Name() string` (the last element of `path`), `Size() int` in bytes, `Mode() int` (the permission bits), `IsDir() bool`, and `ModTime() int`, the time of the last change in whole Unix seconds (`0` when the system does not report one) |
+| `ReadDir(path string) (Array<DirEntry>, error)` | The entries of a folder, sorted by name; `(e DirEntry) Name() string`, `(e DirEntry) IsDir() bool`, and `(e DirEntry) IsSymlink() bool` describe each without following links, so a link to a folder is not a folder |
+| `Stat(path string) (FileInfo, error)` | Facts about a file or folder, following links: `(i FileInfo) Name() string` (the last element of `path`), `Size() int` in bytes, `Mode() int` (the permission bits), `IsDir() bool`, `ModTime() int`, the time of the last change in whole Unix seconds (`0` when the system does not report one), and `IsSymlink() bool`, which is `false` after following |
+| `Lstat(path string) (FileInfo, error)` | `Stat` without following a link at the end of `path`: for a link, the facts are the link's own and `IsSymlink()` is `true` |
+| `TempDir() string`, `CreateTemp(dir string, pattern string) (File, error)`, `MkdirTemp(dir string, pattern string) (string, error)` | Temporary files and folders (§37.15) |
 | `MkdirAll(path string, perm int) error` | Creates the folder and any missing parents with the permission bits `perm`; nothing to do when it exists |
 | `Remove(path string) error` | Removes a file or an empty folder |
 | `RemoveAll(path string) error` | Removes a file or a folder and everything in it; a missing path is not an error |
-| `Rename(oldPath string, newPath string) error` | Moves a file or folder to `newPath`; an existing file at `newPath` is replaced, on Windows as well |
+| `Rename(oldPath string, newPath string) error` | Moves a file or folder to `newPath`; an existing file at `newPath` is replaced, on Windows as well. What is and is not atomic is in §37.15 |
 | `Getenv(key string) string` | The value of the environment variable, or `""` when it is not set |
 | `Getwd() (string, error)` | The current folder |
 | `Args() Array<string>` | The program's command-line arguments, starting with the program name |
 | `Exit(code int)` | Ends the process at once with the status `code`; other tasks are not waited for and nothing is dropped |
 
 `os.File` is an open file. It is a struct type with a custom `drop` (§8.3), so it
-is a Move value: dropping one closes it. Its field is not exported, and the zero
+is a Move value: dropping one closes it. Its fields are not exported, and the zero
 value is closed, so every operation on it fails.
 
 | Function or method | Behavior |
@@ -7436,15 +7439,19 @@ value is closed, so every operation on it fails.
 | `Open(path string) (File, error)` | Opens a file for reading |
 | `Create(path string) (File, error)` | Creates or truncates a file and opens it for reading and writing |
 | `Append(path string, perm int) (File, error)` | Opens a file for writing at its end, creating it with the permission bits `perm` when it is missing; every write goes to the current end, and existing contents are kept |
+| `OpenFile(path string, flags int, perm int) (File, error)` | Opens a file with the chosen access and creation rules (§37.15) |
+| `(f File) Name() string` | The path the file was opened with; `""` for standard streams |
 | `Stdin() File`, `Stdout() File`, `Stderr() File` | Standard input, output, and error; closing or dropping these does nothing |
 | `(f File) Read(buf mut []byte) (int, error)` | Waits for at least one byte and moves up to `buf.len()` bytes into `buf`; at end of input, `0` and `EOF`; an empty `buf` gives `0` and `nil` at once |
 | `(f File) Write(data []byte) (int, error)`, `(f File) WriteString(s string) (int, error)` | Writes everything and returns the byte count; on failure, the bytes written before it |
+| `(f File) Seek(offset int, whence int) (int, error)`, `(f File) Sync() error` | Moves the read and write position, and asks the system to store written data (§37.15) |
 | `(f own File) Close() error` | Closes the file |
 
 Error messages begin with the function name (`os.ReadFile: `, `os.Open: `,
-`os.Append: `, `os.Rename: `,
-`os.Read: `, `os.Write: `, `os.Stat: `, `os.ReadDir: `, and so on) and continue
-with system-defined text.
+`os.Append: `, `os.Rename: `, `os.OpenFile: `, `os.CreateTemp: `,
+`os.Read: `, `os.Write: `, `os.Seek: `, `os.Sync: `, `os.Stat: `,
+`os.Lstat: `, `os.ReadDir: `, and so on) and continue with system-defined
+text.
 
 **`std/os/exec`** runs other programs.
 
@@ -7469,6 +7476,7 @@ one function can work with any of them. Its interface types (§22.2) are:
 | `Reader` | `mut Read(buf mut []byte) (int, error)` |
 | `Writer` | `mut Write(data []byte) (int, error)` |
 | `Closer` | `own Close() error` |
+| `Seeker` | `mut Seek(offset int, whence int) (int, error)` |
 | `ReadWriter` | the entries of `Reader` and `Writer` |
 | `ReadCloser` | the entries of `Reader` and `Closer` |
 | `WriteCloser` | the entries of `Writer` and `Closer` |
@@ -7501,6 +7509,7 @@ and no-progress errors in `tests/codegen/review_regressions.rs`.
 | Name | Behavior |
 | --- | --- |
 | `let EOF = error("EOF")` | The error a `Read` gives at the end of the input |
+| `const SeekStart = 0`, `SeekCurrent = 1`, `SeekEnd = 2` | Where a `Seek` offset counts from: the start, the current position, or the end |
 | `Copy(dst mut Writer, src mut Reader) (int, error)` | Writes everything `src` gives to `dst` until `EOF`, and returns the byte count; `EOF` itself is not an error, and the first other read or write error stops the copy |
 | `ReadAll(r mut Reader) (Array<byte>, error)` | Every byte up to `EOF`, with `nil`; on another error, the bytes read before it and the error |
 | `ReadFull(r mut Reader, buf mut []byte) (int, error)` | Reads until `buf` is full; `EOF` when nothing was read, `unexpected EOF` when the input ends part way |
@@ -9611,6 +9620,228 @@ Compiler impact: none; the packages are bundled Zore source built from
 `std/strconv` and `std/strings`. Conformance cases:
 `tests/conformance/encoding.md`, with native tests in
 `tests/codegen/encoding.rs`.
+
+## 37.15 File handles, temporary storage, renames, and folder walks — LOCKED
+
+These additions to `"std/os"`, `"std/io"`, and `"std/path/filepath"` cover what
+programs that keep files need beyond reading and writing in order: opening a
+file exactly the way they mean, moving around in it, making sure data reached
+storage, scratch files that cannot collide, replacing a file, and visiting a
+folder tree. Every function is an ordinary call like the rest of §37.3: plain
+in synchronous code, and in an `async func` a call that touches the disk
+suspends only the calling task.
+
+**Opening files.** `os.OpenFile(path, flags, perm)` takes one access mode and
+any of the option flags, combined with `|`:
+
+| Constant | Value | Meaning |
+| --- | --- | --- |
+| `os.OpenReadOnly` | `0` | Read only |
+| `os.OpenWriteOnly` | `1` | Write only |
+| `os.OpenReadWrite` | `2` | Read and write |
+| `os.OpenAppend` | `4` | Every write goes to the current end of the file |
+| `os.OpenCreate` | `8` | Create the file, with the permission bits `perm`, when it is missing |
+| `os.OpenExclusive` | `16` | With `OpenCreate`: fail when the file already exists |
+| `os.OpenTruncate` | `32` | Empty an existing file on opening |
+
+Before touching the disk `OpenFile` rejects, with these errors, flags that do
+not describe one clear request:
+
+- a bit outside the table: `os.OpenFile: unknown flag`;
+- both write bits, value `3`: `os.OpenFile: more than one access mode`;
+- `OpenAppend`, `OpenCreate`, `OpenExclusive`, or `OpenTruncate` with
+  `OpenReadOnly`: `os.OpenFile: append, create, exclusive, and truncate need write access`;
+- `OpenExclusive` without `OpenCreate`: `os.OpenFile: exclusive needs create`;
+- `OpenAppend` with `OpenTruncate`: `os.OpenFile: append and truncate together`.
+
+`perm` is used only when the file is created, and only on systems with
+permission bits; the process's file-creation mask may remove bits from it.
+`OpenExclusive` checks and creates in one step, so of several programs or
+tasks opening the same path with it on a local file system, exactly one
+succeeds; network file systems may not keep that promise. `Open`, `Create`,
+and `Append` mean `OpenReadOnly`; `OpenReadWrite | OpenCreate | OpenTruncate`
+with `0o666`; and `OpenWriteOnly | OpenAppend | OpenCreate` with `perm`; each
+keeps its own error prefix. A failed open returns a closed `File`.
+
+**Position.** `(f File) Seek(offset, whence)` sets where the next read or write
+starts and returns the new position in bytes from the start. `whence` is
+`io.SeekStart`, `io.SeekCurrent`, or `io.SeekEnd`; any other value gives
+`os.Seek: invalid whence`. A position before the start is an error and leaves
+the position unchanged. A position past the end is allowed: reading there gives
+`EOF`, and writing there first fills the gap with zero bytes. `Seek(0,
+io.SeekCurrent)` reports the position without moving it, and `Seek(0,
+io.SeekEnd)` the size. In a file opened with `OpenAppend`, seeking moves where
+reads start, but every write still goes to the end and leaves the position
+there. Standard streams cannot seek and
+give `os.Seek: not a seekable file`. `os.File` satisfies `io.Seeker`.
+
+**Reaching storage.** `os.File` keeps no buffer of its own: when `Write`
+returns, the bytes have been handed to the operating system, and other readers
+of the file see them. The system may still hold them in memory. `(f File)
+Sync()` waits until the system reports that the file's data and its facts
+(size, times) are on the storage device, and returns that report's error.
+`Sync` on `Stdout()` writes out anything the process still holds for standard
+output; on `Stdin()` and `Stderr()` it does nothing. `Close` and dropping a
+file release it without waiting for storage; `Close` reports only a closed or
+unknown handle, so a program that must know whether its data is safe calls
+`Sync` before `Close`. How long a device takes, and whether it honors the
+request, is up to the system and hardware.
+
+**Temporary files and folders.**
+
+| Function | Behavior |
+| --- | --- |
+| `TempDir() string` | The system's folder for temporary files: `TMPDIR` on Linux and macOS when set, otherwise a system default such as `/tmp`; on Windows the folder the system reports, from `TMP`, `TEMP`, or the user profile. The folder is not checked or created |
+| `CreateTemp(dir string, pattern string) (File, error)` | Creates a new file in `dir`, or in `TempDir()` when `dir` is `""`, opened for reading and writing with the permission bits `0o600` |
+| `MkdirTemp(dir string, pattern string) (string, error)` | Creates a new folder the same way, with the permission bits `0o700`, and returns its path |
+
+The new name is `pattern` with its last `*` replaced by twelve random
+characters from `0`–`9` and `a`–`v`; without a `*`, they are added at the end.
+`CreateTemp("", "report-*.csv")` might create `/tmp/report-k3v09q1d7ma2.csv`.
+A `pattern` holding a path separator is rejected with `os.CreateTemp: pattern
+contains a path separator` (or `os.MkdirTemp: `) before anything is created.
+The path is `dir` joined with the name by the host's separator, without
+cleaning; `(f File) Name()` gives it for a file.
+
+Creation is exclusive: a name that already exists is never opened or reused.
+When a name is taken, another is tried, up to 10000 names, and then the call
+fails with `os.CreateTemp: no unused name found` (or `os.MkdirTemp: `). Any
+other failure, such as a missing `dir`, ends the call at once with the system's
+error. So tasks and programs creating temporary files at the same time in the
+same folder each get their own. The characters come from a generator seeded by
+the system for each process; they make collisions unlikely and are not meant to
+be secret.
+
+The caller owns what is created. Dropping or closing the `File` closes it but
+does not delete it, and nothing is removed when the program ends: remove a
+temporary file with `os.Remove` and a temporary folder with `os.RemoveAll`
+when done. Permission bits apply on systems that have them; on Windows the new
+file or folder gets the access rules of the folder it is in.
+
+```ore
+import "std/os"
+
+func scratch() error {
+    let dir = os.MkdirTemp("", "build-*")?
+    var file = os.CreateTemp(dir, "part-*.bin")?
+    let _ = file.WriteString("partial")?
+    _ = file.Close()
+    return os.RemoveAll(dir)
+}
+```
+
+**Renames.** `os.Rename(oldPath, newPath)` asks the system to give a file or
+folder a new name. It never copies data; when a copy would be needed, it fails.
+
+- Within one file system on Linux and macOS, replacing an existing file is
+  atomic: a program opening `newPath` at any moment finds either the old file
+  or the new one, never neither and never a mix.
+- On Windows an existing file is replaced too, but Windows does not promise
+  that the replacement is atomic, and it fails while another program has
+  `newPath` open without allowing deletion.
+- Moving between file systems (another disk, partition, mount, or Windows
+  volume) fails with the system's error, such as `cross-device link`.
+- A folder replaces an existing empty folder on Linux and macOS and fails on
+  Windows. Replacing a folder that is not empty, a file with a folder, or a
+  folder with a file fails everywhere, as does moving a folder into itself.
+- A completed rename may still be lost if the computer stops before the
+  system writes the folder change to storage; `std/os` offers no way to
+  wait for that.
+
+This is the usual way to replace a file's contents without readers ever seeing
+a half-written file: write to `CreateTemp` in the same folder as the target,
+`Sync`, `Close`, then `Rename` onto the target. On Linux and macOS readers see
+the old or the new contents; after a crash either may remain. No stronger
+promise is made on any system.
+
+```ore
+func save(path string, data []byte) error {
+    var file = os.CreateTemp(filepath.Dir(path), "save-*")?
+    let name = file.Name()
+    let _, writeErr = file.Write(data)
+    var failure = writeErr
+    if failure == nil {
+        failure = file.Sync()
+    }
+    _ = file.Close()
+    if failure != nil {
+        _ = os.Remove(name)
+        return failure
+    }
+    return os.Rename(name, path)
+}
+```
+
+**Folder walks.** `filepath.Walk(root string) Walker` visits `root` and
+everything below it, one entry per call to `Next`. It reads nothing until the
+first call.
+
+| Method | Behavior |
+| --- | --- |
+| `(w mut Walker) Next() bool` | Moves to the next entry; `false` when there is none, after which the other methods give `""`, `false`, and `nil` |
+| `(w Walker) Path() string` | The current entry's path: `root` itself, then each entry joined to its folder's path with `Join` |
+| `(w Walker) IsDir() bool`, `(w Walker) IsSymlink() bool` | Whether the current entry is a folder or a link, not following links |
+| `(w Walker) Err() error` | The error for the current entry, or `nil` |
+| `(w mut Walker) SkipDir()` | Leaves out everything below the current folder; nothing to do for other entries |
+
+The order is depth-first: a folder comes before its contents, and the entries
+of each folder come sorted by name, as from `os.ReadDir`. `root` is described
+with `os.Lstat`; when that fails, the only entry is `root` with that error and
+`IsDir()` false. When a folder's entries cannot be read, the folder is still
+visited, with `IsDir()` true and that error, and nothing below it is visited.
+Every error belongs to one entry, and the walk goes on with the next one; a
+caller that wants to stop at the first error stops calling `Next`.
+
+Links are visited but never followed, including a `root` that is a link, so a
+link to a folder is not entered and a loop of links cannot make the walk run
+forever. A folder is read, completely, during the `Next` that visits it, and
+closed before `Next` returns; a `Walker` holds no open folder between calls.
+Its memory holds the not-yet-visited entries of the folders along the current
+path. Changes made to the tree during a walk are seen only in folders read
+after the change: an entry removed after its folder was read is still visited,
+and when it was a folder, it comes with the error from reading it.
+
+```ore
+import "std/path/filepath"
+
+func count(root string) (int, error) {
+    var files = 0
+    var walk = filepath.Walk(root)
+    for walk.Next() {
+        if walk.Err() != nil {
+            return files, walk.Err()
+        }
+        if filepath.Base(walk.Path()) == ".git" {
+            walk.SkipDir()
+        } else if !walk.IsDir() {
+            files += 1
+        }
+    }
+    return files, nil
+}
+```
+
+Not part of these packages: copying files, changing permissions or times,
+creating links, locking files, watching folders, folder synchronization, and an
+atomic-write helper. Each needs its own contract.
+
+Ownership, error, and async implications: `File` stays a Move value whose
+`drop` closes it on every exit path; `Name`, `Seek`, and `Sync` borrow it.
+`CreateTemp` gives the caller the only `File`, and the file and folder it names
+stay until the caller removes them. `Walker` is a Move value (it owns an
+`Array`) that owns no open folder; dropping it in the middle of a walk only
+frees memory. Flag and pattern mistakes are reported as `error` before the
+disk is touched; system failures are reported as `error` with the function name
+first. `OpenFile`, `Seek`, `Sync`, `CreateTemp`, `MkdirTemp`, `Lstat`, and
+`Walker.Next` suspend only the calling task in async code; `TempDir`, `Name`,
+and the other `Walker` methods do not wait.
+
+Compiler impact: none in the language. The packages are bundled Zore source
+over native functions that open with flags, seek, sync, create one folder,
+describe a path with or without following links, and build a random temporary
+path. Those that wait for the disk run on blocking helpers in async code.
+Conformance cases: `tests/conformance/files.md`, with native tests in
+`tests/codegen/files.rs`.
 
 ---
 
