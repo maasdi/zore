@@ -1,0 +1,49 @@
+package main
+
+import "std/encoding/base64"
+import "std/encoding/binary"
+import "std/encoding/hex"
+import "std/errors"
+import "std/strings"
+
+type Session struct {
+    user uint32
+    expires int64
+}
+
+func encodeSession(session Session) string {
+    var frame = Array<byte>{1}
+    binary.BigEndian.AppendUint32(frame, session.user)
+    binary.BigEndian.AppendInt64(frame, session.expires)
+    return base64.RawURL.EncodeToString(frame[:])
+}
+
+func decodeSession(token string) (Session, error) {
+    let frame = base64.RawURL.DecodeString(token)?
+    if frame.len() != 13 || frame[0] != 1 {
+        return Session{user: 0, expires: 0}, error("session: unsupported token")
+    }
+    let user = binary.BigEndian.Uint32(frame[1:5])?
+    let expires = binary.BigEndian.Int64(frame[5:13])?
+    return Session{user: user, expires: expires}, nil
+}
+
+func main() {
+    let token = encodeSession(Session{user: 42, expires: 1767225600})
+    println(token)
+
+    let session, err = decodeSession(token)
+    if err != nil {
+        panic(errors.Message(err))
+    }
+    println(session.user)
+    println(session.expires)
+
+    let frame, _ = base64.RawURL.DecodeString(token)
+    println(hex.EncodeToString(frame[:]))
+
+    let _, tampered = decodeSession(token + "=")
+    println(errors.Message(tampered))
+    let _, other = decodeSession(base64.RawURL.EncodeToString(strings.Bytes("hello")[:]))
+    println(errors.Message(other))
+}

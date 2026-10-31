@@ -9,6 +9,7 @@ mod build_parallel;
 mod channel_acceptance;
 mod conformance;
 mod controlled_runtime;
+mod encoding;
 mod generic_acceptance;
 mod hardening;
 mod host_support;

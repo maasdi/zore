@@ -1,0 +1,87 @@
+package hex
+
+import "std/strconv"
+import "std/strings"
+
+const digits = "0123456789abcdef"
+const maxLength = 4611686018427387903
+
+func EncodedLen(n int) int {
+    if n < 0 {
+        panic("hex.EncodedLen: negative length")
+    }
+    if n > maxLength {
+        panic("hex.EncodedLen: length overflows int")
+    }
+    return 2 * n
+}
+
+func DecodedLen(n int) int {
+    if n < 0 {
+        panic("hex.DecodedLen: negative length")
+    }
+    return n / 2
+}
+
+func Encode(data []byte) Array<byte> {
+    var output = Array<byte>{}
+    for value in data {
+        output.push(digits[int(value >> 4)])
+        output.push(digits[int(value & 15)])
+    }
+    return output
+}
+
+func EncodeToString(data []byte) string {
+    let output = Encode(data)
+    let text, err = strings.FromBytes(output[:])
+    if err != nil {
+        panic("hex.EncodeToString: invalid output")
+    }
+    return text
+}
+
+func Decode(text []byte) (Array<byte>, error) {
+    return decode(text, "hex.Decode")
+}
+
+func DecodeString(text string) (Array<byte>, error) {
+    let data = strings.Bytes(text)
+    return decode(data[:], "hex.DecodeString")
+}
+
+func decode(text []byte, name string) (Array<byte>, error) {
+    if text.len() % 2 != 0 {
+        return Array<byte>{}, error(name + ": odd length")
+    }
+    var output = Array<byte>{}
+    for var i = 0; i < text.len(); i += 2 {
+        let high = digitValue(text[i])
+        if high < 0 {
+            return Array<byte>{}, invalidByte(name, i)
+        }
+        let low = digitValue(text[i + 1])
+        if low < 0 {
+            return Array<byte>{}, invalidByte(name, i + 1)
+        }
+        output.push(byte(high * 16 + low))
+    }
+    return output, nil
+}
+
+func digitValue(c byte) int {
+    if c >= 48 && c <= 57 {
+        return int(c) - 48
+    }
+    if c >= 97 && c <= 102 {
+        return int(c) - 87
+    }
+    if c >= 65 && c <= 70 {
+        return int(c) - 55
+    }
+    return -1
+}
+
+func invalidByte(name string, offset int) error {
+    return error(name + ": invalid byte at offset " + strconv.Itoa(offset))
+}

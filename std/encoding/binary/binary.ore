@@ -1,0 +1,159 @@
+package binary
+
+import "std/strconv"
+
+type ByteOrder int
+
+const BigEndian ByteOrder = 0
+const LittleEndian ByteOrder = 1
+
+func (o ByteOrder) check() {
+    if o != BigEndian && o != LittleEndian {
+        panic("binary: unknown ByteOrder " + strconv.Itoa(int(o)))
+    }
+}
+
+func (o ByteOrder) read(data []byte, width int, name string) (uint64, error) {
+    o.check()
+    if data.len() != width {
+        return 0, wrongLength(name, width, data.len())
+    }
+    var value = uint64(0)
+    for var i = 0; i < width; i += 1 {
+        var index = i
+        if o == LittleEndian {
+            index = width - 1 - i
+        }
+        value = value << 8 | uint64(data[index])
+    }
+    return value, nil
+}
+
+func (o ByteOrder) write(data mut []byte, value uint64, width int, name string) error {
+    o.check()
+    if data.len() != width {
+        return wrongLength(name, width, data.len())
+    }
+    for var i = 0; i < width; i += 1 {
+        data[o.position(i, width)] = byte((value >>(8 * i)) & 255)
+    }
+    return nil
+}
+
+func (o ByteOrder) append(data mut Array<byte>, value uint64, width int) {
+    o.check()
+    for var i = 0; i < width; i += 1 {
+        let shift = 8 * o.position(i, width)
+        data.push(byte((value >> shift) & 255))
+    }
+}
+
+func (o ByteOrder) position(significance int, width int) int {
+    if o == LittleEndian {
+        return significance
+    }
+    return width - 1 - significance
+}
+
+func wrongLength(name string, width int, got int) error {
+    return error("binary.ByteOrder." + name + ": need " + strconv.Itoa(width) + " bytes, got " + strconv.Itoa(got))
+}
+
+func signed(value uint64, width int) int64 {
+    let bits = 8 * width
+    if value >>(bits - 1) == 0 {
+        return int64(value)
+    }
+    if bits == 64 {
+        return -int64(^value) - 1
+    }
+    return int64(value) - int64(uint64(1) << bits)
+}
+
+func unsigned(value int64, width int) uint64 {
+    if value >= 0 {
+        return uint64(value)
+    }
+    let complement = uint64(-(value + 1))
+    if width == 8 {
+        return ^complement
+    }
+    return (uint64(1) << (8 * width)) - 1 - complement
+}
+
+func (o ByteOrder) Uint16(data []byte) (uint16, error) {
+    let value, err = o.read(data, 2, "Uint16")
+    return uint16(value), err
+}
+
+func (o ByteOrder) Uint32(data []byte) (uint32, error) {
+    let value, err = o.read(data, 4, "Uint32")
+    return uint32(value), err
+}
+
+func (o ByteOrder) Uint64(data []byte) (uint64, error) {
+    return o.read(data, 8, "Uint64")
+}
+
+func (o ByteOrder) Int16(data []byte) (int16, error) {
+    let value, err = o.read(data, 2, "Int16")
+    return int16(signed(value, 2)), err
+}
+
+func (o ByteOrder) Int32(data []byte) (int32, error) {
+    let value, err = o.read(data, 4, "Int32")
+    return int32(signed(value, 4)), err
+}
+
+func (o ByteOrder) Int64(data []byte) (int64, error) {
+    let value, err = o.read(data, 8, "Int64")
+    return signed(value, 8), err
+}
+
+func (o ByteOrder) PutUint16(data mut []byte, value uint16) error {
+    return o.write(data, uint64(value), 2, "PutUint16")
+}
+
+func (o ByteOrder) PutUint32(data mut []byte, value uint32) error {
+    return o.write(data, uint64(value), 4, "PutUint32")
+}
+
+func (o ByteOrder) PutUint64(data mut []byte, value uint64) error {
+    return o.write(data, value, 8, "PutUint64")
+}
+
+func (o ByteOrder) PutInt16(data mut []byte, value int16) error {
+    return o.write(data, unsigned(int64(value), 2), 2, "PutInt16")
+}
+
+func (o ByteOrder) PutInt32(data mut []byte, value int32) error {
+    return o.write(data, unsigned(int64(value), 4), 4, "PutInt32")
+}
+
+func (o ByteOrder) PutInt64(data mut []byte, value int64) error {
+    return o.write(data, unsigned(value, 8), 8, "PutInt64")
+}
+
+func (o ByteOrder) AppendUint16(data mut Array<byte>, value uint16) {
+    o.append(data, uint64(value), 2)
+}
+
+func (o ByteOrder) AppendUint32(data mut Array<byte>, value uint32) {
+    o.append(data, uint64(value), 4)
+}
+
+func (o ByteOrder) AppendUint64(data mut Array<byte>, value uint64) {
+    o.append(data, value, 8)
+}
+
+func (o ByteOrder) AppendInt16(data mut Array<byte>, value int16) {
+    o.append(data, unsigned(int64(value), 2), 2)
+}
+
+func (o ByteOrder) AppendInt32(data mut Array<byte>, value int32) {
+    o.append(data, unsigned(int64(value), 4), 4)
+}
+
+func (o ByteOrder) AppendInt64(data mut Array<byte>, value int64) {
+    o.append(data, unsigned(value, 8), 8)
+}

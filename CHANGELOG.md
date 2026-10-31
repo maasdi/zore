@@ -176,6 +176,13 @@ once it does.
 
 ### Standard library
 
+- Added `std/encoding/hex`, `std/encoding/base64`, and `std/encoding/binary`
+  (§37.14). Hex and the four RFC 4648 base64 encodings (`Standard`, `URL`, and
+  unpadded `RawStandard` and `RawURL`) decode strictly: anything their encoder
+  would not produce is rejected, and the error names the offset of the first
+  bad byte without repeating the input. `binary.BigEndian` and
+  `binary.LittleEndian` read, write, and append 16-, 32-, and 64-bit signed and
+  unsigned integers; a slice of the wrong length is an error, not a panic.
 - **Breaking:** `std/time` has separate types (§37.3). `Duration` is a
   length of time (`5 * time.Second` keeps working), `time.Now()` returns an
   `Instant` (a stopwatch reading used for deadlines: `time.Now().Add(d)`,

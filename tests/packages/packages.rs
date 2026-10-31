@@ -635,6 +635,57 @@ fn the_log_package_checks_templates_and_values() {
 }
 
 #[test]
+fn the_encoding_packages_borrow_input_and_check_their_types() {
+    let imports = "import \"std/encoding/base64\"\nimport \"std/encoding/binary\"\nimport \"std/encoding/hex\"";
+    accepts(&[(
+        "main.ore",
+        &main_with(
+            imports,
+            "var frame = Array<byte>{}\nbinary.BigEndian.AppendUint32(frame, 7)\n_ = binary.LittleEndian.PutUint16(frame[0:2], 1)\nlet length, err = binary.BigEndian.Uint32(frame[:])\n_ = err\nlet text = hex.EncodeToString(frame[:])\nlet encoding = base64.RawURL\nlet token = encoding.EncodeToString(frame[:])\nlet data, decodeErr = base64.RawURL.DecodeString(token)\n_ = decodeErr\nlet raw, hexErr = hex.Decode(data[:])\n_ = hexErr\nprintln(text + token)\nprintln(length)\nprintln(raw.len())",
+        ),
+    )]);
+    let base64 = "import \"std/encoding/base64\"";
+    let binary = "import \"std/encoding/binary\"";
+    let hex = "import \"std/encoding/hex\"";
+    for (imports, body, message) in [
+        (
+            hex,
+            "let text = hex.EncodeToString(\"ab\")",
+            "mismatched types",
+        ),
+        (
+            hex,
+            "hex.DecodeString(\"ab\")",
+            "must be used or explicitly discarded",
+        ),
+        (
+            base64,
+            "let data, err = base64.Standard.DecodeString(\"\")\nprintln(data.len())",
+            "may be unused",
+        ),
+        (base64, "let size int = base64.URL", "mismatched types"),
+        (base64, "println(base64.standardAlphabet)", "not exported"),
+        (
+            binary,
+            "let data = Array<byte>{0, 0}\nbinary.BigEndian.AppendUint16(data, 1)",
+            "mutable",
+        ),
+        (
+            binary,
+            "let value, err = binary.BigEndian.Uint16(Array<byte>{1, 2}[:], 3)\n_ = err",
+            "takes 1 argument",
+        ),
+        (
+            imports,
+            "let order binary.ByteOrder = base64.Standard",
+            "mismatched types",
+        ),
+    ] {
+        rejects(&[("main.ore", &main_with(imports, body))], message);
+    }
+}
+
+#[test]
 fn the_rolling_package_owns_its_writer() {
     let imports = "import \"std/log\"\nimport \"std/log/rolling\"\nimport \"std/os\"";
     accepts(&[(
