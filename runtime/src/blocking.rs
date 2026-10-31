@@ -203,8 +203,8 @@ pub unsafe extern "C" fn zore_blocking_start(
     let completion = Arc::clone(&operation);
     let waiter = Waiter::from(unsafe { &*context }.waker().clone());
     let data = data as usize;
+    let mut panic = super::panic::PanicState::for_current_task();
     submit(Box::new(move || {
-        let mut panic = super::panic::PanicState::default();
         super::panic::swap_state(&mut panic);
         unsafe {
             work(data as *mut u8);
@@ -227,11 +227,11 @@ pub unsafe extern "C" fn zore_blocking_poll(operation: *const Operation) -> u8 {
         .result
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let Some(mut panic) = result.take() else {
+    let Some(panic) = result.take() else {
         return 0;
     };
     drop(result);
-    super::panic::swap_state(&mut panic);
+    super::panic::adopt(panic);
     drop(unsafe { Arc::from_raw(operation) });
     1
 }

@@ -1468,8 +1468,9 @@ When `main` returns normally, its scope cleanup runs as for any function and
 the process then exits with status 0. Tasks still running are abandoned as
 specified in §18.11.
 
-If the initial task panics, it unwinds (§15.4), the runtime reports the panic
-on standard error (§18.10), and the process exits with a nonzero status. The
+If the initial task panics, the runtime reports the panic on standard error
+when it is raised (§18.10), the task unwinds (§15.4), and the process exits
+with a nonzero status. The
 specific nonzero value is implementation-defined. An abort (§15.4) also ends
 the process with a nonzero status and without further unwinding.
 
@@ -5403,8 +5404,13 @@ task's drops (§15.4). What happens next depends on the task:
   — detached, or dropped — the process continues running.
 
 The runtime reports every panic, with its message and originating task, on
-standard error when it occurs. The report format is implementation-defined;
-the process exit status after an initial-task panic is specified in §3.19.
+standard error when it occurs: when the panic is raised, before the task
+unwinds. The report therefore comes before anything the unwinding makes
+visible to other tasks, such as a poisoned mutex (§20.2) or a value a drop
+sends, and is not lost when another task then ends the process. A panic raised
+again at retrieval is reported again, in the retrieving task. The report
+format is implementation-defined; the process exit status after an
+initial-task panic is specified in §3.19.
 
 This does not make panics catchable (§15.4): no operation turns a panic into a
 value, and no code resumes after the panicking point. A task boundary only

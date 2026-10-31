@@ -370,9 +370,11 @@ func main() {
     assert_eq!(output.status.code(), Some(2), "{}", stderr(&output));
     assert_eq!(stdout(&output), "entered\n");
     let errors = stderr(&output);
-    assert!(errors.contains("sink exploded"), "{errors}");
-    assert!(
-        errors.contains("panic in the main task: withLock on a poisoned mutex"),
-        "{errors}"
-    );
+    let exploded = errors
+        .find("sink exploded")
+        .unwrap_or_else(|| panic!("{errors}"));
+    let poisoned = errors
+        .find("panic in the main task: withLock on a poisoned mutex")
+        .unwrap_or_else(|| panic!("{errors}"));
+    assert!(exploded < poisoned, "the cause is reported first: {errors}");
 }
