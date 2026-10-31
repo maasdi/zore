@@ -5839,6 +5839,34 @@ func main() {
 }
 
 #[test]
+fn a_task_keeps_its_panic_label_after_waiting_for_a_helper_thread() {
+    let output = run(r#"package main
+import "std/os"
+
+async func work() int {
+    let data, err = os.ReadFile("no-such-file.txt")
+    _ = err
+    _ = data
+    panic("after read")
+}
+
+func main() {
+    let t = go work()
+    println(t.wait())
+}
+"#);
+    assert_eq!(output.status.code(), Some(2), "{}", stderr(&output));
+    let report = stderr(&output);
+    let task = report
+        .find("panic in task 1: after read")
+        .unwrap_or_else(|| panic!("{report}"));
+    let main = report
+        .find("panic in the main task: after read")
+        .unwrap_or_else(|| panic!("{report}"));
+    assert!(task < main, "{report}");
+}
+
+#[test]
 fn async_state_machines_propagate_errors_and_return_move_values() {
     prints(
         r#"package main

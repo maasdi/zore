@@ -15,6 +15,14 @@ impl PanicState {
             ..Self::default()
         }
     }
+
+    /// Fresh state for work done on the current task's behalf on another thread.
+    pub(super) fn for_current_task() -> Self {
+        Self {
+            task: STATE.with(|state| state.borrow().task),
+            ..Self::default()
+        }
+    }
 }
 
 thread_local! {
@@ -63,6 +71,20 @@ pub(super) fn raise(message: &[u8]) {
 #[inline(never)]
 pub(super) fn take() -> Option<Vec<u8>> {
     STATE.with(|state| state.borrow_mut().current.take())
+}
+
+/// Takes on a panic raised on this task's behalf elsewhere, keeping its own state otherwise.
+pub(super) fn adopt(other: PanicState) {
+    let Some(message) = other.current else {
+        return;
+    };
+    STATE.with(|state| {
+        let mut state = state.borrow_mut();
+        if state.current.is_some() {
+            std::process::abort();
+        }
+        state.current = Some(message);
+    });
 }
 
 /// A task that moves between threads carries its panic state with it.

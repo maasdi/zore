@@ -1468,8 +1468,9 @@ When `main` returns normally, its scope cleanup runs as for any function and
 the process then exits with status 0. Tasks still running are abandoned as
 specified in §18.11.
 
-If the initial task panics, it unwinds (§15.4), the runtime reports the panic
-on standard error (§18.10), and the process exits with a nonzero status. The
+If the initial task panics, the runtime reports the panic on standard error
+when it is raised (§18.10), the task unwinds (§15.4), and the process exits
+with a nonzero status. The
 specific nonzero value is implementation-defined. An abort (§15.4) also ends
 the process with a nonzero status and without further unwinding.
 
