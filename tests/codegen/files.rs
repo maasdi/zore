@@ -58,8 +58,9 @@ func main() {{
     let _, statErr = os.Stat("DIR/never")
     check(statErr != nil, "rejected flags touch nothing")
 
-    let _, missing = os.OpenFile(path, os.OpenWriteOnly, 0o644)
+    let missingFile, missing = os.OpenFile(path, os.OpenWriteOnly, 0o644)
     check(failsWith(missing, "os.OpenFile: "), "missing without create")
+    check(missingFile.Name() == "" && fails(missingFile.Sync(), "os.Sync: not an open file"), "system failure gives a closed file")
 
     let created, createErr = os.OpenFile(path, os.OpenWriteOnly | os.OpenCreate | os.OpenExclusive, 0o640)
     check(createErr == nil, "exclusive create")
@@ -70,8 +71,9 @@ func main() {{
     check(failsWith(readErr, "os.Read: "), "write-only cannot read")
     check(created.Close() == nil, "Close reports success")
 
-    let _, again = os.OpenFile(path, os.OpenReadWrite | os.OpenCreate | os.OpenExclusive, 0o640)
+    let refused, again = os.OpenFile(path, os.OpenReadWrite | os.OpenCreate | os.OpenExclusive, 0o640)
     check(failsWith(again, "os.OpenFile: "), "exclusive refuses an existing file")
+    check(refused.Name() == "" && fails(refused.Sync(), "os.Sync: not an open file"), "refused open gives a closed file")
     check(text(path) == "hello world", "refused open keeps contents")
 
     let reader, _ = os.OpenFile(path, os.OpenReadOnly, 0)
@@ -284,6 +286,7 @@ fn concurrent_temporary_files_never_collide_in_plain_and_async_code() {
         r#"package main
 import "std/errors"
 import "std/os"
+import "std/path/filepath"
 import "std/strings"
 import "std/sync"
 {CHECK}
@@ -291,7 +294,7 @@ func make(dir string, wg sync.WaitGroup, failures Mutex<int>) {{
     for var i = 0; i < 5; i += 1 {{
         let file, err = os.CreateTemp(dir, "c-*")
         if err != nil {{ failures.withLock(func(n mut int) {{ n += 1 }}) }}
-        let _, _ = file.WriteString(file.Name())
+        let _, _ = file.WriteString(filepath.Base(file.Name()))
     }}
     let folder, err = os.MkdirTemp(dir, "c-*")
     if err != nil || folder == "" {{ failures.withLock(func(n mut int) {{ n += 1 }}) }}
@@ -322,8 +325,7 @@ func main() {{
     check(entries.len() == 240, "every file and folder is new")
     for entry in entries {{
         if !entry.IsDir() {{
-            let path = dir + "/" + entry.Name()
-            check(text(path) == path, "each file written once by its creator")
+            check(text(dir + "/" + entry.Name()) == entry.Name(), "each file written once by its creator")
         }}
     }}
     let task = go makeAsync(dir)
@@ -435,7 +437,7 @@ func main() {{
     check(walk.Path() == "", "nothing before Next")
     for walk.Next() {{
         check(walk.Err() == nil, "no errors")
-        let rel = walk.Path()[root.len():]
+        let rel = strings.ReplaceAll(walk.Path()[root.len():], "\\", "/")
         if walk.IsDir() {{ println(rel + "/") }} else {{ println(rel) }}
         if filepath.Base(walk.Path()) == "skip" {{ walk.SkipDir() }}
         if filepath.Base(walk.Path()) == "top" {{ walk.SkipDir() }}
@@ -455,10 +457,10 @@ func main() {{
     var changing = filepath.Walk(root)
     var errorsSeen = 0
     for changing.Next() {{
-        if changing.Path() == root + "/a" {{ check(os.RemoveAll(root + "/b") == nil, "remove b") }}
+        if changing.Path() == filepath.Join(Array<string>{{root, "a"}}[:]) {{ check(os.RemoveAll(root + "/b") == nil, "remove b") }}
         if changing.Err() != nil {{
             errorsSeen += 1
-            check(changing.Path() == root + "/b" && changing.IsDir(), "error on the removed folder")
+            check(changing.Path() == filepath.Join(Array<string>{{root, "b"}}[:]) && changing.IsDir(), "error on the removed folder")
             check(failsWith(changing.Err(), "os.ReadDir: "), "read error")
         }}
     }}
@@ -569,4 +571,32 @@ func main() {{
 "#
     );
     prints_in(&source, "ok\n");
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn an_empty_tmpdir_falls_back_to_the_system_folder() {
+    let dir = TempDir::new().unwrap();
+    let executable = dir.executable("program");
+    let source = r#"package main
+import "std/os"
+
+func main() {
+    println(os.TempDir())
+    let file, err = os.CreateTemp("", "zore-empty-tmpdir-*")
+    println(err == nil)
+    println(file.Name()[:5])
+    let name = file.Name()
+    drop(file)
+    println(os.Remove(name) == nil)
+}
+"#;
+    build_file(source, &executable).unwrap_or_else(|e| panic!("build failed: {e:?}"));
+    let output = Command::new(&executable)
+        .env("TMPDIR", "")
+        .current_dir(dir.path())
+        .output()
+        .expect("run built program");
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    assert_eq!(stdout(&output), "/tmp\ntrue\n/tmp/\ntrue\n");
 }

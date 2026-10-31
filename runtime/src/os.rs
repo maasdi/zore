@@ -452,9 +452,18 @@ pub unsafe extern "C" fn zore_native_os_file_sync(out: *mut ErrorOut, id: i64) {
 /// `out` must be writable.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn zore_native_os_temp_dir(out: *mut StringOut) {
-    let dir = std::env::temp_dir().to_string_lossy().into_owned();
+    let dir = temp_dir();
     // SAFETY: guaranteed by the caller.
     unsafe { out.write(StringOut::built(dir.as_bytes())) };
+}
+
+fn temp_dir() -> String {
+    let dir = std::env::temp_dir().to_string_lossy().into_owned();
+    if dir.is_empty() && cfg!(unix) {
+        "/tmp".to_string()
+    } else {
+        dir
+    }
 }
 
 static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -501,13 +510,11 @@ pub unsafe extern "C" fn zore_native_os_temp_path(
             text_of(suffix, suffix_len),
         )
     };
-    let base = if dir.is_empty() {
-        std::env::temp_dir()
-    } else {
-        std::path::PathBuf::from(dir)
-    };
-    let path = base.join(format!("{prefix}{}{suffix}", random_text()));
-    let path = path.to_string_lossy().into_owned();
+    let mut path = if dir.is_empty() { temp_dir() } else { dir };
+    if !path.is_empty() && !path.ends_with(std::path::is_separator) {
+        path.push(std::path::MAIN_SEPARATOR);
+    }
+    path.push_str(&format!("{prefix}{}{suffix}", random_text()));
     // SAFETY: guaranteed by the caller.
     unsafe { out.write(StringOut::built(path.as_bytes())) };
 }
@@ -524,12 +531,14 @@ pub unsafe extern "C" fn zore_native_os_mkdir_new(
     // SAFETY: guaranteed by the caller.
     let path = unsafe { text_of(path, path_len) };
     let result = blocking::run(move || {
-        let mut builder = std::fs::DirBuilder::new();
+        let builder = std::fs::DirBuilder::new();
         #[cfg(unix)]
-        {
+        let builder = {
             use std::os::unix::fs::DirBuilderExt;
+            let mut builder = builder;
             builder.mode(u32::try_from(perm & 0o7777).unwrap_or(0o700));
-        }
+            builder
+        };
         #[cfg(not(unix))]
         let _ = perm;
         builder.create(&path)

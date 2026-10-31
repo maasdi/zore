@@ -9681,7 +9681,9 @@ of the file see them. The system may still hold them in memory. `(f File)
 Sync()` waits until the system reports that the file's data and its facts
 (size, times) are on the storage device, and returns that report's error.
 `Sync` on `Stdout()` writes out anything the process still holds for standard
-output; on `Stdin()` and `Stderr()` it does nothing.
+output; on `Stdin()` and `Stderr()` it does nothing. On Windows, `Sync` needs
+write access: a file opened with `OpenReadOnly` gives an error beginning
+`os.Sync: `, while Linux and macOS accept it.
 
 `Close` returns the error the system reports while closing the file. Some
 systems, network file systems among them, report a failed earlier write only
@@ -9696,7 +9698,7 @@ it honors the request, is up to the system and hardware.
 
 | Function | Behavior |
 | --- | --- |
-| `TempDir() string` | The system's folder for temporary files: `TMPDIR` on Linux and macOS when set, otherwise a system default such as `/tmp`; on Windows the folder the system reports, from `TMP`, `TEMP`, or the user profile. The folder is not checked or created |
+| `TempDir() string` | The system's folder for temporary files: `TMPDIR` on Linux and macOS when set and not empty, otherwise a system default such as `/tmp`; on Windows the folder the system reports, from `TMP`, `TEMP`, or the user profile. The folder is not checked or created |
 | `CreateTemp(dir string, pattern string) (File, error)` | Creates a new file in `dir`, or in `TempDir()` when `dir` is `""`, opened for reading and writing with the permission bits `0o600` |
 | `MkdirTemp(dir string, pattern string) (string, error)` | Creates a new folder the same way, with the permission bits `0o700`, and returns its path |
 
@@ -9705,8 +9707,10 @@ characters from `0`–`9` and `a`–`v`; without a `*`, they are added at the en
 `CreateTemp("", "report-*.csv")` might create `/tmp/report-k3v09q1d7ma2.csv`.
 A `pattern` holding a path separator is rejected with `os.CreateTemp: pattern
 contains a path separator` (or `os.MkdirTemp: `) before anything is created.
-The path is `dir` joined with the name by the host's separator, without
-cleaning; `(f File) Name()` gives it for a file.
+The path is `dir`, then the host's separator unless `dir` already ends with
+one, then the name, without cleaning; nothing in the name can replace `dir`,
+so on Windows a pattern such as `C:*` still names a file inside `dir`.
+`(f File) Name()` gives the path for a file.
 
 Creation is exclusive: a name that already exists is never opened or reused.
 When a name is taken, another is tried, up to 10000 names, and then the call

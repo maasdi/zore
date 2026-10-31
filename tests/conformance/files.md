@@ -48,6 +48,7 @@ macOS" run only there.
 | Patterns `plain`, `a*b*c`, and `""` | Characters added at the end; the last `*` replaced; a twelve-character name |
 | Dropping the file | The file and its contents remain |
 | `CreateTemp("", ...)` | The file is in `TempDir()`; the caller removes it |
+| `TempDir()` and `CreateTemp("", ...)` with `TMPDIR` set to `""` (Linux) | `/tmp`, and the file is created there |
 | Patterns `a/b*` and `x/*` | `os.CreateTemp: pattern contains a path separator`, `os.MkdirTemp: pattern contains a path separator` |
 | A missing `dir` | Errors beginning `os.CreateTemp: ` and `os.MkdirTemp: `; `MkdirTemp` returns `""` |
 | `MkdirTemp(dir, "work-*")` | An empty new folder; `RemoveAll` removes it |
