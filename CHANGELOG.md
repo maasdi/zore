@@ -187,7 +187,8 @@ once it does.
   order, never follows links, keeps no folder open between steps, and reports
   each error with the entry it belongs to. `os.Lstat`, `FileInfo.IsSymlink`, and
   `DirEntry.IsSymlink` describe links. The spec now states what `os.Rename`
-  does and does not promise on each system.
+  does and does not promise on each system. `File.Close` now returns the error
+  the system reports while closing, instead of always `nil`.
 - Added `std/encoding/hex`, `std/encoding/base64`, and `std/encoding/binary`
   (§37.14). Hex and the four RFC 4648 base64 encodings (`Standard`, `URL`, and
   unpadded `RawStandard` and `RawURL`) decode strictly: anything their encoder

@@ -37,6 +37,8 @@ macOS" run only there.
 | `Sync` on a written file, `Stdout`, `Stderr`, `Stdin` | `nil` |
 | `Stdin().Seek(0, SeekStart)` | `os.Seek: not a seekable file` |
 | `Seek` and `Sync` in an `async func` task | Same results |
+| `Close` of a written file | `nil` |
+| The close the runtime makes for `Close`, given a descriptor that is not open (Linux and macOS) | The system's error, `EBADF`, comes back instead of being dropped (`runtime/src/os.rs` unit test) |
 
 ## Temporary files and folders
 

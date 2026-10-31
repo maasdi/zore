@@ -668,6 +668,43 @@ pub unsafe extern "C" fn zore_native_os_file_write_string(
     unsafe { out.write(write_all(id, data)) };
 }
 
+#[cfg(unix)]
+fn close_reporting(file: std::fs::File) -> std::io::Result<()> {
+    use std::os::fd::IntoRawFd;
+    unsafe extern "C" {
+        fn close(fd: i32) -> i32;
+    }
+    let fd = file.into_raw_fd();
+    // SAFETY: the descriptor was released by its `File` and is closed exactly once; never retried.
+    if unsafe { close(fd) } == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
+}
+
+#[cfg(windows)]
+fn close_reporting(file: std::fs::File) -> std::io::Result<()> {
+    use std::os::windows::io::IntoRawHandle;
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn CloseHandle(handle: *mut std::ffi::c_void) -> i32;
+    }
+    let handle = file.into_raw_handle();
+    // SAFETY: the handle was released by its `File` and is closed exactly once.
+    if unsafe { CloseHandle(handle) } != 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
+}
+
+#[cfg(not(any(unix, windows)))]
+fn close_reporting(file: std::fs::File) -> std::io::Result<()> {
+    drop(file);
+    Ok(())
+}
+
 /// # Safety
 /// `out` must be writable.
 #[unsafe(no_mangle)]
@@ -676,10 +713,14 @@ pub unsafe extern "C" fn zore_native_os_file_close(out: *mut ErrorOut, id: i64) 
         ErrorOut::ok()
     } else {
         match remove(id) {
-            Some(handle) => {
-                blocking::run(move || drop(handle));
-                ErrorOut::ok()
-            }
+            Some(handle) => ErrorOut::from_failure(blocking::run(move || {
+                let Ok(Handle::File(file)) = Arc::try_unwrap(handle) else {
+                    return None;
+                };
+                close_reporting(file)
+                    .err()
+                    .map(|error| format!("os.Close: {error}"))
+            })),
             None => ErrorOut::failed("os.Close: not an open file"),
         }
     };
@@ -690,4 +731,27 @@ pub unsafe extern "C" fn zore_native_os_file_close(out: *mut ErrorOut, id: i64) 
 #[unsafe(no_mangle)]
 pub extern "C" fn zore_native_os_file_drop(id: i64) {
     drop(remove(id));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::close_reporting;
+
+    #[test]
+    fn closing_a_file_reports_success() {
+        let path = std::env::temp_dir().join(format!("zore-close-{}", std::process::id()));
+        let file = std::fs::File::create(&path).unwrap();
+        assert!(close_reporting(file).is_ok());
+        std::fs::remove_file(&path).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn closing_reports_the_system_error() {
+        use std::os::fd::FromRawFd;
+        // SAFETY: a descriptor this large is never open, so `close` fails and touches nothing.
+        let never_open = unsafe { std::fs::File::from_raw_fd(1 << 30) };
+        let error = close_reporting(never_open).unwrap_err();
+        assert_eq!(error.raw_os_error(), Some(9));
+    }
 }

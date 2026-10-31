@@ -7445,7 +7445,7 @@ value is closed, so every operation on it fails.
 | `(f File) Read(buf mut []byte) (int, error)` | Waits for at least one byte and moves up to `buf.len()` bytes into `buf`; at end of input, `0` and `EOF`; an empty `buf` gives `0` and `nil` at once |
 | `(f File) Write(data []byte) (int, error)`, `(f File) WriteString(s string) (int, error)` | Writes everything and returns the byte count; on failure, the bytes written before it |
 | `(f File) Seek(offset int, whence int) (int, error)`, `(f File) Sync() error` | Moves the read and write position, and asks the system to store written data (§37.15) |
-| `(f own File) Close() error` | Closes the file |
+| `(f own File) Close() error` | Closes the file and returns the error the system reports while closing, if any (§37.15) |
 
 Error messages begin with the function name (`os.ReadFile: `, `os.Open: `,
 `os.Append: `, `os.Rename: `, `os.OpenFile: `, `os.CreateTemp: `,
@@ -9681,11 +9681,16 @@ of the file see them. The system may still hold them in memory. `(f File)
 Sync()` waits until the system reports that the file's data and its facts
 (size, times) are on the storage device, and returns that report's error.
 `Sync` on `Stdout()` writes out anything the process still holds for standard
-output; on `Stdin()` and `Stderr()` it does nothing. `Close` and dropping a
-file release it without waiting for storage; `Close` reports only a closed or
-unknown handle, so a program that must know whether its data is safe calls
-`Sync` before `Close`. How long a device takes, and whether it honors the
-request, is up to the system and hardware.
+output; on `Stdin()` and `Stderr()` it does nothing.
+
+`Close` returns the error the system reports while closing the file. Some
+systems, network file systems among them, report a failed earlier write only
+there. The file is closed whether or not an error comes back, and the close is
+never repeated. Dropping a file closes it the same way but has nowhere to
+report an error, so a program that writes should call `Close` and check it.
+Neither `Close` nor a drop waits for storage: a program that must know its
+data is safe calls `Sync` before `Close`. How long a device takes, and whether
+it honors the request, is up to the system and hardware.
 
 **Temporary files and folders.**
 

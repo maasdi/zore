@@ -68,7 +68,7 @@ func main() {{
     var buf = Array<byte>{{0, 0}}
     let _, readErr = created.Read(buf[:])
     check(failsWith(readErr, "os.Read: "), "write-only cannot read")
-    _ = created.Close()
+    check(created.Close() == nil, "Close reports success")
 
     let _, again = os.OpenFile(path, os.OpenReadWrite | os.OpenCreate | os.OpenExclusive, 0o640)
     check(failsWith(again, "os.OpenFile: "), "exclusive refuses an existing file")
