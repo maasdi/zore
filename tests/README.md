@@ -415,6 +415,10 @@ rejected, local times across daylight saving, and timers and tickers that fire,
 stop, reset, drain, and leave no waiting task once dropped. That the types do
 not mix is checked in `packages/packages.rs`.
 
+`conformance/encoding.md` maps hex, base64, and byte order to
+`codegen/encoding.rs`: RFC 4648 vectors, every byte and length, strict
+rejection with exact offsets, width boundaries, and length panics.
+
 `conformance/log.md` also maps `std/log/rolling` to `codegen/rolling.rs`:
 rolling and backup removal, restarts, buffering and background flushing,
 failures, and records from many tasks across rolls.

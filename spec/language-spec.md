@@ -6884,8 +6884,9 @@ At minimum, the architecture must leave room for:
 Packages and imports are specified in §3.20. The standard packages are
 specified in §37.2 (text, bytes, and errors), §37.3 (time, the operating
 system, buffered I/O, and TCP), §37.4 (cancellation and task coordination),
-§37.5 (paths and sorting), §37.12 (structured logging), and §37.13 (rolling
-log files). Further packages are TBD.
+§37.5 (paths and sorting), §37.7 (JSON), §37.12 (structured logging), §37.13
+(rolling log files), and §37.14 (hex, base64, and byte order). Further packages
+are TBD.
 
 ## 37.1 `println` — LOCKED
 
@@ -9417,6 +9418,193 @@ channels, and `select`. `os.Append` and
 `os.Rename` are runtime functions that wait for a helper like the other file
 operations (§37.3). Conformance cases: `tests/conformance/log.md`, with native
 tests in `tests/codegen/rolling.rs`.
+
+## 37.14 Hex, base64, and byte order — LOCKED
+
+`std/encoding/hex`, `std/encoding/base64`, and `std/encoding/binary` turn bytes
+into text and back, and read and write fixed-width integers in a chosen byte
+order. They are bundled Zore source with no native dependency. Every function
+borrows its input for the call only, never keeps or changes it, and returns a
+fresh owned result; only a `mut` parameter is written. They do not wait,
+suspend, spawn tasks, or keep state, so any task may call them at any time.
+Their work is proportional to the input; callers bound untrusted input before
+decoding it.
+
+Decoding is strict, so every byte sequence has exactly one encoding, which hex
+decoding also accepts in upper case. A decoding error returns an empty array
+and the error, never partial output. Unlike the parsing convention of §37.2,
+error messages do not quote the rejected text: they name the position of the
+first rejected byte as a zero-based offset into the input and never repeat the
+input, since encoded data is often a secret token.
+
+**`std/encoding/hex`**
+
+```ore
+func EncodedLen(n int) int
+func DecodedLen(n int) int
+func Encode(data []byte) Array<byte>
+func EncodeToString(data []byte) string
+func Decode(text []byte) (Array<byte>, error)
+func DecodeString(text string) (Array<byte>, error)
+```
+
+Each byte becomes two lower-case digits, high half first: `0`–`9` and `a`–`f`.
+Decoding accepts `0`–`9`, `a`–`f`, and `A`–`F`, and nothing else: no prefix,
+sign, separator, or white space. `EncodedLen(n)` is `2 * n` and
+`DecodedLen(n)` is `n / 2`; both panic when `n` is negative, and `EncodedLen`
+panics when the result overflows `int`. Empty input encodes to empty output and
+decodes to an empty array.
+
+A decoding function checks the length first, then the bytes from the start:
+
+| Input | Error message (`DecodeString` uses its own name) |
+| --- | --- |
+| Odd length | `hex.Decode: odd length` |
+| A byte that is not a hex digit | `hex.Decode: invalid byte at offset N` |
+
+**`std/encoding/base64`**
+
+```ore
+type Encoding int
+const Standard Encoding = 0
+const URL Encoding = 1
+const RawStandard Encoding = 2
+const RawURL Encoding = 3
+
+func (e Encoding) EncodedLen(n int) int
+func (e Encoding) DecodedLen(n int) int
+func (e Encoding) Encode(data []byte) Array<byte>
+func (e Encoding) EncodeToString(data []byte) string
+func (e Encoding) Decode(text []byte) (Array<byte>, error)
+func (e Encoding) DecodeString(text string) (Array<byte>, error)
+```
+
+These are the encodings of RFC 4648. `Standard` and `RawStandard` use the
+alphabet `A`–`Z`, `a`–`z`, `0`–`9`, `+`, `/` (RFC 4648 §4). `URL` and `RawURL`
+use the same alphabet with `-` and `_` in place of `+` and `/` (§5), so the
+result can be used in URLs and file names without escaping. `Standard` and
+`URL` pad the last group to four characters with `=`; `RawStandard` and
+`RawURL` write no padding. Use `RawURL` for tokens in URLs, cookies, and
+headers, and `Standard` for MIME-style or JSON-carried binary data. An
+`Encoding` value other than the four constants panics in every method with
+`base64: unknown Encoding N`.
+
+`EncodedLen(n)` is `4 * ((n + 2) / 3)` with padding and `(8 * n + 5) / 6`
+without; `DecodedLen(n)` is the most bytes `n` characters can decode to,
+`3 * (n / 4)` with padding and `3 * (n / 4) + 3 * (n % 4) / 4` without, which
+does not overflow for any `n`. Both panic
+when `n` is negative, and `EncodedLen` panics when the result overflows `int`.
+
+A decoding function accepts exactly the output its encoding produces:
+
+- only bytes of its own alphabet: the other alphabet's two characters, white
+  space, and line breaks are invalid;
+- with padding, a length that is a multiple of 4, with `=` only as the last
+  one or two bytes, and `=` in the second-to-last position only when the last
+  is also `=`; a group of one character plus padding is invalid;
+- without padding, no `=` at all, and a length whose remainder by 4 is not 1;
+- unused low bits of the last character equal to zero.
+
+It checks the length first, then the bytes from the start, then the unused
+bits:
+
+| Input | Error message (`DecodeString` uses its own name) |
+| --- | --- |
+| A length the encoding cannot produce | `base64.Encoding.Decode: invalid length` |
+| A byte outside the alphabet, or a misplaced `=` | `base64.Encoding.Decode: invalid byte at offset N` |
+| Nonzero unused bits in the last character | `base64.Encoding.Decode: nonzero padding bits at offset N` |
+
+```ore
+import "std/encoding/base64"
+import "std/errors"
+
+func main() {
+    let token = base64.RawURL.EncodeToString(Array<byte>{251, 255}[:])
+    println(token)                                   // -_8
+    let data, err = base64.RawURL.DecodeString(token)
+    if err != nil { panic(errors.Message(err)) }
+    println(data.len())                              // 2
+    let _, bad = base64.Standard.DecodeString("-_8=")
+    println(errors.Message(bad))   // base64.Encoding.DecodeString: invalid byte at offset 0
+}
+```
+
+**`std/encoding/binary`**
+
+```ore
+type ByteOrder int
+const BigEndian ByteOrder = 0
+const LittleEndian ByteOrder = 1
+
+func (o ByteOrder) Uint16(data []byte) (uint16, error)
+func (o ByteOrder) Uint32(data []byte) (uint32, error)
+func (o ByteOrder) Uint64(data []byte) (uint64, error)
+func (o ByteOrder) Int16(data []byte) (int16, error)
+func (o ByteOrder) Int32(data []byte) (int32, error)
+func (o ByteOrder) Int64(data []byte) (int64, error)
+func (o ByteOrder) PutUint16(data mut []byte, value uint16) error
+func (o ByteOrder) PutUint32(data mut []byte, value uint32) error
+func (o ByteOrder) PutUint64(data mut []byte, value uint64) error
+func (o ByteOrder) PutInt16(data mut []byte, value int16) error
+func (o ByteOrder) PutInt32(data mut []byte, value int32) error
+func (o ByteOrder) PutInt64(data mut []byte, value int64) error
+func (o ByteOrder) AppendUint16(data mut Array<byte>, value uint16)
+func (o ByteOrder) AppendUint32(data mut Array<byte>, value uint32)
+func (o ByteOrder) AppendUint64(data mut Array<byte>, value uint64)
+func (o ByteOrder) AppendInt16(data mut Array<byte>, value int16)
+func (o ByteOrder) AppendInt32(data mut Array<byte>, value int32)
+func (o ByteOrder) AppendInt64(data mut Array<byte>, value int64)
+```
+
+`BigEndian` puts the most significant byte first, as network protocols do;
+`LittleEndian` puts the least significant byte first. Signed values use
+two's complement, so `Int16` of the bytes `FF FF` is `-1` and every value of
+each type round-trips through its bytes; no conversion panics.
+
+A read takes exactly the width of its type, 2, 4, or 8 bytes, and a `Put`
+writes exactly that many: the slice must have that length, so a caller names
+the field with a slice expression such as `header[4:8]`. Any other length
+returns the zero value or leaves `data` unchanged, with the error
+`binary.ByteOrder.Uint32: need 4 bytes, got N` (with the method's own name and
+width). An `Append` adds the bytes to the end of `data` and cannot fail. A
+`ByteOrder` value other than the two constants panics in every method with
+`binary: unknown ByteOrder N`.
+
+```ore
+import "std/encoding/binary"
+import "std/errors"
+
+func main() {
+    var frame = Array<byte>{}
+    binary.BigEndian.AppendUint16(frame, 0x0102)
+    binary.LittleEndian.AppendInt32(frame, -2)
+    println(frame.len())                                       // 6
+    let length, err = binary.BigEndian.Uint16(frame[0:2])
+    if err != nil { panic(errors.Message(err)) }
+    println(length)                                            // 258
+    let value, _ = binary.LittleEndian.Int32(frame[2:6])
+    println(value)                                             // -2
+    let _, short = binary.BigEndian.Uint32(frame[0:3])
+    println(errors.Message(short))   // binary.ByteOrder.Uint32: need 4 bytes, got 3
+}
+```
+
+Streaming encoders and decoders over `io.Reader` and `io.Writer`, line-wrapped
+MIME output, lenient decoding that skips white space, and variable-length
+integers are not part of these packages; each needs its own contract first.
+
+Ownership, error, and async implications: `Encoding` and `ByteOrder` are Copy
+integer types. Encoded and decoded arrays are fresh Move values owned by the
+caller, and encoded strings are ordinary strings; nothing keeps a view of the
+input. `Put` methods borrow `data` mutably for the call and change it only on
+success; `Append` methods borrow the array mutably and only add to it. Errors
+are ordinary `error` values (§7.2), so `?` and cleanup work as for any call.
+The functions are plain: an `async` caller runs them without suspending.
+
+Compiler impact: none; the packages are bundled Zore source built from
+`std/strconv` and `std/strings`. Conformance cases:
+`tests/conformance/encoding.md`, with native tests in
+`tests/codegen/encoding.rs`.
 
 ---
 

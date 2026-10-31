@@ -47,6 +47,7 @@ progress have no example until they work.
 | [`timeouts`](timeouts) | A `select` that gives up after `time.After`, a worker stopped by a `context.WithTimeout` context, and a `Listener` whose `Accept` reaches its deadline | §37.3, §37.4 |
 | [`mutex`](mutex) | `Mutex<T>`: forty tasks updating one shared counter, a guarded struct with a custom `drop`, results from `withLock`, and `isPoisoned` | §20.2 |
 | [`logging`](logging) | `std/log`: message templates, levels and filtering, fields added with `With`, quoted values, a failing output reported by `Err`, and timestamps | §37.12 |
+| [`encoding`](encoding) | `std/encoding/base64`, `std/encoding/binary`, and `std/encoding/hex`: a session packed in big-endian order, carried as a URL-safe token, and read back | §37.14 |
 | [`rolling-logs`](rolling-logs) | `std/log/rolling`: a small file limit, records rolled into numbered backups, the oldest removed, and `Close` errors | §37.13 |
 | [`rest-api`](rest-api) | HTTP/1.1 user API, factory handlers, shared store, structured request logs, bounded JSON body and graceful shutdown | §37.6, §37.12 |
 | [`json`](json) | Generated JSON codecs, naming, Optional, strict decoding, Value patches and indentation | §37.7 |

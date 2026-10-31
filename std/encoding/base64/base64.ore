@@ -1,0 +1,200 @@
+package base64
+
+import "std/strconv"
+import "std/strings"
+
+type Encoding int
+
+const Standard Encoding = 0
+const URL Encoding = 1
+const RawStandard Encoding = 2
+const RawURL Encoding = 3
+
+const standardAlphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+const urlAlphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
+const padding = 61
+const maxGroups = 2305843009213693951
+
+func (e Encoding) check() {
+    if e < Standard || e > RawURL {
+        panic("base64: unknown Encoding " + strconv.Itoa(int(e)))
+    }
+}
+
+func (e Encoding) padded() bool {
+    return e == Standard || e == URL
+}
+
+func (e Encoding) alphabet() string {
+    if e == URL || e == RawURL {
+        return urlAlphabet
+    }
+    return standardAlphabet
+}
+
+func (e Encoding) EncodedLen(n int) int {
+    e.check()
+    if n < 0 {
+        panic("base64.Encoding.EncodedLen: negative length")
+    }
+    let groups = n / 3
+    let rest = n % 3
+    if groups > maxGroups || (groups == maxGroups && rest > 0 && e.padded()) {
+        panic("base64.Encoding.EncodedLen: length overflows int")
+    }
+    if rest == 0 {
+        return 4 * groups
+    }
+    if e.padded() {
+        return 4 * groups + 4
+    }
+    return 4 * groups + rest + 1
+}
+
+func (e Encoding) DecodedLen(n int) int {
+    e.check()
+    if n < 0 {
+        panic("base64.Encoding.DecodedLen: negative length")
+    }
+    if e.padded() {
+        return 3 * (n / 4)
+    }
+    return 3 * (n / 4) + 3 * (n % 4) / 4
+}
+
+func (e Encoding) Encode(data []byte) Array<byte> {
+    e.check()
+    let alphabet = e.alphabet()
+    var output = Array<byte>{}
+    var i = 0
+    for i + 3 <= data.len() {
+        let group = int(data[i]) << 16 | int(data[i + 1]) << 8 | int(data[i + 2])
+        output.push(alphabet[group >> 18])
+        output.push(alphabet[(group >> 12) & 63])
+        output.push(alphabet[(group >> 6) & 63])
+        output.push(alphabet[group & 63])
+        i += 3
+    }
+    let rest = data.len() - i
+    if rest == 0 {
+        return output
+    }
+    var group = int(data[i]) << 16
+    if rest == 2 {
+        group |= int(data[i + 1]) << 8
+    }
+    output.push(alphabet[group >> 18])
+    output.push(alphabet[(group >> 12) & 63])
+    if rest == 2 {
+        output.push(alphabet[(group >> 6) & 63])
+    }
+    if e.padded() {
+        if rest == 1 {
+            output.push(padding)
+        }
+        output.push(padding)
+    }
+    return output
+}
+
+func (e Encoding) EncodeToString(data []byte) string {
+    let output = e.Encode(data)
+    let text, err = strings.FromBytes(output[:])
+    if err != nil {
+        panic("base64.Encoding.EncodeToString: invalid output")
+    }
+    return text
+}
+
+func (e Encoding) Decode(text []byte) (Array<byte>, error) {
+    return e.decode(text, "base64.Encoding.Decode")
+}
+
+func (e Encoding) DecodeString(text string) (Array<byte>, error) {
+    let data = strings.Bytes(text)
+    return e.decode(data[:], "base64.Encoding.DecodeString")
+}
+
+func (e Encoding) decode(text []byte, name string) (Array<byte>, error) {
+    e.check()
+    var length = text.len()
+    if e.padded() {
+        if length % 4 != 0 {
+            return Array<byte>{}, error(name + ": invalid length")
+        }
+        if length > 0 && text[length - 1] == padding {
+            length -= 1
+            if text[length - 1] == padding {
+                length -= 1
+            }
+        }
+    } else if length % 4 == 1 {
+        return Array<byte>{}, error(name + ": invalid length")
+    }
+    let urlSafe = e == URL || e == RawURL
+    for var i = 0; i < text.len(); i += 1 {
+        if i >= length || sextet(text[i], urlSafe) < 0 {
+            if i < length || text[i] != padding {
+                return Array<byte>{}, invalidAt(name, ": invalid byte at offset ", i)
+            }
+        }
+    }
+    var output = Array<byte>{}
+    var i = 0
+    for i + 4 <= length {
+        let group = sextet(text[i], urlSafe) << 18 | sextet(text[i + 1], urlSafe) << 12 | sextet(text[i + 2], urlSafe) << 6 | sextet(text[i + 3], urlSafe)
+        output.push(byte(group >> 16))
+        output.push(byte((group >> 8) & 255))
+        output.push(byte(group & 255))
+        i += 4
+    }
+    let rest = length - i
+    if rest == 0 {
+        return output, nil
+    }
+    var group = sextet(text[i], urlSafe) << 18 | sextet(text[i + 1], urlSafe) << 12
+    if rest == 3 {
+        group |= sextet(text[i + 2], urlSafe) << 6
+    }
+    let unused = group & ((1 << (8 * (4 - rest))) - 1)
+    if unused != 0 {
+        return Array<byte>{}, invalidAt(name, ": nonzero padding bits at offset ", length - 1)
+    }
+    output.push(byte(group >> 16))
+    if rest == 3 {
+        output.push(byte((group >> 8) & 255))
+    }
+    return output, nil
+}
+
+func sextet(c byte, urlSafe bool) int {
+    if c >= 65 && c <= 90 {
+        return int(c) - 65
+    }
+    if c >= 97 && c <= 122 {
+        return int(c) - 71
+    }
+    if c >= 48 && c <= 57 {
+        return int(c) + 4
+    }
+    if urlSafe {
+        if c == 45 {
+            return 62
+        }
+        if c == 95 {
+            return 63
+        }
+    } else {
+        if c == 43 {
+            return 62
+        }
+        if c == 47 {
+            return 63
+        }
+    }
+    return -1
+}
+
+func invalidAt(name string, problem string, offset int) error {
+    return error(name + problem + strconv.Itoa(offset))
+}

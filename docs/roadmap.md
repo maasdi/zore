@@ -175,6 +175,12 @@ with fixed offsets, RFC 3339 text, and stoppable `Timer` and `Ticker` owners.
 `context`, `net`, `net/http`, `log`, and `log/rolling` use them, and the HTTP
 date format moved to `http.FormatDate`. Named time zones and their rules remain
 outside the package; see [the time conformance list](../tests/conformance/time.md).
+Issue [#214](https://github.com/maasdi/zore/issues/214) adds `std/encoding/hex`,
+`std/encoding/base64`, and `std/encoding/binary` under §37.14: strict decoding
+with exact error offsets, the four RFC 4648 base64 encodings, and fixed-width
+integers in either byte order. Streaming adapters and variable-length integers
+wait for their own contracts; see
+[the encoding conformance list](../tests/conformance/encoding.md).
 
 Issue [#195](https://github.com/maasdi/zore/issues/195) overlaps runtime-library
 preparation with clang object generation. Its [Linux build-scheduling report](performance-build-scheduling.md)
