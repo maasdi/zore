@@ -45,7 +45,8 @@ macOS" run only there.
 | Scenario | Expected result |
 | --- | --- |
 | `CreateTemp(dir, "report-*.csv")` | A new file in `dir` named `report-`, twelve characters from `0-9a-v`, `.csv`; opened for reading and writing |
-| Patterns `plain`, `a*b*c`, and `""` | Characters added at the end; the last `*` replaced; a twelve-character name |
+| Patterns `plain` and `""` | Characters added at the end; a twelve-character name |
+| Pattern `a*b*c` (Linux and macOS) | Only the last `*` is replaced; Windows rejects `*` in names |
 | Dropping the file | The file and its contents remain |
 | `CreateTemp("", ...)` | The file is in `TempDir()`; the caller removes it |
 | `TempDir()` and `CreateTemp("", ...)` with `TMPDIR` set to `""` (Linux) | `/tmp`, and the file is created there |
@@ -61,7 +62,8 @@ macOS" run only there.
 | --- | --- |
 | Temporary file in the same folder, `Sync`, `Close`, `Rename` onto an existing file | The target holds the new contents; no temporary file remains |
 | A missing source | An error beginning `os.Rename: `; the target is unchanged |
-| A folder onto a non-empty folder, a file onto a folder, a folder onto a file, a folder into itself | Errors beginning `os.Rename: ` |
+| A folder onto a non-empty folder, a file onto a folder, a folder into itself | Errors beginning `os.Rename: ` |
+| A folder onto a file (Linux and macOS) | An error beginning `os.Rename: `; Windows may replace the file |
 | A folder to a new name | Its contents move with it |
 | A folder onto an empty folder (Linux and macOS) | Replaced |
 | Replacing a file that is open for reading (Linux and macOS) | The open file still reads the old contents; the path has the new ones |

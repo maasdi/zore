@@ -9704,6 +9704,9 @@ it honors the request, is up to the system and hardware.
 
 The new name is `pattern` with its last `*` replaced by twelve random
 characters from `0`–`9` and `a`–`v`; without a `*`, they are added at the end.
+Any other `*` stays in the name, and the system decides whether the name is
+allowed: Windows forbids `*` and other characters such as `?` and `:` in file
+names, so there `CreateTemp(dir, "a*b*c")` fails with the system's error.
 `CreateTemp("", "report-*.csv")` might create `/tmp/report-k3v09q1d7ma2.csv`.
 A `pattern` holding a path separator is rejected with `os.CreateTemp: pattern
 contains a path separator` (or `os.MkdirTemp: `) before anything is created.
@@ -9750,9 +9753,12 @@ folder a new name. It never copies data; when a copy would be needed, it fails.
   `newPath` open without allowing deletion.
 - Moving between file systems (another disk, partition, mount, or Windows
   volume) fails with the system's error, such as `cross-device link`.
-- A folder replaces an existing empty folder on Linux and macOS and fails on
-  Windows. Replacing a folder that is not empty, a file with a folder, or a
-  folder with a file fails everywhere, as does moving a folder into itself.
+- On Linux and macOS a folder replaces an existing empty folder, and replacing
+  a folder that is not empty, a file with a folder, or a folder with a file
+  fails. Windows follows its own rules for replacing with a folder: it can
+  replace a file with a folder. Portable code removes the target first when
+  it moves a folder. Replacing a folder that is not empty and moving a folder
+  into itself fail everywhere.
 - A completed rename may still be lost if the computer stops before the
   system writes the folder change to storage; `std/os` offers no way to
   wait for that.

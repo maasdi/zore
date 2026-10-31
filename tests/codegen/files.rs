@@ -137,6 +137,9 @@ func main() {{
     let folder, _ = os.MkdirTemp("DIR", "d-*")
     let folderInfo, _ = os.Stat(folder)
     check(folderInfo.Mode() == 0o700 && folderInfo.IsDir(), "MkdirTemp perm")
+    let last, _ = os.CreateTemp("DIR", "a*b*c")
+    let base = last.Name()["DIR/".len():]
+    check(base.len() == 16 && base[:3] == "a*b" && base[15:] == "c", "only the last star is replaced")
     println("ok")
 }}
 "#
@@ -244,11 +247,9 @@ func main() {{
 
     let plain, _ = os.CreateTemp("DIR", "plain")
     check(randomPart(filepath.Base(plain.Name()), "plain", ""), "pattern without star")
-    let last, _ = os.CreateTemp("DIR", "a*b*c")
-    check(randomPart(filepath.Base(last.Name()), "a*b", "c"), "last star")
     let bare, _ = os.CreateTemp("DIR", "")
     check(randomPart(filepath.Base(bare.Name()), "", ""), "empty pattern")
-    check(plain.Name() != last.Name(), "distinct names")
+    check(plain.Name() != bare.Name(), "distinct names")
 
     let inTemp, tempErr = os.CreateTemp("", "zore-test-*")
     check(tempErr == nil, "default folder")
@@ -374,7 +375,6 @@ func main() {{
     check(os.MkdirAll("DIR/full/inner", 0o755) == nil && os.MkdirAll("DIR/src/sub", 0o755) == nil, "folders")
     check(failsWith(os.Rename("DIR/src", "DIR/full"), "os.Rename: "), "folder onto non-empty folder")
     check(failsWith(os.Rename("DIR/target", "DIR/full"), "os.Rename: "), "file onto folder")
-    check(failsWith(os.Rename("DIR/src", "DIR/target"), "os.Rename: "), "folder onto file")
     check(failsWith(os.Rename("DIR/src", "DIR/src/sub/inside"), "os.Rename: "), "folder into itself")
     check(os.Rename("DIR/src", "DIR/moved") == nil, "folder to a new name")
     let info, _ = os.Stat("DIR/moved/sub")
@@ -400,6 +400,8 @@ func main() {{
     check(os.Rename("DIR/a", "DIR/b") == nil, "folder onto an empty folder")
     let info, _ = os.Stat("DIR/b/x")
     check(info.IsDir(), "replaced")
+    check(os.WriteFile("DIR/plain", strings.Bytes("x")[:], 0o644) == nil, "plain file")
+    check(failsWith(os.Rename("DIR/b", "DIR/plain"), "os.Rename: "), "folder onto file")
 
     check(os.WriteFile("DIR/f", strings.Bytes("old")[:], 0o644) == nil, "old")
     check(os.WriteFile("DIR/g", strings.Bytes("new")[:], 0o644) == nil, "new")
