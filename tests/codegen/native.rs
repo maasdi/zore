@@ -5802,6 +5802,43 @@ func main() {
 }
 
 #[test]
+fn a_task_panic_is_reported_before_its_unwinding_releases_a_lock() {
+    let output = run(r#"package main
+
+type Stuck struct { release channel<bool> }
+func (s mut Stuck) drop() { let _, _ = s.release.receive() }
+
+func holder(shared Mutex<int>, entered channel<bool>, release channel<bool>) {
+    let stuck = Stuck{release: release}
+    shared.withLock(func(value mut int) {
+        entered.send(true)
+        panic("holder failed")
+    })
+}
+
+func main() {
+    let shared = mutex(0)
+    let entered = channel<bool>(1)
+    let release = channel<bool>(1)
+    go holder(shared, entered, release)
+    let _, _ = entered.receive()
+    println("entered")
+    shared.withLock(func(value mut int) { value += 1 })
+}
+"#);
+    assert_eq!(output.status.code(), Some(2), "{}", stderr(&output));
+    assert_eq!(stdout(&output), "entered\n");
+    let report = stderr(&output);
+    let cause = report
+        .find("panic in task 1: holder failed")
+        .unwrap_or_else(|| panic!("{report}"));
+    let poisoned = report
+        .find("panic in the main task: withLock on a poisoned mutex")
+        .unwrap_or_else(|| panic!("{report}"));
+    assert!(cause < poisoned, "{report}");
+}
+
+#[test]
 fn async_state_machines_propagate_errors_and_return_move_values() {
     prints(
         r#"package main

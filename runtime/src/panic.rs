@@ -5,6 +5,16 @@ use std::io::Write;
 pub(super) struct PanicState {
     current: Option<Vec<u8>>,
     suspended: Vec<Option<Vec<u8>>>,
+    task: Option<u64>,
+}
+
+impl PanicState {
+    pub(super) fn for_task(id: u64) -> Self {
+        Self {
+            task: Some(id),
+            ..Self::default()
+        }
+    }
 }
 
 thread_local! {
@@ -12,12 +22,19 @@ thread_local! {
 }
 
 pub(super) fn fail(message: &[u8]) -> ! {
+    report(None, message);
+    std::process::exit(2);
+}
+
+fn report(task: Option<u64>, message: &[u8]) {
     let mut stderr = std::io::stderr().lock();
-    let _ = stderr.write_all(b"panic in the main task: ");
+    let _ = match task {
+        Some(id) => write!(stderr, "panic in task {id}: "),
+        None => stderr.write_all(b"panic in the main task: "),
+    };
     let _ = stderr.write_all(message);
     let _ = stderr.write_all(b"\n");
     let _ = stderr.flush();
-    std::process::exit(2);
 }
 
 pub(super) fn deadlock() -> ! {
@@ -29,15 +46,18 @@ pub(super) fn deadlock() -> ! {
     std::process::exit(2);
 }
 
+/// Reports the panic now, before unwinding releases anything another task could observe.
 #[inline(never)]
 pub(super) fn raise(message: &[u8]) {
-    STATE.with(|state| {
+    let task = STATE.with(|state| {
         let mut state = state.borrow_mut();
         if state.current.is_some() {
             std::process::abort();
         }
         state.current = Some(message.to_vec());
+        state.task
     });
+    report(task, message);
 }
 
 #[inline(never)]
@@ -51,20 +71,10 @@ pub(super) fn swap_state(other: &mut PanicState) {
     STATE.with(|state| std::mem::swap(&mut *state.borrow_mut(), other));
 }
 
-pub(super) fn report_task(id: u64, message: &[u8]) {
-    let mut stderr = std::io::stderr().lock();
-    let _ = write!(stderr, "panic in task {id}: ");
-    let _ = stderr.write_all(message);
-    let _ = stderr.write_all(b"\n");
-    let _ = stderr.flush();
-}
-
 pub(super) fn finish() {
-    STATE.with(|state| {
-        if let Some(message) = &state.borrow().current {
-            fail(message);
-        }
-    });
+    if zore_panic_pending() {
+        std::process::exit(2);
+    }
 }
 
 #[unsafe(no_mangle)]

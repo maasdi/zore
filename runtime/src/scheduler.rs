@@ -20,15 +20,11 @@ pub struct Context {
     budget: u16,
     waker: Waker,
     internal: bool,
-    task_id: u64,
 }
 
 const POLL_BUDGET: u16 = 128;
 
 impl Context {
-    pub(super) fn task_id(&self) -> u64 {
-        self.task_id
-    }
     pub fn waker(&self) -> &Waker {
         &self.waker
     }
@@ -128,7 +124,6 @@ impl Task {
             budget: POLL_BUDGET,
             waker: Waker::from(Arc::clone(self)),
             internal: false,
-            task_id: self.id,
         };
         panic::swap_state(&mut frame.panic);
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -145,9 +140,7 @@ impl Task {
         if result == Poll::Ready {
             // Destroy the frame with its task's panic state installed.
             frame.body.take();
-            if let Some(message) = panic::take() {
-                panic::report_task(self.id, &message);
-            }
+            panic::take();
         }
         panic::swap_state(&mut frame.panic);
         drop(frame);
@@ -273,7 +266,7 @@ impl Pool {
             }),
             frame: Mutex::new(Frame {
                 body: Some(body),
-                panic: PanicState::default(),
+                panic: PanicState::for_task(id),
             }),
         });
         lock(&self.state).tasks.insert(id, Arc::clone(&task));

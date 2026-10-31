@@ -5403,8 +5403,13 @@ task's drops (§15.4). What happens next depends on the task:
   — detached, or dropped — the process continues running.
 
 The runtime reports every panic, with its message and originating task, on
-standard error when it occurs. The report format is implementation-defined;
-the process exit status after an initial-task panic is specified in §3.19.
+standard error when it occurs: when the panic is raised, before the task
+unwinds. The report therefore comes before anything the unwinding makes
+visible to other tasks, such as a poisoned mutex (§20.2) or a value a drop
+sends, and is not lost when another task then ends the process. A panic raised
+again at retrieval is reported again, in the retrieving task. The report
+format is implementation-defined; the process exit status after an
+initial-task panic is specified in §3.19.
 
 This does not make panics catchable (§15.4): no operation turns a panic into a
 value, and no code resumes after the panicking point. A task boundary only

@@ -265,6 +265,12 @@ once it does.
 
 ### Compiler
 
+- A panic is now reported on standard error when it is raised, before the
+  task unwinds (§18.10). Before, a spawned task's report came after its
+  unwinding, so another task could see the poisoned mutex it left and end the
+  process before the cause was printed; programs could show only
+  `withLock on a poisoned mutex`. This also fixes the occasional Windows
+  failure of `log_sink_panic_poisons_every_copy_of_the_logger`.
 - Added direct conformance coverage for nested return/clone provenance,
   primitive/library resource transfer, lifetime-syntax rejection, and
   collection-field resurrection. Destructor-observed views now have bounded

@@ -88,11 +88,8 @@ pub(super) fn finished() {
     super::deadlock::finished();
 }
 
-fn complete(shared: &Shared, block: Block, id: u64) {
+fn complete(shared: &Shared, block: Block) {
     let panic = super::panic::take();
-    if let Some(message) = &panic {
-        super::panic::report_task(id, message);
-    }
     let panicked = panic.is_some();
     let mut state = shared.lock();
     state.finished = true;
@@ -152,7 +149,7 @@ unsafe fn poll_task(
         if unsafe { entry(block.data, context) } == 0 {
             return super::scheduler::Poll::Pending;
         }
-        complete(&task_shared, block, context.task_id());
+        complete(&task_shared, block);
         super::scheduler::Poll::Ready
     };
     (Box::new(Handle { shared, block }), body)
@@ -195,10 +192,10 @@ pub unsafe extern "C" fn zore_task_spawn(
         drop_results,
     };
     let task_shared = Arc::clone(&shared);
-    super::scheduler::spawn(move |context| {
+    super::scheduler::spawn(move |_| {
         // SAFETY: the caller guarantees `entry` accepts the block.
         unsafe { entry(block.data) };
-        complete(&task_shared, block, context.task_id());
+        complete(&task_shared, block);
         super::scheduler::Poll::Ready
     });
     Box::into_raw(Box::new(Handle { shared, block }))

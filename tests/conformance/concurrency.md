@@ -82,6 +82,7 @@ using shared pool workers and persistent async frames.
 | Spawned task panics; its handle is retrieved with `await task` | The panic is raised again at the `await` |
 | Detached task panics | Panic reported on stderr; the process continues |
 | Any panic | Reported on stderr with message and originating task when it occurs |
+| Task panics while holding a lock, then blocks in a drop; the initial task then hits the poisoned lock | The task's report comes before the initial task's; it is not lost when the process exits |
 | Initial task panics while spawned tasks are running | Initial task unwinds; the process terminates; other tasks are abandoned without drops |
 | Retrieving a panicked task's `(T, error)` result | No `error` value is produced; the retriever panics instead |
 | Task panics while holding a mutex's lock | Lock released during unwind; mutex marked poisoned; a later locker is told (mechanism belongs to the mutex API, Q05) |
