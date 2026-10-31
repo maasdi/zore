@@ -12,7 +12,8 @@ a session into a URL-safe token and reads it back.
 | `DeAdBeEf` | Mixed case decodes to `DE AD BE EF` |
 | Empty input | Encodes to `""`; decodes to an empty array without error |
 | `abc`, and `zzz` | `hex.DecodeString: odd length`, and `hex.Decode: odd length`: length is checked before bytes |
-| `0x00`, `g0`, `0g`, `00 1`, `12\n4`, `-1`, `ab+c` | `invalid byte at offset N` naming the first bad byte, and an empty array |
+| `0x00`, `g0`, `0g`, `00 1`, `12\n4`, `-1`, `ab+c`, and digits next to the ranges: `/`, `:`, `@`, `G`, `` ` ``, `g`, and byte `80` | `invalid byte at offset N` naming the first bad byte, and an empty array; `Decode` uses its own name |
+| `DecodedLen` of the largest `int` | `4611686018427387903` |
 | `EncodedLen(-1)`, `DecodedLen(-1)`, `EncodedLen` past the largest `int` | Panics naming the function |
 
 ## `std/encoding/base64`
@@ -25,9 +26,12 @@ a session into a URL-safe token and reads it back.
 | `Zg=`, `Zm9vY` and `Zg` padded, `Zm9vY` and `Z` raw, white space that changes the length | `invalid length` |
 | The other alphabet's characters, a space, `\r\n`, `Z===`, `Zm=v`, `Z=m=`, `====`, `Zg==Zg==`, `=` in a raw encoding | `invalid byte at offset N` at the first rejected byte |
 | `Zh==`, `Zm9=`, raw `Zh` and `Zm9vYmF` | `nonzero padding bits at offset N` at the last character |
+| `!h==` | `invalid byte at offset 0`: bytes are checked before unused bits |
+| Characters next to each alphabet range: `@`, `[`, `` ` ``, `{`, `/` and `:` in `URL`, `,`, byte `80` | `invalid byte at offset N` |
 | `Decode` with zero bytes | The message starts `base64.Encoding.Decode:` |
-| `Encoding(4)`, `Encoding(-1)` | Panics with `base64: unknown Encoding N` |
-| Negative lengths, and `EncodedLen` past the largest `int` | Panics; the largest raw length that fits, `9223372036854775807`, does not |
+| `Encoding(4)` and `Encoding(-1)` with each method | Panics with `base64: unknown Encoding N` |
+| `DecodedLen` of the largest `int` | `6917529027641081853` padded, `6917529027641081855` raw, without overflow |
+| Negative lengths, and `EncodedLen` past the largest `int` | Panics; the largest inputs that fit, `6917529027641081853` padded and `6917529027641081855` raw, give `9223372036854775804` and `9223372036854775807` |
 
 ## `std/encoding/binary`
 
@@ -44,5 +48,5 @@ a session into a URL-safe token and reads it back.
 
 | Scenario | Expected result |
 | --- | --- |
-| A function that decodes base64, then hex, then a big-endian `Uint32` with `?` | `256` for a good token; the first decoder's error otherwise, with no storage left behind |
-| A string passed as bytes, an unread decode error, `base64.URL` as an `int`, a `base64.Encoding` as a `binary.ByteOrder`, an unexported name, `Append` to a `let` array, an extra argument | Reject: mismatched types, may be unused, not exported, mutable, takes 1 argument |
+| A function that decodes base64, then hex, then a big-endian `Uint32` with `?` | `256` for a good token; otherwise the error of the decoder that failed, base64 or hex, with no storage left behind |
+| A string passed as bytes, a discarded `DecodeString` call, an unread decode error, `base64.URL` as an `int`, a `base64.Encoding` as a `binary.ByteOrder`, an unexported name, `Append` to a `let` array, an extra argument | Reject: mismatched types, must be used or explicitly discarded, may be unused, not exported, mutable, takes 1 argument |

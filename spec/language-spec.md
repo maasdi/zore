@@ -9430,11 +9430,12 @@ suspend, spawn tasks, or keep state, so any task may call them at any time.
 Their work is proportional to the input; callers bound untrusted input before
 decoding it.
 
-Decoding is strict, so every byte sequence has exactly one encoding and two
-encodings that decode to the same bytes are equal as text. A decoding error
-returns an empty array and the error, never partial output. Error messages
-name the position of the first rejected byte as a zero-based offset into the
-input and never repeat the input, since encoded data is often a secret token.
+Decoding is strict, so every byte sequence has exactly one encoding, which hex
+decoding also accepts in upper case. A decoding error returns an empty array
+and the error, never partial output. Unlike the parsing convention of §37.2,
+error messages do not quote the rejected text: they name the position of the
+first rejected byte as a zero-based offset into the input and never repeat the
+input, since encoded data is often a secret token.
 
 **`std/encoding/hex`**
 
@@ -9490,7 +9491,8 @@ headers, and `Standard` for MIME-style or JSON-carried binary data. An
 
 `EncodedLen(n)` is `4 * ((n + 2) / 3)` with padding and `(8 * n + 5) / 6`
 without; `DecodedLen(n)` is the most bytes `n` characters can decode to,
-`3 * (n / 4)` with padding and `3 * n / 4` rounded down without. Both panic
+`3 * (n / 4)` with padding and `3 * (n / 4) + 3 * (n % 4) / 4` without, which
+does not overflow for any `n`. Both panic
 when `n` is negative, and `EncodedLen` panics when the result overflows `int`.
 
 A decoding function accepts exactly the output its encoding produces:

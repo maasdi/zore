@@ -51,6 +51,7 @@ func main() {{
     let empty, emptyErr = hex.DecodeString("")
     check(emptyErr == nil && empty.len() == 0, "empty decode")
     check(hex.DecodedLen(7) == 3 && hex.DecodedLen(0) == 0 && hex.EncodedLen(0) == 0, "lengths")
+    check(hex.DecodedLen(9223372036854775807) == 4611686018427387903, "largest DecodedLen")
 
     let odd, oddErr = hex.DecodeString("abc")
     check(fails(oddErr, "hex.DecodeString: odd length") && odd.len() == 0, "odd length")
@@ -63,6 +64,13 @@ func main() {{
     rejects("12\n4", 2)
     rejects("-1", 0)
     rejects("ab+c", 2)
+    rejects("0/", 1)
+    rejects(":0", 0)
+    rejects("@0", 0)
+    rejects("0G", 1)
+    rejects("`0", 0)
+    let _, high = hex.Decode(Array<byte>{{48, 128}}[:])
+    check(fails(high, "hex.Decode: invalid byte at offset 1"), "byte 80 in Decode")
     println("ok")
 }}
 "#
@@ -157,6 +165,8 @@ func main() {{
     check(base64.Standard.EncodedLen(0) == 0 && base64.RawURL.EncodedLen(1) == 2, "small lengths")
     check(base64.RawURL.DecodedLen(3) == 2 && base64.RawURL.DecodedLen(2) == 1, "raw decoded lengths")
     check(base64.Standard.DecodedLen(8) == 6 && base64.Standard.DecodedLen(7) == 3, "padded decoded lengths")
+    check(base64.Standard.DecodedLen(9223372036854775807) == 6917529027641081853, "largest padded DecodedLen")
+    check(base64.RawStandard.DecodedLen(9223372036854775807) == 6917529027641081855, "largest raw DecodedLen")
     println("ok")
 }}
 "#
@@ -202,6 +212,17 @@ func main() {{
     rejects(base64.Standard, "Zm9=", "nonzero padding bits at offset 2")
     rejects(base64.RawURL, "Zh", "nonzero padding bits at offset 1")
     rejects(base64.RawStandard, "Zm9vYmF", "nonzero padding bits at offset 6")
+    rejects(base64.Standard, "!h==", "invalid byte at offset 0")
+
+    rejects(base64.Standard, "AA@A", "invalid byte at offset 2")
+    rejects(base64.Standard, "AA[A", "invalid byte at offset 2")
+    rejects(base64.Standard, "AA`A", "invalid byte at offset 2")
+    rejects(base64.Standard, "AA{{A", "invalid byte at offset 2")
+    rejects(base64.Standard, "AA,A", "invalid byte at offset 2")
+    rejects(base64.URL, "AA:A", "invalid byte at offset 2")
+    rejects(base64.URL, "AA/A", "invalid byte at offset 2")
+    let _, high = base64.RawURL.Decode(Array<byte>{{65, 65, 128}}[:])
+    check(fails(high, "base64.Encoding.Decode: invalid byte at offset 2"), "byte 80")
 
     let _, bytesErr = base64.Standard.Decode(Array<byte>{{0, 0, 0, 0}}[:])
     check(fails(bytesErr, "base64.Encoding.Decode: invalid byte at offset 0"), "Decode name")
@@ -249,6 +270,28 @@ fn base64_methods_panic_on_unknown_encodings_and_bad_lengths() {
             &source,
             message,
             "9223372036854775804\n9223372036854775807\n",
+        );
+    }
+}
+
+#[test]
+fn every_base64_method_panics_on_an_unknown_encoding() {
+    for (call, value) in [
+        ("_ = base64.Encoding(4).EncodedLen(0)", "4"),
+        ("_ = base64.Encoding(-1).Encode(Array<byte>{}[:])", "-1"),
+        (
+            "let _, _ = base64.Encoding(4).Decode(Array<byte>{}[:])",
+            "4",
+        ),
+        ("let _, _ = base64.Encoding(-1).DecodeString(\"\")", "-1"),
+    ] {
+        let source = format!(
+            "package main\nimport \"std/encoding/base64\"\n\nfunc main() {{\n    println(\"start\")\n    {call}\n}}\n"
+        );
+        panics(
+            &source,
+            &format!("base64: unknown Encoding {value}"),
+            "start\n",
         );
     }
 }
