@@ -1,0 +1,104 @@
+package filepath
+
+import "std/os"
+
+type walkItem struct {
+    path    string
+    dir     bool
+    symlink bool
+}
+
+type Walker struct {
+    root     string
+    started  bool
+    pending  Array<walkItem>
+    path     string
+    dir      bool
+    symlink  bool
+    err      error
+    children int
+}
+
+func Walk(root string) Walker {
+    return Walker{
+        root: root,
+        started: false,
+        pending: Array<walkItem>{},
+        path: "",
+        dir: false,
+        symlink: false,
+        err: nil,
+        children: 0,
+    }
+}
+
+func (w mut Walker) Next() bool {
+    if !w.started {
+        w.started = true
+        let info, err = os.Lstat(w.root)
+        if err != nil {
+            w.show(walkItem{path: w.root, dir: false, symlink: false})
+            w.err = err
+            return true
+        }
+        w.visit(walkItem{path: w.root, dir: info.IsDir(), symlink: info.IsSymlink()})
+        return true
+    }
+    let found, item = w.pending.pop()
+    if !found {
+        w.show(walkItem{path: "", dir: false, symlink: false})
+        return false
+    }
+    w.visit(item)
+    return true
+}
+
+func (w mut Walker) show(item walkItem) {
+    w.path = item.path
+    w.dir = item.dir
+    w.symlink = item.symlink
+    w.err = nil
+    w.children = 0
+}
+
+func (w mut Walker) visit(item walkItem) {
+    w.show(item)
+    let descend = item.dir && !item.symlink
+    if !descend {
+        return
+    }
+    let entries, err = os.ReadDir(item.path)
+    if err != nil {
+        w.err = err
+        return
+    }
+    for var i = entries.len() - 1; i >= 0; i -= 1 {
+        let entry = entries[i]
+        let child = Join(Array<string>{item.path, entry.Name()}[:])
+        w.pending.push(walkItem{path: child, dir: entry.IsDir(), symlink: entry.IsSymlink()})
+    }
+    w.children = entries.len()
+}
+
+func (w mut Walker) SkipDir() {
+    for w.children > 0 {
+        let _, _ = w.pending.pop()
+        w.children -= 1
+    }
+}
+
+func (w Walker) Path() string {
+    return w.path
+}
+
+func (w Walker) IsDir() bool {
+    return w.dir
+}
+
+func (w Walker) IsSymlink() bool {
+    return w.symlink
+}
+
+func (w Walker) Err() error {
+    return w.err
+}

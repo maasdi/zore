@@ -176,6 +176,19 @@ once it does.
 
 ### Standard library
 
+- Completed common file work in `std/os`, `std/io`, and `std/path/filepath`
+  (§37.15). `os.OpenFile` takes an access mode and the `OpenAppend`,
+  `OpenCreate`, `OpenExclusive`, and `OpenTruncate` flags, rejecting unclear
+  combinations before touching the disk. `File` gains `Name`, `Seek` (with
+  `io.SeekStart`, `io.SeekCurrent`, `io.SeekEnd`, and the `io.Seeker`
+  interface), and `Sync`. `os.TempDir`, `os.CreateTemp`, and `os.MkdirTemp`
+  create files and folders under random names that are never reused; the caller
+  removes them. `filepath.Walk` visits a folder tree one entry at a time in name
+  order, never follows links, keeps no folder open between steps, and reports
+  each error with the entry it belongs to. `os.Lstat`, `FileInfo.IsSymlink`, and
+  `DirEntry.IsSymlink` describe links. The spec now states what `os.Rename`
+  does and does not promise on each system. `File.Close` now returns the error
+  the system reports while closing, instead of always `nil`.
 - Added bounded and composable reading to `std/io`: `ReadAtMost` reads up
   to a limit and reports `io.LimitExceeded` instead of cutting input short;
   `CopyN` copies exactly `n` bytes without reading past them; `LimitReader`

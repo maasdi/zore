@@ -1,0 +1,60 @@
+package os
+
+const tempAttempts = 10000
+
+func TempDir() string
+
+func CreateTemp(dir string, pattern string) (File, error) {
+    let prefix, suffix, invalid = splitPattern(pattern, "os.CreateTemp")
+    if invalid != nil {
+        return File{id: 0, name: ""}, invalid
+    }
+    for var attempt = 0; attempt < tempAttempts; attempt += 1 {
+        let path = tempPath(dir, prefix, suffix)
+        let id, err = fileOpenWith(path, OpenReadWrite | OpenCreate | OpenExclusive, 0o600, "os.CreateTemp")
+        if err == nil {
+            return File{id: id, name: path}, nil
+        }
+        if id != alreadyExists {
+            return File{id: 0, name: ""}, err
+        }
+    }
+    return File{id: 0, name: ""}, error("os.CreateTemp: no unused name found")
+}
+
+func MkdirTemp(dir string, pattern string) (string, error) {
+    let prefix, suffix, invalid = splitPattern(pattern, "os.MkdirTemp")
+    if invalid != nil {
+        return "", invalid
+    }
+    for var attempt = 0; attempt < tempAttempts; attempt += 1 {
+        let path = tempPath(dir, prefix, suffix)
+        let exists, err = mkdirNew(path, 0o700)
+        if err == nil {
+            return path, nil
+        }
+        if !exists {
+            return "", err
+        }
+    }
+    return "", error("os.MkdirTemp: no unused name found")
+}
+
+func splitPattern(pattern string, op string) (string, string, error) {
+    var star = -1
+    for var i = 0; i < pattern.len(); i += 1 {
+        if pathSeparator(pattern[i]) {
+            return "", "", error(op + ": pattern contains a path separator")
+        }
+        if pattern[i] == 42 {
+            star = i
+        }
+    }
+    if star < 0 {
+        return pattern, "", nil
+    }
+    return pattern[:star], pattern[star + 1:], nil
+}
+
+func tempPath(dir string, prefix string, suffix string) string
+func mkdirNew(path string, perm int) (bool, error)

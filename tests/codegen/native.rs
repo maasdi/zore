@@ -10,6 +10,7 @@ mod channel_acceptance;
 mod conformance;
 mod controlled_runtime;
 mod encoding;
+mod files;
 mod generic_acceptance;
 mod hardening;
 mod host_support;
