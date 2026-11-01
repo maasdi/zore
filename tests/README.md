@@ -419,6 +419,11 @@ not mix is checked in `packages/packages.rs`.
 `codegen/encoding.rs`: RFC 4648 vectors, every byte and length, strict
 rejection with exact offsets, width boundaries, and length panics.
 
+`conformance/files.md` maps file handles, temporary storage, renames, and
+folder walks to `codegen/files.rs`: flag validation, seeking and syncing,
+collision-free temporary names under concurrency, rename replacement and
+refusals, walk order, skipping, links, and errors that stay with their entry.
+
 `conformance/log.md` also maps `std/log/rolling` to `codegen/rolling.rs`:
 rolling and backup removal, restarts, buffering and background flushing,
 failures, and records from many tasks across rolls.

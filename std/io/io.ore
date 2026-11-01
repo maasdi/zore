@@ -4,12 +4,20 @@ let EOF = error("EOF")
 
 const copySize = 32768
 
+const SeekStart = 0
+const SeekCurrent = 1
+const SeekEnd = 2
+
 type Reader interface {
     mut Read(buf mut []byte) (int, error)
 }
 
 type Writer interface {
     mut Write(data []byte) (int, error)
+}
+
+type Seeker interface {
+    mut Seek(offset int, whence int) (int, error)
 }
 
 type Closer interface {

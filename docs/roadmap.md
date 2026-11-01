@@ -181,6 +181,14 @@ with exact error offsets, the four RFC 4648 base64 encodings, and fixed-width
 integers in either byte order. Streaming adapters and variable-length integers
 wait for their own contracts; see
 [the encoding conformance list](../tests/conformance/encoding.md).
+Issue [#215](https://github.com/maasdi/zore/issues/215) completes common file
+work under §37.15: `os.OpenFile` with access and creation flags, `File.Seek`,
+`File.Sync`, and `File.Name`, collision-free `os.CreateTemp` and `os.MkdirTemp`,
+the documented limits of `os.Rename`, `os.Lstat` and link reporting, and
+`filepath.Walk`, which never follows links and holds no folder open between
+steps. Copying, permission and time changes, links, file locks, folder
+synchronization, and an atomic-write helper wait for their own contracts; see
+[the file conformance list](../tests/conformance/files.md).
 
 Issue [#195](https://github.com/maasdi/zore/issues/195) overlaps runtime-library
 preparation with clang object generation. Its [Linux build-scheduling report](performance-build-scheduling.md)

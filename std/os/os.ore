@@ -12,8 +12,9 @@ func Args() Array<string>
 func Exit(code int)
 
 type DirEntry struct {
-    name string
-    dir  bool
+    name    string
+    dir     bool
+    symlink bool
 }
 
 func (e DirEntry) Name() string {
@@ -24,19 +25,19 @@ func (e DirEntry) IsDir() bool {
     return e.dir
 }
 
+func (e DirEntry) IsSymlink() bool {
+    return e.symlink
+}
+
 func ReadDir(path string) (Array<DirEntry>, error) {
     let names, err = dirNames(path)
     var entries = Array<DirEntry>{}
     if err != nil {
         return entries, err
     }
-    for name in names[:] {
-        let dir = name.len() > 0 && name[name.len() - 1] == 47
-        if dir {
-            entries.push(DirEntry{name: name[:name.len() - 1], dir: true})
-        } else {
-            entries.push(DirEntry{name: name, dir: false})
-        }
+    for tagged in names[:] {
+        let kind = tagged[0]
+        entries.push(DirEntry{name: tagged[1:], dir: kind == 100, symlink: kind == 108})
     }
     return entries, nil
 }
@@ -47,6 +48,7 @@ type FileInfo struct {
     mode     int
     dir      bool
     modified int
+    symlink  bool
 }
 
 func (i FileInfo) Name() string {
@@ -69,12 +71,24 @@ func (i FileInfo) ModTime() int {
     return i.modified
 }
 
+func (i FileInfo) IsSymlink() bool {
+    return i.symlink
+}
+
 func Stat(path string) (FileInfo, error) {
-    let fields, err = statFields(path)
+    return describe(path, true)
+}
+
+func Lstat(path string) (FileInfo, error) {
+    return describe(path, false)
+}
+
+func describe(path string, follow bool) (FileInfo, error) {
+    let fields, err = statFields(path, follow)
     if err != nil {
-        return FileInfo{name: "", size: 0, mode: 0, dir: false, modified: 0}, err
+        return FileInfo{name: "", size: 0, mode: 0, dir: false, modified: 0, symlink: false}, err
     }
-    return FileInfo{name: baseName(path), size: fields[0], mode: fields[1], dir: fields[2] == 1, modified: fields[3]}, nil
+    return FileInfo{name: baseName(path), size: fields[0], mode: fields[1], dir: fields[2] == 1, modified: fields[3], symlink: fields[4] == 1}, nil
 }
 
 func baseName(path string) string {
@@ -91,4 +105,4 @@ func baseName(path string) string {
 
 func pathSeparator(value byte) bool
 func dirNames(path string) (Array<string>, error)
-func statFields(path string) (Array<int>, error)
+func statFields(path string, follow bool) (Array<int>, error)
