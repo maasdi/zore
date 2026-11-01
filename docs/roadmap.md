@@ -182,6 +182,13 @@ integers in either byte order. Streaming adapters and variable-length integers
 wait for their own contracts; see
 [the encoding conformance list](../tests/conformance/encoding.md).
 
+Issue [#216](https://github.com/maasdi/zore/issues/216) adds bounded and
+composable I/O under §37.3: `io.ReadAtMost` with `io.LimitExceeded`,
+`io.CopyN`, and the owning `io.LimitReader`, plus stall detection in the
+existing helpers. The `rest-api` example uses `ReadAtMost` for its body limit.
+Writer fan-out, tee readers, and section readers wait for a consumer; see
+[the I/O conformance list](../tests/conformance/io.md).
+
 Issue [#195](https://github.com/maasdi/zore/issues/195) overlaps runtime-library
 preparation with clang object generation. Its [Linux build-scheduling report](performance-build-scheduling.md)
 records current-main stage profiles, alternating warm/cold measurements and raw

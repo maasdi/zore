@@ -16,6 +16,7 @@ mod host_support;
 mod http;
 mod http_client;
 mod interface_acceptance;
+mod io_adapters;
 mod json;
 mod linkage_timers;
 mod local_dependencies;

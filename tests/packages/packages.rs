@@ -730,6 +730,50 @@ fn the_rolling_package_owns_its_writer() {
 }
 
 #[test]
+fn io_adapters_own_or_borrow_their_endpoints() {
+    let imports = "import \"std/bytes\"\nimport \"std/io\"";
+    accepts(&[(
+        "main.ore",
+        &main_with(
+            imports,
+            "var src = bytes.NewBuffer(Array<byte>{1, 2, 3}[:])\nvar dst = bytes.NewBuffer(Array<byte>{}[:])\nlet n, err = io.CopyN(dst, src, 1)\n_ = n\n_ = err\nlet data, limitErr = io.ReadAtMost(src, 2)\n_ = data\n_ = limitErr == io.LimitExceeded\nvar limited = io.LimitReader(src, 1)\nlet left int = limited.Remaining()\n_ = left\nvar back io.Reader = limited.Source()\nlet _, _ = io.ReadAll(back)",
+        ),
+    )]);
+    for (body, message) in [
+        (
+            "var src = bytes.NewBuffer(Array<byte>{1}[:])\nvar limited = io.LimitReader(src, 1)\nlet _, _ = io.ReadAll(src)\n_ = limited.Remaining()",
+            "use of moved value",
+        ),
+        (
+            "var src = bytes.NewBuffer(Array<byte>{1}[:])\nvar limited = io.LimitReader(src, 1)\nlet first = limited.Source()\nlet second = limited.Source()",
+            "use of moved value",
+        ),
+        (
+            "var src = bytes.NewBuffer(Array<byte>{1}[:])\nio.ReadAtMost(src, 1)",
+            "must be used or explicitly discarded",
+        ),
+        (
+            "var src = bytes.NewBuffer(Array<byte>{1}[:])\nlet data = io.ReadAtMost(src, 1)",
+            "this call returns 2 values",
+        ),
+        (
+            "var src = bytes.NewBuffer(Array<byte>{1}[:])\nvar dst = bytes.NewBuffer(Array<byte>{}[:])\nlet n, err = io.CopyN(dst, src)",
+            "takes 3 arguments",
+        ),
+        (
+            "var src = bytes.NewBuffer(Array<byte>{1}[:])\nlet limited = io.LimitReader(src, 1)\nvar buf = Array<byte>{0}\nlet _, _ = limited.Read(buf[:])",
+            "mutable",
+        ),
+        (
+            "var src = bytes.NewBuffer(Array<byte>{1}[:])\nlet limited = io.LimitedReader{source: src, remaining: 1}",
+            "not exported",
+        ),
+    ] {
+        rejects(&[("main.ore", &main_with(imports, body))], message);
+    }
+}
+
+#[test]
 fn time_types_do_not_mix() {
     accepts(&[(
         "main.ore",

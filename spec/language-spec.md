@@ -7473,9 +7473,9 @@ one function can work with any of them. Its interface types (§22.2) are:
 | `ReadCloser` | the entries of `Reader` and `Closer` |
 | `WriteCloser` | the entries of `Writer` and `Closer` |
 
-`os.File`, `net.Conn`, `bytes.Buffer`, `bufio.Reader`, and `bufio.Writer`
-satisfy the ones whose methods they have. A `Read` gives at least one byte, or
-`0` and an error; the end of the input is the error `EOF`.
+`os.File`, `net.Conn`, `bytes.Buffer`, `bufio.Reader`, `bufio.Writer`, and
+`io.LimitedReader` satisfy the ones whose methods they have. A `Read` gives at
+least one byte, or `0` and an error; the end of the input is the error `EOF`.
 A read may deliver its last bytes together with an error. `ReadFull` succeeds
 with `nil` as soon as the requested buffer is filled, including when that read
 also reports an error. A read count below zero or past the buffer stops `Copy`
@@ -7493,6 +7493,13 @@ that error. `bufio.Writer.Write` keeps all of its input in the buffer, so when
 its own flush fails it reports the full input length with that error. For example, copying `abc` to a writer accepting one byte per call
 writes `a`, then `b`, then `c`, returning `(3, nil)`.
 
+A `Read` that returns `0` and `nil` breaks that rule but is tolerated a few
+times, since some sources report a wait that way. `Copy`, `CopyN`, `ReadAll`,
+`ReadAtMost`, and `ReadFull` stop after 100 such reads in a row with
+`io.Copy: no read progress` (or the function's own name). A read count below
+zero or past the buffer stops `ReadAll`, `CopyN`, and `ReadAtMost` with
+`invalid read count` under their own names, as for `Copy`.
+
 These rules preserve ordinary borrowed buffer ownership and explicit errors;
 interface calls still suspend in async callers. They require no compiler syntax
 or type changes. Native conformance covers final data plus EOF, partial writes,
@@ -7505,6 +7512,70 @@ and no-progress errors in `tests/codegen/review_regressions.rs`.
 | `ReadAll(r mut Reader) (Array<byte>, error)` | Every byte up to `EOF`, with `nil`; on another error, the bytes read before it and the error |
 | `ReadFull(r mut Reader, buf mut []byte) (int, error)` | Reads until `buf` is full; `EOF` when nothing was read, `unexpected EOF` when the input ends part way |
 | `WriteString(w mut Writer, s string) (int, error)` | Writes the bytes of `s` |
+| `let LimitExceeded = error("io: limit exceeded")` | The error `ReadAtMost` gives when the input is longer than its limit |
+| `ReadAtMost(r mut Reader, limit int) (Array<byte>, error)` | Every byte up to `EOF` when there are at most `limit`; otherwise the first `limit` bytes and `LimitExceeded`. Reads at most one byte past `limit` from `r` |
+| `CopyN(dst mut Writer, src mut Reader, n int) (int, error)` | Copies exactly `n` bytes and returns the count; never reads more than `n` bytes from `src`. `EOF` when `src` ends before any byte, `unexpected EOF` when it ends part way |
+| `LimitReader(source own Reader, limit int) LimitedReader` | A reader that gives the first `limit` bytes of `source`, then `EOF` |
+| `(l mut LimitedReader) Read(buf mut []byte) (int, error)` | Reads from `source`, asking for no more than the bytes left |
+| `(l LimitedReader) Remaining() int` | How many bytes it may still give |
+| `(l own LimitedReader) Source() Reader` | Gives back `source`, positioned after what was read through `l` |
+
+**Limits.** `ReadAtMost` is `ReadAll` with a ceiling, for input whose size the
+sender controls. It asks `r` for no more than `limit + 1` bytes in total, so
+it can tell input that fits from input that does not. Input of exactly
+`limit` bytes returns them with `nil` when `EOF` follows, and with
+`LimitExceeded` when another byte arrives. That one extra byte is consumed from
+`r` and not returned. `limit` `0` accepts only empty input, and a negative
+`limit` gives `io.ReadAtMost: negative limit` without reading. Other errors are
+returned with the bytes read before them, as in `ReadAll`.
+
+`CopyN` copies a known amount, such as one framed record, and leaves the rest
+of `src` unread. A count of `0` returns `0` and `nil` without reading; a
+negative one gives `io.CopyN: negative count`. Writes follow `Copy`, with
+`io.CopyN: ` in the invalid-count and no-progress messages; on any error the
+result is the number of bytes written to `dst`. When the last needed bytes
+arrive with an error, `CopyN` returns `n` and `nil`, as `ReadFull` does.
+
+`LimitReader` wraps a reader that will be handed on, for example to
+`bufio.NewReader` or a decoder. It owns `source` (an `own` parameter, like
+`bufio.NewReader`), so the caller cannot read `source` past the limit while it
+is wrapped; `Source()` consumes the `LimitedReader` and returns `source` for
+further reads. A negative `limit` is treated as `0`. An empty `buf` gives `0` and
+`nil` without reading `source`. Once the limit is used up, `Read` gives `0`
+and `EOF` without calling `source`. Before that, it passes on whatever
+`source` returns, errors and `EOF` included, after counting the bytes. So `EOF`
+means either that the limit was reached or that `source` ended; `Remaining()`
+is `0` in the first case. A read count below zero or past the requested size
+gives `0` and `io.LimitedReader: invalid read count` and counts nothing.
+Dropping a `LimitedReader` drops `source`. Closing is the source's own
+business: get it back with `Source()` and close it if it is a closer.
+
+```ore
+import "std/io"
+import "std/os"
+
+func header(path string) (Array<byte>, error) {
+    var file = os.Open(path)?
+    var head = io.LimitReader(file, 512)
+    return io.ReadAll(head)
+}
+
+func body(r mut io.Reader) (Array<byte>, error) {
+    let data, err = io.ReadAtMost(r, 1 << 20)
+    if err == io.LimitExceeded {
+        return data, error("body larger than 1 MiB")
+    }
+    return data, err
+}
+```
+
+Ownership, error, and async implications: the functions borrow their readers
+and writers for the call only, so the caller keeps using them afterwards; the
+`LimitedReader` owns its source until `Source()` hands it back. Results are fresh
+arrays owned by the caller. Every failure is an `error` result with the bytes
+read or written so far; nothing panics. In an `async func`, each read and write
+through these helpers waits as a direct call would and suspends only the
+calling task.
 
 ```ore
 import "std/io"

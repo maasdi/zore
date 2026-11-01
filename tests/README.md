@@ -419,6 +419,11 @@ not mix is checked in `packages/packages.rs`.
 `codegen/encoding.rs`: RFC 4648 vectors, every byte and length, strict
 rejection with exact offsets, width boundaries, and length panics.
 
+`conformance/io.md` also maps the bounded `std/io` helpers to
+`codegen/io_adapters.rs`: limit boundaries at every chunk size, exact copies
+through short and failing endpoints, stalled sources, invalid counts, source
+hand-back and drop, and async use.
+
 `conformance/log.md` also maps `std/log/rolling` to `codegen/rolling.rs`:
 rolling and backup removal, restarts, buffering and background flushing,
 failures, and records from many tasks across rolls.

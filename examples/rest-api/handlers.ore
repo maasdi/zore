@@ -8,6 +8,7 @@ import "std/strconv"
 import "std/strings"
 
 const statusUnsupportedMediaType = 415
+const maxUserBody = 4096
 
 func problem(w mut http.ResponseWriter, status int, message string) error {
     return http.JSONWith(w, status, Problem{Error: message}, json.LowerCamel)
@@ -40,7 +41,13 @@ func createUser(store UserStore, logger log.Logger, w mut http.ResponseWriter, r
     if types.len() != 1 || !strings.EqualFold(strings.TrimSpace(types[0]), "application/json") {
         return problem(w, statusUnsupportedMediaType, "expected application/json")
     }
-    let body = io.ReadAll(r)?
+    let body, readErr = io.ReadAtMost(r, maxUserBody)
+    if readErr == io.LimitExceeded {
+        return problem(w, http.StatusContentTooLarge, "request body is larger than 4096 bytes")
+    }
+    if readErr != nil {
+        return readErr
+    }
     let input, err = decodeCreateUser(body[:])
     if err != nil {
         return problem(w, http.StatusBadRequest, "expected a nonempty name string")
