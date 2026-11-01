@@ -235,7 +235,7 @@ func main() {{
 "#
     );
     let executable = build(&source, &dir);
-    let evening_before_daylight_saving_ends = 1_793_503_800;
+    let evening_before_daylight_saving_ends = 1_762_054_200;
     for name in ["local.log", "utc.log"] {
         let path = dir.path().join(name);
         std::fs::write(&path, "old\n").unwrap();
@@ -243,9 +243,9 @@ func main() {{
     }
     let today = run_in_zone(&executable, "EST5EDT,M3.2.0,M11.1.0");
     let read = |name: &str| std::fs::read_to_string(dir.path().join(name)).ok();
-    assert_eq!(read("local.log.2026-10-31").as_deref(), Some("old\n"));
-    assert_eq!(read("utc.log.2026-11-01").as_deref(), Some("old\n"));
-    assert_eq!(read("local.log.2026-11-01"), None);
+    assert_eq!(read("local.log.2025-11-01").as_deref(), Some("old\n"));
+    assert_eq!(read("utc.log.2025-11-02").as_deref(), Some("old\n"));
+    assert_eq!(read("local.log.2025-11-02"), None);
     assert_eq!(read("local.log").as_deref(), Some("level=INFO msg=today\n"));
     assert_eq!(today.len(), 10, "{today}");
 }

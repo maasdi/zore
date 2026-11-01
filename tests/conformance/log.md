@@ -97,6 +97,6 @@ Native cases are in `tests/codegen/rolling.rs`; checking cases are in
 | `Daily` with `app.log.notes`, numbered `app.log.1`, another file, and `.01` | Left alone; not dated backups |
 | `Daily`, a restart on the same day under the size limit | The record is appended; nothing rolls |
 | `DefaultConfig` | `Daily` and `Local` are `false` |
-| `Daily` with `Local` under `TZ=EST5EDT,M3.2.0,M11.1.0`, an existing file last changed 2026-11-01 03:30 UTC (23:30 local the evening before) | It becomes `local.log.2026-10-31`; the same file without `Local` becomes `utc.log.2026-11-01` |
+| `Daily` with `Local` under `TZ=EST5EDT,M3.2.0,M11.1.0`, an existing file last changed 2025-11-02 03:30 UTC (23:30 local the evening before daylight saving ends) | It becomes `local.log.2025-11-01`; the same file without `Local` becomes `utc.log.2025-11-02` |
 | `Open` given a string, `Close` then `Flush`, copying a `Writer` twice | Reject: mismatched types; use of moved value |
 | `rolling.Sink{...}` | Reject: not exported |
