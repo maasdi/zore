@@ -28,6 +28,11 @@ A `std/log` logger writes `listening`, `user created`, and `stopped` records
 to standard error; copies of it are captured by the route handlers and share one
 lock, so records from concurrent requests never mix.
 
+The creation handler reads the request body with `io.ReadAtMost(r, 4096)`.
+A body of at most 4096 bytes is decoded as usual; a longer one stops after
+4097 bytes and gets `413 Content Too Large`, so the handler never holds more
+than its own limit in memory, whatever the server's larger body limit allows.
+
 The lookup handler uses `(let id, var err)` to declare an immutable ID and
 a reusable error, then `(let user, err)` to declare the user and assign the next
 error. It handles malformed IDs and missing users locally; other failures

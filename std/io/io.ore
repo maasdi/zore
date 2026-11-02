@@ -1,8 +1,10 @@
 package io
 
 let EOF = error("EOF")
+let LimitExceeded = error("io: limit exceeded")
 
 const copySize = 32768
+const maxEmptyReads = 100
 
 const SeekStart = 0
 const SeekCurrent = 1
@@ -47,33 +49,40 @@ func zeros(count int) Array<byte> {
     return data
 }
 
+func writeAll(dst mut Writer, data []byte, op string) (int, error) {
+    var offset = 0
+    for offset < data.len() {
+        let written, err = dst.Write(data[offset:])
+        if written < 0 || written > data.len() - offset {
+            _ = err
+            return offset, error(op + ": invalid write count")
+        }
+        offset += written
+        if err != nil {
+            return offset, err
+        }
+        if written == 0 {
+            return offset, error(op + ": no write progress")
+        }
+    }
+    return offset, nil
+}
+
 func Copy(dst mut Writer, src mut Reader) (int, error) {
     var buf = zeros(copySize)
     var total = 0
+    var empty = 0
     for {
         let count, err = src.Read(buf[:])
         if count < 0 || count > buf.len() {
             _ = err
             return total, error("io.Copy: invalid read count")
         }
-        var offset = 0
-        for offset < count {
-            let written, writeErr = dst.Write(buf[offset:count])
-            if written < 0 || written > count - offset {
-                _ = err
-                _ = writeErr
-                return total, error("io.Copy: invalid write count")
-            }
-            total += written
-            offset += written
-            if writeErr != nil {
-                _ = err
-                return total, writeErr
-            }
-            if written == 0 {
-                _ = err
-                return total, error("io.Copy: no write progress")
-            }
+        let written, writeErr = writeAll(dst, buf[:count], "io.Copy")
+        total += written
+        if writeErr != nil {
+            _ = err
+            return total, writeErr
         }
         if err == EOF {
             return total, nil
@@ -81,14 +90,78 @@ func Copy(dst mut Writer, src mut Reader) (int, error) {
         if err != nil {
             return total, err
         }
+        empty = emptyReads(count, empty)
+        if empty >= maxEmptyReads {
+            return total, error("io.Copy: no read progress")
+        }
     }
+}
+
+func CopyN(dst mut Writer, src mut Reader, n int) (int, error) {
+    if n < 0 {
+        return 0, error("io.CopyN: negative count")
+    }
+    var size = copySize
+    if n < size {
+        size = n
+    }
+    var buf = zeros(size)
+    var total = 0
+    var empty = 0
+    for total < n {
+        var want = n - total
+        if want > buf.len() {
+            want = buf.len()
+        }
+        let count, err = src.Read(buf[:want])
+        if count < 0 || count > want {
+            _ = err
+            return total, error("io.CopyN: invalid read count")
+        }
+        let written, writeErr = writeAll(dst, buf[:count], "io.CopyN")
+        total += written
+        if writeErr != nil {
+            _ = err
+            return total, writeErr
+        }
+        if total == n {
+            _ = err
+            return total, nil
+        }
+        if err == EOF {
+            if total == 0 {
+                return total, EOF
+            }
+            return total, error("unexpected EOF")
+        }
+        if err != nil {
+            return total, err
+        }
+        empty = emptyReads(count, empty)
+        if empty >= maxEmptyReads {
+            return total, error("io.CopyN: no read progress")
+        }
+    }
+    return total, nil
+}
+
+func emptyReads(count int, before int) int {
+    if count == 0 {
+        return before + 1
+    }
+    return 0
 }
 
 func ReadAll(r mut Reader) (Array<byte>, error) {
     var data = Array<byte>{}
     var buf = zeros(copySize)
+    var empty = 0
     for {
         let count, err = r.Read(buf[:])
+        if count < 0 || count > buf.len() {
+            _ = err
+            return data, error("io.ReadAll: invalid read count")
+        }
         for var i = 0; i < count; i += 1 {
             data.push(buf[i])
         }
@@ -98,11 +171,61 @@ func ReadAll(r mut Reader) (Array<byte>, error) {
         if err != nil {
             return data, err
         }
+        empty = emptyReads(count, empty)
+        if empty >= maxEmptyReads {
+            return data, error("io.ReadAll: no read progress")
+        }
+    }
+}
+
+func ReadAtMost(r mut Reader, limit int) (Array<byte>, error) {
+    var data = Array<byte>{}
+    if limit < 0 {
+        return data, error("io.ReadAtMost: negative limit")
+    }
+    var size = copySize
+    if limit < size {
+        size = limit + 1
+    }
+    var buf = zeros(size)
+    var empty = 0
+    for {
+        let room = limit - data.len()
+        var want = buf.len()
+        if room < want {
+            want = room + 1
+        }
+        let count, err = r.Read(buf[:want])
+        if count < 0 || count > want {
+            _ = err
+            return data, error("io.ReadAtMost: invalid read count")
+        }
+        if count > room {
+            _ = err
+            for var i = 0; i < room; i += 1 {
+                data.push(buf[i])
+            }
+            return data, LimitExceeded
+        }
+        for var i = 0; i < count; i += 1 {
+            data.push(buf[i])
+        }
+        if err == EOF {
+            return data, nil
+        }
+        if err != nil {
+            return data, err
+        }
+        empty = emptyReads(count, empty)
+        if empty >= maxEmptyReads {
+            return data, error("io.ReadAtMost: no read progress")
+        }
     }
 }
 
 func ReadFull(r mut Reader, buf mut []byte) (int, error) {
     var total = 0
+    var empty = 0
     let size = buf.len()
     for total < size {
         let count, err = r.Read(buf[total:])
@@ -121,6 +244,10 @@ func ReadFull(r mut Reader, buf mut []byte) (int, error) {
         if err != nil {
             return total, err
         }
+        empty = emptyReads(count, empty)
+        if empty >= maxEmptyReads {
+            return total, error("io.ReadFull: no read progress")
+        }
     }
     return total, nil
 }
@@ -131,4 +258,45 @@ func WriteString(w mut Writer, s string) (int, error) {
         data.push(s[i])
     }
     return w.Write(data[:])
+}
+
+type LimitedReader struct {
+    source Reader
+    remaining int
+}
+
+func LimitReader(source own Reader, limit int) LimitedReader {
+    var remaining = limit
+    if remaining < 0 {
+        remaining = 0
+    }
+    return LimitedReader{source: source, remaining: remaining}
+}
+
+func (l mut LimitedReader) Read(buf mut []byte) (int, error) {
+    if buf.len() == 0 {
+        return 0, nil
+    }
+    if l.remaining == 0 {
+        return 0, EOF
+    }
+    var want = buf.len()
+    if want > l.remaining {
+        want = l.remaining
+    }
+    let count, err = l.source.Read(buf[:want])
+    if count < 0 || count > want {
+        _ = err
+        return 0, error("io.LimitedReader: invalid read count")
+    }
+    l.remaining -= count
+    return count, err
+}
+
+func (l LimitedReader) Remaining() int {
+    return l.remaining
+}
+
+func (l own LimitedReader) Source() Reader {
+    return l.source
 }

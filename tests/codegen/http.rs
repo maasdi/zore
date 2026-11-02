@@ -1126,6 +1126,13 @@ fn rest_api_example_serves_requests_and_shuts_down_cleanly() {
         415,
     );
     status(&server.exchange("POST /users HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}"), 400);
+    for (size, expected) in [(4096, 400), (4097, 413)] {
+        let padded = format!("{{}}{}", " ".repeat(size - 2));
+        let request = format!(
+            "POST /users HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\nContent-Length: {size}\r\nConnection: close\r\n\r\n{padded}"
+        );
+        status(&server.exchange(&request), expected);
+    }
     send_signal(&server.child, test_signals()[1]);
     let logs = server.finish_with_errors();
     let records: Vec<&str> = logs

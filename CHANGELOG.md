@@ -189,6 +189,14 @@ once it does.
   `DirEntry.IsSymlink` describe links. The spec now states what `os.Rename`
   does and does not promise on each system. `File.Close` now returns the error
   the system reports while closing, instead of always `nil`.
+- Added bounded and composable reading to `std/io`: `ReadAtMost` reads up
+  to a limit and reports `io.LimitExceeded` instead of cutting input short;
+  `CopyN` copies exactly `n` bytes without reading past them; `LimitReader`
+  wraps a reader so it stops at a limit and gives its source back with
+  `Source()`. `Copy`, `ReadAll`, and `ReadFull` now stop with
+  `no read progress` after 100 empty reads in a row instead of looping
+  forever, and `ReadAll` rejects impossible read counts. The `rest-api`
+  example answers `413` to request bodies over 4096 bytes.
 - Added `std/encoding/hex`, `std/encoding/base64`, and `std/encoding/binary`
   (§37.14). Hex and the four RFC 4648 base64 encodings (`Standard`, `URL`, and
   unpadded `RawStandard` and `RawURL`) decode strictly: anything their encoder

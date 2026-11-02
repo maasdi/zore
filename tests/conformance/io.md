@@ -77,6 +77,35 @@ Authority: spec §37.3–§37.4. The cases below are covered by executable tests
 | `io.WriteString` to a file | The byte count |
 | A `string` where an `io.Reader` is expected | Reject: `string` does not satisfy `io.Reader` |
 
+### Limits, exact copies, and stalled sources
+
+Native cases are in `tests/codegen/io_adapters.rs`, checking cases in
+`tests/packages/packages.rs`, and the HTTP use in `tests/codegen/http.rs`.
+
+| Scenario | Expected result |
+| --- | --- |
+| `ReadAtMost(r, 300)` over 300, 299, 301, and 5000 bytes, delivered 1, 7, 300, and 40000 bytes per read | All 300 or 299 with `nil`; or the first 300 with `LimitExceeded`, and exactly 301 bytes taken from the source |
+| `ReadAtMost` when the last bytes come with `EOF`, of empty input with limit `0`, of one byte with limit `0` | The bytes and `nil`; empty and `nil`; empty and `LimitExceeded` |
+| `ReadAtMost` with limit `-1`, the largest `int`, and a source error after six bytes | `io.ReadAtMost: negative limit` without reading; all 70000 bytes; the six bytes and the error |
+| `CopyN(dst, src, 600)` from 1000 bytes for every mix of 1, 5, 40000 bytes per read and 1, 3, 40000 per write | `600`, `nil`, the same bytes, and the source left at byte 600 |
+| `CopyN` of 70000 bytes, of `0`, of `-1` | Every byte; `0`, `nil` without reading; `io.CopyN: negative count` without reading |
+| `CopyN(dst, src, 5)` from empty and three-byte sources, and from five bytes ending with an error | `0` and `EOF`; `3` and `unexpected EOF`; `5` and `nil` |
+| `CopyN` into a writer that fails after four bytes, and one that accepts nothing | `4` and its error; `0` and `io.CopyN: no write progress` |
+| `LimitReader(source, 20)` over 50 bytes at 1, 3, and 100 per read, then `Source()` | The first 20 bytes, `Remaining() == 0`, then `EOF`; the source gives the other 30 |
+| A limit of 7 read with a 64-byte buffer | `7` bytes from one read; the source keeps the other 93 |
+| A source shorter than its limit, an empty buffer, a limit of `-3` | `Remaining()` is what is left; `0` and `nil` without reading; nothing, with `Remaining() == 0` |
+| An error returned with the last bytes | Passed on with them, and the bytes counted |
+| A source reporting a count past the buffer | `0` and `io.LimitedReader: invalid read count`; nothing counted |
+| A `LimitedReader` inside `bufio.NewReader` and `bufio.NewScanner` | Reads stop at the limit |
+| Dropping a `LimitedReader` | Its source's `drop` runs |
+| A source that returns `0` and `nil` forever, to `ReadAtMost`, `CopyN`, `ReadAll`, `Copy`, and `ReadFull` | Each stops after 100 such reads with `no read progress` under its own name |
+| The same source returning data after 99 empty reads | The data, without an error |
+| A source giving four bytes, each after 99 empty reads, to each of the five helpers | All four bytes and `nil`: the count starts over after every byte |
+| Read counts of `-1` and past the buffer to `ReadAll`, `ReadAtMost`, and `CopyN` | `invalid read count` under each name |
+| `LimitReader` and `ReadAtMost` over a file in six `async` tasks, `CopyN` in another | The same bytes as in plain code |
+| Using the source after `LimitReader`, calling `Source()` twice, `limited.Read` on a `let` binding, building `LimitedReader{...}` | Rejected: moved value; moved value; needs `mut`; fields not exported |
+| `examples/rest-api` given a 4096-byte and a 4097-byte body | `400` from the decoder; `413` from `ReadAtMost(r, 4096)` |
+
 ## `std/bufio`
 
 | Scenario | Expected result |
