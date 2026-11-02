@@ -120,3 +120,30 @@ The contract is locked under §37.17. Executable tests are in
 | `HEAD` of an empty file; `POST` to `ServeFileIn` with a missing name | `200` with `Content-Length: 0`; `405` |
 | `%2e%2e`, `..%2f`, `%5c` in the request path | `400` from the server before the handler runs |
 | Server shutdown after all cases | Clean exit with leak checking on |
+
+## Multipart forms and uploads
+
+The contract is locked under §37.18. Executable tests are in
+`tests/codegen/http.rs::http_multipart_forms_stream_files_and_clean_up`;
+compiler acceptance and rejection are in
+`tests/packages/packages.rs::multipart_forms_own_their_uploads`.
+
+| Scenario | Expected result |
+| --- | --- |
+| A preamble, a boundary line with trailing space and tab, a value holding CRLFs and `--XyZ-not-a-boundary`, a file named `C:\Users\ada\résumé.bin` of 150,000 binary bytes, a second file with no `Content-Type` and no bytes, an empty file input, a repeated `name`, and an epilogue | Values in order with `empty=`; files `résumé.bin` (`application/x-test`, exact size and checksum) and `second.txt` (`application/octet-stream`, 0 bytes); `Value` and `File` give the first |
+| The same body in 997-byte pieces; a body with a 400-byte file in 3-byte pieces | The same results |
+| `RemoveAll`, then `Open` | The file is still listed; `Open` fails |
+| A handler error or a panic after reading the form | The upload folder is empty afterwards |
+| 4 parts with `MaxParts` 3; a 17-byte file with `MaxFileBytes` 16; values of 9 bytes with `MaxValueBytes` 8; a part header over 128 bytes; a body over `MaxBytes` 40 | `io.LimitExceeded` (413), no files left |
+| A 16-byte file with `MaxFileBytes` 16 | Accepted |
+| No boundary, an empty or 71-character boundary, one ending in space, a `\` in it | `invalid boundary` |
+| `multipart/mixed`, a form type, a malformed media type | `unsupported content type` |
+| A negative limit | `negative limit` |
+| No closing line, no boundary at all, a file cut short, `--XyZjunk` | `unexpected end of body` |
+| `--XyZ` followed by space, tab, and text | `invalid boundary line` |
+| No `Content-Disposition`, two of them, a header name with a space, a folded line | `invalid part header` |
+| `attachment`, no `name`, an unterminated quote | `invalid content disposition` |
+| A value byte 255, also after a file part | `value is not UTF-8`, no files left |
+| A header byte 255 | `part header is not UTF-8` |
+| `ParseDisposition` of `form-data; name="doc"; filename="résumé.pdf"`, `Form-Data;Name=a`, `form-data` | Lowercased type and names, UTF-8 file name kept |
+| `ParseDisposition` of `""` and `form/data; name=a` | `mime: invalid disposition`; `mime: invalid parameter` |

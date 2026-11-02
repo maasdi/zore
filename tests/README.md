@@ -424,6 +424,11 @@ folder walks to `codegen/files.rs`: flag validation, seeking and syncing,
 collision-free temporary names under concurrency, rename replacement and
 refusals, walk order, skipping, links, and errors that stay with their entry.
 
+`conformance/http.md` also maps multipart forms to `codegen/http.rs`: a
+150,000-byte binary upload checked byte for byte, bodies sent in tiny pieces
+so boundaries split across reads, every limit, malformed bodies and headers,
+and temporary files removed after success, errors, `RemoveAll`, and panics.
+
 `conformance/http.md` also maps media types and file serving to
 `codegen/http.rs`: media-type parsing, writing, and round trips, the
 extension table, and a real server that serves files with their headers,

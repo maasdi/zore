@@ -1775,6 +1775,14 @@ func main() {
     println(charset); println(found)
     let _, missing = parsed.Parameter("boundary")
     println(missing)
+    let dispositions = [string; 5]{"form-data; name=\"doc\"; filename=\"r\u00e9sum\u00e9.pdf\"", "Form-Data;Name=a", "form-data", "", "form/data; name=a"}
+    for text in dispositions {
+        let d, dErr = mime.ParseDisposition(text)
+        if dErr != nil { println(errors.Message(dErr)); continue }
+        var out = d.Type
+        for p in d.Parameters { out += " [" + p.Name + "=" + p.Value + "]" }
+        println(out)
+    }
     let built = mime.MediaType{Type: "a/b", Parameters: Array<mime.Parameter>{mime.Parameter{Name: "Charset", Value: "x"}}}
     let stored, hit = built.Parameter("charset")
     println(stored); println(hit)
@@ -1806,7 +1814,9 @@ mime: invalid media type\nmime: invalid media type\nmime: invalid media type\nmi
 mime: invalid parameter\nmime: invalid media type\nmime: invalid parameter\nmime: invalid parameter\nmime: invalid parameter\n\
 mime: duplicate parameter\nmime: unterminated quoted string\n\
 mime: invalid parameter\nmime: invalid parameter\n\
-utf-8\ntrue\nfalse\nx\ntrue\nfalse\n\
+utf-8\ntrue\nfalse\n\
+form-data [name=doc] [filename=r\u{e9}sum\u{e9}.pdf]\nform-data [name=a]\nform-data\nmime: invalid disposition\nmime: invalid parameter\n\
+x\ntrue\nfalse\n\
 mime: invalid media type\nmime: invalid parameter\nmime: invalid parameter\nmime: duplicate parameter\n\
 .html text/html; charset=utf-8 true\n.HTM text/html; charset=utf-8 true\n.js text/javascript; charset=utf-8 true\n\
 .png image/png true\n.JPEG image/jpeg true\n.woff2 font/woff2 true\n.exe  false\n  false\n",
@@ -2028,4 +2038,292 @@ fn http_serves_files_inside_a_root_only() {
         status(&get(path), 400);
     }
     server.stop("");
+}
+
+const UPLOAD_SERVER: &str = r#"package main
+import "std/context"
+import "std/errors"
+import "std/io"
+import "std/net"
+import "std/net/http"
+import "std/strconv"
+func limitsFor(r mut http.Request) http.MultipartLimits {
+    var limits = http.DefaultMultipartLimits()
+    limits.TempDir = "UPLOADS"
+    let query, _ = r.Query()
+    let tight, isTight = query.Get("tight")
+    if isTight {
+        let n, _ = strconv.Atoi(tight)
+        limits.MaxBytes = n
+        limits.MaxParts = 3
+        limits.MaxValueBytes = 8
+        limits.MaxFileBytes = 16
+        limits.MaxPartHeaderBytes = 128
+    }
+    let _, negative = query.Get("negative")
+    if negative { limits.MaxParts = -1 }
+    return limits
+}
+func describe(form http.MultipartForm) (string, error) {
+    var text = ""
+    for entry in form.Values().Entries() { text += "value " + entry.Key + "=" + entry.Value + "\n" }
+    for file in form.Files() {
+        var opened = file.Open()?
+        let data = io.ReadAll(opened)?
+        var sum = 0
+        for b in data { sum = (sum * 31 + int(b)) % 1000000007 }
+        text += "file " + file.Field + " " + file.Filename + " " + file.ContentType + " " + strconv.Itoa(file.Size) + " " + strconv.Itoa(data.len()) + " " + strconv.Itoa(sum) + "\n"
+    }
+    return text, nil
+}
+func upload(w mut http.ResponseWriter, r mut http.Request) error {
+    let limits = limitsFor(r)
+    var form, err = r.ReadMultipartForm(limits)
+    if err == io.LimitExceeded {
+        let _, _ = io.ReadAll(r)
+        return w.Text(413, "limit")
+    }
+    if err != nil {
+        let _, _ = io.ReadAll(r)
+        return w.Text(400, errors.Message(err))
+    }
+    let mode = r.RawQuery()
+    if mode == "panic" { panic("handler failure after upload") }
+    if mode == "fail" { return error("handler failure after upload") }
+    if mode == "remove" {
+        let removed = form.RemoveAll()
+        if removed != nil { return removed }
+        let file, found = form.File("doc")
+        if !found { return w.Text(200, "no file") }
+        let _, openErr = file.Open()
+        if openErr == nil { panic("opened a removed upload") }
+        return w.Text(200, "removed")
+    }
+    let first, _ = form.Value("name")
+    let doc, hasDoc = form.File("doc")
+    var text = "first name=" + first + "\n"
+    if hasDoc { text += "first doc=" + doc.Filename + "\n" }
+    let described = describe(form)?
+    return w.Text(200, text + described)
+}
+func main() {
+    let stop = channel<bool>(1)
+    var routes = http.NewRouterBuilder()
+    routes.Handle("GET /stop", func(w mut http.ResponseWriter, r mut http.Request) error {
+        stop.send(true)
+        return w.WriteHeader(204)
+    })
+    routes.Handle("POST /upload", upload)
+    let router, buildErr = routes.Build()
+    if buildErr != nil { panic("build") }
+    var config = http.DefaultConfig()
+    config.MaxBodyBytes = 2000000
+    let server, configErr = http.NewServer(router, config)
+    if configErr != nil { panic("config") }
+    let listener, listenErr = net.Listen("tcp", "127.0.0.1:0")
+    if listenErr != nil { panic("listen") }
+    println(listener.Addr())
+    let serving = go server.Serve(listener)
+    let _, _ = stop.receive()
+    let err = server.Shutdown(context.Background())
+    if err != nil { panic("shutdown") }
+    let serveErr = serving.wait()
+    if serveErr != nil { panic("serve") }
+}
+"#;
+
+fn multipart_request(query: &str, content_type: &str, body: &[u8]) -> Vec<u8> {
+    let mut request = format!(
+        "POST /upload{query} HTTP/1.1\r\nHost: x\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        body.len()
+    )
+    .into_bytes();
+    request.extend_from_slice(body);
+    request
+}
+
+fn checksum(data: &[u8]) -> u64 {
+    data.iter().fold(0u64, |sum, byte| {
+        (sum * 31 + u64::from(*byte)) % 1_000_000_007
+    })
+}
+
+#[test]
+fn http_multipart_forms_stream_files_and_clean_up() {
+    let uploads = TempDir::new().unwrap();
+    let uploads_text = uploads.path().to_str().unwrap().replace('\\', "\\\\");
+    let server = ServerProcess::start(&UPLOAD_SERVER.replace("UPLOADS", &uploads_text));
+    let send = |query: &str, content_type: &str, body: &[u8]| {
+        let mut stream = server.connect();
+        stream
+            .write_all(&multipart_request(query, content_type, body))
+            .unwrap();
+        read_closed(&mut stream)
+    };
+    let wait_empty = || {
+        let deadline = std::time::Instant::now() + Duration::from_secs(4);
+        loop {
+            let left = std::fs::read_dir(uploads.path()).unwrap().count();
+            if left == 0 {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "{left} uploads left behind"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    };
+    let form_type = "multipart/form-data; boundary=XyZ";
+    let binary: Vec<u8> = (0..150_000u32)
+        .map(|i| (i.wrapping_mul(2_654_435_761) >> 13) as u8)
+        .collect();
+    let mut body = Vec::new();
+    body.extend_from_slice(b"preamble to skip\r\n--XyZ\r\nContent-Disposition: form-data; name=\"name\"\r\n\r\nAda\r\n");
+    body.extend_from_slice("--XyZ \t\r\nContent-Disposition: form-data; name=\"note\"\r\nContent-Type: text/plain; charset=utf-8\r\n\r\nh\u{e9}llo\r\n\r\nworld\r\n--XyZ-not-a-boundary\r\n".as_bytes());
+    body.extend_from_slice(b"--XyZ\r\ncontent-disposition: form-data; name=\"doc\"; filename=\"C:\\\\Users\\\\ada\\\\r\xc3\xa9sum\xc3\xa9.bin\"\r\nContent-Type: application/x-test\r\nX-Ignored: yes\r\n\r\n");
+    body.extend_from_slice(&binary);
+    body.extend_from_slice(b"\r\n--XyZ\r\nContent-Disposition: form-data; name=\"doc\"; filename=\"dir/second.txt\"\r\n\r\n\r\n--XyZ\r\nContent-Disposition: form-data; name=\"empty\"; filename=\"\"\r\nContent-Type: application/octet-stream\r\n\r\n\r\n--XyZ\r\nContent-Disposition: form-data; name=\"name\"\r\n\r\nGrace\r\n--XyZ--\r\nepilogue ignored");
+    let full = send("", form_type, &body);
+    status(&full, 200);
+    let expected = format!(
+        "first name=Ada\nfirst doc=r\u{e9}sum\u{e9}.bin\nvalue name=Ada\nvalue note=h\u{e9}llo\r\n\r\nworld\r\n--XyZ-not-a-boundary\nvalue empty=\nvalue name=Grace\nfile doc r\u{e9}sum\u{e9}.bin application/x-test 150000 150000 {}\nfile doc second.txt application/octet-stream 0 0 0\n",
+        checksum(&binary)
+    );
+    assert_eq!(body_of(&full), expected);
+    wait_empty();
+
+    let simple = b"--XyZ\r\nContent-Disposition: form-data; name=\"doc\"; filename=\"a.txt\"\r\n\r\nhello\r\n--XyZ--\r\n";
+    let mut trickled = server.connect();
+    trickled.set_nodelay(true).unwrap();
+    let request = multipart_request("", form_type, &body);
+    for piece in request.chunks(997) {
+        trickled.write_all(piece).unwrap();
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    let slow = read_closed(&mut trickled);
+    assert_eq!(body_of(&slow), expected);
+    wait_empty();
+    let tail = &binary[binary.len() - 400..];
+    let mut tiny = server.connect();
+    tiny.set_nodelay(true).unwrap();
+    let small_body = [
+        b"--XyZ\r\nContent-Disposition: form-data; name=\"name\"\r\n\r\nAda\r\n".as_slice(),
+        b"--XyZ\r\nContent-Disposition: form-data; name=\"doc\"; filename=\"t.bin\"\r\n\r\n",
+        tail,
+        b"\r\n--XyZ--\r\n",
+    ]
+    .concat();
+    for piece in multipart_request("", form_type, &small_body).chunks(3) {
+        tiny.write_all(piece).unwrap();
+        std::thread::sleep(Duration::from_micros(200));
+    }
+    let pieces = read_closed(&mut tiny);
+    status(&pieces, 200);
+    assert!(
+        body_of(&pieces).ends_with(&format!(
+            "file doc t.bin application/octet-stream 400 400 {}\n",
+            checksum(tail)
+        )),
+        "{pieces}"
+    );
+    wait_empty();
+    for (query, expected_status, expected_body) in [
+        ("?remove", 200, "removed"),
+        ("?fail", 500, "0\r\n\r\n"),
+        ("?panic", 0, ""),
+    ] {
+        let response = send(query, form_type, simple);
+        if expected_status != 0 {
+            status(&response, expected_status);
+            assert_eq!(body_of(&response), expected_body, "{query}");
+        }
+        wait_empty();
+    }
+
+    let many_parts: Vec<u8> = (0..4)
+        .flat_map(|i| {
+            format!("--XyZ\r\nContent-Disposition: form-data; name=\"p{i}\"\r\n\r\n{i}\r\n")
+                .into_bytes()
+        })
+        .chain(b"--XyZ--\r\n".iter().copied())
+        .collect();
+    let big_file = format!(
+        "--XyZ\r\nContent-Disposition: form-data; name=\"doc\"; filename=\"a\"\r\n\r\n{}\r\n--XyZ--\r\n",
+        "x".repeat(17)
+    );
+    let exact_file = format!(
+        "--XyZ\r\nContent-Disposition: form-data; name=\"doc\"; filename=\"a\"\r\n\r\n{}\r\n--XyZ--\r\n",
+        "x".repeat(16)
+    );
+    let big_value = "--XyZ\r\nContent-Disposition: form-data; name=\"a\"\r\n\r\n12345\r\n--XyZ\r\nContent-Disposition: form-data; name=\"b\"\r\n\r\n6789\r\n--XyZ--\r\n";
+    let big_header = format!(
+        "--XyZ\r\nContent-Disposition: form-data; name=\"a\"\r\nX-Pad: {}\r\n\r\n1\r\n--XyZ--\r\n",
+        "p".repeat(100)
+    );
+    for (query, payload, expected_status) in [
+        ("?tight=100000", many_parts.as_slice(), 413),
+        ("?tight=100000", big_file.as_bytes(), 413),
+        ("?tight=100000", exact_file.as_bytes(), 200),
+        ("?tight=100000", big_value.as_bytes(), 413),
+        ("?tight=100000", big_header.as_bytes(), 413),
+        ("?tight=40", simple.as_slice(), 413),
+    ] {
+        let response = send(query, form_type, payload);
+        assert!(
+            response.starts_with(&format!("HTTP/1.1 {expected_status} ")),
+            "{query} {}: {response}",
+            payload.len()
+        );
+        wait_empty();
+    }
+
+    let error = |query: &str, content_type: &str, payload: &[u8]| {
+        let response = send(query, content_type, payload);
+        status(&response, 400);
+        wait_empty();
+        body_of(&response)
+            .trim_start_matches("http.Request.ReadMultipartForm: ")
+            .to_string()
+    };
+    for (content_type, message) in [
+        ("multipart/form-data", "invalid boundary"),
+        ("multipart/form-data; boundary=\"\"", "invalid boundary"),
+        ("multipart/form-data; boundary=\"a b \"", "invalid boundary"),
+        (
+            "multipart/form-data; boundary=a\\b",
+            "unsupported content type",
+        ),
+        ("multipart/mixed; boundary=XyZ", "unsupported content type"),
+        (
+            "application/x-www-form-urlencoded",
+            "unsupported content type",
+        ),
+    ] {
+        assert_eq!(error("", content_type, simple), message, "{content_type}");
+    }
+    let long_boundary = format!("multipart/form-data; boundary={}", "b".repeat(71));
+    assert_eq!(error("", &long_boundary, simple), "invalid boundary");
+    assert_eq!(error("?negative", form_type, simple), "negative limit");
+    for (payload, message) in [
+        (&b"--XyZ\r\nContent-Disposition: form-data; name=\"a\"\r\n\r\n1\r\n--XyZ"[..], "unexpected end of body"),
+        (b"no boundary at all", "unexpected end of body"),
+        (b"--XyZ\r\nContent-Disposition: form-data; name=\"doc\"; filename=\"a\"\r\n\r\npartial", "unexpected end of body"),
+        (b"--XyZjunk\r\n", "unexpected end of body"),
+        (b"--XyZ \tjunk\r\n--XyZ--", "invalid boundary line"),
+        (b"--XyZ\r\nContent-Type: text/plain\r\n\r\n1\r\n--XyZ--", "invalid part header"),
+        (b"--XyZ\r\nContent-Disposition: form-data; name=\"a\"\r\nContent-Disposition: form-data; name=\"b\"\r\n\r\n1\r\n--XyZ--", "invalid part header"),
+        (b"--XyZ\r\nBad Header: x\r\nContent-Disposition: form-data; name=\"a\"\r\n\r\n1\r\n--XyZ--", "invalid part header"),
+        (b"--XyZ\r\nContent-Disposition: form-data; name=\"a\"\r\n folded\r\n\r\n1\r\n--XyZ--", "invalid part header"),
+        (b"--XyZ\r\nContent-Disposition: attachment; name=\"a\"\r\n\r\n1\r\n--XyZ--", "invalid content disposition"),
+        (b"--XyZ\r\nContent-Disposition: form-data; filename=\"a\"\r\n\r\n1\r\n--XyZ--", "invalid content disposition"),
+        (b"--XyZ\r\nContent-Disposition: form-data; name=\"a\r\n\r\n1\r\n--XyZ--", "invalid content disposition"),
+        (b"--XyZ\r\nContent-Disposition: form-data; name=\"a\"\r\n\r\n\xff\r\n--XyZ--", "value is not UTF-8"),
+        (b"--XyZ\r\nContent-Disposition: form-data; name=\"\xff\"\r\n\r\n1\r\n--XyZ--", "part header is not UTF-8"),
+        (b"--XyZ\r\nContent-Disposition: form-data; name=\"doc\"; filename=\"a\"\r\n\r\nfile bytes\r\n--XyZ\r\nContent-Disposition: form-data; name=\"b\"\r\n\r\n\xff\r\n--XyZ--", "value is not UTF-8"),
+    ] {
+        assert_eq!(error("", form_type, payload), message, "{:?}", String::from_utf8_lossy(payload));
+    }
+
+    server.stop("handler failure after upload");
 }

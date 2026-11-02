@@ -189,6 +189,14 @@ once it does.
   `DirEntry.IsSymlink` describe links. The spec now states what `os.Rename`
   does and does not promise on each system. `File.Close` now returns the error
   the system reports while closing, instead of always `nil`.
+- Added multipart forms and file uploads to `std/net/http` (§37.18), the
+  third part of issue #217. `Request.ReadMultipartForm` streams a
+  `multipart/form-data` body through a 64 KiB window, keeps text values in
+  memory, and writes each file to its own temporary file. `MultipartLimits`
+  bounds the body, parts, values, files, and part headers, and any limit
+  gives `io.LimitExceeded`. The returned `MultipartForm` deletes its files
+  when dropped, including after a handler error or panic, or earlier with
+  `RemoveAll`. `mime.ParseDisposition` reads `Content-Disposition` values.
 - Added `std/mime` and file serving to `std/net/http` (§37.17), the second
   part of issue #217. `mime.ParseMediaType` and `mime.FormatMediaType` read
   and write media types with their parameters, and `mime.TypeByExtension`
