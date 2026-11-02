@@ -100,6 +100,7 @@ Native cases are in `tests/codegen/io_adapters.rs`, checking cases in
 | Dropping a `LimitedReader` | Its source's `drop` runs |
 | A source that returns `0` and `nil` forever, to `ReadAtMost`, `CopyN`, `ReadAll`, `Copy`, and `ReadFull` | Each stops after 100 such reads with `no read progress` under its own name |
 | The same source returning data after 99 empty reads | The data, without an error |
+| A source giving four bytes, each after 99 empty reads, to each of the five helpers | All four bytes and `nil`: the count starts over after every byte |
 | Read counts of `-1` and past the buffer to `ReadAll`, `ReadAtMost`, and `CopyN` | `invalid read count` under each name |
 | `LimitReader` and `ReadAtMost` over a file in six `async` tasks, `CopyN` in another | The same bytes as in plain code |
 | Using the source after `LimitReader`, calling `Source()` twice, `limited.Read` on a `let` binding, building `LimitedReader{...}` | Rejected: moved value; moved value; needs `mut`; fields not exported |

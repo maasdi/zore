@@ -43,7 +43,7 @@ func createUser(store UserStore, logger log.Logger, w mut http.ResponseWriter, r
     }
     let body, readErr = io.ReadAtMost(r, maxUserBody)
     if readErr == io.LimitExceeded {
-        return problem(w, http.StatusContentTooLarge, "request body is larger than 4096 bytes")
+        return problem(w, http.StatusContentTooLarge, "request body is larger than " + strconv.Itoa(maxUserBody) + " bytes")
     }
     if readErr != nil {
         return readErr

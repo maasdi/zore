@@ -7511,7 +7511,9 @@ zero or past the buffer stops `ReadAll`, `CopyN`, and `ReadAtMost` with
 These rules preserve ordinary borrowed buffer ownership and explicit errors;
 interface calls still suspend in async callers. They require no compiler syntax
 or type changes. Native conformance covers final data plus EOF, partial writes,
-and no-progress errors in `tests/codegen/review_regressions.rs`.
+and no-progress errors in `tests/codegen/review_regressions.rs`; stalled
+sources, invalid read counts, and the helpers below in
+`tests/codegen/io_adapters.rs`.
 
 | Name | Behavior |
 | --- | --- |
@@ -7530,7 +7532,7 @@ and no-progress errors in `tests/codegen/review_regressions.rs`.
 | `(l own LimitedReader) Source() Reader` | Gives back `source`, positioned after what was read through `l` |
 
 **Limits.** `ReadAtMost` is `ReadAll` with a ceiling, for input whose size the
-sender controls. It asks `r` for no more than `limit + 1` bytes in total, so
+sender controls. It takes no more than `limit + 1` bytes from `r` in total, so
 it can tell input that fits from input that does not. Input of exactly
 `limit` bytes returns them with `nil` when `EOF` follows, and with
 `LimitExceeded` when another byte arrives. That one extra byte is consumed from
@@ -7556,8 +7558,11 @@ and `EOF` without calling `source`. Before that, it passes on whatever
 means either that the limit was reached or that `source` ended; `Remaining()`
 is `0` in the first case. A read count below zero or past the requested size
 gives `0` and `io.LimitedReader: invalid read count` and counts nothing.
-Dropping a `LimitedReader` drops `source`. Closing is the source's own
-business: get it back with `Source()` and close it if it is a closer.
+Dropping a `LimitedReader` drops `source`, and dropping the `Reader` that
+`Source()` returns does the same, so a wrapped `os.File` is closed when either
+is dropped. `Source()` gives back an `io.Reader`, which has no `Close`; a
+caller that must see a close error keeps the file and wraps it only after
+reading through `LimitReader` is no longer needed.
 
 ```ore
 import "std/io"

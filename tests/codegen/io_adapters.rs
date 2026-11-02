@@ -16,18 +16,16 @@ type Feed struct {
     endErr   error
     withLast bool
     calls    int
-    asked    int
 }
 
 func feed(size int, chunk int) Feed {
     var data = Array<byte>{}
     for var i = 0; i < size; i += 1 { data.push(byte((i * 7 + 3) % 256)) }
-    return Feed{data: data, pos: 0, chunk: chunk, endErr: io.EOF, withLast: false, calls: 0, asked: 0}
+    return Feed{data: data, pos: 0, chunk: chunk, endErr: io.EOF, withLast: false, calls: 0}
 }
 
 func (f mut Feed) Read(buf mut []byte) (int, error) {
     f.calls += 1
-    f.asked += buf.len()
     if buf.len() == 0 { return 0, nil }
     if f.pos >= f.data.len() { return 0, f.endErr }
     var n = buf.len()
@@ -66,6 +64,29 @@ func (s mut Stall) Read(buf mut []byte) (int, error) {
     }
     buf[0] = 42
     return 1, io.EOF
+}
+
+type Pulse struct {
+    beats int
+    quiet int
+    calls int
+}
+
+func (p mut Pulse) Read(buf mut []byte) (int, error) {
+    p.calls += 1
+    if p.beats == 0 { return 0, io.EOF }
+    if p.quiet < 99 {
+        p.quiet += 1
+        return 0, nil
+    }
+    p.quiet = 0
+    p.beats -= 1
+    buf[0] = 9
+    return 1, nil
+}
+
+func pulse() Pulse {
+    return Pulse{beats: 4, quiet: 0, calls: 0}
 }
 
 type Bad struct {
@@ -244,6 +265,9 @@ func main() {
     var bad = Bad{count: 1}
     let _, badErr = io.CopyN(idleSink, bad, 4)
     check(fails(badErr, "io.CopyN: invalid read count"), "invalid read count")
+    var negativeCount = Bad{count: -1}
+    let _, negativeErr = io.CopyN(idleSink, negativeCount, 4)
+    check(fails(negativeErr, "io.CopyN: invalid read count"), "negative read count")
     println("ok")
 }
 "#,
@@ -320,7 +344,7 @@ func main() {
     let _, linesErr = lines.ReadByte()
     check(linesErr == io.EOF, "wrapped by bufio")
 
-    var text = Feed{data: Array<byte>{104, 105, 10, 116, 104, 101, 114, 101, 10}, pos: 0, chunk: 2, endErr: io.EOF, withLast: false, calls: 0, asked: 0}
+    var text = Feed{data: Array<byte>{104, 105, 10, 116, 104, 101, 114, 101, 10}, pos: 0, chunk: 2, endErr: io.EOF, withLast: false, calls: 0}
     var scanner = bufio.NewScanner(io.LimitReader(text, 6))
     var seen = 0
     for scanner.Scan() { seen += 1 }
@@ -359,6 +383,24 @@ func main() {
     var buf = Array<byte>{0, 0}
     let _, fullErr = io.ReadFull(fullStuck, buf[:])
     check(fails(fullErr, "io.ReadFull: no read progress") && fullStuck.calls == 100, "ReadFull")
+
+    var everyHelper = pulse()
+    let beats, beatsErr = io.ReadAll(everyHelper)
+    check(beatsErr == nil && beats.len() == 4 && everyHelper.calls == 401, "ReadAll counter resets on progress")
+    var atMost = pulse()
+    let capped, cappedErr = io.ReadAtMost(atMost, 10)
+    check(cappedErr == nil && capped.len() == 4, "ReadAtMost counter resets on progress")
+    var copySource = pulse()
+    var copyOut = sink(10)
+    let copiedN, copiedErr = io.Copy(copyOut, copySource)
+    check(copiedErr == nil && copiedN == 4, "Copy counter resets on progress")
+    var exact = pulse()
+    let exactN, exactErr = io.CopyN(copyOut, exact, 4)
+    check(exactErr == nil && exactN == 4, "CopyN counter resets on progress")
+    var filled = pulse()
+    var four = Array<byte>{0, 0, 0, 0}
+    let filledN, filledErr = io.ReadFull(filled, four[:])
+    check(filledErr == nil && filledN == 4, "ReadFull counter resets on progress")
 
     var bad = Bad{count: 1}
     let _, badErr = io.ReadAll(bad)

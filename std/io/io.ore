@@ -101,7 +101,11 @@ func CopyN(dst mut Writer, src mut Reader, n int) (int, error) {
     if n < 0 {
         return 0, error("io.CopyN: negative count")
     }
-    var buf = zeros(copySize)
+    var size = copySize
+    if n < size {
+        size = n
+    }
+    var buf = zeros(size)
     var total = 0
     var empty = 0
     for total < n {
@@ -179,7 +183,11 @@ func ReadAtMost(r mut Reader, limit int) (Array<byte>, error) {
     if limit < 0 {
         return data, error("io.ReadAtMost: negative limit")
     }
-    var buf = zeros(copySize)
+    var size = copySize
+    if limit < size {
+        size = limit + 1
+    }
+    var buf = zeros(size)
     var empty = 0
     for {
         let room = limit - data.len()
@@ -253,7 +261,7 @@ func WriteString(w mut Writer, s string) (int, error) {
 }
 
 type LimitedReader struct {
-    source    Reader
+    source Reader
     remaining int
 }
 
