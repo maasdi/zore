@@ -1,0 +1,489 @@
+package http
+
+import "std/bytes"
+import "std/io"
+import "std/mime"
+import "std/net/url"
+import "std/os"
+import "std/strings"
+
+const ContentTypeMultipart = "multipart/form-data"
+const multipartWindow = 65536
+
+type MultipartLimits struct {
+    MaxBytes int
+    MaxParts int
+    MaxValueBytes int
+    MaxFileBytes int
+    MaxPartHeaderBytes int
+    TempDir string
+}
+
+func DefaultMultipartLimits() MultipartLimits {
+    return MultipartLimits{MaxBytes: 33554432, MaxParts: 100, MaxValueBytes: 1048576, MaxFileBytes: 33554432, MaxPartHeaderBytes: 8192, TempDir: ""}
+}
+
+type FormFile struct {
+    Field string
+    Filename string
+    ContentType string
+    Size int
+    path string
+}
+
+func (f FormFile) Open() (os.File, error) {
+    return os.Open(f.path)
+}
+
+type MultipartForm struct {
+    values url.Values
+    files Array<FormFile>
+}
+
+func emptyMultipartForm() MultipartForm {
+    return MultipartForm{values: url.NewValues(), files: Array<FormFile>{}}
+}
+
+func (m mut MultipartForm) drop() {
+    for file in m.files {
+        if file.path != "" {
+            _ = os.Remove(file.path)
+        }
+    }
+}
+
+func (m MultipartForm) Values() url.Values {
+    return clone(m.values)
+}
+
+func (m MultipartForm) Value(name string) (string, bool) {
+    return m.values.Get(name)
+}
+
+func (m MultipartForm) Files() Array<FormFile> {
+    return clone(m.files)
+}
+
+func (m MultipartForm) File(field string) (FormFile, bool) {
+    for file in m.files {
+        if file.Field == field {
+            return file, true
+        }
+    }
+    return FormFile{Field: "", Filename: "", ContentType: "", Size: 0, path: ""}, false
+}
+
+func (m mut MultipartForm) RemoveAll() error {
+    var failures = Array<error>{}
+    for var i = 0; i < m.files.len(); i += 1 {
+        if m.files[i].path == "" {
+            continue
+        }
+        let err = os.Remove(m.files[i].path)
+        if err != nil {
+            failures.push(err)
+        } else {
+            m.files[i].path = ""
+        }
+    }
+    if failures.len() == 0 {
+        return nil
+    }
+    return failures[0]
+}
+
+type multipartInput struct {
+    buf Array<byte>
+    start int
+    end int
+    eof bool
+    total int
+    limit int
+    empty int
+}
+
+func multipartError(problem string) error {
+    return error("http.Request.ReadMultipartForm: " + problem)
+}
+
+func (source mut multipartInput) fill(r mut Request) error {
+    if source.eof {
+        return multipartError("unexpected end of body")
+    }
+    if source.start > 0 {
+        let count = source.end - source.start
+        for var i = 0; i < count; i += 1 {
+            source.buf[i] = source.buf[source.start + i]
+        }
+        source.start = 0
+        source.end = count
+    }
+    var want = source.buf.len() - source.end
+    let room = source.limit - source.total
+    if room + 1 < want {
+        want = room + 1
+    }
+    let count, err = r.Read(source.buf[source.end:source.end + want])
+    if count < 0 || count > want {
+        _ = err
+        return multipartError("invalid read count")
+    }
+    source.total += count
+    source.end += count
+    if source.total > source.limit {
+        _ = err
+        return io.LimitExceeded
+    }
+    if err == io.EOF {
+        source.eof = true
+        return nil
+    }
+    if err != nil {
+        return err
+    }
+    if count == 0 {
+        source.empty += 1
+        if source.empty >= 100 {
+            return multipartError("no read progress")
+        }
+    } else {
+        source.empty = 0
+    }
+    return nil
+}
+
+func (source mut multipartInput) ensure(r mut Request, n int) error {
+    for source.end - source.start < n {
+        if source.eof {
+            return multipartError("unexpected end of body")
+        }
+        source.fill(r)?
+    }
+    return nil
+}
+
+func (source multipartInput) boundaryEnds(after int) bool {
+    if after >= source.end {
+        return true
+    }
+    let c = source.buf[after]
+    if c == 32 || c == 9 || c == 13 {
+        return true
+    }
+    if c != 45 {
+        return false
+    }
+    return after + 1 >= source.end || source.buf[after + 1] == 45
+}
+
+func (source mut multipartInput) next(r mut Request, pattern []byte, boundary bool) (int, int, bool, error) {
+    var offset = 0
+    for {
+        let found = bytes.Index(source.buf[source.start + offset:source.end], pattern)
+        if found >= 0 {
+            let first = source.start
+            let at = first + offset + found
+            let after = at + pattern.len()
+            if boundary && source.end - after < 2 && !source.eof {
+                if at > first {
+                    source.start = at
+                    return first, at, false, nil
+                }
+                let err = source.fill(r)
+                if err != nil {
+                    return 0, 0, false, err
+                }
+                continue
+            }
+            if !boundary || source.boundaryEnds(after) {
+                source.start = after
+                return first, at, true, nil
+            }
+            offset = at - first + 1
+            continue
+        }
+        let keep = pattern.len() - 1
+        if source.end - source.start > keep {
+            let first = source.start
+            source.start = source.end - keep
+            return first, source.start, false, nil
+        }
+        let err = source.fill(r)
+        if err != nil {
+            return 0, 0, false, err
+        }
+        offset = 0
+    }
+}
+
+func boundaryByte(c byte) bool {
+    if (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || (c >= 48 && c <= 57) {
+        return true
+    }
+    return strings.IndexByte("'()+_,-./:=? ", c) >= 0
+}
+
+func multipartBoundary(r Request) (string, error) {
+    let types = r.headers.Values(HeaderContentType)
+    if types.len() != 1 {
+        return "", multipartError("unsupported content type")
+    }
+    let parsed, err = mime.ParseMediaType(types[0])
+    if err != nil || parsed.Type != ContentTypeMultipart {
+        return "", multipartError("unsupported content type")
+    }
+    let boundary, found = parsed.Parameter("boundary")
+    if !found || boundary == "" || boundary.len() > 70 || boundary[boundary.len() - 1] == 32 {
+        return "", multipartError("invalid boundary")
+    }
+    for var i = 0; i < boundary.len(); i += 1 {
+        if !boundaryByte(boundary[i]) {
+            return "", multipartError("invalid boundary")
+        }
+    }
+    return boundary, nil
+}
+
+func checkedLimits(limits MultipartLimits) (MultipartLimits, error) {
+    let fallback = DefaultMultipartLimits()
+    var result = limits
+    let sizes = [int; 5]{limits.MaxBytes, limits.MaxParts, limits.MaxValueBytes, limits.MaxFileBytes, limits.MaxPartHeaderBytes}
+    for size in sizes {
+        if size < 0 {
+            return fallback, multipartError("negative limit")
+        }
+    }
+    if result.MaxBytes == 0 {
+        result.MaxBytes = fallback.MaxBytes
+    }
+    if result.MaxParts == 0 {
+        result.MaxParts = fallback.MaxParts
+    }
+    if result.MaxValueBytes == 0 {
+        result.MaxValueBytes = fallback.MaxValueBytes
+    }
+    if result.MaxFileBytes == 0 {
+        result.MaxFileBytes = fallback.MaxFileBytes
+    }
+    if result.MaxPartHeaderBytes == 0 {
+        result.MaxPartHeaderBytes = fallback.MaxPartHeaderBytes
+    }
+    if result.TempDir == "" {
+        result.TempDir = os.TempDir()
+    }
+    return result, nil
+}
+
+type partHeader struct {
+    name string
+    filename string
+    isFile bool
+    contentType string
+}
+
+func uploadName(filename string) string {
+    var start = 0
+    for var i = 0; i < filename.len(); i += 1 {
+        if filename[i] == 47 || filename[i] == 92 {
+            start = i + 1
+        }
+    }
+    let name = filename[start:]
+    if name == "." || name == ".." {
+        return ""
+    }
+    return name
+}
+
+func parsePartHeader(block []byte) (partHeader, error) {
+    var header = partHeader{name: "", filename: "", isFile: false, contentType: ""}
+    let text, textErr = strings.FromBytes(block)
+    if textErr != nil {
+        return header, multipartError("part header is not UTF-8")
+    }
+    var disposition = ""
+    var dispositions = 0
+    var types = 0
+    let lines = strings.Split(text, "\r\n")
+    for var index = 1; index < lines.len(); index += 1 {
+        let line = lines[index]
+        for var i = 0; i < line.len(); i += 1 {
+            let c = line[i]
+            if (c < 32 && c != 9) || c == 127 {
+                return header, multipartError("invalid part header")
+            }
+        }
+        let rawName, rawValue, found = strings.Cut(line, ":")
+        if !found || !token(rawName) {
+            return header, multipartError("invalid part header")
+        }
+        let value = strings.Trim(rawValue, " \t")
+        if strings.EqualFold(rawName, "Content-Disposition") {
+            disposition = value
+            dispositions += 1
+        } else if strings.EqualFold(rawName, HeaderContentType) {
+            header.contentType = value
+            types += 1
+        }
+    }
+    if dispositions != 1 || types > 1 {
+        return header, multipartError("invalid part header")
+    }
+    let parsed, err = mime.ParseDisposition(disposition)
+    if err != nil || parsed.Type != "form-data" {
+        return header, multipartError("invalid content disposition")
+    }
+    let name, named = parsed.Parameter("name")
+    if !named {
+        return header, multipartError("invalid content disposition")
+    }
+    header.name = name
+    let filename, hasFile = parsed.Parameter("filename")
+    if hasFile && filename != "" {
+        header.isFile = true
+        header.filename = uploadName(filename)
+        if header.contentType == "" {
+            header.contentType = "application/octet-stream"
+        }
+    } else if header.contentType == "" {
+        header.contentType = "text/plain"
+    }
+    return header, nil
+}
+
+func (r mut Request) ReadMultipartForm(limits MultipartLimits) (MultipartForm, error) {
+    let checked, limitErr = checkedLimits(limits)
+    if limitErr != nil {
+        return emptyMultipartForm(), limitErr
+    }
+    let boundary, boundaryErr = multipartBoundary(r)
+    if boundaryErr != nil {
+        return emptyMultipartForm(), boundaryErr
+    }
+    var form = emptyMultipartForm()
+    let err = readParts(r, checked, boundary, form)
+    if err != nil {
+        return emptyMultipartForm(), err
+    }
+    return form, nil
+}
+
+func readParts(r mut Request, limits MultipartLimits, boundary string, form mut MultipartForm) error {
+    var window = Array<byte>{13, 10}
+    for window.len() < multipartWindow {
+        window.push(0)
+    }
+    var input = multipartInput{buf: window, start: 0, end: 2, eof: false, total: 0, limit: limits.MaxBytes, empty: 0}
+    let delimiter = strings.Bytes("\r\n--" + boundary)
+    let headerEnd = strings.Bytes("\r\n\r\n")
+    for {
+        let _, _, found, err = input.next(r, delimiter[:], true)
+        if err != nil {
+            return err
+        }
+        if found {
+            break
+        }
+    }
+    var parts = 0
+    var valueBytes = 0
+    for {
+        input.ensure(r, 2)?
+        if input.buf[input.start] == 45 && input.buf[input.start + 1] == 45 {
+            break
+        }
+        for {
+            input.ensure(r, 1)?
+            let c = input.buf[input.start]
+            if c != 32 && c != 9 {
+                break
+            }
+            input.start += 1
+        }
+        input.ensure(r, 2)?
+        if input.buf[input.start] != 13 || input.buf[input.start + 1] != 10 {
+            return multipartError("invalid boundary line")
+        }
+        parts += 1
+        if parts > limits.MaxParts {
+            return io.LimitExceeded
+        }
+        var block = Array<byte>{}
+        for {
+            let first, last, found, err = input.next(r, headerEnd[:], false)
+            if err != nil {
+                return err
+            }
+            if block.len() + last - first > limits.MaxPartHeaderBytes + 2 {
+                return io.LimitExceeded
+            }
+            for var i = first; i < last; i += 1 {
+                block.push(input.buf[i])
+            }
+            if found {
+                break
+            }
+        }
+        let header = parsePartHeader(block[:])?
+        if header.isFile {
+            readFilePart(r, input, delimiter[:], limits, header, form)?
+        } else {
+            var value = Array<byte>{}
+            for {
+                let first, last, found, err = input.next(r, delimiter[:], true)
+                if err != nil {
+                    return err
+                }
+                valueBytes += last - first
+                if valueBytes > limits.MaxValueBytes {
+                    return io.LimitExceeded
+                }
+                for var i = first; i < last; i += 1 {
+                    value.push(input.buf[i])
+                }
+                if found {
+                    break
+                }
+            }
+            let text, textErr = strings.FromBytes(value[:])
+            if textErr != nil {
+                return multipartError("value is not UTF-8")
+            }
+            form.values.Add(header.name, text)
+        }
+    }
+    for !input.eof {
+        input.start = input.end
+        input.fill(r)?
+    }
+    return nil
+}
+
+func readFilePart(r mut Request, input mut multipartInput, delimiter []byte, limits MultipartLimits, header partHeader, form mut MultipartForm) error {
+    var file = os.CreateTemp(limits.TempDir, "zore-upload-*")?
+    var record = FormFile{Field: header.name, Filename: header.filename, ContentType: header.contentType, Size: 0, path: file.Name()}
+    form.files.push(record)
+    let index = form.files.len() - 1
+    var size = 0
+    for {
+        let first, last, found, err = input.next(r, delimiter, true)
+        if err != nil {
+            return err
+        }
+        size += last - first
+        if size > limits.MaxFileBytes {
+            return io.LimitExceeded
+        }
+        if last > first {
+            let _, writeErr = file.Write(input.buf[first:last])
+            if writeErr != nil {
+                return writeErr
+            }
+        }
+        if found {
+            break
+        }
+    }
+    form.files[index].Size = size
+    return file.Close()
+}

@@ -883,6 +883,50 @@ fn mime_types_and_file_serving_check_their_arguments() {
 }
 
 #[test]
+fn multipart_forms_own_their_uploads() {
+    let handler = |imports: &str, body: &str| {
+        format!(
+            "package main\n{imports}\nfunc handle(w mut http.ResponseWriter, r mut http.Request) error {{\n{body}\nreturn nil\n}}\nfunc main() {{}}\n"
+        )
+    };
+    accepts(&[(
+        "main.ore",
+        &handler(
+            "import \"std/io\"\nimport \"std/mime\"\nimport \"std/net/http\"",
+            "var limits = http.DefaultMultipartLimits()\nlimits.MaxFileBytes = 1024\nlimits.TempDir = \"uploads\"\nvar form = r.ReadMultipartForm(limits)?\nlet name, found = form.Value(\"name\")\n_ = name\n_ = found\nlet all = form.Values()\n_ = all\nlet file, hasFile = form.File(\"doc\")\n_ = hasFile\nlet copied http.FormFile = file\n_ = copied.Filename\n_ = copied.Size\nvar opened = file.Open()?\nlet _, _ = io.ReadAll(opened)\nlet files Array<http.FormFile> = form.Files()\n_ = files\nform.RemoveAll()?\nlet d, dErr = mime.ParseDisposition(\"form-data; name=a\")\n_ = d\n_ = dErr",
+        ),
+    )]);
+    for (body, message) in [
+        (
+            "let form = r.ReadMultipartForm(http.DefaultMultipartLimits())?\nlet moved = form\nlet _, _ = form.Value(\"a\")\n_ = moved",
+            "use of moved value",
+        ),
+        (
+            "let form = r.ReadMultipartForm(http.DefaultMultipartLimits())?\nlet copy = clone(form)\n_ = copy",
+            "clone",
+        ),
+        (
+            "let form = r.ReadMultipartForm(http.DefaultMultipartLimits())?\nform.RemoveAll()?",
+            "mutable",
+        ),
+        (
+            "r.ReadMultipartForm(http.DefaultMultipartLimits())",
+            "must be used or explicitly discarded",
+        ),
+        ("let form = r.ReadMultipartForm()", "takes 1 argument"),
+        (
+            "let f = http.FormFile{Field: \"a\", Filename: \"b\", ContentType: \"c\", Size: 0, path: \"/etc/passwd\"}",
+            "not exported",
+        ),
+    ] {
+        rejects(
+            &[("main.ore", &handler("import \"std/net/http\"", body))],
+            message,
+        );
+    }
+}
+
+#[test]
 fn time_types_do_not_mix() {
     accepts(&[(
         "main.ore",

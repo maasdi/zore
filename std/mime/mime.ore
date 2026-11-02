@@ -79,18 +79,30 @@ func failed(problem string) (MediaType, error) {
 }
 
 func ParseMediaType(text string) (MediaType, error) {
-    var i = skipSpace(text, 0)
-    let typeEnd = tokenEnd(text, i)
-    if typeEnd == i || typeEnd >= text.len() || text[typeEnd] != 47 {
+    let start = skipSpace(text, 0)
+    let typeEnd = tokenEnd(text, start)
+    if typeEnd == start || typeEnd >= text.len() || text[typeEnd] != 47 {
         return failed("invalid media type")
     }
     let subtypeEnd = tokenEnd(text, typeEnd + 1)
     if subtypeEnd == typeEnd + 1 {
         return failed("invalid media type")
     }
-    let mediaType = lowerASCII(text[i:subtypeEnd])
+    return parseParameters(text, lowerASCII(text[start:subtypeEnd]), subtypeEnd, false)
+}
+
+func ParseDisposition(text string) (MediaType, error) {
+    let start = skipSpace(text, 0)
+    let typeEnd = tokenEnd(text, start)
+    if typeEnd == start {
+        return failed("invalid disposition")
+    }
+    return parseParameters(text, lowerASCII(text[start:typeEnd]), typeEnd, true)
+}
+
+func parseParameters(text string, kind string, after int, unicode bool) (MediaType, error) {
     var parameters = Array<Parameter>{}
-    i = skipSpace(text, subtypeEnd)
+    var i = skipSpace(text, after)
     for i < text.len() {
         if text[i] != 59 {
             return failed("invalid parameter")
@@ -117,14 +129,15 @@ func ParseMediaType(text string) (MediaType, error) {
                     i += 1
                     break
                 }
-                if c == 92 {
+                let escaping = !unicode || (i + 1 < text.len() && (text[i + 1] == 34 || text[i + 1] == 92))
+                if c == 92 && escaping {
                     i += 1
                     if i >= text.len() {
                         break
                     }
                     c = text[i]
                 }
-                if (c < 32 && c != 9) || c > 126 {
+                if (c < 32 && c != 9) || c == 127 || (c > 126 && !unicode) {
                     return failed("invalid parameter")
                 }
                 data.push(c)
@@ -151,7 +164,7 @@ func ParseMediaType(text string) (MediaType, error) {
         parameters.push(Parameter{Name: name, Value: value})
         i = skipSpace(text, i)
     }
-    return MediaType{Type: mediaType, Parameters: parameters}, nil
+    return MediaType{Type: kind, Parameters: parameters}, nil
 }
 
 func FormatMediaType(m MediaType) (string, error) {

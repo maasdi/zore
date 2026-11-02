@@ -6893,7 +6893,8 @@ system, buffered I/O, and TCP), §37.4 (cancellation and task coordination),
 §37.5 (paths and sorting), §37.7 (JSON), §37.12 (structured logging), §37.13
 (rolling log files), §37.14 (hex, base64, and byte order), §37.15 (file
 handles, temporary storage, renames, and folder walks), §37.16 (HTTP
-cookies and URL-encoded forms), and §37.17 (media types and file serving). Further packages are TBD.
+cookies and URL-encoded forms), §37.17 (media types and file serving), and
+§37.18 (multipart forms and uploads). Further packages are TBD.
 
 ## 37.1 `println` — LOCKED
 
@@ -10045,8 +10046,7 @@ func login(w mut http.ResponseWriter, r mut http.Request) error {
 }
 ```
 
-Not part of this step: multipart forms and file uploads (a later step of
-issue #217), a client cookie jar, parsing
+Not part of this step: multipart forms and file uploads (§37.18), a client cookie jar, parsing
 `Set-Cookie` in clients, and signed or encrypted cookies.
 
 Ownership, error, and async implications: `Cookie` and `url.Values` own their
@@ -10199,6 +10199,145 @@ Zore source; `std/net/http` gains `file.ore` and now imports `std/mime`,
 `std/os`, and `std/path/filepath`. `std/os` gains one native that describes an
 open file, run on a blocking helper in async code like the other file
 natives. Conformance cases: the media-type and file tables in
+`tests/conformance/http.md`, with native tests in `tests/codegen/http.rs`.
+
+## 37.18 Multipart forms and uploads — LOCKED
+
+These additions are the third part of issue #217. They read an HTML form sent
+as `multipart/form-data` ([RFC 7578](https://www.rfc-editor.org/rfc/rfc7578.html)),
+the format browsers use when a form has a file input. Text fields are kept in
+memory; each uploaded file is written to its own temporary file, which the
+returned form owns and deletes.
+
+**`std/mime`**
+
+| Declaration | Contract |
+| --- | --- |
+| `func ParseDisposition(text string) (MediaType, error)` | Read a `Content-Disposition` value such as `form-data; name="file"; filename="a.png"`: one token, lowercased into `Type`, then parameters as for `ParseMediaType` |
+
+`ParseDisposition` differs from `ParseMediaType` (§37.17) in three ways,
+all because of how browsers send file names: the first item is a single token
+without `/`; quoted values may also hold non-ASCII UTF-8; and inside quotes a
+`\` escapes only a following `"` or `\` and is otherwise kept, so
+`filename="C:\Users\ada\a.png"` keeps its backslashes. A missing or
+invalid token gives `mime: invalid disposition`; parameter errors are the same
+as for `ParseMediaType`.
+
+**`std/net/http`**
+
+| Declaration | Contract |
+| --- | --- |
+| `const ContentTypeMultipart = "multipart/form-data"` | Media type |
+| `type MultipartLimits struct { MaxBytes int; MaxParts int; MaxValueBytes int; MaxFileBytes int; MaxPartHeaderBytes int; TempDir string }` | Bounds for one form |
+| `func DefaultMultipartLimits() MultipartLimits` | 32 MiB body, 100 parts, 1 MiB of text values, 32 MiB per file, 8 KiB of headers per part, the system temporary folder |
+| `type FormFile struct { Field string; Filename string; ContentType string; Size int; ... }` | One uploaded file; a private field holds its temporary path |
+| `func (f FormFile) Open() (os.File, error)` | Open the temporary file for reading |
+| `type MultipartForm struct { ... }` | Text values and uploaded files; Move, deletes its files when dropped |
+| `func (m MultipartForm) Value(name string) (string, bool)`, `Values() url.Values` | The first text value of `name`; all text values in body order |
+| `func (m MultipartForm) File(field string) (FormFile, bool)`, `Files() Array<FormFile>` | The first file of `field`; all files in body order |
+| `func (m mut MultipartForm) RemoveAll() error` | Delete the temporary files now and report the first failure |
+| `func (r mut Request) ReadMultipartForm(limits MultipartLimits) (MultipartForm, error)` | Read the whole body as a multipart form |
+
+**Limits.** In `MultipartLimits`, zero selects the default for that field and
+a negative value is an error (`http.Request.ReadMultipartForm: negative
+limit`), as for `Config` (§37.6). An empty `TempDir` selects `os.TempDir()`.
+`MaxBytes` counts every body byte read, including the preamble and epilogue.
+`MaxParts` counts parts. `MaxValueBytes` is the total of all text values.
+`MaxFileBytes` applies to each file. `MaxPartHeaderBytes` applies to each
+part's header lines and the line breaks between them. A header block without
+its empty line runs on until a limit or the end of the body stops it. Passing any of them returns `io.LimitExceeded`, so a
+handler can answer `413` the same way as for `ReadForm` (§37.16). The server's
+`Config.MaxBodyBytes` still applies on top and defaults to 1 MiB, so an
+application that accepts uploads raises it too; when it is reached first, its
+`Read` error is returned and the sticky body rules of §37.6 apply.
+
+**Reading.** `ReadMultipartForm` needs exactly one `Content-Type` that
+`mime.ParseMediaType` reads as `multipart/form-data` with a `boundary`
+parameter of 1 to 70 characters from RFC 2046's set (letters, digits, and
+`'()+_,-./:=?` and space) that does not end with a space; otherwise it returns
+`unsupported content type` or `invalid boundary` without reading. It then
+streams the body through a 64 KiB window, so memory use does not grow with
+file size:
+
+1. Text before the first `--boundary` line is skipped.
+2. After each `--boundary`, `--` ends the form; otherwise spaces and tabs,
+   then CRLF, must follow (`invalid boundary line`).
+3. The part's header block runs to the first empty line. It must be UTF-8 and
+   hold `Name: value` lines with token names and no control bytes other than
+   tab (`invalid part header`). Exactly one `Content-Disposition` and at most
+   one `Content-Type` are allowed; other header lines are ignored.
+4. `Content-Disposition` must read with `ParseDisposition` as `form-data`
+   with a `name` parameter (`invalid content disposition`).
+5. A part with a nonempty `filename` is a file. `Filename` keeps only what
+   follows the last `/` or `\`, since some browsers send a full path, and is
+   `""` when that is empty, `.`, or `..`. It is still text from the client
+   and must never be used as a path.
+   `ContentType` is the part's `Content-Type` as sent, or
+   `application/octet-stream`. The bytes go to a new file from
+   `os.CreateTemp(TempDir, "zore-upload-*")`, and `Size` is their count.
+6. Any other part, including a file input left empty (`filename=""`), is a
+   text value, which must be UTF-8 (`value is not UTF-8`). Its `Content-Type`
+   is ignored.
+7. After the closing `--boundary--`, the rest of the body is read and dropped,
+   so the connection can serve the next request.
+
+A body that ends before the closing line gives `unexpected end of body`. A
+request body that gives an impossible read count gives `invalid read count`,
+and one that gives 100 empty reads in a row gives `no read progress`.
+Errors from reading the request (deadlines, cancellation, the server body
+limit) and from the disk are returned unchanged. All other errors start with
+`http.Request.ReadMultipartForm: `.
+
+**Cleanup.** The temporary files belong to the returned `MultipartForm`. Its
+`drop` deletes them, ignoring errors, so they are removed when the handler
+returns, when it returns an error, and when it panics, because unwinding runs
+`drop` (§15.4). On any error `ReadMultipartForm` deletes every file it created
+before returning. `RemoveAll` deletes them earlier and returns the first
+failure; files it deleted are not touched again, while files it could not
+delete are tried again by a later `RemoveAll` and by `drop`. After a file is
+deleted, it stays in `Files` and its `Open` fails. A `FormFile` is plain data: copying it out of the form
+does not keep its file alive. To keep an upload, copy it with `Open` and
+`io.Copy` into a file the program owns before the form is dropped. (Renaming
+the temporary file is not possible: its path is private.) A process
+that is killed, or that exits from `main` while a handler still runs, can
+leave files behind in `TempDir`.
+
+```ore
+func upload(w mut http.ResponseWriter, r mut http.Request) error {
+    var limits = http.DefaultMultipartLimits()
+    limits.MaxFileBytes = 5 * 1024 * 1024
+    let form, err = r.ReadMultipartForm(limits)
+    if err == io.LimitExceeded {
+        return w.Text(http.StatusContentTooLarge, "upload too large")
+    }
+    if err != nil {
+        return w.Text(http.StatusBadRequest, "invalid upload")
+    }
+    let title, _ = form.Value("title")
+    let photo, found = form.File("photo")
+    if !found {
+        return w.Text(http.StatusBadRequest, "missing photo")
+    }
+    var source = photo.Open()?
+    var target = os.Create("photos/" + newPhotoID() + ".jpg")?
+    io.Copy(target, source)?
+    target.Close()?
+    return w.Text(http.StatusCreated, "saved " + title)
+}
+```
+
+Not part of this step: keeping small files in memory, nested `multipart/mixed`
+parts, `Content-Transfer-Encoding`, `filename*`, a charset other than UTF-8,
+and writing multipart bodies in the client.
+
+Ownership, error, and async implications: `MultipartForm` is a Move value
+with a `drop`, like `os.File`; `FormFile` and `MultipartLimits` are plain
+values. `ReadMultipartForm` borrows the request mutably; its reads and disk
+calls suspend only the calling task in async code. Every problem is an
+`error`; none panics.
+
+Compiler impact: none. `std/net/http` gains `multipart.ore`, and `std/mime`
+gains `ParseDisposition`. Conformance cases: the multipart table in
 `tests/conformance/http.md`, with native tests in `tests/codegen/http.rs`.
 
 ---
