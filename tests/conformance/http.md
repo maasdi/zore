@@ -59,3 +59,30 @@ HTTPS integration evidence is supplied by the verified external TLS transport
 fixture; the standard HTTP package does not depend on a native TLS provider.
 Linux/macOS/Windows native CI runs the portable real-peer tests. A local run on
 one platform alone does not establish results on the other hosts.
+
+## Cookies and URL-encoded forms
+
+The contract is locked under §37.16. Executable tests are in
+`tests/codegen/http.rs`; compiler acceptance and rejection are in
+`tests/packages/packages.rs::http_cookies_and_forms_check_their_receivers`.
+
+| Scenario | Expected result |
+| --- | --- |
+| `FormatSetCookie` with every attribute and an `Expires` time in another zone | Attributes in the order `Path`, `Domain`, `Expires` (in GMT), `Max-Age`, `HttpOnly`, `Secure`, `SameSite`, with one leading `.` dropped from `Domain` |
+| `MaxAge` negative, zero | `Max-Age=0`; left out |
+| Values with space, `"`, `,`, `;`, `\`, or non-ASCII; empty or non-token names; a path with `;` | `http.Cookie: invalid value`, `invalid name`, `invalid path` |
+| Domains `-bad.com`, `a..b`, `.`, `a_b.com` | `http.Cookie: invalid domain` |
+| `SameSite` `lax`; `None` without `Secure` | `invalid SameSite`; `SameSite=None requires Secure` |
+| `__Secure-` without `Secure`; `__Host-` with a `Domain` | Refused with the prefix rule |
+| `SetCookie` twice, once with a bad cookie in between | Two `Set-Cookie` lines in order; the bad one adds nothing |
+| `SetCookie` after `WriteHeader` | An error; no `Set-Cookie` sent |
+| Two `Cookie` lines with quotes, tabs, empty pairs, a pair without `=`, an empty name, a name with a space, and a value with `"` inside | Well-formed pairs in order, quotes removed, the rest skipped |
+| `Cookie("b")` with two `b` cookies; `Cookie("missing")`; no `Cookie` header | The first; an empty cookie and `false`; no cookies |
+| `ReadForm` of `a=1&b=x+y%21&a=2&&c` | `a=1`, `b=x y!`, `a=2`, `c=` in body order |
+| Empty body; body exactly at the limit; one byte over | No fields; decoded; `io.LimitExceeded` (413) |
+| Media type in mixed case with `charset="UTF-8"` | Accepted |
+| `application/json`, `charset=latin1`, no `Content-Type`, two `Content-Type` lines | `http.Request.ReadForm: unsupported content type` |
+| Raw byte 255 in the body; `%FF`; `%zz`; raw UTF-8 `é` | `body is not UTF-8`; the `url.ParseQuery` UTF-8 error; `url: invalid escape`; decoded |
+| Body over the server `MaxBodyBytes` | 413 |
+| Handler error after a good form | Generic 500 without the message |
+| Server shutdown after all cases | Clean exit with leak checking on |

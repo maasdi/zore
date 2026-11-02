@@ -190,6 +190,12 @@ steps. Copying, permission and time changes, links, file locks, folder
 synchronization, and an atomic-write helper wait for their own contracts; see
 [the file conformance list](../tests/conformance/files.md).
 
+Issue [#217](https://github.com/maasdi/zore/issues/217) adds HTTP application
+helpers in steps. The first step, §37.16, adds cookies and URL-encoded forms to
+`std/net/http`. Multipart forms with temporary-file cleanup, MIME types, and
+file serving are the next steps; see
+[the HTTP conformance list](../tests/conformance/http.md).
+
 Issue [#216](https://github.com/maasdi/zore/issues/216) adds bounded and
 composable I/O under §37.3: `io.ReadAtMost` with `io.LimitExceeded`,
 `io.CopyN`, and the owning `io.LimitReader`, plus stall detection in the

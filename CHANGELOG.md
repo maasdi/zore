@@ -189,6 +189,13 @@ once it does.
   `DirEntry.IsSymlink` describe links. The spec now states what `os.Rename`
   does and does not promise on each system. `File.Close` now returns the error
   the system reports while closing, instead of always `nil`.
+- Added cookies and URL-encoded forms to `std/net/http` (§37.16), the first
+  part of issue #217. `Request.Cookies` and `Request.Cookie` read the
+  `Cookie` header and skip malformed pairs; `NewCookie`, `FormatSetCookie`,
+  and `ResponseWriter.SetCookie` write `Set-Cookie` after checking the name,
+  value, path, domain, `SameSite`, and the `__Secure-` and `__Host-` prefixes.
+  `Request.ReadForm(limit)` reads an `application/x-www-form-urlencoded` body
+  of at most `limit` bytes and decodes it with `url.ParseQuery`.
 - Added bounded and composable reading to `std/io`: `ReadAtMost` reads up
   to a limit and reports `io.LimitExceeded` instead of cutting input short;
   `CopyN` copies exactly `n` bytes without reading past them; `LimitReader`

@@ -25,7 +25,7 @@ bundled! {
     "math" => ["math.ore"],
     "net" => ["net.ore"],
     "net/url" => ["url.ore", "absolute.ore"],
-    "net/http" => ["header.ore", "router.ore", "exchange.ore", "server.ore", "convenience.ore", "client.ore"],
+    "net/http" => ["header.ore", "cookie.ore", "form.ore", "router.ore", "exchange.ore", "server.ore", "convenience.ore", "client.ore"],
     "os" => ["os.ore", "file.ore", "temp.ore"],
     "os/exec" => ["exec.ore"],
     "os/signal" => ["signal.ore"],

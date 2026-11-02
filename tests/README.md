@@ -424,6 +424,11 @@ folder walks to `codegen/files.rs`: flag validation, seeking and syncing,
 collision-free temporary names under concurrency, rename replacement and
 refusals, walk order, skipping, links, and errors that stay with their entry.
 
+`conformance/http.md` also maps HTTP cookies and URL-encoded forms to
+`codegen/http.rs`: every `Set-Cookie` attribute and refusal, lenient reading
+of repeated and malformed `Cookie` headers, cookies after the response
+started, and form limits, content types, encodings, and server limits.
+
 `conformance/io.md` also maps the bounded `std/io` helpers to
 `codegen/io_adapters.rs`: limit boundaries at every chunk size, exact copies
 through short and failing endpoints, stalled sources, invalid counts, source

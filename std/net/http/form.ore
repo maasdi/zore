@@ -1,0 +1,51 @@
+package http
+
+import "std/io"
+import "std/net/url"
+import "std/strings"
+
+const ContentTypeForm = "application/x-www-form-urlencoded"
+
+func formError(problem string) (url.Values, error) {
+    return url.NewValues(), error("http.Request.ReadForm: " + problem)
+}
+
+func formContentType(value string) bool {
+    let mediaType, parameters, _ = strings.Cut(value, ";")
+    if !strings.EqualFold(strings.Trim(mediaType, " \t"), ContentTypeForm) {
+        return false
+    }
+    if strings.Trim(parameters, " \t") == "" {
+        return true
+    }
+    let pairs = strings.Split(parameters, ";")
+    for pair in pairs {
+        let rawName, rawValue, found = strings.Cut(strings.Trim(pair, " \t"), "=")
+        if !found || !token(rawName) {
+            return false
+        }
+        if strings.EqualFold(rawName, "charset") && !strings.EqualFold(strings.Trim(rawValue, "\""), "utf-8") {
+            return false
+        }
+    }
+    return true
+}
+
+func (r mut Request) ReadForm(limit int) (url.Values, error) {
+    if limit < 0 {
+        return formError("negative limit")
+    }
+    let types = r.headers.Values(HeaderContentType)
+    if types.len() != 1 || !formContentType(types[0]) {
+        return formError("unsupported content type")
+    }
+    let data, readErr = io.ReadAtMost(r, limit)
+    if readErr != nil {
+        return url.NewValues(), readErr
+    }
+    let text, textErr = strings.FromBytes(data[:])
+    if textErr != nil {
+        return formError("body is not UTF-8")
+    }
+    return url.ParseQuery(text)
+}

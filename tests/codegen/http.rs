@@ -1401,3 +1401,256 @@ func main() {{
     );
     assert!(!errors.contains("leak"), "{errors}");
 }
+
+#[test]
+fn http_cookie_serialization_checks_every_attribute() {
+    prints(
+        r#"package main
+import "std/errors"
+import "std/net/http"
+import "std/time"
+func show(c http.Cookie) {
+    let text, err = http.FormatSetCookie(c)
+    if err != nil { println(errors.Message(err)); return }
+    println(text)
+}
+func main() {
+    var full = http.NewCookie("session", "abc-123")
+    full.Path = "/app"
+    full.Domain = ".Example.com"
+    full.MaxAge = 3600
+    full.HttpOnly = true
+    full.Secure = true
+    full.SameSite = "Lax"
+    let when, _ = time.Unix(784111777, 0)
+    let jakarta, _ = time.Offset(7 * time.Hour)
+    full.SetExpires(when.In(jakarta))
+    show(full)
+    let stamp, set = full.Expires()
+    println(set); println(stamp.Unix())
+    full.ClearExpires()
+    let _, cleared = full.Expires()
+    println(cleared)
+    var gone = http.NewCookie("gone", "")
+    gone.MaxAge = -5
+    show(gone)
+    show(http.NewCookie("plain", "x"))
+    let badValues = [string; 6]{"a b", "a\"b", "a,b", "a;b", "a\\b", "é"}
+    for value in badValues { show(http.NewCookie("v", value)) }
+    show(http.NewCookie("", "x"))
+    show(http.NewCookie("a b", "x"))
+    var path = http.NewCookie("p", "1")
+    path.Path = "/a;b"
+    show(path)
+    let domains = [string; 5]{"-bad.com", "a..b", ".", "a_b.com", "ok.example"}
+    for domain in domains {
+        var c = http.NewCookie("d", "1")
+        c.Domain = domain
+        show(c)
+    }
+    var site = http.NewCookie("s", "1")
+    site.SameSite = "lax"
+    show(site)
+    site.SameSite = "None"
+    show(site)
+    site.Secure = true
+    show(site)
+    var secure = http.NewCookie("__Secure-id", "1")
+    show(secure)
+    secure.Secure = true
+    show(secure)
+    var host = http.NewCookie("__Host-id", "1")
+    host.Secure = true
+    host.Path = "/"
+    show(host)
+    host.Domain = "example.com"
+    show(host)
+}
+"#,
+        "session=abc-123; Path=/app; Domain=Example.com; Expires=Sun, 06 Nov 1994 08:49:37 GMT; Max-Age=3600; HttpOnly; Secure; SameSite=Lax\n\
+true\n784111777\nfalse\n\
+gone=; Max-Age=0\n\
+plain=x\n\
+http.Cookie: invalid value\nhttp.Cookie: invalid value\nhttp.Cookie: invalid value\nhttp.Cookie: invalid value\nhttp.Cookie: invalid value\nhttp.Cookie: invalid value\n\
+http.Cookie: invalid name\nhttp.Cookie: invalid name\n\
+http.Cookie: invalid path\n\
+http.Cookie: invalid domain\nhttp.Cookie: invalid domain\nhttp.Cookie: invalid domain\nhttp.Cookie: invalid domain\nd=1; Domain=ok.example\n\
+http.Cookie: invalid SameSite\nhttp.Cookie: SameSite=None requires Secure\ns=1; Secure; SameSite=None\n\
+http.Cookie: __Secure- prefix requires Secure\n__Secure-id=1; Secure\n\
+__Host-id=1; Path=/; Secure\nhttp.Cookie: __Host- prefix requires Secure, Path=/ and no Domain\n",
+    );
+}
+
+const COOKIE_FORM_SERVER: &str = r#"package main
+import "std/context"
+import "std/errors"
+import "std/io"
+import "std/net"
+import "std/net/http"
+import "std/strings"
+func cookies(w mut http.ResponseWriter, r mut http.Request) error {
+    var text = ""
+    for c in r.Cookies() { text += c.Name + "=" + c.Value + "|" }
+    let first, found = r.Cookie("b")
+    if found { text += " b=" + first.Value }
+    let missing, absent = r.Cookie("missing")
+    if !absent && missing.Name == "" { text += " none" }
+    var a = http.NewCookie("a", "1")
+    a.Path = "/"
+    w.SetCookie(a)?
+    let bad = w.SetCookie(http.NewCookie("bad", "x y"))
+    if bad == nil { panic("invalid cookie accepted") }
+    w.SetCookie(http.NewCookie("b", "2"))?
+    return w.Text(200, text)
+}
+func late(w mut http.ResponseWriter, r mut http.Request) error {
+    w.WriteHeader(204)?
+    let err = w.SetCookie(http.NewCookie("late", "1"))
+    if err == nil { panic("cookie after commitment") }
+    return nil
+}
+func form(w mut http.ResponseWriter, r mut http.Request) error {
+    let values, err = r.ReadForm(24)
+    if err == io.LimitExceeded { return w.Text(413, "limit") }
+    if err != nil { return w.Text(400, errors.Message(err)) }
+    if values.Entries().len() != 0 && strings.HasPrefix(r.RawQuery(), "fail") { return error("handler failure") }
+    var text = ""
+    for entry in values.Entries() { text += entry.Key + "=" + entry.Value + "|" }
+    return w.Text(200, text)
+}
+func main() {
+    let stop = channel<bool>(1)
+    var routes = http.NewRouterBuilder()
+    routes.Handle("GET /stop", func(w mut http.ResponseWriter, r mut http.Request) error {
+        stop.send(true)
+        return w.WriteHeader(204)
+    })
+    routes.Handle("GET /cookies", cookies)
+    routes.Handle("GET /late", late)
+    routes.Handle("POST /form", form)
+    let router, buildErr = routes.Build()
+    if buildErr != nil { panic("build") }
+    var config = http.DefaultConfig()
+    config.MaxBodyBytes = 64
+    let server, configErr = http.NewServer(router, config)
+    if configErr != nil { panic("config") }
+    let listener, listenErr = net.Listen("tcp", "127.0.0.1:0")
+    if listenErr != nil { panic("listen") }
+    println(listener.Addr())
+    let serving = go server.Serve(listener)
+    let _, _ = stop.receive()
+    let err = server.Shutdown(context.Background())
+    if err != nil { panic("shutdown") }
+    let serveErr = serving.wait()
+    if serveErr != nil { panic("serve") }
+}
+"#;
+
+fn body_of(response: &str) -> &str {
+    response.split_once("\r\n\r\n").map_or("", |(_, body)| body)
+}
+
+fn form_request(content_type: Option<&str>, body: &str) -> String {
+    let content_type =
+        content_type.map_or(String::new(), |value| format!("Content-Type: {value}\r\n"));
+    format!(
+        "POST /form HTTP/1.1\r\nHost: x\r\n{content_type}Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    )
+}
+
+#[test]
+fn http_cookies_and_forms_on_loopback() {
+    let server = ServerProcess::start(COOKIE_FORM_SERVER);
+    let cookies = server.exchange(
+        "GET /cookies HTTP/1.1\r\nHost: x\r\nCookie: a=1; b=\"two\"; bad name=x; c; =v; d=x\"y\r\nCookie: \tb=3 ;; e = five words, ok \r\nConnection: close\r\n\r\n",
+    );
+    status(&cookies, 200);
+    assert_eq!(
+        body_of(&cookies),
+        "a=1|b=two|b=3|e=five words, ok| b=two none",
+        "{cookies}"
+    );
+    let lines: Vec<&str> = cookies
+        .lines()
+        .filter(|line| line.starts_with("Set-Cookie: "))
+        .collect();
+    assert_eq!(lines, ["Set-Cookie: a=1; Path=/", "Set-Cookie: b=2"]);
+    let none = server.exchange("GET /cookies HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n");
+    assert_eq!(body_of(&none), " none", "{none}");
+    let late = server.exchange("GET /late HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n");
+    status(&late, 204);
+    assert!(!late.contains("Set-Cookie"), "{late}");
+
+    let form = "application/x-www-form-urlencoded";
+    for (content_type, body, expected_status, expected_body) in [
+        (Some(form), "a=1&b=x+y%21&a=2&&c", 200, "a=1|b=x y!|a=2|c=|"),
+        (Some(form), "", 200, ""),
+        (
+            Some("Application/X-WWW-Form-URLEncoded ; charset=\"UTF-8\""),
+            "k=v",
+            200,
+            "k=v|",
+        ),
+        (
+            Some(form),
+            "0123456789abcdefghijklmn",
+            200,
+            "0123456789abcdefghijklmn=|",
+        ),
+        (Some(form), "0123456789abcdefghijklmno", 413, "limit"),
+        (Some(form), "a=%FF", 400, "strings.FromBytes: invalid UTF-8"),
+        (Some(form), "a=%zz", 400, "url: invalid escape"),
+        (Some(form), "a=\u{e9}", 200, "a=\u{e9}|"),
+        (
+            Some("application/json"),
+            "a=1",
+            400,
+            "http.Request.ReadForm: unsupported content type",
+        ),
+        (
+            Some("application/x-www-form-urlencoded; charset=latin1"),
+            "a=1",
+            400,
+            "http.Request.ReadForm: unsupported content type",
+        ),
+        (
+            None,
+            "a=1",
+            400,
+            "http.Request.ReadForm: unsupported content type",
+        ),
+    ] {
+        let response = server.exchange(&form_request(content_type, body));
+        assert!(
+            response.starts_with(&format!("HTTP/1.1 {expected_status} ")),
+            "{body:?}: {response}"
+        );
+        assert_eq!(body_of(&response), expected_body, "{response}");
+    }
+    let mut raw = server.connect();
+    raw.write_all(
+        format!("POST /form HTTP/1.1\r\nHost: x\r\nContent-Type: {form}\r\nContent-Length: 3\r\nConnection: close\r\n\r\n")
+            .as_bytes(),
+    )
+    .unwrap();
+    raw.write_all(&[b'a', b'=', 0xff]).unwrap();
+    let not_utf8 = read_closed(&mut raw);
+    status(&not_utf8, 400);
+    assert_eq!(
+        body_of(&not_utf8),
+        "http.Request.ReadForm: body is not UTF-8"
+    );
+    let twice = server.exchange(&format!(
+        "POST /form HTTP/1.1\r\nHost: x\r\nContent-Type: {form}\r\nContent-Type: {form}\r\nContent-Length: 3\r\nConnection: close\r\n\r\na=1"
+    ));
+    status(&twice, 400);
+    let over_server_limit = server.exchange(&form_request(Some(form), &"a".repeat(65)));
+    status(&over_server_limit, 413);
+    let failed = server.exchange(&format!(
+        "POST /form?fail HTTP/1.1\r\nHost: x\r\nContent-Type: {form}\r\nContent-Length: 3\r\nConnection: close\r\n\r\na=1"
+    ));
+    status(&failed, 500);
+    assert!(!failed.contains("handler failure"), "{failed}");
+    server.stop("");
+}

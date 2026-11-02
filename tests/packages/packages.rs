@@ -807,6 +807,45 @@ fn io_adapters_own_or_borrow_their_endpoints() {
 }
 
 #[test]
+fn http_cookies_and_forms_check_their_receivers() {
+    let imports = "import \"std/net/http\"\nimport \"std/net/url\"\nimport \"std/time\"";
+    let handler = |body: &str| {
+        format!(
+            "package main\n{imports}\nfunc handle(w mut http.ResponseWriter, r mut http.Request) error {{\n{body}\nreturn nil\n}}\nfunc main() {{}}\n"
+        )
+    };
+    accepts(&[(
+        "main.ore",
+        &handler(
+            "var c = http.NewCookie(\"id\", \"1\")\nc.Path = \"/\"\nc.MaxAge = -1\nc.SameSite = \"Strict\"\nc.SetExpires(time.UTC())\nlet _, has = c.Expires()\n_ = has\nc.ClearExpires()\nlet text, err = http.FormatSetCookie(c)\n_ = text\n_ = err\nw.SetCookie(c)?\nlet all Array<http.Cookie> = r.Cookies()\n_ = all\nlet one, found = r.Cookie(\"id\")\n_ = one.Value\n_ = found\nlet form, formErr = r.ReadForm(1024)\nlet copied url.Values = form\n_ = copied\n_ = formErr",
+        ),
+    )]);
+    for (body, message) in [
+        (
+            "let c = http.Cookie{Name: \"a\", Value: \"b\", Path: \"\", Domain: \"\", MaxAge: 0, Secure: false, HttpOnly: false, SameSite: \"\", expires: time.UTC(), hasExpires: false}",
+            "not exported",
+        ),
+        (
+            "let c = http.NewCookie(\"a\", \"b\")\nc.SetExpires(time.UTC())",
+            "mutable",
+        ),
+        ("r.ReadForm(10)", "must be used or explicitly discarded"),
+        ("let form = r.ReadForm(10)", "this call returns 2 values"),
+        ("let form, err = r.ReadForm()", "takes 1 argument"),
+        (
+            "let c = http.NewCookie(\"a\", \"b\")\nhttp.FormatSetCookie(c)",
+            "must be used or explicitly discarded",
+        ),
+        (
+            "let c = http.NewCookie(\"a\", \"b\")\nw.SetCookie(c)",
+            "must be used or explicitly discarded",
+        ),
+    ] {
+        rejects(&[("main.ore", &handler(body))], message);
+    }
+}
+
+#[test]
 fn time_types_do_not_mix() {
     accepts(&[(
         "main.ore",
