@@ -1643,6 +1643,30 @@ fn http_cookies_and_forms_on_loopback() {
             "http.Request.ReadForm: unsupported content type",
         ),
         (
+            Some("application/x-www-form-urlencoded; note=\"a;b\""),
+            "k=v",
+            200,
+            "k=v|",
+        ),
+        (
+            Some("application/x-www-form-urlencoded; x=a b"),
+            "k=v",
+            400,
+            "http.Request.ReadForm: unsupported content type",
+        ),
+        (
+            Some("application/x-www-form-urlencoded; charset = utf-8"),
+            "k=v",
+            400,
+            "http.Request.ReadForm: unsupported content type",
+        ),
+        (
+            Some("application/x-www-form-urlencoded; charset=utf-8; charset=utf-8"),
+            "k=v",
+            400,
+            "http.Request.ReadForm: unsupported content type",
+        ),
+        (
             Some(form),
             "0123456789abcdefghijklmn",
             200,
@@ -1751,6 +1775,12 @@ func main() {
     println(charset); println(found)
     let _, missing = parsed.Parameter("boundary")
     println(missing)
+    let built = mime.MediaType{Type: "a/b", Parameters: Array<mime.Parameter>{mime.Parameter{Name: "Charset", Value: "x"}}}
+    let stored, hit = built.Parameter("charset")
+    println(stored); println(hit)
+    let keyed, _ = mime.ParseMediaType("a/b; key=1")
+    let _, kelvin = keyed.Parameter("\u212Aey")
+    println(kelvin)
     refuse(mime.MediaType{Type: "text", Parameters: Array<mime.Parameter>{}})
     refuse(mime.MediaType{Type: "a/b", Parameters: Array<mime.Parameter>{mime.Parameter{Name: "bad name", Value: "1"}}})
     refuse(mime.MediaType{Type: "a/b", Parameters: Array<mime.Parameter>{mime.Parameter{Name: "x", Value: "line\nbreak"}}})
@@ -1776,7 +1806,7 @@ mime: invalid media type\nmime: invalid media type\nmime: invalid media type\nmi
 mime: invalid parameter\nmime: invalid media type\nmime: invalid parameter\nmime: invalid parameter\nmime: invalid parameter\n\
 mime: duplicate parameter\nmime: unterminated quoted string\n\
 mime: invalid parameter\nmime: invalid parameter\n\
-utf-8\ntrue\nfalse\n\
+utf-8\ntrue\nfalse\nx\ntrue\nfalse\n\
 mime: invalid media type\nmime: invalid parameter\nmime: invalid parameter\nmime: duplicate parameter\n\
 .html text/html; charset=utf-8 true\n.HTM text/html; charset=utf-8 true\n.js text/javascript; charset=utf-8 true\n\
 .png image/png true\n.JPEG image/jpeg true\n.woff2 font/woff2 true\n.exe  false\n  false\n",
@@ -1796,6 +1826,11 @@ func site(w mut http.ResponseWriter, r mut http.Request) error {
 func direct(w mut http.ResponseWriter, r mut http.Request) error {
     return http.ServeFile(w, r, "ROOT/index.html")
 }
+func query(w mut http.ResponseWriter, r mut http.Request) error {
+    let values = r.Query()?
+    let name, _ = values.Get("n")
+    return http.ServeFileIn(w, r, "ROOT", name)
+}
 func emptyRoot(w mut http.ResponseWriter, r mut http.Request) error {
     let err = http.ServeFileIn(w, r, "", "index.html")
     if err == nil || w.Committed() { panic("empty root served") }
@@ -1812,6 +1847,8 @@ func main() {
     routes.Handle("POST /s/{file}", site)
     routes.Handle("GET /s/{folder}/{file}", site)
     routes.Handle("GET /direct", direct)
+    routes.Handle("GET /q", query)
+    routes.Handle("POST /q", query)
     routes.Handle("GET /empty-root", emptyRoot)
     let router, buildErr = routes.Build()
     if buildErr != nil { panic("build") }
@@ -1858,6 +1895,11 @@ fn http_serves_files_inside_a_root_only() {
     std::fs::write(files.path().join("secret.txt"), "outside").unwrap();
     #[cfg(unix)]
     {
+        let made = Command::new("mkfifo")
+            .arg(root.join("pipe"))
+            .status()
+            .unwrap();
+        assert!(made.success());
         std::os::unix::fs::symlink(files.path().join("secret.txt"), root.join("link.txt")).unwrap();
         std::os::unix::fs::symlink(root.join("css"), root.join("linked")).unwrap();
     }
@@ -1899,6 +1941,14 @@ fn http_serves_files_inside_a_root_only() {
         header_value(&unknown, "Content-Type"),
         Some("application/octet-stream")
     );
+    let empty_head =
+        server.exchange("HEAD /s/empty.txt HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n");
+    status(&empty_head, 200);
+    assert_eq!(header_value(&empty_head, "Content-Length"), Some("0"));
+    let post_missing = server.exchange(
+        "POST /q?n=missing HTTP/1.1\r\nHost: x\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+    );
+    status(&post_missing, 405);
     let empty = get("/s/empty.txt");
     status(&empty, 200);
     assert_eq!(header_value(&empty, "Content-Length"), Some("0"));
@@ -1924,7 +1974,7 @@ fn http_serves_files_inside_a_root_only() {
     let refused = get("/empty-root");
     assert_eq!(body_of(&refused), "refused");
 
-    let mut hidden = vec![
+    let mut hidden: Vec<String> = [
         "/s/missing.txt",
         "/s/css",
         "/s/.env",
@@ -1937,11 +1987,38 @@ fn http_serves_files_inside_a_root_only() {
         "/s/index.html%20",
         "/s/a%3Ab",
         "/s/a%09b",
-    ];
+    ]
+    .map(String::from)
+    .to_vec();
     if cfg!(unix) {
-        hidden.extend(["/s/link.txt", "/s/linked/app.css"]);
+        hidden.extend(["/s/link.txt", "/s/linked/app.css", "/s/pipe"].map(String::from));
     }
-    for path in hidden {
+    for name in [
+        "",
+        "/",
+        "a/",
+        "../secret.txt",
+        "/etc/passwd",
+        "a//b",
+        "css/../index.html",
+        "C:x",
+        "a:b:$DATA",
+        "CON%20.txt",
+        "conin$",
+        "CONOUT$.log",
+        "COM0",
+        "LPT9.txt",
+        "COM%C2%B9",
+        "GIT~1",
+        "ENV~1/config",
+        "index.html~",
+        "a%5Cb",
+    ] {
+        hidden.push(format!("/q?n={name}"));
+    }
+    let direct_ok = get("/q?n=css/app.css");
+    assert_eq!(body_of(&direct_ok), "body{}");
+    for path in &hidden {
         let response = get(path);
         assert!(response.starts_with("HTTP/1.1 404 "), "{path}: {response}");
         assert_eq!(body_of(&response), "404 not found", "{path}");

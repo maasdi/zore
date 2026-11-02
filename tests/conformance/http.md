@@ -83,7 +83,8 @@ The contract is locked under §37.16. Executable tests are in
 | Empty body; body exactly at the limit; one byte over | No fields; decoded; `io.LimitExceeded` (413) |
 | `limit` 0 with an empty body; with one byte; `limit` -1 | No fields; 413; `http.Request.ReadForm: negative limit` |
 | Media type in mixed case with `charset="UTF-8"`; a trailing `;` with or without `charset=utf-8` before it | Accepted |
-| `charset="utf-8` with one quote | `http.Request.ReadForm: unsupported content type` |
+| `charset="utf-8` with one quote; `x=a b`; `charset = utf-8`; `charset` twice | `http.Request.ReadForm: unsupported content type` |
+| A quoted parameter holding `;` | Accepted |
 | `application/json`, `charset=latin1`, no `Content-Type`, two `Content-Type` lines | `http.Request.ReadForm: unsupported content type` |
 | Raw byte 255 in the body; `%FF`; `%zz`; raw UTF-8 `é` | `http.Request.ReadForm: body is not UTF-8`; `strings.FromBytes: invalid UTF-8` from `url.ParseQuery`; `url: invalid escape`; decoded |
 | Body over the server `MaxBodyBytes` | 413 |
@@ -104,7 +105,7 @@ The contract is locked under §37.17. Executable tests are in
 | `""`, `text`, `text/`, `/x`, `a/b/c`, `a b/c` | `mime: invalid media type` |
 | `a/b; x`, `a/b; x =1`, `a/b; x=1 y`, a quoted control byte, a quoted `é` | `mime: invalid parameter` |
 | `a/b; x=1; X=2`; `a/b; x="open` | `mime: duplicate parameter`; `mime: unterminated quoted string` |
-| `Parameter("CHARSET")`; a missing name | The value and `true`; `""` and `false` |
+| `Parameter("CHARSET")`; a missing name; `charset` on a built value whose name is `Charset`; `Kelvin sign + "ey"` on `key` | The value and `true`; `""` and `false`; the value and `true`; `false` |
 | `FormatMediaType` with type `text`, a name with a space, a value with a line break, a repeated name | Refused |
 | `TypeByExtension` of `.html`, `.HTM`, `.js`, `.png`, `.JPEG`, `.woff2`; `.exe`; `""` | The table types; `""` and `false` for the last two |
 | `GET` of `index.html`, `css/app.css`, a file with an unknown extension, an empty file, a 200,000-byte file | `200` with type, `nosniff`, exact length, `Last-Modified` in GMT, and the exact bytes; `application/octet-stream` for the unknown one |
@@ -113,6 +114,9 @@ The contract is locked under §37.17. Executable tests are in
 | `ServeFile` with a fixed path | The file |
 | `ServeFileIn` with an empty root | An error and no response from it |
 | Missing file, a folder, `.env`, `.git/config`, a missing file in a folder, `CON`, `nul.txt`, `Com1.log`, a trailing `.` or space, `:`, a tab | `404` with `404 not found`, no file bytes |
-| A link to a file outside the root; a path through a linked folder (Unix) | `404` |
+| A link to a file outside the root; a path through a linked folder; a named pipe (Unix) | `404`; the pipe is never opened |
+| Names given straight to `ServeFileIn`: `""`, `/`, `a/`, `../secret.txt`, `/etc/passwd`, `a//b`, `css/../index.html`, `C:x`, `a:b:$DATA`, `CON .txt`, `conin$`, `CONOUT$.log`, `COM0`, `LPT9.txt`, `COM¹`, `GIT~1`, `ENV~1/config`, `index.html~`, `a\b` | `404` |
+| `ServeFileIn` with `css/app.css` from the query | The file |
+| `HEAD` of an empty file; `POST` to `ServeFileIn` with a missing name | `200` with `Content-Length: 0`; `405` |
 | `%2e%2e`, `..%2f`, `%5c` in the request path | `400` from the server before the handler runs |
 | Server shutdown after all cases | Clean exit with leak checking on |

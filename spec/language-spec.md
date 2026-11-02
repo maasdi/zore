@@ -7418,7 +7418,7 @@ conformance cases: `tests/conformance/time.md`.
 | `ReadFile(path string) (Array<byte>, error)` | The whole contents of the file |
 | `WriteFile(path string, data []byte, perm int) error` | Creates or truncates the file and writes `data`; a new file gets the permission bits `perm`, such as `0o644`, on systems that have them |
 | `ReadDir(path string) (Array<DirEntry>, error)` | The entries of a folder, sorted by name; `(e DirEntry) Name() string`, `(e DirEntry) IsDir() bool`, and `(e DirEntry) IsSymlink() bool` describe each without following links, so a link to a folder is not a folder |
-| `Stat(path string) (FileInfo, error)` | Facts about a file or folder, following links: `(i FileInfo) Name() string` (the last element of `path`), `Size() int` in bytes, `Mode() int` (the permission bits), `IsDir() bool`, `ModTime() int`, the time of the last change in whole Unix seconds (`0` when the system does not report one), and `IsSymlink() bool`, which is `false` after following |
+| `Stat(path string) (FileInfo, error)` | Facts about a file or folder, following links: `(i FileInfo) Name() string` (the last element of `path`), `Size() int` in bytes, `Mode() int` (the permission bits), `IsDir() bool`, `ModTime() int`, the time of the last change in whole Unix seconds (`0` when the system does not report one), `IsSymlink() bool`, which is `false` after following, and `IsRegular() bool`, true only for an ordinary file (not a folder, link, named pipe, socket, or device) |
 | `Lstat(path string) (FileInfo, error)` | `Stat` without following a link at the end of `path`: for a link, the facts are the link's own and `IsSymlink()` is `true` |
 | `TempDir() string`, `CreateTemp(dir string, pattern string) (File, error)`, `MkdirTemp(dir string, pattern string) (string, error)` | Temporary files and folders (§37.15) |
 | `MkdirAll(path string, perm int) error` | Creates the folder and any missing parents with the permission bits `perm`; nothing to do when it exists |
@@ -7445,6 +7445,7 @@ value is closed, so every operation on it fails.
 | `(f File) Read(buf mut []byte) (int, error)` | Waits for at least one byte and moves up to `buf.len()` bytes into `buf`; at end of input, `0` and `EOF`; an empty `buf` gives `0` and `nil` at once |
 | `(f File) Write(data []byte) (int, error)`, `(f File) WriteString(s string) (int, error)` | Writes everything and returns the byte count; on failure, the bytes written before it |
 | `(f File) Seek(offset int, whence int) (int, error)`, `(f File) Sync() error` | Moves the read and write position, and asks the system to store written data (§37.15) |
+| `(f File) Stat() (FileInfo, error)` | Facts about the open file itself, as `Stat` gives them, with `Name` the last element of the path it was opened with; it sees the file even after the path is renamed or replaced. Standard input and output give an `os.File.Stat: ...` error (§37.17) |
 | `(f own File) Close() error` | Closes the file and returns the error the system reports while closing, if any (§37.15) |
 
 Error messages begin with the function name (`os.ReadFile: `, `os.Open: `,
@@ -10002,7 +10003,8 @@ browsers do not send attributes back. The request header limit
 `mime.ParseMediaType` (§37.17) reads as `application/x-www-form-urlencoded`.
 Case does not matter, empty parameters are ignored, and a `charset` parameter,
 bare or quoted, must be `utf-8` in any case. A header that `ParseMediaType`
-refuses is unsupported. It then reads the body with
+refuses is unsupported, for example one with a parameter value that is neither
+a token nor a quoted string, spaces around `=`, or a repeated `charset`. It then reads the body with
 `io.ReadAtMost(r, limit)` and decodes it with `url.ParseQuery`. Results:
 
 | Input | Result |
@@ -10074,7 +10076,7 @@ code can use it without importing HTTP.
 | `type Parameter struct { Name string; Value string }` | One parameter |
 | `type MediaType struct { Type string; Parameters Array<Parameter> }` | `type/subtype` and its parameters in order |
 | `func ParseMediaType(text string) (MediaType, error)` | Read a media type |
-| `func (m MediaType) Parameter(name string) (string, bool)` | The value of the parameter named `name`, compared without regard to ASCII case; absent gives `""` and false |
+| `func (m MediaType) Parameter(name string) (string, bool)` | The value of the first parameter whose name equals `name` when both are turned to lowercase ASCII (other letters are compared as they are); absent gives `""` and false |
 | `func FormatMediaType(m MediaType) (string, error)` | Write a media type |
 | `func TypeByExtension(ext string) (string, bool)` | The media type of an extension such as `".png"`, compared without regard to ASCII case; unknown gives `""` and false |
 
@@ -10095,7 +10097,9 @@ parameter in order with the name in lowercase. A value that is a token is
 written bare; any other value is quoted, with `"` and `\` escaped. It refuses a
 type that is not two tokens around `/`, a name that is not a token, a value
 with control bytes other than tab or with bytes above 126, and duplicate names.
-Parsing what it writes gives the same `MediaType` back.
+Parsing what it writes gives back the same `MediaType` with the type and names
+in lowercase; for a value that came from `ParseMediaType`, that is the same
+value.
 
 `TypeByExtension` uses a fixed table and never reads system files, so every
 host gives the same answer:
@@ -10122,28 +10126,34 @@ host gives the same answer:
 
 | Request | Response |
 | --- | --- |
-| Not `GET` or `HEAD` | `405` with `Allow: GET, HEAD` |
-| Missing path, a folder, or a file that cannot be opened | `404` with the text `404 not found`; the reason is not shown |
-| `GET` of a file | `200` with `Content-Type` from `TypeByExtension` (or `application/octet-stream`), `X-Content-Type-Options: nosniff`, `Content-Length` from the file size, `Last-Modified` from `ModTime` when the system reports one, and the bytes |
+| Not `GET` or `HEAD` | `405` with `Allow: GET, HEAD`, before the path is looked at |
+| Missing path, anything that is not a regular file (`os.FileInfo.IsRegular`: a folder, named pipe, socket, or device), or a file that cannot be opened | `404` with the text `404 not found`; the reason is not shown |
+| `GET` of a file | `200` with `Content-Type` from `TypeByExtension` (or `application/octet-stream`), `X-Content-Type-Options: nosniff`, `Content-Length` and `Last-Modified` from `File.Stat` of the opened file (the time only when the system reports one), and the bytes |
 | `HEAD` of a file | The same headers and no body; the file is not read |
 
 The 404 and 405 answers are written with `Text`, so `ServeFile` returns
-`nil` after them. The body is sent with `io.CopyN` of the size found before
-opening; when the file shrinks while it is sent, the copy error is returned
-after the response started, the connection closes (§37.6), and the client sees
-a short body instead of wrong bytes. Writing errors are returned the same way.
+`nil` after them. `ServeFile` checks the path with `os.Stat` before opening,
+so a named pipe is never opened, then takes the size and time from the opened
+file. Size, time, and bytes therefore describe the same file even when another
+file is renamed into place during the request. The body is sent with
+`io.CopyN` of that size; when the open file shrinks while it is sent, the copy
+error is returned after the response started, the connection closes (§37.6),
+and the client sees a short body instead of a different file. Writing errors
+are returned the same way.
 Range requests, `If-Modified-Since` and other conditional requests, folder
 listings, `index.html` for folders, and compression are not part of this step.
 
 `ServeFileIn` is the one to use with request data, for example a path
-parameter. `name` is split at `/` into segments, and the request gets `404`
-without touching the disk when `name` is empty, starts or ends with `/`, or has
-a segment that:
+parameter. It answers `405` first, like `ServeFile`. Then `name` is split at
+`/` into segments, and the request gets `404` without touching the disk when
+`name` is empty, starts or ends with `/`, or has a segment that:
 
 - is empty, or starts with `.` (so `.`, `..`, `.git`, and `.env` are never served);
-- ends with `.` or a space, or holds a control byte, `\`, or `:`;
-- is a Windows device name (`CON`, `PRN`, `AUX`, `NUL`, `COM1`–`COM9`,
-  `LPT1`–`LPT9`, in any case, with or without an extension).
+- ends with `.` or a space, or holds a control byte, `\`, `:`, or `~` (the
+  last keeps Windows short names such as `GIT~1` from reaching hidden names);
+- is a Windows device name: `CON`, `PRN`, `AUX`, `NUL`, `CONIN$`, `CONOUT$`,
+  or `COM` or `LPT` followed by one digit `0`–`9` or by `¹`, `²`, or `³`, in
+  any case, with or without spaces before an extension.
 
 These rules apply on every host, so a site behaves the same on each. Then each
 segment is joined to `root` with `filepath.Join` and checked with `os.Lstat`:
@@ -10184,9 +10194,11 @@ shared; their disk calls and writes suspend only the calling task in async
 code. `ParseMediaType`, `FormatMediaType`, and `TypeByExtension` do not wait.
 All problems are `error` values or HTTP answers; none panics.
 
-Compiler impact: none. `std/mime` is a new bundled package of Zore source;
-`std/net/http` gains `file.ore` and now imports `std/mime`, `std/os`, and
-`std/path/filepath`. Conformance cases: the media-type and file tables in
+Compiler impact: none in the language. `std/mime` is a new bundled package of
+Zore source; `std/net/http` gains `file.ore` and now imports `std/mime`,
+`std/os`, and `std/path/filepath`. `std/os` gains one native that describes an
+open file, run on a blocking helper in async code like the other file
+natives. Conformance cases: the media-type and file tables in
 `tests/conformance/http.md`, with native tests in `tests/codegen/http.rs`.
 
 ---
