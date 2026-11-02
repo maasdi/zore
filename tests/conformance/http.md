@@ -132,12 +132,17 @@ compiler acceptance and rejection are in
 | --- | --- |
 | A preamble, a boundary line with trailing space and tab, a value holding CRLFs and `--XyZ-not-a-boundary`, a file named `C:\Users\ada\résumé.bin` of 150,000 binary bytes, a second file with no `Content-Type` and no bytes, an empty file input, a repeated `name`, and an epilogue | Values in order with `empty=`; files `résumé.bin` (`application/x-test`, exact size and checksum) and `second.txt` (`application/octet-stream`, 0 bytes); `Value` and `File` give the first |
 | The same body in 997-byte pieces; a body with a 400-byte file in 3-byte pieces | The same results |
-| `RemoveAll`, then `Open` | The file is still listed; `Open` fails |
+| `RemoveAll` twice, then `Open` | Both return `nil`; the file is still listed; `Open` fails |
+| A body exactly `MaxBytes` long; one byte over | Accepted; `io.LimitExceeded` |
+| A closing `--XyZ--` with nothing after it | Accepted |
+| A field named `k\x`; file names `C:\Users\ada\r.bin`, `say \"hi\".txt`, `dir/`, `a/..` sent with single backslashes | Key `k\x`; names `r.bin`, `say "hi".txt`, `""`, `""` |
+| Files of 65,380 to 65,620 bytes made of near-boundary text such as `\r\n--XyZ-` | Exact size and checksum each time |
+| A handler panic after reading | No `200`; the upload folder is empty afterwards |
 | A handler error or a panic after reading the form | The upload folder is empty afterwards |
 | 4 parts with `MaxParts` 3; a 17-byte file with `MaxFileBytes` 16; values of 9 bytes with `MaxValueBytes` 8; a part header over 128 bytes; a body over `MaxBytes` 40 | `io.LimitExceeded` (413), no files left |
 | A 16-byte file with `MaxFileBytes` 16 | Accepted |
-| No boundary, an empty or 71-character boundary, one ending in space, a `\` in it | `invalid boundary` |
-| `multipart/mixed`, a form type, a malformed media type | `unsupported content type` |
+| No boundary, an empty or 71-character boundary, one ending in space, a quoted `a\\b` | `invalid boundary` |
+| `multipart/mixed`, a form type, a bare `boundary=a\b` (not a token) | `unsupported content type` |
 | A negative limit | `negative limit` |
 | No closing line, no boundary at all, a file cut short, `--XyZjunk` | `unexpected end of body` |
 | `--XyZ` followed by space, tab, and text | `invalid boundary line` |

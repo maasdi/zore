@@ -10215,9 +10215,11 @@ returned form owns and deletes.
 | --- | --- |
 | `func ParseDisposition(text string) (MediaType, error)` | Read a `Content-Disposition` value such as `form-data; name="file"; filename="a.png"`: one token, lowercased into `Type`, then parameters as for `ParseMediaType` |
 
-`ParseDisposition` differs from `ParseMediaType` (§37.17) in two ways: the
-first item is a single token without `/`, and quoted values may also hold
-non-ASCII UTF-8, because browsers send file names that way. A missing or
+`ParseDisposition` differs from `ParseMediaType` (§37.17) in three ways,
+all because of how browsers send file names: the first item is a single token
+without `/`; quoted values may also hold non-ASCII UTF-8; and inside quotes a
+`\` escapes only a following `"` or `\` and is otherwise kept, so
+`filename="C:\Users\ada\a.png"` keeps its backslashes. A missing or
 invalid token gives `mime: invalid disposition`; parameter errors are the same
 as for `ParseMediaType`.
 
@@ -10242,7 +10244,8 @@ limit`), as for `Config` (§37.6). An empty `TempDir` selects `os.TempDir()`.
 `MaxBytes` counts every body byte read, including the preamble and epilogue.
 `MaxParts` counts parts. `MaxValueBytes` is the total of all text values.
 `MaxFileBytes` applies to each file. `MaxPartHeaderBytes` applies to each
-part's header block. Passing any of them returns `io.LimitExceeded`, so a
+part's header lines and the line breaks between them. A header block without
+its empty line runs on until a limit or the end of the body stops it. Passing any of them returns `io.LimitExceeded`, so a
 handler can answer `413` the same way as for `ReadForm` (§37.16). The server's
 `Config.MaxBodyBytes` still applies on top and defaults to 1 MiB, so an
 application that accepts uploads raises it too; when it is reached first, its
@@ -10266,8 +10269,9 @@ file size:
 4. `Content-Disposition` must read with `ParseDisposition` as `form-data`
    with a `name` parameter (`invalid content disposition`).
 5. A part with a nonempty `filename` is a file. `Filename` keeps only what
-   follows the last `/` or `\`, since some browsers send a full path; it is
-   still text from the client and must never be used as a path.
+   follows the last `/` or `\`, since some browsers send a full path, and is
+   `""` when that is empty, `.`, or `..`. It is still text from the client
+   and must never be used as a path.
    `ContentType` is the part's `Content-Type` as sent, or
    `application/octet-stream`. The bytes go to a new file from
    `os.CreateTemp(TempDir, "zore-upload-*")`, and `Size` is their count.
@@ -10277,7 +10281,9 @@ file size:
 7. After the closing `--boundary--`, the rest of the body is read and dropped,
    so the connection can serve the next request.
 
-A body that ends before the closing line gives `unexpected end of body`.
+A body that ends before the closing line gives `unexpected end of body`. A
+request body that gives an impossible read count gives `invalid read count`,
+and one that gives 100 empty reads in a row gives `no read progress`.
 Errors from reading the request (deadlines, cancellation, the server body
 limit) and from the disk are returned unchanged. All other errors start with
 `http.Request.ReadMultipartForm: `.
@@ -10286,10 +10292,13 @@ limit) and from the disk are returned unchanged. All other errors start with
 `drop` deletes them, ignoring errors, so they are removed when the handler
 returns, when it returns an error, and when it panics, because unwinding runs
 `drop` (§15.4). On any error `ReadMultipartForm` deletes every file it created
-before returning. `RemoveAll` deletes them earlier and reports problems; later
-`Open` calls then fail. A `FormFile` is plain data: copying it out of the form
+before returning. `RemoveAll` deletes them earlier and returns the first
+failure; files it deleted are not touched again, while files it could not
+delete are tried again by a later `RemoveAll` and by `drop`. After a file is
+deleted, it stays in `Files` and its `Open` fails. A `FormFile` is plain data: copying it out of the form
 does not keep its file alive. To keep an upload, copy it with `Open` and
-`io.Copy` into a file the program owns before the form is dropped. A process
+`io.Copy` into a file the program owns before the form is dropped. (Renaming
+the temporary file is not possible: its path is private.) A process
 that is killed, or that exits from `main` while a handler still runs, can
 leave files behind in `TempDir`.
 

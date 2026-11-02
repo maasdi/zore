@@ -38,19 +38,17 @@ func (f FormFile) Open() (os.File, error) {
 type MultipartForm struct {
     values url.Values
     files Array<FormFile>
-    removed bool
 }
 
 func emptyMultipartForm() MultipartForm {
-    return MultipartForm{values: url.NewValues(), files: Array<FormFile>{}, removed: false}
+    return MultipartForm{values: url.NewValues(), files: Array<FormFile>{}}
 }
 
 func (m mut MultipartForm) drop() {
-    if m.removed {
-        return
-    }
     for file in m.files {
-        _ = os.Remove(file.path)
+        if file.path != "" {
+            _ = os.Remove(file.path)
+        }
     }
 }
 
@@ -77,13 +75,17 @@ func (m MultipartForm) File(field string) (FormFile, bool) {
 
 func (m mut MultipartForm) RemoveAll() error {
     var failures = Array<error>{}
-    for file in m.files {
-        let err = os.Remove(file.path)
+    for var i = 0; i < m.files.len(); i += 1 {
+        if m.files[i].path == "" {
+            continue
+        }
+        let err = os.Remove(m.files[i].path)
         if err != nil {
             failures.push(err)
+        } else {
+            m.files[i].path = ""
         }
     }
-    m.removed = true
     if failures.len() == 0 {
         return nil
     }
@@ -286,7 +288,11 @@ func uploadName(filename string) string {
             start = i + 1
         }
     }
-    return filename[start:]
+    let name = filename[start:]
+    if name == "." || name == ".." {
+        return ""
+    }
+    return name
 }
 
 func parsePartHeader(block []byte) (partHeader, error) {
@@ -408,7 +414,7 @@ func readParts(r mut Request, limits MultipartLimits, boundary string, form mut 
             if err != nil {
                 return err
             }
-            if block.len() + last - first > limits.MaxPartHeaderBytes {
+            if block.len() + last - first > limits.MaxPartHeaderBytes + 2 {
                 return io.LimitExceeded
             }
             for var i = first; i < last; i += 1 {

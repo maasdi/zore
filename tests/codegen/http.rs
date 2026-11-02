@@ -2093,6 +2093,8 @@ func upload(w mut http.ResponseWriter, r mut http.Request) error {
     if mode == "remove" {
         let removed = form.RemoveAll()
         if removed != nil { return removed }
+        let again = form.RemoveAll()
+        if again != nil { return again }
         let file, found = form.File("doc")
         if !found { return w.Text(200, "no file") }
         let _, openErr = file.Open()
@@ -2234,10 +2236,56 @@ fn http_multipart_forms_stream_files_and_clean_up() {
         ("?panic", 0, ""),
     ] {
         let response = send(query, form_type, simple);
-        if expected_status != 0 {
+        if expected_status == 0 {
+            assert!(!response.starts_with("HTTP/1.1 200"), "{response}");
+        } else {
             status(&response, expected_status);
             assert_eq!(body_of(&response), expected_body, "{query}");
         }
+        wait_empty();
+    }
+    let exact = simple.len();
+    status(&send(&format!("?tight={exact}"), form_type, simple), 200);
+    wait_empty();
+    status(
+        &send(&format!("?tight={}", exact - 1), form_type, simple),
+        413,
+    );
+    wait_empty();
+    let unterminated_close =
+        b"--XyZ\r\nContent-Disposition: form-data; name=\"name\"\r\n\r\nAda\r\n--XyZ--";
+    assert_eq!(
+        body_of(&send("", form_type, unterminated_close)),
+        "first name=Ada\nvalue name=Ada\n"
+    );
+    let raw_paths = b"--XyZ\r\nContent-Disposition: form-data; name=\"k\\x\"\r\n\r\nv\r\n--XyZ\r\nContent-Disposition: form-data; name=\"doc\"; filename=\"C:\\Users\\ada\\r.bin\"\r\n\r\n1\r\n--XyZ\r\nContent-Disposition: form-data; name=\"doc\"; filename=\"say \\\"hi\\\".txt\"\r\n\r\n2\r\n--XyZ\r\nContent-Disposition: form-data; name=\"doc\"; filename=\"dir/\"\r\n\r\n3\r\n--XyZ\r\nContent-Disposition: form-data; name=\"doc\"; filename=\"a/..\"\r\n\r\n4\r\n--XyZ--\r\n";
+    let raw = send("", form_type, raw_paths);
+    status(&raw, 200);
+    assert_eq!(
+        body_of(&raw),
+        "first name=\nfirst doc=r.bin\nvalue k\\x=v\nfile doc r.bin application/octet-stream 1 1 49\nfile doc say \"hi\".txt application/octet-stream 1 1 50\nfile doc  application/octet-stream 1 1 51\nfile doc  application/octet-stream 1 1 52\n"
+    );
+    wait_empty();
+    let near: Vec<u8> = b"\r\n--Xy\r\n--XyZ-\r\n-"
+        .iter()
+        .copied()
+        .cycle()
+        .take(70_000)
+        .collect();
+    for size in (65_380..65_620).step_by(17) {
+        let mut edge =
+            b"--XyZ\r\nContent-Disposition: form-data; name=\"doc\"; filename=\"e\"\r\n\r\n"
+                .to_vec();
+        edge.extend_from_slice(&near[..size]);
+        edge.extend_from_slice(b"\r\n--XyZ--\r\n");
+        let response = send("", form_type, &edge);
+        assert!(
+            body_of(&response).ends_with(&format!(
+                "file doc e application/octet-stream {size} {size} {}\n",
+                checksum(&near[..size])
+            )),
+            "{size}: {response}"
+        );
         wait_empty();
     }
 
@@ -2293,6 +2341,10 @@ fn http_multipart_forms_stream_files_and_clean_up() {
         (
             "multipart/form-data; boundary=a\\b",
             "unsupported content type",
+        ),
+        (
+            "multipart/form-data; boundary=\"a\\\\b\"",
+            "invalid boundary",
         ),
         ("multipart/mixed; boundary=XyZ", "unsupported content type"),
         (
