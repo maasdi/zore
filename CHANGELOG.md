@@ -189,6 +189,16 @@ once it does.
   `DirEntry.IsSymlink` describe links. The spec now states what `os.Rename`
   does and does not promise on each system. `File.Close` now returns the error
   the system reports while closing, instead of always `nil`.
+- Added `std/mime` and file serving to `std/net/http` (§37.17), the second
+  part of issue #217. `mime.ParseMediaType` and `mime.FormatMediaType` read
+  and write media types with their parameters, and `mime.TypeByExtension`
+  names common file types from a fixed table. `http.ServeFile` sends a file
+  with its type, length, and modification time, and answers `HEAD`, `404`,
+  and `405`; `http.ServeFileIn` serves a name from the request only from
+  inside a root folder, refusing hidden names, `..`, Windows device names,
+  and symbolic links. `Request.ReadForm` now reads its content type with
+  `mime.ParseMediaType`, so quoted parameter values are read properly and
+  duplicate parameters are refused.
 - Added cookies and URL-encoded forms to `std/net/http` (§37.16), the first
   part of issue #217. `Request.Cookies` and `Request.Cookie` read the
   `Cookie` header and skip malformed pairs; `NewCookie`, `FormatSetCookie`,

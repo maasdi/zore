@@ -1717,3 +1717,238 @@ fn http_cookies_and_forms_on_loopback() {
     assert!(!failed.contains("handler failure"), "{failed}");
     server.stop("");
 }
+
+#[test]
+fn mime_media_types_parse_format_and_name_extensions() {
+    prints(
+        r#"package main
+import "std/errors"
+import "std/mime"
+func show(text string) {
+    let m, err = mime.ParseMediaType(text)
+    if err != nil { println(errors.Message(err)); return }
+    var out = m.Type
+    for p in m.Parameters { out += " [" + p.Name + "=" + p.Value + "]" }
+    let back, formatErr = mime.FormatMediaType(m)
+    if formatErr != nil { panic("format") }
+    let again, _ = mime.ParseMediaType(back)
+    if again.Type != m.Type || again.Parameters.len() != m.Parameters.len() { panic("round trip") }
+    println(out + " | " + back)
+}
+func refuse(m mime.MediaType) {
+    let _, err = mime.FormatMediaType(m)
+    println(errors.Message(err))
+}
+func main() {
+    let good = [string; 6]{"Text/HTML; Charset=UTF-8", " multipart/form-data;boundary=\"a b;c\"", "a/b;", "a/b ; ; x=1 ;", "a/b; x=\"q\\\"t\\\\\"", "a/b; x=\"\""}
+    for text in good { show(text) }
+    let bad = [string; 11]{"", "text", "text/", "/x", "a/b/c", "a b/c", "a/b; x", "a/b; x =1", "a/b; x=1 y", "a/b; x=1; X=2", "a/b; x=\"open"}
+    for text in bad { show(text) }
+    show("a/b; x=\"bell\u0007\"")
+    show("a/b; x=\"é\"")
+    let parsed, _ = mime.ParseMediaType("a/b; Charset=utf-8")
+    let charset, found = parsed.Parameter("CHARSET")
+    println(charset); println(found)
+    let _, missing = parsed.Parameter("boundary")
+    println(missing)
+    refuse(mime.MediaType{Type: "text", Parameters: Array<mime.Parameter>{}})
+    refuse(mime.MediaType{Type: "a/b", Parameters: Array<mime.Parameter>{mime.Parameter{Name: "bad name", Value: "1"}}})
+    refuse(mime.MediaType{Type: "a/b", Parameters: Array<mime.Parameter>{mime.Parameter{Name: "x", Value: "line\nbreak"}}})
+    refuse(mime.MediaType{Type: "a/b", Parameters: Array<mime.Parameter>{mime.Parameter{Name: "x", Value: "1"}, mime.Parameter{Name: "X", Value: "2"}}})
+    let extensions = [string; 8]{".html", ".HTM", ".js", ".png", ".JPEG", ".woff2", ".exe", ""}
+    for ext in extensions {
+        let kind, known = mime.TypeByExtension(ext)
+        println(ext + " " + kind + " " + strconvBool(known))
+    }
+}
+func strconvBool(value bool) string {
+    if value { return "true" }
+    return "false"
+}
+"#,
+        "text/html [charset=UTF-8] | text/html; charset=UTF-8\n\
+multipart/form-data [boundary=a b;c] | multipart/form-data; boundary=\"a b;c\"\n\
+a/b | a/b\n\
+a/b [x=1] | a/b; x=1\n\
+a/b [x=q\"t\\] | a/b; x=\"q\\\"t\\\\\"\n\
+a/b [x=] | a/b; x=\"\"\n\
+mime: invalid media type\nmime: invalid media type\nmime: invalid media type\nmime: invalid media type\n\
+mime: invalid parameter\nmime: invalid media type\nmime: invalid parameter\nmime: invalid parameter\nmime: invalid parameter\n\
+mime: duplicate parameter\nmime: unterminated quoted string\n\
+mime: invalid parameter\nmime: invalid parameter\n\
+utf-8\ntrue\nfalse\n\
+mime: invalid media type\nmime: invalid parameter\nmime: invalid parameter\nmime: duplicate parameter\n\
+.html text/html; charset=utf-8 true\n.HTM text/html; charset=utf-8 true\n.js text/javascript; charset=utf-8 true\n\
+.png image/png true\n.JPEG image/jpeg true\n.woff2 font/woff2 true\n.exe  false\n  false\n",
+    );
+}
+
+const FILE_SERVER: &str = r#"package main
+import "std/context"
+import "std/net"
+import "std/net/http"
+func site(w mut http.ResponseWriter, r mut http.Request) error {
+    let file, _ = r.PathParam("file")
+    let folder, nested = r.PathParam("folder")
+    if nested { return http.ServeFileIn(w, r, "ROOT", folder + "/" + file) }
+    return http.ServeFileIn(w, r, "ROOT", file)
+}
+func direct(w mut http.ResponseWriter, r mut http.Request) error {
+    return http.ServeFile(w, r, "ROOT/index.html")
+}
+func emptyRoot(w mut http.ResponseWriter, r mut http.Request) error {
+    let err = http.ServeFileIn(w, r, "", "index.html")
+    if err == nil || w.Committed() { panic("empty root served") }
+    return w.Text(200, "refused")
+}
+func main() {
+    let stop = channel<bool>(1)
+    var routes = http.NewRouterBuilder()
+    routes.Handle("GET /stop", func(w mut http.ResponseWriter, r mut http.Request) error {
+        stop.send(true)
+        return w.WriteHeader(204)
+    })
+    routes.Handle("GET /s/{file}", site)
+    routes.Handle("POST /s/{file}", site)
+    routes.Handle("GET /s/{folder}/{file}", site)
+    routes.Handle("GET /direct", direct)
+    routes.Handle("GET /empty-root", emptyRoot)
+    let router, buildErr = routes.Build()
+    if buildErr != nil { panic("build") }
+    let server, configErr = http.NewServer(router, http.DefaultConfig())
+    if configErr != nil { panic("config") }
+    let listener, listenErr = net.Listen("tcp", "127.0.0.1:0")
+    if listenErr != nil { panic("listen") }
+    println(listener.Addr())
+    let serving = go server.Serve(listener)
+    let _, _ = stop.receive()
+    let err = server.Shutdown(context.Background())
+    if err != nil { panic("shutdown") }
+    let serveErr = serving.wait()
+    if serveErr != nil { panic("serve") }
+}
+"#;
+
+fn header_value<'a>(response: &'a str, name: &str) -> Option<&'a str> {
+    let head = response
+        .split_once("\r\n\r\n")
+        .map_or(response, |(head, _)| head);
+    head.lines().find_map(|line| {
+        let (key, value) = line.split_once(": ")?;
+        key.eq_ignore_ascii_case(name).then_some(value)
+    })
+}
+
+#[test]
+fn http_serves_files_inside_a_root_only() {
+    let files = TempDir::new().unwrap();
+    let root = files.path().join("site");
+    std::fs::create_dir_all(root.join("css")).unwrap();
+    std::fs::create_dir_all(root.join(".git")).unwrap();
+    std::fs::write(root.join("index.html"), "<h1>hi</h1>\n").unwrap();
+    std::fs::write(root.join("css").join("app.css"), "body{}").unwrap();
+    std::fs::write(root.join(".git").join("config"), "secret").unwrap();
+    std::fs::write(root.join(".env"), "secret").unwrap();
+    std::fs::write(root.join("empty.txt"), "").unwrap();
+    std::fs::write(root.join("notes.unknown"), "plain").unwrap();
+    let big: String = (0..200_000)
+        .map(|i| char::from(b'a' + (i % 26) as u8))
+        .collect();
+    std::fs::write(root.join("big.txt"), &big).unwrap();
+    std::fs::write(files.path().join("secret.txt"), "outside").unwrap();
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(files.path().join("secret.txt"), root.join("link.txt")).unwrap();
+        std::os::unix::fs::symlink(root.join("css"), root.join("linked")).unwrap();
+    }
+    let root_text = root.to_str().unwrap().replace('\\', "\\\\");
+    let server = ServerProcess::start(&FILE_SERVER.replace("ROOT", &root_text));
+    let get = |path: &str| {
+        server.exchange(&format!(
+            "GET {path} HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n"
+        ))
+    };
+
+    let index = get("/s/index.html");
+    status(&index, 200);
+    assert_eq!(body_of(&index), "<h1>hi</h1>\n");
+    assert_eq!(
+        header_value(&index, "Content-Type"),
+        Some("text/html; charset=utf-8")
+    );
+    assert_eq!(header_value(&index, "Content-Length"), Some("12"));
+    assert_eq!(
+        header_value(&index, "X-Content-Type-Options"),
+        Some("nosniff")
+    );
+    let modified = header_value(&index, "Last-Modified").expect("Last-Modified");
+    assert!(
+        modified.ends_with(" GMT") && modified.len() == 29,
+        "{modified}"
+    );
+
+    let css = get("/s/css/app.css");
+    status(&css, 200);
+    assert_eq!(body_of(&css), "body{}");
+    assert_eq!(
+        header_value(&css, "Content-Type"),
+        Some("text/css; charset=utf-8")
+    );
+    let unknown = get("/s/notes.unknown");
+    assert_eq!(
+        header_value(&unknown, "Content-Type"),
+        Some("application/octet-stream")
+    );
+    let empty = get("/s/empty.txt");
+    status(&empty, 200);
+    assert_eq!(header_value(&empty, "Content-Length"), Some("0"));
+    assert_eq!(body_of(&empty), "");
+    let large = get("/s/big.txt");
+    status(&large, 200);
+    assert_eq!(body_of(&large).len(), big.len());
+    assert!(body_of(&large) == big, "large body differs");
+
+    let head = server.exchange("HEAD /s/big.txt HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n");
+    status(&head, 200);
+    assert_eq!(header_value(&head, "Content-Length"), Some("200000"));
+    assert_eq!(body_of(&head), "");
+    let post = server.exchange(
+        "POST /s/index.html HTTP/1.1\r\nHost: x\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+    );
+    status(&post, 405);
+    assert_eq!(header_value(&post, "Allow"), Some("GET, HEAD"));
+
+    let direct = get("/direct");
+    status(&direct, 200);
+    assert_eq!(body_of(&direct), "<h1>hi</h1>\n");
+    let refused = get("/empty-root");
+    assert_eq!(body_of(&refused), "refused");
+
+    let mut hidden = vec![
+        "/s/missing.txt",
+        "/s/css",
+        "/s/.env",
+        "/s/.git/config",
+        "/s/css/missing.css",
+        "/s/CON",
+        "/s/nul.txt",
+        "/s/Com1.log",
+        "/s/index.html.",
+        "/s/index.html%20",
+        "/s/a%3Ab",
+        "/s/a%09b",
+    ];
+    if cfg!(unix) {
+        hidden.extend(["/s/link.txt", "/s/linked/app.css"]);
+    }
+    for path in hidden {
+        let response = get(path);
+        assert!(response.starts_with("HTTP/1.1 404 "), "{path}: {response}");
+        assert_eq!(body_of(&response), "404 not found", "{path}");
+        assert!(!response.contains("secret") && !response.contains("outside"));
+    }
+    for path in ["/s/%2e%2e/secret.txt", "/s/..%2fsecret.txt", "/s/a%5cb"] {
+        status(&get(path), 400);
+    }
+    server.stop("");
+}

@@ -1,6 +1,7 @@
 package http
 
 import "std/io"
+import "std/mime"
 import "std/net/url"
 import "std/strings"
 
@@ -10,36 +11,13 @@ func formError(problem string) (url.Values, error) {
     return url.NewValues(), error("http.Request.ReadForm: " + problem)
 }
 
-func unquoted(text string) string {
-    if text.len() >= 2 && text[0] == 34 && text[text.len() - 1] == 34 {
-        return text[1:text.len() - 1]
-    }
-    return text
-}
-
 func formContentType(value string) bool {
-    let mediaType, parameters, _ = strings.Cut(value, ";")
-    if !strings.EqualFold(strings.Trim(mediaType, " \t"), ContentTypeForm) {
+    let parsed, err = mime.ParseMediaType(value)
+    if err != nil || parsed.Type != ContentTypeForm {
         return false
     }
-    if strings.Trim(parameters, " \t") == "" {
-        return true
-    }
-    let pairs = strings.Split(parameters, ";")
-    for pair in pairs {
-        let parameter = strings.Trim(pair, " \t")
-        if parameter == "" {
-            continue
-        }
-        let rawName, rawValue, found = strings.Cut(parameter, "=")
-        if !found || !token(rawName) {
-            return false
-        }
-        if strings.EqualFold(rawName, "charset") && !strings.EqualFold(unquoted(rawValue), "utf-8") {
-            return false
-        }
-    }
-    return true
+    let charset, found = parsed.Parameter("charset")
+    return !found || strings.EqualFold(charset, "utf-8")
 }
 
 func (r mut Request) ReadForm(limit int) (url.Values, error) {

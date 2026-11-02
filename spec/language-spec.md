@@ -6892,8 +6892,8 @@ specified in §37.2 (text, bytes, and errors), §37.3 (time, the operating
 system, buffered I/O, and TCP), §37.4 (cancellation and task coordination),
 §37.5 (paths and sorting), §37.7 (JSON), §37.12 (structured logging), §37.13
 (rolling log files), §37.14 (hex, base64, and byte order), §37.15 (file
-handles, temporary storage, renames, and folder walks), and §37.16 (HTTP
-cookies and URL-encoded forms). Further packages are TBD.
+handles, temporary storage, renames, and folder walks), §37.16 (HTTP
+cookies and URL-encoded forms), and §37.17 (media types and file serving). Further packages are TBD.
 
 ## 37.1 `println` — LOCKED
 
@@ -9998,11 +9998,11 @@ returns that one. Cookies read from a request carry only `Name` and `Value`;
 browsers do not send attributes back. The request header limit
 (`Config.MaxHeaderBytes`) also bounds the number of cookies.
 
-**Reading forms.** `ReadForm` accepts exactly one `Content-Type` header whose
-media type is `application/x-www-form-urlencoded`, compared without regard to
-ASCII case. Parameters after `;` are allowed and empty ones are ignored. Each
-needs a token name and `=`; values are not checked, except that a `charset`
-value must be `utf-8` in any case, bare or inside one pair of quotes. It then reads the body with
+**Reading forms.** `ReadForm` accepts exactly one `Content-Type` header that
+`mime.ParseMediaType` (§37.17) reads as `application/x-www-form-urlencoded`.
+Case does not matter, empty parameters are ignored, and a `charset` parameter,
+bare or quoted, must be `utf-8` in any case. A header that `ParseMediaType`
+refuses is unsupported. It then reads the body with
 `io.ReadAtMost(r, limit)` and decodes it with `url.ParseQuery`. Results:
 
 | Input | Result |
@@ -10043,8 +10043,8 @@ func login(w mut http.ResponseWriter, r mut http.Request) error {
 }
 ```
 
-Not part of this step: multipart forms and file uploads, MIME types and file
-serving (later steps of issue #217), a client cookie jar, parsing
+Not part of this step: multipart forms and file uploads (a later step of
+issue #217), a client cookie jar, parsing
 `Set-Cookie` in clients, and signed or encrypted cookies.
 
 Ownership, error, and async implications: `Cookie` and `url.Values` own their
@@ -10055,6 +10055,138 @@ strings. `Cookies`, `Cookie`, and `FormatSetCookie` do not wait.
 
 Compiler impact: none. The additions are bundled Zore source in
 `std/net/http`. Conformance cases: the cookie and form tables in
+`tests/conformance/http.md`, with native tests in `tests/codegen/http.rs`.
+
+## 37.17 Media types and file serving — LOCKED
+
+These additions are the second part of issue #217. The new package
+`"std/mime"` reads and writes media types such as
+`text/html; charset=utf-8`, and names the type of common file extensions.
+`"std/net/http"` uses it to send files from disk. Media-type syntax follows
+[RFC 9110 §8.3.1](https://www.rfc-editor.org/rfc/rfc9110.html#section-8.3.1).
+`std/mime` imports only `std/strings`, so lower packages and future multipart
+code can use it without importing HTTP.
+
+**`std/mime`**
+
+| Declaration | Contract |
+| --- | --- |
+| `type Parameter struct { Name string; Value string }` | One parameter |
+| `type MediaType struct { Type string; Parameters Array<Parameter> }` | `type/subtype` and its parameters in order |
+| `func ParseMediaType(text string) (MediaType, error)` | Read a media type |
+| `func (m MediaType) Parameter(name string) (string, bool)` | The value of the parameter named `name`, compared without regard to ASCII case; absent gives `""` and false |
+| `func FormatMediaType(m MediaType) (string, error)` | Write a media type |
+| `func TypeByExtension(ext string) (string, bool)` | The media type of an extension such as `".png"`, compared without regard to ASCII case; unknown gives `""` and false |
+
+`ParseMediaType` accepts optional spaces and tabs, then `type/subtype`, each a
+nonempty HTTP token. Each parameter follows a `;` as `name=value`, where the
+name is a token and the value is a token or a quoted string. A quoted string
+may use `\` to escape the next byte and holds only printable ASCII and tab,
+the same bytes HTTP header values allow (§37.6). Spaces and tabs are allowed around `;` but not
+around `=`. Empty parameters, as in `a/b;` or `a/b; ; x=1`, are skipped. The
+type and parameter names are turned to lowercase; values keep their case.
+Errors, each with an empty result: `mime: invalid media type`,
+`mime: invalid parameter` (including text after a value without a `;`),
+`mime: duplicate parameter` (names compared after lowercasing), and
+`mime: unterminated quoted string`.
+
+`FormatMediaType` writes the lowercase type, then `; name=value` for each
+parameter in order with the name in lowercase. A value that is a token is
+written bare; any other value is quoted, with `"` and `\` escaped. It refuses a
+type that is not two tokens around `/`, a name that is not a token, a value
+with control bytes other than tab or with bytes above 126, and duplicate names.
+Parsing what it writes gives the same `MediaType` back.
+
+`TypeByExtension` uses a fixed table and never reads system files, so every
+host gives the same answer:
+
+| Extensions | Type |
+| --- | --- |
+| `.html`, `.htm` | `text/html; charset=utf-8` |
+| `.css` | `text/css; charset=utf-8` |
+| `.js`, `.mjs` | `text/javascript; charset=utf-8` |
+| `.txt`, `.csv`, `.md` | `text/plain`, `text/csv`, `text/markdown`, each with `; charset=utf-8` |
+| `.json`, `.xml`, `.pdf`, `.wasm`, `.zip`, `.gz` | `application/json`, `application/xml`, `application/pdf`, `application/wasm`, `application/zip`, `application/gzip` |
+| `.svg`, `.png`, `.jpg`, `.jpeg`, `.gif`, `.webp`, `.avif`, `.ico` | `image/svg+xml`, `image/png`, `image/jpeg` (both), `image/gif`, `image/webp`, `image/avif`, `image/vnd.microsoft.icon` |
+| `.woff`, `.woff2`, `.ttf`, `.otf` | `font/woff`, `font/woff2`, `font/ttf`, `font/otf` |
+| `.mp3`, `.wav`, `.ogg`, `.mp4`, `.webm` | `audio/mpeg`, `audio/wav`, `audio/ogg`, `video/mp4`, `video/webm` |
+
+**File serving in `std/net/http`**
+
+| Declaration | Contract |
+| --- | --- |
+| `func ServeFile(w mut ResponseWriter, r Request, path string) error` | Send the file at `path`, which the program chose |
+| `func ServeFileIn(w mut ResponseWriter, r Request, root string, name string) error` | Send the file `name`, which came from the request, from inside the folder `root` |
+
+`ServeFile` answers by the request method:
+
+| Request | Response |
+| --- | --- |
+| Not `GET` or `HEAD` | `405` with `Allow: GET, HEAD` |
+| Missing path, a folder, or a file that cannot be opened | `404` with the text `404 not found`; the reason is not shown |
+| `GET` of a file | `200` with `Content-Type` from `TypeByExtension` (or `application/octet-stream`), `X-Content-Type-Options: nosniff`, `Content-Length` from the file size, `Last-Modified` from `ModTime` when the system reports one, and the bytes |
+| `HEAD` of a file | The same headers and no body; the file is not read |
+
+The 404 and 405 answers are written with `Text`, so `ServeFile` returns
+`nil` after them. The body is sent with `io.CopyN` of the size found before
+opening; when the file shrinks while it is sent, the copy error is returned
+after the response started, the connection closes (§37.6), and the client sees
+a short body instead of wrong bytes. Writing errors are returned the same way.
+Range requests, `If-Modified-Since` and other conditional requests, folder
+listings, `index.html` for folders, and compression are not part of this step.
+
+`ServeFileIn` is the one to use with request data, for example a path
+parameter. `name` is split at `/` into segments, and the request gets `404`
+without touching the disk when `name` is empty, starts or ends with `/`, or has
+a segment that:
+
+- is empty, or starts with `.` (so `.`, `..`, `.git`, and `.env` are never served);
+- ends with `.` or a space, or holds a control byte, `\`, or `:`;
+- is a Windows device name (`CON`, `PRN`, `AUX`, `NUL`, `COM1`–`COM9`,
+  `LPT1`–`LPT9`, in any case, with or without an extension).
+
+These rules apply on every host, so a site behaves the same on each. Then each
+segment is joined to `root` with `filepath.Join` and checked with `os.Lstat`:
+a missing segment or a symbolic link anywhere below `root` gives `404`, so a
+link cannot lead outside `root`. `root` itself is trusted and may be a link.
+An empty `root` returns `http.ServeFile: empty root` without a response. The
+final path is served with `ServeFile`. The checks run before opening, so they
+protect against links and names in the served folder, not against another
+program that swaps folders for links while a request runs; serve only folders
+that untrusted programs cannot write. Serve folders of regular files and
+folders: opening a named pipe or device found there may wait.
+
+Routes match one segment per parameter (§37.6), so a handler that serves
+nested folders registers one route per depth and joins the parameters with
+`/`:
+
+```ore
+func asset(w mut http.ResponseWriter, r mut http.Request) error {
+    let file, _ = r.PathParam("file")
+    let folder, nested = r.PathParam("folder")
+    if nested {
+        return http.ServeFileIn(w, r, "public", folder + "/" + file)
+    }
+    return http.ServeFileIn(w, r, "public", file)
+}
+
+var routes = http.NewRouterBuilder()
+routes.Handle("GET /assets/{file}", asset)
+routes.Handle("GET /assets/{folder}/{file}", asset)
+let router = routes.Build()?
+return http.ListenAndServe(":8080", router)
+```
+
+Ownership, error, and async implications: `MediaType` owns its strings and
+array. The file is a local `os.File` closed on every exit path by its `drop`.
+`ServeFile` and `ServeFileIn` borrow the writer mutably and the request
+shared; their disk calls and writes suspend only the calling task in async
+code. `ParseMediaType`, `FormatMediaType`, and `TypeByExtension` do not wait.
+All problems are `error` values or HTTP answers; none panics.
+
+Compiler impact: none. `std/mime` is a new bundled package of Zore source;
+`std/net/http` gains `file.ore` and now imports `std/mime`, `std/os`, and
+`std/path/filepath`. Conformance cases: the media-type and file tables in
 `tests/conformance/http.md`, with native tests in `tests/codegen/http.rs`.
 
 ---
