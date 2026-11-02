@@ -6891,9 +6891,9 @@ Packages and imports are specified in §3.20. The standard packages are
 specified in §37.2 (text, bytes, and errors), §37.3 (time, the operating
 system, buffered I/O, and TCP), §37.4 (cancellation and task coordination),
 §37.5 (paths and sorting), §37.7 (JSON), §37.12 (structured logging), §37.13
-(rolling log files), §37.14 (hex, base64, and byte order), and §37.15 (file
-handles, temporary storage, renames, and folder walks). Further packages are
-TBD.
+(rolling log files), §37.14 (hex, base64, and byte order), §37.15 (file
+handles, temporary storage, renames, and folder walks), and §37.16 (HTTP
+cookies and URL-encoded forms). Further packages are TBD.
 
 ## 37.1 `println` — LOCKED
 
@@ -9933,6 +9933,129 @@ describe a path with or without following links, and build a random temporary
 path. Those that wait for the disk run on blocking helpers in async code.
 Conformance cases: `tests/conformance/files.md`, with native tests in
 `tests/codegen/files.rs`.
+
+## 37.16 HTTP cookies and URL-encoded forms — LOCKED
+
+These additions to `"std/net/http"` are the first part of issue #217. They let
+a handler read the cookies a browser sends, send cookies back, and read an HTML
+form posted as `application/x-www-form-urlencoded`. Cookie syntax follows
+[RFC 6265](https://www.rfc-editor.org/rfc/rfc6265.html); form decoding reuses
+`url.ParseQuery` (§37.6), so form text and query text follow one set of rules.
+
+| Declaration | Contract |
+| --- | --- |
+| `const HeaderCookie = "Cookie"`, `const HeaderSetCookie = "Set-Cookie"` | Header names |
+| `const ContentTypeForm = "application/x-www-form-urlencoded"` | Form media type |
+| `type Cookie struct { Name string; Value string; Path string; Domain string; MaxAge int; Secure bool; HttpOnly bool; SameSite string; ... }` | One cookie; the private fields hold `Expires` |
+| `func NewCookie(name string, value string) Cookie` | A cookie with no attributes |
+| `func (c mut Cookie) SetExpires(t time.Timestamp)`, `func (c mut Cookie) ClearExpires()` | Set or remove the `Expires` attribute |
+| `func (c Cookie) Expires() (time.Timestamp, bool)` | The `Expires` time and whether it is set |
+| `func FormatSetCookie(cookie Cookie) (string, error)` | The `Set-Cookie` header value, or an error |
+| `func (w mut ResponseWriter) SetCookie(cookie Cookie) error` | Check the cookie and add one `Set-Cookie` header |
+| `func (r Request) Cookies() Array<Cookie>` | Every well-formed cookie in the request, in order |
+| `func (r Request) Cookie(name string) (Cookie, bool)` | The first cookie named `name`; absent gives an empty cookie and false |
+| `func (r mut Request) ReadForm(limit int) (url.Values, error)` | Read and decode a URL-encoded body of at most `limit` bytes |
+
+`Cookie` has private fields, so code outside the package makes one with
+`NewCookie` and then sets the exported fields. It is a plain value: it owns
+only strings and a `time.Timestamp`, and copying it out of `Cookies` shares
+nothing with the request.
+
+**Sending cookies.** `FormatSetCookie` checks the whole cookie before it
+writes anything, and returns the first problem as an `http.Cookie: ...`
+error:
+
+| Field | Rule |
+| --- | --- |
+| `Name` | A nonempty HTTP token |
+| `Value` | Empty, or only cookie octets: printable ASCII except space, `"`, `,`, `;`, and `\`. Values are never quoted or escaped for the caller; encode other bytes first, for example with `url.QueryEscape` or base64 |
+| `Path` | Empty, or starting with `/` and holding only printable ASCII and space without `;` |
+| `Domain` | Empty, or a host name of at most 253 bytes: letters, digits, and `-` in labels of 1 to 63 bytes that neither start nor end with `-`, joined by single `.`; one leading `.` is allowed and dropped, a trailing `.` is refused |
+| `MaxAge` | `0` leaves out `Max-Age`; a positive value writes it; a negative value writes `Max-Age=0`, which asks the browser to delete the cookie now |
+| `SameSite` | `""` (left out), `"Lax"`, `"Strict"`, or `"None"`; `"None"` requires `Secure` |
+| `Expires` | When set, a time in the year 1601 or later in UTC, since browsers ignore earlier dates |
+| Name prefixes | A name starting with `__Secure-` requires `Secure`; `__Host-` requires `Secure`, `Path` `"/"`, and no `Domain`. Prefixes match without regard to ASCII case, as browsers match them |
+
+The result is `name=value` followed by the attributes in this order, each after
+`; `: `Path`, `Domain`, `Expires` (an IMF-fixdate from `http.FormatDate`),
+`Max-Age`, `HttpOnly`, `Secure`, `SameSite`. Attributes with no value are left
+out. `SetCookie` adds one header per call through `AddHeader`, so several
+cookies give several `Set-Cookie` lines and are never joined with commas. The
+response rules of §37.6 still apply: after the response has started,
+`SetCookie` returns the `AddHeader` error. A cookie that fails the check adds
+nothing.
+
+**Reading cookies.** `Cookies` reads every `Cookie` header line in arrival
+order. A browser sends one line, but a client that sends several is read the
+same way. Each line is split at `;`; spaces and tabs around a pair, its name,
+and its value are removed; one pair of surrounding `"` is removed from the
+value. A pair is kept when its name is an HTTP token and its value holds only
+cookie octets, space, or `,`. Other pairs, including ones without `=`, are
+skipped instead of failing the request, because one bad cookie set by another
+site part must not lock a user out. Repeated names are all kept, in order;
+browsers send the cookie with the longest matching path first, so `Cookie`
+returns that one. Cookies read from a request carry only `Name` and `Value`;
+browsers do not send attributes back. The request header limit
+(`Config.MaxHeaderBytes`) also bounds the number of cookies.
+
+**Reading forms.** `ReadForm` accepts exactly one `Content-Type` header whose
+media type is `application/x-www-form-urlencoded`, compared without regard to
+ASCII case. Parameters after `;` are allowed and empty ones are ignored. Each
+needs a token name and `=`; values are not checked, except that a `charset`
+value must be `utf-8` in any case, bare or inside one pair of quotes. It then reads the body with
+`io.ReadAtMost(r, limit)` and decodes it with `url.ParseQuery`. Results:
+
+| Input | Result |
+| --- | --- |
+| Valid form within `limit` | The fields in body order, with repeated names kept |
+| Negative `limit` | `http.Request.ReadForm: negative limit`, nothing read |
+| No, repeated, or other `Content-Type`, or another charset | `http.Request.ReadForm: unsupported content type`, nothing read |
+| Body longer than `limit` | `io.LimitExceeded`, so the handler can answer 413 |
+| Body that is not UTF-8 | `http.Request.ReadForm: body is not UTF-8` |
+| Malformed escape or escaped bytes that are not UTF-8 | The `url.ParseQuery` error |
+| Body read error | That error unchanged, for example the server body limit or a timeout |
+
+Every failure returns empty values. `ReadForm` does not look at the query
+string; `Request.Query` reads that, so a handler that wants both reads both and
+decides which wins. The server body limit (`Config.MaxBodyBytes`) still
+applies on top of `limit`; when it is reached first, `ReadForm` returns that
+`Read` error and the sticky body rules of §37.6 decide the response. Like any
+body read, `ReadForm` must run before the response starts.
+
+```ore
+func login(w mut http.ResponseWriter, r mut http.Request) error {
+    let form, err = r.ReadForm(4096)
+    if err == io.LimitExceeded {
+        return w.Text(http.StatusContentTooLarge, "form too large")
+    }
+    if err != nil {
+        return w.Text(http.StatusBadRequest, "invalid form")
+    }
+    let user, _ = form.Get("user")
+    var session = http.NewCookie("session", newSessionID(user))
+    session.Path = "/"
+    session.HttpOnly = true
+    session.Secure = true
+    session.SameSite = "Lax"
+    session.MaxAge = 3600
+    w.SetCookie(session)?
+    return w.Text(http.StatusOK, "welcome")
+}
+```
+
+Not part of this step: multipart forms and file uploads, MIME types and file
+serving (later steps of issue #217), a client cookie jar, parsing
+`Set-Cookie` in clients, and signed or encrypted cookies.
+
+Ownership, error, and async implications: `Cookie` and `url.Values` own their
+strings. `Cookies`, `Cookie`, and `FormatSetCookie` do not wait.
+`ReadForm` borrows the request mutably for the read and, like
+`Request.Read`, suspends only the calling task in async code. All problems are
+`error` values; none panics.
+
+Compiler impact: none. The additions are bundled Zore source in
+`std/net/http`. Conformance cases: the cookie and form tables in
+`tests/conformance/http.md`, with native tests in `tests/codegen/http.rs`.
 
 ---
 

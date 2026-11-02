@@ -1,0 +1,217 @@
+package http
+
+import "std/strconv"
+import "std/strings"
+import "std/time"
+
+const HeaderCookie = "Cookie"
+const HeaderSetCookie = "Set-Cookie"
+
+type Cookie struct {
+    Name string
+    Value string
+    Path string
+    Domain string
+    MaxAge int
+    Secure bool
+    HttpOnly bool
+    SameSite string
+    expires time.Timestamp
+    hasExpires bool
+}
+
+func unixEpoch() time.Timestamp {
+    let epoch, _ = time.Unix(0, 0)
+    return epoch
+}
+
+func NewCookie(name string, value string) Cookie {
+    return Cookie{Name: name, Value: value, Path: "", Domain: "", MaxAge: 0, Secure: false, HttpOnly: false, SameSite: "", expires: unixEpoch(), hasExpires: false}
+}
+
+func (c mut Cookie) SetExpires(t time.Timestamp) {
+    c.expires = t
+    c.hasExpires = true
+}
+
+func (c mut Cookie) ClearExpires() {
+    c.expires = unixEpoch()
+    c.hasExpires = false
+}
+
+func (c Cookie) Expires() (time.Timestamp, bool) {
+    return c.expires, c.hasExpires
+}
+
+func cookieOctet(c byte) bool {
+    return c == 33 || (c >= 35 && c <= 43) || (c >= 45 && c <= 58) || (c >= 60 && c <= 91) || (c >= 93 && c <= 126)
+}
+
+func cookieValue(text string) bool {
+    for var i = 0; i < text.len(); i += 1 {
+        if !cookieOctet(text[i]) {
+            return false
+        }
+    }
+    return true
+}
+
+func attributeValue(text string) bool {
+    for var i = 0; i < text.len(); i += 1 {
+        let c = text[i]
+        if c < 32 || c > 126 || c == 59 {
+            return false
+        }
+    }
+    return true
+}
+
+func cookieDomain(text string) bool {
+    var domain = text
+    if strings.HasPrefix(domain, ".") {
+        domain = domain[1:]
+    }
+    if domain == "" || domain.len() > 253 {
+        return false
+    }
+    let labels = strings.Split(domain, ".")
+    for label in labels {
+        if label == "" || label.len() > 63 || label[0] == 45 || label[label.len() - 1] == 45 {
+            return false
+        }
+        for var i = 0; i < label.len(); i += 1 {
+            let c = label[i]
+            if !((c >= 65 && c <= 90) || (c >= 97 && c <= 122) || (c >= 48 && c <= 57) || c == 45) {
+                return false
+            }
+        }
+    }
+    return true
+}
+
+func prefixFold(text string, prefix string) bool {
+    return text.len() >= prefix.len() && asciiEqual(text[:prefix.len()], prefix)
+}
+
+func cookieError(problem string) (string, error) {
+    return "", error("http.Cookie: " + problem)
+}
+
+func FormatSetCookie(cookie Cookie) (string, error) {
+    if !token(cookie.Name) {
+        return cookieError("invalid name")
+    }
+    if !cookieValue(cookie.Value) {
+        return cookieError("invalid value")
+    }
+    if !attributeValue(cookie.Path) || (cookie.Path != "" && cookie.Path[0] != 47) {
+        return cookieError("invalid path")
+    }
+    if cookie.Domain != "" && !cookieDomain(cookie.Domain) {
+        return cookieError("invalid domain")
+    }
+    let sameSite = cookie.SameSite
+    if sameSite != "" && sameSite != "Lax" && sameSite != "Strict" && sameSite != "None" {
+        return cookieError("invalid SameSite")
+    }
+    if sameSite == "None" && !cookie.Secure {
+        return cookieError("SameSite=None requires Secure")
+    }
+    if prefixFold(cookie.Name, "__Secure-") && !cookie.Secure {
+        return cookieError("__Secure- prefix requires Secure")
+    }
+    if prefixFold(cookie.Name, "__Host-") && (!cookie.Secure || cookie.Path != "/" || cookie.Domain != "") {
+        return cookieError("__Host- prefix requires Secure, Path=/ and no Domain")
+    }
+    if cookie.hasExpires && cookie.expires.UTC().Year() < 1601 {
+        return cookieError("Expires before 1601")
+    }
+    var text = cookie.Name + "=" + cookie.Value
+    if cookie.Path != "" {
+        text += "; Path=" + cookie.Path
+    }
+    if cookie.Domain != "" {
+        var domain = cookie.Domain
+        if strings.HasPrefix(domain, ".") {
+            domain = domain[1:]
+        }
+        text += "; Domain=" + domain
+    }
+    if cookie.hasExpires {
+        text += "; Expires=" + FormatDate(cookie.expires)
+    }
+    if cookie.MaxAge > 0 {
+        text += "; Max-Age=" + strconv.Itoa(cookie.MaxAge)
+    }
+    if cookie.MaxAge < 0 {
+        text += "; Max-Age=0"
+    }
+    if cookie.HttpOnly {
+        text += "; HttpOnly"
+    }
+    if cookie.Secure {
+        text += "; Secure"
+    }
+    if sameSite != "" {
+        text += "; SameSite=" + sameSite
+    }
+    return text, nil
+}
+
+func (w mut ResponseWriter) SetCookie(cookie Cookie) error {
+    let text = FormatSetCookie(cookie)?
+    return w.AddHeader(HeaderSetCookie, text)
+}
+
+func receivedCookieValue(text string) bool {
+    for var i = 0; i < text.len(); i += 1 {
+        let c = text[i]
+        if !cookieOctet(c) && c != 32 && c != 44 {
+            return false
+        }
+    }
+    return true
+}
+
+func parseCookies(lines Array<string>, wanted string, first bool) Array<Cookie> {
+    var result = Array<Cookie>{}
+    for line in lines {
+        let pairs = strings.Split(line, ";")
+        for pair in pairs {
+            let trimmed = strings.Trim(pair, " \t")
+            if trimmed == "" {
+                continue
+            }
+            let rawName, rawValue, found = strings.Cut(trimmed, "=")
+            if !found {
+                continue
+            }
+            let name = strings.Trim(rawName, " \t")
+            let value = unquoted(strings.Trim(rawValue, " \t"))
+            if !token(name) || !receivedCookieValue(value) {
+                continue
+            }
+            if first && name != wanted {
+                continue
+            }
+            result.push(NewCookie(name, value))
+            if first {
+                return result
+            }
+        }
+    }
+    return result
+}
+
+func (r Request) Cookies() Array<Cookie> {
+    return parseCookies(r.headers.Values(HeaderCookie), "", false)
+}
+
+func (r Request) Cookie(name string) (Cookie, bool) {
+    var found = parseCookies(r.headers.Values(HeaderCookie), name, true)
+    let ok, cookie = found.pop()
+    if !ok {
+        return NewCookie("", ""), false
+    }
+    return cookie, true
+}
