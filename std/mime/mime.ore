@@ -1,0 +1,283 @@
+package mime
+
+import "std/strings"
+
+type Parameter struct {
+    Name string
+    Value string
+}
+
+type MediaType struct {
+    Type string
+    Parameters Array<Parameter>
+}
+
+func (m MediaType) Parameter(name string) (string, bool) {
+    let wanted = lowerASCII(name)
+    for parameter in m.Parameters {
+        if lowerASCII(parameter.Name) == wanted {
+            return parameter.Value, true
+        }
+    }
+    return "", false
+}
+
+func tokenByte(c byte) bool {
+    if (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || (c >= 48 && c <= 57) {
+        return true
+    }
+    return strings.IndexByte("!#$%&'*+-.^_`|~", c) >= 0
+}
+
+func token(text string) bool {
+    if text == "" {
+        return false
+    }
+    for var i = 0; i < text.len(); i += 1 {
+        if !tokenByte(text[i]) {
+            return false
+        }
+    }
+    return true
+}
+
+func lowerASCII(text string) string {
+    var data = Array<byte>{}
+    for var i = 0; i < text.len(); i += 1 {
+        var c = text[i]
+        if c >= 65 && c <= 90 {
+            c += 32
+        }
+        data.push(c)
+    }
+    let result, _ = strings.FromBytes(data[:])
+    return result
+}
+
+func space(c byte) bool {
+    return c == 32 || c == 9
+}
+
+func skipSpace(text string, position int) int {
+    var i = position
+    for i < text.len() && space(text[i]) {
+        i += 1
+    }
+    return i
+}
+
+func tokenEnd(text string, position int) int {
+    var i = position
+    for i < text.len() && tokenByte(text[i]) {
+        i += 1
+    }
+    return i
+}
+
+func failed(problem string) (MediaType, error) {
+    return MediaType{Type: "", Parameters: Array<Parameter>{}}, error("mime: " + problem)
+}
+
+func ParseMediaType(text string) (MediaType, error) {
+    var i = skipSpace(text, 0)
+    let typeEnd = tokenEnd(text, i)
+    if typeEnd == i || typeEnd >= text.len() || text[typeEnd] != 47 {
+        return failed("invalid media type")
+    }
+    let subtypeEnd = tokenEnd(text, typeEnd + 1)
+    if subtypeEnd == typeEnd + 1 {
+        return failed("invalid media type")
+    }
+    let mediaType = lowerASCII(text[i:subtypeEnd])
+    var parameters = Array<Parameter>{}
+    i = skipSpace(text, subtypeEnd)
+    for i < text.len() {
+        if text[i] != 59 {
+            return failed("invalid parameter")
+        }
+        i = skipSpace(text, i + 1)
+        if i >= text.len() || text[i] == 59 {
+            continue
+        }
+        let nameEnd = tokenEnd(text, i)
+        if nameEnd == i || nameEnd >= text.len() || text[nameEnd] != 61 {
+            return failed("invalid parameter")
+        }
+        let name = lowerASCII(text[i:nameEnd])
+        i = nameEnd + 1
+        var value = ""
+        if i < text.len() && text[i] == 34 {
+            var data = Array<byte>{}
+            var closed = false
+            i += 1
+            for i < text.len() {
+                var c = text[i]
+                if c == 34 {
+                    closed = true
+                    i += 1
+                    break
+                }
+                if c == 92 {
+                    i += 1
+                    if i >= text.len() {
+                        break
+                    }
+                    c = text[i]
+                }
+                if (c < 32 && c != 9) || c > 126 {
+                    return failed("invalid parameter")
+                }
+                data.push(c)
+                i += 1
+            }
+            if !closed {
+                return failed("unterminated quoted string")
+            }
+            let decoded, _ = strings.FromBytes(data[:])
+            value = decoded
+        } else {
+            let valueEnd = tokenEnd(text, i)
+            if valueEnd == i {
+                return failed("invalid parameter")
+            }
+            value = text[i:valueEnd]
+            i = valueEnd
+        }
+        for parameter in parameters {
+            if parameter.Name == name {
+                return failed("duplicate parameter")
+            }
+        }
+        parameters.push(Parameter{Name: name, Value: value})
+        i = skipSpace(text, i)
+    }
+    return MediaType{Type: mediaType, Parameters: parameters}, nil
+}
+
+func FormatMediaType(m MediaType) (string, error) {
+    let kind, subtype, found = strings.Cut(m.Type, "/")
+    if !found || !token(kind) || !token(subtype) {
+        return "", error("mime: invalid media type")
+    }
+    var text = lowerASCII(m.Type)
+    var seen = Array<string>{}
+    for parameter in m.Parameters {
+        if !token(parameter.Name) {
+            return "", error("mime: invalid parameter")
+        }
+        let name = lowerASCII(parameter.Name)
+        for earlier in seen {
+            if earlier == name {
+                return "", error("mime: duplicate parameter")
+            }
+        }
+        seen.push(name)
+        text += "; " + name + "="
+        if token(parameter.Value) {
+            text += parameter.Value
+            continue
+        }
+        var quoted = "\""
+        for var i = 0; i < parameter.Value.len(); i += 1 {
+            let c = parameter.Value[i]
+            if (c < 32 && c != 9) || c > 126 {
+                return "", error("mime: invalid parameter")
+            }
+            if c == 34 || c == 92 {
+                quoted += "\\"
+            }
+            quoted += parameter.Value[i:i + 1]
+        }
+        text += quoted + "\""
+    }
+    return text, nil
+}
+
+func TypeByExtension(ext string) (string, bool) {
+    let key = lowerASCII(ext)
+    if key == ".html" || key == ".htm" {
+        return "text/html; charset=utf-8", true
+    }
+    if key == ".css" {
+        return "text/css; charset=utf-8", true
+    }
+    if key == ".js" || key == ".mjs" {
+        return "text/javascript; charset=utf-8", true
+    }
+    if key == ".json" {
+        return "application/json", true
+    }
+    if key == ".txt" {
+        return "text/plain; charset=utf-8", true
+    }
+    if key == ".csv" {
+        return "text/csv; charset=utf-8", true
+    }
+    if key == ".md" {
+        return "text/markdown; charset=utf-8", true
+    }
+    if key == ".xml" {
+        return "application/xml", true
+    }
+    if key == ".svg" {
+        return "image/svg+xml", true
+    }
+    if key == ".png" {
+        return "image/png", true
+    }
+    if key == ".jpg" || key == ".jpeg" {
+        return "image/jpeg", true
+    }
+    if key == ".gif" {
+        return "image/gif", true
+    }
+    if key == ".webp" {
+        return "image/webp", true
+    }
+    if key == ".avif" {
+        return "image/avif", true
+    }
+    if key == ".ico" {
+        return "image/vnd.microsoft.icon", true
+    }
+    if key == ".pdf" {
+        return "application/pdf", true
+    }
+    if key == ".wasm" {
+        return "application/wasm", true
+    }
+    if key == ".woff" {
+        return "font/woff", true
+    }
+    if key == ".woff2" {
+        return "font/woff2", true
+    }
+    if key == ".ttf" {
+        return "font/ttf", true
+    }
+    if key == ".otf" {
+        return "font/otf", true
+    }
+    if key == ".mp3" {
+        return "audio/mpeg", true
+    }
+    if key == ".wav" {
+        return "audio/wav", true
+    }
+    if key == ".ogg" {
+        return "audio/ogg", true
+    }
+    if key == ".mp4" {
+        return "video/mp4", true
+    }
+    if key == ".webm" {
+        return "video/webm", true
+    }
+    if key == ".zip" {
+        return "application/zip", true
+    }
+    if key == ".gz" {
+        return "application/gzip", true
+    }
+    return "", false
+}

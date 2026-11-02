@@ -1,19 +1,28 @@
 package os
 
 func ReadFile(path string) (Array<byte>, error)
+
 func WriteFile(path string, data []byte, perm int) error
+
 func MkdirAll(path string, perm int) error
+
 func Remove(path string) error
+
 func RemoveAll(path string) error
+
 func Rename(oldPath string, newPath string) error
+
 func Getenv(key string) string
+
 func Getwd() (string, error)
+
 func Args() Array<string>
+
 func Exit(code int)
 
 type DirEntry struct {
-    name    string
-    dir     bool
+    name string
+    dir bool
     symlink bool
 }
 
@@ -43,12 +52,13 @@ func ReadDir(path string) (Array<DirEntry>, error) {
 }
 
 type FileInfo struct {
-    name     string
-    size     int
-    mode     int
-    dir      bool
+    name string
+    size int
+    mode int
+    dir bool
     modified int
-    symlink  bool
+    symlink bool
+    regular bool
 }
 
 func (i FileInfo) Name() string {
@@ -75,6 +85,10 @@ func (i FileInfo) IsSymlink() bool {
     return i.symlink
 }
 
+func (i FileInfo) IsRegular() bool {
+    return i.regular
+}
+
 func Stat(path string) (FileInfo, error) {
     return describe(path, true)
 }
@@ -85,10 +99,14 @@ func Lstat(path string) (FileInfo, error) {
 
 func describe(path string, follow bool) (FileInfo, error) {
     let fields, err = statFields(path, follow)
+    return infoFrom(baseName(path), fields, err)
+}
+
+func infoFrom(name string, fields Array<int>, err error) (FileInfo, error) {
     if err != nil {
-        return FileInfo{name: "", size: 0, mode: 0, dir: false, modified: 0, symlink: false}, err
+        return FileInfo{name: "", size: 0, mode: 0, dir: false, modified: 0, symlink: false, regular: false}, err
     }
-    return FileInfo{name: baseName(path), size: fields[0], mode: fields[1], dir: fields[2] == 1, modified: fields[3], symlink: fields[4] == 1}, nil
+    return FileInfo{name: name, size: fields[0], mode: fields[1], dir: fields[2] == 1, modified: fields[3], symlink: fields[4] == 1, regular: fields[5] == 1}, nil
 }
 
 func baseName(path string) string {
@@ -104,5 +122,7 @@ func baseName(path string) string {
 }
 
 func pathSeparator(value byte) bool
+
 func dirNames(path string) (Array<string>, error)
+
 func statFields(path string, follow bool) (Array<int>, error)

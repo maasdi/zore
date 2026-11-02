@@ -293,32 +293,51 @@ pub unsafe extern "C" fn zore_native_os_stat_fields(
         }
     });
     let value = match result {
-        Ok(metadata) => {
-            #[cfg(unix)]
-            let mode = {
-                use std::os::unix::fs::PermissionsExt;
-                i64::from(metadata.permissions().mode() & 0o7777)
-            };
-            #[cfg(not(unix))]
-            let mode = if metadata.permissions().readonly() {
-                0o444
-            } else {
-                0o666
-            };
-            let size = i64::try_from(metadata.len()).unwrap_or(i64::MAX);
-            let modified = metadata.modified().map_or(0, unix_seconds);
-            WordArrayError::ok(WordArray::ints(&[
-                size,
-                mode,
-                i64::from(metadata.is_dir()),
-                modified,
-                i64::from(metadata.file_type().is_symlink()),
-            ]))
-        }
+        Ok(metadata) => WordArrayError::ok(WordArray::ints(&metadata_fields(&metadata))),
         Err(error) => WordArrayError::failed(&format!(
             "{}: {error}",
             if follow { "os.Stat" } else { "os.Lstat" }
         )),
+    };
+    // SAFETY: guaranteed by the caller.
+    unsafe { out.write(value) };
+}
+
+fn metadata_fields(metadata: &std::fs::Metadata) -> [i64; 6] {
+    #[cfg(unix)]
+    let mode = {
+        use std::os::unix::fs::PermissionsExt;
+        i64::from(metadata.permissions().mode() & 0o7777)
+    };
+    #[cfg(not(unix))]
+    let mode = if metadata.permissions().readonly() {
+        0o444
+    } else {
+        0o666
+    };
+    [
+        i64::try_from(metadata.len()).unwrap_or(i64::MAX),
+        mode,
+        i64::from(metadata.is_dir()),
+        metadata.modified().map_or(0, unix_seconds),
+        i64::from(metadata.file_type().is_symlink()),
+        i64::from(metadata.is_file()),
+    ]
+}
+
+/// # Safety
+/// `out` must be writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn zore_native_os_file_stat(out: *mut WordArrayError, id: i64) {
+    let handle = lookup(id);
+    let result = blocking::run(move || match handle.as_deref() {
+        Some(Handle::File(file)) => file.metadata().map_err(|error| error.to_string()),
+        Some(_) => Err("not a file on disk".to_string()),
+        None => Err("not an open file".to_string()),
+    });
+    let value = match result {
+        Ok(metadata) => WordArrayError::ok(WordArray::ints(&metadata_fields(&metadata))),
+        Err(error) => WordArrayError::failed(&format!("os.File.Stat: {error}")),
     };
     // SAFETY: guaranteed by the caller.
     unsafe { out.write(value) };

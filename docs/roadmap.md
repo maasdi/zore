@@ -192,8 +192,9 @@ synchronization, and an atomic-write helper wait for their own contracts; see
 
 Issue [#217](https://github.com/maasdi/zore/issues/217) adds HTTP application
 helpers in steps. The first step, §37.16, adds cookies and URL-encoded forms to
-`std/net/http`. Multipart forms with temporary-file cleanup, MIME types, and
-file serving are the next steps; see
+`std/net/http`. The second step, §37.17, adds `std/mime` and file serving
+from a root folder. Multipart forms with temporary-file cleanup and an
+application example are the next steps; see
 [the HTTP conformance list](../tests/conformance/http.md).
 
 Issue [#216](https://github.com/maasdi/zore/issues/216) adds bounded and

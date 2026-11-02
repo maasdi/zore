@@ -163,6 +163,13 @@ func (w mut ResponseWriter) SetCookie(cookie Cookie) error {
     return w.AddHeader(HeaderSetCookie, text)
 }
 
+func unquoted(text string) string {
+    if text.len() >= 2 && text[0] == 34 && text[text.len() - 1] == 34 {
+        return text[1:text.len() - 1]
+    }
+    return text
+}
+
 func receivedCookieValue(text string) bool {
     for var i = 0; i < text.len(); i += 1 {
         let c = text[i]

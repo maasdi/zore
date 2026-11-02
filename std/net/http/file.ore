@@ -1,0 +1,122 @@
+package http
+
+import "std/io"
+import "std/mime"
+import "std/os"
+import "std/path/filepath"
+import "std/strconv"
+import "std/strings"
+import "std/time"
+
+func fileError(problem string) error {
+    return error("http.ServeFile: " + problem)
+}
+
+func reservedDeviceName(segment string) bool {
+    let stem, _, _ = strings.Cut(strings.ToUpper(segment), ".")
+    let base = strings.TrimRight(stem, " ")
+    if base == "CON" || base == "PRN" || base == "AUX" || base == "NUL" || base == "CONIN$" || base == "CONOUT$" {
+        return true
+    }
+    if !strings.HasPrefix(base, "COM") && !strings.HasPrefix(base, "LPT") {
+        return false
+    }
+    let suffix = base[3:]
+    if suffix.len() == 1 {
+        return suffix[0] >= 48 && suffix[0] <= 57
+    }
+    return suffix == "\u00b9" || suffix == "\u00b2" || suffix == "\u00b3"
+}
+
+func servableSegment(segment string) bool {
+    if segment == "" || segment[0] == 46 {
+        return false
+    }
+    let last = segment[segment.len() - 1]
+    if last == 46 || last == 32 {
+        return false
+    }
+    for var i = 0; i < segment.len(); i += 1 {
+        let c = segment[i]
+        if c < 32 || c == 127 || c == 92 || c == 58 || c == 126 {
+            return false
+        }
+    }
+    return !reservedDeviceName(segment)
+}
+
+func notFound(w mut ResponseWriter) error {
+    return w.Text(StatusNotFound, "404 not found")
+}
+
+func methodRefused(w mut ResponseWriter, r Request) (bool, error) {
+    let method = r.Method()
+    if method == "GET" || method == "HEAD" {
+        return false, nil
+    }
+    w.SetHeader(HeaderAllow, "GET, HEAD")?
+    return true, w.Text(StatusMethodNotAllowed, "405 method not allowed")
+}
+
+func ServeFileIn(w mut ResponseWriter, r Request, root string, name string) error {
+    if root == "" {
+        return fileError("empty root")
+    }
+    let refused, err = methodRefused(w, r)
+    if err != nil || refused {
+        return err
+    }
+    let segments = strings.Split(name, "/")
+    var parts = Array<string>{root}
+    for segment in segments {
+        if !servableSegment(segment) {
+            return notFound(w)
+        }
+        parts.push(segment)
+        let info, statErr = os.Lstat(filepath.Join(parts[:]))
+        if statErr != nil || info.IsSymlink() {
+            return notFound(w)
+        }
+    }
+    return ServeFile(w, r, filepath.Join(parts[:]))
+}
+
+func ServeFile(w mut ResponseWriter, r Request, path string) error {
+    let refused, err = methodRefused(w, r)
+    if err != nil || refused {
+        return err
+    }
+    let checked, statErr = os.Stat(path)
+    if statErr != nil || !checked.IsRegular() {
+        return notFound(w)
+    }
+    var file, openErr = os.Open(path)
+    if openErr != nil {
+        return notFound(w)
+    }
+    let info, infoErr = file.Stat()
+    if infoErr != nil || !info.IsRegular() {
+        return notFound(w)
+    }
+    let size = info.Size()
+    var contentType = "application/octet-stream"
+    let known, found = mime.TypeByExtension(filepath.Ext(path))
+    if found {
+        contentType = known
+    }
+    w.SetHeader(HeaderContentType, contentType)?
+    w.SetHeader("X-Content-Type-Options", "nosniff")?
+    w.SetHeader(HeaderContentLength, strconv.Itoa(size))?
+    if info.ModTime() > 0 {
+        let modified, timeErr = time.Unix(info.ModTime(), 0)
+        if timeErr == nil {
+            w.SetHeader("Last-Modified", FormatDate(modified))?
+        }
+    }
+    w.WriteHeader(StatusOK)?
+    if r.Method() == "HEAD" || size == 0 {
+        return nil
+    }
+    let _, copyErr = io.CopyN(w, file, size)
+    return copyErr
+}

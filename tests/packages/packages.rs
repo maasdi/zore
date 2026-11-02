@@ -846,6 +846,43 @@ fn http_cookies_and_forms_check_their_receivers() {
 }
 
 #[test]
+fn mime_types_and_file_serving_check_their_arguments() {
+    let imports = "import \"std/mime\"\nimport \"std/net/http\"";
+    let handler = |body: &str| {
+        format!(
+            "package main\n{imports}\nfunc handle(w mut http.ResponseWriter, r mut http.Request) error {{\n{body}\nreturn nil\n}}\nfunc main() {{}}\n"
+        )
+    };
+    accepts(&[(
+        "main.ore",
+        &handler(
+            "let parsed, err = mime.ParseMediaType(\"text/plain; charset=utf-8\")\n_ = err\nlet charset, found = parsed.Parameter(\"charset\")\n_ = charset\n_ = found\nvar built = mime.MediaType{Type: \"a/b\", Parameters: Array<mime.Parameter>{mime.Parameter{Name: \"x\", Value: \"1\"}}}\nbuilt.Parameters.push(mime.Parameter{Name: \"y\", Value: \"2\"})\nlet text, formatErr = mime.FormatMediaType(built)\n_ = text\n_ = formatErr\nlet kind, known = mime.TypeByExtension(\".png\")\n_ = kind\n_ = known\nhttp.ServeFileIn(w, r, \"public\", \"index.html\")?\nreturn http.ServeFile(w, r, \"public/index.html\")",
+        ),
+    )]);
+    for (body, message) in [
+        (
+            "mime.ParseMediaType(\"a/b\")",
+            "must be used or explicitly discarded",
+        ),
+        (
+            "let kind = mime.TypeByExtension(\".png\")",
+            "this call returns 2 values",
+        ),
+        (
+            "http.ServeFile(w, r, \"x\")",
+            "must be used or explicitly discarded",
+        ),
+        ("http.ServeFileIn(w, r, \"x\")?", "takes 4 arguments"),
+        (
+            "let x = 1\nhttp.ServeFile(w, x, \"x\")?",
+            "mismatched types",
+        ),
+    ] {
+        rejects(&[("main.ore", &handler(body))], message);
+    }
+}
+
+#[test]
 fn time_types_do_not_mix() {
     accepts(&[(
         "main.ore",

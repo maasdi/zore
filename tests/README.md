@@ -424,6 +424,12 @@ folder walks to `codegen/files.rs`: flag validation, seeking and syncing,
 collision-free temporary names under concurrency, rename replacement and
 refusals, walk order, skipping, links, and errors that stay with their entry.
 
+`conformance/http.md` also maps media types and file serving to
+`codegen/http.rs`: media-type parsing, writing, and round trips, the
+extension table, and a real server that serves files with their headers,
+answers `HEAD` and `405`, and refuses hidden names, device names, links, and
+paths outside its root.
+
 `conformance/http.md` also maps HTTP cookies and URL-encoded forms to
 `codegen/http.rs`: every `Set-Cookie` attribute and refusal, lenient reading
 of repeated and malformed `Cookie` headers, cookies after the response

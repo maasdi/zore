@@ -100,3 +100,12 @@ macOS" run only there.
 | `let position = file.Seek(0, io.SeekStart)` | Rejected: two results |
 | `os.CreateTemp("", "x")` as a statement | Rejected: the results must be used |
 | `filepath.Walker{root: "."}` | Rejected: fields are not exported |
+
+## Describing open files
+
+| Scenario | Expected result (`codegen/files.rs::open_files_describe_themselves_and_regular_files_are_marked`) |
+| --- | --- |
+| `File.Stat` of an opened five-byte file | Name `data.txt`, size 5, regular, not a folder, a modification time |
+| The file rewritten to 13 bytes, then `File.Stat` again | Size 13 |
+| `os.Stat` of the file; of a folder | `IsRegular` true; false with `IsDir` true |
+| `File.Stat` of standard input | An `os.File.Stat: ...` error |

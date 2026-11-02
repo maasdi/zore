@@ -602,3 +602,44 @@ func main() {
     assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
     assert_eq!(stdout(&output), "/tmp\ntrue\n/tmp/\ntrue\n");
 }
+
+#[test]
+fn open_files_describe_themselves_and_regular_files_are_marked() {
+    let source = format!(
+        r#"package main
+import "std/errors"
+import "std/os"
+import "std/strings"
+{CHECK}
+func main() {{
+    check(os.WriteFile("DIR/data.txt", strings.Bytes("hello")[:], 420) == nil, "write")
+    var file, err = os.Open("DIR/data.txt")
+    check(err == nil, "open")
+    let info, statErr = file.Stat()
+    check(statErr == nil, "stat")
+    println(info.Name()); println(info.Size()); println(info.IsRegular()); println(info.IsDir())
+    check(info.ModTime() > 0, "time")
+    check(os.WriteFile("DIR/data.txt", strings.Bytes("hello, longer")[:], 420) == nil, "rewrite")
+    let grown, _ = file.Stat()
+    println(grown.Size())
+    let byPath, _ = os.Stat("DIR/data.txt")
+    println(byPath.IsRegular())
+    check(os.MkdirAll("DIR/folder", 493) == nil, "mkdir")
+    let folder, _ = os.Stat("DIR/folder")
+    println(folder.IsRegular()); println(folder.IsDir())
+    let _, missing = os.Stat("DIR/missing")
+    println(missing != nil)
+    let closeErr = file.Close()
+    check(closeErr == nil, "close")
+    let stdin = os.Stdin()
+    let _, consoleErr = stdin.Stat()
+    check(failsWith(consoleErr, "os.File.Stat: "), "stdin stat")
+    println("done")
+}}
+"#
+    );
+    prints_in(
+        &source,
+        "data.txt\n5\ntrue\nfalse\n13\ntrue\nfalse\ntrue\ntrue\ndone\n",
+    );
+}
