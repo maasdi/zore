@@ -9969,11 +9969,12 @@ error:
 | --- | --- |
 | `Name` | A nonempty HTTP token |
 | `Value` | Empty, or only cookie octets: printable ASCII except space, `"`, `,`, `;`, and `\`. Values are never quoted or escaped for the caller; encode other bytes first, for example with `url.QueryEscape` or base64 |
-| `Path` | Empty, or printable ASCII and space without `;` |
-| `Domain` | Empty, or a host name of letters, digits, `-`, and `.` in labels of 1 to 63 bytes; one leading `.` is allowed and dropped |
+| `Path` | Empty, or starting with `/` and holding only printable ASCII and space without `;` |
+| `Domain` | Empty, or a host name of at most 253 bytes: letters, digits, and `-` in labels of 1 to 63 bytes that neither start nor end with `-`, joined by single `.`; one leading `.` is allowed and dropped, a trailing `.` is refused |
 | `MaxAge` | `0` leaves out `Max-Age`; a positive value writes it; a negative value writes `Max-Age=0`, which asks the browser to delete the cookie now |
 | `SameSite` | `""` (left out), `"Lax"`, `"Strict"`, or `"None"`; `"None"` requires `Secure` |
-| Name prefixes | A name starting with `__Secure-` requires `Secure`; `__Host-` requires `Secure`, `Path` `"/"`, and no `Domain` |
+| `Expires` | When set, a time in the year 1601 or later in UTC, since browsers ignore earlier dates |
+| Name prefixes | A name starting with `__Secure-` requires `Secure`; `__Host-` requires `Secure`, `Path` `"/"`, and no `Domain`. Prefixes match without regard to ASCII case, as browsers match them |
 
 The result is `name=value` followed by the attributes in this order, each after
 `; `: `Path`, `Domain`, `Expires` (an IMF-fixdate from `http.FormatDate`),
@@ -9999,8 +10000,9 @@ browsers do not send attributes back. The request header limit
 
 **Reading forms.** `ReadForm` accepts exactly one `Content-Type` header whose
 media type is `application/x-www-form-urlencoded`, compared without regard to
-ASCII case. Parameters are allowed, but a `charset` parameter must be `utf-8`
-in any case, with or without quotes. It then reads the body with
+ASCII case. Parameters after `;` are allowed and empty ones are ignored. Each
+needs a token name and `=`; values are not checked, except that a `charset`
+value must be `utf-8` in any case, bare or inside one pair of quotes. It then reads the body with
 `io.ReadAtMost(r, limit)` and decodes it with `url.ParseQuery`. Results:
 
 | Input | Result |
@@ -10017,8 +10019,8 @@ Every failure returns empty values. `ReadForm` does not look at the query
 string; `Request.Query` reads that, so a handler that wants both reads both and
 decides which wins. The server body limit (`Config.MaxBodyBytes`) still
 applies on top of `limit`; when it is reached first, `ReadForm` returns that
-`Read` error and the sticky body rules of §37.6 decide the response. Like any body read, `ReadForm` must run
-before the response starts.
+`Read` error and the sticky body rules of §37.6 decide the response. Like any
+body read, `ReadForm` must run before the response starts.
 
 ```ore
 func login(w mut http.ResponseWriter, r mut http.Request) error {

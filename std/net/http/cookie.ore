@@ -89,6 +89,10 @@ func cookieDomain(text string) bool {
     return true
 }
 
+func prefixFold(text string, prefix string) bool {
+    return text.len() >= prefix.len() && asciiEqual(text[:prefix.len()], prefix)
+}
+
 func cookieError(problem string) (string, error) {
     return "", error("http.Cookie: " + problem)
 }
@@ -100,7 +104,7 @@ func FormatSetCookie(cookie Cookie) (string, error) {
     if !cookieValue(cookie.Value) {
         return cookieError("invalid value")
     }
-    if !attributeValue(cookie.Path) {
+    if !attributeValue(cookie.Path) || (cookie.Path != "" && cookie.Path[0] != 47) {
         return cookieError("invalid path")
     }
     if cookie.Domain != "" && !cookieDomain(cookie.Domain) {
@@ -113,11 +117,14 @@ func FormatSetCookie(cookie Cookie) (string, error) {
     if sameSite == "None" && !cookie.Secure {
         return cookieError("SameSite=None requires Secure")
     }
-    if strings.HasPrefix(cookie.Name, "__Secure-") && !cookie.Secure {
+    if prefixFold(cookie.Name, "__Secure-") && !cookie.Secure {
         return cookieError("__Secure- prefix requires Secure")
     }
-    if strings.HasPrefix(cookie.Name, "__Host-") && (!cookie.Secure || cookie.Path != "/" || cookie.Domain != "") {
+    if prefixFold(cookie.Name, "__Host-") && (!cookie.Secure || cookie.Path != "/" || cookie.Domain != "") {
         return cookieError("__Host- prefix requires Secure, Path=/ and no Domain")
+    }
+    if cookie.hasExpires && cookie.expires.UTC().Year() < 1601 {
+        return cookieError("Expires before 1601")
     }
     var text = cookie.Name + "=" + cookie.Value
     if cookie.Path != "" {
@@ -180,10 +187,7 @@ func parseCookies(lines Array<string>, wanted string, first bool) Array<Cookie> 
                 continue
             }
             let name = strings.Trim(rawName, " \t")
-            var value = strings.Trim(rawValue, " \t")
-            if value.len() >= 2 && value[0] == 34 && value[value.len() - 1] == 34 {
-                value = value[1:value.len() - 1]
-            }
+            let value = unquoted(strings.Trim(rawValue, " \t"))
             if !token(name) || !receivedCookieValue(value) {
                 continue
             }

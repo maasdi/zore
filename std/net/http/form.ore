@@ -10,6 +10,13 @@ func formError(problem string) (url.Values, error) {
     return url.NewValues(), error("http.Request.ReadForm: " + problem)
 }
 
+func unquoted(text string) string {
+    if text.len() >= 2 && text[0] == 34 && text[text.len() - 1] == 34 {
+        return text[1:text.len() - 1]
+    }
+    return text
+}
+
 func formContentType(value string) bool {
     let mediaType, parameters, _ = strings.Cut(value, ";")
     if !strings.EqualFold(strings.Trim(mediaType, " \t"), ContentTypeForm) {
@@ -20,11 +27,15 @@ func formContentType(value string) bool {
     }
     let pairs = strings.Split(parameters, ";")
     for pair in pairs {
-        let rawName, rawValue, found = strings.Cut(strings.Trim(pair, " \t"), "=")
+        let parameter = strings.Trim(pair, " \t")
+        if parameter == "" {
+            continue
+        }
+        let rawName, rawValue, found = strings.Cut(parameter, "=")
         if !found || !token(rawName) {
             return false
         }
-        if strings.EqualFold(rawName, "charset") && !strings.EqualFold(strings.Trim(rawValue, "\""), "utf-8") {
+        if strings.EqualFold(rawName, "charset") && !strings.EqualFold(unquoted(rawValue), "utf-8") {
             return false
         }
     }

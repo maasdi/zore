@@ -1408,6 +1408,7 @@ fn http_cookie_serialization_checks_every_attribute() {
         r#"package main
 import "std/errors"
 import "std/net/http"
+import "std/strings"
 import "std/time"
 func show(c http.Cookie) {
     let text, err = http.FormatSetCookie(c)
@@ -1440,9 +1441,14 @@ func main() {
     show(http.NewCookie("", "x"))
     show(http.NewCookie("a b", "x"))
     var path = http.NewCookie("p", "1")
-    path.Path = "/a;b"
-    show(path)
-    let domains = [string; 5]{"-bad.com", "a..b", ".", "a_b.com", "ok.example"}
+    let paths = [string; 4]{"/a;b", "/a\r\nX: y", "/a\tb", "relative"}
+    for value in paths {
+        path.Path = value
+        show(path)
+    }
+    let longLabel = strings.Repeat("a", 64)
+    let longName = strings.Repeat("abcdefghi.", 25) + "abcd"
+    let domains = [string; 8]{"-bad.com", "a..b", ".", "a_b.com", "a.b.", longLabel, longName, "ok.example"}
     for domain in domains {
         var c = http.NewCookie("d", "1")
         c.Domain = domain
@@ -1465,6 +1471,26 @@ func main() {
     show(host)
     host.Domain = "example.com"
     show(host)
+    var hostPath = http.NewCookie("__Host-id", "1")
+    hostPath.Secure = true
+    hostPath.Path = "/x"
+    show(hostPath)
+    hostPath.Path = "/"
+    hostPath.Secure = false
+    show(hostPath)
+    var lowerHost = http.NewCookie("__host-id", "1")
+    lowerHost.Secure = true
+    lowerHost.Path = "/"
+    lowerHost.Domain = "evil.example"
+    show(lowerHost)
+    show(http.NewCookie("__SECURE-id", "1"))
+    var early = http.NewCookie("e", "1")
+    let year1600, _ = time.Date(1600, 12, 31, 23, 59, 59, 0, time.UTCZone)
+    early.SetExpires(year1600)
+    show(early)
+    let year1601, _ = time.Date(1601, 1, 1, 0, 0, 0, 0, time.UTCZone)
+    early.SetExpires(year1601)
+    show(early)
 }
 "#,
         "session=abc-123; Path=/app; Domain=Example.com; Expires=Sun, 06 Nov 1994 08:49:37 GMT; Max-Age=3600; HttpOnly; Secure; SameSite=Lax\n\
@@ -1473,11 +1499,14 @@ gone=; Max-Age=0\n\
 plain=x\n\
 http.Cookie: invalid value\nhttp.Cookie: invalid value\nhttp.Cookie: invalid value\nhttp.Cookie: invalid value\nhttp.Cookie: invalid value\nhttp.Cookie: invalid value\n\
 http.Cookie: invalid name\nhttp.Cookie: invalid name\n\
-http.Cookie: invalid path\n\
-http.Cookie: invalid domain\nhttp.Cookie: invalid domain\nhttp.Cookie: invalid domain\nhttp.Cookie: invalid domain\nd=1; Domain=ok.example\n\
+http.Cookie: invalid path\nhttp.Cookie: invalid path\nhttp.Cookie: invalid path\nhttp.Cookie: invalid path\n\
+http.Cookie: invalid domain\nhttp.Cookie: invalid domain\nhttp.Cookie: invalid domain\nhttp.Cookie: invalid domain\nhttp.Cookie: invalid domain\nhttp.Cookie: invalid domain\nhttp.Cookie: invalid domain\nd=1; Domain=ok.example\n\
 http.Cookie: invalid SameSite\nhttp.Cookie: SameSite=None requires Secure\ns=1; Secure; SameSite=None\n\
 http.Cookie: __Secure- prefix requires Secure\n__Secure-id=1; Secure\n\
-__Host-id=1; Path=/; Secure\nhttp.Cookie: __Host- prefix requires Secure, Path=/ and no Domain\n",
+__Host-id=1; Path=/; Secure\nhttp.Cookie: __Host- prefix requires Secure, Path=/ and no Domain\n\
+http.Cookie: __Host- prefix requires Secure, Path=/ and no Domain\nhttp.Cookie: __Host- prefix requires Secure, Path=/ and no Domain\n\
+http.Cookie: __Host- prefix requires Secure, Path=/ and no Domain\nhttp.Cookie: __Secure- prefix requires Secure\n\
+http.Cookie: Expires before 1601\ne=1; Expires=Mon, 01 Jan 1601 00:00:00 GMT\n",
     );
 }
 
@@ -1510,7 +1539,10 @@ func late(w mut http.ResponseWriter, r mut http.Request) error {
     return nil
 }
 func form(w mut http.ResponseWriter, r mut http.Request) error {
-    let values, err = r.ReadForm(24)
+    var limit = 24
+    if r.RawQuery() == "zero" { limit = 0 }
+    if r.RawQuery() == "negative" { limit = -1 }
+    let values, err = r.ReadForm(limit)
     if err == io.LimitExceeded { return w.Text(413, "limit") }
     if err != nil { return w.Text(400, errors.Message(err)) }
     if values.Entries().len() != 0 && strings.HasPrefix(r.RawQuery(), "fail") { return error("handler failure") }
@@ -1593,6 +1625,24 @@ fn http_cookies_and_forms_on_loopback() {
             "k=v|",
         ),
         (
+            Some("application/x-www-form-urlencoded; charset=utf-8;"),
+            "k=v",
+            200,
+            "k=v|",
+        ),
+        (
+            Some("application/x-www-form-urlencoded;"),
+            "k=v",
+            200,
+            "k=v|",
+        ),
+        (
+            Some("application/x-www-form-urlencoded; charset=\"utf-8"),
+            "k=v",
+            400,
+            "http.Request.ReadForm: unsupported content type",
+        ),
+        (
             Some(form),
             "0123456789abcdefghijklmn",
             200,
@@ -1645,6 +1695,19 @@ fn http_cookies_and_forms_on_loopback() {
         "POST /form HTTP/1.1\r\nHost: x\r\nContent-Type: {form}\r\nContent-Type: {form}\r\nContent-Length: 3\r\nConnection: close\r\n\r\na=1"
     ));
     status(&twice, 400);
+    let lower = server
+        .exchange("GET /cookies HTTP/1.1\r\nHost: x\r\ncookie: low=1\r\nConnection: close\r\n\r\n");
+    assert_eq!(body_of(&lower), "low=1| none", "{lower}");
+    let zero =
+        server.exchange(&form_request(Some(form), "").replace("POST /form ", "POST /form?zero "));
+    assert_eq!(body_of(&zero), "", "{zero}");
+    let zero_over =
+        server.exchange(&form_request(Some(form), "a").replace("POST /form ", "POST /form?zero "));
+    status(&zero_over, 413);
+    let negative = server
+        .exchange(&form_request(Some(form), "a=1").replace("POST /form ", "POST /form?negative "));
+    status(&negative, 400);
+    assert_eq!(body_of(&negative), "http.Request.ReadForm: negative limit");
     let over_server_limit = server.exchange(&form_request(Some(form), &"a".repeat(65)));
     status(&over_server_limit, 413);
     let failed = server.exchange(&format!(
