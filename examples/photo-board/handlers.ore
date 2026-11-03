@@ -1,0 +1,146 @@
+package main
+
+import "std/io"
+import "std/log"
+import "std/mime"
+import "std/net/http"
+import "std/net/url"
+import "std/os"
+import "std/path/filepath"
+import "std/strconv"
+import "std/strings"
+
+const nameCookie = "board_name"
+const maxNameFormBytes = 1024
+const maxPhotoBytes = 5242880
+const maxUploadBytes = 5308416
+
+func validName(name string) bool {
+    if name == "" || name.len() > 40 {
+        return false
+    }
+    for var i = 0; i < name.len(); i += 1 {
+        let c = name[i]
+        if !((c >= 65 && c <= 90) || (c >= 97 && c <= 122) || (c >= 48 && c <= 57) || c == 32 || c == 45 || c == 95) {
+            return false
+        }
+    }
+    return true
+}
+
+func visitorName(r http.Request) (string, bool) {
+    let cookie, found = r.Cookie(nameCookie)
+    if !found {
+        return "", false
+    }
+    let name, err = url.QueryUnescape(cookie.Value)
+    if err != nil || !validName(name) {
+        return "", false
+    }
+    return name, true
+}
+
+func redirectHome(w mut http.ResponseWriter) error {
+    w.SetHeader(http.HeaderLocation, "/")?
+    return w.WriteHeader(http.StatusSeeOther)
+}
+
+func page(w mut http.ResponseWriter, status int, html string) error {
+    let data = strings.Bytes(html)
+    w.SetHeader(http.HeaderContentType, "text/html; charset=utf-8")?
+    w.SetHeader(http.HeaderContentLength, strconv.Itoa(data.len()))?
+    w.WriteHeader(status)?
+    let _, err = w.Write(data[:])
+    return err
+}
+
+func showBoard(board Board, w mut http.ResponseWriter, r mut http.Request) error {
+    let name, named = visitorName(r)
+    return page(w, http.StatusOK, boardPage(name, named, board.Photos()))
+}
+
+func saveName(w mut http.ResponseWriter, r mut http.Request) error {
+    let form, err = r.ReadForm(maxNameFormBytes)
+    if err == io.LimitExceeded {
+        return w.Text(http.StatusContentTooLarge, "the form is too large")
+    }
+    if err != nil {
+        return w.Text(http.StatusBadRequest, "expected a form")
+    }
+    let raw, _ = form.Get("name")
+    let name = strings.TrimSpace(raw)
+    if !validName(name) {
+        return w.Text(http.StatusBadRequest, "use 1 to 40 letters, digits, spaces, - or _")
+    }
+    var cookie = http.NewCookie(nameCookie, url.QueryEscape(name))
+    cookie.Path = "/"
+    cookie.HttpOnly = true
+    cookie.SameSite = "Lax"
+    cookie.MaxAge = 2592000
+    w.SetCookie(cookie)?
+    return redirectHome(w)
+}
+
+func forgetName(w mut http.ResponseWriter, r mut http.Request) error {
+    var cookie = http.NewCookie(nameCookie, "")
+    cookie.Path = "/"
+    cookie.MaxAge = -1
+    w.SetCookie(cookie)?
+    return redirectHome(w)
+}
+
+func photoExtension(filename string) (string, bool) {
+    let ext = strings.ToLower(filepath.Ext(filename))
+    if ext == ".svg" {
+        return "", false
+    }
+    let kind, known = mime.TypeByExtension(ext)
+    return ext, known && strings.HasPrefix(kind, "image/")
+}
+
+func uploadPhoto(board Board, logger log.Logger, w mut http.ResponseWriter, r mut http.Request) error {
+    let owner, named = visitorName(r)
+    if !named {
+        return w.Text(http.StatusUnauthorized, "choose a name first")
+    }
+    var limits = http.DefaultMultipartLimits()
+    limits.MaxBytes = maxUploadBytes
+    limits.MaxFileBytes = maxPhotoBytes
+    limits.MaxParts = 4
+    limits.MaxValueBytes = 1024
+    let form, err = r.ReadMultipartForm(limits)
+    if err == io.LimitExceeded {
+        return w.Text(http.StatusContentTooLarge, "photos can be at most 5 MiB")
+    }
+    if err != nil {
+        return w.Text(http.StatusBadRequest, "expected a photo upload form")
+    }
+    let rawTitle, _ = form.Value("title")
+    let title = strings.TrimSpace(rawTitle)
+    if title == "" || title.len() > 100 {
+        return w.Text(http.StatusBadRequest, "the title must have 1 to 100 bytes")
+    }
+    let upload, found = form.File("photo")
+    if !found {
+        return w.Text(http.StatusBadRequest, "choose a photo")
+    }
+    let ext, allowed = photoExtension(upload.Filename)
+    if !allowed {
+        return w.Text(http.StatusUnsupportedMediaType, "use a PNG, JPEG, GIF or WebP file")
+    }
+    let id = board.NextID()
+    let file = strconv.Itoa(id) + ext
+    let parts = [string; 2]{photoDirectory, file}
+    var source = upload.Open()?
+    var target = os.Create(filepath.Join(parts[:]))?
+    io.Copy(target, source)?
+    target.Close()?
+    board.Add(Photo{ID: id, Owner: owner, Title: title, File: file})
+    logger.Info("photo {id} added by {owner}", id, owner)
+    return redirectHome(w)
+}
+
+func servePhoto(w mut http.ResponseWriter, r mut http.Request) error {
+    let file, _ = r.PathParam("file")
+    return http.ServeFileIn(w, r, photoDirectory, file)
+}

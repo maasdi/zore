@@ -152,3 +152,20 @@ compiler acceptance and rejection are in
 | A header byte 255 | `part header is not UTF-8` |
 | `ParseDisposition` of `form-data; name="doc"; filename="résumé.pdf"`, `Form-Data;Name=a`, `form-data` | Lowercased type and names, UTF-8 file name kept |
 | `ParseDisposition` of `""` and `form/data; name=a` | `mime: invalid disposition`; `mime: invalid parameter` |
+
+## Photo board example
+
+`examples/photo-board` combines §37.16 to §37.18. It is checked by
+`tests/codegen/http.rs::photo_board_example_names_uploads_and_serves_photos`.
+
+| Scenario | Expected result |
+| --- | --- |
+| `GET /` without a cookie | The name form and `No photos yet.` |
+| `POST /name` with `<b>`, a 41-character name, a 1025-byte form; with `Ada Lovelace` | `400`, `400`, `413`; `303 See Other` to `/` with `board_name=Ada+Lovelace; Path=/; Max-Age=2592000; HttpOnly; SameSite=Lax` |
+| `GET /` with that cookie; with a forged `<script>` cookie | `Signed as Ada Lovelace.`; the name form |
+| An upload without the cookie; an SVG; an `.exe`; a blank title | `401`, `415`, `415`, `400` |
+| An upload titled `<My cat>` named `C:\Users\ada\Cat.PNG` | `303`; the page shows `/photos/1.png` with the title escaped |
+| `GET /photos/1.png` | `200`, `image/png`, the exact bytes, which also match the stored file |
+| `GET /photos/2.png`, `/photos/.hidden`; `/photos/..%2f1.png` | `404`; `400` from the server |
+| `POST /name/forget` | `303` with `board_name=; Path=/; Max-Age=0` |
+| SIGTERM (Ctrl+Break on Windows) | Logs `photo 1 added by Ada Lovelace` and `stopped`, then exits cleanly |

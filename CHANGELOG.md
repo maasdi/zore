@@ -189,6 +189,12 @@ once it does.
   `DirEntry.IsSymlink` describe links. The spec now states what `os.Rename`
   does and does not promise on each system. `File.Close` now returns the error
   the system reports while closing, instead of always `nil`.
+- Added the `photo-board` example, the last part of issue #217: a web
+  application that keeps a display name in a cookie set from a URL-encoded
+  form, accepts photo uploads through a multipart form, serves them from one
+  folder, and redirects with `303 See Other`. `std/net/http` gains
+  `StatusSeeOther`, `StatusUnauthorized`, and `StatusUnsupportedMediaType`,
+  and `StatusText(303)` is now `See Other`.
 - Added multipart forms and file uploads to `std/net/http` (§37.18), the
   third part of issue #217. `Request.ReadMultipartForm` streams a
   `multipart/form-data` body through a 64 KiB window, keeps text values in

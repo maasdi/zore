@@ -2379,3 +2379,137 @@ fn http_multipart_forms_stream_files_and_clean_up() {
 
     server.stop("handler failure after upload");
 }
+
+#[test]
+fn photo_board_example_names_uploads_and_serves_photos() {
+    #[cfg(windows)]
+    if !super::signal_windows::isolated_console() {
+        return;
+    }
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap().to_string();
+    drop(listener);
+    let data = TempDir::new().unwrap();
+    let photos = data.path().join("photos");
+    let photos_text = photos.to_str().unwrap().replace('\\', "\\\\");
+    let main = include_str!("../../examples/photo-board/main.ore")
+        .replace(
+            "println(\"Starting http://\" + listenAddress + \"; Ctrl-C shuts down gracefully\")",
+            "println(listenAddress)",
+        )
+        .replace("127.0.0.1:8080", &address)
+        .replace("photo-board-data/photos", &photos_text);
+    let source = rest_sources(&[
+        &main,
+        include_str!("../../examples/photo-board/handlers.ore"),
+        include_str!("../../examples/photo-board/board.ore"),
+        include_str!("../../examples/photo-board/page.ore"),
+    ]);
+    let server = ServerProcess::start(&source);
+    let get = |path: &str, cookie: &str| {
+        server.exchange(&format!(
+            "GET {path} HTTP/1.1\r\nHost: x\r\n{cookie}Connection: close\r\n\r\n"
+        ))
+    };
+    let empty = get("/", "");
+    status(&empty, 200);
+    assert!(
+        body_of(&empty).contains("name=\"name\"") && body_of(&empty).contains("No photos yet."),
+        "{empty}"
+    );
+    let post_form = |path: &str, body: &str| {
+        server.exchange(&format!(
+            "POST {path} HTTP/1.1\r\nHost: x\r\nContent-Type: application/x-www-form-urlencoded\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        ))
+    };
+    status(&post_form("/name", "name=%3Cb%3E"), 400);
+    status(
+        &post_form("/name", &format!("name={}", "a".repeat(41))),
+        400,
+    );
+    status(&post_form("/name", &"a".repeat(1025)), 413);
+    let named = post_form("/name", "name=Ada+Lovelace");
+    assert!(named.starts_with("HTTP/1.1 303 See Other\r\n"), "{named}");
+    assert_eq!(header_value(&named, "Location"), Some("/"));
+    assert_eq!(
+        header_value(&named, "Set-Cookie"),
+        Some("board_name=Ada+Lovelace; Path=/; Max-Age=2592000; HttpOnly; SameSite=Lax")
+    );
+    let cookie = "Cookie: board_name=Ada+Lovelace\r\n";
+    let signed = get("/", cookie);
+    assert!(
+        body_of(&signed).contains("Signed as Ada Lovelace."),
+        "{signed}"
+    );
+    let forged = get("/", "Cookie: board_name=%3Cscript%3E\r\n");
+    assert!(body_of(&forged).contains("name=\"name\""), "{forged}");
+
+    let image: Vec<u8> = b"\x89PNG\r\n\x1a\n"
+        .iter()
+        .copied()
+        .chain((0..5000u32).map(|i| (i * 7) as u8))
+        .collect();
+    let upload = |cookie: &str, title: &str, filename: &str, bytes: &[u8]| {
+        let mut body = format!(
+            "--B\r\nContent-Disposition: form-data; name=\"title\"\r\n\r\n{title}\r\n--B\r\nContent-Disposition: form-data; name=\"photo\"; filename=\"{filename}\"\r\nContent-Type: image/png\r\n\r\n"
+        )
+        .into_bytes();
+        body.extend_from_slice(bytes);
+        body.extend_from_slice(b"\r\n--B--\r\n");
+        let mut request = format!(
+            "POST /photos HTTP/1.1\r\nHost: x\r\n{cookie}Content-Type: multipart/form-data; boundary=B\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            body.len()
+        )
+        .into_bytes();
+        request.extend_from_slice(&body);
+        let mut stream = server.connect();
+        stream.write_all(&request).unwrap();
+        read_closed(&mut stream)
+    };
+    status(&upload("", "Cat", "cat.png", &image), 401);
+    status(&upload(cookie, "Cat", "cat.svg", b"<svg/>"), 415);
+    status(&upload(cookie, "Cat", "cat.exe", &image), 415);
+    status(&upload(cookie, " ", "cat.png", &image), 400);
+    let added = upload(cookie, "<My cat>", "C:\\Users\\ada\\Cat.PNG", &image);
+    status(&added, 303);
+    let board = get("/", cookie);
+    assert!(
+        body_of(&board).contains("<img src=\"/photos/1.png\" alt=\"&lt;My cat&gt;\" width=\"320\"><figcaption>&lt;My cat&gt; by Ada Lovelace</figcaption>"),
+        "{board}"
+    );
+    assert!(!body_of(&board).contains("No photos yet."));
+    let served = {
+        let mut stream = server.connect();
+        stream
+            .write_all(b"GET /photos/1.png HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n")
+            .unwrap();
+        let mut bytes = Vec::new();
+        stream.read_to_end(&mut bytes).unwrap();
+        bytes
+    };
+    let split = served.windows(4).position(|w| w == b"\r\n\r\n").unwrap();
+    let head = String::from_utf8_lossy(&served[..split]).to_string();
+    assert!(head.starts_with("HTTP/1.1 200 OK"), "{head}");
+    assert_eq!(header_value(&head, "Content-Type"), Some("image/png"));
+    assert_eq!(&served[split + 4..], image.as_slice());
+    assert_eq!(std::fs::read(photos.join("1.png")).unwrap(), image);
+    status(&get("/photos/2.png", ""), 404);
+    status(&get("/photos/.hidden", ""), 404);
+    status(&get("/photos/..%2f1.png", ""), 400);
+    let forgotten = post_form("/name/forget", "");
+    status(&forgotten, 303);
+    assert_eq!(
+        header_value(&forgotten, "Set-Cookie"),
+        Some("board_name=; Path=/; Max-Age=0")
+    );
+    assert_eq!(std::fs::read_dir(&photos).unwrap().count(), 1);
+    send_signal(&server.child, test_signals()[1]);
+    let logs = server.finish_with_errors();
+    assert!(
+        logs.contains(
+            "level=INFO msg=\"photo 1 added by Ada Lovelace\" id=1 owner=\"Ada Lovelace\""
+        ) && logs.contains("level=INFO msg=stopped"),
+        "{logs}"
+    );
+}

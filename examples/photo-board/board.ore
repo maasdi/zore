@@ -1,0 +1,45 @@
+package main
+
+type Photo struct {
+    ID int
+    Owner string
+    Title string
+    File string
+}
+
+type Board struct {
+    state Mutex<boardState>
+}
+
+type boardState struct {
+    photos Array<Photo>
+    nextID int
+}
+
+func NewBoard() Board {
+    return Board{state: mutex(boardState{photos: Array<Photo>{}, nextID: 1})}
+}
+
+func (board Board) Photos() Array<Photo> {
+    return board.state.withLock(func(state mut boardState) Array<Photo> {
+        var newest = Array<Photo>{}
+        for var i = state.photos.len() - 1; i >= 0; i -= 1 {
+            newest.push(state.photos[i])
+        }
+        return newest
+    })
+}
+
+func (board Board) NextID() int {
+    return board.state.withLock(func(state mut boardState) int {
+        let id = state.nextID
+        state.nextID += 1
+        return id
+    })
+}
+
+func (board Board) Add(photo Photo) {
+    board.state.withLock(func(state mut boardState) {
+        state.photos.push(photo)
+    })
+}

@@ -8128,9 +8128,10 @@ received values and reason phrases as described for bounded clients.
 This ASCII restriction must be documented as interoperability policy.
 
 Provide `StatusText(code int) string` and integer constants including `StatusOK`,
-`StatusCreated`, `StatusNoContent`, `StatusResetContent`, `StatusBadRequest`,
-`StatusNotFound`,
+`StatusCreated`, `StatusNoContent`, `StatusResetContent`, `StatusSeeOther`,
+`StatusBadRequest`, `StatusUnauthorized`, `StatusNotFound`,
 `StatusMethodNotAllowed`, `StatusRequestTimeout`, `StatusContentTooLarge`,
+`StatusUnsupportedMediaType`,
 `StatusExpectationFailed`, `StatusRequestHeaderFieldsTooLarge`,
 `StatusInternalServerError`, `StatusNotImplemented`, and
 `StatusServiceUnavailable`. Unknown codes have empty status text. Common header
