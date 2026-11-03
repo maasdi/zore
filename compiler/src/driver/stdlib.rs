@@ -12,6 +12,8 @@ bundled! {
     "bufio" => ["bufio.ore"],
     "bytes" => ["bytes.ore", "buffer.ore"],
     "context" => ["context.ore"],
+    "crypto/rand" => ["rand.ore"],
+    "crypto/subtle" => ["subtle.ore"],
     "errors" => ["errors.ore"],
     "encoding/base64" => ["base64.ore"],
     "encoding/binary" => ["binary.ore"],

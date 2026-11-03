@@ -6893,8 +6893,9 @@ system, buffered I/O, and TCP), §37.4 (cancellation and task coordination),
 §37.5 (paths and sorting), §37.7 (JSON), §37.12 (structured logging), §37.13
 (rolling log files), §37.14 (hex, base64, and byte order), §37.15 (file
 handles, temporary storage, renames, and folder walks), §37.16 (HTTP
-cookies and URL-encoded forms), §37.17 (media types and file serving), and
-§37.18 (multipart forms and uploads). Further packages are TBD.
+cookies and URL-encoded forms), §37.17 (media types and file serving),
+§37.18 (multipart forms and uploads), and §37.19 (secure random bytes and
+constant-time comparison). Further packages are TBD.
 
 ## 37.1 `println` — LOCKED
 
@@ -8746,7 +8747,10 @@ changes are introduced by the Windows backend.
 `crypto` is a maintained external package with the curated `crypto-v1` native
 adapter. It is a synchronous, stateless API; the initial package is distributed
 in `examples/crypto/crypto` and consumed by local path or pinned Git dependency.
-These capabilities are not implicitly available in the standard library:
+Secure random bytes and constant-time comparison are also in the standard
+library as `std/crypto/rand` and `std/crypto/subtle` (§37.19); new code should
+use those. Hashing and HMAC are not implicitly available in the standard
+library. The package's functions:
 
 ```ore
 func RandomBytes(size int) (Array<byte>, error)
@@ -10339,6 +10343,81 @@ calls suspend only the calling task in async code. Every problem is an
 Compiler impact: none. `std/net/http` gains `multipart.ore`, and `std/mime`
 gains `ParseDisposition`. Conformance cases: the multipart table in
 `tests/conformance/http.md`, with native tests in `tests/codegen/http.rs`.
+
+## 37.19 Secure random bytes and constant-time comparison — LOCKED
+
+`"std/crypto/rand"` reads secure random bytes from the operating system, and
+`"std/crypto/subtle"` compares secrets without stopping at the first
+difference. They are what an application needs for session tokens, password
+reset links, and checking a token it handed out. Both ask the operating system
+or do plain byte work; neither implements a cryptographic algorithm, so the
+rule of §37.9 that Zore ships no hand-written cryptography still holds.
+Hashing and HMAC stay in the external `crypto` package (§37.9).
+
+| Declaration | Contract |
+| --- | --- |
+| `rand.MaxBytes = 1048576` | The largest request |
+| `func rand.Bytes(size int) (Array<byte>, error)` | `size` fresh secure random bytes |
+| `func rand.Text() (string, error)` | A random token: 32 random bytes in unpadded URL-safe base64, 43 characters of `A`–`Z`, `a`–`z`, `0`–`9`, `-` and `_` |
+| `func subtle.ConstantTimeEqual(a []byte, b []byte) bool` | Whether `a` and `b` hold the same bytes, taking the same time for every pair of equal-length inputs |
+
+**Random bytes.** `Bytes` accepts 0 through `MaxBytes`. Any other size returns
+`crypto/rand.Bytes: size outside 0..1048576` and an empty array without asking
+the system. Zero returns an empty array without asking the system. Otherwise
+the bytes come from the system's secure random source: `getrandom` on Linux,
+`getentropy` on macOS, and `BCryptGenRandom` with the system's preferred
+generator on Windows (other Unix systems read `/dev/urandom`). There is no
+seed, no state kept between calls, and no fallback to a weaker source: a
+system failure returns `crypto/rand.Bytes: ` followed by the system's message,
+an empty array, and no partial output. The result is a fresh owned array.
+`Text` returns the same errors. Its 256 bits are far beyond what guessing can
+reach, and its characters are safe in URLs, file names, and cookie values
+without escaping.
+
+**Comparison.** `ConstantTimeEqual` returns false at once when the lengths
+differ, because a length is not secret, and true for two empty slices. For
+equal lengths it reads every byte of both inputs and combines the
+differences without branching on them, so the time does not reveal where the
+first difference is. It borrows both slices only for the call. Use it, never
+`==` or `bytes.Equal`, to check a token or tag from a client against the one
+the server holds. This is a promise about this function only, not about
+other code in the program.
+
+```ore
+func newSession(sessions SessionStore, w mut http.ResponseWriter) error {
+    let token = rand.Text()?
+    sessions.Add(token)
+    var cookie = http.NewCookie("session", token)
+    cookie.Path = "/"
+    cookie.HttpOnly = true
+    cookie.Secure = true
+    cookie.SameSite = "Lax"
+    return w.SetCookie(cookie)
+}
+
+func validToken(expected string, sent string) bool {
+    let want = strings.Bytes(expected)
+    let got = strings.Bytes(sent)
+    return subtle.ConstantTimeEqual(want[:], got[:])
+}
+```
+
+Not part of these packages: random integers in a range, shuffling, a
+non-secure fast generator, hashing, MACs, encryption, and password hashing.
+No locked memory or erasure of returned arrays is promised.
+
+Ownership, error, and async implications: results are fresh owned arrays and
+strings; inputs are borrowed for the call. `Bytes` and `Text` may wait for the
+system while it gathers entropy early in boot; in async code that wait runs on
+a blocking helper and suspends only the calling task, like file calls.
+`ConstantTimeEqual` does CPU work proportional to its input and does not
+wait. Problems are `error` values; none panics.
+
+Compiler impact: none in the language. The packages are bundled Zore source
+over two runtime natives, one that fills a buffer from the system and one that
+compares two byte slices. `crypto/rand` imports `std/encoding/base64` and
+`std/strconv`; `crypto/subtle` imports nothing. Conformance cases:
+`tests/conformance/crypto.md`, with native tests in `tests/codegen/crypto.rs`.
 
 ---
 

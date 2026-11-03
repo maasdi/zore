@@ -14,6 +14,8 @@ mod alloc;
 mod blocking;
 #[path = "channel.rs"]
 mod channel;
+#[path = "crypto.rs"]
+mod crypto;
 #[path = "deadline.rs"]
 mod deadline;
 #[path = "deadlock.rs"]

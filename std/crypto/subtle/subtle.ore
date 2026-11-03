@@ -1,0 +1,7 @@
+package subtle
+
+func ConstantTimeEqual(a []byte, b []byte) bool {
+    return equal(a, b)
+}
+
+func equal(a []byte, b []byte) bool
