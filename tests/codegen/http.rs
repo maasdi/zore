@@ -2392,6 +2392,8 @@ fn photo_board_example_names_uploads_and_serves_photos() {
     let data = TempDir::new().unwrap();
     let photos = data.path().join("photos");
     let photos_text = photos.to_str().unwrap().replace('\\', "\\\\");
+    std::fs::create_dir_all(&photos).unwrap();
+    std::fs::write(photos.join("9.png"), "left from an earlier run").unwrap();
     let main = include_str!("../../examples/photo-board/main.ore")
         .replace(
             "println(\"Starting http://\" + listenAddress + \"; Ctrl-C shuts down gracefully\")",
@@ -2439,7 +2441,7 @@ fn photo_board_example_names_uploads_and_serves_photos() {
     let cookie = "Cookie: board_name=Ada+Lovelace\r\n";
     let signed = get("/", cookie);
     assert!(
-        body_of(&signed).contains("Signed as Ada Lovelace."),
+        body_of(&signed).contains("Signed in as Ada Lovelace."),
         "{signed}"
     );
     let forged = get("/", "Cookie: board_name=%3Cscript%3E\r\n");
@@ -2467,18 +2469,33 @@ fn photo_board_example_names_uploads_and_serves_photos() {
         stream.write_all(&request).unwrap();
         read_closed(&mut stream)
     };
-    status(&upload("", "Cat", "cat.png", &image), 401);
-    status(&upload(cookie, "Cat", "cat.svg", b"<svg/>"), 415);
-    status(&upload(cookie, "Cat", "cat.exe", &image), 415);
+    assert!(!photos.join("9.png").exists(), "startup keeps old photos");
+    status(&get("/photos/9.png", ""), 404);
+    let refused_early = |cookie: &str, length: usize| {
+        server.exchange(&format!(
+            "POST /photos HTTP/1.1\r\nHost: x\r\n{cookie}Content-Type: multipart/form-data; boundary=B\r\nContent-Length: {length}\r\nExpect: 100-continue\r\nConnection: close\r\n\r\n"
+        ))
+    };
+    status(&refused_early("", 100), 401);
+    status(&refused_early(cookie, 5_308_417), 413);
+    for name in ["cat.svg", "cat.exe", "cat.avif", "cat.ico", "cat"] {
+        status(&upload(cookie, "Cat", name, &image), 415);
+    }
     status(&upload(cookie, " ", "cat.png", &image), 400);
     let added = upload(cookie, "<My cat>", "C:\\Users\\ada\\Cat.PNG", &image);
     status(&added, 303);
+    status(&upload(cookie, "Second", "dog.webp", b"RIFF0000WEBP"), 303);
     let board = get("/", cookie);
     assert!(
         body_of(&board).contains("<img src=\"/photos/1.png\" alt=\"&lt;My cat&gt;\" width=\"320\"><figcaption>&lt;My cat&gt; by Ada Lovelace</figcaption>"),
         "{board}"
     );
     assert!(!body_of(&board).contains("No photos yet."));
+    let second = body_of(&board)
+        .find("/photos/2.webp")
+        .expect("second photo");
+    let first = body_of(&board).find("/photos/1.png").unwrap();
+    assert!(second < first, "newest photo first: {board}");
     let served = {
         let mut stream = server.connect();
         stream
@@ -2494,16 +2511,16 @@ fn photo_board_example_names_uploads_and_serves_photos() {
     assert_eq!(header_value(&head, "Content-Type"), Some("image/png"));
     assert_eq!(&served[split + 4..], image.as_slice());
     assert_eq!(std::fs::read(photos.join("1.png")).unwrap(), image);
-    status(&get("/photos/2.png", ""), 404);
+    status(&get("/photos/3.png", ""), 404);
     status(&get("/photos/.hidden", ""), 404);
     status(&get("/photos/..%2f1.png", ""), 400);
     let forgotten = post_form("/name/forget", "");
     status(&forgotten, 303);
     assert_eq!(
         header_value(&forgotten, "Set-Cookie"),
-        Some("board_name=; Path=/; Max-Age=0")
+        Some("board_name=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax")
     );
-    assert_eq!(std::fs::read_dir(&photos).unwrap().count(), 1);
+    assert_eq!(std::fs::read_dir(&photos).unwrap().count(), 2);
     send_signal(&server.child, test_signals()[1]);
     let logs = server.finish_with_errors();
     assert!(

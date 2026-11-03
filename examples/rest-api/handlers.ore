@@ -7,7 +7,6 @@ import "std/net/http"
 import "std/strconv"
 import "std/strings"
 
-const statusUnsupportedMediaType = 415
 const maxUserBody = 4096
 
 func problem(w mut http.ResponseWriter, status int, message string) error {
@@ -39,7 +38,7 @@ func createUser(store UserStore, logger log.Logger, w mut http.ResponseWriter, r
     let headers = r.Headers()
     let types = headers.Values(http.HeaderContentType)
     if types.len() != 1 || !strings.EqualFold(strings.TrimSpace(types[0]), "application/json") {
-        return problem(w, statusUnsupportedMediaType, "expected application/json")
+        return problem(w, http.StatusUnsupportedMediaType, "expected application/json")
     }
     let body, readErr = io.ReadAtMost(r, maxUserBody)
     if readErr == io.LimitExceeded {

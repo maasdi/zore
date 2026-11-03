@@ -7,6 +7,7 @@ import "std/os"
 
 const listenAddress = "127.0.0.1:8080"
 const photoDirectory = "photo-board-data/photos"
+const photoDirectoryMode = 493
 
 func main() {
     let err = run()
@@ -18,7 +19,8 @@ func main() {
 
 func run() error {
     let logger = log.New(os.Stderr(), log.LevelInfo)
-    os.MkdirAll(photoDirectory, 493)?
+    os.RemoveAll(photoDirectory)?
+    os.MkdirAll(photoDirectory, photoDirectoryMode)?
     let board = NewBoard()
     let router = newRouter(board, logger)?
     var config = http.DefaultConfig()

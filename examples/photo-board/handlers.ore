@@ -2,7 +2,6 @@ package main
 
 import "std/io"
 import "std/log"
-import "std/mime"
 import "std/net/http"
 import "std/net/url"
 import "std/os"
@@ -11,17 +10,23 @@ import "std/strconv"
 import "std/strings"
 
 const nameCookie = "board_name"
+const nameCookieSeconds = 2592000
+const nameBytes = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789 -_"
+const maxNameBytes = 40
 const maxNameFormBytes = 1024
+const maxTitleBytes = 100
 const maxPhotoBytes = 5242880
-const maxUploadBytes = 5308416
+const multipartOverheadBytes = 65536
+const maxUploadBytes = maxPhotoBytes + multipartOverheadBytes
+const maxUploadParts = 4
+const maxUploadTextBytes = 1024
 
 func validName(name string) bool {
-    if name == "" || name.len() > 40 {
+    if name == "" || name.len() > maxNameBytes {
         return false
     }
     for var i = 0; i < name.len(); i += 1 {
-        let c = name[i]
-        if !((c >= 65 && c <= 90) || (c >= 97 && c <= 122) || (c >= 48 && c <= 57) || c == 32 || c == 45 || c == 95) {
+        if strings.IndexByte(nameBytes, name[i]) < 0 {
             return false
         }
     }
@@ -70,32 +75,52 @@ func saveName(w mut http.ResponseWriter, r mut http.Request) error {
     let raw, _ = form.Get("name")
     let name = strings.TrimSpace(raw)
     if !validName(name) {
-        return w.Text(http.StatusBadRequest, "use 1 to 40 letters, digits, spaces, - or _")
+        return w.Text(http.StatusBadRequest, "use 1 to " + strconv.Itoa(maxNameBytes) + " letters, digits, spaces, - or _")
     }
-    var cookie = http.NewCookie(nameCookie, url.QueryEscape(name))
-    cookie.Path = "/"
-    cookie.HttpOnly = true
-    cookie.SameSite = "Lax"
-    cookie.MaxAge = 2592000
-    w.SetCookie(cookie)?
+    w.SetCookie(nameCookieWith(url.QueryEscape(name), nameCookieSeconds))?
     return redirectHome(w)
 }
 
 func forgetName(w mut http.ResponseWriter, r mut http.Request) error {
-    var cookie = http.NewCookie(nameCookie, "")
-    cookie.Path = "/"
-    cookie.MaxAge = -1
-    w.SetCookie(cookie)?
+    w.SetCookie(nameCookieWith("", -1))?
     return redirectHome(w)
+}
+
+func nameCookieWith(value string, maxAge int) http.Cookie {
+    var cookie = http.NewCookie(nameCookie, value)
+    cookie.Path = "/"
+    cookie.HttpOnly = true
+    cookie.SameSite = "Lax"
+    cookie.MaxAge = maxAge
+    return cookie
 }
 
 func photoExtension(filename string) (string, bool) {
     let ext = strings.ToLower(filepath.Ext(filename))
-    if ext == ".svg" {
-        return "", false
+    let allowed = [string; 5]{".png", ".jpg", ".jpeg", ".gif", ".webp"}
+    for candidate in allowed {
+        if ext == candidate {
+            return ext, true
+        }
     }
-    let kind, known = mime.TypeByExtension(ext)
-    return ext, known && strings.HasPrefix(kind, "image/")
+    return "", false
+}
+
+func savePhoto(upload http.FormFile, path string) error {
+    var source = upload.Open()?
+    var target = os.OpenFile(path, os.OpenWriteOnly | os.OpenCreate | os.OpenExclusive, 420)?
+    let _, copyErr = io.Copy(target, source)
+    let closeErr = target.Close()
+    if copyErr != nil {
+        _ = closeErr
+        _ = os.Remove(path)
+        return copyErr
+    }
+    if closeErr != nil {
+        _ = os.Remove(path)
+        return closeErr
+    }
+    return nil
 }
 
 func uploadPhoto(board Board, logger log.Logger, w mut http.ResponseWriter, r mut http.Request) error {
@@ -106,19 +131,19 @@ func uploadPhoto(board Board, logger log.Logger, w mut http.ResponseWriter, r mu
     var limits = http.DefaultMultipartLimits()
     limits.MaxBytes = maxUploadBytes
     limits.MaxFileBytes = maxPhotoBytes
-    limits.MaxParts = 4
-    limits.MaxValueBytes = 1024
+    limits.MaxParts = maxUploadParts
+    limits.MaxValueBytes = maxUploadTextBytes
     let form, err = r.ReadMultipartForm(limits)
     if err == io.LimitExceeded {
-        return w.Text(http.StatusContentTooLarge, "photos can be at most 5 MiB")
+        return w.Text(http.StatusContentTooLarge, "the upload is too large; photos can be at most 5 MiB")
     }
     if err != nil {
         return w.Text(http.StatusBadRequest, "expected a photo upload form")
     }
     let rawTitle, _ = form.Value("title")
     let title = strings.TrimSpace(rawTitle)
-    if title == "" || title.len() > 100 {
-        return w.Text(http.StatusBadRequest, "the title must have 1 to 100 bytes")
+    if title == "" || title.len() > maxTitleBytes {
+        return w.Text(http.StatusBadRequest, "the title must have 1 to " + strconv.Itoa(maxTitleBytes) + " bytes")
     }
     let upload, found = form.File("photo")
     if !found {
@@ -131,10 +156,7 @@ func uploadPhoto(board Board, logger log.Logger, w mut http.ResponseWriter, r mu
     let id = board.NextID()
     let file = strconv.Itoa(id) + ext
     let parts = [string; 2]{photoDirectory, file}
-    var source = upload.Open()?
-    var target = os.Create(filepath.Join(parts[:]))?
-    io.Copy(target, source)?
-    target.Close()?
+    savePhoto(upload, filepath.Join(parts[:]))?
     board.Add(Photo{ID: id, Owner: owner, Title: title, File: file})
     logger.Info("photo {id} added by {owner}", id, owner)
     return redirectHome(w)

@@ -162,10 +162,12 @@ compiler acceptance and rejection are in
 | --- | --- |
 | `GET /` without a cookie | The name form and `No photos yet.` |
 | `POST /name` with `<b>`, a 41-character name, a 1025-byte form; with `Ada Lovelace` | `400`, `400`, `413`; `303 See Other` to `/` with `board_name=Ada+Lovelace; Path=/; Max-Age=2592000; HttpOnly; SameSite=Lax` |
-| `GET /` with that cookie; with a forged `<script>` cookie | `Signed as Ada Lovelace.`; the name form |
-| An upload without the cookie; an SVG; an `.exe`; a blank title | `401`, `415`, `415`, `400` |
-| An upload titled `<My cat>` named `C:\Users\ada\Cat.PNG` | `303`; the page shows `/photos/1.png` with the title escaped |
+| `GET /` with that cookie; with a forged `<script>` cookie | `Signed in as Ada Lovelace.`; the name form |
+| A file `9.png` left in the photo folder before start | Deleted at start; `GET /photos/9.png` is `404` |
+| An upload without the cookie; one declaring 5,308,417 bytes (both with `Expect: 100-continue` and no body) | `401`; `413` |
+| Uploads named `.svg`, `.exe`, `.avif`, `.ico`, or without an extension; a blank title | `415`; `400` |
+| An upload titled `<My cat>` named `C:\Users\ada\Cat.PNG`, then a `.webp` | `303` each; the page shows `/photos/2.webp` before `/photos/1.png`, titles escaped |
 | `GET /photos/1.png` | `200`, `image/png`, the exact bytes, which also match the stored file |
-| `GET /photos/2.png`, `/photos/.hidden`; `/photos/..%2f1.png` | `404`; `400` from the server |
-| `POST /name/forget` | `303` with `board_name=; Path=/; Max-Age=0` |
+| `GET /photos/3.png`, `/photos/.hidden`; `/photos/..%2f1.png` | `404`; `400` from the server |
+| `POST /name/forget` | `303` with `board_name=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax`; two photo files remain |
 | SIGTERM (Ctrl+Break on Windows) | Logs `photo 1 added by Ada Lovelace` and `stopped`, then exits cleanly |
