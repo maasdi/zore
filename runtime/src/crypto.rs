@@ -7,25 +7,34 @@ use super::sys::ByteArrayError;
 /// # Safety
 /// `out` must be writable.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn zore_native_rand_read(out: *mut ByteArrayError, size: i64) {
+pub unsafe extern "C" fn zore_native_rand_secure_read(out: *mut ByteArrayError, size: i64) {
     let result = match usize::try_from(size) {
         Ok(0) => Ok(Vec::new()),
-        Ok(size) => blocking::run(move || {
-            let mut buffer = vec![0u8; size];
-            fill(&mut buffer)
-                .map(|()| buffer)
-                .map_err(|error| format!("crypto/rand.Bytes: {error}"))
-        }),
+        Ok(size) => blocking::run(move || random_bytes(size)),
         Err(_) => Err("crypto/rand.Bytes: negative size".to_string()),
     };
     // SAFETY: guaranteed by the caller.
     unsafe { out.write(ByteArrayError::from_bytes(result)) };
 }
 
+fn random_bytes(size: usize) -> Result<Vec<u8>, String> {
+    let mut buffer = vec![0u8; size];
+    fill(&mut buffer)
+        .map(|()| buffer)
+        .map_err(|error| format!("crypto/rand.Bytes: {error}"))
+}
+
+#[cfg(all(
+    test,
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64")
+))]
+static FAIL_RANDOM: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 /// # Safety
 /// Each slice must satisfy the storage rule of `bytes`.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn zore_native_subtle_equal(
+pub unsafe extern "C" fn zore_native_subtle_constant_time_equal(
     a: *const u8,
     a_len: i64,
     b: *const u8,
@@ -41,22 +50,40 @@ fn constant_time_equal(a: &[u8], b: &[u8]) -> bool {
         return false;
     }
     let mut difference = 0u8;
-    for (left, right) in a.iter().zip(b) {
-        difference |= std::hint::black_box(left ^ right);
+    for index in 0..a.len() {
+        // SAFETY: `index` is below the length of both slices; volatile loads cannot be skipped.
+        let (left, right) = unsafe {
+            (
+                std::ptr::read_volatile(a.as_ptr().add(index)),
+                std::ptr::read_volatile(b.as_ptr().add(index)),
+            )
+        };
+        difference |= left ^ right;
     }
     std::hint::black_box(difference) == 0
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(all(
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64")
+))]
 fn fill(buffer: &mut [u8]) -> std::io::Result<()> {
+    #[cfg(target_arch = "x86_64")]
+    const SYS_GETRANDOM: i64 = 318;
+    #[cfg(target_arch = "aarch64")]
+    const SYS_GETRANDOM: i64 = 278;
     unsafe extern "C" {
-        fn getrandom(buf: *mut u8, len: usize, flags: u32) -> isize;
+        fn syscall(number: i64, ...) -> i64;
+    }
+    #[cfg(test)]
+    if FAIL_RANDOM.load(std::sync::atomic::Ordering::SeqCst) {
+        return Err(std::io::Error::other("injected failure"));
     }
     let mut filled = 0;
     while filled < buffer.len() {
         let rest = &mut buffer[filled..];
-        // SAFETY: `rest` is a writable buffer of exactly `rest.len()` bytes.
-        let count = unsafe { getrandom(rest.as_mut_ptr(), rest.len(), 0) };
+        // SAFETY: `rest` is a writable buffer of exactly `rest.len()` bytes; flags 0 waits for an initialized pool.
+        let count = unsafe { syscall(SYS_GETRANDOM, rest.as_mut_ptr(), rest.len(), 0u32) };
         if count < 0 {
             let error = std::io::Error::last_os_error();
             if error.kind() == std::io::ErrorKind::Interrupted {
@@ -64,7 +91,7 @@ fn fill(buffer: &mut [u8]) -> std::io::Result<()> {
             }
             return Err(error);
         }
-        filled += count.unsigned_abs();
+        filled += count.unsigned_abs() as usize;
     }
     Ok(())
 }
@@ -115,7 +142,14 @@ fn fill(buffer: &mut [u8]) -> std::io::Result<()> {
     Ok(())
 }
 
-#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
+#[cfg(not(any(
+    all(
+        target_os = "linux",
+        any(target_arch = "x86_64", target_arch = "aarch64")
+    ),
+    target_os = "macos",
+    windows
+)))]
 fn fill(buffer: &mut [u8]) -> std::io::Result<()> {
     use std::io::Read;
     std::fs::File::open("/dev/urandom")?.read_exact(buffer)
@@ -133,6 +167,29 @@ mod tests {
         fill(&mut second).unwrap();
         assert_ne!(first, second);
         assert!(first.iter().any(|byte| *byte != 0));
+    }
+
+    #[cfg(all(
+        target_os = "linux",
+        any(target_arch = "x86_64", target_arch = "aarch64")
+    ))]
+    #[test]
+    fn a_failing_source_returns_an_error_and_no_bytes() {
+        FAIL_RANDOM.store(true, std::sync::atomic::Ordering::SeqCst);
+        let result = random_bytes(16);
+        FAIL_RANDOM.store(false, std::sync::atomic::Ordering::SeqCst);
+        assert_eq!(
+            result,
+            Err("crypto/rand.Bytes: injected failure".to_string())
+        );
+        assert_eq!(random_bytes(16).map(|bytes| bytes.len()), Ok(16));
+    }
+
+    #[test]
+    fn large_requests_fill_every_chunk() {
+        let bytes = random_bytes(1 << 20).unwrap();
+        assert_eq!(bytes.len(), 1 << 20);
+        assert!(bytes[(1 << 20) - 256..].iter().any(|byte| *byte != 0));
     }
 
     #[test]

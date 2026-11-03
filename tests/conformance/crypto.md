@@ -16,7 +16,8 @@ and compiler acceptance and rejection in
 | 32 async tasks calling `Text` and `Bytes` | All succeed with different tokens |
 | `ConstantTimeEqual` of two empty slices; a slice with itself; with a copy | `true` |
 | A one-bit change at every position; a shorter slice; empty against nonempty; `{0, 255, 128}` against `{0, 255, 127}` | `false` |
-| `rand.Bytes(16)` unused; `let token = rand.Text()`; `rand.read`; a string size; arrays instead of slices | Rejected |
+| `rand.Bytes(16)` unused; `let token = rand.Text()`; `rand.secureRead`; a string size; arrays instead of slices | Rejected |
 
-A failing system random source is not injected in these tests; the runtime
-returns its error unchanged, as the specification states.
+Runtime unit tests also fill a 1 MiB request to its last chunk and, on Linux,
+inject a failing source: the call returns
+`crypto/rand.Bytes: injected failure` and no bytes, and the next call works.

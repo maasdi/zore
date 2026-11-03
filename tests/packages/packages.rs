@@ -940,7 +940,7 @@ fn crypto_rand_and_subtle_check_their_calls() {
         ("rand.Bytes(16)", "must be used or explicitly discarded"),
         ("let token = rand.Text()", "this call returns 2 values"),
         (
-            "let data, err = rand.read(16)\n_ = data\n_ = err",
+            "let data, err = rand.secureRead(16)\n_ = data\n_ = err",
             "not exported",
         ),
         (

@@ -10349,39 +10349,45 @@ gains `ParseDisposition`. Conformance cases: the multipart table in
 `"std/crypto/rand"` reads secure random bytes from the operating system, and
 `"std/crypto/subtle"` compares secrets without stopping at the first
 difference. They are what an application needs for session tokens, password
-reset links, and checking a token it handed out. Both ask the operating system
-or do plain byte work; neither implements a cryptographic algorithm, so the
-rule of §37.9 that Zore ships no hand-written cryptography still holds.
-Hashing and HMAC stay in the external `crypto` package (§37.9).
+reset links, and checking a token it handed out. Neither implements a
+cryptographic algorithm: random bytes come from the operating system, and the
+comparison is a plain loop over bytes. Hashing and HMAC, which do need such
+algorithms, stay in the external `crypto` package and its reviewed provider
+(§37.9).
 
 | Declaration | Contract |
 | --- | --- |
 | `rand.MaxBytes = 1048576` | The largest request |
 | `func rand.Bytes(size int) (Array<byte>, error)` | `size` fresh secure random bytes |
 | `func rand.Text() (string, error)` | A random token: 32 random bytes in unpadded URL-safe base64, 43 characters of `A`–`Z`, `a`–`z`, `0`–`9`, `-` and `_` |
-| `func subtle.ConstantTimeEqual(a []byte, b []byte) bool` | Whether `a` and `b` hold the same bytes, taking the same time for every pair of equal-length inputs |
+| `func subtle.ConstantTimeEqual(a []byte, b []byte) bool` | Whether `a` and `b` hold the same bytes, without stopping at the first difference |
 
 **Random bytes.** `Bytes` accepts 0 through `MaxBytes`. Any other size returns
 `crypto/rand.Bytes: size outside 0..1048576` and an empty array without asking
 the system. Zero returns an empty array without asking the system. Otherwise
-the bytes come from the system's secure random source: `getrandom` on Linux,
-`getentropy` on macOS, and `BCryptGenRandom` with the system's preferred
-generator on Windows (other Unix systems read `/dev/urandom`). There is no
-seed, no state kept between calls, and no fallback to a weaker source: a
-system failure returns `crypto/rand.Bytes: ` followed by the system's message,
-an empty array, and no partial output. The result is a fresh owned array.
+the bytes come from the system's secure random source: the `getrandom` system
+call on Linux, which waits until the kernel's pool is ready and needs Linux
+3.17 or later but no particular C library, `getentropy` on macOS, and
+`BCryptGenRandom` with the system's preferred generator on Windows (other
+systems read `/dev/urandom`). There is no seed, no state kept between calls,
+and no fallback to a weaker source: a system failure returns
+`crypto/rand.Bytes: ` followed by a message describing the failure, an empty
+array, and no partial output. The result is a fresh owned array.
 `Text` returns the same errors. Its 256 bits are far beyond what guessing can
 reach, and its characters are safe in URLs, file names, and cookie values
 without escaping.
 
 **Comparison.** `ConstantTimeEqual` returns false at once when the lengths
 differ, because a length is not secret, and true for two empty slices. For
-equal lengths it reads every byte of both inputs and combines the
-differences without branching on them, so the time does not reveal where the
-first difference is. It borrows both slices only for the call. Use it, never
-`==` or `bytes.Equal`, to check a token or tag from a client against the one
-the server holds. This is a promise about this function only, not about
-other code in the program.
+equal lengths it reads every byte of both inputs with loads the compiler may
+not remove, and combines the differences with bitwise operations, branching
+only on the final result. So it never stops at the first difference, and
+where the inputs differ does not change which bytes are read or which
+branches run. Like Go's `crypto/subtle`, this is a property of the code it
+runs, not a measured timing guarantee for every processor. It borrows both
+slices only for the call. Use it, never `==` or `bytes.Equal`, to check a
+token or tag from a client against the one the server holds. The promise
+covers this function only, not other code in the program.
 
 ```ore
 func newSession(sessions SessionStore, w mut http.ResponseWriter) error {

@@ -23,7 +23,7 @@ func main() {{
     check(emptyErr == nil && empty.len() == 0, "empty")
     let largest, largestErr = rand.Bytes(rand.MaxBytes)
     check(largestErr == nil && largest.len() == rand.MaxBytes, "largest")
-    for size in [int; 3]{{-1, rand.MaxBytes + 1, -9223372036854775807}} {{
+    for size in [int; 3]{{-1, rand.MaxBytes + 1, -9223372036854775807 - 1}} {{
         let data, err = rand.Bytes(size)
         check(data.len() == 0, "no output")
         println(errors.Message(err))

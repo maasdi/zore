@@ -10,7 +10,7 @@ func Bytes(size int) (Array<byte>, error) {
     if size < 0 || size > MaxBytes {
         return Array<byte>{}, error("crypto/rand.Bytes: size outside 0.." + strconv.Itoa(MaxBytes))
     }
-    return read(size)
+    return secureRead(size)
 }
 
 func Text() (string, error) {
@@ -18,4 +18,4 @@ func Text() (string, error) {
     return base64.RawURL.EncodeToString(data[:]), nil
 }
 
-func read(size int) (Array<byte>, error)
+func secureRead(size int) (Array<byte>, error)
