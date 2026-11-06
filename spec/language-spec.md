@@ -6894,8 +6894,9 @@ system, buffered I/O, and TCP), §37.4 (cancellation and task coordination),
 (rolling log files), §37.14 (hex, base64, and byte order), §37.15 (file
 handles, temporary storage, renames, and folder walks), §37.16 (HTTP
 cookies and URL-encoded forms), §37.17 (media types and file serving),
-§37.18 (multipart forms and uploads), and §37.19 (secure random bytes and
-constant-time comparison). Further packages are TBD.
+§37.18 (multipart forms and uploads), §37.19 (secure random bytes and
+constant-time comparison), and §37.20 (hashes and HMAC). Further packages are
+TBD.
 
 ## 37.1 `println` — LOCKED
 
@@ -8770,9 +8771,9 @@ changes are introduced by the Windows backend.
 adapter. It is a synchronous, stateless API; the initial package is distributed
 in `examples/crypto/crypto` and consumed by local path or pinned Git dependency.
 Secure random bytes and constant-time comparison are also in the standard
-library as `std/crypto/rand` and `std/crypto/subtle` (§37.19); new code should
-use those. Hashing and HMAC are not implicitly available in the standard
-library. The package's functions:
+library as `std/crypto/rand` and `std/crypto/subtle` (§37.19), and SHA-256 and
+HMAC-SHA-256 as `std/crypto/sha256` and `std/crypto/hmac` (§37.20); new code
+should use those. The package's functions:
 
 ```ore
 func RandomBytes(size int) (Array<byte>, error)
@@ -10373,9 +10374,7 @@ gains `ParseDisposition`. Conformance cases: the multipart table in
 difference. They are what an application needs for session tokens, password
 reset links, and checking a token it handed out. Neither implements a
 cryptographic algorithm: random bytes come from the operating system, and the
-comparison is a plain loop over bytes. Hashing and HMAC, which do need such
-algorithms, stay in the external `crypto` package and its reviewed provider
-(§37.9).
+comparison is a plain loop over bytes. Hashing and HMAC are in §37.20.
 
 | Declaration | Contract |
 | --- | --- |
@@ -10431,7 +10430,7 @@ func validToken(expected string, sent string) bool {
 ```
 
 Not part of these packages: random integers in a range, shuffling, a
-non-secure fast generator, hashing, MACs, encryption, and password hashing.
+non-secure fast generator, encryption, and password hashing.
 No locked memory or erasure of returned arrays is promised.
 
 Ownership, error, and async implications: results are fresh owned arrays and
@@ -10445,6 +10444,98 @@ Compiler impact: none in the language. The packages are bundled Zore source
 over two runtime natives, one that fills a buffer from the system and one that
 compares two byte slices. `crypto/rand` imports `std/encoding/base64` and
 `std/strconv`; `crypto/subtle` imports nothing. Conformance cases:
+`tests/conformance/crypto.md`, with native tests in `tests/codegen/crypto.rs`.
+
+## 37.20 Hashes and HMAC — LOCKED
+
+`"std/crypto/sha256"`, `"std/crypto/sha512"`, and `"std/crypto/sha1"` compute
+the SHA-256, SHA-512, and SHA-1 hashes of FIPS 180-4, and `"std/crypto/hmac"`
+computes HMAC (RFC 2104) over SHA-256 and SHA-512. A hash turns any amount of
+data into a short fixed-size value that changes completely when any byte of
+the data changes: it checks that a file arrived unchanged, names content, and
+is the building block of HMAC. An HMAC mixes a secret key into the hash, so
+only someone who holds the key can produce the right value: it signs and
+checks webhook bodies, cookies, and links.
+
+Unlike §37.19, these packages implement the algorithms themselves, in Zore,
+as Go's standard library does. SHA-2 and HMAC use only additions, shifts,
+rotations, and bitwise operations on whole words; no table lookup or branch
+depends on the data or the key, only on lengths.
+
+| Declaration | Contract |
+| --- | --- |
+| `sha256.Size = 32`, `sha256.BlockSize = 64` | Hash and block sizes in bytes |
+| `func sha256.Sum256(data []byte) Array<byte>` | The 32-byte SHA-256 hash of `data` |
+| `func sha256.New() sha256.Digest` | A hash in progress over no data yet |
+| `sha512.Size = 64`, `sha512.BlockSize = 128` | Hash and block sizes in bytes |
+| `func sha512.Sum512(data []byte) Array<byte>` | The 64-byte SHA-512 hash of `data` |
+| `func sha512.New() sha512.Digest` | A hash in progress over no data yet |
+| `sha1.Size = 20`, `sha1.BlockSize = 64` | Hash and block sizes in bytes |
+| `func sha1.Sum(data []byte) Array<byte>` | The 20-byte SHA-1 hash of `data` |
+| `func sha1.New() sha1.Digest` | A hash in progress over no data yet |
+| `func hmac.SHA256(key []byte, data []byte) Array<byte>` | The 32-byte HMAC-SHA-256 of `data` under `key` |
+| `func hmac.SHA512(key []byte, data []byte) Array<byte>` | The 64-byte HMAC-SHA-512 of `data` under `key` |
+
+Each `Digest` has the same three methods:
+
+| Method | Contract |
+| --- | --- |
+| `(d mut Digest) Write(data []byte) (int, error)` | Adds `data` to the hash; always returns `data.len()` and `nil` |
+| `(d Digest) Sum() Array<byte>` | The hash of everything written so far; `d` is unchanged, so writing may continue |
+| `(d mut Digest) Reset()` | Forgets everything written, as if new |
+
+`Write` makes a `Digest` an `io.Writer`, so `io.Copy` can hash a file or a
+request body piece by piece without holding all of it. Writing data in any
+split gives the same hash as writing it at once. A `Digest` holds at most one
+partial block between writes. Its fields are private; make one only with
+`New`. Lengths are counted modulo 2^64 bits, as the standard defines.
+
+HMAC accepts any key, including an empty one. A key longer than the block
+size is hashed first, and every key is padded with zeros to the block size,
+as RFC 2104 defines. To check an HMAC that a client sent, compute the
+expected value and compare with `subtle.ConstantTimeEqual` (§37.19), never
+`==` or `bytes.Equal`, so the time taken does not reveal how much matched.
+
+SHA-1 is broken for security: people can make two different inputs with the
+same SHA-1 hash. It exists only for protocols that require it, such as the
+WebSocket handshake and older file formats. Never use it to sign, to check
+integrity against an attacker, or to store passwords.
+
+```ore
+func validSignature(secret []byte, body []byte, sent string) bool {
+    let expected = hmac.SHA256(secret, body)
+    let given, err = hex.DecodeString(sent)
+    if err != nil {
+        return false
+    }
+    return subtle.ConstantTimeEqual(expected[:], given[:])
+}
+
+func fileHash(path string) (string, error) {
+    var file = os.Open(path)?
+    var digest = sha256.New()
+    _ = io.Copy(digest, file)?
+    let sum = digest.Sum()
+    return hex.EncodeToString(sum[:]), nil
+}
+```
+
+Not part of these packages: SHA-224, SHA-384, SHA-512/256, SHA-3, MD5,
+streaming HMAC, key derivation, and password hashing. A plain hash of a
+password, even with HMAC, is not a password storage scheme: passwords need a
+deliberately slow, salted function such as Argon2, which needs its own
+design. No erasure of keys, states, or results is promised.
+
+Ownership, error, and async implications: results are fresh owned arrays;
+inputs are borrowed for the call. A `Digest` is an ordinary owned value with a
+private buffer of at most one block. Nothing here waits or suspends: hashing
+does CPU work proportional to the input size, so bound untrusted input and
+run long hashes in their own task when a caller must not be delayed. No
+function fails or panics.
+
+Compiler impact: none. The packages are bundled Zore source with no runtime
+natives. `crypto/hmac` imports `std/crypto/sha256` and `std/crypto/sha512`;
+the hash packages import nothing. Conformance cases:
 `tests/conformance/crypto.md`, with native tests in `tests/codegen/crypto.rs`.
 
 ---

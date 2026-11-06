@@ -1,8 +1,10 @@
 # Cryptographic byte utilities
 
 Secure random bytes and constant-time comparison are in the standard library
-as `std/crypto/rand` and `std/crypto/subtle` (§37.19) and need no setup; use
-them for tokens. This external package is still the place for hashing.
+as `std/crypto/rand` and `std/crypto/subtle` (§37.19), and SHA-256, SHA-512,
+SHA-1, and HMAC as `std/crypto/sha256`, `std/crypto/sha512`, `std/crypto/sha1`,
+and `std/crypto/hmac` (§37.20). They need no setup; new code should use them.
+This external package keeps working for programs that already use it.
 
 The maintained `crypto` package provides secure random bytes, SHA-256,
 HMAC-SHA-256, HMAC tag verification and constant-time byte comparison through the curated `crypto-v1`

@@ -192,9 +192,11 @@ synchronization, and an atomic-write helper wait for their own contracts; see
 
 Secure random bytes and constant-time comparison moved into the standard
 library as `std/crypto/rand` and `std/crypto/subtle` (§37.19), using the
-operating system's random source and no hand-written algorithms. Hashing and
-HMAC stay in the external `crypto` package until a reviewed provider can ship
-with every program; see [the crypto conformance list](../tests/conformance/crypto.md).
+operating system's random source and no hand-written algorithms. SHA-256,
+SHA-512, SHA-1, and HMAC followed as `std/crypto/sha256`, `std/crypto/sha512`,
+`std/crypto/sha1`, and `std/crypto/hmac` (§37.20), written in Zore as Go's
+standard library writes them in Go; see
+[the crypto conformance list](../tests/conformance/crypto.md).
 
 Issue [#217](https://github.com/maasdi/zore/issues/217) adds HTTP application
 helpers in steps. The first step, §37.16, adds cookies and URL-encoded forms to

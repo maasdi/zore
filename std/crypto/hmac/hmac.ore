@@ -1,0 +1,50 @@
+package hmac
+
+import "std/crypto/sha256"
+import "std/crypto/sha512"
+
+type digest interface {
+    mut Write(data []byte) (int, error)
+    Sum() Array<byte>
+    mut Reset()
+}
+
+func SHA256(key []byte, data []byte) Array<byte> {
+    var h = sha256.New()
+    return compute(h, sha256.BlockSize, key, data)
+}
+
+func SHA512(key []byte, data []byte) Array<byte> {
+    var h = sha512.New()
+    return compute(h, sha512.BlockSize, key, data)
+}
+
+func compute(h mut digest, blockSize int, key []byte, data []byte) Array<byte> {
+    var padded = Array<byte>{}
+    if key.len() > blockSize {
+        let _, _ = h.Write(key)
+        padded = h.Sum()
+        h.Reset()
+    } else {
+        for b in key {
+            padded.push(b)
+        }
+    }
+    for padded.len() < blockSize {
+        padded.push(0)
+    }
+    var pad = Array<byte>{}
+    for b in padded {
+        pad.push(b ^ 0x36)
+    }
+    let _, _ = h.Write(pad[:])
+    let _, _ = h.Write(data)
+    let inner = h.Sum()
+    h.Reset()
+    for var i = 0; i < blockSize; i += 1 {
+        pad[i] = padded[i] ^ 0x5c
+    }
+    let _, _ = h.Write(pad[:])
+    let _, _ = h.Write(inner[:])
+    return h.Sum()
+}

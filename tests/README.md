@@ -432,6 +432,10 @@ with the client reading late so that a reset would lose the answer.
 `conformance/crypto.md` maps `std/crypto/rand` and `std/crypto/subtle` to
 `codegen/crypto.rs`: size bounds, byte spread, unique URL-safe tokens, async
 use from many tasks, and comparisons that change one bit at every position.
+It also maps the hash and HMAC packages: NIST known answers including one
+million `a` bytes, every input length up to 300 bytes written whole, byte by
+byte, and in two parts with a `Sum` in between, `Reset`, RFC 4231 HMAC cases,
+keys around the block size, and a file hashed through `io.Copy`.
 
 `conformance/http.md` also maps the `photo-board` example to
 `codegen/http.rs`: sign-in tokens, sessions created and ended, forged and
