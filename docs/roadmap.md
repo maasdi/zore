@@ -200,8 +200,8 @@ Issue [#217](https://github.com/maasdi/zore/issues/217) adds HTTP application
 helpers in steps. The first step, §37.16, adds cookies and URL-encoded forms to
 `std/net/http`. The second step, §37.17, adds `std/mime` and file serving
 from a root folder. The third step, §37.18, adds multipart forms whose
-uploads go to temporary files that are deleted when the form is dropped. An
-application example that uses all of them is the last step; see
+uploads go to temporary files that are deleted when the form is dropped. The
+`photo-board` example uses all of them in one application; see
 [the HTTP conformance list](../tests/conformance/http.md).
 
 Issue [#216](https://github.com/maasdi/zore/issues/216) adds bounded and

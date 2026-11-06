@@ -847,7 +847,10 @@ fn every_example_prints_its_expected_output() {
     let examples = examples();
     assert!(examples.len() >= 15, "{examples:?}");
     for (name, path) in examples {
-        if matches!(name.as_str(), "rest-api" | "http-client" | "https-client") {
+        if matches!(
+            name.as_str(),
+            "rest-api" | "photo-board" | "http-client" | "https-client"
+        ) {
             continue;
         }
         let expected = std::fs::read_to_string(path.join("expected-output.txt"))

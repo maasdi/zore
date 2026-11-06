@@ -1,0 +1,124 @@
+package main
+
+import "std/crypto/rand"
+import "std/crypto/subtle"
+import "std/strings"
+
+const maxSessions = 1000
+const maxSessionsPerClient = 5
+
+let errBoardFull = error("the board has too many sessions")
+
+type Photo struct {
+    ID int
+    Owner string
+    Title string
+    File string
+}
+
+type Session struct {
+    Token string
+    FormToken string
+    Name string
+    Client string
+}
+
+type Board struct {
+    state Mutex<boardState>
+}
+
+type boardState struct {
+    photos Array<Photo>
+    nextID int
+    sessions Array<Session>
+}
+
+func NewBoard() Board {
+    return Board{state: mutex(boardState{photos: Array<Photo>{}, nextID: 1, sessions: Array<Session>{}})}
+}
+
+func (board Board) Photos() Array<Photo> {
+    return board.state.withLock(func(state mut boardState) Array<Photo> {
+        var newest = Array<Photo>{}
+        for var i = state.photos.len() - 1; i >= 0; i -= 1 {
+            newest.push(state.photos[i])
+        }
+        return newest
+    })
+}
+
+func (board Board) NextID() int {
+    return board.state.withLock(func(state mut boardState) int {
+        let id = state.nextID
+        state.nextID += 1
+        return id
+    })
+}
+
+func (board Board) Add(photo Photo) {
+    board.state.withLock(func(state mut boardState) {
+        state.photos.push(photo)
+    })
+}
+
+func sameToken(expected string, sent string) bool {
+    let want = strings.Bytes(expected)
+    let got = strings.Bytes(sent)
+    return expected != "" && subtle.ConstantTimeEqual(want[:], got[:])
+}
+
+func (board Board) StartSession(name string, client string) (Session, error) {
+    let token = rand.Text()?
+    let formToken = rand.Text()?
+    let session = Session{Token: token, FormToken: formToken, Name: name, Client: client}
+    let added = board.state.withLock(func(state mut boardState) bool {
+        var fromClient = 0
+        for existing in state.sessions {
+            if existing.Client == client {
+                fromClient += 1
+            }
+        }
+        if fromClient < maxSessionsPerClient && state.sessions.len() >= maxSessions {
+            return false
+        }
+        var kept = Array<Session>{}
+        var dropOldest = fromClient >= maxSessionsPerClient
+        for existing in state.sessions {
+            if dropOldest && existing.Client == client {
+                dropOldest = false
+            } else {
+                kept.push(existing)
+            }
+        }
+        kept.push(session)
+        state.sessions = kept
+        return true
+    })
+    if !added {
+        return session, errBoardFull
+    }
+    return session, nil
+}
+
+func (board Board) Session(token string) (Session, bool) {
+    return board.state.withLock(func(state mut boardState) (Session, bool) {
+        for session in state.sessions {
+            if sameToken(session.Token, token) {
+                return session, true
+            }
+        }
+        return Session{Token: "", FormToken: "", Name: "", Client: ""}, false
+    })
+}
+
+func (board Board) EndSession(token string) {
+    board.state.withLock(func(state mut boardState) {
+        var kept = Array<Session>{}
+        for session in state.sessions {
+            if !sameToken(session.Token, token) {
+                kept.push(session)
+            }
+        }
+        state.sessions = kept
+    })
+}

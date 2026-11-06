@@ -13,11 +13,15 @@ const StatusOK = 200
 const StatusCreated = 201
 const StatusNoContent = 204
 const StatusResetContent = 205
+const StatusSeeOther = 303
 const StatusBadRequest = 400
+const StatusUnauthorized = 401
+const StatusForbidden = 403
 const StatusNotFound = 404
 const StatusMethodNotAllowed = 405
 const StatusRequestTimeout = 408
 const StatusContentTooLarge = 413
+const StatusUnsupportedMediaType = 415
 const StatusExpectationFailed = 417
 const StatusRequestHeaderFieldsTooLarge = 431
 const StatusInternalServerError = 500
@@ -33,6 +37,7 @@ func StatusText(code int) string {
     if code == 205 { return "Reset Content" }
     if code == 301 { return "Moved Permanently" }
     if code == 302 { return "Found" }
+    if code == 303 { return "See Other" }
     if code == 304 { return "Not Modified" }
     if code == 400 { return "Bad Request" }
     if code == 401 { return "Unauthorized" }

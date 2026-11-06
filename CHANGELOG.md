@@ -189,6 +189,13 @@ once it does.
   `DirEntry.IsSymlink` describe links. The spec now states what `os.Rename`
   does and does not promise on each system. `File.Close` now returns the error
   the system reports while closing, instead of always `nil`.
+- Added the `photo-board` example, the last part of issue #217: a web
+  application with server-side sessions named by `rand.Text` tokens, form
+  tokens checked with `subtle.ConstantTimeEqual`, photo uploads through a
+  multipart form, file serving from one folder, and `303 See Other`
+  redirects. `std/net/http` gains `StatusSeeOther`, `StatusUnauthorized`,
+  `StatusForbidden`, and `StatusUnsupportedMediaType`, and `StatusText(303)`
+  is now `See Other`.
 - Added `std/crypto/rand` and `std/crypto/subtle` (§37.19). `rand.Bytes`
   reads secure random bytes from the operating system (`getrandom`,
   `getentropy`, or `BCryptGenRandom`), `rand.Text` returns a 43-character

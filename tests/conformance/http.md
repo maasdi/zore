@@ -152,3 +152,32 @@ compiler acceptance and rejection are in
 | A header byte 255 | `part header is not UTF-8` |
 | `ParseDisposition` of `form-data; name="doc"; filename="résumé.pdf"`, `Form-Data;Name=a`, `form-data` | Lowercased type and names, UTF-8 file name kept |
 | `ParseDisposition` of `""` and `form/data; name=a` | `mime: invalid disposition`; `mime: invalid parameter` |
+
+## Photo board example
+
+`examples/photo-board` combines §37.16 to §37.19. It is checked by
+`tests/codegen/http.rs::photo_board_example_names_uploads_and_serves_photos`.
+
+| Scenario | Expected result |
+| --- | --- |
+| `GET /` without cookies | The sign-in form, `No photos yet.`, `Cache-Control: no-store`, and a 43-character `board_login` cookie (`Max-Age=3600; HttpOnly; SameSite=Lax`) equal to the form's hidden `login` field |
+| `GET /` again with that cookie | No new cookie; the same hidden token |
+| A file `9.png` left in the photo folder before start | Deleted at start; `GET /photos/9.png` is `404` |
+| `POST /name` without the cookie, with a wrong `login`, without `login` | `403` |
+| `POST /name` with `<b>`, a 41-character name, a 1025-byte form | `400`, `400`, `413` |
+| `POST /name` with matching tokens and `Ada Lovelace` | `303 See Other` to `/`, a 43-character `board_session` cookie (`Max-Age=2592000; HttpOnly; SameSite=Lax`) different from the login token, and the login cookie deleted |
+| A second sign-in | A different session token |
+| `GET /` with the session; with `board_session` set to the name, `x`, or empty | `Signed in as Ada Lovelace.` and a separate 43-character form token; the sign-in form |
+| Uploads without a session; with a forged session (both with `Expect: 100-continue` and no body); one declaring 5,308,417 bytes | `403`; `403`; `413` |
+| Uploads with a wrong form token; with another session's form token | `403` |
+| Uploads named `.svg`, `.exe`, `.avif`, `.ico`, or without an extension; a blank title | `415`; `400` |
+| An upload titled `<My cat>` named `C:\Users\ada\Cat.PNG`, then a `.webp` | `303` each; the page shows `/photos/2.webp` before `/photos/1.png`, titles escaped, owner from the session |
+| `GET /photos/1.png` | `200`, `image/png`, the exact bytes, which also match the stored file |
+| `GET /photos/3.png`, `/photos/.hidden`; `/photos/..%2f1.png` | `404`; `400` from the server |
+| `POST /name/forget` with a wrong form token; with another session's | `403` |
+| `POST /name/forget` with the right token | `303` with `board_session=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax`; the old cookie then finds no session and its uploads get `403`; the other session still works |
+| `POST /name/forget` with an unknown session cookie | `303` and the cookie deleted |
+| `POST /name/forget` with a 1025-byte form: without a session; with one | `303`; `413` |
+| Signing in again while signed in | A new session; the old one no longer works |
+| Five more sign-ins from the same client | The first four keep the earlier session; the fifth ends it, and all five new sessions work |
+| SIGTERM (Ctrl+Break on Windows) | Logs `photo 1 added by Ada Lovelace` and `stopped`, then exits cleanly; two photo files remain |

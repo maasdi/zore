@@ -1,0 +1,232 @@
+package main
+
+import "std/io"
+import "std/log"
+import "std/net/http"
+import "std/crypto/rand"
+import "std/os"
+import "std/path/filepath"
+import "std/strconv"
+import "std/strings"
+
+const sessionCookie = "board_session"
+const loginCookie = "board_login"
+const sessionSeconds = 2592000
+const loginSeconds = 3600
+const tokenLength = 43
+const photoFileMode = 420
+const nameBytes = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789 -_"
+const maxNameBytes = 40
+const maxNameFormBytes = 1024
+const maxTitleBytes = 100
+const maxPhotoBytes = 5242880
+const multipartOverheadBytes = 65536
+const maxUploadBytes = maxPhotoBytes + multipartOverheadBytes
+const maxUploadParts = 4
+const maxUploadTextBytes = 1024
+
+func validName(name string) bool {
+    if name == "" || name.len() > maxNameBytes {
+        return false
+    }
+    for var i = 0; i < name.len(); i += 1 {
+        if strings.IndexByte(nameBytes, name[i]) < 0 {
+            return false
+        }
+    }
+    return true
+}
+
+func boardCookie(name string, value string, maxAge int) http.Cookie {
+    var cookie = http.NewCookie(name, value)
+    cookie.Path = "/"
+    cookie.HttpOnly = true
+    cookie.SameSite = "Lax"
+    cookie.MaxAge = maxAge
+    return cookie
+}
+
+func currentSession(board Board, r http.Request) (Session, bool) {
+    let cookie, found = r.Cookie(sessionCookie)
+    if !found {
+        return Session{Token: "", FormToken: "", Name: "", Client: ""}, false
+    }
+    return board.Session(cookie.Value)
+}
+
+func clientOf(r http.Request) string {
+    let address = r.RemoteAddr()
+    var end = address.len()
+    for var i = address.len() - 1; i >= 0; i -= 1 {
+        if address[i] == 58 {
+            end = i
+            break
+        }
+    }
+    return address[:end]
+}
+
+func redirectHome(w mut http.ResponseWriter) error {
+    w.SetHeader(http.HeaderLocation, "/")?
+    return w.WriteHeader(http.StatusSeeOther)
+}
+
+func expiredForm(w mut http.ResponseWriter) error {
+    return w.Text(http.StatusForbidden, "this form has expired; reload the page and try again")
+}
+
+func page(w mut http.ResponseWriter, status int, html string) error {
+    let data = strings.Bytes(html)
+    w.SetHeader(http.HeaderContentType, "text/html; charset=utf-8")?
+    w.SetHeader(http.HeaderContentLength, strconv.Itoa(data.len()))?
+    w.SetHeader("Cache-Control", "no-store")?
+    w.WriteHeader(status)?
+    let _, err = w.Write(data[:])
+    return err
+}
+
+func showBoard(board Board, w mut http.ResponseWriter, r mut http.Request) error {
+    let session, signed = currentSession(board, r)
+    if signed {
+        return page(w, http.StatusOK, boardPage(session.Name, true, session.FormToken, board.Photos()))
+    }
+    let cookie, found = r.Cookie(loginCookie)
+    var loginToken = cookie.Value
+    if !found || loginToken.len() != tokenLength {
+        loginToken = rand.Text()?
+        w.SetCookie(boardCookie(loginCookie, loginToken, loginSeconds))?
+    }
+    return page(w, http.StatusOK, boardPage("", false, loginToken, board.Photos()))
+}
+
+func saveName(board Board, w mut http.ResponseWriter, r mut http.Request) error {
+    let form, err = r.ReadForm(maxNameFormBytes)
+    if err == io.LimitExceeded {
+        return w.Text(http.StatusContentTooLarge, "the form is too large")
+    }
+    if err != nil {
+        return w.Text(http.StatusBadRequest, "expected a form")
+    }
+    let cookie, _ = r.Cookie(loginCookie)
+    let sent, _ = form.Get("login")
+    if !sameToken(cookie.Value, sent) {
+        return expiredForm(w)
+    }
+    let raw, _ = form.Get("name")
+    let name = strings.TrimSpace(raw)
+    if !validName(name) {
+        return w.Text(http.StatusBadRequest, "use 1 to " + strconv.Itoa(maxNameBytes) + " letters, digits, spaces, - or _")
+    }
+    let previous, signedIn = currentSession(board, r)
+    if signedIn {
+        board.EndSession(previous.Token)
+    }
+    let session, startErr = board.StartSession(name, clientOf(r))
+    if startErr == errBoardFull {
+        return w.Text(http.StatusServiceUnavailable, "the board is full; try again later")
+    }
+    if startErr != nil {
+        return startErr
+    }
+    w.SetCookie(boardCookie(sessionCookie, session.Token, sessionSeconds))?
+    w.SetCookie(boardCookie(loginCookie, "", -1))?
+    return redirectHome(w)
+}
+
+func forgetName(board Board, w mut http.ResponseWriter, r mut http.Request) error {
+    let session, signed = currentSession(board, r)
+    if !signed {
+        w.SetCookie(boardCookie(sessionCookie, "", -1))?
+        return redirectHome(w)
+    }
+    let form, err = r.ReadForm(maxNameFormBytes)
+    if err == io.LimitExceeded {
+        return w.Text(http.StatusContentTooLarge, "the form is too large")
+    }
+    if err != nil {
+        return w.Text(http.StatusBadRequest, "expected a form")
+    }
+    let sent, _ = form.Get("form")
+    if !sameToken(session.FormToken, sent) {
+        return expiredForm(w)
+    }
+    board.EndSession(session.Token)
+    w.SetCookie(boardCookie(sessionCookie, "", -1))?
+    return redirectHome(w)
+}
+
+func photoExtension(filename string) (string, bool) {
+    let ext = strings.ToLower(filepath.Ext(filename))
+    let allowed = [string; 5]{".png", ".jpg", ".jpeg", ".gif", ".webp"}
+    for candidate in allowed {
+        if ext == candidate {
+            return ext, true
+        }
+    }
+    return "", false
+}
+
+func savePhoto(upload http.FormFile, path string) error {
+    var source = upload.Open()?
+    var target = os.OpenFile(path, os.OpenWriteOnly | os.OpenCreate | os.OpenExclusive, photoFileMode)?
+    let _, copyErr = io.Copy(target, source)
+    let closeErr = target.Close()
+    if copyErr != nil {
+        _ = closeErr
+        _ = os.Remove(path)
+        return copyErr
+    }
+    if closeErr != nil {
+        _ = os.Remove(path)
+        return closeErr
+    }
+    return nil
+}
+
+func uploadPhoto(board Board, logger log.Logger, w mut http.ResponseWriter, r mut http.Request) error {
+    let session, signed = currentSession(board, r)
+    if !signed {
+        return w.Text(http.StatusForbidden, "sign in first")
+    }
+    var limits = http.DefaultMultipartLimits()
+    limits.MaxBytes = maxUploadBytes
+    limits.MaxFileBytes = maxPhotoBytes
+    limits.MaxParts = maxUploadParts
+    limits.MaxValueBytes = maxUploadTextBytes
+    let form, err = r.ReadMultipartForm(limits)
+    if err == io.LimitExceeded {
+        return w.Text(http.StatusContentTooLarge, "the upload is too large; photos can be at most 5 MiB")
+    }
+    if err != nil {
+        return w.Text(http.StatusBadRequest, "expected a photo upload form")
+    }
+    let sent, _ = form.Value("form")
+    if !sameToken(session.FormToken, sent) {
+        return expiredForm(w)
+    }
+    let rawTitle, _ = form.Value("title")
+    let title = strings.TrimSpace(rawTitle)
+    if title == "" || title.len() > maxTitleBytes {
+        return w.Text(http.StatusBadRequest, "the title must have 1 to " + strconv.Itoa(maxTitleBytes) + " bytes")
+    }
+    let upload, found = form.File("photo")
+    if !found {
+        return w.Text(http.StatusBadRequest, "choose a photo")
+    }
+    let ext, allowed = photoExtension(upload.Filename)
+    if !allowed {
+        return w.Text(http.StatusUnsupportedMediaType, "use a PNG, JPEG, GIF or WebP file")
+    }
+    let id = board.NextID()
+    let file = strconv.Itoa(id) + ext
+    let parts = [string; 2]{photoDirectory, file}
+    savePhoto(upload, filepath.Join(parts[:]))?
+    board.Add(Photo{ID: id, Owner: session.Name, Title: title, File: file})
+    logger.Info("photo {id} added by {owner}", id, session.Name)
+    return redirectHome(w)
+}
+
+func servePhoto(w mut http.ResponseWriter, r mut http.Request) error {
+    let file, _ = r.PathParam("file")
+    return http.ServeFileIn(w, r, photoDirectory, file)
+}

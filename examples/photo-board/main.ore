@@ -1,0 +1,51 @@
+package main
+
+import "std/errors"
+import "std/log"
+import "std/net/http"
+import "std/os"
+
+const listenAddress = "127.0.0.1:8080"
+const photoDirectory = "photo-board-data/photos"
+const photoDirectoryMode = 493
+
+func main() {
+    let err = run()
+    if err != nil {
+        println(errors.Message(err))
+        os.Exit(1)
+    }
+}
+
+func run() error {
+    let logger = log.New(os.Stderr(), log.LevelInfo)
+    os.RemoveAll(photoDirectory)?
+    os.MkdirAll(photoDirectory, photoDirectoryMode)?
+    let board = NewBoard()
+    let router = newRouter(board, logger)?
+    var config = http.DefaultConfig()
+    config.MaxBodyBytes = maxUploadBytes
+    println("Starting http://" + listenAddress + "; Ctrl-C shuts down gracefully")
+    logger.Info("listening on {addr}", listenAddress)
+    http.ListenAndServeWithConfig(listenAddress, router, config)?
+    logger.Info("stopped")
+    return nil
+}
+
+func newRouter(board Board, logger log.Logger) (http.Router, error) {
+    var routes = http.NewRouterBuilder()
+    routes.Handle("GET /", func(w mut http.ResponseWriter, r mut http.Request) error {
+        return showBoard(board, w, r)
+    })
+    routes.Handle("POST /name", func(w mut http.ResponseWriter, r mut http.Request) error {
+        return saveName(board, w, r)
+    })
+    routes.Handle("POST /name/forget", func(w mut http.ResponseWriter, r mut http.Request) error {
+        return forgetName(board, w, r)
+    })
+    routes.Handle("POST /photos", func(w mut http.ResponseWriter, r mut http.Request) error {
+        return uploadPhoto(board, logger, w, r)
+    })
+    routes.Handle("GET /photos/{file}", servePhoto)
+    return routes.Build()
+}
