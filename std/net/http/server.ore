@@ -396,7 +396,7 @@ async func (s Server) connection(conn own net.Conn, accepted time.Instant) {
             w.close = true
             _ = w.WriteHeader(status)
             let refusedErr = w.finish()
-            if refusedErr == nil { lingerClose(sockets[:], s) }
+            if refusedErr == nil && status != 408 { lingerClose(sockets[:], s) }
             return
         }
         r.writeDeadline = writeDeadline
@@ -426,7 +426,8 @@ async func (s Server) connection(conn own net.Conn, accepted time.Instant) {
         if !r.done { w.close = true }
         let finalErr = w.finish()
         if finalErr != nil || w.close || r.close || !r.done || s.draining() {
-            if finalErr == nil && !r.done { lingerClose(sockets[:], s) }
+            let unread = !r.done || r.position < r.buffer.len()
+            if finalErr == nil && unread && r.failureStatus != 408 { lingerClose(sockets[:], s) }
             return
         }
         pending = Array<byte>{}

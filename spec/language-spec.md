@@ -8268,7 +8268,8 @@ unread makes the system send a reset, and a client that has not yet read the
 response may lose it (Windows discards it). So after a final response has been
 written completely, when request bytes may still be unread (the handler left
 the body unread, the request was refused before its body, as with 413 for a
-known length, or the head was rejected), the server ends the connection as
+known length, the head was rejected, or the connection closes with bytes of a
+later request already received), the server ends the connection as
 [RFC 9112 §9.6](https://www.rfc-editor.org/rfc/rfc9112.html#section-9.6)
 describes: it shuts down its sending side with `net.Conn.CloseWrite`, so the
 client sees the end of the response, then reads and discards input until the
@@ -8276,9 +8277,9 @@ client ends its side, a read fails, 1,048,576 bytes have been discarded, or
 two seconds have passed, and only then closes. Reads use the control polling
 interval, so server cancellation stops the wait early. Discarded bytes are
 never parsed, and no further request is served on the connection. A response
-whose writing failed, a connection that ends because the client went away or a
-deadline expired, and a connection closed after a body read to its end close
-at once as before. Graceful shutdown waits for a lingering connection like any
+whose writing failed, a `408` for an expired read deadline, and a connection
+closed with no request bytes left unread close at once as before; when the
+client has already gone away, the first read ends the wait. Graceful shutdown waits for a lingering connection like any
 other; its wait is bounded by the same two seconds.
 
 Set socket deadlines before the associated wait, using std/time's monotonic

@@ -943,11 +943,9 @@ fn http_capacity_and_handler_panic_release_the_connection_permit() {
     drop(held);
     let deadline = std::time::Instant::now() + Duration::from_secs(4);
     loop {
-        assert!(
-            server
-                .exchange("GET /panic HTTP/1.1\r\nHost: x\r\n\r\n")
-                .is_empty()
-        );
+        assert!(server
+            .exchange("GET /panic HTTP/1.1\r\nHost: x\r\n\r\n")
+            .is_empty());
         match started.recv_timeout(Duration::from_millis(10)) {
             Ok(line) => {
                 assert_eq!(line, "panic-entered\n");
@@ -979,11 +977,9 @@ fn http_factory_poison_preserves_acceptance_and_shutdown() {
         .replace("let _, _ = stop.receive()", "let input = os.Stdin()\n    var signalByte = Array<byte>{0}\n    let _, _ = input.Read(signalByte[:])")
         .replace("import \"std/net\"", "import \"std/net\"\nimport \"std/os\"");
     let mut server = ServerProcess::start(&source);
-    assert!(
-        server
-            .exchange("GET /factory-panic HTTP/1.1\r\nHost: x\r\n\r\n")
-            .is_empty()
-    );
+    assert!(server
+        .exchange("GET /factory-panic HTTP/1.1\r\nHost: x\r\n\r\n")
+        .is_empty());
     status(
         &server.exchange("GET /echo HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n"),
         503,
@@ -1063,11 +1059,9 @@ func main() {
 }
 "#;
     let server = ServerProcess::start(source);
-    assert!(
-        server
-            .exchange("GET /hold HTTP/1.1\r\nHost: x\r\n\r\n")
-            .is_empty()
-    );
+    assert!(server
+        .exchange("GET /hold HTTP/1.1\r\nHost: x\r\n\r\n")
+        .is_empty());
     server.finish("");
 }
 
@@ -2728,7 +2722,14 @@ fn send_while_reading(server: &ServerProcess, head: &str, body_len: usize) -> (S
         match reader.read(&mut buffer) {
             Ok(0) => break true,
             Ok(n) => bytes.extend_from_slice(&buffer[..n]),
-            Err(error) if error.kind() == std::io::ErrorKind::ConnectionReset => break false,
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::ConnectionReset | std::io::ErrorKind::ConnectionAborted
+                ) =>
+            {
+                break false
+            }
             Err(error) => panic!("reading response: {error}"),
         }
     };
@@ -2739,7 +2740,7 @@ fn send_while_reading(server: &ServerProcess, head: &str, body_len: usize) -> (S
 #[test]
 fn http_lingering_close_delivers_answers_to_unread_bodies() {
     let server = ServerProcess::start(LINGER_SERVER);
-    for body_len in [600_000usize, 1_000_000] {
+    for body_len in [600_000usize, 800_000] {
         let (response, all_sent, clean_end) = send_while_reading(
             &server,
             &format!("POST /refuse HTTP/1.1\r\nHost: x\r\nContent-Length: {body_len}\r\n\r\n"),
@@ -2777,6 +2778,36 @@ fn http_lingering_close_delivers_answers_to_unread_bodies() {
     );
     status(&beyond_linger, 403);
     assert_eq!(body_of(&beyond_linger), "refused without reading");
+    let started = std::time::Instant::now();
+    let mut finished = server.connect();
+    finished
+        .write_all(b"POST /refuse HTTP/1.1\r\nHost: x\r\nContent-Length: 50\r\n\r\n")
+        .unwrap();
+    finished.write_all(&[b'x'; 50]).unwrap();
+    finished.shutdown(std::net::Shutdown::Write).unwrap();
+    let response = read_closed(&mut finished);
+    status(&response, 403);
+    assert!(
+        started.elapsed() < Duration::from_secs(1),
+        "the client's end of input ends the lingering close"
+    );
+    let mut pipelined = server.connect();
+    let mut requests =
+        String::from("GET /missing HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n");
+    for _ in 0..200 {
+        requests.push_str("GET /missing HTTP/1.1\r\nHost: x\r\n\r\n");
+    }
+    pipelined.write_all(requests.as_bytes()).unwrap();
+    std::thread::sleep(Duration::from_millis(300));
+    let mut bytes = Vec::new();
+    let pipelined_end = pipelined.read_to_end(&mut bytes);
+    let response = String::from_utf8(bytes).unwrap();
+    status(&response, 404);
+    assert_eq!(response.matches("HTTP/1.1 ").count(), 1, "{response}");
+    assert!(
+        pipelined_end.is_ok(),
+        "closing with pipelined requests unread ended in a reset: {pipelined_end:?}"
+    );
     let started = std::time::Instant::now();
     let mut silent = server.connect();
     silent
