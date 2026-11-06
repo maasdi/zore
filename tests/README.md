@@ -429,9 +429,10 @@ refusals, walk order, skipping, links, and errors that stay with their entry.
 use from many tasks, and comparisons that change one bit at every position.
 
 `conformance/http.md` also maps the `photo-board` example to
-`codegen/http.rs`: names set and forgotten through cookies, refused names and
-forged cookies, uploads that are refused or stored, escaped HTML, the photo
-served byte for byte, and a graceful stop.
+`codegen/http.rs`: sign-in tokens, sessions created and ended, forged and
+ended sessions, form tokens that are missing, wrong, or from another session,
+uploads that are refused or stored, escaped HTML, the photo served byte for
+byte, and a graceful stop.
 
 `conformance/http.md` also maps multipart forms to `codegen/http.rs`: a
 150,000-byte binary upload checked byte for byte, bodies sent in tiny pieces

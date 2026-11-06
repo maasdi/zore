@@ -2413,48 +2413,107 @@ fn photo_board_example_names_uploads_and_serves_photos() {
             "GET {path} HTTP/1.1\r\nHost: x\r\n{cookie}Connection: close\r\n\r\n"
         ))
     };
+    let post_form = |path: &str, cookie: &str, body: &str| {
+        server.exchange(&format!(
+            "POST {path} HTTP/1.1\r\nHost: x\r\n{cookie}Content-Type: application/x-www-form-urlencoded\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        ))
+    };
+    let hidden = |page: &str, field: &str| -> String {
+        let marker = format!("name=\"{field}\" value=\"");
+        let start = page.find(&marker).expect(field) + marker.len();
+        page[start..start + 43].to_string()
+    };
+    let cookie_value = |response: &str, name: &str| -> String {
+        let head = response
+            .split_once("\r\n\r\n")
+            .map_or(response, |(head, _)| head);
+        head.lines()
+            .filter_map(|line| line.strip_prefix("Set-Cookie: "))
+            .find_map(|line| line.strip_prefix(&format!("{name}=")))
+            .and_then(|rest| rest.split(';').next())
+            .expect(name)
+            .to_string()
+    };
+
     let empty = get("/", "");
     status(&empty, 200);
     assert!(
         body_of(&empty).contains("name=\"name\"") && body_of(&empty).contains("No photos yet."),
         "{empty}"
     );
-    let post_form = |path: &str, body: &str| {
-        server.exchange(&format!(
-            "POST {path} HTTP/1.1\r\nHost: x\r\nContent-Type: application/x-www-form-urlencoded\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-            body.len()
-        ))
-    };
-    status(&post_form("/name", "name=%3Cb%3E"), 400);
+    assert_eq!(header_value(&empty, "Cache-Control"), Some("no-store"));
+    let login_token = cookie_value(&empty, "board_login");
+    assert_eq!(login_token.len(), 43);
+    assert_eq!(hidden(body_of(&empty), "login"), login_token);
+    assert!(
+        empty.contains(&format!(
+            "Set-Cookie: board_login={login_token}; Path=/; Max-Age=3600; HttpOnly; SameSite=Lax"
+        )),
+        "{empty}"
+    );
+    let login = format!("Cookie: board_login={login_token}\r\n");
+    let again = get("/", &login);
+    assert!(!again.contains("Set-Cookie"), "{again}");
+    assert_eq!(hidden(body_of(&again), "login"), login_token);
+
+    let name_form = format!("login={login_token}&name=Ada+Lovelace");
+    status(&post_form("/name", "", &name_form), 403);
+    status(&post_form("/name", &login, "login=x&name=Ada"), 403);
+    status(&post_form("/name", &login, "name=Ada"), 403);
     status(
-        &post_form("/name", &format!("name={}", "a".repeat(41))),
+        &post_form(
+            "/name",
+            &login,
+            &format!("login={login_token}&name=%3Cb%3E"),
+        ),
         400,
     );
-    status(&post_form("/name", &"a".repeat(1025)), 413);
-    let named = post_form("/name", "name=Ada+Lovelace");
+    status(
+        &post_form(
+            "/name",
+            &login,
+            &format!("login={login_token}&name={}", "a".repeat(41)),
+        ),
+        400,
+    );
+    status(&post_form("/name", &login, &"a".repeat(1025)), 413);
+    let named = post_form("/name", &login, &name_form);
     assert!(named.starts_with("HTTP/1.1 303 See Other\r\n"), "{named}");
     assert_eq!(header_value(&named, "Location"), Some("/"));
-    assert_eq!(
-        header_value(&named, "Set-Cookie"),
-        Some("board_name=Ada+Lovelace; Path=/; Max-Age=2592000; HttpOnly; SameSite=Lax")
+    let session_token = cookie_value(&named, "board_session");
+    assert_eq!(session_token.len(), 43);
+    assert_ne!(session_token, login_token);
+    assert!(
+        named.contains(&format!(
+            "Set-Cookie: board_session={session_token}; Path=/; Max-Age=2592000; HttpOnly; SameSite=Lax"
+        )) && named.contains("Set-Cookie: board_login=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax"),
+        "{named}"
     );
-    let cookie = "Cookie: board_name=Ada+Lovelace\r\n";
-    let signed = get("/", cookie);
+    let cookie = format!("Cookie: board_session={session_token}\r\n");
+    let signed = get("/", &cookie);
     assert!(
         body_of(&signed).contains("Signed in as Ada Lovelace."),
         "{signed}"
     );
-    let forged = get("/", "Cookie: board_name=%3Cscript%3E\r\n");
-    assert!(body_of(&forged).contains("name=\"name\""), "{forged}");
+    let form_token = hidden(body_of(&signed), "form");
+    assert_ne!(form_token, session_token);
+    let other = post_form("/name", &login, &name_form);
+    let other_session = cookie_value(&other, "board_session");
+    assert_ne!(other_session, session_token);
+    for forged in ["Ada+Lovelace", "x", ""] {
+        let page = get("/", &format!("Cookie: board_session={forged}\r\n"));
+        assert!(body_of(&page).contains("name=\"name\""), "{forged}: {page}");
+    }
 
     let image: Vec<u8> = b"\x89PNG\r\n\x1a\n"
         .iter()
         .copied()
         .chain((0..5000u32).map(|i| (i * 7) as u8))
         .collect();
-    let upload = |cookie: &str, title: &str, filename: &str, bytes: &[u8]| {
+    let upload = |cookie: &str, token: &str, title: &str, filename: &str, bytes: &[u8]| {
         let mut body = format!(
-            "--B\r\nContent-Disposition: form-data; name=\"title\"\r\n\r\n{title}\r\n--B\r\nContent-Disposition: form-data; name=\"photo\"; filename=\"{filename}\"\r\nContent-Type: image/png\r\n\r\n"
+            "--B\r\nContent-Disposition: form-data; name=\"form\"\r\n\r\n{token}\r\n--B\r\nContent-Disposition: form-data; name=\"title\"\r\n\r\n{title}\r\n--B\r\nContent-Disposition: form-data; name=\"photo\"; filename=\"{filename}\"\r\nContent-Type: image/png\r\n\r\n"
         )
         .into_bytes();
         body.extend_from_slice(bytes);
@@ -2477,15 +2536,37 @@ fn photo_board_example_names_uploads_and_serves_photos() {
         ))
     };
     status(&refused_early("", 100), 401);
-    status(&refused_early(cookie, 5_308_417), 413);
+    status(&refused_early("Cookie: board_session=forged\r\n", 100), 401);
+    status(&refused_early(&cookie, 5_308_417), 413);
+    status(
+        &upload(&cookie, "wrong-token", "Cat", "cat.png", &image),
+        403,
+    );
+    let other_form = hidden(
+        body_of(&get(
+            "/",
+            &format!("Cookie: board_session={other_session}\r\n"),
+        )),
+        "form",
+    );
+    status(&upload(&cookie, &other_form, "Cat", "cat.png", &image), 403);
     for name in ["cat.svg", "cat.exe", "cat.avif", "cat.ico", "cat"] {
-        status(&upload(cookie, "Cat", name, &image), 415);
+        status(&upload(&cookie, &form_token, "Cat", name, &image), 415);
     }
-    status(&upload(cookie, " ", "cat.png", &image), 400);
-    let added = upload(cookie, "<My cat>", "C:\\Users\\ada\\Cat.PNG", &image);
+    status(&upload(&cookie, &form_token, " ", "cat.png", &image), 400);
+    let added = upload(
+        &cookie,
+        &form_token,
+        "<My cat>",
+        "C:\\Users\\ada\\Cat.PNG",
+        &image,
+    );
     status(&added, 303);
-    status(&upload(cookie, "Second", "dog.webp", b"RIFF0000WEBP"), 303);
-    let board = get("/", cookie);
+    status(
+        &upload(&cookie, &form_token, "Second", "dog.webp", b"RIFF0000WEBP"),
+        303,
+    );
+    let board = get("/", &cookie);
     assert!(
         body_of(&board).contains("<img src=\"/photos/1.png\" alt=\"&lt;My cat&gt;\" width=\"320\"><figcaption>&lt;My cat&gt; by Ada Lovelace</figcaption>"),
         "{board}"
@@ -2514,12 +2595,30 @@ fn photo_board_example_names_uploads_and_serves_photos() {
     status(&get("/photos/3.png", ""), 404);
     status(&get("/photos/.hidden", ""), 404);
     status(&get("/photos/..%2f1.png", ""), 400);
-    let forgotten = post_form("/name/forget", "");
-    status(&forgotten, 303);
-    assert_eq!(
-        header_value(&forgotten, "Set-Cookie"),
-        Some("board_name=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax")
+
+    status(&post_form("/name/forget", &cookie, "form=wrong"), 403);
+    status(
+        &post_form("/name/forget", &cookie, &format!("form={other_form}")),
+        403,
     );
+    let forgotten = post_form("/name/forget", &cookie, &format!("form={form_token}"));
+    status(&forgotten, 303);
+    assert!(
+        forgotten.contains("Set-Cookie: board_session=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax"),
+        "{forgotten}"
+    );
+    let after = get("/", &cookie);
+    assert!(body_of(&after).contains("name=\"name\""), "{after}");
+    status(
+        &upload(&cookie, &form_token, "Late", "late.png", &image),
+        401,
+    );
+    let still = get("/", &format!("Cookie: board_session={other_session}\r\n"));
+    assert!(
+        body_of(&still).contains("Signed in as Ada Lovelace."),
+        "{still}"
+    );
+    status(&post_form("/name/forget", "", ""), 303);
     assert_eq!(std::fs::read_dir(&photos).unwrap().count(), 2);
     send_signal(&server.child, test_signals()[1]);
     let logs = server.finish_with_errors();

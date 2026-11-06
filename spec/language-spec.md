@@ -8130,7 +8130,7 @@ This ASCII restriction must be documented as interoperability policy.
 
 Provide `StatusText(code int) string` and integer constants including `StatusOK`,
 `StatusCreated`, `StatusNoContent`, `StatusResetContent`, `StatusSeeOther`,
-`StatusBadRequest`, `StatusUnauthorized`, `StatusNotFound`,
+`StatusBadRequest`, `StatusUnauthorized`, `StatusForbidden`, `StatusNotFound`,
 `StatusMethodNotAllowed`, `StatusRequestTimeout`, `StatusContentTooLarge`,
 `StatusUnsupportedMediaType`,
 `StatusExpectationFailed`, `StatusRequestHeaderFieldsTooLarge`,

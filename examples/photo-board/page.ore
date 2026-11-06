@@ -11,17 +11,19 @@ func escapeHTML(text string) string {
     return strings.ReplaceAll(result, "'", "&#39;")
 }
 
-func boardPage(name string, named bool, photos Array<Photo>) string {
+func boardPage(name string, named bool, token string, photos Array<Photo>) string {
     var html = "<!doctype html>\n<html lang=\"en\">\n<head><meta charset=\"utf-8\"><title>Photo board</title></head>\n<body>\n<h1>Photo board</h1>\n"
     if named {
         html += "<p>Signed in as " + escapeHTML(name) + ".</p>\n"
-        html += "<form method=\"post\" action=\"/name/forget\"><button>Forget my name</button></form>\n"
+        html += "<form method=\"post\" action=\"/name/forget\"><input type=\"hidden\" name=\"form\" value=\"" + escapeHTML(token) + "\"><button>Forget my name</button></form>\n"
         html += "<form method=\"post\" action=\"/photos\" enctype=\"multipart/form-data\">\n"
+        html += "<input type=\"hidden\" name=\"form\" value=\"" + escapeHTML(token) + "\">\n"
         html += "<input name=\"title\" maxlength=\"" + strconv.Itoa(maxTitleBytes) + "\" required placeholder=\"Title\">\n"
         html += "<input type=\"file\" name=\"photo\" accept=\"image/png,image/jpeg,image/gif,image/webp\" required>\n"
         html += "<button>Upload</button>\n</form>\n"
     } else {
         html += "<form method=\"post\" action=\"/name\">\n"
+        html += "<input type=\"hidden\" name=\"login\" value=\"" + escapeHTML(token) + "\">\n"
         html += "<input name=\"name\" maxlength=\"" + strconv.Itoa(maxNameBytes) + "\" required placeholder=\"Your name\">\n"
         html += "<button>Continue</button>\n</form>\n"
     }

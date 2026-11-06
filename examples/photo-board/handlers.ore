@@ -3,14 +3,16 @@ package main
 import "std/io"
 import "std/log"
 import "std/net/http"
-import "std/net/url"
+import "std/crypto/rand"
 import "std/os"
 import "std/path/filepath"
 import "std/strconv"
 import "std/strings"
 
-const nameCookie = "board_name"
-const nameCookieSeconds = 2592000
+const sessionCookie = "board_session"
+const loginCookie = "board_login"
+const sessionSeconds = 2592000
+const loginSeconds = 3600
 const nameBytes = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789 -_"
 const maxNameBytes = 40
 const maxNameFormBytes = 1024
@@ -33,16 +35,21 @@ func validName(name string) bool {
     return true
 }
 
-func visitorName(r http.Request) (string, bool) {
-    let cookie, found = r.Cookie(nameCookie)
+func boardCookie(name string, value string, maxAge int) http.Cookie {
+    var cookie = http.NewCookie(name, value)
+    cookie.Path = "/"
+    cookie.HttpOnly = true
+    cookie.SameSite = "Lax"
+    cookie.MaxAge = maxAge
+    return cookie
+}
+
+func currentSession(board Board, r http.Request) (Session, bool) {
+    let cookie, found = r.Cookie(sessionCookie)
     if !found {
-        return "", false
+        return Session{Token: "", FormToken: "", Name: ""}, false
     }
-    let name, err = url.QueryUnescape(cookie.Value)
-    if err != nil || !validName(name) {
-        return "", false
-    }
-    return name, true
+    return board.Session(cookie.Value)
 }
 
 func redirectHome(w mut http.ResponseWriter) error {
@@ -50,21 +57,35 @@ func redirectHome(w mut http.ResponseWriter) error {
     return w.WriteHeader(http.StatusSeeOther)
 }
 
+func expiredForm(w mut http.ResponseWriter) error {
+    return w.Text(http.StatusForbidden, "this form has expired; reload the page and try again")
+}
+
 func page(w mut http.ResponseWriter, status int, html string) error {
     let data = strings.Bytes(html)
     w.SetHeader(http.HeaderContentType, "text/html; charset=utf-8")?
     w.SetHeader(http.HeaderContentLength, strconv.Itoa(data.len()))?
+    w.SetHeader("Cache-Control", "no-store")?
     w.WriteHeader(status)?
     let _, err = w.Write(data[:])
     return err
 }
 
 func showBoard(board Board, w mut http.ResponseWriter, r mut http.Request) error {
-    let name, named = visitorName(r)
-    return page(w, http.StatusOK, boardPage(name, named, board.Photos()))
+    let session, signed = currentSession(board, r)
+    if signed {
+        return page(w, http.StatusOK, boardPage(session.Name, true, session.FormToken, board.Photos()))
+    }
+    let cookie, found = r.Cookie(loginCookie)
+    var loginToken = cookie.Value
+    if !found || loginToken.len() != 43 {
+        loginToken = rand.Text()?
+        w.SetCookie(boardCookie(loginCookie, loginToken, loginSeconds))?
+    }
+    return page(w, http.StatusOK, boardPage("", false, loginToken, board.Photos()))
 }
 
-func saveName(w mut http.ResponseWriter, r mut http.Request) error {
+func saveName(board Board, w mut http.ResponseWriter, r mut http.Request) error {
     let form, err = r.ReadForm(maxNameFormBytes)
     if err == io.LimitExceeded {
         return w.Text(http.StatusContentTooLarge, "the form is too large")
@@ -72,27 +93,38 @@ func saveName(w mut http.ResponseWriter, r mut http.Request) error {
     if err != nil {
         return w.Text(http.StatusBadRequest, "expected a form")
     }
+    let cookie, _ = r.Cookie(loginCookie)
+    let sent, _ = form.Get("login")
+    if !sameToken(cookie.Value, sent) {
+        return expiredForm(w)
+    }
     let raw, _ = form.Get("name")
     let name = strings.TrimSpace(raw)
     if !validName(name) {
         return w.Text(http.StatusBadRequest, "use 1 to " + strconv.Itoa(maxNameBytes) + " letters, digits, spaces, - or _")
     }
-    w.SetCookie(nameCookieWith(url.QueryEscape(name), nameCookieSeconds))?
+    let session = board.StartSession(name)?
+    w.SetCookie(boardCookie(sessionCookie, session.Token, sessionSeconds))?
+    w.SetCookie(boardCookie(loginCookie, "", -1))?
     return redirectHome(w)
 }
 
-func forgetName(w mut http.ResponseWriter, r mut http.Request) error {
-    w.SetCookie(nameCookieWith("", -1))?
+func forgetName(board Board, w mut http.ResponseWriter, r mut http.Request) error {
+    let session, signed = currentSession(board, r)
+    if !signed {
+        return redirectHome(w)
+    }
+    let form, err = r.ReadForm(maxNameFormBytes)
+    if err != nil {
+        return w.Text(http.StatusBadRequest, "expected a form")
+    }
+    let sent, _ = form.Get("form")
+    if !sameToken(session.FormToken, sent) {
+        return expiredForm(w)
+    }
+    board.EndSession(session.Token)
+    w.SetCookie(boardCookie(sessionCookie, "", -1))?
     return redirectHome(w)
-}
-
-func nameCookieWith(value string, maxAge int) http.Cookie {
-    var cookie = http.NewCookie(nameCookie, value)
-    cookie.Path = "/"
-    cookie.HttpOnly = true
-    cookie.SameSite = "Lax"
-    cookie.MaxAge = maxAge
-    return cookie
 }
 
 func photoExtension(filename string) (string, bool) {
@@ -124,8 +156,8 @@ func savePhoto(upload http.FormFile, path string) error {
 }
 
 func uploadPhoto(board Board, logger log.Logger, w mut http.ResponseWriter, r mut http.Request) error {
-    let owner, named = visitorName(r)
-    if !named {
+    let session, signed = currentSession(board, r)
+    if !signed {
         return w.Text(http.StatusUnauthorized, "choose a name first")
     }
     var limits = http.DefaultMultipartLimits()
@@ -139,6 +171,10 @@ func uploadPhoto(board Board, logger log.Logger, w mut http.ResponseWriter, r mu
     }
     if err != nil {
         return w.Text(http.StatusBadRequest, "expected a photo upload form")
+    }
+    let sent, _ = form.Value("form")
+    if !sameToken(session.FormToken, sent) {
+        return expiredForm(w)
     }
     let rawTitle, _ = form.Value("title")
     let title = strings.TrimSpace(rawTitle)
@@ -157,8 +193,8 @@ func uploadPhoto(board Board, logger log.Logger, w mut http.ResponseWriter, r mu
     let file = strconv.Itoa(id) + ext
     let parts = [string; 2]{photoDirectory, file}
     savePhoto(upload, filepath.Join(parts[:]))?
-    board.Add(Photo{ID: id, Owner: owner, Title: title, File: file})
-    logger.Info("photo {id} added by {owner}", id, owner)
+    board.Add(Photo{ID: id, Owner: session.Name, Title: title, File: file})
+    logger.Info("photo {id} added by {owner}", id, session.Name)
     return redirectHome(w)
 }
 

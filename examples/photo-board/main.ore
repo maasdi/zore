@@ -37,8 +37,12 @@ func newRouter(board Board, logger log.Logger) (http.Router, error) {
     routes.Handle("GET /", func(w mut http.ResponseWriter, r mut http.Request) error {
         return showBoard(board, w, r)
     })
-    routes.Handle("POST /name", saveName)
-    routes.Handle("POST /name/forget", forgetName)
+    routes.Handle("POST /name", func(w mut http.ResponseWriter, r mut http.Request) error {
+        return saveName(board, w, r)
+    })
+    routes.Handle("POST /name/forget", func(w mut http.ResponseWriter, r mut http.Request) error {
+        return forgetName(board, w, r)
+    })
     routes.Handle("POST /photos", func(w mut http.ResponseWriter, r mut http.Request) error {
         return uploadPhoto(board, logger, w, r)
     })

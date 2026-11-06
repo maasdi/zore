@@ -16,6 +16,7 @@ const StatusResetContent = 205
 const StatusSeeOther = 303
 const StatusBadRequest = 400
 const StatusUnauthorized = 401
+const StatusForbidden = 403
 const StatusNotFound = 404
 const StatusMethodNotAllowed = 405
 const StatusRequestTimeout = 408

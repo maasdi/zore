@@ -1,10 +1,22 @@
 package main
 
+import "std/crypto/rand"
+import "std/crypto/subtle"
+import "std/strings"
+
+const maxSessions = 1000
+
 type Photo struct {
     ID int
     Owner string
     Title string
     File string
+}
+
+type Session struct {
+    Token string
+    FormToken string
+    Name string
 }
 
 type Board struct {
@@ -14,10 +26,11 @@ type Board struct {
 type boardState struct {
     photos Array<Photo>
     nextID int
+    sessions Array<Session>
 }
 
 func NewBoard() Board {
-    return Board{state: mutex(boardState{photos: Array<Photo>{}, nextID: 1})}
+    return Board{state: mutex(boardState{photos: Array<Photo>{}, nextID: 1, sessions: Array<Session>{}})}
 }
 
 func (board Board) Photos() Array<Photo> {
@@ -41,5 +54,53 @@ func (board Board) NextID() int {
 func (board Board) Add(photo Photo) {
     board.state.withLock(func(state mut boardState) {
         state.photos.push(photo)
+    })
+}
+
+func sameToken(expected string, sent string) bool {
+    let want = strings.Bytes(expected)
+    let got = strings.Bytes(sent)
+    return expected != "" && subtle.ConstantTimeEqual(want[:], got[:])
+}
+
+func (board Board) StartSession(name string) (Session, error) {
+    let token = rand.Text()?
+    let formToken = rand.Text()?
+    let session = Session{Token: token, FormToken: formToken, Name: name}
+    board.state.withLock(func(state mut boardState) {
+        var kept = Array<Session>{}
+        var start = 0
+        if state.sessions.len() >= maxSessions {
+            start = state.sessions.len() - maxSessions + 1
+        }
+        for var i = start; i < state.sessions.len(); i += 1 {
+            kept.push(state.sessions[i])
+        }
+        kept.push(session)
+        state.sessions = kept
+    })
+    return session, nil
+}
+
+func (board Board) Session(token string) (Session, bool) {
+    return board.state.withLock(func(state mut boardState) (Session, bool) {
+        for session in state.sessions {
+            if sameToken(session.Token, token) {
+                return session, true
+            }
+        }
+        return Session{Token: "", FormToken: "", Name: ""}, false
+    })
+}
+
+func (board Board) EndSession(token string) {
+    board.state.withLock(func(state mut boardState) {
+        var kept = Array<Session>{}
+        for session in state.sessions {
+            if !sameToken(session.Token, token) {
+                kept.push(session)
+            }
+        }
+        state.sessions = kept
     })
 }
