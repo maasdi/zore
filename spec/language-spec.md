@@ -8203,8 +8203,9 @@ automatic 100, including when final-header transmission subsequently fails.
 
 Version one requires handlers to read the body before committing a final
 response. A subsequent Read returns `http.Request.Read: response already started`
-without reading the socket or emitting 100. The server does not drain the body
-through another path; if unread bytes remain, it closes after the response.
+without reading the socket or emitting 100. The server does not hand unread
+body bytes to anyone; if they remain, it ends the connection after the
+response with the lingering close described below.
 For example, WriteHeader(403) followed by Read returns that error and never
 places an informational response after 403. Repeated reads before commitment
 cannot emit a second 100. Informational responses precede final responses
@@ -8254,12 +8255,31 @@ may route if valid tokens.
 The connection task owns the Conn, parser buffers, and response serialization.
 It serves one request at a time, including pipelined input; responses stay in
 request order. Keep-alive is default unless either side requests close or framing
-fails. If the handler leaves body bytes unread, send its response and close;
-do not start an unbounded drain. Once a streamed body exceeds the limit,
+fails. If the handler leaves body bytes unread, send its response and end the
+connection with a lingering close; never start an unbounded drain. Once a
+streamed body exceeds the limit,
 Read records a stable limit error and marks the connection for closure after a
 bounded error response; emit 413 only if uncommitted. A handler cannot erase a
 parser/body error by returning nil. Close immediately if a response cannot be
 sent safely.
+
+**Lingering close.** Closing a TCP connection while the client's bytes sit
+unread makes the system send a reset, and a client that has not yet read the
+response may lose it (Windows discards it). So after a final response has been
+written completely, when request bytes may still be unread (the handler left
+the body unread, the request was refused before its body, as with 413 for a
+known length, or the head was rejected), the server ends the connection as
+[RFC 9112 §9.6](https://www.rfc-editor.org/rfc/rfc9112.html#section-9.6)
+describes: it shuts down its sending side with `net.Conn.CloseWrite`, so the
+client sees the end of the response, then reads and discards input until the
+client ends its side, a read fails, 1,048,576 bytes have been discarded, or
+two seconds have passed, and only then closes. Reads use the control polling
+interval, so server cancellation stops the wait early. Discarded bytes are
+never parsed, and no further request is served on the connection. A response
+whose writing failed, a connection that ends because the client went away or a
+deadline expired, and a connection closed after a body read to its end close
+at once as before. Graceful shutdown waits for a lingering connection like any
+other; its wait is bounded by the same two seconds.
 
 Set socket deadlines before the associated wait, using std/time's monotonic
 clock. Context cancellation alone does not interrupt a socket wait (§37.4).
