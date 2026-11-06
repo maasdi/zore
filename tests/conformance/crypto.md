@@ -31,13 +31,15 @@ The contract is locked in specification §37.20. Executable tests are in
 | Scenario | Expected result |
 | --- | --- |
 | SHA-1, SHA-256, and SHA-512 of the empty input, `abc`, the 448- and 896-bit NIST messages, and one million `a` bytes | The FIPS 180-4 example values |
-| Every input length from 0 to 300 bytes, written whole, byte by byte, and in two parts | The same hash each way |
-| `Sum` after the first part, then writing the rest | The hash of the first part, then the hash of the whole |
+| Every input length from 0 to 300 bytes | Hashes that match a reference implementation |
+| The same inputs written whole, byte by byte, and in two parts with an empty write between | The same hash each way |
+| `Sum` twice after the first part, then writing the rest | The hash of the first part both times, then the hash of the whole |
 | `Reset`, then writing the input again | The same hash as a new `Digest` |
 | `Write` | Returns the input length and `nil` |
 | `Size` and `BlockSize` | 20/64 for SHA-1, 32/64 for SHA-256, 64/128 for SHA-512 |
 | HMAC-SHA-256 and HMAC-SHA-512 of RFC 4231 cases 1, 2, 3, 4, 6, and 7 | The RFC values |
-| HMAC with an empty key and data; keys of exactly the block size and one byte longer | The RFC 2104 result |
+| HMAC with an empty key and data; keys one byte shorter than the block size, exactly the block size, one byte longer, and 1,000 bytes | The RFC 2104 result |
+| HMAC-SHA-1 of RFC 2202 cases 1, 2, and 6, a 64-byte key, and an empty key and data | The reference values |
 | Two HMACs compared with `subtle.ConstantTimeEqual` | `true` for the same key, `false` for another key |
 | A 360,000-byte file hashed through `io.Copy` into a `Digest` | The same hash as `Sum256` of its bytes |
-| A `Digest` built with a struct literal; reading its fields; `sha256.Sum256` given an array; `hmac.SHA256` with one argument; an unused result; a call to a private helper | Rejected |
+| A `Digest` built with a struct literal; reading its fields; `sha256.Sum256` given an array; `hmac.SHA256` or `hmac.SHA1` with one argument; an unused result; a call to a private helper | Rejected |

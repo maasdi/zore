@@ -10450,7 +10450,7 @@ compares two byte slices. `crypto/rand` imports `std/encoding/base64` and
 
 `"std/crypto/sha256"`, `"std/crypto/sha512"`, and `"std/crypto/sha1"` compute
 the SHA-256, SHA-512, and SHA-1 hashes of FIPS 180-4, and `"std/crypto/hmac"`
-computes HMAC (RFC 2104) over SHA-256 and SHA-512. A hash turns any amount of
+computes HMAC (RFC 2104) over SHA-256, SHA-512, and SHA-1. A hash turns any amount of
 data into a short fixed-size value that changes completely when any byte of
 the data changes: it checks that a file arrived unchanged, names content, and
 is the building block of HMAC. An HMAC mixes a secret key into the hash, so
@@ -10458,9 +10458,11 @@ only someone who holds the key can produce the right value: it signs and
 checks webhook bodies, cookies, and links.
 
 Unlike §37.19, these packages implement the algorithms themselves, in Zore,
-as Go's standard library does. SHA-2 and HMAC use only additions, shifts,
-rotations, and bitwise operations on whole words; no table lookup or branch
-depends on the data or the key, only on lengths.
+like the portable version in Go's standard library. They use only additions,
+shifts, rotations, and bitwise operations on whole words. No table lookup or
+branch in their source depends on the data or the key, only on lengths and
+round numbers; the compiler's overflow checks on these operations are never
+taken. This is a property of the code, not a measured timing guarantee.
 
 | Declaration | Contract |
 | --- | --- |
@@ -10475,6 +10477,7 @@ depends on the data or the key, only on lengths.
 | `func sha1.New() sha1.Digest` | A hash in progress over no data yet |
 | `func hmac.SHA256(key []byte, data []byte) Array<byte>` | The 32-byte HMAC-SHA-256 of `data` under `key` |
 | `func hmac.SHA512(key []byte, data []byte) Array<byte>` | The 64-byte HMAC-SHA-512 of `data` under `key` |
+| `func hmac.SHA1(key []byte, data []byte) Array<byte>` | The 20-byte HMAC-SHA-1 of `data` under `key`, for protocols that require it, such as one-time passwords (RFC 4226 and 6238) |
 
 Each `Digest` has the same three methods:
 
@@ -10488,7 +10491,9 @@ Each `Digest` has the same three methods:
 request body piece by piece without holding all of it. Writing data in any
 split gives the same hash as writing it at once. A `Digest` holds at most one
 partial block between writes. Its fields are private; make one only with
-`New`. Lengths are counted modulo 2^64 bits, as the standard defines.
+`New`. FIPS 180-4 defines SHA-1 and SHA-256 for inputs shorter than 2^61
+bytes; past that their length field wraps and the result is not a standard
+hash, and a total past 2^64 - 1 bytes panics. No program can write that much.
 
 HMAC accepts any key, including an empty one. A key longer than the block
 size is hashed first, and every key is padded with zeros to the block size,
@@ -10498,7 +10503,9 @@ expected value and compare with `subtle.ConstantTimeEqual` (§37.19), never
 
 SHA-1 is broken for security: people can make two different inputs with the
 same SHA-1 hash. It exists only for protocols that require it, such as the
-WebSocket handshake and older file formats. Never use it to sign, to check
+WebSocket handshake, one-time password apps, and older file formats. HMAC-SHA-1
+is not affected by that weakness in the same way, which is why those
+protocols still use it. Never use it to sign, to check
 integrity against an attacker, or to store passwords.
 
 ```ore
@@ -10531,7 +10538,8 @@ inputs are borrowed for the call. A `Digest` is an ordinary owned value with a
 private buffer of at most one block. Nothing here waits or suspends: hashing
 does CPU work proportional to the input size, so bound untrusted input and
 run long hashes in their own task when a caller must not be delayed. No
-function fails or panics.
+function returns an error, and none panics on any input a program can
+produce.
 
 Compiler impact: none. The packages are bundled Zore source with no runtime
 natives. `crypto/hmac` imports `std/crypto/sha256` and `std/crypto/sha512`;

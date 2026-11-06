@@ -1,5 +1,6 @@
 package hmac
 
+import "std/crypto/sha1"
 import "std/crypto/sha256"
 import "std/crypto/sha512"
 
@@ -17,6 +18,11 @@ func SHA256(key []byte, data []byte) Array<byte> {
 func SHA512(key []byte, data []byte) Array<byte> {
     var h = sha512.New()
     return compute(h, sha512.BlockSize, key, data)
+}
+
+func SHA1(key []byte, data []byte) Array<byte> {
+    var h = sha1.New()
+    return compute(h, sha1.BlockSize, key, data)
 }
 
 func compute(h mut digest, blockSize int, key []byte, data []byte) Array<byte> {

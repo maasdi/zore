@@ -173,6 +173,7 @@ fn sha_digests_give_the_same_hash_for_any_split() {
 import "std/crypto/sha1"
 import "std/crypto/sha256"
 import "std/crypto/sha512"
+import "std/encoding/hex"
 import "std/io"
 func check(ok bool, label string) {
     if !ok { panic(label) }
@@ -190,11 +191,17 @@ func main() {
     check(sha256.Size == 32 && sha256.BlockSize == 64, "sha256 sizes")
     check(sha512.Size == 64 && sha512.BlockSize == 128, "sha512 sizes")
     check(sha1.Size == 20 && sha1.BlockSize == 64, "sha1 sizes")
+    var all1 = Array<byte>{}
+    var all2 = Array<byte>{}
+    var all5 = Array<byte>{}
     for var n = 0; n <= data.len(); n += 1 {
         let part = data[0:n]
         let whole1 = sha1.Sum(part)
         let whole2 = sha256.Sum256(part)
         let whole5 = sha512.Sum512(part)
+        for b in whole1 { all1.push(b) }
+        for b in whole2 { all2.push(b) }
+        for b in whole5 { all5.push(b) }
         check(whole1.len() == 20 && whole2.len() == 32 && whole5.len() == 64, "lengths")
         var bytewise1 = sha1.New()
         var bytewise2 = sha256.New()
@@ -228,8 +235,14 @@ func main() {
         let prefix2 = sha256.Sum256(part[0:cut])
         let prefix5 = sha512.Sum512(part[0:cut])
         check(same(early1[:], prefix1[:]) && same(early2[:], prefix2[:]) && same(early5[:], prefix5[:]), "sum mid-stream")
-        let _, _ = split1.Write(part[cut:n])
+        let again1 = split1.Sum()
+        let again2 = split2.Sum()
+        let again5 = split5.Sum()
+        check(same(again1[:], early1[:]) && same(again2[:], early2[:]) && same(again5[:], early5[:]), "repeated sum")
+        let _, _ = io.WriteString(split1, "")
         let _, _ = io.WriteString(split2, "")
+        let _, _ = io.WriteString(split5, "")
+        let _, _ = split1.Write(part[cut:n])
         let _, _ = split2.Write(part[cut:n])
         let _, _ = split5.Write(part[cut:n])
         let s1 = split1.Sum()
@@ -249,10 +262,19 @@ func main() {
         let r5 = split5.Sum()
         check(same(r1[:], whole1[:]) && same(r2[:], whole2[:]) && same(r5[:], whole5[:]), "reset")
     }
-    println("ok")
+    println(hex.EncodeToString(all1[:]).len())
+    let fold1 = sha256.Sum256(all1[:])
+    let fold2 = sha256.Sum256(all2[:])
+    let fold5 = sha256.Sum256(all5[:])
+    println(hex.EncodeToString(fold1[:]))
+    println(hex.EncodeToString(fold2[:]))
+    println(hex.EncodeToString(fold5[:]))
 }
 "#;
-    prints(source, "ok\n");
+    prints(
+        source,
+        "12040\n67888d6b2a15b4bc43c5788ce28aaa0a241369a940ef796d976aac3bbd00740e\n7d917fbd2cf49ddff9ad0a8706bba32d204e92e71d2e369c5a03d6af29278c9f\n60aaa3762fae9f89010087979a48af59703cbdd193aa92fd1ffe54f969edc0e7\n",
+    );
 }
 
 #[test]
@@ -270,6 +292,14 @@ func show(keyText string, dataText string) {
     let b = hmac.SHA512(key[:], data[:])
     println(hex.EncodeToString(a[:]))
     println(hex.EncodeToString(b[:]))
+}
+func sha1Line(keyText string, dataText string) {
+    let key, keyErr = hex.DecodeString(keyText)
+    if keyErr != nil { panic("hex") }
+    let data, dataErr = hex.DecodeString(dataText)
+    if dataErr != nil { panic("hex") }
+    let mac = hmac.SHA1(key[:], data[:])
+    println(hex.EncodeToString(mac[:]))
 }
 func main() {
     show("0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b", "4869205468657265")
@@ -296,6 +326,21 @@ func main() {
     let d = hmac.SHA512(k129[:], x[:])
     println(hex.EncodeToString(c[:]))
     println(hex.EncodeToString(d[:]))
+    var k1000 = Array<byte>{}
+    for var i = 0; i < 1000; i += 1 { k1000.push(byte(i % 256)) }
+    let e1 = hmac.SHA256(k1000[0:63], x[:])
+    let e2 = hmac.SHA256(k1000[:], x[:])
+    let e3 = hmac.SHA512(k1000[0:127], x[:])
+    let e4 = hmac.SHA512(k1000[:], x[:])
+    println(hex.EncodeToString(e1[:]))
+    println(hex.EncodeToString(e2[:]))
+    println(hex.EncodeToString(e3[:]))
+    println(hex.EncodeToString(e4[:]))
+    sha1Line("0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b", "4869205468657265")
+    sha1Line("4a656665", "7768617420646f2079612077616e7420666f72206e6f7468696e673f")
+    sha1Line("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "54657374205573696e67204c6172676572205468616e20426c6f636b2d53697a65204b6579202d2048617368204b6579204669727374")
+    sha1Line("000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f", "78")
+    sha1Line("", "")
     let again = hmac.SHA256(k65[:], x[:])
     println(subtle.ConstantTimeEqual(c[:], again[:]))
     let other = hmac.SHA256(k64[0:64], x[:])
@@ -304,7 +349,7 @@ func main() {
 "#;
     prints(
         source,
-        "b0344c61d8db38535ca8afceaf0bf12b881dc200c9833da726e9376c2e32cff7\n87aa7cdea5ef619d4ff0b4241a1d6cb02379f4e2ce4ec2787ad0b30545e17cdedaa833b7d6b8a702038b274eaea3f4e4be9d914eeb61f1702e696c203a126854\n5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843\n164b7a7bfcf819e2e395fbe73b56e0a387bd64222e831fd610270cd7ea2505549758bf75c05a994a6d034f65f8f0e6fdcaeab1a34d4a6b4b636e070a38bce737\n773ea91e36800e46854db8ebd09181a72959098b3ef8c122d9635514ced565fe\nfa73b0089d56a284efb0f0756c890be9b1b5dbdd8ee81a3655f83e33b2279d39bf3e848279a722c806b485a47e67c807b946a337bee8942674278859e13292fb\n82558a389a443c0ea4cc819899f2083a85f0faa3e578f8077a2e3ff46729665b\nb0ba465637458c6990e5a8c5f61d4af7e576d97ff94b872de76f8050361ee3dba91ca5c11aa25eb4d679275cc5788063a5f19741120c4f2de2adebeb10a298dd\n60e431591ee0b67f0d8a26aacbf5b77f8e0bc6213728c5140546040f0ee37f54\n80b24263c7c1a3ebb71493c1dd7be8b49b46d1f41b4aeec1121b013783f8f3526b56d037e05f2598bd0fd2215d6a1e5295e64f73f63f0aec8b915a985d786598\n9b09ffa71b942fcb27635fbcd5b0e944bfdc63644f0713938a7f51535c3a35e2\ne37b6a775dc87dbaa4dfa9f96e5e3ffddebd71f8867289865df5a32d20cdc944b6022cac3c4982b10d5eeb55c3e4de15134676fb6de0446065c97440fa8c6a58\nb613679a0814d9ec772f95d778c35fc5ff1697c493715653c6c712144292c5ad\nb936cee86c9f87aa5d3c6f2e84cb5a4239a5fe50480a6ec66b70ab5b1f4ac6730c6c515421b327ec1d69402e53dfb49ad7381eb067b338fd7b0cb22247225d47\nb8dc75d4220cfd86a5bf7c4301b3698f142a66fd7c004627df558626edb480cd\ndf0d02dfb105a623db2ca1ac8108103706a65c7aea41d702c8d26f285f1174be2bd9f094e3ce6a3ffdd76633236ee61e64a60ed80e9aa19fdd7eef2dfb5575c9\n1472ca3b7ce487865cfbcba4d890f1199715de8ec225b912285e16032768e6dd\n189d449f2c721aac66ad3dcbdbcb92f077e9f70b73d55e5d73e3d6b241160f15838e03eb4f1b479357f40964077c288e1459275feae846180047b35f8392f49a\ntrue\nfalse\n",
+        "b0344c61d8db38535ca8afceaf0bf12b881dc200c9833da726e9376c2e32cff7\n87aa7cdea5ef619d4ff0b4241a1d6cb02379f4e2ce4ec2787ad0b30545e17cdedaa833b7d6b8a702038b274eaea3f4e4be9d914eeb61f1702e696c203a126854\n5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843\n164b7a7bfcf819e2e395fbe73b56e0a387bd64222e831fd610270cd7ea2505549758bf75c05a994a6d034f65f8f0e6fdcaeab1a34d4a6b4b636e070a38bce737\n773ea91e36800e46854db8ebd09181a72959098b3ef8c122d9635514ced565fe\nfa73b0089d56a284efb0f0756c890be9b1b5dbdd8ee81a3655f83e33b2279d39bf3e848279a722c806b485a47e67c807b946a337bee8942674278859e13292fb\n82558a389a443c0ea4cc819899f2083a85f0faa3e578f8077a2e3ff46729665b\nb0ba465637458c6990e5a8c5f61d4af7e576d97ff94b872de76f8050361ee3dba91ca5c11aa25eb4d679275cc5788063a5f19741120c4f2de2adebeb10a298dd\n60e431591ee0b67f0d8a26aacbf5b77f8e0bc6213728c5140546040f0ee37f54\n80b24263c7c1a3ebb71493c1dd7be8b49b46d1f41b4aeec1121b013783f8f3526b56d037e05f2598bd0fd2215d6a1e5295e64f73f63f0aec8b915a985d786598\n9b09ffa71b942fcb27635fbcd5b0e944bfdc63644f0713938a7f51535c3a35e2\ne37b6a775dc87dbaa4dfa9f96e5e3ffddebd71f8867289865df5a32d20cdc944b6022cac3c4982b10d5eeb55c3e4de15134676fb6de0446065c97440fa8c6a58\nb613679a0814d9ec772f95d778c35fc5ff1697c493715653c6c712144292c5ad\nb936cee86c9f87aa5d3c6f2e84cb5a4239a5fe50480a6ec66b70ab5b1f4ac6730c6c515421b327ec1d69402e53dfb49ad7381eb067b338fd7b0cb22247225d47\nb8dc75d4220cfd86a5bf7c4301b3698f142a66fd7c004627df558626edb480cd\ndf0d02dfb105a623db2ca1ac8108103706a65c7aea41d702c8d26f285f1174be2bd9f094e3ce6a3ffdd76633236ee61e64a60ed80e9aa19fdd7eef2dfb5575c9\n1472ca3b7ce487865cfbcba4d890f1199715de8ec225b912285e16032768e6dd\n189d449f2c721aac66ad3dcbdbcb92f077e9f70b73d55e5d73e3d6b241160f15838e03eb4f1b479357f40964077c288e1459275feae846180047b35f8392f49a\nfb5f49d0867564e7dcea4ad21ec4ad1654761f4c5878694d9c1f7fa1309edf8e\n6273d115a5ccf79411c838f52c548d4c760fa0846e9fd229d0d8ffd25246715f\n52100d4fff41fc6bc0187305722ec9f61054c9468ef4fadc0557876e042f6c12325444244c311fc3cd03444f04206caa50fc7f8b4ac7b5185d8792d4dd0dd723\n4d549427d3d8dd9b8de9ae1c0b692385517eb5b300bce422696a130ea342b1868db836dd10eb98f6d619ba967664349dbe6cc9625d04a522610d6ef585966be6\nb617318655057264e28bc0b6fb378c8ef146be00\neffcdf6ae5eb2fa2d27416d5f184df9c259a7c79\naa4ae5e15272d00e95705637ce8a3b55ed402112\nea0254d7ad556218f4722ee78bba1dd24b873a5c\nfbdb1d1b18aa6c08324b7d64b71fb76370690e1d\ntrue\nfalse\n",
     );
 }
 

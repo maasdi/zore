@@ -76,7 +76,7 @@ func (d Digest) Sum() Array<byte> {
 }
 
 func rotate(x uint32, n int) uint32 {
-    return (x << n) | (x >>(32 - n))
+    return (x << n) | (x >> (32 - n))
 }
 
 func blocks(h mut [uint32; 5], data []byte) {
