@@ -2667,3 +2667,163 @@ fn photo_board_example_names_uploads_and_serves_photos() {
         "{logs}"
     );
 }
+
+const LINGER_SERVER: &str = r#"package main
+import "std/context"
+import "std/net"
+import "std/net/http"
+func main() {
+    let stop = channel<bool>(1)
+    var routes = http.NewRouterBuilder()
+    routes.Handle("GET /stop", func(w mut http.ResponseWriter, r mut http.Request) error {
+        stop.send(true)
+        return w.WriteHeader(204)
+    })
+    routes.Handle("POST /refuse", func(w mut http.ResponseWriter, r mut http.Request) error {
+        return w.Text(403, "refused without reading")
+    })
+    let router, buildErr = routes.Build()
+    if buildErr != nil { panic("build") }
+    var config = http.DefaultConfig()
+    config.MaxBodyBytes = 8388608
+    let server, configErr = http.NewServer(router, config)
+    if configErr != nil { panic("config") }
+    let listener, listenErr = net.Listen("tcp", "127.0.0.1:0")
+    if listenErr != nil { panic("listen") }
+    println(listener.Addr())
+    let serving = go server.Serve(listener)
+    let _, _ = stop.receive()
+    let err = server.Shutdown(context.Background())
+    if err != nil { panic("shutdown") }
+    let serveErr = serving.wait()
+    if serveErr != nil { panic("serve") }
+}
+"#;
+
+fn send_while_reading(server: &ServerProcess, head: &str, body_len: usize) -> (String, bool, bool) {
+    let stream = server.connect();
+    let mut writer = stream.try_clone().unwrap();
+    let head = head.to_string();
+    let sending = std::thread::spawn(move || {
+        let chunk = vec![b'x'; 65536];
+        let mut sent = 0;
+        let mut ok = writer.write_all(head.as_bytes()).is_ok();
+        while ok && sent < body_len {
+            let n = chunk.len().min(body_len - sent);
+            ok = writer.write_all(&chunk[..n]).is_ok();
+            sent += n;
+        }
+        ok
+    });
+    let mut reader = stream;
+    if body_len <= 1_000_000 {
+        while !sending.is_finished() {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        std::thread::sleep(Duration::from_millis(300));
+    }
+    let mut bytes = Vec::new();
+    let mut buffer = [0u8; 4096];
+    let clean_end = loop {
+        match reader.read(&mut buffer) {
+            Ok(0) => break true,
+            Ok(n) => bytes.extend_from_slice(&buffer[..n]),
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::ConnectionReset | std::io::ErrorKind::ConnectionAborted
+                ) =>
+            {
+                break false;
+            }
+            Err(error) => panic!("reading response: {error}"),
+        }
+    };
+    let all_sent = sending.join().unwrap();
+    (String::from_utf8(bytes).unwrap(), all_sent, clean_end)
+}
+
+#[test]
+fn http_lingering_close_delivers_answers_to_unread_bodies() {
+    let server = ServerProcess::start(LINGER_SERVER);
+    for body_len in [600_000usize, 800_000] {
+        let (response, all_sent, clean_end) = send_while_reading(
+            &server,
+            &format!("POST /refuse HTTP/1.1\r\nHost: x\r\nContent-Length: {body_len}\r\n\r\n"),
+            body_len,
+        );
+        status(&response, 403);
+        assert_eq!(body_of(&response), "refused without reading", "{body_len}");
+        assert!(
+            all_sent,
+            "{body_len}: the server reset the connection while the client was sending"
+        );
+        assert!(
+            clean_end,
+            "{body_len}: the answer ended in a reset instead of a clean close"
+        );
+    }
+    let (too_large, all_sent, clean_end) = send_while_reading(
+        &server,
+        "POST /refuse HTTP/1.1\r\nHost: x\r\nContent-Length: 9000000\r\n\r\n",
+        900_000,
+    );
+    status(&too_large, 413);
+    assert!(
+        all_sent,
+        "the server reset the connection after refusing a known length"
+    );
+    assert!(
+        clean_end,
+        "the 413 ended in a reset instead of a clean close"
+    );
+    let (beyond_linger, _, _) = send_while_reading(
+        &server,
+        "POST /refuse HTTP/1.1\r\nHost: x\r\nContent-Length: 6000000\r\n\r\n",
+        6_000_000,
+    );
+    status(&beyond_linger, 403);
+    assert_eq!(body_of(&beyond_linger), "refused without reading");
+    let started = std::time::Instant::now();
+    let mut finished = server.connect();
+    finished
+        .write_all(b"POST /refuse HTTP/1.1\r\nHost: x\r\nContent-Length: 50\r\n\r\n")
+        .unwrap();
+    finished.write_all(&[b'x'; 50]).unwrap();
+    finished.shutdown(std::net::Shutdown::Write).unwrap();
+    let response = read_closed(&mut finished);
+    status(&response, 403);
+    assert!(
+        started.elapsed() < Duration::from_secs(1),
+        "the client's end of input ends the lingering close"
+    );
+    let mut pipelined = server.connect();
+    let mut requests =
+        String::from("GET /missing HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n");
+    for _ in 0..200 {
+        requests.push_str("GET /missing HTTP/1.1\r\nHost: x\r\n\r\n");
+    }
+    pipelined.write_all(requests.as_bytes()).unwrap();
+    std::thread::sleep(Duration::from_millis(300));
+    let mut bytes = Vec::new();
+    let pipelined_end = pipelined.read_to_end(&mut bytes);
+    let response = String::from_utf8(bytes).unwrap();
+    status(&response, 404);
+    assert_eq!(response.matches("HTTP/1.1 ").count(), 1, "{response}");
+    assert!(
+        pipelined_end.is_ok(),
+        "closing with pipelined requests unread ended in a reset: {pipelined_end:?}"
+    );
+    let started = std::time::Instant::now();
+    let mut silent = server.connect();
+    silent
+        .write_all(b"POST /refuse HTTP/1.1\r\nHost: x\r\nContent-Length: 50\r\n\r\nonly part")
+        .unwrap();
+    let response = read_closed(&mut silent);
+    status(&response, 403);
+    assert!(
+        started.elapsed() < Duration::from_secs(4),
+        "lingering is bounded"
+    );
+    server.stop("");
+}

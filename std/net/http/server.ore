@@ -358,6 +358,25 @@ func validIPv6(text string) bool {
     return groups == 8
 }
 
+const lingerBytes = 1048576
+const lingerTime = 2 * time.Second
+const lingerChunk = 16384
+
+func lingerClose(conn []net.Conn, s Server) {
+    if conn.len() == 0 || conn[0].CloseWrite() != nil { return }
+    let deadline = time.Now().Add(lingerTime)
+    var buffer = Array<byte>{}
+    for buffer.len() < lingerChunk { buffer.push(0) }
+    var discarded = 0
+    for discarded < lingerBytes && !s.canceled() && time.Now().Before(deadline) {
+        if conn[0].SetReadDeadline(pollDeadline(deadline, s.config.AcceptPollInterval)) != nil { return }
+        let count, err = conn[0].Read(buffer[:])
+        discarded += count
+        if err == error("net.Read: timed out") { continue }
+        if err != nil || count == 0 { return }
+    }
+}
+
 async func (s Server) connection(conn own net.Conn, accepted time.Instant) {
     let guard = completion{server: s}
     let sockets = [net.Conn; 1]{conn}
@@ -376,7 +395,8 @@ async func (s Server) connection(conn own net.Conn, accepted time.Instant) {
         if parseErr != nil {
             w.close = true
             _ = w.WriteHeader(status)
-            _ = w.finish()
+            let refusedErr = w.finish()
+            if refusedErr == nil && status != 408 { lingerClose(sockets[:], s) }
             return
         }
         r.writeDeadline = writeDeadline
@@ -405,7 +425,11 @@ async func (s Server) connection(conn own net.Conn, accepted time.Instant) {
         }
         if !r.done { w.close = true }
         let finalErr = w.finish()
-        if finalErr != nil || w.close || r.close || !r.done || s.draining() { return }
+        if finalErr != nil || w.close || r.close || !r.done || s.draining() {
+            let unread = !r.done || r.position < r.buffer.len()
+            if finalErr == nil && unread && r.failureStatus != 408 { lingerClose(sockets[:], s) }
+            return
+        }
         pending = Array<byte>{}
         for var i = r.position; i < r.buffer.len(); i += 1 { pending.push(r.buffer[i]) }
         initial = false

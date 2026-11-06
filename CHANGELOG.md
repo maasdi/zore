@@ -189,6 +189,11 @@ once it does.
   `DirEntry.IsSymlink` describe links. The spec now states what `os.Rename`
   does and does not promise on each system. `File.Close` now returns the error
   the system reports while closing, instead of always `nil`.
+- The HTTP server now ends connections with unread request bytes with a
+  lingering close (§37.6): it shuts down its sending side, reads and discards
+  up to 1 MiB for at most two seconds, then closes. Before, it closed at once,
+  and the system's reset could make clients, Windows ones above all, lose a
+  response such as `413` or a handler's `403` for an unread upload.
 - Added the `photo-board` example, the last part of issue #217: a web
   application with server-side sessions named by `rand.Text` tokens, form
   tokens checked with `subtle.ConstantTimeEqual`, photo uploads through a

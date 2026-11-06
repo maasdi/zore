@@ -35,6 +35,20 @@ Windows close/logoff/shutdown cleanup is best effort under OS deadlines. Direct
 callback tests do not claim real delivery of these events. The Ctrl+C/Break HTTP
 cases exercise both convenience entry points and drain active requests before exit.
 
+## Lingering close
+
+Specified in §37.6 and checked by
+`tests/codegen/http.rs::http_lingering_close_delivers_answers_to_unread_bodies`.
+The client sends the whole body, waits 300 ms, and only then reads, the order
+in which an immediate close loses the answer.
+
+| Scenario | Expected result |
+| --- | --- |
+| A handler answers `403` without reading a 600,000-byte or 1,000,000-byte body | The client sends every byte, reads the whole `403`, and sees a clean end of stream rather than a reset; with the old immediate close the end was a reset |
+| A known length above `MaxBodyBytes` with 900,000 bytes sent | `413`, every byte sent, and a clean end of stream |
+| A 6,000,000-byte body, beyond the 1 MiB the server discards | The complete `403` while the client is still sending |
+| A body shorter than its length that the client never finishes | The `403` arrives and the connection ends within the two-second bound |
+
 ## Bounded outbound client
 
 The client contract is locked under §37.11. `Client` owns an optional transport;

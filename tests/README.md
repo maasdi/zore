@@ -424,6 +424,11 @@ folder walks to `codegen/files.rs`: flag validation, seeking and syncing,
 collision-free temporary names under concurrency, rename replacement and
 refusals, walk order, skipping, links, and errors that stay with their entry.
 
+`conformance/http.md` also maps the lingering close to `codegen/http.rs`:
+handlers that refuse uploads without reading them, a refused known length,
+bodies beyond the discard limit, and a client that never finishes its body,
+with the client reading late so that a reset would lose the answer.
+
 `conformance/crypto.md` maps `std/crypto/rand` and `std/crypto/subtle` to
 `codegen/crypto.rs`: size bounds, byte spread, unique URL-safe tokens, async
 use from many tasks, and comparisons that change one bit at every position.
