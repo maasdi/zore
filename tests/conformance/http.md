@@ -168,13 +168,16 @@ compiler acceptance and rejection are in
 | `POST /name` with matching tokens and `Ada Lovelace` | `303 See Other` to `/`, a 43-character `board_session` cookie (`Max-Age=2592000; HttpOnly; SameSite=Lax`) different from the login token, and the login cookie deleted |
 | A second sign-in | A different session token |
 | `GET /` with the session; with `board_session` set to the name, `x`, or empty | `Signed in as Ada Lovelace.` and a separate 43-character form token; the sign-in form |
-| Uploads without a session; with a forged session (both with `Expect: 100-continue` and no body); one declaring 5,308,417 bytes | `401`; `401`; `413` |
+| Uploads without a session; with a forged session (both with `Expect: 100-continue` and no body); one declaring 5,308,417 bytes | `403`; `403`; `413` |
 | Uploads with a wrong form token; with another session's form token | `403` |
 | Uploads named `.svg`, `.exe`, `.avif`, `.ico`, or without an extension; a blank title | `415`; `400` |
 | An upload titled `<My cat>` named `C:\Users\ada\Cat.PNG`, then a `.webp` | `303` each; the page shows `/photos/2.webp` before `/photos/1.png`, titles escaped, owner from the session |
 | `GET /photos/1.png` | `200`, `image/png`, the exact bytes, which also match the stored file |
 | `GET /photos/3.png`, `/photos/.hidden`; `/photos/..%2f1.png` | `404`; `400` from the server |
 | `POST /name/forget` with a wrong form token; with another session's | `403` |
-| `POST /name/forget` with the right token | `303` with `board_session=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax`; the old cookie then finds no session and its uploads get `401`; the other session still works |
-| `POST /name/forget` without a session | `303` |
+| `POST /name/forget` with the right token | `303` with `board_session=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax`; the old cookie then finds no session and its uploads get `403`; the other session still works |
+| `POST /name/forget` with an unknown session cookie | `303` and the cookie deleted |
+| `POST /name/forget` with a 1025-byte form: without a session; with one | `303`; `413` |
+| Signing in again while signed in | A new session; the old one no longer works |
+| Five more sign-ins from the same client | The first four keep the earlier session; the fifth ends it, and all five new sessions work |
 | SIGTERM (Ctrl+Break on Windows) | Logs `photo 1 added by Ada Lovelace` and `stopped`, then exits cleanly; two photo files remain |

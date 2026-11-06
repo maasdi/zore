@@ -28,8 +28,8 @@ curl -i -b jar --form-string 'form=<the value>' --form-string 'title=My cat' -F 
 curl -i http://127.0.0.1:8080/photos/1.png
 ```
 
-The limits are named constants at the top of `handlers.ore`. What each part
-shows:
+The limits are named constants at the top of `handlers.ore` and
+`board.ore`. What each part shows:
 
 - **Sessions.** Signing in creates a session on the server: a random
   43-character token from `rand.Text`, a second random token for forms, and
@@ -37,10 +37,16 @@ shows:
   through `ResponseWriter.SetCookie` with `Path=/`, `HttpOnly`,
   `SameSite=Lax`, and a 30-day `Max-Age`. Every request looks the token up
   with `subtle.ConstantTimeEqual`, so a cookie someone invents or edits finds
-  no session, and the name shown always comes from the server. The board
-  keeps the newest 1,000 sessions, in memory, so a restart signs everyone
-  out. `POST /name/forget` ends the session on the server and deletes the
-  cookie.
+  no session, and the name shown always comes from the server. Signing in
+  again ends the previous session. Sessions live in memory: the browser
+  forgets the cookie after 30 days, but the server keeps a session until the
+  visitor signs out or the server restarts.
+- **Session limits.** One client address may hold 5 sessions; a sixth
+  sign-in from it ends its own oldest one. The board holds at most 1,000
+  sessions, and when it is full a new sign-in gets `503` instead of pushing
+  anyone else out, so nobody can sign other visitors out by signing in many
+  times. `POST /name/forget` ends the session on the server and always
+  deletes the cookie.
 - **Form tokens.** Each form sends a token the server compares with
   `ConstantTimeEqual` before doing anything; a missing or wrong token gets
   `403`. Pages from the board hold the right token, but another website
@@ -74,9 +80,12 @@ shows:
   so reloading the page does not post the form again.
 
 This is still an example, not a full login system: anyone can sign in under
-any name, there are no passwords, and sessions vanish on restart. Behind
-HTTPS, also set `Secure` on both cookies. Photos are public: anyone who knows
-a photo's URL can load it.
+any name, there are no passwords, sessions vanish on restart, and many
+clients behind one proxy share one address and its 5 sessions. Behind HTTPS,
+also set `Secure` on both cookies and rename them with the `__Host-` prefix,
+so that a site on a sibling subdomain cannot plant a `board_login` cookie and
+sign a visitor in under a name it chose. Photos are public: anyone who knows
+a photo's URL can load it. Uploads without a session get `403`.
 
 Press Ctrl-C (or send SIGTERM on Unix) to drain connections and stop.
 `http.ListenAndServeWithConfig` handles the signals and graceful shutdown.

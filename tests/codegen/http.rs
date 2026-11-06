@@ -2535,8 +2535,8 @@ fn photo_board_example_names_uploads_and_serves_photos() {
             "POST /photos HTTP/1.1\r\nHost: x\r\n{cookie}Content-Type: multipart/form-data; boundary=B\r\nContent-Length: {length}\r\nExpect: 100-continue\r\nConnection: close\r\n\r\n"
         ))
     };
-    status(&refused_early("", 100), 401);
-    status(&refused_early("Cookie: board_session=forged\r\n", 100), 401);
+    status(&refused_early("", 100), 403);
+    status(&refused_early("Cookie: board_session=forged\r\n", 100), 403);
     status(&refused_early(&cookie, 5_308_417), 413);
     status(
         &upload(&cookie, "wrong-token", "Cat", "cat.png", &image),
@@ -2609,16 +2609,54 @@ fn photo_board_example_names_uploads_and_serves_photos() {
     );
     let after = get("/", &cookie);
     assert!(body_of(&after).contains("name=\"name\""), "{after}");
-    status(
-        &upload(&cookie, &form_token, "Late", "late.png", &image),
-        401,
-    );
+    status(&refused_early(&cookie, 100), 403);
     let still = get("/", &format!("Cookie: board_session={other_session}\r\n"));
     assert!(
         body_of(&still).contains("Signed in as Ada Lovelace."),
         "{still}"
     );
-    status(&post_form("/name/forget", "", ""), 303);
+    let stale = post_form("/name/forget", "Cookie: board_session=zzz\r\n", "");
+    status(&stale, 303);
+    assert!(
+        stale.contains("Set-Cookie: board_session=; Path=/; Max-Age=0"),
+        "{stale}"
+    );
+    status(&post_form("/name/forget", &login, &"a".repeat(1025)), 303);
+    let other_cookie = format!("Cookie: board_session={other_session}\r\n");
+    status(
+        &post_form("/name/forget", &other_cookie, &"a".repeat(1025)),
+        413,
+    );
+    let signed_in_again = |cookies: &str| {
+        let response = post_form(
+            "/name",
+            &format!("Cookie: board_login={login_token}{cookies}\r\n"),
+            &name_form,
+        );
+        status(&response, 303);
+        cookie_value(&response, "board_session")
+    };
+    let replaced = signed_in_again(&format!("; board_session={other_session}"));
+    let replaced_page = get("/", &other_cookie);
+    assert!(
+        body_of(&replaced_page).contains("name=\"name\""),
+        "signing in again keeps the old session: {replaced_page}"
+    );
+    let replaced_cookie = format!("Cookie: board_session={replaced}\r\n");
+    let mut newer = Vec::new();
+    for _ in 0..4 {
+        newer.push(signed_in_again(""));
+    }
+    assert!(body_of(&get("/", &replaced_cookie)).contains("Signed in as"));
+    newer.push(signed_in_again(""));
+    assert!(
+        body_of(&get("/", &replaced_cookie)).contains("name=\"name\""),
+        "a sixth session from one client keeps its oldest"
+    );
+    for token in &newer {
+        let page = get("/", &format!("Cookie: board_session={token}\r\n"));
+        assert!(body_of(&page).contains("Signed in as"), "{token}");
+    }
     assert_eq!(std::fs::read_dir(&photos).unwrap().count(), 2);
     send_signal(&server.child, test_signals()[1]);
     let logs = server.finish_with_errors();

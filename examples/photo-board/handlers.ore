@@ -13,6 +13,8 @@ const sessionCookie = "board_session"
 const loginCookie = "board_login"
 const sessionSeconds = 2592000
 const loginSeconds = 3600
+const tokenLength = 43
+const photoFileMode = 420
 const nameBytes = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789 -_"
 const maxNameBytes = 40
 const maxNameFormBytes = 1024
@@ -47,9 +49,21 @@ func boardCookie(name string, value string, maxAge int) http.Cookie {
 func currentSession(board Board, r http.Request) (Session, bool) {
     let cookie, found = r.Cookie(sessionCookie)
     if !found {
-        return Session{Token: "", FormToken: "", Name: ""}, false
+        return Session{Token: "", FormToken: "", Name: "", Client: ""}, false
     }
     return board.Session(cookie.Value)
+}
+
+func clientOf(r http.Request) string {
+    let address = r.RemoteAddr()
+    var end = address.len()
+    for var i = address.len() - 1; i >= 0; i -= 1 {
+        if address[i] == 58 {
+            end = i
+            break
+        }
+    }
+    return address[:end]
 }
 
 func redirectHome(w mut http.ResponseWriter) error {
@@ -78,7 +92,7 @@ func showBoard(board Board, w mut http.ResponseWriter, r mut http.Request) error
     }
     let cookie, found = r.Cookie(loginCookie)
     var loginToken = cookie.Value
-    if !found || loginToken.len() != 43 {
+    if !found || loginToken.len() != tokenLength {
         loginToken = rand.Text()?
         w.SetCookie(boardCookie(loginCookie, loginToken, loginSeconds))?
     }
@@ -103,7 +117,17 @@ func saveName(board Board, w mut http.ResponseWriter, r mut http.Request) error 
     if !validName(name) {
         return w.Text(http.StatusBadRequest, "use 1 to " + strconv.Itoa(maxNameBytes) + " letters, digits, spaces, - or _")
     }
-    let session = board.StartSession(name)?
+    let previous, signedIn = currentSession(board, r)
+    if signedIn {
+        board.EndSession(previous.Token)
+    }
+    let session, startErr = board.StartSession(name, clientOf(r))
+    if startErr == errBoardFull {
+        return w.Text(http.StatusServiceUnavailable, "the board is full; try again later")
+    }
+    if startErr != nil {
+        return startErr
+    }
     w.SetCookie(boardCookie(sessionCookie, session.Token, sessionSeconds))?
     w.SetCookie(boardCookie(loginCookie, "", -1))?
     return redirectHome(w)
@@ -112,9 +136,13 @@ func saveName(board Board, w mut http.ResponseWriter, r mut http.Request) error 
 func forgetName(board Board, w mut http.ResponseWriter, r mut http.Request) error {
     let session, signed = currentSession(board, r)
     if !signed {
+        w.SetCookie(boardCookie(sessionCookie, "", -1))?
         return redirectHome(w)
     }
     let form, err = r.ReadForm(maxNameFormBytes)
+    if err == io.LimitExceeded {
+        return w.Text(http.StatusContentTooLarge, "the form is too large")
+    }
     if err != nil {
         return w.Text(http.StatusBadRequest, "expected a form")
     }
@@ -140,7 +168,7 @@ func photoExtension(filename string) (string, bool) {
 
 func savePhoto(upload http.FormFile, path string) error {
     var source = upload.Open()?
-    var target = os.OpenFile(path, os.OpenWriteOnly | os.OpenCreate | os.OpenExclusive, 420)?
+    var target = os.OpenFile(path, os.OpenWriteOnly | os.OpenCreate | os.OpenExclusive, photoFileMode)?
     let _, copyErr = io.Copy(target, source)
     let closeErr = target.Close()
     if copyErr != nil {
@@ -158,7 +186,7 @@ func savePhoto(upload http.FormFile, path string) error {
 func uploadPhoto(board Board, logger log.Logger, w mut http.ResponseWriter, r mut http.Request) error {
     let session, signed = currentSession(board, r)
     if !signed {
-        return w.Text(http.StatusUnauthorized, "choose a name first")
+        return w.Text(http.StatusForbidden, "sign in first")
     }
     var limits = http.DefaultMultipartLimits()
     limits.MaxBytes = maxUploadBytes
