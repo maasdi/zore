@@ -189,6 +189,12 @@ once it does.
   `DirEntry.IsSymlink` describe links. The spec now states what `os.Rename`
   does and does not promise on each system. `File.Close` now returns the error
   the system reports while closing, instead of always `nil`.
+- Added `std/crypto/rand` and `std/crypto/subtle` (§37.19). `rand.Bytes`
+  reads secure random bytes from the operating system (`getrandom`,
+  `getentropy`, or `BCryptGenRandom`), `rand.Text` returns a 43-character
+  URL-safe token, and `subtle.ConstantTimeEqual` compares secrets without
+  stopping at the first difference. Hashing and HMAC stay in the external
+  `crypto` package, whose `RandomBytes` and `Equal` still work.
 - Added multipart forms and file uploads to `std/net/http` (§37.18), the
   third part of issue #217. `Request.ReadMultipartForm` streams a
   `multipart/form-data` body through a 64 KiB window, keeps text values in

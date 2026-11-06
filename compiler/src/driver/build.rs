@@ -56,6 +56,7 @@ const RUNTIME_SOURCES: &[(&str, &str)] = &[
         "local_time.rs",
         include_str!("../../../runtime/src/local_time.rs"),
     ),
+    ("crypto.rs", include_str!("../../../runtime/src/crypto.rs")),
     ("map.rs", include_str!("../../../runtime/src/map.rs")),
     ("math.rs", include_str!("../../../runtime/src/math.rs")),
     ("mutex.rs", include_str!("../../../runtime/src/mutex.rs")),

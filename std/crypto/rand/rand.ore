@@ -1,0 +1,21 @@
+package rand
+
+import "std/encoding/base64"
+import "std/strconv"
+
+const MaxBytes = 1048576
+const textBytes = 32
+
+func Bytes(size int) (Array<byte>, error) {
+    if size < 0 || size > MaxBytes {
+        return Array<byte>{}, error("crypto/rand.Bytes: size outside 0.." + strconv.Itoa(MaxBytes))
+    }
+    return secureRead(size)
+}
+
+func Text() (string, error) {
+    let data = Bytes(textBytes)?
+    return base64.RawURL.EncodeToString(data[:]), nil
+}
+
+func secureRead(size int) (Array<byte>, error)

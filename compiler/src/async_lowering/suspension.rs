@@ -49,6 +49,7 @@ fn standard_wait(name: &str) -> Option<NativeWait> {
         | "std/os.fileStat"
         | "std/os.fileClose"
         | "std/os/exec.run"
+        | "std/crypto/rand.secureRead"
         | "std/net.listen"
         | "std/net.dial" => Some(NativeWait::Helper),
         "std/net.accept" | "std/net.read" | "std/net.write" => Some(
