@@ -1,0 +1,166 @@
+package sha512
+
+const Size = 64
+const BlockSize = 128
+const low32 = 0xFFFFFFFF
+
+let initial = [uint64; 8]{
+    0x6a09e667f3bcc908, 0xbb67ae8584caa73b, 0x3c6ef372fe94f82b, 0xa54ff53a5f1d36f1,
+    0x510e527fade682d1, 0x9b05688c2b3e6c1f, 0x1f83d9abfb41bd6b, 0x5be0cd19137e2179,
+}
+
+let rounds = [uint64; 80]{
+    0x428a2f98d728ae22, 0x7137449123ef65cd, 0xb5c0fbcfec4d3b2f, 0xe9b5dba58189dbbc,
+    0x3956c25bf348b538, 0x59f111f1b605d019, 0x923f82a4af194f9b, 0xab1c5ed5da6d8118,
+    0xd807aa98a3030242, 0x12835b0145706fbe, 0x243185be4ee4b28c, 0x550c7dc3d5ffb4e2,
+    0x72be5d74f27b896f, 0x80deb1fe3b1696b1, 0x9bdc06a725c71235, 0xc19bf174cf692694,
+    0xe49b69c19ef14ad2, 0xefbe4786384f25e3, 0x0fc19dc68b8cd5b5, 0x240ca1cc77ac9c65,
+    0x2de92c6f592b0275, 0x4a7484aa6ea6e483, 0x5cb0a9dcbd41fbd4, 0x76f988da831153b5,
+    0x983e5152ee66dfab, 0xa831c66d2db43210, 0xb00327c898fb213f, 0xbf597fc7beef0ee4,
+    0xc6e00bf33da88fc2, 0xd5a79147930aa725, 0x06ca6351e003826f, 0x142929670a0e6e70,
+    0x27b70a8546d22ffc, 0x2e1b21385c26c926, 0x4d2c6dfc5ac42aed, 0x53380d139d95b3df,
+    0x650a73548baf63de, 0x766a0abb3c77b2a8, 0x81c2c92e47edaee6, 0x92722c851482353b,
+    0xa2bfe8a14cf10364, 0xa81a664bbc423001, 0xc24b8b70d0f89791, 0xc76c51a30654be30,
+    0xd192e819d6ef5218, 0xd69906245565a910, 0xf40e35855771202a, 0x106aa07032bbd1b8,
+    0x19a4c116b8d2d0c8, 0x1e376c085141ab53, 0x2748774cdf8eeb99, 0x34b0bcb5e19b48a8,
+    0x391c0cb3c5c95a63, 0x4ed8aa4ae3418acb, 0x5b9cca4f7763e373, 0x682e6ff3d6b2b8a3,
+    0x748f82ee5defb2fc, 0x78a5636f43172f60, 0x84c87814a1f0ab72, 0x8cc702081a6439ec,
+    0x90befffa23631e28, 0xa4506cebde82bde9, 0xbef9a3f7b2c67915, 0xc67178f2e372532b,
+    0xca273eceea26619c, 0xd186b8c721c0c207, 0xeada7dd6cde0eb1e, 0xf57d4f7fee6ed178,
+    0x06f067aa72176fba, 0x0a637dc5a2c898a6, 0x113f9804bef90dae, 0x1b710b35131c471b,
+    0x28db77f523047d84, 0x32caab7b40c72493, 0x3c9ebe0a15c9bebc, 0x431d67c49c100d4c,
+    0x4cc5d4becb3e42b6, 0x597f299cfc657e2a, 0x5fcb6fab3ad6faec, 0x6c44198c4a475817,
+}
+
+type Digest struct {
+    h [uint64; 8]
+    pending Array<byte>
+    length uint64
+}
+
+func New() Digest {
+    return Digest{h: initial, pending: Array<byte>{}, length: 0}
+}
+
+func Sum512(data []byte) Array<byte> {
+    var d = New()
+    let _, _ = d.Write(data)
+    return d.Sum()
+}
+
+func (d mut Digest) Reset() {
+    d.h = initial
+    d.pending = Array<byte>{}
+    d.length = 0
+}
+
+func (d mut Digest) Write(data []byte) (int, error) {
+    d.length += uint64(data.len())
+    var start = 0
+    if d.pending.len() > 0 {
+        for start < data.len() && d.pending.len() < BlockSize {
+            d.pending.push(data[start])
+            start += 1
+        }
+        if d.pending.len() < BlockSize {
+            return data.len(), nil
+        }
+        blocks(d.h, d.pending[:])
+        d.pending = Array<byte>{}
+    }
+    let whole = start + (data.len() - start) / BlockSize * BlockSize
+    blocks(d.h, data[start:whole])
+    for var i = whole; i < data.len(); i += 1 {
+        d.pending.push(data[i])
+    }
+    return data.len(), nil
+}
+
+func (d Digest) Sum() Array<byte> {
+    var h = d.h
+    var tail = Array<byte>{}
+    for b in d.pending {
+        tail.push(b)
+    }
+    tail.push(0x80)
+    for tail.len() % BlockSize != 112 {
+        tail.push(0)
+    }
+    let high = d.length >> 61
+    let bits = d.length << 3
+    for var shift = 56; shift >= 0; shift -= 8 {
+        tail.push(byte((high >> shift) & 0xFF))
+    }
+    for var shift = 56; shift >= 0; shift -= 8 {
+        tail.push(byte((bits >> shift) & 0xFF))
+    }
+    blocks(h, tail[:])
+    var out = Array<byte>{}
+    for word in h {
+        for var shift = 56; shift >= 0; shift -= 8 {
+            out.push(byte((word >> shift) & 0xFF))
+        }
+    }
+    return out
+}
+
+func rotate(x uint64, n int) uint64 {
+    return (x >> n) | (x << (64 - n))
+}
+
+func add(a uint64, b uint64) uint64 {
+    let lower = (a & low32) + (b & low32)
+    let upper = (a >> 32) + (b >> 32) + (lower >> 32)
+    return (upper << 32) | (lower & low32)
+}
+
+func blocks(h mut [uint64; 8], data []byte) {
+    var w = [uint64; 16]{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}
+    for var base = 0; base + BlockSize <= data.len(); base += BlockSize {
+        var a = h[0]
+        var b = h[1]
+        var c = h[2]
+        var d = h[3]
+        var e = h[4]
+        var f = h[5]
+        var g = h[6]
+        var hh = h[7]
+        for var i = 0; i < 80; i += 1 {
+            if i < 16 {
+                var word uint64 = 0
+                for var j = base + i * 8; j < base + i * 8 + 8; j += 1 {
+                    word = word << 8 | uint64(data[j])
+                }
+                w[i] = word
+            } else {
+                let v1 = w[(i - 2) & 15]
+                let v2 = w[(i - 15) & 15]
+                let s1 = rotate(v1, 19) ^ rotate(v1, 61) ^ (v1 >> 6)
+                let s0 = rotate(v2, 1) ^ rotate(v2, 8) ^ (v2 >> 7)
+                w[i & 15] = add(add(s1, w[(i - 7) & 15]), add(s0, w[i & 15]))
+            }
+            let big1 = rotate(e, 14) ^ rotate(e, 18) ^ rotate(e, 41)
+            let choose = (e & f) ^ (^e & g)
+            let t1 = add(add(hh, big1), add(add(choose, rounds[i]), w[i & 15]))
+            let big0 = rotate(a, 28) ^ rotate(a, 34) ^ rotate(a, 39)
+            let majority = (a & b) ^ (a & c) ^ (b & c)
+            let t2 = add(big0, majority)
+            hh = g
+            g = f
+            f = e
+            e = add(d, t1)
+            d = c
+            c = b
+            b = a
+            a = add(t1, t2)
+        }
+        h[0] = add(h[0], a)
+        h[1] = add(h[1], b)
+        h[2] = add(h[2], c)
+        h[3] = add(h[3], d)
+        h[4] = add(h[4], e)
+        h[5] = add(h[5], f)
+        h[6] = add(h[6], g)
+        h[7] = add(h[7], hh)
+    }
+}

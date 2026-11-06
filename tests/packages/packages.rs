@@ -957,6 +957,43 @@ fn crypto_rand_and_subtle_check_their_calls() {
 }
 
 #[test]
+fn crypto_hashes_and_hmac_check_their_calls() {
+    let imports = "import \"std/crypto/hmac\"\nimport \"std/crypto/sha1\"\nimport \"std/crypto/sha256\"\nimport \"std/crypto/sha512\"\nimport \"std/io\"";
+    accepts(&[(
+        "main.ore",
+        &main_with(
+            imports,
+            "let data = Array<byte>{1, 2, 3}\nlet a Array<byte> = sha256.Sum256(data[:])\nlet b Array<byte> = sha512.Sum512(data[:])\nlet c Array<byte> = sha1.Sum(data[:])\nvar d = sha256.New()\nlet n, err = d.Write(data[:])\n_ = n\n_ = err\nlet written, writeErr = io.WriteString(d, \"x\")\n_ = written\n_ = writeErr\nlet sum = d.Sum()\nd.Reset()\nvar e sha512.Digest = sha512.New()\ne.Reset()\nvar f sha1.Digest = sha1.New()\nf.Reset()\nlet mac = hmac.SHA256(a[:], data[:])\nlet long = hmac.SHA512(b[:], c[:])\nlet legacy = hmac.SHA1(c[:], data[:])\n_ = legacy\nlet size int = sha256.Size + sha512.BlockSize + sha1.Size\n_ = sum\n_ = mac\n_ = long\n_ = size",
+        ),
+    )]);
+    for (body, message) in [
+        ("let d = sha256.Digest{length: 0}\n_ = d", "not exported"),
+        (
+            "let d = sha256.New()\nlet n = d.length\n_ = n",
+            "not exported",
+        ),
+        (
+            "let data = Array<byte>{1}\nlet a = sha256.Sum256(data)\n_ = a",
+            "mismatched types",
+        ),
+        (
+            "let data = Array<byte>{1}\nlet a = hmac.SHA256(data[:])\n_ = a",
+            "takes 2 arguments",
+        ),
+        (
+            "let data = Array<byte>{1}\nvar d = sha256.New()\nd.Write(data[:])",
+            "must be used or explicitly discarded",
+        ),
+        (
+            "let data = Array<byte>{1}\nlet a = hmac.compute(data[:])\n_ = a",
+            "not exported",
+        ),
+    ] {
+        rejects(&[("main.ore", &main_with(imports, body))], message);
+    }
+}
+
+#[test]
 fn time_types_do_not_mix() {
     accepts(&[(
         "main.ore",

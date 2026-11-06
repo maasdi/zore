@@ -1,0 +1,126 @@
+package sha1
+
+const Size = 20
+const BlockSize = 64
+const low32 = 0xFFFFFFFF
+
+let initial = [uint32; 5]{0x67452301, 0xefcdab89, 0x98badcfe, 0x10325476, 0xc3d2e1f0}
+
+type Digest struct {
+    h [uint32; 5]
+    pending Array<byte>
+    length uint64
+}
+
+func New() Digest {
+    return Digest{h: initial, pending: Array<byte>{}, length: 0}
+}
+
+func Sum(data []byte) Array<byte> {
+    var d = New()
+    let _, _ = d.Write(data)
+    return d.Sum()
+}
+
+func (d mut Digest) Reset() {
+    d.h = initial
+    d.pending = Array<byte>{}
+    d.length = 0
+}
+
+func (d mut Digest) Write(data []byte) (int, error) {
+    d.length += uint64(data.len())
+    var start = 0
+    if d.pending.len() > 0 {
+        for start < data.len() && d.pending.len() < BlockSize {
+            d.pending.push(data[start])
+            start += 1
+        }
+        if d.pending.len() < BlockSize {
+            return data.len(), nil
+        }
+        blocks(d.h, d.pending[:])
+        d.pending = Array<byte>{}
+    }
+    let whole = start + (data.len() - start) / BlockSize * BlockSize
+    blocks(d.h, data[start:whole])
+    for var i = whole; i < data.len(); i += 1 {
+        d.pending.push(data[i])
+    }
+    return data.len(), nil
+}
+
+func (d Digest) Sum() Array<byte> {
+    var h = d.h
+    var tail = Array<byte>{}
+    for b in d.pending {
+        tail.push(b)
+    }
+    tail.push(0x80)
+    for tail.len() % BlockSize != 56 {
+        tail.push(0)
+    }
+    let bits = d.length << 3
+    for var shift = 56; shift >= 0; shift -= 8 {
+        tail.push(byte((bits >> shift) & 0xFF))
+    }
+    blocks(h, tail[:])
+    var out = Array<byte>{}
+    for word in h {
+        out.push(byte(word >> 24))
+        out.push(byte((word >> 16) & 0xFF))
+        out.push(byte((word >> 8) & 0xFF))
+        out.push(byte(word & 0xFF))
+    }
+    return out
+}
+
+func rotate(x uint32, n int) uint32 {
+    let back = 32 - n
+    return (x << n) | (x >> back)
+}
+
+func blocks(h mut [uint32; 5], data []byte) {
+    var w = [uint32; 16]{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}
+    for var base = 0; base + BlockSize <= data.len(); base += BlockSize {
+        var a = h[0]
+        var b = h[1]
+        var c = h[2]
+        var d = h[3]
+        var e = h[4]
+        for var i = 0; i < 80; i += 1 {
+            if i < 16 {
+                let j = base + i * 4
+                w[i] = uint32(data[j]) << 24 | uint32(data[j + 1]) << 16 | uint32(data[j + 2]) << 8 | uint32(data[j + 3])
+            } else {
+                w[i & 15] = rotate(w[(i - 3) & 15] ^ w[(i - 8) & 15] ^ w[(i - 14) & 15] ^ w[i & 15], 1)
+            }
+            var f uint32 = 0
+            var k uint32 = 0
+            if i < 20 {
+                f = (b & c) | (^b & d)
+                k = 0x5a827999
+            } else if i < 40 {
+                f = b ^ c ^ d
+                k = 0x6ed9eba1
+            } else if i < 60 {
+                f = (b & c) | (b & d) | (c & d)
+                k = 0x8f1bbcdc
+            } else {
+                f = b ^ c ^ d
+                k = 0xca62c1d6
+            }
+            let t = uint32((uint64(rotate(a, 5)) + uint64(f) + uint64(e) + uint64(k) + uint64(w[i & 15])) & low32)
+            e = d
+            d = c
+            c = rotate(b, 30)
+            b = a
+            a = t
+        }
+        h[0] = uint32((uint64(h[0]) + uint64(a)) & low32)
+        h[1] = uint32((uint64(h[1]) + uint64(b)) & low32)
+        h[2] = uint32((uint64(h[2]) + uint64(c)) & low32)
+        h[3] = uint32((uint64(h[3]) + uint64(d)) & low32)
+        h[4] = uint32((uint64(h[4]) + uint64(e)) & low32)
+    }
+}
