@@ -943,9 +943,11 @@ fn http_capacity_and_handler_panic_release_the_connection_permit() {
     drop(held);
     let deadline = std::time::Instant::now() + Duration::from_secs(4);
     loop {
-        assert!(server
-            .exchange("GET /panic HTTP/1.1\r\nHost: x\r\n\r\n")
-            .is_empty());
+        assert!(
+            server
+                .exchange("GET /panic HTTP/1.1\r\nHost: x\r\n\r\n")
+                .is_empty()
+        );
         match started.recv_timeout(Duration::from_millis(10)) {
             Ok(line) => {
                 assert_eq!(line, "panic-entered\n");
@@ -977,9 +979,11 @@ fn http_factory_poison_preserves_acceptance_and_shutdown() {
         .replace("let _, _ = stop.receive()", "let input = os.Stdin()\n    var signalByte = Array<byte>{0}\n    let _, _ = input.Read(signalByte[:])")
         .replace("import \"std/net\"", "import \"std/net\"\nimport \"std/os\"");
     let mut server = ServerProcess::start(&source);
-    assert!(server
-        .exchange("GET /factory-panic HTTP/1.1\r\nHost: x\r\n\r\n")
-        .is_empty());
+    assert!(
+        server
+            .exchange("GET /factory-panic HTTP/1.1\r\nHost: x\r\n\r\n")
+            .is_empty()
+    );
     status(
         &server.exchange("GET /echo HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n"),
         503,
@@ -1059,9 +1063,11 @@ func main() {
 }
 "#;
     let server = ServerProcess::start(source);
-    assert!(server
-        .exchange("GET /hold HTTP/1.1\r\nHost: x\r\n\r\n")
-        .is_empty());
+    assert!(
+        server
+            .exchange("GET /hold HTTP/1.1\r\nHost: x\r\n\r\n")
+            .is_empty()
+    );
     server.finish("");
 }
 
@@ -2728,7 +2734,7 @@ fn send_while_reading(server: &ServerProcess, head: &str, body_len: usize) -> (S
                     std::io::ErrorKind::ConnectionReset | std::io::ErrorKind::ConnectionAborted
                 ) =>
             {
-                break false
+                break false;
             }
             Err(error) => panic!("reading response: {error}"),
         }
