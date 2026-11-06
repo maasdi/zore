@@ -190,6 +190,12 @@ steps. Copying, permission and time changes, links, file locks, folder
 synchronization, and an atomic-write helper wait for their own contracts; see
 [the file conformance list](../tests/conformance/files.md).
 
+Secure random bytes and constant-time comparison moved into the standard
+library as `std/crypto/rand` and `std/crypto/subtle` (§37.19), using the
+operating system's random source and no hand-written algorithms. Hashing and
+HMAC stay in the external `crypto` package until a reviewed provider can ship
+with every program; see [the crypto conformance list](../tests/conformance/crypto.md).
+
 Issue [#217](https://github.com/maasdi/zore/issues/217) adds HTTP application
 helpers in steps. The first step, §37.16, adds cookies and URL-encoded forms to
 `std/net/http`. The second step, §37.17, adds `std/mime` and file serving

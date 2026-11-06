@@ -195,6 +195,12 @@ once it does.
   folder, and redirects with `303 See Other`. `std/net/http` gains
   `StatusSeeOther`, `StatusUnauthorized`, and `StatusUnsupportedMediaType`,
   and `StatusText(303)` is now `See Other`.
+- Added `std/crypto/rand` and `std/crypto/subtle` (§37.19). `rand.Bytes`
+  reads secure random bytes from the operating system (`getrandom`,
+  `getentropy`, or `BCryptGenRandom`), `rand.Text` returns a 43-character
+  URL-safe token, and `subtle.ConstantTimeEqual` compares secrets without
+  stopping at the first difference. Hashing and HMAC stay in the external
+  `crypto` package, whose `RandomBytes` and `Equal` still work.
 - Added multipart forms and file uploads to `std/net/http` (§37.18), the
   third part of issue #217. `Request.ReadMultipartForm` streams a
   `multipart/form-data` body through a 64 KiB window, keeps text values in

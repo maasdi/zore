@@ -927,6 +927,36 @@ fn multipart_forms_own_their_uploads() {
 }
 
 #[test]
+fn crypto_rand_and_subtle_check_their_calls() {
+    let imports = "import \"std/crypto/rand\"\nimport \"std/crypto/subtle\"";
+    accepts(&[(
+        "main.ore",
+        &main_with(
+            imports,
+            "let data, err = rand.Bytes(rand.MaxBytes)\n_ = err\nlet token, textErr = rand.Text()\n_ = token\n_ = textErr\nlet same bool = subtle.ConstantTimeEqual(data[:], data[:])\n_ = same",
+        ),
+    )]);
+    for (body, message) in [
+        ("rand.Bytes(16)", "must be used or explicitly discarded"),
+        ("let token = rand.Text()", "this call returns 2 values"),
+        (
+            "let data, err = rand.secureRead(16)\n_ = data\n_ = err",
+            "not exported",
+        ),
+        (
+            "let data, err = rand.Bytes(\"16\")\n_ = data\n_ = err",
+            "mismatched types",
+        ),
+        (
+            "let a = Array<byte>{1}\nlet same = subtle.ConstantTimeEqual(a, a)\n_ = same",
+            "mismatched types",
+        ),
+    ] {
+        rejects(&[("main.ore", &main_with(imports, body))], message);
+    }
+}
+
+#[test]
 fn time_types_do_not_mix() {
     accepts(&[(
         "main.ore",

@@ -424,6 +424,10 @@ folder walks to `codegen/files.rs`: flag validation, seeking and syncing,
 collision-free temporary names under concurrency, rename replacement and
 refusals, walk order, skipping, links, and errors that stay with their entry.
 
+`conformance/crypto.md` maps `std/crypto/rand` and `std/crypto/subtle` to
+`codegen/crypto.rs`: size bounds, byte spread, unique URL-safe tokens, async
+use from many tasks, and comparisons that change one bit at every position.
+
 `conformance/http.md` also maps the `photo-board` example to
 `codegen/http.rs`: names set and forgotten through cookies, refused names and
 forged cookies, uploads that are refused or stored, escaped HTML, the photo
