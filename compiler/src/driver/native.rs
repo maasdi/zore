@@ -129,20 +129,6 @@ const SQLITE: Adapter = Adapter {
     ],
 };
 
-const CRYPTO: Adapter = Adapter {
-    mbedtls: true,
-    id: "crypto-v1",
-    project: "crypto",
-    fingerprint: "dd6bb78dd5d57d5e867f325c316135f1b7b94002904dc3c4343b0fa9ee34c2b4",
-    c_flags: &[],
-    symbols: &[
-        ("nativeRandomBytes", "zore_native_crypto_random_bytes", None),
-        ("nativeSHA256", "zore_native_crypto_sha256", None),
-        ("nativeHMACSHA256", "zore_native_crypto_hmac_sha256", None),
-        ("nativeEqual", "zore_native_crypto_equal", None),
-    ],
-};
-
 const TLS: Adapter = Adapter {
     mbedtls: true,
     id: "tls-mbedtls-v1",
@@ -170,7 +156,7 @@ const TLS: Adapter = Adapter {
 };
 
 pub(super) fn find(id: &str) -> Option<&'static Adapter> {
-    [&ADLER32, &SQLITE, &CRYPTO, &TLS]
+    [&ADLER32, &SQLITE, &TLS]
         .into_iter()
         .find(|adapter| adapter.id == id)
 }

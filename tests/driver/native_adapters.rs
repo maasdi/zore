@@ -318,6 +318,39 @@ fn native_recipe_lock_drift_is_explicit_and_never_silently_rewritten() {
     assert_eq!(fs::read_to_string(&lock_path).unwrap(), expected);
 }
 
+#[test]
+fn withdrawn_crypto_adapter_is_rejected_as_unknown() {
+    let temporary = TempDir::new().unwrap();
+    let root = temporary.path();
+    write(
+        root,
+        "crypto/zore.toml",
+        "name = 'crypto'\n[native]\nadapter = 'crypto-v1'\n",
+    );
+    write(root, "crypto/crypto.ore", "package crypto\n");
+    write(
+        root,
+        "app/zore.toml",
+        "name = 'app'\n[dependencies]\ncrypto = { path = '../crypto' }\n",
+    );
+    write(
+        root,
+        "app/main.ore",
+        "package main\nimport \"crypto\"\nfunc main() {}\n",
+    );
+    for (action, target) in [("install", "app"), ("check", "app/main.ore")] {
+        failure(
+            Command::new(env!("CARGO_BIN_EXE_zore"))
+                .args([action, "--offline"])
+                .arg(root.join(target))
+                .env("ZORE_CACHE_DIR", root.join("cache"))
+                .output()
+                .unwrap(),
+            "unknown native adapter `crypto-v1`",
+        );
+    }
+}
+
 const ASYNC: &str = r#"package main
 import "adler32"
 import "std/time"

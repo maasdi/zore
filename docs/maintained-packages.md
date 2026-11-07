@@ -69,9 +69,9 @@ func main() {
 ```
 
 Compare MACs with `subtle.ConstantTimeEqual`, never with an early-exit
-comparison such as `bytes.Equal`. Random generation fails with an error rather than falling back to weak entropy. The
-older `crypto` package in `examples/crypto/crypto` is kept for existing code
-and is not released.
+comparison such as `bytes.Equal`. Random generation fails with an error rather than falling back to weak entropy.
+The former external `crypto` package has been removed in favor of these
+standard packages.
 
 ## Verified HTTPS
 
