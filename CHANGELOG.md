@@ -8,6 +8,14 @@ including those shipped in `0.1.0-alpha.1`, are not split by release.
 
 ## [Unreleased]
 
+### Release
+
+- A Tag release workflow tags `v<version>`, `tls/v<version>` and
+  `sqlite/v<version>` on the merge commit of a `release/v<version>` pull
+  request once CI passes on `main`, then starts the Alpha distribution build.
+  The Alpha distribution workflow's publishing steps also accept a manual
+  start on a tag.
+
 ## [0.1.0-alpha.2]
 
 ### Release

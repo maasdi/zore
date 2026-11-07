@@ -75,10 +75,16 @@ repository.
 
 ### Cutting a release
 
-The compiler's release PR bumps `compiler/Cargo.toml` and both package
-manifests to the new version and refreshes their locks. After it merges and CI
-passes on that `main` commit, push the compiler tag and then the package tags
-on the same commit:
+The compiler's release PR, from a `release/v<version>` branch, bumps
+`compiler/Cargo.toml` and both package manifests to the new version and
+refreshes their locks. After it merges and CI passes on that `main` commit, the
+Tag release workflow creates `v<version>`, `tls/v<version>` and
+`sqlite/v<version>` on that commit and starts the Alpha distribution build. It
+acts only on the merge commit of `release/v<version>` whose packages carry the
+same version, and it never moves an existing tag.
+
+To tag by hand instead, for example after re-running a failed build, push the
+compiler tag and then the package tags on the same commit:
 
 ```sh
 version=0.1.0-alpha.2

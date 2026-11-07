@@ -1,0 +1,98 @@
+name: Tag release
+
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tag-release
+  cancel-in-progress: false
+
+jobs:
+  tag:
+    if: github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      actions: write
+    env:
+      HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+      HEAD_MESSAGE: ${{ github.event.workflow_run.head_commit.message }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.13'
+      - name: Find the release version
+        id: release
+        shell: bash
+        run: |
+          set -euo pipefail
+          version=$(python .github/scripts/package_release.py metadata)
+          subject=$(printf '%s\n' "$HEAD_MESSAGE" | head -n 1)
+          if [[ "$subject" != "Merge pull request #"*" from $GITHUB_REPOSITORY_OWNER/release/v$version" ]]; then
+            echo "Not the merge of release/v$version; nothing to tag."
+            echo "version=" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          python - "$version" <<'EOF'
+          import sys, tomllib
+          for package in ("tls", "sqlite"):
+              with open(f"packages/{package}/zore.toml", "rb") as manifest:
+                  found = tomllib.load(manifest)["version"]
+              if found != sys.argv[1]:
+                  sys.exit(f"packages/{package} is {found}, expected {sys.argv[1]}")
+          EOF
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - name: Create and push tags
+        id: tags
+        if: steps.release.outputs.version != ''
+        shell: bash
+        env:
+          VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          set -euo pipefail
+          git fetch origin main
+          if ! git merge-base --is-ancestor "$HEAD_SHA" origin/main; then
+            echo "$HEAD_SHA is not on main; refusing to tag it."
+            exit 1
+          fi
+          created_compiler_tag=false
+          missing=()
+          for tag in "v$VERSION" "tls/v$VERSION" "sqlite/v$VERSION"; do
+            existing=$(git ls-remote --tags origin "refs/tags/$tag^{}" | cut -f1)
+            if [ -z "$existing" ]; then
+              existing=$(git ls-remote --tags origin "refs/tags/$tag" | cut -f1)
+            fi
+            if [ -n "$existing" ]; then
+              if [ "$existing" != "$HEAD_SHA" ]; then
+                echo "Tag $tag already points at $existing, not $HEAD_SHA; refusing to move it."
+                exit 1
+              fi
+              echo "Tag $tag already exists on $HEAD_SHA."
+              continue
+            fi
+            if [ "$tag" = "v$VERSION" ]; then message="Release $VERSION"; else message="Release ${tag%%/*} $VERSION"; fi
+            git -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+              tag -a "$tag" -m "$message" "$HEAD_SHA"
+            missing+=("refs/tags/$tag")
+            if [ "$tag" = "v$VERSION" ]; then created_compiler_tag=true; fi
+          done
+          if [ "${#missing[@]}" -gt 0 ]; then
+            git push origin "${missing[@]}"
+          fi
+          echo "created_compiler_tag=$created_compiler_tag" >> "$GITHUB_OUTPUT"
+      - name: Start the alpha distribution build
+        if: steps.tags.outputs.created_compiler_tag == 'true'
+        shell: bash
+        env:
+          VERSION: ${{ steps.release.outputs.version }}
+        run: gh workflow run release.yml --ref "v$VERSION"

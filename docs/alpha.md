@@ -123,11 +123,15 @@ The final runtime is checked for missing shared libraries and accidental build
 tools. These checks validate the packaging path, not arbitrary website programs.
 
 Before tagging, require the release PR's ordinary CI and alpha-distribution
-checks to pass. Merge to `main`, wait for ordinary CI on that exact commit,
-then push the matching `v0.1.0-alpha.2` tag. The release PR also sets
-`packages/tls` and `packages/sqlite` to the same version (a test enforces it);
-push their `tls/v<version>` and `sqlite/v<version>` tags on the same commit
-after the compiler tag. The tag workflow verifies version,
+checks to pass. The release PR comes from a `release/v<version>` branch and also
+sets `packages/tls` and `packages/sqlite` to the same version (a test enforces
+it). When it merges and ordinary CI passes on that exact `main` commit, the Tag
+release workflow pushes `v<version>`, `tls/v<version>` and `sqlite/v<version>` on
+that commit and starts the Alpha distribution build for `v<version>`. It does
+nothing for any other merge and refuses to move an existing tag. Tags created
+with the workflow token do not start other workflows on their own, so the build
+is started explicitly; pushing the tags by hand still works. The alpha
+distribution workflow verifies version,
 main-branch ancestry and successful CI on the same commit, rebuilds and validates
 the artifacts, publishes the versioned builder image and creates a draft
 prerelease. Inspect assets/checksums, image provenance and installation evidence
