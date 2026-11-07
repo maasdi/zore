@@ -212,6 +212,40 @@ pub unsafe extern "C" fn zore_native_os_getenv(out: *mut StringOut, key: *const 
 }
 
 /// # Safety
+/// `out` must be writable and the key must satisfy the storage rule of `bytes`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn zore_native_os_lookup_env(
+    out: *mut WordArray,
+    key: *const u8,
+    key_len: i64,
+) {
+    // SAFETY: guaranteed by the caller.
+    let key = unsafe { text_of(key, key_len) };
+    let values: Vec<String> = if key.is_empty() || key.contains(['=', '\0']) {
+        Vec::new()
+    } else {
+        std::env::var_os(key)
+            .map(|value| value.to_string_lossy().into_owned())
+            .into_iter()
+            .collect()
+    };
+    // SAFETY: guaranteed by the caller.
+    unsafe { out.write(WordArray::strings(&values)) };
+}
+
+/// # Safety
+/// `out` must be writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn zore_native_os_environ(out: *mut WordArray) {
+    let mut entries: Vec<String> = std::env::vars_os()
+        .map(|(key, value)| format!("{}={}", key.to_string_lossy(), value.to_string_lossy()))
+        .collect();
+    entries.sort();
+    // SAFETY: guaranteed by the caller.
+    unsafe { out.write(WordArray::strings(&entries)) };
+}
+
+/// # Safety
 /// `out` must be writable.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn zore_native_os_getwd(out: *mut StringError) {

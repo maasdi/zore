@@ -2,6 +2,17 @@
 
 Source-evidence catalog for issue #211, originally audited against baseline `edcf584` and refreshed against current upstream baseline `4210225`. It maps the locked contracts in specification §37.1–§37.14 to named executable assertions. The evidence is deliberately bounded: bundled source declarations and implementation bodies establish the supplied API, while the listed tests establish only the observations they assert. This catalog does not claim exhaustive coverage of every function, input, host, or combination, and it reports no new test run.
 
+The §37.3 follow-up for issue #220 adds
+[subprocess conformance](../../tests/conformance/exec.md).
+[tests/codegen/subprocess.rs](../../tests/codegen/subprocess.rs) names direct
+assertions for environment presence and child overrides, binary streaming and
+cached status, gated cancellation/cleanup, and bounded capture.
+[tests/packages/exec.rs](../../tests/packages/exec.rs) checks private Move
+resources, `std/io` composition and helper suspension; runtime `exec` tests
+inspect handle removal, untaken pipe closure and reaped child state. These cases
+use a Rust child fixture on each host rather than a Unix shell. They establish
+direct-child behavior, with no descendant process-tree guarantee.
+
 [compiler/src/driver/stdlib.rs](../../compiler/src/driver/stdlib.rs) registers exactly 30 bundled package paths: `std/bufio`, `std/bytes`, `std/context`, `std/errors`, `std/encoding/base64`, `std/encoding/binary`, `std/encoding/hex`, `std/encoding/json`, `std/fmt`, `std/io`, `std/log`, `std/log/rolling`, `std/maps`, `std/math`, `std/net`, `std/net/url`, `std/net/http`, `std/os`, `std/os/exec`, `std/os/signal`, `std/path`, `std/path/filepath`, `std/slices`, `std/sort`, `std/strconv`, `std/strings`, `std/sync`, `std/time`, `std/unicode`, and `std/unicode/utf8`. These paths bundle `.ore` sources, with selected runtime declarations. `path/filepath` substitutes a Windows source file on Windows. Cargo sets `autotests = false`; target registrations are explicit in [compiler/Cargo.toml](../../compiler/Cargo.toml). Native tests named below are compiled under its `native` target through modules declared in `tests/codegen/native.rs`; HTTP, JSON, signal, URL/client, log/rolling and other nested suites are not standalone Cargo targets. The external crypto, TLS and SQLite packages are maintained native-adapter examples, not part of the 30 bundled packages.
 
 | §37 contract family and supplied source/API | Registered executable assertion and observed behavior | Boundary or exclusion |

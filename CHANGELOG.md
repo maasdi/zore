@@ -8,6 +8,18 @@ including those shipped in `0.1.0-alpha.1`, are not split by release.
 
 ## [Unreleased]
 
+### Environment and subprocesses
+
+- Added `os.LookupEnv` to distinguish missing and empty variables, and
+  `os.Environ` for independent environment snapshots. Child environment
+  overrides do not mutate the parent process.
+- Added owned subprocess handles with start, cached wait/status, cancellation,
+  and deterministic direct-child termination and reaping. Owned pipes compose
+  with `std/io`; process-tree termination is outside the guarantee.
+- `exec.Cmd.OutputLimit` and `CombinedOutputLimit` retain a bounded prefix and
+  report overflow. Existing `Output` and `CombinedOutput` now default to a
+  16 MiB limit; use an explicit limit or streaming pipes for larger output.
+
 ### Release
 
 - A Tag release workflow tags `v<version>`, `tls/v<version>` and

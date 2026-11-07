@@ -7497,6 +7497,8 @@ conformance cases: `tests/conformance/time.md`.
 | `RemoveAll(path string) error` | Removes a file or a folder and everything in it; a missing path is not an error |
 | `Rename(oldPath string, newPath string) error` | Moves a file or folder to `newPath`; an existing file at `newPath` is replaced, on Windows as well. What is and is not atomic is in §37.15 |
 | `Getenv(key string) string` | The value of the environment variable, or `""` when it is not set |
+| `LookupEnv(key string) (string, bool)` | The value and whether the variable is present; a present empty value gives `"", true` |
+| `Environ() Array<string>` | An owned, sorted snapshot of `key=value` entries in this process environment |
 | `Getwd() (string, error)` | The current folder |
 | `Args() Array<string>` | The program's command-line arguments, starting with the program name |
 | `Exit(code int)` | Ends the process at once with the status `code`; other tasks are not waited for and nothing is dropped |
@@ -7525,20 +7527,100 @@ Error messages begin with the function name (`os.ReadFile: `, `os.Open: `,
 `os.Lstat: `, `os.ReadDir: `, and so on) and continue with system-defined
 text.
 
-**`std/os/exec`** runs other programs.
+**Environment snapshots and subprocess control — LOCKED.** `Getenv`,
+`LookupEnv`, and `Environ` read the host process environment. Invalid keys
+(empty or containing `=` or NUL) are absent. Host strings are converted to UTF-8
+with replacement for invalid encodings. `Environ` returns independent owned
+storage: changing its array does not mutate the process environment. Global
+environment mutation is not provided. Concurrent subprocess configuration never
+changes another command or the parent environment.
+
+**`std/os/exec`** runs programs directly, without shell interpolation.
 
 | Name | Behavior |
 | --- | --- |
-| `type Cmd struct { Path string; Args Array<string>; Dir string }` | A program to run: `Path` is found through the `PATH` environment variable when it has no `/`; `Args` starts with the program name; a non-empty `Dir` is the folder it runs in |
-| `Command(name string, args []string) Cmd` | A `Cmd` with `Path` set to `name` and `Args` to `name` followed by `args` |
-| `(c Cmd) Run() error` | Runs the program and waits for it, with standard input, output, and error connected to nothing |
-| `(c Cmd) Output() (Array<byte>, error)` | Runs it and returns what it wrote to standard output |
-| `(c Cmd) CombinedOutput() (Array<byte>, error)` | Runs it and returns what it wrote to standard output and error, in the order written |
+| `type Cmd struct { Path string; Args Array<string>; Dir string }` | A program: `Args` begins with its name; a nonempty `Dir` selects the child directory. Fields and existing literals remain unchanged |
+| `Command(name string, args []string) Cmd` | Sets `Path` to `name`, `Args` to `name` followed by `args`, and `Dir` to empty |
+| `type Options struct { Env Array<string>; ClearEnv bool; StdinPipe bool; StdoutPipe bool; StderrPipe bool }` | Child environment and requested pipes |
+| `DefaultOptions() Options` | Inherits the environment, with no pipes and empty overrides |
+| `(c Cmd) Start() (Process, error)`, `StartWith(options Options) (Process, error)` | Starts a direct child, with default or explicit options, returning promptly after spawn |
+| `(c Cmd) StartContext(ctx context.Context, options Options) (Process, error)` | Checks cancellation before spawning; later cancellation kills and reaps the child; its watcher ends on child completion |
+| `(p Process) Wait() (Status, error)` | Waits for direct-child exit and returns cached results on repeated calls |
+| `(p Process) Kill() error` | Requests forceful termination of a running direct child; succeeds if already exited |
+| `(p own Process) Close() error` | Closes untaken pipes, kills a running direct child, and waits until it is reaped |
+| `(p Process) StdinPipe() (PipeWriter, error)`, `StdoutPipe() (PipeReader, error)`, `StderrPipe() (PipeReader, error)` | Transfers each requested parent pipe endpoint exactly once; missing or already taken pipes fail |
+| `(s Status) Success() bool`, `ExitCode() int`, `Signal() int` | Whether exit was successful; host exit code or `-1` if unavailable; Unix terminating signal or `0` otherwise |
+| `(r PipeReader) Read(buf mut []byte) (int, error)`, `(w PipeWriter) Write(data []byte) (int, error)` | Streaming byte operations satisfying `io.Reader` and `io.Writer`; reads return `io.EOF` at end; writes report partial progress on failure |
+| `(r own PipeReader) Close() error`, `(w own PipeWriter) Close() error` | Close the endpoint; the types satisfy `io.ReadCloser` and `io.WriteCloser` |
+| `(c Cmd) Run() error` | Starts and waits with all streams connected to nothing |
+| `(c Cmd) Output() (Array<byte>, error)`, `CombinedOutput() (Array<byte>, error)` | Captures stdout, or stdout and stderr through one shared pipe preserving pipe write order, up to 16 MiB |
+| `(c Cmd) OutputLimit(limit int) (Array<byte>, error)`, `CombinedOutputLimit(limit int) (Array<byte>, error)` | Captures at most `limit` bytes, between zero and 1 GiB inclusive; overflow returns the retained prefix and `exec: output limit exceeded`, kills and reaps the direct child |
 
-A program that ends with a nonzero status gives the error `exit status N`, one
-ended by a signal gives `signal: N`, and one that cannot start gives an error
-beginning `exec: `. `Output` and `CombinedOutput` return what was captured
-together with the error.
+`Options.Env` entries must have a nonempty key followed by `=` and must not
+contain NUL. Unless `ClearEnv` is true they overlay an inherited snapshot;
+otherwise the child starts with only those entries. Later duplicate keys win,
+with host key comparison rules (case-insensitive on Windows). Invalid entries
+fail before spawning. An empty `Env` with `ClearEnv` true explicitly removes all
+variables. Bare program paths use host executable search rules; callers needing
+portable, deterministic lookup with a cleared or replaced PATH use an absolute
+program path. Arguments are passed literally; `Args[0]` is descriptive and the
+remaining elements are arguments. Relative paths and `Dir` follow host rules.
+
+`Process`, `PipeReader`, and `PipeWriter` are Move structs with private fields
+and custom drop. Dropping a process has the same cleanup obligations as `Close`;
+dropping a pipe closes its endpoint. Zero values are closed and operations fail.
+An exited child is reaped even if `Wait` is never called. Taken endpoints have
+independent ownership and may outlive `Wait`; untaken endpoints close on process
+cleanup. `Wait` waits only for child exit, never for pipe draining. Before waiting,
+close stdin when done and drain stdout and stderr concurrently when both are
+piped: sequential draining, or waiting before draining, can deadlock on host pipe
+capacity. `Close` and cancellation act only on the direct child. Descendants may
+survive and retain pipe handles; no process-tree or descendant EOF guarantee is
+provided. Programs must arrange descendant cleanup themselves.
+
+Nonzero exit reports `exit status N`, Unix signal exit `signal: N`, and spawn,
+pipe, or control failure an error beginning `exec: `. `Status` retains host exit
+facts even on failure. Cancellation and natural exit race through one native
+child state: cancellation wins only when it observes a still-running child;
+then `Wait` returns that context's error. Once exit is observed, later cancellation
+does not replace its cached result. Output overflow takes precedence over the
+signal caused by its own cleanup. Invalid capture limits fail before spawning.
+
+```zore
+let empty, present = os.LookupEnv("OPTIONAL_VALUE")
+var options = exec.DefaultOptions()
+options.Env.push("MODE=worker")
+options.StdinPipe = true
+options.StdoutPipe = true
+let child = exec.Command("/absolute/helper", Array<string>{"literal $HOME"}[:]).StartWith(options)?
+let input = child.StdinPipe()?
+var output = child.StdoutPipe()?
+let _, writeErr = input.Write(Array<byte>{65, 66}[:])
+let _ = input.Close()
+let data, readErr = io.ReadAtMost(output, 4096)
+let status, waitErr = child.Wait()
+```
+
+Ownership/error/async implications: options borrow their owned array only for
+start, which copies the configuration; a process never borrows its command or
+options. Pipe views are used only for each operation. Start, Wait, process cleanup,
+pipe reads/writes/close, and capture are ordinary potentially waiting calls;
+async callers suspend only their task, while native cleanup compensates workers.
+Cancellation monitoring owns only an opaque non-reused identifier and completion
+channel, and ends on completion even for `context.Background()`.
+
+Compiler impact: bundled source wraps native environment snapshots, child and
+pipe handle tables, and the existing scalar/array/error ABI. The native helper
+wait classification includes subprocess start, wait, cleanup, streaming, and
+capture. No new language syntax or general ABI is introduced. Host process,
+thread, descriptor, argument, environment-size and permission limits remain
+host errors; pipe reads allocate chunks no larger than 64 KiB. Captures are
+bounded independently of child output size. Conformance cases are in
+`tests/conformance/exec.md`.
+
+Migration: `Cmd` literals and simple helpers remain valid. Previously unbounded
+`Output` and `CombinedOutput` now cap retention at 16 MiB. Use the explicit limit
+(up to 1 GiB) for larger finite output, or streaming pipes for arbitrary output.
 
 **`std/io`** names what files, connections, and buffers have in common, so
 one function can work with any of them. Its interface types (§22.2) are:
