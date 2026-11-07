@@ -12,6 +12,7 @@
 - [ ] New unresolved questions are recorded in `docs/spec-questions.md`.
 - [ ] Accepted behavior is paired with rejection tests where relevant.
 - [ ] `cargo fmt --all -- --check`
+- [ ] `target/debug/zore fmt --check .`
 - [ ] `cargo clippy --locked --all-targets -- -D warnings`
 - [ ] `cargo build --locked`
 - [ ] `cargo test --locked --all-targets`

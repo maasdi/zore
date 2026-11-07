@@ -8,11 +8,20 @@ const Interrupt Signal = 1
 const Terminate Signal = 2
 
 func subscribe(mask int) (int, error)
+
 func raised(id int) bool
+
 func unsubscribe(id int)
 
-type completion struct { id int; finished channel<bool> }
-func (c mut completion) drop() { unsubscribe(c.id); c.finished.close() }
+type completion struct {
+    id int;
+    finished channel<bool>
+}
+
+func (c mut completion) drop() {
+    unsubscribe(c.id);
+    c.finished.close()
+}
 
 async func watch(ctx context.Context, id int, trigger channel<bool>, finished channel<bool>) {
     let guard = completion{id: id, finished: finished}
@@ -23,7 +32,9 @@ async func watch(ctx context.Context, id int, trigger channel<bool>, finished ch
             return
         }
         select {
-            case ctx.Done().receive() { return }
+            case ctx.Done().receive() {
+                return
+            }
             case time.After(10 * time.Millisecond).receive() {}
         }
     }
@@ -38,10 +49,15 @@ func NotifyContext(parent context.Context, signals []Signal) (context.Context, f
         mask |= 1 << (int(selected) - 1)
     }
     let id, err = subscribe(mask)
-    if err != nil { return context.Background(), func() {}, err }
+    if err != nil {
+        return context.Background(), func() {}, err
+    }
     let trigger = channel<bool>()
     let finished = channel<bool>()
     let ctx, cancel = context.WithCancelOn(parent, trigger)
     go watch(ctx, id, trigger, finished)
-    return ctx, func() { cancel(); let _, _ = finished.receive() }, nil
+    return ctx, func() {
+        cancel();
+        let _, _ = finished.receive()
+    }, nil
 }

@@ -11,10 +11,10 @@ const ListTag = "list"
 
 // Start is -1 for a node that has no span of its own.
 type Node struct {
-    Tag      string
-    Start    int
-    End      int
-    Attr     string
+    Tag string
+    Start int
+    End int
+    Attr string
     Children Array<int>
 }
 

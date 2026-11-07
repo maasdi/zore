@@ -47,20 +47,28 @@ func main() {
     measure("discard", log.New(Discard{count: 0}, log.LevelInfo).WithoutTime())
     measure("discard with time", log.New(Discard{count: 0}, log.LevelInfo))
     let file, err = os.Create(folder + "/plain.log")
-    if err != nil { os.Exit(1) }
+    if err != nil {
+        os.Exit(1)
+    }
     measure("os.File", log.New(file, log.LevelInfo).WithoutTime())
     var buffered, bufferedErr = rolling.Open(rollingConfig("buffered.log", 64 * 1024))
-    if bufferedErr != nil { os.Exit(1) }
+    if bufferedErr != nil {
+        os.Exit(1)
+    }
     measure("rolling, 64 KiB buffer", log.New(buffered.Sink(), log.LevelInfo).WithoutTime())
     let _ = buffered.Close()
     var dailyConfig = rollingConfig("daily.log", 64 * 1024)
     dailyConfig.Daily = true
     var daily, dailyErr = rolling.Open(dailyConfig)
-    if dailyErr != nil { os.Exit(1) }
+    if dailyErr != nil {
+        os.Exit(1)
+    }
     measure("rolling, 64 KiB buffer, daily", log.New(daily.Sink(), log.LevelInfo).WithoutTime())
     let _ = daily.Close()
     var direct, directErr = rolling.Open(rollingConfig("direct.log", 0))
-    if directErr != nil { os.Exit(1) }
+    if directErr != nil {
+        os.Exit(1)
+    }
     measure("rolling, unbuffered", log.New(direct.Sink(), log.LevelInfo).WithoutTime())
     let _ = direct.Close()
     let _ = os.RemoveAll(folder)

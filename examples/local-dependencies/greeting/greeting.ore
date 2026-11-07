@@ -3,5 +3,10 @@ package greeting
 import "shared"
 import "greeting/text"
 
-func NewPerson(name string) shared.Person { return shared.Person{Name: name} }
-func Message(person shared.Person) string { return text.Greet(person.Name) }
+func NewPerson(name string) shared.Person {
+    return shared.Person{Name: name}
+}
+
+func Message(person shared.Person) string {
+    return text.Greet(person.Name)
+}

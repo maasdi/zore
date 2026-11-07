@@ -48,6 +48,6 @@ func main() {
     var orders = Array<Order>{Order{Id: 1}}
     orders.push(Order{Id: 2})
     for order in orders {
-        println(order.Id + 100)       // a loop item borrows; it is not moved
+        println(order.Id + 100) // a loop item borrows; it is not moved
     }
-}                                   // orders drop in reverse order
+} // orders drop in reverse order

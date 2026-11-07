@@ -57,4 +57,5 @@ func splitPattern(pattern string, op string) (string, string, error) {
 }
 
 func tempPath(dir string, prefix string, suffix string) string
+
 func mkdirNew(path string, perm int) (bool, error)

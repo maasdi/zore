@@ -17,6 +17,7 @@ type Config struct {
     AcceptPollInterval time.Duration
     ShutdownTimeout time.Duration
 }
+
 type serverState struct {
     started bool
     accepting bool
@@ -25,6 +26,7 @@ type serverState struct {
     stopped channel<bool>
     connections int
 }
+
 type Server struct {
     router Router
     config Config
@@ -45,41 +47,88 @@ func DefaultConfig() Config {
         ShutdownTimeout: 10 * time.Second,
     }
 }
+
 func NewServer(router Router, config Config) (Server, error) {
     var chosen = config
     let defaults = DefaultConfig()
     let values = [int; 3]{config.MaxHeaderBytes, config.MaxBodyBytes, config.MaxConnections}
     let durations = [time.Duration; 6]{config.ReadHeaderTimeout, config.ReadBodyTimeout, config.WriteTimeout, config.IdleTimeout, config.AcceptPollInterval, config.ShutdownTimeout}
     var invalid = !router.live
-    for value in values { if value < 0 { invalid = true } }
-    for duration in durations { if duration < 0 { invalid = true } }
-    if chosen.MaxHeaderBytes == 0 { chosen.MaxHeaderBytes = defaults.MaxHeaderBytes }
-    if chosen.MaxBodyBytes == 0 { chosen.MaxBodyBytes = defaults.MaxBodyBytes }
-    if chosen.MaxConnections == 0 { chosen.MaxConnections = defaults.MaxConnections }
-    if chosen.ReadHeaderTimeout == 0 { chosen.ReadHeaderTimeout = defaults.ReadHeaderTimeout }
-    if chosen.ReadBodyTimeout == 0 { chosen.ReadBodyTimeout = defaults.ReadBodyTimeout }
-    if chosen.WriteTimeout == 0 { chosen.WriteTimeout = defaults.WriteTimeout }
-    if chosen.IdleTimeout == 0 { chosen.IdleTimeout = defaults.IdleTimeout }
-    if chosen.AcceptPollInterval == 0 { chosen.AcceptPollInterval = defaults.AcceptPollInterval }
-    if chosen.ShutdownTimeout == 0 { chosen.ShutdownTimeout = defaults.ShutdownTimeout }
+    for value in values {
+        if value < 0 {
+            invalid = true
+        }
+    }
+    for duration in durations {
+        if duration < 0 {
+            invalid = true
+        }
+    }
+    if chosen.MaxHeaderBytes == 0 {
+        chosen.MaxHeaderBytes = defaults.MaxHeaderBytes
+    }
+    if chosen.MaxBodyBytes == 0 {
+        chosen.MaxBodyBytes = defaults.MaxBodyBytes
+    }
+    if chosen.MaxConnections == 0 {
+        chosen.MaxConnections = defaults.MaxConnections
+    }
+    if chosen.ReadHeaderTimeout == 0 {
+        chosen.ReadHeaderTimeout = defaults.ReadHeaderTimeout
+    }
+    if chosen.ReadBodyTimeout == 0 {
+        chosen.ReadBodyTimeout = defaults.ReadBodyTimeout
+    }
+    if chosen.WriteTimeout == 0 {
+        chosen.WriteTimeout = defaults.WriteTimeout
+    }
+    if chosen.IdleTimeout == 0 {
+        chosen.IdleTimeout = defaults.IdleTimeout
+    }
+    if chosen.AcceptPollInterval == 0 {
+        chosen.AcceptPollInterval = defaults.AcceptPollInterval
+    }
+    if chosen.ShutdownTimeout == 0 {
+        chosen.ShutdownTimeout = defaults.ShutdownTimeout
+    }
     let server = Server{router: router, config: chosen, state: mutex(serverState{started: false, accepting: false, draining: false, canceled: false, stopped: channel<bool>(), connections: 0}), live: !invalid}
-    if invalid { return server, error("http.NewServer: invalid configuration or router") }
+    if invalid {
+        return server, error("http.NewServer: invalid configuration or router")
+    }
     return server, nil
 }
+
 func (s Server) draining() bool {
-    if !s.live { return true }
-    return s.state.withLock(func(state mut serverState) bool { return state.draining })
+    if !s.live {
+        return true
+    }
+    return s.state.withLock(func(state mut serverState) bool {
+        return state.draining
+    })
 }
+
 func (s Server) canceled() bool {
-    if !s.live { return true }
-    return s.state.withLock(func(state mut serverState) bool { return state.canceled })
+    if !s.live {
+        return true
+    }
+    return s.state.withLock(func(state mut serverState) bool {
+        return state.canceled
+    })
 }
+
 func (s Server) complete() bool {
-    return s.state.withLock(func(state mut serverState) bool { return !state.accepting && state.connections == 0 })
+    return s.state.withLock(func(state mut serverState) bool {
+        return !state.accepting && state.connections == 0
+    })
 }
+
 func (s Server) Shutdown(ctx context.Context) error {
-    if !s.live { return error("http.Shutdown: empty server") }
-    s.state.withLock(func(state mut serverState) { state.draining = true })
+    if !s.live {
+        return error("http.Shutdown: empty server")
+    }
+    s.state.withLock(func(state mut serverState) {
+        state.draining = true
+    })
     for !s.complete() {
         let err = ctx.Err()
         if err != nil {
@@ -99,30 +148,53 @@ func (s Server) Shutdown(ctx context.Context) error {
 type completion struct {
     server Server
 }
+
 func (g mut completion) drop() {
-    if g.server.live { g.server.state.withLock(func(state mut serverState) { state.connections -= 1 }) }
+    if g.server.live {
+        g.server.state.withLock(func(state mut serverState) {
+            state.connections -= 1
+        })
+    }
 }
+
 type acceptance struct {
     server Server
 }
+
 func (g mut acceptance) drop() {
-    if g.server.live { g.server.state.withLock(func(state mut serverState) { state.accepting = false; state.draining = true }) }
+    if g.server.live {
+        g.server.state.withLock(func(state mut serverState) {
+            state.accepting = false;
+            state.draining = true
+        })
+    }
 }
+
 type requestCompletion struct {
     done channel<bool>
     finished channel<bool>
 }
-func (g mut requestCompletion) drop() { g.done.close(); let _, _ = g.finished.receive() }
+
+func (g mut requestCompletion) drop() {
+    g.done.close();
+    let _, _ = g.finished.receive()
+}
+
 type contextCompletion struct {
     finished channel<bool>
 }
-func (g mut contextCompletion) drop() { g.finished.close() }
+
+func (g mut contextCompletion) drop() {
+    g.finished.close()
+}
 
 async func requestContext(ready channel<context.Context>, done channel<bool>, finished channel<bool>, s Server, deadline time.Instant) {
     let guard = contextCompletion{finished: finished}
     let ctx, cancel = context.WithDeadline(context.Background(), deadline)
     ready.send(ctx)
-    let stopped = s.state.withLock(func(state mut serverState) channel<bool> { return state.stopped })
+    let stopped = s.state.withLock(func(state mut serverState) channel<bool> {
+        return state.stopped
+    })
     select {
         case done.receive() {}
         case ctx.Done().receive() {}
@@ -132,36 +204,60 @@ async func requestContext(ready channel<context.Context>, done channel<bool>, fi
 }
 
 func (s Server) Serve(listener own net.Listener) error {
-    if !s.live { return error("http.Serve: empty server") }
+    if !s.live {
+        return error("http.Serve: empty server")
+    }
     let admitted = s.state.withLock(func(state mut serverState) bool {
-        if state.started || state.draining { return false }
+        if state.started || state.draining {
+            return false
+        }
         state.started = true
         state.accepting = true
         return true
     })
-    if !admitted { return error("http.Serve: server already started or shut down") }
+    if !admitted {
+        return error("http.Serve: server already started or shut down")
+    }
     let guard = acceptance{server: s}
     var failure error = nil
     for !s.draining() {
         let deadlineErr = listener.SetDeadline(time.Now().Add(s.config.AcceptPollInterval))
-        if deadlineErr != nil { _ = failure; failure = deadlineErr; break }
+        if deadlineErr != nil {
+            _ = failure;
+            failure = deadlineErr;
+            break
+        }
         let conn, err = listener.Accept()
-        if err == error("net.Accept: timed out") { continue }
-        if err != nil { _ = failure; failure = err; break }
+        if err == error("net.Accept: timed out") {
+            continue
+        }
+        if err != nil {
+            _ = failure;
+            failure = err;
+            break
+        }
         let accepted = time.Now()
         let headerDeadlineErr = conn.SetReadDeadline(accepted.Add(s.config.ReadHeaderTimeout))
-        if headerDeadlineErr != nil { continue }
+        if headerDeadlineErr != nil {
+            continue
+        }
         let permit = s.state.withLock(func(state mut serverState) bool {
-            if state.draining || state.connections >= s.config.MaxConnections { return false }
+            if state.draining || state.connections >= s.config.MaxConnections {
+                return false
+            }
             state.connections += 1
             return true
         })
-        if !permit { continue }
+        if !permit {
+            continue
+        }
         go s.connection(conn, accepted)
     }
     _ = listener.Close()
     drop(guard)
-    for !s.complete() { time.Sleep(s.config.AcceptPollInterval) }
+    for !s.complete() {
+        time.Sleep(s.config.AcceptPollInterval)
+    }
     return failure
 }
 
@@ -219,55 +315,89 @@ func newWriter(conn []net.Conn, s Server, control Mutex<exchangeControl>, deadli
 
 func (r mut Request) beginHeaders(initial bool) error {
     let _, err = r.nextByte()
-    if err != nil { return err }
+    if err != nil {
+        return err
+    }
     r.position -= 1
-    if !initial { r.deadline = time.Now().Add(r.config.ReadHeaderTimeout) }
+    if !initial {
+        r.deadline = time.Now().Add(r.config.ReadHeaderTimeout)
+    }
     return nil
 }
 
 func (r mut Request) parseHeaders() (int, error) {
     let first, firstErr = r.line()
-    if firstErr != nil { return headerFailure(firstErr), firstErr }
+    if firstErr != nil {
+        return headerFailure(firstErr), firstErr
+    }
     let parts = strings.Split(first, " ")
-    if parts.len() != 3 || !token(parts[0]) { return 400, error("http: invalid request line") }
-    if parts[2] != "HTTP/1.1" { return 505, error("http: unsupported HTTP version") }
+    if parts.len() != 3 || !token(parts[0]) {
+        return 400, error("http: invalid request line")
+    }
+    if parts[2] != "HTTP/1.1" {
+        return 505, error("http: unsupported HTTP version")
+    }
     let target, targetErr = url.ParseRequestTarget(parts[1])
-    if targetErr != nil { return 400, targetErr }
+    if targetErr != nil {
+        return 400, targetErr
+    }
     r.method = parts[0]
     r.target = parts[1]
     r.path = target.Path
     r.query = target.RawQuery
     for {
         let line, err = r.line()
-        if err != nil { return headerFailure(err), err }
-        if line == "" { break }
+        if err != nil {
+            return headerFailure(err), err
+        }
+        if line == "" {
+            break
+        }
         let name, value, found = strings.Cut(line, ":")
-        if !found { return 400, error("http: invalid header") }
+        if !found {
+            return 400, error("http: invalid header")
+        }
         let addErr = r.headers.Add(name, strings.Trim(value, " \t"))
-        if addErr != nil { return 400, addErr }
+        if addErr != nil {
+            return 400, addErr
+        }
     }
     let hosts = r.headers.Values(HeaderHost)
-    if hosts.len() != 1 || !validHost(hosts[0]) { return 400, error("http: expected one valid Host") }
+    if hosts.len() != 1 || !validHost(hosts[0]) {
+        return 400, error("http: expected one valid Host")
+    }
     r.host = hosts[0]
     let lengths = r.headers.Values(HeaderContentLength)
     let encodings = r.headers.Values("Transfer-Encoding")
-    if lengths.len() > 1 || encodings.len() > 1 || (lengths.len() > 0 && encodings.len() > 0) { return 400, error("http: ambiguous framing") }
+    if lengths.len() > 1 || encodings.len() > 1 || (lengths.len() > 0 && encodings.len() > 0) {
+        return 400, error("http: ambiguous framing")
+    }
     if encodings.len() == 1 {
-        if !strings.EqualFold(encodings[0], "chunked") { return 400, error("http: unsupported transfer encoding") }
+        if !strings.EqualFold(encodings[0], "chunked") {
+            return 400, error("http: unsupported transfer encoding")
+        }
         r.chunked = true
         r.done = false
     }
     if lengths.len() == 1 {
         let count, err = decimal(lengths[0])
-        if err != nil { return 400, err }
-        if count > r.config.MaxBodyBytes { return 413, error("http: body too large") }
+        if err != nil {
+            return 400, err
+        }
+        if count > r.config.MaxBodyBytes {
+            return 413, error("http: body too large")
+        }
         r.remaining = count
         r.done = count == 0
     }
     let expectations = r.headers.Values("Expect")
-    if expectations.len() > 1 { return 417, error("http: unsupported expectation") }
+    if expectations.len() > 1 {
+        return 417, error("http: unsupported expectation")
+    }
     if expectations.len() == 1 {
-        if !strings.EqualFold(expectations[0], "100-continue") { return 417, error("http: unsupported expectation") }
+        if !strings.EqualFold(expectations[0], "100-continue") {
+            return 417, error("http: unsupported expectation")
+        }
         r.expect = !r.done
     }
     let connections = r.headers.Values("Connection")
@@ -275,8 +405,12 @@ func (r mut Request) parseHeaders() (int, error) {
         let options = strings.Split(connection, ",")
         for option in options {
             let name = strings.Trim(option, " \t")
-            if !token(name) { return 400, error("http: invalid connection option") }
-            if strings.EqualFold(name, "close") { r.close = true }
+            if !token(name) {
+                return 400, error("http: invalid connection option")
+            }
+            if strings.EqualFold(name, "close") {
+                r.close = true
+            }
         }
     }
     r.deadline = time.Now().Add(r.config.ReadBodyTimeout)
@@ -286,31 +420,54 @@ func (r mut Request) parseHeaders() (int, error) {
 }
 
 func headerFailure(err error) int {
-    if err == error("http: metadata too large") { return 431 }
-    if err == error("http: read timed out") { return 408 }
+    if err == error("http: metadata too large") {
+        return 431
+    }
+    if err == error("http: read timed out") {
+        return 408
+    }
     return 400
 }
+
 func validHost(host string) bool {
-    if host == "" { return false }
+    if host == "" {
+        return false
+    }
     var name = host
     var port = ""
     if host[0] == 91 {
         let end = strings.Index(host, "]")
-        if end < 0 || !validIPv6(host[1:end]) { return false }
-        if end + 1 == host.len() { return true }
-        if host[end + 1] != 58 { return false }
+        if end < 0 || !validIPv6(host[1:end]) {
+            return false
+        }
+        if end + 1 == host.len() {
+            return true
+        }
+        if host[end + 1] != 58 {
+            return false
+        }
         port = host[end + 2:]
     } else {
         let before, after, found = strings.Cut(host, ":")
         name = before
-        if found { port = after }
-        if name == "" { return false }
+        if found {
+            port = after
+        }
+        if name == "" {
+            return false
+        }
         for var i = 0; i < name.len(); i += 1 {
             let c = name[i]
-            if (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || (c >= 48 && c <= 57) { continue }
-            if strings.Contains("-._~!$&'()*+;=", name[i:i + 1]) { continue }
+            if (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || (c >= 48 && c <= 57) {
+                continue
+            }
+            if strings.Contains("-._~!$&'()*+;=", name[i:i + 1]) {
+                continue
+            }
             if c == 37 && i + 2 < name.len() {
-                if !hexDigit(name[i + 1]) || !hexDigit(name[i + 2]) { return false }
+                if !hexDigit(name[i + 1]) || !hexDigit(name[i + 2]) {
+                    return false
+                }
                 i += 2
                 continue
             }
@@ -318,7 +475,9 @@ func validHost(host string) bool {
         }
     }
     for var i = 0; i < port.len(); i += 1 {
-        if port[i] < 48 || port[i] > 57 { return false }
+        if port[i] < 48 || port[i] > 57 {
+            return false
+        }
     }
     return true
 }
@@ -328,33 +487,59 @@ func hexDigit(c byte) bool {
 }
 
 func validIPv6(text string) bool {
-    if text == "" || strings.Count(text, "::") > 1 { return false }
+    if text == "" || strings.Count(text, "::") > 1 {
+        return false
+    }
     let compressed = strings.Contains(text, "::")
-    if strings.HasPrefix(text, ":") && !strings.HasPrefix(text, "::") { return false }
-    if strings.HasSuffix(text, ":") && !strings.HasSuffix(text, "::") { return false }
-    if strings.Contains(text, ":::") { return false }
+    if strings.HasPrefix(text, ":") && !strings.HasPrefix(text, "::") {
+        return false
+    }
+    if strings.HasSuffix(text, ":") && !strings.HasSuffix(text, "::") {
+        return false
+    }
+    if strings.Contains(text, ":::") {
+        return false
+    }
     let parts = strings.Split(text, ":")
     var groups = 0
     for var i = 0; i < parts.len(); i += 1 {
         let part = parts[i]
-        if part == "" { continue }
+        if part == "" {
+            continue
+        }
         if strings.Contains(part, ".") {
-            if i != parts.len() - 1 { return false }
+            if i != parts.len() - 1 {
+                return false
+            }
             let octets = strings.Split(part, ".")
-            if octets.len() != 4 { return false }
+            if octets.len() != 4 {
+                return false
+            }
             for octet in octets {
                 let value, err = decimal(octet)
-                if err != nil || value > 255 || octet.len() > 3 { return false }
-                if octet.len() > 1 && octet[0] == 48 { return false }
+                if err != nil || value > 255 || octet.len() > 3 {
+                    return false
+                }
+                if octet.len() > 1 && octet[0] == 48 {
+                    return false
+                }
             }
             groups += 2
         } else {
-            if part.len() > 4 { return false }
-            for var j = 0; j < part.len(); j += 1 { if !hexDigit(part[j]) { return false } }
+            if part.len() > 4 {
+                return false
+            }
+            for var j = 0; j < part.len(); j += 1 {
+                if !hexDigit(part[j]) {
+                    return false
+                }
+            }
             groups += 1
         }
     }
-    if compressed { return groups < 8 }
+    if compressed {
+        return groups < 8
+    }
     return groups == 8
 }
 
@@ -363,17 +548,27 @@ const lingerTime = 2 * time.Second
 const lingerChunk = 16384
 
 func lingerClose(conn []net.Conn, s Server) {
-    if conn.len() == 0 || conn[0].CloseWrite() != nil { return }
+    if conn.len() == 0 || conn[0].CloseWrite() != nil {
+        return
+    }
     let deadline = time.Now().Add(lingerTime)
     var buffer = Array<byte>{}
-    for buffer.len() < lingerChunk { buffer.push(0) }
+    for buffer.len() < lingerChunk {
+        buffer.push(0)
+    }
     var discarded = 0
     for discarded < lingerBytes && !s.canceled() && time.Now().Before(deadline) {
-        if conn[0].SetReadDeadline(pollDeadline(deadline, s.config.AcceptPollInterval)) != nil { return }
+        if conn[0].SetReadDeadline(pollDeadline(deadline, s.config.AcceptPollInterval)) != nil {
+            return
+        }
         let count, err = conn[0].Read(buffer[:])
         discarded += count
-        if err == error("net.Read: timed out") { continue }
-        if err != nil || count == 0 { return }
+        if err == error("net.Read: timed out") {
+            continue
+        }
+        if err != nil || count == 0 {
+            return
+        }
     }
 }
 
@@ -384,11 +579,15 @@ async func (s Server) connection(conn own net.Conn, accepted time.Instant) {
     var initial = true
     for !s.draining() {
         var deadline = accepted.Add(s.config.ReadHeaderTimeout)
-        if !initial { deadline = time.Now().Add(s.config.IdleTimeout) }
+        if !initial {
+            deadline = time.Now().Add(s.config.IdleTimeout)
+        }
         var handler Handler = automatic{status: 500, allow: ""}
         var r = newRequest(sockets[:], s, pending, deadline)
         let firstErr = r.beginHeaders(initial)
-        if firstErr != nil { return }
+        if firstErr != nil {
+            return
+        }
         let status, parseErr = r.parseHeaders()
         let writeDeadline = time.Now().Add(s.config.WriteTimeout)
         var w = newWriter(sockets[:], s, r.control, writeDeadline, r.method == "HEAD", r.close)
@@ -396,7 +595,9 @@ async func (s Server) connection(conn own net.Conn, accepted time.Instant) {
             w.close = true
             _ = w.WriteHeader(status)
             let refusedErr = w.finish()
-            if refusedErr == nil && status != 408 { lingerClose(sockets[:], s) }
+            if refusedErr == nil && status != 408 {
+                lingerClose(sockets[:], s)
+            }
             return
         }
         r.writeDeadline = writeDeadline
@@ -411,27 +612,41 @@ async func (s Server) connection(conn own net.Conn, accepted time.Instant) {
         handler = createdHandler
         r.params = params
         var handlerErr = factoryErr
-        if handlerErr == nil { handlerErr = handler.Handle(w, r) }
+        if handlerErr == nil {
+            handlerErr = handler.Handle(w, r)
+        }
         drop(requestGuard)
         let handlerFailed = handlerErr != nil
         if r.failure != nil || handlerFailed {
-            if w.committed { return }
+            if w.committed {
+                return
+            }
             var responseStatus = 500
-            if r.failure != nil { responseStatus = r.failureStatus }
-            w.control.withLock(func(c mut exchangeControl) { c.failure = nil })
+            if r.failure != nil {
+                responseStatus = r.failureStatus
+            }
+            w.control.withLock(func(c mut exchangeControl) {
+                c.failure = nil
+            })
             w.headers = NewHeader()
             w.close = true
             _ = w.WriteHeader(responseStatus)
         }
-        if !r.done { w.close = true }
+        if !r.done {
+            w.close = true
+        }
         let finalErr = w.finish()
         if finalErr != nil || w.close || r.close || !r.done || s.draining() {
             let unread = !r.done || r.position < r.buffer.len()
-            if finalErr == nil && unread && r.failureStatus != 408 { lingerClose(sockets[:], s) }
+            if finalErr == nil && unread && r.failureStatus != 408 {
+                lingerClose(sockets[:], s)
+            }
             return
         }
         pending = Array<byte>{}
-        for var i = r.position; i < r.buffer.len(); i += 1 { pending.push(r.buffer[i]) }
+        for var i = r.position; i < r.buffer.len(); i += 1 {
+            pending.push(r.buffer[i])
+        }
         initial = false
     }
 }

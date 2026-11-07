@@ -6,11 +6,11 @@ import "std/strings"
 const defaultSize = 4096
 
 type Reader struct {
-    source  io.Reader
-    chunk   Array<byte>
+    source io.Reader
+    chunk Array<byte>
     pending Array<byte>
-    start   int
-    err     error
+    start int
+    err error
 }
 
 func NewReader(source own io.Reader) Reader {
@@ -115,9 +115,9 @@ func (r mut Reader) ReadByte() (byte, error) {
 
 type Scanner struct {
     reader Reader
-    token  string
-    err    error
-    done   bool
+    token string
+    err error
+    done bool
 }
 
 func NewScanner(source own io.Reader) Scanner {
@@ -164,9 +164,9 @@ func (s Scanner) Err() error {
 }
 
 type Writer struct {
-    sink    io.Writer
+    sink io.Writer
     pending Array<byte>
-    err     error
+    err error
 }
 
 func NewWriter(sink own io.Writer) Writer {

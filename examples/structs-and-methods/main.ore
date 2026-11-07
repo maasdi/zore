@@ -6,7 +6,7 @@ type Point struct {
 }
 
 type Counter struct {
-    Name  string
+    Name string
     Count int
 }
 

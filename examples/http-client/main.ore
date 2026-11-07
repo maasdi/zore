@@ -6,11 +6,15 @@ import "std/errors"
 import "std/net/http"
 import "std/os"
 
-type User struct { Name string }
+type User struct {
+    Name string
+}
 
 func run() error {
     let args = os.Args()
-    if args.len() != 2 { return error("usage: http-client http://localhost:8080/users") }
+    if args.len() != 2 {
+        return error("usage: http-client http://localhost:8080/users")
+    }
     let response = http.Get(context.Background(), args[1])?
     println(response.StatusCode)
     let client = http.NewClient(http.DefaultClientConfig())?
@@ -21,7 +25,11 @@ func run() error {
     println(created.StatusCode)
     return nil
 }
+
 func main() {
     let err = run()
-    if err != nil { println(errors.Message(err)); os.Exit(1) }
+    if err != nil {
+        println(errors.Message(err));
+        os.Exit(1)
+    }
 }

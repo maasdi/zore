@@ -9,14 +9,14 @@ import "std/time"
 let errClosed = error("rolling: closed")
 
 type Config struct {
-    Path          string
-    MaxBytes      int
-    MaxBackups    int
-    BufferBytes   int
+    Path string
+    MaxBytes int
+    MaxBackups int
+    BufferBytes int
     FlushInterval time.Duration
-    Perm          int
-    Daily         bool
-    Local         bool
+    Perm int
+    Daily bool
+    Local bool
 }
 
 func DefaultConfig(path string) Config {
@@ -33,19 +33,19 @@ func DefaultConfig(path string) Config {
 }
 
 type state struct {
-    config  Config
-    files   Array<os.File>
-    size    int
+    config Config
+    files Array<os.File>
+    size int
     pending Array<byte>
-    err     error
-    closed  bool
-    day     int
+    err error
+    closed bool
+    day int
 }
 
 type Writer struct {
-    shared   Mutex<state>
-    stop     channel<bool>
-    done     channel<bool>
+    shared Mutex<state>
+    stop channel<bool>
+    done channel<bool>
     flushing bool
 }
 
@@ -87,10 +87,18 @@ func Open(config Config) (Writer, error) {
 }
 
 func check(config Config) error {
-    if config.Path == "" { return error("rolling.Open: empty path") }
-    if config.MaxBytes <= 0 { return error("rolling.Open: MaxBytes must be positive") }
-    if config.MaxBackups < 0 { return error("rolling.Open: MaxBackups must not be negative") }
-    if config.BufferBytes < 0 { return error("rolling.Open: BufferBytes must not be negative") }
+    if config.Path == "" {
+        return error("rolling.Open: empty path")
+    }
+    if config.MaxBytes <= 0 {
+        return error("rolling.Open: MaxBytes must be positive")
+    }
+    if config.MaxBackups < 0 {
+        return error("rolling.Open: MaxBackups must not be negative")
+    }
+    if config.BufferBytes < 0 {
+        return error("rolling.Open: BufferBytes must not be negative")
+    }
     if config.BufferBytes > 0 && config.FlushInterval <= 0 {
         return error("rolling.Open: FlushInterval must be positive when buffering")
     }
@@ -108,7 +116,9 @@ func (w Writer) Sink() Sink {
 
 func (w Writer) Flush() error {
     return w.shared.withLock(func(s mut state) error {
-        if s.closed && s.err == nil { return errClosed }
+        if s.closed && s.err == nil {
+            return errClosed
+        }
         flush(s)
         return s.err
     })
@@ -119,7 +129,9 @@ func (w own Writer) Close() error {
 }
 
 func (w Writer) finish() error {
-    let open = w.shared.withLock(func(s mut state) bool { return !s.closed })
+    let open = w.shared.withLock(func(s mut state) bool {
+        return !s.closed
+    })
     if !open {
         return nil
     }
@@ -141,24 +153,34 @@ func (w Writer) finish() error {
 
 func (sink Sink) Write(data []byte) (int, error) {
     return sink.shared.withLock(func(s mut state) (int, error) {
-        if s.err != nil { return 0, s.err }
-        if s.closed { return 0, errClosed }
+        if s.err != nil {
+            return 0, s.err
+        }
+        if s.closed {
+            return 0, errClosed
+        }
         if s.config.Daily {
             let current = today(s.config)
             if s.size > 0 && current != s.day {
                 roll(s)
-                if s.err != nil { return 0, s.err }
+                if s.err != nil {
+                    return 0, s.err
+                }
             }
             s.day = current
         }
         if s.size > 0 && s.size + data.len() > s.config.MaxBytes {
             roll(s)
-            if s.err != nil { return 0, s.err }
+            if s.err != nil {
+                return 0, s.err
+            }
         }
         if s.config.BufferBytes == 0 {
             let count, err = s.files[0].Write(data)
             s.size += count
-            if err != nil { s.err = err }
+            if err != nil {
+                s.err = err
+            }
             return count, err
         }
         for b in data {
@@ -181,7 +203,9 @@ async func flushEvery(shared Mutex<state>, interval time.Duration, stop channel<
             }
             case time.After(interval).receive() {
                 shared.withLock(func(s mut state) {
-                    if !s.closed { flush(s) }
+                    if !s.closed {
+                        flush(s)
+                    }
                 })
             }
         }
@@ -214,9 +238,13 @@ func closeFile(s mut state) error {
 
 func roll(s mut state) {
     flush(s)
-    if s.err != nil { return }
+    if s.err != nil {
+        return
+    }
     s.err = closeFile(s)
-    if s.err != nil { return }
+    if s.err != nil {
+        return
+    }
     let path = s.config.Path
     if s.config.MaxBackups == 0 {
         s.err = os.Remove(path)
@@ -225,9 +253,14 @@ func roll(s mut state) {
     } else {
         s.err = shift(path, s.config.MaxBackups)
     }
-    if s.err != nil { return }
+    if s.err != nil {
+        return
+    }
     let file, err = os.Append(path, s.config.Perm)
-    if err != nil { s.err = err; return }
+    if err != nil {
+        s.err = err;
+        return
+    }
     s.files.push(file)
     s.size = 0
 }
@@ -236,13 +269,17 @@ func shift(path string, backups int) error {
     let oldest = backup(path, backups)
     if exists(oldest) {
         let err = os.Remove(oldest)
-        if err != nil { return err }
+        if err != nil {
+            return err
+        }
     }
     for var i = backups - 1; i >= 1; i -= 1 {
         let from = backup(path, i)
         if exists(from) {
             let err = os.Rename(from, backup(path, i + 1))
-            if err != nil { return err }
+            if err != nil {
+                return err
+            }
         }
     }
     return os.Rename(path, backup(path, 1))
@@ -267,7 +304,9 @@ func dayOf(config Config, seconds int) int {
         shifted += time.LocalOffset(seconds) / 60 * 60
     }
     var day = shifted / 86400
-    if shifted % 86400 < 0 { day -= 1 }
+    if shifted % 86400 < 0 {
+        day -= 1
+    }
     return day
 }
 
@@ -283,7 +322,9 @@ func shiftDated(path string, day int, backups int) error {
         target = dated + "." + strconv.Itoa(n)
     }
     let err = os.Rename(path, target)
-    if err != nil { return err }
+    if err != nil {
+        return err
+    }
     return prune(path, backups)
 }
 
@@ -295,7 +336,9 @@ func prune(path string, backups int) error {
         let name = entry.Name()
         if !entry.IsDir() && name.len() > prefix.len() && name[:prefix.len()] == prefix {
             let key = datedKey(name[prefix.len():])
-            if key != "" { keys.push(key) }
+            if key != "" {
+                keys.push(key)
+            }
         }
     }
     sort.Strings(keys[:])
@@ -317,7 +360,9 @@ func datedKey(suffix string) string {
         return ""
     }
     var padded = count
-    for padded.len() < 9 { padded = "0" + padded }
+    for padded.len() < 9 {
+        padded = "0" + padded
+    }
     return suffix[:10] + "." + padded
 }
 
@@ -335,7 +380,9 @@ func date(text string) bool {
 
 func digits(text string) bool {
     for var i = 0; i < text.len(); i += 1 {
-        if text[i] < 48 || text[i] > 57 { return false }
+        if text[i] < 48 || text[i] > 57 {
+            return false
+        }
     }
     return true
 }

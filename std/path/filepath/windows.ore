@@ -25,11 +25,17 @@ func volumeLength(p string) int {
         return 0
     }
     let serverEnd = strings.Index(p[2:], "/")
-    if serverEnd <= 0 { return 0 }
+    if serverEnd <= 0 {
+        return 0
+    }
     let shareStart = serverEnd + 3
-    if shareStart >= p.len() || p[shareStart] == 47 { return 0 }
+    if shareStart >= p.len() || p[shareStart] == 47 {
+        return 0
+    }
     let shareEnd = strings.Index(p[shareStart:], "/")
-    if shareEnd < 0 { return p.len() }
+    if shareEnd < 0 {
+        return p.len()
+    }
     return shareStart + shareEnd
 }
 
@@ -42,26 +48,34 @@ func Clean(p string) string {
     if unc && rest.len() == 0 {
         return strings.ReplaceAll(prefix, "/", "\\")
     }
-    if unc && !strings.HasPrefix(rest, "/") { rest = "/" + rest }
+    if unc && !strings.HasPrefix(rest, "/") {
+        rest = "/" + rest
+    }
     var cleaned = path.Clean(rest)
     if unc && cleaned == "/" {
         return strings.ReplaceAll(prefix, "/", "\\")
     }
-    if volume == 0 && volumeLength(cleaned) > 0 { cleaned = "./" + cleaned }
+    if volume == 0 && volumeLength(cleaned) > 0 {
+        cleaned = "./" + cleaned
+    }
     return strings.ReplaceAll(prefix + cleaned, "/", "\\")
 }
 
 func Join(elems []string) string {
     var joined = ""
     for elem in elems {
-        if elem.len() == 0 { continue }
+        if elem.len() == 0 {
+            continue
+        }
         let driveOnly = joined.len() == 2 && volumeLength(joined) == 2
         if joined.len() > 0 && !driveOnly {
             joined += "/"
         }
         joined += elem
     }
-    if joined.len() == 0 { return "" }
+    if joined.len() == 0 {
+        return ""
+    }
     return Clean(joined)
 }
 
@@ -73,12 +87,18 @@ func Split(p string) (string, string) {
 }
 
 func Base(p string) string {
-    if p.len() == 0 { return "." }
+    if p.len() == 0 {
+        return "."
+    }
     let text = normalized(p)
     let volume = volumeLength(text)
     var end = text.len()
-    for end > volume && text[end - 1] == 47 { end -= 1 }
-    if end == volume { return "\\" }
+    for end > volume && text[end - 1] == 47 {
+        end -= 1
+    }
+    if end == volume {
+        return "\\"
+    }
     let rest = text[volume:end]
     return rest[strings.LastIndex(rest, "/") + 1:]
 }
@@ -96,7 +116,9 @@ func Ext(p string) string {
 func IsAbs(p string) bool {
     let text = normalized(p)
     let volume = volumeLength(text)
-    if volume > 2 { return true }
+    if volume > 2 {
+        return true
+    }
     return volume == 2 && text.len() > volume && text[volume] == 47
 }
 

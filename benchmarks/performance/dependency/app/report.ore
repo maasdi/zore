@@ -4,6 +4,8 @@ import "profilemodel"
 
 func report(id int) {
     let data, err = profilemodel.Encode(profilemodel.New(id))
-    if err != nil { panic("encode") }
+    if err != nil {
+        panic("encode")
+    }
     println(data.len())
 }

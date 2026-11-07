@@ -55,6 +55,9 @@ jobs:
           ZORE_NATIVE_ADAPTERS: ${{ github.workspace }}/packages/tls/native/registration.rs
       - name: Build
         run: cargo build --locked
+      - name: Check Zore formatting
+        if: runner.os == 'Linux'
+        run: target/debug/zore fmt --check .
       - name: Documentation
         run: cargo doc --no-deps --locked
         env:

@@ -8,18 +8,18 @@ const SeverityError = 1
 const SeverityWarning = 2
 
 type Label struct {
-    File    source.File
-    Start   int
-    End     int
+    File source.File
+    Start int
+    End int
     Message string
 }
 
 type Diagnostic struct {
     Severity int
-    Message  string
-    Primary  Label
-    Related  Array<Label>
-    Notes    Array<string>
+    Message string
+    Primary Label
+    Related Array<Label>
+    Notes Array<string>
 }
 
 func Error(message string, file source.File, start int, end int) Diagnostic {
@@ -91,7 +91,7 @@ func renderLabel(label Label, arrow string) (string, bool) {
     let lineNumber = strconv.Itoa(startLine)
     let gutter = spaces(lineNumber.len())
     var output = " " + arrow + " " + label.File.Path() + ":" + lineNumber + ":" +
-        strconv.Itoa(startColumn) + "\n"
+    strconv.Itoa(startColumn) + "\n"
     output += gutter + " |\n"
     output += lineNumber + " | " + display.Text + "\n"
     output += gutter + " | " + spaces(markerStart) + strings.Repeat("^", markerEnd - markerStart)
@@ -106,7 +106,7 @@ func renderLabel(label Label, arrow string) (string, bool) {
 }
 
 type DisplayLine struct {
-    Text       string
+    Text string
     Boundaries Array<int>
 }
 

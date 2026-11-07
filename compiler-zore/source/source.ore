@@ -10,11 +10,18 @@ func NewFile(path string, text string) File {
     return File{valid: true, path: path, text: text}
 }
 
-func (f File) Path() string { return f.path }
-func (f File) Text() string { return f.text }
+func (f File) Path() string {
+    return f.path
+}
+
+func (f File) Text() string {
+    return f.text
+}
 
 func (f File) LineCount() int {
-    if !f.valid { return 0 }
+    if !f.valid {
+        return 0
+    }
     var count = 1
     for var i = 0; i < f.text.len(); i += 1 {
         if f.text[i] == 10 {
@@ -36,7 +43,9 @@ func (f File) Contains(start int, end int) bool {
 }
 
 func (f File) Line(zeroBased int) (string, bool) {
-    if !f.valid || zeroBased < 0 { return "", false }
+    if !f.valid || zeroBased < 0 {
+        return "", false
+    }
     let text = f.text
     var start = 0
     var line = 0

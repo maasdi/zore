@@ -5,8 +5,8 @@ const limit = 1 << 10
 const greeting = "Hello, " + "Zore"
 
 func main() {
-    let answer = 42          // immutable binding, inferred as int
-    var counter uint8 = 250  // mutable binding with an explicit type
+    let answer = 42 // immutable binding, inferred as int
+    var counter uint8 = 250 // mutable binding with an explicit type
     counter += 5
 
     let small int16 = limit / 4

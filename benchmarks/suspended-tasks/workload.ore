@@ -7,15 +7,21 @@ import "std/strconv"
 async func wait(ready channel<bool>, release channel<bool>) int {
     ready.send(true)
     let _, ok = release.receive()
-    if !ok { return 0 }
+    if !ok {
+        return 0
+    }
     return 1
 }
 
 func main() {
     var input = bufio.NewScanner(os.Stdin())
-    if !input.Scan() { return }
+    if !input.Scan() {
+        return
+    }
     let count, parseError = strconv.Atoi(input.Text())
-    if parseError != nil || count < 1 { return }
+    if parseError != nil || count < 1 {
+        return
+    }
 
     let ready = channel<bool>()
     let release = channel<bool>()
@@ -28,7 +34,9 @@ func main() {
     }
     println("READY " + strconv.Itoa(count))
 
-    if !input.Scan() || input.Text() != "release" { return }
+    if !input.Scan() || input.Text() != "release" {
+        return
+    }
     for var i = 0; i < count; i += 1 {
         release.send(true)
     }
@@ -36,7 +44,9 @@ func main() {
     var completed = 0
     for tasks.len() > 0 {
         let found, task = tasks.pop()
-        if found { completed += task.wait() }
+        if found {
+            completed += task.wait()
+        }
     }
     println("DONE " + strconv.Itoa(completed))
 }

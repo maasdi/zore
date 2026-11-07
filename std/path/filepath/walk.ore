@@ -3,19 +3,19 @@ package filepath
 import "std/os"
 
 type walkItem struct {
-    path    string
-    dir     bool
+    path string
+    dir bool
     symlink bool
 }
 
 type Walker struct {
-    root     string
-    started  bool
-    pending  Array<walkItem>
-    path     string
-    dir      bool
-    symlink  bool
-    err      error
+    root string
+    started bool
+    pending Array<walkItem>
+    path string
+    dir bool
+    symlink bool
+    err error
     children int
 }
 

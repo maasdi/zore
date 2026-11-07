@@ -17,38 +17,38 @@ const itemFuncTypeParam = 6
 
 // LexProblems are the lexer's errors; Diagnostics are the parser's, in reporting order.
 type Parsed struct {
-    Tree        ast.Tree
-    Root        int
+    Tree ast.Tree
+    Root int
     LexProblems Array<lexer.Problem>
     Diagnostics Array<diagnostic.Diagnostic>
 }
 
 // A token the parser makes, such as half of a split `>>`, waits in `pending` ahead of `tokens[pos]`.
 type Parser struct {
-    file            source.File
-    tokens          Array<lexer.Token>
-    pos             int
-    pending         lexer.Token
-    hasPending      bool
-    lastTokenEnd    int
-    openDelimiters  int
-    structLiterals  bool
+    file source.File
+    tokens Array<lexer.Token>
+    pos int
+    pending lexer.Token
+    hasPending bool
+    lastTokenEnd int
+    openDelimiters int
+    structLiterals bool
     nativeFunctions bool
-    diagnostics     Array<diagnostic.Diagnostic>
-    tree            ast.Tree
-    precedences     Array<int>
-    assignments     Array<bool>
-    nesting         Array<int>
+    diagnostics Array<diagnostic.Diagnostic>
+    tree ast.Tree
+    precedences Array<int>
+    assignments Array<bool>
+    nesting Array<int>
 }
 
 type parserState struct {
-    pos            int
-    pending        lexer.Token
-    hasPending     bool
-    lastTokenEnd   int
+    pos int
+    pending lexer.Token
+    hasPending bool
+    lastTokenEnd int
     openDelimiters int
-    diagnostics    int
-    nodes          int
+    diagnostics int
+    nodes int
 }
 
 // Parse expects valid UTF-8; with `native`, function declarations may omit their bodies.
@@ -107,7 +107,7 @@ func assignmentTable() Array<bool> {
     for var i = 0; i < lexer.PunctCount; i += 1 {
         let op = lexer.PunctSpelling(i)
         table.push(op == "=" || op == "+=" || op == "-=" || op == "*=" || op == "/=" || op == "%=" ||
-            op == "&=" || op == "|=" || op == "^=" || op == "<<=" || op == ">>=")
+        op == "&=" || op == "|=" || op == "^=" || op == "<<=" || op == ">>=")
     }
     return table
 }
@@ -251,7 +251,7 @@ func (p Parser) atExplicitSemicolon() bool {
 
 func (p Parser) atNewlineBefore(kind int, spelling string) bool {
     return p.kind() == lexer.KindSemicolon && p.detail() == lexer.SeparatorNewline &&
-        p.matchesAt(1, kind, spelling)
+    p.matchesAt(1, kind, spelling)
 }
 
 func (p Parser) atNewlineBeforePunct(punct string) bool {
