@@ -1,7 +1,7 @@
 package main
 
 type Report struct {
-    Name  string
+    Name string
     Total int
 }
 

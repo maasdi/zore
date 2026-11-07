@@ -1,12 +1,12 @@
 package sync
 
 type counter struct {
-    active  int
+    active int
     waiting int
 }
 
 type WaitGroup struct {
-    state   Mutex<counter>
+    state Mutex<counter>
     release channel<bool>
 }
 

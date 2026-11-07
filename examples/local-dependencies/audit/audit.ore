@@ -2,4 +2,6 @@ package audit
 
 import "shared"
 
-func Label(person shared.Person) string { return "person:" + person.Name }
+func Label(person shared.Person) string {
+    return "person:" + person.Name
+}

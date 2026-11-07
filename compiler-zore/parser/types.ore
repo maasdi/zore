@@ -124,12 +124,12 @@ func (p Parser) atTypeArgumentsBeforeBrace(ahead int) bool {
         } else if p.atPunctAt(index, ">>") {
             depth = clampedDepth(depth - 2)
         } else if kind == lexer.KindIdent || kind == lexer.KindInt || p.atPunctAt(index, ",") ||
-            p.atPunctAt(index, ".") || p.atPunctAt(index, "[") || p.atPunctAt(index, "]") ||
-            p.atPunctAt(index, "(") || p.atPunctAt(index, ")") ||
-            (kind == lexer.KindSemicolon && p.tokenAt(index).Detail == lexer.SeparatorExplicit) ||
-            p.atKeywordAt(index, "map") || p.atKeywordAt(index, "channel") ||
-            p.atKeywordAt(index, "func") || p.atKeywordAt(index, "mut") ||
-            p.atKeywordAt(index, "async") {
+        p.atPunctAt(index, ".") || p.atPunctAt(index, "[") || p.atPunctAt(index, "]") ||
+        p.atPunctAt(index, "(") || p.atPunctAt(index, ")") ||
+        (kind == lexer.KindSemicolon && p.tokenAt(index).Detail == lexer.SeparatorExplicit) ||
+        p.atKeywordAt(index, "map") || p.atKeywordAt(index, "channel") ||
+        p.atKeywordAt(index, "func") || p.atKeywordAt(index, "mut") ||
+        p.atKeywordAt(index, "async") {
         } else {
             return false
         }
@@ -281,8 +281,8 @@ func (p mut Parser) funcTypeParam() int {
     if p.atKind(lexer.KindIdent) {
         let next = p.kindAt(1)
         if next == lexer.KindIdent || p.atPunctAt(1, "[") || p.atKeywordAt(1, "mut") ||
-            p.atKeywordAt(1, "own") || p.atKeywordAt(1, "func") || p.atKeywordAt(1, "map") ||
-            p.atKeywordAt(1, "async") {
+        p.atKeywordAt(1, "own") || p.atKeywordAt(1, "func") || p.atKeywordAt(1, "map") ||
+        p.atKeywordAt(1, "async") {
             return p.errorAtCurrent(
                 "function type parameters have no names; write only the type, as in `func(int)`",
             )
@@ -300,8 +300,8 @@ func (p mut Parser) funcTypeParam() int {
 
 func (p Parser) atTypeStart() bool {
     return p.atKind(lexer.KindIdent) || p.at("[") || p.at("(") || p.atKeyword("map") ||
-        p.atKeyword("func") || p.atKeyword("channel") || p.atKeyword("mut") ||
-        (p.atKeyword("async") && p.atKeywordAt(1, "func"))
+    p.atKeyword("func") || p.atKeyword("channel") || p.atKeyword("mut") ||
+    (p.atKeyword("async") && p.atKeywordAt(1, "func"))
 }
 
 func (p mut Parser) mapType() int {

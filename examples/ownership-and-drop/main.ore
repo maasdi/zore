@@ -11,7 +11,7 @@ func (f mut File) drop() {
 }
 
 type Pair struct {
-    First  File
+    First File
     Second File
 }
 
@@ -21,13 +21,13 @@ func consume(file own File) {
 
 func main() {
     let config = File{Name: "config"}
-    consume(config)                 // ownership moves; `config` is now unusable
+    consume(config) // ownership moves; `config` is now unusable
 
     let log = File{Name: "log"}
-    drop(log)                       // explicit cleanup
+    drop(log) // explicit cleanup
 
     var pair = Pair{First: File{Name: "a"}, Second: File{Name: "b"}}
-    let taken = pair.First          // partial move of one field
-    pair.First = File{Name: "c"}    // reinitialize it; `pair` is whole again
+    let taken = pair.First // partial move of one field
+    pair.First = File{Name: "c"} // reinitialize it; `pair` is whole again
     println("end of main")
-}                                   // cleanup runs in reverse order
+} // cleanup runs in reverse order

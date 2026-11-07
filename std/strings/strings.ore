@@ -1,26 +1,47 @@
 package strings
 
 func Contains(s string, sub string) bool
+
 func HasPrefix(s string, prefix string) bool
+
 func HasSuffix(s string, suffix string) bool
+
 func Index(s string, sub string) int
+
 func LastIndex(s string, sub string) int
+
 func Count(s string, sub string) int
+
 func ToUpper(s string) string
+
 func ToLower(s string) string
+
 func EqualFold(s string, t string) bool
+
 func TrimSpace(s string) string
+
 func Trim(s string, cutset string) string
+
 func TrimLeft(s string, cutset string) string
+
 func TrimRight(s string, cutset string) string
+
 func Repeat(s string, count int) string
+
 func Replace(s string, old string, new string, n int) string
+
 func ReplaceAll(s string, old string, new string) string
+
 func Split(s string, sep string) Array<string>
+
 func SplitN(s string, sep string, n int) Array<string>
+
 func Fields(s string) Array<string>
+
 func Join(parts []string, sep string) string
+
 func Bytes(s string) Array<byte>
+
 func FromBytes(data []byte) (string, error)
 
 func IndexByte(s string, c byte) int {

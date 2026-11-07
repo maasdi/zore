@@ -13,25 +13,33 @@ const LevelWarn Level = 2
 const LevelError Level = 3
 
 func (l Level) String() string {
-    if l == LevelDebug { return "DEBUG" }
-    if l == LevelInfo { return "INFO" }
-    if l == LevelWarn { return "WARN" }
-    if l == LevelError { return "ERROR" }
+    if l == LevelDebug {
+        return "DEBUG"
+    }
+    if l == LevelInfo {
+        return "INFO"
+    }
+    if l == LevelWarn {
+        return "WARN"
+    }
+    if l == LevelError {
+        return "ERROR"
+    }
     return fmt.Sprintf("LEVEL(%d)", int(l))
 }
 
 type output struct {
     sink io.Writer
-    err  error
+    err error
 }
 
 type Logger struct {
-    out     Mutex<output>
-    level   Level
+    out Mutex<output>
+    level Level
     context string
     stamped bool
-    local   bool
-    open    bool
+    local bool
+    open bool
 }
 
 func New(sink own io.Writer, level Level) Logger {
@@ -113,7 +121,9 @@ func (l Logger) emit(level Level, template string, values own Array<string>) {
             i = end + 1
         } else {
             var end = i + 1
-            for end < template.len() && template[end] != 123 && template[end] != 125 { end += 1 }
+            for end < template.len() && template[end] != 123 && template[end] != 125 {
+                end += 1
+            }
             message.WriteString(template[i:end])
             i = end
         }
@@ -121,7 +131,9 @@ func (l Logger) emit(level Level, template string, values own Array<string>) {
     var record = strings.NewBuilder()
     if l.stamped {
         var now = time.UTC()
-        if l.local { now = now.Local() }
+        if l.local {
+            now = now.Local()
+        }
         record.WriteString("time=" + now.RFC3339() + " ")
     }
     record.WriteString("level=" + text(level.String()) + " msg=" + text(message.String()))
@@ -139,7 +151,9 @@ func (l Logger) emit(level Level, template string, values own Array<string>) {
             let count, err = out.sink.Write(data[offset:])
             if count < 0 || count > size - offset {
                 out.err = err
-                if err == nil { out.err = error("log: invalid write count") }
+                if err == nil {
+                    out.err = error("log: invalid write count")
+                }
                 return
             }
             offset += count
@@ -157,8 +171,12 @@ func (l Logger) emit(level Level, template string, values own Array<string>) {
 
 func hole(template string, start int) int {
     for var i = start + 1; i < template.len(); i += 1 {
-        if template[i] == 125 { return i }
-        if template[i] == 123 { return 0 }
+        if template[i] == 125 {
+            return i
+        }
+        if template[i] == 123 {
+            return 0
+        }
     }
     return 0
 }
@@ -179,7 +197,9 @@ func plain(c byte) bool {
 func text(value string) string {
     var clean = value.len() > 0
     for var i = 0; i < value.len(); i += 1 {
-        if !plain(value[i]) { clean = false }
+        if !plain(value[i]) {
+            clean = false
+        }
     }
     if clean {
         return value

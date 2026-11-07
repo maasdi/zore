@@ -5,7 +5,11 @@ import "audit"
 
 func TestSharedPerson() error {
     let person = greeting.NewPerson("Ada")
-    if greeting.Message(person) != "Hello, Ada!" { return error("unexpected greeting") }
-    if audit.Label(person) != "person:Ada" { return error("unexpected audit label") }
+    if greeting.Message(person) != "Hello, Ada!" {
+        return error("unexpected greeting")
+    }
+    if audit.Label(person) != "person:Ada" {
+        return error("unexpected audit label")
+    }
     return nil
 }

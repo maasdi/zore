@@ -24,6 +24,6 @@ func main() {
     println(total(values))
 
     var lamps = [Lamp; 2]{Lamp{Id: 1}, Lamp{Id: 2}}
-    lamps[0] = Lamp{Id: 3}          // the replaced lamp is dropped
+    lamps[0] = Lamp{Id: 3} // the replaced lamp is dropped
     println(0)
-}                                   // remaining lamps drop in reverse order
+} // remaining lamps drop in reverse order

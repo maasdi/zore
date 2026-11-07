@@ -2,18 +2,18 @@ package lexer
 
 // Offsets are relative to the start of the literal.
 type NumberResult struct {
-    Kind  int
-    Base  int
-    Code  string
+    Kind int
+    Base int
+    Code string
     Start int
-    End   int
+    End int
 }
 
 type DigitScan struct {
-    Next  int
-    Code  string
+    Next int
+    Code string
     Start int
-    End   int
+    End int
 }
 
 func validateNumber(text string) NumberResult {

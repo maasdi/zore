@@ -26,7 +26,11 @@ func example() error {
     let patch = json.Parse(patchBytes[:])?
     if patch.Has("email") {
         let email = patch.Get("email")
-        if email.IsNull() { user.Email.Set = false } else { user.Email = json.Some(email.String()?) }
+        if email.IsNull() {
+            user.Email.Set = false
+        } else {
+            user.Email = json.Some(email.String()?)
+        }
     }
     let updated = json.MarshalIndent(user, json.SnakeCase, "  ")?
     println(strings.FromBytes(updated[:])?)
@@ -38,5 +42,7 @@ func example() error {
 
 func main() {
     let err = example()
-    if err != nil { println(errors.Message(err)) }
+    if err != nil {
+        println(errors.Message(err))
+    }
 }

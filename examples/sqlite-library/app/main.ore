@@ -15,11 +15,15 @@ func persist() error {
         return nil
     })?
     var rows = db.Prepare("select body from notes order by rowid desc limit 1")?
-    if rows.Step()? { println(rows.Text(0)?) }
+    if rows.Step()? {
+        println(rows.Text(0)?)
+    }
     return nil
 }
 
 func main() {
     let err = persist()
-    if err != nil { panic("SQLite persistence failed") }
+    if err != nil {
+        panic("SQLite persistence failed")
+    }
 }

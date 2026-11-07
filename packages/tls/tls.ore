@@ -384,8 +384,12 @@ func (c Conn) waitDeadline(writing bool) (time.Instant, bool) {
 
 func (c Conn) armSource(writing bool, sourceWrite bool) error {
     let deadline, set = c.waitDeadline(writing)
-    if !set { return c.source.ClearDeadline() }
-    if sourceWrite { return c.source.SetWriteDeadline(deadline) }
+    if !set {
+        return c.source.ClearDeadline()
+    }
+    if sourceWrite {
+        return c.source.SetWriteDeadline(deadline)
+    }
     return c.source.SetReadDeadline(deadline)
 }
 

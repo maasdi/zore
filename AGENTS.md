@@ -57,7 +57,8 @@
   semantic behavior with rejection cases where relevant. See `tests/README.md`.
 - Run `cargo fmt --all -- --check`,
   `cargo clippy --locked --all-targets -- -D warnings`,
-  `cargo build --locked`, and `cargo test --locked --all-targets`.
+  `cargo build --locked`, `target/debug/zore fmt --check .`, and
+  `cargo test --locked --all-targets`.
 - Track `Cargo.lock`. Explain new dependencies and keep the frontend usable
   without LLVM. Do not introduce a runtime/backend dependency for convenience.
 - Report what changed, what was verified, and any unresolved blockers. Never

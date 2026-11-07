@@ -10,28 +10,48 @@ func TestParametersAndOwnedRows() error {
     var query = db.Prepare("select ?, ?, ?, ?, ?, ?")?
     query.BindNull(1)?
     query.BindInt(2, -9223372036854775807)?
-    if query.BindFloat(3, math.NaN()) == nil { panic("NaN was silently accepted") }
+    if query.BindFloat(3, math.NaN()) == nil {
+        panic("NaN was silently accepted")
+    }
     query.BindFloat(3, 1.25)?
     query.BindText(4, "hello\u0000world")?
     var binary = Array<uint8>{0, 255, 128, 1}
     query.BindBytes(5, binary[:])?
     query.BindBytes(6, Array<uint8>{}[:])?
     binary[1] = 2
-    if !query.Step()? { panic("missing row") }
-    if query.ColumnCount()? != 6 || query.ColumnType(0)? != Null { panic("column metadata") }
-    if query.Int(1)? != -9223372036854775807 || query.Float(2)? != 1.25 { panic("numeric binding") }
+    if !query.Step()? {
+        panic("missing row")
+    }
+    if query.ColumnCount()? != 6 || query.ColumnType(0)? != Null {
+        panic("column metadata")
+    }
+    if query.Int(1)? != -9223372036854775807 || query.Float(2)? != 1.25 {
+        panic("numeric binding")
+    }
     let text = query.Text(3)?
     let blob = query.Bytes(4)?
     let empty = query.Bytes(5)?
-    if empty.len() != 0 || blob.len() != 4 || blob[1] != 255 { panic("binary binding") }
-    if text != "hello\u0000world" { panic("text binding") }
-    if query.Step()? { panic("unexpected row") }
+    if empty.len() != 0 || blob.len() != 4 || blob[1] != 255 {
+        panic("binary binding")
+    }
+    if text != "hello\u0000world" {
+        panic("text binding")
+    }
+    if query.Step()? {
+        panic("unexpected row")
+    }
     query.Reset()?
-    if blob[1] != 255 || text != "hello\u0000world" { panic("borrowed result escaped") }
+    if blob[1] != 255 || text != "hello\u0000world" {
+        panic("borrowed result escaped")
+    }
     query.BindInt(2, 42)?
     query.BindFloat(3, math.Inf(1))?
-    if !query.Step()? || query.Int(1)? != 42 || query.Text(3)? != "hello\u0000world" { panic("reset did not keep bindings") }
-    if !math.IsInf(query.Float(2)?, 1) { panic("real infinity lost") }
+    if !query.Step()? || query.Int(1)? != 42 || query.Text(3)? != "hello\u0000world" {
+        panic("reset did not keep bindings")
+    }
+    if !math.IsInf(query.Float(2)?, 1) {
+        panic("real infinity lost")
+    }
     return nil
 }
 
@@ -41,14 +61,22 @@ func TestConnectionLeaseAndClosedHandles() error {
     db.Close()
     db.Close()
     let unused, closed = db.Prepare("select 1")
-    if closed == nil { panic("closed database accepted") }
-    if !query.Step()? || query.Int(0)? != 7 { panic("connection lease lost") }
+    if closed == nil {
+        panic("closed database accepted")
+    }
+    if !query.Step()? || query.Int(0)? != 7 {
+        panic("connection lease lost")
+    }
     query.Close()?
     query.Close()?
     let row, failure = query.Step()
-    if failure == nil { panic("closed statement accepted") }
+    if failure == nil {
+        panic("closed statement accepted")
+    }
     let value, invalid = nativeColumn(-1, 0, Integer)
-    if invalid == nil { panic("invalid native token accepted") }
+    if invalid == nil {
+        panic("invalid native token accepted")
+    }
     return nil
 }
 
@@ -83,23 +111,31 @@ func TestTransactions() error {
     executeSQL(db, "create table records(value integer)")?
     var tx = db.Begin()?
     let unused, moved = db.Prepare("select 1")
-    if moved == nil { panic("database token survived Begin") }
+    if moved == nil {
+        panic("database token survived Begin")
+    }
     {
         var insert = tx.Prepare("insert into records values (?)")?
         insert.BindInt(1, 1)?
         insert.Step()?
     }
     var committed = tx.Commit()?
-    if countRows(committed)? != 1 { panic("commit lost row") }
+    if countRows(committed)? != 1 {
+        panic("commit lost row")
+    }
     let again, completed = tx.Rollback()
-    if completed == nil { panic("completed transaction remained usable") }
+    if completed == nil {
+        panic("completed transaction remained usable")
+    }
     var rollback = committed.Begin()?
     {
         var insert = rollback.Prepare("insert into records values (2)")?
         insert.Step()?
     }
     let reverted = rollback.Rollback()?
-    if countRows(reverted)? != 1 { panic("rollback retained row") }
+    if countRows(reverted)? != 1 {
+        panic("rollback retained row")
+    }
     return nil
 }
 
@@ -109,44 +145,70 @@ func TestTransactionAbandonmentInvalidatesEscapedStatement() error {
     let statement = nativePrepare(db, "select 1")?
     nativeDropDatabase(db, true)
     let row, failure = nativeStep(statement)
-    if failure == nil { panic("abandoned transaction remained usable") }
+    if failure == nil {
+        panic("abandoned transaction remained usable")
+    }
     nativeFinalize(statement)?
     return nil
 }
 
 func TestInvalidQueriesAndPhases() error {
     let invalidDatabase, invalidPath = Open("bad\u0000path")
-    if invalidPath == nil { panic("NUL path accepted") }
+    if invalidPath == nil {
+        panic("NUL path accepted")
+    }
     let unopened, missingPath = Open(".sqlite-missing-" + strconv.Itoa(time.UTC().Nanosecond()) + "/data.db")
-    if missingPath == nil { panic("missing parent directory accepted") }
+    if missingPath == nil {
+        panic("missing parent directory accepted")
+    }
     let db = Open(":memory:")?
     for sql in Array<string>{"", " ", "select 1; select 2", "select 1\u0000", "begin", "savepoint x", "not SQL"} {
         let statement, failure = db.Prepare(sql)
-        if failure == nil { panic("invalid SQL accepted") }
+        if failure == nil {
+            panic("invalid SQL accepted")
+        }
     }
     var query = db.Prepare("select ?")?
     let before, missing = query.Int(0)
-    if missing == nil { panic("read before step accepted") }
-    if query.BindInt(0, 1) == nil || query.BindInt(2, 1) == nil { panic("bad parameter accepted") }
+    if missing == nil {
+        panic("read before step accepted")
+    }
+    if query.BindInt(0, 1) == nil || query.BindInt(2, 1) == nil {
+        panic("bad parameter accepted")
+    }
     query.BindText(1, "value")?
     query.Step()?
     let value, wrongType = query.Int(0)
     let index, wrongIndex = query.ColumnType(1)
-    if wrongType == nil { panic("row type checks bypassed") }
-    if wrongIndex == nil { panic("row bounds checks bypassed") }
-    if query.BindInt(1, 3) == nil { panic("row phase checks bypassed") }
+    if wrongType == nil {
+        panic("row type checks bypassed")
+    }
+    if wrongIndex == nil {
+        panic("row bounds checks bypassed")
+    }
+    if query.BindInt(1, 3) == nil {
+        panic("row phase checks bypassed")
+    }
     query.Step()?
     let row, done = query.Step()
-    if done == nil { panic("completed query restarted") }
-    if db.SetBusyTimeout(-1) == nil || db.SetBusyTimeout(60001) == nil { panic("bad timeout accepted") }
+    if done == nil {
+        panic("completed query restarted")
+    }
+    if db.SetBusyTimeout(-1) == nil || db.SetBusyTimeout(60001) == nil {
+        panic("bad timeout accepted")
+    }
     executeSQL(db, "create table unique_values(value integer unique)")?
     executeSQL(db, "insert into unique_values values (1)")?
     var duplicate = db.Prepare("insert into unique_values values (1)")?
     let ignored, constraint = duplicate.Step()
-    if constraint == nil { panic("constraint failure lost") }
+    if constraint == nil {
+        panic("constraint failure lost")
+    }
     duplicate.Reset()?
     let retried, repeated = duplicate.Step()
-    if repeated == nil { panic("retried constraint failure lost") }
+    if repeated == nil {
+        panic("retried constraint failure lost")
+    }
     duplicate.Close()?
     duplicate.Close()?
 
@@ -158,7 +220,9 @@ async func asyncQuery() error {
     var query = db.Prepare("select ?")?
     query.BindText(1, "async")?
     time.Sleep(time.Millisecond)
-    if !query.Step()? || query.Text(0)? != "async" { panic("async resource lost") }
+    if !query.Step()? || query.Text(0)? != "async" {
+        panic("async resource lost")
+    }
     return nil
 }
 
@@ -180,16 +244,22 @@ func TestPersistenceContentionAndRollbackOnDrop() error {
     var second = Open(path)?
     second.SetBusyTimeout(2)?
     let blocked, busy = second.Begin()
-    if busy == nil { panic("writer contention was ignored") }
+    if busy == nil {
+        panic("writer contention was ignored")
+    }
     let committed = tx.Commit()?
-    if countRows(second)? != 1 { panic("failed Begin lost the database") }
+    if countRows(second)? != 1 {
+        panic("failed Begin lost the database")
+    }
     {
         var retried = second.Begin()?
         let restored = retried.Rollback()?
     }
     abortTransaction(committed)?
     var reopened = Open(path)?
-    if countRows(reopened)? != 1 { panic("abandoned transaction did not roll back") }
+    if countRows(reopened)? != 1 {
+        panic("abandoned transaction did not roll back")
+    }
     reopened.Close()
     os.Remove(path)?
     return nil
@@ -200,8 +270,12 @@ func TestStrictTextAndEmptyValues() error {
     var query = db.Prepare("select cast(x'ff' as text), '', x''")?
     query.Step()?
     let invalid, failure = query.Text(0)
-    if failure == nil { panic("invalid UTF-8 escaped") }
-    if query.Text(1)? != "" || (query.Bytes(2)?).len() != 0 { panic("empty values lost type") }
+    if failure == nil {
+        panic("invalid UTF-8 escaped")
+    }
+    if query.Text(1)? != "" || (query.Bytes(2)?).len() != 0 {
+        panic("empty values lost type")
+    }
     return nil
 }
 
@@ -211,11 +285,17 @@ func TestFailedCompletionKeepsTransaction() error {
     var tx = db.Begin()?
     var insert = tx.Prepare("insert into records values (1)")?
     let early, failure = tx.Commit()
-    if failure == nil { panic("live statement allowed completion") }
-    if insert.Step()? { panic("insert returned a row") }
+    if failure == nil {
+        panic("live statement allowed completion")
+    }
+    if insert.Step()? {
+        panic("insert returned a row")
+    }
     insert.Close()?
     let committed = tx.Commit()?
-    if countRows(committed)? != 1 { panic("retried commit lost row") }
+    if countRows(committed)? != 1 {
+        panic("retried commit lost row")
+    }
     return nil
 }
 
@@ -228,20 +308,26 @@ func TestFailedSQLiteCommitCanBeRepairedOrRolledBack() error {
     var repaired = db.Begin()?
     executeIn(repaired, "insert into child values (1)")?
     let early, violation = repaired.Commit()
-    if violation == nil { panic("deferred foreign key commit succeeded") }
+    if violation == nil {
+        panic("deferred foreign key commit succeeded")
+    }
     executeIn(repaired, "insert into parent values (1)")?
     var committed = repaired.Commit()?
     var reverted = committed.Begin()?
     executeIn(reverted, "insert into child values (2)")?
     let late, repeated = reverted.Commit()
-    if repeated == nil { panic("second deferred foreign key commit succeeded") }
+    if repeated == nil {
+        panic("second deferred foreign key commit succeeded")
+    }
     var restored = reverted.Rollback()?
     restored.Close()
     var reopened = Open(path)?
     {
         var query = reopened.Prepare("select count(*) from child")?
         query.Step()?
-        if query.Int(0)? != 1 { panic("failed SQLite commit was not recoverable") }
+        if query.Int(0)? != 1 {
+            panic("failed SQLite commit was not recoverable")
+        }
     }
     reopened.Close()
     os.Remove(path)?
@@ -266,7 +352,9 @@ func TestConcurrentStatementsShareSerializedConnection() error {
     let right = go sumStatement(second)
     let leftTotal = left.wait()?
     let rightTotal = right.wait()?
-    if leftTotal != 55 || rightTotal != 55 { panic("concurrent connection serialization failed") }
+    if leftTotal != 55 || rightTotal != 55 {
+        panic("concurrent connection serialization failed")
+    }
     return nil
 }
 
@@ -275,13 +363,21 @@ func TestClearBindingsSetsNullAfterReset() error {
     var query = db.Prepare("select ?, ?")?
     query.BindInt(1, 7)?
     query.BindText(2, "kept")?
-    if !query.Step()? { panic("missing row") }
-    if query.ClearBindings() == nil { panic("ClearBindings accepted during a row") }
+    if !query.Step()? {
+        panic("missing row")
+    }
+    if query.ClearBindings() == nil {
+        panic("ClearBindings accepted during a row")
+    }
     query.Reset()?
-    if !query.Step()? || query.Int(0)? != 7 || query.Text(1)? != "kept" { panic("Reset lost bindings") }
+    if !query.Step()? || query.Int(0)? != 7 || query.Text(1)? != "kept" {
+        panic("Reset lost bindings")
+    }
     query.Reset()?
     query.ClearBindings()?
-    if !query.Step()? || query.ColumnType(0)? != Null || query.ColumnType(1)? != Null { panic("ClearBindings kept values") }
+    if !query.Step()? || query.ColumnType(0)? != Null || query.ColumnType(1)? != Null {
+        panic("ClearBindings kept values")
+    }
     return nil
 }
 
@@ -301,10 +397,14 @@ func TestTransactionCallbackCommitsOnLetDatabase() error {
     db.Transaction(func(tx mut Transaction) error {
         return executeIn(tx, "insert into records values (3)")
     })?
-    if calls != 1 || countRows(db)? != 3 { panic("callback transactions did not commit") }
+    if calls != 1 || countRows(db)? != 3 {
+        panic("callback transactions did not commit")
+    }
     var reused = db.Prepare("select count(*) from records where value = 1")?
     reused.Step()?
-    if reused.Int(0)? != 2 { panic("binding was not reused after Reset") }
+    if reused.Int(0)? != 2 {
+        panic("binding was not reused after Reset")
+    }
     return nil
 }
 
@@ -316,11 +416,15 @@ func TestTransactionCallbackErrorRollsBack() error {
         executeIn(tx, "insert into records values (1)")?
         return stop
     })
-    if result != stop || countRows(db)? != 0 { panic("callback error did not roll back") }
+    if result != stop || countRows(db)? != 0 {
+        panic("callback error did not roll back")
+    }
     db.Transaction(func(tx mut Transaction) error {
         return executeIn(tx, "insert into records values (2)")
     })?
-    if countRows(db)? != 1 { panic("database unusable after rollback") }
+    if countRows(db)? != 1 {
+        panic("database unusable after rollback")
+    }
     return nil
 }
 
@@ -331,22 +435,34 @@ func TestTransactionRejectsExplicitCompletionInCallback() error {
         executeIn(tx, "insert into records values (1)")?
         let committed, commitFailure = tx.Commit()
         let reverted, rollbackFailure = tx.Rollback()
-        if commitFailure == nil { panic("callback committed its own transaction") }
-        if rollbackFailure == nil { panic("callback rolled back its own transaction") }
+        if commitFailure == nil {
+            panic("callback committed its own transaction")
+        }
+        if rollbackFailure == nil {
+            panic("callback rolled back its own transaction")
+        }
         executeIn(tx, "insert into records values (2)")?
         return nil
     })?
-    if countRows(db)? != 2 { panic("library did not commit") }
+    if countRows(db)? != 2 {
+        panic("library did not commit")
+    }
     let stop = error("stop")
     let result = db.Transaction(func(tx mut Transaction) error {
         let committed, commitFailure = tx.Commit()
         let reverted, rollbackFailure = tx.Rollback()
-        if commitFailure == nil { panic("callback committed its own transaction") }
-        if rollbackFailure == nil { panic("callback rolled back its own transaction") }
+        if commitFailure == nil {
+            panic("callback committed its own transaction")
+        }
+        if rollbackFailure == nil {
+            panic("callback rolled back its own transaction")
+        }
         executeIn(tx, "insert into records values (3)")?
         return stop
     })
-    if result != stop || countRows(db)? != 2 { panic("error after explicit completion did not roll back") }
+    if result != stop || countRows(db)? != 2 {
+        panic("error after explicit completion did not roll back")
+    }
     return nil
 }
 
@@ -359,11 +475,17 @@ func TestTransactionFinalizesEscapedStatements() error {
         escaped = tx.Prepare("select count(*) from records")?
         return nil
     })
-    if result == nil { panic("live statement allowed commit") }
+    if result == nil {
+        panic("live statement allowed commit")
+    }
     let row, failure = escaped.Step()
-    if failure == nil { panic("escaped statement stayed usable") }
+    if failure == nil {
+        panic("escaped statement stayed usable")
+    }
     escaped.Close()?
-    if countRows(db)? != 0 { panic("failed commit kept rows") }
+    if countRows(db)? != 0 {
+        panic("failed commit kept rows")
+    }
     return nil
 }
 
@@ -371,14 +493,22 @@ func TestTransactionRequiresNoLiveStatementsAndRejectsNesting() error {
     let db = Open(":memory:")?
     executeSQL(db, "create table records(value integer)")?
     var live = db.Prepare("select 1")?
-    let blocked = db.Transaction(func(tx mut Transaction) error { return nil })
-    if blocked == nil { panic("Transaction ignored a live statement") }
+    let blocked = db.Transaction(func(tx mut Transaction) error {
+        return nil
+    })
+    if blocked == nil {
+        panic("Transaction ignored a live statement")
+    }
     live.Close()?
     let nested = db.Transaction(func(tx mut Transaction) error {
         executeIn(tx, "insert into records values (1)")?
-        return db.Transaction(func(inner mut Transaction) error { return nil })
+        return db.Transaction(func(inner mut Transaction) error {
+            return nil
+        })
     })
-    if nested == nil || countRows(db)? != 0 { panic("nested Transaction was accepted") }
+    if nested == nil || countRows(db)? != 0 {
+        panic("nested Transaction was accepted")
+    }
     return nil
 }
 
@@ -391,17 +521,25 @@ func TestTransactionBusyCommitRollsBackAfterTimeout() error {
         db.SetBusyTimeout(2)?
         let reader = Open(path)?
         var rows = reader.Prepare("select value from records")?
-        if !rows.Step()? { panic("missing reader row") }
+        if !rows.Step()? {
+            panic("missing reader row")
+        }
         let busy = db.Transaction(func(tx mut Transaction) error {
             return executeIn(tx, "insert into records values (1)")
         })
-        if busy == nil { panic("busy commit succeeded") }
+        if busy == nil {
+            panic("busy commit succeeded")
+        }
         rows.Close()?
-        if countRows(db)? != 1 { panic("busy commit kept rows") }
+        if countRows(db)? != 1 {
+            panic("busy commit kept rows")
+        }
         db.Transaction(func(tx mut Transaction) error {
             return executeIn(tx, "insert into records values (1)")
         })?
-        if countRows(db)? != 2 { panic("retried Transaction lost row") }
+        if countRows(db)? != 2 {
+            panic("retried Transaction lost row")
+        }
     }
     os.Remove(path)?
     return nil
@@ -422,13 +560,17 @@ func TestTransactionCommitWaitsForReaderWithinBusyTimeout() error {
         db.SetBusyTimeout(5000)?
         let reader = Open(path)?
         var rows = reader.Prepare("select value from records")?
-        if !rows.Step()? { panic("missing reader row") }
+        if !rows.Step()? {
+            panic("missing reader row")
+        }
         let release = go releaseReader(rows)
         db.Transaction(func(tx mut Transaction) error {
             return executeIn(tx, "insert into records values (1)")
         })?
         release.wait()?
-        if countRows(db)? != 2 { panic("commit lost row after waiting") }
+        if countRows(db)? != 2 {
+            panic("commit lost row after waiting")
+        }
     }
     os.Remove(path)?
     return nil
@@ -444,17 +586,25 @@ func TestScopedTransactionDropRollsBackAndKeepsDatabase() error {
         executeIn(tx, "insert into records values (1)")?
         escaped = tx.Prepare("select 1")?
     }
-    if countRows(db)? != 1 { panic("scoped Transaction drop completed the transaction") }
+    if countRows(db)? != 1 {
+        panic("scoped Transaction drop completed the transaction")
+    }
     {
         let guard = rollbackGuard{handle: db.handle}
     }
     let row, failure = escaped.Step()
-    if failure == nil { panic("guard drop left a statement usable") }
-    if countRows(db)? != 0 { panic("guard drop kept rows") }
+    if failure == nil {
+        panic("guard drop left a statement usable")
+    }
+    if countRows(db)? != 0 {
+        panic("guard drop kept rows")
+    }
     db.Transaction(func(tx mut Transaction) error {
         return executeIn(tx, "insert into records values (1)")
     })?
-    if countRows(db)? != 1 { panic("database closed by scoped drop") }
+    if countRows(db)? != 1 {
+        panic("database closed by scoped drop")
+    }
     return nil
 }
 
@@ -466,7 +616,9 @@ async func asyncTransaction() error {
         return executeIn(tx, "insert into records values (1)")
     })?
     time.Sleep(time.Millisecond)
-    if countRows(db)? != 1 { panic("async Transaction lost row") }
+    if countRows(db)? != 1 {
+        panic("async Transaction lost row")
+    }
     return nil
 }
 
@@ -488,22 +640,36 @@ func TestTransactionRolledBackBySQLiteAcceptsOnlyRollback() error {
     var tx = db.Begin()?
     var pending = tx.Prepare("insert into unique_values values (3)")?
     executeIn(tx, "insert into unique_values values (2)")?
-    if executeIn(tx, "insert or rollback into unique_values values (1)") == nil { panic("OR ROLLBACK conflict was accepted") }
+    if executeIn(tx, "insert or rollback into unique_values values (1)") == nil {
+        panic("OR ROLLBACK conflict was accepted")
+    }
     let row, stepFailure = pending.Step()
-    if stepFailure == nil { panic("Step ran outside the rolled back transaction") }
+    if stepFailure == nil {
+        panic("Step ran outside the rolled back transaction")
+    }
     pending.Close()?
     let prepared, prepareFailure = tx.Prepare("select 1")
-    if prepareFailure == nil { panic("Prepare accepted after SQLite rollback") }
+    if prepareFailure == nil {
+        panic("Prepare accepted after SQLite rollback")
+    }
     let early, commitFailure = tx.Commit()
-    if commitFailure == nil { panic("Commit accepted after SQLite rollback") }
+    if commitFailure == nil {
+        panic("Commit accepted after SQLite rollback")
+    }
     let restored = tx.Rollback()?
-    if countValues(restored)? != 1 { panic("rolled back transaction kept rows") }
+    if countValues(restored)? != 1 {
+        panic("rolled back transaction kept rows")
+    }
     let failure = restored.Transaction(func(scoped mut Transaction) error {
         executeIn(scoped, "insert into unique_values values (4)")?
-        if executeIn(scoped, "insert or rollback into unique_values values (1)") == nil { panic("OR ROLLBACK conflict was accepted") }
+        if executeIn(scoped, "insert or rollback into unique_values values (1)") == nil {
+            panic("OR ROLLBACK conflict was accepted")
+        }
         return executeIn(scoped, "insert into unique_values values (5)")
     })
-    if failure == nil || countValues(restored)? != 1 { panic("statements ran outside the rolled back transaction") }
+    if failure == nil || countValues(restored)? != 1 {
+        panic("statements ran outside the rolled back transaction")
+    }
     return nil
 }
 
@@ -512,7 +678,9 @@ func replaceAndInsert(db Database, failing bool) error {
     return db.Transaction(func(tx mut Transaction) error {
         tx = other.Begin()?
         executeSQL(db, "insert into records values (1)")?
-        if failing { return error("stop") }
+        if failing {
+            return error("stop")
+        }
         return nil
     })
 }
@@ -521,12 +689,18 @@ func TestTransactionCallbackReplacingItsTransactionStaysAtomic() error {
     let db = Open(":memory:")?
     executeSQL(db, "create table records(value integer)")?
     replaceAndInsert(db, false)?
-    if countRows(db)? != 1 { panic("replaced transaction lost the committed write") }
+    if countRows(db)? != 1 {
+        panic("replaced transaction lost the committed write")
+    }
     let failure = replaceAndInsert(db, true)
-    if failure == nil || countRows(db)? != 1 { panic("replaced transaction escaped rollback") }
+    if failure == nil || countRows(db)? != 1 {
+        panic("replaced transaction escaped rollback")
+    }
     db.Transaction(func(tx mut Transaction) error {
         return executeIn(tx, "insert into records values (2)")
     })?
-    if countRows(db)? != 2 { panic("database unusable after replacement") }
+    if countRows(db)? != 2 {
+        panic("database unusable after replacement")
+    }
     return nil
 }

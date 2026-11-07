@@ -32,8 +32,12 @@ Run the same checks as CI:
 cargo fmt --all -- --check
 cargo clippy --locked --all-targets -- -D warnings
 cargo build --locked
+target/debug/zore fmt --check .
 cargo test --locked --all-targets
 ```
+
+`zore fmt --check .` lists any `.ore` file that needs formatting; run
+`target/debug/zore fmt <path>` on it.
 
 If you change Python files, also run `python .github/scripts/import_modules.py`
 and `python -m unittest discover -s benchmarks/<harness> -p 'test_*.py'` for

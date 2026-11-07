@@ -6,7 +6,7 @@ type Job struct {
 }
 
 type Request struct {
-    Text  string
+    Text string
     Reply channel<string>
 }
 

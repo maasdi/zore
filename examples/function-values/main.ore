@@ -70,17 +70,23 @@ func main() {
 
     // A spawned closure takes over a value it consumes.
     let job = Resource{Name: "job"}
-    let second = go func() { consume(job) }()
+    let second = go func() {
+        consume(job)
+    }()
     second.wait()
 
     // A closure or function value in a local moves into the task.
-    let double = func(n int) int { return n * 2 }
+    let double = func(n int) int {
+        return n * 2
+    }
     let third = go double(21)
     println(third.wait())
 
     // A closure that owns what it uses can be handed to a spawned call.
     let owned = Resource{Name: "owned"}
-    let handler = func() int { return owned.Name.len() }
+    let handler = func() int {
+        return owned.Name.len()
+    }
     let fourth = go runWorker(handler)
     println(fourth.wait())
 

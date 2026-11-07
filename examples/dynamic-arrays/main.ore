@@ -35,6 +35,6 @@ func main() {
     println(made[2])
 
     var jobs = Array<Job>{Job{Id: 1}, Job{Id: 2}}
-    jobs[0] = Job{Id: 3}          // the replaced job is dropped
+    jobs[0] = Job{Id: 3} // the replaced job is dropped
     println(0)
-}                                   // elements drop in reverse order
+} // elements drop in reverse order

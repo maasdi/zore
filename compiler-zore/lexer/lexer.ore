@@ -3,12 +3,12 @@ package lexer
 import "std/strings"
 
 type Lexer struct {
-    text     string
-    pos      int
-    tokens   Array<Token>
+    text string
+    pos int
+    tokens Array<Token>
     problems Array<Problem>
     lastEnds bool
-    ranges   Array<int>
+    ranges Array<int>
 }
 
 // Lex expects text that has already passed UTF-8 validation.
@@ -85,7 +85,7 @@ func (l Lexer) charAt(at int) int {
         return (first & 0x0F) << 12 | l.continuation(at + 1) << 6 | l.continuation(at + 2)
     }
     return (first & 0x07) << 18 | l.continuation(at + 1) << 12 | l.continuation(at + 2) << 6 |
-        l.continuation(at + 3)
+    l.continuation(at + 3)
 }
 
 func (l Lexer) continuation(at int) int {
@@ -245,7 +245,7 @@ func (l mut Lexer) number() {
     let start = l.pos
     let marker = l.byteAt(start + 1)
     let prefixed = l.text[start] == 48 &&
-        (marker == 98 || marker == 66 || marker == 111 || marker == 79 || marker == 120 || marker == 88)
+    (marker == 98 || marker == 66 || marker == 111 || marker == 79 || marker == 120 || marker == 88)
     var seenPoint = false
     var seenExponent = false
     // Scan the whole run so suffixes are diagnosed rather than split off.
@@ -262,7 +262,7 @@ func (l mut Lexer) number() {
                 }
             }
         } else if code == 46 && !prefixed && !seenPoint && !seenExponent &&
-            isAsciiDigit(l.charAfter(l.pos)) {
+        isAsciiDigit(l.charAfter(l.pos)) {
             seenPoint = true
             l.pos += 1
         } else {

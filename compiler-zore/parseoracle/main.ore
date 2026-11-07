@@ -128,11 +128,15 @@ func identityProbe(lines mut Array<string>) {
     describe(lines, retainedDiagnostic())
     let invalid = diagnostic.Error("invalid", unrelated, 0, 99)
     let _, ok = diagnostic.Render(invalid)
-    if !ok { lines.push("invalid span rejected") }
+    if !ok {
+        lines.push("invalid span rejected")
+    }
     let empty = channel<source.File>()
     empty.close()
     let file, _ = empty.receive()
     let missing = diagnostic.Error("missing", file, 0, 0)
     let _, found = diagnostic.Render(missing)
-    if !found { lines.push("empty file rejected") }
+    if !found {
+        lines.push("empty file rejected")
+    }
 }

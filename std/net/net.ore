@@ -127,14 +127,25 @@ func (c own Conn) Close() error {
 }
 
 func listen(family int, address string) (int, error)
+
 func dial(family int, address string, timeout int) (int, error)
+
 func accept(id int) (int, error)
+
 func read(id int, max int) (Array<byte>, error)
+
 func write(id int, data []byte) (int, error)
+
 func localAddr(id int) string
+
 func remoteAddr(id int) string
+
 func setDeadline(id int, which int, remaining int) error
+
 func clearDeadline(id int, which int) error
+
 func closeWrite(id int) error
+
 func close(id int) error
+
 func closeHandle(id int)

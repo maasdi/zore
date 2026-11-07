@@ -5,11 +5,19 @@ const ReplacementChar = '�'
 const MaxASCII = '\u007F'
 
 func IsLetter(r rune) bool
+
 func IsDigit(r rune) bool
+
 func IsNumber(r rune) bool
+
 func IsSpace(r rune) bool
+
 func IsUpper(r rune) bool
+
 func IsLower(r rune) bool
+
 func IsControl(r rune) bool
+
 func ToUpper(r rune) rune
+
 func ToLower(r rune) rune

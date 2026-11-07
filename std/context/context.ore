@@ -44,12 +44,16 @@ func WithCancel(parent Context) (Context, func()) {
 func WithCancelOn(parent Context, done channel<bool>) (Context, func()) {
     let ctx = derive(parent, parent.deadline, parent.limited)
     go cancelOn(ctx, done)
-    return ctx, func() { ctx.cancel(canceled) }
+    return ctx, func() {
+        ctx.cancel(canceled)
+    }
 }
 
 async func cancelOn(ctx Context, done channel<bool>) {
     select {
-        case done.receive() { ctx.cancel(canceled) }
+        case done.receive() {
+            ctx.cancel(canceled)
+        }
         case ctx.Done().receive() {}
     }
 }

@@ -31,12 +31,12 @@ func main() {
     println(sum(data[:], 5))
     println(sum(data[2:], 3))
 
-    scale(data[:2], 2, 10)          // contextual exclusive view for the call
+    scale(data[:2], 2, 10) // contextual exclusive view for the call
     println(data[0])
 
-    var tail mut []int = data[3:]   // a named mutable view
+    var tail mut []int = data[3:] // a named mutable view
     tail[1] = 50
-    println(data[4])                // `tail` is no longer used, so `data` is free
+    println(data[4]) // `tail` is no longer used, so `data` is free
 
     let inner = middle(data)
     println(sum(inner, 3))
