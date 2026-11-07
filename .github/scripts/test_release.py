@@ -14,7 +14,7 @@ from package_release import (
 )
 
 
-VERSION = "0.1.0-alpha.1"
+VERSION = "0.1.0-alpha.2"
 COMMIT = "a" * 40
 
 
@@ -65,7 +65,7 @@ class ReleasePackagingTests(unittest.TestCase):
         for version in ("0.1.0", "0.1.0-beta.1", "0.1.0-rc.1", "0.1.0-alpha.01", "../0.1.0-alpha.1", "0.1.0-alpha.1+build"):
             with self.subTest(version=version), self.assertRaises(ValueError):
                 validate_version(version)
-        for tag in ("v0.1.0-alpha.2", "v0.1.0-beta.1"):
+        for tag in ("v0.0.0-alpha.1", "v0.1.0-beta.1"):
             with self.subTest(tag=tag), self.assertRaises(ValueError):
                 validate_version(VERSION, tag)
         self.assertEqual(validate_version(VERSION, f"v{VERSION}"), VERSION)

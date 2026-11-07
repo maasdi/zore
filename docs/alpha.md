@@ -3,7 +3,7 @@
 **Zore** is pronounced **"zor"**; its **`.ore`** source-file extension is
 pronounced **"or"**. See the [official naming rules](../spec/language-spec.md#21-naming--locked).
 
-The first alpha is `v0.1.0-alpha.1`. It distributes the supported compiler subset;
+The current alpha is `v0.1.0-alpha.2` (the first was `v0.1.0-alpha.1`). It distributes the supported compiler subset;
 it does not declare full MVP conformance or stable language/API compatibility.
 Known boundaries and executable evidence remain in the
 [MVP inventory](conformance/mvp.md), [roadmap](roadmap.md) and
@@ -37,7 +37,7 @@ the tested alpha toolchain; set `ZORE_RUSTC` and `ZORE_CC` to select executables
 Linux example:
 
 ```sh
-version=0.1.0-alpha.1
+version=0.1.0-alpha.2
 archive="zore-${version}-x86_64-unknown-linux-gnu.tar.gz"
 base="https://github.com/maasdi/zore/releases/download/v${version}"
 curl -fLO "$base/$archive"
@@ -57,7 +57,7 @@ trusted release. Preserve `artifact.json` with the download for provenance.
 
 ## Linux builder image
 
-`ghcr.io/maasdi/zore-builder:0.1.0-alpha.1` contains the prebuilt Linux compiler,
+`ghcr.io/maasdi/zore-builder:0.1.0-alpha.2` contains the prebuilt Linux compiler,
 Rust 1.98.1, clang and host build dependencies on Ubuntu 24.04, for `linux/amd64`.
 It does not build the compiler from source. A project using only bundled
 standard packages can build without a compiler-source checkout.
@@ -65,13 +65,13 @@ standard packages can build without a compiler-source checkout.
 GHCR may initially require the package owner to make the package public.
 Anonymous pulling must be verified before relying on it in another repository.
 The release also carries the validated image as
-`zore-builder-0.1.0-alpha.1-linux-amd64.tar.gz` with a checksum, so it can be
+`zore-builder-0.1.0-alpha.2-linux-amd64.tar.gz` with a checksum, so it can be
 downloaded, verified and loaded with `docker load` without registry credentials:
 
 ```sh
-sha256sum -c zore-builder-0.1.0-alpha.1-linux-amd64.tar.gz.sha256
-gzip -dc zore-builder-0.1.0-alpha.1-linux-amd64.tar.gz | docker load
-docker run --rm ghcr.io/maasdi/zore-builder:0.1.0-alpha.1 zore --version
+sha256sum -c zore-builder-0.1.0-alpha.2-linux-amd64.tar.gz.sha256
+gzip -dc zore-builder-0.1.0-alpha.2-linux-amd64.tar.gz | docker load
+docker run --rm ghcr.io/maasdi/zore-builder:0.1.0-alpha.2 zore --version
 ```
 
 Pin the exact image digest in consuming CI once published, rather than `latest`.
@@ -82,7 +82,7 @@ A separate application repository can use this pattern after generating and
 committing its `zore.lock` with `zore install .`:
 
 ```dockerfile
-FROM ghcr.io/maasdi/zore-builder:0.1.0-alpha.1 AS build
+FROM ghcr.io/maasdi/zore-builder:0.1.0-alpha.2 AS build
 WORKDIR /project
 COPY . .
 RUN zore install --locked --offline . \
@@ -124,7 +124,7 @@ tools. These checks validate the packaging path, not arbitrary website programs.
 
 Before tagging, require the release PR's ordinary CI and alpha-distribution
 checks to pass. Merge to `main`, wait for ordinary CI on that exact commit,
-then push the matching `v0.1.0-alpha.1` tag. The release PR also sets
+then push the matching `v0.1.0-alpha.2` tag. The release PR also sets
 `packages/tls` and `packages/sqlite` to the same version (a test enforces it);
 push their `tls/v<version>` and `sqlite/v<version>` tags on the same commit
 after the compiler tag. The tag workflow verifies version,
@@ -134,7 +134,7 @@ prerelease. Inspect assets/checksums, image provenance and installation evidence
 before publishing the draft. Published tags/assets must not be overwritten;
 fix a failed published version with a new alpha number.
 
-The compiler bounds in project metadata remain numeric: `0.1.0-alpha.1` is
+The compiler bounds in project metadata remain numeric: `0.1.0-alpha.2` is
 compared as `0.1.0` for `zore-min` and `zore-max`. Package release versions
 may carry an `-alpha.N` suffix; the bounds may not. This does not imply stable compatibility.
 

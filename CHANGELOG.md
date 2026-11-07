@@ -1,11 +1,20 @@
 # Changelog
 
 All notable changes to this project are documented here. The format follows
-[Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Zore has no releases
-yet; version numbers will follow [Semantic Versioning](https://semver.org/)
-once it does.
+[Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Releases are alpha
+prereleases tagged `v<version>`; version numbers follow
+[Semantic Versioning](https://semver.org/). Entries before `0.1.0-alpha.2`,
+including those shipped in `0.1.0-alpha.1`, are not split by release.
 
 ## [Unreleased]
+
+## [0.1.0-alpha.2]
+
+### Release
+
+- Compiler and maintained packages are released together: `v0.1.0-alpha.2`,
+  `tls/v0.1.0-alpha.2` and `sqlite/v0.1.0-alpha.2` tag the same commit. This
+  is the first release of the `tls` and `sqlite` packages.
 
 ### Curated native libraries
 
