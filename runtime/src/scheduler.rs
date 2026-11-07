@@ -979,6 +979,14 @@ pub mod test_support {
         }
     }
 
+    pub fn set_helper_capacity(capacity: usize) {
+        super::super::blocking::set_capacity(capacity);
+    }
+
+    pub fn wait_active_helpers(count: usize) {
+        super::super::blocking::wait_active(count);
+    }
+
     pub fn wake_idle_helpers() {
         super::super::blocking::wake_idle_helpers();
     }

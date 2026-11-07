@@ -19,14 +19,7 @@ impl FunctionBuilder<'_, '_> {
         let returns = self.module.results_ty(&function.results);
         let name = format!("@\"{}.{}$io", self.module.package.name, function.name);
         let output = self.fresh();
-        self.hoist_alloca(
-            &output,
-            if function.results.is_empty() {
-                "i8"
-            } else {
-                &returns
-            },
-        );
+        self.hoist_alloca(&output, &returns);
         let rendered = self.arguments(args);
         let operation = self.fresh();
         let helper = native_wait(function) == Some(NativeWait::Helper);
@@ -84,13 +77,8 @@ impl FunctionBuilder<'_, '_> {
         self.line("ret i8 0");
         self.out.push_str(&format!("{done}:\n"));
         self.line("store ptr null, ptr %pending.slot");
-        let result = if self.module.package.function(id).results.is_empty() {
-            None
-        } else {
-            let result = self.fresh();
-            self.line(format!("{result} = load {returns}, ptr {output}"));
-            Some((returns, result))
-        };
-        self.call_continuation(result, destinations, *target, *unwind);
+        let result = self.fresh();
+        self.line(format!("{result} = load {returns}, ptr {output}"));
+        self.call_continuation(Some((returns, result)), destinations, *target, *unwind);
     }
 }

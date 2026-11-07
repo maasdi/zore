@@ -193,18 +193,7 @@ impl Module<'_> {
                         loaded.push(format!("{ty} %a{index}"));
                     }
                 }
-                if function.results.is_empty() {
-                    writeln!(
-                        job,
-                        "  call void @\"{}.{}\"({})\n  ret void\n}}\n",
-                        self.package.name,
-                        function.name,
-                        loaded.join(", ")
-                    )
-                    .unwrap();
-                } else {
-                    writeln!(job, "  %result = call {returns} @\"{}.{}\"({})\n  store {returns} %result, ptr %a{}\n  ret void\n}}\n", self.package.name, function.name, loaded.join(", "), types.len() - 1).unwrap();
-                }
+                writeln!(job, "  %result = call {returns} @\"{}.{}\"({})\n  store {returns} %result, ptr %a{}\n  ret void\n}}\n", self.package.name, function.name, loaded.join(", "), types.len() - 1).unwrap();
                 plain + &job
             }
             Some(crate::async_lowering::NativeWait::Socket) => {

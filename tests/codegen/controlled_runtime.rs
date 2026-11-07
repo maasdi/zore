@@ -91,15 +91,33 @@ pub(super) fn build_with_optimization(
     workers: usize,
     optimization: &str,
 ) {
+    build_with_limits(source, output, workers, optimization, None);
+}
+
+pub(super) fn build_with_helper_capacity(source: &str, output: &Path, capacity: usize) {
+    build_with_limits(source, output, 2, "-O2", Some(capacity));
+}
+
+fn build_with_limits(
+    source: &str,
+    output: &Path,
+    workers: usize,
+    optimization: &str,
+    helper_capacity: Option<usize>,
+) {
     assert!(
         source.contains("waitPending(")
             || source.contains("waitBlocked(")
             || source.contains("waitIdle(")
     );
+    let helper_hook = source.contains("waitHelpers(");
     let timer_hook = source.contains("expireTimers(");
     let mut source = format!(
         "{source}\nfunc waitPending(n int) {{}}\nfunc waitBlocked(n int) {{}}\nfunc waitIdle(n int) {{}}\n"
     );
+    if helper_hook {
+        source.push_str("func waitHelpers(n int) {}\n");
+    }
     if timer_hook {
         source.push_str("func expireTimers(n int) {}\n");
     }
@@ -119,6 +137,9 @@ pub(super) fn build_with_optimization(
         ("waitBlocked", "zore_test_wait_blocked"),
         ("waitIdle", "zore_test_wait_idle"),
     ];
+    if helper_hook {
+        hooks.push(("waitHelpers", "zore_test_wait_helpers"));
+    }
     if timer_hook {
         hooks.push(("expireTimers", "zore_test_expire_timers"));
     }
@@ -182,6 +203,10 @@ extern "C" fn zore_test_wait_idle(count: i64) {
     zore_runtime::scheduler::test_support::wait_idle(usize::try_from(count).unwrap());
 }
 #[unsafe(no_mangle)]
+extern "C" fn zore_test_wait_helpers(count: i64) {
+    zore_runtime::scheduler::test_support::wait_active_helpers(usize::try_from(count).unwrap());
+}
+#[unsafe(no_mangle)]
 extern "C" fn zore_test_allocated_bytes() -> i64 {
     i64::try_from(zore_runtime::scheduler::test_support::allocated_bytes()).unwrap()
 }
@@ -199,11 +224,12 @@ fn main() {
     zore_runtime::finish();
 }
 "#;
-    fs::write(
-        &entry,
-        entry_source.replace("install_pool(2)", &format!("install_pool({workers})")),
-    )
-    .unwrap();
+    let mut entry_source =
+        entry_source.replace("install_pool(2)", &format!("install_pool({workers})"));
+    if let Some(capacity) = helper_capacity {
+        entry_source = entry_source.replace("unsafe { zore_entry() }", &format!("zore_runtime::scheduler::test_support::set_helper_capacity({capacity}); unsafe {{ zore_entry() }}"));
+    }
+    fs::write(&entry, entry_source).unwrap();
     checked(
         rustc()
             .args([

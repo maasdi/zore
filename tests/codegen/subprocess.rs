@@ -62,7 +62,9 @@ fn run_program(directory: &TempDir, source: &str) -> Output {
             source = without_import;
         }
     }
-    if source.contains("waitIdle(") {
+    if source.contains("waitHelpers(") {
+        controlled_runtime::build_with_helper_capacity(&source, &executable, 2);
+    } else if source.contains("waitIdle(") {
         controlled_runtime::build(&source, &executable);
     } else {
         build_file(&source, &executable).unwrap_or_else(|error| panic!("build: {error:?}"));
@@ -327,6 +329,88 @@ func main() {{
     waitIdle(0)
     let _, failure = background.Wait()
     check(failure == nil, "background completion")
+    println("ok")
+}}
+"#,
+        helper = helper.to_str().unwrap()
+    );
+    let output = run_program(&directory, &source);
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert_eq!(stdout(&output), "ok\n");
+}
+
+#[test]
+fn saturated_pipe_helpers_cannot_starve_child_control_or_many_waiters() {
+    let directory = TempDir::new().unwrap();
+    let helper = helper(&directory);
+    let source = format!(
+        r#"{PRELUDE}
+type Running struct {{
+    child exec.Process
+    output exec.PipeReader
+}}
+func startGated(ctx context.Context) Running {{
+    var options = exec.DefaultOptions()
+    options.StdinPipe = true
+    options.StdoutPipe = true
+    let child, err = exec.Command({helper:?}, Array<string>{{"blocked"}}[:]).StartContext(ctx, options)
+    check(err == nil, "start gated")
+    var output, pipeErr = child.StdoutPipe()
+    check(pipeErr == nil, "take output")
+    var ready = Array<byte>{{0, 0, 0, 0, 0}}
+    let count, readErr = io.ReadFull(output, ready[:])
+    check(readErr == nil && count == 5 && text(ready[:]) == "ready", "ready gate")
+    return Running{{child: child, output: output}}
+}}
+async func finish(child own exec.Process, results channel<bool>) {{
+    let _, err = child.Wait()
+    results.send(err == error("context canceled"))
+}}
+async func readBlocked(reader own exec.PipeReader, results channel<bool>) {{
+    var input = reader
+    let data, err = io.ReadAll(input)
+    results.send(err == nil && data.len() == 0)
+}}
+func extra() exec.Process {{
+    var options = exec.DefaultOptions()
+    options.StdinPipe = true
+    let child, err = exec.Command({helper:?}, Array<string>{{"blocked"}}[:]).StartWith(options)
+    check(err == nil, "start while saturated")
+    return child
+}}
+func main() {{
+    let ctx, cancel = context.WithCancel(context.Background())
+    let results = channel<bool>(8)
+    let reads = channel<bool>(2)
+    var children = Array<Running>{{}}
+    for var i = 0; i < 8; i += 1 {{ children.push(startGated(ctx)) }}
+    for var i = 0; i < 8; i += 1 {{
+        let present, running = children.pop()
+        check(present, "owned child")
+        if i < 2 {{ go readBlocked(running.output, reads) }}
+        go finish(running.child, results)
+    }}
+    waitHelpers(2)
+    let closed = extra()
+    check(closed.Close() == nil, "close while saturated")
+    let dropped = extra()
+    drop(dropped)
+    let killed = extra()
+    check(killed.Kill() == nil, "kill while saturated")
+    let status, killedErr = killed.Wait()
+    check(killedErr != nil && !status.Success(), "reap while saturated")
+    waitHelpers(2)
+    cancel()
+    for var i = 0; i < 8; i += 1 {{
+        let canceled, _ = results.receive()
+        check(canceled, "all waiters canceled")
+    }}
+    for var i = 0; i < 2; i += 1 {{
+        let drained, _ = reads.receive()
+        check(drained, "blocked reads released")
+    }}
+    waitHelpers(0)
+    waitIdle(0)
     println("ok")
 }}
 "#,

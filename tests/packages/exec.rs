@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use zore::async_lowering::{self, NativeWait};
+use zore::async_lowering::{self, NativeWait, Suspension};
 use zore::check::check_project;
 use zore::driver::project::{Memory, load_project};
 use zore::mir;
@@ -116,14 +116,17 @@ func main() {}
         .collect();
     assert!(names.contains(&"collect"), "{names:?}");
     assert!(!names.contains(&"plain"), "{names:?}");
-    for name in [
-        "start",
-        "waitFields",
-        "processClose",
-        "pipeRead",
-        "pipeWrite",
-        "run",
-    ] {
+    let (_, wait) = plan
+        .machines
+        .iter()
+        .find(|(id, _)| package.function(**id).name == "std/os/exec.Process.Wait")
+        .unwrap();
+    assert!(
+        wait.suspensions
+            .iter()
+            .any(|(_, suspension)| matches!(suspension, Suspension::Channel))
+    );
+    for name in ["pipeRead", "pipeWrite", "run"] {
         let name = format!("std/os/exec.{name}");
         let function = package
             .functions
@@ -134,5 +137,24 @@ func main() {}
             async_lowering::native_wait(function),
             Some(NativeWait::Helper)
         );
+    }
+    for name in [
+        "start",
+        "pollExited",
+        "waitFields",
+        "kill",
+        "cancel",
+        "beginClose",
+        "processClose",
+        "pipeClose",
+        "pipeDrop",
+    ] {
+        let name = format!("std/os/exec.{name}");
+        let function = package
+            .functions
+            .iter()
+            .find(|function| function.name == name)
+            .unwrap();
+        assert_eq!(async_lowering::native_wait(function), None);
     }
 }

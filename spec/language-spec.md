@@ -7603,16 +7603,28 @@ let status, waitErr = child.Wait()
 
 Ownership/error/async implications: options borrow their owned array only for
 start, which copies the configuration; a process never borrows its command or
-options. Pipe views are used only for each operation. Start, Wait, process cleanup,
-pipe reads/writes/close, and capture are ordinary potentially waiting calls;
-async callers suspend only their task, while native cleanup compensates workers.
-Cancellation monitoring owns only an opaque non-reused identifier and completion
-channel, and ends on completion even for `context.Background()`.
+options. Pipe views are used only for each operation. Wait and explicit Close
+await a completion channel; async callers suspend only their task. Completion
+monitoring checks child exit without blocking, then suspends on a short timer
+while the child remains running. It does not reserve a blocking helper for the
+child's lifetime or for each Wait call. Cancellation monitoring owns only an
+opaque non-reused identifier and completion channel, and ends on completion
+even for `context.Background()`.
+
+**Subprocess control progress — LOCKED.** Spawn, exit polling, cached status,
+Kill, cancellation, and process release execute independently of the bounded
+blocking-helper queue. A full queue of blocked pipe operations must not prevent
+these controls from killing or reaping their children. Spawn and fallback native
+cleanup can block a scheduler worker briefly and compensate that worker; they
+are not promises of a polled asynchronous host-spawn operation. Implicit drop
+kills before its synchronous completion wait and uses worker compensation.
+Explicit Close kills before awaiting completion and releasing its handle.
 
 Compiler impact: bundled source wraps native environment snapshots, child and
-pipe handle tables, and the existing scalar/array/error ABI. The native helper
-wait classification includes subprocess start, wait, cleanup, streaming, and
-capture. No new language syntax or general ABI is introduced. Host process,
+pipe handle tables, and the existing scalar/array/error ABI. Pipe reads/writes
+and capture use blocking helpers; completion and explicit cleanup use channel
+and timer suspension. Control natives are not classified as helper waits.
+No new language syntax or general ABI is introduced. Host process,
 thread, descriptor, argument, environment-size and permission limits remain
 host errors; pipe reads allocate chunks no larger than 64 KiB. Captures are
 bounded independently of child output size. Conformance cases are in

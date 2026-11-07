@@ -105,11 +105,18 @@ blocked.
 
 ## Host limits
 
-Start, capture, pipe operations, Wait, and cleanup use the runtime's blocking
-helpers so other tasks can progress. The current backend polls child exit at
-short intervals and uses a helper while a child is running. Host thread,
-process, descriptor, argument-size, environment-size, and permission limits can
-cause errors. Pipe read allocations are capped at 64 KiB per operation.
+Pipe reads, writes, and capture use the runtime's bounded blocking-helper pool.
+Child completion is checked by an asynchronous task that suspends on a short
+timer between nonblocking exit checks. Wait and explicit Close await a shared
+completion channel, so neither a running child nor each waiter reserves a
+helper. Spawn, Kill, cancellation, exit checks, and process release execute
+outside the helper queue: blocked pipe jobs cannot prevent them from releasing
+the children those jobs depend on. Spawn and fallback native cleanup compensate
+scheduler workers during their brief synchronous host operations; implicit drop
+kills first and compensates its synchronous completion wait.
+
+Host thread, process, descriptor, argument-size, environment-size, and permission
+limits can cause errors. Pipe read allocations are capped at 64 KiB per operation.
 
 On Linux and macOS, forceful termination sends SIGKILL; on Windows it uses
 TerminateProcess. Neither mechanism runs child cleanup handlers. The runtime

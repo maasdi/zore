@@ -379,7 +379,8 @@ pub unsafe extern "C" fn zore_native_exec_start(
             texts_of(env, env_len),
         )
     };
-    let result = blocking::run(move || start(&path, &args, &dir, &env, clear, pipes));
+    let _blocking = super::scheduler::BlockingGuard::enter();
+    let result = start(&path, &args, &dir, &env, clear, pipes);
     let value = match result {
         Ok(id) => ValueError::ok(id),
         Err(error) => ValueError::failed_text(&error),
@@ -388,11 +389,38 @@ pub unsafe extern "C" fn zore_native_exec_start(
     unsafe { out.write(value) };
 }
 
+#[unsafe(no_mangle)]
+pub extern "C" fn zore_native_exec_poll_exited(id: i64) -> bool {
+    match process(id) {
+        Ok(state) => !matches!(lock(&state).observe(), Ok(None)),
+        Err(_) => true,
+    }
+}
+
+/// # Safety
+/// `out` must be writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn zore_native_exec_begin_close(out: *mut ErrorOut, id: i64) {
+    let failure = process(id)
+        .and_then(|state| {
+            let mut state = lock(&state);
+            state.pipes = [None, None, None];
+            state.terminate(None)
+        })
+        .err();
+    // SAFETY: guaranteed by the caller.
+    unsafe { out.write(ErrorOut::from_failure(failure)) };
+}
+
 /// # Safety
 /// `out` must be writable.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn zore_native_exec_wait_fields(out: *mut WordArrayError, id: i64) {
-    let result = process(id).and_then(|state| blocking::run(move || wait(&state)));
+    let result = process(id).and_then(|state| {
+        lock(&state)
+            .observe()?
+            .ok_or_else(|| "exec: process is still running".to_string())
+    });
     let value = match result {
         Ok(outcome) => {
             let mut result = match outcome.failure {
@@ -441,14 +469,16 @@ pub unsafe extern "C" fn zore_native_exec_cancel(
 /// `out` must be writable.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn zore_native_exec_process_close(out: *mut ErrorOut, id: i64) {
-    let failure = blocking::run(move || close(id)).err();
+    let _blocking = super::scheduler::BlockingGuard::enter();
+    let failure = close(id).err();
     // SAFETY: guaranteed by the caller.
     unsafe { out.write(ErrorOut::from_failure(failure)) };
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn zore_native_exec_process_drop(id: i64) {
-    let _ = blocking::run(move || close(id));
+    let _blocking = super::scheduler::BlockingGuard::enter();
+    let _ = close(id);
 }
 
 /// # Safety

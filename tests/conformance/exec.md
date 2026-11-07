@@ -27,10 +27,14 @@ External-package ownership and async checks live in `tests/packages/exec.rs`.
 | Capture an infinite output producer with limits 0, 1 and chunk boundaries | Exact retained prefix, limit error, child killed and reaped |
 | Combined output at and past exact limit | Shared-pipe write order retained; overflow prefix returned |
 | Negative or greater-than-1-GiB capture limit | Error before spawn |
-| Async native wait/pipe/capture operations | Helper suspension classification keeps other tasks progressing |
+| Async Wait and explicit Close | Channel suspension keeps other tasks progressing; completion uses timed nonblocking exit checks |
+| Eight gated children and waiters with helper capacity two | Waiting children reserve no helpers; every canceled waiter receives the context error |
+| Both helper workers blocked in pipe reads | Start, Kill, cancellation, Close, drop and reaping still progress independently of the helper queue |
 | Copy or use a moved Process/pipe; construct private fields | Rejected by ordinary ownership and visibility rules |
 
 Native subprocess tests build a Rust helper and use bounded parent-process
 execution. Ready bytes gate cancellation and cleanup instead of sleep-based
-lifecycle assumptions. Descendant process-tree cleanup and descendant pipe EOF
+lifecycle assumptions. A controlled runtime sets helper capacity to two and gates
+on actual active helper counts before exercising saturated-pool controls.
+Descendant process-tree cleanup and descendant pipe EOF
 are deliberately outside this direct-child contract.
