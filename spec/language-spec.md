@@ -10612,7 +10612,7 @@ any order.
 - `-` alone, an empty word, and any word that does not start with `-` are
   arguments.
 - `--help` or `-h` before `--` makes `Parse` return `Help` straight away,
-  without reading the rest.
+  without reading the rest. Like a `Bool` option, it takes no value.
 
 Parsing stops at the first problem and returns the error with an empty
 `Result`, which answers as if no word had been given: declared defaults, empty
@@ -10623,6 +10623,7 @@ checked after every word is read. An unknown option is named only up to its
 | Input | Error message |
 | --- | --- |
 | `--help` or `-h` | `Help`, whose message is `flag: help requested` |
+| `--help=value` or `-h=value` | `flag: option --help takes no value` |
 | An undeclared option | `flag: unknown option --nmae` |
 | A `Bool` option with `=value` | `flag: option --verbose takes no value` |
 | A value option as the last word | `flag: option --name needs a value` |
@@ -10680,7 +10681,7 @@ status, and returns the status without exiting:
 | `err` | Writes | Returns |
 | --- | --- | --- |
 | `nil` | Nothing | 0 |
-| `Help` | `Usage()` to `stdout` | 0 |
+| `Help`, or an error whose cause is `Help` (`errors.Is`) | `Usage()` to `stdout` | 0 |
 | Any other error | Three lines to `stderr`: `greet: ` and the message without its `flag: ` prefix, the usage line, and `Run 'greet --help' for more information.` | 2 |
 
 If the write fails, `Report` returns 1. A program that wants other text or

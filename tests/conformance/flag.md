@@ -31,7 +31,8 @@ word-counting program built on the package.
 | No words, or only options | `flag: missing argument STYLE`; with two required arguments, the first missing one, `TO_PATH` for `to-path` |
 | Four words for two required arguments | `flag: unexpected argument "c"`, the first extra one |
 | `--bogus --help` | The unknown option: problems are found from left to right |
-| `--help --bogus`, `plain -h`, `-h=x` | `Help`, equal to `flag.Help` with `==` and `errors.Is` |
+| `--help --bogus`, `plain -h` | `Help`, equal to `flag.Help` with `==` and `errors.Is` |
+| `-h=x`, `--help=` | `flag: option --help takes no value` |
 | `a b c --bogus` against two required arguments | The unknown option: options are read before counts are checked |
 | Every rejected case | The returned `Result` answers with defaults, empty lists, and empty argument text |
 
@@ -45,6 +46,7 @@ word-counting program built on the package.
 | A built program run with `--help --bogus` | Usage on stdout, nothing on stderr, exit status 0 |
 | A built program run with `--name=secret-value --nmae=secret-value` | Three lines on stderr, nothing on stdout, exit status 2, the value not repeated |
 | `Report(nil, ...)` | 0, nothing written |
+| `Report` with `Help` wrapped by `errors.Wrap` | Usage on stdout, 0 |
 | `Report` with a failing writer | 1 |
 | `Report` with an error from elsewhere | `t: other failure`, the usage line, and the hint; status 2 |
 

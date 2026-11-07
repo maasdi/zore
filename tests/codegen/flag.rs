@@ -107,7 +107,8 @@ fn flag_rejects_malformed_input_with_exact_messages_and_an_empty_result() {
         "--bogus --help|flag: unknown option --bogus",
         "--help --bogus|flag: help requested",
         "plain -h|flag: help requested",
-        "-h=x|flag: help requested",
+        "-h=x|flag: option --help takes no value",
+        "--help= plain|flag: option --help takes no value",
     } {
         let input, expected, _ = strings.Cut(case, "|")
         let result, err = set.Parse(words(input)[:])
@@ -328,6 +329,7 @@ fn flag_report_prints_help_and_errors_and_returns_the_exit_status() {
 #[test]
 fn flag_report_returns_one_when_its_writer_fails_and_zero_for_nil() {
     let source = r#"package main
+import "std/errors"
 import "std/flag"
 import "std/fmt"
 
@@ -353,13 +355,15 @@ func main() {
     println(set.Report(error("flag: unknown option --x"), kept, broken))
     println(broken.calls)
     println(kept.text == "")
+    println(set.Report(errors.Wrap(flag.Help, "tool"), kept, broken))
+    println(broken.calls)
     println(set.Report(error("other failure"), broken, kept))
     fmt.Print(kept.text)
 }
 "#;
     prints(
         source,
-        "0\n0\n1\n1\n2\ntrue\n2\nt: other failure\nUsage: t [options]\nRun 't --help' for more information.\n",
+        "0\n0\n1\n1\n2\ntrue\n0\n2\n2\nUsage: t [options]\n\nOptions:\n  -h, --help  show this help\nt: other failure\nUsage: t [options]\nRun 't --help' for more information.\n",
     );
 }
 

@@ -203,7 +203,7 @@ func (s Set) Parse(args []string) (Result, error) {
             value = text
             attached = found
             if name == "help" {
-                return s.emptyResult(), Help
+                return s.emptyResult(), helpRequest(found)
             }
             index = s.longIndex(name)
         } else {
@@ -214,7 +214,7 @@ func (s Set) Parse(args []string) (Result, error) {
             if name.len() == 2 {
                 let short = strings.TrimPrefix(name, "-")
                 if short == "h" {
-                    return s.emptyResult(), Help
+                    return s.emptyResult(), helpRequest(found)
                 }
                 index = s.shortIndex(short)
             }
@@ -273,6 +273,13 @@ func (s Set) Parse(args []string) (Result, error) {
         return s.emptyResult(), error("flag: unexpected argument " + strconv.Quote(positionals[next]))
     }
     return result, nil
+}
+
+func helpRequest(attached bool) error {
+    if attached {
+        return error("flag: option --help takes no value")
+    }
+    return Help
 }
 
 func (s Set) synopsis() string {
@@ -364,7 +371,7 @@ func (s Set) Report(err error, stdout mut io.Writer, stderr mut io.Writer) int {
     if err == nil {
         return 0
     }
-    if err == Help {
+    if errors.Is(err, Help) {
         let _, failure = io.WriteString(stdout, s.Usage())
         if failure != nil {
             return 1

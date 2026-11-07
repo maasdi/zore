@@ -3,6 +3,7 @@ package main
 import "std/flag"
 import "std/io"
 import "std/os"
+import "std/slices"
 import "std/sort"
 import "std/strconv"
 import "std/strings"
@@ -24,17 +25,19 @@ type count struct {
 
 func tally(result flag.Result) Array<count> {
     let ignored = result.Strings("ignore")
+    let lower = result.Bool("lower")
+    let shortest = result.Int("min-length")
     var counts = Array<count>{}
     for raw in result.Rest() {
         var word = raw
-        if result.Bool("lower") {
+        if lower {
             word = strings.ToLower(word)
         }
-        if word.len() < result.Int("min-length") || contains(ignored, word) {
+        if word.len() < shortest || slices.Contains(ignored[:], word) {
             continue
         }
         var found = false
-        for var i = 0; i < counts.len(); i += 1 {
+        for var i = 0; i < counts.len() && !found; i += 1 {
             if counts[i].word == word {
                 counts[i].times += 1
                 found = true
@@ -53,27 +56,19 @@ func tally(result flag.Result) Array<count> {
     return counts
 }
 
-func contains(words Array<string>, word string) bool {
-    for candidate in words {
-        if candidate == word {
-            return true
-        }
-    }
-    return false
-}
-
 func run(args []string, stdout mut io.Writer, stderr mut io.Writer) int {
     let set = options()
     let result, err = set.Parse(args)
     if err != nil {
         return set.Report(err, stdout, stderr)
     }
-    if result.Int("top") < 1 {
+    let top = result.Int("top")
+    if top < 1 {
         let _, _ = io.WriteString(stderr, "wordfreq: --top must be at least 1\n")
         return 2
     }
     let counts = tally(result)
-    for var i = 0; i < counts.len() && i < result.Int("top"); i += 1 {
+    for var i = 0; i < counts.len() && i < top; i += 1 {
         let line = strconv.Itoa(counts[i].times) + " " + counts[i].word + "\n"
         let _, failure = io.WriteString(stdout, line)
         if failure != nil {
