@@ -10,42 +10,81 @@ use super::project::{Disk, FileSystem, Manifest};
 use crate::source::SourceError;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct Version([String; 3]);
+pub struct Version {
+    core: [String; 3],
+    alpha: Option<String>,
+}
 
 impl Version {
     pub fn compatible_with(&self, other: &Self) -> bool {
-        self.0[0] == other.0[0] && (self.0[0] != "0" || self.0[1] == other.0[1])
+        self.core[0] == other.core[0] && (self.core[0] != "0" || self.core[1] == other.core[1])
     }
+
+    pub fn is_alpha(&self) -> bool {
+        self.alpha.is_some()
+    }
+}
+
+fn canonical_number(part: &str) -> bool {
+    !part.is_empty()
+        && part.bytes().all(|byte| byte.is_ascii_digit())
+        && (part.len() == 1 || !part.starts_with('0'))
+}
+
+fn numeric_order(left: &str, right: &str) -> Ordering {
+    left.len().cmp(&right.len()).then_with(|| left.cmp(right))
+}
+
+fn compiler_bound(text: &str) -> Result<Version, String> {
+    let version: Version = text.parse()?;
+    if version.is_alpha() {
+        return Err("compiler bounds take MAJOR.MINOR.PATCH without a prerelease suffix".into());
+    }
+    Ok(version)
 }
 
 impl FromStr for Version {
     type Err = String;
 
     fn from_str(text: &str) -> Result<Self, Self::Err> {
-        let components: Vec<_> = text.split('.').collect();
-        if components.len() != 3
-            || components.iter().any(|part| {
-                part.is_empty()
-                    || !part.bytes().all(|byte| byte.is_ascii_digit())
-                    || (part.len() > 1 && part.starts_with('0'))
-            })
-        {
+        let (core, alpha) = match text.split_once('-') {
+            Some((core, suffix)) => (core, Some(suffix)),
+            None => (text, None),
+        };
+        let components: Vec<_> = core.split('.').collect();
+        let alpha = match alpha {
+            None => None,
+            Some(suffix) => match suffix.strip_prefix("alpha.") {
+                Some(number) if canonical_number(number) => Some(number.to_string()),
+                _ => return Err("expected an `-alpha.N` prerelease suffix".into()),
+            },
+        };
+        if components.len() != 3 || !components.iter().all(|part| canonical_number(part)) {
             return Err(
-                "expected canonical MAJOR.MINOR.PATCH without leading zeroes or suffixes".into(),
+                "expected canonical MAJOR.MINOR.PATCH[-alpha.N] without leading zeroes".into(),
             );
         }
-        Ok(Self(std::array::from_fn(|index| components[index].into())))
+        Ok(Self {
+            core: std::array::from_fn(|index| components[index].into()),
+            alpha,
+        })
     }
 }
 
 impl Ord for Version {
     fn cmp(&self, other: &Self) -> Ordering {
-        self.0
+        self.core
             .iter()
-            .zip(&other.0)
-            .map(|(left, right)| left.len().cmp(&right.len()).then_with(|| left.cmp(right)))
+            .zip(&other.core)
+            .map(|(left, right)| numeric_order(left, right))
             .find(|order| *order != Ordering::Equal)
             .unwrap_or(Ordering::Equal)
+            .then_with(|| match (&self.alpha, &other.alpha) {
+                (None, None) => Ordering::Equal,
+                (None, Some(_)) => Ordering::Greater,
+                (Some(_), None) => Ordering::Less,
+                (Some(left), Some(right)) => numeric_order(left, right),
+            })
     }
 }
 
@@ -57,7 +96,15 @@ impl PartialOrd for Version {
 
 impl fmt::Display for Version {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(formatter, "{}.{}.{}", self.0[0], self.0[1], self.0[2])
+        write!(
+            formatter,
+            "{}.{}.{}",
+            self.core[0], self.core[1], self.core[2]
+        )?;
+        if let Some(alpha) = &self.alpha {
+            write!(formatter, "-alpha.{alpha}")?;
+        }
+        Ok(())
     }
 }
 
@@ -205,13 +252,13 @@ impl Metadata {
         let minimum = self
             .zore_min
             .as_deref()
-            .map(str::parse::<Version>)
+            .map(compiler_bound)
             .transpose()
             .map_err(|message| format!("zore-min: {message}"))?;
         let maximum = self
             .zore_max
             .as_deref()
-            .map(str::parse::<Version>)
+            .map(compiler_bound)
             .transpose()
             .map_err(|message| format!("zore-max: {message}"))?;
         if let (Some(minimum), Some(maximum)) = (minimum, maximum)
@@ -266,11 +313,14 @@ pub fn validate_metadata(files: &dyn FileSystem, manifest: &Manifest) -> Result<
     manifest
         .metadata
         .validate_support(
-            &Version([
-                env!("CARGO_PKG_VERSION_MAJOR").into(),
-                env!("CARGO_PKG_VERSION_MINOR").into(),
-                env!("CARGO_PKG_VERSION_PATCH").into(),
-            ]),
+            &Version {
+                core: [
+                    env!("CARGO_PKG_VERSION_MAJOR").into(),
+                    env!("CARGO_PKG_VERSION_MINOR").into(),
+                    env!("CARGO_PKG_VERSION_PATCH").into(),
+                ],
+                alpha: None,
+            },
             std::env::consts::OS,
         )
         .map_err(|message| manifest_error(&manifest.root, message))?;

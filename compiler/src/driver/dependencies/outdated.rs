@@ -70,8 +70,9 @@ fn report(target: &Path, offline: bool) -> Result<String, SourceError> {
         } else {
             cache::advertised(&binding.key.url, &binding.key.name)?
         };
-        versions.sort();
         let current = &binding.key.version;
+        versions.retain(|version| !version.is_alpha() || current.is_alpha());
+        versions.sort();
         let compatible = versions
             .iter()
             .filter(|version| version.compatible_with(current))

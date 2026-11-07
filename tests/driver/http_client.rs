@@ -52,10 +52,13 @@ fn success(mut command: Command) -> Output {
 #[test]
 fn offline_https_do_verifies_peer_and_preserves_fragmented_binary_bytes() {
     let directory = TempDir::new().unwrap();
-    let examples = Path::new(env!("CARGO_MANIFEST_DIR")).join("../examples");
-    let app = directory.path().join("https-client");
-    copy_tree(&examples.join("https-client"), &app);
-    copy_tree(&examples.join("tls/tls"), &directory.path().join("tls/tls"));
+    let repository = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+    let app = directory.path().join("examples/https-client");
+    copy_tree(&repository.join("examples/https-client"), &app);
+    copy_tree(
+        &repository.join("packages/tls"),
+        &directory.path().join("packages/tls"),
+    );
     let compiler = directory
         .path()
         .join(format!("distributed-zore{}", std::env::consts::EXE_SUFFIX));

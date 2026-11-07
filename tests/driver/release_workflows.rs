@@ -240,6 +240,8 @@ fn online_discovery_filters_tags_orders_numeric_lines_and_never_writes_or_fetche
         "shared/v99999999999999999999999999999.0.0",
         "shared/v1.010.0",
         "shared/v1.99.0-beta",
+        "shared/v1.99.0-alpha.1",
+        "shared/v3.0.0-alpha.1",
         "shared/v1.99.0+build",
         "shared/V1.99.0",
         "other/v99.0.0",
@@ -256,6 +258,7 @@ fn online_discovery_filters_tags_orders_numeric_lines_and_never_writes_or_fetche
         "{report}"
     );
     assert!(!report.contains("1.99"), "{report}");
+    assert!(!report.contains("alpha"), "{report}");
     fixture.app(&fixture.requirement("shared", "1.10.0"));
     failure(fixture.invoke("lock", &[]), "does not match");
     assert!(fixture.lock().contains("version = \"1.2.3\""));
@@ -709,4 +712,50 @@ fn git_listing_failures_redact_remote_diagnostics_and_embedded_credentials() {
         "without embedded credentials",
     );
     assert!(!error.contains("TOP_SECRET"), "{error}");
+}
+
+#[test]
+fn alpha_releases_publish_lock_and_report_alpha_updates_only_to_alpha_consumers() {
+    let fixture = Fixture::new();
+    let source = "package shared\nfunc Value() int { return 42 }\n";
+    let first = fixture.release("shared", "0.1.0-alpha.1", "", source, true);
+    fixture.app(&fixture.requirement("shared", "0.1.0-alpha.1"));
+    success(fixture.invoke("install", &[]));
+    let lock = fixture.lock();
+    assert!(lock.contains("version = \"0.1.0-alpha.1\""), "{lock}");
+    assert!(lock.contains("shared/v0.1.0-alpha.1"), "{lock}");
+    assert!(lock.contains(&first), "{lock}");
+    for version in ["0.1.0-alpha.2", "0.1.0", "0.2.0-alpha.1"] {
+        fixture.leaf(version);
+    }
+    let report = fixture.readonly_report(&[]);
+    assert!(
+        report.contains("shared\t0.1.0-alpha.1\t0.1.0\t0.2.0-alpha.1\n"),
+        "{report}"
+    );
+    success(fixture.invoke("install", &["--locked"]));
+    assert_eq!(fixture.lock(), lock);
+    fixture.release(
+        "consumer",
+        "1.0.0",
+        &fixture.requirement("shared", "0.1.0-alpha.2"),
+        "package consumer\nimport \"shared\"\nfunc Value() int { return shared.Value() }\n",
+        false,
+    );
+    fixture.app(&format!(
+        "{}{}",
+        fixture.requirement("shared", "0.1.0-alpha.1"),
+        fixture.requirement("consumer", "1.0.0")
+    ));
+    success(fixture.invoke("lock", &[]));
+    assert!(
+        fixture.lock().contains("version = \"0.1.0-alpha.2\""),
+        "{}",
+        fixture.lock()
+    );
+    fixture.app(&fixture.requirement("shared", "0.1.0"));
+    success(fixture.invoke("lock", &[]));
+    assert!(fixture.lock().contains("version = \"0.1.0\""));
+    let report = fixture.readonly_report(&[]);
+    assert!(report.contains("shared\t0.1.0\t0.1.0\t-\n"), "{report}");
 }

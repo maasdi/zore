@@ -30,7 +30,14 @@ fn rejected(text: &str, message: &str) {
 
 #[test]
 fn versions_are_canonical_and_order_numerically_without_integer_overflow() {
-    for text in ["0.0.0", "1.2.3", "999999999999999999999999999999.0.0"] {
+    for text in [
+        "0.0.0",
+        "1.2.3",
+        "999999999999999999999999999999.0.0",
+        "0.1.0-alpha.0",
+        "0.1.0-alpha.1",
+        "1.2.3-alpha.10",
+    ] {
         assert_eq!(text.parse::<Version>().unwrap().to_string(), text);
     }
     for text in [
@@ -46,6 +53,15 @@ fn versions_are_canonical_and_order_numerically_without_integer_overflow() {
         " 1.2.3",
         "1.2.3\n",
         "1.2.3-alpha",
+        "1.2.3-alpha.",
+        "1.2.3-alpha.01",
+        "1.2.3-alpha.1.2",
+        "1.2.3-alpha.1+build",
+        "1.2.3-alpha.x",
+        "1.2.3-ALPHA.1",
+        "1.2.3-beta.1",
+        "1.2.3-rc.1",
+        "1.2-alpha.1",
         "1.2.3+build",
         "^1.2.3",
         "１.2.3",
@@ -55,7 +71,11 @@ fn versions_are_canonical_and_order_numerically_without_integer_overflow() {
     }
     let versions = [
         "0.9.99",
+        "0.10.0-alpha.1",
+        "0.10.0-alpha.2",
+        "0.10.0-alpha.10",
         "0.10.0",
+        "0.10.1-alpha.1",
         "1.0.0",
         "1.0.9",
         "1.0.10",
@@ -68,6 +88,29 @@ fn versions_are_canonical_and_order_numerically_without_integer_overflow() {
     for pair in versions.windows(2) {
         assert!(pair[0].parse::<Version>().unwrap() < pair[1].parse::<Version>().unwrap());
     }
+}
+
+#[test]
+fn alpha_releases_share_their_core_line_and_tag_exactly() {
+    let version = |text: &str| text.parse::<Version>().unwrap();
+    assert!(version("0.1.0-alpha.1").compatible_with(&version("0.1.0")));
+    assert!(version("0.1.0-alpha.1").compatible_with(&version("0.1.9-alpha.3")));
+    assert!(!version("0.1.0-alpha.1").compatible_with(&version("0.2.0-alpha.1")));
+    assert!(version("1.0.0-alpha.1").compatible_with(&version("1.4.0")));
+    assert!(!version("1.0.0-alpha.1").compatible_with(&version("0.9.0")));
+    let alpha = "name = 'greeting'\nversion = '0.1.0-alpha.1'\nlicense = 'MIT'\n";
+    assert_eq!(
+        validate_text(alpha, Some("greeting/v0.1.0-alpha.1")).unwrap(),
+        "greeting/v0.1.0-alpha.1"
+    );
+    for tag in [
+        "greeting/v0.1.0",
+        "greeting/v0.1.0-alpha.2",
+        "greeting/v0.1.0-alpha.01",
+    ] {
+        assert!(validate_text(alpha, Some(tag)).is_err(), "{tag}");
+    }
+    assert!(validate_text(MINIMAL, Some("greeting/v1.2.3-alpha.1")).is_err());
 }
 
 #[test]
@@ -171,6 +214,8 @@ fn optional_fields_parse_and_validate_without_becoming_required() {
         "platforms = ['linux',,]",
         "platforms = [1]",
         "zore-min = '0.01.0'",
+        "zore-min = '0.1.0-alpha.1'",
+        "zore-max = '0.2.0-alpha.1'",
         "zore-max = '0.2'",
         "zore-min = '0.2.0'\nzore-max = '0.2.0'",
         "license = 'Apache-2.0'",
@@ -654,5 +699,31 @@ fn deprecated_gnu_licenses_work_in_release_and_ordinary_checks() {
                 assert!(output.stdout.is_empty(), "{output:?}");
             }
         }
+    }
+}
+
+#[test]
+fn maintained_packages_are_releasable_from_their_canonical_subdirectories() {
+    let repository = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+    for (name, subdir) in [("tls", "packages/tls"), ("sqlite", "packages/sqlite")] {
+        let manifest = fs::read_to_string(repository.join(subdir).join("zore.toml")).unwrap();
+        let version = manifest
+            .lines()
+            .find_map(|line| line.strip_prefix("version = \""))
+            .and_then(|rest| rest.strip_suffix('"'))
+            .unwrap();
+        let output = Command::new(env!("CARGO_BIN_EXE_zore"))
+            .args(["check", "--release", "--offline", "--tag"])
+            .arg(format!("{name}/v{version}"))
+            .arg(repository.join(subdir))
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{subdir}: {output:?}");
+        assert!(
+            manifest.contains("repository = \"https://github.com/maasdi/zore.git\""),
+            "{subdir}"
+        );
+        assert!(manifest.contains("license-file = \"LICENSE\""), "{subdir}");
+        assert_eq!(version, env!("CARGO_PKG_VERSION"), "{subdir}");
     }
 }

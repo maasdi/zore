@@ -19,8 +19,12 @@ recipes are validated before any code is loaded. Repository/documentation links
 in a manifest cannot redirect the selected source URL.
 
 `version` means a compatible minimum. It does not mean an exact pin or the latest
-published version. Versions use canonical `MAJOR.MINOR.PATCH`, with no leading
-zeroes, ranges, prereleases or build suffixes. Versions with major 1 or higher
+published version. Versions use canonical `MAJOR.MINOR.PATCH` with an optional
+`-alpha.N` suffix, and no leading zeroes, ranges, other prereleases or build
+suffixes. An alpha is in the line of its numbers and sorts before the plain
+version, so requirements `0.1.0-alpha.1` and `0.1.0-alpha.2` select
+`0.1.0-alpha.2`, and adding `0.1.0` selects `0.1.0`. A plain requirement never
+selects an alpha, because only requested versions are selected. Versions with major 1 or higher
 share a compatibility line by major; before 1.0 the minor must also match.
 
 | Requirements for shared | Selection |

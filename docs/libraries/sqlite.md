@@ -1,9 +1,10 @@
 # SQLite library
 
-The maintained external `sqlite` package in `examples/sqlite-library/sqlite`
+The maintained external `sqlite` package in `packages/sqlite`
 uses the curated `sqlite-v1` adapter. Applications import `sqlite` through an
-ordinary local or tagged Git dependency. The separate persistence application
-is in `examples/sqlite-library/app`. No installed SQLite library is used.
+ordinary local or tagged Git dependency; see
+[maintained packages](../maintained-packages.md) for the release coordinates.
+The separate persistence application is in `examples/sqlite-library/app`. No installed SQLite library is used.
 
 ## API
 
@@ -168,8 +169,8 @@ live in the package-owned reviewed bridge and ordinary Zore wrapper.
 zore install --offline examples/sqlite-library/app
 zore check --locked --offline examples/sqlite-library/app/main.ore
 zore run --locked --offline examples/sqlite-library/app/main.ore
-zore install --offline examples/sqlite-library/sqlite
-zore test --locked --offline examples/sqlite-library/sqlite
+zore install --offline packages/sqlite
+zore test --locked --offline packages/sqlite
 ```
 
 The app inserts a parameterized row in `notes.db` and queries its stored text.

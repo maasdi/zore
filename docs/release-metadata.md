@@ -13,8 +13,10 @@ license = "MIT OR Apache-2.0"
 ```
 
 Versions have exactly three decimal components without leading zeroes, signs,
-whitespace or suffixes. `0.1.0` is valid; `v1.2.3`, `01.2.3`, `1.2`, prereleases,
-build suffixes and ranges are not. Components compare numerically without a
+whitespace or suffixes, except one optional `-alpha.N` suffix. `0.1.0` and
+`0.1.0-alpha.2` are valid; `v1.2.3`, `01.2.3`, `1.2`, `1.2.3-beta.1`,
+`1.2.3-alpha.01`, build suffixes and ranges are not. An alpha comes before its
+plain version: `0.1.0-alpha.1 < 0.1.0-alpha.2 < 0.1.0`. Components compare numerically without a
 fixed integer-width limit. The release tag convention is `greeting/v1.2.3`.
 
 The `license` field accepts recognized SPDX identifiers, including deprecated
@@ -51,7 +53,8 @@ Git dependency URL remains authoritative for source identity and attribution.
 No link is fetched during metadata validation.
 
 `zore-min` is inclusive; `zore-max` is exclusive. Both use canonical versions;
-compiler prerelease/build suffixes are excluded from this comparison. For
+compiler prerelease/build suffixes are excluded from this comparison, and the
+bounds themselves cannot carry an alpha suffix. For
 example, compiler `0.1.0-alpha.1` satisfies minimum `0.1.0` and fails exclusive
 maximum `0.1.0`. This does not extend the package-version grammar or declare
 alpha compatibility stable. If both occur, minimum must be less than maximum.

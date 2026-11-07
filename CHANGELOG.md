@@ -9,6 +9,16 @@ once it does.
 
 ### Curated native libraries
 
+- The maintained `tls` and `sqlite` packages moved to `packages/` and are
+  released as `tls/v<version>` and `sqlite/v<version>` tags of this repository,
+  with the same version as the compiler release.
+  Applications depend on them with `git`, `subdir` and `version` and commit
+  their own lock; no example folder needs to be copied. `tls` now declares its
+  version, license and supported platforms.
+- Release versions and tags accept one `-alpha.N` suffix, ordered before the
+  plain version and in the same compatibility line, so package releases can
+  follow compiler alphas (`tls/v0.1.0-alpha.2` with `v0.1.0-alpha.2`).
+  `zore outdated` reports alphas only for dependencies locked to an alpha.
 - Added manifest-registered native adapters, generated private bindings and
   recipe fingerprints in dependency locks, with linker-independent checking.
 - Added package-owned, reviewed C/Rust Adler-32 sources and an external Zore wrapper,

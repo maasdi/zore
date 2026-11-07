@@ -16,7 +16,7 @@ impl Fixture {
         for (path, text) in [
             (
                 "app/zore.toml",
-                include_str!("../../examples/sqlite-library/app/zore.toml"),
+                "name = \"notes\"\n\n[dependencies]\nsqlite = { path = \"../sqlite\" }\n",
             ),
             (
                 "app/main.ore",
@@ -24,31 +24,35 @@ impl Fixture {
             ),
             (
                 "sqlite/zore.toml",
-                include_str!("../../examples/sqlite-library/sqlite/zore.toml"),
+                include_str!("../../packages/sqlite/zore.toml"),
+            ),
+            (
+                "sqlite/LICENSE",
+                include_str!("../../packages/sqlite/LICENSE"),
             ),
             (
                 "sqlite/sqlite.ore",
-                include_str!("../../examples/sqlite-library/sqlite/sqlite.ore"),
+                include_str!("../../packages/sqlite/sqlite.ore"),
             ),
             (
                 "sqlite/sqlite_test.ore",
-                include_str!("../../examples/sqlite-library/sqlite/sqlite_test.ore"),
+                include_str!("../../packages/sqlite/sqlite_test.ore"),
             ),
             (
                 "sqlite/native/bindings.abi",
-                include_str!("../../examples/sqlite-library/sqlite/native/bindings.abi"),
+                include_str!("../../packages/sqlite/native/bindings.abi"),
             ),
             (
                 "sqlite/native/sqlite.c",
-                include_str!("../../examples/sqlite-library/sqlite/native/sqlite.c"),
+                include_str!("../../packages/sqlite/native/sqlite.c"),
             ),
             (
                 "sqlite/native/sqlite.h",
-                include_str!("../../examples/sqlite-library/sqlite/native/sqlite.h"),
+                include_str!("../../packages/sqlite/native/sqlite.h"),
             ),
             (
                 "sqlite/native/bridge.rs",
-                include_str!("../../examples/sqlite-library/sqlite/native/bridge.rs"),
+                include_str!("../../packages/sqlite/native/bridge.rs"),
             ),
         ] {
             write(&root, path, text);
@@ -86,7 +90,10 @@ fn sqlite_resource_contract_and_tagged_offline_application() {
     git(&library, &["init", "-q"]);
     git(&library, &["add", "."]);
     git(&library, &["commit", "-qm", "reviewed SQLite fixture"]);
-    git(&library, &["tag", "sqlite/v0.1.0"]);
+    git(
+        &library,
+        &["tag", &format!("sqlite/v{}", env!("CARGO_PKG_VERSION"))],
+    );
     let revision = git(&library, &["rev-parse", "HEAD"]);
     let path = library.to_str().unwrap().replace('\\', "/");
     let url = format!(
@@ -97,7 +104,8 @@ fn sqlite_resource_contract_and_tagged_offline_application() {
         &fixture.root,
         "app/zore.toml",
         &format!(
-            "name = 'notes'\n[dependencies]\nsqlite = {{ git = '{url}', version = '0.1.0' }}\n"
+            "name = 'notes'\n[dependencies]\nsqlite = {{ git = '{url}', version = '{}' }}\n",
+            env!("CARGO_PKG_VERSION")
         ),
     );
     write(

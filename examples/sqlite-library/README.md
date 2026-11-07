@@ -1,7 +1,7 @@
 # SQLite persistence
 
-`sqlite/` is a separate native-backed Zore package. `app/` consumes it through an
-ordinary dependency, binds an insert parameter, commits a callback transaction
+`app/` consumes the maintained `sqlite` package from `packages/sqlite` through
+an ordinary dependency, binds an insert parameter, commits a callback transaction
 on a `let` database, and reads back the stored text. The app creates or updates
 `notes.db` in its working directory.
 
@@ -9,8 +9,8 @@ on a `let` database, and reads back the stored text. The app creates or updates
 zore install --offline examples/sqlite-library/app
 zore check --locked --offline examples/sqlite-library/app/main.ore
 zore run --locked --offline examples/sqlite-library/app/main.ore
-zore install --offline examples/sqlite-library/sqlite
-zore test --locked --offline examples/sqlite-library/sqlite
+zore install --offline packages/sqlite
+zore test --locked --offline packages/sqlite
 ```
 
 See the [library guide](../../docs/libraries/sqlite.md) for the API, ownership,
