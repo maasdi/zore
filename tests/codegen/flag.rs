@@ -55,8 +55,8 @@ fn flag_reads_long_short_attached_and_mixed_options() {
     check(mixedErr == nil && mixed.Arg("style") == "x" && joined(mixed.Rest()) == "y,z", "options between arguments")
     check(mixed.Has("count") && mixed.Int("count") == 1, "explicit value equal to the default")
 
-    let shaped, shapedErr = set.Parse(words("--name -s --count -5 plain - -- --help -n --tag=x")[:])
-    check(shapedErr == nil && shaped.String("name") == "-s" && !shaped.Bool("shout"), "option-shaped value")
+    let shaped, shapedErr = set.Parse(words("--name=-s --count -5 plain - -- --help -n --tag=x")[:])
+    check(shapedErr == nil && shaped.String("name") == "-s" && !shaped.Bool("shout"), "option-shaped value after =")
     check(shaped.Int("count") == -5, "negative value")
     check(joined(shaped.Rest()) == "-,--help,-n,--tag=x" && !shaped.Has("tag"), "words after --")
 
@@ -67,6 +67,9 @@ fn flag_reads_long_short_attached_and_mixed_options() {
     let blank, blankErr = set.Parse(empty[:])
     check(blankErr == nil && blank.Arg("style") == "" && blank.Has("name") && blank.String("name") == "", "empty words")
     check(blank.Rest().len() == 1, "empty rest word")
+
+    let dash, dashErr = set.Parse(words("--name - --tag - -c -0 plain")[:])
+    check(dashErr == nil && dash.String("name") == "-" && joined(dash.Strings("tag")) == "-" && dash.Has("count"), "lone dash value")
 
     let equals, equalsErr = set.Parse(words("--name=a=b -c=+7 plain")[:])
     check(equalsErr == nil && equals.String("name") == "a=b" && equals.Int("count") == 7, "value after the first =")
@@ -95,6 +98,11 @@ fn flag_rejects_malformed_input_with_exact_messages_and_an_empty_result() {
         "-s= plain|flag: option --shout takes no value",
         "plain --name|flag: option --name needs a value",
         "plain -c|flag: option --count needs a value",
+        "--name -s plain|flag: option --name needs a value",
+        "--tag --name plain|flag: option --tag needs a value",
+        "--name -- plain|flag: option --name needs a value",
+        "-c -x plain|flag: option --count needs a value",
+        "-c --5 plain|flag: option --count needs a value",
         "--count x plain|flag: option --count: invalid integer \"x\"",
         "-c=1.5 plain|flag: option --count: invalid integer \"1.5\"",
         "--count=99999999999999999999 plain|flag: option --count: invalid integer \"99999999999999999999\"",
@@ -104,9 +112,14 @@ fn flag_rejects_malformed_input_with_exact_messages_and_an_empty_result() {
         "|flag: missing argument STYLE",
         "--name bob|flag: missing argument STYLE",
         "--bogus|flag: unknown option --bogus",
-        "--bogus --help|flag: unknown option --bogus",
+        "--bogus --help|flag: help requested",
         "--help --bogus|flag: help requested",
         "plain -h|flag: help requested",
+        "--name --help|flag: help requested",
+        "--count many -h|flag: help requested",
+        "a b c -h=x --help|flag: help requested",
+        "--bogus -- --help|flag: unknown option --bogus",
+        "--name=--help|flag: missing argument STYLE",
         "-h=x|flag: option --help takes no value",
         "--help= plain|flag: option --help takes no value",
     } {
@@ -237,12 +250,30 @@ fn flag_declaration_mistakes_panic() {
         ("set.Arg(\"file\", \"\")", "flag: duplicate argument FILE"),
         ("set.Arg(\"more\", \"\")", "flag: argument MORE after Rest"),
         ("set.Rest(\"more\", \"\")", "flag: argument MORE after Rest"),
+        (
+            "set.Bool(\"file\", \"\", \"\")",
+            "flag: option --file and argument FILE share a name",
+        ),
+        (
+            "set.Bool(\"FILE\", \"\", \"\")",
+            "flag: option --FILE and argument FILE share a name",
+        ),
     ] {
         let source = format!(
             "package main\nimport \"std/flag\"\nfunc main() {{\n    var set = flag.New(\"t\", \"\")\n    set.String(\"name\", \"n\", \"\", \"\")\n    set.Rest(\"file\", \"\")\n    println(\"declared\")\n    {declaration}\n}}\n"
         );
         panics(&source, message, "declared\n");
     }
+}
+
+#[test]
+fn flag_arguments_cannot_reuse_an_option_name() {
+    let source = "package main\nimport \"std/flag\"\nfunc main() {\n    var set = flag.New(\"t\", \"\")\n    set.String(\"to-path\", \"\", \"\", \"\")\n    println(\"declared\")\n    set.Arg(\"to-path\", \"\")\n}\n";
+    panics(
+        source,
+        "flag: option --to-path and argument TO_PATH share a name",
+        "declared\n",
+    );
 }
 
 #[test]

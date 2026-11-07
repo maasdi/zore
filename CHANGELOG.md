@@ -22,8 +22,9 @@ including those shipped in `0.1.0-alpha.1`, are not split by release.
   `Bool`, `String`, `Int` and repeatable `Strings` options and required or
   trailing arguments on a `Set`; `Parse` returns a `Result` value or an error
   and never prints or exits. Unknown, repeated and malformed options, missing
-  values and wrong argument counts are explicit errors, `--` ends options, and
-  `Has` tells a given value from a default. `Usage` builds deterministic help
+  values and wrong argument counts are explicit errors, a forgotten value never
+  swallows the next option, `--help` wins over every other mistake, `--` ends
+  options, and `Has` tells a given value from a default. `Usage` builds deterministic help
   text, and `Report` writes help or the error to caller-supplied writers and
   returns exit status 0, 1 or 2 without exiting. See
   [command-line options](docs/command-line-options.md) and `examples/cli`.

@@ -92,6 +92,11 @@ func (s mut Set) add(o own option) {
     if o.short != "" && (o.short.len() != 1 || !alphanumeric(o.short[0])) {
         panic("flag: invalid short name " + strconv.Quote(o.short))
     }
+    for a in s.arguments {
+        if placeholder(a.name) == placeholder(o.name) {
+            panic(sharedName(o.name, a.name))
+        }
+    }
     for existing in s.options {
         if existing.name == o.name {
             panic("flag: duplicate option --" + o.name)
@@ -107,6 +112,11 @@ func (s mut Set) addArgument(name string, help string, rest bool) {
     if !validName(name) {
         panic("flag: invalid argument name " + strconv.Quote(name))
     }
+    for o in s.options {
+        if placeholder(o.name) == placeholder(name) {
+            panic(sharedName(o.name, name))
+        }
+    }
     for existing in s.arguments {
         if existing.name == name {
             panic("flag: duplicate argument " + placeholder(name))
@@ -116,6 +126,10 @@ func (s mut Set) addArgument(name string, help string, rest bool) {
         }
     }
     s.arguments.push(argument{name: name, help: help, rest: rest})
+}
+
+func sharedName(option string, argument string) string {
+    return "flag: option --" + option + " and argument " + placeholder(argument) + " share a name"
 }
 
 func validName(name string) bool {
@@ -182,6 +196,14 @@ func (s Set) Parse(args []string) (Result, error) {
     var positionals = Array<string>{}
     var scanning = true
     var i = 0
+    for arg in args {
+        if arg == "--" {
+            break
+        }
+        if arg == "--help" || arg == "-h" {
+            return s.emptyResult(), Help
+        }
+    }
     for i < args.len() {
         let arg = args[i]
         i += 1
@@ -235,7 +257,7 @@ func (s Set) Parse(args []string) (Result, error) {
             continue
         }
         if !attached {
-            if i >= args.len() {
+            if i >= args.len() || !acceptsValue(o.kind, args[i]) {
                 return s.emptyResult(), error("flag: option " + canonical + " needs a value")
             }
             value = args[i]
@@ -273,6 +295,17 @@ func (s Set) Parse(args []string) (Result, error) {
         return s.emptyResult(), error("flag: unexpected argument " + strconv.Quote(positionals[next]))
     }
     return result, nil
+}
+
+func acceptsValue(kind int, word string) bool {
+    if word == "-" || !strings.HasPrefix(word, "-") {
+        return true
+    }
+    if kind != kindInt {
+        return false
+    }
+    let _, err = strconv.Atoi(word)
+    return err == nil
 }
 
 func helpRequest(attached bool) error {

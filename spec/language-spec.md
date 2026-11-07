@@ -10595,6 +10595,7 @@ and `-h` are always defined by the package. Each of these panics:
 | An argument name that breaks the rule | `flag: invalid argument name "1x"` |
 | An argument name used twice | `flag: duplicate argument FILE` |
 | Any argument after `Rest` | `flag: argument FILE after Rest` |
+| An option and an argument with the same placeholder | `flag: option --file and argument FILE share a name` |
 
 **Reading the command line.** `Parse` reads `args` from left to right; pass
 `os.Args()[1:]` to skip the program name. Options and arguments may be mixed in
@@ -10603,20 +10604,27 @@ any order.
 - `--name value` and `--name=value` give a long option its value, and
   `-n value` and `-n=value` give a short one its value. A `Bool` option is
   written alone, `--name` or `-n`.
-- The word after an option that takes a value is always that value, even when
-  it starts with `-`, so `--offset -5` sets `offset` to `-5`.
+- A separate value word cannot start with `-`, so a forgotten value never
+  swallows the next option: `--name --verbose` is an error. Two exceptions:
+  `-` alone is a value, and an `Int` option takes a negative number, so
+  `--offset -5` sets `offset` to `-5`. Any other value that starts with `-` is
+  written with `=`, as in `--name=-x`.
 - A short option is `-` and one character, before any `=`. Short options
   cannot be grouped (`-abc`) or carry a value without `=` (`-n5`); such a word
   is an unknown option.
 - `--` ends the options: every word after it is an argument, even `--help`.
 - `-` alone, an empty word, and any word that does not start with `-` are
   arguments.
-- `--help` or `-h` before `--` makes `Parse` return `Help` straight away,
-  without reading the rest. Like a `Bool` option, it takes no value.
+- A word `--help` or `-h` anywhere before `--` makes `Parse` return `Help`,
+  whatever else is wrong with the command line, because a person asking for
+  help needs the usage text more than the first mistake. `--name=--help` is a
+  value, not a help request, and `--help=value` and `-h=value` are errors.
+  Like a `Bool` option, help takes no value.
 
 Parsing stops at the first problem and returns the error with an empty
 `Result`, which answers as if no word had been given: declared defaults, empty
-lists, and empty text for each `Arg`. Option problems are found from left to right; argument counts are
+lists, and empty text for each `Arg`. A help request is looked for first;
+then option problems are found from left to right, and argument counts are
 checked after every word is read. An unknown option is named only up to its
 `=`, so a value typed after a misspelled name is never repeated in the error.
 
@@ -10626,7 +10634,7 @@ checked after every word is read. An unknown option is named only up to its
 | `--help=value` or `-h=value` | `flag: option --help takes no value` |
 | An undeclared option | `flag: unknown option --nmae` |
 | A `Bool` option with `=value` | `flag: option --verbose takes no value` |
-| A value option as the last word | `flag: option --name needs a value` |
+| A value option as the last word, or followed by a word starting with `-` | `flag: option --name needs a value` |
 | A value that is not an integer, for `Int` | `flag: option --count: invalid integer "x"` |
 | A `Bool`, `String`, or `Int` option given twice | `flag: option --name given more than once` |
 | Fewer arguments than `Arg` declared | `flag: missing argument FILE` (the first one missing) |

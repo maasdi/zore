@@ -71,13 +71,18 @@ Run 'greet --help' for more information.
 | `Rest("file", help)` | Any number of words after the required ones | All of them |
 
 Pass `""` as the short name when an option has none. `--help` and `-h` are
-always there for you.
+always there for you. An option and an argument can't share a name, such as
+`--file` and `FILE`, so the help text stays clear.
 
 ## Rules worth knowing
 
 - Options and arguments can be mixed: `greet a -n bob b` works.
-- The word after an option that needs a value is always its value, so
-  `--count -5` is minus five.
+- A value can't be a separate word starting with `-`, so a forgotten value is
+  caught: `--name --shout` says `option --name needs a value`. Number options
+  still accept negative numbers (`--count -5`), and `-` alone is a value. For
+  any other value starting with `-`, use `=`: `--name=-x`.
+- `--help` or `-h` before `--` always shows the help, even if something else
+  on the line is wrong.
 - `--` stops option reading. Use it for arguments that start with `-`:
   `greet -- -weird-file`.
 - Giving `--name` twice is an error; giving a `Strings` option twice adds both.

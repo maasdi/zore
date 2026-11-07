@@ -12,7 +12,8 @@ word-counting program built on the package.
 | `--name bob --count=3 --shout --tag a --tag=b plain x y` | Each value set, tags `a,b` in order, `Rest` is `x,y`, `Has` true |
 | `-n al -c=2 -s plain` | Short forms with a separate value and with `=` |
 | `x -n al y --count 1 z` | Options between arguments; `Has("count")` is true even though `1` is the default |
-| `--name -s` and `--count -5` | The next word is the value, even when it starts with `-` |
+| `--name=-s` and `--count -5` | A value starting with `-` is written with `=`; an `Int` option takes a negative number as the next word |
+| `--name - --tag - -c -0` | `-` alone is a value; `-0` is a number |
 | `- -- --help -n --tag=x` after the required argument | `-` is an argument, and every word after `--` is an argument, `--help` included |
 | Empty words and `--name=` | Empty words are arguments; `--name=` sets an empty value that counts as given |
 | `--name=a=b` and `-c=+7` | The value is everything after the first `=`; `Int` reads like `strconv.Atoi` |
@@ -26,12 +27,14 @@ word-counting program built on the package.
 | `--pasword=hunter2`, `-p=hunter2` | `flag: unknown option --pasword` and `-p`: the value is never repeated |
 | `--shout=yes`, `-s=` | `flag: option --shout takes no value` |
 | `--name` or `-c` as the last word | `flag: option --name needs a value`, named by its long form |
+| `--name -s`, `--tag --name`, `--name --`, `-c -x`, `-c --5` | `needs a value`: a separate word starting with `-` is not a value, except a negative number for `Int` |
 | `--count x`, `-c=1.5`, a value past the largest `int` | `flag: option --count: invalid integer "x"` |
 | `--name a -n b`, `-s --shout`, `-c 1 -c 1` | `flag: option --name given more than once` |
 | No words, or only options | `flag: missing argument STYLE`; with two required arguments, the first missing one, `TO_PATH` for `to-path` |
 | Four words for two required arguments | `flag: unexpected argument "c"`, the first extra one |
-| `--bogus --help` | The unknown option: problems are found from left to right |
-| `--help --bogus`, `plain -h` | `Help`, equal to `flag.Help` with `==` and `errors.Is` |
+| `--bogus --help`, `--help --bogus`, `plain -h`, `--name --help`, `--count many -h`, `a b c -h=x --help` | `Help`, equal to `flag.Help` with `==` and `errors.Is`: help wins over every other problem |
+| `--bogus -- --help` | The unknown option: `--help` after `--` is an argument |
+| `--name=--help` with no argument | `flag: missing argument STYLE`: an attached value is not a help request |
 | `-h=x`, `--help=` | `flag: option --help takes no value` |
 | `a b c --bogus` against two required arguments | The unknown option: options are read before counts are checked |
 | Every rejected case | The returned `Result` answers with defaults, empty lists, and empty argument text |
@@ -58,6 +61,7 @@ word-counting program built on the package.
 | Long names `x`, `9lives`, `dry run`, `--name` | Panics with `flag: invalid option name` |
 | Short names `qq`, `-` | Panics with `flag: invalid short name` |
 | A long or short name used twice | Panics with `flag: duplicate option` |
+| An option `file` or `FILE` with an argument `file`, in either order | Panics with `flag: option --file and argument FILE share a name` |
 | Argument names `""`, `1st`, a repeated name, any argument after `Rest` | Panics with the listed message |
 | Asking a `Result` for a missing name or the wrong kind | Panics, such as `flag: no String option --count` and `flag: no Rest argument` |
 | Declaring on a `let` set, using a moved set, ignoring `Parse`, wrong value types, private fields, writers that are not `mut` | Rejected by the checker |
