@@ -1,0 +1,103 @@
+package main
+
+import "std/flag"
+import "std/io"
+import "std/os"
+import "std/slices"
+import "std/sort"
+import "std/strconv"
+import "std/strings"
+
+func options() flag.Set {
+    var set = flag.New("wordfreq", "Count how often each word appears.")
+    set.Int("top", "t", 3, "show only the most common words")
+    set.Int("min-length", "m", 1, "skip words shorter than this")
+    set.Strings("ignore", "i", "a word to leave out")
+    set.Bool("lower", "l", "count words without regard to case")
+    set.Rest("word", "the words to count")
+    return set
+}
+
+type count struct {
+    word string
+    times int
+}
+
+func tally(result flag.Result) Array<count> {
+    let ignored = result.Strings("ignore")
+    let lower = result.Bool("lower")
+    let shortest = result.Int("min-length")
+    var counts = Array<count>{}
+    for raw in result.Rest() {
+        var word = raw
+        if lower {
+            word = strings.ToLower(word)
+        }
+        if word.len() < shortest || slices.Contains(ignored[:], word) {
+            continue
+        }
+        var found = false
+        for var i = 0; i < counts.len() && !found; i += 1 {
+            if counts[i].word == word {
+                counts[i].times += 1
+                found = true
+            }
+        }
+        if !found {
+            counts.push(count{word: word, times: 1})
+        }
+    }
+    sort.Slice(counts[:], func(a count, b count) bool {
+        if a.times != b.times {
+            return a.times > b.times
+        }
+        return a.word < b.word
+    })
+    return counts
+}
+
+func run(args []string, stdout mut io.Writer, stderr mut io.Writer) int {
+    let set = options()
+    let result, err = set.Parse(args)
+    if err != nil {
+        return set.Report(err, stdout, stderr)
+    }
+    let top = result.Int("top")
+    if top < 1 {
+        let _, _ = io.WriteString(stderr, "wordfreq: --top must be at least 1\n")
+        return 2
+    }
+    let counts = tally(result)
+    for var i = 0; i < counts.len() && i < top; i += 1 {
+        let line = strconv.Itoa(counts[i].times) + " " + counts[i].word + "\n"
+        let _, failure = io.WriteString(stdout, line)
+        if failure != nil {
+            return 1
+        }
+    }
+    return 0
+}
+
+func main() {
+    let args = os.Args()
+    var stdout = os.Stdout()
+    var stderr = os.Stderr()
+    if args.len() > 1 {
+        os.Exit(run(args[1:], stdout, stderr))
+    }
+    var shown = os.Stdout()
+    for line in Array<string>{
+        "--help",
+        "the cat and the hat and the bat",
+        "--top 2 --lower --ignore the The cat THE Cat hat",
+        "-m 4 -t=1 -- --top -top --top",
+        "--top many words",
+        "--colour the cat",
+    } {
+        println("$ wordfreq " + line)
+        let words = strings.Split(line, " ")
+        let code = run(words[:], stdout, shown)
+        println("exit status " + strconv.Itoa(code))
+        println("")
+    }
+}

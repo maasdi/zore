@@ -421,6 +421,10 @@ rejected, local times across daylight saving, and timers and tickers that fire,
 stop, reset, drain, and leave no waiting task once dropped. That the types do
 not mix is checked in `packages/packages.rs`.
 
+`conformance/flag.md` maps `std/flag` to `codegen/flag.rs`: every option
+form, option-shaped values and `--`, each error message and panic, exact usage
+text, and a built program's output and exit status for `Report`.
+
 `conformance/encoding.md` maps hex, base64, and byte order to
 `codegen/encoding.rs`: RFC 4648 vectors, every byte and length, strict
 rejection with exact offsets, width boundaries, and length panics.

@@ -198,6 +198,13 @@ the documented limits of `os.Rename`, `os.Lstat` and link reporting, and
 steps. Copying, permission and time changes, links, file locks, folder
 synchronization, and an atomic-write helper wait for their own contracts; see
 [the file conformance list](../tests/conformance/files.md).
+Issue [#219](https://github.com/maasdi/zore/issues/219) adds `std/flag` under
+§37.21: typed, repeatable, and boolean options, required and trailing
+arguments, `--`, explicit errors for every malformed command line, presence
+through `Has`, deterministic usage text, and a `Report` helper that returns an
+exit status instead of exiting. Grouped short options, subcommands,
+environment and file configuration wait for their own contracts; see
+[the flag conformance list](../tests/conformance/flag.md).
 
 Secure random bytes and constant-time comparison moved into the standard
 library as `std/crypto/rand` and `std/crypto/subtle` (§37.19), using the

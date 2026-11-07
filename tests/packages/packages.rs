@@ -687,6 +687,58 @@ fn the_encoding_packages_borrow_input_and_check_their_types() {
 }
 
 #[test]
+fn the_flag_package_borrows_its_set_and_returns_plain_values() {
+    let imports = "import \"std/flag\"\nimport \"std/os\"";
+    accepts(&[(
+        "main.ore",
+        &main_with(
+            imports,
+            "var set = flag.New(\"tool\", \"\")\nset.Bool(\"verbose\", \"v\", \"\")\nset.Int(\"count\", \"c\", 1, \"\")\nset.Rest(\"file\", \"\")\nlet args = os.Args()\nlet result, err = set.Parse(args[1:])\nif err == flag.Help { println(set.Usage()) }\nvar stdout = os.Stdout()\nvar stderr = os.Stderr()\nlet code int = set.Report(err, stdout, stderr)\nlet files Array<string> = result.Rest()\nlet count int = result.Int(\"count\")\nprintln(result.Bool(\"verbose\") && result.Has(\"count\"))\nprintln(code + count + files.len())",
+        ),
+    )]);
+    let only = "import \"std/flag\"";
+    for (imports, body, message) in [
+        (
+            only,
+            "let set = flag.New(\"t\", \"\")\nset.Bool(\"verbose\", \"\", \"\")",
+            "mutable",
+        ),
+        (
+            only,
+            "var set = flag.New(\"t\", \"\")\nlet moved = set\nlet usage = set.Usage()",
+            "moved",
+        ),
+        (
+            imports,
+            "let set = flag.New(\"t\", \"\")\nset.Parse(os.Args()[:])",
+            "must be used or explicitly discarded",
+        ),
+        (
+            imports,
+            "let set = flag.New(\"t\", \"\")\nlet result, err = set.Parse(os.Args()[:])\nlet value string = result.Int(\"n\")\n_ = err",
+            "mismatched types",
+        ),
+        (
+            only,
+            "var set = flag.New(\"t\", \"\")\nset.Int(\"count\", \"c\", \"1\", \"\")",
+            "mismatched types",
+        ),
+        (
+            only,
+            "let set = flag.New(\"t\", \"\")\nprintln(set.options.len())",
+            "not exported",
+        ),
+        (
+            imports,
+            "let set = flag.New(\"t\", \"\")\nlet code = set.Report(nil, os.Stdout(), os.Stderr())",
+            "mutable",
+        ),
+    ] {
+        rejects(&[("main.ore", &main_with(imports, body))], message);
+    }
+}
+
+#[test]
 fn the_rolling_package_owns_its_writer() {
     let imports = "import \"std/log\"\nimport \"std/log/rolling\"\nimport \"std/os\"";
     accepts(&[(
