@@ -89,6 +89,13 @@ workflow lints each package's native bridge and runs its conformance suite,
 including installing a tagged release from an offline cache, on all three
 hosts.
 
+## Future direction
+
+The long-term goal is to implement TLS and SQLite in Zore itself, so these
+packages no longer depend on C providers or compiler-registered native
+recipes. Until then they stay here, next to the compiler that registers their
+adapters, so a provider fix and its recipe change ship in one reviewed change.
+
 ## Provider updates and advisories
 
 Maintainers watch upstream security advisories for Mbed TLS and SQLite. When a

@@ -803,6 +803,9 @@ recipe, passes the package's known-answer, failure and host tests on all
 supported hosts, and is published as a new package version with release notes
 naming the affected and fixed versions. Locks never upgrade on their own.
 
+The packages stay in this repository while their adapters are registered by
+the compiler; implementing them in Zore is a separate future design.
+
 No registry, catalog, syntax, ownership, error, presence or async rule changes,
 and no provider is duplicated or moved into the standard library. Compiler
 impact: none beyond the existing adapters. Conformance covers release metadata
