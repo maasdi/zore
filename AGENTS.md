@@ -63,6 +63,16 @@
 - Report what changed, what was verified, and any unresolved blockers. Never
   describe unrun tests or pending conformance examples as passing.
 
+## Branches
+
+- Name each branch after its change in short lowercase kebab-case, for example
+  `tls-alpha-tags` or `http-lingering-close`. Use ASCII letters, digits and
+  hyphens only, at most about five words.
+- Never put a tool, agent, model or person name such as `claude` in a branch
+  name. Do not add type prefixes such as `feature/`, and do not use a bare
+  issue number as the whole name.
+- Start new branches from the latest `main`; keep one change per branch.
+
 ## Package boundaries
 
 - Apply `.agents/skills/package-boundaries/SKILL.md` before adding, moving, or
