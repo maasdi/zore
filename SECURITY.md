@@ -17,7 +17,10 @@ programs rely on, for example:
 - memory-safety bugs in the runtime (`runtime/zore_runtime.c`) or in the
   compiler itself,
 - problems in how `zore build`/`zore run` handle files, temporary directories,
-  or the external C compiler.
+  or the external C compiler,
+- vulnerabilities in the maintained `tls` and `sqlite` packages or their
+  Mbed TLS and SQLite providers. Fixes ship as new package versions; the
+  advisory names the affected and fixed versions.
 
 Ordinary compiler crashes and wrong diagnostics are regular bugs; please open
 an issue for those.

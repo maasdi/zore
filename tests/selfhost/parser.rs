@@ -1057,6 +1057,7 @@ fn repository_sources_match() {
     let mut cases = Vec::new();
     for (dir, mode) in [
         ("examples", PARSE),
+        ("packages", PARSE),
         ("benchmarks", PARSE),
         ("compiler-zore", PARSE),
         ("std", PARSE_NATIVE),
@@ -1175,6 +1176,7 @@ fn seeded_mutations_of_real_sources_match() {
     let root = repository();
     let mut paths = Vec::new();
     ore_files(&root.join("examples"), &mut paths);
+    ore_files(&root.join("packages"), &mut paths);
     let sources: Vec<String> = paths
         .iter()
         .map(|path| fs::read_to_string(path).unwrap())

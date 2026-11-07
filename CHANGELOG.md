@@ -9,6 +9,11 @@ once it does.
 
 ### Curated native libraries
 
+- The maintained `tls` and `sqlite` packages moved to `packages/` and are
+  released as `tls/vX.Y.Z` and `sqlite/vX.Y.Z` tags of this repository.
+  Applications depend on them with `git`, `subdir` and `version` and commit
+  their own lock; no example folder needs to be copied. `tls` now declares its
+  version, license and supported platforms.
 - Added manifest-registered native adapters, generated private bindings and
   recipe fingerprints in dependency locks, with linker-independent checking.
 - Added package-owned, reviewed C/Rust Adler-32 sources and an external Zore wrapper,

@@ -2,4 +2,4 @@ name = "https-client"
 version = "0.1.0"
 
 [dependencies]
-tls = { path = "../tls/tls" }
+tls = { path = "../../packages/tls" }

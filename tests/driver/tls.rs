@@ -69,7 +69,7 @@ impl Fixture {
         let directory = TempDir::new().unwrap();
         let root = directory.path().join("TLS offline café");
         copy_tree(
-            &Path::new(env!("CARGO_MANIFEST_DIR")).join("../examples/tls/tls"),
+            &Path::new(env!("CARGO_MANIFEST_DIR")).join("../packages/tls"),
             &root,
         );
         let compiler = directory
@@ -235,4 +235,86 @@ func TestPanicCleanup() error {
     let output = run(fixture.command("install"));
     assert!(!output.status.success());
     assert!(String::from_utf8_lossy(&output.stderr).contains("reviewed adapter"));
+}
+
+fn git(root: &Path, args: &[&str]) -> String {
+    let output = Command::new("git")
+        .args([
+            "-c",
+            "core.autocrlf=false",
+            "-c",
+            "user.name=Zore tests",
+            "-c",
+            "user.email=zore@example.invalid",
+        ])
+        .args(args)
+        .current_dir(root)
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    String::from_utf8(output.stdout).unwrap().trim().into()
+}
+
+#[test]
+fn tagged_tls_release_is_consumed_from_a_monorepo_subdirectory_offline() {
+    let fixture = Fixture::new();
+    let repository = fixture._directory.path().join("repository");
+    copy_tree(&fixture.root, &repository.join("packages/tls"));
+    git(&repository, &["init", "-q"]);
+    git(&repository, &["add", "."]);
+    git(&repository, &["commit", "-qm", "Release tls 0.1.0"]);
+    git(&repository, &["tag", "tls/v0.1.0"]);
+    let revision = git(&repository, &["rev-parse", "HEAD"]);
+    let mut release = Command::new(&fixture.compiler);
+    release
+        .args(["check", "--release", "--tag", "tls/v0.1.0"])
+        .arg(repository.join("packages/tls"));
+    assert!(run(release).status.success());
+    let path = repository.to_str().unwrap().replace('\\', "/");
+    let url = format!(
+        "file://{}{path}",
+        if path.starts_with('/') { "" } else { "/" }
+    );
+    let app = fixture._directory.path().join("https-app");
+    fs::create_dir_all(&app).unwrap();
+    fs::write(
+        app.join("zore.toml"),
+        format!(
+            "name = \"httpsapp\"\n[dependencies]\ntls = {{ git = \"{url}\", subdir = \"packages/tls\", version = \"0.1.0\" }}\n"
+        ),
+    )
+    .unwrap();
+    fs::write(
+        app.join("main.ore"),
+        r#"package main
+import "std/net/http"
+import "tls/https"
+func client() (http.Client, error) {
+    return https.NewDefaultClient(http.DefaultClientConfig())
+}
+func main() {}
+"#,
+    )
+    .unwrap();
+    let mut install = Command::new(&fixture.compiler);
+    install
+        .arg("install")
+        .arg(&app)
+        .env("ZORE_CACHE_DIR", fixture._directory.path().join("cache"));
+    success(run(install));
+    let lock = fs::read_to_string(app.join("zore.lock")).unwrap();
+    assert!(lock.contains(&revision), "{lock}");
+    assert!(lock.contains("tls/v0.1.0"), "{lock}");
+    assert!(lock.contains("tls-mbedtls-v1"), "{lock}");
+    fs::rename(&repository, fixture._directory.path().join("unavailable")).unwrap();
+    let mut locked = fixture.target("install", &app);
+    locked.arg("--locked");
+    success(run(locked));
+    let mut check = fixture.target("check", &app.join("main.ore"));
+    check
+        .arg("--locked")
+        .env("ZORE_CC", "missing-native-compiler")
+        .env("ZORE_RUSTC", "missing-rust-compiler");
+    success(run(check));
+    assert_eq!(fs::read_to_string(app.join("zore.lock")).unwrap(), lock);
 }

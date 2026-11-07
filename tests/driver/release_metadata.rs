@@ -656,3 +656,28 @@ fn deprecated_gnu_licenses_work_in_release_and_ordinary_checks() {
         }
     }
 }
+
+#[test]
+fn maintained_packages_are_releasable_from_their_canonical_subdirectories() {
+    let repository = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+    for (name, subdir) in [("tls", "packages/tls"), ("sqlite", "packages/sqlite")] {
+        let manifest = fs::read_to_string(repository.join(subdir).join("zore.toml")).unwrap();
+        let version = manifest
+            .lines()
+            .find_map(|line| line.strip_prefix("version = \""))
+            .and_then(|rest| rest.strip_suffix('"'))
+            .unwrap();
+        let output = Command::new(env!("CARGO_BIN_EXE_zore"))
+            .args(["check", "--release", "--offline", "--tag"])
+            .arg(format!("{name}/v{version}"))
+            .arg(repository.join(subdir))
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{subdir}: {output:?}");
+        assert!(
+            manifest.contains("repository = \"https://github.com/maasdi/zore.git\""),
+            "{subdir}"
+        );
+        assert!(manifest.contains("license-file = \"LICENSE\""), "{subdir}");
+    }
+}

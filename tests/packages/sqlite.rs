@@ -14,27 +14,31 @@ fn files(main: &str) -> Vec<(&str, &str)> {
         ("/app/main.ore", main),
         (
             "/sqlite/zore.toml",
-            include_str!("../../examples/sqlite-library/sqlite/zore.toml"),
+            include_str!("../../packages/sqlite/zore.toml"),
+        ),
+        (
+            "/sqlite/LICENSE",
+            include_str!("../../packages/sqlite/LICENSE"),
         ),
         (
             "/sqlite/sqlite.ore",
-            include_str!("../../examples/sqlite-library/sqlite/sqlite.ore"),
+            include_str!("../../packages/sqlite/sqlite.ore"),
         ),
         (
             "/sqlite/native/bindings.abi",
-            include_str!("../../examples/sqlite-library/sqlite/native/bindings.abi"),
+            include_str!("../../packages/sqlite/native/bindings.abi"),
         ),
         (
             "/sqlite/native/sqlite.c",
-            include_str!("../../examples/sqlite-library/sqlite/native/sqlite.c"),
+            include_str!("../../packages/sqlite/native/sqlite.c"),
         ),
         (
             "/sqlite/native/sqlite.h",
-            include_str!("../../examples/sqlite-library/sqlite/native/sqlite.h"),
+            include_str!("../../packages/sqlite/native/sqlite.h"),
         ),
         (
             "/sqlite/native/bridge.rs",
-            include_str!("../../examples/sqlite-library/sqlite/native/bridge.rs"),
+            include_str!("../../packages/sqlite/native/bridge.rs"),
         ),
     ]
 }

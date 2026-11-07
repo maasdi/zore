@@ -47,7 +47,7 @@ jobs:
         run: cargo clippy --locked -p zore-runtime --all-targets -- -D warnings
         env:
           RUSTFLAGS: --cfg zore_native_adapters
-          ZORE_NATIVE_ADAPTERS: ${{ github.workspace }}/examples/sqlite-library/sqlite/native/registration.rs
+          ZORE_NATIVE_ADAPTERS: ${{ github.workspace }}/packages/sqlite/native/registration.rs
       - name: Lint crypto bridge
         run: cargo clippy --locked -p zore-runtime --all-targets -- -D warnings
         env:
@@ -58,7 +58,7 @@ jobs:
         run: cargo clippy --locked -p zore-runtime --all-targets -- -D warnings
         env:
           RUSTFLAGS: --cfg zore_native_adapters
-          ZORE_NATIVE_ADAPTERS: ${{ github.workspace }}/examples/tls/tls/native/registration.rs
+          ZORE_NATIVE_ADAPTERS: ${{ github.workspace }}/packages/tls/native/registration.rs
       - name: Build
         run: cargo build --locked
       - name: Documentation

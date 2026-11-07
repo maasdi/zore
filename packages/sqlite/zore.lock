@@ -1,0 +1,4 @@
+version = 1
+
+[projects]
+sqlite = { manifest = "cb53ac991834d97998aa50077a0c00216cffc1bfdddd9b16defe141a5f6d3e19", path = ".", adapter = "sqlite-v1", recipe = "b91cc133fee296b6343d0558ceb06d3b4c0a00e6715a6cdf20e283fe33c3dd5b" }

@@ -63,19 +63,19 @@ func httpsCase(host string, certPath string, keyPath string, rootsPath string, e
     return nil
 }
 func TestHTTPSDoVerifiesPeerAndPreservesFragmentedBinaryBytes() error {
-    return httpsCase("localhost", "../tls/tls/testdata/server.pem", "../tls/tls/testdata/server-key.pem", "../tls/tls/testdata/roots.pem", "")
+    return httpsCase("localhost", "../../packages/tls/testdata/server.pem", "../../packages/tls/testdata/server-key.pem", "../../packages/tls/testdata/roots.pem", "")
 }
 func TestHTTPSDoRejectsUntrustedExpiredAndFutureCertificates() error {
-    httpsCase("localhost", "../tls/tls/testdata/server.pem", "../tls/tls/testdata/server-key.pem", "../tls/tls/testdata/future.pem", "not correctly signed")?
-    httpsCase("localhost", "../tls/tls/testdata/expired.pem", "../tls/tls/testdata/expired-key.pem", "../tls/tls/testdata/roots.pem", "expired")?
-    return httpsCase("localhost", "../tls/tls/testdata/future.pem", "../tls/tls/testdata/future-key.pem", "../tls/tls/testdata/roots.pem", "future")
+    httpsCase("localhost", "../../packages/tls/testdata/server.pem", "../../packages/tls/testdata/server-key.pem", "../../packages/tls/testdata/future.pem", "not correctly signed")?
+    httpsCase("localhost", "../../packages/tls/testdata/expired.pem", "../../packages/tls/testdata/expired-key.pem", "../../packages/tls/testdata/roots.pem", "expired")?
+    return httpsCase("localhost", "../../packages/tls/testdata/future.pem", "../../packages/tls/testdata/future-key.pem", "../../packages/tls/testdata/roots.pem", "future")
 }
 func TestHTTPSDoRejectsTrustedWrongHostname() error {
-    return httpsCase("localhost", "testdata/wrong-host.pem", "../tls/tls/testdata/server-key.pem", "testdata/wrong-host.pem", "does not match")
+    return httpsCase("localhost", "testdata/wrong-host.pem", "../../packages/tls/testdata/server-key.pem", "testdata/wrong-host.pem", "does not match")
 }
 func TestHTTPSIPAddressURLsMatchOnlyIPEntries() error {
-    httpsCase("127.0.0.1", "../tls/tls/testdata/ip.pem", "../tls/tls/testdata/server-key.pem", "../tls/tls/testdata/ip.pem", "")?
-    return httpsCase("127.0.0.1", "../tls/tls/testdata/server.pem", "../tls/tls/testdata/server-key.pem", "../tls/tls/testdata/roots.pem", "does not match")
+    httpsCase("127.0.0.1", "../../packages/tls/testdata/ip.pem", "../../packages/tls/testdata/server-key.pem", "../../packages/tls/testdata/ip.pem", "")?
+    return httpsCase("127.0.0.1", "../../packages/tls/testdata/server.pem", "../../packages/tls/testdata/server-key.pem", "../../packages/tls/testdata/roots.pem", "does not match")
 }
 func TestHTTPSDefaultClientUsesPlatformRoots() error {
     let client = https.NewDefaultClient(http.DefaultClientConfig())?
@@ -84,7 +84,7 @@ func TestHTTPSDefaultClientUsesPlatformRoots() error {
 }
 
 func TestHTTPSRootedHostnameReachesContextValidation() error {
-    let roots = os.ReadFile("../tls/tls/testdata/roots.pem")?
+    let roots = os.ReadFile("../../packages/tls/testdata/roots.pem")?
     let transport = https.NewTransport(roots[:])?
     let target = url.ParseAbsolute("https://localhost.:443/")?
     let ctx, cancel = context.WithCancel(context.Background())

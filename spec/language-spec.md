@@ -762,6 +762,56 @@ contention, normal/error/panic/async cleanup, source/recipe tampering,
 linker-independent checks and separate tagged Git locked/offline
 check/build/test on supported native hosts.
 
+## 3.4.8 Maintained package distribution — LOCKED
+
+The Zore project maintains the external `tls` package (with its `tls/https`
+subpackage) and the external `sqlite` package. They remain ordinary external
+projects consumed through dependencies; they are not standard packages and are
+never imported implicitly. Their canonical identity is the repository URL
+`https://github.com/maasdi/zore.git` with `subdir = "packages/tls"` or
+`subdir = "packages/sqlite"` and the project name. Other URL spellings, mirrors
+and forks are different sources under §3.4.5.
+
+Each package manifest declares a canonical version, an SPDX license expression,
+a confined license file, a description and the supported platforms. A release is
+an ordinary §3.4.6 tag, `tls/vX.Y.Z` or `sqlite/vX.Y.Z`, on a reviewed commit of
+the repository's main branch whose CI passed on Linux, macOS and Windows. A
+published tag is never moved or deleted; any source correction is a new version.
+The package's reviewed native sources and the compiler's adapter recipe change
+together. An adapter source or recipe change requires a new package version, and
+a compiler whose registered recipe differs from a release's sources rejects that
+release at install with the existing §3.4.3 diagnostic instead of building
+different native code.
+
+An application consumes a release as:
+
+```toml
+[dependencies]
+tls = { git = "https://github.com/maasdi/zore.git", subdir = "packages/tls", version = "0.1.0" }
+```
+
+The application commits its own `zore.lock`. After install with a populated
+cache, locked install, check, build, run and test need no network and do not
+select newer releases. No folder copying is part of the supported installation
+path. Secure random bytes and HMAC are provided by `std/crypto` (§37.19, §37.20);
+the older `crypto` package (§37.9) is kept for existing code and is not released
+under this section.
+
+Maintainers track upstream Mbed TLS and SQLite advisories. A provider update
+replaces the reviewed source closure and its SHA-256 records, updates the
+recipe, passes the package's known-answer, failure and host tests on all
+supported hosts, and is published as a new package version with release notes
+naming the affected and fixed versions. Locks never upgrade on their own.
+
+No registry, catalog, syntax, ownership, error, presence or async rule changes,
+and no provider is duplicated or moved into the standard library. Compiler
+impact: none beyond the existing adapters. Conformance covers release metadata
+validation of each package and a separate application that installs each tagged
+release from a monorepo subdirectory, records the exact commit and adapter in
+its lock, loses the source repository and still installs locked, checks without
+native tools, and for `sqlite` builds, runs and tests offline from the cache,
+on the supported-host CI matrix.
+
 ## 3.5 Identifiers — LOCKED
 
 MVP identifiers use ASCII characters only:
@@ -8768,8 +8818,9 @@ changes are introduced by the Windows backend.
 ## 37.9 Cryptographic byte utilities — LOCKED
 
 `crypto` is a maintained external package with the curated `crypto-v1` native
-adapter. It is a synchronous, stateless API; the initial package is distributed
+adapter. It is a synchronous, stateless API; the package is distributed
 in `examples/crypto/crypto` and consumed by local path or pinned Git dependency.
+It is not released under §3.4.8.
 Secure random bytes and constant-time comparison are also in the standard
 library as `std/crypto/rand` and `std/crypto/subtle` (§37.19), and SHA-256 and
 HMAC-SHA-256 as `std/crypto/sha256` and `std/crypto/hmac` (§37.20); new code

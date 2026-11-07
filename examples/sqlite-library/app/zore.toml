@@ -1,4 +1,4 @@
 name = "notes"
 
 [dependencies]
-sqlite = { path = "../sqlite" }
+sqlite = { path = "../../../packages/sqlite" }
