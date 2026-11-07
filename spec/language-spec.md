@@ -6963,8 +6963,8 @@ system, buffered I/O, and TCP), §37.4 (cancellation and task coordination),
 handles, temporary storage, renames, and folder walks), §37.16 (HTTP
 cookies and URL-encoded forms), §37.17 (media types and file serving),
 §37.18 (multipart forms and uploads), §37.19 (secure random bytes and
-constant-time comparison), and §37.20 (hashes and HMAC). Further packages are
-TBD.
+constant-time comparison), §37.20 (hashes and HMAC), and §37.21
+(command-line options). Further packages are TBD.
 
 ## 37.1 `println` — LOCKED
 
@@ -10531,6 +10531,207 @@ Compiler impact: none. The packages are bundled Zore source with no runtime
 natives. `crypto/hmac` imports `std/crypto/sha256` and `std/crypto/sha512`;
 the hash packages import nothing. Conformance cases:
 `tests/conformance/crypto.md`, with native tests in `tests/codegen/crypto.rs`.
+
+## 37.21 Command-line options — LOCKED
+
+`std/flag` reads the options and arguments a program was started with. A
+program describes them on a `Set`, passes the arguments to `Parse`, and gets
+back a `Result` value or an error. Parsing never prints, never exits, and keeps
+no global state: what to print and which exit status to use stay with the
+caller, and `Report` is an optional helper for the usual choice.
+
+```ore
+let Help error
+
+type Set struct { /* private */ }
+func New(name string, summary string) Set
+func (s mut Set) Bool(name string, short string, help string)
+func (s mut Set) String(name string, short string, value string, help string)
+func (s mut Set) Int(name string, short string, value int, help string)
+func (s mut Set) Strings(name string, short string, help string)
+func (s mut Set) Arg(name string, help string)
+func (s mut Set) Rest(name string, help string)
+func (s Set) Parse(args []string) (Result, error)
+func (s Set) Usage() string
+func (s Set) Report(err error, stdout mut io.Writer, stderr mut io.Writer) int
+
+type Result struct { /* private */ }
+func (r Result) Bool(name string) bool
+func (r Result) String(name string) string
+func (r Result) Int(name string) int
+func (r Result) Strings(name string) Array<string>
+func (r Result) Has(name string) bool
+func (r Result) Arg(name string) string
+func (r Result) Rest() Array<string>
+```
+
+**Declaring.** `New` takes the program name used in usage text and a one-line
+summary, which may be empty. Each option has a long name and an optional
+one-character short name (`""` for none). Options come in four kinds:
+
+| Kind | Takes a value | Value when not given | Repeating it |
+| --- | --- | --- | --- |
+| `Bool` | No | `false` | Error |
+| `String` | Yes, any text | The declared `value` | Error |
+| `Int` | Yes, as `strconv.Atoi` reads it (§37.2) | The declared `value` | Error |
+| `Strings` | Yes, any text | An empty array | Each one is added, in order |
+
+`Arg` declares a required argument and `Rest` declares the zero or more
+arguments that follow the required ones. Arguments are filled in the order
+they are declared, and `Rest`, if any, comes last.
+
+Names are checked when they are declared, because a bad name is a mistake in
+the program, not in its input. A long name or argument name starts with an
+ASCII letter and continues with ASCII letters, digits, and `-`; a long name has
+at least two characters. A short name is one ASCII letter or digit. `--help`
+and `-h` are always defined by the package. Each of these panics:
+
+| Declaration | Panic message |
+| --- | --- |
+| A long name that breaks the rule | `flag: invalid option name "x"` |
+| A short name that breaks the rule | `flag: invalid short name "xy"` |
+| A long name or short name used twice | `flag: duplicate option --name` or `flag: duplicate option -n` |
+| `help` or `h` | `flag: reserved option --help` or `flag: reserved option -h` |
+| An argument name that breaks the rule | `flag: invalid argument name "1x"` |
+| An argument name used twice | `flag: duplicate argument FILE` |
+| Any argument after `Rest` | `flag: argument FILE after Rest` |
+| An option and an argument with the same placeholder | `flag: option --file and argument FILE share a name` |
+
+**Reading the command line.** `Parse` reads `args` from left to right; pass
+`os.Args()[1:]` to skip the program name. Options and arguments may be mixed in
+any order.
+
+- `--name value` and `--name=value` give a long option its value, and
+  `-n value` and `-n=value` give a short one its value. A `Bool` option is
+  written alone, `--name` or `-n`.
+- A separate value word cannot start with `-`, so a forgotten value never
+  swallows the next option: `--name --verbose` is an error. Two exceptions:
+  `-` alone is a value, and an `Int` option takes a negative number, so
+  `--offset -5` sets `offset` to `-5`. Any other value that starts with `-` is
+  written with `=`, as in `--name=-x`.
+- A short option is `-` and one character, before any `=`. Short options
+  cannot be grouped (`-abc`) or carry a value without `=` (`-n5`); such a word
+  is an unknown option.
+- `--` ends the options: every word after it is an argument, even `--help`.
+- `-` alone, an empty word, and any word that does not start with `-` are
+  arguments.
+- A word `--help` or `-h` anywhere before `--` makes `Parse` return `Help`,
+  whatever else is wrong with the command line, because a person asking for
+  help needs the usage text more than the first mistake. `--name=--help` is a
+  value, not a help request, and `--help=value` and `-h=value` are errors.
+  Like a `Bool` option, help takes no value.
+
+Parsing stops at the first problem and returns the error with an empty
+`Result`, which answers as if no word had been given: declared defaults, empty
+lists, and empty text for each `Arg`. A help request is looked for first;
+then option problems are found from left to right, and argument counts are
+checked after every word is read. An unknown option is named only up to its
+`=`, so a value typed after a misspelled name is never repeated in the error.
+
+| Input | Error message |
+| --- | --- |
+| `--help` or `-h` | `Help`, whose message is `flag: help requested` |
+| `--help=value` or `-h=value` | `flag: option --help takes no value` |
+| An undeclared option | `flag: unknown option --nmae` |
+| A `Bool` option with `=value` | `flag: option --verbose takes no value` |
+| A value option as the last word, or followed by a word starting with `-` | `flag: option --name needs a value` |
+| A value that is not an integer, for `Int` | `flag: option --count: invalid integer "x"` |
+| A `Bool`, `String`, or `Int` option given twice | `flag: option --name given more than once` |
+| Fewer arguments than `Arg` declared | `flag: missing argument FILE` (the first one missing) |
+| More arguments than declared, without `Rest` | `flag: unexpected argument "x"` (the first extra one) |
+
+Messages name options by their long form, whichever spelling was typed, and
+arguments by their usage placeholder: the name in upper case with `-` turned
+into `_`. Compare against `Help` with `==` or `errors.Is`.
+
+**Reading results.** Each `Result` method takes the long name, or the argument
+name for `Arg`. `Bool` is `true` when the option was given. `String` and `Int`
+return the given value or else the declared one. `Strings` returns the given
+values in order. `Has` tells whether an option of any kind was given, so a
+program can tell an explicit `--count 1` from the default. `Arg` returns a
+required argument, and `Rest` returns the arguments after the required ones.
+There is no null and no "unset" value: every method returns an ordinary value.
+Asking for a name that was not declared with that kind panics, with
+`flag: no Int option --name`, `flag: no option --name`,
+`flag: no argument FILE`, or `flag: no Rest argument`.
+
+**Usage text.** `Usage` returns the same text for the same `Set`, built in
+declaration order:
+
+```text
+Usage: greet [options] STYLE [FILE...]
+
+Print a greeting.
+
+Arguments:
+  STYLE    plain or fancy
+  FILE...  extra files
+
+Options:
+  -n, --name NAME    who to greet (default "world")
+  -c, --count COUNT  how many times (default 1)
+  -s, --shout        use capital letters
+      --tag TAG      a tag to add (repeatable)
+  -h, --help         show this help
+```
+
+The first line lists each `Arg` placeholder and then `[REST...]`. The summary
+paragraph and the `Arguments:` section are left out when empty. In each
+section the help texts start two spaces after the widest left column; an empty
+help text leaves no trailing spaces. A value option shows its placeholder. A
+note is added for a non-empty `String` default (quoted as `strconv.Quote`
+does), a non-zero `Int` default, and every `Strings` option. `--help` is
+always listed last. Every line ends with `\n`.
+
+**Reporting.** `Report` turns the error from `Parse` into output and an exit
+status, and returns the status without exiting:
+
+| `err` | Writes | Returns |
+| --- | --- | --- |
+| `nil` | Nothing | 0 |
+| `Help`, or an error whose cause is `Help` (`errors.Is`) | `Usage()` to `stdout` | 0 |
+| Any other error | Three lines to `stderr`: `greet: ` and the message without its `flag: ` prefix, the usage line, and `Run 'greet --help' for more information.` | 2 |
+
+If the write fails, `Report` returns 1. A program that wants other text or
+other statuses skips `Report` and uses `Usage` and the error itself.
+
+```ore
+import "std/flag"
+import "std/os"
+
+func main() {
+    var set = flag.New("greet", "Print a greeting.")
+    set.String("name", "n", "world", "who to greet")
+    set.Bool("shout", "s", "use capital letters")
+    set.Rest("file", "extra files")
+    let args = os.Args()
+    let result, err = set.Parse(args[1:])
+    if err != nil {
+        var stdout = os.Stdout()
+        var stderr = os.Stderr()
+        os.Exit(set.Report(err, stdout, stderr))
+    }
+    println("hello " + result.String("name"))
+}
+```
+
+Not part of this package: grouped or attached short options, single-dash long
+names, negated booleans such as `--no-color`, abbreviated names, subcommands,
+other value types, reading options from the environment or from files, and
+splitting a command string into words. Each needs its own contract first.
+
+Ownership, error, and async implications: `Set` and `Result` are Move values
+that own copies of everything they hold; neither keeps a view of `args` after
+`Parse` returns. Declaring borrows the `Set` mutably; `Parse`, `Usage`, and
+`Report` borrow it. `Strings` and `Rest` return fresh arrays. Errors are
+ordinary `error` values (§7.2), and `Help` is a package-level value (§3.21)
+that compares equal to itself with `==`. Every function is plain: `Parse` and `Usage` never wait,
+and `Report` waits only in the writers it is given, so in an `async` caller it
+suspends exactly where those writers do.
+
+Compiler impact: none; the package is bundled Zore source built from
+`std/errors`, `std/io`, `std/strconv`, and `std/strings`. Conformance cases:
+`tests/conformance/flag.md`, with native tests in `tests/codegen/flag.rs`.
 
 ---
 

@@ -1,0 +1,471 @@
+package flag
+
+import "std/errors"
+import "std/io"
+import "std/strconv"
+import "std/strings"
+
+let Help = error("flag: help requested")
+
+const kindBool = 0
+const kindString = 1
+const kindInt = 2
+const kindStrings = 3
+
+type option struct {
+    name string
+    short string
+    kind int
+    help string
+    text string
+    number int
+}
+
+type argument struct {
+    name string
+    help string
+    rest bool
+}
+
+type Set struct {
+    name string
+    summary string
+    options Array<option>
+    arguments Array<argument>
+}
+
+type entry struct {
+    name string
+    kind int
+    given bool
+    text string
+    number int
+    list Array<string>
+}
+
+type Result struct {
+    entries Array<entry>
+    names Array<string>
+    values Array<string>
+    rest Array<string>
+    hasRest bool
+}
+
+func New(name string, summary string) Set {
+    return Set{name: name, summary: summary, options: Array<option>{}, arguments: Array<argument>{}}
+}
+
+func (s mut Set) Bool(name string, short string, help string) {
+    s.add(option{name: name, short: short, kind: kindBool, help: help, text: "", number: 0})
+}
+
+func (s mut Set) String(name string, short string, value string, help string) {
+    s.add(option{name: name, short: short, kind: kindString, help: help, text: value, number: 0})
+}
+
+func (s mut Set) Int(name string, short string, value int, help string) {
+    s.add(option{name: name, short: short, kind: kindInt, help: help, text: "", number: value})
+}
+
+func (s mut Set) Strings(name string, short string, help string) {
+    s.add(option{name: name, short: short, kind: kindStrings, help: help, text: "", number: 0})
+}
+
+func (s mut Set) Arg(name string, help string) {
+    s.addArgument(name, help, false)
+}
+
+func (s mut Set) Rest(name string, help string) {
+    s.addArgument(name, help, true)
+}
+
+func (s mut Set) add(o own option) {
+    if o.name == "help" {
+        panic("flag: reserved option --help")
+    }
+    if o.short == "h" {
+        panic("flag: reserved option -h")
+    }
+    if o.name.len() < 2 || !validName(o.name) {
+        panic("flag: invalid option name " + strconv.Quote(o.name))
+    }
+    if o.short != "" && (o.short.len() != 1 || !alphanumeric(o.short[0])) {
+        panic("flag: invalid short name " + strconv.Quote(o.short))
+    }
+    for a in s.arguments {
+        if placeholder(a.name) == placeholder(o.name) {
+            panic(sharedName(o.name, a.name))
+        }
+    }
+    for existing in s.options {
+        if existing.name == o.name {
+            panic("flag: duplicate option --" + o.name)
+        }
+        if o.short != "" && existing.short == o.short {
+            panic("flag: duplicate option -" + o.short)
+        }
+    }
+    s.options.push(o)
+}
+
+func (s mut Set) addArgument(name string, help string, rest bool) {
+    if !validName(name) {
+        panic("flag: invalid argument name " + strconv.Quote(name))
+    }
+    for o in s.options {
+        if placeholder(o.name) == placeholder(name) {
+            panic(sharedName(o.name, name))
+        }
+    }
+    for existing in s.arguments {
+        if existing.name == name {
+            panic("flag: duplicate argument " + placeholder(name))
+        }
+        if existing.rest {
+            panic("flag: argument " + placeholder(name) + " after Rest")
+        }
+    }
+    s.arguments.push(argument{name: name, help: help, rest: rest})
+}
+
+func sharedName(option string, argument string) string {
+    return "flag: option --" + option + " and argument " + placeholder(argument) + " share a name"
+}
+
+func validName(name string) bool {
+    if name.len() == 0 || !letter(name[0]) {
+        return false
+    }
+    for var i = 1; i < name.len(); i += 1 {
+        if !alphanumeric(name[i]) && name[i] != 45 {
+            return false
+        }
+    }
+    return true
+}
+
+func letter(c byte) bool {
+    return (c >= 97 && c <= 122) || (c >= 65 && c <= 90)
+}
+
+func alphanumeric(c byte) bool {
+    return letter(c) || (c >= 48 && c <= 57)
+}
+
+func placeholder(name string) string {
+    return strings.ToUpper(strings.ReplaceAll(name, "-", "_"))
+}
+
+func (s Set) emptyResult() Result {
+    var entries = Array<entry>{}
+    for o in s.options {
+        entries.push(entry{name: o.name, kind: o.kind, given: false, text: o.text, number: o.number, list: Array<string>{}})
+    }
+    var result = Result{entries: entries, names: Array<string>{}, values: Array<string>{}, rest: Array<string>{}, hasRest: false}
+    for a in s.arguments {
+        if a.rest {
+            result.hasRest = true
+        } else {
+            result.names.push(a.name)
+            result.values.push("")
+        }
+    }
+    return result
+}
+
+func (s Set) longIndex(name string) int {
+    for var i = 0; i < s.options.len(); i += 1 {
+        if s.options[i].name == name {
+            return i
+        }
+    }
+    return -1
+}
+
+func (s Set) shortIndex(short string) int {
+    for var i = 0; i < s.options.len(); i += 1 {
+        if s.options[i].short == short {
+            return i
+        }
+    }
+    return -1
+}
+
+func (s Set) Parse(args []string) (Result, error) {
+    var result = s.emptyResult()
+    var positionals = Array<string>{}
+    var scanning = true
+    var i = 0
+    for arg in args {
+        if arg == "--" {
+            break
+        }
+        if arg == "--help" || arg == "-h" {
+            return s.emptyResult(), Help
+        }
+    }
+    for i < args.len() {
+        let arg = args[i]
+        i += 1
+        if !scanning || arg == "-" || !strings.HasPrefix(arg, "-") {
+            positionals.push(arg)
+            continue
+        }
+        if arg == "--" {
+            scanning = false
+            continue
+        }
+        var spelled = arg
+        var value = ""
+        var attached = false
+        var index = -1
+        if strings.HasPrefix(arg, "--") {
+            let name, text, found = strings.Cut(strings.TrimPrefix(arg, "--"), "=")
+            spelled = "--" + name
+            value = text
+            attached = found
+            if name == "help" {
+                return s.emptyResult(), helpRequest(found)
+            }
+            index = s.longIndex(name)
+        } else {
+            let name, text, found = strings.Cut(arg, "=")
+            spelled = name
+            value = text
+            attached = found
+            if name.len() == 2 {
+                let short = strings.TrimPrefix(name, "-")
+                if short == "h" {
+                    return s.emptyResult(), helpRequest(found)
+                }
+                index = s.shortIndex(short)
+            }
+        }
+        if index < 0 {
+            return s.emptyResult(), error("flag: unknown option " + spelled)
+        }
+        let o = s.options[index]
+        let canonical = "--" + o.name
+        if result.entries[index].given && o.kind != kindStrings {
+            return s.emptyResult(), error("flag: option " + canonical + " given more than once")
+        }
+        if o.kind == kindBool {
+            if attached {
+                return s.emptyResult(), error("flag: option " + canonical + " takes no value")
+            }
+            result.entries[index].given = true
+            continue
+        }
+        if !attached {
+            if i >= args.len() || !acceptsValue(o.kind, args[i]) {
+                return s.emptyResult(), error("flag: option " + canonical + " needs a value")
+            }
+            value = args[i]
+            i += 1
+        }
+        if o.kind == kindInt {
+            let number, err = strconv.Atoi(value)
+            if err != nil {
+                return s.emptyResult(), error("flag: option " + canonical + ": invalid integer " + strconv.Quote(value))
+            }
+            result.entries[index].number = number
+        } else if o.kind == kindStrings {
+            result.entries[index].list.push(value)
+        } else {
+            result.entries[index].text = value
+        }
+        result.entries[index].given = true
+    }
+    var next = 0
+    for a in s.arguments {
+        if a.rest {
+            for next < positionals.len() {
+                result.rest.push(positionals[next])
+                next += 1
+            }
+        } else {
+            if next >= positionals.len() {
+                return s.emptyResult(), error("flag: missing argument " + placeholder(a.name))
+            }
+            result.values[next] = positionals[next]
+            next += 1
+        }
+    }
+    if next < positionals.len() {
+        return s.emptyResult(), error("flag: unexpected argument " + strconv.Quote(positionals[next]))
+    }
+    return result, nil
+}
+
+func acceptsValue(kind int, word string) bool {
+    if word == "-" || !strings.HasPrefix(word, "-") {
+        return true
+    }
+    if kind != kindInt {
+        return false
+    }
+    let _, err = strconv.Atoi(word)
+    return err == nil
+}
+
+func helpRequest(attached bool) error {
+    if attached {
+        return error("flag: option --help takes no value")
+    }
+    return Help
+}
+
+func (s Set) synopsis() string {
+    var line = "Usage: " + s.name + " [options]"
+    for a in s.arguments {
+        if a.rest {
+            line = line + " [" + placeholder(a.name) + "...]"
+        } else {
+            line = line + " " + placeholder(a.name)
+        }
+    }
+    return line + "\n"
+}
+
+func (s Set) Usage() string {
+    var out = strings.NewBuilder()
+    out.WriteString(s.synopsis())
+    if s.summary != "" {
+        out.WriteString("\n" + s.summary + "\n")
+    }
+    if s.arguments.len() > 0 {
+        var lefts = Array<string>{}
+        var helps = Array<string>{}
+        for a in s.arguments {
+            if a.rest {
+                lefts.push("  " + placeholder(a.name) + "...")
+            } else {
+                lefts.push("  " + placeholder(a.name))
+            }
+            helps.push(a.help)
+        }
+        out.WriteString("\nArguments:\n")
+        out.WriteString(columns(lefts, helps))
+    }
+    var lefts = Array<string>{}
+    var helps = Array<string>{}
+    for o in s.options {
+        var left = "      --" + o.name
+        if o.short != "" {
+            left = "  -" + o.short + ", --" + o.name
+        }
+        if o.kind != kindBool {
+            left = left + " " + placeholder(o.name)
+        }
+        lefts.push(left)
+        helps.push(o.help + defaultNote(o))
+    }
+    lefts.push("  -h, --help")
+    helps.push("show this help")
+    out.WriteString("\nOptions:\n")
+    out.WriteString(columns(lefts, helps))
+    return out.String()
+}
+
+func defaultNote(o option) string {
+    var note = ""
+    if o.kind == kindString && o.text != "" {
+        note = "(default " + strconv.Quote(o.text) + ")"
+    } else if o.kind == kindInt && o.number != 0 {
+        note = "(default " + strconv.Itoa(o.number) + ")"
+    } else if o.kind == kindStrings {
+        note = "(repeatable)"
+    }
+    if note == "" || o.help == "" {
+        return note
+    }
+    return " " + note
+}
+
+func columns(lefts Array<string>, helps Array<string>) string {
+    var width = 0
+    for left in lefts {
+        if left.len() > width {
+            width = left.len()
+        }
+    }
+    var out = strings.NewBuilder()
+    for var i = 0; i < lefts.len(); i += 1 {
+        if helps[i] == "" {
+            out.WriteString(lefts[i] + "\n")
+        } else {
+            out.WriteString(lefts[i] + strings.Repeat(" ", width - lefts[i].len() + 2) + helps[i] + "\n")
+        }
+    }
+    return out.String()
+}
+
+func (s Set) Report(err error, stdout mut io.Writer, stderr mut io.Writer) int {
+    if err == nil {
+        return 0
+    }
+    if errors.Is(err, Help) {
+        let _, failure = io.WriteString(stdout, s.Usage())
+        if failure != nil {
+            return 1
+        }
+        return 0
+    }
+    let message = strings.TrimPrefix(errors.Message(err), "flag: ")
+    let text = s.name + ": " + message + "\n" + s.synopsis() + "Run '" + s.name + " --help' for more information.\n"
+    let _, failure = io.WriteString(stderr, text)
+    if failure != nil {
+        return 1
+    }
+    return 2
+}
+
+func (r Result) find(name string, kind int, label string) int {
+    for var i = 0; i < r.entries.len(); i += 1 {
+        if r.entries[i].name == name && r.entries[i].kind == kind {
+            return i
+        }
+    }
+    panic("flag: no " + label + " option --" + name)
+}
+
+func (r Result) Bool(name string) bool {
+    return r.entries[r.find(name, kindBool, "Bool")].given
+}
+
+func (r Result) String(name string) string {
+    return r.entries[r.find(name, kindString, "String")].text
+}
+
+func (r Result) Int(name string) int {
+    return r.entries[r.find(name, kindInt, "Int")].number
+}
+
+func (r Result) Strings(name string) Array<string> {
+    return clone(r.entries[r.find(name, kindStrings, "Strings")].list)
+}
+
+func (r Result) Has(name string) bool {
+    for e in r.entries {
+        if e.name == name {
+            return e.given
+        }
+    }
+    panic("flag: no option --" + name)
+}
+
+func (r Result) Arg(name string) string {
+    for var i = 0; i < r.names.len(); i += 1 {
+        if r.names[i] == name {
+            return r.values[i]
+        }
+    }
+    panic("flag: no argument " + placeholder(name))
+}
+
+func (r Result) Rest() Array<string> {
+    if !r.hasRest {
+        panic("flag: no Rest argument")
+    }
+    return clone(r.rest)
+}
