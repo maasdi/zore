@@ -126,8 +126,6 @@ work; the checksum proof establishes registration, ownership and static linking.
 
 ## Cryptographic byte utilities
 
-The maintained external [`crypto` package](crypto.md) uses the curated
-`crypto-v1` adapter and the compiler-embedded, pinned mbedTLS 3.6.7 source
-closure. It exposes secure random bytes, SHA-256, HMAC-SHA-256 and constant-time
-byte equality with ordinary borrowed inputs and owned arrays. The guide records
-its bounded scope, offline installation, platform dependencies and provenance.
+The former external `crypto` package and its `crypto-v1` adapter are removed.
+Secure random bytes, hashing, HMAC and constant-time comparison are in the
+standard library under `std/crypto/`, with no native adapter.

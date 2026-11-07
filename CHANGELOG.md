@@ -18,6 +18,11 @@ including those shipped in `0.1.0-alpha.1`, are not split by release.
 
 ### Curated native libraries
 
+- Removed: the external `crypto` package (`examples/crypto`) and its
+  `crypto-v1` adapter. Use `std/crypto/rand`, `std/crypto/subtle`,
+  `std/crypto/sha256` and `std/crypto/hmac` instead; a manifest still declaring
+  `crypto-v1` now fails with an unknown-adapter error. The embedded Mbed TLS
+  closure stays for `tls`.
 - The maintained `tls` and `sqlite` packages moved to `packages/` and are
   released as `tls/v<version>` and `sqlite/v<version>` tags of this repository,
   with the same version as the compiler release.

@@ -11,8 +11,8 @@ here is imported implicitly.
 | [`sqlite`](sqlite) | `sqlite` | `sqlite-v1` | SQLite 3.54.1 amalgamation, in `sqlite/native/` |
 
 Secure random bytes, hashing, HMAC and constant-time comparison are in the
-standard library (`std/crypto/...`). The older `crypto` package in
-`examples/crypto/crypto` is not released from here.
+standard library (`std/crypto/...`); the former external `crypto` package has
+been removed.
 
 ## Identity
 

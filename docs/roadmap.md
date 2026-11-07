@@ -2675,10 +2675,8 @@ and Zore eventually becomes capable of compiling itself.
 
 ## Cryptographic utilities (#152)
 
-The maintained external `crypto-v1` package adds random bytes, SHA-256,
-HMAC-SHA-256 and provider constant-time byte comparison through pinned, embedded
-mbedTLS 3.6.7 sources. [The guide](crypto.md) documents installation, provider
-provenance, ownership/error/async limits and later cryptographic scope. Focused
-regressions execute known answers, randomness size bounds, injected provider
-failures, concurrent operations and cleanup on supported-host CI. Local Linux
-verification and cross-host CI evidence are reported with the implementation PR.
+Historical: the external `crypto-v1` package added random bytes, SHA-256,
+HMAC-SHA-256 and constant-time comparison through embedded mbedTLS sources. It
+is now removed; `std/crypto/rand`, `std/crypto/subtle`, `std/crypto/sha256`,
+`std/crypto/sha512`, `std/crypto/sha1` and `std/crypto/hmac` provide those
+operations in the standard library.
