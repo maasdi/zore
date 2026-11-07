@@ -65,12 +65,19 @@
 
 ## Branches
 
-- Name each branch after its change in short lowercase kebab-case, for example
-  `tls-alpha-tags` or `http-lingering-close`. Use ASCII letters, digits and
-  hyphens only, at most about five words.
+- Follow Conventional Branch: `<type>/<description>`, for example
+  `feature/tls-alpha-tags`, `bugfix/http-lingering-close` or
+  `release/v0.1.0-alpha.2`.
+- Types: `feature/` for new behavior, `bugfix/` for fixes, `hotfix/` for urgent
+  fixes to a release, `release/` for release preparation and `chore/` for
+  docs, CI, dependencies and other non-code work.
+- The description is short lowercase kebab-case naming the change: ASCII
+  letters, digits and hyphens, with dots only in `release/` versions. No
+  leading, trailing or repeated hyphens or dots. An issue number may lead the
+  description, as in `feature/issue-218-package-distribution`, but never stands
+  alone.
 - Never put a tool, agent, model or person name such as `claude` in a branch
-  name. Do not add type prefixes such as `feature/`, and do not use a bare
-  issue number as the whole name.
+  name.
 - Start new branches from the latest `main`; keep one change per branch.
 
 ## Package boundaries
