@@ -23,6 +23,7 @@ bundled! {
     "encoding/binary" => ["binary.ore"],
     "encoding/hex" => ["hex.ore"],
     "encoding/json" => ["encoder.ore", "decoder.ore", "value.ore", "codec.ore"],
+    "flag" => ["flag.ore"],
     "fmt" => ["fmt.ore"],
     "io" => ["io.ore"],
     "log" => ["log.ore"],

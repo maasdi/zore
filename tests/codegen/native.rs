@@ -12,6 +12,7 @@ mod controlled_runtime;
 mod crypto;
 mod encoding;
 mod files;
+mod flag;
 mod generic_acceptance;
 mod hardening;
 mod host_support;

@@ -1,0 +1,43 @@
+$ wordfreq --help
+Usage: wordfreq [options] [WORD...]
+
+Count how often each word appears.
+
+Arguments:
+  WORD...  the words to count
+
+Options:
+  -t, --top TOP                show only the most common words (default 3)
+  -m, --min-length MIN_LENGTH  skip words shorter than this (default 1)
+  -i, --ignore IGNORE          a word to leave out (repeatable)
+  -l, --lower                  count words without regard to case
+  -h, --help                   show this help
+exit status 0
+
+$ wordfreq the cat and the hat and the bat
+3 the
+2 and
+1 bat
+exit status 0
+
+$ wordfreq --top 2 --lower --ignore the The cat THE Cat hat
+2 cat
+1 hat
+exit status 0
+
+$ wordfreq -m 4 -t=1 -- --top -top --top
+2 --top
+exit status 0
+
+$ wordfreq --top many words
+wordfreq: option --top: invalid integer "many"
+Usage: wordfreq [options] [WORD...]
+Run 'wordfreq --help' for more information.
+exit status 2
+
+$ wordfreq --colour the cat
+wordfreq: unknown option --colour
+Usage: wordfreq [options] [WORD...]
+Run 'wordfreq --help' for more information.
+exit status 2
+
