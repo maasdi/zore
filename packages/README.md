@@ -33,8 +33,8 @@ forks as the same package.
 name = "myapp"
 
 [dependencies]
-tls = { git = "https://github.com/maasdi/zore.git", subdir = "packages/tls", version = "0.1.0" }
-sqlite = { git = "https://github.com/maasdi/zore.git", subdir = "packages/sqlite", version = "0.1.0" }
+tls = { git = "https://github.com/maasdi/zore.git", subdir = "packages/tls", version = "0.1.0-alpha.2" }
+sqlite = { git = "https://github.com/maasdi/zore.git", subdir = "packages/sqlite", version = "0.1.0-alpha.2" }
 ```
 
 ```sh
@@ -54,8 +54,15 @@ repository.
 
 ## Release policy
 
-- Versions follow `MAJOR.MINOR.PATCH`. Before 1.0.0 a minor bump (0.1 to 0.2)
-  is a breaking change; a patch bump is not.
+- Versions follow `MAJOR.MINOR.PATCH`, optionally with an `-alpha.N` suffix.
+  Before 1.0.0 a minor bump (0.1 to 0.2) is a breaking change; a patch bump is
+  not. `0.1.0-alpha.1` comes before `0.1.0-alpha.2`, which comes before `0.1.0`.
+- Each package's version equals the compiler's version in
+  `compiler/Cargo.toml`; a test enforces this. A compiler release tags all
+  three on one commit, so compiler `v0.1.0-alpha.2` pairs with
+  `tls/v0.1.0-alpha.2` and `sqlite/v0.1.0-alpha.2`. The first package release
+  ships with compiler `v0.1.0-alpha.2`; earlier compilers cannot read alpha
+  package versions.
 - A package release is tagged on a commit of this repository's `main` branch,
   after CI passes on Linux, macOS and Windows for that commit.
 - The native adapter recipe is part of the compiler. Use a package release with
@@ -68,18 +75,21 @@ repository.
 
 ### Cutting a release
 
-From a clean checkout of the reviewed `main` commit:
+The compiler's release PR bumps `compiler/Cargo.toml` and both package
+manifests to the new version and refreshes their locks. After it merges and CI
+passes on that `main` commit, push the compiler tag and then the package tags
+on the same commit:
 
 ```sh
-zore install --offline packages/tls
-zore test --locked --offline packages/tls
-zore check --release --tag tls/v0.1.0 packages/tls
-git tag -a tls/v0.1.0 -m "Release tls 0.1.0"
-git push origin refs/tags/tls/v0.1.0
+version=0.1.0-alpha.2
+zore check --release --tag tls/v$version packages/tls
+zore check --release --tag sqlite/v$version packages/sqlite
+git tag -a v$version -m "Release $version"
+git tag -a tls/v$version -m "Release tls $version"
+git tag -a sqlite/v$version -m "Release sqlite $version"
+git push origin refs/tags/v$version
+git push origin refs/tags/tls/v$version refs/tags/sqlite/v$version
 ```
-
-Replace `tls` with `sqlite` and the version as needed. The manifest `version`
-must equal the tag version.
 
 ## Supported hosts
 

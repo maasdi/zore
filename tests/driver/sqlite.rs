@@ -90,7 +90,10 @@ fn sqlite_resource_contract_and_tagged_offline_application() {
     git(&library, &["init", "-q"]);
     git(&library, &["add", "."]);
     git(&library, &["commit", "-qm", "reviewed SQLite fixture"]);
-    git(&library, &["tag", "sqlite/v0.1.0"]);
+    git(
+        &library,
+        &["tag", &format!("sqlite/v{}", env!("CARGO_PKG_VERSION"))],
+    );
     let revision = git(&library, &["rev-parse", "HEAD"]);
     let path = library.to_str().unwrap().replace('\\', "/");
     let url = format!(
@@ -101,7 +104,8 @@ fn sqlite_resource_contract_and_tagged_offline_application() {
         &fixture.root,
         "app/zore.toml",
         &format!(
-            "name = 'notes'\n[dependencies]\nsqlite = {{ git = '{url}', version = '0.1.0' }}\n"
+            "name = 'notes'\n[dependencies]\nsqlite = {{ git = '{url}', version = '{}' }}\n",
+            env!("CARGO_PKG_VERSION")
         ),
     );
     write(

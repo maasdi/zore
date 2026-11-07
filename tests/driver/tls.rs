@@ -262,12 +262,13 @@ fn tagged_tls_release_is_consumed_from_a_monorepo_subdirectory_offline() {
     copy_tree(&fixture.root, &repository.join("packages/tls"));
     git(&repository, &["init", "-q"]);
     git(&repository, &["add", "."]);
-    git(&repository, &["commit", "-qm", "Release tls 0.1.0"]);
-    git(&repository, &["tag", "tls/v0.1.0"]);
+    let tag = format!("tls/v{}", env!("CARGO_PKG_VERSION"));
+    git(&repository, &["commit", "-qm", "Release tls"]);
+    git(&repository, &["tag", &tag]);
     let revision = git(&repository, &["rev-parse", "HEAD"]);
     let mut release = Command::new(&fixture.compiler);
     release
-        .args(["check", "--release", "--tag", "tls/v0.1.0"])
+        .args(["check", "--release", "--tag", &tag])
         .arg(repository.join("packages/tls"));
     assert!(run(release).status.success());
     let path = repository.to_str().unwrap().replace('\\', "/");
@@ -280,7 +281,8 @@ fn tagged_tls_release_is_consumed_from_a_monorepo_subdirectory_offline() {
     fs::write(
         app.join("zore.toml"),
         format!(
-            "name = \"httpsapp\"\n[dependencies]\ntls = {{ git = \"{url}\", subdir = \"packages/tls\", version = \"0.1.0\" }}\n"
+            "name = \"httpsapp\"\n[dependencies]\ntls = {{ git = \"{url}\", subdir = \"packages/tls\", version = \"{}\" }}\n",
+            env!("CARGO_PKG_VERSION")
         ),
     )
     .unwrap();
@@ -304,7 +306,7 @@ func main() {}
     success(run(install));
     let lock = fs::read_to_string(app.join("zore.lock")).unwrap();
     assert!(lock.contains(&revision), "{lock}");
-    assert!(lock.contains("tls/v0.1.0"), "{lock}");
+    assert!(lock.contains(&tag), "{lock}");
     assert!(lock.contains("tls-mbedtls-v1"), "{lock}");
     fs::rename(&repository, fixture._directory.path().join("unavailable")).unwrap();
     let mut locked = fixture.target("install", &app);

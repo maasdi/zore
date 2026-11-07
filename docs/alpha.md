@@ -124,7 +124,10 @@ tools. These checks validate the packaging path, not arbitrary website programs.
 
 Before tagging, require the release PR's ordinary CI and alpha-distribution
 checks to pass. Merge to `main`, wait for ordinary CI on that exact commit,
-then push the matching `v0.1.0-alpha.1` tag. The tag workflow verifies version,
+then push the matching `v0.1.0-alpha.1` tag. The release PR also sets
+`packages/tls` and `packages/sqlite` to the same version (a test enforces it);
+push their `tls/v<version>` and `sqlite/v<version>` tags on the same commit
+after the compiler tag. The tag workflow verifies version,
 main-branch ancestry and successful CI on the same commit, rebuilds and validates
 the artifacts, publishes the versioned builder image and creates a draft
 prerelease. Inspect assets/checksums, image provenance and installation evidence
@@ -133,7 +136,7 @@ fix a failed published version with a new alpha number.
 
 The compiler bounds in project metadata remain numeric: `0.1.0-alpha.1` is
 compared as `0.1.0` for `zore-min` and `zore-max`. Package release versions
-still reject prerelease suffixes. This does not imply stable compatibility.
+may carry an `-alpha.N` suffix; the bounds may not. This does not imply stable compatibility.
 
 Website code, domain setup and Fly deployment remain in the independent website
 repository. No Fly application, deployment token or production service is

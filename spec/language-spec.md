@@ -399,11 +399,16 @@ panic cleanup, owned async values and Linux/macOS/Windows native execution.
 
 ## 3.4.4 Release versions and metadata validation — LOCKED
 
-A release version is exactly three ASCII decimal components `MAJOR.MINOR.PATCH`.
-Each component is `0` or a nonzero digit followed by digits, without a fixed
-integer-width limit. Whitespace, signs, leading zeroes, `v` prefixes, ranges,
-prerelease and build suffixes are rejected. Ordering compares components
-numerically. The canonical Git release tag is `<name>/v<version>`; both parts
+A release version is exactly three ASCII decimal components `MAJOR.MINOR.PATCH`,
+optionally followed by an alpha suffix `-alpha.N`. Each component, including
+`N`, is `0` or a nonzero digit followed by digits, without a fixed integer-width
+limit. Whitespace, signs, leading zeroes, `v` prefixes, ranges, other prerelease
+labels such as `beta` or `rc`, uppercase labels and build suffixes are rejected.
+Ordering compares the three components numerically; for equal components an
+alpha precedes the plain version and alphas order by `N`, so
+`0.1.0-alpha.1 < 0.1.0-alpha.2 < 0.1.0 < 0.1.1-alpha.1`. An alpha belongs to the
+compatibility line of its components (§3.4.5): `0.1.0-alpha.1` is in the 0.1
+line and `1.0.0-alpha.1` in the 1 line. The canonical Git release tag is `<name>/v<version>`; both parts
 must exactly agree with the selected project's manifest. A future Git resolver
 must resolve lightweight/annotated tags to commits and reuse the existing
 commit/tree verification. Checking a supplied tag string locally does not prove
@@ -444,7 +449,8 @@ exclusive. Compiler distributions may carry a prerelease or build suffix;
 these bounds compare the compiler's numeric `MAJOR.MINOR.PATCH` core, not its
 distribution suffix. For example, `0.1.0-alpha.1` satisfies `zore-min = "0.1.0"`
 and fails `zore-max = "0.1.0"`. This comparison does not declare a prerelease
-stable or extend the canonical project-version grammar above. No source
+stable. The bounds themselves take only `MAJOR.MINOR.PATCH`; an alpha suffix in
+`zore-min` or `zore-max` is rejected. No source
 syntax, ownership, error, cleanup or async behavior changes. The loader must
 derive the compiler core separately from its display version; conformance
 covers acceptance at the inclusive core and rejection at the exclusive core.
@@ -596,8 +602,11 @@ have no inferred release line and are omitted. No tagged selections produces an
 explicit message. Extra/duplicate flags and `--locked` are usage errors.
 
 Online discovery uses normal Git tag listing for each exact source/name pair.
-Only exact canonical `<name>/v<MAJOR.MINOR.PATCH>` ref names count; unrelated,
-malformed, prerelease, build-suffixed and peeled pseudo-refs are ignored. Report
+Only exact canonical `<name>/v<version>` ref names under §3.4.4 count; unrelated,
+malformed, non-alpha prerelease, build-suffixed and peeled pseudo-refs are
+ignored. Alpha versions are reported only for a dependency whose locked version
+is itself an alpha; a dependency locked to a plain version never has an alpha
+reported. Report
 the locked version, numerically newest advertised compatible version (or `-`),
 and the newest version in each newer incompatible line, sorted numerically (or
 `-`). Compatible advertisement may be older than the lock if tags disappeared;
@@ -772,10 +781,14 @@ never imported implicitly. Their canonical identity is the repository URL
 `subdir = "packages/sqlite"` and the project name. Other URL spellings, mirrors
 and forks are different sources under §3.4.5.
 
-Each package manifest declares a canonical version, an SPDX license expression,
+Each package manifest declares a canonical version equal to the compiler's own
+version on the same commit (`compiler/Cargo.toml`), an SPDX license expression,
 a confined license file, a description and the supported platforms. A release is
-an ordinary §3.4.6 tag, `tls/vX.Y.Z` or `sqlite/vX.Y.Z`, on a reviewed commit of
-the repository's main branch whose CI passed on Linux, macOS and Windows. A
+an ordinary §3.4.6 tag, `tls/v<version>` or `sqlite/v<version>`, pushed with the
+compiler's `v<version>` tag on the same reviewed commit of the repository's main
+branch whose CI passed on Linux, macOS and Windows. While the compiler is in
+alpha, package versions therefore carry the same `-alpha.N` suffix, for example
+`v0.1.0-alpha.2`, `tls/v0.1.0-alpha.2` and `sqlite/v0.1.0-alpha.2`. A
 published tag is never moved or deleted; any source correction is a new version.
 The package's reviewed native sources and the compiler's adapter recipe change
 together. An adapter source or recipe change requires a new package version, and
@@ -787,7 +800,7 @@ An application consumes a release as:
 
 ```toml
 [dependencies]
-tls = { git = "https://github.com/maasdi/zore.git", subdir = "packages/tls", version = "0.1.0" }
+tls = { git = "https://github.com/maasdi/zore.git", subdir = "packages/tls", version = "0.1.0-alpha.2" }
 ```
 
 The application commits its own `zore.lock`. After install with a populated
@@ -808,8 +821,11 @@ the compiler; implementing them in Zore is a separate future design.
 
 No registry, catalog, syntax, ownership, error, presence or async rule changes,
 and no provider is duplicated or moved into the standard library. Compiler
-impact: none beyond the existing adapters. Conformance covers release metadata
-validation of each package and a separate application that installs each tagged
+impact: the §3.4.4 version type gains the optional alpha suffix; adapters are
+unchanged. Conformance covers alpha grammar, ordering and line membership,
+rejected alpha compiler bounds, alpha tag publication, locking, minimum selection
+across alphas and alpha-only update reports, release metadata validation of each
+package with its version equal to the compiler's and a separate application that installs each tagged
 release from a monorepo subdirectory, records the exact commit and adapter in
 its lock, loses the source repository and still installs locked, checks without
 native tools, and for `sqlite` builds, runs and tests offline from the cache,

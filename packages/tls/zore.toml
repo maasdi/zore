@@ -1,5 +1,5 @@
 name = "tls"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 license = "Apache-2.0"
 license-file = "LICENSE"
 description = "Verified TLS 1.3 and 1.2 connections and HTTPS clients over Mbed TLS"

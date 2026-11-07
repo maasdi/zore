@@ -105,8 +105,9 @@ greeting  1.2.3    1.4.0               2.3.0, 3.0.0
 Actual columns are separated by tabs. Versions are ordered numerically, so
 1.10.0 follows 1.9.0. Major 1 and higher share a line by major; before 1.0, the
 minor must also match. Each newer incompatible line shows its newest advertised
-version. Malformed/noncanonical release names, prereleases and build suffixes
-are ignored. A `-` means no matching advertised version, including when tags
+version. Malformed/noncanonical release names, non-alpha prereleases and build
+suffixes are ignored. Alpha tags are reported only when the locked version is
+itself an alpha. A `-` means no matching advertised version, including when tags
 have disappeared; a reported compatible version may then be older than the lock.
 
 The command lists ref names without fetching their source. A reported tag might
