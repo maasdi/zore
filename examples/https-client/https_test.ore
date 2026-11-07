@@ -18,20 +18,29 @@ async func serveHTTPS(listener own net.Listener, config own tls.ServerConfig, ct
     var one = Array<byte>{0}
     for !strings.HasSuffix(request, "\r\n\r\n") {
         let n = conn.Read(one[:])?
-        if n != 1 || request.len() > 4096 { return error("invalid HTTPS request") }
+        if n != 1 || request.len() > 4096 {
+            return error("invalid HTTPS request")
+        }
         request += string(rune(one[0]))
     }
-    if !strings.HasPrefix(request, "GET /binary HTTP/1.1\r\nHost: " + host + ":") { return error("wrong HTTPS authority or target") }
+    if !strings.HasPrefix(request, "GET /binary HTTP/1.1\r\nHost: " + host + ":") {
+        return error("wrong HTTPS authority or target")
+    }
     var response = strings.Bytes("HTTP/1.1 200 OK\r\nContent-Length: 3\r\n\r\n")
-    response.push(0); response.push(255); response.push(128)
+    response.push(0)
+    response.push(255)
+    response.push(128)
     for var position = 0; position < response.len(); position += 1 {
         let n = conn.Write(response[position:position + 1])?
-        if n != 1 { return error("short HTTPS fixture write") }
+        if n != 1 {
+            return error("short HTTPS fixture write")
+        }
         time.Sleep(2 * time.Millisecond)
     }
     let _ = conn.Close()
     return nil
 }
+
 func httpsCase(host string, certPath string, keyPath string, rootsPath string, expected string) error {
     let roots = os.ReadFile(rootsPath)?
     let cert = os.ReadFile(certPath)?
@@ -44,39 +53,57 @@ func httpsCase(host string, certPath string, keyPath string, rootsPath string, e
     let client = http.NewClientWithTransport(settings, transport)?
     let listener = net.Listen("tcp4", "127.0.0.1:0")?
     let _, port, found = strings.Cut(listener.Addr(), ":")
-    if !found { return error("listener port") }
+    if !found {
+        return error("listener port")
+    }
     listener.SetDeadline(time.Now().Add(3 * time.Second))?
     let ctx, cancel = context.WithTimeout(context.Background(), 3 * time.Second)
     let server = go serveHTTPS(listener, serverConfig, ctx, host)
     let response, err = client.Get(ctx, "https://" + host + ":" + port + "/binary")
     if expected == "" {
-        if err != nil { cancel(); return err }
-        if response.StatusCode != 200 || response.Body.len() != 3 || response.Body[0] != 0 || response.Body[1] != 255 || response.Body[2] != 128 { panic("HTTPS binary response") }
+        if err != nil {
+            cancel();
+            return err
+        }
+        if response.StatusCode != 200 || response.Body.len() != 3 || response.Body[0] != 0 || response.Body[1] != 255 || response.Body[2] != 128 {
+            panic("HTTPS binary response")
+        }
     } else {
-        if err == nil || response.Body.len() != 0 { panic("unverified HTTPS accepted") }
-        if !strings.Contains(errors.Message(err), expected) { panic(errors.Message(err)) }
+        if err == nil || response.Body.len() != 0 {
+            panic("unverified HTTPS accepted")
+        }
+        if !strings.Contains(errors.Message(err), expected) {
+            panic(errors.Message(err))
+        }
     }
     let servingErr = server.wait()
     cancel()
-    if expected == "" && servingErr != nil { return servingErr }
+    if expected == "" && servingErr != nil {
+        return servingErr
+    }
     _ = servingErr
     return nil
 }
+
 func TestHTTPSDoVerifiesPeerAndPreservesFragmentedBinaryBytes() error {
     return httpsCase("localhost", "../../packages/tls/testdata/server.pem", "../../packages/tls/testdata/server-key.pem", "../../packages/tls/testdata/roots.pem", "")
 }
+
 func TestHTTPSDoRejectsUntrustedExpiredAndFutureCertificates() error {
     httpsCase("localhost", "../../packages/tls/testdata/server.pem", "../../packages/tls/testdata/server-key.pem", "../../packages/tls/testdata/future.pem", "not correctly signed")?
     httpsCase("localhost", "../../packages/tls/testdata/expired.pem", "../../packages/tls/testdata/expired-key.pem", "../../packages/tls/testdata/roots.pem", "expired")?
     return httpsCase("localhost", "../../packages/tls/testdata/future.pem", "../../packages/tls/testdata/future-key.pem", "../../packages/tls/testdata/roots.pem", "future")
 }
+
 func TestHTTPSDoRejectsTrustedWrongHostname() error {
     return httpsCase("localhost", "testdata/wrong-host.pem", "../../packages/tls/testdata/server-key.pem", "testdata/wrong-host.pem", "does not match")
 }
+
 func TestHTTPSIPAddressURLsMatchOnlyIPEntries() error {
     httpsCase("127.0.0.1", "../../packages/tls/testdata/ip.pem", "../../packages/tls/testdata/server-key.pem", "../../packages/tls/testdata/ip.pem", "")?
     return httpsCase("127.0.0.1", "../../packages/tls/testdata/server.pem", "../../packages/tls/testdata/server-key.pem", "../../packages/tls/testdata/roots.pem", "does not match")
 }
+
 func TestHTTPSDefaultClientUsesPlatformRoots() error {
     let client = https.NewDefaultClient(http.DefaultClientConfig())?
     let transport = https.NewDefaultTransport()?
