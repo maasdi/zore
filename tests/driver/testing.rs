@@ -435,6 +435,17 @@ func boolText(value bool) string {
 
 const SUM: &str = "package calc\nfunc add(a int, b int) int { return a + b }\n";
 
+/// Each line with the folder before `file` removed, whatever its separators or short names.
+fn without_folders(text: &str, file: &str) -> String {
+    text.lines()
+        .map(|line| match line.find(file) {
+            Some(start) => &line[start..],
+            None => line,
+        })
+        .map(|line| format!("{line}\n"))
+        .collect()
+}
+
 #[test]
 fn context_tests_record_failures_stop_at_errors_and_clean_up_on_every_path() {
     let directory = project(&[
@@ -444,9 +455,10 @@ fn context_tests_record_failures_stop_at_errors_and_clean_up_on_every_path() {
     ]);
     let output = run(directory.path());
     assert_eq!(output.status.code(), Some(1), "{output:?}");
-    let text = stdout(&output)
-        .replace(&format!("{}::", directory.path().display()), ".::")
-        .replace(&format!("{}/", directory.path().display()), "");
+    let text = without_folders(
+        &stdout(&output).replace(&format!("{}::", directory.path().display()), ".::"),
+        "calc_test.ore:",
+    );
     assert!(text.ends_with("Tests: 2 passed, 3 failed\n"), "{text}");
     let block = |name: &str| {
         let start = text
