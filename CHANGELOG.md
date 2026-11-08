@@ -8,6 +8,16 @@ including those shipped in `0.1.0-alpha.1`, are not split by release.
 
 ## [Unreleased]
 
+### Regular expressions
+
+- Added `std/regexp`: compilation, matching, bounded finding, numbered-capture
+  and literal replacement, with explicit errors and presence. Matching uses
+  UTF-8 runes and original byte offsets; ASCII shorthands are locale independent.
+- Compiled patterns are Move handles with cheap `Share` for independent tasks.
+  A dependency-free ordered Thompson NFA enforces state, work, input, output
+  and match limits instead of recursively backtracking. Unsupported PCRE
+  features, flags and Unicode properties fail explicitly.
+
 ### Testing
 
 - Added `std/testing` (§37.22). Checks return an `error` that starts with the

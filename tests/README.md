@@ -1,5 +1,13 @@
 # Compiler testing
 
+Regular expressions have parser/VM/lifecycle tests in the runtime,
+`tests/packages/regexp.rs` for ownership, visibility and async classification,
+and bounded native runs in `tests/codegen/regexp.rs` for captures, Unicode,
+replacement, work/output limits, one-worker sharing and cleanup. The native
+suite also compiles the guide examples. CI runs
+`python tests/hardening/regexp_oracle.py` for 17,960 deterministic comparisons
+against an independent engine. See `conformance/regexp.md` for the contract map.
+
 `tests/packages/local_dependencies.rs` checks manifests, transitive and diamond
 graphs, direct visibility before cache reuse, root imports, conflicts, cycles,
 canonical project aliases and package boundaries. `tests/codegen/local_dependencies.rs`
