@@ -8,6 +8,17 @@ including those shipped in `0.1.0-alpha.1`, are not split by release.
 
 ## [Unreleased]
 
+### Archive I/O
+
+- Added `std/archive` for bounded USTAR and classic stored ZIP readers/writers,
+  explicit entry presence, skipping, finalization and checksum/structure errors.
+  Generic writers return their concrete sink through `Sink()` so `.tar.gz`
+  composition can finalize each layer in order. Archives never extract files.
+- Added `io.ReadSeeker` and IEEE `std/hash/crc32`, shared by ZIP and gzip.
+- Fixed duplicate LLVM symbols for same-named generic methods on different
+  receiver types, including interface dispatch and cleanup.
+- ZIP DEFLATE/ZIP64, extended TAR forms and filesystem extraction remain follow-ups.
+
 ### Streaming gzip
 
 - Added `std/compress/gzip` with owned, composable readers and writers,

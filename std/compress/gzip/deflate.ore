@@ -1,5 +1,7 @@
 package gzip
 
+import "std/hash/crc32"
+
 func zeros(count int) Array<byte> {
     var result = Array<byte>{}
     for var i = 0; i < count; i += 1 {
@@ -9,15 +11,7 @@ func zeros(count int) Array<byte> {
 }
 
 func crcByte(crc int, value byte) int {
-    var next = crc ^ int(value)
-    for var bit = 0; bit < 8; bit += 1 {
-        if next & 1 != 0 {
-            next = (next >> 1) ^ 3988292384
-        } else {
-            next >>= 1
-        }
-    }
-    return next
+    return int(crc32.UpdateByte(uint32(crc ^ 4294967295), value)) ^ 4294967295
 }
 
 type alphabet struct {

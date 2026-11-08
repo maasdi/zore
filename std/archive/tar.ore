@@ -1,0 +1,448 @@
+package archive
+
+import "std/io"
+import "std/strings"
+
+const tarRecord = 512
+
+func octal(data []byte) (int, error) {
+    var value = 0
+    var ended = false
+    var started = false
+    for octet in data {
+        if octet == 0 || octet == 32 {
+            if started || octet == 0 {
+                ended = true
+            }
+        } else {
+            if ended || octet < 48 || octet > 55 {
+                return 0, error("archive: invalid TAR octal field")
+            }
+            started = true
+            value = value * 8 + int(octet - 48)
+        }
+    }
+    return value, nil
+}
+
+func tarText(data []byte) (string, error) {
+    var end = data.len()
+    for var i = 0; i < data.len(); i += 1 {
+        if data[i] == 0 {
+            end = i
+            if !allZero(data[i:]) {
+                return "", error("archive: invalid TAR text padding")
+            }
+            break
+        }
+    }
+    return strings.FromBytes(data[:end])
+}
+
+func tarHeader(block []byte) (Header, error) {
+    let expected = octal(block[148:156])?
+    var sum = 0
+    for var i = 0; i < tarRecord; i += 1 {
+        if i >= 148 && i < 156 {
+            sum += 32
+        } else {
+            sum += int(block[i])
+        }
+    }
+    if expected != sum {
+        return absent(), error("archive: TAR header checksum mismatch")
+    }
+    if block[257] != 117 || block[258] != 115 || block[259] != 116 || block[260] != 97 || block[261] != 114 || block[262] != 0 || block[263] != 48 || block[264] != 48 {
+        return absent(), error("archive: unsupported TAR format")
+    }
+    if block[156] != 0 && block[156] != 48 && block[156] != 53 {
+        return absent(), error("archive: unsupported TAR entry type")
+    }
+    if !allZero(block[157:257]) {
+        return absent(), error("archive: TAR link target is unsupported")
+    }
+    let _, modeErr = octal(block[100:108])
+    if modeErr != nil {
+        return absent(), modeErr
+    }
+    let _, uidErr = octal(block[108:116])
+    if uidErr != nil {
+        return absent(), uidErr
+    }
+    let _, gidErr = octal(block[116:124])
+    if gidErr != nil {
+        return absent(), gidErr
+    }
+    let _, timeErr = octal(block[136:148])
+    if timeErr != nil {
+        return absent(), timeErr
+    }
+    let size = octal(block[124:136])?
+    var name = tarText(block[:100])?
+    let prefix = tarText(block[345:500])?
+    if prefix != "" {
+        name = prefix + "/" + name
+    }
+    let header = Header{Name: name, Size: size, Directory: block[156] == 53}
+    validate(header)?
+    return header, nil
+}
+
+func putOctal(data mut []byte, at int, width int, value int) {
+    var rest = value
+    data[at + width - 1] = 0
+    for var i = width - 2; i >= 0; i -= 1 {
+        data[at + i] = byte(48 + rest % 8)
+        rest /= 8
+    }
+}
+
+func encodeTAR(header Header) (Array<byte>, error) {
+    validate(header)?
+    var name = header.Name
+    var prefix = ""
+    if name.len() > 100 {
+        var split = -1
+        for var i = 0; i < name.len(); i += 1 {
+            if name[i] == 47 && i <= 155 && name.len() - i - 1 <= 100 && i + 1 < name.len() {
+                split = i
+            }
+        }
+        if split < 0 {
+            return Array<byte>{}, error("archive: TAR name does not fit USTAR")
+        }
+        prefix = name[:split]
+        name = name[split + 1:]
+    }
+    var block = zeros(tarRecord)
+    putText(block[:], 0, name)
+    putText(block[:], 345, prefix)
+    var mode = 0o644
+    block[156] = 48
+    if header.Directory {
+        mode = 0o755;
+        block[156] = 53
+    }
+    putOctal(block[:], 100, 8, mode)
+    putOctal(block[:], 108, 8, 0)
+    putOctal(block[:], 116, 8, 0)
+    putOctal(block[:], 124, 12, header.Size)
+    putOctal(block[:], 136, 12, 0)
+    putText(block[:], 257, "ustar")
+    putText(block[:], 263, "00")
+    for var i = 148; i < 156; i += 1 {
+        block[i] = 32
+    }
+    var sum = 0
+    for value in block {
+        sum += int(value)
+    }
+    putOctal(block[:], 148, 7, sum)
+    block[155] = 32
+    return block, nil
+}
+
+type TARReader struct {
+    source io.Reader
+    archiveLimit int
+    dataLimit int
+    entryLimit int
+    consumed int
+    declared int
+    entries int
+    remaining int
+    padding int
+    active bool
+    ended bool
+    pending error
+    err error
+}
+
+func NewTARReader(source own io.Reader, archiveLimit int, dataLimit int, entryLimit int) (TARReader, error) {
+    var reader = TARReader{source: source, archiveLimit: archiveLimit, dataLimit: dataLimit, entryLimit: entryLimit, consumed: 0, declared: 0, entries: 0, remaining: 0, padding: 0, active: false, ended: false, pending: nil, err: nil}
+    if !validLimits(archiveLimit, dataLimit, entryLimit) {
+        reader.err = error("archive: invalid limit")
+    }
+    let err = reader.err
+    return reader, err
+}
+
+func (r mut TARReader) pull(buf mut []byte) (int, error) {
+    if r.pending != nil {
+        return 0, r.pending
+    }
+    let room = r.archiveLimit - r.consumed
+    var want = buf.len()
+    if want > room {
+        want = room + 1
+    }
+    let count, err = readSome(r.source, buf[:want])
+    r.consumed += count
+    if count > room {
+        _ = err
+        return room, error("archive: archive byte limit exceeded")
+    }
+    if count > 0 {
+        r.pending = err
+        return count, nil
+    }
+    return count, err
+}
+
+func (r mut TARReader) exact(buf mut []byte) error {
+    var offset = 0
+    for offset < buf.len() {
+        let count, err = r.pull(buf[offset:])
+        offset += count
+        if err != nil {
+            if err == io.EOF {
+                return error("archive: truncated TAR stream")
+            }
+            return err
+        }
+    }
+    return nil
+}
+
+func (r mut TARReader) finishEntry() error {
+    if r.remaining != 0 {
+        return error("archive: unread TAR entry data")
+    }
+    if r.active {
+        if r.pending != nil && r.pending != io.EOF {
+            return r.pending
+        }
+        var padding = zeros(r.padding)
+        r.exact(padding[:])?
+        if !allZero(padding[:]) {
+            return error("archive: nonzero TAR padding")
+        }
+        r.active = false
+    }
+    return nil
+}
+
+func (r mut TARReader) nextHeader() (Header, bool, error) {
+    r.finishEntry()?
+    var block = zeros(tarRecord)
+    r.exact(block[:])?
+    if allZero(block[:]) {
+        r.exact(block[:])?
+        if !allZero(block[:]) {
+            return absent(), false, error("archive: invalid TAR end records")
+        }
+        for {
+            let count, err = r.pull(block[:])
+            if !allZero(block[:count]) {
+                _ = err;
+                return absent(), false, error("archive: trailing TAR data")
+            }
+            if err != nil {
+                if err == io.EOF {
+                    r.ended = true;
+                    return absent(), false, nil
+                }
+                return absent(), false, err
+            }
+        }
+    }
+    let header = tarHeader(block[:])?
+    if r.entries == r.entryLimit {
+        return absent(), false, error("archive: entry limit exceeded")
+    }
+    if header.Size > r.dataLimit - r.declared {
+        return absent(), false, error("archive: data byte limit exceeded")
+    }
+    r.entries += 1
+    r.declared += header.Size
+    r.remaining = header.Size
+    r.padding = (tarRecord - header.Size % tarRecord) % tarRecord
+    r.active = true
+    return header, true, nil
+}
+
+func (r mut TARReader) Next() (Header, bool, error) {
+    if r.err != nil {
+        return absent(), false, r.err
+    }
+    if r.ended {
+        return absent(), false, nil
+    }
+    let header, present, err = r.nextHeader()
+    r.err = err
+    return header, present, err
+}
+
+func (r mut TARReader) Read(buf mut []byte) (int, error) {
+    if buf.len() == 0 {
+        return 0, nil
+    }
+    if r.err != nil {
+        return 0, r.err
+    }
+    if !r.active {
+        return 0, io.EOF
+    }
+    if r.remaining == 0 {
+        r.err = r.finishEntry()
+        if r.err != nil {
+            return 0, r.err
+        }
+        return 0, io.EOF
+    }
+    var want = buf.len()
+    if want > r.remaining {
+        want = r.remaining
+    }
+    let count, err = r.pull(buf[:want])
+    r.remaining -= count
+    if err == io.EOF {
+        r.err = error("archive: truncated TAR stream")
+    } else {
+        r.err = err
+    }
+    return count, r.err
+}
+
+func (r mut TARReader) Skip() error {
+    var buf = zeros(4096)
+    for {
+        let _, err = r.Read(buf[:])
+        if err == io.EOF {
+            return nil
+        }
+        if err != nil {
+            return err
+        }
+    }
+}
+
+func (r own TARReader) Close() error {
+    return r.err
+}
+
+type TARWriter<W io.Writer> struct {
+    sink W
+    output outputState
+    record Array<byte>
+    dataLimit int
+    entryLimit int
+    declared int
+    entries int
+    remaining int
+    padding int
+    active bool
+    finished bool
+    err error
+}
+
+func NewTARWriter<W io.Writer>(sink own W, archiveLimit int, dataLimit int, entryLimit int) (TARWriter<W>, error) {
+    var writer = TARWriter<W>{sink: sink, record: zeros(tarRecord), output: outputState{limit: archiveLimit, count: 0}, dataLimit: dataLimit, entryLimit: entryLimit, declared: 0, entries: 0, remaining: 0, padding: 0, active: false, finished: false, err: nil}
+    if !validLimits(archiveLimit, dataLimit, entryLimit) {
+        writer.err = error("archive: invalid limit")
+    }
+    let err = writer.err
+    return writer, err
+}
+
+func (w mut TARWriter<W>) finishEntry() error {
+    if w.remaining != 0 {
+        return error("archive: incomplete TAR entry")
+    }
+    if w.active {
+        w.record = zeros(tarRecord)
+        let _, err = writeAll(w.output, w.sink, w.record[:w.padding])
+        if err != nil {
+            return err
+        }
+        w.active = false
+    }
+    return nil
+}
+
+func (w mut TARWriter<W>) start(header Header) error {
+    let block = encodeTAR(header)?
+    if w.entries == w.entryLimit {
+        return error("archive: entry limit exceeded")
+    }
+    if header.Size > w.dataLimit - w.declared {
+        return error("archive: data byte limit exceeded")
+    }
+    w.finishEntry()?
+    w.record = block
+    let _, err = writeAll(w.output, w.sink, w.record[:])
+    if err != nil {
+        return err
+    }
+    w.entries += 1
+    w.declared += header.Size
+    w.remaining = header.Size
+    w.padding = (tarRecord - header.Size % tarRecord) % tarRecord
+    w.active = true
+    return nil
+}
+
+func (w mut TARWriter<W>) WriteHeader(header Header) error {
+    if w.finished {
+        return error("archive: writer finished")
+    }
+    if w.err == nil {
+        w.err = w.start(header)
+    }
+    return w.err
+}
+
+func (w mut TARWriter<W>) Write(data []byte) (int, error) {
+    if w.err != nil {
+        return 0, w.err
+    }
+    if w.finished {
+        return 0, error("archive: writer finished")
+    }
+    if !w.active {
+        w.err = error("archive: no writable TAR entry");
+        return 0, w.err
+    }
+    if data.len() > w.remaining {
+        w.err = error("archive: entry size exceeded");
+        return 0, w.err
+    }
+    let count, err = writeAll(w.output, w.sink, data)
+    w.remaining -= count
+    w.err = err
+    return count, err
+}
+
+func (w mut TARWriter<W>) Finish() error {
+    if w.err != nil {
+        return w.err
+    }
+    if w.finished {
+        return nil
+    }
+    w.err = w.finishEntry()
+    if w.err != nil {
+        return w.err
+    }
+    w.record = zeros(tarRecord)
+    for var i = 0; i < 2; i += 1 {
+        let _, err = writeAll(w.output, w.sink, w.record[:])
+        if err != nil {
+            w.err = err;
+            return err
+        }
+    }
+    w.finished = true
+    return nil
+}
+
+func (w own TARWriter<W>) Close() error {
+    var writer = w
+    return writer.Finish()
+}
+
+func (w own TARWriter<W>) Sink() (W, error) {
+    var writer = w
+    let err = writer.Finish()
+    return writer.sink, err
+}

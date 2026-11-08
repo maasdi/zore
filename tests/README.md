@@ -1,5 +1,13 @@
 # Compiler testing
 
+Archive checks in `tests/packages/archive.rs` cover ownership and private state.
+`tests/codegen/archive.rs` exercises short/partial I/O, explicit finalization,
+concrete sink recovery, bounded errors, cleanup and one-worker progress.
+`python tests/hardening/archive_oracle.py` checks external USTAR/stored ZIP and
+`.tar.gz` fixtures, malformed input, limits and descriptor/CRC edge cases. The
+compiled guide verifies composition and full stream validation. See
+`conformance/archives.md`.
+
 Streaming gzip has ownership/visibility checks in `tests/packages/gzip.rs` and
 leak-checked native source/sink, limit, finalization and task cleanup tests in
 `tests/codegen/gzip.rs`. `python tests/hardening/gzip_oracle.py` compares the

@@ -1,0 +1,573 @@
+package archive
+
+import "std/hash/crc32"
+import "std/io"
+import "std/strings"
+
+const zipLocal = 0x04034b50
+const zipCentral = 0x02014b50
+const zipEnd = 0x06054b50
+const zipDescriptor = 0x08074b50
+const zipUTF8 = 0x0800
+const zipStreamed = 0x0008
+
+type zipEntry struct {
+    header Header
+    crc uint32
+    flags int
+    offset int
+}
+
+func zipFlags(flags int, method int, version int) error {
+    if method != 0 {
+        return error("archive: unsupported ZIP compression method")
+    }
+    if flags & (65535 ^ (zipUTF8 | zipStreamed)) != 0 {
+        return error("archive: unsupported ZIP flags")
+    }
+    if version > 20 {
+        return error("archive: unsupported ZIP version")
+    }
+    return nil
+}
+
+func zipExtra(data []byte) error {
+    var at = 0
+    for at < data.len() {
+        if data.len() - at < 4 {
+            return error("archive: invalid ZIP extra field")
+        }
+        let kind = u16(data, at)
+        let size = u16(data, at + 2)
+        if kind == 1 {
+            return error("archive: ZIP64 is unsupported")
+        }
+        at += 4
+        if size > data.len() - at {
+            return error("archive: invalid ZIP extra field")
+        }
+        at += size
+    }
+    return nil
+}
+
+func zipName(data []byte, flags int) (string, error) {
+    if flags & zipUTF8 == 0 {
+        for value in data {
+            if value >= 128 {
+                return "", error("archive: ZIP names require ASCII or the UTF-8 flag")
+            }
+        }
+    }
+    return strings.FromBytes(data)
+}
+
+func seekTo(source mut io.ReadSeeker, offset int) error {
+    let actual, err = source.Seek(offset, io.SeekStart)
+    if err != nil {
+        return err
+    }
+    if actual != offset {
+        return error("archive: invalid seek position")
+    }
+    return nil
+}
+
+type ZIPReader struct {
+    source io.ReadSeeker
+    archiveLimit int
+    dataLimit int
+    entryLimit int
+    entries Array<zipEntry>
+    cursor int
+    remaining int
+    crc uint32
+    nextOffset int
+    centralOffset int
+    active bool
+    initialized bool
+    ended bool
+    err error
+}
+
+func NewZIPReader(source own io.ReadSeeker, archiveLimit int, dataLimit int, entryLimit int) (ZIPReader, error) {
+    var reader = ZIPReader{source: source, archiveLimit: archiveLimit, dataLimit: dataLimit, entryLimit: entryLimit, entries: Array<zipEntry>{}, cursor: 0, remaining: 0, crc: 0, nextOffset: 0, centralOffset: 0, active: false, initialized: false, ended: false, err: nil}
+    if !validLimits(archiveLimit, dataLimit, entryLimit) {
+        reader.err = error("archive: invalid limit")
+    }
+    let err = reader.err
+    return reader, err
+}
+
+func (r mut ZIPReader) initialize() error {
+    let size, sizeErr = r.source.Seek(0, io.SeekEnd)
+    if sizeErr != nil {
+        return sizeErr
+    }
+    if size < 22 {
+        return error("archive: truncated ZIP stream")
+    }
+    if size > r.archiveLimit {
+        return error("archive: archive byte limit exceeded")
+    }
+    var tailSize = size
+    if tailSize > 65557 {
+        tailSize = 65557
+    }
+    seekTo(r.source, size - tailSize)?
+    var tail = zeros(tailSize)
+    readExact(r.source, tail[:])?
+    var end = -1
+    for var at = tail.len() - 22; at >= 0; at -= 1 {
+        if u32(tail[:], at) == zipEnd && u16(tail[:], at + 20) == tail.len() - at - 22 {
+            let directoryOffset = u32(tail[:], at + 16)
+            let directorySize = u32(tail[:], at + 12)
+            let candidateOffset = size - tailSize + at
+            if directoryOffset <= candidateOffset && directorySize == candidateOffset - directoryOffset {
+                if end >= 0 {
+                    return error("archive: ambiguous ZIP end records")
+                }
+                end = at
+            }
+        }
+    }
+    if end < 0 {
+        return error("archive: ZIP end record not found")
+    }
+    if u16(tail[:], end + 4) != 0 || u16(tail[:], end + 6) != 0 {
+        return error("archive: split ZIP is unsupported")
+    }
+    let count = u16(tail[:], end + 10)
+    let centralSize = u32(tail[:], end + 12)
+    r.centralOffset = u32(tail[:], end + 16)
+    if count == 65535 || centralSize == 4294967295 || r.centralOffset == 4294967295 {
+        return error("archive: ZIP64 is unsupported")
+    }
+    if count != u16(tail[:], end + 8) {
+        return error("archive: ZIP entry count mismatch")
+    }
+    if count > r.entryLimit {
+        return error("archive: entry limit exceeded")
+    }
+    if centralSize > MaxMetadataBytes {
+        return error("archive: metadata byte limit exceeded")
+    }
+    let endOffset = size - tailSize + end
+    if r.centralOffset > endOffset || centralSize != endOffset - r.centralOffset {
+        return error("archive: invalid ZIP directory bounds")
+    }
+    seekTo(r.source, r.centralOffset)?
+    var used = 0
+    var declared = 0
+    for var index = 0; index < count; index += 1 {
+        if centralSize - used < 46 {
+            return error("archive: truncated ZIP directory")
+        }
+        var record = zeros(46)
+        readExact(r.source, record[:])?
+        used += 46
+        if u32(record[:], 0) != zipCentral {
+            return error("archive: invalid ZIP directory signature")
+        }
+        let flags = u16(record[:], 8)
+        zipFlags(flags, u16(record[:], 10), u16(record[:], 6))?
+        if u16(record[:], 34) != 0 {
+            return error("archive: split ZIP is unsupported")
+        }
+        let compressed = u32(record[:], 20)
+        let size = u32(record[:], 24)
+        let offset = u32(record[:], 42)
+        if compressed == 4294967295 || size == 4294967295 || offset == 4294967295 {
+            return error("archive: ZIP64 is unsupported")
+        }
+        if compressed != size {
+            return error("archive: stored ZIP size mismatch")
+        }
+        let nameSize = u16(record[:], 28)
+        let extraSize = u16(record[:], 30)
+        let commentSize = u16(record[:], 32)
+        if nameSize > MaxNameBytes {
+            return error("archive: invalid entry name")
+        }
+        let variableSize = nameSize + extraSize + commentSize
+        if variableSize > centralSize - used {
+            return error("archive: invalid ZIP directory record size")
+        }
+        var variable = zeros(variableSize)
+        readExact(r.source, variable[:])?
+        used += variableSize
+        zipExtra(variable[nameSize:nameSize + extraSize])?
+        let name = zipName(variable[:nameSize], flags)?
+        let directory = strings.HasSuffix(name, "/")
+        let header = Header{Name: name, Size: size, Directory: directory}
+        validate(header)?
+        let attributes = u32(record[:], 38)
+        if attributes & 16 != 0 && !directory {
+            return error("archive: inconsistent ZIP directory attributes")
+        }
+        {
+            let kind = (attributes >> 16) & 0o170000
+            if kind != 0 && kind != 0o100000 && kind != 0o40000 {
+                return error("archive: unsupported ZIP entry type")
+            }
+            if (kind == 0o40000 && !directory) || (kind == 0o100000 && directory) {
+                return error("archive: inconsistent ZIP entry type")
+            }
+        }
+        let crc = uint32(u32(record[:], 16))
+        if directory && crc != 0 {
+            return error("archive: invalid ZIP directory checksum")
+        }
+        if size > r.dataLimit - declared {
+            return error("archive: data byte limit exceeded")
+        }
+        declared += size
+        if offset >= r.centralOffset {
+            return error("archive: invalid ZIP local offset")
+        }
+        r.entries.push(zipEntry{header: header, crc: crc, flags: flags, offset: offset})
+    }
+    if used != centralSize {
+        return error("archive: ZIP directory size mismatch")
+    }
+    r.initialized = true
+    return nil
+}
+
+func (r mut ZIPReader) finishEntry() error {
+    if r.remaining != 0 {
+        return error("archive: unread ZIP entry data")
+    }
+    if !r.active {
+        return nil
+    }
+    let entry = r.entries[r.cursor - 1]
+    if r.crc != entry.crc {
+        return error("archive: ZIP checksum mismatch")
+    }
+    if entry.flags & zipStreamed != 0 {
+        var boundary = r.centralOffset
+        if r.cursor < r.entries.len() {
+            boundary = r.entries[r.cursor].offset
+        }
+        let length = boundary - r.nextOffset
+        if length != 12 && length != 16 {
+            return error("archive: invalid ZIP descriptor bounds")
+        }
+        var descriptor = zeros(length)
+        readExact(r.source, descriptor[:])?
+        var at = 0
+        if length == 16 {
+            if u32(descriptor[:], 0) != zipDescriptor {
+                return error("archive: invalid ZIP descriptor signature")
+            }
+            at = 4
+        }
+        if uint32(u32(descriptor[:], at)) != entry.crc || u32(descriptor[:], at + 4) != entry.header.Size || u32(descriptor[:], at + 8) != entry.header.Size {
+            return error("archive: ZIP descriptor mismatch")
+        }
+        r.nextOffset = boundary
+    }
+    r.active = false
+    return nil
+}
+
+func (r mut ZIPReader) nextHeader() (Header, bool, error) {
+    if !r.initialized {
+        r.initialize()?
+    }
+    r.finishEntry()?
+    if r.cursor == r.entries.len() {
+        if r.nextOffset != r.centralOffset {
+            return absent(), false, error("archive: unindexed ZIP data")
+        }
+        r.ended = true
+        return absent(), false, nil
+    }
+    let entry = r.entries[r.cursor]
+    if entry.offset != r.nextOffset {
+        return absent(), false, error("archive: ZIP local records are not contiguous and ordered")
+    }
+    if r.centralOffset - entry.offset < 30 {
+        return absent(), false, error("archive: truncated ZIP local header")
+    }
+    seekTo(r.source, entry.offset)?
+    var record = zeros(30)
+    readExact(r.source, record[:])?
+    if u32(record[:], 0) != zipLocal {
+        return absent(), false, error("archive: invalid ZIP local signature")
+    }
+    let flags = u16(record[:], 6)
+    zipFlags(flags, u16(record[:], 8), u16(record[:], 4))?
+    if flags != entry.flags {
+        return absent(), false, error("archive: ZIP flag mismatch")
+    }
+    let crc = u32(record[:], 14)
+    let compressed = u32(record[:], 18)
+    let size = u32(record[:], 22)
+    if flags & zipStreamed == 0 {
+        if uint32(crc) != entry.crc || compressed != entry.header.Size || size != entry.header.Size {
+            return absent(), false, error("archive: ZIP local metadata mismatch")
+        }
+    } else {
+        if (crc != 0 && uint32(crc) != entry.crc) || (compressed != 0 && compressed != entry.header.Size) || (size != 0 && size != entry.header.Size) {
+            return absent(), false, error("archive: ZIP local metadata mismatch")
+        }
+    }
+    let nameSize = u16(record[:], 26)
+    let extraSize = u16(record[:], 28)
+    if nameSize > MaxNameBytes {
+        return absent(), false, error("archive: invalid entry name")
+    }
+    let dataOffset = entry.offset + 30 + nameSize + extraSize
+    if dataOffset > r.centralOffset || entry.header.Size > r.centralOffset - dataOffset {
+        return absent(), false, error("archive: invalid ZIP entry bounds")
+    }
+    var variable = zeros(nameSize + extraSize)
+    readExact(r.source, variable[:])?
+    zipExtra(variable[nameSize:])?
+    let name = zipName(variable[:nameSize], flags)?
+    if name != entry.header.Name {
+        return absent(), false, error("archive: ZIP local name mismatch")
+    }
+    r.nextOffset = dataOffset + entry.header.Size
+    r.remaining = entry.header.Size
+    r.crc = 0
+    r.cursor += 1
+    r.active = true
+    return entry.header, true, nil
+}
+
+func (r mut ZIPReader) Next() (Header, bool, error) {
+    if r.err != nil {
+        return absent(), false, r.err
+    }
+    if r.ended {
+        return absent(), false, nil
+    }
+    let header, present, err = r.nextHeader()
+    r.err = err
+    return header, present, err
+}
+
+func (r mut ZIPReader) Read(buf mut []byte) (int, error) {
+    if buf.len() == 0 {
+        return 0, nil
+    }
+    if r.err != nil {
+        return 0, r.err
+    }
+    if !r.active {
+        return 0, io.EOF
+    }
+    if r.remaining == 0 {
+        r.err = r.finishEntry()
+        if r.err != nil {
+            return 0, r.err
+        }
+        return 0, io.EOF
+    }
+    var want = buf.len()
+    if want > r.remaining {
+        want = r.remaining
+    }
+    let count, err = readSome(r.source, buf[:want])
+    r.crc = crc32.Update(r.crc, buf[:count])
+    r.remaining -= count
+    if err == io.EOF {
+        r.err = error("archive: truncated ZIP stream")
+    } else {
+        r.err = err
+    }
+    return count, r.err
+}
+
+func (r mut ZIPReader) Skip() error {
+    var buf = zeros(4096)
+    for {
+        let _, err = r.Read(buf[:])
+        if err == io.EOF {
+            return nil
+        }
+        if err != nil {
+            return err
+        }
+    }
+}
+
+func (r own ZIPReader) Close() error {
+    return r.err
+}
+
+type ZIPWriter<W io.Writer> struct {
+    sink W
+    output outputState
+    dataLimit int
+    entryLimit int
+    declared int
+    metadata int
+    entries Array<zipEntry>
+    remaining int
+    crc uint32
+    active bool
+    finished bool
+    err error
+}
+
+func NewZIPWriter<W io.Writer>(sink own W, archiveLimit int, dataLimit int, entryLimit int) (ZIPWriter<W>, error) {
+    var writer = ZIPWriter<W>{sink: sink, output: outputState{limit: archiveLimit, count: 0}, dataLimit: dataLimit, entryLimit: entryLimit, declared: 0, metadata: 0, entries: Array<zipEntry>{}, remaining: 0, crc: 0, active: false, finished: false, err: nil}
+    if !validLimits(archiveLimit, dataLimit, entryLimit) {
+        writer.err = error("archive: invalid limit")
+    }
+    let err = writer.err
+    return writer, err
+}
+
+func (w mut ZIPWriter<W>) finishEntry() error {
+    if w.remaining != 0 {
+        return error("archive: incomplete ZIP entry")
+    }
+    if !w.active {
+        return nil
+    }
+    var descriptor = zeros(16)
+    put32(descriptor[:], 0, zipDescriptor)
+    put32(descriptor[:], 4, int(w.crc))
+    let size = w.entries[w.entries.len() - 1].header.Size
+    put32(descriptor[:], 8, size)
+    put32(descriptor[:], 12, size)
+    let _, err = writeAll(w.output, w.sink, descriptor[:])
+    if err != nil {
+        return err
+    }
+    w.entries[w.entries.len() - 1].crc = w.crc
+    w.active = false
+    return nil
+}
+
+func (w mut ZIPWriter<W>) start(header Header) error {
+    validate(header)?
+    if w.entries.len() == w.entryLimit {
+        return error("archive: entry limit exceeded")
+    }
+    if header.Size > w.dataLimit - w.declared {
+        return error("archive: data byte limit exceeded")
+    }
+    if 46 + header.Name.len() > MaxMetadataBytes - w.metadata {
+        return error("archive: metadata byte limit exceeded")
+    }
+    w.finishEntry()?
+    let offset = w.output.count
+    var record = zeros(30 + header.Name.len())
+    put32(record[:], 0, zipLocal)
+    put16(record[:], 4, 20)
+    put16(record[:], 6, zipUTF8 | zipStreamed)
+    put16(record[:], 12, 33)
+    put16(record[:], 26, header.Name.len())
+    putText(record[:], 30, header.Name)
+    let _, err = writeAll(w.output, w.sink, record[:])
+    if err != nil {
+        return err
+    }
+    w.entries.push(zipEntry{header: header, crc: 0, flags: zipUTF8 | zipStreamed, offset: offset})
+    w.metadata += 46 + header.Name.len()
+    w.declared += header.Size
+    w.remaining = header.Size
+    w.crc = 0
+    w.active = true
+    return nil
+}
+
+func (w mut ZIPWriter<W>) WriteHeader(header Header) error {
+    if w.finished {
+        return error("archive: writer finished")
+    }
+    if w.err == nil {
+        w.err = w.start(header)
+    }
+    return w.err
+}
+
+func (w mut ZIPWriter<W>) Write(data []byte) (int, error) {
+    if w.err != nil {
+        return 0, w.err
+    }
+    if w.finished {
+        return 0, error("archive: writer finished")
+    }
+    if !w.active {
+        w.err = error("archive: no writable ZIP entry");
+        return 0, w.err
+    }
+    if data.len() > w.remaining {
+        w.err = error("archive: entry size exceeded");
+        return 0, w.err
+    }
+    let count, err = writeAll(w.output, w.sink, data)
+    w.crc = crc32.Update(w.crc, data[:count])
+    w.remaining -= count
+    w.err = err
+    return count, err
+}
+
+func (w mut ZIPWriter<W>) directory() error {
+    let centralOffset = w.output.count
+    for entry in w.entries {
+        var record = zeros(46 + entry.header.Name.len())
+        put32(record[:], 0, zipCentral)
+        put16(record[:], 4, 20)
+        put16(record[:], 6, 20)
+        put16(record[:], 8, entry.flags)
+        put16(record[:], 14, 33)
+        put32(record[:], 16, int(entry.crc))
+        put32(record[:], 20, entry.header.Size)
+        put32(record[:], 24, entry.header.Size)
+        put16(record[:], 28, entry.header.Name.len())
+        if entry.header.Directory {
+            put32(record[:], 38, 16)
+        }
+        put32(record[:], 42, entry.offset)
+        putText(record[:], 46, entry.header.Name)
+        let _, err = writeAll(w.output, w.sink, record[:])
+        if err != nil {
+            return err
+        }
+    }
+    var end = zeros(22)
+    put32(end[:], 0, zipEnd)
+    put16(end[:], 8, w.entries.len())
+    put16(end[:], 10, w.entries.len())
+    put32(end[:], 12, w.output.count - centralOffset)
+    put32(end[:], 16, centralOffset)
+    let _, err = writeAll(w.output, w.sink, end[:])
+    return err
+}
+
+func (w mut ZIPWriter<W>) Finish() error {
+    if w.err != nil {
+        return w.err
+    }
+    if w.finished {
+        return nil
+    }
+    w.err = w.finishEntry()
+    if w.err != nil {
+        return w.err
+    }
+    w.err = w.directory()
+    if w.err == nil {
+        w.finished = true
+    }
+    return w.err
+}
+
+func (w own ZIPWriter<W>) Close() error {
+    var writer = w
+    return writer.Finish()
+}
+
+func (w own ZIPWriter<W>) Sink() (W, error) {
+    var writer = w
+    let err = writer.Finish()
+    return writer.sink, err
+}
