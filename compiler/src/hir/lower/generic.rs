@@ -4,7 +4,7 @@ use super::closure_kind::visit_expr;
 use super::{Checker, MutableUse, Value};
 use crate::ast::{self, ParamMode};
 use crate::diagnostic::{Diagnostic, Severity};
-use crate::hir::{self, ExprKind, StmtKind};
+use crate::hir::{self, Const, ExprKind, StmtKind};
 use crate::resolve::{FunctionId, LocalKind, Res};
 use crate::source::Span;
 use crate::types::constant::Untyped;
@@ -738,6 +738,8 @@ impl Checker<'_> {
         let mut copies = Copies {
             by_key: HashMap::new(),
             depths: vec![0; functions.len()],
+            origins: vec![None; functions.len()],
+            caller_origin: None,
             pending: (0..functions.len())
                 .filter(|&index| functions[index].type_params.is_empty())
                 .collect(),
@@ -786,7 +788,17 @@ impl Checker<'_> {
     ) {
         let probe = functions[index].probe;
         let depth = copies.depths[index];
+        let origin = copies.origins[index];
+        copies.caller_origin = origin;
         let span = functions[index].span;
+        let generic_text = self.generic_text_helper();
+        let within = functions[index]
+            .name
+            .rsplit('/')
+            .next()
+            .unwrap_or_default()
+            .to_string();
+        let mut rescan = false;
         let mut body = std::mem::replace(
             &mut functions[index].body,
             hir::Block {
@@ -803,6 +815,30 @@ impl Checker<'_> {
             else {
                 return;
             };
+            if !probe
+                && Some(*function) == generic_text
+                && !type_args.iter().any(|&ty| self.types.mentions_param(ty))
+            {
+                let mut taken = std::mem::take(args);
+                let letter = match taken.get(1).map(|arg| &arg.kind) {
+                    Some(ExprKind::Const(Const::Rune(letter))) => *letter,
+                    _ => 'v',
+                };
+                let value = taken.swap_remove(0);
+                let site = origin.unwrap_or(expr.span);
+                let text_span = expr.span;
+                *expr = self
+                    .concrete_text(value, letter, site, &within)
+                    .unwrap_or_else(|| {
+                        super::typed(
+                            ExprKind::Const(Const::String(String::new())),
+                            TypeStore::STRING,
+                            text_span,
+                        )
+                    });
+                rescan = true;
+                return;
+            }
             let Some(copy) = self.copy_once(
                 functions,
                 copies,
@@ -820,6 +856,10 @@ impl Checker<'_> {
             };
         });
         functions[index].body = body;
+        copies.caller_origin = None;
+        if rescan {
+            copies.pending.push(index);
+        }
     }
 
     /// The copy of `template` for these type arguments, made the first time it is needed.
@@ -862,6 +902,7 @@ impl Checker<'_> {
         }
         for index in first_new..functions.len() {
             copies.depths.push(depth);
+            copies.origins.push(copies.caller_origin.or(call));
             copies.pending.push(index);
         }
         Some(copy)
@@ -1038,6 +1079,9 @@ const MAX_COPY_DEPTH: usize = 64;
 struct Copies {
     by_key: HashMap<(FunctionId, Vec<TypeId>, bool), FunctionId>,
     depths: Vec<usize>,
+    /// The call in ordinary code that a copy was made for, where its errors are reported.
+    origins: Vec<Option<Span>>,
+    caller_origin: Option<Span>,
     pending: Vec<usize>,
     runaway: HashSet<FunctionId>,
 }
