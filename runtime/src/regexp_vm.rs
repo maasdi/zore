@@ -1,7 +1,8 @@
 use super::regexp_parse::{self, Assertion, ClassItem, MAX_CAPTURES, Matcher, Node};
 
 pub(super) const MAX_STATES: usize = 4096;
-pub(super) const MAX_WORK: usize = 16_777_216;
+pub(super) const BASE_WORK: usize = 16_777_216;
+pub(super) const WORK_PER_BYTE: usize = 64;
 pub(super) const MAX_INPUT: usize = 1_048_576;
 pub(super) const MAX_MATCHES: usize = 1024;
 pub(super) const MAX_OUTPUT: usize = 1_048_576;
@@ -28,8 +29,8 @@ pub(super) struct Program {
 pub(super) struct Budget(usize);
 
 impl Budget {
-    pub fn new() -> Self {
-        Self(MAX_WORK)
+    pub fn new(bytes: usize) -> Self {
+        Self(BASE_WORK + WORK_PER_BYTE * bytes)
     }
 
     fn charge(&mut self) -> Result<(), String> {
@@ -129,6 +130,12 @@ struct Thread {
     captures: Captures,
 }
 
+struct Searcher {
+    current: Frontier,
+    next: Frontier,
+    stack: Vec<Thread>,
+}
+
 struct Frontier {
     threads: Vec<Thread>,
     seen: Vec<usize>,
@@ -203,7 +210,7 @@ impl Program {
         let (node, captures) = regexp_parse::parse(pattern)?;
         let mut builder = Builder {
             instructions: Vec::new(),
-            budget: Budget::new(),
+            budget: Budget::new(0),
         };
         let accept = builder.emit(Instruction::Accept)?;
         let end = builder.emit(Instruction::Save(1, accept))?;
@@ -257,15 +264,28 @@ impl Program {
         Ok(())
     }
 
+    fn searcher(&self) -> Searcher {
+        Searcher {
+            current: Frontier::new(self.instructions.len()),
+            next: Frontier::new(self.instructions.len()),
+            stack: Vec::new(),
+        }
+    }
+
     fn find(
         &self,
         text: &str,
         start: usize,
         budget: &mut Budget,
+        searcher: &mut Searcher,
     ) -> Result<Option<Captures>, String> {
-        let mut current = Frontier::new(self.instructions.len());
-        let mut next = Frontier::new(self.instructions.len());
-        let mut stack = Vec::new();
+        let Searcher {
+            current,
+            next,
+            stack,
+        } = searcher;
+        current.clear();
+        stack.clear();
         let mut candidate = None;
         let mut at = start;
         loop {
@@ -277,8 +297,8 @@ impl Program {
                     },
                     at,
                     text,
-                    &mut current,
-                    &mut stack,
+                    current,
+                    stack,
                     budget,
                 )?;
             }
@@ -301,8 +321,8 @@ impl Program {
                                 },
                                 at + ch.len_utf8(),
                                 text,
-                                &mut next,
-                                &mut stack,
+                                next,
+                                stack,
                                 budget,
                             )?;
                         }
@@ -317,8 +337,41 @@ impl Program {
                 return Ok(candidate);
             };
             at += ch.len_utf8();
-            std::mem::swap(&mut current, &mut next);
+            std::mem::swap(current, next);
         }
+    }
+
+    fn each_match(
+        &self,
+        text: &str,
+        budget: &mut Budget,
+        mut visit: impl FnMut(&Captures, &mut Budget) -> Result<bool, String>,
+    ) -> Result<(), String> {
+        let mut searcher = self.searcher();
+        let mut at = 0;
+        let mut last_nonempty_end = None;
+        while at <= text.len() {
+            let Some(captures) = self.find(text, at, budget, &mut searcher)? else {
+                return Ok(());
+            };
+            let (start, end) = (captures[0], captures[1]);
+            if start == end {
+                if last_nonempty_end != Some(end) && !visit(&captures, budget)? {
+                    return Ok(());
+                }
+                match text[end..].chars().next() {
+                    Some(ch) => at = end + ch.len_utf8(),
+                    None => return Ok(()),
+                }
+            } else {
+                at = end;
+                last_nonempty_end = Some(end);
+                if !visit(&captures, budget)? {
+                    return Ok(());
+                }
+            }
+        }
+        Ok(())
     }
 
     pub fn find_all(
@@ -328,26 +381,11 @@ impl Program {
         budget: &mut Budget,
     ) -> Result<Vec<Captures>, String> {
         let mut found = Vec::new();
-        let mut at = 0;
-        let mut last_nonempty_end = None;
-        while at <= text.len() && found.len() < limit {
-            let Some(captures) = self.find(text, at, budget)? else {
-                break;
-            };
-            let (start, end) = (captures[0], captures[1]);
-            if start == end {
-                if last_nonempty_end != Some(end) {
-                    found.push(captures);
-                }
-                match text[end..].chars().next() {
-                    Some(ch) => at = end + ch.len_utf8(),
-                    None => break,
-                }
-            } else {
-                at = end;
-                last_nonempty_end = Some(end);
-                found.push(captures);
-            }
+        if limit > 0 {
+            self.each_match(text, budget, |captures, _| {
+                found.push(*captures);
+                Ok(found.len() < limit)
+            })?;
         }
         Ok(found)
     }
@@ -359,19 +397,15 @@ impl Program {
     }
 
     pub fn replace(&self, text: &str, replacement: &str, literal: bool) -> Result<String, String> {
-        let mut budget = Budget::new();
+        let mut budget = Budget::new(text.len() + replacement.len());
         let parts = if literal {
             vec![Part::Literal(replacement)]
         } else {
             replacement_parts(replacement, self.captures, &mut budget)?
         };
-        let found = self.find_all(text, MAX_MATCHES + 1, &mut budget)?;
-        if found.len() > MAX_MATCHES {
-            return Err("match limit exceeded".into());
-        }
         let mut result = String::new();
         let mut at = 0;
-        for captures in found {
+        self.each_match(text, &mut budget, |captures, budget| {
             append(&mut result, &text[at..captures[0]])?;
             for part in &parts {
                 budget.charge()?;
@@ -386,7 +420,8 @@ impl Program {
                 }
             }
             at = captures[1];
-        }
+            Ok(true)
+        })?;
         append(&mut result, &text[at..])?;
         Ok(result)
     }
@@ -461,7 +496,7 @@ mod tests {
     fn offsets(pattern: &str, text: &str) -> Option<Vec<i64>> {
         let program = Program::compile(pattern).unwrap();
         program
-            .find(text, 0, &mut Budget::new())
+            .find(text, 0, &mut Budget::new(0), &mut program.searcher())
             .unwrap()
             .map(|captures| program.offsets(&captures).collect())
     }
@@ -547,7 +582,7 @@ mod tests {
             ("(?:)*", "ab", vec![vec![0, 0], vec![1, 1], vec![2, 2]]),
         ] {
             let program = Program::compile(pattern).unwrap();
-            let found = program.find_all(text, 20, &mut Budget::new()).unwrap();
+            let found = program.find_all(text, 20, &mut Budget::new(0)).unwrap();
             let found: Vec<Vec<i64>> = found.iter().map(|m| program.offsets(m).collect()).collect();
             assert_eq!(found, expected, "{pattern:?} on {text:?}");
         }
@@ -601,21 +636,33 @@ mod tests {
         assert_eq!(builder.build(&empty, 0), Err("work limit exceeded".into()));
         let program = Program::compile("a+").unwrap();
         assert_eq!(
-            program.find("aaa", 0, &mut Budget(0)),
+            program.find("aaa", 0, &mut Budget(0), &mut program.searcher()),
             Err("work limit exceeded".into())
         );
         let input = "a".repeat(MAX_MATCHES + 1);
         let program = Program::compile("a").unwrap();
         assert_eq!(
             program
-                .find_all(&input, 1, &mut Budget::new())
+                .find_all(&input, 1, &mut Budget::new(0))
                 .unwrap()
                 .len(),
             1
         );
+        assert_eq!(program.replace(&input, "", false), Ok(String::new()));
         assert_eq!(
-            program.replace(&input, "", false),
-            Err("match limit exceeded".into())
+            program.find_all(&input, 0, &mut Budget::new(0)),
+            Ok(Vec::new())
+        );
+        let words = Program::compile("(?:cat|cow|car|cab|cop|cup|cut|cry)").unwrap();
+        let prose = "the quick brown fox, jumps over the lazy dog. ".repeat(23_000);
+        let prose = &prose[..MAX_INPUT];
+        assert_eq!(
+            words.find_all(prose, 1, &mut Budget::new(prose.len())),
+            Ok(Vec::new())
+        );
+        assert_eq!(
+            words.find_all(prose, 1, &mut Budget::new(0)),
+            Err("work limit exceeded".into())
         );
         assert_eq!(
             program.replace("aa", &"x".repeat(MAX_OUTPUT), true),
@@ -645,7 +692,9 @@ mod tests {
                     input.push(['a', 'b', 'é'][bits % 3]);
                     bits /= 3;
                 }
-                let matched = program.find(&input, 0, &mut Budget::new()).unwrap();
+                let matched = program
+                    .find(&input, 0, &mut Budget::new(0), &mut program.searcher())
+                    .unwrap();
                 assert_eq!(
                     matched.is_some(),
                     size <= 4 && !input.contains('é'),

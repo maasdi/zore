@@ -47,14 +47,16 @@ direct-child behavior, with no descendant process-tree guarantee.
 Issue #222 implements §37.23 in `std/regexp`, using bundled parser/ordered-NFA
 runtime sources and no external provider. [Native tests](../../tests/codegen/regexp.rs)
 assert UTF-8 capture offsets, ordered and empty matches, strict/literal
-replacement, explicit work/output/count errors, scoped/shared use on one
+replacement, explicit work/output errors, work that grows with the input,
+replacement past the `FindAll` cap, `Group` numbering, `MustCompile`, scoped/shared use on one
 worker, error/panic cleanup and executable guide examples. Runtime tests cover
 parser rejection, exact state boundaries, zero-work rejection, empty AST
 expansion budgets, repeated-capture priority and shared-handle release.
 [Package checks](../../tests/packages/regexp.rs) pair ordinary usage with Move,
 private-field and type rejections and verify helper classification.
-`python tests/hardening/regexp_oracle.py` compares 17,960 deterministic
-pattern/input cases with an independent engine. See the
+`python tests/hardening/regexp_oracle.py` compares every match of 19,860
+deterministic pattern/input cases, anchored and empty matches included, with
+an independent engine. See the
 [conformance map](../../tests/conformance/regexp.md) for the supported subset;
 PCRE completeness, flags/properties, streaming and helper cancellation are excluded.
 

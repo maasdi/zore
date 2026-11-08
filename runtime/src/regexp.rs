@@ -83,16 +83,9 @@ pub extern "C" fn zore_native_regexp_group_count(id: i64) -> i64 {
     program(id).map_or(0, |program| program.captures as i64)
 }
 
-/// # Safety
-/// Out must be writable.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn zore_native_regexp_share(out: *mut ValueError, id: i64) {
-    let result = match program(id).and_then(retain) {
-        Ok(id) => ValueError::ok(id),
-        Err(error) => ValueError::failed_text(&format!("regexp.Share: {error}")),
-    };
-    // SAFETY: guaranteed by the caller.
-    unsafe { out.write(result) };
+pub extern "C" fn zore_native_regexp_share(id: i64) -> i64 {
+    program(id).and_then(retain).unwrap_or(0)
 }
 
 #[unsafe(no_mangle)]
@@ -111,16 +104,19 @@ pub unsafe extern "C" fn zore_native_regexp_search(
     input: *const u8,
     input_len: i64,
     limit: i64,
-    operation: *const u8,
-    operation_len: i64,
+    operation: i64,
 ) {
-    // SAFETY: guaranteed by the caller.
-    let operation = unsafe { super::sys::text_of(operation, operation_len) };
+    let operation = match operation {
+        0 => "regexp.Matches",
+        1 => "regexp.Find",
+        _ => "regexp.FindAll",
+    };
     let result = (|| {
         let program = program(id)?;
-        if !(1..=MAX_MATCHES as i64).contains(&limit) {
+        if limit < 1 {
             return Err("invalid match limit".into());
         }
+        let limit = limit.min(MAX_MATCHES as i64) as usize;
         // SAFETY: guaranteed by the caller.
         let input = text(
             unsafe { super::bytes(input, input_len) },
@@ -128,7 +124,7 @@ pub unsafe extern "C" fn zore_native_regexp_search(
             "input",
         )?;
         blocking::run(move || {
-            let found = program.find_all(&input, limit as usize, &mut Budget::new())?;
+            let found = program.find_all(&input, limit, &mut Budget::new(input.len()))?;
             Ok::<_, String>(
                 found
                     .iter()
@@ -204,7 +200,7 @@ mod tests {
                     for _ in 0..100 {
                         assert_eq!(
                             inflight
-                                .find_all("abab", 1, &mut Budget::new())
+                                .find_all("abab", 1, &mut Budget::new(0))
                                 .unwrap()
                                 .len(),
                             1

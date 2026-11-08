@@ -11073,13 +11073,16 @@ and ordered Thompson NFA; it never uses recursive backtracking during matching.
 | Name | Behavior |
 | --- | --- |
 | `Compile(pattern string) (Regexp, error)` | Compiles a pattern; failure returns a closed zero handle |
-| `(r Regexp) Share() (Regexp, error)` | Returns an independently owned handle sharing the immutable compiled program |
-| `(r Regexp) Match(text string) (bool, error)` | Whether any substring matches; use anchors for a full-text match |
-| `(r Regexp) Find(text string) (Match, bool, error)` | First match, explicit presence, and an error; absent/error results have `Start == End == -1` and empty `Groups` |
-| `(r Regexp) FindAll(text string, limit int) (Array<Match>, error)` | First at most `limit` non-overlapping matches; `limit` must be 1 through `MaxMatches` |
+| `MustCompile(pattern string) Regexp` | Compiles a pattern written in the program; an invalid pattern panics with `regexp.MustCompile: ` followed by the `Compile` error |
+| `(r Regexp) Share() Regexp` | Returns an independently owned handle sharing the immutable compiled program; sharing a closed handle returns a closed handle |
+| `(r Regexp) Matches(text string) (bool, error)` | Whether any substring matches; use anchors for a full-text match |
+| `(r Regexp) Find(text string) (Match, bool, error)` | First match, explicit presence, and an error; absent/error results have `Start == End == -1` and no groups |
+| `(r Regexp) FindAll(text string, limit int) (Array<Match>, error)` | First at most `limit` non-overlapping matches, and at most `MaxMatches`; a `limit` below 1 is an error |
 | `(r Regexp) ReplaceAll(text string, replacement string) (string, error)` | Replaces all non-overlapping matches using numbered capture expansion |
 | `(r Regexp) ReplaceAllLiteral(text string, replacement string) (string, error)` | Replaces matches with the replacement bytes unchanged |
-| `type Match struct { Start int; End int; Groups Array<Span> }` | Half-open byte offsets for the whole match and parenthesized groups in opening-parenthesis order; `Groups[0]` is group 1 |
+| `type Match struct { Start int; End int }` with private group storage | Half-open byte offsets for the whole match |
+| `(m Match) Group(n int) Span` | Group `n` in opening-parenthesis order, numbered like replacement references: `Group(0)` is the whole match; a number below 0 or above `Groups()` panics |
+| `(m Match) Groups() int` | The number of parenthesized groups in the pattern; 0 for an absent match |
 | `type Span struct { Start int; End int }`, `(s Span) Matched() bool` | A participating capture has nonnegative half-open offsets; an unmatched optional group is `{-1, -1}` |
 
 `Regexp` has private fields and custom drop, so it is a Move resource. Dropping
@@ -11171,8 +11174,9 @@ The package exports these integer constants:
 | `MaxOutputBytes` | 1,048,576 bytes per replacement result |
 | `MaxCaptures` | 16 numbered groups |
 | `MaxStates` | 4096 compiled NFA instructions |
-| `MaxMatches` | 1024 results/expanded matches per call |
-| `MaxWork` | 16,777,216 matcher work units per call |
+| `MaxMatches` | 1024 results per `FindAll` call |
+| `BaseWork` | 16,777,216 work units per call |
+| `WorkPerByte` | 64 further work units per byte of input and replacement template |
 
 Group nesting is limited to 64 levels. Counted repetitions may be rejected when
 their expansion exceeds `MaxStates`. Classes share immutable range storage.
@@ -11180,11 +11184,14 @@ For a given input position, at most one ordered thread per instruction is
 retained. Matching uses explicit epsilon stacks, bounded capture registers and
 two reusable frontiers, with no recursive match-time traversal. A work unit is
 charged for each epsilon-stack visit, consuming-thread test, class-range
-comparison, replacement-template scan step and replacement-part expansion;
-a whole `FindAll` or replacement shares one budget. Exceeding the
+comparison, replacement-template scan step and replacement-part expansion.
+A search or replacement has `BaseWork + WorkPerByte * n` units, where `n` is
+the byte length of its input plus its replacement template; a whole `FindAll`
+or replacement shares one budget. The budget grows with the text, so a pattern
+whose cost per character is ordinary can scan any accepted input. Exceeding the
 budget fails instead of returning a potentially incorrect no-match result.
 This bounds adversarial work even where an NFA with many states is expensive.
-Compilation also charges AST expansion visits against `MaxWork`, including
+Compilation has `BaseWork` units and also charges AST expansion visits, including
 repeated empty subexpressions that do not emit instructions. Compilation
 storage is bounded by pattern/depth/state limits. Match working
 storage is proportional to `MaxStates * (MaxCaptures + 1)`, independent of text
@@ -11192,8 +11199,9 @@ length. Input copying, UTF-8 validation, result materialization and replacement
 copying are additionally bounded by the byte/result limits. Bounds are per call
 and program; ordinary host allocation and task-population limits still apply.
 
-`FindAll` stops successfully at its requested result count. Replacement instead
-fails if a further match would exceed `MaxMatches`; it never silently truncates.
+`FindAll` stops successfully at its requested result count or `MaxMatches`,
+whichever is smaller. Replacement has no match count limit: it streams matches
+into its output, which `MaxOutputBytes` bounds, and never silently truncates.
 Limits cannot be raised in this increment. For larger documents, applications
 choose their own record boundaries; arbitrary chunking is not equivalent for
 anchors or cross-boundary matches.
@@ -11210,11 +11218,11 @@ let found, present, err = re.Find("count=42")
 if err != nil { return err }
 if present {
     println(found.Start)
-    println(found.Groups[0].Start)
+    println(found.Group(1).Start)
 }
 let changed = re.ReplaceAll("count=42", "${1}: $2 ($$)")?
 println(changed)
-let workerPattern = re.Share()?
+let workerPattern = re.Share()
 go checkRecord(workerPattern)
 ```
 

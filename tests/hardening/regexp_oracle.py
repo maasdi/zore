@@ -1,4 +1,4 @@
-"""Compare the shared regex subset with Python's independent regex engine."""
+"""Compare every match of the shared regex subset with Python's independent regex engine."""
 
 import json
 import os
@@ -31,24 +31,58 @@ def fragment(rng, depth):
     return pattern, nullable
 
 
+def anchored(rng, pattern):
+    choice = rng.randrange(6)
+    if choice == 0:
+        return "^" + pattern
+    if choice == 1:
+        return pattern + "$"
+    if choice == 2:
+        return "^" + pattern + "$"
+    return pattern
+
+
+def every_match(compiled, text):
+    found = []
+    at = 0
+    last_nonempty_end = None
+    while at <= len(text):
+        match = compiled.search(text, at)
+        if not match:
+            break
+        start, end = match.span()
+        if start == end:
+            if last_nonempty_end != end:
+                found.append(match)
+            at = end + 1
+        else:
+            at = end
+            last_nonempty_end = end
+            found.append(match)
+    return found
+
+
+def spans(match, groups, text):
+    offsets = []
+    for group in range(groups + 1):
+        start, end = match.span(group)
+        offsets.extend((-1, -1) if start < 0 else (len(text[:start].encode()), len(text[:end].encode())))
+    return ",".join(map(str, offsets))
+
+
 def cases():
     rng = random.Random(222)
-    patterns = {fragment(rng, 3)[0] for _ in range(1200)}
-    patterns.update([r"(a+)(a)", r"(a+?)(a)", r"\b(a|b)+\b", r"((a)|(b))+", r"^(?:a|b)*$", r"[α-ω]+", r"(a)?(b*)"])
+    patterns = {anchored(rng, fragment(rng, 3)[0]) for _ in range(1200)}
+    patterns.update([r"(a+)(a)", r"(a+?)(a)", r"\b(a|b)+\b", r"((a)|(b))+", r"^(?:a|b)*$", r"[α-ω]+", r"(a)?(b*)", r"a*", r"", r"(?:a|)"])
     result = []
     for pattern in sorted(patterns):
-        compiled = re.compile(pattern, re.ASCII)
+        compiled = re.compile(pattern[:-1] + r"\Z" if pattern.endswith("$") else pattern, re.ASCII)
         if compiled.groups > 16:
             continue
         for _ in range(20):
             text = "".join(rng.choices("aabé🦀012_\n", k=rng.randrange(13)))
-            match = compiled.search(text)
-            offsets = []
-            if match:
-                for group in range(compiled.groups + 1):
-                    start, end = match.span(group)
-                    offsets.extend((-1, -1) if start < 0 else (len(text[:start].encode()), len(text[:end].encode())))
-            result.append((pattern, text, ",".join(map(str, offsets))))
+            expected = ";".join(spans(match, compiled.groups, text) for match in every_match(compiled, text))
+            result.append((pattern, text, expected))
     return result
 
 
@@ -70,9 +104,9 @@ fn main() {
         let (pattern, input) = line.split_once('\t').unwrap();
         let (pattern, input) = (decode(pattern), decode(input));
         let program = regexp_vm::Program::compile(&pattern).unwrap();
-        let found = program.find_all(&input, 1, &mut regexp_vm::Budget::new()).unwrap();
-        println!("{}", found.iter().flat_map(|capture| program.offsets(capture))
-            .map(|at| at.to_string()).collect::<Vec<_>>().join(","));
+        let found = program.find_all(&input, regexp_vm::MAX_MATCHES, &mut regexp_vm::Budget::new(input.len())).unwrap();
+        println!("{}", found.iter().map(|capture| program.offsets(capture)
+            .map(|at| at.to_string()).collect::<Vec<_>>().join(",")).collect::<Vec<_>>().join(";"));
     }
 }
 '''

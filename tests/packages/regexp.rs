@@ -18,10 +18,10 @@ func compiled() (regexp.Regexp, error) {
 }
 func inspect() error {
     let re = compiled()?
-    let shared = re.Share()?
+    let shared = re.Share()
     let found, present, err = shared.Find("aaa")
     if err != nil { return err }
-    if present { println(found.Start); println(found.Groups[0].Matched()) }
+    if present { println(found.Start); println(found.Group(1).Matched()) }
     let results = shared.FindAll("aaa", 10)?
     println(results.len())
     let replaced = shared.ReplaceAll("aaa", "$1")?
@@ -37,7 +37,7 @@ func main() {}
 fn regexp_handles_and_capture_arrays_follow_move_and_visibility_rules() {
     for (body, expected) in [
         (
-            "let re = regexp.Compile(\"a\")?; let moved = re; let _, err = re.Match(\"a\"); _ = err; drop(moved); return nil",
+            "let re = regexp.Compile(\"a\")?; let moved = re; let _, err = re.Matches(\"a\"); _ = err; drop(moved); return nil",
             "moved",
         ),
         (
@@ -57,7 +57,7 @@ fn regexp_handles_and_capture_arrays_follow_move_and_visibility_rules() {
             "moved",
         ),
         (
-            "let re = regexp.Compile(\"a\")?; let _, err = re.Match(12); return err",
+            "let re = regexp.Compile(\"a\")?; let _, err = re.Matches(12); return err",
             "mismatched types",
         ),
     ] {
@@ -76,7 +76,7 @@ async func run() error {
     let re = regexp.Compile("(a+)")?
     let result = re.ReplaceAll("aaa", "$1")?
     println(result)
-    let _, err = re.Match("a")
+    let _, err = re.Matches("a")
     return err
 }
 func main() {}

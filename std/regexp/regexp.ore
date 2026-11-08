@@ -1,12 +1,16 @@
 package regexp
 
+import "std/errors"
+import "std/strconv"
+
 const MaxPatternBytes = 4096
 const MaxInputBytes = 1048576
 const MaxOutputBytes = 1048576
 const MaxCaptures = 16
 const MaxStates = 4096
 const MaxMatches = 1024
-const MaxWork = 16777216
+const BaseWork = 16777216
+const WorkPerByte = 64
 
 type Regexp struct {
     id int
@@ -25,12 +29,20 @@ func Compile(pattern string) (Regexp, error) {
     return Regexp{id: id, groups: groupCount(id)}, nil
 }
 
-func (r Regexp) Share() (Regexp, error) {
-    let id, err = share(r.id)
+func MustCompile(pattern string) Regexp {
+    let compiled, err = Compile(pattern)
     if err != nil {
-        return Regexp{id: 0, groups: 0}, err
+        panic("regexp.MustCompile: " + errors.Message(err))
     }
-    return Regexp{id: id, groups: r.groups}, nil
+    return compiled
+}
+
+func (r Regexp) Share() Regexp {
+    let id = share(r.id)
+    if id == 0 {
+        return Regexp{id: 0, groups: 0}
+    }
+    return Regexp{id: id, groups: r.groups}
 }
 
 type Span struct {
@@ -45,29 +57,43 @@ func (s Span) Matched() bool {
 type Match struct {
     Start int
     End int
-    Groups Array<Span>
+    spans Array<Span>
+}
+
+func (m Match) Group(n int) Span {
+    if n < 0 || n >= m.spans.len() {
+        panic("regexp.Match.Group: no group " + strconv.Itoa(n))
+    }
+    return m.spans[n]
+}
+
+func (m Match) Groups() int {
+    if m.spans.len() == 0 {
+        return 0
+    }
+    return m.spans.len() - 1
 }
 
 func absent() Match {
-    return Match{Start: -1, End: -1, Groups: Array<Span>{}}
+    return Match{Start: -1, End: -1, spans: Array<Span>{}}
 }
 
 func unpack(values []int, at int, groups int) Match {
-    var captures = Array<Span>{}
-    for var group = 0; group < groups; group += 1 {
-        let offset = at + 2 + group * 2
-        captures.push(Span{Start: values[offset], End: values[offset + 1]})
+    var spans = Array<Span>{}
+    for var group = 0; group <= groups; group += 1 {
+        let offset = at + group * 2
+        spans.push(Span{Start: values[offset], End: values[offset + 1]})
     }
-    return Match{Start: values[at], End: values[at + 1], Groups: captures}
+    return Match{Start: values[at], End: values[at + 1], spans: spans}
 }
 
-func (r Regexp) Match(text string) (bool, error) {
-    let values, err = search(r.id, text, 1, "regexp.Match")
+func (r Regexp) Matches(text string) (bool, error) {
+    let values, err = search(r.id, text, 1, 0)
     return values.len() != 0, err
 }
 
 func (r Regexp) Find(text string) (Match, bool, error) {
-    let values, err = search(r.id, text, 1, "regexp.Find")
+    let values, err = search(r.id, text, 1, 1)
     if err != nil {
         return absent(), false, err
     }
@@ -78,7 +104,7 @@ func (r Regexp) Find(text string) (Match, bool, error) {
 }
 
 func (r Regexp) FindAll(text string, limit int) (Array<Match>, error) {
-    let values, err = search(r.id, text, limit, "regexp.FindAll")
+    let values, err = search(r.id, text, limit, 2)
     var found = Array<Match>{}
     if err != nil {
         return found, err
@@ -102,10 +128,10 @@ func compile(pattern string) (int, error)
 
 func groupCount(id int) int
 
-func share(id int) (int, error)
+func share(id int) int
 
 func release(id int)
 
-func search(id int, text string, limit int, operation string) (Array<int>, error)
+func search(id int, text string, limit int, operation int) (Array<int>, error)
 
 func replace(id int, text string, replacement string, literal bool) (string, error)

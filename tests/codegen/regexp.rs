@@ -39,23 +39,24 @@ fn regex_find_reports_ordered_captures_and_unicode_byte_offsets() {
     check(err == nil, "compile")
     let found, present, findErr = re.Find("xéαβ!")
     check(findErr == nil && present, "find")
-    check(found.Start == 1 && found.End == 7 && found.Groups.len() == 3, "whole span")
-    check(found.Groups[0].Start == 1 && found.Groups[0].End == 3, "first capture")
-    check(found.Groups[1].Start == 3 && found.Groups[1].End == 7, "second capture")
-    check(!found.Groups[2].Matched() && found.Groups[2].Start == -1 && found.Groups[2].End == -1, "absent group")
+    check(found.Start == 1 && found.End == 7 && found.Groups() == 3, "whole span")
+    check(found.Group(0).Start == 1 && found.Group(0).End == 7, "group zero is the whole match")
+    check(found.Group(1).Start == 1 && found.Group(1).End == 3, "first capture")
+    check(found.Group(2).Start == 3 && found.Group(2).End == 7, "second capture")
+    check(!found.Group(3).Matched() && found.Group(3).Start == -1 && found.Group(3).End == -1, "absent group")
     let absent, missing, absentErr = re.Find("no match")
-    check(absentErr == nil && !missing && absent.Start == -1 && absent.End == -1 && absent.Groups.len() == 0, "absence")
+    check(absentErr == nil && !missing && absent.Start == -1 && absent.End == -1 && absent.Groups() == 0, "absence")
     let lazy, lazyErr = regexp.Compile("(a+?)(a)")
     check(lazyErr == nil, "lazy compile")
     let short, exists, shortErr = lazy.Find("aaa")
-    check(shortErr == nil && exists && short.End == 2 && short.Groups[0].End == 1, "lazy capture")
+    check(shortErr == nil && exists && short.End == 2 && short.Group(1).End == 1, "lazy capture")
     let earlier, earlierErr = regexp.Compile("a|ab")
     check(earlierErr == nil, "ordered compile")
     let first, firstFound, firstErr = earlier.Find("ab")
     check(firstErr == nil && firstFound && first.End == 1, "alternative order")
     let ascii, asciiErr = regexp.Compile("\\w+")
     check(asciiErr == nil, "ascii compile")
-    let matches, matchErr = ascii.Match("αβ")
+    let matches, matchErr = ascii.Matches("αβ")
     check(matchErr == nil && !matches, "ascii shorthand")
     println("ok")
 }
@@ -107,15 +108,15 @@ fn regex_syntax_and_closed_handles_fail_without_partial_results() {
     for pattern in Array<string>{"(", "[z-a]", "a**", "(?=a)", "(?i)a", "\\1", "\\p{L}"} {
         let failed, invalid = regexp.Compile(pattern)
         check(invalid != nil, "invalid pattern")
-        let value, closed = failed.Match("a")
-        check(closed == error("regexp.Match: closed pattern") && !value, "closed failure handle")
-        let shared, shareErr = failed.Share()
-        check(shareErr == error("regexp.Share: closed pattern"), "cannot share closed handle")
-        drop(shared)
+        let value, closed = failed.Matches("a")
+        check(closed == error("regexp.Matches: closed pattern") && !value, "closed failure handle")
+        let shared = failed.Share()
+        let sharedValue, sharedErr = shared.Matches("a")
+        check(sharedErr == error("regexp.Matches: closed pattern") && !sharedValue, "a share of a closed handle is closed")
     }
     let re, err = regexp.Compile("a")
     check(err == nil, "compile")
-    for limit in Array<int>{-1, 0, regexp.MaxMatches + 1} {
+    for limit in Array<int>{-1, 0} {
         let none, invalid = re.FindAll("a", limit)
         check(invalid == error("regexp.FindAll: invalid match limit") && none.len() == 0, "invalid limit")
     }
@@ -142,19 +143,30 @@ fn regex_adversarial_inputs_and_expansion_limits_fail_explicitly() {
     drop(groups)
     let re, err = regexp.Compile("a")
     check(err == nil, "compile")
-    let value, inputErr = re.Match(strings.Repeat("a", regexp.MaxInputBytes + 1))
-    check(inputErr == error("regexp.Match: input byte limit exceeded") && !value, "input bound")
+    let value, inputErr = re.Matches(strings.Repeat("a", regexp.MaxInputBytes + 1))
+    check(inputErr == error("regexp.Matches: input byte limit exceeded") && !value, "input bound")
     let output, outputErr = re.ReplaceAllLiteral("aa", strings.Repeat("x", regexp.MaxOutputBytes))
     check(outputErr == error("regexp.ReplaceAllLiteral: output byte limit exceeded") && output == "", "output bound")
-    let many, countErr = re.ReplaceAll(strings.Repeat("a", regexp.MaxMatches + 1), "")
-    check(countErr == error("regexp.ReplaceAll: match limit exceeded") && many == "", "replacement count")
+    let many, countErr = re.ReplaceAll(strings.Repeat("a", regexp.MaxMatches + 1), "b")
+    check(countErr == nil && many == strings.Repeat("b", regexp.MaxMatches + 1), "replacement has no match count limit")
+    let capped, cappedErr = re.FindAll(strings.Repeat("a", regexp.MaxMatches + 1), regexp.MaxMatches + 100)
+    check(cappedErr == nil && capped.len() == regexp.MaxMatches, "a larger limit stops at MaxMatches")
+    let words, wordsErr = regexp.Compile("(?:cat|cow|car|cab|cop|cup|cut|cry)")
+    check(wordsErr == nil, "word list compile")
+    let prose = strings.Repeat("the quick brown fox, jumps over the lazy dog. ", 22000)
+    let wordFound, wordErr = words.Matches(prose)
+    check(wordErr == nil && !wordFound, "ordinary alternation scans a large input")
+    let lines, linesErr = regexp.Compile("\n")
+    check(linesErr == nil, "newline compile")
+    let joined, joinErr = lines.ReplaceAll(strings.Repeat("line\n", 5000), " ")
+    check(joinErr == nil && joined == strings.Repeat("line ", 5000), "replace thousands of matches")
     let costly, costlyErr = regexp.Compile("(?:a?){1000}b")
     check(costlyErr == nil, "adversarial compile")
-    let matched, workErr = costly.Match(strings.Repeat("a", 8192))
-    check(workErr == error("regexp.Match: work limit exceeded") && !matched, "bounded adversarial work")
+    let matched, workErr = costly.Matches(strings.Repeat("a", 8192))
+    check(workErr == error("regexp.Matches: work limit exceeded") && !matched, "bounded adversarial work")
     let linear, linearErr = regexp.Compile("^(a|aa)*b$")
     check(linearErr == nil, "nested compile")
-    let found, linearMatchErr = linear.Match(strings.Repeat("a", 10000))
+    let found, linearMatchErr = linear.Matches(strings.Repeat("a", 10000))
     check(linearMatchErr == nil && !found, "no exponential backtracking")
     let optional, optionalErr = regexp.Compile("(a)?b")
     check(optionalErr == nil, "optional capture")
@@ -172,17 +184,17 @@ fn regex_shared_handles_and_scoped_borrows_work_on_one_scheduler_worker() {
     succeeds(
         "",
         r#"async func owned(re own regexp.Regexp, results channel<bool>) {
-    let matched, err = re.Match("é42")
+    let matched, err = re.Matches("é42")
     results.send(err == nil && matched)
 }
 func borrowed(re regexp.Regexp, results channel<bool>) {
-    let matched, err = re.Match("é42")
+    let matched, err = re.Matches("é42")
     results.send(err == nil && matched)
 }
 func fail() error {
     let local = regexp.Compile("a")?
-    let shared = local.Share()?
-    let _, err = shared.Match("a")
+    let shared = local.Share()
+    let _, err = shared.Matches("a")
     if err != nil { return err }
     return error("intentional")
 }
@@ -194,9 +206,7 @@ func main() {
         for var i = 0; i < 8; i += 1 { go borrowed(re, results) }
     }
     for var i = 0; i < 64; i += 1 {
-        let share, shareErr = re.Share()
-        check(shareErr == nil, "share")
-        go owned(share, results)
+        go owned(re.Share(), results)
     }
     drop(re)
     for var i = 0; i < 72; i += 1 {
@@ -219,9 +229,8 @@ fn regex_panic_releases_all_compiled_handles() {
         r#"func main() {
     let re, err = regexp.Compile("a+")
     check(err == nil, "compile")
-    let share, shareErr = re.Share()
-    check(shareErr == nil, "share")
-    let matched, matchErr = share.Match("a")
+    let share = re.Share()
+    let matched, matchErr = share.Matches("a")
     check(matchErr == nil && matched, "match")
     panic("regexp cleanup probe")
 }
@@ -251,4 +260,47 @@ fn regex_guide_examples_compile_and_run_together() {
         "name=é\nname\nname: é ($) count: 42 ($)\n2\ntrue\n"
     );
     assert!(output.stderr.is_empty(), "{}", stderr(&output));
+}
+
+#[test]
+fn must_compile_returns_a_pattern_or_panics_with_the_reason() {
+    succeeds(
+        "",
+        r#"func main() {
+    let re = regexp.MustCompile("(a)(b)?")
+    let found, present, err = re.Find("xa")
+    check(err == nil && present && found.Group(1).Matched() && !found.Group(2).Matched(), "must compile")
+    println("ok")
+}
+"#,
+        false,
+    );
+    let output = execute(
+        "",
+        "func main() {\n    let re = regexp.MustCompile(\"(\")\n    drop(re)\n}\n",
+        false,
+    );
+    assert_eq!(output.status.code(), Some(2));
+    assert!(
+        stderr(&output)
+            .contains("regexp.MustCompile: regexp.Compile: at byte 1: unterminated group"),
+        "{}",
+        stderr(&output)
+    );
+}
+
+#[test]
+fn a_group_number_past_the_pattern_panics() {
+    let output = execute(
+        "",
+        "func main() {\n    let re = regexp.MustCompile(\"(a)\")\n    let found, _, _ = re.Find(\"a\")\n    println(found.Group(1).End)\n    println(found.Group(2).End)\n}\n",
+        false,
+    );
+    assert_eq!(output.status.code(), Some(2));
+    assert_eq!(stdout(&output), "1\n");
+    assert!(
+        stderr(&output).contains("regexp.Match.Group: no group 2"),
+        "{}",
+        stderr(&output)
+    );
 }
