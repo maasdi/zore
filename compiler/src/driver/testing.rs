@@ -8,14 +8,23 @@ use super::check::check_project_with_entry;
 use super::dependencies::{DependencyDisk, Options};
 use super::project::{Disk, FileSystem, LoadError, Project, is_test_file, load_test_project};
 use super::session::report;
-use crate::ast::{Item, Type};
+use crate::ast::{File, Item, Param, ParamMode, Type};
 use crate::diagnostic::{Diagnostic, Severity};
 use crate::source::SourceMap;
 
 const ENTRY_NAME: &str = "$test";
+const BENCHMARK_GOAL_NANOSECONDS: u64 = 1_000_000_000;
+
+#[derive(Clone, Copy, PartialEq)]
+enum Kind {
+    Plain,
+    Context,
+    Benchmark,
+}
 
 struct Test {
     name: String,
+    kind: Kind,
     returns_error: bool,
 }
 
@@ -25,8 +34,8 @@ struct Suite {
     tests: Vec<Test>,
 }
 
-pub(super) fn run(target: &Path, dependencies: Options) -> ExitCode {
-    match test(target, dependencies) {
+pub(super) fn run(target: &Path, dependencies: Options, bench: bool) -> ExitCode {
+    match test(target, dependencies, bench) {
         Ok(true) => ExitCode::SUCCESS,
         Ok(false) => ExitCode::FAILURE,
         Err(message) => {
@@ -38,7 +47,7 @@ pub(super) fn run(target: &Path, dependencies: Options) -> ExitCode {
     }
 }
 
-fn test(target: &Path, dependencies: Options) -> Result<bool, String> {
+fn test(target: &Path, dependencies: Options, bench: bool) -> Result<bool, String> {
     let metadata = fs::symlink_metadata(target).map_err(|error| path_error(target, error))?;
     if metadata.file_type().is_symlink() {
         return Err(format!(
@@ -77,7 +86,7 @@ fn test(target: &Path, dependencies: Options) -> Result<bool, String> {
         let mut sources = SourceMap::new();
         let mut project = load_test_project(&mut sources, &DependencyDisk(dependencies), entry)
             .map_err(|error| load_error(&sources, error))?;
-        let tests = discover(&project, &sources, selected_file.as_deref())?;
+        let tests = discover(&project, &sources, selected_file.as_deref(), bench)?;
         if tests.is_empty() {
             let checked = check_project_with_entry(&project, &sources, Some(ENTRY_NAME));
             if !checked.diagnostics.is_empty() {
@@ -107,6 +116,15 @@ fn test(target: &Path, dependencies: Options) -> Result<bool, String> {
                 .map_err(|error| path_error(&executable, error))?,
             tests,
         });
+    }
+    if bench {
+        println!(
+            "Benchmarks: zore {}, {} {}, clang -O2, at least {}s per benchmark in its own process",
+            env!("CARGO_PKG_VERSION"),
+            std::env::consts::OS,
+            std::env::consts::ARCH,
+            BENCHMARK_GOAL_NANOSECONDS / 1_000_000_000,
+        );
     }
     let mut passed = 0;
     let mut failed = 0;
@@ -138,7 +156,8 @@ fn test(target: &Path, dependencies: Options) -> Result<bool, String> {
             }
         }
     }
-    println!("Tests: {passed} passed, {failed} failed");
+    let noun = if bench { "Benchmarks" } else { "Tests" };
+    println!("{noun}: {passed} passed, {failed} failed");
     Ok(failed == 0)
 }
 
@@ -146,6 +165,7 @@ fn discover(
     project: &Project,
     sources: &SourceMap,
     selected: Option<&std::ffi::OsStr>,
+    bench: bool,
 ) -> Result<Vec<Test>, String> {
     let mut tests = Vec::new();
     let mut diagnostics = Vec::new();
@@ -160,25 +180,48 @@ fn discover(
                 continue;
             }
             let name = &function.name.text;
-            if !name
-                .strip_prefix("Test")
-                .is_some_and(|suffix| suffix.starts_with(|c: char| c.is_ascii_uppercase()))
-            {
+            let benchmark = if prefixed(name, "Test") {
+                false
+            } else if prefixed(name, "Benchmark") {
+                true
+            } else {
                 continue;
-            }
+            };
             let returns_error =
                 matches!(function.results.as_slice(), [Type::Named(name)] if name.text == "error");
-            if function.is_async
-                || !function.type_params.is_empty()
-                || !function.params.is_empty()
-                || (!function.results.is_empty() && !returns_error)
+            let context = if benchmark { "B" } else { "T" };
+            let kind = match function.params.as_slice() {
+                [] if !benchmark => Some(Kind::Plain),
+                [param] if is_context(param, &loaded.file, context) => Some(if benchmark {
+                    Kind::Benchmark
+                } else {
+                    Kind::Context
+                }),
+                _ => None,
+            };
+            let Some(kind) = kind.filter(|_| {
+                !function.is_async
+                    && function.type_params.is_empty()
+                    && (function.results.is_empty() || returns_error)
+            }) else {
+                let message = if benchmark {
+                    "a benchmark must be synchronous, non-generic, take one `b mut testing.B`, and return nothing or error"
+                } else {
+                    "a test must be synchronous, non-generic, take no parameters or one `t mut testing.T`, and return nothing or error"
+                };
+                diagnostics.push(Diagnostic::new(
+                    Severity::Error,
+                    message,
+                    function.name.span,
+                ));
+                continue;
+            };
+            if benchmark == bench
+                && selected.is_none_or(|selected| path.file_name() == Some(selected))
             {
-                diagnostics.push(Diagnostic::new(Severity::Error,
-                    "a test must be synchronous, non-generic, take no parameters, and return nothing or error",
-                    function.name.span));
-            } else if selected.is_none_or(|selected| path.file_name() == Some(selected)) {
                 tests.push(Test {
                     name: name.clone(),
+                    kind,
                     returns_error,
                 });
             }
@@ -192,23 +235,62 @@ fn discover(
     Ok(tests)
 }
 
+fn prefixed(name: &str, prefix: &str) -> bool {
+    name.strip_prefix(prefix)
+        .is_some_and(|suffix| suffix.starts_with(|c: char| c.is_ascii_uppercase()))
+}
+
+/// `t mut testing.T` or `b mut testing.B`, where `testing` is the file's import of `std/testing`.
+fn is_context(param: &Param, file: &File, name: &str) -> bool {
+    param.mode == ParamMode::Mut
+        && matches!(&param.ty, Type::Qualified { package, name: ty, .. }
+            if package.text == "testing" && ty.text == name)
+        && file
+            .imports
+            .iter()
+            .any(|import| import.path == "std/testing")
+}
+
 fn dispatcher(package: &str, tests: &[Test]) -> String {
     let mut text = format!("package {package}\nimport \"std/os\"\n");
-    if tests.iter().any(|test| test.returns_error) {
+    if tests
+        .iter()
+        .any(|test| test.returns_error && test.kind == Kind::Plain)
+    {
         text.push_str("import \"std/errors\"\n");
+    }
+    if tests.iter().any(|test| test.kind != Kind::Plain) {
+        text.push_str("import \"std/testing\"\n");
     }
     text.push_str("func runner() int {\nlet args = os.Args()\n");
     for test in tests {
-        text.push_str(&format!("if args[1] == \"{}\" {{\n", test.name));
-        if test.returns_error {
-            text.push_str(&format!(
-                "let err = {}()\nif err != nil {{\nprintln(errors.Message(err))\nreturn 1\n}}\n",
-                test.name
-            ));
-        } else {
-            text.push_str(&format!("{}()\n", test.name));
+        let name = &test.name;
+        text.push_str(&format!("if args[1] == \"{name}\" {{\n"));
+        match test.kind {
+            Kind::Plain if test.returns_error => text.push_str(&format!(
+                "let err = {name}()\nif err != nil {{\nprintln(errors.Message(err))\nreturn 1\n}}\nreturn 0\n"
+            )),
+            Kind::Plain => text.push_str(&format!("{name}()\nreturn 0\n")),
+            Kind::Context | Kind::Benchmark => {
+                let (binding, value) = if test.kind == Kind::Context {
+                    ("t", format!("testing.NewT(\"{name}\")"))
+                } else {
+                    (
+                        "b",
+                        format!("testing.NewB(\"{name}\", {BENCHMARK_GOAL_NANOSECONDS})"),
+                    )
+                };
+                text.push_str(&format!("var {binding} = {value}\n"));
+                if test.returns_error {
+                    text.push_str(&format!(
+                        "let err = {name}({binding})\nreturn {binding}.Finish(err)\n"
+                    ));
+                } else {
+                    text.push_str(&format!("{name}({binding})\nreturn {binding}.Finish(nil)\n"));
+                }
+            }
         }
-        text.push_str("return 0\n}\n");
+        text.push_str("}\n");
     }
     text.push_str("return 1\n}\n");
     text

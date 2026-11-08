@@ -314,7 +314,7 @@ fn hide_test_imports(block: &mut ast::Block) {
 
 fn hide_test_import_expression(expression: &mut ast::Expr) {
     match &mut expression.kind {
-        ast::ExprKind::Name(name) if name == "os" || name == "errors" => {
+        ast::ExprKind::Name(name) if name == "os" || name == "errors" || name == "testing" => {
             *name = format!("$test_{name}");
         }
         ast::ExprKind::Call { callee, args } => {

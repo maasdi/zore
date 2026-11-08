@@ -26,6 +26,7 @@ pub fn run() -> ExitCode {
             format_check,
             release,
             release_tag,
+            bench,
             dependencies,
         }) => match action {
             cli::Action::Check if release => super::release::run(&target, release_tag.as_deref()),
@@ -33,7 +34,7 @@ pub fn run() -> ExitCode {
             cli::Action::Build => build_command(&target, dependencies),
             cli::Action::Run => run_command(&target, dependencies),
             cli::Action::Format => super::format::run(&target, format_check),
-            cli::Action::Test => super::testing::run(&target, dependencies),
+            cli::Action::Test => super::testing::run(&target, dependencies, bench),
             cli::Action::Install | cli::Action::Lock => {
                 super::dependencies::run(&target, dependencies)
             }

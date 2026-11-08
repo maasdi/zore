@@ -38,6 +38,7 @@ pub(crate) enum Command {
         format_check: bool,
         release: bool,
         release_tag: Option<String>,
+        bench: bool,
         dependencies: Options,
     },
 }
@@ -80,6 +81,7 @@ pub(crate) fn parse(args: Vec<OsString>) -> Result<Command, String> {
     let mut targets = Vec::new();
     let mut literal = false;
     let mut format_check = false;
+    let mut bench = false;
     let mut release = false;
     let mut release_tag = None;
     let mut dependencies = Options {
@@ -118,6 +120,10 @@ pub(crate) fn parse(args: Vec<OsString>) -> Result<Command, String> {
             format_check = true;
             continue;
         }
+        if !literal && action == Action::Test && arg == "--bench" && !bench {
+            bench = true;
+            continue;
+        }
         if !literal && action != Action::Format {
             if arg == "--locked"
                 && !dependencies.locked
@@ -154,6 +160,7 @@ pub(crate) fn parse(args: Vec<OsString>) -> Result<Command, String> {
         format_check,
         release,
         release_tag,
+        bench,
         dependencies,
     })
 }
@@ -199,9 +206,10 @@ pub(crate) fn help(action: Option<Action>) -> String {
                 Skips symbolic links, hidden directories, target, and node_modules.\n"
             }
             Action::Test => {
-                "Usage: zore test [--] <file.ore|directory>\n\n\
+                "Usage: zore test [--bench] [--] <file.ore|directory>\n\n\
                 Run TestName functions in _test.ore files, one process per test.\n\
-                Tests take no parameters and return nothing or error.\n\
+                Tests take no parameters or one `t mut testing.T`, and return nothing or error.\n\
+                --bench runs BenchmarkName(b mut testing.B) functions instead of tests.\n\
                 A directory selects packages recursively; a test file selects its tests.\n\
                 Requires clang and rustc, as for build. Exits 1 on any failure.\n"
             }
