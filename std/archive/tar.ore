@@ -104,7 +104,7 @@ func encodeTAR(header Header) (Array<byte>, error) {
     if name.len() > 100 {
         var split = -1
         for var i = 0; i < name.len(); i += 1 {
-            if name[i] == 47 && i <= 155 && name.len() - i - 1 <= 100 && i + 1 < name.len() {
+            if name[i] == 47 && i <= 155 && name.len() - i - 1 <= 100 && (header.Directory || i + 1 < name.len()) {
                 split = i
             }
         }

@@ -86,9 +86,10 @@ func run() error {
         if err != nil { return err }
         return recovered.Close()
     }
-    if args[1] == "wt" || args[1] == "et" {
+    if args[1] == "wt" || args[1] == "et" || args[1] == "wtdir" {
         var writer = archive.NewTARWriter(sink, archiveLimit, dataLimit, entryLimit)?
         if args[1] == "wt" { emit(writer, data[:], args[7])? }
+        if args[1] == "wtdir" { writer.WriteHeader(archive.Header{Name: args[7], Size: 0, Directory: true})? }
         return writer.Close()
     }
     var writer = archive.NewZIPWriter(sink, archiveLimit, dataLimit, entryLimit)?
@@ -268,6 +269,12 @@ def main():
         encoded, _ = run('wt', b'long', name=long_name)
         assert run('rt', encoded)[1][1][0] == long_name
         run('wt', b'', valid=False, name='x' * 101)
+        long_directory = 'd' * 120 + '/'
+        encoded, _ = run('wtdir', b'', name=long_directory)
+        with tarfile.open(fileobj=io.BytesIO(encoded)) as archive:
+            assert archive.getmembers()[0].name == long_directory.rstrip('/')
+        assert run('rt', tar_bytes([(long_directory, b'')]))[1] == [(long_directory, 0, True)]
+
         for mode in ['rt', 'rz']:
             encoded = tar_bytes([('abc', b'payload')]) if mode == 'rt' else zip_bytes([('abc', b'payload')])
             lengths = list(range(0, min(80, len(encoded))))

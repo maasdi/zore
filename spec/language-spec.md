@@ -11365,7 +11365,8 @@ drop. Directory sizes must be zero. ZIP retained central-directory metadata is
 additionally bounded by `MaxMetadataBytes`. Headers/data/padding/metadata/end
 records all count toward `archiveLimit`; limits are never per-entry resets.
 USTAR names must also fit a 100-byte suffix and optional 155-byte prefix at a
-slash boundary. No implicit truncation occurs.
+slash boundary. A directory may use an empty name field with its path in the
+prefix. No implicit truncation occurs.
 
 ### Reader/writer API and ownership
 
