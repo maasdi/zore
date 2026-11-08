@@ -8,6 +8,26 @@ including those shipped in `0.1.0-alpha.1`, are not split by release.
 
 ## [Unreleased]
 
+### Testing
+
+- Added `std/testing` (§37.22). Checks return an `error` that says what was
+  found and wanted: `Equal`, `NotEqual`, `EqualSlices`, `Near`, `True`,
+  `NoError`, `ErrorIs` and `ErrorContains`. A `testing.T` records failures with
+  `Check` and `Fail`, logs, makes a temporary folder with `TempDir`, and runs
+  `Cleanup` functions newest first after a return, an error or a panic.
+- `zore test` also runs `TestName(t mut testing.T)` tests, with or without an
+  `error` result (§45.1); existing tests are unchanged.
+- `zore test --bench` runs `BenchmarkName(b mut testing.B)` functions, and only
+  those, each in its own process. `for b.Loop()` measures for at least a
+  second; the output starts with the compiler version, host and optimization,
+  then gives iterations, time per iteration and total time.
+
+### Standard library
+
+- `fmt` formats a value whose type is a type parameter with `%v` inside a
+  generic function (§37.2). Each copy for a concrete type formats it as that
+  type; a type `fmt` cannot format is reported at the call that made the copy.
+
 ## [0.1.0-alpha.3]
 
 ### Release

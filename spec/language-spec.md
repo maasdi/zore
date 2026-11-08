@@ -6963,8 +6963,9 @@ system, buffered I/O, and TCP), §37.4 (cancellation and task coordination),
 handles, temporary storage, renames, and folder walks), §37.16 (HTTP
 cookies and URL-encoded forms), §37.17 (media types and file serving),
 §37.18 (multipart forms and uploads), §37.19 (secure random bytes and
-constant-time comparison), §37.20 (hashes and HMAC), and §37.21
-(command-line options). Further packages are TBD.
+constant-time comparison), §37.20 (hashes and HMAC), §37.21
+(command-line options), and §37.22 (test helpers and benchmarks). Further
+packages are TBD.
 
 ## 37.1 `println` — LOCKED
 
@@ -7229,6 +7230,22 @@ and a verb:
 
 A width pads the text with spaces, or with zeros after any sign, to that many
 characters. The number of directives must equal the number of arguments.
+
+Inside a generic function (§22.1), an argument whose type is a type parameter
+is also accepted, under any constraint. It takes `%v`, with an optional width,
+and no other verb or precision; in `Print` and `Sprint` it counts as a
+non-`string` argument for spacing. The check moves to each copy of the function:
+when a call in ordinary code makes a copy whose type argument fmt cannot format,
+that call is the error, naming the copy, for example
+`fmt cannot format a value of type Point` at `outer(Point{x: 1})`. Otherwise
+the copy formats the value exactly as a value of its concrete type.
+
+```ore
+func describe<T comparable>(got T, want T) string {
+    return fmt.Sprintf("got %v, want %v", got, want)
+}
+// describe(4, 5) is "got 4, want 5"; describe("a", "b") is "got a, want b"
+```
 
 ```ore
 import "std/fmt"
@@ -10856,6 +10873,123 @@ Compiler impact: none; the package is bundled Zore source built from
 `std/errors`, `std/io`, `std/strconv`, and `std/strings`. Conformance cases:
 `tests/conformance/flag.md`, with native tests in `tests/codegen/flag.rs`.
 
+## 37.22 Test helpers and benchmarks — LOCKED
+
+`std/testing` gives application tests (§45.1) readable checks, temporary
+folders, cleanup, and benchmark measurement. It adds no syntax and no
+reflection: checks are ordinary generic functions that return an `error`, and
+the test context is an ordinary value.
+
+```ore
+func Equal<V comparable>(got V, want V) error
+func NotEqual<V comparable>(got V, avoid V) error
+func EqualSlices<V comparable>(got []V, want []V) error
+func Near(got float64, want float64, tolerance float64) error
+func True(ok bool, message string) error
+func NoError(err error) error
+func ErrorIs(err error, target error) error
+func ErrorContains(err error, text string) error
+
+type T struct { /* private */ }
+func NewT(name string) T
+func (t mut T) Name() string
+func (t mut T) Check(err error)
+func (t mut T) Fail(message string)
+func (t mut T) Failed() bool
+func (t mut T) Failures() Array<string>
+func (t mut T) Log(message string)
+func (t mut T) Cleanup(cleanup own func())
+func (t mut T) TempDir() (string, error)
+func (t own T) Finish(err error) int
+
+type B struct { /* private */ }
+func NewB(name string, goal time.Duration) B
+func (b mut B) Name() string
+func (b mut B) Loop() bool
+func (b B) Iterations() int
+func (b B) Elapsed() time.Duration
+func (b B) NanosecondsPerIteration() float64
+func (b own B) Finish(err error) int
+```
+
+**Checks.** Each check returns `nil` when it holds and otherwise an error whose
+message says what was found and what was wanted. Values are written as `fmt`
+`%v` writes them (§37.2), so they work for every comparable type, including
+named types with a `String() string` method. A test either stops at the first
+failed check with `?`, or records it with `T.Check` and continues.
+
+| Check | Holds when | Failure message |
+| --- | --- | --- |
+| `Equal(got, want)` | `got == want` | `got 4, want 5` |
+| `NotEqual(got, avoid)` | `got != avoid` | `got 4, want any other value` |
+| `EqualSlices(got, want)` | Same length and equal elements | `got length 2, want 3`, or `at index 1: got 2, want 3` for the first difference |
+| `Near(got, want, tolerance)` | The difference is at most `tolerance` | `got 0.3, want 0.5 within 0.001` |
+| `True(ok, message)` | `ok` | `message` |
+| `NoError(err)` | `err == nil` | `unexpected error: ` and the message |
+| `ErrorIs(err, target)` | `errors.Is(err, target)` (§37.2) | `got no error, want "missing"`, or `got error "x", want "missing"` |
+| `ErrorContains(err, text)` | `err` is non-nil and its message contains `text` | `got no error, want one containing "x"`, or `got error "y", want one containing "x"` |
+
+Floats are compared with `Near`, and errors with `ErrorIs` or
+`ErrorContains`, because `comparable` excludes them (§22.1).
+
+**The test context.** `NewT` makes a context named `name`; the test runner makes
+one for each `TestName(t mut testing.T)` test, and a test of a helper can make
+its own. `Check` records the message of a non-nil error and `Fail` records a
+message; neither stops the test. `Failed` and `Failures` report what was
+recorded, in order. `Log` writes its message and a line feed to standard output
+at once. `Cleanup` registers a function, and `TempDir` creates a new, empty
+folder named after the test inside `os.TempDir()` and registers its removal
+with `os.RemoveAll`. The folder's path and the error from `os.MkdirTemp`, with
+`testing.T.TempDir: ` before it, are returned.
+
+`Finish` ends the test: it runs every registered cleanup, newest first, writes
+each recorded failure and then the message of a non-nil `err` on its own line,
+and returns 1 if anything was written and 0 otherwise. If a `T` is dropped
+without `Finish`, as when the test panics, its cleanups still run, newest first,
+while the panic unwinds (§14); nothing else is written. A cleanup runs at most
+once.
+
+**Benchmarks.** `NewB` makes a benchmark that measures for at least `goal`, and
+panics with `testing.NewB: goal must be positive` otherwise. The code being
+measured runs in a loop:
+
+```ore
+func BenchmarkSum(b mut testing.B) {
+    var total = 0
+    for b.Loop() {
+        total = sum(total, 1)
+    }
+}
+```
+
+`Loop` returns `true` once for each iteration and starts the clock on the first
+call. It runs 1 iteration, then raises the count, at most a hundredfold and
+otherwise to the predicted count for `goal` plus a fifth, until the measured
+time reaches `goal` or one billion iterations have run, and then returns
+`false`, on every later call too. The measurement covers all iterations and the
+`Loop` calls between them, measured with `time.Now()` (§37.3). `Iterations`,
+`Elapsed`, and `NanosecondsPerIteration` report it. `Finish` writes
+`601806580 iterations, 2.03 ns/op, 1.223821341s total` and returns 0, or, if
+`err` is non-nil, writes its message and returns 1, or, if `Loop` never returned
+`false`, writes `benchmark BenchmarkSum did not run its Loop to the end` and
+returns 1.
+
+A benchmark is a measurement of one process on one machine, not a comparison
+between runs: no warm-up, statistics, allocation counts, or comparison with
+earlier results are made, and other work on the machine changes the numbers.
+
+Ownership, error, and async implications: `T` and `B` are Move values owned by
+the runner and lent to the test with `mut`; a cleanup function is owned by the
+`T` once registered and is called on the task that runs `Finish` or drops the
+`T`. Checks borrow their arguments. Every function is plain; a test that starts
+async work waits for it before returning (§45.1).
+
+Compiler impact: the package is bundled Zore source built from `std/errors`,
+`std/fmt`, `std/os`, `std/strconv`, `std/strings`, and `std/time`; its checks
+rely on `fmt` formatting a type parameter's value (§37.2). Conformance cases:
+`tests/conformance/testing.md`, with native tests in `tests/codegen/testing.rs`
+and runner tests in `tests/driver/testing.rs`.
+
 ---
 
 # 38. Self-Hosting Constraint
@@ -11479,9 +11613,13 @@ error. A separate external test package is not supported.
 
 A test is a top-level, synchronous, non-generic function in a `_test.ore` file
 whose name starts with `Test` followed by an ASCII uppercase letter. It has no
-receiver or parameters and returns either nothing or exactly the predeclared
-`error` type. A matching top-level name with another signature is an error,
-not a silently skipped test. Methods and other names are ordinary helpers.
+receiver, and either no parameters or exactly one `mut` parameter of type
+`testing.T`, where `testing` is that file's import of `std/testing` (§37.22). It
+returns either nothing or exactly the predeclared `error` type. A benchmark is
+the same with a name that starts with `Benchmark` followed by an ASCII uppercase
+letter and exactly one `mut` parameter of type `testing.B`. A matching
+top-level name with another signature is an error, not a silently skipped test
+or benchmark. Methods and other names are ordinary helpers.
 
 ```ore
 package calculator
@@ -11495,7 +11633,21 @@ func TestLoad() error {
     if value != 5 { return error("unexpected fixture value") }
     return nil
 }
+
+func TestTotals(t mut testing.T) {
+    t.Check(testing.Equal(sum(2, 3), 5))
+    t.Check(testing.Equal(sum(-1, 1), 0))
+}
+
+func BenchmarkSum(b mut testing.B) {
+    var total = 0
+    for b.Loop() { total = sum(total, 1) }
+}
 ```
+
+`zore test <target>` runs the selected tests and never benchmarks;
+`zore test --bench <target>` runs the selected benchmarks and never tests. Every
+selected package is checked against both kinds of signature either way.
 
 Dependency loading follows §3.20 in check/build/run/test. Imported dependency
 tests are excluded; explicitly selecting a library tests its own package files.
@@ -11511,21 +11663,33 @@ targets are rejected; traversal skips symbolic links, hidden directories,
 `target`, and `node_modules`. Packages run in path order, and their selected tests
 in name order. All selected packages must check and build before any test runs.
 
-Each test runs sequentially in a fresh native process, with its package folder
-as the working directory and inherited environment and standard streams. The
+Each test or benchmark runs sequentially in a fresh native process, with its
+package folder as the working directory and inherited environment and standard
+streams. The
 application's `main` is checked if present but is not invoked; test-only `main`
 packages need no application entry point. Package initialization runs normally
 in each process. Normal return or `nil` passes; a returned non-nil error is
-printed and exits the child with status 1. A panic retains ordinary panic
+printed and exits the child with status 1. A test with a `testing.T` receives
+`testing.NewT` of its name, and a benchmark receives `testing.NewB` of its name
+and a goal of one second; after the function returns, the generated entry calls
+`Finish` with the returned error, or `nil`, and exits with its result, so a
+recorded failure also fails the test. A panic retains ordinary panic
 diagnostics and status 2. Other nonzero exits, signals, or launch failures also
 fail the test. The runner reports `RUN`, `PASS` or `FAIL` with package path and
-test name, then a passed/failed count; it continues after child failures.
+test name, then a passed/failed count (`Tests: ` or `Benchmarks: `); it
+continues after child failures. With `--bench` it first writes one line naming
+the compiler version, the host operating system and architecture, the
+optimization (`clang -O2`, as for `build`), and the one-second goal, such as
+`Benchmarks: zore 0.1.0-alpha.3, linux x86_64, clang -O2, at least 1s per
+benchmark in its own process`.
 Its exit status is 0 if every selected test passes (including no tests), 1 for
 test/load/check/build/execution failures, and 2 for invalid command arguments.
 
 Ownership and error implications: ordinary checking and deterministic drop
 placement apply to test bodies and the generated entry wrapper. Cleanup occurs
-on return, `?`, and panic exactly as in ordinary programs. A returned error does
+on return, `?`, and panic exactly as in ordinary programs; the generated entry
+owns the `testing.T` or `testing.B`, so cleanups registered on a `T` run on all
+three paths (§37.22). A returned error does
 not use abrupt `os.Exit` to bypass wrapper cleanup. Explicit `os.Exit` still has
 its ordinary abrupt-exit behavior and determines the child status, including 0.
 Filesystem or other external state is not reset between tests. There is no
@@ -11545,8 +11709,10 @@ linking, and runtime finalization. Native host requirements are the same as for
 Conformance coverage must include both valid signatures, invalid signatures,
 private helper access, imported-test exclusion, deterministic file/directory
 selection, returned errors and panics followed by later passing tests, and
-cleanup on normal/error/panic exits. No registry, dependency solver, test context,
-fixture syntax, or new source-language construct is added.
+cleanup on normal/error/panic exits, both context signatures, benchmark
+selection and output, and cleanup registered on a `T`. The test context is the
+ordinary library type `testing.T`; no registry, dependency solver, fixture
+syntax, or new source-language construct is added.
 
 Semantic analysis and diagnostics should work independently of LLVM code generation.
 

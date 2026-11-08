@@ -22,6 +22,7 @@ See the [official naming rules](../spec/language-spec.md#21-naming--locked).
 | [Maintained packages](maintained-packages.md) | Released `tls`/`tls/https` and `sqlite` packages: coordinates, locked offline use and short HTTPS, SQLite and secure-random/HMAC examples. |
 | [Release workflow](release-workflow.md) | Ordinary Git author/tag/push publication, read-only update reports and explicit application upgrades. |
 | [Command-line options](command-line-options.md) | `std/flag`: declaring options and arguments, reading the result, help text, and choosing output and exit status. |
+| [Application testing](testing.md) | `zore test`, `std/testing` checks and test contexts, temporary folders, cleanup, and `zore test --bench` benchmarks. |
 | [Formatter](formatter.md) | `zore fmt`, check mode, style, traversal, and write behavior. |
 | [Subprocesses and environment](exec.md) | Environment presence and snapshots, child settings, cancellation, streaming pipes, and bounded output. |
 | [Lexical task scopes](scoped-tasks.md) | Plain-function borrowing tasks, mandatory join/cleanup, failure rules and staged async support. |

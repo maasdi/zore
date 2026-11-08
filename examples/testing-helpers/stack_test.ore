@@ -1,0 +1,45 @@
+package stack
+
+import "std/os"
+import "std/testing"
+
+func TestPushPop() error {
+    var s = New()
+    s.Push(1)
+    s.Push(2)
+    testing.Equal(s.Len(), 2)?
+    let top, ok = s.Pop()
+    testing.True(ok, "Pop on a full stack should succeed")?
+    return testing.Equal(top, 2)
+}
+
+func TestPopOrder(t mut testing.T) error {
+    var s = New()
+    s.Push(1)
+    s.Push(2)
+    let first, _ = s.Pop()
+    let second, _ = s.Pop()
+    t.Check(testing.Equal(first, 2))
+    t.Check(testing.Equal(second, 1))
+    let dir = t.TempDir()?
+    t.Check(os.WriteFile(dir + "/data.txt", Array<byte>{1}[:], 0o600))
+    t.Cleanup(func() {
+        println("finished")
+    })
+    return nil
+}
+
+func TestEmptyPop(t mut testing.T) {
+    var s = New()
+    let _, ok = s.Pop()
+    t.Check(testing.True(!ok, "Pop on an empty stack should fail"))
+    t.Check(testing.Equal(s.Len(), 0))
+}
+
+func BenchmarkPushPop(b mut testing.B) {
+    var s = New()
+    for b.Loop() {
+        s.Push(1)
+        let _, _ = s.Pop()
+    }
+}

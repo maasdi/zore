@@ -387,3 +387,254 @@ fn recursive_targets_run_in_path_order_and_skip_symlinks_and_generated_folders()
     assert_eq!(output.status.code(), Some(1));
     assert!(stderr(&output).contains("symbolic links"));
 }
+
+const CONTEXT_TESTS: &str = r#"package calc
+
+import "std/os"
+import "std/testing"
+
+func TestPlainStillRuns() {
+    if add(1, 1) != 2 { panic("bad sum") }
+}
+
+func TestRecordsAndContinues(t mut testing.T) {
+    t.Check(testing.Equal(add(2, 2), 5))
+    t.Log("after the first failure")
+    t.Check(testing.EqualSlices(Array<int>{1, 2}[:], Array<int>{1, 3}[:]))
+}
+
+func TestStopsAtQuestionMark(t mut testing.T) error {
+    t.Cleanup(func() { println("cleanup: stopped test") })
+    testing.Equal(add(1, 2), 4)?
+    t.Fail("not reached")
+    return nil
+}
+
+func TestTempDirIsRemoved(t mut testing.T) {
+    let dir, err = t.TempDir()
+    t.Check(err)
+    t.Check(os.WriteFile(dir + "/note.txt", Array<byte>{104, 105}[:], 0o600))
+    t.Cleanup(func() {
+        let _, gone = os.Stat(dir + "/note.txt")
+        println("note exists during cleanup: " + boolText(gone == nil))
+    })
+    println("dir: " + dir)
+}
+
+func TestPanicRunsCleanups(t mut testing.T) {
+    t.Cleanup(func() { println("cleanup: first registered") })
+    t.Cleanup(func() { println("cleanup: last registered") })
+    panic("intentional context panic")
+}
+
+func boolText(value bool) string {
+    if value { return "yes" }
+    return "no"
+}
+"#;
+
+const SUM: &str = "package calc\nfunc add(a int, b int) int { return a + b }\n";
+
+#[test]
+fn context_tests_record_failures_stop_at_errors_and_clean_up_on_every_path() {
+    let directory = project(&[
+        ("zore.toml", "name = \"calc\"\n"),
+        ("calc.ore", SUM),
+        ("calc_test.ore", CONTEXT_TESTS),
+    ]);
+    let output = run(directory.path());
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let text = stdout(&output).replace(&format!("{}::", directory.path().display()), ".::");
+    assert!(text.ends_with("Tests: 2 passed, 3 failed\n"), "{text}");
+    let block = |name: &str| {
+        let start = text
+            .find(&format!("RUN .::{name}\n"))
+            .unwrap_or_else(|| panic!("{text}"));
+        let rest = &text[start..];
+        let end = rest
+            .find("\nPASS ")
+            .into_iter()
+            .chain(rest.find("\nFAIL "))
+            .min()
+            .unwrap();
+        let line_end = rest[end + 1..].find('\n').unwrap() + end + 1;
+        rest[..line_end].to_string()
+    };
+    assert_eq!(
+        block("TestRecordsAndContinues"),
+        "RUN .::TestRecordsAndContinues\nafter the first failure\ngot 4, want 5\nat index 1: got 2, want 3\nFAIL .::TestRecordsAndContinues (exit status: 1)"
+    );
+    assert_eq!(
+        block("TestStopsAtQuestionMark"),
+        "RUN .::TestStopsAtQuestionMark\ncleanup: stopped test\ngot 3, want 4\nFAIL .::TestStopsAtQuestionMark (exit status: 1)"
+    );
+    assert_eq!(
+        block("TestPanicRunsCleanups"),
+        "RUN .::TestPanicRunsCleanups\ncleanup: last registered\ncleanup: first registered\nFAIL .::TestPanicRunsCleanups (exit status: 2)"
+    );
+    assert!(
+        stderr(&output).contains("intentional context panic"),
+        "{output:?}"
+    );
+    assert!(!stderr(&output).contains("leak:"), "{output:?}");
+    assert!(text.contains("PASS .::TestPlainStillRuns\n"), "{text}");
+    let temp = block("TestTempDirIsRemoved");
+    assert!(
+        temp.ends_with("note exists during cleanup: yes\nPASS .::TestTempDirIsRemoved"),
+        "{temp}"
+    );
+    let dir = temp
+        .lines()
+        .find_map(|line| line.strip_prefix("dir: "))
+        .unwrap_or_else(|| panic!("{temp}"));
+    assert!(dir.contains("zore-TestTempDirIsRemoved-"), "{dir}");
+    assert!(!Path::new(dir).exists(), "{dir} was not removed");
+}
+
+#[test]
+fn bench_runs_only_benchmarks_with_a_metadata_header() {
+    let directory = project(&[
+        ("zore.toml", "name = \"calc\"\n"),
+        ("calc.ore", SUM),
+        (
+            "calc_test.ore",
+            r#"package calc
+
+import "std/testing"
+
+func TestNotRunWithBench() {
+    panic("tests must not run with --bench")
+}
+
+func BenchmarkAdd(b mut testing.B) {
+    var total = 0
+    for b.Loop() { total = add(total, 1) }
+}
+
+func BenchmarkStopsEarly(b mut testing.B) error {
+    return error("setup failed")
+}
+
+func BenchmarkNeverLoops(b mut testing.B) {}
+"#,
+        ),
+    ]);
+    let tests = run(directory.path());
+    assert_eq!(tests.status.code(), Some(1), "{tests:?}");
+    assert!(
+        stdout(&tests).ends_with("Tests: 0 passed, 1 failed\n"),
+        "{tests:?}"
+    );
+    assert!(!stdout(&tests).contains("Benchmark"), "{tests:?}");
+    let output = Command::new(env!("CARGO_BIN_EXE_zore"))
+        .args(["test", "--bench"])
+        .arg(directory.path())
+        .env("ZORE_CHECK_LEAKS", "1")
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let text = stdout(&output).replace(&format!("{}::", directory.path().display()), ".::");
+    let mut lines = text.lines();
+    assert_eq!(
+        lines.next().unwrap(),
+        format!(
+            "Benchmarks: zore {}, {} {}, clang -O2, at least 1s per benchmark in its own process",
+            env!("CARGO_PKG_VERSION"),
+            std::env::consts::OS,
+            std::env::consts::ARCH
+        )
+    );
+    assert_eq!(lines.next().unwrap(), "RUN .::BenchmarkAdd");
+    let measured = lines.next().unwrap();
+    let (iterations, rest) = measured
+        .split_once(" iterations, ")
+        .unwrap_or_else(|| panic!("{text}"));
+    assert!(iterations.parse::<u64>().unwrap() > 1, "{measured}");
+    assert!(
+        rest.contains(" ns/op, ") && rest.ends_with(" total"),
+        "{measured}"
+    );
+    assert_eq!(
+        lines.collect::<Vec<_>>(),
+        [
+            "PASS .::BenchmarkAdd",
+            "RUN .::BenchmarkNeverLoops",
+            "benchmark BenchmarkNeverLoops did not run its Loop to the end",
+            "FAIL .::BenchmarkNeverLoops (exit status: 1)",
+            "RUN .::BenchmarkStopsEarly",
+            "setup failed",
+            "FAIL .::BenchmarkStopsEarly (exit status: 1)",
+            "Benchmarks: 1 passed, 2 failed",
+        ]
+    );
+    assert!(!stderr(&output).contains("must not run"), "{output:?}");
+}
+
+#[test]
+fn context_and_benchmark_signatures_are_checked_before_building() {
+    for (body, message) in [
+        (
+            "import \"std/testing\"\nfunc TestShared(t testing.T) {}",
+            "a test must be synchronous, non-generic, take no parameters or one `t mut testing.T`",
+        ),
+        (
+            "import \"std/testing\"\nfunc TestTwo(t mut testing.T, u mut testing.T) {}",
+            "a test must be synchronous",
+        ),
+        (
+            "import \"std/testing\"\nfunc TestWrongContext(t mut testing.B) {}",
+            "a test must be synchronous",
+        ),
+        (
+            "import \"std/testing\"\nfunc BenchmarkPlain() {}",
+            "a benchmark must be synchronous, non-generic, take one `b mut testing.B`",
+        ),
+        (
+            "import \"std/testing\"\nfunc BenchmarkInt(b mut testing.B) int { return 0 }",
+            "a benchmark must be synchronous",
+        ),
+        (
+            "type T struct {}\nfunc TestLocal(t mut T) {}",
+            "a test must be synchronous",
+        ),
+    ] {
+        let directory = project(&[
+            ("zore.toml", "name = \"calc\"\n"),
+            ("calc.ore", SUM),
+            ("calc_test.ore", &format!("package calc\n{body}\n")),
+        ]);
+        for bench in [false, true] {
+            let mut command = Command::new(env!("CARGO_BIN_EXE_zore"));
+            command.arg("test");
+            if bench {
+                command.arg("--bench");
+            }
+            let output = command
+                .arg(directory.path())
+                .env("ZORE_CC", "missing-c-compiler")
+                .output()
+                .unwrap();
+            assert_eq!(output.status.code(), Some(1), "{body}: {output:?}");
+            assert!(stderr(&output).contains(message), "{body}: {output:?}");
+        }
+    }
+}
+
+#[test]
+fn the_testing_helpers_example_passes_its_tests_and_benchmark() {
+    let example = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../examples/testing-helpers");
+    let tests = run(&example);
+    success(&tests, 3);
+    assert!(stdout(&tests).contains("finished\n"), "{tests:?}");
+    let bench = Command::new(env!("CARGO_BIN_EXE_zore"))
+        .args(["test", "--bench"])
+        .arg(&example)
+        .env("ZORE_CHECK_LEAKS", "1")
+        .output()
+        .unwrap();
+    assert!(bench.status.success(), "{bench:?}");
+    assert!(
+        stdout(&bench).ends_with("Benchmarks: 1 passed, 0 failed\n"),
+        "{bench:?}"
+    );
+}

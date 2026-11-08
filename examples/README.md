@@ -53,6 +53,7 @@ progress have no example until they work.
 | [`photo-board`](photo-board) | Web application with server-side sessions on random tokens, form tokens checked in constant time, photo uploads through multipart forms, file serving from one folder, redirects and graceful shutdown | §37.16 to §37.19 |
 | [`rest-api`](rest-api) | HTTP/1.1 user API, factory handlers, shared store, structured request logs, bounded JSON body and graceful shutdown | §37.6, §37.12 |
 | [`json`](json) | Generated JSON codecs, naming, Optional, strict decoding, Value patches and indentation | §37.7 |
+| [`testing-helpers`](testing-helpers) | `std/testing`: checks with `?`, a `t mut testing.T` that records failures, a temporary folder and cleanup, and a benchmark run with `zore test --bench` | §37.22, §45.1 |
 | [`application-tests`](application-tests) | Same-package tests, private helpers, both test signatures, return/error/panic cleanup and continued failure reporting | §45.1 |
 
 The [`map-entries`](map-entries) example demonstrates scoped shared/mutable access

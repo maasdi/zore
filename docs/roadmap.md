@@ -206,6 +206,14 @@ through `Has`, deterministic usage text, and a `Report` helper that returns an
 exit status instead of exiting. Grouped short options, subcommands,
 environment and file configuration wait for their own contracts; see
 [the flag conformance list](../tests/conformance/flag.md).
+Issue [#221](https://github.com/maasdi/zore/issues/221) adds `std/testing` under
+§37.22 and extends `zore test` under §45.1: checks that return readable errors,
+a `t mut testing.T` context with recorded failures, temporary folders and
+cleanup on every exit path, and `BenchmarkName(b mut testing.B)` functions run
+with `zore test --bench`. `fmt` now formats type parameters' values (§37.2),
+which the checks rely on. Benchmark statistics, comparisons and allocation
+counts wait for their own contracts; see
+[the testing conformance list](../tests/conformance/testing.md).
 
 Secure random bytes and constant-time comparison moved into the standard
 library as `std/crypto/rand` and `std/crypto/subtle` (§37.19), using the
