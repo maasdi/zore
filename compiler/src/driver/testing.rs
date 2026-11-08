@@ -5,6 +5,7 @@ use std::process::{Command, ExitCode};
 
 use super::build::{BuildError, TempDir, build_test_project};
 use super::check::check_project_with_entry;
+use super::command::TestOptions;
 use super::dependencies::{DependencyDisk, Options};
 use super::project::{Disk, FileSystem, LoadError, Project, is_test_file, load_test_project};
 use super::session::report;
@@ -13,7 +14,6 @@ use crate::diagnostic::{Diagnostic, Severity};
 use crate::source::SourceMap;
 
 const ENTRY_NAME: &str = "$test";
-const BENCHMARK_GOAL_NANOSECONDS: u64 = 1_000_000_000;
 
 #[derive(Clone, Copy, PartialEq)]
 enum Kind {
@@ -34,8 +34,8 @@ struct Suite {
     tests: Vec<Test>,
 }
 
-pub(super) fn run(target: &Path, dependencies: Options, bench: bool) -> ExitCode {
-    match test(target, dependencies, bench) {
+pub(super) fn run(target: &Path, dependencies: Options, options: &TestOptions) -> ExitCode {
+    match test(target, dependencies, options) {
         Ok(true) => ExitCode::SUCCESS,
         Ok(false) => ExitCode::FAILURE,
         Err(message) => {
@@ -47,7 +47,8 @@ pub(super) fn run(target: &Path, dependencies: Options, bench: bool) -> ExitCode
     }
 }
 
-fn test(target: &Path, dependencies: Options, bench: bool) -> Result<bool, String> {
+fn test(target: &Path, dependencies: Options, options: &TestOptions) -> Result<bool, String> {
+    let bench = options.bench;
     let metadata = fs::symlink_metadata(target).map_err(|error| path_error(target, error))?;
     if metadata.file_type().is_symlink() {
         return Err(format!(
@@ -86,7 +87,7 @@ fn test(target: &Path, dependencies: Options, bench: bool) -> Result<bool, Strin
         let mut sources = SourceMap::new();
         let mut project = load_test_project(&mut sources, &DependencyDisk(dependencies), entry)
             .map_err(|error| load_error(&sources, error))?;
-        let tests = discover(&project, &sources, selected_file.as_deref(), bench)?;
+        let tests = discover(&project, &sources, selected_file.as_deref(), options)?;
         if tests.is_empty() {
             let checked = check_project_with_entry(&project, &sources, Some(ENTRY_NAME));
             if !checked.diagnostics.is_empty() {
@@ -96,7 +97,7 @@ fn test(target: &Path, dependencies: Options, bench: bool) -> Result<bool, Strin
             continue;
         }
         let name = &project.packages.last().expect("entry package").name;
-        let runner = dispatcher(name, &tests);
+        let runner = dispatcher(name, &tests, options.goal_nanoseconds);
         project
             .add_test_runner(&mut sources, runner, ENTRY_NAME)
             .map_err(|error| load_error(&sources, error))?;
@@ -118,18 +119,28 @@ fn test(target: &Path, dependencies: Options, bench: bool) -> Result<bool, Strin
         });
     }
     if bench {
+        let runs = if options.count == 1 {
+            String::new()
+        } else {
+            format!(", {} runs each", options.count)
+        };
         println!(
-            "Benchmarks: zore {}, {} {}, clang -O2, at least {}s per benchmark in its own process",
+            "Benchmarks: zore {}, {} {}, clang -O2, at least {} per benchmark in its own process{runs}",
             env!("CARGO_PKG_VERSION"),
             std::env::consts::OS,
             std::env::consts::ARCH,
-            BENCHMARK_GOAL_NANOSECONDS / 1_000_000_000,
+            goal_text(options.goal_nanoseconds),
         );
     }
     let mut passed = 0;
     let mut failed = 0;
+    let repeats = if bench { options.count } else { 1 };
     for suite in suites {
-        for test in suite.tests {
+        for test in suite
+            .tests
+            .iter()
+            .flat_map(|test| std::iter::repeat_n(test, repeats as usize))
+        {
             let label = format!("{}::{}", suite.directory.display(), test.name);
             println!("RUN {label}");
             io::stdout().flush().map_err(|error| error.to_string())?;
@@ -165,8 +176,9 @@ fn discover(
     project: &Project,
     sources: &SourceMap,
     selected: Option<&std::ffi::OsStr>,
-    bench: bool,
+    options: &TestOptions,
 ) -> Result<Vec<Test>, String> {
+    let bench = options.bench;
     let mut tests = Vec::new();
     let mut diagnostics = Vec::new();
     for loaded in &project.packages.last().expect("entry package").files {
@@ -218,6 +230,10 @@ fn discover(
             };
             if benchmark == bench
                 && selected.is_none_or(|selected| path.file_name() == Some(selected))
+                && options
+                    .filter
+                    .as_deref()
+                    .is_none_or(|filter| name.contains(filter))
             {
                 tests.push(Test {
                     name: name.clone(),
@@ -251,7 +267,15 @@ fn is_context(param: &Param, file: &File, name: &str) -> bool {
             .any(|import| import.path == "std/testing")
 }
 
-fn dispatcher(package: &str, tests: &[Test]) -> String {
+fn goal_text(nanoseconds: u64) -> String {
+    if nanoseconds % 1_000_000_000 == 0 {
+        format!("{}s", nanoseconds / 1_000_000_000)
+    } else {
+        format!("{}ms", nanoseconds / 1_000_000)
+    }
+}
+
+fn dispatcher(package: &str, tests: &[Test], goal_nanoseconds: u64) -> String {
     let mut text = format!("package {package}\nimport \"std/os\"\n");
     if tests
         .iter()
@@ -277,7 +301,7 @@ fn dispatcher(package: &str, tests: &[Test]) -> String {
                 } else {
                     (
                         "b",
-                        format!("testing.NewB(\"{name}\", {BENCHMARK_GOAL_NANOSECONDS})"),
+                        format!("testing.NewB(\"{name}\", {goal_nanoseconds})"),
                     )
                 };
                 text.push_str(&format!("var {binding} = {value}\n"));

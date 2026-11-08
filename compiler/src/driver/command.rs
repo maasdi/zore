@@ -38,9 +38,47 @@ pub(crate) enum Command {
         format_check: bool,
         release: bool,
         release_tag: Option<String>,
-        bench: bool,
+        tests: TestOptions,
         dependencies: Options,
     },
+}
+
+/// What `zore test` selects and how long it measures benchmarks.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct TestOptions {
+    pub(crate) bench: bool,
+    pub(crate) filter: Option<String>,
+    pub(crate) goal_nanoseconds: u64,
+    pub(crate) count: u32,
+}
+
+impl Default for TestOptions {
+    fn default() -> Self {
+        Self {
+            bench: false,
+            filter: None,
+            goal_nanoseconds: 1_000_000_000,
+            count: 1,
+        }
+    }
+}
+
+fn duration(text: &str) -> Option<u64> {
+    let (digits, scale) = if let Some(digits) = text.strip_suffix("ms") {
+        (digits, 1_000_000)
+    } else if let Some(digits) = text.strip_suffix('s') {
+        (digits, 1_000_000_000)
+    } else {
+        return None;
+    };
+    if digits.is_empty() || !digits.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    digits
+        .parse::<u64>()
+        .ok()
+        .and_then(|value| value.checked_mul(scale))
+        .filter(|&value| value > 0 && value <= 3_600_000_000_000)
 }
 
 pub(crate) fn parse(args: Vec<OsString>) -> Result<Command, String> {
@@ -81,7 +119,9 @@ pub(crate) fn parse(args: Vec<OsString>) -> Result<Command, String> {
     let mut targets = Vec::new();
     let mut literal = false;
     let mut format_check = false;
-    let mut bench = false;
+    let mut tests = TestOptions::default();
+    let mut bench_time = false;
+    let mut count = false;
     let mut release = false;
     let mut release_tag = None;
     let mut dependencies = Options {
@@ -120,9 +160,39 @@ pub(crate) fn parse(args: Vec<OsString>) -> Result<Command, String> {
             format_check = true;
             continue;
         }
-        if !literal && action == Action::Test && arg == "--bench" && !bench {
-            bench = true;
-            continue;
+        if !literal && action == Action::Test {
+            if arg == "--bench" && !tests.bench {
+                tests.bench = true;
+                continue;
+            }
+            if arg == "--filter" && tests.filter.is_none() {
+                let value = arguments
+                    .next()
+                    .and_then(|value| value.to_str())
+                    .filter(|value| !value.is_empty())
+                    .ok_or("--filter requires a non-empty UTF-8 name fragment")?;
+                tests.filter = Some(value.to_string());
+                continue;
+            }
+            if arg == "--bench-time" && !bench_time {
+                tests.goal_nanoseconds = arguments
+                    .next()
+                    .and_then(|value| value.to_str())
+                    .and_then(duration)
+                    .ok_or("--bench-time requires a duration such as 500ms or 2s, at most 3600s")?;
+                bench_time = true;
+                continue;
+            }
+            if arg == "--count" && !count {
+                tests.count = arguments
+                    .next()
+                    .and_then(|value| value.to_str())
+                    .and_then(|value| value.parse::<u32>().ok())
+                    .filter(|&value| (1..=100).contains(&value))
+                    .ok_or("--count requires a whole number from 1 to 100")?;
+                count = true;
+                continue;
+            }
         }
         if !literal && action != Action::Format {
             if arg == "--locked"
@@ -142,6 +212,9 @@ pub(crate) fn parse(args: Vec<OsString>) -> Result<Command, String> {
         }
         targets.push(arg);
     }
+    if (bench_time || count) && !tests.bench {
+        return Err("--bench-time and --count apply only with --bench".into());
+    }
     if release_tag.is_some() && !release {
         return Err("--tag requires --release".into());
     }
@@ -160,7 +233,7 @@ pub(crate) fn parse(args: Vec<OsString>) -> Result<Command, String> {
         format_check,
         release,
         release_tag,
-        bench,
+        tests,
         dependencies,
     })
 }
@@ -206,10 +279,12 @@ pub(crate) fn help(action: Option<Action>) -> String {
                 Skips symbolic links, hidden directories, target, and node_modules.\n"
             }
             Action::Test => {
-                "Usage: zore test [--bench] [--] <file.ore|directory>\n\n\
+                "Usage: zore test [--bench [--bench-time <500ms|2s>] [--count <n>]] [--filter <text>] [--] <file.ore|directory>\n\n\
                 Run TestName functions in _test.ore files, one process per test.\n\
                 Tests take no parameters or one `t mut testing.T`, and return nothing or error.\n\
-                --bench runs BenchmarkName(b mut testing.B) functions instead of tests.\n\
+                --bench runs BenchmarkName(b mut testing.B) functions instead of tests,\n\
+                each for at least --bench-time (default 1s), --count times (default 1).\n\
+                --filter runs only the tests or benchmarks whose name contains <text>.\n\
                 A directory selects packages recursively; a test file selects its tests.\n\
                 Requires clang and rustc, as for build. Exits 1 on any failure.\n"
             }

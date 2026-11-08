@@ -200,6 +200,57 @@ impl Checker<'_> {
         }
     }
 
+    /// `std/testing.callerLocation`, which builds the `testing.Location` a call leaves out.
+    fn location_constructor(&self) -> Option<(FunctionId, TypeId)> {
+        let index = (0..self.res.functions.len()).find(|&index| {
+            self.res.packages[self.res.function_package[index]].path == "std/testing"
+                && self.res.functions[index].name.text == "callerLocation"
+        })?;
+        let result = *self.signatures[index].as_ref()?.results.first()?;
+        Some((FunctionId(index as u32), result))
+    }
+
+    /// Whether a call with `given` arguments leaves out a final `testing.Location` parameter.
+    pub(super) fn implicit_location(&self, params: &[TypeId], given: usize) -> bool {
+        given + 1 == params.len()
+            && self
+                .location_constructor()
+                .is_some_and(|(_, location)| params.last() == Some(&location))
+    }
+
+    /// The `testing.Location` of the call at `span`.
+    pub(super) fn call_location(&self, span: Span) -> hir::Expr {
+        let (function, location) = self
+            .location_constructor()
+            .expect("checked by implicit_location");
+        let (path, line, column) = match self.sources.locate(span) {
+            Some((path, at)) => (path, at.line, at.column),
+            None => ("<unknown>".to_string(), 0, 0),
+        };
+        let args = vec![
+            super::typed(
+                ExprKind::Const(Const::String(path)),
+                TypeStore::STRING,
+                span,
+            ),
+            super::typed(
+                ExprKind::Const(Const::Int(line as i128)),
+                TypeStore::INT,
+                span,
+            ),
+            super::typed(
+                ExprKind::Const(Const::Int(column as i128)),
+                TypeStore::INT,
+                span,
+            ),
+        ];
+        hir::Expr {
+            kind: ExprKind::Call { function, args },
+            types: vec![location],
+            span,
+        }
+    }
+
     pub(super) fn is_generic(&self, id: FunctionId) -> bool {
         self.res.type_params.contains_key(&id)
     }
@@ -307,6 +358,7 @@ impl Checker<'_> {
             Constraint::Copyable => "copyable".into(),
             Constraint::Comparable => "comparable".into(),
             Constraint::Ordered => "ordered".into(),
+            Constraint::Formattable => "formattable".into(),
             Constraint::Interface(id) => self.name(self.types.interface_type(id)),
         }
     }
@@ -345,6 +397,7 @@ impl Checker<'_> {
                 self.types.kind(argument),
                 TypeKind::Int(_) | TypeKind::Float(_) | TypeKind::Rune | TypeKind::String
             ),
+            Constraint::Formattable => self.formats(argument),
             Constraint::Interface(interface) => {
                 return self.require_satisfied(argument, interface, span);
             }
@@ -362,6 +415,9 @@ impl Checker<'_> {
                 }
                 Constraint::Comparable => {
                     "a comparable type is `bool`, an integer type, `rune`, `string`, or a named type built on one"
+                }
+                Constraint::Formattable => {
+                    "a formattable type is `bool`, a number, `rune`, `string`, `error`, a named type built on one, or a type with a `String() string` method"
                 }
                 _ => {
                     "an ordered type is an integer or float type, `rune`, `string`, or a named type built on one"
@@ -390,6 +446,14 @@ impl Checker<'_> {
             ) => true,
             (Constraint::Comparable, Constraint::Comparable)
             | (Constraint::Ordered, Constraint::Ordered) => true,
+            (
+                Constraint::Formattable,
+                Constraint::Formattable | Constraint::Comparable | Constraint::Ordered,
+            ) => true,
+            (Constraint::Formattable, Constraint::Interface(have)) => {
+                let have = self.types.interface_type(have);
+                self.formats(have)
+            }
             (Constraint::Interface(wanted), Constraint::Interface(have)) => {
                 let have = self.types.interface_type(have);
                 return self.require_satisfied(have, wanted, span);
@@ -429,7 +493,8 @@ impl Checker<'_> {
         let (params, results) = (signature.params.clone(), signature.results.clone());
         let type_params = self.res.type_params[&id].clone();
         let expected = self.call_expected.take();
-        if args.len() != params.len() {
+        let implicit = self.implicit_location(&params, args.len());
+        if args.len() + usize::from(implicit) != params.len() {
             let message = format!(
                 "`{name}` takes {} argument{} but {} {} given",
                 params.len(),
@@ -516,6 +581,9 @@ impl Checker<'_> {
         if !ok {
             return None;
         }
+        if implicit {
+            checked.push(self.call_location(span));
+        }
         let modes: Vec<ParamMode> = self.res.locals[id.0 as usize]
             .iter()
             .take(params.len())
@@ -600,7 +668,8 @@ impl Checker<'_> {
             .iter()
             .map(|&param| self.types.substitute(param, &bound))
             .collect();
-        if args.len() + 1 != params.len() {
+        let implicit = self.implicit_location(&params[1..], args.len());
+        if args.len() + 1 + usize::from(implicit) != params.len() {
             let message = format!(
                 "`{name}` takes {} argument{} but {} {} given",
                 params.len() - 1,
@@ -625,6 +694,9 @@ impl Checker<'_> {
         }
         if !ok {
             return None;
+        }
+        if implicit {
+            checked.push(self.call_location(span));
         }
         let modes: Vec<ParamMode> = self.res.locals[id.0 as usize]
             .iter()
@@ -977,7 +1049,7 @@ impl Checker<'_> {
     fn placeholder(&mut self, param: TypeId) -> TypeId {
         match self.types.constraint(param).unwrap_or(Constraint::Any) {
             Constraint::Copyable | Constraint::Comparable | Constraint::Ordered => TypeStore::INT64,
-            Constraint::Any => self.types.dyn_array_type(TypeStore::INT),
+            Constraint::Any | Constraint::Formattable => self.types.dyn_array_type(TypeStore::INT),
             Constraint::Interface(interface) => self.types.interface_type(interface),
         }
     }

@@ -742,24 +742,36 @@ fn the_flag_package_borrows_its_set_and_returns_plain_values() {
 fn fmt_checks_type_parameter_values_in_each_copy() {
     accepts(&[(
         "main.ore",
-        "package main\nimport \"std/fmt\"\nfunc show<T any>(value T) string { return fmt.Sprintf(\"%v|%8v\", value, value) + fmt.Sprint(value) }\nfunc main() { println(show(1) + show(\"a\")) }\n",
+        "package main\nimport \"std/fmt\"\nfunc show<T formattable>(value T) string { return fmt.Sprintf(\"%v|%8v\", value, value) + fmt.Sprint(value) }\nfunc sorted<T ordered>(value T) string { return show(value) }\nfunc compared<T comparable>(value T) string { return fmt.Sprint(value) }\nfunc main() { println(show(1) + show(error(\"e\")) + sorted(1.5) + compared(\"a\")) }\n",
     )]);
     for (body, message) in [
         (
-            "func show<T any>(value T) string { return fmt.Sprintf(\"%d\", value) }\nfunc main() { println(show(1)) }",
+            "func show<T formattable>(value T) string { return fmt.Sprintf(\"%d\", value) }\nfunc main() { println(show(1)) }",
             "`fmt.Sprintf` directive `%d` cannot format a value of type `T`",
         ),
         (
-            "func show<T any>(value T) string { return fmt.Sprintf(\"%s\", value) }\nfunc main() { println(show(\"a\")) }",
+            "func show<T formattable>(value T) string { return fmt.Sprintf(\"%s\", value) }\nfunc main() { println(show(\"a\")) }",
             "`fmt.Sprintf` directive `%s` cannot format a value of type `T`",
         ),
         (
-            "func show<T any>(value T) string { return fmt.Sprintf(\"%.2v\", value) }\nfunc main() { println(show(1.5)) }",
+            "func show<T formattable>(value T) string { return fmt.Sprintf(\"%.2v\", value) }\nfunc main() { println(show(1.5)) }",
             "takes no precision",
         ),
         (
-            "type Point struct { x int }\nfunc show<T any>(value T) string { return fmt.Sprint(value) }\nfunc outer<T any>(value T) string { return show(value) }\nfunc main() { println(outer(Point{x: 1})) }",
-            "`fmt` cannot format a value of type `Point`",
+            "func show<T any>(value T) string { return fmt.Sprint(value) }\nfunc main() { println(show(1)) }",
+            "`fmt.Sprint` cannot format a value of type `T`",
+        ),
+        (
+            "func show<T copyable>(value T) string { return fmt.Sprint(value) }\nfunc main() { println(show(1)) }",
+            "`fmt.Sprint` cannot format a value of type `T`",
+        ),
+        (
+            "type Point struct { x int }\nfunc show<T formattable>(value T) string { return fmt.Sprint(value) }\nfunc outer<T formattable>(value T) string { return show(value) }\nfunc main() { println(outer(Point{x: 1})) }",
+            "`Point` does not satisfy `formattable`, the constraint of `T`",
+        ),
+        (
+            "func show<T formattable>(value T) string { return fmt.Sprint(value) }\nfunc outer<T any>(value T) string { return show(value) }\nfunc main() { println(outer(1)) }",
+            "`T` does not satisfy `formattable`",
         ),
     ] {
         rejects(

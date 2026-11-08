@@ -19,7 +19,7 @@ func pair<T comparable>(got T, want T) string {
     return fmt.Sprintf("got %v, want %4v|", got, want)
 }
 
-func plain<T any>(value T) string {
+func plain<T formattable>(value T) string {
     return fmt.Sprint(value) + fmt.Sprint(value, value) + fmt.Sprintln(value, value)
 }
 
@@ -27,7 +27,7 @@ func nested<T comparable>(value T) string {
     return pair(value, value)
 }
 
-func failure<T any>(value T) error {
+func failure<T formattable>(value T) error {
     return fmt.Errorf("value %v", value)
 }
 
@@ -98,7 +98,7 @@ func main() {
 "#;
     prints(
         source,
-        "ok\ngot 4, want 5\ngot left, want right\ngot 3, want 4\nok\ngot same, want any other value\nok\ngot length 2, want 3\nat index 1: got b, want x\nok\nok\ngot 1.0, want 1.5 within 0.25\nok\nok\nflag should be set\nok\nunexpected error: disk full\nok\ngot no error, want \"missing\"\ngot error \"other\", want \"missing\"\nok\ngot no error, want one containing \"line\"\ngot error \"bad input\", want one containing \"timeout\"\n",
+        "ok\ntest.ore:17:10: got 4, want 5\ntest.ore:18:10: got left, want right\ntest.ore:19:10: got 3, want 4\nok\ntest.ore:21:10: got same, want any other value\nok\ntest.ore:23:10: got length 2, want 3\ntest.ore:24:10: at index 1: got b, want x\nok\nok\ntest.ore:27:10: got 1.0, want 1.5 within 0.25\nok\nok\ntest.ore:30:10: flag should be set\nok\ntest.ore:32:10: unexpected error: disk full\nok\ntest.ore:35:10: got no error, want \"missing\"\ntest.ore:36:10: got error \"other\", want \"missing\"\nok\ntest.ore:38:10: got no error, want one containing \"line\"\ntest.ore:39:10: got error \"bad input\", want one containing \"timeout\"\n",
     );
 }
 
@@ -140,7 +140,7 @@ func main() {
 "#;
     prints(
         source,
-        "TestDemo\nfalse\ntrue\ntrue\nfalse\n2\nfirst,second\nlogged now\ncleanup 2\ncleanup 1\nfirst\nsecond\nreturned\n1\ntrue\nclean cleanup\n0\ndropped cleanup\nend\n",
+        "TestDemo\nfalse\ntrue\ntrue\nfalse\n2\nfirst,test.ore:18:5: second\ntest.ore:22:5: logged now\ncleanup 2\ncleanup 1\nfirst\ntest.ore:18:5: second\nreturned\n1\ntrue\nclean cleanup\n0\ndropped cleanup\nend\n",
     );
 }
 
@@ -217,4 +217,100 @@ fn a_benchmark_needs_a_positive_goal() {
         );
         panics(&source, "testing.NewB: goal must be positive", "start\n");
     }
+}
+
+#[test]
+fn locations_name_the_call_and_can_be_passed_on_by_helpers() {
+    let source = r#"package main
+import "std/errors"
+import "std/testing"
+
+func expectSum(a int, b int, want int, at testing.Location) error {
+    return testing.Equal(a + b, want, at)
+}
+
+func here(at testing.Location) testing.Location {
+    return at
+}
+
+func main() {
+    println(errors.Message(expectSum(1, 2, 4)))
+    let at = here()
+    println(at.File() + " " + at.String())
+    println(at.Line())
+    println(at.Column())
+    println(errors.Message(testing.Equal(1, 2, at)))
+    let call = here
+    println(call(at).Line())
+}
+"#;
+    prints(
+        source,
+        "test.ore:14:28: got 3, want 4\ntest.ore test.ore:15:14\n15\n14\ntest.ore:15:14: got 1, want 2\n15\n",
+    );
+}
+
+#[test]
+fn equal_func_compares_with_a_function_and_prints_with_string() {
+    let source = r#"package main
+import "std/errors"
+import "std/testing"
+
+type Point struct {
+    x int
+    y int
+}
+
+func (p Point) String() string {
+    return "(" + text(p.x) + ", " + text(p.y) + ")"
+}
+
+func text(n int) string {
+    if n == 0 { return "0" }
+    if n == 1 { return "1" }
+    return "many"
+}
+
+func same(a Point, b Point) bool {
+    return a.x == b.x && a.y == b.y
+}
+
+func main() {
+    println(testing.EqualFunc(Point{x: 1, y: 0}, Point{x: 1, y: 0}, same) == nil)
+    println(errors.Message(testing.EqualFunc(Point{x: 1, y: 0}, Point{x: 0, y: 1}, same)))
+}
+"#;
+    prints(source, "true\ntest.ore:26:28: got (1, 0), want (0, 1)\n");
+}
+
+#[test]
+fn run_names_cases_and_keeps_their_failures_and_cleanups_separate() {
+    let source = r#"package main
+import "std/testing"
+
+func main() {
+    var t = testing.NewT("TestTable")
+    for value in Array<int>{1, 2, 3} {
+        let passed = t.Run("value " + text(value), func(c mut testing.T) {
+            println(c.Name())
+            c.Cleanup(func() { println("case cleanup") })
+            c.Check(testing.Equal(value % 2, 1))
+        })
+        println(passed)
+    }
+    t.Cleanup(func() { println("outer cleanup") })
+    println(t.Failures().len())
+    println(t.Finish(nil))
+}
+
+func text(n int) string {
+    if n == 1 { return "one" }
+    if n == 2 { return "two" }
+    return "three"
+}
+"#;
+    prints(
+        source,
+        "TestTable/value one\ncase cleanup\ntrue\nTestTable/value two\ncase cleanup\nfalse\nTestTable/value three\ncase cleanup\ntrue\n1\nouter cleanup\nvalue two: test.ore:10:21: got 0, want 1\n1\n",
+    );
 }

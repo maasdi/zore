@@ -84,6 +84,7 @@ pub(super) fn predeclared(name: &str) -> Option<Res> {
         "copyable" => Some(Res::Constraint(Constraint::Copyable)),
         "comparable" => Some(Res::Constraint(Constraint::Comparable)),
         "ordered" => Some(Res::Constraint(Constraint::Ordered)),
+        "formattable" => Some(Res::Constraint(Constraint::Formattable)),
         "Array" | "Task" | "Mutex" => Some(Res::Unsupported),
         _ => None,
     }

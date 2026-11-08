@@ -444,7 +444,9 @@ fn context_tests_record_failures_stop_at_errors_and_clean_up_on_every_path() {
     ]);
     let output = run(directory.path());
     assert_eq!(output.status.code(), Some(1), "{output:?}");
-    let text = stdout(&output).replace(&format!("{}::", directory.path().display()), ".::");
+    let text = stdout(&output)
+        .replace(&format!("{}::", directory.path().display()), ".::")
+        .replace(&format!("{}/", directory.path().display()), "");
     assert!(text.ends_with("Tests: 2 passed, 3 failed\n"), "{text}");
     let block = |name: &str| {
         let start = text
@@ -462,11 +464,11 @@ fn context_tests_record_failures_stop_at_errors_and_clean_up_on_every_path() {
     };
     assert_eq!(
         block("TestRecordsAndContinues"),
-        "RUN .::TestRecordsAndContinues\nafter the first failure\ngot 4, want 5\nat index 1: got 2, want 3\nFAIL .::TestRecordsAndContinues (exit status: 1)"
+        "RUN .::TestRecordsAndContinues\ncalc_test.ore:12:5: after the first failure\ncalc_test.ore:11:13: got 4, want 5\ncalc_test.ore:13:13: at index 1: got 2, want 3\nFAIL .::TestRecordsAndContinues (exit status: 1)"
     );
     assert_eq!(
         block("TestStopsAtQuestionMark"),
-        "RUN .::TestStopsAtQuestionMark\ncleanup: stopped test\ngot 3, want 4\nFAIL .::TestStopsAtQuestionMark (exit status: 1)"
+        "RUN .::TestStopsAtQuestionMark\ncleanup: stopped test\ncalc_test.ore:18:5: got 3, want 4\nFAIL .::TestStopsAtQuestionMark (exit status: 1)"
     );
     assert_eq!(
         block("TestPanicRunsCleanups"),
@@ -637,4 +639,105 @@ fn the_testing_helpers_example_passes_its_tests_and_benchmark() {
         stdout(&bench).ends_with("Benchmarks: 1 passed, 0 failed\n"),
         "{bench:?}"
     );
+}
+
+#[test]
+fn filter_bench_time_and_count_select_and_repeat_runs() {
+    let directory = project(&[
+        ("zore.toml", "name = \"calc\"\n"),
+        ("calc.ore", SUM),
+        (
+            "calc_test.ore",
+            r#"package calc
+
+import "std/testing"
+
+func TestAddSmall() {}
+
+func TestAddLarge() {}
+
+func TestOther() {}
+
+func BenchmarkAdd(b mut testing.B) {
+    var total = 0
+    for b.Loop() { total = add(total, 1) }
+}
+
+func BenchmarkOther(b mut testing.B) {
+    for b.Loop() {}
+}
+"#,
+        ),
+    ]);
+    let zore = |args: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_zore"))
+            .args(args)
+            .arg(directory.path())
+            .env("ZORE_CHECK_LEAKS", "1")
+            .output()
+            .unwrap()
+    };
+    let label = format!("{}::", directory.path().display());
+    let filtered = zore(&["test", "--filter", "Add"]);
+    success(&filtered, 2);
+    let text = stdout(&filtered).replace(&label, ".::");
+    assert!(
+        text.contains("PASS .::TestAddLarge\n") && text.contains("PASS .::TestAddSmall\n"),
+        "{text}"
+    );
+    assert!(!text.contains("TestOther"), "{text}");
+    let bench = zore(&[
+        "test",
+        "--bench",
+        "--filter",
+        "Add",
+        "--bench-time",
+        "50ms",
+        "--count",
+        "2",
+    ]);
+    assert!(bench.status.success(), "{bench:?}");
+    let text = stdout(&bench).replace(&label, ".::");
+    assert!(
+        text.starts_with(&format!(
+            "Benchmarks: zore {}, {} {}, clang -O2, at least 50ms per benchmark in its own process, 2 runs each\n",
+            env!("CARGO_PKG_VERSION"),
+            std::env::consts::OS,
+            std::env::consts::ARCH
+        )),
+        "{text}"
+    );
+    assert_eq!(text.matches("RUN .::BenchmarkAdd\n").count(), 2, "{text}");
+    assert!(!text.contains("BenchmarkOther"), "{text}");
+    assert!(text.ends_with("Benchmarks: 2 passed, 0 failed\n"), "{text}");
+    for (args, message) in [
+        (
+            &["test", "--count", "2"][..],
+            "--bench-time and --count apply only with --bench",
+        ),
+        (
+            &["test", "--bench", "--bench-time", "5"][..],
+            "--bench-time requires a duration",
+        ),
+        (
+            &["test", "--bench", "--bench-time", "0ms"][..],
+            "--bench-time requires a duration",
+        ),
+        (
+            &["test", "--bench", "--count", "0"][..],
+            "--count requires a whole number from 1 to 100",
+        ),
+        (
+            &["test", "--bench", "--count", "101"][..],
+            "--count requires a whole number from 1 to 100",
+        ),
+        (
+            &["test", "--filter", ""][..],
+            "--filter requires a non-empty",
+        ),
+    ] {
+        let output = zore(args);
+        assert_eq!(output.status.code(), Some(2), "{args:?}: {output:?}");
+        assert!(stderr(&output).contains(message), "{args:?}: {output:?}");
+    }
 }

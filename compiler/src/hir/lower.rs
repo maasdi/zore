@@ -2937,7 +2937,8 @@ impl<'a> Checker<'a> {
         let skipped = usize::from(receiver.is_some());
         let params = signature.params[skipped..].to_vec();
         let results = signature.results.clone();
-        if args.len() != params.len() {
+        let implicit = self.implicit_location(&params, args.len());
+        if args.len() + usize::from(implicit) != params.len() {
             let message = format!(
                 "`{name}` takes {} argument{} but {} {} given",
                 params.len(),
@@ -2959,6 +2960,9 @@ impl<'a> Checker<'a> {
                 Some(expr) => checked.push(expr),
                 None => ok = false,
             }
+        }
+        if implicit {
+            checked.push(self.call_location(span));
         }
         if !ok || !self.check_mut_arguments(id, &checked) {
             return None;
