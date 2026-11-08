@@ -389,18 +389,6 @@ impl<'a> Resolver<'a> {
     fn bind_imports(&mut self, file_unit: &FileUnit<'a>) {
         let (package, file) = (self.current_package, self.current_file);
         for (import, binding) in file_unit.file.imports.iter().zip(&file_unit.imports) {
-            if let Some(alias) = &import.alias
-                && import.path.rsplit('/').next() == Some(alias.text.as_str())
-            {
-                self.out.diagnostics.push(
-                    Diagnostic::new(
-                        Severity::Error,
-                        format!("this import is already named `{}`", alias.text),
-                        alias.span,
-                    )
-                    .note("remove the name, or choose a different one"),
-                );
-            }
             let table = &self.imports[package][file];
             if let Some(&first) = table.by_name.get(&binding.name) {
                 let first_package = table.entries[first].package;

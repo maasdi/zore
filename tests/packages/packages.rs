@@ -320,10 +320,6 @@ fn import_declarations_are_checked() {
             "blank imports are not supported",
         ),
         (
-            "import shapes \"myapp/shapes\"\n",
-            "this import is already named `shapes`",
-        ),
-        (
             "import func \"myapp/shapes\"\n",
             "`func` is a keyword and cannot be used as an import name",
         ),
@@ -358,6 +354,10 @@ fn an_import_name_replaces_the_last_path_segment_in_its_file() {
     );
     let accepted: Vec<(&str, &str)> = accepted.iter().map(|(p, t)| (*p, t.as_str())).collect();
     accepts(&accepted);
+    accepts(&with_shapes(&main_with(
+        "import shapes \"myapp/shapes\"\nimport strings \"std/strings\"\n",
+        "println(strings.ToUpper(\"a\"))\n    let _ = shapes.Area(shapes.Circle{Radius: 1})",
+    )));
     for (main, message) in [
         (
             "package main\nimport second \"myapp/b/util\"\nfunc main() { println(util.B() + other()) }\n",

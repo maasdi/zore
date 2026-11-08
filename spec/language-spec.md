@@ -1673,8 +1673,8 @@ type position (`var c shapes.Circle`). The rules are:
   The name is an identifier (§3.5); a keyword, reserved word or `_` is an
   error. It replaces the last segment for every rule above: the unused,
   duplicate-name, declaration and predeclared-name checks apply to it, and the
-  last segment is not also bound. A name equal to the last segment is an error,
-  because it changes nothing. The package itself is unchanged: its package
+  last segment is not also bound. A name equal to the last segment is allowed
+  and changes nothing. The package itself is unchanged: its package
   clause still matches its last segment, its types keep their nominal identity
   however each file names it, and diagnostics inside it use its own name. Using
   the last segment of a renamed import is an ordinary unknown-name error, with
