@@ -8441,8 +8441,10 @@ func main() {
     let _, gone = os.Open(root + "/out.txt")
     println(gone != nil)
 
-    println(os.Getenv("ZORE_TEST_VALUE"))
-    println("[" + os.Getenv("ZORE_UNSET_VALUE") + "]")
+    let value, _ = os.Getenv("ZORE_TEST_VALUE")
+    println(value)
+    let unset, _ = os.Getenv("ZORE_UNSET_VALUE")
+    println("[" + unset + "]")
     let args = os.Args()
     println(args.len())
     println(args[1])

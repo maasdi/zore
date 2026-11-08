@@ -10,13 +10,14 @@ use std::time::Duration;
 use super::blocking;
 use super::strconv::ValueError;
 use super::string::StringOut;
-use super::sys::{
-    ByteArray, ByteArrayError, ErrorOut, WordArray, WordArrayError, text_of, texts_of,
-};
+use super::sys::{ByteArrayError, ErrorOut, WordArray, WordArrayError, text_of, texts_of};
 
-const MAX_CAPTURE: i64 = 1 << 30;
 const READ_CHUNK: usize = 65536;
-const OUTPUT_LIMIT: &str = "exec: output limit exceeded";
+const NULL_STREAM: i64 = 0;
+const INHERIT_STREAM: i64 = 1;
+const PIPE_STREAM: i64 = 2;
+const FIRST_DELAY: Duration = Duration::from_millis(1);
+const LONGEST_DELAY: Duration = Duration::from_millis(50);
 
 #[derive(Clone, Debug)]
 struct Outcome {
@@ -59,6 +60,7 @@ enum Pipe {
     Input(ChildStdin),
     Output(ChildStdout),
     Error(ChildStderr),
+    Shared(std::io::PipeReader),
 }
 
 struct ChildState {
@@ -162,27 +164,52 @@ fn configured(
     Ok(command)
 }
 
+struct Streams {
+    stdin: i64,
+    stdout: i64,
+    stderr: i64,
+    combined: bool,
+}
+
+fn stdio(mode: i64) -> Result<Stdio, String> {
+    match mode {
+        NULL_STREAM => Ok(Stdio::null()),
+        INHERIT_STREAM => Ok(Stdio::inherit()),
+        PIPE_STREAM => Ok(Stdio::piped()),
+        _ => Err("exec: invalid stream".to_string()),
+    }
+}
+
 fn start(
     path: &str,
     args: &[String],
     dir: &str,
     env: &[String],
     clear: bool,
-    pipes: i64,
+    streams: Streams,
 ) -> Result<i64, String> {
     let mut command = configured(path, args, dir, env, clear)?;
-    let stream = |bit| {
-        if pipes & bit != 0 {
-            Stdio::piped()
-        } else {
-            Stdio::null()
-        }
+    command.stdin(stdio(streams.stdin)?);
+    let shared = if streams.combined {
+        let (reader, writer) = std::io::pipe().map_err(|e| format!("exec: pipe: {e}"))?;
+        let copy = writer.try_clone().map_err(|e| format!("exec: pipe: {e}"))?;
+        command.stdout(writer).stderr(copy);
+        Some(reader)
+    } else {
+        command
+            .stdout(stdio(streams.stdout)?)
+            .stderr(stdio(streams.stderr)?);
+        None
     };
-    command.stdin(stream(1)).stdout(stream(2)).stderr(stream(4));
     let mut child = command.spawn().map_err(|e| format!("exec: {path}: {e}"))?;
+    drop(command);
+    let output = match shared {
+        Some(reader) => Some(Pipe::Shared(reader)),
+        None => child.stdout.take().map(Pipe::Output),
+    };
     let pipes = [
         child.stdin.take().map(Pipe::Input),
-        child.stdout.take().map(Pipe::Output),
+        output,
         child.stderr.take().map(Pipe::Error),
     ];
     let state = ChildState {
@@ -199,11 +226,13 @@ fn start(
 }
 
 fn wait(state: &Mutex<ChildState>) -> Result<Outcome, String> {
+    let mut delay = FIRST_DELAY;
     loop {
         if let Some(outcome) = lock(state).observe()? {
             return Ok(outcome);
         }
-        std::thread::sleep(Duration::from_millis(2));
+        std::thread::sleep(delay);
+        delay = (delay * 2).min(LONGEST_DELAY);
     }
 }
 
@@ -247,6 +276,7 @@ fn read_pipe(id: i64, max: i64) -> Result<Vec<u8>, String> {
     let read = match &mut *lock(&endpoint) {
         Pipe::Output(reader) => reader.read(&mut buffer),
         Pipe::Error(reader) => reader.read(&mut buffer),
+        Pipe::Shared(reader) => reader.read(&mut buffer),
         Pipe::Input(_) => return Err("exec: pipe not open for reading".to_string()),
     }
     .map_err(|e| format!("exec: read: {e}"))?;
@@ -283,77 +313,6 @@ fn close_pipe(id: i64) -> Result<(), String> {
         .ok_or_else(|| "exec: not an open pipe".to_string())
 }
 
-fn capture(
-    path: &str,
-    args: &[String],
-    dir: &str,
-    mode: i64,
-    limit: i64,
-) -> (Vec<u8>, Option<String>) {
-    if !(0..=MAX_CAPTURE).contains(&limit) {
-        return (Vec::new(), Some("exec: invalid output limit".to_string()));
-    }
-    let result = (|| -> Result<_, String> {
-        let mut command = configured(path, args, dir, &[], false)?;
-        command.stdin(Stdio::null());
-        let combined = if mode == 2 {
-            let (reader, writer) = std::io::pipe().map_err(|e| format!("exec: pipe: {e}"))?;
-            let copy = writer.try_clone().map_err(|e| format!("exec: pipe: {e}"))?;
-            command.stdout(writer).stderr(copy);
-            Some(reader)
-        } else {
-            command
-                .stdout(if mode == 1 {
-                    Stdio::piped()
-                } else {
-                    Stdio::null()
-                })
-                .stderr(Stdio::null());
-            None
-        };
-        let mut child = command.spawn().map_err(|e| format!("exec: {path}: {e}"))?;
-        drop(command);
-        let mut output = Vec::new();
-        let mut reader: Option<Box<dyn Read>> = combined
-            .map(|r| Box::new(r) as Box<dyn Read>)
-            .or_else(|| child.stdout.take().map(|r| Box::new(r) as Box<dyn Read>));
-        let read = if let Some(reader) = &mut reader {
-            read_bounded(reader, &mut output, limit as usize)
-        } else {
-            Ok(())
-        };
-        drop(reader);
-        if read.is_err() {
-            let _ = child.kill();
-        }
-        let waited = child.wait().map_err(|e| format!("exec: wait: {e}"));
-        let failure = read.err().or_else(|| match waited {
-            Ok(status) => Outcome::exited(status, None).failure,
-            Err(error) => Some(error),
-        });
-        Ok((output, failure))
-    })();
-    result.unwrap_or_else(|error| (Vec::new(), Some(error)))
-}
-
-fn read_bounded(reader: &mut dyn Read, output: &mut Vec<u8>, limit: usize) -> Result<(), String> {
-    let mut buffer = [0; 8192];
-    loop {
-        let want = buffer.len().min(limit - output.len() + 1);
-        let count = match reader.read(&mut buffer[..want]) {
-            Ok(0) => return Ok(()),
-            Ok(count) => count,
-            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
-            Err(error) => return Err(format!("exec: read: {error}")),
-        };
-        let retained = count.min(limit - output.len());
-        output.extend_from_slice(&buffer[..retained]);
-        if retained < count {
-            return Err(OUTPUT_LIMIT.to_string());
-        }
-    }
-}
-
 /// # Safety
 /// `out` must be writable; strings and slices must address their declared lengths.
 #[unsafe(no_mangle)]
@@ -368,7 +327,10 @@ pub unsafe extern "C" fn zore_native_exec_start(
     env: *const StringOut,
     env_len: i64,
     clear: bool,
-    pipes: i64,
+    stdin: i64,
+    stdout: i64,
+    stderr: i64,
+    combined: bool,
 ) {
     // SAFETY: guaranteed by the caller.
     let (path, args, dir, env) = unsafe {
@@ -380,13 +342,24 @@ pub unsafe extern "C" fn zore_native_exec_start(
         )
     };
     let _blocking = super::scheduler::BlockingGuard::enter();
-    let result = start(&path, &args, &dir, &env, clear, pipes);
+    let streams = Streams {
+        stdin,
+        stdout,
+        stderr,
+        combined,
+    };
+    let result = start(&path, &args, &dir, &env, clear, streams);
     let value = match result {
         Ok(id) => ValueError::ok(id),
         Err(error) => ValueError::failed_text(&error),
     };
     // SAFETY: guaranteed by the caller.
     unsafe { out.write(value) };
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn zore_native_exec_process_pid(id: i64) -> i64 {
+    process(id).map_or(0, |state| i64::from(lock(&state).child.id()))
 }
 
 #[unsafe(no_mangle)]
@@ -536,38 +509,6 @@ pub extern "C" fn zore_native_exec_pipe_drop(id: i64) {
     let _ = close_pipe(id);
 }
 
-/// # Safety
-/// `out` must be writable; strings and slices must address their declared lengths.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn zore_native_exec_run(
-    out: *mut ByteArrayError,
-    path: *const u8,
-    path_len: i64,
-    args: *const StringOut,
-    args_len: i64,
-    dir: *const u8,
-    dir_len: i64,
-    mode: i64,
-    limit: i64,
-) {
-    // SAFETY: guaranteed by the caller.
-    let (path, args, dir) = unsafe {
-        (
-            text_of(path, path_len),
-            texts_of(args, args_len),
-            text_of(dir, dir_len),
-        )
-    };
-    let (output, failure) = blocking::run(move || capture(&path, &args, &dir, mode, limit));
-    let mut value = match failure {
-        Some(error) => ByteArrayError::failed(&error),
-        None => ByteArrayError::ok(&[]),
-    };
-    value.array = ByteArray::copy_of(&output);
-    // SAFETY: guaranteed by the caller.
-    unsafe { out.write(value) };
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -636,7 +577,12 @@ mod tests {
                 "",
                 &["ZORE_EXEC_RUNTIME_GATE=1".to_string()],
                 false,
-                7,
+                Streams {
+                    stdin: PIPE_STREAM,
+                    stdout: PIPE_STREAM,
+                    stderr: PIPE_STREAM,
+                    combined: false,
+                },
             )
             .unwrap();
             let state = process(id).unwrap();
@@ -664,38 +610,21 @@ mod tests {
     }
 
     #[test]
-    fn bounded_reads_keep_exact_prefix_and_probe_only_one_extra_byte() {
-        for limit in [0, 1, 8191, 8192, 8193] {
-            let bytes = vec![b'x'; limit + 10000];
-            let mut reader = bytes.as_slice();
-            let mut output = Vec::new();
-            assert_eq!(
-                read_bounded(&mut reader, &mut output, limit),
-                Err(OUTPUT_LIMIT.to_string())
-            );
-            assert_eq!(output, vec![b'x'; limit]);
-            assert_eq!(reader.len(), bytes.len() - limit - 1);
-        }
-    }
-
-    #[test]
-    fn bounded_reads_accept_exact_limit_and_empty_output() {
-        for bytes in [b"".as_slice(), b"abcd".as_slice()] {
-            let mut output = Vec::new();
-            assert!(read_bounded(&mut &bytes[..], &mut output, bytes.len()).is_ok());
-            assert_eq!(output, bytes);
-        }
-    }
-
-    #[test]
-    fn invalid_environment_and_limits_fail_before_spawn() {
+    fn invalid_environment_and_streams_fail_before_spawn() {
         for entry in ["missing_equals", "=value", "x=contains\0nul"] {
             assert!(configured("never-started", &[], "", &[entry.to_string()], false).is_err());
         }
-        for limit in [-1, MAX_CAPTURE + 1] {
-            let (output, error) = capture("never-started", &[], "", 1, limit);
-            assert!(output.is_empty());
-            assert_eq!(error.as_deref(), Some("exec: invalid output limit"));
+        for mode in [-1, 3] {
+            let streams = Streams {
+                stdin: mode,
+                stdout: NULL_STREAM,
+                stderr: NULL_STREAM,
+                combined: false,
+            };
+            assert_eq!(
+                start("never-started", &[], "", &[], false, streams),
+                Err("exec: invalid stream".to_string())
+            );
         }
     }
 }

@@ -2,8 +2,13 @@ package main
 
 import "std/os"
 
+func demoFailures() bool {
+    let value, _ = os.Getenv("ZORE_TEST_DEMO_FAILURES")
+    return value == "1"
+}
+
 func requestedFailure() error {
-    if os.Getenv("ZORE_TEST_DEMO_FAILURES") == "1" {
+    if demoFailures() {
         return error("intentional returned error")
     }
     return nil
@@ -17,7 +22,7 @@ func TestReturnedError() error {
 
 func TestPanic() {
     let probe = CleanupProbe{label: "panic or normal return"}
-    if os.Getenv("ZORE_TEST_DEMO_FAILURES") == "1" {
+    if demoFailures() {
         panic("intentional panic")
     }
 }

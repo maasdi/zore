@@ -10,15 +10,23 @@ including those shipped in `0.1.0-alpha.1`, are not split by release.
 
 ### Environment and subprocesses
 
-- Added `os.LookupEnv` to distinguish missing and empty variables, and
-  `os.Environ` for independent environment snapshots. Child environment
-  overrides do not mutate the parent process.
-- Added owned subprocess handles with start, cached wait/status, cancellation,
-  and deterministic direct-child termination and reaping. Owned pipes compose
-  with `std/io`; process-tree termination is outside the guarantee.
-- `exec.Cmd.OutputLimit` and `CombinedOutputLimit` retain a bounded prefix and
-  report overflow. Existing `Output` and `CombinedOutput` now default to a
-  16 MiB limit; use an explicit limit or streaming pipes for larger output.
+- **Breaking:** `os.Getenv` returns `(string, bool)`, the value and whether the
+  variable is set, matching `url.Values.Get` and `http.Header.Get`. Write
+  `let value, _ = os.Getenv(key)` where presence does not matter. Package
+  releases built for an earlier compiler, such as `tls/v0.1.0-alpha.2`, need
+  the matching new release.
+- Added `os.Environ` for independent environment snapshots. Child environment
+  settings do not change the parent process.
+- Added owned subprocess handles: `Cmd.Start(ctx, options)` with `Pid`, cached
+  `Wait`/`Status`, `Kill`, cancellation, and deterministic direct-child
+  termination and reaping. Each of `Options.Stdin`, `Stdout` and `Stderr` is
+  `exec.Null`, `exec.Inherit` (share the parent's stream) or `exec.Pipe`; owned
+  pipes compose with `std/io`. `Options.SetEnv` adds one variable.
+  Process-tree termination is outside the guarantee.
+- Added `RunWith`, `OutputWith` and `CombinedOutputWith`, which take a context
+  and options, including `Options.OutputLimit`. Captures keep a bounded prefix
+  and report overflow. `Run`, `Output` and `CombinedOutput` keep their
+  signatures; captures now default to a 16 MiB limit.
 
 ### Release
 

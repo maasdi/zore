@@ -18,9 +18,11 @@ import "std/os/exec"
 func start() (exec.Process, error) {
     var options = exec.DefaultOptions()
     options.Env = os.Environ()
-    options.Env.push("MODE=worker")
-    options.StdoutPipe = true
-    return exec.Command("helper", Array<string>{}[:]).StartContext(context.Background(), options)
+    options.SetEnv("MODE", "worker")
+    options.Stdin = exec.Pipe
+    options.Stdout = exec.Pipe
+    options.Stderr = exec.Inherit
+    return exec.Command("helper", Array<string>{}[:]).Start(context.Background(), options)
 }
 func read(reader mut io.Reader) error {
     let _, err = io.ReadAtMost(reader, 8)
@@ -31,7 +33,7 @@ func write(writer mut io.Writer) error {
     return err
 }
 func run() error {
-    let value, found = os.LookupEnv("MODE")
+    let value, found = os.Getenv("MODE")
     println(value)
     println(found)
     let child = start()?
@@ -41,11 +43,19 @@ func run() error {
     input.Close()?
     read(output)?
     output.Close()?
+    println(child.Pid())
     let status, err = child.Wait()
     println(status.Success())
     println(status.ExitCode())
     println(status.Signal())
     _ = err
+    var limited = exec.DefaultOptions()
+    limited.OutputLimit = 1024
+    let data = exec.Command("helper", Array<string>{}[:]).OutputWith(context.Background(), limited)?
+    println(data.len())
+    exec.Command("helper", Array<string>{}[:]).RunWith(context.Background(), exec.DefaultOptions())?
+    let both = exec.Command("helper", Array<string>{}[:]).CombinedOutputWith(context.Background(), exec.DefaultOptions())?
+    println(both.len())
     return child.Close()
 }
 func main() {}
@@ -57,28 +67,40 @@ func main() {}
 fn subprocess_handles_are_private_move_resources() {
     for (body, expected) in [
         (
-            "let child = exec.Command(\"helper\", Array<string>{}[:]).Start()?; let moved = child; child.Kill()?; return moved.Close()",
+            "let child = exec.Command(\"helper\", Array<string>{}[:]).Start(context.Background(), exec.DefaultOptions())?; let moved = child; child.Kill()?; return moved.Close()",
             "moved",
         ),
         (
-            "let child = exec.Command(\"helper\", Array<string>{}[:]).Start()?; child.Close()?; let _, err = child.Wait(); return err",
+            "let child = exec.Command(\"helper\", Array<string>{}[:]).Start(context.Background(), exec.DefaultOptions())?; child.Close()?; let _, err = child.Wait(); return err",
             "moved",
         ),
         (
-            "let child = exec.Command(\"helper\", Array<string>{}[:]).Start()?; let input = child.StdinPipe()?; input.Close()?; let _, err = input.Write(Array<byte>{1}[:]); return err",
+            "let child = exec.Command(\"helper\", Array<string>{}[:]).Start(context.Background(), exec.DefaultOptions())?; let input = child.StdinPipe()?; input.Close()?; let _, err = input.Write(Array<byte>{1}[:]); return err",
             "moved",
         ),
         (
-            "let child = exec.Command(\"helper\", Array<string>{}[:]).Start()?; let output = child.StdoutPipe()?; let moved = output; var buffer = Array<byte>{0}; let _, err = output.Read(buffer[:]); _ = err; return moved.Close()",
+            "let child = exec.Command(\"helper\", Array<string>{}[:]).Start(context.Background(), exec.DefaultOptions())?; let output = child.StdoutPipe()?; let moved = output; var buffer = Array<byte>{0}; let _, err = output.Read(buffer[:]); _ = err; return moved.Close()",
             "moved",
         ),
         (
-            "let child = exec.Command(\"helper\", Array<string>{}[:]).Start()?; println(child.id); return nil",
+            "let child = exec.Command(\"helper\", Array<string>{}[:]).Start(context.Background(), exec.DefaultOptions())?; println(child.id); return nil",
             "not exported",
+        ),
+        (
+            "let stream exec.Stream = exec.Pipe; let mode int = stream; _ = mode; return nil",
+            "mismatched types",
+        ),
+        (
+            "let options = exec.DefaultOptions(); options.SetEnv(\"A\", \"b\"); return nil",
+            "mutable",
+        ),
+        (
+            "let _, found = os.Getenv(\"A\"); let value string = os.Getenv(\"A\"); _ = found; return nil",
+            "expected one value, but this call returns 2 values",
         ),
     ] {
         let source = format!(
-            "package main\nimport \"std/os/exec\"\nfunc run() error {{ {body} }}\nfunc main() {{}}\n"
+            "package main\nimport \"std/context\"\nimport \"std/os\"\nimport \"std/os/exec\"\nfunc run() error {{ _ = context.Background(); _ = os.Args(); {body} }}\nfunc main() {{}}\n"
         );
         super::rejects(&[("main.ore", &source)], expected);
     }
@@ -87,9 +109,10 @@ fn subprocess_handles_are_private_move_resources() {
 #[test]
 fn subprocess_waits_suspend_in_async_callers() {
     let source = r#"package main
+import "std/context"
 import "std/os/exec"
 async func collect() error {
-    let child = exec.Command("helper", Array<string>{}[:]).Start()?
+    let child = exec.Command("helper", Array<string>{}[:]).Start(context.Background(), exec.DefaultOptions())?
     let _, err = child.Wait()
     return err
 }
@@ -126,7 +149,7 @@ func main() {}
             .iter()
             .any(|(_, suspension)| matches!(suspension, Suspension::Channel))
     );
-    for name in ["pipeRead", "pipeWrite", "run"] {
+    for name in ["pipeRead", "pipeWrite"] {
         let name = format!("std/os/exec.{name}");
         let function = package
             .functions
@@ -140,6 +163,7 @@ func main() {}
     }
     for name in [
         "start",
+        "processPid",
         "pollExited",
         "waitFields",
         "kill",

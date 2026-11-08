@@ -59,7 +59,8 @@ func main() {
     let args = os.Args()
     if args.len() != 5 || args[2] != "a b" || args[3] != "\"quoted\"" || args[4] != "C:\\tmp\\end\\" { panic("arguments changed") }
     let cwd, err = os.Getwd()
-    if err != nil || cwd != os.Getenv("ZORE_PROCESS_DIR") { panic("working directory changed") }
+    let expected, _ = os.Getenv("ZORE_PROCESS_DIR")
+    if err != nil || cwd != expected { panic("working directory changed") }
     if args[1] == "bytes" {
         let _, _ = os.Stdout().Write(Array<byte>{0, 255, 128}[:])
     } else {

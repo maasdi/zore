@@ -6,7 +6,9 @@ The §37.3 follow-up for issue #220 adds
 [subprocess conformance](../../tests/conformance/exec.md).
 [tests/codegen/subprocess.rs](../../tests/codegen/subprocess.rs) names direct
 assertions for environment presence and child overrides, binary streaming and
-cached status, gated cancellation/cleanup, and bounded capture.
+cached status, gated cancellation/cleanup, bounded capture, streams shared with
+the parent, and the `RunWith`/`OutputWith`/`CombinedOutputWith` options,
+deadlines and `Pipe` rejections.
 [tests/packages/exec.rs](../../tests/packages/exec.rs) checks private Move
 resources, `std/io` composition and helper suspension; runtime `exec` tests
 inspect handle removal, untaken pipe closure and reaped child state. These cases

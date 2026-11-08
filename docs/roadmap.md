@@ -45,10 +45,11 @@ shutdown. `ListenAndServeWithConfig` accepts custom limits and deadlines;
 `ListenAndServeContext` keeps explicit cancellation available.
 
 Issue [#220](https://github.com/maasdi/zore/issues/220) expands environment
-access and subprocess control under §37.3. `os.LookupEnv` preserves presence,
-and `os.Environ` provides an owned snapshot without global mutation. `os/exec`
-owns child-specific environments, process lifecycle and status, cancellation,
-streaming pipes, and bounded capture. The [subprocess guide](exec.md) explains
+access and subprocess control under §37.3. `os.Getenv` reports presence with a
+second result, and `os.Environ` provides an owned snapshot without global
+mutation. `os/exec` owns child-specific environments, child streams that are
+discarded, shared with the parent or piped, process lifecycle and status,
+cancellation, and bounded capture with a context and options. The [subprocess guide](exec.md) explains
 pipe ordering and the direct-child cleanup guarantee on each host; process-tree
 termination remains outside this contract. Focused evidence is tracked in
 [subprocess conformance](../tests/conformance/exec.md).
