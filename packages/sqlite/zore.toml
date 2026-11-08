@@ -1,5 +1,5 @@
 name = "sqlite"
-version = "0.1.0-alpha.2"
+version = "0.1.0-alpha.3"
 license = "Apache-2.0 AND blessing"
 license-file = "LICENSE"
 description = "Owned SQLite databases, parameterized statements and transactions"

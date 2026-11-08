@@ -14,7 +14,7 @@ from package_release import (
 )
 
 
-VERSION = "0.1.0-alpha.2"
+VERSION = "0.1.0-alpha.3"
 COMMIT = "a" * 40
 
 

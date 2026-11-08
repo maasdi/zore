@@ -33,8 +33,8 @@ forks as the same package.
 name = "myapp"
 
 [dependencies]
-tls = { git = "https://github.com/maasdi/zore.git", subdir = "packages/tls", version = "0.1.0-alpha.2" }
-sqlite = { git = "https://github.com/maasdi/zore.git", subdir = "packages/sqlite", version = "0.1.0-alpha.2" }
+tls = { git = "https://github.com/maasdi/zore.git", subdir = "packages/tls", version = "0.1.0-alpha.3" }
+sqlite = { git = "https://github.com/maasdi/zore.git", subdir = "packages/sqlite", version = "0.1.0-alpha.3" }
 ```
 
 ```sh
@@ -59,10 +59,12 @@ repository.
   not. `0.1.0-alpha.1` comes before `0.1.0-alpha.2`, which comes before `0.1.0`.
 - Each package's version equals the compiler's version in
   `compiler/Cargo.toml`; a test enforces this. A compiler release tags all
-  three on one commit, so compiler `v0.1.0-alpha.2` pairs with
-  `tls/v0.1.0-alpha.2` and `sqlite/v0.1.0-alpha.2`. The first package release
-  ships with compiler `v0.1.0-alpha.2`; earlier compilers cannot read alpha
-  package versions.
+  three on one commit, so compiler `v0.1.0-alpha.3` pairs with
+  `tls/v0.1.0-alpha.3` and `sqlite/v0.1.0-alpha.3`. The first package release
+  shipped with compiler `v0.1.0-alpha.2`; earlier compilers cannot read alpha
+  package versions. Use the package release that matches your compiler: a
+  standard-library change can make an older package release fail to compile, as
+  `os.Getenv` did between `0.1.0-alpha.2` and `0.1.0-alpha.3`.
 - A package release is tagged on a commit of this repository's `main` branch,
   after CI passes on Linux, macOS and Windows for that commit.
 - The native adapter recipe is part of the compiler. Use a package release with
@@ -87,7 +89,7 @@ To tag by hand instead, for example after re-running a failed build, push the
 compiler tag and then the package tags on the same commit:
 
 ```sh
-version=0.1.0-alpha.2
+version=0.1.0-alpha.3
 zore check --release --tag tls/v$version packages/tls
 zore check --release --tag sqlite/v$version packages/sqlite
 git tag -a v$version -m "Release $version"

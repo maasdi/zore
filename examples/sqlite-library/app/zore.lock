@@ -2,4 +2,4 @@ version = 1
 
 [projects]
 notes = { manifest = "e15bacc02330a84ad4ddc3e687bbd636778963aea7e8cd1b0ed4eb9aa83ef184", path = "." }
-sqlite = { manifest = "5de171ac34592587e40f33ab0471a7c167e8bdfc1742201a9e57ba3108da8984", path = "../../../packages/sqlite", adapter = "sqlite-v1", recipe = "b91cc133fee296b6343d0558ceb06d3b4c0a00e6715a6cdf20e283fe33c3dd5b" }
+sqlite = { manifest = "e20cdf942ba79c846aeba9b56b272e640c7a175fe6268d58f51f0f8e6d342a14", path = "../../../packages/sqlite", adapter = "sqlite-v1", recipe = "b91cc133fee296b6343d0558ceb06d3b4c0a00e6715a6cdf20e283fe33c3dd5b" }

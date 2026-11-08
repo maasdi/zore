@@ -13,8 +13,8 @@ library.
 name = "myapp"
 
 [dependencies]
-tls = { git = "https://github.com/maasdi/zore.git", subdir = "packages/tls", version = "0.1.0-alpha.2" }
-sqlite = { git = "https://github.com/maasdi/zore.git", subdir = "packages/sqlite", version = "0.1.0-alpha.2" }
+tls = { git = "https://github.com/maasdi/zore.git", subdir = "packages/tls", version = "0.1.0-alpha.3" }
+sqlite = { git = "https://github.com/maasdi/zore.git", subdir = "packages/sqlite", version = "0.1.0-alpha.3" }
 ```
 
 Keep only the packages you use. Then:
@@ -30,11 +30,12 @@ zore build --locked --offline ./main.ore
 `build`, `run`, `test` and `install --locked` work offline from the populated
 cache and keep the same bytes until you change the manifest and run
 `zore lock .`. `zore outdated .` lists newer releases without changing
-anything. `version = "0.1.0-alpha.2"` means at least that release within the
-0.1 line, so it can later move to `0.1.0-alpha.3` or `0.1.0`; the lock holds
+anything. `version = "0.1.0-alpha.3"` means at least that release within the
+0.1 line, so it can later move to `0.1.0-alpha.4` or `0.1.0`; the lock holds
 the exact choice. Each package release has the same version as the compiler
-release it ships with, and the first one ships with compiler `v0.1.0-alpha.2`.
-Use a compiler at least as new as the package version. See [tagged dependencies](versioned-dependencies.md)
+release it ships with, and the first one shipped with compiler `v0.1.0-alpha.2`.
+Use the package version that matches your compiler: `tls` `0.1.0-alpha.2` does
+not compile with compiler `0.1.0-alpha.3`, because `os.Getenv` changed. See [tagged dependencies](versioned-dependencies.md)
 for the selection rules and [release workflow](release-workflow.md) for the
 cache and update details.
 

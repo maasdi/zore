@@ -8,6 +8,19 @@ including those shipped in `0.1.0-alpha.1`, are not split by release.
 
 ## [Unreleased]
 
+## [0.1.0-alpha.3]
+
+### Release
+
+- `v0.1.0-alpha.3`, `tls/v0.1.0-alpha.3` and `sqlite/v0.1.0-alpha.3` tag the
+  same commit. Upgrade `tls` together with the compiler: `tls` `0.1.0-alpha.2`
+  calls the old one-value `os.Getenv` and does not compile with this compiler.
+- A Tag release workflow tags `v<version>`, `tls/v<version>` and
+  `sqlite/v<version>` on the merge commit of a `release/v<version>` pull
+  request once CI passes on `main`, then starts the Alpha distribution build.
+  The Alpha distribution workflow's publishing steps also accept a manual
+  start on a tag. This is the first release tagged by it.
+
 ### Environment and subprocesses
 
 - **Breaking:** `os.Getenv` returns `(string, bool)`, the value and whether the
@@ -27,14 +40,6 @@ including those shipped in `0.1.0-alpha.1`, are not split by release.
   and options, including `Options.OutputLimit`. Captures keep a bounded prefix
   and report overflow. `Run`, `Output` and `CombinedOutput` keep their
   signatures; captures now default to a 16 MiB limit.
-
-### Release
-
-- A Tag release workflow tags `v<version>`, `tls/v<version>` and
-  `sqlite/v<version>` on the merge commit of a `release/v<version>` pull
-  request once CI passes on `main`, then starts the Alpha distribution build.
-  The Alpha distribution workflow's publishing steps also accept a manual
-  start on a tag.
 
 ### Standard library
 
