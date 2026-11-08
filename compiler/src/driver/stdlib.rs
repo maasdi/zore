@@ -39,6 +39,7 @@ bundled! {
     "os/signal" => ["signal.ore"],
     "path" => ["path.ore"],
     "path/filepath" => ["filepath.ore", "walk.ore"],
+    "regexp" => ["regexp.ore"],
     "slices" => ["slices.ore"],
     "sort" => ["sort.ore"],
     "strconv" => ["strconv.ore"],

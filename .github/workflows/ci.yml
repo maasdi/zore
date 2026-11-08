@@ -66,6 +66,8 @@ jobs:
         run: |
           clang --version
           rustc --version
+      - name: Regex differential oracle
+        run: python tests/hardening/regexp_oracle.py
       - name: Python harness tests
         shell: bash
         run: |

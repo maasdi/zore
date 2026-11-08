@@ -46,6 +46,9 @@ mod os;
 mod panic;
 #[path = "reactor.rs"]
 mod reactor;
+mod regexp;
+mod regexp_parse;
+mod regexp_vm;
 #[path = "scheduler.rs"]
 pub mod scheduler;
 #[path = "signal.rs"]
@@ -76,7 +79,7 @@ pub fn finish() {
         eprintln!("leak: signal subscriptions still alive at exit");
         std::process::exit(70);
     }
-    if native::live_resources() > 0
+    if native::live_resources() + regexp::live_handles() > 0
         && !tasks_running
         && std::env::var_os("ZORE_CHECK_LEAKS").is_some()
     {

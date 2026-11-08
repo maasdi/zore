@@ -28,6 +28,7 @@ mod log;
 mod map_entries;
 mod mixed_bindings;
 mod performance;
+mod regexp;
 mod review_regressions;
 mod rolling;
 mod scoped_tasks;

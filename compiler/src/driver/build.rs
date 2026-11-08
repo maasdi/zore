@@ -66,6 +66,15 @@ const RUNTIME_SOURCES: &[(&str, &str)] = &[
         include_str!("../../../runtime/src/net_poll.rs"),
     ),
     ("os.rs", include_str!("../../../runtime/src/os.rs")),
+    ("regexp.rs", include_str!("../../../runtime/src/regexp.rs")),
+    (
+        "regexp_parse.rs",
+        include_str!("../../../runtime/src/regexp_parse.rs"),
+    ),
+    (
+        "regexp_vm.rs",
+        include_str!("../../../runtime/src/regexp_vm.rs"),
+    ),
     ("panic.rs", include_str!("../../../runtime/src/panic.rs")),
     (
         "reactor.rs",

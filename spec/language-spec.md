@@ -11060,6 +11060,180 @@ and runner tests in `tests/driver/testing.rs`.
 
 ---
 
+## 37.23 Bounded regular expressions — LOCKED
+
+`std/regexp` compiles immutable regular expressions and searches UTF-8 text.
+It owns regex syntax, matching, captures, and replacement policy. It does not
+add regex literals, implicit exceptions, unrestricted FFI, or a shell/provider
+dependency. The bootstrap provider is a bundled, dependency-free Rust parser
+and ordered Thompson NFA; it never uses recursive backtracking during matching.
+
+### API and ownership
+
+| Name | Behavior |
+| --- | --- |
+| `Compile(pattern string) (Regexp, error)` | Compiles a pattern; failure returns a closed zero handle |
+| `MustCompile(pattern string) Regexp` | Compiles a pattern written in the program; an invalid pattern panics with `regexp.MustCompile: ` followed by the `Compile` error |
+| `(r Regexp) Share() Regexp` | Returns an independently owned handle sharing the immutable compiled program; sharing a closed handle returns a closed handle |
+| `(r Regexp) Matches(text string) (bool, error)` | Whether any substring matches; use anchors for a full-text match |
+| `(r Regexp) Find(text string) (Match, bool, error)` | First match, explicit presence, and an error; absent/error results have `Start == End == -1` and no groups |
+| `(r Regexp) FindAll(text string, limit int) (Array<Match>, error)` | First at most `limit` non-overlapping matches, and at most `MaxMatches`; a `limit` below 1 is an error |
+| `(r Regexp) ReplaceAll(text string, replacement string) (string, error)` | Replaces all non-overlapping matches using numbered capture expansion |
+| `(r Regexp) ReplaceAllLiteral(text string, replacement string) (string, error)` | Replaces matches with the replacement bytes unchanged |
+| `type Match struct { Start int; End int }` with private group storage | Half-open byte offsets for the whole match |
+| `(m Match) Group(n int) Span` | Group `n` in opening-parenthesis order, numbered like replacement references: `Group(0)` is the whole match; a number below 0 or above `Groups()` panics |
+| `(m Match) Groups() int` | The number of parenthesized groups in the pattern; 0 for an absent match |
+| `type Span struct { Start int; End int }`, `(s Span) Matched() bool` | A participating capture has nonnegative half-open offsets; an unmatched optional group is `{-1, -1}` |
+
+`Regexp` has private fields and custom drop, so it is a Move resource. Dropping
+it releases that handle. A shared program is freed after its last handle and
+in-flight call finish. No operation borrows its original pattern, text, or
+another handle after returning. Result arrays own their storage and
+contain offsets, not views of input. A closed handle fails with an ordinary
+error; stale identifiers are never reused. Immutable borrowed calls may run
+concurrently in a lexical task scope. An independent task takes an owned handle,
+obtained by moving one or calling `Share`; sharing does not recompile the pattern.
+
+### Syntax, Unicode, and selection
+
+Patterns and input must be valid UTF-8. Matching consumes Unicode scalar values;
+literal runes, `.` and character-class ranges operate on scalar values. All
+reported offsets are **byte offsets into the original input**, always at UTF-8
+boundaries. Matching is case sensitive, with no normalization or grapheme
+segmentation. Shorthands and word boundaries use the ASCII definitions below,
+independent of locale and Unicode database versions.
+
+Supported syntax:
+
+- Literal runes and escaped metacharacters: `\\`, `\.`, `\*`, `\+`, `\?`,
+  `\(`, `\)`, `\[`, `\]`, `\{`, `\}`, `\|`, `\^`, `\$`, `\-`.
+- Concatenation, ordered alternation `a|b`, numbered capturing groups `(...)`,
+  and noncapturing groups `(?:...)`. Empty patterns, groups, and alternatives
+  are valid and may match an empty string.
+- `.` matches one scalar except LF. `^` and `$` match only the absolute start
+  and end of the input; `$` has no special final-newline rule.
+- Greedy `*`, `+`, `?`, `{n}`, `{n,}`, and `{n,m}`, with counts from 0 through
+  1000 and `m >= n`. Appending `?` makes a quantifier lazy. Stacked quantifiers
+  and quantifying a bare assertion are invalid.
+- Classes `[abc]`, scalar ranges `[a-z]`, and negation `[^abc]`. An unescaped
+  `-` is literal at the beginning or end; `]` must be escaped when literal.
+  An empty class or reversed range is invalid. LF belongs to a negated class
+  unless explicitly excluded.
+- `\n`, `\r`, `\t`, `\f`, `\v`, `\xHH` (exactly two hex digits, a
+  scalar U+0000 through U+00FF), and `\u{H...}` (1–6 hex digits, a valid scalar).
+- `\d`/`\D`: ASCII digits/their complement; `\w`/`\W`: ASCII letters,
+  digits and underscore/their complement; `\s`/`\S`: ASCII space, tab,
+  LF, CR, form feed and vertical tab/their complement. These work in classes.
+  `\b`/`\B` are ASCII word/nonword boundary assertions outside classes.
+
+Backreferences, lookaround, named groups, inline flags, Unicode properties,
+POSIX class expressions, octal escapes, and unknown escapes are rejected.
+General parser combinators and complete PCRE compatibility are excluded.
+
+Search selects the leftmost starting byte. At that position, earlier alternatives
+win, and quantifiers follow their greedy/lazy order; this is not a
+leftmost-longest POSIX policy. A repeated group reports its last participating
+iteration. An unbounded repetition does not perform additional empty iterations
+without consuming input; a counted repetition may take its finite empty
+iterations. Captures in alternatives that never participated remain absent.
+Thus `a|ab` finds `a` in `ab`, `(ab)+` captures the last `ab`, and `(a)?b`
+reports an absent group in `b`.
+
+`FindAll` and replacement use the same non-overlapping iteration. After an empty
+match, iteration advances by one scalar (or ends after the final boundary).
+An empty match immediately adjacent to a preceding nonempty match is omitted.
+An empty pattern on `é` therefore finds byte spans `[0,0)` and `[2,2)`;
+`a*` on `aa` finds just `[0,2)`. Anchors still refer to the entire original
+input during iteration, not each remaining suffix.
+
+### Replacement and errors
+
+`ReplaceAll` recognizes `$0` for the whole match, `$1` through `$16` for captures,
+`${n}` for a delimited reference, and `$$` for a literal dollar. A numeric
+reference greedily consumes its digits. The referenced group must exist in the
+compiled pattern, even if the input has no matches; an unmatched group expands
+to empty text. A dangling dollar, nonnumeric reference, malformed braces, or
+unknown group is an error. Backslashes are literal in a replacement.
+`ReplaceAllLiteral` performs no expansion. Replacements must also be valid UTF-8.
+
+Errors begin with the public operation, for example `regexp.Compile: ` or
+`regexp.ReplaceAll: `. Pattern syntax errors include a byte offset. Invalid
+UTF-8, closed handles, invalid limits/references and exceeded resource bounds
+return errors. Failed array/string operations return empty results, never partial
+captures or a partial replacement. Presence is false on failed `Find`; false
+with nil error is an ordinary no-match result.
+
+### Resource and execution contract
+
+The package exports these integer constants:
+
+| Constant | Bound |
+| --- | --- |
+| `MaxPatternBytes` | 4096 bytes per pattern |
+| `MaxInputBytes` | 1,048,576 bytes per input or replacement template |
+| `MaxOutputBytes` | 1,048,576 bytes per replacement result |
+| `MaxCaptures` | 16 numbered groups |
+| `MaxStates` | 4096 compiled NFA instructions |
+| `MaxMatches` | 1024 results per `FindAll` call |
+| `BaseWork` | 16,777,216 work units per call |
+| `WorkPerByte` | 64 further work units per byte of input and replacement template |
+
+Group nesting is limited to 64 levels. Counted repetitions may be rejected when
+their expansion exceeds `MaxStates`. Classes share immutable range storage.
+For a given input position, at most one ordered thread per instruction is
+retained. Matching uses explicit epsilon stacks, bounded capture registers and
+two reusable frontiers, with no recursive match-time traversal. A work unit is
+charged for each epsilon-stack visit, consuming-thread test, class-range
+comparison, replacement-template scan step and replacement-part expansion.
+A search or replacement has `BaseWork + WorkPerByte * n` units, where `n` is
+the byte length of its input plus its replacement template; a whole `FindAll`
+or replacement shares one budget. The budget grows with the text, so a pattern
+whose cost per character is ordinary can scan any accepted input. Exceeding the
+budget fails instead of returning a potentially incorrect no-match result.
+This bounds adversarial work even where an NFA with many states is expensive.
+Compilation has `BaseWork` units and also charges AST expansion visits, including
+repeated empty subexpressions that do not emit instructions. Compilation
+storage is bounded by pattern/depth/state limits. Match working
+storage is proportional to `MaxStates * (MaxCaptures + 1)`, independent of text
+length. Input copying, UTF-8 validation, result materialization and replacement
+copying are additionally bounded by the byte/result limits. Bounds are per call
+and program; ordinary host allocation and task-population limits still apply.
+
+`FindAll` stops successfully at its requested result count or `MaxMatches`,
+whichever is smaller. Replacement has no match count limit: it streams matches
+into its output, which `MaxOutputBytes` bounds, and never silently truncates.
+Limits cannot be raised in this increment. For larger documents, applications
+choose their own record boundaries; arbitrary chunking is not equivalent for
+anchors or cross-boundary matches.
+
+Compilation and search/replacement are plain functions using bounded native
+helper operations: plain callers wait with worker compensation; async callers
+suspend their task while the helper runs. The program is immutable; the handle
+table lock is held only while retaining/releasing a handle, never across matching.
+There is no cancellation/deadline API or promise of preemption of a helper job.
+
+```ore
+let re = regexp.Compile("([a-z]+)=([0-9]+)")?
+let found, present, err = re.Find("count=42")
+if err != nil { return err }
+if present {
+    println(found.Start)
+    println(found.Group(1).Start)
+}
+let changed = re.ReplaceAll("count=42", "${1}: $2 ($$)")?
+println(changed)
+let workerPattern = re.Share()
+go checkRecord(workerPattern)
+```
+
+Compiler impact: bundle `std/regexp`, embed the provider sources with the
+existing runtime, and classify compilation and search/replacement as helper
+waits. Existing scalar/array/error native ABI shapes suffice; captures cross
+that private boundary as bounded integer offsets. No new dependency, external
+adapter, source syntax or general native-library access is introduced.
+Conformance: `tests/conformance/regexp.md`, runtime parser/VM tests, native
+execution tests, and paired package ownership/visibility checks.
+
 # 38. Self-Hosting Constraint
 
 ## 38.1 Long-term goal — LOCKED

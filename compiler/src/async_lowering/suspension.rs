@@ -50,6 +50,9 @@ fn standard_wait(name: &str) -> Option<NativeWait> {
         | "std/os.fileClose"
         | "std/os/exec.pipeRead"
         | "std/os/exec.pipeWrite"
+        | "std/regexp.compile"
+        | "std/regexp.search"
+        | "std/regexp.replace"
         | "std/crypto/rand.secureRead"
         | "std/net.listen"
         | "std/net.dial" => Some(NativeWait::Helper),

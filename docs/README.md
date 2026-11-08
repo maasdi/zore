@@ -24,6 +24,7 @@ See the [official naming rules](../spec/language-spec.md#21-naming--locked).
 | [Command-line options](command-line-options.md) | `std/flag`: declaring options and arguments, reading the result, help text, and choosing output and exit status. |
 | [Application testing](testing.md) | `zore test`, `std/testing` checks and test contexts, temporary folders, cleanup, and `zore test --bench` benchmarks. |
 | [Formatter](formatter.md) | `zore fmt`, check mode, style, traversal, and write behavior. |
+| [Regular expressions](regexp.md) | Bounded UTF-8 matching, byte-offset captures, replacement, and shared ownership. |
 | [Subprocesses and environment](exec.md) | Environment presence and snapshots, child settings, cancellation, streaming pipes, and bounded output. |
 | [Lexical task scopes](scoped-tasks.md) | Plain-function borrowing tasks, mandatory join/cleanup, failure rules and staged async support. |
 | [Performance baseline](performance.md) | Reproducible compiler, REST/JSON and frame measurements, raw data and measured follow-ups. |

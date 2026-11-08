@@ -3,6 +3,7 @@ mod bundled_inventory;
 mod exec;
 mod local_dependencies;
 mod native_adapters;
+mod regexp;
 
 use std::path::Path;
 

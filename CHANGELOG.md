@@ -8,6 +8,19 @@ including those shipped in `0.1.0-alpha.1`, are not split by release.
 
 ## [Unreleased]
 
+### Regular expressions
+
+- Added `std/regexp`: `Compile` and `MustCompile`, `Matches`, `Find`, bounded
+  `FindAll`, numbered-capture and literal replacement, with explicit errors and
+  presence. `Match.Group(n)` numbers groups like `$n`, with `Group(0)` the whole
+  match. Matching uses UTF-8 runes and original byte offsets; ASCII shorthands
+  are locale independent.
+- Compiled patterns are Move handles with cheap `Share` for independent tasks.
+  A dependency-free ordered Thompson NFA enforces state, input, output and
+  `FindAll` match limits, and a work budget that grows with the input, instead
+  of recursively backtracking. Replacement streams matches with no count limit. Unsupported PCRE
+  features, flags and Unicode properties fail explicitly.
+
 ### Testing
 
 - Added `std/testing` (§37.22). Checks return an `error` that starts with the

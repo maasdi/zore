@@ -1,5 +1,13 @@
 # Implementation roadmap
 
+Issue [#222](https://github.com/maasdi/zore/issues/222) adds `std/regexp` under
+locked §37.23: owned compilation and shared handles, rune-based matching with
+byte-offset captures, bounded finding, and strict/literal replacement. The
+dependency-free ordered NFA enforces compilation and search work limits that
+grow with the input;
+backreferences, lookaround and complete PCRE compatibility remain excluded.
+See the [guide](regexp.md) and [conformance](../tests/conformance/regexp.md).
+
 The detailed phase notes below preserve decisions and evidence as recorded at
 their original milestones. For present status, use [Current implementation and
 next work](#current-implementation-and-next-work) and the dated [MVP evidence
