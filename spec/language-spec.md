@@ -11239,7 +11239,8 @@ execution tests, and paired package ownership/visibility checks.
 
 The first slice of #224 is `std/compress/gzip`. ZIP/TAR and extraction are
 follow-ups, not part of this implementation. This package owns RFC 1952 framing,
-RFC 1951 DEFLATE, checksums and compression policy; it imports only `std/io`.
+RFC 1951 DEFLATE, checksums and compression policy; it imports lower-level I/O and CRC32
+primitives.
 It is implemented in Zore without a native provider or new dependencies; the
 shared IEEE primitive lives in `std/hash/crc32`.
 
