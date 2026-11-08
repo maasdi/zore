@@ -359,12 +359,13 @@ impl Program {
     }
 
     pub fn replace(&self, text: &str, replacement: &str, literal: bool) -> Result<String, String> {
+        let mut budget = Budget::new();
         let parts = if literal {
             vec![Part::Literal(replacement)]
         } else {
-            replacement_parts(replacement, self.captures)?
+            replacement_parts(replacement, self.captures, &mut budget)?
         };
-        let found = self.find_all(text, MAX_MATCHES + 1, &mut Budget::new())?;
+        let found = self.find_all(text, MAX_MATCHES + 1, &mut budget)?;
         if found.len() > MAX_MATCHES {
             return Err("match limit exceeded".into());
         }
@@ -373,6 +374,7 @@ impl Program {
         for captures in found {
             append(&mut result, &text[at..captures[0]])?;
             for part in &parts {
+                budget.charge()?;
                 match part {
                     Part::Literal(value) => append(&mut result, value)?,
                     Part::Group(group) => {
@@ -403,12 +405,17 @@ enum Part<'a> {
     Group(usize),
 }
 
-fn replacement_parts(template: &str, groups: usize) -> Result<Vec<Part<'_>>, String> {
+fn replacement_parts<'a>(
+    template: &'a str,
+    groups: usize,
+    budget: &mut Budget,
+) -> Result<Vec<Part<'a>>, String> {
     let bytes = template.as_bytes();
     let mut parts = Vec::new();
     let mut at = 0;
     let mut literal = 0;
     while at < bytes.len() {
+        budget.charge()?;
         if bytes[at] != b'$' {
             at += 1;
             continue;
@@ -426,6 +433,7 @@ fn replacement_parts(template: &str, groups: usize) -> Result<Vec<Part<'_>>, Str
             let start = at;
             let mut group = 0;
             while let Some(digit) = bytes.get(at).filter(|digit| digit.is_ascii_digit()) {
+                budget.charge()?;
                 group = group * 10 + usize::from(*digit - b'0');
                 if group > groups {
                     return Err("replacement references an unknown capture".into());
@@ -619,6 +627,12 @@ mod tests {
             Err("output byte limit exceeded".into())
         );
         assert!(append(&mut output, "").is_ok());
+        assert!(replacement_parts("text", 0, &mut Budget(0)).is_err());
+        let optional = Program::compile("(a)?b").unwrap();
+        assert_eq!(
+            optional.replace(&"b".repeat(MAX_MATCHES), &"$1".repeat(MAX_INPUT / 2), false),
+            Err("work limit exceeded".into())
+        );
     }
 
     #[test]

@@ -11179,8 +11179,9 @@ their expansion exceeds `MaxStates`. Classes share immutable range storage.
 For a given input position, at most one ordered thread per instruction is
 retained. Matching uses explicit epsilon stacks, bounded capture registers and
 two reusable frontiers, with no recursive match-time traversal. A work unit is
-charged for each epsilon-stack visit, consuming-thread test, and class-range
-comparison; a whole `FindAll` or replacement shares one budget. Exceeding the
+charged for each epsilon-stack visit, consuming-thread test, class-range
+comparison, replacement-template scan step and replacement-part expansion;
+a whole `FindAll` or replacement shares one budget. Exceeding the
 budget fails instead of returning a potentially incorrect no-match result.
 This bounds adversarial work even where an NFA with many states is expensive.
 Compilation also charges AST expansion visits against `MaxWork`, including

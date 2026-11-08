@@ -156,6 +156,10 @@ fn regex_adversarial_inputs_and_expansion_limits_fail_explicitly() {
     check(linearErr == nil, "nested compile")
     let found, linearMatchErr = linear.Match(strings.Repeat("a", 10000))
     check(linearMatchErr == nil && !found, "no exponential backtracking")
+    let optional, optionalErr = regexp.Compile("(a)?b")
+    check(optionalErr == nil, "optional capture")
+    let discarded, expansionErr = optional.ReplaceAll(strings.Repeat("b", regexp.MaxMatches), strings.Repeat("$1", regexp.MaxInputBytes / 2))
+    check(expansionErr == error("regexp.ReplaceAll: work limit exceeded") && discarded == "", "empty capture expansion budget")
     println("ok")
 }
 "#,

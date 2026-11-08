@@ -14,6 +14,7 @@ parser/VM tests, `tests/codegen/regexp.rs` under the native target, and
 | Empty patterns and nullable repetitions | Finite, scalar-boundary iteration; adjacent empty suppression |
 | Numbered and delimited replacement, escaped dollars, literal replacement | Exact bytes, absent group expansion, invalid references fail even with no match |
 | Pattern/depth/capture/state/input/output/work limits | Bounded failure, empty result on error |
+| Large replacement templates with many absent capture references | Expansion consumes the same work budget even when no bytes are appended |
 | Adversarial nested alternation/repetition | No recursive backtracking; deterministic work-budget failure |
 | Share/move/drop, panic/error cleanup and scoped concurrent use | Immutable program remains alive for valid handles and is released exactly once |
 | Private fields, Move reuse and async wrappers | Ordinary compiler acceptance/rejection and helper suspension |

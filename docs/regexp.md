@@ -105,7 +105,8 @@ the byte, capture, state and match limits.
 Compilation also charges expansion visits, including nested empty repetitions.
 The VM uses explicit epsilon stacks and at most one ordered thread per
 instruction, with no recursive input backtracking. Its working storage depends
-on states and captures, not text length; class comparisons also consume work.
+on states and captures, not text length; class comparisons, template scanning
+and replacement-part expansion also consume work, including empty captures.
 Exceeded bounds return errors, distinct from no match. Limits cannot be raised
 yet. For larger documents choose application-defined record boundaries;
 arbitrary chunks change anchor and cross-boundary matching behavior.
