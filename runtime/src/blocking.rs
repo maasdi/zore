@@ -13,13 +13,13 @@ type Job = Box<dyn FnOnce() + Send>;
 const MAX_THREADS: usize = 512;
 const IDLE_SECONDS: u64 = 5;
 
-#[cfg(test)]
+#[cfg(any(test, zore_test_hooks))]
 static TEST_CAPACITY: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
 #[cfg(test)]
 static TEST_IDLE: std::sync::OnceLock<Duration> = std::sync::OnceLock::new();
 
 fn capacity() -> usize {
-    #[cfg(test)]
+    #[cfg(any(test, zore_test_hooks))]
     if let Some(capacity) = TEST_CAPACITY.get() {
         return *capacity;
     }
@@ -352,6 +352,19 @@ fn wait_pool(mut ready: impl FnMut(&Pool) -> bool) {
         .wait_timeout_while(pool(), Duration::from_secs(30), |state| !ready(state))
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     assert!(ready(&state), "helper checkpoint timed out");
+}
+
+#[cfg(any(test, zore_test_hooks))]
+pub(super) fn set_capacity(capacity: usize) {
+    assert!(capacity > 0);
+    let state = pool();
+    assert_eq!(state.threads, 0, "helper pool must not have started");
+    assert!(TEST_CAPACITY.set(capacity).is_ok());
+}
+
+#[cfg(any(test, zore_test_hooks))]
+pub(super) fn wait_active(count: usize) {
+    wait_pool(|state| state.active_jobs == count);
 }
 
 #[cfg(any(test, zore_test_hooks))]

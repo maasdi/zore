@@ -47,7 +47,7 @@ Authority: spec §37.3–§37.4. The cases below are covered by executable tests
 | `Remove` of a file twice, of a non-empty folder | `nil`, then an error; an error |
 | `RemoveAll` of a tree, then again | `nil` both times; the tree is gone |
 | `Create`, `WriteString`, `Close`, `ReadFile`, in plain and async functions | The same results and cleanup |
-| `Getenv` of a set and an unset variable, `Args()` with one argument | Its value and `""`; two elements, the second the argument |
+| `Getenv` of a set and an unset variable, `Args()` with one argument | Its value and `""` (presence is covered in `exec.md`); two elements, the second the argument |
 | `Stdout().WriteString` | The text on standard output and its byte count |
 | `Exit(4)` | The process ends with status 4; later statements do not run |
 | `Append` twice to a new path, writing a line each time | The file holds both lines (`codegen/rolling.rs`) |

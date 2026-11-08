@@ -23,6 +23,7 @@ See the [official naming rules](../spec/language-spec.md#21-naming--locked).
 | [Release workflow](release-workflow.md) | Ordinary Git author/tag/push publication, read-only update reports and explicit application upgrades. |
 | [Command-line options](command-line-options.md) | `std/flag`: declaring options and arguments, reading the result, help text, and choosing output and exit status. |
 | [Formatter](formatter.md) | `zore fmt`, check mode, style, traversal, and write behavior. |
+| [Subprocesses and environment](exec.md) | Environment presence and snapshots, child settings, cancellation, streaming pipes, and bounded output. |
 | [Lexical task scopes](scoped-tasks.md) | Plain-function borrowing tasks, mandatory join/cleanup, failure rules and staged async support. |
 | [Performance baseline](performance.md) | Reproducible compiler, REST/JSON and frame measurements, raw data and measured follow-ups. |
 | [Performance follow-ups](performance-followups.md) | Internal LLVM linkage and cancellable request deadlines, paired compiler measurements and long REST retention runs. |

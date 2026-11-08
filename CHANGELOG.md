@@ -8,6 +8,26 @@ including those shipped in `0.1.0-alpha.1`, are not split by release.
 
 ## [Unreleased]
 
+### Environment and subprocesses
+
+- **Breaking:** `os.Getenv` returns `(string, bool)`, the value and whether the
+  variable is set, matching `url.Values.Get` and `http.Header.Get`. Write
+  `let value, _ = os.Getenv(key)` where presence does not matter. Package
+  releases built for an earlier compiler, such as `tls/v0.1.0-alpha.2`, need
+  the matching new release.
+- Added `os.Environ` for independent environment snapshots. Child environment
+  settings do not change the parent process.
+- Added owned subprocess handles: `Cmd.Start(ctx, options)` with `Pid`, cached
+  `Wait`/`Status`, `Kill`, cancellation, and deterministic direct-child
+  termination and reaping. Each of `Options.Stdin`, `Stdout` and `Stderr` is
+  `exec.Null`, `exec.Inherit` (share the parent's stream) or `exec.Pipe`; owned
+  pipes compose with `std/io`. `Options.SetEnv` adds one variable.
+  Process-tree termination is outside the guarantee.
+- Added `RunWith`, `OutputWith` and `CombinedOutputWith`, which take a context
+  and options, including `Options.OutputLimit`. Captures keep a bounded prefix
+  and report overflow. `Run`, `Output` and `CombinedOutput` keep their
+  signatures; captures now default to a 16 MiB limit.
+
 ### Release
 
 - A Tag release workflow tags `v<version>`, `tls/v<version>` and

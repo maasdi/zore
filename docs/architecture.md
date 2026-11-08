@@ -410,7 +410,7 @@ any function but marks them native; MIR gives them no blocks, and code
 generation emits a shim that calls the runtime symbol
 `zore_native_<name>_<function>`, where `<name>` is the last segment of the
 package path (`HasPrefix` in `strings` is `zore_native_strings_has_prefix`, and
-`run` in `os/exec` is `zore_native_exec_run`). Native parameters are strings,
+`pipeRead` in `os/exec` is `zore_native_exec_pipe_read`). Native parameters are strings,
 slices, integers of any width, runes, and booleans.
 
 AST preserves written structure; HIR records resolved meaning; MIR describes

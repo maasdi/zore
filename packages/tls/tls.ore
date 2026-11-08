@@ -65,7 +65,8 @@ func wrap(source own net.Conn, handle int, ctx context.Context) Conn {
 }
 
 func SystemRoots() (Array<byte>, error) {
-    let roots, err = nativeSystemRoots(os.Getenv("SSL_CERT_FILE"))
+    let certFile, _ = os.Getenv("SSL_CERT_FILE")
+    let roots, err = nativeSystemRoots(certFile)
     _ = err
     return roots, errors.Wrap(err, "tls.SystemRoots")
 }

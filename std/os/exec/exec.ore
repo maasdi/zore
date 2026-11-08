@@ -1,5 +1,14 @@
 package exec
 
+import "std/context"
+import "std/io"
+import "std/strings"
+import "std/time"
+
+const defaultOutputLimit = 16777216
+const maxOutputLimit = 1073741824
+const captureChunk = 65536
+
 type Cmd struct {
     Path string
     Args Array<string>
@@ -14,17 +23,302 @@ func Command(name string, args []string) Cmd {
     return Cmd{Path: name, Args: all, Dir: ""}
 }
 
+type Stream int
+
+const Null Stream = 0
+const Inherit Stream = 1
+const Pipe Stream = 2
+
+type Options struct {
+    Env Array<string>
+    ClearEnv bool
+    Stdin Stream
+    Stdout Stream
+    Stderr Stream
+    OutputLimit int
+}
+
+func DefaultOptions() Options {
+    return Options{Env: Array<string>{}, ClearEnv: false, Stdin: Null, Stdout: Null, Stderr: Null, OutputLimit: defaultOutputLimit}
+}
+
+func (o mut Options) SetEnv(key string, value string) {
+    if key == "" || strings.Contains(key, "=") || strings.Contains(key, "\u0000") {
+        panic("exec: invalid environment key")
+    }
+    o.Env.push(key + "=" + value)
+}
+
+type Process struct {
+    id int
+    finished channel<bool>
+}
+
+func (p mut Process) drop() {
+    if p.id != 0 {
+        let _ = stopAndClose(p.id, p.finished)
+    }
+}
+
+func closedProcess() Process {
+    return Process{id: 0, finished: channel<bool>()}
+}
+
+func (c Cmd) Start(ctx context.Context, options Options) (Process, error) {
+    return c.launch(ctx, options, false)
+}
+
+func (c Cmd) launch(ctx context.Context, options Options, combined bool) (Process, error) {
+    let canceled = ctx.Err()
+    if canceled != nil {
+        return closedProcess(), canceled
+    }
+    let id, err = start(c.Path, c.Args[:], c.Dir, options.Env[:], options.ClearEnv, int(options.Stdin), int(options.Stdout), int(options.Stderr), combined)
+    if err != nil {
+        return closedProcess(), err
+    }
+    let finished = channel<bool>()
+    go complete(id, finished)
+    go cancelOn(ctx, id, finished)
+    return Process{id: id, finished: finished}, nil
+}
+
+async func complete(id int, finished channel<bool>) {
+    var delay = time.Millisecond
+    let longest = 50 * time.Millisecond
+    for !pollExited(id) {
+        time.Sleep(delay)
+        delay = delay + delay
+        if delay > longest {
+            delay = longest
+        }
+    }
+    finished.close()
+}
+
+async func cancelOn(ctx context.Context, id int, finished channel<bool>) {
+    select {
+        case finished.receive() {}
+        case ctx.Done().receive() {
+            let reason = ctx.Err()
+            if reason != nil {
+                cancel(id, reason)
+            }
+        }
+    }
+}
+
+type Status struct {
+    code int
+    signal int
+}
+
+func (s Status) Success() bool {
+    return s.code == 0 && s.signal == 0
+}
+
+func (s Status) ExitCode() int {
+    return s.code
+}
+
+func (s Status) Signal() int {
+    return s.signal
+}
+
+func (p Process) Pid() int {
+    return processPid(p.id)
+}
+
+func (p Process) Wait() (Status, error) {
+    if p.id != 0 {
+        let _, _ = p.finished.receive()
+    }
+    let fields, err = waitFields(p.id)
+    if fields.len() != 2 {
+        return Status{code: -1, signal: 0}, err
+    }
+    return Status{code: fields[0], signal: fields[1]}, err
+}
+
+func (p Process) Kill() error {
+    return kill(p.id)
+}
+
+func (p own Process) Close() error {
+    return stopAndClose(p.id, p.finished)
+}
+
+func stopAndClose(id int, finished channel<bool>) error {
+    if id == 0 {
+        return processClose(id)
+    }
+    let stopped = beginClose(id)
+    let _, _ = finished.receive()
+    let released = processClose(id)
+    if stopped != nil {
+        _ = released
+        return stopped
+    }
+    return released
+}
+
+type PipeReader struct {
+    id int
+}
+
+type PipeWriter struct {
+    id int
+}
+
+func (r mut PipeReader) drop() {
+    pipeDrop(r.id)
+}
+
+func (w mut PipeWriter) drop() {
+    pipeDrop(w.id)
+}
+
+func (p Process) StdinPipe() (PipeWriter, error) {
+    let id, err = takePipe(p.id, 0)
+    return PipeWriter{id: id}, err
+}
+
+func (p Process) StdoutPipe() (PipeReader, error) {
+    let id, err = takePipe(p.id, 1)
+    return PipeReader{id: id}, err
+}
+
+func (p Process) StderrPipe() (PipeReader, error) {
+    let id, err = takePipe(p.id, 2)
+    return PipeReader{id: id}, err
+}
+
+func (r PipeReader) Read(buf mut []byte) (int, error) {
+    let data, err = pipeRead(r.id, buf.len())
+    for var i = 0; i < data.len(); i += 1 {
+        buf[i] = data[i]
+    }
+    return data.len(), err
+}
+
+func (w PipeWriter) Write(data []byte) (int, error) {
+    return pipeWrite(w.id, data)
+}
+
+func (r own PipeReader) Close() error {
+    return pipeClose(r.id)
+}
+
+func (w own PipeWriter) Close() error {
+    return pipeClose(w.id)
+}
+
 func (c Cmd) Run() error {
-    let _, err = run(c.Path, c.Args[:], c.Dir, 0)
-    return err
+    return c.RunWith(context.Background(), DefaultOptions())
 }
 
 func (c Cmd) Output() (Array<byte>, error) {
-    return run(c.Path, c.Args[:], c.Dir, 1)
+    return c.OutputWith(context.Background(), DefaultOptions())
 }
 
 func (c Cmd) CombinedOutput() (Array<byte>, error) {
-    return run(c.Path, c.Args[:], c.Dir, 2)
+    return c.CombinedOutputWith(context.Background(), DefaultOptions())
 }
 
-func run(path string, args []string, dir string, capture int) (Array<byte>, error)
+func (c Cmd) RunWith(ctx context.Context, options Options) error {
+    if options.Stdin == Pipe || options.Stdout == Pipe || options.Stderr == Pipe {
+        return error("exec: RunWith cannot use Pipe; use Start")
+    }
+    let child = c.Start(ctx, options)?
+    let _, err = child.Wait()
+    let closed = child.Close()
+    if err != nil {
+        _ = closed
+        return err
+    }
+    return closed
+}
+
+func (c Cmd) OutputWith(ctx context.Context, options Options) (Array<byte>, error) {
+    return c.capture(ctx, options, false)
+}
+
+func (c Cmd) CombinedOutputWith(ctx context.Context, options Options) (Array<byte>, error) {
+    return c.capture(ctx, options, true)
+}
+
+func (c Cmd) capture(ctx context.Context, options Options, combined bool) (Array<byte>, error) {
+    if options.OutputLimit < 0 || options.OutputLimit > maxOutputLimit {
+        return Array<byte>{}, error("exec: invalid output limit")
+    }
+    if options.Stdin == Pipe || (!combined && options.Stderr == Pipe) {
+        return Array<byte>{}, error("exec: output capture cannot use Pipe for other streams; use Start")
+    }
+    var chosen = clone(options)
+    chosen.Stdout = Pipe
+    let child = c.launch(ctx, chosen, combined)?
+    var reader = child.StdoutPipe()?
+    let data, readErr = readBounded(reader, options.OutputLimit)
+    if readErr != nil {
+        let _ = child.Kill()
+        let _, _ = child.Wait()
+        return data, readErr
+    }
+    let _, waitErr = child.Wait()
+    return data, waitErr
+}
+
+func readBounded(reader mut PipeReader, limit int) (Array<byte>, error) {
+    var output = Array<byte>{}
+    var buffer = Array<byte>{}
+    for var i = 0; i < captureChunk; i += 1 {
+        buffer.push(0)
+    }
+    for {
+        let room = limit - output.len()
+        var want = room + 1
+        if want > buffer.len() {
+            want = buffer.len()
+        }
+        let count, err = reader.Read(buffer[0:want])
+        for var i = 0; i < count && i < room; i += 1 {
+            output.push(buffer[i])
+        }
+        if count > room {
+            _ = err
+            return output, error("exec: output limit exceeded")
+        }
+        if err == io.EOF {
+            return output, nil
+        }
+        if err != nil {
+            return output, err
+        }
+    }
+}
+
+func start(path string, args []string, dir string, env []string, clear bool, stdin int, stdout int, stderr int, combined bool) (int, error)
+
+func processPid(id int) int
+
+func waitFields(id int) (Array<int>, error)
+
+func kill(id int) error
+
+func cancel(id int, reason error)
+
+func processClose(id int) error
+
+func beginClose(id int) error
+
+func pollExited(id int) bool
+
+func takePipe(id int, which int) (int, error)
+
+func pipeRead(id int, max int) (Array<byte>, error)
+
+func pipeWrite(id int, data []byte) (int, error)
+
+func pipeClose(id int) error
+
+func pipeDrop(id int)

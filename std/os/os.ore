@@ -12,7 +12,17 @@ func RemoveAll(path string) error
 
 func Rename(oldPath string, newPath string) error
 
-func Getenv(key string) string
+func Getenv(key string) (string, bool) {
+    let values = lookupEnv(key)
+    if values.len() == 0 {
+        return "", false
+    }
+    return values[0], true
+}
+
+func Environ() Array<string>
+
+func lookupEnv(key string) Array<string>
 
 func Getwd() (string, error)
 

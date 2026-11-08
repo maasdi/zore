@@ -167,6 +167,13 @@ sleep, scan piped standard input, round-trip files, list and remove folders, run
 child processes, echo bytes through a loopback TCP server (including a peer
 written in Rust that sends bytes that are not text), and check that a task
 waiting on input, a timer, or `Accept` never stops another task.
+`conformance/exec.md` records environment and subprocess contracts. The native
+`subprocess` module builds a Rust child fixture and bounds each parent run;
+it checks environment presence/isolation, binary pipes, streams shared with
+the parent, cached exit status, cancellation, capture limits, and the helpers
+that take a context and options. Runtime tests assert handle removal, pipe
+cleanup and child reaping. Package tests pair the public API with Move/private
+field rejections and check async helper classification.
 `conformance/packages.md` lists the text, byte, path, and sorting packages,
 whose native tests compare each function with its documented result.
 `conformance/interfaces.md` lists interface declarations, satisfaction,
