@@ -43,7 +43,8 @@ counterpart in `tests/driver/cli.rs`, `tests/typecheck/check.rs`, or
 | Package importing itself, or a cycle through others | Reject, listing the chain |
 | Importing the `main` package | Reject |
 | `import name "path"` next to another import whose path ends the same way | Valid; each file names its own imports |
-| An import name that is unused, duplicated, a declaration's name, predeclared, a keyword, or equal to the last segment | Reject |
+| An import name equal to the last segment | Valid; changes nothing |
+| An import name that is unused, duplicated, a declaration's name, predeclared, or a keyword | Reject |
 | The last segment of a renamed import used as a qualifier | Reject, with a note naming the chosen name |
 | A test whose `std/testing` import is renamed | Context tests and benchmarks are still found |
 | `.` import, `_` import, grouped import | Reject, each with its own message |
