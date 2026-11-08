@@ -42,7 +42,11 @@ counterpart in `tests/driver/cli.rs`, `tests/typecheck/check.rs`, or
 | Import name equal to a package-level declaration | Reject |
 | Package importing itself, or a cycle through others | Reject, listing the chain |
 | Importing the `main` package | Reject |
-| Import alias, `.` import, `_` import, grouped import | Reject |
+| `import name "path"` next to another import whose path ends the same way | Valid; each file names its own imports |
+| An import name that is unused, duplicated, a declaration's name, predeclared, a keyword, or equal to the last segment | Reject |
+| The last segment of a renamed import used as a qualifier | Reject, with a note naming the chosen name |
+| A test whose `std/testing` import is renamed | Context tests and benchmarks are still found |
+| `.` import, `_` import, grouped import | Reject, each with its own message |
 | Package-level `let` or `var` in an imported package | Reject |
 | Same type name in two packages | Distinct types; both usable in one program |
 | Custom `drop` on an imported type | Runs at the usual points |

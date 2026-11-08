@@ -753,3 +753,25 @@ func BenchmarkOther(b mut testing.B) {
         assert!(stderr(&output).contains(message), "{args:?}: {output:?}");
     }
 }
+
+#[test]
+fn context_tests_follow_a_renamed_testing_import() {
+    let directory = project(&[
+        ("zore.toml", "name = \"calc\"\n"),
+        ("calc.ore", SUM),
+        (
+            "calc_test.ore",
+            "package calc\nimport check \"std/testing\"\n\nfunc TestRenamed(t mut check.T) error {\n    t.Check(check.Equal(add(2, 2), 4))\n    return nil\n}\n\nfunc BenchmarkRenamed(b mut check.B) {\n    for b.Loop() {\n        _ = add(1, 1)\n    }\n}\n",
+        ),
+    ]);
+    success(&run(directory.path()), 1);
+    let output = command("test", directory.path())
+        .args(["--bench", "--bench-time", "10ms"])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    assert!(
+        stdout(&output).ends_with("Benchmarks: 1 passed, 0 failed\n"),
+        "{output:?}"
+    );
+}

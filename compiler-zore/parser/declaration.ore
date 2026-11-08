@@ -70,11 +70,23 @@ func quoteBytes(text string) string {
 
 func (p mut Parser) importDecl() int {
     let start = p.bump()
+    var alias = ast.Absent
+    if p.atKind(lexer.KindIdent) || p.atKind(lexer.KindKeyword) || p.atKind(lexer.KindReserved) {
+        alias = p.name("an import name")
+        if alias == failed {
+            return failed
+        }
+    } else if p.atKind(lexer.KindUnderscore) {
+        return p.errorAtCurrent("blank imports are not supported; an import must be used")
+    } else if p.at(".") {
+        return p.errorAtCurrent("dot imports are not supported; use the package name as a qualifier")
+    }
     let token = p.current()
     if token.Kind == lexer.KindString && p.file.Text()[token.Start] == 34 {
         _ = p.bump()
         let path = p.tree.Add("path", token.Start, token.End, quoteBytes(token.Text))
         let node = p.addNode("import", start.Start, start.End, "")
+        p.tree.Append(node, alias)
         p.tree.Append(node, path)
         return node
     }

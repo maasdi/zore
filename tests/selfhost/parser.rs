@@ -290,12 +290,13 @@ impl Printer<'_> {
                         "import",
                         Some(import.span),
                         "",
-                        &[node(
-                            "path",
-                            Some(import.path_span),
-                            &quoted(&import.path),
-                            &[],
-                        )],
+                        &[
+                            import
+                                .alias
+                                .as_ref()
+                                .map_or_else(absent, |alias| self.name(alias)),
+                            node("path", Some(import.path_span), &quoted(&import.path), &[]),
+                        ],
                     )
                 })),
                 list(file.items.iter().map(|item| self.item(item))),
@@ -897,6 +898,7 @@ fn targeted_programs_and_errors_match() {
         "func main() {}",
         "package 1\nfunc main() {}\n",
         "package main\nimport \"std/os\"\nimport `raw`\nimport (\n\"a\"\n)\nfunc main() {}\nimport \"late\"\n",
+        "package main\nimport secure \"std/crypto/rand\"\nimport _ \"std/os\"\nimport . \"std/io\"\nimport func \"std/fmt\"\nimport go \"std/sync\"\nimport name\nimport a b \"c\"\nfunc main() {}\n",
         "package main\ntype Point struct {\n    X int\n    Y int\n}\ntype Bad interface {}\n",
         "package main\nfunc (p mut Point) move(dx int, dy own []int) (int, error) { return 0, nil }\n",
         "package main\nfunc f(a, b int) {}\nfunc g(a int = 1) {}\nfunc h() () {}\nfunc k() (int) {}\n",
