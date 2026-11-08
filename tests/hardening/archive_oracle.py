@@ -128,7 +128,13 @@ def zip_bytes(entries, streamed=False, compression=zipfile.ZIP_STORED, comment=b
     with zipfile.ZipFile(output, 'w', compression=compression) as archive:
         archive.comment = comment
         for name, data in entries:
-            archive.writestr(name, data)
+            info = zipfile.ZipInfo(name)
+            info.filename = name
+            info.orig_filename = name
+            info.compress_type = compression
+            if name.endswith('/'):
+                info.external_attr = (0o40775 << 16) | 16
+            archive.writestr(info, data)
     return output.getvalue()
 
 
@@ -191,7 +197,7 @@ def main():
         input_path, output_path = directory / 'input', directory / 'output'
 
         def run(mode, data, valid=True, archive_limit=None, data_limit=1048576,
-                entry_limit=100, name='dir/é.txt'):
+                entry_limit=100, name='dir/é.txt', label=''):
             nonlocal checked
             input_path.write_bytes(data)
             result = subprocess.run(
@@ -201,7 +207,7 @@ def main():
                 capture_output=True, timeout=30,
                 env={**os.environ, 'ZORE_CHECK_LEAKS': '1'})
             checked += 1
-            assert (result.returncode == 0) == valid, (mode, len(data), result.stderr)
+            assert (result.returncode == 0) == valid, (mode, label or name, len(data), result.stderr)
             assert b'leak:' not in result.stderr, result.stderr
             headers = []
             if valid and mode.startswith('r'):
@@ -261,7 +267,7 @@ def main():
                      'C:drive', 'nul.txt', 'COM1', 'lPt².log', 'a.', 'a ', 'a\nname', 'a\x85name', 'NUL .txt', 'a*', 'a?', 'a|b', 'a<b', 'a\"b']:
             for mode in ['rt', 'rz']:
                 encoded = tar_bytes([(name, b'x')]) if mode == 'rt' else zip_bytes([(name, b'x')])
-                run(mode, encoded, valid=False)
+                run(mode, encoded, valid=False, label=repr(name))
             run('wt', b'x', valid=False, name=name)
             run('wz', b'x', valid=False, name=name)
 
