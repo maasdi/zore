@@ -1038,6 +1038,12 @@ impl<'a> Checker<'a> {
                 Some(ast::Type::Named(type_name)) => {
                     format!("{prefix}{}.{}", type_name.text, func.name.text)
                 }
+                Some(ast::Type::Instance { base, .. }) => {
+                    let ast::Type::Named(type_name) = &**base else {
+                        unreachable!("resolved method receiver has a named base")
+                    };
+                    format!("{prefix}{}.{}", type_name.text, func.name.text)
+                }
                 _ => format!("{prefix}{}", func.name.text),
             };
         }

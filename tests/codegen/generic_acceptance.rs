@@ -105,3 +105,29 @@ fn generic_owned_arguments_clean_up_on_success_propagation_and_panic_after_pendi
 fn generic_struct_fields_clean_up_on_success_propagation_and_panic_after_pending() {
     assert_generic_cleanup(true);
 }
+
+#[test]
+fn generic_methods_with_the_same_name_keep_their_receiver_identity() {
+    let source = r#"package main
+type Left<T copyable> struct { value T }
+type Right<T copyable> struct { value T }
+func (left Left<T>) Get() T { return left.value }
+func (right Right<T>) Get() T { return right.value }
+func (left mut Left<T>) drop() { println("left") }
+func (right mut Right<T>) drop() { println("right") }
+type Getter interface { Get() int }
+func read(value Getter) int { return value.Get() }
+func Get<T copyable>(value T) T { return value }
+func main() {
+    let left = Left<int>{value: 11}
+    let right = Right<int>{value: 22}
+    println(read(left))
+    println(read(right))
+    println(Get(33))
+}
+"#;
+    let output = super::run(source);
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert_eq!(stdout(&output), "11\n22\n33\nright\nleft\n");
+    assert!(output.stderr.is_empty(), "{}", stderr(&output));
+}
