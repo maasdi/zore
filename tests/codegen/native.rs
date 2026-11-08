@@ -37,6 +37,7 @@ mod signal_windows;
 mod std_time;
 mod string_ownership;
 mod subprocess;
+mod testing;
 
 use std::io::Write;
 use std::path::Path;

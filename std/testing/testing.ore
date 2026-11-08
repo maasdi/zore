@@ -1,0 +1,311 @@
+package testing
+
+import "std/errors"
+import "std/fmt"
+import "std/os"
+import "std/strconv"
+import "std/strings"
+import "std/time"
+
+const maxIterations = 1000000000
+
+type Location struct {
+    file string
+    line int
+    column int
+}
+
+func callerLocation(file string, line int, column int) Location {
+    return Location{file: file, line: line, column: column}
+}
+
+func (l Location) File() string {
+    return l.file
+}
+
+func (l Location) Line() int {
+    return l.line
+}
+
+func (l Location) Column() int {
+    return l.column
+}
+
+func (l Location) String() string {
+    return l.file + ":" + strconv.Itoa(l.line) + ":" + strconv.Itoa(l.column)
+}
+
+func failure(at Location, message string) error {
+    return error(at.String() + ": " + message)
+}
+
+func Equal<V comparable>(got V, want V, at Location) error {
+    if got == want {
+        return nil
+    }
+    return failure(at, fmt.Sprintf("got %v, want %v", got, want))
+}
+
+func NotEqual<V comparable>(got V, avoid V, at Location) error {
+    if got != avoid {
+        return nil
+    }
+    return failure(at, fmt.Sprintf("got %v, want any other value", got))
+}
+
+func EqualFunc<V formattable>(got V, want V, same func(V, V) bool, at Location) error {
+    if same(got, want) {
+        return nil
+    }
+    return failure(at, fmt.Sprintf("got %v, want %v", got, want))
+}
+
+func EqualSlices<V comparable>(got []V, want []V, at Location) error {
+    if got.len() != want.len() {
+        return failure(at, "got length " + strconv.Itoa(got.len()) + ", want " + strconv.Itoa(want.len()))
+    }
+    for var i = 0; i < got.len(); i += 1 {
+        if got[i] != want[i] {
+            return failure(at, fmt.Sprintf("at index %v: got %v, want %v", i, got[i], want[i]))
+        }
+    }
+    return nil
+}
+
+func Near(got float64, want float64, tolerance float64, at Location) error {
+    var difference = got - want
+    if difference < 0.0 {
+        difference = -difference
+    }
+    if difference <= tolerance {
+        return nil
+    }
+    return failure(at, fmt.Sprintf("got %v, want %v within %v", got, want, tolerance))
+}
+
+func True(ok bool, message string, at Location) error {
+    if ok {
+        return nil
+    }
+    return failure(at, message)
+}
+
+func NoError(err error, at Location) error {
+    if err == nil {
+        return nil
+    }
+    return failure(at, "unexpected error: " + errors.Message(err))
+}
+
+func ErrorIs(err error, target error, at Location) error {
+    if errors.Is(err, target) {
+        return nil
+    }
+    if err == nil {
+        return failure(at, "got no error, want " + strconv.Quote(errors.Message(target)))
+    }
+    return failure(at, "got error " + strconv.Quote(errors.Message(err)) + ", want " + strconv.Quote(errors.Message(target)))
+}
+
+func ErrorContains(err error, text string, at Location) error {
+    if err == nil {
+        return failure(at, "got no error, want one containing " + strconv.Quote(text))
+    }
+    if strings.Contains(errors.Message(err), text) {
+        return nil
+    }
+    return failure(at, "got error " + strconv.Quote(errors.Message(err)) + ", want one containing " + strconv.Quote(text))
+}
+
+type T struct {
+    name string
+    failures Array<string>
+    cleanups Array<func()>
+    finished bool
+}
+
+func NewT(name string) T {
+    return T{name: name, failures: Array<string>{}, cleanups: Array<func()>{}, finished: false}
+}
+
+func (t mut T) Name() string {
+    return t.name
+}
+
+func (t mut T) Check(err error) {
+    if err != nil {
+        t.failures.push(errors.Message(err))
+    }
+}
+
+func (t mut T) Fail(message string, at Location) {
+    t.failures.push(at.String() + ": " + message)
+}
+
+func (t mut T) Failed() bool {
+    return t.failures.len() > 0
+}
+
+func (t mut T) Failures() Array<string> {
+    return clone(t.failures)
+}
+
+func (t mut T) Log(message string, at Location) {
+    println(at.String() + ": " + message)
+}
+
+func runCase(body own func(mut T), child mut T) {
+    body(child)
+}
+
+func (t mut T) Run(name string, body own func(mut T)) bool {
+    var child = NewT(t.name + "/" + name)
+    runCase(body, child)
+    child.finished = true
+    child.runCleanups()
+    for failure in child.failures {
+        t.failures.push(name + ": " + failure)
+    }
+    return child.failures.len() == 0
+}
+
+func (t mut T) Cleanup(cleanup own func()) {
+    t.cleanups.push(cleanup)
+}
+
+func (t mut T) TempDir() (string, error) {
+    let path, err = os.MkdirTemp("", "zore-" + t.name + "-*")
+    if err != nil {
+        return "", errors.Wrap(err, "testing.T.TempDir")
+    }
+    t.Cleanup(func() {
+        let _ = os.RemoveAll(path)
+    })
+    return path, nil
+}
+
+func (t mut T) runCleanups() {
+    for {
+        let present, cleanup = t.cleanups.pop()
+        if !present {
+            return
+        }
+        cleanup()
+    }
+}
+
+func (t mut T) drop() {
+    if !t.finished {
+        t.runCleanups()
+    }
+}
+
+func (t own T) Finish(err error) int {
+    var test = t
+    test.finished = true
+    test.runCleanups()
+    for failure in test.failures {
+        println(failure)
+    }
+    if err != nil {
+        println(errors.Message(err))
+    }
+    if err != nil || test.failures.len() > 0 {
+        return 1
+    }
+    return 0
+}
+
+type B struct {
+    name string
+    goal time.Duration
+    target int
+    done int
+    start time.Instant
+    elapsed time.Duration
+    running bool
+    measured bool
+}
+
+func NewB(name string, goal time.Duration) B {
+    if goal <= time.Duration(0) {
+        panic("testing.NewB: goal must be positive")
+    }
+    return B{name: name, goal: goal, target: 0, done: 0, start: time.Now(), elapsed: time.Duration(0), running: false, measured: false}
+}
+
+func (b B) Name() string {
+    return b.name
+}
+
+func (b mut B) Loop() bool {
+    if b.measured {
+        return false
+    }
+    if !b.running {
+        b.running = true
+        b.target = 1
+        b.done = 0
+        b.start = time.Now()
+        return true
+    }
+    b.done += 1
+    if b.done < b.target {
+        return true
+    }
+    let elapsed = b.start.Elapsed()
+    if elapsed >= b.goal || b.done >= maxIterations {
+        b.elapsed = elapsed
+        b.running = false
+        b.measured = true
+        return false
+    }
+    b.target = nextTarget(b.done, elapsed.Nanoseconds(), b.goal.Nanoseconds())
+    return true
+}
+
+func nextTarget(done int, spent int, goal int) int {
+    var next = done * 100
+    if spent > 0 {
+        let predicted = goal / spent * done + goal % spent * done / spent
+        let padded = predicted + predicted / 5
+        if padded < next {
+            next = padded
+        }
+    }
+    if next <= done {
+        next = done + 1
+    }
+    if next > maxIterations {
+        next = maxIterations
+    }
+    return next
+}
+
+func (b B) Iterations() int {
+    return b.done
+}
+
+func (b B) Elapsed() time.Duration {
+    return b.elapsed
+}
+
+func (b B) NanosecondsPerIteration() float64 {
+    if b.done == 0 {
+        return 0.0
+    }
+    return float64(b.elapsed.Nanoseconds()) / float64(b.done)
+}
+
+func (b own B) Finish(err error) int {
+    if err != nil {
+        println(errors.Message(err))
+        return 1
+    }
+    if !b.measured {
+        println("benchmark " + b.name + " did not run its Loop to the end")
+        return 1
+    }
+    println(strconv.Itoa(b.done) + " iterations, " + strconv.FormatFloat(b.NanosecondsPerIteration(), 'f', 2, 64) + " ns/op, " + b.elapsed.String() + " total")
+    return 0
+}

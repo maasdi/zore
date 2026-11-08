@@ -4,7 +4,7 @@ use crate::diagnostic::{Diagnostic, Severity};
 use crate::hir::{self, Const, ExprKind};
 use crate::resolve::FunctionId;
 use crate::source::Span;
-use crate::types::{TypeId, TypeKind, TypeStore};
+use crate::types::{Constraint, TypeId, TypeKind, TypeStore};
 
 #[derive(Clone, Copy, PartialEq)]
 pub(super) enum FormatKind {
@@ -60,6 +60,8 @@ pub(super) enum Shape {
     Float(u8),
     Text,
     Error,
+    /// A type parameter's value, formatted in each copy of the generic function.
+    Generic,
 }
 
 fn parse_format(text: &str) -> Result<Vec<Piece>, String> {
@@ -131,6 +133,7 @@ fn allowed(shape: Shape, letter: char) -> bool {
         Shape::Float(_) => "vfeEgG".contains(letter),
         Shape::Text => "vsq".contains(letter),
         Shape::Error => "vsw".contains(letter),
+        Shape::Generic => letter == 'v',
     }
 }
 
@@ -152,6 +155,41 @@ impl Checker<'_> {
             "Errorf" => FormatKind::Errorf,
             _ => return None,
         })
+    }
+
+    /// The placeholder that formats a type parameter's value, if `std/fmt` is loaded.
+    pub(super) fn generic_text_helper(&self) -> Option<FunctionId> {
+        (0..self.res.functions.len())
+            .find(|&index| {
+                self.res.packages[self.res.function_package[index]].path == "std/fmt"
+                    && self.res.functions[index].name.text == "genericText"
+            })
+            .map(|index| FunctionId(index as u32))
+    }
+
+    /// The text of `value` once its type is known, or `None` with a diagnostic at `site`.
+    pub(super) fn concrete_text(
+        &mut self,
+        value: hir::Expr,
+        letter: char,
+        site: Span,
+        within: &str,
+    ) -> Option<hir::Expr> {
+        let note = format!(
+            "`{within}` formats this value with `%v`; fmt formats bool, numbers, rune, string, error, and types with a `String() string` method"
+        );
+        let shape = self.shape_for(value.ty(), site, "fmt", &note)?;
+        Some(self.value_text(
+            value,
+            shape,
+            Verb {
+                letter,
+                width: None,
+                precision: None,
+                left: false,
+                zero: false,
+            },
+        ))
     }
 
     fn fmt_helper(&self, name: &str) -> FunctionId {
@@ -338,6 +376,8 @@ impl Checker<'_> {
                         );
                         let note = if verb.letter == 'w' {
                             "`%w` wraps an `error`, and only `fmt.Errorf` takes it"
+                        } else if shape == Shape::Generic {
+                            "a value of a type parameter is formatted with `%v`"
                         } else {
                             "`%v` formats any value fmt accepts"
                         };
@@ -425,17 +465,52 @@ impl Checker<'_> {
             TypeKind::Float(float) => Shape::Float(float.bits),
             TypeKind::String => Shape::Text,
             TypeKind::Error => Shape::Error,
+            TypeKind::Param(_) if self.param_formats(ty) => Shape::Generic,
             _ => {
                 let message = format!(
                     "`{caller}` cannot format a value of type `{}`",
                     self.name(ty)
                 );
+                let note = if matches!(self.types.kind(ty), TypeKind::Param(_)) {
+                    format!(
+                        "declare `{}` with the `formattable` constraint (or `comparable` or `ordered`) to format its values",
+                        self.name(ty)
+                    )
+                } else {
+                    note.to_string()
+                };
                 self.diagnostics
                     .push(Diagnostic::new(Severity::Error, message, span).note(note));
                 return None;
             }
         };
         Some(shape)
+    }
+
+    /// Whether fmt can format every value of a concrete type, or of a type parameter by its constraint.
+    pub(super) fn formats(&self, ty: TypeId) -> bool {
+        if let Some(method) = self.method_of(ty, "String")
+            && self.is_string_method(method)
+        {
+            return true;
+        }
+        match self.types.kind(ty) {
+            TypeKind::Bool
+            | TypeKind::Int(_)
+            | TypeKind::Rune
+            | TypeKind::Float(_)
+            | TypeKind::String
+            | TypeKind::Error => true,
+            TypeKind::Param(_) => self.param_formats(ty),
+            _ => false,
+        }
+    }
+
+    fn param_formats(&self, ty: TypeId) -> bool {
+        matches!(
+            self.types.constraint(ty),
+            Some(Constraint::Formattable | Constraint::Comparable | Constraint::Ordered)
+        )
     }
 
     fn is_string_method(&self, method: FunctionId) -> bool {
@@ -526,6 +601,18 @@ impl Checker<'_> {
                 }
             }
             Shape::Error => self.helper_call("formatError", vec![value], TypeStore::STRING, span),
+            Shape::Generic => {
+                let ty = value.ty();
+                hir::Expr {
+                    kind: ExprKind::CallGeneric {
+                        function: self.fmt_helper("genericText"),
+                        type_args: vec![ty],
+                        args: vec![value, letter],
+                    },
+                    types: vec![TypeStore::STRING],
+                    span,
+                }
+            }
         };
         let Some(width) = verb.width else {
             return text;

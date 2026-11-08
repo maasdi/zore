@@ -1,0 +1,22 @@
+package stack
+
+type Stack struct {
+    items Array<int>
+}
+
+func New() Stack {
+    return Stack{items: Array<int>{}}
+}
+
+func (s mut Stack) Push(value int) {
+    s.items.push(value)
+}
+
+func (s mut Stack) Pop() (int, bool) {
+    let found, value = s.items.pop()
+    return value, found
+}
+
+func (s Stack) Len() int {
+    return s.items.len()
+}

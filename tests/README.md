@@ -422,6 +422,11 @@ rejected, local times across daylight saving, and timers and tickers that fire,
 stop, reset, drain, and leave no waiting task once dropped. That the types do
 not mix is checked in `packages/packages.rs`.
 
+`conformance/testing.md` maps `std/testing` to `codegen/testing.rs`,
+runner cases in `driver/testing.rs`, and checks in `packages/packages.rs`:
+failure messages, type-parameter formatting, cleanup order on return, error
+and panic, temporary folders, benchmark measurement, and `--bench` selection.
+
 `conformance/flag.md` maps `std/flag` to `codegen/flag.rs`: every option
 form, option-shaped values and `--`, each error message and panic, exact usage
 text, and a built program's output and exit status for `Report`.

@@ -44,6 +44,7 @@ bundled! {
     "strconv" => ["strconv.ore"],
     "strings" => ["strings.ore", "builder.ore"],
     "sync" => ["sync.ore"],
+    "testing" => ["testing.ore"],
     "time" => ["time.ore"],
     "unicode" => ["unicode.ore"],
     "unicode/utf8" => ["utf8.ore"],

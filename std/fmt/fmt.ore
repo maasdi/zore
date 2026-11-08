@@ -36,6 +36,10 @@ func writeOut(text string) {
     let _, _ = os.Stdout().WriteString(text)
 }
 
+func genericText<T any>(value T, verb rune) string {
+    return ""
+}
+
 func digits(value uint64, base uint64, upper bool) string {
     let lower = "0123456789abcdef"
     let capital = "0123456789ABCDEF"

@@ -112,6 +112,7 @@ pub enum Constraint {
     Copyable,
     Comparable,
     Ordered,
+    Formattable,
     Interface(InterfaceId),
 }
 
