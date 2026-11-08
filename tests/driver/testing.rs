@@ -626,7 +626,7 @@ fn context_and_benchmark_signatures_are_checked_before_building() {
 fn the_testing_helpers_example_passes_its_tests_and_benchmark() {
     let example = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../examples/testing-helpers");
     let tests = run(&example);
-    success(&tests, 3);
+    success(&tests, 5);
     assert!(stdout(&tests).contains("finished\n"), "{tests:?}");
     let bench = Command::new(env!("CARGO_BIN_EXE_zore"))
         .args(["test", "--bench"])

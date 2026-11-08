@@ -268,7 +268,7 @@ fn is_context(param: &Param, file: &File, name: &str) -> bool {
 }
 
 fn goal_text(nanoseconds: u64) -> String {
-    if nanoseconds % 1_000_000_000 == 0 {
+    if nanoseconds.is_multiple_of(1_000_000_000) {
         format!("{}s", nanoseconds / 1_000_000_000)
     } else {
         format!("{}ms", nanoseconds / 1_000_000)

@@ -1457,8 +1457,8 @@ The type/zero-value rules for `nil` are locked in §41.4. Do not infer
 Go's complete statement or type grammar from this keyword list.
 
 Built-in primitive type names (§6.1), `Array`, `Task`, `Mutex`, `mutex`, `error`, `println`,
-`panic`, `clone`, and `drop`, and the constraints `any`, `copyable`, `comparable`, and
-`ordered` (§22.1), are predeclared names, not keywords. They are lexed as identifiers
+`panic`, `clone`, and `drop`, and the constraints `any`, `copyable`, `comparable`,
+`ordered`, and `formattable` (§22.1), are predeclared names, not keywords. They are lexed as identifiers
 and resolved semantically; their built-in meaning may still require special
 compiler handling. Declarations may not shadow them (§3.18). This distinction
 does not imply additional built-in APIs.
@@ -1485,7 +1485,7 @@ name into unqualified lookup, that name must obey the same restriction.
 
 The protected names currently established in §3.17 are all primitive type names
 from §6.1, plus `Array`, `Task`, `Mutex`, `mutex`, `error`, `println`, `clone`, `drop`,
-`any`, `copyable`, `comparable`, and `ordered`.
+`any`, `copyable`, `comparable`, `ordered`, and `formattable`.
 Any additional predeclared names must be explicitly specified; implementations
 must not protect speculative library names. The full built-in API inventory
 and signatures remain separate decisions.
@@ -6186,12 +6186,16 @@ contain itself with ever-growing type arguments is an error.
 | --- | --- | --- |
 | `any` | every type allowed below | nothing more |
 | `copyable` | every Copy type (§10.2) | copy it |
-| `comparable` | `bool`, integer types, `rune`, `string`, and named types built on one: exactly the map key types (§13.3) | copy it, compare it with `==` and `!=`, and use it as a map key |
-| `ordered` | integer and float types, `rune`, `string`, and named types built on one | copy it, and compare it with `==`, `!=`, `<`, `<=`, `>`, and `>=` |
+| `comparable` | `bool`, integer types, `rune`, `string`, and named types built on one: exactly the map key types (§13.3) | copy it, compare it with `==` and `!=`, use it as a map key, and format it with `fmt` |
+| `ordered` | integer and float types, `rune`, `string`, and named types built on one | copy it, compare it with `==`, `!=`, `<`, `<=`, `>`, and `>=`, and format it with `fmt` |
+| `formattable` | the types `fmt` formats (§37.2): `bool`, integer and float types, `rune`, `string`, `error`, named types built on one, and types with a shared `String() string` method | format it with `fmt` |
 | an interface type (§22.2) | types that satisfy the interface, including interface types | call the interface's methods |
 
-`any`, `copyable`, `comparable`, and `ordered` are predeclared names (§3.17)
-usable only as constraints; none of them is a type. No type argument can be a
+`any`, `copyable`, `comparable`, `ordered`, and `formattable` are predeclared
+names (§3.17) usable only as constraints; none of them is a type. A type
+parameter passed on to another generic function satisfies `formattable` when
+its own constraint is `formattable`, `comparable`, `ordered`, or an interface
+with a shared `String() string` method. No type argument can be a
 function type, a `mut []T`, a borrowed interface value, or a type that holds one
 of these. Floats are not `comparable`, as they are not map keys.
 
@@ -7232,19 +7236,20 @@ A width pads the text with spaces, or with zeros after any sign, to that many
 characters. The number of directives must equal the number of arguments.
 
 Inside a generic function (§22.1), an argument whose type is a type parameter
-is also accepted, under any constraint. It takes `%v`, with an optional width,
-and no other verb or precision; in `Print` and `Sprint` it counts as a
-non-`string` argument for spacing. The check moves to each copy of the function:
-when a call in ordinary code makes a copy whose type argument fmt cannot format,
-that call is the error, naming the copy, for example
-`fmt cannot format a value of type Point` at `outer(Point{x: 1})`. Otherwise
-the copy formats the value exactly as a value of its concrete type.
+is also accepted when its constraint is `formattable`, `comparable`, or
+`ordered`; any other constraint is an error in the generic function itself,
+`fmt.Sprint cannot format a value of type T`, with a note naming those
+constraints. Such an argument takes `%v`, with an optional width, and no other
+verb or precision; in `Print` and `Sprint` it counts as a non-`string` argument
+for spacing. Because the constraint is checked at every call (§22.1), each copy
+of the function formats the value exactly as a value of its concrete type, and
+no call can fail later.
 
 ```ore
-func describe<T comparable>(got T, want T) string {
+func describe<T formattable>(got T, want T) string {
     return fmt.Sprintf("got %v, want %v", got, want)
 }
-// describe(4, 5) is "got 4, want 5"; describe("a", "b") is "got a, want b"
+// describe(4, 5) is "got 4, want 5"; describe(error("a"), error("b")) is "got a, want b"
 ```
 
 ```ore
@@ -10875,29 +10880,37 @@ Compiler impact: none; the package is bundled Zore source built from
 
 ## 37.22 Test helpers and benchmarks — LOCKED
 
-`std/testing` gives application tests (§45.1) readable checks, temporary
-folders, cleanup, and benchmark measurement. It adds no syntax and no
-reflection: checks are ordinary generic functions that return an `error`, and
-the test context is an ordinary value.
+`std/testing` gives application tests (§45.1) readable checks that name the
+line that failed, named cases, temporary folders, cleanup, and benchmark
+measurement. It adds no syntax and no reflection: checks are ordinary generic
+functions that return an `error`, and the test context is an ordinary value.
 
 ```ore
-func Equal<V comparable>(got V, want V) error
-func NotEqual<V comparable>(got V, avoid V) error
-func EqualSlices<V comparable>(got []V, want []V) error
-func Near(got float64, want float64, tolerance float64) error
-func True(ok bool, message string) error
-func NoError(err error) error
-func ErrorIs(err error, target error) error
-func ErrorContains(err error, text string) error
+type Location struct { /* private */ }
+func (l Location) File() string
+func (l Location) Line() int
+func (l Location) Column() int
+func (l Location) String() string
+
+func Equal<V comparable>(got V, want V, at Location) error
+func NotEqual<V comparable>(got V, avoid V, at Location) error
+func EqualFunc<V formattable>(got V, want V, same func(V, V) bool, at Location) error
+func EqualSlices<V comparable>(got []V, want []V, at Location) error
+func Near(got float64, want float64, tolerance float64, at Location) error
+func True(ok bool, message string, at Location) error
+func NoError(err error, at Location) error
+func ErrorIs(err error, target error, at Location) error
+func ErrorContains(err error, text string, at Location) error
 
 type T struct { /* private */ }
 func NewT(name string) T
 func (t mut T) Name() string
 func (t mut T) Check(err error)
-func (t mut T) Fail(message string)
+func (t mut T) Fail(message string, at Location)
 func (t mut T) Failed() bool
 func (t mut T) Failures() Array<string>
-func (t mut T) Log(message string)
+func (t mut T) Log(message string, at Location)
+func (t mut T) Run(name string, body own func(mut T)) bool
 func (t mut T) Cleanup(cleanup own func())
 func (t mut T) TempDir() (string, error)
 func (t own T) Finish(err error) int
@@ -10912,16 +10925,42 @@ func (b B) NanosecondsPerIteration() float64
 func (b own B) Finish(err error) int
 ```
 
-**Checks.** Each check returns `nil` when it holds and otherwise an error whose
-message says what was found and what was wanted. Values are written as `fmt`
-`%v` writes them (§37.2), so they work for every comparable type, including
-named types with a `String() string` method. A test either stops at the first
-failed check with `?`, or records it with `T.Check` and continues.
+**Call locations.** A direct call of a function or method whose last parameter
+has type `testing.Location` may leave that argument out. The compiler then
+passes the location of the call: the source path as the compiler loaded it, as
+in panic diagnostics (§15.4), and the one-based line and column where the call
+expression starts, which for a method call is its receiver. `String` writes
+`file:line:column`. A function that takes its own `at testing.Location` and
+passes it on makes failures point at its caller instead:
 
-| Check | Holds when | Failure message |
+```ore
+func expectTotal(cart Cart, want int, at testing.Location) error {
+    return testing.Equal(cart.Total(), want, at)
+}
+
+func TestCart() error {
+    expectTotal(newCart(), 30)?      // a failure names this line
+    return nil
+}
+```
+
+The argument can always be written explicitly, and a `go` call (§18) is a
+direct call for this rule, with the location of the called function's name. A
+call through a function value and a call of an interface method pass every
+argument. Only a `Location` received as a parameter or returned by such a call
+can be passed explicitly, since the type has no public constructor.
+
+**Checks.** Each check returns `nil` when it holds and otherwise an error whose
+message is the location, `: `, and what was found and what was wanted, such as
+`calc_test.ore:12:5: got 4, want 5`. Values are written as `fmt` `%v` writes
+them (§37.2). A test either stops at the first failed check with `?`, or
+records it with `T.Check` and continues.
+
+| Check | Holds when | Failure message after the location |
 | --- | --- | --- |
 | `Equal(got, want)` | `got == want` | `got 4, want 5` |
 | `NotEqual(got, avoid)` | `got != avoid` | `got 4, want any other value` |
+| `EqualFunc(got, want, same)` | `same(got, want)` | `got (1, 0), want (0, 1)` |
 | `EqualSlices(got, want)` | Same length and equal elements | `got length 2, want 3`, or `at index 1: got 2, want 3` for the first difference |
 | `Near(got, want, tolerance)` | The difference is at most `tolerance` | `got 0.3, want 0.5 within 0.001` |
 | `True(ok, message)` | `ok` | `message` |
@@ -10929,18 +10968,39 @@ failed check with `?`, or records it with `T.Check` and continues.
 | `ErrorIs(err, target)` | `errors.Is(err, target)` (§37.2) | `got no error, want "missing"`, or `got error "x", want "missing"` |
 | `ErrorContains(err, text)` | `err` is non-nil and its message contains `text` | `got no error, want one containing "x"`, or `got error "y", want one containing "x"` |
 
-Floats are compared with `Near`, and errors with `ErrorIs` or
-`ErrorContains`, because `comparable` excludes them (§22.1).
+`comparable` excludes floats, errors, and structs (§22.1): floats are compared
+with `Near`, errors with `ErrorIs` or `ErrorContains`, and any other value with
+`EqualFunc`, whose type must be `formattable`, for example a struct with a
+`String() string` method.
 
 **The test context.** `NewT` makes a context named `name`; the test runner makes
 one for each `TestName(t mut testing.T)` test, and a test of a helper can make
-its own. `Check` records the message of a non-nil error and `Fail` records a
-message; neither stops the test. `Failed` and `Failures` report what was
-recorded, in order. `Log` writes its message and a line feed to standard output
-at once. `Cleanup` registers a function, and `TempDir` creates a new, empty
-folder named after the test inside `os.TempDir()` and registers its removal
-with `os.RemoveAll`. The folder's path and the error from `os.MkdirTemp`, with
-`testing.T.TempDir: ` before it, are returned.
+its own. `Check` records the message of a non-nil error. `Fail` records the
+location, `: `, and the message. Neither stops the test. `Failed` and `Failures`
+report what was recorded, in order. `Log` writes the location, `: `, the
+message, and a line feed to standard output at once. `Cleanup` registers a
+function, and `TempDir` creates a new, empty folder named after the test inside
+`os.TempDir()` and registers its removal with `os.RemoveAll`; it returns the
+folder's path, or the error from `os.MkdirTemp` with `testing.T.TempDir: `
+before it.
+
+`Run` runs one named case: it calls `body` with a new context named
+`<name of t>/<name>`, then runs that context's cleanups, newest first, adds
+each of its failures to `t` with `<name>: ` before it, and returns whether the
+case recorded none. A case shares the process of its test, so a panic in it
+ends the test (§45.1).
+
+```ore
+func TestTotals(t mut testing.T) {
+    for row in rows() {
+        let input = row
+        _ = t.Run(row.name, func(c mut testing.T) {
+            c.Check(testing.Equal(total(input.items[:]), input.want))
+        })
+    }
+}
+// a failure reads: empty cart: cart_test.ore:7:21: got 1, want 0
+```
 
 `Finish` ends the test: it runs every registered cleanup, newest first, writes
 each recorded failure and then the message of a non-nil `err` on its own line,
@@ -10948,6 +11008,10 @@ and returns 1 if anything was written and 0 otherwise. If a `T` is dropped
 without `Finish`, as when the test panics, its cleanups still run, newest first,
 while the panic unwinds (§14); nothing else is written. A cleanup runs at most
 once.
+
+A `T` holds cleanup functions, and a shared parameter cannot hold a function
+value (§16), so every method takes the context as `mut`; tests always receive
+it that way.
 
 **Benchmarks.** `NewB` makes a benchmark that measures for at least `goal`, and
 panics with `testing.NewB: goal must be positive` otherwise. The code being
@@ -10974,19 +11038,23 @@ time reaches `goal` or one billion iterations have run, and then returns
 `false`, writes `benchmark BenchmarkSum did not run its Loop to the end` and
 returns 1.
 
-A benchmark is a measurement of one process on one machine, not a comparison
-between runs: no warm-up, statistics, allocation counts, or comparison with
-earlier results are made, and other work on the machine changes the numbers.
+A benchmark is a measurement of one process on one machine: no warm-up,
+statistics, allocation counts, or comparison with earlier results are made, and
+other work on the machine changes the numbers. Repeating runs with
+`zore test --bench --count N` (§45.1) shows how much they vary.
 
 Ownership, error, and async implications: `T` and `B` are Move values owned by
 the runner and lent to the test with `mut`; a cleanup function is owned by the
-`T` once registered and is called on the task that runs `Finish` or drops the
-`T`. Checks borrow their arguments. Every function is plain; a test that starts
-async work waits for it before returning (§45.1).
+`T` once registered and is called on the task that runs `Finish` or `Run`, or
+drops the `T`. Checks borrow their arguments; `Location` is a Copy value.
+Every function is plain; a test that starts async work waits for it before
+returning (§45.1).
 
 Compiler impact: the package is bundled Zore source built from `std/errors`,
-`std/fmt`, `std/os`, `std/strconv`, `std/strings`, and `std/time`; its checks
-rely on `fmt` formatting a type parameter's value (§37.2). Conformance cases:
+`std/fmt`, `std/os`, `std/strconv`, `std/strings`, and `std/time`. The checker
+supplies a left-out `testing.Location` argument by calling the package's private
+constructor with the call's location, and its checks rely on `formattable` and
+on `fmt` formatting a type parameter's value (§22.1, §37.2). Conformance cases:
 `tests/conformance/testing.md`, with native tests in `tests/codegen/testing.rs`
 and runner tests in `tests/driver/testing.rs`.
 
@@ -11648,6 +11716,13 @@ func BenchmarkSum(b mut testing.B) {
 `zore test <target>` runs the selected tests and never benchmarks;
 `zore test --bench <target>` runs the selected benchmarks and never tests. Every
 selected package is checked against both kinds of signature either way.
+`--filter <text>` keeps only the tests or benchmarks whose name contains
+`text`, a non-empty string compared exactly. With `--bench`, `--bench-time`
+sets the goal to a whole number of milliseconds (`500ms`) or seconds (`2s`),
+greater than zero and at most `3600s`, instead of one second, and
+`--count <n>`, from 1 to 100, runs each benchmark `n` times, each in a new
+process, one after another. Either option without `--bench` is an invalid
+argument.
 
 Dependency loading follows §3.20 in check/build/run/test. Imported dependency
 tests are excluded; explicitly selecting a library tests its own package files.
@@ -11671,7 +11746,7 @@ packages need no application entry point. Package initialization runs normally
 in each process. Normal return or `nil` passes; a returned non-nil error is
 printed and exits the child with status 1. A test with a `testing.T` receives
 `testing.NewT` of its name, and a benchmark receives `testing.NewB` of its name
-and a goal of one second; after the function returns, the generated entry calls
+and the goal; after the function returns, the generated entry calls
 `Finish` with the returned error, or `nil`, and exits with its result, so a
 recorded failure also fails the test. A panic retains ordinary panic
 diagnostics and status 2. Other nonzero exits, signals, or launch failures also
@@ -11679,9 +11754,10 @@ fail the test. The runner reports `RUN`, `PASS` or `FAIL` with package path and
 test name, then a passed/failed count (`Tests: ` or `Benchmarks: `); it
 continues after child failures. With `--bench` it first writes one line naming
 the compiler version, the host operating system and architecture, the
-optimization (`clang -O2`, as for `build`), and the one-second goal, such as
-`Benchmarks: zore 0.1.0-alpha.3, linux x86_64, clang -O2, at least 1s per
-benchmark in its own process`.
+optimization (`clang -O2`, as for `build`), the goal, and the count when it is
+more than one, such as `Benchmarks: zore 0.1.0-alpha.3, linux x86_64, clang -O2,
+at least 500ms per benchmark in its own process, 3 runs each`. Each run of a
+benchmark is reported, and counted, on its own.
 Its exit status is 0 if every selected test passes (including no tests), 1 for
 test/load/check/build/execution failures, and 2 for invalid command arguments.
 
@@ -11710,7 +11786,8 @@ Conformance coverage must include both valid signatures, invalid signatures,
 private helper access, imported-test exclusion, deterministic file/directory
 selection, returned errors and panics followed by later passing tests, and
 cleanup on normal/error/panic exits, both context signatures, benchmark
-selection and output, and cleanup registered on a `T`. The test context is the
+selection, filtering, goal, count, and output, call locations, named cases, and
+cleanup registered on a `T`. The test context is the
 ordinary library type `testing.T`; no registry, dependency solver, fixture
 syntax, or new source-language construct is added.
 

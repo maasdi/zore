@@ -10,23 +10,32 @@ including those shipped in `0.1.0-alpha.1`, are not split by release.
 
 ### Testing
 
-- Added `std/testing` (§37.22). Checks return an `error` that says what was
-  found and wanted: `Equal`, `NotEqual`, `EqualSlices`, `Near`, `True`,
-  `NoError`, `ErrorIs` and `ErrorContains`. A `testing.T` records failures with
-  `Check` and `Fail`, logs, makes a temporary folder with `TempDir`, and runs
-  `Cleanup` functions newest first after a return, an error or a panic.
+- Added `std/testing` (§37.22). Checks return an `error` that starts with the
+  file, line and column of the check and says what was found and wanted:
+  `Equal`, `NotEqual`, `EqualFunc`, `EqualSlices`, `Near`, `True`, `NoError`,
+  `ErrorIs` and `ErrorContains`. A `testing.T` records failures with `Check`
+  and `Fail`, logs, runs named cases with `Run`, makes a temporary folder with
+  `TempDir`, and runs `Cleanup` functions newest first after a return, an
+  error or a panic.
+- A direct call may leave out a final `testing.Location` argument; the compiler
+  passes the call's location. A helper that takes one and passes it on makes
+  failures point at its caller.
 - `zore test` also runs `TestName(t mut testing.T)` tests, with or without an
   `error` result (§45.1); existing tests are unchanged.
 - `zore test --bench` runs `BenchmarkName(b mut testing.B)` functions, and only
   those, each in its own process. `for b.Loop()` measures for at least a
-  second; the output starts with the compiler version, host and optimization,
-  then gives iterations, time per iteration and total time.
+  second, or the `--bench-time` given, and `--count` repeats each benchmark;
+  the output starts with the compiler version, host and optimization, then
+  gives iterations, time per iteration and total time.
+- `zore test --filter <text>` runs only the tests or benchmarks whose name
+  contains the text.
 
 ### Standard library
 
-- `fmt` formats a value whose type is a type parameter with `%v` inside a
-  generic function (§37.2). Each copy for a concrete type formats it as that
-  type; a type `fmt` cannot format is reported at the call that made the copy.
+- Added the `formattable` constraint (§22.1): the types `fmt` formats. Inside a
+  generic function, `fmt` formats a value of a `formattable`, `comparable` or
+  `ordered` type parameter with `%v` (§37.2), exactly as its concrete type.
+  `formattable` is a new predeclared name.
 
 ## [0.1.0-alpha.3]
 

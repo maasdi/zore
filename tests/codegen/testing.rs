@@ -314,3 +314,20 @@ func text(n int) string {
         "TestTable/value one\ncase cleanup\ntrue\nTestTable/value two\ncase cleanup\nfalse\nTestTable/value three\ncase cleanup\ntrue\n1\nouter cleanup\nvalue two: test.ore:10:21: got 0, want 1\n1\n",
     );
 }
+
+#[test]
+fn a_go_call_passes_the_location_of_the_called_name() {
+    let source = r#"package main
+import "std/testing"
+
+func report(message string, at testing.Location) {
+    println(at.String() + " " + message)
+}
+
+func main() {
+    let task = go report("spawned")
+    task.wait()
+}
+"#;
+    prints(source, "test.ore:9:19 spawned\n");
+}

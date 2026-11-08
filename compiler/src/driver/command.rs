@@ -64,12 +64,9 @@ impl Default for TestOptions {
 }
 
 fn duration(text: &str) -> Option<u64> {
-    let (digits, scale) = if let Some(digits) = text.strip_suffix("ms") {
-        (digits, 1_000_000)
-    } else if let Some(digits) = text.strip_suffix('s') {
-        (digits, 1_000_000_000)
-    } else {
-        return None;
+    let (digits, scale) = match text.strip_suffix("ms") {
+        Some(digits) => (digits, 1_000_000),
+        None => (text.strip_suffix('s')?, 1_000_000_000),
     };
     if digits.is_empty() || !digits.bytes().all(|byte| byte.is_ascii_digit()) {
         return None;

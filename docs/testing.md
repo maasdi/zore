@@ -31,8 +31,12 @@ zore test .
 zore test path/to/package/implementation.ore
 zore test path/to/package/specific_test.ore
 zore test -- -package
+zore test --filter Pop .
 zore test --bench .
+zore test --bench --bench-time 200ms --count 3 --filter Push .
 ```
+
+`--filter` runs only the tests or benchmarks whose name contains the text.
 
 A directory recursively selects packages; an ordinary source file selects all
 tests in its package; a test file selects only its own tests. Every selected
@@ -80,7 +84,9 @@ folder, and a benchmark. The locked contracts are specification §45.1 and §37.
 ## Checks and the test context
 
 `std/testing` checks return an `error`: `nil` when the check holds, otherwise a
-message that says what was found and what was wanted.
+message that starts with the file, line and column of the check, then says what
+was found and what was wanted: `stack_test.ore:10:5: got 1, want 2`. You never
+pass the location; the compiler fills it in.
 
 ```ore
 package stack
@@ -98,9 +104,10 @@ func TestPushPop() error {
 }
 ```
 
-| Check | Fails with |
+| Check | Fails with, after the location |
 | --- | --- |
 | `Equal(got, want)`, `NotEqual(got, avoid)` | `got 4, want 5`, `got 4, want any other value` |
+| `EqualFunc(got, want, same)` | `got (1, 0), want (0, 1)` |
 | `EqualSlices(got, want)` | `got length 2, want 3`, `at index 1: got 2, want 3` |
 | `Near(got, want, tolerance)` | `got 0.3, want 0.5 within 0.001` |
 | `True(ok, message)` | your message |
@@ -109,8 +116,29 @@ func TestPushPop() error {
 
 Values are written the way `fmt` writes `%v`, so the checks work for numbers,
 strings, booleans, runes, and named types, including ones with a
-`String() string` method. Compare floats with `Near`, and errors with `ErrorIs`
-or `ErrorContains`.
+`String() string` method. Compare floats with `Near`, errors with `ErrorIs` or
+`ErrorContains`, and structs with `EqualFunc`, giving it a function that says
+whether two values are the same; the struct needs a `String() string` method so
+the failure can show it.
+
+### Your own helpers
+
+A helper that runs checks for a test can take a `testing.Location` as its last
+parameter and pass it on. Callers leave it out, so failures point at the test's
+line rather than the helper's:
+
+```ore
+func expectLen(s Stack, want int, at testing.Location) error {
+    return testing.Equal(s.Len(), want, at)
+}
+
+func TestGrows() error {
+    var s = New()
+    s.Push(1)
+    expectLen(s, 1)?
+    return nil
+}
+```
 
 `?` stops the test at the first failed check. To keep going and see every
 failure, take a `t mut testing.T` and record checks with `t.Check`:
@@ -134,8 +162,12 @@ func TestPopOrder(t mut testing.T) error {
 A `T` gives you:
 
 - `t.Check(err)` records a failed check and continues; `t.Fail(message)` records
-  a message. `t.Failed()` and `t.Failures()` show what was recorded.
-- `t.Log(message)` prints a line at once.
+  a message with its location. `t.Failed()` and `t.Failures()` show what was
+  recorded.
+- `t.Log(message)` prints a line, with its location, at once.
+- `t.Run(name, func(c mut testing.T) { ... })` runs one named case with its own
+  context. Its failures are reported with the name in front, and its cleanups
+  run when the case ends. It returns whether the case passed.
 - `t.TempDir()` makes a new, empty folder for this test and removes it, with
   everything inside, when the test ends.
 - `t.Cleanup(f)` runs `f` when the test ends. Cleanups run newest first, after a
@@ -145,6 +177,30 @@ When the test ends, the runner prints each recorded failure, then any returned
 error, and the test fails if there was either. Like this one, a test can return `error` and use
 `?` too, and `testing.NewT("name")` makes a context of your own, which is
 how to test a helper that takes one.
+
+### Named cases
+
+`t.Run` keeps table-driven tests readable: each failure says which case it came
+from.
+
+```ore
+func TestPops(t mut testing.T) {
+    for count in Array<int>{0, 1, 3} {
+        let pushes = count
+        _ = t.Run("after pushes", func(c mut testing.T) {
+            var s = New()
+            for var i = 0; i < pushes; i += 1 {
+                s.Push(i)
+            }
+            let _, ok = s.Pop()
+            c.Check(testing.True(ok == (pushes > 0), "Pop should succeed only on a full stack"))
+        })
+    }
+}
+```
+
+A case runs in the same process as its test, so a panic in a case ends the
+whole test.
 
 ## Benchmarks
 
@@ -164,7 +220,9 @@ func BenchmarkPushPop(b mut testing.B) {
 
 `zore test --bench .` runs the benchmarks, and only the benchmarks, in a fresh
 process each. Plain `zore test` never runs them, but both check every
-signature. The output starts with what the numbers depend on, then shows each
+signature. `--bench-time 500ms` (or `2s`) changes how long each one measures,
+`--count 3` runs each one three times so you can see how much the numbers move,
+and `--filter Push` picks benchmarks by name. The output starts with what the numbers depend on, then shows each
 benchmark's iterations, time per iteration, and total time:
 
 ```text
@@ -175,12 +233,12 @@ PASS ./stack::BenchmarkPushPop
 Benchmarks: 1 passed, 0 failed
 ```
 
-`Loop` runs one iteration, then more and more, until at least a second has been
-measured or a billion iterations have run. The time includes the `Loop` calls
+`Loop` runs one iteration, then more and more, until at least the benchmark time
+(one second by default) has been measured or a billion iterations have run. The time includes the `Loop` calls
 themselves, so a nearly empty loop shows a few nanoseconds. Each number is one
 run on one machine: there is no warm-up, statistics, memory counting, or
 comparison with earlier runs, and other programs on the machine change the
-result. Run a benchmark several times before trusting a difference.
+result. Use `--count` and compare the runs before trusting a difference.
 
 ## Git dependency workflows
 
