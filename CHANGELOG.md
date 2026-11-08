@@ -8,6 +8,15 @@ including those shipped in `0.1.0-alpha.1`, are not split by release.
 
 ## [Unreleased]
 
+### Streaming gzip
+
+- Added `std/compress/gzip` with owned, composable readers and writers,
+  independent compressed/uncompressed ceilings, explicit finalization and sticky
+  errors. Readers validate CRC32/ISIZE, optional headers and concatenated
+  members with stored/fixed/dynamic DEFLATE. The deterministic fixed-Huffman
+  writer uses bounded LZ77 search. Implementation is Zore with no new dependency
+  or native provider. ZIP/TAR and extraction remain follow-ups under #224.
+
 ### Regular expressions
 
 - Added `std/regexp`: `Compile` and `MustCompile`, `Matches`, `Find`, bounded

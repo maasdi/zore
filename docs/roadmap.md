@@ -1,5 +1,13 @@
 # Implementation roadmap
 
+Issue [#224](https://github.com/maasdi/zore/issues/224) begins with
+`std/compress/gzip` under locked §37.24: streaming owned I/O, inclusive byte and
+member ceilings, CRC32/ISIZE validation, explicit writer finalization and
+partial-output/error cleanup. It is implemented in Zore with no provider or
+new dependency. ZIP/TAR and extraction remain deferred; proposed API boundaries
+and safe extraction policies are recorded in [archive follow-ups](design/archives.md).
+See the [gzip guide](gzip.md) and [conformance](../tests/conformance/gzip.md).
+
 Issue [#222](https://github.com/maasdi/zore/issues/222) adds `std/regexp` under
 locked §37.23: owned compilation and shared handles, rune-based matching with
 byte-offset captures, bounded finding, and strict/literal replacement. The

@@ -68,6 +68,8 @@ jobs:
           rustc --version
       - name: Regex differential oracle
         run: python tests/hardening/regexp_oracle.py
+      - name: Gzip interoperability oracle
+        run: python tests/hardening/gzip_oracle.py
       - name: Python harness tests
         shell: bash
         run: |
