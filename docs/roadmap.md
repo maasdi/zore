@@ -129,7 +129,7 @@ linked above.
 
 ## Current implementation and next work
 
-Alpha distribution work prepares `v0.1.0-alpha.2` compiler archives, checksums and
+Alpha distribution work prepares `v0.1.0-alpha.3` compiler archives, checksums and
 a Linux amd64 builder image for independent application repositories. The
 [alpha guide](alpha.md) records installation, toolchain requirements and release
 gates. Packaging validation includes an independent HTTP project and a minimal

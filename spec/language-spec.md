@@ -788,7 +788,7 @@ an ordinary §3.4.6 tag, `tls/v<version>` or `sqlite/v<version>`, pushed with th
 compiler's `v<version>` tag on the same reviewed commit of the repository's main
 branch whose CI passed on Linux, macOS and Windows. While the compiler is in
 alpha, package versions therefore carry the same `-alpha.N` suffix, for example
-`v0.1.0-alpha.2`, `tls/v0.1.0-alpha.2` and `sqlite/v0.1.0-alpha.2`. A
+`v0.1.0-alpha.3`, `tls/v0.1.0-alpha.3` and `sqlite/v0.1.0-alpha.3`. A
 published tag is never moved or deleted; any source correction is a new version.
 The package's reviewed native sources and the compiler's adapter recipe change
 together. An adapter source or recipe change requires a new package version, and
@@ -800,7 +800,7 @@ An application consumes a release as:
 
 ```toml
 [dependencies]
-tls = { git = "https://github.com/maasdi/zore.git", subdir = "packages/tls", version = "0.1.0-alpha.2" }
+tls = { git = "https://github.com/maasdi/zore.git", subdir = "packages/tls", version = "0.1.0-alpha.3" }
 ```
 
 The application commits its own `zore.lock`. After install with a populated
