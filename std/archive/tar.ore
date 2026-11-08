@@ -77,6 +77,14 @@ func tarHeader(block []byte) (Header, error) {
     if timeErr != nil {
         return absent(), timeErr
     }
+    let _, majorErr = octal(block[329:337])
+    if majorErr != nil {
+        return absent(), majorErr
+    }
+    let _, minorErr = octal(block[337:345])
+    if minorErr != nil {
+        return absent(), minorErr
+    }
     let size = octal(block[124:136])?
     var name = tarText(block[:100])?
     let prefix = tarText(block[345:500])?

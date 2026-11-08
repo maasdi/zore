@@ -300,6 +300,10 @@ def main():
         corrupt = bytearray(tar)
         corrupt[124] = 128
         run('rt', repair_tar_checksum(corrupt), valid=False)
+        for position in [100, 108, 116, 136, 329, 337]:
+            corrupt = bytearray(tar)
+            corrupt[position] = ord('9')
+            run('rt', repair_tar_checksum(corrupt), valid=False)
         run('rt', tar + b'garbage', valid=False)
         assert run('rt', tar + b'\0' * 512)[0] == b'payload'
 
