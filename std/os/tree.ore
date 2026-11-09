@@ -2,19 +2,27 @@ package os
 
 import "std/errors"
 import "std/path"
+import "std/strings"
 
 type StagedTree struct {
     id int
     err error
+    files map[string]bool
+    links map[string]bool
+    passes Array<string>
+}
+
+func newStagedTree(id int, err error) StagedTree {
+    return StagedTree{id: id, err: err, files: map[string]bool{}, links: map[string]bool{}, passes: Array<string>{}}
 }
 
 func StageTree(destination string, nodeLimit int) (StagedTree, error) {
     if nodeLimit < 0 || nodeLimit > 65534 || !path.IsLocal(baseName(destination)) {
         let err = error("os.StageTree: invalid destination or node limit")
-        return StagedTree{id: 0, err: err}, err
+        return newStagedTree(0, err), err
     }
     let id, err = treeStage(destination, nodeLimit)
-    return StagedTree{id: id, err: err}, err
+    return newStagedTree(id, err), err
 }
 
 func localTreeName(name string) bool {
@@ -55,7 +63,75 @@ func (t mut StagedTree) create(name string, executable bool) error {
             t.err = error("os.StagedTree: invalid local name")
         } else {
             t.err = treeCreate(t.id, name, executable)
+            if t.err == nil {
+                t.files[strings.ToUpper(name)] = true
+            }
         }
+    }
+    return t.err
+}
+
+func (t mut StagedTree) Symlink(name string, target string) error {
+    if t.err != nil {
+        return t.err
+    }
+    if !localTreeName(name) {
+        t.err = error("os.StagedTree: invalid local name")
+        return t.err
+    }
+    if target == "" || target.len() > 1024 || strings.IndexByte(target, 0) >= 0 || target[0] == 47 || strings.IndexByte(target, 92) >= 0 || strings.IndexByte(target, 58) >= 0 {
+        t.err = error("os.StagedTree: link target leaves the tree")
+        return t.err
+    }
+    var resolved = strings.Split(name, "/")
+    let _, _ = resolved.pop()
+    let parts = strings.Split(target, "/")
+    var passes = Array<string>{}
+    for var i = 0; i < parts.len(); i += 1 {
+        let part = parts[i]
+        if part == "" || part == "." {
+            continue
+        }
+        if part == ".." {
+            if resolved.len() == 0 {
+                t.err = error("os.StagedTree: link target leaves the tree")
+                return t.err
+            }
+            let _, _ = resolved.pop()
+            continue
+        }
+        resolved.push(part)
+        if i + 1 < parts.len() {
+            passes.push(strings.Join(resolved[:], "/"))
+        }
+    }
+    t.err = treeLink(t.id, name, target, true)
+    if t.err == nil {
+        t.links[strings.ToUpper(name)] = true
+        for pass in passes {
+            t.passes.push(pass)
+        }
+    }
+    return t.err
+}
+
+func (t mut StagedTree) Link(name string, existing string) error {
+    if t.err != nil {
+        return t.err
+    }
+    if !localTreeName(name) || !localTreeName(existing) {
+        t.err = error("os.StagedTree: invalid local name")
+        return t.err
+    }
+    if staged = t.files.entry(strings.ToUpper(existing)) {
+        _ = staged
+    } else {
+        t.err = error("os.StagedTree: hard link target is not a staged file")
+        return t.err
+    }
+    t.err = treeLink(t.id, name, existing, false)
+    if t.err == nil {
+        t.files[strings.ToUpper(name)] = true
     }
     return t.err
 }
@@ -77,14 +153,24 @@ func (t mut StagedTree) FinishFile() error {
 }
 
 func (t own StagedTree) Commit() error {
-    if t.err != nil {
-        let cleanup = treeAbort(t.id)
-        if cleanup != nil {
-            return errors.Wrap(t.err, "staging cleanup failed: " + errors.Message(cleanup))
+    var tree = t
+    if tree.err == nil {
+        for pass in tree.passes {
+            if through = tree.links.entry(strings.ToUpper(pass)) {
+                _ = through
+                tree.err = error("os.StagedTree: link target passes through another link")
+                break
+            }
         }
-        return t.err
     }
-    return treeCommit(t.id)
+    if tree.err != nil {
+        let cleanup = treeAbort(tree.id)
+        if cleanup != nil {
+            return errors.Wrap(tree.err, "staging cleanup failed: " + errors.Message(cleanup))
+        }
+        return tree.err
+    }
+    return treeCommit(tree.id)
 }
 
 func (t own StagedTree) Abort() error {
@@ -100,6 +186,8 @@ func treeStage(destination string, nodeLimit int) (int, error)
 func treeMkdir(id int, name string) error
 
 func treeCreate(id int, name string, executable bool) error
+
+func treeLink(id int, name string, target string, symbolic bool) error
 
 func treeWrite(id int, data []byte) (int, error)
 

@@ -376,23 +376,7 @@ func (r mut ZIPReader) nextHeader() (Header, bool, error) {
     return entry.header, true, nil
 }
 
-func (r mut ZIPReader) Next() (Header, bool, error) {
-    if r.err != nil {
-        return absent(), false, r.err
-    }
-    if r.ended {
-        return absent(), false, nil
-    }
-    let header, present, err = r.nextHeader()
-    if err == nil && present && r.entries[r.cursor - 1].symlink {
-        r.err = error("archive: unsupported ZIP entry type")
-        return absent(), false, error("archive: unsupported ZIP entry type")
-    }
-    r.err = err
-    return header, present, err
-}
-
-func (r mut ZIPReader) NextEntry() (Entry, bool, error) {
+func (r mut ZIPReader) Next() (Entry, bool, error) {
     if r.err != nil {
         return absentEntry(), false, r.err
     }

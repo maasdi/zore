@@ -683,10 +683,16 @@ fn delete(file: &File) -> io::Result<()> {
     Ok(())
 }
 fn rename(file: &File, parent: &File, name: &[u16]) -> io::Result<()> {
+    place(file, parent, name, 10)
+}
+fn hard_link(file: &File, parent: &File, name: &[u16]) -> io::Result<()> {
+    place(file, parent, name, 11)
+}
+fn place(file: &File, parent: &File, name: &[u16], class: u32) -> io::Result<()> {
     let size = 20 + name.len() * 2;
     let mut data = words(size);
     let bytes = data.as_mut_ptr().cast::<u8>();
-    // SAFETY: the aligned buffer has the 64-bit FILE_RENAME_INFORMATION header and complete name.
+    // SAFETY: the aligned buffer has the 64-bit FILE_RENAME/LINK_INFORMATION header and complete name.
     unsafe {
         bytes.add(8).cast::<Handle>().write(parent.as_raw_handle());
         bytes.add(16).cast::<u32>().write((name.len() * 2) as u32);
@@ -703,7 +709,7 @@ fn rename(file: &File, parent: &File, name: &[u16]) -> io::Result<()> {
             &mut io,
             data.as_ptr().cast(),
             size as u32,
-            10,
+            class,
         )
     };
     nt_result(status, &io, file.as_raw_handle())
@@ -896,6 +902,51 @@ impl Tree {
             Some(&self.security),
         )?;
         self.active = Some(self.register(file, path, false)?);
+        Ok(())
+    }
+    pub(super) fn symlink(&mut self, _path: &str, _target: &str) -> io::Result<()> {
+        Err(invalid(
+            "symbolic links are unsupported in confined Windows extraction",
+        ))
+    }
+    pub(super) fn hard_link(&mut self, path: &str, existing: &str) -> io::Result<()> {
+        if self.active.is_some() {
+            return Err(invalid("an entry file is still open"));
+        }
+        let expected = self
+            .nodes
+            .iter()
+            .find(|node| node.path == existing && !node.directory)
+            .map(|node| node.id)
+            .ok_or_else(|| invalid("hard link target is not a staged file"))?;
+        let old_parts = Self::parts(existing)?;
+        let old_parent = self.walk(&old_parts[..old_parts.len() - 1], false)?;
+        let target = open(
+            &old_parent,
+            &old_parts[old_parts.len() - 1]
+                .encode_utf16()
+                .collect::<Vec<_>>(),
+            false,
+            false,
+            READ_ATTRIBUTES | 0x100,
+            None,
+        )?;
+        if identity(&target, false)? != expected {
+            return Err(invalid("staging node identity changed"));
+        }
+        let parts = Self::parts(path)?;
+        let parent = self.walk(&parts[..parts.len() - 1], true)?;
+        if self.nodes.len() == self.limit {
+            return Err(invalid("node limit exceeded"));
+        }
+        let name: Vec<u16> = parts[parts.len() - 1].encode_utf16().collect();
+        component(&name)?;
+        hard_link(&target, &parent, &name)?;
+        self.nodes.push(Node {
+            path: path.into(),
+            directory: false,
+            id: expected,
+        });
         Ok(())
     }
     pub(super) fn file(&mut self) -> io::Result<&mut File> {
@@ -1321,6 +1372,19 @@ mod tests {
         std::fs::remove_file(file).unwrap();
         tree.abort().unwrap();
         assert_eq!(root.children(), 0);
+    }
+    #[test]
+    fn windows_staged_tree_hard_links_share_files_and_symlinks_fail() {
+        let root = Sandbox::new();
+        let mut tree = Tree::create(&root.destination(), 5).unwrap();
+        tree.create_file("dir/file", false).unwrap();
+        tree.file().unwrap().write_all(b"x").unwrap();
+        tree.finish_file().unwrap();
+        tree.hard_link("hard", "dir/file").unwrap();
+        assert!(tree.hard_link("missing", "dir/none").is_err());
+        assert!(tree.symlink("soft", "dir/file").is_err());
+        tree.commit().unwrap();
+        assert_eq!(std::fs::read(root.0.join("result/hard")).unwrap(), b"x");
     }
     #[test]
     fn windows_staged_tree_canonical_paths_accept_mixed_separators() {

@@ -26,6 +26,12 @@ impl Tree {
     fn create_file(&mut self, _: &str, _: bool) -> std::io::Result<()> {
         Err(unsupported())
     }
+    fn symlink(&mut self, _: &str, _: &str) -> std::io::Result<()> {
+        Err(unsupported())
+    }
+    fn hard_link(&mut self, _: &str, _: &str) -> std::io::Result<()> {
+        Err(unsupported())
+    }
     fn file(&mut self) -> std::io::Result<&mut std::fs::File> {
         Err(unsupported())
     }
@@ -155,6 +161,39 @@ pub unsafe extern "C" fn zore_native_os_tree_create(
             })
             .err()
             .map(|e| format!("os.StagedTree.Create: {e}"))
+    });
+    // SAFETY: the compiler supplies writable result storage.
+    unsafe { out.write(ErrorOut::from_failure(failure)) };
+}
+
+/// # Safety
+/// `out` is writable and both names are readable for their lengths.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn zore_native_os_tree_link(
+    out: *mut ErrorOut,
+    id: i64,
+    name: *const u8,
+    len: i64,
+    target: *const u8,
+    target_len: i64,
+    symbolic: bool,
+) {
+    // SAFETY: the compiler supplies valid string storage.
+    let name = unsafe { text_of(name, len) };
+    // SAFETY: the compiler supplies valid string storage.
+    let target = unsafe { text_of(target, target_len) };
+    let failure = blocking::run(move || {
+        lookup(id)
+            .and_then(|h| {
+                let mut tree = h.lock().unwrap_or_else(|p| p.into_inner());
+                if symbolic {
+                    tree.symlink(&name, &target)
+                } else {
+                    tree.hard_link(&name, &target)
+                }
+            })
+            .err()
+            .map(|e| format!("os.StagedTree.Link: {e}"))
     });
     // SAFETY: the compiler supplies writable result storage.
     unsafe { out.write(ErrorOut::from_failure(failure)) };

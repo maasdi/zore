@@ -11581,7 +11581,7 @@ and writer constructors have no filesystem effects. Regular files and
 directories are supported; method 8 and confined extraction are locked below.
 ZIP64/encryption, special nodes and sparse TAR entries remain excluded; PAX
 and GNU long names are read as described in §37.33, and links are reported by
-`NextEntry` (§37.34) but never written or extracted. Unsupported input fails explicitly.
+`Next` (§37.34), never written, and extracted only on request. Unsupported input fails explicitly.
 
 ### Metadata and limits
 
@@ -11616,7 +11616,7 @@ prefix. No implicit truncation occurs.
 | --- | --- |
 | `NewTARReader(source own io.Reader, archiveLimit int, dataLimit int, entryLimit int) (TARReader, error)` | Streaming USTAR reader; no constructor I/O |
 | `NewZIPReader(source own io.ReadSeeker, archiveLimit int, dataLimit int, entryLimit int) (ZIPReader, error)` | Seekable classic ZIP reader; reads the entire source as one archive, beginning at offset 0; no constructor I/O |
-| `(r mut TARReader) Next() (Header, bool, error)` and ZIP equivalent | Advances; false plus nil means validated end, false plus error means failure; absent header is `Header{Name: "", Size: 0, Directory: false}` |
+| `(r mut TARReader) Next() (Entry, bool, error)` and ZIP equivalent | Advances; false plus nil means validated end, false plus error means failure; the absent entry is a `FileEntry` with `Header{Name: "", Size: 0, Directory: false}`, empty `Link` and `Executable` false (§37.34) |
 | `(r mut TARReader) Read(buf mut []byte) (int, error)` and ZIP equivalent | Reads only current-entry data; entry EOF permits Next; empty reads return `(0, nil)` |
 | `(r mut TARReader) Skip() error` and ZIP equivalent | Explicitly drains and validates the current entry |
 | `(r own TARReader) Close() error` and ZIP equivalent | Returns a prior terminal failure and drops source without draining or validating unread input |
@@ -11665,8 +11665,8 @@ ZIP initialization validates EOCD and central-directory offsets/counts/lengths
 within the complete source. It accepts stored method 0 and DEFLATE method 8, ASCII names without the
 UTF-8 flag and UTF-8 names with it, plus signed/unsigned data descriptors. Local
 headers, CRC32 and sizes must agree with the central directory. Unsupported
-flags, ZIP64 extras, split disks and special nodes fail; symlinks fail in
-`Next` and are reported by `NextEntry` (§37.34). Extra-field
+flags, ZIP64 extras, split disks and special nodes fail; symlinks are reported
+by `Next` (§37.34). Extra-field
 TLVs must be well formed; supported opaque metadata/comments are bounded and
 ignored. Entries must occur contiguously from offset 0, in central-directory
 order; prefixes, overlapping entries, gaps and extra unindexed local records
@@ -11692,9 +11692,9 @@ import "std/os"
 func firstFile(path string) (Array<byte>, bool, error) {
     let file = os.Open(path)?
     var reader = archive.NewTARReader(file, 1048576, 524288, 100)?
-    let header, present, err = reader.Next()
+    let entry, present, err = reader.Next()
     if err != nil { return Array<byte>{}, false, err }
-    if !present || header.Directory { return Array<byte>{}, false, nil }
+    if !present || entry.Kind != archive.FileEntry { return Array<byte>{}, false, nil }
     let data = io.ReadAll(reader)?
     return data, true, nil
 }
@@ -11827,7 +11827,7 @@ Errors are sticky except Abort, which reports cleanup status without repeating
 a prior operation error. Creation and directory traversal use anchored handles and
 no-follow operations, never canonicalize-then-open. Private envelope and tree
 permissions are owner-only, files owner read/write, and owner read/write/execute
-for entries `NextEntry` marks executable (§37.34); other archive mode bits,
+for entries `Next` marks executable (§37.34); other archive mode bits,
 ownership and times are never restored. Directory identity detects host
 name aliases; no spelling may resolve to a differently spelled staged node.
 Publication cannot overwrite a destination created concurrently. Staging uses
@@ -11848,7 +11848,8 @@ dataLimit int, entryLimit int) error` and
 int, dataLimit int, entryLimit int) error` own their source and validate limits
 before filesystem work. They materialize a new tree only. Duplicate explicit
 entries, file/directory conflicts, case aliases (Unicode ToUpper folding), host
-aliases, links (`archive: links are not extracted`) and special nodes fail.
+aliases, links unless requested (`archive: links are not extracted`, §37.34) and
+special nodes fail.
 Same-spelling explicit directories may
 follow implicit parent creation once. All implicit directories and files count
 toward entryLimit, in addition to reader entry counts. Validation includes every
@@ -12067,27 +12068,34 @@ replacement, global headers, leading `./`, writer long names read by Python, and
 each malformed extended header.
 
 
-## 37.34 Archive entry kinds and executable files — LOCKED
+## 37.34 Archive entries, links and executable files — LOCKED
 
-Archive readers can report link entries and executable files, and writers can
-mark files executable. `Header` and the existing methods are unchanged: `Next`
-still fails on a link with its §37.28 error, so existing programs keep their
-behavior.
+Archive readers report every entry's kind, link target and executable flag;
+writers can mark files executable; extraction restores the executable flag and,
+only on request, creates links that provably stay inside the new tree.
 
 | Name | Behavior |
 | --- | --- |
 | `type EntryKind int`; `FileEntry EntryKind = 0`, `DirectoryEntry EntryKind = 1`, `SymlinkEntry EntryKind = 2`, `HardLinkEntry EntryKind = 3` | What an entry is |
 | `type Entry struct { Header Header; Kind EntryKind; Link string; Executable bool }` | A Copy value: the entry's header, its kind, its link target (`""` unless a link) and whether it is an executable file |
-| `(r mut TARReader) NextEntry() (Entry, bool, error)` and ZIP equivalent | `Next` that also returns links; presence, limits, stickiness and entry reading follow §37.28 |
+| `(r mut TARReader) Next() (Entry, bool, error)` and ZIP equivalent | The next entry of any kind (§37.28) |
 | `(w mut TARWriter<W>) WriteEntry(entry Entry) error` | `WriteHeader` for an entry |
 | `(w mut ZIPWriter<W>) WriteEntry(entry Entry) error` and `WriteEntryWith(entry Entry, compression Compression) error` | `WriteHeader` and `WriteHeaderWith` for an entry |
+| `type ExtractOptions struct { ArchiveLimit int; DataLimit int; EntryLimit int; Links bool }` | Extraction limits and whether links are created |
+| `DefaultExtractOptions(archiveLimit int, dataLimit int, entryLimit int) ExtractOptions` | The limits given, `Links` false; fields added later get safe defaults here |
+| `ExtractTARWith(source own io.Reader, destination string, options ExtractOptions) error` and `ExtractZIPWith(source own io.ReadSeeker, ...)` | `ExtractTAR`/`ExtractZIP` with options; the old functions use the defaults |
 | `(t mut os.StagedTree) CreateExecutable(name string) error` | `Create` for a file that is owner read/write/execute |
+| `(t mut os.StagedTree) Symlink(name string, target string) error` | Stages a symbolic link whose target stays inside the tree (below) |
+| `(t mut os.StagedTree) Link(name string, existing string) error` | Stages a hard link to a file already staged by `Create` or `Link` |
+
+**Migration.** `Next` used to return `Header` and fail on links. Read
+`entry.Header` for the old value and check `entry.Kind` where links matter.
 
 **Links.** A link entry's `Header` has the link's own name, `Size` 0 and
 `Directory` false, and the name must pass `ValidName`. Its target is reported as
-written: non-empty, at most `MaxNameBytes` bytes of UTF-8 with no NUL, and
-**not** checked to stay inside the archive; it may name anything. Reading a
-link entry's data returns `io.EOF` at once.
+written: non-empty, at most `MaxNameBytes` bytes of UTF-8 with no NUL, and not
+checked by the reader; it may name anything. Reading a link entry's data returns
+`io.EOF` at once.
 
 - TAR type `2` is `SymlinkEntry` and type `1` is `HardLinkEntry`; a link header's
   size must be 0 (`archive: invalid TAR link entry`). The target is the PAX
@@ -12097,8 +12105,8 @@ link entry's data returns `io.EOF` at once.
   unsupported`, and a global `linkpath` fails like a global `path`.
 - ZIP entries whose external attributes have file type `0o120000` are
   `SymlinkEntry`; the entry's data, stored or deflated, is the target, read and
-  checked by `NextEntry`, which fails with `archive: invalid link target` for
-  bad targets. ZIP has no hard links.
+  checked by `Next`, which fails with `archive: invalid link target` for bad
+  targets. ZIP has no hard links.
 
 **Executable files.** A file entry is executable when TAR mode bits `0o111` are
 not all clear, or when a ZIP entry was made on Unix (version-made-by host `3`)
@@ -12114,17 +12122,39 @@ they fail with `archive: links cannot be written`,
 `archive: directories cannot be executable`. These failures are sticky, like
 other header failures.
 
-**Extraction.** `ExtractTAR` and `ExtractZIP` read with `NextEntry`, fail on any
-link with `archive: links are not extracted` and roll back, and create
-executable entries with `CreateExecutable`. On Linux and macOS such a file is
-mode `0700`, verified like the other private modes of §37.30; Windows ignores
-the flag. No other mode bit, owner or time is restored.
+**Staged links.** `Symlink(name, target)` fails with
+`os.StagedTree: link target leaves the tree` when the target is empty, longer
+than 1024 bytes, contains NUL, `\` or `:`, starts with `/`, or when walking it
+from the folder of `name` (empty and `.` components skipped, `..` going up one
+folder) would go above the tree root. Every folder the walk enters before its
+last component is recorded; `Commit` fails with
+`os.StagedTree: link target passes through another link` if any of them, compared
+in upper case, names a symlink staged in the tree, wherever it appears in the
+staging order. `Link(name, existing)` fails with
+`os.StagedTree: hard link target is not a staged file` unless `existing`, in
+upper case, names a file staged earlier by `Create`, `CreateExecutable` or
+`Link`. Links count as nodes, are created relative to anchored handles without
+following links, share the tree's cleanup, and make every later operation
+through them fail. Windows creates hard links by handle and fails every
+`Symlink` (`symbolic links are unsupported in confined Windows extraction`).
+All failures are sticky.
 
-Compiler impact: bundled Zore source plus one `bool` argument on the existing
-staged-tree create provider. Conformance: Python `tarfile` and `zipfile`
-symlinks, hard links, long PAX/GNU targets, stored and deflated ZIP link
-targets, Unix and non-Unix ZIP modes, malformed link entries, writer modes read
-back by Python, extraction modes and link refusal, and runtime mode checks.
+**Extraction.** `ExtractTAR` and `ExtractZIP`, and the `With` forms with
+`Links` false, fail on any link with `archive: links are not extracted` and roll
+back. With `Links` true they stage symlinks with `Symlink` and hard links with
+`Link`, after removing any leading `./` from a hard link's target, which must
+then pass `ValidName` as a file (`archive: invalid hard link target`). Every
+entry still passes the duplicate, alias, depth and limit checks of §37.30.
+Executable entries are created with `CreateExecutable`; on Linux and macOS such
+a file is mode `0700`, verified like the other private modes of §37.30, and
+Windows ignores the flag. No other mode bit, owner or time is restored.
+
+Compiler impact: bundled Zore source plus a `bool` argument on the staged-tree
+create provider and one new link provider. Conformance: Python `tarfile` and
+`zipfile` symlinks, hard links, long PAX/GNU targets, stored and deflated ZIP
+link targets, Unix and non-Unix ZIP modes, malformed link entries, writer modes
+read back by Python, extraction modes, default link refusal, opted-in links
+inside the tree, and every escape, pass-through, ordering and hard-link failure.
 
 # 38. Self-Hosting Constraint
 

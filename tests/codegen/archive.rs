@@ -87,7 +87,7 @@ type entriesWriter interface {
     mut Finish() error
 }
 type entriesReader interface {
-    mut Next() (archive.Header, bool, error)
+    mut Next() (archive.Entry, bool, error)
     mut Read(buf mut []byte) (int, error)
     mut Skip() error
 }
@@ -118,14 +118,15 @@ func inspect(reader mut entriesReader, expected []byte) error {
     let zero, emptyErr = reader.Read(empty[:])
     check(emptyErr == nil, "empty read")
     check(zero == 0, "empty read count")
-    let header, present, err = reader.Next()
+    let entry, present, err = reader.Next()
     if err != nil { return err }
-    check(present && header.Name == "file" && header.Size == expected.len() && !header.Directory, "entry metadata")
+    let header = entry.Header
+    check(present && entry.Kind == archive.FileEntry && header.Name == "file" && header.Size == expected.len() && !header.Directory, "entry metadata")
     let data = io.ReadAll(reader)?
     check(bytes.Equal(data[:], expected), "entry payload")
     let absent, more, endErr = reader.Next()
     if endErr != nil { return endErr }
-    check(!more && absent.Name == "" && absent.Size == 0, "validated end presence")
+    check(!more && absent.Header.Name == "" && absent.Header.Size == 0 && absent.Link == "", "validated end presence")
     let _, again, repeated = reader.Next()
     check(repeated == nil, "repeat end")
     check(!again, "repeat end presence")
@@ -612,12 +613,12 @@ fn long_tar_names_use_pax_and_dot_prefixes_are_removed() {
     var reader = archive.NewTARReader(bytes.NewBuffer(encoded[:]), 1048576, 100, 2)?
     let first, present, firstErr = reader.Next()
     if firstErr != nil { return firstErr }
-    check(present && first.Name == long && first.Size == 3, "long file name")
+    check(present && first.Header.Name == long && first.Header.Size == 3, "long file name")
     let data = io.ReadAll(reader)?
     check(data.len() == 3 && data[2] == 99, "long file data")
     let second, again, secondErr = reader.Next()
     if secondErr != nil { return secondErr }
-    check(again && second.Name == folder && second.Directory, "long directory name")
+    check(again && second.Header.Name == folder && second.Header.Directory, "long directory name")
     let _, ended, endErr = reader.Next()
     if endErr != nil { return endErr }
     check(!ended, "end")
@@ -651,11 +652,11 @@ fn entries_report_kinds_and_writers_reject_links_and_executable_directories() {
     let encoded, _ = done.receive()
     check(encoded[100] == 48 && encoded[104] == 55 && encoded[105] == 53 && encoded[106] == 53, "mode 0755")
     var reader = archive.NewTARReader(bytes.NewBuffer(encoded[:]), 1048576, 100, 3)?
-    let first, present, firstErr = reader.NextEntry()
+    let first, present, firstErr = reader.Next()
     if firstErr != nil { return firstErr }
     check(present && first.Kind == archive.FileEntry && first.Executable && first.Header.Name == "bin/tool", "executable file")
     reader.Skip()?
-    let second, again, secondErr = reader.NextEntry()
+    let second, again, secondErr = reader.Next()
     if secondErr != nil { return secondErr }
     check(again && second.Kind == archive.DirectoryEntry && !second.Executable && second.Link == "", "directory")
     reader.Close()?

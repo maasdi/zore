@@ -28,17 +28,16 @@ ignored. A leading `./`, which GNU tar writes for `tar -C dir .`, is removed, an
 the bare `./` folder itself is skipped.
 
 `TARWriter` writes a PAX `path` record when a name does not fit the USTAR fields,
-so names up to `MaxNameBytes` work. Links, sparse files and PAX headers that set a
+so names up to `MaxNameBytes` work. Sparse files and PAX headers that set a
 global name or size are still rejected with an error.
 
 ## Links and executable files
 
-`Next()` refuses link entries, as it always has. Call `NextEntry()` instead to
-see them: it returns an `archive.Entry` with the `Header`, a `Kind`
-(`FileEntry`, `DirectoryEntry`, `SymlinkEntry` or `HardLinkEntry`), the link's
-target in `Link`, and `Executable`, which is true for files whose mode lets
-someone run them. A link's target is reported exactly as written and may point
-anywhere, including outside the archive, so never follow it blindly.
+`Next()` returns an `archive.Entry`: the `Header`, a `Kind` (`FileEntry`,
+`DirectoryEntry`, `SymlinkEntry` or `HardLinkEntry`), the link's target in
+`Link`, and `Executable`, which is true for files whose mode lets someone run
+them. A link's target is reported exactly as written and may point anywhere,
+including outside the archive, so check `Kind` before trusting an entry.
 
 To write a runnable file, pass an `Entry` with `Executable: true` to
 `WriteEntry` (or `WriteEntryWith` for a compressed ZIP entry). TAR stores mode
@@ -51,7 +50,7 @@ Construct a `TARReader` from an owned `io.Reader`, or a `ZIPReader` from an owne
 source, starting at offset 0, as one archive. Constructors validate limits
 without I/O; the first `Next()` starts parsing.
 
-`Next()` returns `(Header, bool, error)`. False with nil means the complete
+`Next()` returns `(Entry, bool, error)`. False with nil means the complete
 archive has been validated; false with an error means failure. Call `Read` or
 `io.Copy`/`io.ReadAll` to consume only the current entry. Entry EOF allows the
 next entry. Call `Skip()` to explicitly discard the remaining entry bytes.
@@ -117,12 +116,12 @@ func read(path string) (int, error) {
     var reader = archive.NewTARReader(compressed, 2097152, 1048576, 100)?
     var total = 0
     for {
-        let header, present, err = reader.Next()
+        let entry, present, err = reader.Next()
         if err != nil { return total, err }
         if !present { return total, nil }
         let data = io.ReadAll(reader)?
         total += data.len()
-        println(header.Name)
+        println(entry.Header.Name)
     }
 }
 
@@ -203,6 +202,32 @@ anchored by its open handle, so operations cannot follow a replacement path.
 
 Duplicate explicit names, case aliases, host-equivalent aliases, file/directory
 conflicts, links (`archive: links are not extracted`) and special nodes fail.
+
+### Extracting links
+
+Links are refused unless you ask for them:
+
+```text
+var options = archive.DefaultExtractOptions(archiveLimit, dataLimit, entryLimit)
+options.Links = true
+archive.ExtractTARWith(source, destination, options)?
+```
+
+Even then, a link is only created when it provably stays inside the new folder:
+
+- A symlink's target must be relative, may not contain `\` or `:`, and, read
+  from the link's own folder, may never climb above the destination with `..`.
+- No folder on the way to a symlink's target may itself be a symlink from the
+  archive. This is checked over the whole archive before anything is published,
+  because otherwise `a -> .` and `b -> a/..` together would escape.
+- A hard link must name a regular file that the archive already extracted
+  earlier (a leading `./` is allowed).
+- Nothing is ever written through a symlink: a later entry inside a symlinked
+  folder fails.
+
+Any violation fails the whole extraction and nothing is published. Windows
+supports hard links; symlinks fail there, because creating them needs special
+privileges.
 An explicit directory may follow its same-spelling implicit creation once.
 Files and implicit directories all count toward entryLimit; paths have at most
 64 components. Unix files use mode 0600, executable files 0700, and directories

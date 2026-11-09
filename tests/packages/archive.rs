@@ -10,10 +10,10 @@ import "std/os"
 func read(path string) error {
     let file = os.Open(path)?
     var reader = archive.NewZIPReader(file, 10000, 5000, 10)?
-    let header, present, err = reader.Next()
+    let entry, present, err = reader.Next()
     if err != nil { return err }
     if present {
-        println(header.Name)
+        println(entry.Header.Name)
         let data = io.ReadAll(reader)?
         println(crc32.Checksum(data[:]))
     }
@@ -163,7 +163,7 @@ func list(path string) (Array<archive.Entry>, error) {
     var reader = archive.NewTARReader(file, 10000, 5000, 10)?
     var entries = Array<archive.Entry>{}
     for {
-        let entry, present, err = reader.NextEntry()
+        let entry, present, err = reader.Next()
         if err != nil { return entries, err }
         if !present { break }
         let copied = entry
@@ -178,7 +178,17 @@ async func write(path string) error {
     writer.WriteEntryWith(archive.Entry{Header: archive.Header{Name: "run", Size: 0, Directory: false}, Kind: archive.FileEntry, Link: "", Executable: true}, archive.Deflate)?
     return writer.Close()
 }
-func create(tree mut os.StagedTree) error { return tree.CreateExecutable("run") }
+func create(tree mut os.StagedTree) error {
+    tree.CreateExecutable("run")?
+    tree.Symlink("alias", "run")?
+    return tree.Link("again", "run")
+}
+func unpack(path string) error {
+    let file = os.Open(path)?
+    var options = archive.DefaultExtractOptions(10000, 5000, 10)
+    options.Links = true
+    return archive.ExtractTARWith(file, "out", options)
+}
 func main() {}
 "#,
     )]);

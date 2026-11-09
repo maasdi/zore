@@ -571,7 +571,7 @@ func (r mut TARReader) accept(header Header) error {
     return nil
 }
 
-func (r mut TARReader) NextEntry() (Entry, bool, error) {
+func (r mut TARReader) Next() (Entry, bool, error) {
     if r.err != nil {
         return absentEntry(), false, r.err
     }
@@ -581,18 +581,6 @@ func (r mut TARReader) NextEntry() (Entry, bool, error) {
     let entry, present, err = r.nextEntry()
     r.err = err
     return entry, present, err
-}
-
-func (r mut TARReader) Next() (Header, bool, error) {
-    let entry, present, err = r.NextEntry()
-    if err != nil {
-        return absent(), false, err
-    }
-    if entry.Kind == SymlinkEntry || entry.Kind == HardLinkEntry {
-        r.err = error("archive: TAR link target is unsupported")
-        return absent(), false, error("archive: TAR link target is unsupported")
-    }
-    return entry.Header, present, nil
 }
 
 func (r mut TARReader) Read(buf mut []byte) (int, error) {

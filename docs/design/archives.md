@@ -14,8 +14,9 @@ ZIP64, encryption, split archives, CP437 names and more permissive central/local
 ordering remain excluded. Extensions must retain bounded directory memory,
 unambiguous offsets, exact size/CRC validation and explicit entry lifetimes.
 PAX and GNU long names are read and PAX names are written (§37.33). Links are
-reported but never written or extracted, and executable bits are restored as
-owner-only execute (§37.34). Sparse files and special nodes need separately
+reported, never written, and extracted only on request when they provably stay
+inside the new tree; executable bits are restored as owner-only execute
+(§37.34). Windows symbolic links would need a privilege policy. Sparse files and special nodes need separately
 locked metadata and expansion limits.
 
 Extraction currently publishes a new directory only. Merging into existing
