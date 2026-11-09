@@ -14,9 +14,6 @@ including those shipped in `0.1.0-alpha.1`, are not split by release.
   quoted text attributes, with explicit UTF-8, ownership and context restrictions.
   HTML and plain-text templates remain a separate application-driven design
   decision.
-- Grouped HTML escaping under `std/encoding/html`; replace pre-merge `std/html`
-  imports with the new path. The `html` qualifier stays the same; no old-path
-  forwarding package remains.
 
 ### ZIP DEFLATE and confined extraction
 

@@ -11869,9 +11869,7 @@ rollback, and independent Python extraction interoperability.
 ## 37.31 HTML text and quoted-attribute escaping — LOCKED
 
 `std/encoding/html` owns HTML escaping policy and imports only `std/strings`.
-HTML escaping is grouped with the standard format encoders. This path replaces
-the pre-merge `std/html` spelling; update imports to `std/encoding/html` while
-keeping the `html` qualifier. The old path is removed without a forwarding alias.
+HTML escaping is grouped with the standard format encoders.
 `EscapeString(text string) string` replaces exactly these five ASCII characters:
 
 | Input | Output |
