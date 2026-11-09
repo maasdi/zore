@@ -11474,6 +11474,88 @@ Compiler impact: bundle `std/encoding/csv` as ordinary Zore source. No native
 code, runtime support, syntax or dependency is added. Conformance:
 `tests/conformance/csv.md`, native execution tests and package checks.
 
+## 37.26 Streaming gzip — LOCKED
+
+The first slice of #224 is `std/compress/gzip`. ZIP/TAR and extraction are
+follow-ups, not part of this implementation. This package owns RFC 1952 framing,
+RFC 1951 DEFLATE, checksums and compression policy; it imports only `std/io`.
+It is implemented in Zore without a native provider or new dependencies.
+
+| Name | Contract |
+| --- | --- |
+| `MaxBytes = 1073741824` | Largest permitted compressed or uncompressed byte ceiling |
+| `MaxMembers = 1024` | Maximum concatenated gzip members per reader |
+| `NewReader(source own io.Reader, compressedLimit int, outputLimit int) (Reader, error)` | Takes ownership; validates limits without reading; parses lazily |
+| `(r mut Reader) Read(buf mut []byte) (int, error)` | Streams decoded bytes, with sticky terminal errors; empty reads return `(0, nil)` |
+| `(r own Reader) Close() error` | Returns a prior failure, otherwise nil; drops source without draining or validating unread input |
+| `NewWriter(sink own io.Writer, inputLimit int, compressedLimit int) (Writer, error)` | Takes ownership; validates limits without writing |
+| `(w mut Writer) Write(data []byte) (int, error)` | Accepts input in bounded chunks and writes compressed blocks; empty writes succeed unless already failed or finished |
+| `(w mut Writer) Finish() error` | Writes final DEFLATE block, CRC32 and ISIZE; idempotent after success, sticky after failure |
+| `(w own Writer) Close() error` | Calls `Finish`, then drops sink |
+
+Both wrappers are Move values with private fields. They own their underlying
+interfaces; construction failure still consumes the argument, and the returned
+inert wrapper retains it until that wrapper is dropped.
+Drop releases resources but never implicitly finalizes a writer or validates a
+reader. To report errors, explicitly call `Close`/`Finish`; neither promises to
+call a concrete underlying `Close` method, since `io.Reader`/`io.Writer` do not
+provide it. A successful `Finish` does not flush an independently buffered sink.
+Input/output slices are borrowed only for the duration of each call.
+
+Limits are inclusive, independently chosen integers in `[0, MaxBytes]`; invalid
+values return an error and an inert wrapper. Compressed counts include headers
+and trailers of every member. Readers consume at most one extra compressed byte
+to detect an exceeded limit; they never return more than `outputLimit` bytes.
+A writer rejects a whole `Write` exceeding its remaining input limit before
+accepting input. A failed sink operation may leave a compressed prefix; counts
+report input accepted, not compressed bytes committed. No operation rolls back
+external output. Invalid read/write counts, zero write progress, and 100
+consecutive empty source reads fail explicitly. Positive short writes retry.
+Other underlying errors propagate. No operation retries after a terminal error.
+
+Readers accept stored, fixed and dynamic DEFLATE blocks, overlapping backrefs,
+optional header fields and header CRCs, and concatenated members. Reserved
+flags/block types, invalid Huffman trees/symbols/distances, bad CRC32/ISIZE,
+truncation and non-member trailing bytes fail. An empty source is truncated;
+an empty member is valid. Header scans are bounded by the compressed ceiling.
+An all-zero unused distance alphabet is accepted until a length needs it.
+Padding bits at block/member boundaries are ignored as the format permits.
+A stream is validated only after a nonempty `Read` returns `io.EOF`; bytes
+returned earlier, including bytes returned with a later error, are unverified
+partial output. Reading exactly the expected payload length is insufficient.
+`Close` does not substitute for reading to EOF. Member count and byte ceilings
+apply across the entire concatenation, not per member.
+
+Writers emit deterministic headers (MTIME 0, no name/comment, OS 255), fixed
+Huffman DEFLATE with a bounded single-candidate LZ77 search in 32 KiB chunks,
+and a CRC32/ISIZE trailer. No compression-level, metadata, flush/reset or archive
+API is introduced. They may expand incompressible input; applications must allow
+for framing/block overhead when choosing the compressed ceiling.
+
+Memory stays bounded independently of stream length: 32 KiB decoding history,
+bounded Huffman alphabets and a bounded compression chunk/hash table. Work is
+bounded by accepted compressed/output bytes and the fixed 258-byte maximum
+match search. Plain functions execute CPU work inline; async callers suspend at
+underlying interface I/O as usual, with no helper/preemption guarantee for CPU
+work. Callers needing cancellation supply a source/sink with that policy.
+
+```ore
+import "std/compress/gzip"
+import "std/io"
+import "std/os"
+
+func unpack(path string) (Array<byte>, error) {
+    let file = os.Open(path)?
+    var reader = gzip.NewReader(file, 1048576, 8388608)?
+    return io.ReadAll(reader)
+}
+```
+
+Compiler impact: bundle the source package using existing interfaces, arrays,
+integers, ownership and error propagation; no syntax, ABI or runtime changes.
+Conformance: gzip ownership/visibility checks, native format/interoperability,
+bounds, source/sink errors, finalization, async I/O and cleanup tests.
+
 # 38. Self-Hosting Constraint
 
 ## 38.1 Long-term goal — LOCKED

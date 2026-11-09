@@ -11,6 +11,7 @@ macro_rules! bundled {
 bundled! {
     "bufio" => ["bufio.ore"],
     "bytes" => ["bytes.ore", "buffer.ore"],
+    "compress/gzip" => ["deflate.ore", "reader.ore", "writer.ore"],
     "context" => ["context.ore"],
     "crypto/hmac" => ["hmac.ore"],
     "crypto/rand" => ["rand.ore"],

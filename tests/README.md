@@ -1,5 +1,12 @@
 # Compiler testing
 
+Streaming gzip has ownership/visibility checks in `tests/packages/gzip.rs` and
+leak-checked native source/sink, limit, finalization and task cleanup tests in
+`tests/codegen/gzip.rs`. `python tests/hardening/gzip_oracle.py` compares the
+native package with Python gzip/zlib across stored/fixed/dynamic blocks,
+optional headers, concatenation, checksum/truncation and bound failures.
+See `conformance/gzip.md`.
+
 CSV reading and writing have native runs, including a Python-written
 fixture that must round-trip byte for byte, in `tests/codegen/csv.rs`; see
 `conformance/csv.md`.

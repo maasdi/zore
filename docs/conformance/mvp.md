@@ -211,3 +211,14 @@ conformance and other roadmap work remain separate.
 The additional [seeded hardening inventory](hardening.md) maps generated ownership,
 plain/async cleanup, protocol fragmentation and quiescent cancellation assertions
 to the earlier executable cases, with replay and CI.
+
+## Streaming gzip follow-up — issue #224
+
+Spec §37.26 locks `std/compress/gzip` as the first compression/archive slice.
+The package composes owned I/O with compressed/uncompressed byte ceilings,
+member limits, explicit finalization and checksum validation. It is implemented
+in Zore with no new runtime provider or dependency. Ownership/visibility checks,
+native error/drop/task tests and the independent Python gzip/zlib oracle are
+mapped in [gzip conformance](../../tests/conformance/gzip.md).
+ZIP/TAR and filesystem extraction remain deferred, with API/policy questions
+recorded in [archive follow-ups](../design/archives.md) and Q15.
