@@ -11345,12 +11345,11 @@ code, runtime support, syntax or dependency is added. Conformance:
 
 ## 37.25 Streaming gzip — LOCKED
 
-The first slice of #224 is `std/compress/gzip`. ZIP/TAR and extraction are
-follow-ups, not part of this implementation. This package owns RFC 1952 framing,
-RFC 1951 DEFLATE, checksums and compression policy; it imports lower-level I/O and CRC32
-primitives.
-It is implemented in Zore without a native provider or new dependencies; the
-shared IEEE primitive lives in `std/hash/crc32`.
+`std/compress/gzip` owns RFC 1952 framing. Archive formats and extraction are
+separate contracts below. Gzip owns its framing checksums and compression
+policy; it imports `std/io`, `std/hash/crc32` and `std/compress/flate`. The raw
+RFC 1951 codec is shared below framing policy. These packages are implemented
+in Zore without a native provider or new dependencies.
 
 | Name | Contract |
 | --- | --- |
@@ -11666,7 +11665,8 @@ StagedTree is a Move resource with private state:
 | `(t own StagedTree) Commit() error` | Requires no active file; atomically publish without replacement; failure aborts |
 | `(t own StagedTree) Abort() error` | Close active file and remove staging; report cleanup failures |
 
-Errors are sticky. Creation and directory traversal use anchored handles and
+Errors are sticky except Abort, which reports cleanup status without repeating
+a prior operation error. Creation and directory traversal use anchored handles and
 no-follow operations, never canonicalize-then-open. Private envelope and tree
 permissions are owner-only, files owner read/write; archive modes, ownership,
 times and executable bits are never restored. Directory identity detects host

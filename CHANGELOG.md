@@ -29,7 +29,7 @@ including those shipped in `0.1.0-alpha.1`, are not split by release.
 - Added `io.ReadSeeker` and IEEE `std/hash/crc32`, shared by ZIP and gzip.
 - Fixed duplicate LLVM symbols for same-named generic methods on different
   receiver types, including interface dispatch and cleanup.
-- ZIP DEFLATE/ZIP64, extended TAR forms and filesystem extraction remain follow-ups.
+- ZIP64, extended TAR forms and Windows extraction remain follow-ups.
 
 ### Streaming gzip
 
@@ -38,7 +38,7 @@ including those shipped in `0.1.0-alpha.1`, are not split by release.
   errors. Readers validate CRC32/ISIZE, optional headers and concatenated
   members with stored/fixed/dynamic DEFLATE. The deterministic fixed-Huffman
   writer uses bounded LZ77 search. Implementation is Zore with no new dependency
-  or native provider. ZIP/TAR and extraction remain follow-ups under #224.
+  or native provider. Archive I/O and extraction are described above under #224.
 
 ### Seeded random numbers
 

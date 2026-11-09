@@ -1,7 +1,7 @@
 # Streaming gzip conformance
 
-Locked contract: spec §37.25. This is the first slice of issue #224; ZIP/TAR
-and filesystem extraction remain deferred in `docs/design/archives.md`.
+Locked contract: spec §37.25. ZIP/TAR I/O and confined Linux/macOS extraction are mapped in
+`archives.md`; remaining format and Windows work is in `docs/design/archives.md`.
 
 | Contract | Evidence |
 | --- | --- |

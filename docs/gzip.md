@@ -84,6 +84,7 @@ compressed space for overhead. Processing uses bounded chunks, a 32 KiB history
 and bounded Huffman tables rather than retaining the whole stream. CPU work
 runs inline; underlying interface I/O keeps its ordinary plain/async behavior.
 
-ZIP/TAR and extraction remain tracked by [#224](https://github.com/maasdi/zore/issues/224).
+ZIP/TAR I/O and confined Linux/macOS extraction are described in the
+[archive guide](archives.md), tracked by [#224](https://github.com/maasdi/zore/issues/224).
 See the [archive follow-up design](design/archives.md) for the proposed boundaries
 and policy questions that must be locked before those APIs are implemented.

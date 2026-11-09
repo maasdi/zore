@@ -220,8 +220,9 @@ member limits, explicit finalization and checksum validation. It is implemented
 in Zore with no new runtime provider or dependency. Ownership/visibility checks,
 native error/drop/task tests and the independent Python gzip/zlib oracle are
 mapped in [gzip conformance](../../tests/conformance/gzip.md).
-ZIP/TAR and filesystem extraction remain deferred, with API/policy questions
-recorded in [archive follow-ups](../design/archives.md) and Q15.
+ZIP/TAR and confined Linux/macOS extraction are covered below; remaining
+format extensions and Windows extraction are recorded in
+[archive follow-ups](../design/archives.md) and Q15.
 
 ## Archive I/O follow-up — issue #224
 
@@ -231,7 +232,7 @@ concrete sinks for ordered finalization. Native lifecycle/task tests, package
 ownership checks and independent tarfile/zipfile/gzip fixtures are mapped in
 [archive conformance](../../tests/conformance/archives.md). A generic method
 symbol collision discovered by the two writer types has a direct native
-regression. Extended formats and extraction remain deferred under Q15.
+regression. Extended formats and Windows extraction remain deferred under Q15.
 
 Spec §§37.28–37.29 add a shared raw-DEFLATE codec, ZIP method 8 and confined
 new-directory extraction on Linux/macOS. Python gzip/archive/extraction
