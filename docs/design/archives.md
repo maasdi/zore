@@ -1,7 +1,7 @@
 # Remaining archive work
 
 The first implementation of [#224](https://github.com/maasdi/zore/issues/224)
-provides gzip in §37.25 and `std/archive` USTAR/stored ZIP I/O in §37.27.
+provides gzip in §37.26 and `std/archive` USTAR/stored ZIP I/O in §37.28.
 The [archive guide](../archives.md) describes the implemented APIs. Archive
 readers return metadata and bytes, never filesystem effects. `Sink()` retains
 the concrete writer type for ordered finalization through compression layers.

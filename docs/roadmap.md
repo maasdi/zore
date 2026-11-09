@@ -1,13 +1,19 @@
 # Implementation roadmap
 
 Issue [#224](https://github.com/maasdi/zore/issues/224) provides gzip I/O under
-§37.25 and USTAR/stored ZIP I/O under §37.27. Archive readers expose owned
+§37.26 and USTAR/stored ZIP I/O under §37.28. Archive readers expose owned
 metadata and bounded entry streams; generic writers preserve their concrete
 sink for ordered finalization. Limits, checksums, partial output and cleanup are
-explicit. Shared IEEE CRC32 is in §37.26. ZIP DEFLATE, ZIP64, GNU/PAX/sparse TAR,
+explicit. Shared IEEE CRC32 is in §37.27. ZIP DEFLATE, ZIP64, GNU/PAX/sparse TAR,
 links, special nodes and extraction remain deferred. See the
 [archive guide](archives.md), [conformance](../tests/conformance/archives.md)
 and [remaining design](design/archives.md).
+
+Issue [#225](https://github.com/maasdi/zore/issues/225) adds
+`std/encoding/csv` under locked §37.25: RFC 4180 records read one at a time
+from an `io.Reader` and written to an `io.Writer`, with size and field limits,
+line-and-column errors, and records the caller owns. See the
+[guide](csv.md) and [conformance](../tests/conformance/csv.md).
 
 Issue [#222](https://github.com/maasdi/zore/issues/222) adds `std/regexp` under
 locked §37.23: owned compilation and shared handles, rune-based matching with
