@@ -1,51 +1,43 @@
 package gzip
 
 import "std/io"
+import "std/compress/flate"
 
 const MaxBytes = 1073741824
 const MaxMembers = 1024
-const windowSize = 32768
 const headerPhase = 0
 const blockPhase = 1
-const storedPhase = 2
-const codesPhase = 3
 const trailerPhase = 4
-const literalAlphabet = 0
-const distanceAlphabet = 1
-const codeAlphabet = 2
 
 func validLimit(limit int) bool {
     return limit >= 0 && limit <= MaxBytes
 }
 
-type Reader struct {
+type input struct {
     source io.Reader
     compressedLimit int
-    outputLimit int
     compressed int
-    output int
-    members int
-    history Array<byte>
-    memberSize int
-    crc int
-    bits int
-    bitCount int
-    phase int
-    finalBlock bool
-    remaining int
-    distance int
-    literals alphabet
-    distances alphabet
-    codes alphabet
     chunk Array<byte>
     cursor int
     used int
     pending error
+}
+
+type Reader struct {
+    input input
+    decoder flate.Decoder
+    outputLimit int
+    output int
+    members int
+    memberSize int
+    crc int
+    phase int
     err error
 }
 
 func NewReader(source own io.Reader, compressedLimit int, outputLimit int) (Reader, error) {
-    var reader = Reader{source: source, compressedLimit: compressedLimit, outputLimit: outputLimit, compressed: 0, output: 0, members: 0, history: zeros(windowSize), memberSize: 0, crc: 4294967295, bits: 0, bitCount: 0, phase: headerPhase, finalBlock: false, remaining: 0, distance: 0, literals: emptyAlphabet(), distances: emptyAlphabet(), codes: emptyAlphabet(), chunk: zeros(4096), cursor: 0, used: 0, pending: nil, err: nil}
+    let decoder, _ = flate.NewDecoder(MaxBytes, MaxBytes)
+    var reader = Reader{input: input{source: source, compressedLimit: compressedLimit, compressed: 0, chunk: zeros(4096), cursor: 0, used: 0, pending: nil}, decoder: decoder, outputLimit: outputLimit, output: 0, members: 0, memberSize: 0, crc: 4294967295, phase: headerPhase, err: nil}
     if !validLimit(compressedLimit) || !validLimit(outputLimit) {
         reader.err = error("gzip: invalid byte limit")
     }
@@ -53,7 +45,7 @@ func NewReader(source own io.Reader, compressedLimit int, outputLimit int) (Read
     return reader, err
 }
 
-func (r mut Reader) raw() (byte, error) {
+func (r mut input) raw() (byte, error) {
     var empty = 0
     for r.cursor == r.used {
         if r.pending != nil {
@@ -87,7 +79,7 @@ func (r mut Reader) raw() (byte, error) {
     return value, nil
 }
 
-func (r mut Reader) octet() (byte, error) {
+func (r mut input) octet() (byte, error) {
     let value, err = r.raw()
     if err == io.EOF {
         return 0, error("gzip: truncated stream")
@@ -95,50 +87,16 @@ func (r mut Reader) octet() (byte, error) {
     return value, err
 }
 
-func (r mut Reader) takeBits(count int) (int, error) {
-    for r.bitCount < count {
-        let value = r.octet()?
-        r.bits |= int(value) << r.bitCount
-        r.bitCount += 8
+func (r mut input) Read(buf mut []byte) (int, error) {
+    if buf.len() == 0 {
+        return 0, nil
     }
-    let value = r.bits & ((1 << count) - 1)
-    r.bits >>= count
-    r.bitCount -= count
-    return value, nil
-}
-
-func (r mut Reader) symbol(kind int) (int, error) {
-    var code = 0
-    var first = 0
-    var index = 0
-    for var length = 1; length <= 15; length += 1 {
-        let bit = r.takeBits(1)?
-        code |= bit
-        var count = 0
-        if kind == literalAlphabet {
-            count = r.literals.counts[length]
-        }
-        if kind == distanceAlphabet {
-            count = r.distances.counts[length]
-        }
-        if kind == codeAlphabet {
-            count = r.codes.counts[length]
-        }
-        if code >= first && code - first < count {
-            let position = index + code - first
-            if kind == distanceAlphabet {
-                return r.distances.symbols[position], nil
-            }
-            if kind == codeAlphabet {
-                return r.codes.symbols[position], nil
-            }
-            return r.literals.symbols[position], nil
-        }
-        index += count
-        first = (first + count) << 1
-        code <<= 1
+    let value, err = r.raw()
+    if err != nil {
+        return 0, err
     }
-    return 0, error("gzip: invalid Huffman code")
+    buf[0] = value
+    return 1, nil
 }
 
 func (r mut Reader) header(first byte) error {
@@ -149,7 +107,7 @@ func (r mut Reader) header(first byte) error {
     var crc = crcByte(4294967295, first)
     var head = Array<byte>{first}
     for var i = 1; i < 10; i += 1 {
-        let value = r.octet()?
+        let value = r.input.octet()?
         crc = crcByte(crc, value)
         head.push(value)
     }
@@ -158,19 +116,19 @@ func (r mut Reader) header(first byte) error {
         return error("gzip: invalid header")
     }
     if flags & 4 != 0 {
-        let low = r.octet()?
-        let high = r.octet()?
+        let low = r.input.octet()?
+        let high = r.input.octet()?
         crc = crcByte(crcByte(crc, low), high)
         let size = int(low) | (int(high) << 8)
         for var i = 0; i < size; i += 1 {
-            let value = r.octet()?
+            let value = r.input.octet()?
             crc = crcByte(crc, value)
         }
     }
     for flag in Array<int>{8, 16} {
         if flags & flag != 0 {
             for {
-                let value = r.octet()?
+                let value = r.input.octet()?
                 crc = crcByte(crc, value)
                 if value == 0 {
                     break
@@ -179,139 +137,29 @@ func (r mut Reader) header(first byte) error {
         }
     }
     if flags & 2 != 0 {
-        let low = r.octet()?
-        let high = r.octet()?
+        let low = r.input.octet()?
+        let high = r.input.octet()?
         if (int(low) | (int(high) << 8)) != ((crc ^ 4294967295) & 65535) {
             return error("gzip: header checksum mismatch")
         }
     }
+    r.decoder = flate.NewDecoder(MaxBytes, MaxBytes)?
     r.memberSize = 0
     r.crc = 4294967295
     r.phase = blockPhase
     return nil
 }
 
-func (r mut Reader) tables(fixed bool) error {
-    var lengths = Array<int>{}
-    var distances = Array<int>{}
-    if fixed {
-        for var i = 0; i < 288; i += 1 {
-            var length = 8
-            if i >= 144 {
-                length = 9
-            }
-            if i >= 256 {
-                length = 7
-            }
-            if i >= 280 {
-                length = 8
-            }
-            lengths.push(length)
-        }
-        for var i = 0; i < 32; i += 1 {
-            distances.push(5)
-        }
-    } else {
-        let literalBits = r.takeBits(5)?
-        let distanceBits = r.takeBits(5)?
-        let codeBits = r.takeBits(4)?
-        let literalCount = literalBits + 257
-        let distanceCount = distanceBits + 1
-        if literalCount > 286 {
-            return error("gzip: invalid literal count")
-        }
-        let order = Array<int>{16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 14, 1, 15}
-        var codeLengths = Array<int>{}
-        for var i = 0; i < 19; i += 1 {
-            codeLengths.push(0)
-        }
-        for var i = 0; i < codeBits + 4; i += 1 {
-            let length = r.takeBits(3)?
-            codeLengths[order[i]] = length
-        }
-        r.codes = makeAlphabet(codeLengths[:], 7, true)?
-        var all = Array<int>{}
-        for all.len() < literalCount + distanceCount {
-            let code = r.symbol(codeAlphabet)?
-            if code < 16 {
-                all.push(code)
-            } else {
-                var value = 0
-                var repeat = 0
-                if code == 16 {
-                    if all.len() == 0 {
-                        return error("gzip: invalid length repeat")
-                    }
-                    value = all[all.len() - 1]
-                    let extra = r.takeBits(2)?
-                    repeat = extra + 3
-                } else if code == 17 {
-                    let extra = r.takeBits(3)?
-                    repeat = extra + 3
-                } else {
-                    let extra = r.takeBits(7)?
-                    repeat = extra + 11
-                }
-                if repeat > literalCount + distanceCount - all.len() {
-                    return error("gzip: invalid length repeat")
-                }
-                for var i = 0; i < repeat; i += 1 {
-                    all.push(value)
-                }
-            }
-        }
-        for var i = 0; i < literalCount; i += 1 {
-            lengths.push(all[i])
-        }
-        for var i = literalCount; i < all.len(); i += 1 {
-            distances.push(all[i])
-        }
-        if lengths[256] == 0 {
-            return error("gzip: missing end code")
-        }
-    }
-    r.literals = makeAlphabet(lengths[:], 15, false)?
-    r.distances = makeAlphabet(distances[:], 15, false)?
-    return nil
-}
-
-func (r mut Reader) block() error {
-    let final = r.takeBits(1)?
-    r.finalBlock = final != 0
-    let kind = r.takeBits(2)?
-    if kind == 0 {
-        r.bits = 0
-        r.bitCount = 0
-        let low = r.octet()?
-        let high = r.octet()?
-        let invertedLow = r.octet()?
-        let invertedHigh = r.octet()?
-        r.remaining = int(low) | (int(high) << 8)
-        if (int(invertedLow) | (int(invertedHigh) << 8)) != (r.remaining ^ 65535) {
-            return error("gzip: invalid stored length")
-        }
-        r.phase = storedPhase
-    } else if kind == 1 || kind == 2 {
-        r.tables(kind == 1)?
-        r.phase = codesPhase
-    } else {
-        return error("gzip: reserved block type")
-    }
-    return nil
-}
-
 func (r mut Reader) little32() (int, error) {
     var value = 0
     for var i = 0; i < 4; i += 1 {
-        let octet = r.octet()?
+        let octet = r.input.octet()?
         value |= int(octet) << (i * 8)
     }
     return value, nil
 }
 
 func (r mut Reader) trailer() error {
-    r.bits = 0
-    r.bitCount = 0
     let crc = r.little32()?
     let size = r.little32()?
     if crc != (r.crc ^ 4294967295) {
@@ -327,7 +175,7 @@ func (r mut Reader) trailer() error {
 func (r mut Reader) next() (byte, error) {
     for {
         if r.phase == headerPhase {
-            let first, err = r.raw()
+            let first, err = r.input.raw()
             if err != nil {
                 if err == io.EOF && r.members == 0 {
                     return 0, error("gzip: truncated stream")
@@ -336,48 +184,15 @@ func (r mut Reader) next() (byte, error) {
             }
             r.header(first)?
         } else if r.phase == blockPhase {
-            r.block()?
-        } else if r.phase == storedPhase {
-            if r.remaining > 0 {
-                let value = r.octet()?
-                r.remaining -= 1
-                return value, nil
+            var buf = [byte; 1]{0}
+            let count, err = flate.Read(r.decoder, r.input, buf[:])
+            if err != nil && err != io.EOF {
+                return 0, err
             }
-            r.phase = blockPhase
-            if r.finalBlock {
-                r.phase = trailerPhase
+            if count > 0 {
+                return buf[0], nil
             }
-        } else if r.phase == codesPhase {
-            if r.remaining > 0 {
-                let value = r.history[(r.memberSize - r.distance) % windowSize]
-                r.remaining -= 1
-                return value, nil
-            }
-            let code = r.symbol(literalAlphabet)?
-            if code < 256 {
-                return byte(code), nil
-            }
-            if code == 256 {
-                r.phase = blockPhase
-                if r.finalBlock {
-                    r.phase = trailerPhase
-                }
-            } else {
-                if code > 285 {
-                    return 0, error("gzip: reserved length code")
-                }
-                let extra = r.takeBits(lengthExtra(code - 257))?
-                r.remaining = lengthBase(code - 257) + extra
-                let distanceCode = r.symbol(distanceAlphabet)?
-                if distanceCode > 29 {
-                    return 0, error("gzip: reserved distance code")
-                }
-                let extraDistance = r.takeBits(distanceExtra(distanceCode))?
-                r.distance = distanceBase(distanceCode) + extraDistance
-                if r.distance > r.memberSize || r.distance > windowSize {
-                    return 0, error("gzip: invalid back-reference")
-                }
-            }
+            r.phase = trailerPhase
         } else {
             r.trailer()?
         }
@@ -404,7 +219,6 @@ func (r mut Reader) Read(buf mut []byte) (int, error) {
         }
         buf[count] = value
         count += 1
-        r.history[r.memberSize % windowSize] = value
         r.memberSize += 1
         r.output += 1
         r.crc = crcByte(r.crc, value)

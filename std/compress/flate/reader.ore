@@ -1,0 +1,322 @@
+package flate
+
+import "std/io"
+
+const MaxBytes = 1073741824
+const windowSize = 32768
+const blockPhase = 1
+const storedPhase = 2
+const codesPhase = 3
+const donePhase = 4
+const literalAlphabet = 0
+const distanceAlphabet = 1
+const codeAlphabet = 2
+
+func validLimit(limit int) bool {
+    return limit >= 0 && limit <= MaxBytes
+}
+
+type Decoder struct {
+    inputLimit int
+    outputLimit int
+    input int
+    output int
+    history Array<byte>
+    memberSize int
+    bits int
+    bitCount int
+    phase int
+    finalBlock bool
+    remaining int
+    distance int
+    literals alphabet
+    distances alphabet
+    codes alphabet
+    pending error
+    err error
+}
+
+func NewDecoder(inputLimit int, outputLimit int) (Decoder, error) {
+    var decoder = Decoder{inputLimit: inputLimit, outputLimit: outputLimit, input: 0, output: 0, history: zeros(windowSize), memberSize: 0, bits: 0, bitCount: 0, phase: blockPhase, finalBlock: false, remaining: 0, distance: 0, literals: emptyAlphabet(), distances: emptyAlphabet(), codes: emptyAlphabet(), pending: nil, err: nil}
+    if !validLimit(inputLimit) || !validLimit(outputLimit) {
+        decoder.err = error("flate: invalid byte limit")
+    }
+    let err = decoder.err
+    return decoder, err
+}
+
+func (d Decoder) InputBytes() int {
+    return d.input
+}
+
+func (d Decoder) OutputBytes() int {
+    return d.output
+}
+
+func octet<R io.Reader>(r mut Decoder, source mut R) (byte, error) {
+    if r.pending != nil {
+        if r.pending == io.EOF {
+            return 0, error("flate: truncated stream")
+        }
+        return 0, r.pending
+    }
+    var buf = [byte; 1]{0}
+    for var empty = 0; empty < 100; empty += 1 {
+        let count, err = source.Read(buf[:])
+        if count < 0 || count > 1 {
+            _ = err;
+            return 0, error("flate: invalid read count")
+        }
+        r.pending = err
+        if count == 1 {
+            r.input += 1
+            if r.input > r.inputLimit {
+                return 0, error("flate: input byte limit exceeded")
+            }
+            if err != nil && err != io.EOF {
+                return 0, err
+            }
+            return buf[0], nil
+        }
+        if err == io.EOF {
+            return 0, error("flate: truncated stream")
+        }
+        if err != nil {
+            return 0, err
+        }
+    }
+    return 0, error("flate: no read progress")
+}
+
+func takeBits<R io.Reader>(r mut Decoder, source mut R, count int) (int, error) {
+    for r.bitCount < count {
+        let value = octet(r, source)?
+        r.bits |= int(value) << r.bitCount
+        r.bitCount += 8
+    }
+    let value = r.bits & ((1 << count) - 1)
+    r.bits >>= count
+    r.bitCount -= count
+    return value, nil
+}
+
+func symbol<R io.Reader>(r mut Decoder, source mut R, kind int) (int, error) {
+    var code = 0
+    var first = 0
+    var index = 0
+    for var length = 1; length <= 15; length += 1 {
+        let bit = takeBits(r, source, 1)?
+        code |= bit
+        var count = 0
+        if kind == literalAlphabet {
+            count = r.literals.counts[length]
+        }
+        if kind == distanceAlphabet {
+            count = r.distances.counts[length]
+        }
+        if kind == codeAlphabet {
+            count = r.codes.counts[length]
+        }
+        if code >= first && code - first < count {
+            let position = index + code - first
+            if kind == distanceAlphabet {
+                return r.distances.symbols[position], nil
+            }
+            if kind == codeAlphabet {
+                return r.codes.symbols[position], nil
+            }
+            return r.literals.symbols[position], nil
+        }
+        index += count
+        first = (first + count) << 1
+        code <<= 1
+    }
+    return 0, error("flate: invalid Huffman code")
+}
+
+func tables<R io.Reader>(r mut Decoder, source mut R, fixed bool) error {
+    var lengths = Array<int>{}
+    var distances = Array<int>{}
+    if fixed {
+        for var i = 0; i < 288; i += 1 {
+            var length = 8
+            if i >= 144 {
+                length = 9
+            }
+            if i >= 256 {
+                length = 7
+            }
+            if i >= 280 {
+                length = 8
+            }
+            lengths.push(length)
+        }
+        for var i = 0; i < 32; i += 1 {
+            distances.push(5)
+        }
+    } else {
+        let literalBits = takeBits(r, source, 5)?
+        let distanceBits = takeBits(r, source, 5)?
+        let codeBits = takeBits(r, source, 4)?
+        let literalCount = literalBits + 257
+        let distanceCount = distanceBits + 1
+        if literalCount > 286 {
+            return error("flate: invalid literal count")
+        }
+        let order = Array<int>{16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 14, 1, 15}
+        var codeLengths = Array<int>{}
+        for var i = 0; i < 19; i += 1 {
+            codeLengths.push(0)
+        }
+        for var i = 0; i < codeBits + 4; i += 1 {
+            let length = takeBits(r, source, 3)?
+            codeLengths[order[i]] = length
+        }
+        r.codes = makeAlphabet(codeLengths[:], 7, true)?
+        var all = Array<int>{}
+        for all.len() < literalCount + distanceCount {
+            let code = symbol(r, source, codeAlphabet)?
+            if code < 16 {
+                all.push(code)
+            } else {
+                var value = 0
+                var repeat = 0
+                if code == 16 {
+                    if all.len() == 0 {
+                        return error("flate: invalid length repeat")
+                    }
+                    value = all[all.len() - 1]
+                    let extra = takeBits(r, source, 2)?
+                    repeat = extra + 3
+                } else if code == 17 {
+                    let extra = takeBits(r, source, 3)?
+                    repeat = extra + 3
+                } else {
+                    let extra = takeBits(r, source, 7)?
+                    repeat = extra + 11
+                }
+                if repeat > literalCount + distanceCount - all.len() {
+                    return error("flate: invalid length repeat")
+                }
+                for var i = 0; i < repeat; i += 1 {
+                    all.push(value)
+                }
+            }
+        }
+        for var i = 0; i < literalCount; i += 1 {
+            lengths.push(all[i])
+        }
+        for var i = literalCount; i < all.len(); i += 1 {
+            distances.push(all[i])
+        }
+        if lengths[256] == 0 {
+            return error("flate: missing end code")
+        }
+    }
+    r.literals = makeAlphabet(lengths[:], 15, false)?
+    r.distances = makeAlphabet(distances[:], 15, false)?
+    return nil
+}
+
+func block<R io.Reader>(r mut Decoder, source mut R) error {
+    let final = takeBits(r, source, 1)?
+    r.finalBlock = final != 0
+    let kind = takeBits(r, source, 2)?
+    if kind == 0 {
+        r.bits = 0
+        r.bitCount = 0
+        let low = octet(r, source)?
+        let high = octet(r, source)?
+        let invertedLow = octet(r, source)?
+        let invertedHigh = octet(r, source)?
+        r.remaining = int(low) | (int(high) << 8)
+        if (int(invertedLow) | (int(invertedHigh) << 8)) != (r.remaining ^ 65535) {
+            return error("flate: invalid stored length")
+        }
+        r.phase = storedPhase
+    } else if kind == 1 || kind == 2 {
+        tables(r, source, kind == 1)?
+        r.phase = codesPhase
+    } else {
+        return error("flate: reserved block type")
+    }
+    return nil
+}
+
+func next<R io.Reader>(r mut Decoder, source mut R) (byte, error) {
+    for {
+        if r.phase == blockPhase {
+            block(r, source)?
+        } else if r.phase == storedPhase {
+            if r.remaining > 0 {
+                let value = octet(r, source)?
+                r.remaining -= 1
+                return value, nil
+            }
+            r.phase = blockPhase
+            if r.finalBlock {
+                r.phase = donePhase
+            }
+        } else if r.phase == codesPhase {
+            if r.remaining > 0 {
+                let value = r.history[(r.memberSize - r.distance) % windowSize]
+                r.remaining -= 1
+                return value, nil
+            }
+            let code = symbol(r, source, literalAlphabet)?
+            if code < 256 {
+                return byte(code), nil
+            }
+            if code == 256 {
+                r.phase = blockPhase
+                if r.finalBlock {
+                    r.phase = donePhase
+                }
+            } else {
+                if code > 285 {
+                    return 0, error("flate: reserved length code")
+                }
+                let extra = takeBits(r, source, lengthExtra(code - 257))?
+                r.remaining = lengthBase(code - 257) + extra
+                let distanceCode = symbol(r, source, distanceAlphabet)?
+                if distanceCode > 29 {
+                    return 0, error("flate: reserved distance code")
+                }
+                let extraDistance = takeBits(r, source, distanceExtra(distanceCode))?
+                r.distance = distanceBase(distanceCode) + extraDistance
+                if r.distance > r.memberSize || r.distance > windowSize {
+                    return 0, error("flate: invalid back-reference")
+                }
+            }
+        } else {
+            return 0, io.EOF
+        }
+    }
+}
+
+func Read<R io.Reader>(r mut Decoder, source mut R, buf mut []byte) (int, error) {
+    if buf.len() == 0 {
+        return 0, nil
+    }
+    if r.err != nil {
+        return 0, r.err
+    }
+    var count = 0
+    for count < buf.len() {
+        let value, err = next(r, source)
+        if err != nil {
+            r.err = err
+            return count, err
+        }
+        if r.output == r.outputLimit {
+            r.err = error("flate: output byte limit exceeded")
+            return count, r.err
+        }
+        buf[count] = value
+        count += 1
+        r.history[r.memberSize % windowSize] = value
+        r.memberSize += 1
+        r.output += 1
+    }
+    return count, nil
+}

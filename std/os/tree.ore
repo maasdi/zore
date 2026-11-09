@@ -1,0 +1,104 @@
+package os
+
+import "std/errors"
+import "std/path"
+
+type StagedTree struct {
+    id int
+    err error
+}
+
+func StageTree(destination string, nodeLimit int) (StagedTree, error) {
+    if nodeLimit < 0 || nodeLimit > 65534 || !path.IsLocal(baseName(destination)) {
+        let err = error("os.StageTree: invalid destination or node limit")
+        return StagedTree{id: 0, err: err}, err
+    }
+    let id, err = treeStage(destination, nodeLimit)
+    return StagedTree{id: id, err: err}, err
+}
+
+func localTreeName(name string) bool {
+    if name.len() > 1024 || !path.IsLocal(name) {
+        return false
+    }
+    var depth = 1
+    for var i = 0; i < name.len(); i += 1 {
+        if name[i] == 47 {
+            depth += 1
+        }
+    }
+    return depth <= 64
+}
+
+func (t mut StagedTree) Mkdir(name string) error {
+    if t.err == nil {
+        if !localTreeName(name) {
+            t.err = error("os.StagedTree: invalid local name")
+        } else {
+            t.err = treeMkdir(t.id, name)
+        }
+    }
+    return t.err
+}
+
+func (t mut StagedTree) Create(name string) error {
+    if t.err == nil {
+        if !localTreeName(name) {
+            t.err = error("os.StagedTree: invalid local name")
+        } else {
+            t.err = treeCreate(t.id, name)
+        }
+    }
+    return t.err
+}
+
+func (t mut StagedTree) Write(data []byte) (int, error) {
+    if t.err != nil {
+        return 0, t.err
+    }
+    let count, err = treeWrite(t.id, data)
+    t.err = err
+    return count, err
+}
+
+func (t mut StagedTree) FinishFile() error {
+    if t.err == nil {
+        t.err = treeFinishFile(t.id)
+    }
+    return t.err
+}
+
+func (t own StagedTree) Commit() error {
+    if t.err != nil {
+        let cleanup = treeAbort(t.id)
+        if cleanup != nil {
+            return errors.Wrap(t.err, "staging cleanup failed: " + errors.Message(cleanup))
+        }
+        return t.err
+    }
+    return treeCommit(t.id)
+}
+
+func (t own StagedTree) Abort() error {
+    return treeAbort(t.id)
+}
+
+func (t mut StagedTree) drop() {
+    treeDrop(t.id)
+}
+
+func treeStage(destination string, nodeLimit int) (int, error)
+
+func treeMkdir(id int, name string) error
+
+func treeCreate(id int, name string) error
+
+func treeWrite(id int, data []byte) (int, error)
+
+func treeFinishFile(id int) error
+
+func treeCommit(id int) error
+
+func treeAbort(id int) error
+
+func treeDrop(id int)

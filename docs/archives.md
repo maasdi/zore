@@ -1,11 +1,11 @@
 # Archive I/O
 
-`std/archive` reads and writes canonical USTAR and classic stored ZIP archives.
+`std/archive` reads and writes canonical USTAR and classic ZIP archives with stored or DEFLATE payloads.
 Both formats support regular files and directories. Archive operations work
-through I/O interfaces and never open entry paths or extract files.
+through I/O interfaces. Explicit extraction functions stage a new destination.
 
-ZIP DEFLATE, ZIP64, encryption, links and special nodes, GNU/PAX/sparse TAR
-extensions and filesystem extraction are follow-ups to
+ZIP64, encryption, links and special nodes, GNU/PAX/sparse TAR
+extensions and Windows extraction are follow-ups to
 [#224](https://github.com/maasdi/zore/issues/224). Unsupported forms return errors.
 
 The shared `Header` contains `Name string`, `Size int`, and `Directory bool`.
@@ -39,7 +39,7 @@ a prior terminal failure; it never drains unread input.
 
 ZIP entries must be contiguous from offset 0, in central-directory order. Extra
 unindexed local records, prefixes, gaps, overlaps and split archives fail.
-Stored entries may use signed or unsigned data descriptors. Names without the
+Stored and DEFLATE entries may use signed or unsigned data descriptors. Names without the
 UTF-8 flag must be ASCII; CP437 is outside this slice. Well-formed opaque extra
 fields and comments are bounded and ignored; ZIP64 fields and ambiguous end
 records fail. USTAR requires canonical markers, octal fields, two zero end
@@ -109,7 +109,7 @@ func main() {
 ```
 
 Writer output is deterministic. USTAR uses uid/gid/mtime 0 and file/directory
-modes 0644/0755; ZIP uses stored payloads, UTF-8 names, the DOS epoch, signed data
+modes 0644/0755; ZIP uses stored payloads by default, UTF-8 names, the DOS epoch, signed data
 descriptors and no archive comment. No permissions, ownership, timestamps or
 other archive metadata are applied to the filesystem.
 
@@ -136,3 +136,56 @@ inline; underlying I/O retains ordinary plain/async behavior.
 
 See the [conformance map](../tests/conformance/archives.md) and
 [remaining archive design](design/archives.md).
+
+## ZIP DEFLATE
+
+`writer.WriteHeaderWith(header, archive.Deflate)` selects DEFLATE for that
+entry; `archive.Store` or ordinary `WriteHeader` selects stored bytes. Write
+exactly `header.Size` uncompressed bytes and explicitly finalize. Compression
+may expand input, so allow archive overhead. Writes count accepted input,
+including a chunk accepted before a compressed sink error.
+
+ZIP readers accept both methods automatically. They validate the raw stream
+terminator, exact compressed and uncompressed sizes, and CRC32, including on
+Skip. Declared size alone does not establish a valid stream.
+
+`std/compress/flate` contains the shared raw codec used by gzip and ZIP. Its
+Move Decoder/Encoder states borrow concrete sources/sinks through generic
+`Read`, `Write`, and `Finish` functions. Supply one continuous logical stream
+for each state. Raw decoding consumes no framing byte after the final block;
+raw encoding requires Finish and never finalizes on drop.
+
+## Extracting a new directory
+
+`archive.ExtractZIP(source, destination, archiveLimit, dataLimit, entryLimit)`
+owns an `io.ReadSeeker`; `ExtractTAR` owns an `io.Reader`. For compressed TAR,
+pass a gzip reader to ExtractTAR. Limits are validated before filesystem work.
+
+The destination must be new and have a portable basename. Its existing parent
+path must contain no symlinks or `..`. The provider creates a private sibling
+envelope, streams the whole archive into it, validates all entries and the
+archive end, then atomically publishes without replacing an existing target.
+A destination appearing during extraction makes publication fail. Errors abort
+staging; cleanup failures include the original error. A renamed parent remains
+anchored by its open handle, so operations cannot follow a replacement path.
+
+Duplicate explicit names, case aliases, host-equivalent aliases, file/directory
+conflicts, links and special nodes fail. An explicit directory may follow its
+same-spelling implicit creation once. Files and implicit directories all count
+toward entryLimit; paths have at most 64 components. Files use mode 0600 and
+directories 0700; archive modes, ownership, times and executable bits are ignored.
+
+Extraction is implemented on Linux and macOS. Windows returns an explicit
+unsupported error until a handle-relative provider is verified. Filesystems
+without required no-follow/atomic no-replace operations also fail closed.
+Staging directories are private against other users; mutation by the process
+owner or privileged users is outside this protection. Normal error/panic/drop
+paths clean up; a crash may leave private staging. Publication makes no crash
+persistence guarantee. A cleanup error after publication explicitly reports
+that the validated tree was published; it does not remove that tree.
+
+`std/os.StageTree` exposes the lower filesystem primitive separately: Mkdir,
+Create, Write, FinishFile, and consuming Commit/Abort. Only one file is active;
+finish it before Commit. It implements io.Writer without exposing a file handle
+that could outlive the transaction. Drop aborts best-effort. Native operations
+use helper waits and support plain and async callers.

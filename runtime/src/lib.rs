@@ -55,6 +55,8 @@ pub mod scheduler;
 mod signal;
 #[path = "slot.rs"]
 mod slot;
+mod staged_tree;
+mod staged_tree_unix;
 #[path = "strconv.rs"]
 mod strconv;
 #[path = "string.rs"]
@@ -79,7 +81,7 @@ pub fn finish() {
         eprintln!("leak: signal subscriptions still alive at exit");
         std::process::exit(70);
     }
-    if native::live_resources() + regexp::live_handles() > 0
+    if native::live_resources() + regexp::live_handles() + staged_tree::live_handles() > 0
         && !tasks_running
         && std::env::var_os("ZORE_CHECK_LEAKS").is_some()
     {

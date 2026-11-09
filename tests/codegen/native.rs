@@ -1,6 +1,7 @@
 //! Requires clang (LLVM 15+) and rustc 1.98+; a missing toolchain fails rather than skips.
 
 mod archive;
+mod archive_followup;
 mod async_callables;
 mod async_scopes;
 #[path = "../hardening/process.rs"]

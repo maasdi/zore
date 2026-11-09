@@ -72,6 +72,8 @@ jobs:
         run: python tests/hardening/gzip_oracle.py
       - name: Archive interoperability oracle
         run: python tests/hardening/archive_oracle.py
+      - name: Extraction interoperability and rollback oracle
+        run: python tests/hardening/extraction_oracle.py
       - name: Python harness tests
         shell: bash
         run: |

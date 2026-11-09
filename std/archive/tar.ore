@@ -330,8 +330,7 @@ func (r own TARReader) Close() error {
 }
 
 type TARWriter<W io.Writer> struct {
-    sink W
-    output outputState
+    output output<W>
     record Array<byte>
     dataLimit int
     entryLimit int
@@ -345,7 +344,7 @@ type TARWriter<W io.Writer> struct {
 }
 
 func NewTARWriter<W io.Writer>(sink own W, archiveLimit int, dataLimit int, entryLimit int) (TARWriter<W>, error) {
-    var writer = TARWriter<W>{sink: sink, record: zeros(tarRecord), output: outputState{limit: archiveLimit, count: 0}, dataLimit: dataLimit, entryLimit: entryLimit, declared: 0, entries: 0, remaining: 0, padding: 0, active: false, finished: false, err: nil}
+    var writer = TARWriter<W>{record: zeros(tarRecord), output: output<W>{sink: sink, limit: archiveLimit, count: 0}, dataLimit: dataLimit, entryLimit: entryLimit, declared: 0, entries: 0, remaining: 0, padding: 0, active: false, finished: false, err: nil}
     if !validLimits(archiveLimit, dataLimit, entryLimit) {
         writer.err = error("archive: invalid limit")
     }
@@ -359,7 +358,7 @@ func (w mut TARWriter<W>) finishEntry() error {
     }
     if w.active {
         w.record = zeros(tarRecord)
-        let _, err = writeAll(w.output, w.sink, w.record[:w.padding])
+        let _, err = w.output.Write(w.record[:w.padding])
         if err != nil {
             return err
         }
@@ -378,7 +377,7 @@ func (w mut TARWriter<W>) start(header Header) error {
     }
     w.finishEntry()?
     w.record = block
-    let _, err = writeAll(w.output, w.sink, w.record[:])
+    let _, err = w.output.Write(w.record[:])
     if err != nil {
         return err
     }
@@ -415,7 +414,7 @@ func (w mut TARWriter<W>) Write(data []byte) (int, error) {
         w.err = error("archive: entry size exceeded");
         return 0, w.err
     }
-    let count, err = writeAll(w.output, w.sink, data)
+    let count, err = w.output.Write(data)
     w.remaining -= count
     w.err = err
     return count, err
@@ -434,7 +433,7 @@ func (w mut TARWriter<W>) Finish() error {
     }
     w.record = zeros(tarRecord)
     for var i = 0; i < 2; i += 1 {
-        let _, err = writeAll(w.output, w.sink, w.record[:])
+        let _, err = w.output.Write(w.record[:])
         if err != nil {
             w.err = err;
             return err
@@ -452,5 +451,5 @@ func (w own TARWriter<W>) Close() error {
 func (w own TARWriter<W>) Sink() (W, error) {
     var writer = w
     let err = writer.Finish()
-    return writer.sink, err
+    return writer.output.sink, err
 }

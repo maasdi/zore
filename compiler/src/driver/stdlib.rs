@@ -9,9 +9,10 @@ macro_rules! bundled {
 }
 
 bundled! {
-    "archive" => ["archive.ore", "tar.ore", "zip.ore"],
+    "archive" => ["archive.ore", "extract.ore", "tar.ore", "zip.ore"],
     "bufio" => ["bufio.ore"],
     "bytes" => ["bytes.ore", "buffer.ore"],
+    "compress/flate" => ["deflate.ore", "reader.ore", "writer.ore"],
     "compress/gzip" => ["deflate.ore", "reader.ore", "writer.ore"],
     "context" => ["context.ore"],
     "crypto/hmac" => ["hmac.ore"],
@@ -38,7 +39,7 @@ bundled! {
     "net" => ["net.ore"],
     "net/url" => ["url.ore", "absolute.ore"],
     "net/http" => ["header.ore", "cookie.ore", "form.ore", "file.ore", "multipart.ore", "router.ore", "exchange.ore", "server.ore", "convenience.ore", "client.ore"],
-    "os" => ["os.ore", "file.ore", "temp.ore"],
+    "os" => ["os.ore", "file.ore", "temp.ore", "tree.ore"],
     "os/exec" => ["exec.ore"],
     "os/signal" => ["signal.ore"],
     "path" => ["path.ore"],

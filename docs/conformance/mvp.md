@@ -232,3 +232,8 @@ ownership checks and independent tarfile/zipfile/gzip fixtures are mapped in
 [archive conformance](../../tests/conformance/archives.md). A generic method
 symbol collision discovered by the two writer types has a direct native
 regression. Extended formats and extraction remain deferred under Q15.
+
+Spec §§37.28–37.29 add a shared raw-DEFLATE codec, ZIP method 8 and confined
+new-directory extraction on Linux/macOS. Python gzip/archive/extraction
+oracles and native ownership, boundary, race and cleanup tests provide evidence.
+Windows extraction deliberately returns unsupported; it has no weaker fallback.

@@ -11443,11 +11443,13 @@ Conformance includes published vectors and chunked/native equivalence.
 
 ## 37.27 Bounded archive I/O — LOCKED
 
-`std/archive` owns USTAR and classic stored ZIP framing and entry policy. It
-imports lower-level `io`, `strings`, `unicode`, `encoding/binary` and `hash/crc32`; it never opens paths or
-extracts files. The first slice supports regular files and directory entries.
-ZIP DEFLATE/ZIP64/encryption, links, special nodes, GNU/PAX/sparse TAR extensions
-and extraction remain follow-ups to #224. Unsupported input fails explicitly.
+`std/archive` owns USTAR and classic ZIP framing and entry policy. It imports
+`io`, `strings`, `path`, `encoding/binary`, `hash/crc32` and `compress/flate`.
+Its explicit extraction functions additionally use `os` and `errors`. Reader
+and writer constructors have no filesystem effects. Regular files and
+directories are supported; method 8 and confined extraction are locked below.
+ZIP64/encryption, links, special nodes and GNU/PAX/sparse TAR extensions remain
+excluded. Unsupported input fails explicitly.
 
 ### Metadata and limits
 
@@ -11460,7 +11462,7 @@ Unicode control characters, trailing component dots or
 spaces, and Windows reserved device components (case insensitive, including
 extensions). It is syntax validation, not a promise of race-safe extraction.
 Duplicate names may be enumerated/written; collision/overwrite policy belongs to
-an explicit future extraction API. Metadata is owned; it contains no borrowed
+the explicit extraction API below. Metadata is owned; it contains no borrowed
 view into an archive or its reader.
 
 The package exports `MaxBytes = 1073741824`, `MaxEntries = 65534`,
@@ -11528,7 +11530,7 @@ gid and mtime 0; modes 0644 for files and 0755 for directories. TAR has no data
 checksum; header validation cannot establish payload integrity.
 
 ZIP initialization validates EOCD and central-directory offsets/counts/lengths
-within the complete source. It accepts stored method 0, ASCII names without the
+within the complete source. It accepts stored method 0 and DEFLATE method 8, ASCII names without the
 UTF-8 flag and UTF-8 names with it, plus signed/unsigned data descriptors. Local
 headers, CRC32 and sizes must agree with the central directory. Unsupported
 flags, ZIP64 extras, split disks, symlinks and special nodes fail. Extra-field
@@ -11538,7 +11540,8 @@ order; prefixes, overlapping entries, gaps and extra unindexed local records
 fail. The central directory must end exactly at EOCD; archive comments end at
 source EOF. Multiple structurally plausible EOCD records are rejected as
 ambiguous. These restrictions reject ambiguous layouts explicitly.
-Writers emit UTF-8 names, method 0, signed descriptors, a central directory and
+Writers emit UTF-8 names, method 0 by default or explicitly selected method 8,
+signed descriptors, a central directory and
 EOCD with no comment; timestamps are the DOS epoch and permissions are not
 restored. CRC32 is validated only when entry EOF/Next finalization is reached.
 Output before that is unverified partial data.
@@ -11566,7 +11569,8 @@ func firstFile(path string) (Array<byte>, bool, error) {
 
 Compiler impact: bundle ordinary Zore sources, add the combined `io.ReadSeeker`
 interface and CRC32 primitive, preserve receiver identity in generic method
-symbols, and reuse existing ownership/interface/error/array semantics. No syntax, runtime ABI, dependencies or filesystem authority is added.
+symbols, and reuse existing ownership/interface/error/array semantics. No syntax or dependency is added; the explicit extraction provider below adds
+confined filesystem authority.
 Conformance includes external tarfile/zipfile interoperability, malformed and
 truncated structures, exact limits, partial I/O, lifecycle cleanup, explicit
 unsupported variants, ownership rejection and async endpoint composition.
@@ -11675,7 +11679,8 @@ it does not redirect operations into a replacement path. Abort removes only
 tracked children relative to anchored handles and never follows links; hostile
 owner mutation may cause explicit cleanup failure. Drop aborts best-effort;
 forced process termination/crash may leave private staging. Publication is not
-a crash-durability guarantee. Native operations are helper waits; cleanup on
+a crash-durability guarantee. Once publication succeeds, a later envelope
+cleanup error explicitly says the tree was published; it cannot undo publication. Native operations are helper waits; cleanup on
 normal/error/panic paths follows ordinary Move drop rules.
 
 `archive.ExtractTAR(source own io.Reader, destination string, archiveLimit int,

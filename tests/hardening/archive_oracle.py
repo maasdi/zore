@@ -11,6 +11,7 @@ import subprocess
 import tarfile
 import tempfile
 import zipfile
+import zlib
 
 
 PROGRAM = '''package main
@@ -94,6 +95,13 @@ func run() error {
     }
     var writer = archive.NewZIPWriter(sink, archiveLimit, dataLimit, entryLimit)?
     if args[1] == "wz" { emit(writer, data[:], args[7])? }
+    if args[1] == "wzd" {
+        writer.WriteHeaderWith(archive.Header{Name: "dir/", Size: 0, Directory: true}, archive.Deflate)?
+        writer.WriteHeaderWith(archive.Header{Name: args[7], Size: data.len(), Directory: false}, archive.Deflate)?
+        let count, err = writer.Write(data[:]); if err != nil { return err }
+        if count != data.len() { return error("short deflated write") }
+        writer.WriteHeaderWith(archive.Header{Name: "empty", Size: 0, Directory: false}, archive.Deflate)?
+    }
     return writer.Close()
 }
 func main() {
@@ -181,6 +189,15 @@ def unsigned_descriptor(data):
     return bytes(result)
 
 
+def raw_zip(payload, raw, flags=0, declared=None):
+    size = len(payload) if declared is None else declared
+    crc = binascii.crc32(payload)
+    local = struct.pack('<IHHHHHIIIHH', 0x04034b50, 20, flags, 8, 0, 33, crc, len(raw), size, 3, 0) + b'abc' + raw
+    central = struct.pack('<IHHHHHHIIIHHHHHII', 0x02014b50, 20, 20, flags, 8, 0, 33, crc, len(raw), size, 3, 0, 0, 0, 0, 0, 0) + b'abc'
+    end = struct.pack('<IHHHHIIH', 0x06054b50, 0, 0, 1, 1, len(central), len(local), 0)
+    return local + central + end
+
+
 def main():
     root = Path(__file__).resolve().parents[2]
     compiler = root / 'target' / 'debug' / ('zore.exe' if os.name == 'nt' else 'zore')
@@ -222,7 +239,9 @@ def main():
             entries = [('dir/', b''), ('dir/é.txt', payload), ('empty', b'')]
             expected = [(name, len(data), name.endswith('/')) for name, data in entries]
             for mode, encoded in [('rt', tar_bytes(entries)), ('rz', zip_bytes(entries)),
-                                  ('rz', zip_bytes(entries, streamed=True))]:
+                                  ('rz', zip_bytes(entries, streamed=True)),
+                                  ('rz', zip_bytes(entries, compression=zipfile.ZIP_DEFLATED)),
+                                  ('rz', zip_bytes(entries, streamed=True, compression=zipfile.ZIP_DEFLATED))]:
                 actual, headers = run(mode, encoded, archive_limit=len(encoded),
                                       data_limit=len(payload), entry_limit=3)
                 assert actual == payload and headers == expected, (mode, headers)
@@ -250,6 +269,12 @@ def main():
                 assert archive.read('dir/é.txt') == payload
                 assert archive.testzip() is None
             assert run('rz', encoded, archive_limit=len(encoded))[0] == payload
+            deflated, _ = run('wzd', payload, data_limit=len(payload), entry_limit=3)
+            with zipfile.ZipFile(io.BytesIO(deflated)) as archive:
+                assert all(member.compress_type == zipfile.ZIP_DEFLATED for member in archive.infolist())
+                assert archive.read('dir/é.txt') == payload
+                assert archive.testzip() is None
+            assert run('rz', deflated, archive_limit=len(deflated))[0] == payload
             for mode in ['wt', 'wz']:
                 run(mode, payload, valid=False, entry_limit=2)
                 if payload:
@@ -329,7 +354,7 @@ def main():
             run('rz', corrupt, valid=False)
         run('rz', encoded + b'garbage', valid=False)
         run('rz', b'prefix' + encoded, valid=False)
-        run('rz', zip_bytes([('abc', b'payload')], compression=zipfile.ZIP_DEFLATED), valid=False)
+        assert run('rz', zip_bytes([('abc', b'payload')], compression=zipfile.ZIP_DEFLATED))[0] == b'payload'
         commented = zip_bytes([('abc', b'payload')], comment=b'bounded comment')
         assert run('rz', commented)[0] == b'payload'
         false_marker_comment = zip_bytes([('abc', b'payload')], comment=b'commentPK\x05\x06' + b'\0' * 18)
@@ -362,6 +387,28 @@ def main():
         run('wz', b'', valid=False, name='x' * 1025)
         run('wt', b'', valid=False, name='')
         run('wz', b'', valid=False, name='')
+        for payload in [b'', b'hello deflate', b'a' * 100000, rng.randbytes(40000)]:
+            for level, strategy in [(0, zlib.Z_DEFAULT_STRATEGY), (6, zlib.Z_FIXED), (9, zlib.Z_DEFAULT_STRATEGY)]:
+                compressor = zlib.compressobj(level, zlib.DEFLATED, -15, strategy=strategy)
+                raw = compressor.compress(payload) + compressor.flush()
+                encoded = raw_zip(payload, raw)
+                assert run('rz', encoded)[0] == payload
+                for hints in [2, 4, 6]:
+                    assert run('rz', raw_zip(payload, raw, flags=hints))[0] == payload
+                run('rz', raw_zip(payload, raw + b'x'), valid=False)
+                run('rz', raw_zip(payload, raw[:-1]), valid=False)
+                if payload:
+                    run('rz', raw_zip(payload, raw, declared=len(payload) - 1), valid=False)
+                    run('rz', raw_zip(payload, raw, declared=len(payload) + 1), valid=False)
+                    run('rz', encoded, valid=False, data_limit=len(payload) - 1)
+            streamed = zip_bytes([('abc', payload)], streamed=True, compression=zipfile.ZIP_DEFLATED)
+            assert run('rz', unsigned_descriptor(streamed))[0] == payload
+        for raw in [b'', b'\x07', b'\x03', b'\x01\x01\x00\x00\x00x']:
+            run('rz', raw_zip(b'', raw), valid=False)
+        run('rz', raw_zip(b'', b'\x03\x00', flags=1), valid=False)
+        mismatch = bytearray(raw_zip(b'', b'\x03\x00'))
+        struct.pack_into('<H', mismatch, 8, 0)
+        run('rz', mismatch, valid=False)
         print(f'archive interoperability: {checked} cases passed')
 
 

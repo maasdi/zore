@@ -17,7 +17,7 @@ pub unsafe extern "C" fn zore_native_rand_secure_read(out: *mut ByteArrayError, 
     unsafe { out.write(ByteArrayError::from_bytes(result)) };
 }
 
-fn random_bytes(size: usize) -> Result<Vec<u8>, String> {
+pub(crate) fn random_bytes(size: usize) -> Result<Vec<u8>, String> {
     let mut buffer = vec![0u8; size];
     fill(&mut buffer)
         .map(|()| buffer)

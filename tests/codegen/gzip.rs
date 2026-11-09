@@ -175,7 +175,7 @@ fn gzip_sink_errors_are_sticky_and_constructor_failures_release_ownership() {
     check(finishErr == error("gzip: compressed byte limit exceeded"), "trailer limit")
     check(compressed.Close() == finishErr, "sticky trailer failure")
     let partial, _ = done.receive()
-    check(partial == 10, "partial external output retained")
+    check(partial == 12, "raw DEFLATE prefix retained before trailer limit")
     println("ok")
 }
 "#,

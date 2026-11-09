@@ -1,6 +1,7 @@
 package archive
 
 import "std/hash/crc32"
+import "std/compress/flate"
 import "std/io"
 import "std/strings"
 
@@ -11,7 +12,14 @@ const zipDescriptor = 0x08074b50
 const zipUTF8 = 0x0800
 const zipStreamed = 0x0008
 
+type Compression int
+
+const Store Compression = 0
+const Deflate Compression = 8
+
 type zipEntry struct {
+    method int
+    compressed int
     header Header
     crc uint32
     flags int
@@ -19,10 +27,14 @@ type zipEntry struct {
 }
 
 func zipFlags(flags int, method int, version int) error {
-    if method != 0 {
+    if method != 0 && method != 8 {
         return error("archive: unsupported ZIP compression method")
     }
-    if flags & (65535 ^ (zipUTF8 | zipStreamed)) != 0 {
+    var allowed = zipUTF8 | zipStreamed
+    if method == 8 {
+        allowed |= 6
+    }
+    if flags & (65535 ^ allowed) != 0 {
         return error("archive: unsupported ZIP flags")
     }
     if version > 20 {
@@ -74,7 +86,8 @@ func seekTo(source mut io.ReadSeeker, offset int) error {
 }
 
 type ZIPReader struct {
-    source io.ReadSeeker
+    source zipInput
+    decoder flate.Decoder
     archiveLimit int
     dataLimit int
     entryLimit int
@@ -91,7 +104,8 @@ type ZIPReader struct {
 }
 
 func NewZIPReader(source own io.ReadSeeker, archiveLimit int, dataLimit int, entryLimit int) (ZIPReader, error) {
-    var reader = ZIPReader{source: source, archiveLimit: archiveLimit, dataLimit: dataLimit, entryLimit: entryLimit, entries: Array<zipEntry>{}, cursor: 0, remaining: 0, crc: 0, nextOffset: 0, centralOffset: 0, active: false, initialized: false, ended: false, err: nil}
+    let decoder, _ = flate.NewDecoder(0, 0)
+    var reader = ZIPReader{source: zipInput{source: source, remaining: 0, framed: false, chunk: zeros(4096), cursor: 0, used: 0, pending: nil}, decoder: decoder, archiveLimit: archiveLimit, dataLimit: dataLimit, entryLimit: entryLimit, entries: Array<zipEntry>{}, cursor: 0, remaining: 0, crc: 0, nextOffset: 0, centralOffset: 0, active: false, initialized: false, ended: false, err: nil}
     if !validLimits(archiveLimit, dataLimit, entryLimit) {
         reader.err = error("archive: invalid limit")
     }
@@ -180,7 +194,7 @@ func (r mut ZIPReader) initialize() error {
         if compressed == 4294967295 || size == 4294967295 || offset == 4294967295 {
             return error("archive: ZIP64 is unsupported")
         }
-        if compressed != size {
+        if u16(record[:], 10) == 0 && compressed != size {
             return error("archive: stored ZIP size mismatch")
         }
         let nameSize = u16(record[:], 28)
@@ -225,7 +239,7 @@ func (r mut ZIPReader) initialize() error {
         if offset >= r.centralOffset {
             return error("archive: invalid ZIP local offset")
         }
-        r.entries.push(zipEntry{header: header, crc: crc, flags: flags, offset: offset})
+        r.entries.push(zipEntry{method: u16(record[:], 10), compressed: compressed, header: header, crc: crc, flags: flags, offset: offset})
     }
     if used != centralSize {
         return error("archive: ZIP directory size mismatch")
@@ -242,6 +256,20 @@ func (r mut ZIPReader) finishEntry() error {
         return nil
     }
     let entry = r.entries[r.cursor - 1]
+    if entry.method == 8 {
+        var probe = [byte; 1]{0}
+        let count, err = flate.Read(r.decoder, r.source, probe[:])
+        if err != io.EOF {
+            if err != nil {
+                return err
+            };
+            return error("archive: excess ZIP output")
+        }
+        if count != 0 || r.decoder.InputBytes() != entry.compressed || r.decoder.OutputBytes() != entry.header.Size {
+            return error("archive: ZIP DEFLATE size mismatch")
+        }
+        r.source.framed = false
+    }
     if r.crc != entry.crc {
         return error("archive: ZIP checksum mismatch")
     }
@@ -263,7 +291,7 @@ func (r mut ZIPReader) finishEntry() error {
             }
             at = 4
         }
-        if uint32(u32(descriptor[:], at)) != entry.crc || u32(descriptor[:], at + 4) != entry.header.Size || u32(descriptor[:], at + 8) != entry.header.Size {
+        if uint32(u32(descriptor[:], at)) != entry.crc || u32(descriptor[:], at + 4) != entry.compressed || u32(descriptor[:], at + 8) != entry.header.Size {
             return error("archive: ZIP descriptor mismatch")
         }
         r.nextOffset = boundary
@@ -299,18 +327,18 @@ func (r mut ZIPReader) nextHeader() (Header, bool, error) {
     }
     let flags = u16(record[:], 6)
     zipFlags(flags, u16(record[:], 8), u16(record[:], 4))?
-    if flags != entry.flags {
+    if flags != entry.flags || u16(record[:], 8) != entry.method {
         return absent(), false, error("archive: ZIP flag mismatch")
     }
     let crc = u32(record[:], 14)
     let compressed = u32(record[:], 18)
     let size = u32(record[:], 22)
     if flags & zipStreamed == 0 {
-        if uint32(crc) != entry.crc || compressed != entry.header.Size || size != entry.header.Size {
+        if uint32(crc) != entry.crc || compressed != entry.compressed || size != entry.header.Size {
             return absent(), false, error("archive: ZIP local metadata mismatch")
         }
     } else {
-        if (crc != 0 && uint32(crc) != entry.crc) || (compressed != 0 && compressed != entry.header.Size) || (size != 0 && size != entry.header.Size) {
+        if (crc != 0 && uint32(crc) != entry.crc) || (compressed != 0 && compressed != entry.compressed) || (size != 0 && size != entry.header.Size) {
             return absent(), false, error("archive: ZIP local metadata mismatch")
         }
     }
@@ -320,7 +348,7 @@ func (r mut ZIPReader) nextHeader() (Header, bool, error) {
         return absent(), false, error("archive: invalid entry name")
     }
     let dataOffset = entry.offset + 30 + nameSize + extraSize
-    if dataOffset > r.centralOffset || entry.header.Size > r.centralOffset - dataOffset {
+    if dataOffset > r.centralOffset || entry.compressed > r.centralOffset - dataOffset {
         return absent(), false, error("archive: invalid ZIP entry bounds")
     }
     var variable = zeros(nameSize + extraSize)
@@ -330,11 +358,16 @@ func (r mut ZIPReader) nextHeader() (Header, bool, error) {
     if name != entry.header.Name {
         return absent(), false, error("archive: ZIP local name mismatch")
     }
-    r.nextOffset = dataOffset + entry.header.Size
+    r.nextOffset = dataOffset + entry.compressed
     r.remaining = entry.header.Size
     r.crc = 0
     r.cursor += 1
     r.active = true
+    if entry.method == 8 {
+        r.decoder = flate.NewDecoder(entry.compressed, entry.header.Size)?
+        r.source.remaining = entry.compressed
+        r.source.framed = true
+    }
     return entry.header, true, nil
 }
 
@@ -371,7 +404,7 @@ func (r mut ZIPReader) Read(buf mut []byte) (int, error) {
     if want > r.remaining {
         want = r.remaining
     }
-    let count, err = readSome(r.source, buf[:want])
+    let count, err = r.payload(buf[:want])
     r.crc = crc32.Update(r.crc, buf[:count])
     r.remaining -= count
     if err == io.EOF {
@@ -400,8 +433,9 @@ func (r own ZIPReader) Close() error {
 }
 
 type ZIPWriter<W io.Writer> struct {
-    sink W
-    output outputState
+    output output<W>
+    encoder flate.Encoder
+    payloadStart int
     dataLimit int
     entryLimit int
     declared int
@@ -415,7 +449,8 @@ type ZIPWriter<W io.Writer> struct {
 }
 
 func NewZIPWriter<W io.Writer>(sink own W, archiveLimit int, dataLimit int, entryLimit int) (ZIPWriter<W>, error) {
-    var writer = ZIPWriter<W>{sink: sink, output: outputState{limit: archiveLimit, count: 0}, dataLimit: dataLimit, entryLimit: entryLimit, declared: 0, metadata: 0, entries: Array<zipEntry>{}, remaining: 0, crc: 0, active: false, finished: false, err: nil}
+    let encoder, _ = flate.NewEncoder(0, 0)
+    var writer = ZIPWriter<W>{encoder: encoder, payloadStart: 0, output: output<W>{sink: sink, limit: archiveLimit, count: 0}, dataLimit: dataLimit, entryLimit: entryLimit, declared: 0, metadata: 0, entries: Array<zipEntry>{}, remaining: 0, crc: 0, active: false, finished: false, err: nil}
     if !validLimits(archiveLimit, dataLimit, entryLimit) {
         writer.err = error("archive: invalid limit")
     }
@@ -430,13 +465,19 @@ func (w mut ZIPWriter<W>) finishEntry() error {
     if !w.active {
         return nil
     }
+    let index = w.entries.len() - 1
+    if w.entries[index].method == 8 {
+        flate.Finish(w.encoder, w.output)?
+    }
+    let compressed = w.output.count - w.payloadStart
+    w.entries[index].compressed = compressed
     var descriptor = zeros(16)
     put32(descriptor[:], 0, zipDescriptor)
     put32(descriptor[:], 4, int(w.crc))
     let size = w.entries[w.entries.len() - 1].header.Size
-    put32(descriptor[:], 8, size)
+    put32(descriptor[:], 8, compressed)
     put32(descriptor[:], 12, size)
-    let _, err = writeAll(w.output, w.sink, descriptor[:])
+    let _, err = w.output.Write(descriptor[:])
     if err != nil {
         return err
     }
@@ -445,7 +486,10 @@ func (w mut ZIPWriter<W>) finishEntry() error {
     return nil
 }
 
-func (w mut ZIPWriter<W>) start(header Header) error {
+func (w mut ZIPWriter<W>) start(header Header, compression Compression) error {
+    if compression != Store && compression != Deflate {
+        return error("archive: unsupported ZIP compression method")
+    }
     validate(header)?
     if w.entries.len() == w.entryLimit {
         return error("archive: entry limit exceeded")
@@ -462,16 +506,19 @@ func (w mut ZIPWriter<W>) start(header Header) error {
     put32(record[:], 0, zipLocal)
     put16(record[:], 4, 20)
     put16(record[:], 6, zipUTF8 | zipStreamed)
+    put16(record[:], 8, int(compression))
     put16(record[:], 12, 33)
     put16(record[:], 26, header.Name.len())
     putText(record[:], 30, header.Name)
-    let _, err = writeAll(w.output, w.sink, record[:])
+    let _, err = w.output.Write(record[:])
     if err != nil {
         return err
     }
-    w.entries.push(zipEntry{header: header, crc: 0, flags: zipUTF8 | zipStreamed, offset: offset})
+    w.entries.push(zipEntry{method: int(compression), compressed: 0, header: header, crc: 0, flags: zipUTF8 | zipStreamed, offset: offset})
     w.metadata += 46 + header.Name.len()
     w.declared += header.Size
+    w.payloadStart = w.output.count
+    w.encoder = flate.NewEncoder(header.Size, MaxBytes)?
     w.remaining = header.Size
     w.crc = 0
     w.active = true
@@ -479,11 +526,15 @@ func (w mut ZIPWriter<W>) start(header Header) error {
 }
 
 func (w mut ZIPWriter<W>) WriteHeader(header Header) error {
+    return w.WriteHeaderWith(header, Store)
+}
+
+func (w mut ZIPWriter<W>) WriteHeaderWith(header Header, compression Compression) error {
     if w.finished {
         return error("archive: writer finished")
     }
     if w.err == nil {
-        w.err = w.start(header)
+        w.err = w.start(header, compression)
     }
     return w.err
 }
@@ -503,7 +554,7 @@ func (w mut ZIPWriter<W>) Write(data []byte) (int, error) {
         w.err = error("archive: entry size exceeded");
         return 0, w.err
     }
-    let count, err = writeAll(w.output, w.sink, data)
+    let count, err = w.payload(data)
     w.crc = crc32.Update(w.crc, data[:count])
     w.remaining -= count
     w.err = err
@@ -518,9 +569,10 @@ func (w mut ZIPWriter<W>) directory() error {
         put16(record[:], 4, 20)
         put16(record[:], 6, 20)
         put16(record[:], 8, entry.flags)
+        put16(record[:], 10, entry.method)
         put16(record[:], 14, 33)
         put32(record[:], 16, int(entry.crc))
-        put32(record[:], 20, entry.header.Size)
+        put32(record[:], 20, entry.compressed)
         put32(record[:], 24, entry.header.Size)
         put16(record[:], 28, entry.header.Name.len())
         if entry.header.Directory {
@@ -528,7 +580,7 @@ func (w mut ZIPWriter<W>) directory() error {
         }
         put32(record[:], 42, entry.offset)
         putText(record[:], 46, entry.header.Name)
-        let _, err = writeAll(w.output, w.sink, record[:])
+        let _, err = w.output.Write(record[:])
         if err != nil {
             return err
         }
@@ -539,7 +591,7 @@ func (w mut ZIPWriter<W>) directory() error {
     put16(end[:], 10, w.entries.len())
     put32(end[:], 12, w.output.count - centralOffset)
     put32(end[:], 16, centralOffset)
-    let _, err = writeAll(w.output, w.sink, end[:])
+    let _, err = w.output.Write(end[:])
     return err
 }
 
@@ -569,5 +621,85 @@ func (w own ZIPWriter<W>) Close() error {
 func (w own ZIPWriter<W>) Sink() (W, error) {
     var writer = w
     let err = writer.Finish()
-    return writer.sink, err
+    return writer.output.sink, err
+}
+
+type zipInput struct {
+    source io.ReadSeeker
+    remaining int
+    framed bool
+    chunk Array<byte>
+    cursor int
+    used int
+    pending error
+}
+
+func (s mut zipInput) Seek(offset int, whence int) (int, error) {
+    s.cursor = 0
+    s.used = 0
+    s.pending = nil
+    s.framed = false
+    return s.source.Seek(offset, whence)
+}
+
+func (s mut zipInput) Read(buf mut []byte) (int, error) {
+    if !s.framed {
+        return s.source.Read(buf)
+    }
+    if buf.len() == 0 {
+        return 0, nil
+    }
+    if s.cursor == s.used {
+        if s.pending != nil {
+            return 0, s.pending
+        }
+        if s.remaining == 0 {
+            return 0, io.EOF
+        }
+        var want = s.remaining
+        if want > s.chunk.len() {
+            want = s.chunk.len()
+        }
+        let count, err = readSome(s.source, s.chunk[:want])
+        s.cursor = 0
+        s.used = count
+        s.remaining -= count
+        s.pending = err
+        if err != nil && err != io.EOF {
+            return 0, err
+        }
+        if count == 0 {
+            return 0, err
+        }
+    }
+    var count = buf.len()
+    if count > s.used - s.cursor {
+        count = s.used - s.cursor
+    }
+    for var i = 0; i < count; i += 1 {
+        buf[i] = s.chunk[s.cursor + i]
+    }
+    s.cursor += count
+    return count, nil
+}
+
+func (r mut ZIPReader) payload(buf mut []byte) (int, error) {
+    if r.entries[r.cursor - 1].method == 0 {
+        return readSome(r.source, buf)
+    }
+    let count, err = flate.Read(r.decoder, r.source, buf)
+    if err == io.EOF {
+        if count != r.remaining {
+            return count, error("archive: short ZIP DEFLATE output")
+        }
+        return count, nil
+    }
+    return count, err
+}
+
+func (w mut ZIPWriter<W>) payload(data []byte) (int, error) {
+    if w.entries[w.entries.len() - 1].method == 8 {
+        return flate.Write(w.encoder, w.output, data)
+    }
+    return w.output.Write(data)
 }

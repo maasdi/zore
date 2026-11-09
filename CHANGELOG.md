@@ -8,6 +8,18 @@ including those shipped in `0.1.0-alpha.1`, are not split by release.
 
 ## [Unreleased]
 
+### ZIP DEFLATE and confined extraction
+
+- Added shared raw `std/compress/flate`, ZIP method 8 reading/writing with exact
+  compressed/output size and CRC validation, and explicit compression selection.
+- Added `archive.ExtractTAR`/`ExtractZIP` and `os.StageTree` for confined private
+  staging and atomic new-directory publication on Linux/macOS. Paths, aliases,
+  duplicates, byte/node/depth limits and cleanup are enforced. Windows extraction
+  explicitly returns unsupported pending a verified handle-relative provider.
+- Moved portable entry-name syntax to `path.IsLocal`; archive naming retains its
+  byte ceiling and directory convention. Fixed premature specialization of
+  interface methods on generic wrappers with unresolved type arguments.
+
 ### Archive I/O
 
 - Added `std/archive` for bounded USTAR and classic stored ZIP readers/writers,

@@ -98,3 +98,55 @@ func main() {}
 "#,
     )]);
 }
+
+#[test]
+fn archive_deflate_extraction_and_staged_tree_public_contracts_check_without_native_linking() {
+    super::accepts(&[(
+        "main.ore",
+        r#"package main
+import "std/archive"
+import "std/compress/flate"
+import "std/io"
+import "std/os"
+import "std/path"
+func extract(source own io.ReadSeeker, destination string) error {
+    return archive.ExtractZIP(source, destination, 10000, 50000, 10)
+}
+async func write(destination string) error {
+    var tree = os.StageTree(destination, 10)?
+    tree.Create("dir/file")?
+    var encoder = flate.NewEncoder(0, 100)?
+    flate.Finish(encoder, tree)?
+    tree.FinishFile()?
+    if !path.IsLocal("dir/file") { return tree.Abort() }
+    return tree.Commit()
+}
+func main() {}
+"#,
+    )]);
+    for (body, expected) in [
+        (
+            "let tree = os.StageTree(\"result\", 10)?; let moved = tree; return tree.Abort()",
+            "moved",
+        ),
+        (
+            "let tree = os.StageTree(\"result\", 10)?; println(tree.id); return tree.Abort()",
+            "not exported",
+        ),
+        (
+            "let source = os.Open(\"input\")?; archive.ExtractZIP(source, \"result\", 10000, 10000, 10)?; return source.Close()",
+            "moved",
+        ),
+    ] {
+        let source = format!(
+            "package main\nimport \"std/archive\"\nimport \"std/os\"\nfunc run() error {{ println(archive.MaxEntries); {body} }}\nfunc main() {{}}\n"
+        );
+        super::rejects(&[("main.ore", &source)], expected);
+    }
+    for state in ["Decoder", "Encoder"] {
+        let source = format!(
+            "package main\nimport \"std/compress/flate\"\nfunc run() error {{ let state = flate.New{state}(10, 10)?; let moved = state; println(state.InputBytes()); return nil }}\nfunc main() {{}}\n"
+        );
+        super::rejects(&[("main.ore", &source)], "moved");
+    }
+}
