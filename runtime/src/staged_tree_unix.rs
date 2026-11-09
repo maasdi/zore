@@ -157,6 +157,47 @@ fn parent_path(destination: &str) -> io::Result<(File, CString)> {
     Ok((parent, basename))
 }
 
+#[cfg(target_os = "macos")]
+fn private_parent(parent: &File) -> io::Result<()> {
+    unsafe extern "C" {
+        fn geteuid() -> u32;
+        fn acl_get_fd_np(fd: c_int, kind: c_int) -> *mut c_void;
+        fn acl_get_entry(acl: *mut c_void, which: c_int, entry: *mut *mut c_void) -> c_int;
+        fn acl_free(acl: *mut c_void) -> c_int;
+    }
+    let owner = parent.metadata()?.uid();
+    // SAFETY: geteuid has no arguments or memory contract.
+    if owner != 0 && owner != unsafe { geteuid() } {
+        return Err(invalid(
+            "destination parent must belong to the current user or root",
+        ));
+    }
+    // SAFETY: the live descriptor names the anchored destination parent.
+    let acl = unsafe { acl_get_fd_np(parent.as_raw_fd(), 0x100) };
+    if acl.is_null() {
+        let error = io::Error::last_os_error();
+        return if error.kind() == io::ErrorKind::NotFound {
+            Ok(())
+        } else {
+            Err(error)
+        };
+    }
+    let mut entry = std::ptr::null_mut();
+    // SAFETY: acl_get_fd_np returned an owned ACL and entry is writable.
+    let found = unsafe { acl_get_entry(acl, 0, &mut entry) };
+    let error = io::Error::last_os_error();
+    // SAFETY: the ACL is no longer used and is freed exactly once.
+    unsafe { acl_free(acl) };
+    if found == 0 {
+        return Err(invalid("destination parent has extended ACL entries"));
+    }
+    if found == -1 && error.raw_os_error() == Some(22) {
+        Ok(())
+    } else {
+        Err(error)
+    }
+}
+
 struct Node {
     path: String,
     directory: bool,
@@ -178,6 +219,8 @@ pub(super) struct Tree {
 impl Tree {
     pub(super) fn create(destination: &str, limit: usize) -> io::Result<Self> {
         let (parent, destination) = parent_path(destination)?;
+        #[cfg(target_os = "macos")]
+        private_parent(&parent)?;
         let mut selected = None;
         for _ in 0..100 {
             let bytes = super::crypto::random_bytes(16).map_err(|e| invalid(&e))?;
@@ -524,6 +567,38 @@ mod tests {
         assert!(tree.mkdir("a/b").is_err());
         assert!(tree.create_file("a").is_err());
         tree.abort().unwrap();
+        assert_eq!(root.children(), 0);
+    }
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn rejects_inherited_acl_grants_before_creating_staging() {
+        let root = Sandbox::new();
+        let output = std::process::Command::new("/bin/chmod")
+            .arg("+a")
+            .arg("everyone allow read,write,execute,file_inherit,directory_inherit")
+            .arg(&root.0)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let error = Tree::create(&root.destination(), 0)
+            .err()
+            .expect("extended ACL must be rejected");
+        assert!(error.to_string().contains("extended ACL"), "{error}");
+        assert_eq!(root.children(), 0);
+        let status = std::process::Command::new("/bin/chmod")
+            .arg("-N")
+            .arg(&root.0)
+            .status()
+            .unwrap();
+        assert!(status.success());
+        Tree::create(&root.destination(), 0)
+            .unwrap()
+            .abort()
+            .unwrap();
         assert_eq!(root.children(), 0);
     }
 }

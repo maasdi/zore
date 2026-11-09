@@ -34,5 +34,6 @@ races, renamed parents, exclusive leaves, modes, node/depth limits and cleanup.
 The extraction oracle checks independent TAR/ZIP/gzip fixtures, DEFLATE bombs,
 corruption after staged output, duplicate/case/path/type conflicts, existing and
 dangling-link destinations, implicit nodes and 64-component boundaries. The
-macOS run additionally rejects normalization aliases on its filesystem.
+macOS run additionally rejects normalization aliases on its filesystem; a native
+regression rejects inheritable ACL grants before creating staging.
 Nested generic interface specialization has its own native regression.
