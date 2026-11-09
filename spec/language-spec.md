@@ -11866,6 +11866,76 @@ ownership, native cleanup, one-worker execution, path/alias/duplicate rejection,
 parent-link and publication races, implicit-node/depth limits, malformed archive
 rollback, and independent Python extraction interoperability.
 
+## 37.31 HTML text and quoted-attribute escaping — LOCKED
+
+`std/encoding/html` owns HTML escaping policy and imports only `std/strings`.
+HTML escaping is grouped with the standard format encoders.
+`EscapeString(text string) string` replaces exactly these five ASCII characters:
+
+| Input | Output |
+| --- | --- |
+| `&` | `&amp;` |
+| `<` | `&lt;` |
+| `>` | `&gt;` |
+| `"` | `&quot;` |
+| `'` | `&#39;` |
+
+Every other UTF-8 byte is preserved, including Unicode, NUL, whitespace and
+controls; there is no normalization, decoding, newline conversion or entity
+recognition. Empty input returns `""`. Existing entity spellings are escaped
+again: `&amp;` becomes `&amp;amp;`. Escaping is deliberately not idempotent;
+callers pass the original text once at the output boundary.
+
+Input and output are ordinary immutable Copy strings. The input is borrowed
+for the call, remains usable, and is never changed; the result is an independent
+string value with no retained borrow. Like all Zore strings, input is already
+well-formed UTF-8 (§6.8, §41.5); the result is well-formed UTF-8 too. Convert
+arbitrary bytes with `strings.FromBytes` and handle its explicit validation
+error before escaping. There is no bytes overload or invalid-UTF-8 replacement
+policy in this package. No error result is needed for valid strings. Resource
+allocation follows ordinary string/builder behavior, without a package byte
+ceiling; output length is at most six times the input byte length. Work is
+linear in input/output length. An unchanged input may share immutable storage
+with its result; storage identity is not observable.
+
+Supported contexts are ordinary HTML element text and values enclosed in fixed
+single or double quotes for ordinary text attributes, such as `title` or `alt`.
+The surrounding markup and attribute name are application-controlled literals.
+This function is not an HTML sanitizer or context detector. It does not make a
+URL safe, constrain URL schemes, serialize JavaScript/CSS, or implement template
+auto-escaping. It is insufficient for script/style/raw-text contents, event
+handlers, `style`, `srcdoc`, URL-valued attributes, comments, tag/attribute names,
+doctype, unquoted attributes or executable/embedded-language contexts. A URL
+needs its own validation and context-specific encoding before HTML embedding.
+Preserving output bytes does not promise identical DOM values when HTML parsers
+normalize newlines or control characters.
+
+```ore
+import "std/encoding/html"
+
+func greeting(name string) string {
+    return "<p title=\"" + html.EscapeString(name) + "\">Hello " + html.EscapeString(name) + "</p>"
+}
+```
+
+The function is plain, deterministic CPU work. It does no I/O, opens no
+resources, and does not suspend or offload work; async callers use an ordinary
+call. No source syntax, compiler intrinsic, runtime provider or dependency is
+added. The compiler bundles ordinary Zore source. Conformance includes exact
+replacements, Unicode/controls, empty and already-escaped input, ownership and
+lifetime/cleanup runs in plain and async code, independent differential escaping,
+and HTML parser checks of supported text/quoted-attribute contexts.
+
+**Template follow-up decision — deferred, application-driven.** This increment
+adds no template language, template parser, framework or trusted-markup bypass.
+A separate application-driven decision must lock contextual auto-escaping for
+HTML templates and the independent semantics of plain-text templates before
+implementation. It must define supported contexts, literal/data separation,
+URL/script/style rules, compiled-template ownership and sharing, rendering
+limits, and whether output is an independent string or a borrowed writer with
+explicit partial-output errors. See `docs/design/templates.md` and Q16; these
+are follow-up requirements, not additional public APIs.
+
 # 38. Self-Hosting Constraint
 
 ## 38.1 Long-term goal — LOCKED

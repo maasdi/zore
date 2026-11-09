@@ -1,5 +1,11 @@
 # Compiler testing
 
+HTML escaping has frontend visibility/type checks in `tests/packages/html.rs`
+and exact UTF-8/replacement, result lifetime, leak and one-worker suspension
+checks in `tests/codegen/html.rs`. `python tests/hardening/html_oracle.py`
+compares output with Python and parses fixed text and both quoted attribute
+contexts. See `conformance/html.md`.
+
 ZIP DEFLATE and confined extraction are covered by `codegen/archive_followup.rs`,
 `packages/archive.rs`, runtime staged-tree tests and
 `python tests/hardening/extraction_oracle.py`. Extraction runs on Linux/macOS/Windows;
