@@ -1,0 +1,198 @@
+package flate
+
+import "std/io"
+
+type Encoder struct {
+    inputLimit int
+    compressedLimit int
+    input int
+    compressed int
+    bits int
+    bitCount int
+    finished bool
+    err error
+    previous Array<int>
+}
+
+func NewEncoder(inputLimit int, compressedLimit int) (Encoder, error) {
+    var encoder = Encoder{inputLimit: inputLimit, compressedLimit: compressedLimit, input: 0, compressed: 0, bits: 0, bitCount: 0, finished: false, err: nil, previous: Array<int>{}}
+    if !validLimit(inputLimit) || !validLimit(compressedLimit) {
+        encoder.err = error("flate: invalid byte limit")
+    }
+    let err = encoder.err
+    return encoder, err
+}
+
+func (e Encoder) InputBytes() int {
+    return e.input
+}
+
+func (e Encoder) OutputBytes() int {
+    return e.compressed
+}
+
+func send<W io.Writer>(w mut Encoder, sink mut W, data []byte) error {
+    if data.len() > w.compressedLimit - w.compressed {
+        return error("flate: compressed byte limit exceeded")
+    }
+    var offset = 0
+    for offset < data.len() {
+        let count, err = sink.Write(data[offset:])
+        if count < 0 || count > data.len() - offset {
+            _ = err
+            return error("flate: invalid write count")
+        }
+        offset += count
+        w.compressed += count
+        if err != nil {
+            return err
+        }
+        if count == 0 {
+            return error("flate: no write progress")
+        }
+    }
+    return nil
+}
+
+func (w mut Encoder) putBits(out mut Array<byte>, value int, count int) {
+    w.bits |= value << w.bitCount
+    w.bitCount += count
+    for w.bitCount >= 8 {
+        out.push(byte(w.bits & 255))
+        w.bits >>= 8
+        w.bitCount -= 8
+    }
+}
+
+func reverse(value int, width int) int {
+    var result = 0
+    var rest = value
+    for var bit = 0; bit < width; bit += 1 {
+        result = (result << 1) | (rest & 1)
+        rest >>= 1
+    }
+    return result
+}
+
+func (w mut Encoder) literal(out mut Array<byte>, symbol int) {
+    var width = 8
+    var code = symbol + 48
+    if symbol >= 144 {
+        width = 9
+        code = symbol + 256
+    }
+    if symbol >= 256 {
+        width = 7
+        code = symbol - 256
+    }
+    if symbol >= 280 {
+        width = 8
+        code = symbol - 88
+    }
+    w.putBits(out, reverse(code, width), width)
+}
+
+func (w mut Encoder) backReference(out mut Array<byte>, length int, distance int) {
+    var code = 0
+    for code < 28 && lengthBase(code + 1) <= length {
+        code += 1
+    }
+    w.literal(out, code + 257)
+    w.putBits(out, length - lengthBase(code), lengthExtra(code))
+    code = 0
+    for code < 29 && distanceBase(code + 1) <= distance {
+        code += 1
+    }
+    w.putBits(out, reverse(code, 5), 5)
+    w.putBits(out, distance - distanceBase(code), distanceExtra(code))
+}
+
+func hash(data []byte, at int) int {
+    return ((int(data[at]) * 251 + int(data[at + 1])) * 251 + int(data[at + 2])) & 4095
+}
+
+func encodeBlock<W io.Writer>(w mut Encoder, sink mut W, data []byte) error {
+    var output = Array<byte>{}
+    w.putBits(output, 2, 3)
+    w.previous = Array<int>{}
+    for var i = 0; i < 4096; i += 1 {
+        w.previous.push(-1)
+    }
+    var at = 0
+    for at < data.len() {
+        var length = 0
+        var candidate = -1
+        if at + 2 < data.len() {
+            let bucket = hash(data, at)
+            candidate = w.previous[bucket]
+            w.previous[bucket] = at
+            if candidate >= 0 {
+                for length < 258 && at + length < data.len() && data[candidate + length] == data[at + length] {
+                    length += 1
+                }
+            }
+        }
+        if length >= 3 {
+            w.backReference(output, length, at - candidate)
+            at += length
+        } else {
+            w.literal(output, int(data[at]))
+            at += 1
+        }
+    }
+    w.literal(output, 256)
+    return send(w, sink, output[:])
+}
+
+func Write<W io.Writer>(w mut Encoder, sink mut W, data []byte) (int, error) {
+    if w.err != nil {
+        return 0, w.err
+    }
+    if w.finished {
+        return 0, error("flate: writer finished")
+    }
+    if data.len() > w.inputLimit - w.input {
+        w.err = error("flate: input byte limit exceeded")
+        return 0, w.err
+    }
+    if data.len() == 0 {
+        return 0, nil
+    }
+    var accepted = 0
+    for accepted < data.len() {
+        var end = accepted + windowSize
+        if end > data.len() {
+            end = data.len()
+        }
+        w.input += end - accepted
+        let begin = accepted
+        accepted = end
+        w.err = encodeBlock(w, sink, data[begin:end])
+        if w.err != nil {
+            return accepted, w.err
+        }
+    }
+    return accepted, nil
+}
+
+func Finish<W io.Writer>(w mut Encoder, sink mut W) error {
+    if w.err != nil {
+        return w.err
+    }
+    if w.finished {
+        return nil
+    }
+    var output = Array<byte>{}
+    w.putBits(output, 3, 3)
+    w.literal(output, 256)
+    if w.bitCount > 0 {
+        output.push(byte(w.bits & 255))
+        w.bits = 0
+        w.bitCount = 0
+    }
+    w.err = send(w, sink, output[:])
+    if w.err == nil {
+        w.finished = true
+    }
+    return w.err
+}

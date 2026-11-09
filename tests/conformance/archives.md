@@ -1,12 +1,12 @@
 # Archive conformance
 
-Contracts: spec §§37.27–37.28, plus `io.ReadSeeker` in §37.3.
+Contracts: spec §§37.27–37.30, plus `io.ReadSeeker` in §37.3.
 
 | Contract | Executable evidence |
 | --- | --- |
 | Owned endpoints, Move wrappers, private state, mutability and frontend-only checking | `tests/packages/archive.rs` |
 | IEEE CRC32 check vector, empty and incremental checksums | `tests/codegen/archive.rs` |
-| USTAR/stored ZIP reads and writes through short I/O | Native roundtrip tests and independent Python oracle |
+| USTAR/stored and DEFLATE ZIP reads and writes through short I/O | Native roundtrip tests and independent Python oracle |
 | Entry presence/EOF, explicit skip, unread entry rejection | Native lifecycle tests |
 | Concrete sink recovery after successful/failed finalization | Native sink recovery and `.tar.gz` oracle/guide tests |
 | Source/sink stalls, invalid counts, broken seeks, partial bytes with errors | Native error/cleanup tests |
@@ -22,5 +22,25 @@ Contracts: spec §§37.27–37.28, plus `io.ReadSeeker` in §37.3.
 Run `cargo test --locked --test packages archive`,
 `cargo test --locked --test native archive`, and, after building the compiler,
 `python tests/hardening/archive_oracle.py`. CI runs the oracle on Linux, macOS
-and Windows. ZIP DEFLATE, filesystem extraction and extended TAR/ZIP forms are
-unsupported and tracked as follow-ups, not represented as passing coverage.
+and Windows. `python tests/hardening/extraction_oracle.py` validates extraction
+and rollback on Linux/macOS/Windows.
+Extended TAR/ZIP forms remain unsupported.
+
+Raw DEFLATE boundary/counter/limit/finalization tests and staged-tree one-worker
+and panic cleanup are in `tests/codegen/archive_followup.rs`. Frontend-only
+checks cover moved sources, Move codec/tree state, visibility and async calls.
+`runtime/src/staged_tree_unix.rs` exercises no-follow traversal, publication
+races, renamed parents, exclusive leaves, modes, node/depth limits and cleanup.
+The extraction oracle checks independent TAR/ZIP/gzip fixtures, DEFLATE bombs,
+corruption after staged output, duplicate/case/path/type conflicts, existing and
+dangling-link destinations, implicit nodes and 64-component boundaries. The
+macOS run additionally rejects normalization aliases on its filesystem; a native
+regression rejects inheritable ACL grants before creating staging.
+Nested generic interface specialization has its own native regression.
+
+Windows provider regressions in `runtime/src/staged_tree_windows.rs` check
+protected owner/LocalSystem DACLs despite permissive inherited ACLs, junctions
+and file/directory symlinks, case aliases and available 8.3 aliases, replacement
+identity checks, node/depth limits, destination races, renamed parents and
+cleanup. The native one-worker and panic cases run on Windows too. The complete
+Python extraction oracle runs on every host.

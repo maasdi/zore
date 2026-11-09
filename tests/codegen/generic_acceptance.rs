@@ -131,3 +131,27 @@ func main() {
     assert_eq!(stdout(&output), "11\n22\n33\nright\nleft\n");
     assert!(output.stderr.is_empty(), "{}", stderr(&output));
 }
+
+#[test]
+fn nested_generic_interface_implementations_specialize_only_concrete_arguments() {
+    let output = super::run(
+        r#"package main
+type Writer interface { mut Write(data []byte) (int, error) }
+type Sink struct { calls int }
+func (s mut Sink) Write(data []byte) (int, error) { s.calls += 1; return data.len(), nil }
+type Wrapped<W Writer> struct { sink W }
+func (w mut Wrapped<W>) Write(data []byte) (int, error) { return w.sink.Write(data) }
+func send<W Writer>(w mut W, data []byte) (int, error) { return w.Write(data) }
+func relay<W Writer>(w mut Wrapped<W>) error { let _, err = send(w, Array<byte>{1,2,3}[:]); return err }
+func main() {
+    var wrapped = Wrapped<Sink>{sink: Sink{calls: 0}}
+    let err = relay(wrapped)
+    if err != nil { panic("write failed") }
+    println(wrapped.sink.calls)
+}
+"#,
+    );
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert_eq!(stdout(&output), "1\n");
+    assert!(output.stderr.is_empty(), "{}", stderr(&output));
+}

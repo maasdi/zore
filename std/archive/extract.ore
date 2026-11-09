@@ -1,0 +1,104 @@
+package archive
+
+import "std/errors"
+import "std/io"
+import "std/os"
+import "std/strings"
+
+type extractionReader interface {
+    mut Next() (Header, bool, error)
+    mut Read(buf mut []byte) (int, error)
+}
+
+type extractionNames struct {
+    folded map[string]string
+    explicit map[string]bool
+    nodes int
+    limit int
+}
+
+func (n mut extractionNames) add(header Header) error {
+    var name = header.Name
+    if header.Directory {
+        name = name[:name.len() - 1]
+    }
+    if prior = n.explicit.entry(name) {
+        _ = prior;
+        return error("archive: duplicate extraction entry")
+    }
+    n.explicit[name] = true
+    var depth = 0
+    for var i = 0; i <= name.len(); i += 1 {
+        if i < name.len() && name[i] != 47 {
+            continue
+        }
+        depth += 1
+        if depth > 64 {
+            return error("archive: extraction depth limit exceeded")
+        }
+        let prefix = name[:i]
+        let key = strings.ToUpper(prefix)
+        if original = n.folded.entry(key) {
+            if original != prefix {
+                return error("archive: extraction name alias")
+            }
+        } else {
+            if n.nodes == n.limit {
+                return error("archive: extraction node limit exceeded")
+            }
+            n.folded[key] = prefix
+            n.nodes += 1
+        }
+    }
+    return nil
+}
+
+func extract(reader mut extractionReader, tree mut os.StagedTree, entryLimit int) error {
+    var names = extractionNames{folded: map[string]string{}, explicit: map[string]bool{}, nodes: 0, limit: entryLimit}
+    for {
+        let header, present, err = reader.Next()
+        if err != nil {
+            return err
+        }
+        if !present {
+            return nil
+        }
+        names.add(header)?
+        if header.Directory {
+            tree.Mkdir(header.Name[:header.Name.len() - 1])?
+        } else {
+            tree.Create(header.Name)?
+            let count, copyErr = io.Copy(tree, reader)
+            if copyErr != nil {
+                return copyErr
+            }
+            if count != header.Size {
+                return error("archive: extraction size mismatch")
+            }
+            tree.FinishFile()?
+        }
+    }
+}
+
+func extractInto(reader mut extractionReader, destination string, entryLimit int) error {
+    var tree = os.StageTree(destination, entryLimit)?
+    let err = extract(reader, tree, entryLimit)
+    if err != nil {
+        let cleanup = tree.Abort()
+        if cleanup != nil {
+            return errors.Wrap(err, "archive: staging cleanup failed: " + errors.Message(cleanup))
+        }
+        return err
+    }
+    return tree.Commit()
+}
+
+func ExtractTAR(source own io.Reader, destination string, archiveLimit int, dataLimit int, entryLimit int) error {
+    var reader = NewTARReader(source, archiveLimit, dataLimit, entryLimit)?
+    return extractInto(reader, destination, entryLimit)
+}
+
+func ExtractZIP(source own io.ReadSeeker, destination string, archiveLimit int, dataLimit int, entryLimit int) error {
+    var reader = NewZIPReader(source, archiveLimit, dataLimit, entryLimit)?
+    return extractInto(reader, destination, entryLimit)
+}

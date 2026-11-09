@@ -1,5 +1,10 @@
 # Compiler testing
 
+ZIP DEFLATE and confined extraction are covered by `codegen/archive_followup.rs`,
+`packages/archive.rs`, runtime staged-tree tests and
+`python tests/hardening/extraction_oracle.py`. Extraction runs on Linux/macOS/Windows;
+Windows has native security and cleanup regressions. See `conformance/archives.md`.
+
 Archive checks in `tests/packages/archive.rs` cover ownership and private state.
 `tests/codegen/archive.rs` exercises short/partial I/O, explicit finalization,
 concrete sink recovery, bounded errors, cleanup and one-worker progress.

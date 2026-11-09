@@ -1027,6 +1027,9 @@ impl Checker<'_> {
                 continue;
             };
             let args = args.to_vec();
+            if args.iter().any(|&arg| self.types.mentions_param(arg)) {
+                continue;
+            }
             let implementations = self.implementations[&key].clone();
             for (index, implementation) in implementations.into_iter().enumerate() {
                 let hir::Implementation::Method(method) = implementation else {

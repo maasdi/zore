@@ -8,6 +8,18 @@ including those shipped in `0.1.0-alpha.1`, are not split by release.
 
 ## [Unreleased]
 
+### ZIP DEFLATE and confined extraction
+
+- Added shared raw `std/compress/flate`, ZIP method 8 reading/writing with exact
+  compressed/output size and CRC validation, and explicit compression selection.
+- Added `archive.ExtractTAR`/`ExtractZIP` and `os.StageTree` for confined private
+  staging and atomic new-directory publication on Linux/macOS/Windows. Paths, aliases,
+  duplicates, byte/node/depth limits and cleanup are enforced. Windows uses NT handle-relative no-reparse operations, protected
+  owner/LocalSystem DACLs, identity checks and handle-based publication/cleanup.
+- Moved portable entry-name syntax to `path.IsLocal`; archive naming retains its
+  byte ceiling and directory convention. Fixed premature specialization of
+  interface methods on generic wrappers with unresolved type arguments.
+
 ### Archive I/O
 
 - Added `std/archive` for bounded USTAR and classic stored ZIP readers/writers,
@@ -17,7 +29,7 @@ including those shipped in `0.1.0-alpha.1`, are not split by release.
 - Added `io.ReadSeeker` and IEEE `std/hash/crc32`, shared by ZIP and gzip.
 - Fixed duplicate LLVM symbols for same-named generic methods on different
   receiver types, including interface dispatch and cleanup.
-- ZIP DEFLATE/ZIP64, extended TAR forms and filesystem extraction remain follow-ups.
+- ZIP64, extended TAR forms and metadata restoration remain follow-ups.
 
 ### Streaming gzip
 
@@ -26,7 +38,7 @@ including those shipped in `0.1.0-alpha.1`, are not split by release.
   errors. Readers validate CRC32/ISIZE, optional headers and concatenated
   members with stored/fixed/dynamic DEFLATE. The deterministic fixed-Huffman
   writer uses bounded LZ77 search. Implementation is Zore with no new dependency
-  or native provider. ZIP/TAR and extraction remain follow-ups under #224.
+  or native provider. Archive I/O and extraction are described above under #224.
 
 ### CSV
 

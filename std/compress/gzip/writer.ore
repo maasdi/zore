@@ -1,31 +1,15 @@
 package gzip
 
+import "std/compress/flate"
 import "std/io"
 
-type Writer struct {
-    sink io.Writer
-    inputLimit int
-    compressedLimit int
-    input int
+type output struct {
+    sink io.Writer;
+    compressedLimit int;
     compressed int
-    crc int
-    bits int
-    bitCount int
-    started bool
-    finished bool
-    err error
 }
 
-func NewWriter(sink own io.Writer, inputLimit int, compressedLimit int) (Writer, error) {
-    var writer = Writer{sink: sink, inputLimit: inputLimit, compressedLimit: compressedLimit, input: 0, compressed: 0, crc: 4294967295, bits: 0, bitCount: 0, started: false, finished: false, err: nil}
-    if !validLimit(inputLimit) || !validLimit(compressedLimit) {
-        writer.err = error("gzip: invalid byte limit")
-    }
-    let err = writer.err
-    return writer, err
-}
-
-func (w mut Writer) send(data []byte) error {
+func (w mut output) send(data []byte) error {
     if data.len() > w.compressedLimit - w.compressed {
         return error("gzip: compressed byte limit exceeded")
     }
@@ -48,102 +32,39 @@ func (w mut Writer) send(data []byte) error {
     return nil
 }
 
+func (w mut output) Write(data []byte) (int, error) {
+    let before = w.compressed
+    let err = w.send(data)
+    return w.compressed - before, err
+}
+
+type Writer struct {
+    output output
+    encoder flate.Encoder
+    inputLimit int
+    input int
+    crc int
+    started bool
+    finished bool
+    err error
+}
+
+func NewWriter(sink own io.Writer, inputLimit int, compressedLimit int) (Writer, error) {
+    let encoder, _ = flate.NewEncoder(MaxBytes, MaxBytes)
+    var writer = Writer{output: output{sink: sink, compressedLimit: compressedLimit, compressed: 0}, encoder: encoder, inputLimit: inputLimit, input: 0, crc: 4294967295, started: false, finished: false, err: nil}
+    if !validLimit(inputLimit) || !validLimit(compressedLimit) {
+        writer.err = error("gzip: invalid byte limit")
+    }
+    let err = writer.err
+    return writer, err
+}
+
 func (w mut Writer) header() error {
     if !w.started {
         w.started = true
-        return w.send(Array<byte>{31, 139, 8, 0, 0, 0, 0, 0, 0, 255}[:])
+        return w.output.send(Array<byte>{31, 139, 8, 0, 0, 0, 0, 0, 0, 255}[:])
     }
     return nil
-}
-
-func (w mut Writer) putBits(out mut Array<byte>, value int, count int) {
-    w.bits |= value << w.bitCount
-    w.bitCount += count
-    for w.bitCount >= 8 {
-        out.push(byte(w.bits & 255))
-        w.bits >>= 8
-        w.bitCount -= 8
-    }
-}
-
-func reverse(value int, width int) int {
-    var result = 0
-    var rest = value
-    for var bit = 0; bit < width; bit += 1 {
-        result = (result << 1) | (rest & 1)
-        rest >>= 1
-    }
-    return result
-}
-
-func (w mut Writer) literal(out mut Array<byte>, symbol int) {
-    var width = 8
-    var code = symbol + 48
-    if symbol >= 144 {
-        width = 9
-        code = symbol + 256
-    }
-    if symbol >= 256 {
-        width = 7
-        code = symbol - 256
-    }
-    if symbol >= 280 {
-        width = 8
-        code = symbol - 88
-    }
-    w.putBits(out, reverse(code, width), width)
-}
-
-func (w mut Writer) backReference(out mut Array<byte>, length int, distance int) {
-    var code = 0
-    for code < 28 && lengthBase(code + 1) <= length {
-        code += 1
-    }
-    w.literal(out, code + 257)
-    w.putBits(out, length - lengthBase(code), lengthExtra(code))
-    code = 0
-    for code < 29 && distanceBase(code + 1) <= distance {
-        code += 1
-    }
-    w.putBits(out, reverse(code, 5), 5)
-    w.putBits(out, distance - distanceBase(code), distanceExtra(code))
-}
-
-func hash(data []byte, at int) int {
-    return ((int(data[at]) * 251 + int(data[at + 1])) * 251 + int(data[at + 2])) & 4095
-}
-
-func (w mut Writer) block(data []byte) error {
-    var output = Array<byte>{}
-    w.putBits(output, 2, 3)
-    var previous = Array<int>{}
-    for var i = 0; i < 4096; i += 1 {
-        previous.push(-1)
-    }
-    var at = 0
-    for at < data.len() {
-        var length = 0
-        var candidate = -1
-        if at + 2 < data.len() {
-            let bucket = hash(data, at)
-            candidate = previous[bucket]
-            previous[bucket] = at
-            if candidate >= 0 {
-                for length < 258 && at + length < data.len() && data[candidate + length] == data[at + length] {
-                    length += 1
-                }
-            }
-        }
-        if length >= 3 {
-            w.backReference(output, length, at - candidate)
-            at += length
-        } else {
-            w.literal(output, int(data[at]))
-            at += 1
-        }
-    }
-    w.literal(output, 256)
-    return w.send(output[:])
 }
 
 func (w mut Writer) Write(data []byte) (int, error) {
@@ -154,7 +75,7 @@ func (w mut Writer) Write(data []byte) (int, error) {
         return 0, error("gzip: writer finished")
     }
     if data.len() > w.inputLimit - w.input {
-        w.err = error("gzip: input byte limit exceeded")
+        w.err = error("gzip: input byte limit exceeded");
         return 0, w.err
     }
     if data.len() == 0 {
@@ -164,24 +85,13 @@ func (w mut Writer) Write(data []byte) (int, error) {
     if w.err != nil {
         return 0, w.err
     }
-    var accepted = 0
-    for accepted < data.len() {
-        var end = accepted + windowSize
-        if end > data.len() {
-            end = data.len()
-        }
-        for var i = accepted; i < end; i += 1 {
-            w.crc = crcByte(w.crc, data[i])
-        }
-        w.input += end - accepted
-        let begin = accepted
-        accepted = end
-        w.err = w.block(data[begin:end])
-        if w.err != nil {
-            return accepted, w.err
-        }
+    let count, err = flate.Write(w.encoder, w.output, data)
+    for var i = 0; i < count; i += 1 {
+        w.crc = crcByte(w.crc, data[i])
     }
-    return accepted, nil
+    w.input += count
+    w.err = err
+    return count, err
 }
 
 func (w mut Writer) Finish() error {
@@ -195,20 +105,17 @@ func (w mut Writer) Finish() error {
     if w.err != nil {
         return w.err
     }
-    var output = Array<byte>{}
-    w.putBits(output, 3, 3)
-    w.literal(output, 256)
-    if w.bitCount > 0 {
-        output.push(byte(w.bits & 255))
-        w.bits = 0
-        w.bitCount = 0
+    w.err = flate.Finish(w.encoder, w.output)
+    if w.err != nil {
+        return w.err
     }
+    var trailer = Array<byte>{}
     for value in Array<int>{w.crc ^ 4294967295, w.input} {
         for var i = 0; i < 4; i += 1 {
-            output.push(byte((value >>(8 * i)) & 255))
+            trailer.push(byte((value >>(8 * i)) & 255))
         }
     }
-    w.err = w.send(output[:])
+    w.err = w.output.send(trailer[:])
     if w.err == nil {
         w.finished = true
     }
@@ -216,6 +123,6 @@ func (w mut Writer) Finish() error {
 }
 
 func (w own Writer) Close() error {
-    var writer = w
+    var writer = w;
     return writer.Finish()
 }

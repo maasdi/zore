@@ -714,7 +714,7 @@ pub unsafe extern "C" fn zore_native_os_file_write_string(
 }
 
 #[cfg(unix)]
-fn close_reporting(file: std::fs::File) -> std::io::Result<()> {
+pub(crate) fn close_reporting(file: std::fs::File) -> std::io::Result<()> {
     use std::os::fd::IntoRawFd;
     unsafe extern "C" {
         fn close(fd: i32) -> i32;
@@ -729,7 +729,7 @@ fn close_reporting(file: std::fs::File) -> std::io::Result<()> {
 }
 
 #[cfg(windows)]
-fn close_reporting(file: std::fs::File) -> std::io::Result<()> {
+pub(crate) fn close_reporting(file: std::fs::File) -> std::io::Result<()> {
     use std::os::windows::io::IntoRawHandle;
     #[link(name = "kernel32")]
     unsafe extern "system" {
@@ -745,7 +745,7 @@ fn close_reporting(file: std::fs::File) -> std::io::Result<()> {
 }
 
 #[cfg(not(any(unix, windows)))]
-fn close_reporting(file: std::fs::File) -> std::io::Result<()> {
+pub(crate) fn close_reporting(file: std::fs::File) -> std::io::Result<()> {
     drop(file);
     Ok(())
 }

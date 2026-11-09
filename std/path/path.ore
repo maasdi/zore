@@ -1,6 +1,7 @@
 package path
 
 import "std/strings"
+import "std/unicode"
 
 func Clean(p string) string {
     if p.len() == 0 {
@@ -85,4 +86,59 @@ func Ext(p string) string {
 
 func IsAbs(p string) bool {
     return strings.HasPrefix(p, "/")
+}
+
+func device(component string) bool {
+    var stem = strings.ToUpper(component)
+    let dot = strings.Index(stem, ".")
+    if dot >= 0 {
+        stem = stem[:dot]
+    }
+    stem = strings.TrimRight(stem, " .")
+    if stem == "CON" || stem == "PRN" || stem == "AUX" || stem == "NUL" || stem == "CONIN$" || stem == "CONOUT$" || stem == "CLOCK$" {
+        return true
+    }
+    if strings.HasPrefix(stem, "COM") || strings.HasPrefix(stem, "LPT") {
+        let suffix = stem[3:]
+        if suffix.len() == 1 && suffix[0] >= 49 && suffix[0] <= 57 {
+            return true
+        }
+        if suffix == "¹" || suffix == "²" || suffix == "³" {
+            return true
+        }
+    }
+    return false
+}
+
+func IsLocal(name string) bool {
+    if name.len() == 0 || name[0] == 47 {
+        return false
+    }
+    for _, point in name {
+        if unicode.IsControl(point) {
+            return false
+        }
+    }
+    let end = name.len()
+    var start = 0
+    for var i = 0; i <= end; i += 1 {
+        if i < end {
+            let value = name[i]
+            if value == 92 || value == 58 || value == 34 || value == 60 || value == 62 || value == 124 || value == 63 || value == 42 {
+                return false
+            }
+            if value != 47 {
+                continue
+            }
+        }
+        let component = name[start:i]
+        if component == "" || component == "." || component == ".." {
+            return false
+        }
+        if component[component.len() - 1] == 32 || component[component.len() - 1] == 46 || device(component) {
+            return false
+        }
+        start = i + 1
+    }
+    return true
 }

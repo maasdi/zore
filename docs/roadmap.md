@@ -1,13 +1,12 @@
 # Implementation roadmap
 
-Issue [#224](https://github.com/maasdi/zore/issues/224) provides gzip I/O under
-§37.26 and USTAR/stored ZIP I/O under §37.28. Archive readers expose owned
-metadata and bounded entry streams; generic writers preserve their concrete
-sink for ordered finalization. Limits, checksums, partial output and cleanup are
-explicit. Shared IEEE CRC32 is in §37.27. ZIP DEFLATE, ZIP64, GNU/PAX/sparse TAR,
-links, special nodes and extraction remain deferred. See the
-[archive guide](archives.md), [conformance](../tests/conformance/archives.md)
-and [remaining design](design/archives.md).
+Issue [#224](https://github.com/maasdi/zore/issues/224) provides streaming gzip,
+USTAR and classic stored/DEFLATE ZIP I/O, plus confined extraction into new
+directories on Linux/macOS/Windows (§§37.26–37.30). Raw DEFLATE is shared below gzip and
+archive policy; CRC32 remains in `std/hash/crc32`. Extraction validates the whole
+archive in private staging before no-replace publication, counts implicit nodes
+and rejects aliases, duplicates and links. Windows extraction uses a handle-relative provider. Extended formats and existing-tree overwrite policies remain
+[follow-ups](design/archives.md). See the [archive guide](archives.md).
 
 Issue [#225](https://github.com/maasdi/zore/issues/225) adds
 `std/encoding/csv` under locked §37.25: RFC 4180 records read one at a time

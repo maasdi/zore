@@ -66,12 +66,23 @@ jobs:
         run: |
           clang --version
           rustc --version
+      - name: macOS inherited ACL confinement
+        if: runner.os == 'macOS'
+        run: cargo test --locked -p zore-runtime rejects_inherited_acl_grants_before_creating_staging -- --nocapture
+      - name: Windows confined filesystem regressions
+        if: runner.os == 'Windows'
+        run: cargo test --locked -p zore-runtime windows_staged_tree -- --nocapture
+      - name: Windows extraction ownership and cleanup
+        if: runner.os == 'Windows'
+        run: cargo test --locked --test native archive_followup -- --nocapture
       - name: Regex differential oracle
         run: python tests/hardening/regexp_oracle.py
       - name: Gzip interoperability oracle
         run: python tests/hardening/gzip_oracle.py
       - name: Archive interoperability oracle
         run: python tests/hardening/archive_oracle.py
+      - name: Extraction interoperability and rollback oracle
+        run: python tests/hardening/extraction_oracle.py
       - name: Python harness tests
         shell: bash
         run: |
