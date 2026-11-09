@@ -11655,7 +11655,8 @@ ACL is never modified.
 `nodeLimit` is in `[0, 65534]`, counts files and implicit/explicit directories,
 and excludes the root. Relative names are local, at most 1024 UTF-8 bytes and
 64 components. Unsupported OS/filesystem confinement or atomic publication
-operations fail closed. The first provider supports Linux and macOS; Windows
+operations fail closed. The first provider supports x86_64/aarch64 Linux and
+macOS; other architectures fail before filesystem work. Windows
 support requires a separately verified handle-relative provider and returns an
 explicit unsupported error until that provider is implemented.
 
