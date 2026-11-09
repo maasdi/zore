@@ -1,5 +1,8 @@
 # Compiler testing
 
+Seeded random numbers have fixed-sequence, bounds, copy and panic runs in
+`tests/codegen/rand.rs`; see `conformance/rand.md`.
+
 Regular expressions have parser/VM/lifecycle tests in the runtime,
 `tests/packages/regexp.rs` for ownership, visibility and async classification,
 and bounded native runs in `tests/codegen/regexp.rs` for captures, Unicode,

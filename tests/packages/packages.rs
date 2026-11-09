@@ -2037,3 +2037,29 @@ func main() {}
 }
 
 mod sqlite;
+
+#[test]
+fn seeded_generators_need_a_var_and_keep_their_state_private() {
+    accepts(&[(
+        "main.ore",
+        "package main\nimport \"std/math/rand\"\nfunc draw(r mut rand.Rand) int { return r.IntN(6) }\nfunc main() {\n    var r = rand.New(1)\n    var items = Array<string>{\"a\", \"b\"}\n    rand.Shuffle(r, items[:])\n    println(draw(r) + r.IntBetween(1, 2))\n    let _ = r.Float64()\n}\n",
+    )]);
+    for (body, message) in [
+        ("let r = rand.New(1)\n    println(r.IntN(6))", "mut"),
+        ("var r = rand.New(1)\n    println(r.s0)", "not exported"),
+        (
+            "let r = rand.Rand{s0: 1, s1: 2, s2: 3, s3: 4}\n    _ = r",
+            "not exported",
+        ),
+        ("var r = rand.New(-1)\n    println(r.IntN(6))", "uint64"),
+        (
+            "var r = rand.New(1)\n    var tasks = Array<Task<int>>{}\n    rand.Shuffle(r, tasks[:])",
+            "copyable",
+        ),
+    ] {
+        rejects(
+            &[("main.ore", &main_with("import \"std/math/rand\"", body))],
+            message,
+        );
+    }
+}
