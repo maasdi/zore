@@ -30,6 +30,7 @@ mod log;
 mod map_entries;
 mod mixed_bindings;
 mod performance;
+mod rand;
 mod regexp;
 mod review_regressions;
 mod rolling;

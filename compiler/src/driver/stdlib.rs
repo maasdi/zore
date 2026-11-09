@@ -34,6 +34,7 @@ bundled! {
     "maps" => ["maps.ore"],
     "mime" => ["mime.ore"],
     "math" => ["math.ore"],
+    "math/rand" => ["rand.ore"],
     "net" => ["net.ore"],
     "net/url" => ["url.ore", "absolute.ore"],
     "net/http" => ["header.ore", "cookie.ore", "form.ore", "file.ore", "multipart.ore", "router.ore", "exchange.ore", "server.ore", "convenience.ore", "client.ore"],

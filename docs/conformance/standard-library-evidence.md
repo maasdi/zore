@@ -15,7 +15,7 @@ inspect handle removal, untaken pipe closure and reaped child state. These cases
 use a Rust child fixture on each host rather than a Unix shell. They establish
 direct-child behavior, with no descendant process-tree guarantee.
 
-[compiler/src/driver/stdlib.rs](../../compiler/src/driver/stdlib.rs) registers exactly 40 bundled package paths: `std/bufio`, `std/bytes`, `std/context`, `std/crypto/hmac`, `std/crypto/rand`, `std/crypto/sha1`, `std/crypto/sha256`, `std/crypto/sha512`, `std/crypto/subtle`, `std/errors`, `std/encoding/base64`, `std/encoding/binary`, `std/encoding/hex`, `std/encoding/json`, `std/flag`, `std/fmt`, `std/io`, `std/log`, `std/log/rolling`, `std/maps`, `std/mime`, `std/math`, `std/net`, `std/net/url`, `std/net/http`, `std/os`, `std/os/exec`, `std/os/signal`, `std/path`, `std/path/filepath`, `std/regexp`, `std/slices`, `std/sort`, `std/strconv`, `std/strings`, `std/sync`, `std/testing`, `std/time`, `std/unicode`, and `std/unicode/utf8`. These paths bundle `.ore` sources, with selected runtime declarations. `path/filepath` substitutes a Windows source file on Windows. Cargo sets `autotests = false`; target registrations are explicit in [compiler/Cargo.toml](../../compiler/Cargo.toml). Native tests named below are compiled under its `native` target through modules declared in `tests/codegen/native.rs`; HTTP, JSON, signal, URL/client, log/rolling and other nested suites are not standalone Cargo targets. The external crypto, TLS and SQLite packages are maintained native-adapter examples, not part of the 40 bundled packages.
+[compiler/src/driver/stdlib.rs](../../compiler/src/driver/stdlib.rs) registers exactly 41 bundled package paths: `std/bufio`, `std/bytes`, `std/context`, `std/crypto/hmac`, `std/crypto/rand`, `std/crypto/sha1`, `std/crypto/sha256`, `std/crypto/sha512`, `std/crypto/subtle`, `std/errors`, `std/encoding/base64`, `std/encoding/binary`, `std/encoding/hex`, `std/encoding/json`, `std/flag`, `std/fmt`, `std/io`, `std/log`, `std/log/rolling`, `std/maps`, `std/mime`, `std/math`, `std/math/rand`, `std/net`, `std/net/url`, `std/net/http`, `std/os`, `std/os/exec`, `std/os/signal`, `std/path`, `std/path/filepath`, `std/regexp`, `std/slices`, `std/sort`, `std/strconv`, `std/strings`, `std/sync`, `std/testing`, `std/time`, `std/unicode`, and `std/unicode/utf8`. These paths bundle `.ore` sources, with selected runtime declarations. `path/filepath` substitutes a Windows source file on Windows. Cargo sets `autotests = false`; target registrations are explicit in [compiler/Cargo.toml](../../compiler/Cargo.toml). Native tests named below are compiled under its `native` target through modules declared in `tests/codegen/native.rs`; HTTP, JSON, signal, URL/client, log/rolling and other nested suites are not standalone Cargo targets. The external crypto, TLS and SQLite packages are maintained native-adapter examples, not part of the 41 bundled packages.
 
 | §37 contract family and supplied source/API | Registered executable assertion and observed behavior | Boundary or exclusion |
 |---|---|---|
@@ -59,6 +59,16 @@ deterministic pattern/input cases, anchored and empty matches included, with
 an independent engine. See the
 [conformance map](../../tests/conformance/regexp.md) for the supported subset;
 PCRE completeness, flags/properties, streaming and helper cancellation are excluded.
+
+## Seeded random numbers
+
+Issue #223 implements §37.24 in `std/math/rand` as plain Zore source.
+[Native tests](../../tests/codegen/rand.rs) compare fixed seeds with sequences
+computed independently in Python from the locked algorithm, check bounds,
+coverage, edge cases, copies and panics, and use both `rand` packages in one
+file through an import name. [Package checks](../../tests/packages/packages.rs)
+reject `let` generators, private-field access, negative seeds and shuffling
+non-copyable values. See the [conformance map](../../tests/conformance/rand.md).
 
 ## External native package status outside §37
 

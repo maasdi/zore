@@ -314,23 +314,81 @@ fn import_declarations_are_checked() {
     );
     for (syntax, message) in [
         (
-            "import s \"myapp/shapes\"\n",
-            "expected a double-quoted import path",
-        ),
-        (
             "import . \"myapp/shapes\"\n",
-            "expected a double-quoted import path",
+            "dot imports are not supported",
         ),
         (
             "import _ \"myapp/shapes\"\n",
-            "expected a double-quoted import path",
+            "blank imports are not supported",
         ),
+        (
+            "import func \"myapp/shapes\"\n",
+            "`func` is a keyword and cannot be used as an import name",
+        ),
+        ("import s\n", "expected a double-quoted import path"),
         (
             "import (\n\"myapp/shapes\"\n)\n",
             "grouped imports are not supported",
         ),
     ] {
         rejects(&with_shapes(&main_with(syntax, "println(1)")), message);
+    }
+}
+
+#[test]
+fn an_import_name_replaces_the_last_path_segment_in_its_file() {
+    let util = |package: &str| format!("package util\nfunc {package}() int {{ return 1 }}\n");
+    let (a, b) = (util("A"), util("B"));
+    let both = |main: &str| {
+        vec![
+            ("main.ore", main.to_string()),
+            ("a/util/u.ore", a.clone()),
+            ("b/util/u.ore", b.clone()),
+            (
+                "other.ore",
+                "package main\nimport \"myapp/a/util\"\nfunc other() int { return util.A() }\n"
+                    .to_string(),
+            ),
+        ]
+    };
+    let accepted = both(
+        "package main\nimport \"myapp/a/util\"\nimport second \"myapp/b/util\"\nimport cryptorand \"std/crypto/rand\"\nfunc main() {\n    println(util.A() + second.B() + other())\n    let _, _ = cryptorand.Text()\n}\n",
+    );
+    let accepted: Vec<(&str, &str)> = accepted.iter().map(|(p, t)| (*p, t.as_str())).collect();
+    accepts(&accepted);
+    accepts(&with_shapes(&main_with(
+        "import shapes \"myapp/shapes\"\nimport strings \"std/strings\"\n",
+        "println(strings.ToUpper(\"a\"))\n    let _ = shapes.Area(shapes.Circle{Radius: 1})",
+    )));
+    for (main, message) in [
+        (
+            "package main\nimport second \"myapp/b/util\"\nfunc main() { println(util.B() + other()) }\n",
+            "cannot find `util` in this scope",
+        ),
+        (
+            "package main\nimport second \"myapp/b/util\"\nfunc main() { println(other()) }\n",
+            "package `second` is imported and not used",
+        ),
+        (
+            "package main\nimport other \"myapp/b/util\"\nfunc main() { println(other.B()) }\n",
+            "import `other` conflicts with a declaration of the same name",
+        ),
+        (
+            "package main\nimport second \"myapp/a/util\"\nimport second \"myapp/b/util\"\nfunc main() { println(second.B() + other()) }\n",
+            "two imports in this file are both named `second`",
+        ),
+        (
+            "package main\nimport string \"myapp/b/util\"\nfunc main() { println(other()) }\n",
+            "import `string` shadows a predeclared name",
+        ),
+        (
+            "package main\nimport second \"myapp/b/util\"\nfunc main() { println(second.A() + other()) }\n",
+            "package `second` does not declare `A`",
+        ),
+    ] {
+        let files = both(main);
+        let files: Vec<(&str, &str)> = files.iter().map(|(p, t)| (*p, t.as_str())).collect();
+        rejects(&files, message);
     }
 }
 
@@ -1981,3 +2039,29 @@ func main() {}
 }
 
 mod sqlite;
+
+#[test]
+fn seeded_generators_need_a_var_and_keep_their_state_private() {
+    accepts(&[(
+        "main.ore",
+        "package main\nimport \"std/math/rand\"\nfunc draw(r mut rand.Rand) int { return r.IntN(6) }\nfunc main() {\n    var r = rand.New(1)\n    var items = Array<string>{\"a\", \"b\"}\n    rand.Shuffle(r, items[:])\n    println(draw(r) + r.IntBetween(1, 2))\n    let _ = r.Float64()\n}\n",
+    )]);
+    for (body, message) in [
+        ("let r = rand.New(1)\n    println(r.IntN(6))", "mut"),
+        ("var r = rand.New(1)\n    println(r.s0)", "not exported"),
+        (
+            "let r = rand.Rand{s0: 1, s1: 2, s2: 3, s3: 4}\n    _ = r",
+            "not exported",
+        ),
+        ("var r = rand.New(-1)\n    println(r.IntN(6))", "uint64"),
+        (
+            "var r = rand.New(1)\n    var tasks = Array<Task<int>>{}\n    rand.Shuffle(r, tasks[:])",
+            "copyable",
+        ),
+    ] {
+        rejects(
+            &[("main.ore", &main_with("import \"std/math/rand\"", body))],
+            message,
+        );
+    }
+}

@@ -15,6 +15,9 @@ native package with Python gzip/zlib across stored/fixed/dynamic blocks,
 optional headers, concatenation, checksum/truncation and bound failures.
 See `conformance/gzip.md`.
 
+Seeded random numbers have fixed-sequence, bounds, copy and panic runs in
+`tests/codegen/rand.rs`; see `conformance/rand.md`.
+
 Regular expressions have parser/VM/lifecycle tests in the runtime,
 `tests/packages/regexp.rs` for ownership, visibility and async classification,
 and bounded native runs in `tests/codegen/regexp.rs` for captures, Unicode,

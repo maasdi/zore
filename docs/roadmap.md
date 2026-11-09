@@ -1,10 +1,10 @@
 # Implementation roadmap
 
 Issue [#224](https://github.com/maasdi/zore/issues/224) provides gzip I/O under
-§37.24 and USTAR/stored ZIP I/O under §37.26. Archive readers expose owned
+§37.25 and USTAR/stored ZIP I/O under §37.27. Archive readers expose owned
 metadata and bounded entry streams; generic writers preserve their concrete
 sink for ordered finalization. Limits, checksums, partial output and cleanup are
-explicit. Shared IEEE CRC32 is in §37.25. ZIP DEFLATE, ZIP64, GNU/PAX/sparse TAR,
+explicit. Shared IEEE CRC32 is in §37.26. ZIP DEFLATE, ZIP64, GNU/PAX/sparse TAR,
 links, special nodes and extraction remain deferred. See the
 [archive guide](archives.md), [conformance](../tests/conformance/archives.md)
 and [remaining design](design/archives.md).
