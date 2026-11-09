@@ -735,6 +735,9 @@ impl Tree {
             ));
         }
         let (parent, destination) = parent_path(destination)?;
+        Self::from_parent(parent, destination, limit)
+    }
+    fn from_parent(parent: File, destination: Vec<u16>, limit: usize) -> io::Result<Self> {
         let security = Identity::current()?;
         let mut envelope = None;
         for _ in 0..100 {
@@ -1246,9 +1249,11 @@ mod tests {
         let root = Sandbox::new();
         let outside = Sandbox::new();
         std::fs::create_dir(root.0.join("parent")).unwrap();
-        let mut tree = Tree::create(root.0.join("parent/result").to_str().unwrap(), 3).unwrap();
+        let (parent, destination) =
+            parent_path(root.0.join("parent/result").to_str().unwrap()).unwrap();
         std::fs::rename(root.0.join("parent"), root.0.join("moved")).unwrap();
         junction(&root.0.join("parent"), &outside.0);
+        let mut tree = Tree::from_parent(parent, destination, 3).unwrap();
         tree.create_file("file").unwrap();
         tree.file().unwrap().write_all(b"anchored").unwrap();
         tree.finish_file().unwrap();
@@ -1259,6 +1264,46 @@ mod tests {
         );
         assert_eq!(outside.children(), 0);
         std::fs::remove_dir(root.0.join("parent")).unwrap();
+    }
+    #[test]
+    fn windows_staged_tree_active_parent_cannot_redirect_publication() {
+        let root = Sandbox::new();
+        let outside = Sandbox::new();
+        std::fs::create_dir(root.0.join("parent")).unwrap();
+        let mut tree = Tree::create(root.0.join("parent/result").to_str().unwrap(), 3).unwrap();
+        let moved = match std::fs::rename(root.0.join("parent"), root.0.join("moved")) {
+            Ok(()) => {
+                junction(&root.0.join("parent"), &outside.0);
+                true
+            }
+            Err(error) if matches!(error.raw_os_error(), Some(5 | 32)) => {
+                assert!(root.0.join("parent").is_dir());
+                assert!(!root.0.join("moved").exists());
+                let attempt = Command::new("cmd.exe")
+                    .args(["/d", "/c", "mklink", "/J"])
+                    .arg(root.0.join("parent"))
+                    .arg(&outside.0)
+                    .output()
+                    .unwrap();
+                assert!(!attempt.status.success());
+                false
+            }
+            Err(error) => panic!("unexpected parent replacement error: {error}"),
+        };
+        tree.create_file("file").unwrap();
+        tree.file().unwrap().write_all(b"anchored").unwrap();
+        tree.finish_file().unwrap();
+        tree.commit().unwrap();
+        let destination = root.0.join(if moved {
+            "moved/result/file"
+        } else {
+            "parent/result/file"
+        });
+        assert_eq!(std::fs::read(destination).unwrap(), b"anchored");
+        assert_eq!(outside.children(), 0);
+        if moved {
+            std::fs::remove_dir(root.0.join("parent")).unwrap();
+        }
     }
     #[test]
     fn windows_staged_tree_replacement_is_not_deleted_during_cleanup() {

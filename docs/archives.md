@@ -185,9 +185,10 @@ New nodes receive protected DACLs granting access only to the effective user
 and LocalSystem, checked before payload writes. Publication and deletion use
 handles. Disk/UNC absolute paths, ordinary relative paths and canonical verbatim
 forms work; drive-relative, root-relative and device namespaces are rejected. Filesystems
-without required no-follow/atomic no-replace operations also fail closed. Created
+without required no-follow/atomic no-replace operations also fail closed. Unix created
 nodes must report the effective owner and exact private mode before payload is
-written; filesystems that silently ignore these permissions are rejected.
+written; Windows checks actual ownership and protected DACL rights. Filesystems
+that silently ignore these permissions are rejected.
 Staging directories are private against other users; mutation by the process
 owner or privileged users is outside this protection. Normal error/panic/drop
 paths clean up; a crash may leave private staging. Publication makes no crash
