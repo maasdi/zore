@@ -181,7 +181,9 @@ directories 0700; archive modes, ownership, times and executable bits are ignore
 Extraction is implemented on x86_64/aarch64 Linux and macOS. Other architectures
 fail before filesystem work. Windows returns an explicit
 unsupported error until a handle-relative provider is verified. Filesystems
-without required no-follow/atomic no-replace operations also fail closed.
+without required no-follow/atomic no-replace operations also fail closed. Created
+nodes must report the effective owner and exact private mode before payload is
+written; filesystems that silently ignore these permissions are rejected.
 Staging directories are private against other users; mutation by the process
 owner or privileged users is outside this protection. Normal error/panic/drop
 paths clean up; a crash may leave private staging. Publication makes no crash

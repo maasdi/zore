@@ -34,6 +34,7 @@ const REMOVE_DIR: c_int = 0x80;
 const STAT_NOFOLLOW: c_int = 0x20;
 
 unsafe extern "C" {
+    fn geteuid() -> u32;
     fn openat(fd: c_int, path: *const c_char, flags: c_int, ...) -> c_int;
     fn mkdirat(fd: c_int, path: *const c_char, mode: u32) -> c_int;
     fn unlinkat(fd: c_int, path: *const c_char, flags: c_int) -> c_int;
@@ -128,6 +129,19 @@ fn absent(parent: &File, child: &CString) -> io::Result<()> {
         Err(error)
     }
 }
+fn make_private(file: &File, mode: u32) -> io::Result<()> {
+    file.set_permissions(Permissions::from_mode(mode))?;
+    let metadata = file.metadata()?;
+    // SAFETY: geteuid has no arguments or memory contract.
+    let owner = unsafe { geteuid() };
+    if metadata.uid() != owner || metadata.mode() & 0o7777 != mode {
+        return Err(invalid(
+            "filesystem did not establish private ownership and permissions",
+        ));
+    }
+    Ok(())
+}
+
 fn identity(file: &File) -> io::Result<(u64, u64)> {
     let meta = file.metadata()?;
     Ok((meta.dev(), meta.ino()))
@@ -160,7 +174,6 @@ fn parent_path(destination: &str) -> io::Result<(File, CString)> {
 #[cfg(target_os = "macos")]
 fn private_parent(parent: &File) -> io::Result<()> {
     unsafe extern "C" {
-        fn geteuid() -> u32;
         fn acl_get_fd_np(fd: c_int, kind: c_int) -> *mut c_void;
         fn acl_get_entry(acl: *mut c_void, which: c_int, entry: *mut *mut c_void) -> c_int;
         fn acl_free(acl: *mut c_void) -> c_int;
@@ -243,10 +256,10 @@ impl Tree {
         let envelope_name = selected.ok_or_else(|| invalid("no staging name available"))?;
         let opened = (|| {
             let envelope = open(&parent, &envelope_name, DIRECTORY)?;
-            envelope.set_permissions(Permissions::from_mode(0o700))?;
+            make_private(&envelope, 0o700)?;
             mkdir(&envelope, &name("tree")?)?;
             let root = open(&envelope, &name("tree")?, DIRECTORY)?;
-            root.set_permissions(Permissions::from_mode(0o700))?;
+            make_private(&root, 0o700)?;
             Ok::<_, io::Error>((envelope, root))
         })();
         let (envelope, root) = match opened {
@@ -315,7 +328,7 @@ impl Tree {
                 directory: true,
             });
             let next = open(&current, &child, DIRECTORY)?;
-            next.set_permissions(Permissions::from_mode(0o700))?;
+            make_private(&next, 0o700)?;
             let id = identity(&next)?;
             if self.identities.insert(id, path.clone()).is_some() {
                 return Err(invalid("filesystem name alias"));
@@ -350,7 +363,7 @@ impl Tree {
             path: path.into(),
             directory: false,
         });
-        file.set_permissions(Permissions::from_mode(0o600))?;
+        make_private(&file, 0o600)?;
         self.active = Some(file);
         Ok(())
     }
