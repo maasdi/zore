@@ -15,7 +15,7 @@ inspect handle removal, untaken pipe closure and reaped child state. These cases
 use a Rust child fixture on each host rather than a Unix shell. They establish
 direct-child behavior, with no descendant process-tree guarantee.
 
-[compiler/src/driver/stdlib.rs](../../compiler/src/driver/stdlib.rs) registers exactly 41 bundled package paths: `std/bufio`, `std/bytes`, `std/context`, `std/crypto/hmac`, `std/crypto/rand`, `std/crypto/sha1`, `std/crypto/sha256`, `std/crypto/sha512`, `std/crypto/subtle`, `std/errors`, `std/encoding/base64`, `std/encoding/binary`, `std/encoding/hex`, `std/encoding/json`, `std/flag`, `std/fmt`, `std/io`, `std/log`, `std/log/rolling`, `std/maps`, `std/mime`, `std/math`, `std/math/rand`, `std/net`, `std/net/url`, `std/net/http`, `std/os`, `std/os/exec`, `std/os/signal`, `std/path`, `std/path/filepath`, `std/regexp`, `std/slices`, `std/sort`, `std/strconv`, `std/strings`, `std/sync`, `std/testing`, `std/time`, `std/unicode`, and `std/unicode/utf8`. These paths bundle `.ore` sources, with selected runtime declarations. `path/filepath` substitutes a Windows source file on Windows. Cargo sets `autotests = false`; target registrations are explicit in [compiler/Cargo.toml](../../compiler/Cargo.toml). Native tests named below are compiled under its `native` target through modules declared in `tests/codegen/native.rs`; HTTP, JSON, signal, URL/client, log/rolling and other nested suites are not standalone Cargo targets. The external crypto, TLS and SQLite packages are maintained native-adapter examples, not part of the 41 bundled packages.
+[compiler/src/driver/stdlib.rs](../../compiler/src/driver/stdlib.rs) registers exactly 42 bundled package paths: `std/bufio`, `std/bytes`, `std/context`, `std/crypto/hmac`, `std/crypto/rand`, `std/crypto/sha1`, `std/crypto/sha256`, `std/crypto/sha512`, `std/crypto/subtle`, `std/errors`, `std/encoding/base64`, `std/encoding/binary`, `std/encoding/csv`, `std/encoding/hex`, `std/encoding/json`, `std/flag`, `std/fmt`, `std/io`, `std/log`, `std/log/rolling`, `std/maps`, `std/mime`, `std/math`, `std/math/rand`, `std/net`, `std/net/url`, `std/net/http`, `std/os`, `std/os/exec`, `std/os/signal`, `std/path`, `std/path/filepath`, `std/regexp`, `std/slices`, `std/sort`, `std/strconv`, `std/strings`, `std/sync`, `std/testing`, `std/time`, `std/unicode`, and `std/unicode/utf8`. These paths bundle `.ore` sources, with selected runtime declarations. `path/filepath` substitutes a Windows source file on Windows. Cargo sets `autotests = false`; target registrations are explicit in [compiler/Cargo.toml](../../compiler/Cargo.toml). Native tests named below are compiled under its `native` target through modules declared in `tests/codegen/native.rs`; HTTP, JSON, signal, URL/client, log/rolling and other nested suites are not standalone Cargo targets. The external crypto, TLS and SQLite packages are maintained native-adapter examples, not part of the 42 bundled packages.
 
 | §37 contract family and supplied source/API | Registered executable assertion and observed behavior | Boundary or exclusion |
 |---|---|---|
@@ -69,6 +69,18 @@ coverage, edge cases, copies and panics, and use both `rand` packages in one
 file through an import name. [Package checks](../../tests/packages/packages.rs)
 reject `let` generators, private-field access, negative seeds and shuffling
 non-copyable values. See the [conformance map](../../tests/conformance/rand.md).
+
+## CSV records
+
+Issue #225 implements §37.25 in `std/encoding/csv` as plain Zore source.
+[Native tests](../../tests/codegen/csv.rs) cover quoting, line endings, empty
+fields, comments, options, malformed input with line and column, limits,
+sticky errors, short, failing and stalled sources and sinks, and record
+ownership, all with leak checking on. A table written by Python's `csv`
+module, kept as a fixture, is read and written back byte for byte.
+[Package checks](../../tests/packages/packages.rs) require `var` readers and
+writers and keep their fields private. See the
+[conformance map](../../tests/conformance/csv.md).
 
 ## External native package status outside §37
 

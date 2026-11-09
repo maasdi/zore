@@ -1,5 +1,9 @@
 # Compiler testing
 
+CSV reading and writing have native runs, including a Python-written
+fixture that must round-trip byte for byte, in `tests/codegen/csv.rs`; see
+`conformance/csv.md`.
+
 Seeded random numbers have fixed-sequence, bounds, copy and panic runs in
 `tests/codegen/rand.rs`; see `conformance/rand.md`.
 
