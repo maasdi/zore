@@ -30,6 +30,7 @@ bundled! {
     "flag" => ["flag.ore"],
     "fmt" => ["fmt.ore"],
     "hash/crc32" => ["crc32.ore"],
+    "html" => ["html.ore"],
     "io" => ["io.ore"],
     "log" => ["log.ore"],
     "log/rolling" => ["rolling.ore"],

@@ -1,5 +1,13 @@
 # Implementation roadmap
 
+Issue [#226](https://github.com/maasdi/zore/issues/226) adds
+`std/html.EscapeString` under locked §37.31. It escapes ordinary HTML text and
+fixed quoted text attributes, preserves other UTF-8 bytes, and returns an
+independent immutable string. Script/style/URL policies and template rendering
+are separate contracts. See the [guide](html.md),
+[conformance](../tests/conformance/html.md) and deferred, application-driven
+[template decision](design/templates.md) tracked by Q16.
+
 Issue [#224](https://github.com/maasdi/zore/issues/224) provides streaming gzip,
 USTAR and classic stored/DEFLATE ZIP I/O, plus confined extraction into new
 directories on Linux/macOS/Windows (§§37.26–37.30). Raw DEFLATE is shared below gzip and
