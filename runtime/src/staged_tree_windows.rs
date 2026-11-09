@@ -541,6 +541,8 @@ fn root_handle(path: &OsStr) -> io::Result<File> {
     Ok(file)
 }
 fn parent_path(destination: &str) -> io::Result<(File, Vec<u16>)> {
+    let normalized = destination.replace('/', "\\");
+    let destination = normalized.as_str();
     let basename = destination
         .rsplit(['/', '\\'])
         .next()
@@ -1319,5 +1321,20 @@ mod tests {
         std::fs::remove_file(file).unwrap();
         tree.abort().unwrap();
         assert_eq!(root.children(), 0);
+    }
+    #[test]
+    fn windows_staged_tree_canonical_paths_accept_mixed_separators() {
+        let root = Sandbox::new();
+        let destination = format!("{}/result", root.0.display());
+        let mut tree = Tree::create(&destination, 1).unwrap();
+        tree.create_file("é file").unwrap();
+        tree.file().unwrap().write_all(b"canonical").unwrap();
+        tree.finish_file().unwrap();
+        tree.commit().unwrap();
+        assert_eq!(
+            std::fs::read(root.0.join("result/é file")).unwrap(),
+            b"canonical"
+        );
+        assert_eq!(root.children(), 1);
     }
 }
