@@ -1,12 +1,18 @@
 # Implementation roadmap
 
 Issue [#224](https://github.com/maasdi/zore/issues/224) begins with
-`std/compress/gzip` under locked §37.25: streaming owned I/O, inclusive byte and
+`std/compress/gzip` under locked §37.26: streaming owned I/O, inclusive byte and
 member ceilings, CRC32/ISIZE validation, explicit writer finalization and
 partial-output/error cleanup. It is implemented in Zore with no provider or
 new dependency. ZIP/TAR and extraction remain deferred; proposed API boundaries
 and safe extraction policies are recorded in [archive follow-ups](design/archives.md).
 See the [gzip guide](gzip.md) and [conformance](../tests/conformance/gzip.md).
+
+Issue [#225](https://github.com/maasdi/zore/issues/225) adds
+`std/encoding/csv` under locked §37.25: RFC 4180 records read one at a time
+from an `io.Reader` and written to an `io.Writer`, with size and field limits,
+line-and-column errors, and records the caller owns. See the
+[guide](csv.md) and [conformance](../tests/conformance/csv.md).
 
 Issue [#222](https://github.com/maasdi/zore/issues/222) adds `std/regexp` under
 locked §37.23: owned compilation and shared handles, rune-based matching with

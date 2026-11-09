@@ -17,6 +17,16 @@ including those shipped in `0.1.0-alpha.1`, are not split by release.
   writer uses bounded LZ77 search. Implementation is Zore with no new dependency
   or native provider. ZIP/TAR and extraction remain follow-ups under #224.
 
+### CSV
+
+- Added `std/encoding/csv` (§37.25): `NewReader` reads RFC 4180 records one
+  at a time from any `io.Reader`, and `NewWriter` writes them to any
+  `io.Writer`, quoting only fields that need it. Options choose the
+  delimiter, comment lines, the field count, CR LF output, and limits on
+  record size and field count. Errors name the line and column and stay
+  sticky; a record cut off by a failing source is never returned, and every
+  record is a new array the caller owns.
+
 ### Seeded random numbers
 
 - Added `std/math/rand` (§37.24): `New(seed)` makes a repeatable generator

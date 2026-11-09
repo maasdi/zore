@@ -6989,8 +6989,9 @@ handles, temporary storage, renames, and folder walks), §37.16 (HTTP
 cookies and URL-encoded forms), §37.17 (media types and file serving),
 §37.18 (multipart forms and uploads), §37.19 (secure random bytes and
 constant-time comparison), §37.20 (hashes and HMAC), §37.21
-(command-line options), and §37.22 (test helpers and benchmarks). Further
-packages are TBD.
+(command-line options), §37.22 (test helpers and benchmarks), §37.23
+(regular expressions), §37.24 (seeded random numbers), and §37.25 (CSV
+records). Further packages are TBD.
 
 ## 37.1 `println` — LOCKED
 
@@ -11342,7 +11343,138 @@ Compiler impact: bundle `std/math/rand` as ordinary Zore source. No native
 code, runtime support, syntax or dependency is added. Conformance:
 `tests/conformance/rand.md`, native execution tests and package checks.
 
-## 37.25 Streaming gzip — LOCKED
+## 37.25 CSV records — LOCKED
+
+`std/encoding/csv` reads and writes comma-separated values as described by
+RFC 4180, the format spreadsheets and databases use to import and export
+tables. A reader takes bytes from any `io.Reader` one record at a time, so a
+large file never has to fit in memory; a writer sends records to any
+`io.Writer`.
+
+```ore
+import "std/encoding/csv"
+import "std/io"
+import "std/os"
+
+func total(path string) (int, error) {
+    let file = os.Open(path)?
+    var reader = csv.NewReader(file)
+    var sum = 0
+    for {
+        let record, err = reader.Read()
+        if err == io.EOF {
+            return sum, nil
+        }
+        if err != nil {
+            return 0, err
+        }
+        sum += record.len()
+    }
+}
+```
+
+| Name | Behavior |
+| --- | --- |
+| `type ReadOptions struct { Delimiter byte; Comment byte; FieldsPerRecord int; MaxRecordBytes int; MaxFields int }` | The byte between fields, the byte that starts a comment line (`0` for none), how many fields each record must have, and the size limits below |
+| `DefaultReadOptions() ReadOptions` | `Delimiter` `,` (44), `Comment` `0`, `FieldsPerRecord` `0`, `MaxRecordBytes` 1 MiB (`1048576`), `MaxFields` `4096` |
+| `type Reader struct` with private fields | One input's reading state |
+| `NewReader(source own io.Reader) Reader` | A reader with `DefaultReadOptions()` |
+| `NewReaderWith(source own io.Reader, options ReadOptions) (Reader, error)` | A reader with `options`; invalid options are an error (below) |
+| `(r mut Reader) Read() (Array<string>, error)` | The next record; `io.EOF` when the input has no more |
+| `(r mut Reader) ReadAll(maxRecords int) (Array<Array<string>>, error)` | Every remaining record; the end of input is not an error. `maxRecords < 1` is an error. Reading a record past `maxRecords` consumes it and stops the reader with `csv.Reader.ReadAll: more than N records`, which every later call returns |
+| `(r Reader) Line() int` | The line on which the last record returned by `Read` started, counting from 1; `0` before the first; a failed `Read` does not change it |
+| `type WriteOptions struct { Delimiter byte; CRLF bool }` | The byte between fields and whether lines end with CR LF instead of LF |
+| `DefaultWriteOptions() WriteOptions` | `Delimiter` `,`, `CRLF` `false` |
+| `type Writer struct` with private fields | One output's writing state |
+| `NewWriter(sink own io.Writer) Writer` | A writer with `DefaultWriteOptions()` |
+| `NewWriterWith(sink own io.Writer, options WriteOptions) (Writer, error)` | A writer with `options`; an invalid `Delimiter` is an error |
+| `(w mut Writer) Write(record []string) error` | Adds one record to the writer's buffer, sending the buffer to `sink` once it holds 64 KiB or more |
+| `(w mut Writer) WriteAll(records []Array<string>) error` | Writes each record, then `Flush` |
+| `(w mut Writer) Flush() error` | Sends everything buffered to `sink` |
+| `(w Writer) Buffered() int` | How many bytes wait in the buffer |
+
+**Options.** A delimiter or comment byte must be ASCII (below 128) and must not
+be `0`, `"`, CR or LF; the comment byte must differ from the delimiter.
+`FieldsPerRecord` is `-1` for any count, `0` to take the count of the first
+record and require it of every later one, or a positive count every record
+must have. `NewReaderWith` fails with `csv.NewReaderWith: invalid Delimiter`,
+`csv.NewReaderWith: invalid Comment`,
+`csv.NewReaderWith: FieldsPerRecord must be -1 or more`,
+`csv.NewReaderWith: MaxRecordBytes must be positive`, or
+`csv.NewReaderWith: MaxFields must be positive`, and `NewWriterWith` with
+`csv.NewWriterWith: invalid Delimiter`. The reader or writer returned with
+such an error returns the same error from every later call.
+
+**Reading.** The input is UTF-8 text. A record is one line of fields
+separated by the delimiter. A line ends with LF or CR LF; a CR not followed by
+LF is ordinary data. The last record does not need a line ending. Empty lines,
+and lines whose first byte is the comment byte, are skipped and never return a
+record; a UTF-8 byte order mark (EF BB BF) at the very start of the input is
+skipped. A field that starts with `"` is quoted: it runs to the next `"` that
+is not doubled, `""` inside it stands for one `"`, and it may hold the
+delimiter, CR and LF, all kept exactly. After its closing quote a quoted field
+must be followed by the delimiter, a line ending or the end of input. An
+unquoted field runs to the next delimiter or line ending and must not contain
+`"`. Spaces are never trimmed. A line ending inside a quoted field counts
+toward `Line()` and toward the line numbers in errors. `a,` gives two fields,
+the second empty, and `""` alone gives one empty field.
+
+**Errors.** Reading stops at the first problem, and every later `Read` returns
+the same error. Problems in the text name the line and the column, counted in
+bytes from 1 with a skipped byte order mark included, of the byte where they
+were found:
+`csv: line L, column C: quote in unquoted field`,
+`csv: line L, column C: text after closing quote`, and
+`csv: line L, column C: quoted field not closed`, where `L` and `C` give the
+opening quote. Problems with a whole record name the line where it started:
+`csv: line L: field N is not valid UTF-8`,
+`csv: line L: record longer than M bytes`,
+`csv: line L: more than M fields`, and
+`csv: line L: record has N fields, want M`. `MaxRecordBytes` counts every
+byte of the record, quotes and delimiters included, except the line ending
+that ends it; the reader stops as soon as the limit is passed, so a hostile
+input never makes it hold more than the limit.
+
+**Short and failing input.** A source may return fewer bytes than asked; the
+reader asks again. A source error other than `io.EOF` is returned as it is,
+once any record that ended before it has been returned; a record that the
+error cut off is never returned. When the source fails before the reader
+could see the byte that decides whether the text is valid (after a closing
+quote, after a CR, or inside a UTF-8 sequence), the source error is returned
+instead of a problem with the text. A count below zero or above the space
+offered is `csv.Reader: invalid read count`, and 100 reads in a row that
+return no bytes and no error are `csv.Reader: no read progress`.
+
+**Writing.** A field is written inside quotes, with each `"` doubled, when it
+contains the delimiter, `"`, CR or LF, or begins with a space, a tab or a
+UTF-8 byte order mark; a record
+with exactly one field that is empty is written as `""` so that it is not an
+empty line. Other fields are written as they are. Fields are separated by the
+delimiter and each record ends with LF, or CR LF with `CRLF`. A record with no
+fields is `csv.Writer.Write: empty record` and writes nothing; it does not
+stop the writer. Writing to `sink` continues after short writes; a sink error
+is kept and returned by that call and every later `Write` and `Flush`, a
+count below zero or above what was offered is `csv.Writer: invalid write
+count`, and a write of zero bytes without an error is
+`csv.Writer: no write progress`. Bytes the sink did not take stay in the
+buffer. Whatever a reader without a comment byte returns, a writer with the
+same delimiter writes back as a record that reader reads again the same.
+
+**Ownership and tasks.** Every record `Read` returns is a new array the
+caller owns; the reader keeps no reference to it and never reuses it, so
+keeping or changing one record never changes another. The reader holds a
+private 64 KiB input buffer, and the writer its output buffer, and nothing
+else. `Reader` owns its source and `Writer` its sink, as `bufio.Reader` and
+`bufio.Writer` do, and both release them when dropped; call `Flush` before
+dropping a writer, because dropping does not flush. Both use ordinary `mut`
+borrowing, do not wait except inside their source or sink, and start no tasks,
+so plain and async callers use them the same way.
+
+Compiler impact: bundle `std/encoding/csv` as ordinary Zore source. No native
+code, runtime support, syntax or dependency is added. Conformance:
+`tests/conformance/csv.md`, native execution tests and package checks.
+
+## 37.26 Streaming gzip — LOCKED
 
 The first slice of #224 is `std/compress/gzip`. ZIP/TAR and extraction are
 follow-ups, not part of this implementation. This package owns RFC 1952 framing,

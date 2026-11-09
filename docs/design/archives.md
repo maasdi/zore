@@ -3,7 +3,7 @@
 Status: design proposal, not a public API or implemented archive support.
 Tracked by [#224](https://github.com/maasdi/zore/issues/224), with library breadth
 under [#210](https://github.com/maasdi/zore/issues/210). The implemented first slice
-is [streaming gzip](../gzip.md), locked in spec §37.25.
+is [streaming gzip](../gzip.md), locked in spec §37.26.
 
 ## Package and API direction
 

@@ -214,7 +214,7 @@ to the earlier executable cases, with replay and CI.
 
 ## Streaming gzip follow-up — issue #224
 
-Spec §37.25 locks `std/compress/gzip` as the first compression/archive slice.
+Spec §37.26 locks `std/compress/gzip` as the first compression/archive slice.
 The package composes owned I/O with compressed/uncompressed byte ceilings,
 member limits, explicit finalization and checksum validation. It is implemented
 in Zore with no new runtime provider or dependency. Ownership/visibility checks,

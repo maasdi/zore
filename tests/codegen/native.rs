@@ -10,6 +10,7 @@ mod channel_acceptance;
 mod conformance;
 mod controlled_runtime;
 mod crypto;
+mod csv;
 mod encoding;
 mod files;
 mod flag;
