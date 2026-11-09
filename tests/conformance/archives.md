@@ -44,3 +44,19 @@ and file/directory symlinks, case aliases and available 8.3 aliases, replacement
 identity checks, node/depth limits, destination races, renamed parents and
 cleanup. The native one-worker and panic cases run on Windows too. The complete
 Python extraction oracle runs on every host.
+
+## PAX and GNU TAR names (§37.33)
+
+| Case | Required result | Evidence |
+| --- | --- | --- |
+| Python `tarfile` PAX and GNU archives with names over 255 bytes, non-ASCII names, long directories and ignored PAX records | Full names, sizes and data | `archive_oracle.py` |
+| PAX `path` with a GNU long name and a USTAR name | The PAX name | `archive_oracle.py` |
+| PAX `size` over a zero header size; an empty `path` value | The PAX size; the USTAR name | `archive_oracle.py` |
+| Global header with ignored records; with `path` or `size` | Ignored; failure | `archive_oracle.py` |
+| `./` root and `./a.txt` | Root skipped; `a.txt` | `archive_oracle.py` |
+| Bad record length, leading zero, missing `=`, empty key, missing newline, invalid UTF-8, bad or oversized `size`, `linkpath`, `GNU.sparse.*`, non-UTF-8 `hdrcharset`, `../` path | Failure | `archive_oracle.py` |
+| Repeated `x` or `L`, extended header at the end, oversized `x` or `L`, `K`, `S` | Failure | `archive_oracle.py` |
+| Extended header bytes and the archive limit | Counted | `archive_oracle.py` |
+| `TARWriter` names of 101, 300 and 1,024 bytes and a 300-byte directory | PAX `path`; Python and Zore read them back | `archive_oracle.py`; native `long_tar_names_use_pax_and_dot_prefixes_are_removed` |
+| Writers and ZIP reading with `./a` | Rejected | `archive_oracle.py` |
+| GNU tar 1.35 `gnu`, `posix`, `oldgnu` and `ustar` archives with long paths and `./` names | Read in full | Checked locally only; CI has the Python cases |

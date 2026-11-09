@@ -39,7 +39,29 @@ func tarText(data []byte) (string, error) {
     return strings.FromBytes(data[:end])
 }
 
-func tarHeader(block []byte) (Header, error) {
+const paxLimit = 65536
+
+type tarFields struct {
+    kind byte
+    name string
+    size int
+}
+
+func tarMagic(block []byte) (bool, error) {
+    if block[257] != 117 || block[258] != 115 || block[259] != 116 || block[260] != 97 || block[261] != 114 {
+        return false, error("archive: unsupported TAR format")
+    }
+    if block[262] == 0 && block[263] == 48 && block[264] == 48 {
+        return false, nil
+    }
+    if block[262] == 32 && block[263] == 32 && block[264] == 0 {
+        return true, nil
+    }
+    return false, error("archive: unsupported TAR format")
+}
+
+func tarRecordFields(block []byte) (tarFields, error) {
+    let none = tarFields{kind: 0, name: "", size: 0}
     let expected = octal(block[148:156])?
     var sum = 0
     for var i = 0; i < tarRecord; i += 1 {
@@ -50,50 +72,179 @@ func tarHeader(block []byte) (Header, error) {
         }
     }
     if expected != sum {
-        return absent(), error("archive: TAR header checksum mismatch")
+        return none, error("archive: TAR header checksum mismatch")
     }
-    if block[257] != 117 || block[258] != 115 || block[259] != 116 || block[260] != 97 || block[261] != 114 || block[262] != 0 || block[263] != 48 || block[264] != 48 {
-        return absent(), error("archive: unsupported TAR format")
+    let gnu = tarMagic(block)?
+    let kind = block[156]
+    if kind == 49 || kind == 50 || kind == 75 {
+        return none, error("archive: TAR link target is unsupported")
     }
-    if block[156] != 0 && block[156] != 48 && block[156] != 53 {
-        return absent(), error("archive: unsupported TAR entry type")
+    if kind == 83 {
+        return none, error("archive: sparse TAR entries are unsupported")
+    }
+    if kind != 0 && kind != 48 && kind != 53 && kind != 120 && kind != 103 && kind != 76 {
+        return none, error("archive: unsupported TAR entry type")
     }
     if !allZero(block[157:257]) {
-        return absent(), error("archive: TAR link target is unsupported")
+        return none, error("archive: TAR link target is unsupported")
     }
     let _, modeErr = octal(block[100:108])
     if modeErr != nil {
-        return absent(), modeErr
+        return none, modeErr
     }
     let _, uidErr = octal(block[108:116])
     if uidErr != nil {
-        return absent(), uidErr
+        return none, uidErr
     }
     let _, gidErr = octal(block[116:124])
     if gidErr != nil {
-        return absent(), gidErr
+        return none, gidErr
     }
     let _, timeErr = octal(block[136:148])
     if timeErr != nil {
-        return absent(), timeErr
+        return none, timeErr
     }
     let _, majorErr = octal(block[329:337])
     if majorErr != nil {
-        return absent(), majorErr
+        return none, majorErr
     }
     let _, minorErr = octal(block[337:345])
     if minorErr != nil {
-        return absent(), minorErr
+        return none, minorErr
     }
     let size = octal(block[124:136])?
     var name = tarText(block[:100])?
-    let prefix = tarText(block[345:500])?
-    if prefix != "" {
-        name = prefix + "/" + name
+    if !gnu {
+        let prefix = tarText(block[345:500])?
+        if prefix != "" {
+            name = prefix + "/" + name
+        }
+    } else if block[482] != 0 {
+        return none, error("archive: sparse TAR entries are unsupported")
     }
-    let header = Header{Name: name, Size: size, Directory: block[156] == 53}
+    return tarFields{kind: kind, name: name, size: size}, nil
+}
+
+type tarOverride struct {
+    path string
+    hasPath bool
+    size int
+    hasSize bool
+    longName string
+    hasLongName bool
+    extended bool
+}
+
+func noOverride() tarOverride {
+    return tarOverride{path: "", hasPath: false, size: 0, hasSize: false, longName: "", hasLongName: false, extended: false}
+}
+
+func paxDecimal(text string) (int, bool) {
+    if text.len() == 0 || text.len() > 10 {
+        return 0, false
+    }
+    var value = 0
+    for var i = 0; i < text.len(); i += 1 {
+        let digit = text[i]
+        if digit < 48 || digit > 57 {
+            return 0, false
+        }
+        value = value * 10 + int(digit - 48)
+    }
+    return value, true
+}
+
+func paxRecords(data []byte, global bool, override mut tarOverride) error {
+    var at = 0
+    for at < data.len() {
+        var space = at
+        for space < data.len() && data[space] != 32 {
+            space += 1
+        }
+        if space == data.len() || space == at || space - at > 7 || data[at] == 48 {
+            return error("archive: invalid PAX record")
+        }
+        var length = 0
+        for var i = at; i < space; i += 1 {
+            if data[i] < 48 || data[i] > 57 {
+                return error("archive: invalid PAX record")
+            }
+            length = length * 10 + int(data[i] - 48)
+        }
+        if length > data.len() - at || length < space - at + 3 || data[at + length - 1] != 10 {
+            return error("archive: invalid PAX record")
+        }
+        let record = data[space + 1:at + length - 1]
+        var equals = 0
+        for equals < record.len() && record[equals] != 61 {
+            equals += 1
+        }
+        if equals == 0 || equals == record.len() {
+            return error("archive: invalid PAX record")
+        }
+        let key = strings.FromBytes(record[:equals])?
+        let value = strings.FromBytes(record[equals + 1:])?
+        at += length
+        let sparse = strings.HasPrefix(key, "GNU.sparse.")
+        if sparse {
+            return error("archive: sparse TAR entries are unsupported")
+        }
+        if key == "linkpath" {
+            return error("archive: TAR link target is unsupported")
+        }
+        if key == "hdrcharset" && value != "ISO-IR 10646 2000 UTF-8" {
+            return error("archive: unsupported PAX character set")
+        }
+        if global && (key == "path" || key == "size") {
+            return error("archive: unsupported PAX global header")
+        }
+        if key == "path" {
+            override.path = value
+            override.hasPath = value != ""
+        }
+        if key == "size" {
+            if value == "" {
+                override.hasSize = false
+            } else {
+                let size, valid = paxDecimal(value)
+                if !valid || size > MaxBytes {
+                    return error("archive: invalid PAX size")
+                }
+                override.size = size
+                override.hasSize = true
+            }
+        }
+    }
+    return nil
+}
+
+func tarEntry(fields tarFields, override tarOverride) (Header, bool, error) {
+    let directory = fields.kind == 53
+    var name = fields.name
+    var extended = false
+    if override.hasPath {
+        name = override.path
+        extended = true
+    } else if override.hasLongName {
+        name = override.longName
+        extended = true
+    }
+    if extended && directory && !strings.HasSuffix(name, "/") {
+        name = name + "/"
+    }
+    for strings.HasPrefix(name, "./") {
+        name = name[2:]
+    }
+    var size = fields.size
+    if override.hasSize {
+        size = override.size
+    }
+    if directory && (name == "" || name == ".") && size == 0 {
+        return absent(), false, nil
+    }
+    let header = Header{Name: name, Size: size, Directory: directory}
     validate(header)?
-    return header, nil
+    return header, true, nil
 }
 
 func putOctal(data mut []byte, at int, width int, value int) {
@@ -105,36 +256,15 @@ func putOctal(data mut []byte, at int, width int, value int) {
     }
 }
 
-func encodeTAR(header Header) (Array<byte>, error) {
-    validate(header)?
-    var name = header.Name
-    var prefix = ""
-    if name.len() > 100 {
-        var split = -1
-        for var i = 0; i < name.len(); i += 1 {
-            if name[i] == 47 && i <= 155 && name.len() - i - 1 <= 100 && (header.Directory || i + 1 < name.len()) {
-                split = i
-            }
-        }
-        if split < 0 {
-            return Array<byte>{}, error("archive: TAR name does not fit USTAR")
-        }
-        prefix = name[:split]
-        name = name[split + 1:]
-    }
+func ustarBlock(name string, prefix string, kind byte, mode int, size int) Array<byte> {
     var block = zeros(tarRecord)
     putText(block[:], 0, name)
     putText(block[:], 345, prefix)
-    var mode = 0o644
-    block[156] = 48
-    if header.Directory {
-        mode = 0o755;
-        block[156] = 53
-    }
+    block[156] = kind
     putOctal(block[:], 100, 8, mode)
     putOctal(block[:], 108, 8, 0)
     putOctal(block[:], 116, 8, 0)
-    putOctal(block[:], 124, 12, header.Size)
+    putOctal(block[:], 124, 12, size)
     putOctal(block[:], 136, 12, 0)
     putText(block[:], 257, "ustar")
     putText(block[:], 263, "00")
@@ -147,7 +277,85 @@ func encodeTAR(header Header) (Array<byte>, error) {
     }
     putOctal(block[:], 148, 7, sum)
     block[155] = 32
-    return block, nil
+    return block
+}
+
+func shortName(name string, directory bool) string {
+    var end = 100
+    if directory {
+        end = 99
+    }
+    for end > 0 && name[end] >= 128 && name[end] < 192 {
+        end -= 1
+    }
+    if directory {
+        return name[:end] + "/"
+    }
+    return name[:end]
+}
+
+func paxPathRecord(name string) Array<byte> {
+    let base = 7 + name.len()
+    var digits = 1
+    var limit = 10
+    for base + digits >= limit {
+        digits += 1
+        limit *= 10
+    }
+    var length = base + digits
+    var text = Array<byte>{}
+    var divisor = 1
+    for var i = 1; i < digits; i += 1 {
+        divisor *= 10
+    }
+    for divisor > 0 {
+        text.push(byte(48 + length / divisor % 10))
+        divisor /= 10
+    }
+    for value in strings.Bytes(" path=" + name + "\n") {
+        text.push(value)
+    }
+    return text
+}
+
+func encodeTAR(header Header) (Array<byte>, error) {
+    validate(header)?
+    var name = header.Name
+    var prefix = ""
+    var extended = Array<byte>{}
+    if name.len() > 100 {
+        var split = -1
+        for var i = 0; i < name.len(); i += 1 {
+            if name[i] == 47 && i <= 155 && name.len() - i - 1 <= 100 && (header.Directory || i + 1 < name.len()) {
+                split = i
+            }
+        }
+        if split < 0 {
+            let record = paxPathRecord(header.Name)
+            extended = ustarBlock("././@PaxHeader", "", 120, 0o644, record.len())
+            for value in record {
+                extended.push(value)
+            }
+            for extended.len() % tarRecord != 0 {
+                extended.push(0)
+            }
+            name = shortName(header.Name, header.Directory)
+        } else {
+            prefix = name[:split]
+            name = name[split + 1:]
+        }
+    }
+    var kind = byte(48)
+    var mode = 0o644
+    if header.Directory {
+        kind = 53
+        mode = 0o755
+    }
+    let block = ustarBlock(name, prefix, kind, mode, header.Size)
+    for value in block {
+        extended.push(value)
+    }
+    return extended, nil
 }
 
 type TARReader struct {
@@ -233,28 +441,81 @@ func (r mut TARReader) finishEntry() error {
 func (r mut TARReader) nextHeader() (Header, bool, error) {
     r.finishEntry()?
     var block = zeros(tarRecord)
-    r.exact(block[:])?
-    if allZero(block[:]) {
+    var override = noOverride()
+    for {
         r.exact(block[:])?
-        if !allZero(block[:]) {
-            return absent(), false, error("archive: invalid TAR end records")
+        if allZero(block[:]) {
+            break
         }
-        for {
-            let count, err = r.pull(block[:])
-            if !allZero(block[:count]) {
-                _ = err;
-                return absent(), false, error("archive: trailing TAR data")
+        let fields = tarRecordFields(block[:])?
+        if fields.kind == 120 || fields.kind == 103 || fields.kind == 76 {
+            r.extension(fields, override)?
+            continue
+        }
+        let header, kept = tarEntry(fields, override)?
+        if !kept {
+            override = noOverride()
+            continue
+        }
+        return r.accept(header)
+    }
+    if override.extended || override.hasLongName {
+        return absent(), false, error("archive: TAR extended header without entry")
+    }
+    r.exact(block[:])?
+    if !allZero(block[:]) {
+        return absent(), false, error("archive: invalid TAR end records")
+    }
+    for {
+        let count, err = r.pull(block[:])
+        if !allZero(block[:count]) {
+            _ = err;
+            return absent(), false, error("archive: trailing TAR data")
+        }
+        if err != nil {
+            if err == io.EOF {
+                r.ended = true;
+                return absent(), false, nil
             }
-            if err != nil {
-                if err == io.EOF {
-                    r.ended = true;
-                    return absent(), false, nil
-                }
-                return absent(), false, err
-            }
+            return absent(), false, err
         }
     }
-    let header = tarHeader(block[:])?
+}
+
+func (r mut TARReader) extension(fields tarFields, override mut tarOverride) error {
+    var limit = paxLimit
+    if fields.kind == 76 {
+        limit = MaxNameBytes + 1
+    }
+    if fields.size > limit {
+        return error("archive: TAR extended header too large")
+    }
+    if (fields.kind == 120 && override.extended) || (fields.kind == 76 && override.hasLongName) {
+        return error("archive: repeated TAR extended header")
+    }
+    var payload = zeros(fields.size)
+    r.exact(payload[:])?
+    var padding = zeros((tarRecord - fields.size % tarRecord) % tarRecord)
+    r.exact(padding[:])?
+    if !allZero(padding[:]) {
+        return error("archive: nonzero TAR padding")
+    }
+    if fields.kind == 76 {
+        override.longName = tarText(payload[:])?
+        override.hasLongName = true
+        return nil
+    }
+    if fields.kind == 120 {
+        override.extended = true
+    }
+    var ignored = noOverride()
+    if fields.kind == 103 {
+        return paxRecords(payload[:], true, ignored)
+    }
+    return paxRecords(payload[:], false, override)
+}
+
+func (r mut TARReader) accept(header Header) (Header, bool, error) {
     if r.entries == r.entryLimit {
         return absent(), false, error("archive: entry limit exceeded")
     }
