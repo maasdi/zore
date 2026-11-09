@@ -17,6 +17,23 @@ including those shipped in `0.1.0-alpha.1`, are not split by release.
   writer uses bounded LZ77 search. Implementation is Zore with no new dependency
   or native provider. ZIP/TAR and extraction remain follow-ups under #224.
 
+### Seeded random numbers
+
+- Added `std/math/rand` (§37.24): `New(seed)` makes a repeatable generator
+  with `Uint64`, `Uint64N`, `IntN`, `IntBetween`, `Float64`, `Bool`, `Perm`,
+  `Sample` and `rand.Shuffle`. The same seed gives the same numbers on every
+  host and in later versions (SplitMix64 seeding, xoshiro256**), bounded draws
+  are unbiased, and invalid bounds panic. There is no hidden global generator.
+  It is not for security; `std/crypto/rand` is unchanged.
+
+### Imports
+
+- An import may be given a name: `import serverconfig "myapp/server/config"`
+  makes that package `serverconfig` in its file, so two packages whose paths
+  end the same way can be used together. The name follows the usual import
+  rules (unused, duplicate, declaration and predeclared-name checks), may
+  repeat the last path segment, and using the old name points at the new one. Dot and blank imports remain unsupported and now say so.
+
 ### Regular expressions
 
 - Added `std/regexp`: `Compile` and `MustCompile`, `Matches`, `Find`, bounded

@@ -133,6 +133,7 @@ pub(super) struct FileImports {
 
 pub(super) struct ImportEntry {
     pub(super) name: String,
+    pub(super) path: String,
     pub(super) package: usize,
     pub(super) span: Span,
     pub(super) used: bool,
@@ -434,6 +435,7 @@ impl<'a> Resolver<'a> {
                 .insert(binding.name.clone(), table.entries.len());
             table.entries.push(ImportEntry {
                 name: binding.name.clone(),
+                path: import.path.clone(),
                 package: binding.package,
                 span: import.span,
                 used: false,
@@ -462,6 +464,15 @@ impl<'a> Resolver<'a> {
         }
     }
 
+    /// A note for `name` when this file imports that package under another name.
+    pub(super) fn renamed_import(&self, name: &str) -> Option<String> {
+        self.imports[self.current_package][self.current_file]
+            .entries
+            .iter()
+            .find(|entry| entry.name != name && entry.path.rsplit('/').next() == Some(name))
+            .map(|entry| format!("this file imports `{}` as `{}`", entry.path, entry.name))
+    }
+
     pub(super) fn mark_import_used(&mut self, name: &str) {
         let table = &mut self.imports[self.current_package][self.current_file];
         if let Some(&index) = table.by_name.get(name) {
@@ -478,10 +489,15 @@ impl<'a> Resolver<'a> {
                 return None;
             }
             None => {
-                self.error(
+                let mut diagnostic = Diagnostic::new(
+                    Severity::Error,
                     format!("cannot find package `{}` in this file", package.text),
                     package.span,
                 );
+                if let Some(note) = self.renamed_import(&package.text) {
+                    diagnostic = diagnostic.note(note);
+                }
+                self.out.diagnostics.push(diagnostic);
                 return None;
             }
         };

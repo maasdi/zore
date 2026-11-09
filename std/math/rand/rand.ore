@@ -1,0 +1,160 @@
+package rand
+
+const low32 = uint64(4294967295)
+const maxInt = 9223372036854775807
+const golden = uint64(0x9e3779b97f4a7c15)
+
+type Rand struct {
+    s0 uint64
+    s1 uint64
+    s2 uint64
+    s3 uint64
+}
+
+func New(seed uint64) Rand {
+    var counter = seed
+    var words = Array<uint64>{}
+    for var i = 0; i < 4; i += 1 {
+        counter = add(counter, golden)
+        words.push(mix(counter))
+    }
+    return Rand{s0: words[0], s1: words[1], s2: words[2], s3: words[3]}
+}
+
+func mix(counter uint64) uint64 {
+    var z = multiply(counter ^ (counter >> 30), 0xbf58476d1ce4e5b9)
+    z = multiply(z ^ (z >> 27), 0x94d049bb133111eb)
+    return z ^ (z >> 31)
+}
+
+func (r mut Rand) Uint64() uint64 {
+    let result = multiply(rotate(multiply(r.s1, 5), 7), 9)
+    let t = r.s1 << 17
+    r.s2 = r.s2 ^ r.s0
+    r.s3 = r.s3 ^ r.s1
+    r.s1 = r.s1 ^ r.s2
+    r.s0 = r.s0 ^ r.s3
+    r.s2 = r.s2 ^ t
+    r.s3 = rotate(r.s3, 45)
+    return result
+}
+
+func (r mut Rand) Uint64N(n uint64) uint64 {
+    if n == 0 {
+        panic("rand.Uint64N: n must be positive")
+    }
+    let threshold = (^uint64(0) - n + 1) % n
+    for {
+        let value = r.Uint64()
+        if value >= threshold {
+            return value % n
+        }
+    }
+}
+
+func (r mut Rand) IntN(n int) int {
+    if n <= 0 {
+        panic("rand.IntN: n must be positive")
+    }
+    return int(r.Uint64N(uint64(n)))
+}
+
+func (r mut Rand) IntBetween(low int, high int) int {
+    if low > high {
+        panic("rand.IntBetween: low is greater than high")
+    }
+    let count = add(subtract(bits(high), bits(low)), 1)
+    if count == 0 {
+        return fromBits(r.Uint64())
+    }
+    return fromBits(add(bits(low), r.Uint64N(count)))
+}
+
+func (r mut Rand) Float64() float64 {
+    return float64(r.Uint64() >> 11) / 9007199254740992.0
+}
+
+func (r mut Rand) Bool() bool {
+    return (r.Uint64() >> 63) == 1
+}
+
+func (r mut Rand) Perm(n int) Array<int> {
+    if n < 0 {
+        panic("rand.Perm: n must not be negative")
+    }
+    var values = Array<int>{}
+    for var i = 0; i < n; i += 1 {
+        values.push(i)
+    }
+    Shuffle(r, values[:])
+    return values
+}
+
+func (r mut Rand) Sample(n int, k int) Array<int> {
+    if n < 0 || k < 0 || k > n {
+        panic("rand.Sample: need 0 <= k <= n")
+    }
+    var chosen = Array<int>{}
+    var swapped = map[int]int{}
+    for var i = 0; i < k; i += 1 {
+        let j = i + r.IntN(n - i)
+        let atI = valueAt(swapped, i)
+        chosen.push(valueAt(swapped, j))
+        swapped[j] = atI
+    }
+    return chosen
+}
+
+func valueAt(swapped map[int]int, index int) int {
+    let found, value = swapped[index]
+    if found {
+        return value
+    }
+    return index
+}
+
+func Shuffle<T copyable>(r mut Rand, items mut []T) {
+    for var i = items.len() - 1; i > 0; i -= 1 {
+        let j = r.IntN(i + 1)
+        let held = items[i]
+        items[i] = items[j]
+        items[j] = held
+    }
+}
+
+func add(a uint64, b uint64) uint64 {
+    let lower = (a & low32) + (b & low32)
+    let upper = (a >> 32) + (b >> 32) + (lower >> 32)
+    return (upper << 32) | (lower & low32)
+}
+
+func subtract(a uint64, b uint64) uint64 {
+    return add(a, add(^b, 1))
+}
+
+func multiply(a uint64, b uint64) uint64 {
+    let al = a & low32
+    let ah = a >> 32
+    let bl = b & low32
+    let bh = b >> 32
+    let cross = ((ah * bl) & low32) + ((al * bh) & low32)
+    return add(al * bl, cross << 32)
+}
+
+func rotate(x uint64, n int) uint64 {
+    return (x << n) | (x >>(64 - n))
+}
+
+func bits(value int) uint64 {
+    if value >= 0 {
+        return uint64(value)
+    }
+    return ^uint64(-(value + 1))
+}
+
+func fromBits(value uint64) int {
+    if value <= uint64(maxInt) {
+        return int(value)
+    }
+    return -int(^value) - 1
+}

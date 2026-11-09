@@ -1603,7 +1603,8 @@ folder that holds `zore.toml`. When there is none, the entry folder is a project
 name, which can import only standard packages.
 
 **Import paths.** An import declaration names exactly one package by a
-double-quoted path of segments separated by `/` (§3.3):
+double-quoted path of segments separated by `/` (§3.3), optionally preceded by
+an import name (see *Import names* below):
 
 | Path | Package |
 | --- | --- |
@@ -1623,7 +1624,8 @@ non-`main` package's package clause must be exactly that name. The `main`
 package cannot be imported.
 
 **Using imports.** An import is visible only in the file that declares it, and
-its name is the last path segment. Members are used with a qualifier:
+its name is its import name when it has one, otherwise the last path segment.
+Members are used with a qualifier:
 
 ```ore
 import "myapp/shapes"
@@ -1659,9 +1661,28 @@ type position (`var c shapes.Circle`). The rules are:
   declaration or a predeclared name are all errors.
 - *No cycles.* A package that imports itself, directly or through other
   packages, is an error that lists the chain.
-- *Outside this increment.* Import aliases, dot imports, blank imports, grouped
-  imports, package-level `var`, init functions and version
-  solving. Package-level let is specified in §3.21.
+- *Import names — LOCKED.* `import name "path"` makes the package known as
+  `name` in that file instead of by its last path segment, so one file can use
+  two packages whose paths end the same way:
+
+  ```ore
+  import "myapp/client/config"
+  import serverconfig "myapp/server/config"
+  ```
+
+  The name is an identifier (§3.5); a keyword, reserved word or `_` is an
+  error. It replaces the last segment for every rule above: the unused,
+  duplicate-name, declaration and predeclared-name checks apply to it, and the
+  last segment is not also bound. A name equal to the last segment is allowed
+  and changes nothing. The package itself is unchanged: its package
+  clause still matches its last segment, its types keep their nominal identity
+  however each file names it, and diagnostics inside it use its own name. Using
+  the last segment of a renamed import is an ordinary unknown-name error, with
+  a note naming the import's chosen name.
+- *Outside this increment.* Dot imports (`import . "path"`), blank imports
+  (`import _ "path"`), grouped imports, package-level `var`, init functions and
+  version solving; dot and blank imports are errors that say so. Package-level
+  let is specified in §3.21.
 
 **Local dependency graph — LOCKED.** Each dependency key must match the target
 manifest's project name and must not be std. The path must point to the project
@@ -11234,7 +11255,94 @@ adapter, source syntax or general native-library access is introduced.
 Conformance: `tests/conformance/regexp.md`, runtime parser/VM tests, native
 execution tests, and paired package ownership/visibility checks.
 
-## 37.24 Streaming gzip — LOCKED
+## 37.24 Seeded random numbers — LOCKED
+
+`std/math/rand` makes repeatable streams of random-looking numbers from a seed
+the program chooses, for tests, simulations, games, shuffling and sampling. The
+same seed gives the same numbers on every host and in every later version. It
+is **not** suitable for passwords, tokens, keys, or any security decision:
+anyone who learns or guesses the seed can predict every number. Use
+`std/crypto/rand` for those. There is no package-level generator, no hidden
+global state, and no seed taken from the clock or the system.
+
+| Name | Behavior |
+| --- | --- |
+| `type Rand struct` with private fields | One generator's state |
+| `New(seed uint64) Rand` | A generator for `seed`; every `uint64` is a valid seed |
+| `(r mut Rand) Uint64() uint64` | The next 64 bits |
+| `(r mut Rand) Uint64N(n uint64) uint64` | A value in `0 <= x < n`, each equally likely; `n == 0` panics |
+| `(r mut Rand) IntN(n int) int` | A value in `0 <= x < n`, each equally likely; `n <= 0` panics |
+| `(r mut Rand) IntBetween(low int, high int) int` | A value in `low <= x <= high`, both ends included, each equally likely; `low > high` panics; the whole `int` range is allowed |
+| `(r mut Rand) Float64() float64` | A value in `0.0 <= x < 1.0` |
+| `(r mut Rand) Bool() bool` | `true` or `false`, equally likely |
+| `(r mut Rand) Perm(n int) Array<int>` | `0` through `n - 1` in random order; `n < 0` panics |
+| `(r mut Rand) Sample(n int, k int) Array<int>` | `k` different values from `0` through `n - 1`, in the order drawn; storage grows with `k`, not `n`; anything but `0 <= k <= n` panics |
+| `Shuffle<T copyable>(r mut Rand, items mut []T)` | Puts `items` in random order, in place |
+
+Invalid bounds are mistakes in the program, so they panic with a message that
+starts with the function's name, such as `rand.IntN: n must be positive`, as
+`strings.Repeat` does for a negative count.
+
+**Algorithm — LOCKED.** These exact steps are the contract; a different
+algorithm would be added under a new constructor name, never by changing these
+results. All arithmetic is modulo 2^64.
+
+- `New` runs SplitMix64 from `seed`: four times, add `0x9e3779b97f4a7c15` to a
+  counter that starts at `seed`, then mix the counter `z` with
+  `z = (z ^ (z >> 30)) * 0xbf58476d1ce4e5b9`,
+  `z = (z ^ (z >> 27)) * 0x94d049bb133111eb`, `z ^ (z >> 31)`. The four
+  results are the state `s0`..`s3`. SplitMix64 never produces four zeros in a
+  row, so the state is never all zero.
+- `Uint64` is xoshiro256\*\*: the result is `rotl(s1 * 5, 7) * 9`; then
+  `t = s1 << 17`, `s2 ^= s0`, `s3 ^= s1`, `s1 ^= s2`, `s0 ^= s3`, `s2 ^= t`,
+  `s3 = rotl(s3, 45)`.
+- `Uint64N(n)` draws `Uint64` values until one is at least `2^64 mod n`, then
+  returns it modulo `n`. `IntN(n)` is `Uint64N(n)`. `IntBetween(low, high)`
+  draws `Uint64N(high - low + 1)` and adds `low`, or returns one `Uint64` as
+  an `int` bit pattern when the range covers every `int`.
+- `Float64` is the top 53 bits of one `Uint64` divided by 2^53. `Bool` is the
+  top bit of one `Uint64`.
+- `Shuffle` is Fisher–Yates from the last index down: for `i` from
+  `len - 1` to `1`, swap item `i` with item `IntN(i + 1)`. `Perm(n)` shuffles
+  `0..n-1` this way. `Sample(n, k)` does the first `k` steps of a forward
+  Fisher–Yates over `0..n-1`: for `i` from `0` to `k - 1` it picks
+  `j = i + IntN(n - i)`, returns the value at `j` and moves the value at `i`
+  there.
+
+For seed 0 the first three `Uint64` values are 11091344671253066420,
+13793997310169335082 and 1900383378846508768.
+
+**Ownership and tasks.** `Rand` is a plain copyable value. Copying it makes a
+second generator in the same state, so both copies repeat the same numbers.
+Methods change the state, so they need a `var` and a `mut` borrow. A generator
+holds no lock and does not wait, so plain and async callers use it the same
+way. Concurrent tasks either lend one generator `mut` inside a task scope, one
+task at a time, as for any `mut` borrow, or each own their own, for example
+`rand.New(seed + uint64(worker))`.
+
+To seed from the system, which makes the run unrepeatable, read bytes from
+`std/crypto/rand` and decode them with `std/encoding/binary`; an import name
+lets one file use both `rand` packages:
+
+```ore
+import "std/crypto/rand"
+import "std/encoding/binary"
+import seeded "std/math/rand"
+
+func shuffled(items mut []string) error {
+    let bytes = rand.Bytes(8)?
+    let seed = binary.LittleEndian.Uint64(bytes[:])?
+    var generator = seeded.New(seed)
+    seeded.Shuffle(generator, items)
+    return nil
+}
+```
+
+Compiler impact: bundle `std/math/rand` as ordinary Zore source. No native
+code, runtime support, syntax or dependency is added. Conformance:
+`tests/conformance/rand.md`, native execution tests and package checks.
+
+## 37.25 Streaming gzip — LOCKED
 
 The first slice of #224 is `std/compress/gzip`. ZIP/TAR and extraction are
 follow-ups, not part of this implementation. This package owns RFC 1952 framing,

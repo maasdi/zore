@@ -139,7 +139,15 @@ impl Resolver<'_> {
 
     pub(super) fn use_name(&mut self, name: &str, span: Span) -> Option<Res> {
         let Some(res) = self.lookup_capturing(name) else {
-            self.error(format!("cannot find `{name}` in this scope"), span);
+            let mut diagnostic = Diagnostic::new(
+                Severity::Error,
+                format!("cannot find `{name}` in this scope"),
+                span,
+            );
+            if let Some(note) = self.renamed_import(name) {
+                diagnostic = diagnostic.note(note);
+            }
+            self.out.diagnostics.push(diagnostic);
             return None;
         };
         if res == Res::Unsupported && name == "Array" {

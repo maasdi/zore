@@ -1,7 +1,7 @@
 # Implementation roadmap
 
 Issue [#224](https://github.com/maasdi/zore/issues/224) begins with
-`std/compress/gzip` under locked §37.24: streaming owned I/O, inclusive byte and
+`std/compress/gzip` under locked §37.25: streaming owned I/O, inclusive byte and
 member ceilings, CRC32/ISIZE validation, explicit writer finalization and
 partial-output/error cleanup. It is implemented in Zore with no provider or
 new dependency. ZIP/TAR and extraction remain deferred; proposed API boundaries
