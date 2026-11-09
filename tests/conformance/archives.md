@@ -23,7 +23,7 @@ Run `cargo test --locked --test packages archive`,
 `cargo test --locked --test native archive`, and, after building the compiler,
 `python tests/hardening/archive_oracle.py`. CI runs the oracle on Linux, macOS
 and Windows. `python tests/hardening/extraction_oracle.py` validates extraction
-and rollback on Linux/macOS/Windows and Windows.
+and rollback on Linux/macOS/Windows.
 Extended TAR/ZIP forms remain unsupported.
 
 Raw DEFLATE boundary/counter/limit/finalization tests and staged-tree one-worker
@@ -37,3 +37,10 @@ dangling-link destinations, implicit nodes and 64-component boundaries. The
 macOS run additionally rejects normalization aliases on its filesystem; a native
 regression rejects inheritable ACL grants before creating staging.
 Nested generic interface specialization has its own native regression.
+
+Windows provider regressions in `runtime/src/staged_tree_windows.rs` check
+protected owner/LocalSystem DACLs despite permissive inherited ACLs, junctions
+and file/directory symlinks, case aliases and available 8.3 aliases, replacement
+identity checks, node/depth limits, destination races, renamed parents and
+cleanup. The native one-worker and panic cases run on Windows too. The complete
+Python extraction oracle runs on every host.
