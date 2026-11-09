@@ -2063,3 +2063,41 @@ fn seeded_generators_need_a_var_and_keep_their_state_private() {
         );
     }
 }
+
+#[test]
+fn csv_readers_and_writers_need_a_var_and_keep_their_state_private() {
+    accepts(&[(
+        "main.ore",
+        "package main\nimport \"std/bytes\"\nimport \"std/encoding/csv\"\nfunc first(r mut csv.Reader) (Array<string>, error) { return r.Read() }\nfunc main() {\n    var r = csv.NewReader(bytes.NewBufferString(\"a\\n\"))\n    let record, _ = first(r)\n    var w = csv.NewWriter(bytes.NewBufferString(\"\"))\n    _ = w.Write(record[:])\n    println(r.Line() + w.Buffered())\n}\n",
+    )]);
+    for (body, message) in [
+        (
+            "let r = csv.NewReader(bytes.NewBufferString(\"a\"))\n    let _, _ = r.Read()",
+            "mut",
+        ),
+        (
+            "var r = csv.NewReader(bytes.NewBufferString(\"a\"))\n    println(r.line)",
+            "not exported",
+        ),
+        (
+            "var w = csv.NewWriter(bytes.NewBufferString(\"\"))\n    println(w.pending.len())",
+            "not exported",
+        ),
+        (
+            "var o = csv.DefaultReadOptions()\n    o.Delimiter = 300\n    _ = csv.NewReader(bytes.NewBufferString(\"\"))",
+            "does not fit",
+        ),
+        (
+            "var w = csv.NewWriter(bytes.NewBufferString(\"\"))\n    _ = w.Write(Array<int>{1}[:])",
+            "string",
+        ),
+    ] {
+        rejects(
+            &[(
+                "main.ore",
+                &main_with("import \"std/bytes\"\nimport \"std/encoding/csv\"", body),
+            )],
+            message,
+        );
+    }
+}
