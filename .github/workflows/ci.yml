@@ -74,7 +74,7 @@ jobs:
         run: cargo test --locked -p zore-runtime windows_staged_tree -- --nocapture
       - name: Windows extraction ownership and cleanup
         if: runner.os == 'Windows'
-        run: cargo test --locked --test native archive_followup:: -- --nocapture
+        run: cargo test --locked --test native archive_followup -- --nocapture
       - name: Regex differential oracle
         run: python tests/hardening/regexp_oracle.py
       - name: Gzip interoperability oracle
