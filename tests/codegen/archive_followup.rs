@@ -193,11 +193,13 @@ func scenario() error {{
         if mode == 1 {{ check(calls == 100, "raw stalled-read ceiling") }}
         var sink = Sink{{mode: mode, calls: 0}}
         var encoder = flate.NewEncoder(3, 100)?
-        let accepted, failed = flate.Write(encoder, sink, Array<byte>{{1,2,3}}[:])
+        let accepted, buffered = flate.Write(encoder, sink, Array<byte>{{1,2,3}}[:])
+        check(buffered == nil && accepted == 3 && sink.calls == 0, "raw input buffered")
+        let failed = flate.Finish(encoder, sink)
         check(failed != nil, "broken raw sink rejected")
-        check(accepted == 3, "raw chunk accepted before sink failure")
         let writes = sink.calls
-        check(flate.Finish(encoder, sink) == failed && sink.calls == writes, "raw write error sticky")
+        let _, again = flate.Write(encoder, sink, Array<byte>{{1}}[:])
+        check(again == failed && flate.Finish(encoder, sink) == failed && sink.calls == writes, "raw write error sticky")
         if mode == 4 {{ check(encoder.OutputBytes() == 1, "raw partial compressed count") }}
     }}
     var untouched = Source{{mode: 4, calls: 0}}

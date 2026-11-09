@@ -8,6 +8,21 @@ including those shipped in `0.1.0-alpha.1`, are not split by release.
 
 ## [Unreleased]
 
+### Compression levels and flushing
+
+- `std/compress/flate` gained compression levels (`NoCompression`, `BestSpeed`,
+  `DefaultCompression`, `BestCompression`, and `0` to `9`) through
+  `NewEncoderLevel`, plus `Flush`, which makes everything written so far
+  readable (§37.32). Gzip gained `NewWriterLevel` and `Writer.Flush`.
+- The shared encoder now keeps a 32 KiB history, collects input into blocks of
+  up to 32 KiB, and writes each block as stored, fixed or dynamic Huffman,
+  whichever is smallest. `NewEncoder`, `gzip.NewWriter` and ZIP DEFLATE use
+  level 6, which compresses text about as well as zlib. Output no longer
+  depends on how input is split across `Write` calls.
+- Behavior change: input now waits in the current block, so a sink failure can
+  appear at a later `Write`, at `Flush` or at `Finish` instead of the `Write`
+  that offered the bytes.
+
 ### ZIP DEFLATE and confined extraction
 
 - Added shared raw `std/compress/flate`, ZIP method 8 reading/writing with exact

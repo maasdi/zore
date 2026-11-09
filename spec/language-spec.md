@@ -11528,16 +11528,16 @@ partial output. Reading exactly the expected payload length is insufficient.
 `Close` does not substitute for reading to EOF. Member count and byte ceilings
 apply across the entire concatenation, not per member.
 
-Writers emit deterministic headers (MTIME 0, no name/comment, OS 255), fixed
-Huffman DEFLATE with a bounded single-candidate LZ77 search in 32 KiB chunks,
-and a CRC32/ISIZE trailer. No compression-level, metadata, flush/reset or archive
-API is introduced. They may expand incompressible input; applications must allow
-for framing/block overhead when choosing the compressed ceiling.
+Writers emit deterministic headers (MTIME 0, no name/comment, OS 255), DEFLATE
+from the shared encoder at a chosen level (§37.32), and a CRC32/ISIZE trailer.
+No metadata, reset or archive API is introduced. They may expand incompressible
+input; applications must allow for framing/block overhead when choosing the
+compressed ceiling.
 
 Memory stays bounded independently of stream length: 32 KiB decoding history,
-bounded Huffman alphabets and a bounded compression chunk/hash table. Work is
-bounded by accepted compressed/output bytes and the fixed 258-byte maximum
-match search. Plain functions execute CPU work inline; async callers suspend at
+bounded Huffman alphabets and the bounded encoder state of §37.32. Work is
+bounded by accepted compressed/output bytes and the per-level match search
+limits. Plain functions execute CPU work inline; async callers suspend at
 underlying interface I/O as usual, with no helper/preemption guarantee for CPU
 work. Callers needing cancellation supply a source/sink with that policy.
 
@@ -11721,7 +11721,7 @@ its existing codec here; there is one implementation of Huffman and LZ77 rules.
   gzip. After the final block it returns `io.EOF`; final padding is ignored.
 - `Write<W io.Writer>(encoder mut Encoder, sink mut W, data []byte)
   (int, error)` and `Finish<W io.Writer>(encoder mut Encoder, sink mut W) error`
-  use deterministic bounded fixed-Huffman/LZ77 coding. Finish is explicit and
+  use the deterministic bounded coding of §37.32. Finish is explicit and
   idempotent; drop produces no output. Write counts accepted uncompressed input,
   including input accepted before a sink failure. Empty input does not start a
   block. A whole write exceeding the input ceiling is rejected before acceptance.
@@ -11729,7 +11729,7 @@ its existing codec here; there is one implementation of Huffman and LZ77 rules.
   and delivered bytes. Encoder counters report accepted input and written
   compressed bytes. The caller must supply the same continuous logical source
   or sink throughout a state; neither state retains or closes it. Borrows last
-  only for the call. No reset, flush or compression-level API is introduced.
+  only for the call. Levels and `Flush` are §37.32; there is no reset API.
 - Terminal failures are sticky. Empty reads succeed; empty writes after finish
   fail. Invalid counts, zero writes and 100 consecutive empty reads fail. An
   input ceiling never consumes more than one detection byte; decoded output
@@ -11865,6 +11865,66 @@ syntax, source pointer access or general native capability. Conformance includes
 ownership, native cleanup, one-worker execution, path/alias/duplicate rejection,
 parent-link and publication races, implicit-node/depth limits, malformed archive
 rollback, and independent Python extraction interoperability.
+
+## 37.32 Compression levels and flushing — LOCKED
+
+The shared encoder in `std/compress/flate` chooses a compression level and can
+flush a readable prefix. Gzip and ZIP DEFLATE use it.
+
+| Name | Behavior |
+| --- | --- |
+| `type Level int`; `NoCompression Level = 0`, `BestSpeed Level = 1`, `DefaultCompression Level = 6`, `BestCompression Level = 9` | Levels `0` through `9`; higher levels search harder for repeats and are slower |
+| `NewEncoderLevel(inputLimit int, compressedLimit int, level Level) (Encoder, error)` | An encoder at `level`; a level outside `0..9` is `flate: invalid compression level`, checked after the limits |
+| `NewEncoder(inputLimit int, compressedLimit int) (Encoder, error)` | `NewEncoderLevel` at `DefaultCompression` |
+| `Flush<W io.Writer>(encoder mut Encoder, sink mut W) error` | Writes every accepted byte as complete blocks, then an empty stored block (`00 00 FF FF` after byte alignment), so a decoder can return all input so far |
+| gzip `NewWriterLevel(sink own io.Writer, inputLimit int, compressedLimit int, level flate.Level) (Writer, error)` | A gzip writer at `level`; an invalid level is `gzip: invalid compression level`, checked after the limits; the returned inert writer still owns `sink` |
+| gzip `NewWriter(sink own io.Writer, inputLimit int, compressedLimit int) (Writer, error)` | `NewWriterLevel` at `flate.DefaultCompression` |
+| gzip `(w mut Writer) Flush() error` | Writes the header if needed, then `flate.Flush`; the member stays open |
+
+**Coding.** The encoder keeps a 32 KiB history and collects input into blocks
+of at most 32 KiB. A block is written when it is full, at `Flush` and at
+`Finish`, never on a partial `Write`. Level `0` writes stored blocks only.
+Levels `1` to `9` find repeats with hash chains whose length and lazy matching
+grow with the level, and write each block as stored, fixed-Huffman or dynamic
+Huffman, whichever is smallest. Matches may reach into history across blocks
+and flushes. `Finish` marks the last block final, or writes an empty final
+fixed block when nothing is pending, then pads to a byte. For a given level and
+the same input and `Flush` calls, the output is the same on every host and does
+not depend on how input is divided among `Write` calls. Exact compressed bytes
+may change between versions; the output is always valid RFC 1951 DEFLATE.
+
+**Errors and limits.** Because input waits in the block, a sink failure can
+surface at the `Write` that fills a block, at `Flush` or at `Finish`, rather
+than at the `Write` that offered the bytes. `Write` still counts accepted
+input, and all other §37.29 failure, ceiling and stickiness rules apply.
+`Flush` after `Finish` fails with `flate: writer finished` or
+`gzip: writer finished`; a failed `Flush` is sticky. Memory stays bounded at
+64 KiB of input history and pending data plus fixed hash, chain and Huffman
+tables, whatever the stream length.
+
+**Gzip header.** The XFL byte is `2` at `BestCompression`, `4` at
+`BestSpeed` and `0` otherwise; the rest of the header is unchanged. ZIP DEFLATE
+entries use `DefaultCompression` and keep the general-purpose flag bits of
+§37.29.
+
+```ore
+import "std/compress/flate"
+import "std/compress/gzip"
+import "std/os"
+
+func pack(path string, data []byte) error {
+    let file = os.Create(path)?
+    var writer = gzip.NewWriterLevel(file, 1048576, 2097152, flate.BestCompression)?
+    let _, err = writer.Write(data)
+    if err != nil { return err }
+    return writer.Close()
+}
+```
+
+Compiler impact: bundled Zore source only; no syntax, runtime or dependency.
+Conformance: native round trips at every level, write-size independence,
+flush decodability and error stickiness, and Python zlib interoperability for
+every level and for flushed streams.
 
 # 38. Self-Hosting Constraint
 

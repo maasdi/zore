@@ -59,3 +59,39 @@ fn gzip_resources_and_private_state_enforce_ownership() {
         super::rejects(&[("main.ore", &source)], expected);
     }
 }
+
+#[test]
+fn compression_levels_are_typed_and_flush_needs_a_mutable_writer() {
+    super::accepts(&[(
+        "main.ore",
+        r#"package main
+import "std/compress/flate"
+import "std/compress/gzip"
+import "std/bytes"
+async func write(level flate.Level) error {
+    var w = gzip.NewWriterLevel(bytes.NewBufferString(""), 100, 1000, level)?
+    w.Flush()?
+    var e = flate.NewEncoderLevel(10, 100, flate.BestSpeed)?
+    var sink = bytes.NewBufferString("")
+    flate.Flush(e, sink)?
+    return w.Close()
+}
+func main() {}
+"#,
+    )]);
+    for (body, expected) in [
+        (
+            "let w = gzip.NewWriterLevel(bytes.NewBufferString(\"\"), 10, 10, flate.DefaultCompression)?; return w.Flush()",
+            "mut",
+        ),
+        (
+            "let level = flate.BestSpeed; _ = level; var w = gzip.NewWriterLevel(bytes.NewBufferString(\"\"), 10, 10, \"fast\")?; return w.Close()",
+            "mismatched types",
+        ),
+    ] {
+        let source = format!(
+            "package main\nimport \"std/compress/flate\"\nimport \"std/compress/gzip\"\nimport \"std/bytes\"\nfunc run() error {{ {body} }}\nfunc main() {{ let _ = run() }}\n"
+        );
+        super::rejects(&[("main.ore", &source)], expected);
+    }
+}

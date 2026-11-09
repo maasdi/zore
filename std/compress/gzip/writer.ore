@@ -41,6 +41,7 @@ func (w mut output) Write(data []byte) (int, error) {
 type Writer struct {
     output output
     encoder flate.Encoder
+    level flate.Level
     inputLimit int
     input int
     crc int
@@ -50,10 +51,17 @@ type Writer struct {
 }
 
 func NewWriter(sink own io.Writer, inputLimit int, compressedLimit int) (Writer, error) {
-    let encoder, _ = flate.NewEncoder(MaxBytes, MaxBytes)
-    var writer = Writer{output: output{sink: sink, compressedLimit: compressedLimit, compressed: 0}, encoder: encoder, inputLimit: inputLimit, input: 0, crc: 4294967295, started: false, finished: false, err: nil}
+    return NewWriterLevel(sink, inputLimit, compressedLimit, flate.DefaultCompression)
+}
+
+func NewWriterLevel(sink own io.Writer, inputLimit int, compressedLimit int, level flate.Level) (Writer, error) {
+    let encoder, levelErr = flate.NewEncoderLevel(MaxBytes, MaxBytes, level)
+    var writer = Writer{output: output{sink: sink, compressedLimit: compressedLimit, compressed: 0}, encoder: encoder, level: level, inputLimit: inputLimit, input: 0, crc: 4294967295, started: false, finished: false, err: nil}
     if !validLimit(inputLimit) || !validLimit(compressedLimit) {
+        _ = levelErr
         writer.err = error("gzip: invalid byte limit")
+    } else if levelErr != nil {
+        writer.err = error("gzip: invalid compression level")
     }
     let err = writer.err
     return writer, err
@@ -62,7 +70,13 @@ func NewWriter(sink own io.Writer, inputLimit int, compressedLimit int) (Writer,
 func (w mut Writer) header() error {
     if !w.started {
         w.started = true
-        return w.output.send(Array<byte>{31, 139, 8, 0, 0, 0, 0, 0, 0, 255}[:])
+        var extra = 0
+        if w.level == flate.BestCompression {
+            extra = 2
+        } else if w.level == flate.BestSpeed {
+            extra = 4
+        }
+        return w.output.send(Array<byte>{31, 139, 8, 0, 0, 0, 0, 0, byte(extra), 255}[:])
     }
     return nil
 }
@@ -92,6 +106,21 @@ func (w mut Writer) Write(data []byte) (int, error) {
     w.input += count
     w.err = err
     return count, err
+}
+
+func (w mut Writer) Flush() error {
+    if w.err != nil {
+        return w.err
+    }
+    if w.finished {
+        return error("gzip: writer finished")
+    }
+    w.err = w.header()
+    if w.err != nil {
+        return w.err
+    }
+    w.err = flate.Flush(w.encoder, w.output)
+    return w.err
 }
 
 func (w mut Writer) Finish() error {

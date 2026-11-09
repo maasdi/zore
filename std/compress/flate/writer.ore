@@ -2,6 +2,17 @@ package flate
 
 import "std/io"
 
+type Level int
+
+const NoCompression Level = 0
+const BestSpeed Level = 1
+const DefaultCompression Level = 6
+const BestCompression Level = 9
+
+const blockSize = 32768
+const hashSize = 32768
+const maxMatch = 258
+
 type Encoder struct {
     inputLimit int
     compressedLimit int
@@ -11,13 +22,25 @@ type Encoder struct {
     bitCount int
     finished bool
     err error
-    previous Array<int>
+    level Level
+    buffer Array<byte>
+    pendingStart int
+    head Array<int>
+    chain Array<int>
+    tokenLengths Array<int>
+    tokenDistances Array<int>
 }
 
 func NewEncoder(inputLimit int, compressedLimit int) (Encoder, error) {
-    var encoder = Encoder{inputLimit: inputLimit, compressedLimit: compressedLimit, input: 0, compressed: 0, bits: 0, bitCount: 0, finished: false, err: nil, previous: Array<int>{}}
+    return NewEncoderLevel(inputLimit, compressedLimit, DefaultCompression)
+}
+
+func NewEncoderLevel(inputLimit int, compressedLimit int, level Level) (Encoder, error) {
+    var encoder = Encoder{inputLimit: inputLimit, compressedLimit: compressedLimit, input: 0, compressed: 0, bits: 0, bitCount: 0, finished: false, err: nil, level: level, buffer: Array<byte>{}, pendingStart: 0, head: Array<int>{}, chain: Array<int>{}, tokenLengths: Array<int>{}, tokenDistances: Array<int>{}}
     if !validLimit(inputLimit) || !validLimit(compressedLimit) {
         encoder.err = error("flate: invalid byte limit")
+    } else if level < NoCompression || level > BestCompression {
+        encoder.err = error("flate: invalid compression level")
     }
     let err = encoder.err
     return encoder, err
@@ -64,6 +87,14 @@ func (w mut Encoder) putBits(out mut Array<byte>, value int, count int) {
     }
 }
 
+func (w mut Encoder) align(out mut Array<byte>) {
+    if w.bitCount > 0 {
+        out.push(byte(w.bits & 255))
+        w.bits = 0
+        w.bitCount = 0
+    }
+}
+
 func reverse(value int, width int) int {
     var result = 0
     var rest = value
@@ -74,73 +105,520 @@ func reverse(value int, width int) int {
     return result
 }
 
-func (w mut Encoder) literal(out mut Array<byte>, symbol int) {
-    var width = 8
-    var code = symbol + 48
-    if symbol >= 144 {
-        width = 9
-        code = symbol + 256
-    }
-    if symbol >= 256 {
-        width = 7
-        code = symbol - 256
-    }
-    if symbol >= 280 {
-        width = 8
-        code = symbol - 88
-    }
-    w.putBits(out, reverse(code, width), width)
-}
-
-func (w mut Encoder) backReference(out mut Array<byte>, length int, distance int) {
+func lengthCode(length int) int {
     var code = 0
     for code < 28 && lengthBase(code + 1) <= length {
         code += 1
     }
-    w.literal(out, code + 257)
-    w.putBits(out, length - lengthBase(code), lengthExtra(code))
-    code = 0
+    return code
+}
+
+func distanceCode(distance int) int {
+    var code = 0
     for code < 29 && distanceBase(code + 1) <= distance {
         code += 1
     }
-    w.putBits(out, reverse(code, 5), 5)
-    w.putBits(out, distance - distanceBase(code), distanceExtra(code))
+    return code
 }
 
-func hash(data []byte, at int) int {
-    return ((int(data[at]) * 251 + int(data[at + 1])) * 251 + int(data[at + 2])) & 4095
-}
-
-func encodeBlock<W io.Writer>(w mut Encoder, sink mut W, data []byte) error {
-    var output = Array<byte>{}
-    w.putBits(output, 2, 3)
-    w.previous = Array<int>{}
-    for var i = 0; i < 4096; i += 1 {
-        w.previous.push(-1)
+func intZeros(count int) Array<int> {
+    var result = Array<int>{}
+    for var i = 0; i < count; i += 1 {
+        result.push(0)
     }
-    var at = 0
-    for at < data.len() {
-        var length = 0
-        var candidate = -1
-        if at + 2 < data.len() {
-            let bucket = hash(data, at)
-            candidate = w.previous[bucket]
-            w.previous[bucket] = at
-            if candidate >= 0 {
-                for length < 258 && at + length < data.len() && data[candidate + length] == data[at + length] {
-                    length += 1
+    return result
+}
+
+func sortedByFrequency(frequencies []int) Array<int> {
+    var order = Array<int>{}
+    for var symbol = 0; symbol < frequencies.len(); symbol += 1 {
+        if frequencies[symbol] == 0 {
+            continue
+        }
+        order.push(symbol)
+        var at = order.len() - 1
+        for at > 0 && frequencies[order[at - 1]] > frequencies[symbol] {
+            order[at] = order[at - 1]
+            at -= 1
+        }
+        order[at] = symbol
+    }
+    return order
+}
+
+func huffmanLengths(frequencies []int, limit int) Array<int> {
+    var lengths = intZeros(frequencies.len())
+    let order = sortedByFrequency(frequencies)
+    let leaves = order.len()
+    if leaves == 0 {
+        return lengths
+    }
+    if leaves == 1 {
+        lengths[order[0]] = 1
+        return lengths
+    }
+    var nodeWeights = Array<int>{}
+    var nodeParents = Array<int>{}
+    var leafParents = intZeros(leaves)
+    var nextLeaf = 0
+    var nextNode = 0
+    for nodeWeights.len() < leaves - 1 {
+        var weight = 0
+        for var pick = 0; pick < 2; pick += 1 {
+            let useLeaf = nextLeaf < leaves && (nextNode >= nodeWeights.len() || frequencies[order[nextLeaf]] <= nodeWeights[nextNode])
+            if useLeaf {
+                weight += frequencies[order[nextLeaf]]
+                leafParents[nextLeaf] = nodeWeights.len()
+                nextLeaf += 1
+            } else {
+                weight += nodeWeights[nextNode]
+                nodeParents[nextNode] = nodeWeights.len()
+                nextNode += 1
+            }
+        }
+        nodeWeights.push(weight)
+        nodeParents.push(-1)
+    }
+    var depths = intZeros(nodeWeights.len())
+    for var node = nodeWeights.len() - 2; node >= 0; node -= 1 {
+        depths[node] = depths[nodeParents[node]] + 1
+    }
+    var counts = intZeros(limit + 1)
+    for var leaf = 0; leaf < leaves; leaf += 1 {
+        var depth = depths[leafParents[leaf]] + 1
+        if depth > limit {
+            depth = limit
+        }
+        counts[depth] += 1
+    }
+    var total = 0
+    for var length = 1; length <= limit; length += 1 {
+        total += counts[length] << (limit - length)
+    }
+    for total != 1 << limit {
+        counts[limit] -= 1
+        for var length = limit - 1; length > 0; length -= 1 {
+            if counts[length] > 0 {
+                counts[length] -= 1
+                counts[length + 1] += 2
+                break
+            }
+        }
+        total -= 1
+    }
+    var next = 0
+    for var length = limit; length > 0; length -= 1 {
+        for var i = 0; i < counts[length]; i += 1 {
+            lengths[order[next]] = length
+            next += 1
+        }
+    }
+    return lengths
+}
+
+func canonicalCodes(lengths []int) Array<int> {
+    var counts = intZeros(16)
+    for length in lengths {
+        counts[length] += 1
+    }
+    counts[0] = 0
+    var next = intZeros(16)
+    var code = 0
+    for var length = 1; length <= 15; length += 1 {
+        code = (code + counts[length - 1]) << 1
+        next[length] = code
+    }
+    var codes = intZeros(lengths.len())
+    for var symbol = 0; symbol < lengths.len(); symbol += 1 {
+        let length = lengths[symbol]
+        if length > 0 {
+            codes[symbol] = reverse(next[length], length)
+            next[length] += 1
+        }
+    }
+    return codes
+}
+
+func atLeastTwo(frequencies mut Array<int>) {
+    var used = 0
+    for value in frequencies {
+        if value > 0 {
+            used += 1
+        }
+    }
+    for var symbol = 0; used < 2 && symbol < frequencies.len(); symbol += 1 {
+        if frequencies[symbol] == 0 {
+            frequencies[symbol] = 1
+            used += 1
+        }
+    }
+}
+
+func fixedLiteralLengths() Array<int> {
+    var lengths = Array<int>{}
+    for var i = 0; i < 288; i += 1 {
+        var length = 8
+        if i >= 144 {
+            length = 9
+        }
+        if i >= 256 {
+            length = 7
+        }
+        if i >= 280 {
+            length = 8
+        }
+        lengths.push(length)
+    }
+    return lengths
+}
+
+func fixedDistanceLengths() Array<int> {
+    var lengths = Array<int>{}
+    for var i = 0; i < 30; i += 1 {
+        lengths.push(5)
+    }
+    return lengths
+}
+
+func searchLimits(level Level) (int, int, int) {
+    if level == 1 {
+        return 4, 8, 0
+    }
+    if level == 2 {
+        return 8, 16, 0
+    }
+    if level == 3 {
+        return 32, 32, 0
+    }
+    if level == 4 {
+        return 16, 16, 4
+    }
+    if level == 5 {
+        return 32, 32, 16
+    }
+    if level == 6 {
+        return 128, 128, 16
+    }
+    if level == 7 {
+        return 256, 128, 32
+    }
+    if level == 8 {
+        return 1024, 258, 128
+    }
+    return 4096, 258, 258
+}
+
+func (w Encoder) hashAt(at int) int {
+    return ((int(w.buffer[at]) << 10) ^ (int(w.buffer[at + 1]) << 5) ^ int(w.buffer[at + 2])) & (hashSize - 1)
+}
+
+func (w mut Encoder) insert(at int, end int) {
+    if at + 2 < end {
+        let bucket = w.hashAt(at)
+        w.chain[at] = w.head[bucket]
+        w.head[bucket] = at
+    }
+}
+
+func (w Encoder) longest(at int, end int, maxChain int, nice int) (int, int) {
+    if at + 2 >= end {
+        return 0, 0
+    }
+    var limit = end - at
+    if limit > maxMatch {
+        limit = maxMatch
+    }
+    var best = 0
+    var bestDistance = 0
+    var candidate = w.head[w.hashAt(at)]
+    var remaining = maxChain
+    for candidate >= 0 && remaining > 0 {
+        let distance = at - candidate
+        if distance > windowSize {
+            break
+        }
+        if best == 0 || w.buffer[candidate + best] == w.buffer[at + best] {
+            var length = 0
+            for length < limit && w.buffer[candidate + length] == w.buffer[at + length] {
+                length += 1
+            }
+            if length > best {
+                best = length
+                bestDistance = distance
+                if length >= nice || length == limit {
+                    break
                 }
             }
         }
-        if length >= 3 {
-            w.backReference(output, length, at - candidate)
+        candidate = w.chain[candidate]
+        remaining -= 1
+    }
+    if best < 3 {
+        return 0, 0
+    }
+    return best, bestDistance
+}
+
+func (w mut Encoder) parse(start int, end int) {
+    let maxChain, nice, maxLazy = searchLimits(w.level)
+    if w.head.len() != hashSize {
+        w.head = intZeros(hashSize)
+    }
+    for var i = 0; i < hashSize; i += 1 {
+        w.head[i] = -1
+    }
+    for w.chain.len() < end {
+        w.chain.push(-1)
+    }
+    for var at = 0; at < start; at += 1 {
+        w.insert(at, end)
+    }
+    w.tokenLengths = Array<int>{}
+    w.tokenDistances = Array<int>{}
+    var at = start
+    for at < end {
+        let length, distance = w.longest(at, end, maxChain, nice)
+        w.insert(at, end)
+        if length > 0 && length < maxLazy && at + 1 < end {
+            let nextLength, _ = w.longest(at + 1, end, maxChain, nice)
+            if nextLength > length {
+                w.tokenLengths.push(int(w.buffer[at]))
+                w.tokenDistances.push(0)
+                at += 1
+                continue
+            }
+        }
+        if length > 0 {
+            w.tokenLengths.push(length)
+            w.tokenDistances.push(distance)
+            for var i = 1; i < length; i += 1 {
+                w.insert(at + i, end)
+            }
             at += length
         } else {
-            w.literal(output, int(data[at]))
+            w.tokenLengths.push(int(w.buffer[at]))
+            w.tokenDistances.push(0)
             at += 1
         }
     }
-    w.literal(output, 256)
+}
+
+func (w mut Encoder) writeTokens(out mut Array<byte>, literalLengths []int, literalCodes []int, distanceLengths []int, distanceCodes []int) {
+    for var i = 0; i < w.tokenLengths.len(); i += 1 {
+        let value = w.tokenLengths[i]
+        let distance = w.tokenDistances[i]
+        if distance == 0 {
+            w.putBits(out, literalCodes[value], literalLengths[value])
+            continue
+        }
+        let code = lengthCode(value)
+        w.putBits(out, literalCodes[code + 257], literalLengths[code + 257])
+        w.putBits(out, value - lengthBase(code), lengthExtra(code))
+        let distanceSymbol = distanceCode(distance)
+        w.putBits(out, distanceCodes[distanceSymbol], distanceLengths[distanceSymbol])
+        w.putBits(out, distance - distanceBase(distanceSymbol), distanceExtra(distanceSymbol))
+    }
+    w.putBits(out, literalCodes[256], literalLengths[256])
+}
+
+func tokenCost(literalFrequencies []int, literalLengths []int, distanceFrequencies []int, distanceLengths []int) int {
+    var cost = 0
+    for var symbol = 0; symbol < literalFrequencies.len(); symbol += 1 {
+        cost += literalFrequencies[symbol] * literalLengths[symbol]
+        if symbol > 256 {
+            cost += literalFrequencies[symbol] * lengthExtra(symbol - 257)
+        }
+    }
+    for var symbol = 0; symbol < distanceFrequencies.len(); symbol += 1 {
+        cost += distanceFrequencies[symbol] * (distanceLengths[symbol] + distanceExtra(symbol))
+    }
+    return cost
+}
+
+func runLengths(sequence []int) (Array<int>, Array<int>) {
+    var symbols = Array<int>{}
+    var extras = Array<int>{}
+    var at = 0
+    for at < sequence.len() {
+        let value = sequence[at]
+        var run = 1
+        for at + run < sequence.len() && sequence[at + run] == value {
+            run += 1
+        }
+        at += run
+        if value == 0 {
+            for run >= 11 {
+                var take = run
+                if take > 138 {
+                    take = 138
+                }
+                symbols.push(18)
+                extras.push(take - 11)
+                run -= take
+            }
+            if run >= 3 {
+                symbols.push(17)
+                extras.push(run - 3)
+                run = 0
+            }
+        } else {
+            symbols.push(value)
+            extras.push(0)
+            run -= 1
+            for run >= 3 {
+                var take = run
+                if take > 6 {
+                    take = 6
+                }
+                symbols.push(16)
+                extras.push(take - 3)
+                run -= take
+            }
+        }
+        for var i = 0; i < run; i += 1 {
+            symbols.push(value)
+            extras.push(0)
+        }
+    }
+    return symbols, extras
+}
+
+func codeExtraBits(symbol int) int {
+    if symbol == 16 {
+        return 2
+    }
+    if symbol == 17 {
+        return 3
+    }
+    if symbol == 18 {
+        return 7
+    }
+    return 0
+}
+
+func (w mut Encoder) compressedBlock(out mut Array<byte>, final bool, start int, end int) {
+    w.parse(start, end)
+    var literalFrequencies = intZeros(286)
+    var distanceFrequencies = intZeros(30)
+    for var i = 0; i < w.tokenLengths.len(); i += 1 {
+        if w.tokenDistances[i] == 0 {
+            literalFrequencies[w.tokenLengths[i]] += 1
+        } else {
+            literalFrequencies[lengthCode(w.tokenLengths[i]) + 257] += 1
+            distanceFrequencies[distanceCode(w.tokenDistances[i])] += 1
+        }
+    }
+    literalFrequencies[256] += 1
+    let fixedLiterals = fixedLiteralLengths()
+    let fixedDistances = fixedDistanceLengths()
+    let fixedCost = 3 + tokenCost(literalFrequencies[:], fixedLiterals[:286], distanceFrequencies[:], fixedDistances[:])
+    var distanceInput = clone(distanceFrequencies)
+    atLeastTwo(distanceInput)
+    let literalLengths = huffmanLengths(literalFrequencies[:], 15)
+    let distanceLengths = huffmanLengths(distanceInput[:], 15)
+    var literalCount = 286
+    for literalCount > 257 && literalLengths[literalCount - 1] == 0 {
+        literalCount -= 1
+    }
+    var distanceCount = 30
+    for distanceCount > 1 && distanceLengths[distanceCount - 1] == 0 {
+        distanceCount -= 1
+    }
+    var sequence = Array<int>{}
+    for var i = 0; i < literalCount; i += 1 {
+        sequence.push(literalLengths[i])
+    }
+    for var i = 0; i < distanceCount; i += 1 {
+        sequence.push(distanceLengths[i])
+    }
+    let codeSymbols, codeExtras = runLengths(sequence[:])
+    var codeFrequencies = intZeros(19)
+    for symbol in codeSymbols {
+        codeFrequencies[symbol] += 1
+    }
+    atLeastTwo(codeFrequencies)
+    let codeLengths = huffmanLengths(codeFrequencies[:], 7)
+    let order = Array<int>{16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 14, 1, 15}
+    var codeCount = 19
+    for codeCount > 4 && codeLengths[order[codeCount - 1]] == 0 {
+        codeCount -= 1
+    }
+    var dynamicCost = 3 + 14 + 3 * codeCount + tokenCost(literalFrequencies[:], literalLengths[:], distanceFrequencies[:], distanceLengths[:])
+    for symbol in codeSymbols {
+        dynamicCost += codeLengths[symbol] + codeExtraBits(symbol)
+    }
+    let storedCost = 3 + (8 - (w.bitCount + 3) % 8) % 8 + 32 + 8 * (end - start)
+    var finalBit = 0
+    if final {
+        finalBit = 1
+    }
+    if storedCost <= fixedCost && storedCost <= dynamicCost {
+        w.storedBlock(out, finalBit, start, end)
+        return
+    }
+    if fixedCost <= dynamicCost {
+        w.putBits(out, finalBit | 2, 3)
+        let fixedLiteralCodes = canonicalCodes(fixedLiterals[:])
+        let fixedDistanceCodes = canonicalCodes(fixedDistances[:])
+        w.writeTokens(out, fixedLiterals[:], fixedLiteralCodes[:], fixedDistances[:], fixedDistanceCodes[:])
+        return
+    }
+    w.putBits(out, finalBit | 4, 3)
+    w.putBits(out, literalCount - 257, 5)
+    w.putBits(out, distanceCount - 1, 5)
+    w.putBits(out, codeCount - 4, 4)
+    for var i = 0; i < codeCount; i += 1 {
+        w.putBits(out, codeLengths[order[i]], 3)
+    }
+    let codeCodes = canonicalCodes(codeLengths[:])
+    for var i = 0; i < codeSymbols.len(); i += 1 {
+        let symbol = codeSymbols[i]
+        w.putBits(out, codeCodes[symbol], codeLengths[symbol])
+        w.putBits(out, codeExtras[i], codeExtraBits(symbol))
+    }
+    let literalCodes = canonicalCodes(literalLengths[:])
+    let distanceCodes = canonicalCodes(distanceLengths[:])
+    w.writeTokens(out, literalLengths[:], literalCodes[:], distanceLengths[:], distanceCodes[:])
+}
+
+func (w mut Encoder) storedBlock(out mut Array<byte>, finalBit int, start int, end int) {
+    w.putBits(out, finalBit, 3)
+    w.align(out)
+    let size = end - start
+    out.push(byte(size & 255))
+    out.push(byte(size >> 8))
+    out.push(byte((size ^ 65535) & 255))
+    out.push(byte((size ^ 65535) >> 8))
+    for var i = start; i < end; i += 1 {
+        out.push(w.buffer[i])
+    }
+}
+
+func (w mut Encoder) slide() {
+    if w.buffer.len() > windowSize {
+        var kept = Array<byte>{}
+        for var i = w.buffer.len() - windowSize; i < w.buffer.len(); i += 1 {
+            kept.push(w.buffer[i])
+        }
+        w.buffer = kept
+    }
+    w.pendingStart = w.buffer.len()
+}
+
+func emit<W io.Writer>(w mut Encoder, sink mut W, final bool) error {
+    var output = Array<byte>{}
+    var finalBit = 0
+    if final {
+        finalBit = 1
+    }
+    let start = w.pendingStart
+    let end = w.buffer.len()
+    if w.level == NoCompression {
+        w.storedBlock(output, finalBit, start, end)
+    } else {
+        w.compressedBlock(output, final, start, end)
+    }
+    w.slide()
     return send(w, sink, output[:])
 }
 
@@ -155,24 +633,44 @@ func Write<W io.Writer>(w mut Encoder, sink mut W, data []byte) (int, error) {
         w.err = error("flate: input byte limit exceeded")
         return 0, w.err
     }
-    if data.len() == 0 {
-        return 0, nil
-    }
     var accepted = 0
     for accepted < data.len() {
-        var end = accepted + windowSize
-        if end > data.len() {
-            end = data.len()
+        var take = blockSize - (w.buffer.len() - w.pendingStart)
+        if take > data.len() - accepted {
+            take = data.len() - accepted
         }
-        w.input += end - accepted
-        let begin = accepted
-        accepted = end
-        w.err = encodeBlock(w, sink, data[begin:end])
-        if w.err != nil {
-            return accepted, w.err
+        for var i = accepted; i < accepted + take; i += 1 {
+            w.buffer.push(data[i])
+        }
+        accepted += take
+        w.input += take
+        if w.buffer.len() - w.pendingStart == blockSize {
+            w.err = emit(w, sink, false)
+            if w.err != nil {
+                return accepted, w.err
+            }
         }
     }
     return accepted, nil
+}
+
+func Flush<W io.Writer>(w mut Encoder, sink mut W) error {
+    if w.err != nil {
+        return w.err
+    }
+    if w.finished {
+        return error("flate: writer finished")
+    }
+    if w.buffer.len() > w.pendingStart {
+        w.err = emit(w, sink, false)
+        if w.err != nil {
+            return w.err
+        }
+    }
+    var output = Array<byte>{}
+    w.storedBlock(output, 0, 0, 0)
+    w.err = send(w, sink, output[:])
+    return w.err
 }
 
 func Finish<W io.Writer>(w mut Encoder, sink mut W) error {
@@ -183,13 +681,20 @@ func Finish<W io.Writer>(w mut Encoder, sink mut W) error {
         return nil
     }
     var output = Array<byte>{}
-    w.putBits(output, 3, 3)
-    w.literal(output, 256)
-    if w.bitCount > 0 {
-        output.push(byte(w.bits & 255))
-        w.bits = 0
-        w.bitCount = 0
+    if w.buffer.len() > w.pendingStart {
+        let start = w.pendingStart
+        let end = w.buffer.len()
+        if w.level == NoCompression {
+            w.storedBlock(output, 1, start, end)
+        } else {
+            w.compressedBlock(output, true, start, end)
+        }
+        w.slide()
+    } else {
+        w.putBits(output, 3, 3)
+        w.putBits(output, 0, 7)
     }
+    w.align(output)
     w.err = send(w, sink, output[:])
     if w.err == nil {
         w.finished = true
