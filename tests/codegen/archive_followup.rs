@@ -158,3 +158,64 @@ func main() {{ let err = scenario(); if err != nil {{ panic(errors.Message(err))
     assert!(!stderr(&output).contains("leak:"), "{}", stderr(&output));
     assert_eq!(std::fs::read_dir(root).unwrap().count(), 0);
 }
+
+#[test]
+fn raw_flate_rejects_broken_io_and_preserves_sticky_errors() {
+    let source = format!(
+        r#"{SUPPORT}
+type Source struct {{ mode int; calls int }}
+func (s mut Source) Read(buf mut []byte) (int, error) {{
+    s.calls += 1
+    if s.mode == 1 {{ return 0, nil }}
+    if s.mode == 2 {{ return -1, nil }}
+    if s.mode == 3 {{ return buf.len() + 1, nil }}
+    return 0, error("raw source failed")
+}}
+type Sink struct {{ mode int; calls int }}
+func (s mut Sink) Write(data []byte) (int, error) {{
+    s.calls += 1
+    if s.mode == 1 {{ return 0, nil }}
+    if s.mode == 2 {{ return -1, nil }}
+    if s.mode == 3 {{ return data.len() + 1, nil }}
+    return 1, error("raw sink failed")
+}}
+func scenario() error {{
+    for var mode = 1; mode <= 4; mode += 1 {{
+        var source = Source{{mode: mode, calls: 0}}
+        var decoder = flate.NewDecoder(100, 100)?
+        var buf = [byte; 1]{{0}}
+        let count, err = flate.Read(decoder, source, buf[:])
+        check(err != nil, "broken raw source rejected")
+        check(count == 0, "broken source returns no output")
+        let calls = source.calls
+        let _, repeated = flate.Read(decoder, source, buf[:])
+        check(repeated == err && source.calls == calls, "raw read error sticky")
+        if mode == 1 {{ check(calls == 100, "raw stalled-read ceiling") }}
+        var sink = Sink{{mode: mode, calls: 0}}
+        var encoder = flate.NewEncoder(3, 100)?
+        let accepted, failed = flate.Write(encoder, sink, Array<byte>{{1,2,3}}[:])
+        check(failed != nil, "broken raw sink rejected")
+        check(accepted == 3, "raw chunk accepted before sink failure")
+        let writes = sink.calls
+        check(flate.Finish(encoder, sink) == failed && sink.calls == writes, "raw write error sticky")
+        if mode == 4 {{ check(encoder.OutputBytes() == 1, "raw partial compressed count") }}
+    }}
+    var untouched = Source{{mode: 4, calls: 0}}
+    var invalid, invalidErr = flate.NewDecoder(-1, 0)
+    check(invalidErr != nil, "invalid raw constructor")
+    var empty = Array<byte>{{}}
+    let _, emptyErr = flate.Read(invalid, untouched, empty[:])
+    check(emptyErr == nil, "empty raw read")
+    var probe = [byte; 1]{{0}}
+    let _, invalidRead = flate.Read(invalid, untouched, probe[:])
+    check(invalidRead == invalidErr && untouched.calls == 0, "inert raw decoder does no IO")
+    return nil
+}}
+func main() {{ let err = scenario(); if err != nil {{ panic(errors.Message(err)) }}; println("ok") }}
+"#
+    );
+    let directory = TempDir::new().unwrap();
+    let output = execute(&source, directory.path(), false);
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert_eq!(stdout(&output), "ok\n");
+}
