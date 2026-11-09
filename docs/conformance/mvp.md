@@ -222,3 +222,13 @@ native error/drop/task tests and the independent Python gzip/zlib oracle are
 mapped in [gzip conformance](../../tests/conformance/gzip.md).
 ZIP/TAR and filesystem extraction remain deferred, with API/policy questions
 recorded in [archive follow-ups](../design/archives.md) and Q15.
+
+## Archive I/O follow-up — issue #224
+
+Spec §§37.27–37.28 add shared IEEE CRC32 and bounded USTAR/stored ZIP I/O.
+Readers validate entries and archive structure; generic writers return their
+concrete sinks for ordered finalization. Native lifecycle/task tests, package
+ownership checks and independent tarfile/zipfile/gzip fixtures are mapped in
+[archive conformance](../../tests/conformance/archives.md). A generic method
+symbol collision discovered by the two writer types has a direct native
+regression. Extended formats and extraction remain deferred under Q15.

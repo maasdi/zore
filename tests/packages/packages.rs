@@ -1,3 +1,4 @@
+mod archive;
 mod bundled_contracts;
 mod bundled_inventory;
 mod exec;

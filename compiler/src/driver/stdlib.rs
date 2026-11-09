@@ -9,6 +9,7 @@ macro_rules! bundled {
 }
 
 bundled! {
+    "archive" => ["archive.ore", "tar.ore", "zip.ore"],
     "bufio" => ["bufio.ore"],
     "bytes" => ["bytes.ore", "buffer.ore"],
     "compress/gzip" => ["deflate.ore", "reader.ore", "writer.ore"],
@@ -27,6 +28,7 @@ bundled! {
     "encoding/json" => ["encoder.ore", "decoder.ore", "value.ore", "codec.ore"],
     "flag" => ["flag.ore"],
     "fmt" => ["fmt.ore"],
+    "hash/crc32" => ["crc32.ore"],
     "io" => ["io.ore"],
     "log" => ["log.ore"],
     "log/rolling" => ["rolling.ore"],

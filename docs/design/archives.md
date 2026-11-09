@@ -1,66 +1,52 @@
-# Archive follow-ups to streaming gzip
+# Remaining archive work
 
-Status: design proposal, not a public API or implemented archive support.
-Tracked by [#224](https://github.com/maasdi/zore/issues/224), with library breadth
-under [#210](https://github.com/maasdi/zore/issues/210). The implemented first slice
-is [streaming gzip](../gzip.md), locked in spec §37.26.
+The first implementation of [#224](https://github.com/maasdi/zore/issues/224)
+provides gzip in §37.26 and `std/archive` USTAR/stored ZIP I/O in §37.28.
+The [archive guide](../archives.md) describes the implemented APIs. Archive
+readers return metadata and bytes, never filesystem effects. `Sink()` retains
+the concrete writer type for ordered finalization through compression layers.
 
-## Package and API direction
+## Format follow-ups
 
-Proposed `std/archive/tar` would own TAR headers, entry iteration and writing.
-A reader would own an `io.Reader`, return explicit entry presence plus errors,
-and expose each current entry through a bounded read operation. Advancing must
-explicitly drain or reject unread entry content; a borrowed entry must not
-outlive the reader. A writer would require an entry size, reject shorter/longer
-content and explicitly finish padding and end records. Reject unsupported
-extensions instead of silently interpreting them. GNU/PAX long names, sparse
-files and special nodes need separate decisions.
+ZIP DEFLATE needs a separately locked raw-DEFLATE primitive below gzip and
+archives, preserving compressed/decompressed limits and checksum handling.
+ZIP64, encryption, split archives, CP437 names and more permissive central/local
+ordering remain excluded. Adding support must preserve unambiguous offsets,
+entry lifetimes, CRC32/size validation and bounded directory memory.
 
-Proposed `std/archive/zip` would own ZIP records, central-directory validation,
-entry metadata, CRC32 and stored/DEFLATE payloads. The first reader should use a
-bounded seekable source, since a central directory can contradict local headers.
-The exact combined seek/read interface and owned per-entry reader lifetime must
-be locked before implementation. Encrypted entries, ZIP64, split archives,
-unsupported compression methods and ambiguous duplicate paths should initially
-fail explicitly. Writer finalization would validate entry sizes/checksums and
-write the central directory; dropping would release resources without finishing.
-
-Both APIs need explicit entry presence and errors, compressed/decompressed byte
-ceilings per entry and per archive, an entry-count ceiling, bounded metadata
-lengths and nesting policy. Limits include skipped entries. Partial reads are
-unverified until the entry checksum and declared size are validated. These
-proposed names are package boundaries, not a commitment to signatures.
+USTAR currently rejects GNU/PAX long names, sparse files, links and special
+nodes. Any extension needs explicit size/count/metadata limits, precedence
+between extension and ordinary headers, and interoperability/adversarial tests.
+No metadata extension may silently change entry names, sizes or type policy.
 
 ## Extraction is a separate explicit policy
 
-Entry iteration must never write files automatically. A future extraction API
-must require a destination root and a validated policy rather than inherit
-archive authority. Proposed defaults:
+A future extraction API must require a destination root and validated policy:
 
 - Reject absolute paths, drive/UNC/device paths, NULs, `..` components and names
-  that normalize outside the root. Define backslash behavior independently of
-  the current host, and reject host-equivalent duplicate/colliding names.
+  that normalize outside the root. `ValidName` supplies conservative syntax;
+  filesystem-equivalent collisions and root-relative traversal need additional
+  checks independent of the host spelling of separators.
 - Reject symbolic links, hard links, devices, FIFOs and sockets initially.
-  If links are added, validate their targets and all parent traversals under
-  the same root policy; do not follow an existing destination symlink.
+  If links are added, validate targets and all parent traversals under the same
+  root policy. Never follow an existing destination symlink implicitly.
 - Create directories/files with conservative application-selected permissions;
   ignore archive ownership, setuid/setgid and executable bits by default.
   Do not restore timestamps or ACLs implicitly.
-- Refuse overwrites by default, including duplicate archive names. An explicit
-  overwrite mode needs atomic publication and a defined existing-file policy.
-- Enforce counts, metadata and expanded-size limits before creating or growing
-  files. Reject a declared size beyond remaining capacity before extraction,
-  and enforce the actual size while streaming even when metadata claims less.
+- Refuse overwrites and duplicate destinations by default. Reading duplicate
+  metadata entries does not authorize overwriting files. An explicit overwrite
+  mode needs atomic publication and a defined existing-file policy.
+- Enforce entry, metadata and expanded-size limits before creating or growing
+  files, and enforce actual sizes while streaming when metadata claims less.
 - Write regular files to temporary siblings, verify checksum/size, then publish.
-  Specify cleanup of temporary files and directories after failure. Never claim
-  atomic rollback of already published entries.
+  Define cleanup of temporary files/directories after failure without promising
+  rollback of already published entries.
 
-String normalization alone cannot prevent filesystem races. Root-relative
-no-follow file creation/traversal and atomic publish primitives must be reviewed
-in `std/os` before promising secure extraction. On hosts lacking the necessary
-capability, reject extraction rather than weaken the policy.
+String validation cannot prevent filesystem races. Root-relative no-follow
+creation/traversal and atomic publication primitives must be reviewed in
+`std/os` before promising safe extraction. On hosts lacking the necessary
+capability, reject extraction rather than weaken policy.
 
-Before an implementation starts, follow spec §53: lock exact signatures,
-ownership/entry lifetimes, finalization, errors, plain/async behavior, numeric
-limits and platform guarantees. Add interoperable fixtures and adversarial path,
-link, overwrite, malformed-metadata, checksum and cleanup conformance tests.
+Before implementation, follow spec §53: lock signatures, ownership, failure
+cleanup, numeric bounds, plain/async behavior and platform guarantees. Include
+external fixtures and adversarial path, link, overwrite and race tests.

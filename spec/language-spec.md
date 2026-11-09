@@ -7716,6 +7716,7 @@ one function can work with any of them. Its interface types (§22.2) are:
 | `Writer` | `mut Write(data []byte) (int, error)` |
 | `Closer` | `own Close() error` |
 | `Seeker` | `mut Seek(offset int, whence int) (int, error)` |
+| `ReadSeeker` | the entries of `Reader` and `Seeker` |
 | `ReadWriter` | the entries of `Reader` and `Writer` |
 | `ReadCloser` | the entries of `Reader` and `Closer` |
 | `WriteCloser` | the entries of `Writer` and `Closer` |
@@ -11478,8 +11479,10 @@ code, runtime support, syntax or dependency is added. Conformance:
 
 The first slice of #224 is `std/compress/gzip`. ZIP/TAR and extraction are
 follow-ups, not part of this implementation. This package owns RFC 1952 framing,
-RFC 1951 DEFLATE, checksums and compression policy; it imports only `std/io`.
-It is implemented in Zore without a native provider or new dependencies.
+RFC 1951 DEFLATE, checksums and compression policy; it imports lower-level I/O and CRC32
+primitives.
+It is implemented in Zore without a native provider or new dependencies; the
+shared IEEE primitive lives in `std/hash/crc32`.
 
 | Name | Contract |
 | --- | --- |
@@ -11555,6 +11558,150 @@ Compiler impact: bundle the source package using existing interfaces, arrays,
 integers, ownership and error propagation; no syntax, ABI or runtime changes.
 Conformance: gzip ownership/visibility checks, native format/interoperability,
 bounds, source/sink errors, finalization, async I/O and cleanup tests.
+
+## 37.27 IEEE CRC32 — LOCKED
+
+`std/hash/crc32` owns the IEEE CRC32 primitive. `Checksum(data []byte) uint32`
+returns the CRC of one byte slice; `Update(crc uint32, data []byte) uint32`
+continues a previously finalized checksum. `UpdateByte(crc uint32, octet byte)
+uint32` continues it with one byte, for streaming format parsers. Start
+incremental checksumming at 0.
+The reflected polynomial is 0xedb88320, with initial/final XOR 0xffffffff.
+`Checksum("123456789" bytes)` is 0xcbf43926; the empty checksum is 0.
+Both functions borrow their slice only for the call and perform bounded inline
+CPU work with no errors, I/O or async waits. No tables, handles or native provider
+are exposed. The compiler bundles ordinary Zore code without syntax/ABI changes.
+Conformance includes published vectors and chunked/native equivalence.
+
+## 37.28 Bounded archive I/O — LOCKED
+
+`std/archive` owns USTAR and classic stored ZIP framing and entry policy. It
+imports lower-level `io`, `strings`, `unicode`, `encoding/binary` and `hash/crc32`; it never opens paths or
+extracts files. The first slice supports regular files and directory entries.
+ZIP DEFLATE/ZIP64/encryption, links, special nodes, GNU/PAX/sparse TAR extensions
+and extraction remain follow-ups to #224. Unsupported input fails explicitly.
+
+### Metadata and limits
+
+`Header` is a Copy struct with public fields `Name string`, `Size int`, and
+`Directory bool`. Names are UTF-8 relative paths using `/`; directory names must
+end in `/`, file names must not. `ValidName(name string, directory bool) bool`
+checks these rules and rejects empty/absolute names, empty, `.` and `..`
+components, backslashes, colons, Windows-forbidden `"<>|?*` characters,
+Unicode control characters, trailing component dots or
+spaces, and Windows reserved device components (case insensitive, including
+extensions). It is syntax validation, not a promise of race-safe extraction.
+Duplicate names may be enumerated/written; collision/overwrite policy belongs to
+an explicit future extraction API. Metadata is owned; it contains no borrowed
+view into an archive or its reader.
+
+The package exports `MaxBytes = 1073741824`, `MaxEntries = 65534`,
+`MaxNameBytes = 1024`, and `MaxMetadataBytes = 16777216`. Constructors take
+`archiveLimit`, `dataLimit` and `entryLimit`: inclusive whole-archive byte,
+summed declared/actual data-byte, and entry ceilings. Byte limits must be in
+`[0, MaxBytes]`, and entry limits in `[0, MaxEntries]`. Invalid construction
+performs no I/O and returns an inert wrapper owning its consumed argument until
+drop. Directory sizes must be zero. ZIP retained central-directory metadata is
+additionally bounded by `MaxMetadataBytes`. Headers/data/padding/metadata/end
+records all count toward `archiveLimit`; limits are never per-entry resets.
+USTAR names must also fit a 100-byte suffix and optional 155-byte prefix at a
+slash boundary. A directory may use an empty name field with its path in the
+prefix. No implicit truncation occurs.
+
+### Reader/writer API and ownership
+
+| Name | Contract |
+| --- | --- |
+| `NewTARReader(source own io.Reader, archiveLimit int, dataLimit int, entryLimit int) (TARReader, error)` | Streaming USTAR reader; no constructor I/O |
+| `NewZIPReader(source own io.ReadSeeker, archiveLimit int, dataLimit int, entryLimit int) (ZIPReader, error)` | Seekable classic ZIP reader; reads the entire source as one archive, beginning at offset 0; no constructor I/O |
+| `(r mut TARReader) Next() (Header, bool, error)` and ZIP equivalent | Advances; false plus nil means validated end, false plus error means failure; absent header is `Header{Name: "", Size: 0, Directory: false}` |
+| `(r mut TARReader) Read(buf mut []byte) (int, error)` and ZIP equivalent | Reads only current-entry data; entry EOF permits Next; empty reads return `(0, nil)` |
+| `(r mut TARReader) Skip() error` and ZIP equivalent | Explicitly drains and validates the current entry |
+| `(r own TARReader) Close() error` and ZIP equivalent | Returns a prior terminal failure and drops source without draining or validating unread input |
+| `NewTARWriter<W io.Writer>(sink own W, archiveLimit int, dataLimit int, entryLimit int) (TARWriter<W>, error)` and ZIP equivalent | Owns sink, no constructor I/O |
+| `(w mut TARWriter<W>) WriteHeader(header Header) error` and ZIP equivalent | Starts the next entry after finalizing the previous fully written entry |
+| `(w mut TARWriter<W>) Write(data []byte) (int, error)` and ZIP equivalent | Writes within current declared size; an oversized call accepts zero bytes and fails |
+| `(w mut TARWriter<W>) Finish() error` and ZIP equivalent | Finalizes current entry and writes archive end structures; idempotent after success |
+| `(w own TARWriter<W>) Close() error` and ZIP equivalent | Calls Finish then drops sink |
+| `(w own TARWriter<W>) Sink() (W, error)` and ZIP equivalent | Calls Finish and returns the concrete owned sink plus the finalization error, including on failure |
+
+Wrappers are Move structs with private fields; their entry metadata is Copy.
+Writer type arguments are inferred from their owned sink. Sink returns the
+concrete type so a caller can finalize an enclosing gzip/buffered writer or
+observe a file Close error. Copy sinks follow ordinary own-parameter copying;
+Move sinks transfer ownership. A returned sink remains usable after archive
+failure, but the archive prefix is incomplete and must not be published.
+Read/write slices are borrowed only for the call. Reading exactly an entry's
+size permits Next to validate its remaining padding/descriptor/checksum. Calling
+Next with unread entry bytes or starting/finalizing with unwritten bytes fails;
+Skip makes discarding explicit. Reading outside an entry returns `io.EOF`.
+Readers must reach `Next() == (empty, false, nil)` to validate the whole archive;
+entry EOF validates only that entry. Writers require explicit Finish/Close:
+drop never finalizes. Closing a source/sink via wrapper drop follows ordinary
+owned-interface cleanup, not a concrete Close call through an interface lacking
+that method. Buffered sinks retain their own flushing policy.
+
+Writes after successful finalization fail without changing successful Finish.
+All format, count, progress and limit failures are sticky; later operations
+return the stored failure. Successful reader entry EOF and archive-end presence
+are not failures. Positive short I/O is supported; invalid counts, zero write
+progress and 100 consecutive empty source reads fail. Underlying errors propagate;
+truncation is an archive error. Partial read bytes are retained with an error,
+and writes may leave an external archive prefix. No rollback is promised.
+
+### Format policy
+
+USTAR validates unsigned header checksums, octal numeric fields and canonical
+`ustar\0`/`00` markers; binary numeric extensions and unsupported type flags
+fail. It reads/writes 512-byte records, zero entry padding and two zero end
+records. Readers accept further zero padding to source EOF and reject nonzero
+trailing data or concatenated archives. Writer metadata is deterministic: uid,
+gid and mtime 0; modes 0644 for files and 0755 for directories. TAR has no data
+checksum; header validation cannot establish payload integrity.
+
+ZIP initialization validates EOCD and central-directory offsets/counts/lengths
+within the complete source. It accepts stored method 0, ASCII names without the
+UTF-8 flag and UTF-8 names with it, plus signed/unsigned data descriptors. Local
+headers, CRC32 and sizes must agree with the central directory. Unsupported
+flags, ZIP64 extras, split disks, symlinks and special nodes fail. Extra-field
+TLVs must be well formed; supported opaque metadata/comments are bounded and
+ignored. Entries must occur contiguously from offset 0, in central-directory
+order; prefixes, overlapping entries, gaps and extra unindexed local records
+fail. The central directory must end exactly at EOCD; archive comments end at
+source EOF. Multiple structurally plausible EOCD records are rejected as
+ambiguous. These restrictions reject ambiguous layouts explicitly.
+Writers emit UTF-8 names, method 0, signed descriptors, a central directory and
+EOCD with no comment; timestamps are the DOS epoch and permissions are not
+restored. CRC32 is validated only when entry EOF/Next finalization is reached.
+Output before that is unverified partial data.
+
+Memory is independent of TAR length and bounded by ZIP directory metadata and
+entry count. CPU work is bounded by byte/metadata/count ceilings. Plain code
+runs inline; underlying interface calls retain ordinary plain/async waiting
+semantics. There is no cancellation API or CPU preemption promise.
+
+```ore
+import "std/archive"
+import "std/io"
+import "std/os"
+
+func firstFile(path string) (Array<byte>, bool, error) {
+    let file = os.Open(path)?
+    var reader = archive.NewTARReader(file, 1048576, 524288, 100)?
+    let header, present, err = reader.Next()
+    if err != nil { return Array<byte>{}, false, err }
+    if !present || header.Directory { return Array<byte>{}, false, nil }
+    let data = io.ReadAll(reader)?
+    return data, true, nil
+}
+```
+
+Compiler impact: bundle ordinary Zore sources, add the combined `io.ReadSeeker`
+interface and CRC32 primitive, preserve receiver identity in generic method
+symbols, and reuse existing ownership/interface/error/array semantics. No syntax, runtime ABI, dependencies or filesystem authority is added.
+Conformance includes external tarfile/zipfile interoperability, malformed and
+truncated structures, exact limits, partial I/O, lifecycle cleanup, explicit
+unsupported variants, ownership rejection and async endpoint composition.
 
 # 38. Self-Hosting Constraint
 

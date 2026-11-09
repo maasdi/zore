@@ -5131,12 +5131,12 @@ func use() {
         .map(|f| f.name.as_str())
         .collect();
     for name in [
-        "Push<int64>",
-        "Push<string>",
-        "Push<Stack<int64>>",
-        "Len<Stack<int64>>",
-        "Get<int64>",
-        "clone<int64>",
+        "Stack.Push<int64>",
+        "Stack.Push<string>",
+        "Stack.Push<Stack<int64>>",
+        "Stack.Len<Stack<int64>>",
+        "Cell.Get<int64>",
+        "Cell.clone<int64>",
     ] {
         assert!(compiled.contains(&name), "no copy {name} in {compiled:?}");
     }

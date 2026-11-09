@@ -1,0 +1,205 @@
+package archive
+
+import "std/encoding/binary"
+import "std/io"
+import "std/strings"
+import "std/unicode"
+
+const MaxBytes = 1073741824
+const MaxEntries = 65534
+const MaxNameBytes = 1024
+const MaxMetadataBytes = 16777216
+
+type Header struct {
+    Name string
+    Size int
+    Directory bool
+}
+
+func absent() Header {
+    return Header{Name: "", Size: 0, Directory: false}
+}
+
+func device(component string) bool {
+    var stem = strings.ToUpper(component)
+    let dot = strings.Index(stem, ".")
+    if dot >= 0 {
+        stem = stem[:dot]
+    }
+    stem = strings.TrimRight(stem, " .")
+    if stem == "CON" || stem == "PRN" || stem == "AUX" || stem == "NUL" || stem == "CONIN$" || stem == "CONOUT$" || stem == "CLOCK$" {
+        return true
+    }
+    if strings.HasPrefix(stem, "COM") || strings.HasPrefix(stem, "LPT") {
+        let suffix = stem[3:]
+        if suffix.len() == 1 && suffix[0] >= 49 && suffix[0] <= 57 {
+            return true
+        }
+        if suffix == "¹" || suffix == "²" || suffix == "³" {
+            return true
+        }
+    }
+    return false
+}
+
+func ValidName(name string, directory bool) bool {
+    if name.len() == 0 || name.len() > MaxNameBytes || name[0] == 47 {
+        return false
+    }
+    if (name[name.len() - 1] == 47) != directory {
+        return false
+    }
+    for _, point in name {
+        if unicode.IsControl(point) {
+            return false
+        }
+    }
+    var end = name.len()
+    if directory {
+        end -= 1
+    }
+    if end == 0 {
+        return false
+    }
+    var start = 0
+    for var i = 0; i <= end; i += 1 {
+        if i < end {
+            let value = name[i]
+            if value == 92 || value == 58 || value == 34 || value == 60 || value == 62 || value == 124 || value == 63 || value == 42 {
+                return false
+            }
+            if value != 47 {
+                continue
+            }
+        }
+        let component = name[start:i]
+        if component == "" || component == "." || component == ".." {
+            return false
+        }
+        if component[component.len() - 1] == 32 || component[component.len() - 1] == 46 || device(component) {
+            return false
+        }
+        start = i + 1
+    }
+    return true
+}
+
+func validate(header Header) error {
+    if !ValidName(header.Name, header.Directory) {
+        return error("archive: invalid entry name")
+    }
+    if header.Size < 0 || header.Size > MaxBytes || (header.Directory && header.Size != 0) {
+        return error("archive: invalid entry size")
+    }
+    return nil
+}
+
+func validLimits(archiveLimit int, dataLimit int, entryLimit int) bool {
+    return archiveLimit >= 0 && archiveLimit <= MaxBytes && dataLimit >= 0 && dataLimit <= MaxBytes && entryLimit >= 0 && entryLimit <= MaxEntries
+}
+
+func zeros(count int) Array<byte> {
+    var data = Array<byte>{}
+    for var i = 0; i < count; i += 1 {
+        data.push(0)
+    }
+    return data
+}
+
+func allZero(data []byte) bool {
+    for value in data {
+        if value != 0 {
+            return false
+        }
+    }
+    return true
+}
+
+func readSome(source mut io.Reader, buf mut []byte) (int, error) {
+    if buf.len() == 0 {
+        return 0, nil
+    }
+    for var empty = 0; empty < 100; empty += 1 {
+        let count, err = source.Read(buf)
+        if count < 0 || count > buf.len() {
+            _ = err
+            return 0, error("archive: invalid read count")
+        }
+        if err != nil || count > 0 {
+            return count, err
+        }
+    }
+    return 0, error("archive: no read progress")
+}
+
+func readExact(source mut io.Reader, buf mut []byte) error {
+    var offset = 0
+    for offset < buf.len() {
+        let count, err = readSome(source, buf[offset:])
+        offset += count
+        if err != nil {
+            if err == io.EOF {
+                if offset == buf.len() {
+                    return nil
+                }
+                return error("archive: truncated stream")
+            }
+            return err
+        }
+    }
+    return nil
+}
+
+type outputState struct {
+    limit int
+    count int
+}
+
+func writeAll<W io.Writer>(o mut outputState, sink mut W, data []byte) (int, error) {
+    if data.len() > o.limit - o.count {
+        return 0, error("archive: archive byte limit exceeded")
+    }
+    var offset = 0
+    for offset < data.len() {
+        let count, err = sink.Write(data[offset:])
+        if count < 0 || count > data.len() - offset {
+            _ = err
+            return offset, error("archive: invalid write count")
+        }
+        offset += count
+        o.count += count
+        if err != nil {
+            return offset, err
+        }
+        if count == 0 {
+            return offset, error("archive: no write progress")
+        }
+    }
+    return offset, nil
+}
+
+func u16(data []byte, at int) int {
+    let value, err = binary.LittleEndian.Uint16(data[at:at + 2])
+    _ = err
+    return int(value)
+}
+
+func u32(data []byte, at int) int {
+    let value, err = binary.LittleEndian.Uint32(data[at:at + 4])
+    _ = err
+    return int(value)
+}
+
+func put16(data mut []byte, at int, value int) {
+    _ = binary.LittleEndian.PutUint16(data[at:at + 2], uint16(value))
+}
+
+func put32(data mut []byte, at int, value int) {
+    _ = binary.LittleEndian.PutUint32(data[at:at + 4], uint32(value))
+}
+
+func putText(data mut []byte, at int, value string) {
+    for var i = 0; i < value.len(); i += 1 {
+        data[at + i] = value[i]
+    }
+}
