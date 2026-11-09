@@ -16,6 +16,12 @@ Locked contract: spec §37.26. ZIP/TAR I/O and confined Linux/macOS/Windows extr
 | Member count, output expansion limits and trailing garbage | Python oracle |
 | Normal/error/panic cleanup, one-worker task execution with blocked sink | leak-checked native tests |
 | Documentation example compiles and runs | native guide test |
+| Every level `0`–`9` round-trips empty, one-byte, text, noise and long-run input | native `every_level_round_trips_and_output_does_not_depend_on_write_sizes` |
+| Output is the same whether input arrives in one `Write` or 7-byte pieces | native, same test |
+| Level 9 is no larger than level 1; level 0 stores; XFL is 2/4/0 | native, same test; oracle |
+| Invalid levels fail before output; `Flush` makes the prefix decodable, keeps history, and is sticky on failure; `Flush` after `Finish` fails | native `invalid_levels_fail_before_output_and_flush_makes_data_readable` |
+| Python zlib reads every level and streams flushed every 1,000 bytes; level 6 stays within 5% of zlib | `gzip_oracle.py` |
+| Levels are typed `flate.Level`; `Flush` needs a mutable writer | package `compression_levels_are_typed_and_flush_needs_a_mutable_writer` |
 
 Run `cargo test --locked --test packages gzip`,
 `cargo test --locked --test native gzip`, and
