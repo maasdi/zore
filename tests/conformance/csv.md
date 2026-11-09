@@ -17,10 +17,17 @@ The locked contract is specification §37.25. Native cases are in
 | Invalid delimiter, comment, field count or limits | The `NewReaderWith` or `NewWriterWith` error, kept |
 | A source giving one byte at a time | The same records |
 | A source failing after a complete record, after a partial one, inside quotes | Complete records, then the source error |
+| A source failing right after a CR, inside a UTF-8 sequence, or after a quote | The source error, except for a real syntax error already received |
+| A source returning its last bytes together with `io.EOF` | Every record, then `io.EOF` |
 | A source with a negative or too large count, or no progress | `invalid read count` or `no read progress` |
+| `Line()` before any record and after a failed `Read` | `0`; the last returned record's line |
+| A comment line with CR LF, at the end without a line ending, after a byte order mark | Skipped |
+| A quoted field exactly at `MaxRecordBytes`, and one byte over through `""` | Accepted; the length error |
+| `ReadAll` on a reader with invalid options | The options error |
 | Writing fields with delimiters, quotes, CR, LF, leading space or tab, empty fields, a lone empty field | Quoted only where required; `""` for the lone empty field |
 | An empty record | `csv.Writer.Write: empty record`; the writer keeps working |
 | Short, failing and lying sinks | Sticky errors; untaken bytes stay buffered |
+| 80 KB of records, and a field starting with a byte order mark | Sent once the buffer passes 64 KiB; quoted |
 | A Python-written table | Read and written back byte for byte with `CRLF` |
 | A changed or kept record | Never affects other records |
 | A reader or writer in a `let`, private fields, a non-byte delimiter, non-string records | Rejected by the checker |

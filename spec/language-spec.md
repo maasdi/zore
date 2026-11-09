@@ -11381,8 +11381,8 @@ func total(path string) (int, error) {
 | `NewReader(source own io.Reader) Reader` | A reader with `DefaultReadOptions()` |
 | `NewReaderWith(source own io.Reader, options ReadOptions) (Reader, error)` | A reader with `options`; invalid options are an error (below) |
 | `(r mut Reader) Read() (Array<string>, error)` | The next record; `io.EOF` when the input has no more |
-| `(r mut Reader) ReadAll(maxRecords int) (Array<Array<string>>, error)` | Every remaining record; more than `maxRecords` is an error, and `maxRecords < 1` is an error; the end of input is not an error |
-| `(r Reader) Line() int` | The line on which the last record returned by `Read` started, counting from 1; `0` before the first |
+| `(r mut Reader) ReadAll(maxRecords int) (Array<Array<string>>, error)` | Every remaining record; the end of input is not an error. `maxRecords < 1` is an error. Reading a record past `maxRecords` consumes it and stops the reader with `csv.Reader.ReadAll: more than N records`, which every later call returns |
+| `(r Reader) Line() int` | The line on which the last record returned by `Read` started, counting from 1; `0` before the first; a failed `Read` does not change it |
 | `type WriteOptions struct { Delimiter byte; CRLF bool }` | The byte between fields and whether lines end with CR LF instead of LF |
 | `DefaultWriteOptions() WriteOptions` | `Delimiter` `,`, `CRLF` `false` |
 | `type Writer struct` with private fields | One output's writing state |
@@ -11421,7 +11421,8 @@ the second empty, and `""` alone gives one empty field.
 
 **Errors.** Reading stops at the first problem, and every later `Read` returns
 the same error. Problems in the text name the line and the column, counted in
-bytes from 1, of the byte where they were found:
+bytes from 1 with a skipped byte order mark included, of the byte where they
+were found:
 `csv: line L, column C: quote in unquoted field`,
 `csv: line L, column C: text after closing quote`, and
 `csv: line L, column C: quoted field not closed`, where `L` and `C` give the
@@ -11437,12 +11438,16 @@ input never makes it hold more than the limit.
 **Short and failing input.** A source may return fewer bytes than asked; the
 reader asks again. A source error other than `io.EOF` is returned as it is,
 once any record that ended before it has been returned; a record that the
-error cut off is never returned. A count below zero or above the space
+error cut off is never returned. When the source fails before the reader
+could see the byte that decides whether the text is valid (after a closing
+quote, after a CR, or inside a UTF-8 sequence), the source error is returned
+instead of a problem with the text. A count below zero or above the space
 offered is `csv.Reader: invalid read count`, and 100 reads in a row that
 return no bytes and no error are `csv.Reader: no read progress`.
 
 **Writing.** A field is written inside quotes, with each `"` doubled, when it
-contains the delimiter, `"`, CR or LF, or begins with a space or tab; a record
+contains the delimiter, `"`, CR or LF, or begins with a space, a tab or a
+UTF-8 byte order mark; a record
 with exactly one field that is empty is written as `""` so that it is not an
 empty line. Other fields are written as they are. Fields are separated by the
 delimiter and each record ends with LF, or CR LF with `CRLF`. A record with no

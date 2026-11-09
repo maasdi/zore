@@ -50,6 +50,7 @@ type Reader struct {
     line int
     column int
     recordLine int
+    returnedLine int
     recordBytes int
     expected int
     err error
@@ -86,7 +87,7 @@ func newReader(source own io.Reader, options ReadOptions) Reader {
     for var i = 0; i < chunkSize; i += 1 {
         chunk.push(0)
     }
-    return Reader{source: source, options: options, chunk: chunk, position: 0, size: 0, sourceErr: nil, finished: false, started: false, line: 1, column: 0, recordLine: 0, recordBytes: 0, expected: options.FieldsPerRecord, err: nil}
+    return Reader{source: source, options: options, chunk: chunk, position: 0, size: 0, sourceErr: nil, finished: false, started: false, line: 1, column: 0, recordLine: 0, returnedLine: 0, recordBytes: 0, expected: options.FieldsPerRecord, err: nil}
 }
 
 func (r mut Reader) available(count int) bool {
@@ -150,12 +151,28 @@ func (r mut Reader) lineEndsHere() bool {
     return value == carriageReturn && r.available(2) && r.peekAt(1) == newline
 }
 
+func (r mut Reader) cutOff() bool {
+    return r.sourceErr != nil && r.size - r.position < 2
+}
+
 func (r mut Reader) fail(message string) error {
+    if r.cutOff() {
+        r.err = r.sourceErr
+        return r.err
+    }
     r.err = error("csv: line " + strconv.Itoa(r.line) + ", column " + strconv.Itoa(r.column) + ": " + message)
     return r.err
 }
 
 func (r mut Reader) failRecord(message string) error {
+    if r.cutOff() {
+        r.err = r.sourceErr
+        return r.err
+    }
+    return r.failEnded(message)
+}
+
+func (r mut Reader) failEnded(message string) error {
     r.err = error("csv: line " + strconv.Itoa(r.recordLine) + ": " + message)
     return r.err
 }
@@ -182,6 +199,7 @@ func (r mut Reader) skipToRecord() bool {
         r.started = true
         if r.available(3) && r.peekAt(0) == 239 && r.peekAt(1) == 187 && r.peekAt(2) == 191 {
             r.position += 3
+            r.column = 3
         }
     }
     for r.available(1) {
@@ -292,6 +310,9 @@ func (r mut Reader) quotedField(field mut Array<byte>) error {
         }
         if r.available(1) && r.peekAt(0) == quote {
             _ = r.next()
+            if r.tooLong() {
+                return r.longError()
+            }
             field.push(quote)
             continue
         }
@@ -308,17 +329,20 @@ func (r mut Reader) finish(record own Array<string>) (Array<string>, error) {
         r.expected = record.len()
     }
     if r.expected > 0 && record.len() != r.expected {
-        r.err = r.failRecord("record has " + strconv.Itoa(record.len()) + " fields, want " + strconv.Itoa(r.expected))
-        return Array<string>{}, r.err
+        return Array<string>{}, r.failEnded("record has " + strconv.Itoa(record.len()) + " fields, want " + strconv.Itoa(r.expected))
     }
+    r.returnedLine = r.recordLine
     return record, nil
 }
 
 func (r Reader) Line() int {
-    return r.recordLine
+    return r.returnedLine
 }
 
 func (r mut Reader) ReadAll(maxRecords int) (Array<Array<string>>, error) {
+    if r.err != nil {
+        return Array<Array<string>>{}, r.err
+    }
     if maxRecords < 1 {
         return Array<Array<string>>{}, error("csv.Reader.ReadAll: maxRecords must be positive")
     }
@@ -364,6 +388,9 @@ func (w Writer) needsQuotes(field string, alone bool) bool {
         return alone
     }
     if field[0] == space || field[0] == tab {
+        return true
+    }
+    if field.len() >= 3 && field[0] == 239 && field[1] == 187 && field[2] == 191 {
         return true
     }
     for var i = 0; i < field.len(); i += 1 {

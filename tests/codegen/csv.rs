@@ -421,3 +421,134 @@ fn guide_examples_compile_and_run() {
         "name,score\nAda,7\n\"Lovelace, A\",5\ntotal,12\n"
     );
 }
+
+const FAILING_AFTER: &str = r##"
+type FailsAfter struct { data Array<byte>; done bool }
+func (f mut FailsAfter) Read(buf mut []byte) (int, error) {
+    if f.done { return 0, error("disk gone") }
+    f.done = true
+    for var i = 0; i < f.data.len(); i += 1 { buf[i] = f.data[i] }
+    return f.data.len(), nil
+}
+
+type EndsWithData struct { done bool }
+func (e mut EndsWithData) Read(buf mut []byte) (int, error) {
+    if e.done { return 0, io.EOF }
+    e.done = true
+    let text = strings.Bytes("a,b\nc,d")
+    for var i = 0; i < text.len(); i += 1 { buf[i] = text[i] }
+    return text.len(), io.EOF
+}
+
+func failing(data own Array<byte>) {
+    var reader = csv.NewReader(FailsAfter{data: data, done: false})
+    show(reader)
+}
+"##;
+
+#[test]
+fn a_source_error_wins_over_problems_in_the_record_it_cut_off() {
+    reads_with(
+        FAILING_AFTER,
+        r##"
+    failing(strings.Bytes("x,y\n\"a\"\r"))
+    failing(Array<byte>{120, 44, 121, 10, 97, 44, 195})
+    failing(strings.Bytes("x,y\na\""))
+    failing(strings.Bytes("a\"b,c\nd\n"))
+    var ended = csv.NewReader(EndsWithData{done: false})
+    show(ended)
+"##,
+        "1: [x][y]\nerror: disk gone\n\
+         1: [x][y]\nerror: disk gone\n\
+         1: [x][y]\nerror: csv: line 2, column 2: quote in unquoted field\n\
+         error: csv: line 1, column 2: quote in unquoted field\n\
+         1: [a][b]\n2: [c][d]\nEOF\n",
+    );
+}
+
+#[test]
+fn line_reports_the_last_returned_record_and_errors_stay_sticky() {
+    reads(
+        r##"
+    var reader = csv.NewReader(bytes.NewBufferString("a,b\nc,d\n\ne\"f\n"))
+    println(reader.Line())
+    let _, _ = reader.Read()
+    let _, _ = reader.Read()
+    let _, err = reader.Read()
+    println(errors.Message(err))
+    println(reader.Line())
+    let bad = Array<byte>{97, 10, 255, 10}
+    var utf = csv.NewReader(bytes.NewBuffer(bad[:]))
+    let _, _ = utf.Read()
+    let _, first = utf.Read()
+    let _, second = utf.Read()
+    println(first == second && first == error("csv: line 2: field 1 is not valid UTF-8"))
+    var counted = csv.NewReader(bytes.NewBufferString("a,b\nc\nd,e\n"))
+    let _, _ = counted.Read()
+    let _, once = counted.Read()
+    let _, twice = counted.Read()
+    println(once == twice && once == error("csv: line 2: record has 1 fields, want 2"))
+    var options = csv.DefaultReadOptions()
+    options.FieldsPerRecord = -2
+    var broken, made = csv.NewReaderWith(bytes.NewBufferString("a\n"), options)
+    let _, all = broken.ReadAll(0)
+    println(all == made && broken.Line() == 0)
+"##,
+        "0\ncsv: line 4, column 2: quote in unquoted field\n2\ntrue\ntrue\ntrue\n",
+    );
+}
+
+#[test]
+fn comments_byte_order_marks_and_exact_limits() {
+    reads(
+        r##"
+    var comments = csv.DefaultReadOptions()
+    comments.Comment = 35
+    parseWith("﻿# title\r\na,b\r\n# end", comments)
+    parseWith("#only", comments)
+    parse("﻿a\"b\n")
+    var small = csv.DefaultReadOptions()
+    small.MaxRecordBytes = 6
+    parseWith("\"abcd\"\n", small)
+    parseWith("\"a\"\"b\"\n", small)
+    parseWith("\"abcd\"\"\n", small)
+"##,
+        "2: [a][b]\nEOF\n\
+         EOF\n\
+         error: csv: line 1, column 5: quote in unquoted field\n\
+         1: [abcd]\nEOF\n\
+         1: [a\"b]\nEOF\n\
+         error: csv: line 1: record longer than 6 bytes\n",
+    );
+}
+
+#[test]
+fn writer_flushes_on_its_own_and_round_trips_a_leading_byte_order_mark() {
+    prints(
+        r##"package main
+import "std/encoding/csv"
+import "std/os"
+import "std/strings"
+
+type Counter struct { writes int }
+func (c mut Counter) Write(data []byte) (int, error) {
+    c.writes += 1
+    println(data.len())
+    return data.len(), nil
+}
+
+func main() {
+    var counter = csv.NewWriter(Counter{writes: 0})
+    let field = strings.Repeat("x", 1000)
+    var row = Array<string>{}
+    for var i = 0; i < 16; i += 1 { row.push(field) }
+    for var i = 0; i < 5; i += 1 { _ = counter.Write(row[:]) }
+    println(counter.Buffered())
+    var out = csv.NewWriter(os.Stdout())
+    _ = out.Write(Array<string>{"﻿a", "b"}[:])
+    _ = out.Flush()
+}
+"##,
+        "80080\n0\n\"\u{feff}a\",b\n",
+    );
+}
