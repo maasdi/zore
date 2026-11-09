@@ -75,8 +75,13 @@ fn run(body: &str, controlled: bool) -> Output {
     let body = body
         .replace("func main() {", "func scenario() error {")
         .replace("println(\"ok\")", "println(\"ok\")\n    return nil");
+    let imports = if body.contains("flate.") {
+        "import \"std/compress/flate\"\n"
+    } else {
+        ""
+    };
     let source = format!(
-        "package main\n{SUPPORT}\n{body}\nfunc main() {{ let err = scenario(); if err != nil {{ panic(errors.Message(err)) }} }}\n"
+        "package main\n{imports}{SUPPORT}\n{body}\nfunc main() {{ let err = scenario(); if err != nil {{ panic(errors.Message(err)) }} }}\n"
     );
     if controlled {
         controlled_runtime::build_with_workers(&source, &executable, 1);
@@ -154,9 +159,12 @@ fn gzip_sink_errors_are_sticky_and_constructor_failures_release_ownership() {
         check(size == 0, "invalid constructor no output")
     }
     var partialWriter = gzip.NewWriter(sink(8, done), 10, 100)?
-    let acceptedData, payloadErr = partialWriter.Write(Array<byte>{1, 2, 3}[:])
+    let acceptedData, bufferedErr = partialWriter.Write(Array<byte>{1, 2, 3}[:])
+    _ = bufferedErr
+    check(acceptedData == 3 && bufferedErr == nil, "payload buffered until finish")
+    let payloadErr = partialWriter.Finish()
     check(payloadErr == error("payload failed"), "payload error")
-    check(acceptedData == 3 && partialWriter.Close() == payloadErr, "accepted chunk and sticky payload error")
+    check(partialWriter.Close() == payloadErr, "sticky payload error")
     let written, _ = done.receive()
     check(written == 11, "partial payload prefix retained")
     var trailerWriter = gzip.NewWriter(sink(8, done), 0, 100)?
@@ -381,6 +389,181 @@ fn gzip_unverified_partial_output_is_preserved_with_checksum_truncation_and_limi
     println("ok")
 }
 "#,
+        false,
+    );
+}
+
+const LEVELS: &str = r#"
+
+type Collect struct { data Array<byte>; out channel<Array<byte>> }
+func (c mut Collect) Write(data []byte) (int, error) {
+    for value in data { c.data.push(value) }
+    return data.len(), nil
+}
+func (c mut Collect) drop() { c.out.send(clone(c.data)) }
+
+type Plain struct { data Array<byte> }
+func (p mut Plain) Write(data []byte) (int, error) {
+    for value in data { p.data.push(value) }
+    return data.len(), nil
+}
+
+func compress(input []byte, level int, piece int) (Array<byte>, error) {
+    let out = channel<Array<byte>>(1)
+    var writer = gzip.NewWriterLevel(Collect{data: Array<byte>{}, out: out}, gzip.MaxBytes, gzip.MaxBytes, flate.Level(level))?
+    var at = 0
+    for at < input.len() {
+        var end = at + piece
+        if end > input.len() { end = input.len() }
+        let _, err = writer.Write(input[at:end])
+        if err != nil { return Array<byte>{}, err }
+        at = end
+    }
+    writer.Close()?
+    let data, _ = out.receive()
+    return data, nil
+}
+
+func expand(data []byte) (Array<byte>, error) {
+    var reader = gzip.NewReader(bytes.NewBuffer(data), gzip.MaxBytes, gzip.MaxBytes)?
+    let result = io.ReadAll(reader)?
+    reader.Close()?
+    return result, nil
+}
+
+func same(left []byte, right []byte) bool {
+    if left.len() != right.len() { return false }
+    for var i = 0; i < left.len(); i += 1 {
+        if left[i] != right[i] { return false }
+    }
+    return true
+}
+
+func samples() Array<Array<byte>> {
+    var text = Array<byte>{}
+    let words = "the quick brown fox jumps over the lazy dog; zore compresses text "
+    for var i = 0; i < 3000; i += 1 {
+        let word = words[(i * 7) % 40:(i * 7) % 40 + 9]
+        for var j = 0; j < word.len(); j += 1 { text.push(word[j]) }
+    }
+    var noise = Array<byte>{}
+    var state = 12345
+    for var i = 0; i < 70000; i += 1 {
+        state = (state * 1103515245 + 12345) % 2147483648
+        noise.push(byte((state >> 16) & 255))
+    }
+    var zeros = Array<byte>{}
+    for var i = 0; i < 100000; i += 1 { zeros.push(0) }
+    return Array<Array<byte>>{Array<byte>{}, Array<byte>{97}, text, noise, zeros}
+}
+"#;
+
+#[test]
+fn every_level_round_trips_and_output_does_not_depend_on_write_sizes() {
+    succeeds(
+        &format!(
+            r#"{LEVELS}
+func main() {{
+    let inputs = samples()
+    for input in inputs {{
+        for var level = 0; level <= 9; level += 1 {{
+            let whole = compress(input[:], level, 1000000)?
+            let back = expand(whole[:])?
+            check(same(back[:], input[:]), "round trip")
+            let pieces = compress(input[:], level, 7)?
+            check(same(pieces[:], whole[:]), "write sizes do not change output")
+            if level == 0 {{ check(whole.len() >= input.len() + 18, "level 0 stores") }}
+        }}
+    }}
+    let fast = compress(inputs[2][:], 1, 4096)?
+    let small = compress(inputs[2][:], 9, 4096)?
+    let stored = compress(inputs[2][:], 0, 4096)?
+    check(small.len() <= fast.len() && fast.len() * 4 < stored.len(), "levels trade speed for size")
+    let fixed = compress(inputs[4][:], 6, 4096)?
+    check(fixed.len() < 400, "long runs compress")
+    let defaulted = channel<Array<byte>>(1)
+    var plain = gzip.NewWriter(Collect{{data: Array<byte>{{}}, out: defaulted}}, 100, 100)?
+    plain.Close()?
+    let header, _ = defaulted.receive()
+    let best = compress(Array<byte>{{}}[:], 9, 1)?
+    let quick = compress(Array<byte>{{}}[:], 1, 1)?
+    check(header[8] == 0 && best[8] == 2 && quick[8] == 4, "XFL level hint")
+    println("ok")
+}}
+"#
+        ),
+        false,
+    );
+}
+
+#[test]
+fn invalid_levels_fail_before_output_and_flush_makes_data_readable() {
+    succeeds(
+        &format!(
+            r#"{LEVELS}
+func main() {{
+    let done = channel<int>(4)
+    for level in Array<int>{{-1, 10}} {{
+        let bad, err = gzip.NewWriterLevel(sink(0, done), 10, 100, flate.Level(level))
+        check(err == error("gzip: invalid compression level"), "gzip level")
+        drop(bad)
+        let size, _ = done.receive()
+        check(size == 0, "no output")
+        let _, rawErr = flate.NewEncoderLevel(10, 100, flate.Level(level))
+        check(rawErr == error("flate: invalid compression level"), "flate level")
+    }}
+    var target = Plain{{data: Array<byte>{{}}}}
+    var encoder = flate.NewEncoderLevel(100, 1000, flate.BestCompression)?
+    let accepted, err = flate.Write(encoder, target, Array<byte>{{104, 101, 108, 108, 111}}[:])
+    _ = err
+    check(accepted == 5 && err == nil && target.data.len() == 0, "input waits in the block")
+    flate.Flush(encoder, target)?
+    let flushed = target.data.len()
+    check(flushed > 4 && target.data[flushed - 4] == 0 && target.data[flushed - 3] == 0 && target.data[flushed - 2] == 255 && target.data[flushed - 1] == 255, "sync marker")
+    var decoder = flate.NewDecoder(1000, 100)?
+    var prefix = bytes.NewBuffer(target.data[:])
+    var buf = Array<byte>{{0, 0, 0, 0, 0, 0, 0, 0}}
+    var got = 0
+    for got < 5 {{
+        let count, readErr = flate.Read(decoder, prefix, buf[got:])
+        got += count
+        if readErr != nil {{ break }}
+    }}
+    check(got == 5 && buf[0] == 104 && buf[4] == 111, "flushed prefix decodes")
+    flate.Flush(encoder, target)?
+    let _, more = flate.Write(encoder, target, Array<byte>{{104, 101, 108, 108, 111}}[:])
+    check(more == nil, "write after flush")
+    flate.Finish(encoder, target)?
+    check(flate.Flush(encoder, target) == error("flate: writer finished"), "flush after finish")
+    var whole = flate.NewDecoder(1000, 100)?
+    var all = bytes.NewBuffer(target.data[:])
+    var out = Array<byte>{{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}}
+    var total = 0
+    for {{
+        let count, readErr = flate.Read(whole, all, out[total:])
+        total += count
+        if readErr == io.EOF {{ break }}
+        if readErr != nil {{ return readErr }}
+    }}
+    check(total == 10 && out[5] == 104 && out[9] == 111, "flush keeps history and stream valid")
+    var gz = gzip.NewWriter(sink(0, done), 10, 100)?
+    gz.Flush()?
+    gz.Finish()?
+    check(gz.Flush() == error("gzip: writer finished"), "gzip flush after finish")
+    check(gz.Close() == nil, "close")
+    let size, _ = done.receive()
+    check(size > 20, "flushed member")
+    var broken = gzip.NewWriter(sink(8, done), 10, 100)?
+    let _, buffered = broken.Write(Array<byte>{{1, 2, 3}}[:])
+    check(buffered == nil, "buffered")
+    let flushErr = broken.Flush()
+    check(flushErr == error("payload failed") && broken.Finish() == flushErr, "flush error sticky")
+    check(broken.Close() == flushErr, "close reports flush error")
+    let _, _ = done.receive()
+    println("ok")
+}}
+"#
+        ),
         false,
     );
 }

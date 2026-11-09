@@ -26,6 +26,7 @@ bundled! {
     "encoding/binary" => ["binary.ore"],
     "encoding/csv" => ["csv.ore"],
     "encoding/hex" => ["hex.ore"],
+    "encoding/html" => ["html.ore"],
     "encoding/json" => ["encoder.ore", "decoder.ore", "value.ore", "codec.ore"],
     "flag" => ["flag.ore"],
     "fmt" => ["fmt.ore"],

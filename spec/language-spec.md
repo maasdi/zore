@@ -11528,16 +11528,16 @@ partial output. Reading exactly the expected payload length is insufficient.
 `Close` does not substitute for reading to EOF. Member count and byte ceilings
 apply across the entire concatenation, not per member.
 
-Writers emit deterministic headers (MTIME 0, no name/comment, OS 255), fixed
-Huffman DEFLATE with a bounded single-candidate LZ77 search in 32 KiB chunks,
-and a CRC32/ISIZE trailer. No compression-level, metadata, flush/reset or archive
-API is introduced. They may expand incompressible input; applications must allow
-for framing/block overhead when choosing the compressed ceiling.
+Writers emit deterministic headers (MTIME 0, no name/comment, OS 255), DEFLATE
+from the shared encoder at a chosen level (§37.32), and a CRC32/ISIZE trailer.
+No metadata, reset or archive API is introduced. They may expand incompressible
+input; applications must allow for framing/block overhead when choosing the
+compressed ceiling.
 
 Memory stays bounded independently of stream length: 32 KiB decoding history,
-bounded Huffman alphabets and a bounded compression chunk/hash table. Work is
-bounded by accepted compressed/output bytes and the fixed 258-byte maximum
-match search. Plain functions execute CPU work inline; async callers suspend at
+bounded Huffman alphabets and the bounded encoder state of §37.32. Work is
+bounded by accepted compressed/output bytes and the per-level match search
+limits. Plain functions execute CPU work inline; async callers suspend at
 underlying interface I/O as usual, with no helper/preemption guarantee for CPU
 work. Callers needing cancellation supply a source/sink with that policy.
 
@@ -11721,7 +11721,7 @@ its existing codec here; there is one implementation of Huffman and LZ77 rules.
   gzip. After the final block it returns `io.EOF`; final padding is ignored.
 - `Write<W io.Writer>(encoder mut Encoder, sink mut W, data []byte)
   (int, error)` and `Finish<W io.Writer>(encoder mut Encoder, sink mut W) error`
-  use deterministic bounded fixed-Huffman/LZ77 coding. Finish is explicit and
+  use the deterministic bounded coding of §37.32. Finish is explicit and
   idempotent; drop produces no output. Write counts accepted uncompressed input,
   including input accepted before a sink failure. Empty input does not start a
   block. A whole write exceeding the input ceiling is rejected before acceptance.
@@ -11729,7 +11729,7 @@ its existing codec here; there is one implementation of Huffman and LZ77 rules.
   and delivered bytes. Encoder counters report accepted input and written
   compressed bytes. The caller must supply the same continuous logical source
   or sink throughout a state; neither state retains or closes it. Borrows last
-  only for the call. No reset, flush or compression-level API is introduced.
+  only for the call. Levels and `Flush` are §37.32; there is no reset API.
 - Terminal failures are sticky. Empty reads succeed; empty writes after finish
   fail. Invalid counts, zero writes and 100 consecutive empty reads fail. An
   input ceiling never consumes more than one detection byte; decoded output
@@ -11866,6 +11866,136 @@ ownership, native cleanup, one-worker execution, path/alias/duplicate rejection,
 parent-link and publication races, implicit-node/depth limits, malformed archive
 rollback, and independent Python extraction interoperability.
 
+## 37.31 HTML text and quoted-attribute escaping — LOCKED
+
+`std/encoding/html` owns HTML escaping policy and imports only `std/strings`.
+HTML escaping is grouped with the standard format encoders.
+`EscapeString(text string) string` replaces exactly these five ASCII characters:
+
+| Input | Output |
+| --- | --- |
+| `&` | `&amp;` |
+| `<` | `&lt;` |
+| `>` | `&gt;` |
+| `"` | `&quot;` |
+| `'` | `&#39;` |
+
+Every other UTF-8 byte is preserved, including Unicode, NUL, whitespace and
+controls; there is no normalization, decoding, newline conversion or entity
+recognition. Empty input returns `""`. Existing entity spellings are escaped
+again: `&amp;` becomes `&amp;amp;`. Escaping is deliberately not idempotent;
+callers pass the original text once at the output boundary.
+
+Input and output are ordinary immutable Copy strings. The input is borrowed
+for the call, remains usable, and is never changed; the result is an independent
+string value with no retained borrow. Like all Zore strings, input is already
+well-formed UTF-8 (§6.8, §41.5); the result is well-formed UTF-8 too. Convert
+arbitrary bytes with `strings.FromBytes` and handle its explicit validation
+error before escaping. There is no bytes overload or invalid-UTF-8 replacement
+policy in this package. No error result is needed for valid strings. Resource
+allocation follows ordinary string/builder behavior, without a package byte
+ceiling; output length is at most six times the input byte length. Work is
+linear in input/output length. An unchanged input may share immutable storage
+with its result; storage identity is not observable.
+
+Supported contexts are ordinary HTML element text and values enclosed in fixed
+single or double quotes for ordinary text attributes, such as `title` or `alt`.
+The surrounding markup and attribute name are application-controlled literals.
+This function is not an HTML sanitizer or context detector. It does not make a
+URL safe, constrain URL schemes, serialize JavaScript/CSS, or implement template
+auto-escaping. It is insufficient for script/style/raw-text contents, event
+handlers, `style`, `srcdoc`, URL-valued attributes, comments, tag/attribute names,
+doctype, unquoted attributes or executable/embedded-language contexts. A URL
+needs its own validation and context-specific encoding before HTML embedding.
+Preserving output bytes does not promise identical DOM values when HTML parsers
+normalize newlines or control characters.
+
+```ore
+import "std/encoding/html"
+
+func greeting(name string) string {
+    return "<p title=\"" + html.EscapeString(name) + "\">Hello " + html.EscapeString(name) + "</p>"
+}
+```
+
+The function is plain, deterministic CPU work. It does no I/O, opens no
+resources, and does not suspend or offload work; async callers use an ordinary
+call. No source syntax, compiler intrinsic, runtime provider or dependency is
+added. The compiler bundles ordinary Zore source. Conformance includes exact
+replacements, Unicode/controls, empty and already-escaped input, ownership and
+lifetime/cleanup runs in plain and async code, independent differential escaping,
+and HTML parser checks of supported text/quoted-attribute contexts.
+
+**Template follow-up decision — deferred, application-driven.** This increment
+adds no template language, template parser, framework or trusted-markup bypass.
+A separate application-driven decision must lock contextual auto-escaping for
+HTML templates and the independent semantics of plain-text templates before
+implementation. It must define supported contexts, literal/data separation,
+URL/script/style rules, compiled-template ownership and sharing, rendering
+limits, and whether output is an independent string or a borrowed writer with
+explicit partial-output errors. See `docs/design/templates.md` and Q16; these
+are follow-up requirements, not additional public APIs.
+
+## 37.32 Compression levels and flushing — LOCKED
+
+The shared encoder in `std/compress/flate` chooses a compression level and can
+flush a readable prefix. Gzip and ZIP DEFLATE use it.
+
+| Name | Behavior |
+| --- | --- |
+| `type Level int`; `NoCompression Level = 0`, `BestSpeed Level = 1`, `DefaultCompression Level = 6`, `BestCompression Level = 9` | Levels `0` through `9`; higher levels search harder for repeats and are slower |
+| `NewEncoderLevel(inputLimit int, compressedLimit int, level Level) (Encoder, error)` | An encoder at `level`; a level outside `0..9` is `flate: invalid compression level`, checked after the limits |
+| `NewEncoder(inputLimit int, compressedLimit int) (Encoder, error)` | `NewEncoderLevel` at `DefaultCompression` |
+| `Flush<W io.Writer>(encoder mut Encoder, sink mut W) error` | Writes every accepted byte as complete blocks, then an empty stored block (`00 00 FF FF` after byte alignment), so a decoder can return all input so far |
+| gzip `NewWriterLevel(sink own io.Writer, inputLimit int, compressedLimit int, level flate.Level) (Writer, error)` | A gzip writer at `level`; an invalid level is `gzip: invalid compression level`, checked after the limits; the returned inert writer still owns `sink` |
+| gzip `NewWriter(sink own io.Writer, inputLimit int, compressedLimit int) (Writer, error)` | `NewWriterLevel` at `flate.DefaultCompression` |
+| gzip `(w mut Writer) Flush() error` | Writes the header if needed, then `flate.Flush`; the member stays open |
+
+**Coding.** The encoder keeps a 32 KiB history and collects input into blocks
+of at most 32 KiB. A block is written when it is full, at `Flush` and at
+`Finish`, never on a partial `Write`. Level `0` writes stored blocks only.
+Levels `1` to `9` find repeats with hash chains whose length and lazy matching
+grow with the level, and write each block as stored, fixed-Huffman or dynamic
+Huffman, whichever is smallest. Matches may reach into history across blocks
+and flushes. `Finish` marks the last block final, or writes an empty final
+fixed block when nothing is pending, then pads to a byte. For a given level and
+the same input and `Flush` calls, the output is the same on every host and does
+not depend on how input is divided among `Write` calls. Exact compressed bytes
+may change between versions; the output is always valid RFC 1951 DEFLATE.
+
+**Errors and limits.** Because input waits in the block, a sink failure can
+surface at the `Write` that fills a block, at `Flush` or at `Finish`, rather
+than at the `Write` that offered the bytes. `Write` still counts accepted
+input, and all other §37.29 failure, ceiling and stickiness rules apply.
+`Flush` after `Finish` fails with `flate: writer finished` or
+`gzip: writer finished`; a failed `Flush` is sticky. Memory stays bounded at
+64 KiB of input history and pending data plus fixed hash, chain and Huffman
+tables, whatever the stream length.
+
+**Gzip header.** The XFL byte is `2` at `BestCompression`, `4` at
+`BestSpeed` and `0` otherwise; the rest of the header is unchanged. ZIP DEFLATE
+entries use `DefaultCompression` and keep the general-purpose flag bits of
+§37.29.
+
+```ore
+import "std/compress/flate"
+import "std/compress/gzip"
+import "std/os"
+
+func pack(path string, data []byte) error {
+    let file = os.Create(path)?
+    var writer = gzip.NewWriterLevel(file, 1048576, 2097152, flate.BestCompression)?
+    let _, err = writer.Write(data)
+    if err != nil { return err }
+    return writer.Close()
+}
+```
+
+Compiler impact: bundled Zore source only; no syntax, runtime or dependency.
+Conformance: native round trips at every level, write-size independence,
+flush decodability and error stickiness, and Python zlib interoperability for
+every level and for flushed streams.
+
 ## 37.33 PAX and GNU TAR names — LOCKED
 
 `TARReader` reads archives made by GNU tar and POSIX pax writers, including names
@@ -11930,6 +12060,7 @@ GNU archives with long, non-ASCII and directory names, GNU tar 1.35 archives in
 its `gnu`, `posix` and `oldgnu` formats checked locally, precedence, size
 replacement, global headers, leading `./`, writer long names read by Python, and
 each malformed extended header.
+
 
 # 38. Self-Hosting Constraint
 

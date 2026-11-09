@@ -20,6 +20,7 @@ mod generic_acceptance;
 mod gzip;
 mod hardening;
 mod host_support;
+mod html;
 mod http;
 mod http_client;
 mod interface_acceptance;

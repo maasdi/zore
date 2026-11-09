@@ -77,12 +77,21 @@ Positive short writes are retried. Zero write progress, invalid I/O counts and
 preserved, including an error reported with the final source byte. This permits
 bounded cleanup without silently treating a failing source as a valid stream.
 
-The writer uses deterministic headers and fixed Huffman codes with a bounded
-LZ77 search. There are no compression levels or metadata knobs. Compression
-ratio is intentionally modest; incompressible input may grow, so allow enough
-compressed space for overhead. Processing uses bounded chunks, a 32 KiB history
-and bounded Huffman tables rather than retaining the whole stream. CPU work
-runs inline; underlying interface I/O keeps its ordinary plain/async behavior.
+The writer uses deterministic headers. Pick how hard it works with a level:
+`gzip.NewWriterLevel(sink, inputLimit, compressedLimit, flate.BestCompression)`
+gives the smallest output, `flate.BestSpeed` the fastest, and
+`flate.NoCompression` stores the bytes as they are. `gzip.NewWriter` uses
+`flate.DefaultCompression` (level 6), which compresses text about as well as
+other gzip tools. Incompressible input may grow slightly, so allow some
+compressed space for overhead.
+
+The writer collects input into blocks of up to 32 KiB, so small writes compress
+as well as large ones. Call `Flush` when a reader on the other side must see
+everything written so far, for example between messages on a network
+connection; the stream stays open. A sink error may therefore appear at a later
+`Write`, at `Flush` or at `Finish`. Memory stays bounded by a 32 KiB history, one
+pending block and fixed tables. CPU work runs inline; underlying interface I/O
+keeps its ordinary plain/async behavior.
 
 ZIP/TAR I/O and confined Linux/macOS extraction are described in the
 [archive guide](archives.md), tracked by [#224](https://github.com/maasdi/zore/issues/224).

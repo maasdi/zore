@@ -11,6 +11,7 @@ import zlib
 
 
 PROGRAM = '''package main
+import "std/compress/flate"
 import "std/compress/gzip"
 import "std/errors"
 import "std/io"
@@ -29,10 +30,32 @@ func run() error {
         if err != nil { return err }
         return reader.Close()
     }
-    var writer = gzip.NewWriter(sink, limit, compressed)?
+    var level = 6
+    var every = 0
+    if args.len() > 6 {
+        level = strconv.Atoi(args[6])?
+        every = strconv.Atoi(args[7])?
+    }
+    var writer = gzip.NewWriterLevel(sink, limit, compressed, flate.Level(level))?
     var input = source
-    let _, err = io.Copy(writer, input)
-    if err != nil { return err }
+    if every == 0 {
+        let _, err = io.Copy(writer, input)
+        if err != nil { return err }
+    } else {
+        var buf = Array<byte>{}
+        for var i = 0; i < every; i += 1 { buf.push(0) }
+        for {
+            let count, readErr = input.Read(buf[:])
+            let ended = readErr == io.EOF
+            if readErr != nil && !ended { return readErr }
+            if count > 0 {
+                let _, err = writer.Write(buf[:count])
+                if err != nil { return err }
+                writer.Flush()?
+            }
+            if ended { break }
+        }
+    }
     writer.Finish()?
     writer.Finish()?
     return writer.Close()
@@ -89,12 +112,13 @@ def main():
         input_path = directory / 'input'
         output_path = directory / 'output'
 
-        def run(mode, data, limit, compressed=None, valid=True):
+        def run(mode, data, limit, compressed=None, valid=True, level=None, every=0):
             nonlocal checked
             input_path.write_bytes(data)
+            extra = [] if level is None else [str(level), str(every)]
             result = subprocess.run(
                 [str(executable), mode, str(input_path), str(output_path),
-                 str(limit), str(compressed if compressed is not None else 10485760)],
+                 str(limit), str(compressed if compressed is not None else 10485760)] + extra,
                 capture_output=True, timeout=30, env={**os.environ, 'ZORE_CHECK_LEAKS': '1'})
             checked += 1
             assert (result.returncode == 0) == valid, (mode, len(data), result.stderr)
@@ -119,6 +143,22 @@ def main():
                 run('c', payload, len(payload) - 1, valid=False)
 
         assert block_types == {0, 1, 2}, block_types
+        produced = set()
+        text = b' '.join(rng.choice([b'archive', b'zore', b'gzip', b'level', b'block', b'stream'])
+                         for _ in range(40000))
+        for payload in [text, rng.randbytes(50000), b'\0' * 70000, b'xyz' * 20000, b'q']:
+            for level in range(10):
+                encoded = run('c', payload, len(payload), level=level)
+                produced.add((encoded[10] >> 1) & 3)
+                assert gzip.decompress(encoded) == payload, level
+                assert encoded[8] == {1: 4, 9: 2}.get(level, 0), (level, encoded[8])
+                if level == 6 and len(payload) > 1000:
+                    reference = len(gzip.compress(payload, 6, mtime=0))
+                    assert len(encoded) <= reference * 1.05 + 64, (len(encoded), reference)
+            flushed = run('c', payload, len(payload), level=6, every=1000)
+            assert gzip.decompress(flushed) == payload
+            assert flushed.count(b'\0\0\xff\xff') >= len(payload) // 1000
+        assert produced == {0, 1, 2}, produced
         payload = b'optional headers and checksums' * 50
         compressor = zlib.compressobj(6, zlib.DEFLATED, -15)
         deflated = compressor.compress(payload) + compressor.flush()

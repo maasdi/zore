@@ -3,6 +3,7 @@ mod bundled_contracts;
 mod bundled_inventory;
 mod exec;
 mod gzip;
+mod html;
 mod local_dependencies;
 mod native_adapters;
 mod regexp;
