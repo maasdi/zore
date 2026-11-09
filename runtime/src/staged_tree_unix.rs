@@ -8,10 +8,24 @@ use std::os::fd::{AsRawFd, FromRawFd};
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Component, Path};
 
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 const DIRECTORY: c_int = 0o200000;
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 const NOFOLLOW: c_int = 0o400000;
+#[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+const DIRECTORY: c_int = 0o40000;
+#[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+const NOFOLLOW: c_int = 0o100000;
+#[cfg(all(
+    target_os = "linux",
+    not(any(target_arch = "x86_64", target_arch = "aarch64"))
+))]
+const DIRECTORY: c_int = 0;
+#[cfg(all(
+    target_os = "linux",
+    not(any(target_arch = "x86_64", target_arch = "aarch64"))
+))]
+const NOFOLLOW: c_int = 0;
 #[cfg(target_os = "linux")]
 const CLOEXEC: c_int = 0o2000000;
 #[cfg(target_os = "linux")]

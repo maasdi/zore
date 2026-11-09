@@ -162,7 +162,8 @@ owns an `io.ReadSeeker`; `ExtractTAR` owns an `io.Reader`. For compressed TAR,
 pass a gzip reader to ExtractTAR. Limits are validated before filesystem work.
 
 The destination must be new and have a portable basename. Its existing parent
-path must contain no symlinks or `..`. On macOS the final parent must be owned
+path must contain no symlinks or `..`; on macOS `/tmp` and `/var` are
+symlinks, so use their `/private` targets. On macOS the final parent must be owned
 by the effective user or root and have no extended ACL entries. This conservative
 check prevents inherited ACL grants from bypassing private mode bits; the parent
 ACL is never changed. The provider creates a private sibling
