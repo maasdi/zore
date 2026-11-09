@@ -11655,10 +11655,27 @@ ACL is never modified.
 `nodeLimit` is in `[0, 65534]`, counts files and implicit/explicit directories,
 and excludes the root. Relative names are local, at most 1024 UTF-8 bytes and
 64 components. Unsupported OS/filesystem confinement or atomic publication
-operations fail closed. The first provider supports x86_64/aarch64 Linux and
-macOS; other architectures fail before filesystem work. Windows
-support requires a separately verified handle-relative provider and returns an
-explicit unsupported error until that provider is implemented.
+operations fail closed. Providers support x86_64/aarch64 Linux and macOS and
+x86_64 Windows; other architectures fail before filesystem work.
+
+Windows uses handle-relative NT file operations with reparse processing disabled
+and verifies that every opened component is a directory/regular file without
+reparse attributes. Disk and UNC absolute paths, ordinary relative paths and
+their canonical verbatim forms are supported; drive-relative, root-relative and
+device-namespace paths fail. Existing parent components may not contain `..`.
+New nodes receive an explicit protected DACL, atomically at creation, granting
+full control only to the effective user and LocalSystem. Actual ownership,
+protected-DACL state and ACE identities/rights are checked before payload writes;
+unsupported security/identity capabilities fail closed. Windows filesystem IDs
+detect aliases and replaced nodes. Publication renames the source directory by
+its handle relative to the anchored destination parent, atomically refusing any
+existing target. Abort opens only tracked no-follow children, checks identities,
+and deletes via handles; unsupported deletion/publication operations return
+errors. The public ownership, limits, explicit FinishFile, helper-wait, sticky
+error, publication and best-effort drop rules are the same on every provider.
+Windows conformance includes independent extraction fixtures, junction/symlink
+rejection, aliases, protected DACLs, destination and parent-replacement races,
+partial-failure cleanup and one-worker/panic lifecycle runs.
 
 StagedTree is a Move resource with private state:
 
