@@ -2,7 +2,7 @@
 
 Issue [#224](https://github.com/maasdi/zore/issues/224) provides gzip, USTAR,
 classic stored/DEFLATE ZIP, and confined new-directory extraction on Linux/macOS.
-See the [archive guide](../archives.md) and spec §§37.25–37.29.
+See the [archive guide](../archives.md) and spec §§37.26–37.30.
 
 Windows extraction needs a verified handle-relative provider: reject reparse
 points at each component, track filesystem identities to reject name aliases,

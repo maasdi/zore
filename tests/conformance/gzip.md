@@ -1,6 +1,6 @@
 # Streaming gzip conformance
 
-Locked contract: spec §37.25. ZIP/TAR I/O and confined Linux/macOS extraction are mapped in
+Locked contract: spec §37.26. ZIP/TAR I/O and confined Linux/macOS extraction are mapped in
 `archives.md`; remaining format and Windows work is in `docs/design/archives.md`.
 
 | Contract | Evidence |

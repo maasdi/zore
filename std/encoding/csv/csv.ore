@@ -1,0 +1,486 @@
+package csv
+
+import "std/io"
+import "std/strconv"
+import "std/strings"
+
+const chunkSize = 65536
+const flushSize = 65536
+const maxEmptyReads = 100
+const quote byte = 34
+const newline byte = 10
+const carriageReturn byte = 13
+const space byte = 32
+const tab byte = 9
+
+type ReadOptions struct {
+    Delimiter byte
+    Comment byte
+    FieldsPerRecord int
+    MaxRecordBytes int
+    MaxFields int
+}
+
+type WriteOptions struct {
+    Delimiter byte
+    CRLF bool
+}
+
+func DefaultReadOptions() ReadOptions {
+    return ReadOptions{Delimiter: 44, Comment: 0, FieldsPerRecord: 0, MaxRecordBytes: 1048576, MaxFields: 4096}
+}
+
+func DefaultWriteOptions() WriteOptions {
+    return WriteOptions{Delimiter: 44, CRLF: false}
+}
+
+func validDelimiter(value byte) bool {
+    return value != 0 && value < 128 && value != quote && value != newline && value != carriageReturn
+}
+
+type Reader struct {
+    source io.Reader
+    options ReadOptions
+    chunk Array<byte>
+    position int
+    size int
+    sourceErr error
+    finished bool
+    started bool
+    line int
+    column int
+    recordLine int
+    returnedLine int
+    recordBytes int
+    expected int
+    err error
+}
+
+func NewReader(source own io.Reader) Reader {
+    return newReader(source, DefaultReadOptions())
+}
+
+func NewReaderWith(source own io.Reader, options ReadOptions) (Reader, error) {
+    var problem = ""
+    if !validDelimiter(options.Delimiter) {
+        problem = "invalid Delimiter"
+    } else if options.Comment != 0 && (!validDelimiter(options.Comment) || options.Comment == options.Delimiter) {
+        problem = "invalid Comment"
+    } else if options.FieldsPerRecord < -1 {
+        problem = "FieldsPerRecord must be -1 or more"
+    } else if options.MaxRecordBytes < 1 {
+        problem = "MaxRecordBytes must be positive"
+    } else if options.MaxFields < 1 {
+        problem = "MaxFields must be positive"
+    }
+    var reader = newReader(source, options)
+    if problem != "" {
+        let message = "csv.NewReaderWith: " + problem
+        reader.err = error(message)
+        return reader, error(message)
+    }
+    return reader, nil
+}
+
+func newReader(source own io.Reader, options ReadOptions) Reader {
+    var chunk = Array<byte>{}
+    for var i = 0; i < chunkSize; i += 1 {
+        chunk.push(0)
+    }
+    return Reader{source: source, options: options, chunk: chunk, position: 0, size: 0, sourceErr: nil, finished: false, started: false, line: 1, column: 0, recordLine: 0, returnedLine: 0, recordBytes: 0, expected: options.FieldsPerRecord, err: nil}
+}
+
+func (r mut Reader) available(count int) bool {
+    var empty = 0
+    for r.size - r.position < count {
+        if r.finished || r.sourceErr != nil {
+            return false
+        }
+        let rest = r.size - r.position
+        for var i = 0; i < rest; i += 1 {
+            r.chunk[i] = r.chunk[r.position + i]
+        }
+        r.position = 0
+        r.size = rest
+        let room = r.chunk.len() - rest
+        let read, err = r.source.Read(r.chunk[rest:])
+        if read < 0 || read > room {
+            _ = err
+            r.sourceErr = error("csv.Reader: invalid read count")
+            return false
+        }
+        r.size += read
+        if err == io.EOF {
+            r.finished = true
+        } else if err != nil {
+            r.sourceErr = err
+        } else if read == 0 {
+            empty += 1
+            if empty >= maxEmptyReads {
+                r.sourceErr = error("csv.Reader: no read progress")
+            }
+        } else {
+            empty = 0
+        }
+    }
+    return true
+}
+
+func (r Reader) peekAt(offset int) byte {
+    return r.chunk[r.position + offset]
+}
+
+func (r mut Reader) next() byte {
+    let value = r.chunk[r.position]
+    r.position += 1
+    r.recordBytes += 1
+    if value == newline {
+        r.line += 1
+        r.column = 0
+    } else {
+        r.column += 1
+    }
+    return value
+}
+
+func (r mut Reader) lineEndsHere() bool {
+    let value = r.peekAt(0)
+    if value == newline {
+        return true
+    }
+    return value == carriageReturn && r.available(2) && r.peekAt(1) == newline
+}
+
+func (r mut Reader) cutOff() bool {
+    return r.sourceErr != nil && r.size - r.position < 2
+}
+
+func (r mut Reader) fail(message string) error {
+    if r.cutOff() {
+        r.err = r.sourceErr
+        return r.err
+    }
+    r.err = error("csv: line " + strconv.Itoa(r.line) + ", column " + strconv.Itoa(r.column) + ": " + message)
+    return r.err
+}
+
+func (r mut Reader) failRecord(message string) error {
+    if r.cutOff() {
+        r.err = r.sourceErr
+        return r.err
+    }
+    return r.failEnded(message)
+}
+
+func (r mut Reader) failEnded(message string) error {
+    r.err = error("csv: line " + strconv.Itoa(r.recordLine) + ": " + message)
+    return r.err
+}
+
+func (r mut Reader) stop() error {
+    if r.sourceErr != nil {
+        r.err = r.sourceErr
+    } else {
+        r.err = io.EOF
+    }
+    return r.err
+}
+
+func (r mut Reader) tooLong() bool {
+    return r.recordBytes > r.options.MaxRecordBytes
+}
+
+func (r mut Reader) longError() error {
+    return r.failRecord("record longer than " + strconv.Itoa(r.options.MaxRecordBytes) + " bytes")
+}
+
+func (r mut Reader) skipToRecord() bool {
+    if !r.started {
+        r.started = true
+        if r.available(3) && r.peekAt(0) == 239 && r.peekAt(1) == 187 && r.peekAt(2) == 191 {
+            r.position += 3
+            r.column = 3
+        }
+    }
+    for r.available(1) {
+        if r.lineEndsHere() {
+            if r.next() == carriageReturn {
+                _ = r.next()
+            }
+        } else if r.options.Comment != 0 && r.peekAt(0) == r.options.Comment {
+            for r.available(1) && r.next() != newline {
+            }
+        } else {
+            return true
+        }
+    }
+    return false
+}
+
+func (r mut Reader) Read() (Array<string>, error) {
+    if r.err != nil {
+        return Array<string>{}, r.err
+    }
+    if !r.skipToRecord() {
+        return Array<string>{}, r.stop()
+    }
+    r.recordLine = r.line
+    r.recordBytes = 0
+    var record = Array<string>{}
+    for {
+        var field = Array<byte>{}
+        let err = r.field(field)
+        if err != nil {
+            return Array<string>{}, err
+        }
+        if r.tooLong() {
+            return Array<string>{}, r.longError()
+        }
+        let text, invalid = strings.FromBytes(field[:])
+        if invalid != nil {
+            return Array<string>{}, r.failRecord("field " + strconv.Itoa(record.len() + 1) + " is not valid UTF-8")
+        }
+        record.push(text)
+        if record.len() > r.options.MaxFields {
+            return Array<string>{}, r.failRecord("more than " + strconv.Itoa(r.options.MaxFields) + " fields")
+        }
+        if !r.available(1) {
+            if r.sourceErr != nil {
+                r.err = r.sourceErr
+                return Array<string>{}, r.err
+            }
+            return r.finish(record)
+        }
+        let value = r.next()
+        if value == carriageReturn {
+            _ = r.next()
+            return r.finish(record)
+        }
+        if value == newline {
+            return r.finish(record)
+        }
+    }
+}
+
+func (r mut Reader) field(field mut Array<byte>) error {
+    if r.available(1) && r.peekAt(0) == quote {
+        return r.quotedField(field)
+    }
+    return r.plainField(field)
+}
+
+func (r mut Reader) plainField(field mut Array<byte>) error {
+    for r.available(1) {
+        let value = r.peekAt(0)
+        if value == r.options.Delimiter || r.lineEndsHere() {
+            return nil
+        }
+        _ = r.next()
+        if value == quote {
+            return r.fail("quote in unquoted field")
+        }
+        if r.tooLong() {
+            return r.longError()
+        }
+        field.push(value)
+    }
+    return nil
+}
+
+func (r mut Reader) quotedField(field mut Array<byte>) error {
+    _ = r.next()
+    let startLine = r.line
+    let startColumn = r.column
+    for {
+        if !r.available(1) {
+            if r.sourceErr != nil {
+                r.err = r.sourceErr
+                return r.err
+            }
+            r.err = error("csv: line " + strconv.Itoa(startLine) + ", column " + strconv.Itoa(startColumn) + ": quoted field not closed")
+            return r.err
+        }
+        let value = r.next()
+        if r.tooLong() {
+            return r.longError()
+        }
+        if value != quote {
+            field.push(value)
+            continue
+        }
+        if r.available(1) && r.peekAt(0) == quote {
+            _ = r.next()
+            if r.tooLong() {
+                return r.longError()
+            }
+            field.push(quote)
+            continue
+        }
+        if !r.available(1) || r.peekAt(0) == r.options.Delimiter || r.lineEndsHere() {
+            return nil
+        }
+        _ = r.next()
+        return r.fail("text after closing quote")
+    }
+}
+
+func (r mut Reader) finish(record own Array<string>) (Array<string>, error) {
+    if r.expected == 0 {
+        r.expected = record.len()
+    }
+    if r.expected > 0 && record.len() != r.expected {
+        return Array<string>{}, r.failEnded("record has " + strconv.Itoa(record.len()) + " fields, want " + strconv.Itoa(r.expected))
+    }
+    r.returnedLine = r.recordLine
+    return record, nil
+}
+
+func (r Reader) Line() int {
+    return r.returnedLine
+}
+
+func (r mut Reader) ReadAll(maxRecords int) (Array<Array<string>>, error) {
+    if r.err != nil {
+        return Array<Array<string>>{}, r.err
+    }
+    if maxRecords < 1 {
+        return Array<Array<string>>{}, error("csv.Reader.ReadAll: maxRecords must be positive")
+    }
+    var records = Array<Array<string>>{}
+    for {
+        let record, err = r.Read()
+        if err == io.EOF {
+            return records, nil
+        }
+        if err != nil {
+            return Array<Array<string>>{}, err
+        }
+        if records.len() == maxRecords {
+            r.err = error("csv.Reader.ReadAll: more than " + strconv.Itoa(maxRecords) + " records")
+            return Array<Array<string>>{}, r.err
+        }
+        records.push(record)
+    }
+}
+
+type Writer struct {
+    sink io.Writer
+    options WriteOptions
+    pending Array<byte>
+    err error
+}
+
+func NewWriter(sink own io.Writer) Writer {
+    return Writer{sink: sink, options: DefaultWriteOptions(), pending: Array<byte>{}, err: nil}
+}
+
+func NewWriterWith(sink own io.Writer, options WriteOptions) (Writer, error) {
+    var writer = Writer{sink: sink, options: options, pending: Array<byte>{}, err: nil}
+    if !validDelimiter(options.Delimiter) {
+        writer.err = error("csv.NewWriterWith: invalid Delimiter")
+        return writer, error("csv.NewWriterWith: invalid Delimiter")
+    }
+    return writer, nil
+}
+
+func (w Writer) needsQuotes(field string, alone bool) bool {
+    if field == "" {
+        return alone
+    }
+    if field[0] == space || field[0] == tab {
+        return true
+    }
+    if field.len() >= 3 && field[0] == 239 && field[1] == 187 && field[2] == 191 {
+        return true
+    }
+    for var i = 0; i < field.len(); i += 1 {
+        let value = field[i]
+        if value == w.options.Delimiter || value == quote || value == newline || value == carriageReturn {
+            return true
+        }
+    }
+    return false
+}
+
+func (w mut Writer) Write(record []string) error {
+    if w.err != nil {
+        return w.err
+    }
+    if record.len() == 0 {
+        return error("csv.Writer.Write: empty record")
+    }
+    for var index = 0; index < record.len(); index += 1 {
+        if index > 0 {
+            w.pending.push(w.options.Delimiter)
+        }
+        let field = record[index]
+        if !w.needsQuotes(field, record.len() == 1) {
+            for var i = 0; i < field.len(); i += 1 {
+                w.pending.push(field[i])
+            }
+            continue
+        }
+        w.pending.push(quote)
+        for var i = 0; i < field.len(); i += 1 {
+            let value = field[i]
+            if value == quote {
+                w.pending.push(quote)
+            }
+            w.pending.push(value)
+        }
+        w.pending.push(quote)
+    }
+    if w.options.CRLF {
+        w.pending.push(carriageReturn)
+    }
+    w.pending.push(newline)
+    if w.pending.len() >= flushSize {
+        return w.Flush()
+    }
+    return nil
+}
+
+func (w mut Writer) WriteAll(records []Array<string>) error {
+    for record in records {
+        let err = w.Write(record[:])
+        if err != nil {
+            return err
+        }
+    }
+    return w.Flush()
+}
+
+func (w Writer) Buffered() int {
+    return w.pending.len()
+}
+
+func (w mut Writer) Flush() error {
+    if w.err != nil {
+        return w.err
+    }
+    let size = w.pending.len()
+    var offset = 0
+    for offset < size {
+        let count, err = w.sink.Write(w.pending[offset:])
+        if count < 0 || count > size - offset {
+            _ = err
+            w.err = error("csv.Writer: invalid write count")
+            break
+        }
+        offset += count
+        if err != nil {
+            w.err = err
+            break
+        }
+        if count == 0 {
+            w.err = error("csv.Writer: no write progress")
+            break
+        }
+    }
+    var rest = Array<byte>{}
+    for var i = offset; i < size; i += 1 {
+        rest.push(w.pending[i])
+    }
+    w.pending = rest
+    return w.err
+}

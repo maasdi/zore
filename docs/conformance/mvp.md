@@ -214,7 +214,7 @@ to the earlier executable cases, with replay and CI.
 
 ## Streaming gzip follow-up — issue #224
 
-Spec §37.25 locks `std/compress/gzip` as the first compression/archive slice.
+Spec §37.26 locks `std/compress/gzip` as the first compression/archive slice.
 The package composes owned I/O with compressed/uncompressed byte ceilings,
 member limits, explicit finalization and checksum validation. It is implemented
 in Zore with no new runtime provider or dependency. Ownership/visibility checks,
@@ -226,7 +226,7 @@ format extensions and Windows extraction are recorded in
 
 ## Archive I/O follow-up — issue #224
 
-Spec §§37.26–37.27 add shared IEEE CRC32 and bounded USTAR/stored ZIP I/O.
+Spec §§37.27–37.28 add shared IEEE CRC32 and bounded USTAR/stored ZIP I/O.
 Readers validate entries and archive structure; generic writers return their
 concrete sinks for ordered finalization. Native lifecycle/task tests, package
 ownership checks and independent tarfile/zipfile/gzip fixtures are mapped in
@@ -234,7 +234,7 @@ ownership checks and independent tarfile/zipfile/gzip fixtures are mapped in
 symbol collision discovered by the two writer types has a direct native
 regression. Extended formats and Windows extraction remain deferred under Q15.
 
-Spec §§37.28–37.29 add a shared raw-DEFLATE codec, ZIP method 8 and confined
+Spec §§37.29–37.30 add a shared raw-DEFLATE codec, ZIP method 8 and confined
 new-directory extraction on Linux/macOS. Python gzip/archive/extraction
 oracles and native ownership, boundary, race and cleanup tests provide evidence.
 Windows extraction deliberately returns unsupported; it has no weaker fallback.

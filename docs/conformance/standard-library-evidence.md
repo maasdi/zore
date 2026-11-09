@@ -15,7 +15,7 @@ inspect handle removal, untaken pipe closure and reaped child state. These cases
 use a Rust child fixture on each host rather than a Unix shell. They establish
 direct-child behavior, with no descendant process-tree guarantee.
 
-[compiler/src/driver/stdlib.rs](../../compiler/src/driver/stdlib.rs) registers exactly 45 bundled package paths: `std/archive`, `std/bufio`, `std/bytes`, `std/compress/flate`, `std/compress/gzip`, `std/context`, `std/crypto/hmac`, `std/crypto/rand`, `std/crypto/sha1`, `std/crypto/sha256`, `std/crypto/sha512`, `std/crypto/subtle`, `std/encoding/base64`, `std/encoding/binary`, `std/encoding/hex`, `std/encoding/json`, `std/errors`, `std/flag`, `std/fmt`, `std/hash/crc32`, `std/io`, `std/log`, `std/log/rolling`, `std/maps`, `std/math`, `std/math/rand`, `std/mime`, `std/net`, `std/net/http`, `std/net/url`, `std/os`, `std/os/exec`, `std/os/signal`, `std/path`, `std/path/filepath`, `std/regexp`, `std/slices`, `std/sort`, `std/strconv`, `std/strings`, `std/sync`, `std/testing`, `std/time`, `std/unicode`, and `std/unicode/utf8`. These paths bundle `.ore` sources, with selected runtime declarations. `path/filepath` substitutes a Windows source file on Windows. Cargo sets `autotests = false`; target registrations are explicit in [compiler/Cargo.toml](../../compiler/Cargo.toml). Native tests named below are compiled under its `native` target through modules declared in `tests/codegen/native.rs`; HTTP, JSON, signal, URL/client, log/rolling and other nested suites are not standalone Cargo targets. The external crypto, TLS and SQLite packages are maintained native-adapter examples, not part of the 45 bundled packages.
+[compiler/src/driver/stdlib.rs](../../compiler/src/driver/stdlib.rs) registers exactly 46 bundled package paths: `std/archive`, `std/bufio`, `std/bytes`, `std/compress/flate`, `std/compress/gzip`, `std/context`, `std/crypto/hmac`, `std/crypto/rand`, `std/crypto/sha1`, `std/crypto/sha256`, `std/crypto/sha512`, `std/crypto/subtle`, `std/encoding/base64`, `std/encoding/binary`, `std/encoding/csv`, `std/encoding/hex`, `std/encoding/json`, `std/errors`, `std/flag`, `std/fmt`, `std/hash/crc32`, `std/io`, `std/log`, `std/log/rolling`, `std/maps`, `std/math`, `std/math/rand`, `std/mime`, `std/net`, `std/net/http`, `std/net/url`, `std/os`, `std/os/exec`, `std/os/signal`, `std/path`, `std/path/filepath`, `std/regexp`, `std/slices`, `std/sort`, `std/strconv`, `std/strings`, `std/sync`, `std/testing`, `std/time`, `std/unicode`, and `std/unicode/utf8`. These paths bundle `.ore` sources, with selected runtime declarations. `path/filepath` substitutes a Windows source file on Windows. Cargo sets `autotests = false`; target registrations are explicit in [compiler/Cargo.toml](../../compiler/Cargo.toml). Native tests named below are compiled under its `native` target through modules declared in `tests/codegen/native.rs`; HTTP, JSON, signal, URL/client, log/rolling and other nested suites are not standalone Cargo targets. The external crypto, TLS and SQLite packages are maintained native-adapter examples, not part of the 46 bundled packages.
 
 | §37 contract family and supplied source/API | Registered executable assertion and observed behavior | Boundary or exclusion |
 |---|---|---|
@@ -70,6 +70,18 @@ file through an import name. [Package checks](../../tests/packages/packages.rs)
 reject `let` generators, private-field access, negative seeds and shuffling
 non-copyable values. See the [conformance map](../../tests/conformance/rand.md).
 
+## CSV records
+
+Issue #225 implements §37.25 in `std/encoding/csv` as plain Zore source.
+[Native tests](../../tests/codegen/csv.rs) cover quoting, line endings, empty
+fields, comments, options, malformed input with line and column, limits,
+sticky errors, short, failing and stalled sources and sinks, and record
+ownership, all with leak checking on. A table written by Python's `csv`
+module, kept as a fixture, is read and written back byte for byte.
+[Package checks](../../tests/packages/packages.rs) require `var` readers and
+writers and keep their fields private. See the
+[conformance map](../../tests/conformance/csv.md).
+
 ## External native package status outside §37
 
 SQLite is a maintained external `sqlite` package with a curated native adapter; it is neither one of the bundled standard paths nor a §37 contract. The registered [`tests/driver/sqlite.rs`](../../tests/driver/sqlite.rs)::`sqlite_resource_contract_and_tagged_offline_application` invokes `zore test sqlite` and asserts “23 passed,” an offline tagged dependency, app output and adapter integrity. In [`packages/sqlite/sqlite_test.ore`](../../packages/sqlite/sqlite_test.ore), `TestParametersAndOwnedRows` checks null/numeric/text/binary bindings and owned result survival; `TestTransactions` checks commit, rollback and completed-handle rejection; `TestAsyncResourceAcrossWaits` checks a live statement after suspension; `TestTransactionCallbackErrorRollsBack` and `TestTransactionBusyCommitRollsBackAfterTimeout` check rollback; `TestTransactionCommitWaitsForReaderWithinBusyTimeout` checks retry after a reader releases. The driver’s [`tests/driver/sqlite.rs`](../../tests/driver/sqlite.rs)::`cleanup_modes` helper, called by that test, asserts normal/error/panic cleanup and contention. The `.ore` cases execute because the Rust driver explicitly invokes the app test runner; Cargo does not discover them directly.
@@ -78,7 +90,7 @@ The `.ore` crypto/TLS/SQLite-style application tests are not Cargo-discovered Ru
 
 ## Compression and archives
 
-Issue #224 implements §§37.25–37.29 through bundled gzip/raw DEFLATE, CRC32 and
+Issue #224 implements §§37.26–37.30 through bundled gzip/raw DEFLATE, CRC32 and
 USTAR/ZIP packages, with the confined staged-tree provider in `std/os` for
 Linux/macOS. The [archive conformance map](../../tests/conformance/archives.md)
 names native, frontend, Python interoperability and filesystem race/cleanup

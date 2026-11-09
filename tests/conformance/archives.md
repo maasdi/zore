@@ -1,6 +1,6 @@
 # Archive conformance
 
-Contracts: spec §§37.26–37.29, plus `io.ReadSeeker` in §37.3.
+Contracts: spec §§37.27–37.30, plus `io.ReadSeeker` in §37.3.
 
 | Contract | Executable evidence |
 | --- | --- |

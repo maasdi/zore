@@ -24,6 +24,7 @@ bundled! {
     "errors" => ["errors.ore"],
     "encoding/base64" => ["base64.ore"],
     "encoding/binary" => ["binary.ore"],
+    "encoding/csv" => ["csv.ore"],
     "encoding/hex" => ["hex.ore"],
     "encoding/json" => ["encoder.ore", "decoder.ore", "value.ore", "codec.ore"],
     "flag" => ["flag.ore"],

@@ -2,12 +2,18 @@
 
 Issue [#224](https://github.com/maasdi/zore/issues/224) provides streaming gzip,
 USTAR and classic stored/DEFLATE ZIP I/O, plus confined extraction into new
-directories on Linux/macOS (§§37.25–37.29). Raw DEFLATE is shared below gzip and
+directories on Linux/macOS (§§37.26–37.30). Raw DEFLATE is shared below gzip and
 archive policy; CRC32 remains in `std/hash/crc32`. Extraction validates the whole
 archive in private staging before no-replace publication, counts implicit nodes
 and rejects aliases, duplicates and links. Windows extraction explicitly returns
 unsupported. Extended formats and existing-tree overwrite policies remain
 [follow-ups](design/archives.md). See the [archive guide](archives.md).
+
+Issue [#225](https://github.com/maasdi/zore/issues/225) adds
+`std/encoding/csv` under locked §37.25: RFC 4180 records read one at a time
+from an `io.Reader` and written to an `io.Writer`, with size and field limits,
+line-and-column errors, and records the caller owns. See the
+[guide](csv.md) and [conformance](../tests/conformance/csv.md).
 
 Issue [#222](https://github.com/maasdi/zore/issues/222) adds `std/regexp` under
 locked §37.23: owned compilation and shared handles, rune-based matching with
