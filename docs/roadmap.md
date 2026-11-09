@@ -1,7 +1,7 @@
 # Implementation roadmap
 
 Issue [#226](https://github.com/maasdi/zore/issues/226) adds
-`std/html.EscapeString` under locked §37.31. It escapes ordinary HTML text and
+`std/encoding/html.EscapeString` under locked §37.31. It escapes ordinary HTML text and
 fixed quoted text attributes, preserves other UTF-8 bytes, and returns an
 independent immutable string. Script/style/URL policies and template rendering
 are separate contracts. See the [guide](html.md),

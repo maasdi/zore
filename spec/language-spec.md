@@ -11868,7 +11868,10 @@ rollback, and independent Python extraction interoperability.
 
 ## 37.31 HTML text and quoted-attribute escaping — LOCKED
 
-`std/html` owns HTML escaping policy and imports only `std/strings`.
+`std/encoding/html` owns HTML escaping policy and imports only `std/strings`.
+HTML escaping is grouped with the standard format encoders. This path replaces
+the pre-merge `std/html` spelling; update imports to `std/encoding/html` while
+keeping the `html` qualifier. The old path is removed without a forwarding alias.
 `EscapeString(text string) string` replaces exactly these five ASCII characters:
 
 | Input | Output |
@@ -11910,7 +11913,7 @@ Preserving output bytes does not promise identical DOM values when HTML parsers
 normalize newlines or control characters.
 
 ```ore
-import "std/html"
+import "std/encoding/html"
 
 func greeting(name string) string {
     return "<p title=\"" + html.EscapeString(name) + "\">Hello " + html.EscapeString(name) + "</p>"

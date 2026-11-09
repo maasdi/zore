@@ -1,13 +1,13 @@
 # HTML escaping
 
-`std/html.EscapeString(text)` escapes data for ordinary HTML element text and
-fixed single- or double-quoted values of ordinary text attributes, such as
-`title` and `alt`. Markup and attribute names stay application-controlled.
+`std/encoding/html.EscapeString(text)` escapes data for ordinary HTML element
+text and fixed single- or double-quoted values of ordinary text attributes, such
+as `title` and `alt`. Markup and attribute names stay application-controlled.
 
 ```ore
 package main
 
-import "std/html"
+import "std/encoding/html"
 
 func greeting(name string) string {
     return "<p title=\"" + html.EscapeString(name) + "\">Hello " + html.EscapeString(name) + "</p>"

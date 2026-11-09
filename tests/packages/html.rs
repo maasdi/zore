@@ -3,7 +3,7 @@ fn html_has_a_plain_string_api_available_without_native_linking() {
     super::accepts(&[(
         "main.ore",
         r#"package main
-import "std/html"
+import "std/encoding/html"
 async func render(text string) string { return html.EscapeString(text) }
 func main() {
     let source = "<&>"
@@ -21,7 +21,8 @@ func main() {
         ("println(html.entity(60))", "not exported"),
         ("println(html.EscapeString())", "takes 1 argument"),
     ] {
-        let source = format!("package main\nimport \"std/html\"\nfunc main() {{ {body} }}\n");
+        let source =
+            format!("package main\nimport \"std/encoding/html\"\nfunc main() {{ {body} }}\n");
         super::rejects(&[("main.ore", &source)], expected);
     }
 }

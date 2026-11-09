@@ -241,7 +241,7 @@ Windows extraction enforces protected DACLs and rejects reparse points.
 
 ## HTML escaping follow-up — issue #226
 
-Locked §37.31 is implemented by `std/html.EscapeString`.
+Locked §37.31 is implemented by `std/encoding/html.EscapeString`.
 [HTML conformance](../../tests/conformance/html.md) maps frontend API checks,
 exact UTF-8 output, ownership/cleanup across suspension, a compiled guide and
 independent Python escaping/parser assertions. Contextual template rendering

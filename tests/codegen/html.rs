@@ -19,7 +19,7 @@ fn execute(source: &str, controlled: bool) -> Output {
 #[test]
 fn html_escaping_preserves_utf8_and_replaces_exactly_five_characters() {
     let source = r#"package main
-import "std/html"
+import "std/encoding/html"
 import "std/strings"
 func check(ok bool, label string) { if !ok { panic(label) } }
 func main() {
@@ -47,7 +47,7 @@ func main() {
 #[test]
 fn html_results_survive_sources_and_one_worker_suspension_without_leaks() {
     let source = r#"package main
-import "std/html"
+import "std/encoding/html"
 import "std/strings"
 func check(ok bool, label string) { if !ok { panic(label) } }
 func local(escape bool) string {

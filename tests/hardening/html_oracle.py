@@ -13,7 +13,7 @@ import tempfile
 PROGRAM = '''package main
 import "std/encoding/binary"
 import "std/errors"
-import "std/html"
+import "std/encoding/html"
 import "std/os"
 import "std/strings"
 
