@@ -11647,6 +11647,11 @@ ceiling and directory trailing-slash convention then calls this primitive.
 creates a private staging directory beside a new destination. The destination
 must have a portable basename, must not exist (including dangling links), and
 its existing parent path must contain no links/reparse points or `..`.
+On macOS the final parent must belong to the effective user or root and must
+have no extended ACL entries; rejection precedes staging creation. This
+conservative restriction also rejects non-inheriting ACLs and
+prevents inherited ACL grants from defeating owner-only mode bits. The parent
+ACL is never modified.
 `nodeLimit` is in `[0, 65534]`, counts files and implicit/explicit directories,
 and excludes the root. Relative names are local, at most 1024 UTF-8 bytes and
 64 components. Unsupported OS/filesystem confinement or atomic publication
