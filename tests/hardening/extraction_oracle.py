@@ -147,7 +147,36 @@ def main():
             info = tarfile.TarInfo('link')
             info.type, info.linkname = tarfile.SYMTYPE, '../outside'
             archive.addfile(info)
+        refused = run('tar', output.getvalue(), valid=False)
+        assert b'archive: links are not extracted' in refused.stderr, refused.stderr
+        output = io.BytesIO()
+        with tarfile.open(fileobj=output, mode='w', format=tarfile.USTAR_FORMAT) as archive:
+            info = tarfile.TarInfo('hard')
+            info.type, info.linkname = tarfile.LNKTYPE, 'tool'
+            archive.addfile(info)
         run('tar', output.getvalue(), valid=False)
+        output = io.BytesIO()
+        with tarfile.open(fileobj=output, mode='w', format=tarfile.USTAR_FORMAT) as archive:
+            for name, mode, data in [('bin/tool', 0o755, b'#!x'), ('bin/only-group', 0o610, b'g'), ('notes', 0o644, b'n')]:
+                info = tarfile.TarInfo(name)
+                info.mode, info.size = mode, len(data)
+                archive.addfile(info, io.BytesIO(data))
+        run('tar', output.getvalue(), expected={'bin/tool': b'#!x', 'bin/only-group': b'g', 'notes': b'n'})
+        if os.name != 'nt':
+            assert destination.joinpath('bin/tool').stat().st_mode & 0o777 == 0o700
+            assert destination.joinpath('bin/only-group').stat().st_mode & 0o777 == 0o700
+            assert destination.joinpath('notes').stat().st_mode & 0o777 == 0o600
+        output = io.BytesIO()
+        with zipfile.ZipFile(output, 'w') as archive:
+            for name, system, mode in [('unix-tool', 3, 0o100755), ('dos-file', 0, 0o100755), ('unix-file', 3, 0o100644)]:
+                info = zipfile.ZipInfo(name)
+                info.create_system = system
+                info.external_attr = mode << 16
+                archive.writestr(info, name.encode())
+        run('zip', output.getvalue(), expected={'unix-tool': b'unix-tool', 'dos-file': b'dos-file', 'unix-file': b'unix-file'})
+        if os.name != 'nt':
+            modes = {name: destination.joinpath(name).stat().st_mode & 0o777 for name in ['unix-tool', 'dos-file', 'unix-file']}
+            assert modes == {'unix-tool': 0o700, 'dos-file': 0o600, 'unix-file': 0o600}, modes
         output = io.BytesIO()
         with zipfile.ZipFile(output, 'w') as archive:
             info = zipfile.ZipInfo('link')

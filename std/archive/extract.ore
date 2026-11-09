@@ -6,7 +6,7 @@ import "std/os"
 import "std/strings"
 
 type extractionReader interface {
-    mut Next() (Header, bool, error)
+    mut NextEntry() (Entry, bool, error)
     mut Read(buf mut []byte) (int, error)
 }
 
@@ -56,18 +56,26 @@ func (n mut extractionNames) add(header Header) error {
 func extract(reader mut extractionReader, tree mut os.StagedTree, entryLimit int) error {
     var names = extractionNames{folded: map[string]string{}, explicit: map[string]bool{}, nodes: 0, limit: entryLimit}
     for {
-        let header, present, err = reader.Next()
+        let entry, present, err = reader.NextEntry()
         if err != nil {
             return err
         }
         if !present {
             return nil
         }
+        if entry.Kind == SymlinkEntry || entry.Kind == HardLinkEntry {
+            return error("archive: links are not extracted")
+        }
+        let header = entry.Header
         names.add(header)?
         if header.Directory {
             tree.Mkdir(header.Name[:header.Name.len() - 1])?
         } else {
-            tree.Create(header.Name)?
+            if entry.Executable {
+                tree.CreateExecutable(header.Name)?
+            } else {
+                tree.Create(header.Name)?
+            }
             let count, copyErr = io.Copy(tree, reader)
             if copyErr != nil {
                 return copyErr

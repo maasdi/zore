@@ -18,6 +18,8 @@ const Store Compression = 0
 const Deflate Compression = 8
 
 type zipEntry struct {
+    symlink bool
+    executable bool
     method int
     compressed int
     header Header
@@ -219,15 +221,18 @@ func (r mut ZIPReader) initialize() error {
         if attributes & 16 != 0 && !directory {
             return error("archive: inconsistent ZIP directory attributes")
         }
-        {
-            let kind = (attributes >> 16) & 0o170000
-            if kind != 0 && kind != 0o100000 && kind != 0o40000 {
-                return error("archive: unsupported ZIP entry type")
-            }
-            if (kind == 0o40000 && !directory) || (kind == 0o100000 && directory) {
-                return error("archive: inconsistent ZIP entry type")
-            }
+        let kind = (attributes >> 16) & 0o170000
+        if kind != 0 && kind != 0o100000 && kind != 0o40000 && kind != 0o120000 {
+            return error("archive: unsupported ZIP entry type")
         }
+        if (kind == 0o40000 && !directory) || ((kind == 0o100000 || kind == 0o120000) && directory) {
+            return error("archive: inconsistent ZIP entry type")
+        }
+        let symlink = kind == 0o120000
+        if symlink && (size == 0 || size > MaxNameBytes) {
+            return error("archive: invalid link target")
+        }
+        let executable = record[5] == 3 && !directory && !symlink && (attributes >> 16) & 0o111 != 0
         let crc = uint32(u32(record[:], 16))
         if directory && crc != 0 {
             return error("archive: invalid ZIP directory checksum")
@@ -239,7 +244,7 @@ func (r mut ZIPReader) initialize() error {
         if offset >= r.centralOffset {
             return error("archive: invalid ZIP local offset")
         }
-        r.entries.push(zipEntry{method: u16(record[:], 10), compressed: compressed, header: header, crc: crc, flags: flags, offset: offset})
+        r.entries.push(zipEntry{symlink: symlink, executable: executable, method: u16(record[:], 10), compressed: compressed, header: header, crc: crc, flags: flags, offset: offset})
     }
     if used != centralSize {
         return error("archive: ZIP directory size mismatch")
@@ -379,8 +384,60 @@ func (r mut ZIPReader) Next() (Header, bool, error) {
         return absent(), false, nil
     }
     let header, present, err = r.nextHeader()
+    if err == nil && present && r.entries[r.cursor - 1].symlink {
+        r.err = error("archive: unsupported ZIP entry type")
+        return absent(), false, error("archive: unsupported ZIP entry type")
+    }
     r.err = err
     return header, present, err
+}
+
+func (r mut ZIPReader) NextEntry() (Entry, bool, error) {
+    if r.err != nil {
+        return absentEntry(), false, r.err
+    }
+    if r.ended {
+        return absentEntry(), false, nil
+    }
+    let header, present, err = r.nextHeader()
+    if err != nil || !present {
+        r.err = err
+        return absentEntry(), false, err
+    }
+    let stored = r.entries[r.cursor - 1]
+    var entry = plainEntry(header)
+    entry.Executable = stored.executable
+    if !stored.symlink {
+        return entry, true, nil
+    }
+    var target = zeros(header.Size)
+    var got = 0
+    for got < target.len() {
+        let count, readErr = r.Read(target[got:])
+        got += count
+        if readErr != nil {
+            if readErr == io.EOF {
+                r.err = error("archive: truncated ZIP stream")
+            } else {
+                r.err = readErr
+            }
+            return absentEntry(), false, r.err
+        }
+    }
+    let text, invalid = strings.FromBytes(target[:])
+    if invalid != nil {
+        r.err = error("archive: invalid link target")
+        return absentEntry(), false, r.err
+    }
+    let linkErr = validLink(text)
+    if linkErr != nil {
+        r.err = linkErr
+        return absentEntry(), false, linkErr
+    }
+    entry.Header.Size = 0
+    entry.Kind = SymlinkEntry
+    entry.Link = text
+    return entry, true, nil
 }
 
 func (r mut ZIPReader) Read(buf mut []byte) (int, error) {
@@ -486,10 +543,12 @@ func (w mut ZIPWriter<W>) finishEntry() error {
     return nil
 }
 
-func (w mut ZIPWriter<W>) start(header Header, compression Compression) error {
+func (w mut ZIPWriter<W>) start(entry Entry, compression Compression) error {
     if compression != Store && compression != Deflate {
         return error("archive: unsupported ZIP compression method")
     }
+    writable(entry)?
+    let header = entry.Header
     validate(header)?
     if w.entries.len() == w.entryLimit {
         return error("archive: entry limit exceeded")
@@ -514,7 +573,7 @@ func (w mut ZIPWriter<W>) start(header Header, compression Compression) error {
     if err != nil {
         return err
     }
-    w.entries.push(zipEntry{method: int(compression), compressed: 0, header: header, crc: 0, flags: zipUTF8 | zipStreamed, offset: offset})
+    w.entries.push(zipEntry{symlink: false, executable: entry.Executable, method: int(compression), compressed: 0, header: header, crc: 0, flags: zipUTF8 | zipStreamed, offset: offset})
     w.metadata += 46 + header.Name.len()
     w.declared += header.Size
     w.payloadStart = w.output.count
@@ -530,11 +589,19 @@ func (w mut ZIPWriter<W>) WriteHeader(header Header) error {
 }
 
 func (w mut ZIPWriter<W>) WriteHeaderWith(header Header, compression Compression) error {
+    return w.WriteEntryWith(plainEntry(header), compression)
+}
+
+func (w mut ZIPWriter<W>) WriteEntry(entry Entry) error {
+    return w.WriteEntryWith(entry, Store)
+}
+
+func (w mut ZIPWriter<W>) WriteEntryWith(entry Entry, compression Compression) error {
     if w.finished {
         return error("archive: writer finished")
     }
     if w.err == nil {
-        w.err = w.start(header, compression)
+        w.err = w.start(entry, compression)
     }
     return w.err
 }
@@ -566,7 +633,11 @@ func (w mut ZIPWriter<W>) directory() error {
     for entry in w.entries {
         var record = zeros(46 + entry.header.Name.len())
         put32(record[:], 0, zipCentral)
-        put16(record[:], 4, 20)
+        if entry.executable {
+            put16(record[:], 4, 0x0314)
+        } else {
+            put16(record[:], 4, 20)
+        }
         put16(record[:], 6, 20)
         put16(record[:], 8, entry.flags)
         put16(record[:], 10, entry.method)
@@ -577,6 +648,8 @@ func (w mut ZIPWriter<W>) directory() error {
         put16(record[:], 28, entry.header.Name.len())
         if entry.header.Directory {
             put32(record[:], 38, 16)
+        } else if entry.executable {
+            put32(record[:], 38, 0o100755 << 16)
         }
         put32(record[:], 42, entry.offset)
         putText(record[:], 46, entry.header.Name)

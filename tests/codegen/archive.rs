@@ -634,3 +634,53 @@ fn long_tar_names_use_pax_and_dot_prefixes_are_removed() {
         false,
     );
 }
+
+#[test]
+fn entries_report_kinds_and_writers_reject_links_and_executable_directories() {
+    succeeds(
+        r#"func scenario() error {
+    let done = channel<Array<byte>>(8)
+    let tool = archive.Entry{Header: archive.Header{Name: "bin/tool", Size: 2, Directory: false}, Kind: archive.FileEntry, Link: "", Executable: true}
+    var writer = archive.NewTARWriter(sink(0, done), 1048576, 100, 3)?
+    writer.WriteEntry(tool)?
+    let count, err = writer.Write(Array<byte>{35, 33}[:])
+    if err != nil { return err }
+    check(count == 2, "payload")
+    writer.WriteHeader(archive.Header{Name: "bin/", Size: 0, Directory: true})?
+    writer.Close()?
+    let encoded, _ = done.receive()
+    check(encoded[100] == 48 && encoded[104] == 55 && encoded[105] == 53 && encoded[106] == 53, "mode 0755")
+    var reader = archive.NewTARReader(bytes.NewBuffer(encoded[:]), 1048576, 100, 3)?
+    let first, present, firstErr = reader.NextEntry()
+    if firstErr != nil { return firstErr }
+    check(present && first.Kind == archive.FileEntry && first.Executable && first.Header.Name == "bin/tool", "executable file")
+    reader.Skip()?
+    let second, again, secondErr = reader.NextEntry()
+    if secondErr != nil { return secondErr }
+    check(again && second.Kind == archive.DirectoryEntry && !second.Executable && second.Link == "", "directory")
+    reader.Close()?
+    for kind in Array<int>{2, 3} {
+        var links = archive.NewZIPWriter(sink(0, done), 1048576, 100, 3)?
+        let entry = archive.Entry{Header: archive.Header{Name: "l", Size: 0, Directory: false}, Kind: archive.EntryKind(kind), Link: "target", Executable: false}
+        let failed = links.WriteEntry(entry)
+        check(failed == error("archive: links cannot be written"), "links rejected")
+        check(links.Close() == failed, "sticky")
+        let _, _ = done.receive()
+    }
+    var mismatch = archive.NewTARWriter(sink(0, done), 1048576, 100, 3)?
+    let wrong = mismatch.WriteEntry(archive.Entry{Header: archive.Header{Name: "d/", Size: 0, Directory: true}, Kind: archive.FileEntry, Link: "", Executable: false})
+    check(wrong == error("archive: entry kind does not match header"), "kind mismatch")
+    let _ = mismatch.Close()
+    let _, _ = done.receive()
+    var folder = archive.NewZIPWriter(sink(0, done), 1048576, 100, 3)?
+    let runnable = folder.WriteEntryWith(archive.Entry{Header: archive.Header{Name: "d/", Size: 0, Directory: true}, Kind: archive.DirectoryEntry, Link: "", Executable: true}, archive.Deflate)
+    check(runnable == error("archive: directories cannot be executable"), "executable directory")
+    let _ = folder.Close()
+    let _, _ = done.receive()
+    println("ok")
+    return nil
+}
+"#,
+        false,
+    );
+}

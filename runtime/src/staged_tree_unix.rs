@@ -359,7 +359,7 @@ impl Tree {
         let parts = Self::parts(path)?;
         self.walk(&parts, true).map(drop)
     }
-    pub(super) fn create_file(&mut self, path: &str) -> io::Result<()> {
+    pub(super) fn create_file(&mut self, path: &str, executable: bool) -> io::Result<()> {
         if self.active.is_some() {
             return Err(invalid("an entry file is still open"));
         }
@@ -377,7 +377,7 @@ impl Tree {
             path: path.into(),
             directory: false,
         });
-        make_private(&file, 0o600)?;
+        make_private(&file, if executable { 0o700 } else { 0o600 })?;
         self.active = Some(file);
         Ok(())
     }
@@ -504,8 +504,8 @@ mod tests {
     #[test]
     fn publication_and_private_permissions() {
         let root = Sandbox::new();
-        let mut tree = Tree::create(&root.destination(), 3).unwrap();
-        tree.create_file("a/b.txt").unwrap();
+        let mut tree = Tree::create(&root.destination(), 4).unwrap();
+        tree.create_file("a/b.txt", false).unwrap();
         tree.file().unwrap().write_all(b"hello").unwrap();
         assert!(!Path::new(&root.destination()).exists());
         assert_eq!(
@@ -514,7 +514,16 @@ mod tests {
         );
         tree.finish_file().unwrap();
         tree.mkdir("a").unwrap();
+        tree.create_file("a/run.sh", true).unwrap();
+        tree.finish_file().unwrap();
         tree.commit().unwrap();
+        assert_eq!(
+            std::fs::metadata(root.0.join("result/a/run.sh"))
+                .unwrap()
+                .mode()
+                & 0o777,
+            0o700
+        );
         assert_eq!(
             std::fs::read(root.0.join("result/a/b.txt")).unwrap(),
             b"hello"
@@ -530,7 +539,7 @@ mod tests {
         let root = Sandbox::new();
         {
             let mut tree = Tree::create(&root.destination(), 3).unwrap();
-            tree.create_file("a/b.txt").unwrap();
+            tree.create_file("a/b.txt", false).unwrap();
             assert!(tree.commit().is_err());
         }
         assert_eq!(root.children(), 0);
@@ -554,14 +563,14 @@ mod tests {
         std::fs::remove_file(root.0.join("result")).unwrap();
         let mut tree = Tree::create(&root.destination(), 3).unwrap();
         for name in ["../escape", "/absolute", "a//b", "a/./b", "a\\b", "a\0b"] {
-            assert!(tree.create_file(name).is_err(), "{name:?}");
+            assert!(tree.create_file(name, false).is_err(), "{name:?}");
         }
         let staging = root
             .0
             .join(tree.envelope_name.to_str().unwrap())
             .join("tree");
         symlink(&outside.0, staging.join("alias")).unwrap();
-        assert!(tree.create_file("alias/escape").is_err());
+        assert!(tree.create_file("alias/escape", false).is_err());
         std::fs::remove_file(staging.join("alias")).unwrap();
         tree.abort().unwrap();
         assert_eq!(outside.children(), 0);
@@ -575,7 +584,7 @@ mod tests {
         let mut tree = Tree::create(destination.to_str().unwrap(), 3).unwrap();
         std::fs::rename(root.0.join("parent"), root.0.join("moved")).unwrap();
         symlink(&outside.0, root.0.join("parent")).unwrap();
-        tree.create_file("file").unwrap();
+        tree.create_file("file", false).unwrap();
         tree.file().unwrap().write_all(b"anchored").unwrap();
         tree.finish_file().unwrap();
         tree.commit().unwrap();
@@ -589,15 +598,15 @@ mod tests {
     fn node_depth_and_collision_failures_clean_up() {
         let root = Sandbox::new();
         let mut tree = Tree::create(&root.destination(), 2).unwrap();
-        assert!(tree.create_file("a/b/c").is_err());
+        assert!(tree.create_file("a/b/c", false).is_err());
         tree.abort().unwrap();
         assert_eq!(root.children(), 0);
         let mut tree = Tree::create(&root.destination(), 10).unwrap();
         assert!(tree.mkdir(&vec!["a"; 65].join("/")).is_err());
-        tree.create_file("a").unwrap();
+        tree.create_file("a", false).unwrap();
         tree.finish_file().unwrap();
         assert!(tree.mkdir("a/b").is_err());
-        assert!(tree.create_file("a").is_err());
+        assert!(tree.create_file("a", false).is_err());
         tree.abort().unwrap();
         assert_eq!(root.children(), 0);
     }

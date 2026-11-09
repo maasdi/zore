@@ -23,7 +23,7 @@ impl Tree {
     fn mkdir(&mut self, _: &str) -> std::io::Result<()> {
         Err(unsupported())
     }
-    fn create_file(&mut self, _: &str) -> std::io::Result<()> {
+    fn create_file(&mut self, _: &str, _: bool) -> std::io::Result<()> {
         Err(unsupported())
     }
     fn file(&mut self) -> std::io::Result<&mut std::fs::File> {
@@ -142,6 +142,7 @@ pub unsafe extern "C" fn zore_native_os_tree_create(
     id: i64,
     name: *const u8,
     len: i64,
+    executable: bool,
 ) {
     // SAFETY: the compiler supplies valid string storage.
     let name = unsafe { text_of(name, len) };
@@ -150,7 +151,7 @@ pub unsafe extern "C" fn zore_native_os_tree_create(
             .and_then(|h| {
                 h.lock()
                     .unwrap_or_else(|p| p.into_inner())
-                    .create_file(&name)
+                    .create_file(&name, executable)
             })
             .err()
             .map(|e| format!("os.StagedTree.Create: {e}"))

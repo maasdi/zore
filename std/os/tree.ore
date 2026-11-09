@@ -42,11 +42,19 @@ func (t mut StagedTree) Mkdir(name string) error {
 }
 
 func (t mut StagedTree) Create(name string) error {
+    return t.create(name, false)
+}
+
+func (t mut StagedTree) CreateExecutable(name string) error {
+    return t.create(name, true)
+}
+
+func (t mut StagedTree) create(name string, executable bool) error {
     if t.err == nil {
         if !localTreeName(name) {
             t.err = error("os.StagedTree: invalid local name")
         } else {
-            t.err = treeCreate(t.id, name)
+            t.err = treeCreate(t.id, name, executable)
         }
     }
     return t.err
@@ -91,7 +99,7 @@ func treeStage(destination string, nodeLimit int) (int, error)
 
 func treeMkdir(id int, name string) error
 
-func treeCreate(id int, name string) error
+func treeCreate(id int, name string, executable bool) error
 
 func treeWrite(id int, data []byte) (int, error)
 

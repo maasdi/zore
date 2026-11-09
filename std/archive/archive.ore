@@ -3,6 +3,7 @@ package archive
 import "std/encoding/binary"
 import "std/io"
 import "std/path"
+import "std/strings"
 
 const MaxBytes = 1073741824
 const MaxEntries = 65534
@@ -13,6 +14,52 @@ type Header struct {
     Name string
     Size int
     Directory bool
+}
+
+type EntryKind int
+
+const FileEntry EntryKind = 0
+const DirectoryEntry EntryKind = 1
+const SymlinkEntry EntryKind = 2
+const HardLinkEntry EntryKind = 3
+
+type Entry struct {
+    Header Header
+    Kind EntryKind
+    Link string
+    Executable bool
+}
+
+func plainEntry(header Header) Entry {
+    var kind = FileEntry
+    if header.Directory {
+        kind = DirectoryEntry
+    }
+    return Entry{Header: header, Kind: kind, Link: "", Executable: false}
+}
+
+func absentEntry() Entry {
+    return plainEntry(absent())
+}
+
+func writable(entry Entry) error {
+    if entry.Kind == SymlinkEntry || entry.Kind == HardLinkEntry || entry.Link != "" {
+        return error("archive: links cannot be written")
+    }
+    if (entry.Kind == DirectoryEntry) != entry.Header.Directory || (entry.Kind != FileEntry && entry.Kind != DirectoryEntry) {
+        return error("archive: entry kind does not match header")
+    }
+    if entry.Executable && entry.Header.Directory {
+        return error("archive: directories cannot be executable")
+    }
+    return nil
+}
+
+func validLink(target string) error {
+    if target == "" || target.len() > MaxNameBytes || strings.IndexByte(target, 0) >= 0 {
+        return error("archive: invalid link target")
+    }
+    return nil
 }
 
 func absent() Header {

@@ -8,6 +8,19 @@ including those shipped in `0.1.0-alpha.1`, are not split by release.
 
 ## [Unreleased]
 
+### Archive links and executable files
+
+- `TARReader.NextEntry` and `ZIPReader.NextEntry` return `archive.Entry`: the
+  `Header`, its `Kind` (`FileEntry`, `DirectoryEntry`, `SymlinkEntry`,
+  `HardLinkEntry`), any link target, and whether a file is executable (§37.34).
+  TAR symlinks, hard links, PAX `linkpath` and GNU long link targets, and ZIP
+  Unix symlinks are reported read-only; `Next` still refuses links.
+- `TARWriter.WriteEntry`, `ZIPWriter.WriteEntry` and `WriteEntryWith` write
+  executable files (TAR mode 0755, ZIP Unix mode 0755) and refuse links.
+- Extraction restores the executable bit as mode 0700 on Linux and macOS via the
+  new `os.StagedTree.CreateExecutable`, and fails with
+  `archive: links are not extracted` on any link.
+
 ### PAX and GNU TAR names
 
 - `TARReader` reads PAX extended headers and GNU long-name entries, so archives

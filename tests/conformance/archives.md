@@ -60,3 +60,17 @@ Python extraction oracle runs on every host.
 | `TARWriter` names of 101, 300 and 1,024 bytes and a 300-byte directory | PAX `path`; Python and Zore read them back | `archive_oracle.py`; native `long_tar_names_use_pax_and_dot_prefixes_are_removed` |
 | Writers and ZIP reading with `./a` | Rejected | `archive_oracle.py` |
 | GNU tar 1.35 `gnu`, `posix`, `oldgnu` and `ustar` archives with long paths and `./` names | Read in full | Checked locally only; CI has the Python cases |
+
+## Entry kinds and executable files (§37.34)
+
+| Case | Required result | Evidence |
+| --- | --- | --- |
+| TAR symlink, hard link, PAX `linkpath` and GNU `K` long targets in PAX, GNU and USTAR formats | `NextEntry` kinds and targets; `Next` fails | `archive_oracle.py` |
+| ZIP Unix symlinks, stored and deflated | `SymlinkEntry` with the data as target; `Next` fails | `archive_oracle.py` |
+| TAR modes 0755 and 0610; ZIP Unix 0755 and 0644; non-Unix ZIP with 0755 bits | Executable only for set bits on TAR or Unix ZIP | `archive_oracle.py` |
+| Link header with data, empty target, `linkpath` or `K` on a file, global `linkpath`, dangling `K`, ZIP target empty, over 1,024 bytes, invalid UTF-8 or with NUL | Failure | `archive_oracle.py` |
+| Writers given an executable file | TAR mode 0755, ZIP Unix 0o100755 read by Python | `archive_oracle.py`; native `entries_report_kinds_and_writers_reject_links_and_executable_directories` |
+| Writers given links, a kind that does not match the header, or an executable directory | Sticky failure | native, same test |
+| Extracting TAR and ZIP executables | Mode 0700; other files 0600; non-Unix ZIP not executable | `extraction_oracle.py`; runtime `publication_and_private_permissions` |
+| Extracting a symlink or hard link | `archive: links are not extracted`; nothing published | `extraction_oracle.py` |
+| `Entry` literals need every field; `Executable` is a `bool` | Rejected otherwise | package `archive_entries_are_copy_values_and_kinds_are_typed` |

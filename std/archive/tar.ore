@@ -45,6 +45,8 @@ type tarFields struct {
     kind byte
     name string
     size int
+    link string
+    mode int
 }
 
 func tarMagic(block []byte) (bool, error) {
@@ -61,7 +63,7 @@ func tarMagic(block []byte) (bool, error) {
 }
 
 func tarRecordFields(block []byte) (tarFields, error) {
-    let none = tarFields{kind: 0, name: "", size: 0}
+    let none = tarFields{kind: 0, name: "", size: 0, link: "", mode: 0}
     let expected = octal(block[148:156])?
     var sum = 0
     for var i = 0; i < tarRecord; i += 1 {
@@ -76,22 +78,17 @@ func tarRecordFields(block []byte) (tarFields, error) {
     }
     let gnu = tarMagic(block)?
     let kind = block[156]
-    if kind == 49 || kind == 50 || kind == 75 {
-        return none, error("archive: TAR link target is unsupported")
-    }
     if kind == 83 {
         return none, error("archive: sparse TAR entries are unsupported")
     }
-    if kind != 0 && kind != 48 && kind != 53 && kind != 120 && kind != 103 && kind != 76 {
+    if kind != 0 && kind != 48 && kind != 53 && kind != 120 && kind != 103 && kind != 76 && kind != 49 && kind != 50 && kind != 75 {
         return none, error("archive: unsupported TAR entry type")
     }
-    if !allZero(block[157:257]) {
+    let link = tarText(block[157:257])?
+    if link != "" && kind != 49 && kind != 50 {
         return none, error("archive: TAR link target is unsupported")
     }
-    let _, modeErr = octal(block[100:108])
-    if modeErr != nil {
-        return none, modeErr
-    }
+    let mode = octal(block[100:108])?
     let _, uidErr = octal(block[108:116])
     if uidErr != nil {
         return none, uidErr
@@ -122,7 +119,7 @@ func tarRecordFields(block []byte) (tarFields, error) {
     } else if block[482] != 0 {
         return none, error("archive: sparse TAR entries are unsupported")
     }
-    return tarFields{kind: kind, name: name, size: size}, nil
+    return tarFields{kind: kind, name: name, size: size, link: link, mode: mode}, nil
 }
 
 type tarOverride struct {
@@ -132,11 +129,19 @@ type tarOverride struct {
     hasSize bool
     longName string
     hasLongName bool
+    link string
+    hasLink bool
+    longLink string
+    hasLongLink bool
     extended bool
 }
 
 func noOverride() tarOverride {
-    return tarOverride{path: "", hasPath: false, size: 0, hasSize: false, longName: "", hasLongName: false, extended: false}
+    return tarOverride{path: "", hasPath: false, size: 0, hasSize: false, longName: "", hasLongName: false, link: "", hasLink: false, longLink: "", hasLongLink: false, extended: false}
+}
+
+func (o tarOverride) pending() bool {
+    return o.extended || o.hasLongName || o.hasLongLink
 }
 
 func paxDecimal(text string) (int, bool) {
@@ -190,7 +195,11 @@ func paxRecords(data []byte, global bool, override mut tarOverride) error {
             return error("archive: sparse TAR entries are unsupported")
         }
         if key == "linkpath" {
-            return error("archive: TAR link target is unsupported")
+            if global {
+                return error("archive: unsupported PAX global header")
+            }
+            override.link = value
+            override.hasLink = value != ""
         }
         if key == "hdrcharset" && value != "ISO-IR 10646 2000 UTF-8" {
             return error("archive: unsupported PAX character set")
@@ -218,8 +227,9 @@ func paxRecords(data []byte, global bool, override mut tarOverride) error {
     return nil
 }
 
-func tarEntry(fields tarFields, override tarOverride) (Header, bool, error) {
+func tarEntry(fields tarFields, override tarOverride) (Entry, bool, error) {
     let directory = fields.kind == 53
+    let linked = fields.kind == 49 || fields.kind == 50
     var name = fields.name
     var extended = false
     if override.hasPath {
@@ -240,11 +250,34 @@ func tarEntry(fields tarFields, override tarOverride) (Header, bool, error) {
         size = override.size
     }
     if directory && (name == "" || name == ".") && size == 0 {
-        return absent(), false, nil
+        return absentEntry(), false, nil
     }
     let header = Header{Name: name, Size: size, Directory: directory}
     validate(header)?
-    return header, true, nil
+    var entry = plainEntry(header)
+    if !linked {
+        if override.hasLink || override.hasLongLink {
+            return absentEntry(), false, error("archive: TAR link target is unsupported")
+        }
+        entry.Executable = !directory && fields.mode & 0o111 != 0
+        return entry, true, nil
+    }
+    if size != 0 {
+        return absentEntry(), false, error("archive: invalid TAR link entry")
+    }
+    var target = fields.link
+    if override.hasLink {
+        target = override.link
+    } else if override.hasLongLink {
+        target = override.longLink
+    }
+    validLink(target)?
+    entry.Link = target
+    entry.Kind = SymlinkEntry
+    if fields.kind == 49 {
+        entry.Kind = HardLinkEntry
+    }
+    return entry, true, nil
 }
 
 func putOctal(data mut []byte, at int, width int, value int) {
@@ -318,7 +351,7 @@ func paxPathRecord(name string) Array<byte> {
     return text
 }
 
-func encodeTAR(header Header) (Array<byte>, error) {
+func encodeTAR(header Header, executable bool) (Array<byte>, error) {
     validate(header)?
     var name = header.Name
     var prefix = ""
@@ -349,6 +382,8 @@ func encodeTAR(header Header) (Array<byte>, error) {
     var mode = 0o644
     if header.Directory {
         kind = 53
+        mode = 0o755
+    } else if executable {
         mode = 0o755
     }
     let block = ustarBlock(name, prefix, kind, mode, header.Size)
@@ -438,7 +473,7 @@ func (r mut TARReader) finishEntry() error {
     return nil
 }
 
-func (r mut TARReader) nextHeader() (Header, bool, error) {
+func (r mut TARReader) nextEntry() (Entry, bool, error) {
     r.finishEntry()?
     var block = zeros(tarRecord)
     var override = noOverride()
@@ -448,49 +483,50 @@ func (r mut TARReader) nextHeader() (Header, bool, error) {
             break
         }
         let fields = tarRecordFields(block[:])?
-        if fields.kind == 120 || fields.kind == 103 || fields.kind == 76 {
+        if fields.kind == 120 || fields.kind == 103 || fields.kind == 76 || fields.kind == 75 {
             r.extension(fields, override)?
             continue
         }
-        let header, kept = tarEntry(fields, override)?
+        let entry, kept = tarEntry(fields, override)?
         if !kept {
             override = noOverride()
             continue
         }
-        return r.accept(header)
+        r.accept(entry.Header)?
+        return entry, true, nil
     }
-    if override.extended || override.hasLongName {
-        return absent(), false, error("archive: TAR extended header without entry")
+    if override.pending() {
+        return absentEntry(), false, error("archive: TAR extended header without entry")
     }
     r.exact(block[:])?
     if !allZero(block[:]) {
-        return absent(), false, error("archive: invalid TAR end records")
+        return absentEntry(), false, error("archive: invalid TAR end records")
     }
     for {
         let count, err = r.pull(block[:])
         if !allZero(block[:count]) {
             _ = err;
-            return absent(), false, error("archive: trailing TAR data")
+            return absentEntry(), false, error("archive: trailing TAR data")
         }
         if err != nil {
             if err == io.EOF {
                 r.ended = true;
-                return absent(), false, nil
+                return absentEntry(), false, nil
             }
-            return absent(), false, err
+            return absentEntry(), false, err
         }
     }
 }
 
 func (r mut TARReader) extension(fields tarFields, override mut tarOverride) error {
     var limit = paxLimit
-    if fields.kind == 76 {
+    if fields.kind == 76 || fields.kind == 75 {
         limit = MaxNameBytes + 1
     }
     if fields.size > limit {
         return error("archive: TAR extended header too large")
     }
-    if (fields.kind == 120 && override.extended) || (fields.kind == 76 && override.hasLongName) {
+    if (fields.kind == 120 && override.extended) || (fields.kind == 76 && override.hasLongName) || (fields.kind == 75 && override.hasLongLink) {
         return error("archive: repeated TAR extended header")
     }
     var payload = zeros(fields.size)
@@ -505,6 +541,11 @@ func (r mut TARReader) extension(fields tarFields, override mut tarOverride) err
         override.hasLongName = true
         return nil
     }
+    if fields.kind == 75 {
+        override.longLink = tarText(payload[:])?
+        override.hasLongLink = true
+        return nil
+    }
     if fields.kind == 120 {
         override.extended = true
     }
@@ -515,31 +556,43 @@ func (r mut TARReader) extension(fields tarFields, override mut tarOverride) err
     return paxRecords(payload[:], false, override)
 }
 
-func (r mut TARReader) accept(header Header) (Header, bool, error) {
+func (r mut TARReader) accept(header Header) error {
     if r.entries == r.entryLimit {
-        return absent(), false, error("archive: entry limit exceeded")
+        return error("archive: entry limit exceeded")
     }
     if header.Size > r.dataLimit - r.declared {
-        return absent(), false, error("archive: data byte limit exceeded")
+        return error("archive: data byte limit exceeded")
     }
     r.entries += 1
     r.declared += header.Size
     r.remaining = header.Size
     r.padding = (tarRecord - header.Size % tarRecord) % tarRecord
     r.active = true
-    return header, true, nil
+    return nil
+}
+
+func (r mut TARReader) NextEntry() (Entry, bool, error) {
+    if r.err != nil {
+        return absentEntry(), false, r.err
+    }
+    if r.ended {
+        return absentEntry(), false, nil
+    }
+    let entry, present, err = r.nextEntry()
+    r.err = err
+    return entry, present, err
 }
 
 func (r mut TARReader) Next() (Header, bool, error) {
-    if r.err != nil {
-        return absent(), false, r.err
+    let entry, present, err = r.NextEntry()
+    if err != nil {
+        return absent(), false, err
     }
-    if r.ended {
-        return absent(), false, nil
+    if entry.Kind == SymlinkEntry || entry.Kind == HardLinkEntry {
+        r.err = error("archive: TAR link target is unsupported")
+        return absent(), false, error("archive: TAR link target is unsupported")
     }
-    let header, present, err = r.nextHeader()
-    r.err = err
-    return header, present, err
+    return entry.Header, present, nil
 }
 
 func (r mut TARReader) Read(buf mut []byte) (int, error) {
@@ -628,8 +681,10 @@ func (w mut TARWriter<W>) finishEntry() error {
     return nil
 }
 
-func (w mut TARWriter<W>) start(header Header) error {
-    let block = encodeTAR(header)?
+func (w mut TARWriter<W>) start(entry Entry) error {
+    writable(entry)?
+    let header = entry.Header
+    let block = encodeTAR(header, entry.Executable)?
     if w.entries == w.entryLimit {
         return error("archive: entry limit exceeded")
     }
@@ -651,11 +706,15 @@ func (w mut TARWriter<W>) start(header Header) error {
 }
 
 func (w mut TARWriter<W>) WriteHeader(header Header) error {
+    return w.WriteEntry(plainEntry(header))
+}
+
+func (w mut TARWriter<W>) WriteEntry(entry Entry) error {
     if w.finished {
         return error("archive: writer finished")
     }
     if w.err == nil {
-        w.err = w.start(header)
+        w.err = w.start(entry)
     }
     return w.err
 }

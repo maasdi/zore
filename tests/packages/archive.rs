@@ -150,3 +150,49 @@ func main() {}
         super::rejects(&[("main.ore", &source)], "moved");
     }
 }
+
+#[test]
+fn archive_entries_are_copy_values_and_kinds_are_typed() {
+    super::accepts(&[(
+        "main.ore",
+        r#"package main
+import "std/archive"
+import "std/os"
+func list(path string) (Array<archive.Entry>, error) {
+    let file = os.Open(path)?
+    var reader = archive.NewTARReader(file, 10000, 5000, 10)?
+    var entries = Array<archive.Entry>{}
+    for {
+        let entry, present, err = reader.NextEntry()
+        if err != nil { return entries, err }
+        if !present { break }
+        let copied = entry
+        if copied.Kind == archive.SymlinkEntry || entry.Kind == archive.HardLinkEntry { println(entry.Link) }
+        entries.push(entry)
+    }
+    return entries, reader.Close()
+}
+async func write(path string) error {
+    let file = os.Create(path)?
+    var writer = archive.NewZIPWriter(file, 10000, 5000, 10)?
+    writer.WriteEntryWith(archive.Entry{Header: archive.Header{Name: "run", Size: 0, Directory: false}, Kind: archive.FileEntry, Link: "", Executable: true}, archive.Deflate)?
+    return writer.Close()
+}
+func create(tree mut os.StagedTree) error { return tree.CreateExecutable("run") }
+func main() {}
+"#,
+    )]);
+    for (body, expected) in [
+        (
+            "let entry = archive.Entry{Header: archive.Header{Name: \"a\", Size: 0, Directory: false}, Kind: 2, Link: \"\"}; println(entry.Link)",
+            "missing field",
+        ),
+        (
+            "let entry = archive.Entry{Header: archive.Header{Name: \"a\", Size: 0, Directory: false}, Kind: archive.FileEntry, Link: \"\", Executable: 1}; println(entry.Link)",
+            "mismatched types",
+        ),
+    ] {
+        let source = format!("package main\nimport \"std/archive\"\nfunc main() {{ {body} }}\n");
+        super::rejects(&[("main.ore", &source)], expected);
+    }
+}
