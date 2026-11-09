@@ -4,8 +4,9 @@
 Both formats support regular files and directories. Archive operations work
 through I/O interfaces. Explicit extraction functions stage a new destination.
 
-ZIP64, encryption, links and special nodes, GNU/PAX/sparse TAR
-extensions are follow-ups to
+The TAR reader also understands PAX and GNU long names, so archives from GNU tar
+and Python's `tarfile` read normally; see below. ZIP64, encryption, links and
+special nodes, and sparse TAR entries are follow-ups to
 [#224](https://github.com/maasdi/zore/issues/224). Unsupported forms return errors.
 
 The shared `Header` contains `Name string`, `Size int`, and `Directory bool`.
@@ -15,6 +16,19 @@ absolute paths, empty components, Windows-forbidden characters/device names,
 Unicode controls and trailing component spaces/dots. It does not resolve paths
 against a filesystem. Duplicate entry names remain distinct entries; readers do
 not impose an extraction overwrite policy.
+
+## Long names from other tar tools
+
+Old USTAR headers only hold names of up to 255 bytes. Other tools store longer
+names in a hidden header before the entry: a PAX `path` record, or a GNU
+`././@LongLink` entry. `TARReader` reads both and returns the full name. If both
+are present, the PAX name wins. Other PAX records, such as times and owners, are
+ignored. A leading `./`, which GNU tar writes for `tar -C dir .`, is removed, and
+the bare `./` folder itself is skipped.
+
+`TARWriter` writes a PAX `path` record when a name does not fit the USTAR fields,
+so names up to `MaxNameBytes` work. Links, sparse files and PAX headers that set a
+global name or size are still rejected with an error.
 
 ## Streaming entries
 

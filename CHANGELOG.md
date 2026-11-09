@@ -8,6 +8,18 @@ including those shipped in `0.1.0-alpha.1`, are not split by release.
 
 ## [Unreleased]
 
+### PAX and GNU TAR names
+
+- `TARReader` reads PAX extended headers and GNU long-name entries, so archives
+  from GNU tar and Python's `tarfile` with names over 255 bytes read normally
+  (§37.33). PAX `path` beats a GNU long name, which beats the USTAR fields; PAX
+  `size` replaces the header size; other PAX records are ignored. GNU-marked
+  headers are accepted.
+- A leading `./` is removed from TAR entry names, and the `./` root entry is
+  skipped. ZIP names and writers keep rejecting `./`.
+- `TARWriter` writes a PAX `path` record for names that do not fit USTAR, instead
+  of failing.
+
 ### Compression levels and flushing
 
 - `std/compress/flate` gained compression levels (`NoCompression`, `BestSpeed`,

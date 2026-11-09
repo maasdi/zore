@@ -13,8 +13,8 @@ must preserve these guarantees and fail closed when a capability is unavailable.
 ZIP64, encryption, split archives, CP437 names and more permissive central/local
 ordering remain excluded. Extensions must retain bounded directory memory,
 unambiguous offsets, exact size/CRC validation and explicit entry lifetimes.
-GNU/PAX long names, sparse files, links and special nodes need separately locked
-metadata precedence and byte/count/expansion limits.
+PAX and GNU long names are read and PAX names are written (§37.33). Sparse files,
+links and special nodes need separately locked metadata and expansion limits.
 
 Extraction currently publishes a new directory only. Merging into existing
 trees, overwrite modes, metadata restoration and link handling need separate

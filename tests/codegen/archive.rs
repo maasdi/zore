@@ -138,6 +138,8 @@ fn run(body: &str, controlled: bool) -> Output {
     let executable = directory.executable("archive");
     let imports = if body.contains("crc32.") {
         "import \"std/hash/crc32\"\nimport \"std/strings\"\n"
+    } else if body.contains("strings.") {
+        "import \"std/strings\"\n"
     } else {
         ""
     };
@@ -588,4 +590,47 @@ fn archive_guide_example_finalizes_tar_then_gzip() {
     assert!(output.status.success(), "{}", stderr(&output));
     assert_eq!(stdout(&output), "hello.txt\n14\n");
     assert!(output.stderr.is_empty(), "{}", stderr(&output));
+}
+
+#[test]
+fn long_tar_names_use_pax_and_dot_prefixes_are_removed() {
+    succeeds(
+        r#"func scenario() error {
+    let done = channel<Array<byte>>(2)
+    let long = "deep/" + strings.Repeat("segment-é/", 40) + "file.txt"
+    let folder = strings.Repeat("d", 300) + "/"
+    var writer = archive.NewTARWriter(sink(0, done), 1048576, 100, 3)?
+    writer.WriteHeader(archive.Header{Name: long, Size: 3, Directory: false})?
+    let count, err = writer.Write(Array<byte>{97, 98, 99}[:])
+    if err != nil { return err }
+    check(count == 3, "payload")
+    writer.WriteHeader(archive.Header{Name: folder, Size: 0, Directory: true})?
+    writer.Close()?
+    let encoded, _ = done.receive()
+    check(encoded.len() == 512 * 9, "two PAX headers, two entries, padding and end")
+    check(encoded[156] == 120 && encoded[1024 + 512 + 512 + 156] == 120, "PAX headers")
+    var reader = archive.NewTARReader(bytes.NewBuffer(encoded[:]), 1048576, 100, 2)?
+    let first, present, firstErr = reader.Next()
+    if firstErr != nil { return firstErr }
+    check(present && first.Name == long && first.Size == 3, "long file name")
+    let data = io.ReadAll(reader)?
+    check(data.len() == 3 && data[2] == 99, "long file data")
+    let second, again, secondErr = reader.Next()
+    if secondErr != nil { return secondErr }
+    check(again && second.Name == folder && second.Directory, "long directory name")
+    let _, ended, endErr = reader.Next()
+    if endErr != nil { return endErr }
+    check(!ended, "end")
+    reader.Close()?
+    var short = archive.NewTARReader(bytes.NewBuffer(encoded[:1024]), 1048576, 100, 2)?
+    let _, _, cut = short.Next()
+    check(cut == error("archive: TAR extended header without entry") || cut == error("archive: truncated TAR stream"), "extended header needs an entry")
+    check(short.Close() == cut, "sticky")
+    check(!archive.ValidName("./a", false), "writers still reject dot prefixes")
+    println("ok")
+    return nil
+}
+"#,
+        false,
+    );
 }

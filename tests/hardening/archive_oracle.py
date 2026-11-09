@@ -123,6 +123,36 @@ def tar_bytes(entries, archive_format=tarfile.USTAR_FORMAT):
     return output.getvalue()
 
 
+def tar_member(name, kind, data=b'', magic=b'ustar\x0000', size=None):
+    block = bytearray(512)
+    raw = name.encode('utf-8') if isinstance(name, str) else name
+    block[0:len(raw)] = raw
+    block[100:108] = b'0000644\0'
+    block[108:116] = b'0000000\0'
+    block[116:124] = b'0000000\0'
+    block[124:136] = b'%011o\0' % (len(data) if size is None else size)
+    block[136:148] = b'00000000000\0'
+    block[156:157] = kind
+    block[257:265] = magic
+    block[148:156] = b' ' * 8
+    block[148:156] = b'%06o\0 ' % sum(block)
+    return bytes(block) + data + b'\0' * ((-len(data)) % 512)
+
+
+def pax_payload(records):
+    body = b''
+    for key, value in records:
+        text = b' ' + key.encode() + b'=' + value.encode() + b'\n'
+        length = len(text) + 1
+        while len(str(length)) + len(text) != length:
+            length += 1
+        body += str(length).encode() + text
+    return body
+
+
+TAR_END = b'\0' * 1024
+
+
 class Unseekable(io.BytesIO):
     def seekable(self):
         return False
@@ -288,7 +318,7 @@ def main():
             assert run(read_mode, encoded, archive_limit=size, data_limit=0, entry_limit=0) == (b'', [])
             run(write_mode, b'', valid=False, archive_limit=size - 1, data_limit=0, entry_limit=0)
 
-        for name in ['../escape', '/absolute', 'a//b', './a', 'a/../b', 'a\\b',
+        for name in ['../escape', '/absolute', 'a//b', 'a/./b', 'a/../b', 'a\\b',
                      'C:drive', 'nul.txt', 'COM1', 'lPt².log', 'a.', 'a ', 'a\nname', 'a\x85name', 'NUL .txt', 'a*', 'a?', 'a|b', 'a<b', 'a\"b']:
             for mode in ['rt', 'rz']:
                 encoded = tar_bytes([(name, b'x')]) if mode == 'rt' else zip_bytes([(name, b'x')])
@@ -299,7 +329,96 @@ def main():
         long_name = 'a' * 120 + '/' + 'b' * 95
         encoded, _ = run('wt', b'long', name=long_name)
         assert run('rt', encoded)[1][1][0] == long_name
-        run('wt', b'', valid=False, name='x' * 101)
+        for name in ['x' * 101, 'deep/' + 'é' * 300 + '.txt', 'y' * 1024]:
+            encoded, _ = run('wt', b'pax', name=name)
+            with tarfile.open(fileobj=io.BytesIO(encoded)) as archive:
+                assert archive.getnames() == ['dir', name, 'empty'], archive.getnames()
+                assert archive.extractfile(name).read() == b'pax'
+            assert run('rt', encoded)[1][1] == (name, 3, False)
+        long_tree = 'z' * 300 + '/'
+        encoded, _ = run('wtdir', b'', name=long_tree)
+        with tarfile.open(fileobj=io.BytesIO(encoded)) as archive:
+            assert archive.getmembers()[0].name == long_tree.rstrip('/')
+            assert archive.getmembers()[0].isdir()
+        assert run('rt', encoded)[1] == [(long_tree, 0, True)]
+        for name in ['./a', 'a/./b', '../a']:
+            run('wt', b'x', valid=False, name=name)
+            run('rz', zip_bytes([(name, b'x')]), valid=False, label=repr(name))
+
+        long_path = 'deep/' + 'segment-é/' * 40 + 'file.txt'
+        extended_entries = [('dir/', b''), (long_path, b'extended'), ('naïve/ü.txt', b'u'),
+                            ('d/' + 'e' * 150 + '/', b'')]
+        expected = [(name, len(data), name.endswith('/')) for name, data in extended_entries]
+        for archive_format in [tarfile.PAX_FORMAT, tarfile.GNU_FORMAT]:
+            output = io.BytesIO()
+            with tarfile.open(fileobj=output, mode='w', format=archive_format) as archive:
+                for name, data in extended_entries:
+                    info = tarfile.TarInfo(name.rstrip('/'))
+                    if name.endswith('/'):
+                        info.type = tarfile.DIRTYPE
+                    info.size = len(data)
+                    info.mtime = 1700000000.5
+                    info.uname = 'ada'
+                    info.pax_headers = {'comment': 'ignored', 'SCHILY.xattr.user.k': 'v'}
+                    archive.addfile(info, io.BytesIO(data))
+            encoded = output.getvalue()
+            actual, headers = run('rt', encoded, entry_limit=4)
+            assert headers == expected, headers
+            assert actual == b'extendedu', actual
+            run('rt', encoded, valid=False, entry_limit=3)
+        dot = tar_member('./', b'5') + tar_member('./a.txt', b'0', b'dot') + TAR_END
+        assert run('rt', dot) == (b'dot', [('a.txt', 3, False)])
+        gnu = b'ustar  \0'
+        gnu_long = (tar_member('././@LongLink', b'L', b'x' * 200 + b'/name\0', magic=gnu)
+                    + tar_member('short', b'0', b'gnu', magic=gnu) + TAR_END)
+        assert run('rt', gnu_long)[1] == [('x' * 200 + '/name', 3, False)]
+        both = (tar_member('././@LongLink', b'L', b'from-gnu\0', magic=gnu)
+                + tar_member('PaxHeader', b'x', pax_payload([('path', 'from-pax')]))
+                + tar_member('ustar-name', b'0', b'abc') + TAR_END)
+        assert run('rt', both)[1] == [('from-pax', 3, False)]
+        sized = (tar_member('PaxHeader', b'x', pax_payload([('size', '7')]))
+                 + tar_member('sized', b'0', b'payload', size=0)[:512] + b'payload' + b'\0' * 505 + TAR_END)
+        assert run('rt', sized) == (b'payload', [('sized', 7, False)])
+        cleared = (tar_member('PaxHeader', b'x', pax_payload([('path', '')]))
+                   + tar_member('kept', b'0', b'k') + TAR_END)
+        assert run('rt', cleared)[1] == [('kept', 1, False)]
+        global_ok = (tar_member('GlobalHead', b'g', pax_payload([('comment', 'all'), ('mtime', '1')]))
+                     + tar_member('g.txt', b'0', b'g') + TAR_END)
+        assert run('rt', global_ok)[1] == [('g.txt', 1, False)]
+        file_entry = tar_member('file', b'0', b'f')
+        for invalid in [
+                pax_payload([('linkpath', 'target')]),
+                pax_payload([('GNU.sparse.size', '10')]),
+                pax_payload([('hdrcharset', 'BINARY')]),
+                pax_payload([('size', '-1')]),
+                pax_payload([('size', '1x')]),
+                pax_payload([('size', str(1073741825))]),
+                pax_payload([('path', '../escape')]),
+                b'12 path=a\n',
+                b'08 a=b\n',
+                b'7 pathx\n',
+                b'6 =ab\n',
+                b'8 path=a',
+                b'path=a\n',
+                b'\xff']:
+            run('rt', tar_member('PaxHeader', b'x', invalid) + file_entry + TAR_END, valid=False, label=repr(invalid))
+        for invalid in [pax_payload([('path', 'all')]), pax_payload([('size', '1')])]:
+            run('rt', tar_member('GlobalHead', b'g', invalid) + file_entry + TAR_END, valid=False)
+        pax_header = tar_member('PaxHeader', b'x', pax_payload([('path', 'p')]))
+        long_link = tar_member('././@LongLink', b'L', b'name\0', magic=gnu)
+        for invalid in [pax_header + pax_header + file_entry + TAR_END,
+                        long_link + long_link + file_entry + TAR_END,
+                        pax_header + TAR_END,
+                        long_link + TAR_END,
+                        tar_member('PaxHeader', b'x', b'x' * 65537) + file_entry + TAR_END,
+                        tar_member('././@LongLink', b'L', b'n' * 1026, magic=gnu) + file_entry + TAR_END,
+                        tar_member('././@LongLink', b'K', b'target\0', magic=gnu) + file_entry + TAR_END,
+                        tar_member('sparse', b'S', b'', magic=gnu) + TAR_END,
+                        tar_member('PaxHeader', b'x', pax_payload([('path', 'p')]) + b'\x01') + file_entry + TAR_END]:
+            run('rt', invalid, valid=False)
+        counted = pax_header + file_entry + TAR_END
+        assert run('rt', counted, archive_limit=len(counted))[1] == [('p', 1, False)]
+        run('rt', counted, valid=False, archive_limit=len(counted) - 1)
         long_directory = 'd' * 120 + '/'
         encoded, _ = run('wtdir', b'', name=long_directory)
         with tarfile.open(fileobj=io.BytesIO(encoded)) as archive:

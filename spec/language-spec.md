@@ -11579,8 +11579,8 @@ Conformance includes published vectors and chunked/native equivalence.
 Its explicit extraction functions additionally use `os` and `errors`. Reader
 and writer constructors have no filesystem effects. Regular files and
 directories are supported; method 8 and confined extraction are locked below.
-ZIP64/encryption, links, special nodes and GNU/PAX/sparse TAR extensions remain
-excluded. Unsupported input fails explicitly.
+ZIP64/encryption, links, special nodes and sparse TAR entries remain excluded;
+PAX and GNU long names are read as described in §37.33. Unsupported input fails explicitly.
 
 ### Metadata and limits
 
@@ -11652,9 +11652,9 @@ and writes may leave an external archive prefix. No rollback is promised.
 
 ### Format policy
 
-USTAR validates unsigned header checksums, octal numeric fields and canonical
-`ustar\0`/`00` markers; binary numeric extensions and unsupported type flags
-fail. It reads/writes 512-byte records, zero entry padding and two zero end
+USTAR validates unsigned header checksums, octal numeric fields and the
+`ustar\0`/`00` marker, or the GNU `ustar  \0` marker (§37.33); binary numeric
+extensions and unsupported type flags fail. It reads/writes 512-byte records, zero entry padding and two zero end
 records. Readers accept further zero padding to source EOF and reject nonzero
 trailing data or concatenated archives. Writer metadata is deterministic: uid,
 gid and mtime 0; modes 0644 for files and 0755 for directories. TAR has no data
@@ -11995,6 +11995,71 @@ Compiler impact: bundled Zore source only; no syntax, runtime or dependency.
 Conformance: native round trips at every level, write-size independence,
 flush decodability and error stickiness, and Python zlib interoperability for
 every level and for flushed streams.
+
+## 37.33 PAX and GNU TAR names — LOCKED
+
+`TARReader` reads archives made by GNU tar and POSIX pax writers, including names
+longer than USTAR's 100-byte name and 155-byte prefix fields. The API is
+unchanged; only the accepted input grows.
+
+**Formats.** A header may carry the POSIX `ustar\0` `00` marker or the GNU
+`ustar  \0` marker. In a GNU-marked header the bytes after the device fields are
+not a name prefix: the name comes from the name field, the GNU access/change
+times there are ignored, and a set "extended sparse" byte fails.
+
+**Extended headers.** These hidden records come before the entry they describe.
+None counts as an entry or toward the data limit; all of their bytes count
+toward the archive limit, and their padding must be zero.
+
+| Type | Meaning |
+| --- | --- |
+| `x` | POSIX extended header for the next entry: `LEN key=value\n` records, at most 65536 bytes in all |
+| `g` | POSIX global header: its records are checked by the rules below and then ignored; a `path` or `size` record also fails |
+| `L` | GNU long name for the next entry: the name, ending at its first NUL, at most `MaxNameBytes + 1` bytes |
+
+Each record's decimal `LEN` has no sign or leading zero and counts the whole
+record, including its newline; the key is non-empty and ends at the first `=`;
+key and value must be UTF-8. In an `x` header, `path` replaces the name and
+`size` (decimal digits, at most `MaxBytes`) replaces the header size. An empty
+value removes that replacement. `hdrcharset` must be
+`ISO-IR 10646 2000 UTF-8`. `linkpath` fails as a link, and keys beginning
+`GNU.sparse.` fail as sparse entries. Every other key is ignored, as are times,
+owners and modes everywhere.
+
+**Precedence.** An entry's name is the `x` `path` if present, else the `L` name,
+else the USTAR name and prefix. At most one `x` and one `L` header may precede
+an entry, in either order; a second of either, or an extended header followed
+by the end of the archive, fails. A directory name taken from `x` or `L` gets a
+trailing `/` if it lacks one.
+
+**Leading `./`.** After precedence, every leading `./` is removed from a name.
+A directory entry that is then empty, or `.`, with size zero, is the archive
+root: it is skipped and returns no entry. The resulting name must pass
+`ValidName`, so `..`, `/` and inner `.` components still fail. ZIP names and all
+writers keep the stricter §37.28 rule.
+
+**Writer.** When a name fits neither the 100-byte name field nor a split into
+the 155-byte prefix and 100-byte name, `TARWriter` writes an `x` header named
+`././@PaxHeader` containing one `path` record, then the entry with the name cut
+to its first 100 bytes (99 and `/` for a directory) at a UTF-8 boundary. The
+extended header counts toward the archive limit only.
+
+Errors: `archive: unsupported TAR format`,
+`archive: TAR link target is unsupported`,
+`archive: sparse TAR entries are unsupported`,
+`archive: TAR extended header too large`,
+`archive: repeated TAR extended header`,
+`archive: TAR extended header without entry`,
+`archive: invalid PAX record`, `archive: invalid PAX size`,
+`archive: unsupported PAX character set` and
+`archive: unsupported PAX global header`, all sticky. Memory per entry stays
+within the 65536-byte extended header limit.
+
+Compiler impact: bundled Zore source only. Conformance: Python `tarfile` PAX and
+GNU archives with long, non-ASCII and directory names, GNU tar 1.35 archives in
+its `gnu`, `posix` and `oldgnu` formats checked locally, precedence, size
+replacement, global headers, leading `./`, writer long names read by Python, and
+each malformed extended header.
 
 
 # 38. Self-Hosting Constraint
