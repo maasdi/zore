@@ -24,6 +24,7 @@ See the [official naming rules](../spec/language-spec.md#21-naming--locked).
 | [Command-line options](command-line-options.md) | `std/flag`: declaring options and arguments, reading the result, help text, and choosing output and exit status. |
 | [Application testing](testing.md) | `zore test`, `std/testing` checks and test contexts, temporary folders, cleanup, and `zore test --bench` benchmarks. |
 | [Formatter](formatter.md) | `zore fmt`, check mode, style, traversal, and write behavior. |
+| [HTML escaping](html.md) | Escaping ordinary text and quoted attributes, context restrictions, and the separate template follow-up decision. |
 | [CSV files](csv.md) | Reading and writing CSV tables one record at a time, quoting rules, limits and error messages. |
 | [Seeded random numbers](random.md) | Repeatable random numbers, shuffles and samples for tests and simulations; not for secrets. |
 | [Regular expressions](regexp.md) | Bounded UTF-8 matching, byte-offset captures, replacement, and shared ownership. |
@@ -51,6 +52,7 @@ These proposals were not accepted and changed nothing. They are kept for their r
 
 These documents record design directions; the specification defines the implemented contracts.
 
+- [Template follow-up decision](design/templates.md) (issue #226; application-driven, deferred)
 - [HTTP server and URL design](proposals/http-server.md) (issue #105; implemented in §37.6)
 - [Opt-in scoped tasks](proposals/scoped-tasks.md) (Q10)
 - [Staged self-hosting plan](proposals/self-hosting-plan.md) (issue #56; stages 1 and 2 done, later stages deferred)

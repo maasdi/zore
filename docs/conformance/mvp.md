@@ -238,3 +238,12 @@ Spec §§37.29–37.30 add a shared raw-DEFLATE codec, ZIP method 8 and confined
 new-directory extraction on Linux/macOS/Windows. Python gzip/archive/extraction
 oracles and native ownership, boundary, race and cleanup tests provide evidence.
 Windows extraction enforces protected DACLs and rejects reparse points.
+
+## HTML escaping follow-up — issue #226
+
+Locked §37.31 is implemented by `std/encoding/html.EscapeString`.
+[HTML conformance](../../tests/conformance/html.md) maps frontend API checks,
+exact UTF-8 output, ownership/cleanup across suspension, a compiled guide and
+independent Python escaping/parser assertions. Contextual template rendering
+remains a separate application-driven decision under Q16; the primitive does
+not validate URLs or serialize JavaScript/CSS.

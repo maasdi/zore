@@ -23,6 +23,14 @@ including those shipped in `0.1.0-alpha.1`, are not split by release.
   appear at a later `Write`, at `Flush` or at `Finish` instead of the `Write`
   that offered the bytes.
 
+### HTML escaping
+
+- Added `std/encoding/html.EscapeString` for ordinary element text and fixed
+  quoted text attributes, with explicit UTF-8, ownership and context restrictions.
+  HTML and plain-text templates remain a separate application-driven design
+  decision.
+
+
 ### ZIP DEFLATE and confined extraction
 
 - Added shared raw `std/compress/flate`, ZIP method 8 reading/writing with exact

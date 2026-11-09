@@ -1,0 +1,41 @@
+package html
+
+import "std/strings"
+
+func entity(value byte) string {
+    if value == 38 {
+        return "&amp;"
+    }
+    if value == 60 {
+        return "&lt;"
+    }
+    if value == 62 {
+        return "&gt;"
+    }
+    if value == 34 {
+        return "&quot;"
+    }
+    if value == 39 {
+        return "&#39;"
+    }
+    return ""
+}
+
+func EscapeString(text string) string {
+    var output = strings.NewBuilder()
+    var segmentStart = 0
+    for var index = 0; index < text.len(); index += 1 {
+        let replacement = entity(text[index])
+        if replacement == "" {
+            continue
+        }
+        output.WriteString(text[segmentStart:index])
+        output.WriteString(replacement)
+        segmentStart = index + 1
+    }
+    if segmentStart == 0 {
+        return text
+    }
+    output.WriteString(text[segmentStart:])
+    return output.String()
+}
