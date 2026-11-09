@@ -63,6 +63,26 @@ impl Parser<'_> {
 
     pub(super) fn import(&mut self) -> PResult<Import> {
         let start = self.bump().span;
+        let alias = match self.peek() {
+            TokenKind::Ident | TokenKind::Keyword(_) | TokenKind::Reserved(_) => {
+                Some(self.name("an import name")?)
+            }
+            TokenKind::Underscore => {
+                let span = self.current_span();
+                return Err(self.error(
+                    "blank imports are not supported; an import must be used",
+                    span,
+                ));
+            }
+            TokenKind::Punct(Punct::Dot) => {
+                let span = self.current_span();
+                return Err(self.error(
+                    "dot imports are not supported; use the package name as a qualifier",
+                    span,
+                ));
+            }
+            _ => None,
+        };
         let span = self.current_span();
         match self.peek().clone() {
             TokenKind::String(path)
@@ -70,6 +90,7 @@ impl Parser<'_> {
             {
                 self.bump();
                 Ok(Import {
+                    alias,
                     path,
                     path_span: span,
                     span: self.span_from(start),

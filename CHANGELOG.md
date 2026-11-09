@@ -8,6 +8,14 @@ including those shipped in `0.1.0-alpha.1`, are not split by release.
 
 ## [Unreleased]
 
+### Imports
+
+- An import may be given a name: `import serverconfig "myapp/server/config"`
+  makes that package `serverconfig` in its file, so two packages whose paths
+  end the same way can be used together. The name follows the usual import
+  rules (unused, duplicate, declaration and predeclared-name checks), may
+  repeat the last path segment, and using the old name points at the new one. Dot and blank imports remain unsupported and now say so.
+
 ### Regular expressions
 
 - Added `std/regexp`: `Compile` and `MustCompile`, `Matches`, `Find`, bounded

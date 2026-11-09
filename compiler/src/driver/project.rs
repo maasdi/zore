@@ -613,7 +613,10 @@ impl<'a> Loader<'a> {
             match self.load_import(&import.path, import.path_span, owner) {
                 Some(package) => bindings.push(ImportBinding {
                     package,
-                    name: import.path.rsplit('/').next().unwrap_or("").to_string(),
+                    name: import.alias.as_ref().map_or_else(
+                        || import.path.rsplit('/').next().unwrap_or("").to_string(),
+                        |alias| alias.text.clone(),
+                    ),
                 }),
                 None => bindings.push(ImportBinding {
                     package: usize::MAX,

@@ -13,6 +13,7 @@ pub struct File {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Import {
+    pub alias: Option<Name>,
     pub path: String,
     pub path_span: Span,
     pub span: Span,

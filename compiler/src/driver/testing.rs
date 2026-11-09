@@ -256,15 +256,22 @@ fn prefixed(name: &str, prefix: &str) -> bool {
         .is_some_and(|suffix| suffix.starts_with(|c: char| c.is_ascii_uppercase()))
 }
 
-/// `t mut testing.T` or `b mut testing.B`, where `testing` is the file's import of `std/testing`.
+/// `t mut testing.T` or `b mut testing.B`, where `testing` is the file's name for `std/testing`.
 fn is_context(param: &Param, file: &File, name: &str) -> bool {
+    let Some(import) = file
+        .imports
+        .iter()
+        .find(|import| import.path == "std/testing")
+    else {
+        return false;
+    };
+    let bound = import
+        .alias
+        .as_ref()
+        .map_or("testing", |alias| alias.text.as_str());
     param.mode == ParamMode::Mut
         && matches!(&param.ty, Type::Qualified { package, name: ty, .. }
-            if package.text == "testing" && ty.text == name)
-        && file
-            .imports
-            .iter()
-            .any(|import| import.path == "std/testing")
+            if package.text == bound && ty.text == name)
 }
 
 fn goal_text(nanoseconds: u64) -> String {

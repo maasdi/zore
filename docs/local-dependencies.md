@@ -31,7 +31,13 @@ import "greeting/text"
 Each package must declare the final import-path segment as its package name.
 Root packages therefore use the project's name; `main` packages cannot be
 imported. Existing imports within a project and `std/...` imports keep working.
-There are no dependency aliases or new source keywords.
+Dependencies are not renamed in the manifest. To use two packages whose paths
+end the same way in one file, give one of them an import name:
+
+```ore
+import "greeting/text"
+import plain "std/strings"
+```
 
 ## Dependency graphs
 

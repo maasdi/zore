@@ -1603,7 +1603,8 @@ folder that holds `zore.toml`. When there is none, the entry folder is a project
 name, which can import only standard packages.
 
 **Import paths.** An import declaration names exactly one package by a
-double-quoted path of segments separated by `/` (§3.3):
+double-quoted path of segments separated by `/` (§3.3), optionally preceded by
+an import name (see *Import names* below):
 
 | Path | Package |
 | --- | --- |
@@ -1623,7 +1624,8 @@ non-`main` package's package clause must be exactly that name. The `main`
 package cannot be imported.
 
 **Using imports.** An import is visible only in the file that declares it, and
-its name is the last path segment. Members are used with a qualifier:
+its name is its import name when it has one, otherwise the last path segment.
+Members are used with a qualifier:
 
 ```ore
 import "myapp/shapes"
@@ -1659,9 +1661,28 @@ type position (`var c shapes.Circle`). The rules are:
   declaration or a predeclared name are all errors.
 - *No cycles.* A package that imports itself, directly or through other
   packages, is an error that lists the chain.
-- *Outside this increment.* Import aliases, dot imports, blank imports, grouped
-  imports, package-level `var`, init functions and version
-  solving. Package-level let is specified in §3.21.
+- *Import names — LOCKED.* `import name "path"` makes the package known as
+  `name` in that file instead of by its last path segment, so one file can use
+  two packages whose paths end the same way:
+
+  ```ore
+  import "myapp/client/config"
+  import serverconfig "myapp/server/config"
+  ```
+
+  The name is an identifier (§3.5); a keyword, reserved word or `_` is an
+  error. It replaces the last segment for every rule above: the unused,
+  duplicate-name, declaration and predeclared-name checks apply to it, and the
+  last segment is not also bound. A name equal to the last segment is allowed
+  and changes nothing. The package itself is unchanged: its package
+  clause still matches its last segment, its types keep their nominal identity
+  however each file names it, and diagnostics inside it use its own name. Using
+  the last segment of a renamed import is an ordinary unknown-name error, with
+  a note naming the import's chosen name.
+- *Outside this increment.* Dot imports (`import . "path"`), blank imports
+  (`import _ "path"`), grouped imports, package-level `var`, init functions and
+  version solving; dot and blank imports are errors that say so. Package-level
+  let is specified in §3.21.
 
 **Local dependency graph — LOCKED.** Each dependency key must match the target
 manifest's project name and must not be std. The path must point to the project
