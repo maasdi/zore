@@ -11571,6 +11571,140 @@ Conformance includes external tarfile/zipfile interoperability, malformed and
 truncated structures, exact limits, partial I/O, lifecycle cleanup, explicit
 unsupported variants, ownership rejection and async endpoint composition.
 
+## 37.28 Raw DEFLATE and ZIP method 8 — LOCKED
+
+`std/compress/flate` owns RFC 1951 coding below gzip and archives. It has no
+filesystem, framing or checksum policy. It imports only `std/io`. Gzip moves
+its existing codec here; there is one implementation of Huffman and LZ77 rules.
+
+- `MaxBytes = 1073741824`; `NewDecoder(inputLimit int, outputLimit int)
+  (Decoder, error)` and `NewEncoder(inputLimit int, compressedLimit int)
+  (Encoder, error)` create Move states, with inclusive limits in `[0, MaxBytes]`.
+- `Read<R io.Reader>(decoder mut Decoder, source mut R, buf mut []byte)
+  (int, error)` reads one raw stream. It does not buffer bytes beyond the last
+  DEFLATE byte. Stored/fixed/dynamic blocks, history and validity rules match
+  gzip. After the final block it returns `io.EOF`; final padding is ignored.
+- `Write<W io.Writer>(encoder mut Encoder, sink mut W, data []byte)
+  (int, error)` and `Finish<W io.Writer>(encoder mut Encoder, sink mut W) error`
+  use deterministic bounded fixed-Huffman/LZ77 coding. Finish is explicit and
+  idempotent; drop produces no output. Write counts accepted uncompressed input,
+  including input accepted before a sink failure. Empty input does not start a
+  block. A whole write exceeding the input ceiling is rejected before acceptance.
+- Decoder `InputBytes()` and `OutputBytes()` report consumed compressed bytes
+  and delivered bytes. Encoder counters report accepted input and written
+  compressed bytes. The caller must supply the same continuous logical source
+  or sink throughout a state; neither state retains or closes it. Borrows last
+  only for the call. No reset, flush or compression-level API is introduced.
+- Terminal failures are sticky. Empty reads succeed; empty writes after finish
+  fail. Invalid counts, zero writes and 100 consecutive empty reads fail. An
+  input ceiling never consumes more than one detection byte; decoded output
+  never exceeds its ceiling. Errors may accompany unverified partial output.
+  CPU and task behavior match gzip, without a CPU preemption guarantee.
+
+ZIPReader additionally accepts method 8 (DEFLATE), including its speed-hint
+flags 1 and 2. Local and central methods must agree. Compressed and uncompressed
+sizes are checked independently in local records, descriptors and directory
+records. A bounded entry input never consumes bytes outside its declared
+compressed span. Reaching declared output size still requires validating the
+final DEFLATE block; short/excess output, unused compressed bytes, invalid raw
+streams and CRC mismatches fail, including on Skip. Declared total output and
+existing archive/metadata/count ceilings continue to apply.
+
+`std/archive` adds `type Compression int`, `Store Compression = 0`,
+`Deflate Compression = 8`, and ZIPWriter
+`WriteHeaderWith(header Header, compression Compression) error`.
+`WriteHeader` retains Store behavior. Unknown compression values fail before
+writing the entry. Both methods retain explicit-size and finalization rules;
+DEFLATE writes signed descriptors with actual compressed size. Empty directory
+entries may use either method. All other unsupported ZIP variants stay excluded.
+
+```ore
+var writer = archive.NewZIPWriter(sink, 1048576, 8388608, 100)?
+writer.WriteHeaderWith(archive.Header{Name: "readme.txt", Size: 5, Directory: false}, archive.Deflate)?
+let _, writeErr = writer.Write(Array<byte>{104, 101, 108, 108, 111}[:])
+if writeErr != nil { return writeErr }
+return writer.Close()
+```
+
+Compiler impact: one bundled source package, existing generic constraints and
+interfaces; no syntax or dependency. Conformance covers raw boundaries, exact
+limits, malformed streams, source/sink failures, generic ownership and Python
+zlib/zipfile interoperability, plus the existing gzip/archive suites.
+
+## 37.29 Confined staged trees and archive extraction — LOCKED
+
+`std/path.IsLocal(name string) bool` owns portable slash-relative name syntax:
+nonempty components, no absolute path, empty/dot/dotdot component, backslash,
+colon, Windows forbidden punctuation, control rune, trailing dot/space or
+Windows device basename (including extensions and superscript COM/LPT digits).
+It does not consult the filesystem. `archive.ValidName` applies its own byte
+ceiling and directory trailing-slash convention then calls this primitive.
+
+`std/os.StageTree(destination string, nodeLimit int) (StagedTree, error)`
+creates a private staging directory beside a new destination. The destination
+must have a portable basename, must not exist (including dangling links), and
+its existing parent path must contain no links/reparse points or `..`.
+`nodeLimit` is in `[0, 65534]`, counts files and implicit/explicit directories,
+and excludes the root. Relative names are local, at most 1024 UTF-8 bytes and
+64 components. Unsupported OS/filesystem confinement or atomic publication
+operations fail closed. The first provider supports Linux and macOS; Windows
+support requires a separately verified handle-relative provider and returns an
+explicit unsupported error until that provider is implemented.
+
+StagedTree is a Move resource with private state:
+
+| Operation | Contract |
+| --- | --- |
+| `(t mut StagedTree) Mkdir(name string) error` | Create parents and directory; repeat same spelling is idempotent |
+| `(t mut StagedTree) Create(name string) error` | Create parents and one exclusive regular file; an existing leaf fails |
+| `(t mut StagedTree) Write(data []byte) (int,error)` | Write the active file; implements io.Writer |
+| `(t mut StagedTree) FinishFile() error` | Sync and close the active file; requires one |
+| `(t own StagedTree) Commit() error` | Requires no active file; atomically publish without replacement; failure aborts |
+| `(t own StagedTree) Abort() error` | Close active file and remove staging; report cleanup failures |
+
+Errors are sticky. Creation and directory traversal use anchored handles and
+no-follow operations, never canonicalize-then-open. Private envelope and tree
+permissions are owner-only, files owner read/write; archive modes, ownership,
+times and executable bits are never restored. Directory identity detects host
+name aliases; no spelling may resolve to a differently spelled staged node.
+Publication cannot overwrite a destination created concurrently. Staging uses
+a private envelope so the rename source cannot be substituted by an unrelated
+user. The threat model excludes mutation by the process owner or a privileged
+actor able to modify owner-only directories. Renaming a parent after opening
+it does not redirect operations into a replacement path. Abort removes only
+tracked children relative to anchored handles and never follows links; hostile
+owner mutation may cause explicit cleanup failure. Drop aborts best-effort;
+forced process termination/crash may leave private staging. Publication is not
+a crash-durability guarantee. Native operations are helper waits; cleanup on
+normal/error/panic paths follows ordinary Move drop rules.
+
+`archive.ExtractTAR(source own io.Reader, destination string, archiveLimit int,
+dataLimit int, entryLimit int) error` and
+`archive.ExtractZIP(source own io.ReadSeeker, destination string, archiveLimit
+int, dataLimit int, entryLimit int) error` own their source and validate limits
+before filesystem work. They materialize a new tree only. Duplicate explicit
+entries, file/directory conflicts, case aliases (Unicode ToUpper folding), host
+aliases, links and special nodes fail. Same-spelling explicit directories may
+follow implicit parent creation once. All implicit directories and files count
+toward entryLimit, in addition to reader entry counts. Validation includes every
+entry, checksum, raw terminator, archive end and all byte/count ceilings before
+Commit. Read/write/format/collision failures abort; cleanup errors retain the
+original failure as context. Existing destinations never change. Invalid source
+bytes are unverified until whole-archive success. Compressed TAR composes a gzip
+reader with ExtractTAR; only ZIP input needs seeking.
+
+```ore
+let source = os.Open("input.zip")?
+return archive.ExtractZIP(source, "unpacked", 1048576, 8388608, 100)
+```
+
+Compiler impact: existing primitive native ABI shapes, helper-wait classification,
+embedded provider sources and resource leak accounting; no new dependency,
+syntax, source pointer access or general native capability. Conformance includes
+ownership, native cleanup, one-worker execution, path/alias/duplicate rejection,
+parent-link and publication races, implicit-node/depth limits, malformed archive
+rollback, and independent Python extraction interoperability.
+
 # 38. Self-Hosting Constraint
 
 ## 38.1 Long-term goal — LOCKED
