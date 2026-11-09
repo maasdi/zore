@@ -1,14 +1,14 @@
 # Remaining archive work
 
 Issue [#224](https://github.com/maasdi/zore/issues/224) provides gzip, USTAR,
-classic stored/DEFLATE ZIP, and confined new-directory extraction on Linux/macOS.
+classic stored/DEFLATE ZIP, and confined new-directory extraction on Linux/macOS/Windows.
 See the [archive guide](../archives.md) and spec §§37.26–37.30.
 
-Windows extraction needs a verified handle-relative provider: reject reparse
-points at each component, track filesystem identities to reject name aliases,
-create owner-only staging, publish without replacement using directory handles,
-and clean up without following links. The current provider returns unsupported;
-no path-based fallback weakens confinement.
+Windows extraction now uses handle-relative no-reparse operations, protected
+owner/LocalSystem DACLs, filesystem identity checks, handle-based cleanup and
+atomic no-replace publication. Its native and archive tests cover reparse
+points, aliases, ACL inheritance, races and cleanup. Future platform extensions
+must preserve these guarantees and fail closed when a capability is unavailable.
 
 ZIP64, encryption, split archives, CP437 names and more permissive central/local
 ordering remain excluded. Extensions must retain bounded directory memory,

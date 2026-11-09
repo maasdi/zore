@@ -48,7 +48,7 @@ Streaming compression is available through [`std/compress/gzip`](docs/gzip.md),
 with explicit byte limits, owned reader/writer composition and checksum validation.
 Bounded USTAR and stored/DEFLATE ZIP I/O are available through
 [`std/archive`](docs/archives.md). Explicit extraction stages a new tree on
-Linux/macOS; Windows extraction and extended formats remain
+Linux, macOS and Windows. Extended formats remain
 [follow-up work](docs/design/archives.md).
 
 ## Project status

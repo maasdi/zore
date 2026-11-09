@@ -13,9 +13,9 @@ including those shipped in `0.1.0-alpha.1`, are not split by release.
 - Added shared raw `std/compress/flate`, ZIP method 8 reading/writing with exact
   compressed/output size and CRC validation, and explicit compression selection.
 - Added `archive.ExtractTAR`/`ExtractZIP` and `os.StageTree` for confined private
-  staging and atomic new-directory publication on Linux/macOS. Paths, aliases,
-  duplicates, byte/node/depth limits and cleanup are enforced. Windows extraction
-  explicitly returns unsupported pending a verified handle-relative provider.
+  staging and atomic new-directory publication on Linux/macOS/Windows. Paths, aliases,
+  duplicates, byte/node/depth limits and cleanup are enforced. Windows uses NT handle-relative no-reparse operations, protected
+  owner/LocalSystem DACLs, identity checks and handle-based publication/cleanup.
 - Moved portable entry-name syntax to `path.IsLocal`; archive naming retains its
   byte ceiling and directory convention. Fixed premature specialization of
   interface methods on generic wrappers with unresolved type arguments.
@@ -29,7 +29,7 @@ including those shipped in `0.1.0-alpha.1`, are not split by release.
 - Added `io.ReadSeeker` and IEEE `std/hash/crc32`, shared by ZIP and gzip.
 - Fixed duplicate LLVM symbols for same-named generic methods on different
   receiver types, including interface dispatch and cleanup.
-- ZIP64, extended TAR forms and Windows extraction remain follow-ups.
+- ZIP64, extended TAR forms and metadata restoration remain follow-ups.
 
 ### Streaming gzip
 

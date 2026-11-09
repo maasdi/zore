@@ -57,6 +57,7 @@ mod signal;
 mod slot;
 mod staged_tree;
 mod staged_tree_unix;
+mod staged_tree_windows;
 #[path = "strconv.rs"]
 mod strconv;
 #[path = "string.rs"]

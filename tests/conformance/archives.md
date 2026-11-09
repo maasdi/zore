@@ -23,7 +23,7 @@ Run `cargo test --locked --test packages archive`,
 `cargo test --locked --test native archive`, and, after building the compiler,
 `python tests/hardening/archive_oracle.py`. CI runs the oracle on Linux, macOS
 and Windows. `python tests/hardening/extraction_oracle.py` validates extraction
-and rollback on Linux/macOS and explicit unsupported behavior on Windows.
+and rollback on Linux/macOS/Windows and Windows.
 Extended TAR/ZIP forms remain unsupported.
 
 Raw DEFLATE boundary/counter/limit/finalization tests and staged-tree one-worker

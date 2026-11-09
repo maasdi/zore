@@ -87,7 +87,7 @@ func main() {{ let err = scenario(); if err != nil {{ panic(errors.Message(err))
     assert_eq!(stdout(&output), "ok\n");
 }
 
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 #[test]
 fn staged_tree_ownership_sticky_errors_and_one_worker_cleanup() {
     let source = format!(
@@ -133,7 +133,7 @@ func main() {{
     assert_eq!(std::fs::read_dir(root).unwrap().count(), 1);
 }
 
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 #[test]
 fn staged_tree_panic_removes_private_staging() {
     let source = format!(

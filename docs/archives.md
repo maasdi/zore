@@ -5,7 +5,7 @@ Both formats support regular files and directories. Archive operations work
 through I/O interfaces. Explicit extraction functions stage a new destination.
 
 ZIP64, encryption, links and special nodes, GNU/PAX/sparse TAR
-extensions and Windows extraction are follow-ups to
+extensions are follow-ups to
 [#224](https://github.com/maasdi/zore/issues/224). Unsupported forms return errors.
 
 The shared `Header` contains `Name string`, `Size int`, and `Directory bool`.
@@ -175,12 +175,16 @@ anchored by its open handle, so operations cannot follow a replacement path.
 Duplicate explicit names, case aliases, host-equivalent aliases, file/directory
 conflicts, links and special nodes fail. An explicit directory may follow its
 same-spelling implicit creation once. Files and implicit directories all count
-toward entryLimit; paths have at most 64 components. Files use mode 0600 and
-directories 0700; archive modes, ownership, times and executable bits are ignored.
+toward entryLimit; paths have at most 64 components. Unix files use mode 0600 and
+directories 0700; Windows nodes use protected owner/LocalSystem DACLs; archive modes, ownership, times and executable bits are ignored.
 
-Extraction is implemented on x86_64/aarch64 Linux and macOS. Other architectures
-fail before filesystem work. Windows returns an explicit
-unsupported error until a handle-relative provider is verified. Filesystems
+Extraction is implemented on x86_64/aarch64 Linux/macOS and x86_64 Windows.
+Other architectures fail before filesystem work. Windows uses handle-relative
+NT operations, rejects all reparse points and checks filesystem identities.
+New nodes receive protected DACLs granting access only to the effective user
+and LocalSystem, checked before payload writes. Publication and deletion use
+handles. Disk/UNC absolute paths, ordinary relative paths and canonical verbatim
+forms work; drive-relative, root-relative and device namespaces are rejected. Filesystems
 without required no-follow/atomic no-replace operations also fail closed. Created
 nodes must report the effective owner and exact private mode before payload is
 written; filesystems that silently ignore these permissions are rejected.

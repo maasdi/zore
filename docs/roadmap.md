@@ -2,11 +2,10 @@
 
 Issue [#224](https://github.com/maasdi/zore/issues/224) provides streaming gzip,
 USTAR and classic stored/DEFLATE ZIP I/O, plus confined extraction into new
-directories on Linux/macOS (§§37.26–37.30). Raw DEFLATE is shared below gzip and
+directories on Linux/macOS/Windows (§§37.26–37.30). Raw DEFLATE is shared below gzip and
 archive policy; CRC32 remains in `std/hash/crc32`. Extraction validates the whole
 archive in private staging before no-replace publication, counts implicit nodes
-and rejects aliases, duplicates and links. Windows extraction explicitly returns
-unsupported. Extended formats and existing-tree overwrite policies remain
+and rejects aliases, duplicates and links. Windows extraction uses a handle-relative provider. Extended formats and existing-tree overwrite policies remain
 [follow-ups](design/archives.md). See the [archive guide](archives.md).
 
 Issue [#225](https://github.com/maasdi/zore/issues/225) adds
@@ -60,7 +59,7 @@ engine uses ordinary TCP operations with a handshake-only context, connection
 deadlines and worker compensation for external wrappers. TLS conformance evidence is tracked by the
 provider-present test and host CI; HTTPS consumers use the separate HTTP client
 transport extension. `std/os/signal.NotifyContext` supports
-SIGINT/SIGTERM cancellation on Linux/macOS and Windows console notifications,
+SIGINT/SIGTERM cancellation on Linux/macOS/Windows and Windows console notifications,
 with idempotent subscription cleanup and best-effort Windows termination cleanup.
 The REST example uses function routes, JSON response helpers, and two-argument
 `http.ListenAndServe` with automatic signal registration and bounded graceful
@@ -269,7 +268,7 @@ evidence. Issue [#205](https://github.com/maasdi/zore/issues/205) records
 with raw paired evidence; the production build scheduler is unchanged.
 
 Issue [#177](https://github.com/maasdi/zore/issues/177) refreshes
-[Linux/macOS/Windows runtime population evidence](runtime-scaling-refresh.md)
+[Linux/macOS/Windows/Windows runtime population evidence](runtime-scaling-refresh.md)
 with the maintained harness and recorded source identities. The original
 three-host report remains historical. Issue #169's shared Windows timer
 implementation and before/after capture are recorded in
@@ -310,7 +309,7 @@ Package-level `var` is forbidden, not an unfinished MVP feature. Async callable
 and scoped-task extensions are separate from conformance to today's rules.
 Formatter/test tooling follows §45; it does not establish ownership safety.
 Windows native support targets x64 MSVC, including console signals. Runtime
-population and helper-lifecycle measurements cover Linux/macOS/Windows; older
+population and helper-lifecycle measurements cover Linux/macOS/Windows/Windows; older
 compiler, REST/JSON and retention harnesses retain their documented host scope.
 See [platform support](platform-support.md) and each linked measurement report.
 
@@ -2327,7 +2326,7 @@ PR #166 checks, not inferred from local execution.
 #### Required environment
 
 Use the repository-pinned Rust toolchain (including rustfmt and Clippy), plus
-clang with LLVM 15 or newer on a Linux/macOS host. Native builds invoke rustc
+clang with LLVM 15 or newer on a Linux/macOS/Windows host. Native builds invoke rustc
 1.98+; `ZORE_CC` and `ZORE_RUSTC` select host-compatible executables.
 No compiler or runtime crate requires third-party Rust dependencies.
 

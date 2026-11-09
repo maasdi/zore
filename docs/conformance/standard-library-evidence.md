@@ -92,7 +92,7 @@ The `.ore` crypto/TLS/SQLite-style application tests are not Cargo-discovered Ru
 
 Issue #224 implements §§37.26–37.30 through bundled gzip/raw DEFLATE, CRC32 and
 USTAR/ZIP packages, with the confined staged-tree provider in `std/os` for
-Linux/macOS. The [archive conformance map](../../tests/conformance/archives.md)
+Linux/macOS/Windows. The [archive conformance map](../../tests/conformance/archives.md)
 names native, frontend, Python interoperability and filesystem race/cleanup
-assertions. Windows extraction returns unsupported. Extended archive formats,
+assertions. Windows extraction uses native handle operations. Extended archive formats,
 existing-tree overwrite modes and metadata restoration remain excluded.

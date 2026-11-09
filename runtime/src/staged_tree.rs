@@ -9,11 +9,13 @@ use super::sys::{ErrorOut, text_of};
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use super::staged_tree_unix::Tree;
+#[cfg(windows)]
+use super::staged_tree_windows::Tree;
 
-#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
 struct Tree;
 
-#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
 impl Tree {
     fn create(_: &str, _: usize) -> std::io::Result<Self> {
         Err(unsupported())
@@ -37,7 +39,7 @@ impl Tree {
         Err(unsupported())
     }
 }
-#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
 fn unsupported() -> std::io::Error {
     std::io::Error::other("confined tree extraction is unsupported on this platform")
 }

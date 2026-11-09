@@ -80,12 +80,6 @@ def main():
                     ('zip', zip_bytes(entries)),
                     ('zip', zip_bytes(entries, streamed=True, compression=zipfile.ZIP_DEFLATED)),
                     ('gzip', gzip.compress(tar_bytes(entries), mtime=0))]
-        if os.name == 'nt':
-            for mode, data in variants:
-                result = run(mode, data, valid=False)
-                assert b'unsupported' in result.stderr, result.stderr
-            print(f'extraction capability: {checked} fail-closed Windows cases passed')
-            return
         for mode, encoded in variants:
             run(mode, encoded, expected={'dir/é.txt': b'hello\0world', 'empty': b''}, entry_limit=3)
             run(mode, encoded, valid=False, entry_limit=2)

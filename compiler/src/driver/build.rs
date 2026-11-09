@@ -74,6 +74,10 @@ const RUNTIME_SOURCES: &[(&str, &str)] = &[
         "staged_tree_unix.rs",
         include_str!("../../../runtime/src/staged_tree_unix.rs"),
     ),
+    (
+        "staged_tree_windows.rs",
+        include_str!("../../../runtime/src/staged_tree_windows.rs"),
+    ),
     ("regexp.rs", include_str!("../../../runtime/src/regexp.rs")),
     (
         "regexp_parse.rs",

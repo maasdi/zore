@@ -43,7 +43,7 @@ their follow-up sections supersede the original missing-test lists.
 | §39.4 Borrowing across await and async I/O | Covered for valid persistent backing and rejected unsafe inputs; plain/polled parity and controlled-pool progress | [Ownership tests](../../tests/ownership/ownership.rs); [native suite](../../tests/codegen/native.rs): `io_poll_files_and_byte_views_preserve_results_and_cleanup`, `pending_async_accepts_leave_workers_for_an_unrelated_task`, `cancelling_from_another_task_wakes_a_pending_done_select_exactly_once` | Conservative safe rejection is explicitly allowed by §17.6. TLS, HTTP client, HTTP/2 and UDP are not delivered by the HTTP server work. |
 | §39.5 Lexer, parser, AST, name resolution, checker and HIR | Covered: recovery, spans, scopes, type/ownership diagnostics and backend-independent checking | [Lexer](../../tests/lexer/lexer.rs), [parser](../../tests/parser/parser.rs), [checker](../../tests/typecheck/check.rs), [packages](../../tests/packages/packages.rs), [CLI](../../tests/driver/cli.rs) tests | Lexical questions remain localized in Q13. No new self-hosting stage is scheduled. |
 | §39.5 Ownership/borrow checking, regions, MIR/CFG, async lowering and drop insertion | Covered for named observable behavior; partial evidence across the combinations above | [Ownership](../../tests/ownership/ownership.rs), [async lowering](../../tests/async/lowering.rs), [native](../../tests/codegen/native.rs) tests; [MIR](../../compiler/src/mir), [ownership](../../compiler/src/ownership), [drop insertion](../../compiler/src/dropck) | Full-MVP completion remains conditional on the remaining evidence inventory and any defects it uncovers. |
-| §39.5 LLVM backend and native executable | Covered on Linux/macOS and Windows x64 MSVC through check/build/run and native subprocess tests | [Native suite](../../tests/codegen/native.rs); [.github/workflows/ci.yml](../../.github/workflows/ci.yml) | Host/toolchain evidence and Windows API limits are in [platform support](../platform-support.md); cross-compilation remains out of MVP. |
+| §39.5 LLVM backend and native executable | Covered on Linux/macOS/Windows and Windows x64 MSVC through check/build/run and native subprocess tests | [Native suite](../../tests/codegen/native.rs); [.github/workflows/ci.yml](../../.github/workflows/ci.yml) | Host/toolchain evidence and Windows API limits are in [platform support](../platform-support.md); cross-compilation remains out of MVP. |
 | §39.5 High-quality diagnostics | Covered for source rendering and named semantic cases; partial as a universal quality claim | [Source diagnostics](../../tests/diagnostics/source_diagnostics.rs): `utf8_spans_are_bytes_but_columns_are_unicode_scalars`, `diagnostics_retain_primary_and_related_locations_in_different_files`; [checker](../../tests/typecheck/check.rs), [ownership](../../tests/ownership/ownership.rs) | Diagnostics must keep pointing to creation/move/loan/conflict when available (§24.2). The illustrative error code is not a locked code registry. |
 
 §22 generics/interfaces and §37 standard-library rules also have executable
@@ -220,8 +220,8 @@ member limits, explicit finalization and checksum validation. It is implemented
 in Zore with no new runtime provider or dependency. Ownership/visibility checks,
 native error/drop/task tests and the independent Python gzip/zlib oracle are
 mapped in [gzip conformance](../../tests/conformance/gzip.md).
-ZIP/TAR and confined Linux/macOS extraction are covered below; remaining
-format extensions and Windows extraction are recorded in
+ZIP/TAR and confined Linux/macOS/Windows extraction are covered below; remaining
+format extensions and metadata restoration are recorded in
 [archive follow-ups](../design/archives.md) and Q15.
 
 ## Archive I/O follow-up — issue #224
@@ -232,9 +232,9 @@ concrete sinks for ordered finalization. Native lifecycle/task tests, package
 ownership checks and independent tarfile/zipfile/gzip fixtures are mapped in
 [archive conformance](../../tests/conformance/archives.md). A generic method
 symbol collision discovered by the two writer types has a direct native
-regression. Extended formats and Windows extraction remain deferred under Q15.
+regression. Extended formats and metadata policies remain deferred under Q15.
 
 Spec §§37.29–37.30 add a shared raw-DEFLATE codec, ZIP method 8 and confined
-new-directory extraction on Linux/macOS. Python gzip/archive/extraction
+new-directory extraction on Linux/macOS/Windows. Python gzip/archive/extraction
 oracles and native ownership, boundary, race and cleanup tests provide evidence.
-Windows extraction deliberately returns unsupported; it has no weaker fallback.
+Windows extraction enforces protected DACLs and rejects reparse points.
