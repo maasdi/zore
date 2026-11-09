@@ -218,6 +218,11 @@ pub(super) struct Tree {
 }
 impl Tree {
     pub(super) fn create(destination: &str, limit: usize) -> io::Result<Self> {
+        if !cfg!(any(target_arch = "x86_64", target_arch = "aarch64")) {
+            return Err(invalid(
+                "confined extraction is unsupported on this architecture",
+            ));
+        }
         let (parent, destination) = parent_path(destination)?;
         #[cfg(target_os = "macos")]
         private_parent(&parent)?;

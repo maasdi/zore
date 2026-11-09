@@ -178,7 +178,8 @@ same-spelling implicit creation once. Files and implicit directories all count
 toward entryLimit; paths have at most 64 components. Files use mode 0600 and
 directories 0700; archive modes, ownership, times and executable bits are ignored.
 
-Extraction is implemented on Linux and macOS. Windows returns an explicit
+Extraction is implemented on x86_64/aarch64 Linux and macOS. Other architectures
+fail before filesystem work. Windows returns an explicit
 unsupported error until a handle-relative provider is verified. Filesystems
 without required no-follow/atomic no-replace operations also fail closed.
 Staging directories are private against other users; mutation by the process
