@@ -11793,7 +11793,7 @@ x86_64 Windows; other architectures fail before filesystem work.
 Windows uses handle-relative NT file operations with reparse processing disabled
 and verifies that every opened component is a directory/regular file without
 reparse attributes. Disk and UNC absolute paths, ordinary relative paths and
-their canonical verbatim forms are supported. Both slash spellings are treated
+their canonical verbatim forms are supported. Both slash spellings in the destination are treated
 as separators at this API boundary, including verbatim forms. Drive-relative, root-relative and
 device-namespace paths fail. Existing parent components may not contain `..`.
 New nodes receive an explicit protected DACL, atomically at creation, granting
