@@ -562,3 +562,22 @@ full-buffer blocking, and quiescence before retrieval. Run
 `cargo test --locked --test native acceptance::`. Diagnostic provenance in
 `diagnostics/semantic_provenance.rs` uses disk-loaded multifile Unicode/CRLF
 projects and the real CLI; run `cargo test --locked --test source_diagnostics`.
+
+# CI timing and sharding experiment
+
+CI runs the complete Cargo all-target test inventory across two shards on each
+supported OS. The runner keeps Cargo's test setup and groups selected cases in
+their original test processes, preserving shared runtime compilation fixtures.
+Ordinary local validation continues to use `cargo test --locked --all-targets`.
+
+Each shard uploads its selected inventory and harness/batch wall-clock timings
+as `test-results-<os>-<shard>` and writes a job summary. These timings include
+test execution and any native compilation performed inside the tests; they do
+not independently attribute frontend, clang, linker or runtime costs. Compare
+the slowest shard, total runner time and coverage against the baseline before
+increasing the shard count. More runners duplicate Cargo builds and cold caches.
+
+The existing `Rust checks (<os>)` gates require validation and every test shard
+to succeed. Dedicated platform checks are covered by the full inventory rather
+than being executed a second time before it. Superseded PR distribution builds
+are cancelled; tag and manually dispatched distribution runs remain queued.
