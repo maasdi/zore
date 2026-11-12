@@ -13,7 +13,7 @@ Contracts: spec §§37.27–37.30, plus `io.ReadSeeker` in §37.3.
 | Constructor failures, early close, normal/error/panic drop | Leak-checked native tests |
 | One-worker progress through a blocked sink | Controlled native task test |
 | Header checksums, directory bounds/metadata, CRC32, descriptors and UTF-8 names | `tests/hardening/archive_oracle.py` with `tarfile`/`zipfile` fixtures |
-| Exact byte/data/count limits, truncated structures, unsupported flags/types/ZIP64 | Python oracle plus native tests |
+| Exact byte/data/count limits, truncated structures, unsupported flags/types | Python oracle plus native tests |
 | Relative names, traversal, Unicode controls, Windows characters/device components | Python oracle |
 | Unsigned descriptors with CRC equal to descriptor signature | Algebraically constructed independent CRC payload in Python oracle |
 | `.tar.gz` composition and full gzip trailer validation | Python oracle and compiled guide example |
@@ -77,3 +77,15 @@ Python extraction oracle runs on every host.
 | With `Links`: `..` above the root, absolute, `\` or `C:` targets, a target through an earlier or later symlink, hard links to missing, folder or later entries, `../` hard links, files written below a symlink | Failure; nothing published or left outside | `extraction_oracle.py` |
 | `ExtractOptions` defaults | `Links` false | package `archive_entries_are_copy_values_and_kinds_are_typed` |
 | `Entry` literals need every field; `Executable` is a `bool` | Rejected otherwise | package `archive_entries_are_copy_values_and_kinds_are_typed` |
+
+## ZIP64 and size limits (§37.35)
+
+| Case | Required result | Evidence |
+| --- | --- | --- |
+| Python ZIP64 extra fields on stored and deflated entries, seekable and streamed with 24-byte descriptors | Read; data and sizes match | `archive_oracle.py` |
+| 70,000-entry Python archive | Read with an entry limit of 70,000; fails with 69,999 | `archive_oracle.py` |
+| 70,000 entries written by `ZIPWriter` | ZIP64 end record and locator; Python lists every name; Zore reads it back | `archive_oracle.py` |
+| Three entries written by `ZIPWriter` | No ZIP64 records | `archive_oracle.py` |
+| ZIP64 end record with a bad signature, size, counts, entries, central size; locator with a bad disk, offset or disk count; no locator; a marker without a locator | Failure | `archive_oracle.py` |
+| ZIP64 extra field that is short, repeated, or holds a value over `MaxBytes` | Failure; an empty field is accepted | `archive_oracle.py` |
+| 4.5 GB stored entry written by Zore and a 4.6 GB entry written by Python; 8.6 GB TAR entry | Read by the other side in full | Checked by hand only (too large for CI) |

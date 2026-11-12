@@ -8,6 +8,17 @@ including those shipped in `0.1.0-alpha.1`, are not split by release.
 
 ## [Unreleased]
 
+### ZIP64 and larger archives
+
+- `ZIPReader` reads ZIP64 end records, locators, extra fields and 8-byte data
+  descriptors, and `ZIPWriter` writes them when an entry nears 4 GB, an offset
+  passes 4 GB, or an archive has more than 65,534 entries (§37.35). Smaller
+  archives are written exactly as before.
+- `archive.MaxBytes` is now 64 GiB, `archive.MaxEntries` 1,000,000 and
+  `archive.MaxMetadataBytes` 256 MiB; `flate.MaxBytes` is also 64 GiB and the
+  `os.StageTree` node limit 1,000,000. Limits passed by callers are unchanged.
+- `TARWriter` writes a PAX `size` record for files over 8 GiB.
+
 ### Archive links and executable files
 
 - Breaking: `TARReader.Next` and `ZIPReader.Next` now return
