@@ -89,6 +89,15 @@ func run() error {
         listEntries(reader, sink)?
         return reader.Close()
     }
+    if args[1] == "wmany" {
+        let count = strconv.Atoi(args[7])?
+        let sink = os.Create(args[3])?
+        var writer = archive.NewZIPWriter(sink, archiveLimit, dataLimit, entryLimit)?
+        for var i = 0; i < count; i += 1 {
+            writer.WriteHeader(archive.Header{Name: "f" + strconv.Itoa(i), Size: 0, Directory: false})?
+        }
+        return writer.Close()
+    }
     if args[1] == "wxt" || args[1] == "wxz" {
         let data = os.ReadFile(args[2])?
         let sink = os.Create(args[3])?
@@ -528,6 +537,61 @@ def main():
                     assert info.create_system == 3 and info.external_attr >> 16 == 0o100755
                     assert archive.read('bin/run') == b'#!run'
 
+        for streamed in [False, True]:
+            output = Unseekable() if streamed else io.BytesIO()
+            with zipfile.ZipFile(output, 'w', compression=zipfile.ZIP_DEFLATED) as archive:
+                for name, data in [('wide.txt', b'zip64 ' * 1000), ('empty', b'')]:
+                    with archive.open(name, 'w', force_zip64=True) as handle:
+                        handle.write(data)
+            encoded = output.getvalue()
+            assert b'\x01\x00\x10\x00' in encoded
+            actual, headers = run('rz', encoded)
+            assert actual == b'zip64 ' * 1000 and headers == [('wide.txt', 6000, False), ('empty', 0, False)], headers
+        many = io.BytesIO()
+        with zipfile.ZipFile(many, 'w') as archive:
+            for index in range(70000):
+                archive.writestr(f'f{index}', b'')
+        encoded = many.getvalue()
+        assert b'PK\x06\x06' in encoded and b'PK\x06\x07' in encoded
+        _, headers = run('rz', encoded, entry_limit=70000)
+        assert len(headers) == 70000 and headers[-1] == ('f69999', 0, False)
+        run('rz', encoded, valid=False, entry_limit=69999)
+        written, _ = run('wmany', b'', name='70000', entry_limit=70000)
+        assert b'PK\x06\x06' in written and b'PK\x06\x07' in written
+        with zipfile.ZipFile(io.BytesIO(written)) as archive:
+            names = archive.namelist()
+            assert len(names) == 70000 and names[0] == 'f0' and names[-1] == 'f69999'
+        assert len(run('rz', written, entry_limit=70000)[1]) == 70000
+        small, _ = run('wmany', b'', name='3')
+        assert b'PK\x06\x06' not in small and b'PK\x06\x07' not in small
+        locator = encoded.rindex(b'PK\x06\x07')
+        record = encoded.rindex(b'PK\x06\x06')
+        for position, value in [(record, 0), (record + 4, 45), (record + 24, 1), (record + 32, 2),
+                                (record + 40, 1), (locator + 4, 1), (locator + 8, 3), (locator + 16, 2)]:
+            corrupt = bytearray(encoded)
+            corrupt[position] = (corrupt[position] + value) % 256 if value else 0
+            run('rz', bytes(corrupt), valid=False, entry_limit=70000, label=f'zip64 end {position - record}')
+        no_locator = bytearray(encoded)
+        no_locator[locator:locator + 4] = b'XXXX'
+        run('rz', bytes(no_locator), valid=False, entry_limit=70000)
+        plain = zip_bytes([('abc', b'payload')])
+        end = plain.rindex(b'PK\x05\x06')
+        marked = bytearray(plain)
+        marked[end + 8:end + 12] = b'\xff\xff\xff\xff'
+        run('rz', bytes(marked), valid=False)
+        output = io.BytesIO()
+        with zipfile.ZipFile(output, 'w') as archive:
+            info = zipfile.ZipInfo('abc')
+            archive.writestr(info, b'payload')
+        huge = bytearray(output.getvalue())
+        central = huge.rindex(b'PK\x01\x02')
+        huge[central + 24:central + 28] = b'\xff\xff\xff\xff'
+        huge[central + 30:central + 32] = (12).to_bytes(2, 'little')
+        huge[central + 46 + 3:central + 46 + 3] = b'\x01\x00\x08\x00' + (2 ** 62).to_bytes(8, 'little')
+        end = huge.rindex(b'PK\x05\x06')
+        huge[end + 12:end + 16] = (int.from_bytes(huge[end + 12:end + 16], 'little') + 12).to_bytes(4, 'little')
+        run('rz', bytes(huge), valid=False)
+
         counted = pax_header + file_entry + TAR_END
         assert run('rt', counted, archive_limit=len(counted))[1] == [('p', 1, False)]
         run('rt', counted, valid=False, archive_limit=len(counted) - 1)
@@ -590,7 +654,13 @@ def main():
         assert run('rz', commented)[0] == b'payload'
         false_marker_comment = zip_bytes([('abc', b'payload')], comment=b'commentPK\x05\x06' + b'\0' * 18)
         assert run('rz', false_marker_comment)[0] == b'payload'
-        for extra in [b'\x01\0\0\0', b'\xfe\xca\x03\0x', b'x']:
+        output = io.BytesIO()
+        with zipfile.ZipFile(output, 'w') as archive:
+            info = zipfile.ZipInfo('abc')
+            info.extra = b'\x01\0\0\0'
+            archive.writestr(info, b'payload')
+        assert run('rz', output.getvalue())[0] == b'payload'
+        for extra in [b'\x01\0\x08\0' + b'\0' * 7, b'\x01\0\0\0\x01\0\0\0', b'\xfe\xca\x03\0x', b'x']:
             output = io.BytesIO()
             with zipfile.ZipFile(output, 'w') as archive:
                 info = zipfile.ZipInfo('abc')

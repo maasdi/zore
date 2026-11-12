@@ -5,10 +5,10 @@ import "std/io"
 import "std/path"
 import "std/strings"
 
-const MaxBytes = 1073741824
-const MaxEntries = 65534
+const MaxBytes = 68719476736
+const MaxEntries = 1000000
 const MaxNameBytes = 1024
-const MaxMetadataBytes = 16777216
+const MaxMetadataBytes = 268435456
 
 type Header struct {
     Name string

@@ -17,7 +17,7 @@ func newStagedTree(id int, err error) StagedTree {
 }
 
 func StageTree(destination string, nodeLimit int) (StagedTree, error) {
-    if nodeLimit < 0 || nodeLimit > 65534 || !path.IsLocal(baseName(destination)) {
+    if nodeLimit < 0 || nodeLimit > 1000000 || !path.IsLocal(baseName(destination)) {
         let err = error("os.StageTree: invalid destination or node limit")
         return newStagedTree(0, err), err
     }
