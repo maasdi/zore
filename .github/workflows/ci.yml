@@ -4,17 +4,43 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
+  schedule:
+    - cron: '13 3 * * 1'
 
 permissions:
   contents: read
 
 # Cancel superseded runs of the same branch or pull request.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
+  routes:
+    name: Select CI routes
+    runs-on: ubuntu-latest
+    outputs:
+      full: ${{ steps.routes.outputs.full }}
+      docs: ${{ steps.routes.outputs.docs }}
+      benchmarks: ${{ steps.routes.outputs.benchmarks }}
+      distribution: ${{ steps.routes.outputs.distribution }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.13'
+      - name: Test routing rules and gates
+        run: python -m unittest discover -s .github/scripts -p test_ci_routing.py
+      - name: Select checks
+        id: routes
+        run: python .github/scripts/ci_routing.py
+
   validation:
+    needs: routes
+    if: needs.routes.outputs.full == 'true' || needs.routes.outputs.benchmarks == 'true'
     name: Rust validation (${{ matrix.os }})
     strategy:
       fail-fast: false
@@ -35,20 +61,25 @@ jobs:
       - name: Install repository toolchain
         run: rustup show active-toolchain
       - name: Check formatting
+        if: needs.routes.outputs.full == 'true'
         run: cargo fmt --all -- --check
       - name: Lint
+        if: needs.routes.outputs.full == 'true'
         run: cargo clippy --locked --all-targets -- -D warnings
       - name: Lint native example bridge
+        if: needs.routes.outputs.full == 'true'
         run: cargo clippy --locked -p zore-runtime --all-targets -- -D warnings
         env:
           RUSTFLAGS: --cfg zore_native_adapters
           ZORE_NATIVE_ADAPTERS: ${{ github.workspace }}/examples/native-library/adler32/native/registration.rs
       - name: Lint SQLite bridge
+        if: needs.routes.outputs.full == 'true'
         run: cargo clippy --locked -p zore-runtime --all-targets -- -D warnings
         env:
           RUSTFLAGS: --cfg zore_native_adapters
           ZORE_NATIVE_ADAPTERS: ${{ github.workspace }}/packages/sqlite/native/registration.rs
       - name: Lint TLS bridge
+        if: needs.routes.outputs.full == 'true'
         run: cargo clippy --locked -p zore-runtime --all-targets -- -D warnings
         env:
           RUSTFLAGS: --cfg zore_native_adapters
@@ -56,9 +87,10 @@ jobs:
       - name: Build
         run: cargo build --locked
       - name: Check Zore formatting
-        if: runner.os == 'Linux'
+        if: needs.routes.outputs.full == 'true' && runner.os == 'Linux'
         run: target/debug/zore fmt --check .
       - name: Documentation
+        if: needs.routes.outputs.full == 'true'
         run: cargo doc --no-deps --locked
         env:
           RUSTDOCFLAGS: -D warnings
@@ -67,14 +99,19 @@ jobs:
           clang --version
           rustc --version
       - name: Regex differential oracle
+        if: needs.routes.outputs.full == 'true'
         run: python tests/hardening/regexp_oracle.py
       - name: Gzip interoperability oracle
+        if: needs.routes.outputs.full == 'true'
         run: python tests/hardening/gzip_oracle.py
       - name: Archive interoperability oracle
+        if: needs.routes.outputs.full == 'true'
         run: python tests/hardening/archive_oracle.py
       - name: Extraction interoperability and rollback oracle
+        if: needs.routes.outputs.full == 'true'
         run: python tests/hardening/extraction_oracle.py
       - name: HTML escaping oracle
+        if: needs.routes.outputs.full == 'true'
         run: python tests/hardening/html_oracle.py
       - name: Python harness tests
         shell: bash
@@ -89,6 +126,8 @@ jobs:
           ZORE_SCALING_COMPILER: ${{ github.workspace }}/target/debug/zore${{ runner.os == 'Windows' && '.exe' || '' }}
 
   tests:
+    needs: routes
+    if: needs.routes.outputs.full == 'true'
     name: Tests (${{ matrix.os }}, shard ${{ matrix.shard }}/2)
     strategy:
       fail-fast: false
@@ -124,24 +163,47 @@ jobs:
           path: ci-test-results
           if-no-files-found: error
 
+  docs:
+    name: Documentation checks
+    needs: routes
+    if: needs.routes.outputs.docs == 'true' && needs.routes.outputs.full == 'false'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - run: rustup show active-toolchain
+      - run: cargo fmt --all -- --check
+      - run: cargo build --locked
+      - run: target/debug/zore fmt --check .
+      - run: cargo doc --no-deps --locked
+        env:
+          RUSTDOCFLAGS: -D warnings
+
   check:
     name: Rust checks (${{ matrix.os }})
     if: always()
-    needs: [validation, tests]
+    needs: [routes, validation, tests, docs, imports]
     strategy:
+      fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
     runs-on: ubuntu-latest
     steps:
-      - name: Require validation and every test shard
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.13'
+      - name: Require every selected check
         env:
+          ROUTES_RESULT: ${{ needs.routes.result }}
+          FULL: ${{ needs.routes.outputs.full }}
+          DOCS: ${{ needs.routes.outputs.docs }}
+          BENCHMARKS: ${{ needs.routes.outputs.benchmarks }}
+          DISTRIBUTION: ${{ needs.routes.outputs.distribution }}
           VALIDATION_RESULT: ${{ needs.validation.result }}
           TEST_RESULT: ${{ needs.tests.result }}
-        shell: python
-        run: |
-          import os
-          import sys
-          sys.exit(0 if all(os.environ[name] == 'success' for name in ('VALIDATION_RESULT', 'TEST_RESULT')) else 1)
+          DOCS_RESULT: ${{ needs.docs.result }}
+          IMPORTS_RESULT: ${{ needs.imports.result }}
+        run: python .github/scripts/ci_routing.py --gate
 
   imports:
     name: Python imports (${{ matrix.os }})
