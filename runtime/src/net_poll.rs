@@ -8,12 +8,24 @@ pub struct Operation {
     kind: Kind,
     buffer: Vec<u8>,
     waiting: Option<reactor::SocketWait>,
+    #[cfg(test)]
+    udp_write_block_once: bool,
 }
 
 enum Kind {
     Accept,
     Read,
-    Write { data: Vec<u8>, sent: usize },
+    UDPRead {
+        capacity: usize,
+    },
+    UDPWrite {
+        data: Vec<u8>,
+        peer: Result<SocketAddr, std::net::AddrParseError>,
+    },
+    Write {
+        data: Vec<u8>,
+        sent: usize,
+    },
 }
 
 enum Output {
@@ -28,12 +40,16 @@ impl Operation {
             kind,
             buffer: vec![0; max],
             waiting: None,
+            #[cfg(test)]
+            udp_write_block_once: false,
         }
     }
 
     fn name(&self) -> &'static str {
         match self.kind {
             Kind::Accept => "net.Accept",
+            Kind::UDPRead { .. } => "net.UDP.ReadFrom",
+            Kind::UDPWrite { .. } => "net.UDP.WriteTo",
             Kind::Read => "net.Read",
             Kind::Write { .. } => "net.Write",
         }
@@ -41,8 +57,8 @@ impl Operation {
 
     fn failed(&self, message: &str) -> Output {
         match self.kind {
-            Kind::Accept => Output::Value(ValueError::failed_text(message)),
-            Kind::Read => Output::Bytes(ByteArrayError::failed(message)),
+            Kind::Accept | Kind::UDPWrite { .. } => Output::Value(ValueError::failed_text(message)),
+            Kind::Read | Kind::UDPRead { .. } => Output::Bytes(ByteArrayError::failed(message)),
             Kind::Write { sent, .. } => {
                 Output::Value(ValueError::failed_with(sent as i64, message))
             }
@@ -130,6 +146,67 @@ impl Operation {
                         result,
                     )
                 }
+                (Kind::UDPRead { capacity }, Handle::Datagram(socket)) => {
+                    if deadline_of(&socket.read_deadline).is_some_and(|when| Instant::now() >= when)
+                    {
+                        return Some(self.failed("net.UDP.ReadFrom: timed out"));
+                    }
+                    let result =
+                        socket
+                            .socket
+                            .recv_from(&mut self.buffer)
+                            .and_then(|(count, peer)| {
+                                udp::packet(&self.buffer[..count], peer, *capacity)
+                                    .map(|packet| Some(Output::Bytes(ByteArrayError::ok(&packet))))
+                                    .map_err(|error| {
+                                        std::io::Error::new(ErrorKind::Unsupported, error)
+                                    })
+                            });
+                    (
+                        socket.socket.descriptor(),
+                        false,
+                        &socket.read_deadline,
+                        result,
+                    )
+                }
+                (Kind::UDPWrite { data, peer }, Handle::Datagram(socket)) => {
+                    if deadline_of(&socket.write_deadline)
+                        .is_some_and(|when| Instant::now() >= when)
+                    {
+                        return Some(self.failed("net.UDP.WriteTo: timed out"));
+                    }
+                    if data.len() > 65507 {
+                        return Some(self.failed("net.UDP.WriteTo: datagram exceeds 65507 bytes"));
+                    }
+                    let Ok(peer) = peer else {
+                        return Some(self.failed("net.UDP.WriteTo: invalid peer address"));
+                    };
+                    #[cfg(test)]
+                    let send = if std::mem::take(&mut self.udp_write_block_once) {
+                        Err(std::io::Error::from(ErrorKind::WouldBlock))
+                    } else {
+                        socket.socket.send_to(data, *peer)
+                    };
+                    #[cfg(not(test))]
+                    let send = socket.socket.send_to(data, *peer);
+                    let result = send.map(|count| {
+                        let value = if count == data.len() {
+                            ValueError::ok(count as i64)
+                        } else {
+                            ValueError::failed_with(
+                                count as i64,
+                                "net.UDP.WriteTo: short datagram write",
+                            )
+                        };
+                        Some(Output::Value(value))
+                    });
+                    (
+                        socket.socket.descriptor(),
+                        true,
+                        &socket.write_deadline,
+                        result,
+                    )
+                }
                 _ => return Some(self.not_open()),
             };
             match attempted {
@@ -158,10 +235,10 @@ impl Operation {
         self.failed(&format!(
             "{}: not an open {}",
             self.name(),
-            if matches!(self.kind, Kind::Accept) {
-                "listener"
-            } else {
-                "connection"
+            match self.kind {
+                Kind::Accept => "listener",
+                Kind::UDPRead { .. } | Kind::UDPWrite { .. } => "datagram socket",
+                _ => "connection",
             }
         ))
     }
@@ -204,6 +281,68 @@ pub(super) fn write(id: i64, data: &[u8]) -> ValueError {
         unreachable!()
     };
     output
+}
+
+fn udp_read_operation(id: i64, capacity: i64) -> Operation {
+    Operation::new(
+        id,
+        Kind::UDPRead {
+            capacity: max_of(capacity),
+        },
+        65536,
+    )
+}
+
+fn udp_write_operation(id: i64, data: &[u8], peer: &str) -> Operation {
+    Operation::new(
+        id,
+        Kind::UDPWrite {
+            data: data.to_vec(),
+            peer: peer.parse(),
+        },
+        0,
+    )
+}
+
+pub(super) fn udp_read(id: i64, capacity: i64) -> ByteArrayError {
+    let Output::Bytes(output) = blocking(udp_read_operation(id, capacity)) else {
+        unreachable!()
+    };
+    output
+}
+
+pub(super) fn udp_write(id: i64, data: &[u8], peer: &str) -> ValueError {
+    let Output::Value(output) = blocking(udp_write_operation(id, data, peer)) else {
+        unreachable!()
+    };
+    output
+}
+
+/// # Safety
+/// Context is live and the returned operation has one serial poller.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn zore_native_net_udp_read_start(
+    id: i64,
+    capacity: i64,
+    _context: *mut crate::scheduler::Context,
+) -> *mut Operation {
+    Box::into_raw(Box::new(udp_read_operation(id, capacity)))
+}
+
+/// # Safety
+/// Data and peer address readable bytes of their lengths; context is live.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn zore_native_net_udp_write_start(
+    id: i64,
+    data: *const u8,
+    len: i64,
+    peer: *const u8,
+    peer_len: i64,
+    _context: *mut crate::scheduler::Context,
+) -> *mut Operation {
+    let data = unsafe { crate::bytes(data, len) };
+    let peer = unsafe { text_of(peer, peer_len) };
+    Box::into_raw(Box::new(udp_write_operation(id, data, &peer)))
 }
 
 /// # Safety
@@ -584,3 +723,7 @@ mod tests {
         zore_native_net_close_handle(id);
     }
 }
+
+#[cfg(test)]
+#[path = "net_udp_tests.rs"]
+mod udp_tests;

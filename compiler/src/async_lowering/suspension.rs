@@ -64,8 +64,10 @@ fn standard_wait(name: &str) -> Option<NativeWait> {
         | "std/crypto/rand.secureRead"
         | "std/net.listen"
         | "std/net.dial"
-        | "std/net.lookupText" => Some(NativeWait::Helper),
-        "std/net.accept" | "std/net.read" | "std/net.write" => Some(
+        | "std/net.lookupText"
+        | "std/net.udpListen" => Some(NativeWait::Helper),
+        "std/net.accept" | "std/net.read" | "std/net.write" | "std/net.udpRead"
+        | "std/net.udpWrite" => Some(
             if cfg!(any(target_os = "linux", target_os = "macos", windows)) {
                 NativeWait::Socket
             } else {

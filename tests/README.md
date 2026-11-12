@@ -1,5 +1,11 @@
 # Compiler testing
 
+Public networking is checked in `packages/networking.rs`,
+`codegen/networking.rs` and runtime UDP tests.
+`python tests/hardening/networking_oracle.py` compares IP/endpoint/order/URI
+results with independent references and exchanges real UDP packets with Python
+on IPv4 and configured IPv6 loopback. See `conformance/networking.md`.
+
 HTML escaping has frontend visibility/type checks in `tests/packages/html.rs`
 and exact UTF-8/replacement, result lifetime, leak and one-worker suspension
 checks in `tests/codegen/html.rs`. `python tests/hardening/html_oracle.py`

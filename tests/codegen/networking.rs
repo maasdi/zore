@@ -112,6 +112,126 @@ func main() { let err = run(); if err != nil { panic(errors.Message(err)) }; pri
 }
 
 #[test]
+fn udp_preserves_datagrams_peers_counts_and_deadlines() {
+    succeeds(
+        r##"package main
+import "std/net"
+import "std/time"
+import "std/errors"
+func check(ok bool) { if !ok { panic("UDP check") } }
+func run() error {
+    let local = net.ParseAddrPort("127.0.0.1:0")?
+    let server = net.ListenUDP("udp4", local)?
+    let client = net.ListenUDP("udp", local)?
+    check(server.LocalAddr().IsValid() && server.LocalAddr().Port() > 0)
+    server.SetDeadline(time.Now().Add(5 * time.Second))?
+    client.SetDeadline(time.Now().Add(5 * time.Second))?
+    let payload = Array<byte>{0, 255, 60, 128, 42}
+    check(client.WriteTo(payload[:], server.LocalAddr())? == 5)
+    var buffer = Array<byte>{99, 99, 99}
+    let count, peer, truncated, err = server.ReadFrom(buffer[:])
+    if err != nil { return err }
+    check(count == 3 && truncated && peer.Equal(client.LocalAddr()) && buffer[0] == 0 && buffer[1] == 255 && buffer[2] == 60)
+    check(client.WriteTo(Array<byte>{}[:], server.LocalAddr())? == 0)
+    let emptyCount, emptyPeer, emptyTruncated, emptyErr = server.ReadFrom(buffer[:])
+    if emptyErr != nil { return emptyErr }
+    check(emptyCount == 0 && !emptyTruncated && emptyPeer.Equal(peer) && buffer[0] == 0)
+    client.WriteTo(payload[:], server.LocalAddr())?
+    var empty = Array<byte>{}
+    let discarded, _, lost, discardErr = server.ReadFrom(empty[:])
+    if discardErr != nil { return discardErr }
+    check(discarded == 0 && lost)
+    client.WriteTo(Array<byte>{7}[:], server.LocalAddr())?
+    server.SetReadDeadline(time.Now().Add(-time.Second))?
+    let failed, missing, _, expired = server.ReadFrom(buffer[:])
+    check(expired != nil); check(failed == 0 && !missing.IsValid())
+    server.ClearDeadline()?
+    server.SetReadDeadline(time.Now().Add(time.Second))?
+    let recovered, _, more, retryErr = server.ReadFrom(buffer[:])
+    if retryErr != nil { return retryErr }
+    check(recovered == 1 && !more && buffer[0] == 7)
+    client.SetWriteDeadline(time.Now().Add(-time.Second))?
+    let sent, sendErr = client.WriteTo(payload[:], server.LocalAddr())
+    check(sendErr != nil); check(sent == 0)
+    let invalid, invalidErr = net.ParseAddrPort("bad")
+    check(invalidErr != nil)
+    let _, peerErr = client.WriteTo(payload[:], invalid)
+    check(peerErr != nil)
+    var oversized = Array<byte>{}
+    for var i = 0; i < 65508; i += 1 { oversized.push(0) }
+    let _, sizeErr = client.WriteTo(oversized[:], server.LocalAddr())
+    check(sizeErr != nil); check(errors.Message(sizeErr) == "net.UDP.WriteTo: datagram exceeds 65507 bytes")
+    server.Close()?
+    return client.Close()
+}
+func main() { let err = run(); if err != nil { panic(errors.Message(err)) }; println("ok") }
+"##,
+        false,
+    );
+}
+
+#[test]
+fn udp_plain_and_async_waits_allow_one_worker_progress() {
+    succeeds(
+        r##"package main
+import "std/net"
+import "std/time"
+import "std/errors"
+func check(ok bool) { if !ok { panic("UDP progress") } }
+async func receiver(conn own net.UDPConn) error {
+    var data = Array<byte>{0, 0}
+    let count, peer, truncated, err = conn.ReadFrom(data[:])
+    if err != nil { return err }
+    check(count == 2 && !truncated && data[0] == 4 && data[1] == 5)
+    conn.WriteTo(data[:], peer)?
+    return nil
+}
+func plainReceiver(conn own net.UDPConn) error {
+    var data = Array<byte>{0}
+    let count, _, truncated, err = conn.ReadFrom(data[:])
+    if err != nil { return err }
+    check(count == 1 && !truncated && data[0] == 9)
+    return nil
+}
+async func sender(conn own net.UDPConn, peer net.AddrPort) error {
+    conn.WriteTo(Array<byte>{9}[:], peer)?
+    return nil
+}
+func run() error {
+    waitIdle(0)
+    let local = net.ParseAddrPort("127.0.0.1:0")?
+    let server = net.ListenUDP("udp4", local)?
+    let client = net.ListenUDP("udp4", local)?
+    server.SetDeadline(time.Now().Add(5 * time.Second))?
+    client.SetDeadline(time.Now().Add(5 * time.Second))?
+    let endpoint = server.LocalAddr()
+    let pending = go receiver(server)
+    waitPending(1)
+    client.WriteTo(Array<byte>{4, 5}[:], endpoint)?
+    var response = Array<byte>{0, 0}
+    let count, peer, truncated, err = client.ReadFrom(response[:])
+    if err != nil { return err }
+    check(count == 2 && !truncated && peer.Equal(endpoint))
+    pending.wait()?
+    waitIdle(0)
+    let blockedServer = net.ListenUDP("udp4", local)?
+    let blockedPeer = blockedServer.LocalAddr()
+    blockedServer.SetReadDeadline(time.Now().Add(5 * time.Second))?
+    let blocked = go plainReceiver(blockedServer)
+    waitBlocked(1)
+    let writer = go sender(client, blockedPeer)
+    writer.wait()?
+    blocked.wait()?
+    waitIdle(0)
+    return nil
+}
+func main() { let err = run(); if err != nil { panic(errors.Message(err)) }; println("ok") }
+"##,
+        true,
+    );
+}
+
+#[test]
 fn dns_lookup_owns_results_and_cancels_before_late_resolver_cleanup() {
     succeeds(
         r##"package main
@@ -120,6 +240,9 @@ import "std/context"
 import "std/time"
 import "std/errors"
 func check(ok bool) { if !ok { panic("DNS check") } }
+async func asyncLookup(ctx context.Context) (Array<net.IP>, error) {
+    return net.LookupIP(ctx, "ip", "localhost")
+}
 func run() error {
     waitIdle(0)
     let background = context.Background()
@@ -133,11 +256,25 @@ func run() error {
     }
     lookupGate(0)
     let ctx, cancel = context.WithCancel(background)
-    let task = go net.LookupIP(ctx, "ip", "localhost")
+    let task = go asyncLookup(ctx)
     lookupGate(1)
+    waitPending(2)
+    let immediate = net.LookupIP(background, "ip6", "::1")?
+    check(immediate.len() == 1 && immediate[0].Is6())
     cancel()
     let cancelled, cancellation = task.wait()
     check(cancellation != nil); check(cancelled.len() == 0 && errors.Message(cancellation) == "context canceled")
+    lookupGate(2)
+    waitIdle(0)
+    lookupGate(0)
+    let plainContext, cancelPlain = context.WithCancel(background)
+    let plainTask = go net.LookupIP(plainContext, "ip", "localhost")
+    lookupGate(1)
+    waitBlocked(1)
+    cancelPlain()
+    let plainResult, plainError = plainTask.wait()
+    check(plainError != nil)
+    check(plainResult.len() == 0)
     lookupGate(2)
     waitIdle(0)
     var host = "localhost"
@@ -159,4 +296,35 @@ func main() { let err = run(); if err != nil { panic(errors.Message(err)) }; pri
 "##,
         true,
     );
+}
+
+#[test]
+fn udp_handles_are_cleaned_on_normal_error_and_panic_exits() {
+    for (exit, success) in [
+        ("return nil", true),
+        ("return error(\"stop\")", true),
+        ("panic(\"stop\")", false),
+    ] {
+        let source = format!(
+            "package main\nimport \"std/net\"\nfunc inner() error {{ let endpoint = net.ParseAddrPort(\"127.0.0.1:0\")?; let conn = net.ListenUDP(\"udp4\", endpoint)?; println(conn.LocalAddr().IsValid()); {exit} }}\nfunc main() {{ let _ = inner() }}\n"
+        );
+        let output = execute(&source, false);
+        assert_eq!(output.status.success(), success, "{}", stderr(&output));
+        assert!(!stderr(&output).contains("leak:"), "{}", stderr(&output));
+    }
+}
+
+#[test]
+fn networking_guide_runs_with_leak_checked_datagram_cleanup() {
+    let source = include_str!("../../docs/networking.md")
+        .split("```ore\n")
+        .nth(1)
+        .unwrap()
+        .split("```")
+        .next()
+        .unwrap();
+    let output = execute(source, false);
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert!(output.stderr.is_empty(), "{}", stderr(&output));
+    assert_eq!(stdout(&output), "hello\nhttps://example.test/c?x#f\n");
 }

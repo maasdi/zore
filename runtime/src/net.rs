@@ -29,9 +29,16 @@ struct Listener {
     deadline: AtomicI64,
 }
 
+struct Datagram {
+    socket: std::net::UdpSocket,
+    read_deadline: AtomicI64,
+    write_deadline: AtomicI64,
+}
+
 enum Handle {
     Listener(Listener),
     Connection(Connection),
+    Datagram(Datagram),
 }
 
 static NEXT: AtomicU64 = AtomicU64::new(1);
@@ -229,6 +236,7 @@ fn address_text(address: std::io::Result<SocketAddr>) -> String {
 pub unsafe extern "C" fn zore_native_net_local_addr(out: *mut StringOut, id: i64) {
     let text = match lookup(id).as_deref() {
         Some(Handle::Listener(listener)) => address_text(listener.socket.local_addr()),
+        Some(Handle::Datagram(socket)) => address_text(socket.socket.local_addr()),
         Some(Handle::Connection(connection)) => address_text(connection.stream.local_addr()),
         None => String::new(),
     };
@@ -287,6 +295,15 @@ unsafe fn store_deadline(out: *mut ErrorOut, id: i64, which: i64, reading: i64) 
         }
         Some(Handle::Listener(listener)) => {
             listener.deadline.store(reading, Ordering::SeqCst);
+            ErrorOut::ok()
+        }
+        Some(Handle::Datagram(socket)) => {
+            if which == 0 || which == 1 {
+                socket.read_deadline.store(reading, Ordering::SeqCst);
+            }
+            if which == 0 || which == 2 {
+                socket.write_deadline.store(reading, Ordering::SeqCst);
+            }
             ErrorOut::ok()
         }
         None => ErrorOut::failed("net.SetDeadline: not an open connection or listener"),
@@ -407,3 +424,6 @@ pub(super) fn test_connection(stream: TcpStream) -> i64 {
     prepare(&stream).unwrap();
     insert(connection(stream))
 }
+
+#[path = "net_udp.rs"]
+mod udp;

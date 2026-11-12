@@ -6,6 +6,7 @@ mod gzip;
 mod html;
 mod local_dependencies;
 mod native_adapters;
+mod networking;
 mod regexp;
 
 use std::path::Path;
