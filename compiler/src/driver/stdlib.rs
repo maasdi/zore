@@ -39,7 +39,7 @@ bundled! {
     "math" => ["math.ore"],
     "math/rand" => ["rand.ore"],
     "net" => ["net.ore", "ip.ore"],
-    "net/url" => ["url.ore", "absolute.ore"],
+    "net/url" => ["url.ore", "absolute.ore", "reference.ore"],
     "net/http" => ["header.ore", "cookie.ore", "form.ore", "file.ore", "multipart.ore", "router.ore", "exchange.ore", "server.ore", "convenience.ore", "client.ore"],
     "os" => ["os.ore", "file.ore", "temp.ore", "tree.ore"],
     "os/exec" => ["exec.ore"],
