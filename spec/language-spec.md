@@ -12083,8 +12083,8 @@ only on request, creates links that provably stay inside the new tree.
 | `(r mut TARReader) Next() (Entry, bool, error)` and ZIP equivalent | The next entry of any kind (§37.28) |
 | `(w mut TARWriter<W>) WriteEntry(entry Entry) error` | `WriteHeader` for an entry |
 | `(w mut ZIPWriter<W>) WriteEntry(entry Entry) error` and `WriteEntryWith(entry Entry, compression Compression) error` | `WriteHeader` and `WriteHeaderWith` for an entry |
-| `type ExtractOptions struct { ArchiveLimit int; DataLimit int; EntryLimit int; Links bool }` | Extraction limits and whether links are created |
-| `DefaultExtractOptions(archiveLimit int, dataLimit int, entryLimit int) ExtractOptions` | The limits given, `Links` false; fields added later get safe defaults here |
+| `type ExtractOptions struct { ArchiveLimit int; DataLimit int; EntryLimit int; Links bool; Merge bool }` | Extraction limits, whether links are created, and whether an existing folder may be merged into (§37.36) |
+| `DefaultExtractOptions(archiveLimit int, dataLimit int, entryLimit int) ExtractOptions` | The limits given, `Links` and `Merge` false; fields added later get safe defaults here |
 | `ExtractTARWith(source own io.Reader, destination string, options ExtractOptions) error` and `ExtractZIPWith(source own io.ReadSeeker, ...)` | `ExtractTAR`/`ExtractZIP` with options; the old functions use the defaults |
 | `(t mut os.StagedTree) CreateExecutable(name string) error` | `Create` for a file that is owner read/write/execute |
 | `(t mut os.StagedTree) Symlink(name string, target string) error` | Stages a symbolic link whose target stays inside the tree (below) |
@@ -12224,6 +12224,57 @@ seekable and streamed; 70,000-entry archives in both directions; malformed
 ZIP64 end records, locators and extra fields; a marker without a locator; and
 unchanged output for small archives. Writing and reading 4.5 GB ZIP and 8.6 GB
 TAR entries against Python was checked by hand; it is too large for CI.
+
+## 37.36 Extracting into an existing folder — LOCKED
+
+Extraction may add an archive's contents to a folder that already exists. It
+creates whatever is missing and never replaces, changes or removes anything
+already there.
+
+| Name | Behavior |
+| --- | --- |
+| `ExtractOptions.Merge` | `false` (the default): the destination must not exist (§37.30). `true`: it may exist and is merged into |
+| `os.StageTreeInto(destination string, nodeLimit int) (StagedTree, error)` | `StageTree` whose destination may already exist as a real folder |
+
+**Staging.** `StageTreeInto` applies every §37.30 check to the destination's
+parent path. The destination itself must be missing or a real folder, not a
+link or any other node: otherwise staging fails before any filesystem change.
+The archive is then staged and validated in full, exactly as for a new folder,
+including every limit, alias, link and checksum rule.
+
+**Publication.** When the destination does not exist at `Commit`, the tree is
+published as a new folder (§37.30). Otherwise `Commit` merges it in two steps:
+
+1. **Plan.** For every staged node in staging order, skipping nodes inside a
+   folder already planned to move, the matching destination path is examined
+   without following links, starting from the destination folder:
+   - missing: the node is planned to move;
+   - a staged folder where a real folder exists: the folder is merged, and its
+     children are examined in turn;
+   - anything else, including a file, a link, or a folder where a file is
+     staged: `Commit` fails with
+     `os.StagedTree.Commit: destination already contains PATH`, or a matching
+     non-directory error, before anything moves.
+2. **Move.** Each planned node, a whole folder at once where possible, is moved
+   by an atomic no-replace rename relative to anchored folder handles. Windows
+   checks the staged node's file identity first. If a move fails, for example
+   because something appeared at the path after the plan, every node already
+   moved is moved back to staging in reverse order; the error names any node
+   that could not be restored.
+
+After a successful merge, the emptied staging folders and envelope are
+removed. Moved files keep their private modes (§37.30, §37.34); existing
+folders keep their owners, modes and contents. The merge is not one atomic
+step: another process may briefly see some new files before the rest arrive,
+and a crash during the move can leave some of them in place. A conflict found
+while planning changes nothing.
+
+Compiler impact: bundled Zore source plus one `bool` argument on the
+staged-tree stage provider. Conformance: runtime merge, conflict, link-in-
+destination, file-destination and missing-destination tests; Python extraction
+cases for TAR and ZIP merges, repeated merges, file conflicts, a folder over a
+file and a file over a folder, a linked subfolder and a linked or file
+destination, with nothing changed or left behind on failure.
 
 # 38. Self-Hosting Constraint
 

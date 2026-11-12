@@ -20,8 +20,9 @@ inside the new tree; executable bits are restored as owner-only execute
 (§37.34). Windows symbolic links would need a privilege policy. Sparse files and special nodes need separately
 locked metadata and expansion limits.
 
-Extraction currently publishes a new directory only. Merging into existing
-trees, overwrite modes, metadata restoration and link handling need separate
+Extraction publishes a new directory, or merges into an existing one without
+replacing anything (§37.36). Overwrite modes and further metadata restoration
+need separate
 policies and adversarial race/alias tests. A successful archive read does not
 authorize overwriting application files. Keep source parsing, portable path
 syntax and confined filesystem operations in their owning packages.
