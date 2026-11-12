@@ -63,7 +63,8 @@ fn standard_wait(name: &str) -> Option<NativeWait> {
         | "std/regexp.replace"
         | "std/crypto/rand.secureRead"
         | "std/net.listen"
-        | "std/net.dial" => Some(NativeWait::Helper),
+        | "std/net.dial"
+        | "std/net.lookupText" => Some(NativeWait::Helper),
         "std/net.accept" | "std/net.read" | "std/net.write" => Some(
             if cfg!(any(target_os = "linux", target_os = "macos", windows)) {
                 NativeWait::Socket

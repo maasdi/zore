@@ -1,0 +1,113 @@
+package net
+
+import "std/context"
+import "std/strings"
+
+type lookupResult struct {
+    addresses Array<IP>
+    err error
+}
+
+func lookupFamily(network string) int {
+    if network == "ip" {
+        return 0
+    }
+    if network == "ip4" {
+        return 4
+    }
+    if network == "ip6" {
+        return 6
+    }
+    return -1
+}
+
+func lookupHostValid(host string) bool {
+    var text = host
+    if strings.HasSuffix(text, ".") {
+        text = text[:text.len() - 1]
+    }
+    if text == "" || text.len() > 253 {
+        return false
+    }
+    var numeric = true
+    let labels = strings.Split(text, ".")
+    for label in labels {
+        if label == "" || label.len() > 63 || label[0] == 45 || label[label.len() - 1] == 45 {
+            return false
+        }
+        for var index = 0; index < label.len(); index += 1 {
+            let c = label[index]
+            if !((c >= 65 && c <= 90) || (c >= 97 && c <= 122) || (c >= 48 && c <= 57) || c == 45 || c == 95) {
+                return false
+            }
+            if c < 48 || c > 57 {
+                numeric = false
+            }
+        }
+    }
+    return !numeric
+}
+
+func lookupAddresses(family int, host string) (Array<IP>, error) {
+    let text = lookupText(family, host)?
+    var addresses = Array<IP>{}
+    for literal in strings.Split(text, "\n") {
+        addresses.push(ParseIP(literal)?)
+    }
+    return addresses, nil
+}
+
+async func lookupWorker(ctx context.Context, family int, host string, output channel<lookupResult>) {
+    if ctx.Err() != nil {
+        return
+    }
+    let addresses, err = lookupAddresses(family, host)
+    select {
+        case output.send(lookupResult{addresses: addresses, err: err}) {}
+        case ctx.Done().receive() {}
+    }
+}
+
+func LookupIP(ctx context.Context, network string, host string) (Array<IP>, error) {
+    let stopped = ctx.Err()
+    if stopped != nil {
+        return Array<IP>{}, stopped
+    }
+    let family = lookupFamily(network)
+    if family < 0 {
+        return Array<IP>{}, error("net.LookupIP: unknown network " + network)
+    }
+    let literal, parseErr = ParseIP(host)
+    if parseErr == nil {
+        let stopped = ctx.Err()
+        if stopped != nil {
+            return Array<IP>{}, stopped
+        }
+        if (family == 4 && !literal.Is4()) || (family == 6 && !literal.Is6()) {
+            return Array<IP>{}, error("net.LookupIP: no suitable address found")
+        }
+        return Array<IP>{literal}, nil
+    }
+    if !lookupHostValid(host) {
+        return Array<IP>{}, error("net.LookupIP: invalid host")
+    }
+    let output = channel<lookupResult>()
+    go lookupWorker(ctx, family, host, output)
+    select {
+        case let result, present = output.receive() {
+            let stopped = ctx.Err()
+            if stopped != nil {
+                return Array<IP>{}, stopped
+            }
+            if !present {
+                return Array<IP>{}, error("net.LookupIP: resolver closed")
+            }
+            return result.addresses, result.err
+        }
+        case ctx.Done().receive() {
+            return Array<IP>{}, ctx.Err()
+        }
+    }
+}
+
+func lookupText(family int, host string) (string, error)

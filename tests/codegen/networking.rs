@@ -110,3 +110,53 @@ func main() { let err = run(); if err != nil { panic(errors.Message(err)) }; pri
         false,
     );
 }
+
+#[test]
+fn dns_lookup_owns_results_and_cancels_before_late_resolver_cleanup() {
+    succeeds(
+        r##"package main
+import "std/net"
+import "std/context"
+import "std/time"
+import "std/errors"
+func check(ok bool) { if !ok { panic("DNS check") } }
+func run() error {
+    waitIdle(0)
+    let background = context.Background()
+    let literal = net.LookupIP(background, "ip4", "127.0.0.1")?
+    check(literal.len() == 1 && literal[0].Is4())
+    let _, mismatch = net.LookupIP(background, "ip6", "127.0.0.1")
+    check(mismatch != nil)
+    for host in Array<string>{"127.1", "0177.0.0.1", "bad host", "a..b", "a\u0000b", "é.test", "[::1]", "host:80", "-bad.test", "bad-.test"} {
+        let value, err = net.LookupIP(background, "ip", host)
+        check(err != nil); check(value.len() == 0)
+    }
+    lookupGate(0)
+    let ctx, cancel = context.WithCancel(background)
+    let task = go net.LookupIP(ctx, "ip", "localhost")
+    lookupGate(1)
+    cancel()
+    let cancelled, cancellation = task.wait()
+    check(cancellation != nil); check(cancelled.len() == 0 && errors.Message(cancellation) == "context canceled")
+    lookupGate(2)
+    waitIdle(0)
+    var host = "localhost"
+    let resolved = net.LookupIP(background, "ip", host)?
+    host = "changed"
+    check(resolved.len() > 0 && resolved[0].IsValid() && host == "changed")
+    for var i = 0; i < resolved.len(); i += 1 {
+        for var j = i + 1; j < resolved.len(); j += 1 { check(!resolved[i].Equal(resolved[j])) }
+    }
+    waitIdle(0)
+    let expired, stop = context.WithTimeout(background, -time.Second)
+    let missing, timeout = net.LookupIP(expired, "ip", "localhost")
+    stop()
+    check(timeout != nil); check(missing.len() == 0 && errors.Message(timeout) == "context deadline exceeded")
+    waitIdle(0)
+    return nil
+}
+func main() { let err = run(); if err != nil { panic(errors.Message(err)) }; println("ok") }
+"##,
+        true,
+    );
+}

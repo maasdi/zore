@@ -959,6 +959,10 @@ mod tests {
 pub mod test_support {
     use super::*;
 
+    pub fn lookup_gate(phase: i64) {
+        crate::net_dns::test_gate(phase);
+    }
+
     pub struct HelperBurst(super::super::blocking::HelperBurst);
 
     impl HelperBurst {

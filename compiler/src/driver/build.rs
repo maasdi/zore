@@ -63,6 +63,10 @@ const RUNTIME_SOURCES: &[(&str, &str)] = &[
     ("net.rs", include_str!("../../../runtime/src/net.rs")),
     ("net_ip.rs", include_str!("../../../runtime/src/net_ip.rs")),
     (
+        "net_dns.rs",
+        include_str!("../../../runtime/src/net_dns.rs"),
+    ),
+    (
         "net_poll.rs",
         include_str!("../../../runtime/src/net_poll.rs"),
     ),

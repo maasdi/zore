@@ -110,11 +110,15 @@ fn build_with_limits(
             || source.contains("waitBlocked(")
             || source.contains("waitIdle(")
     );
+    let lookup_hook = source.contains("lookupGate(");
     let helper_hook = source.contains("waitHelpers(");
     let timer_hook = source.contains("expireTimers(");
     let mut source = format!(
         "{source}\nfunc waitPending(n int) {{}}\nfunc waitBlocked(n int) {{}}\nfunc waitIdle(n int) {{}}\n"
     );
+    if lookup_hook {
+        source.push_str("func lookupGate(phase int) {}\n");
+    }
     if helper_hook {
         source.push_str("func waitHelpers(n int) {}\n");
     }
@@ -137,6 +141,9 @@ fn build_with_limits(
         ("waitBlocked", "zore_test_wait_blocked"),
         ("waitIdle", "zore_test_wait_idle"),
     ];
+    if lookup_hook {
+        hooks.push(("lookupGate", "zore_test_lookup_gate"));
+    }
     if helper_hook {
         hooks.push(("waitHelpers", "zore_test_wait_helpers"));
     }
@@ -190,6 +197,10 @@ fn build_with_limits(
     let entry = dir.path().join("main.rs");
     let entry_source = r#"
 unsafe extern "C" { fn zore_entry(); }
+#[unsafe(no_mangle)]
+extern "C" fn zore_test_lookup_gate(phase: i64) {
+    zore_runtime::scheduler::test_support::lookup_gate(phase);
+}
 #[unsafe(no_mangle)]
 extern "C" fn zore_test_wait_pending(count: i64) {
     zore_runtime::scheduler::test_support::wait_pending(usize::try_from(count).unwrap());
