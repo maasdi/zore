@@ -540,7 +540,27 @@ fn root_handle(path: &OsStr) -> io::Result<File> {
     identity(&file, true)?;
     Ok(file)
 }
-fn parent_path(destination: &str) -> io::Result<(File, Vec<u16>)> {
+const ADD_FILE: u32 = 2;
+fn existing_directory(parent: &File, name: &[u16]) -> io::Result<Option<File>> {
+    match open(
+        parent,
+        name,
+        true,
+        false,
+        READ_ATTRIBUTES | TRAVERSE | ADD_FILE | ADD_DIRECTORY,
+        None,
+    ) {
+        Ok(file) => {
+            identity(&file, true)?;
+            Ok(Some(file))
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(_) => Err(invalid(
+            "destination holds a non-directory where a directory is staged",
+        )),
+    }
+}
+fn parent_path(destination: &str, merge: bool) -> io::Result<(File, Vec<u16>)> {
     let normalized = destination.replace('/', "\\");
     let destination = normalized.as_str();
     let basename = destination
@@ -640,6 +660,10 @@ fn parent_path(destination: &str) -> io::Result<(File, Vec<u16>)> {
         parent = unsafe { File::from_raw_handle(handle) };
         identity(&parent, true)?;
     }
+    if merge {
+        existing_directory(&parent, &destination)?;
+        return Ok((parent, destination));
+    }
     match open(&parent, &destination, false, false, READ_ATTRIBUTES, None) {
         Ok(_) => Err(io::Error::new(
             io::ErrorKind::AlreadyExists,
@@ -734,16 +758,19 @@ pub(super) struct Tree {
     active: Option<File>,
     published: bool,
     cleaned: bool,
+    merge: bool,
 }
 impl Tree {
-    pub(super) fn create(destination: &str, limit: usize) -> io::Result<Self> {
+    pub(super) fn create(destination: &str, limit: usize, merge: bool) -> io::Result<Self> {
         if !cfg!(target_arch = "x86_64") {
             return Err(invalid(
                 "confined extraction is unsupported on this architecture",
             ));
         }
-        let (parent, destination) = parent_path(destination)?;
-        Self::from_parent(parent, destination, limit)
+        let (parent, destination) = parent_path(destination, merge)?;
+        let mut tree = Self::from_parent(parent, destination, limit)?;
+        tree.merge = merge;
+        Ok(tree)
     }
     fn from_parent(parent: File, destination: Vec<u16>, limit: usize) -> io::Result<Self> {
         let security = Identity::current()?;
@@ -776,6 +803,7 @@ impl Tree {
             active: None,
             published: false,
             cleaned: false,
+            merge: false,
         };
         let initialized = (|| {
             let envelope = tree.envelope.as_ref().expect("created above");
@@ -967,6 +995,11 @@ impl Tree {
         if self.active.is_some() || !self.pending.is_empty() {
             return Err(invalid("an entry file is still open or unverified"));
         }
+        if self.merge
+            && let Some(destination) = existing_directory(&self.parent, &self.destination)?
+        {
+            return self.commit_merge(&destination);
+        }
         rename(
             self.root
                 .as_ref()
@@ -982,6 +1015,121 @@ impl Tree {
         self.abort().map_err(|e| {
             invalid(&format!(
                 "tree published; staging envelope cleanup failed: {e}"
+            ))
+        })
+    }
+    fn destination_parent(destination: &File, parts: &[&str]) -> io::Result<File> {
+        let mut current = destination.try_clone()?;
+        for part in parts {
+            let name: Vec<u16> = part.encode_utf16().collect();
+            current = existing_directory(&current, &name)?
+                .ok_or_else(|| invalid("destination directory disappeared"))?;
+        }
+        Ok(current)
+    }
+    fn staged_node(&mut self, path: &str, directory: bool, expected: FileId) -> io::Result<File> {
+        let parts = Self::parts(path)?;
+        let parent = self.walk(&parts[..parts.len() - 1], false)?;
+        let name: Vec<u16> = parts[parts.len() - 1].encode_utf16().collect();
+        let file = open(
+            &parent,
+            &name,
+            directory,
+            false,
+            DELETE | READ_ATTRIBUTES,
+            None,
+        )?;
+        if identity(&file, directory)? != expected {
+            return Err(invalid("staging node identity changed"));
+        }
+        Ok(file)
+    }
+    fn commit_merge(&mut self, destination: &File) -> io::Result<()> {
+        let mut moves: Vec<(String, bool, FileId)> = Vec::new();
+        for node in &self.nodes {
+            if moves
+                .iter()
+                .any(|(moved, _, _)| node.path.starts_with(&format!("{moved}/")))
+            {
+                continue;
+            }
+            let parts = Self::parts(&node.path)?;
+            let parent = Self::destination_parent(destination, &parts[..parts.len() - 1])?;
+            let name: Vec<u16> = parts[parts.len() - 1].encode_utf16().collect();
+            let missing = if node.directory {
+                existing_directory(&parent, &name)?.is_none()
+            } else {
+                matches!(
+                    open(&parent, &name, false, false, READ_ATTRIBUTES, None),
+                    Err(ref error) if error.kind() == io::ErrorKind::NotFound
+                )
+            };
+            if missing {
+                moves.push((node.path.clone(), node.directory, node.id));
+            } else if !node.directory {
+                return Err(invalid(&format!(
+                    "destination already contains {}",
+                    node.path
+                )));
+            }
+        }
+        let mut done: Vec<usize> = Vec::new();
+        for (index, (path, directory, id)) in moves.iter().enumerate() {
+            let parts = Self::parts(path)?;
+            let name: Vec<u16> = parts[parts.len() - 1].encode_utf16().collect();
+            let moved = self.staged_node(path, *directory, *id).and_then(|file| {
+                let parent = Self::destination_parent(destination, &parts[..parts.len() - 1])?;
+                rename(&file, &parent, &name)
+            });
+            if let Err(original) = moved {
+                for &index in done.iter().rev() {
+                    let (path, directory, id) = &moves[index];
+                    let parts = Self::parts(path)?;
+                    let name: Vec<u16> = parts[parts.len() - 1].encode_utf16().collect();
+                    let parent = Self::destination_parent(destination, &parts[..parts.len() - 1])?;
+                    let file = open(
+                        &parent,
+                        &name,
+                        *directory,
+                        false,
+                        DELETE | READ_ATTRIBUTES,
+                        None,
+                    )?;
+                    if identity(&file, *directory)? != *id {
+                        return Err(invalid(&format!(
+                            "{original}; restoring {path} found a different node"
+                        )));
+                    }
+                    let staged = self.walk(&parts[..parts.len() - 1], false)?;
+                    rename(&file, &staged, &name).map_err(|cleanup| {
+                        invalid(&format!("{original}; restoring {path} failed: {cleanup}"))
+                    })?;
+                }
+                return Err(original);
+            }
+            done.push(index);
+        }
+        let published = |path: &str| {
+            moves
+                .iter()
+                .any(|(moved, _, _)| path == moved || path.starts_with(&format!("{moved}/")))
+        };
+        self.nodes.retain(|node| !published(&node.path));
+        let removed: Vec<String> = self
+            .directories
+            .keys()
+            .filter(|path| published(path))
+            .cloned()
+            .collect();
+        for path in removed {
+            if let Some(id) = self.directories.remove(&path) {
+                self.identities.remove(&id);
+            }
+        }
+        self.identities.retain(|_, path| !published(path));
+        self.abort().map_err(|e| {
+            invalid(&format!(
+                "tree merged; staging envelope cleanup failed: {e}"
             ))
         })
     }
@@ -1149,7 +1297,7 @@ mod tests {
         assert_eq!(size_of::<UnicodeString>(), 16);
         assert_eq!(size_of::<IoStatus>(), 16);
         let root = Sandbox::new();
-        let mut tree = Tree::create(&root.destination(), 3).unwrap();
+        let mut tree = Tree::create(&root.destination(), 3, false).unwrap();
         tree.mkdir("a").unwrap();
         tree.create_file("a/b.txt", false).unwrap();
         tree.security
@@ -1174,7 +1322,7 @@ mod tests {
     fn windows_staged_tree_blocks_inherited_acl_grants() {
         let root = Sandbox::new();
         world_acl(&root.0);
-        let mut tree = Tree::create(&root.destination(), 2).unwrap();
+        let mut tree = Tree::create(&root.destination(), 2, false).unwrap();
         tree.create_file("dir/file", false).unwrap();
         tree.security
             .verify(tree.envelope.as_ref().unwrap())
@@ -1198,8 +1346,8 @@ mod tests {
         let root = Sandbox::new();
         let outside = Sandbox::new();
         junction(&root.0.join("link"), &outside.0);
-        assert!(Tree::create(root.0.join("link/result").to_str().unwrap(), 10).is_err());
-        let mut tree = Tree::create(&root.destination(), 10).unwrap();
+        assert!(Tree::create(root.0.join("link/result").to_str().unwrap(), 10, false).is_err());
+        let mut tree = Tree::create(&root.destination(), 10, false).unwrap();
         let alias = root.staging().join("alias");
         junction(&alias, &outside.0);
         assert!(tree.create_file("alias/escape", false).is_err());
@@ -1215,7 +1363,7 @@ mod tests {
             ".",
             "..",
         ] {
-            assert!(Tree::create(value, 1).is_err(), "{value}");
+            assert!(Tree::create(value, 1, false).is_err(), "{value}");
         }
         std::fs::remove_dir(root.0.join("link")).unwrap();
         assert_eq!(root.children(), 0);
@@ -1228,11 +1376,11 @@ mod tests {
         std::fs::write(&target, b"untouched").unwrap();
         std::os::windows::fs::symlink_file(&target, root.0.join("result"))
             .expect("Windows CI must allow symlink fixtures");
-        assert!(Tree::create(&root.destination(), 1).is_err());
+        assert!(Tree::create(&root.destination(), 1, false).is_err());
         std::fs::remove_file(root.0.join("result")).unwrap();
         std::os::windows::fs::symlink_dir(&outside.0, root.0.join("link"))
             .expect("Windows CI must allow symlink fixtures");
-        assert!(Tree::create(root.0.join("link/result").to_str().unwrap(), 1).is_err());
+        assert!(Tree::create(root.0.join("link/result").to_str().unwrap(), 1, false).is_err());
         std::fs::remove_dir(root.0.join("link")).unwrap();
         assert_eq!(std::fs::read(target).unwrap(), b"untouched");
         assert_eq!(root.children(), 0);
@@ -1241,7 +1389,7 @@ mod tests {
     fn windows_staged_tree_aliases_limits_and_drop_cleanup() {
         let root = Sandbox::new();
         {
-            let mut tree = Tree::create(&root.destination(), 3).unwrap();
+            let mut tree = Tree::create(&root.destination(), 3, false).unwrap();
             tree.mkdir("LongDirectoryName").unwrap();
             assert!(tree.mkdir("LONGDIRECTORYNAME").is_err());
             let mut long = wide(root.staging().join("LongDirectoryName").as_os_str());
@@ -1274,7 +1422,7 @@ mod tests {
             }
         }
         assert_eq!(root.children(), 0);
-        let mut tree = Tree::create(&root.destination(), 2).unwrap();
+        let mut tree = Tree::create(&root.destination(), 2, false).unwrap();
         assert!(tree.create_file("a/b/c", false).is_err());
         tree.abort().unwrap();
         assert_eq!(root.children(), 0);
@@ -1282,7 +1430,7 @@ mod tests {
     #[test]
     fn windows_staged_tree_commit_race_preserves_existing_destination() {
         let root = Sandbox::new();
-        let mut tree = Tree::create(&root.destination(), 3).unwrap();
+        let mut tree = Tree::create(&root.destination(), 3, false).unwrap();
         tree.create_file("a/file", false).unwrap();
         tree.finish_file().unwrap();
         std::fs::write(root.0.join("result"), b"sentinel").unwrap();
@@ -1291,7 +1439,7 @@ mod tests {
         assert_eq!(std::fs::read(root.0.join("result")).unwrap(), b"sentinel");
         assert_eq!(root.children(), 1);
         std::fs::remove_file(root.0.join("result")).unwrap();
-        let mut tree = Tree::create(&root.destination(), 3).unwrap();
+        let mut tree = Tree::create(&root.destination(), 3, false).unwrap();
         tree.create_file("unfinished", false).unwrap();
         assert!(tree.commit().is_err());
         drop(tree);
@@ -1303,7 +1451,7 @@ mod tests {
         let outside = Sandbox::new();
         std::fs::create_dir(root.0.join("parent")).unwrap();
         let (parent, destination) =
-            parent_path(root.0.join("parent/result").to_str().unwrap()).unwrap();
+            parent_path(root.0.join("parent/result").to_str().unwrap(), false).unwrap();
         std::fs::rename(root.0.join("parent"), root.0.join("moved")).unwrap();
         junction(&root.0.join("parent"), &outside.0);
         let mut tree = Tree::from_parent(parent, destination, 3).unwrap();
@@ -1323,7 +1471,8 @@ mod tests {
         let root = Sandbox::new();
         let outside = Sandbox::new();
         std::fs::create_dir(root.0.join("parent")).unwrap();
-        let mut tree = Tree::create(root.0.join("parent/result").to_str().unwrap(), 3).unwrap();
+        let mut tree =
+            Tree::create(root.0.join("parent/result").to_str().unwrap(), 3, false).unwrap();
         let moved = match std::fs::rename(root.0.join("parent"), root.0.join("moved")) {
             Ok(()) => {
                 junction(&root.0.join("parent"), &outside.0);
@@ -1361,7 +1510,7 @@ mod tests {
     #[test]
     fn windows_staged_tree_replacement_is_not_deleted_during_cleanup() {
         let root = Sandbox::new();
-        let mut tree = Tree::create(&root.destination(), 2).unwrap();
+        let mut tree = Tree::create(&root.destination(), 2, false).unwrap();
         tree.create_file("file", false).unwrap();
         tree.finish_file().unwrap();
         let file = root.staging().join("file");
@@ -1376,7 +1525,7 @@ mod tests {
     #[test]
     fn windows_staged_tree_hard_links_share_files_and_symlinks_fail() {
         let root = Sandbox::new();
-        let mut tree = Tree::create(&root.destination(), 5).unwrap();
+        let mut tree = Tree::create(&root.destination(), 5, false).unwrap();
         tree.create_file("dir/file", false).unwrap();
         tree.file().unwrap().write_all(b"x").unwrap();
         tree.finish_file().unwrap();
@@ -1390,7 +1539,7 @@ mod tests {
     fn windows_staged_tree_canonical_paths_accept_mixed_separators() {
         let root = Sandbox::new();
         let destination = format!("{}/result", root.0.display());
-        let mut tree = Tree::create(&destination, 1).unwrap();
+        let mut tree = Tree::create(&destination, 1, false).unwrap();
         tree.create_file("é file", false).unwrap();
         tree.file().unwrap().write_all(b"canonical").unwrap();
         tree.finish_file().unwrap();
