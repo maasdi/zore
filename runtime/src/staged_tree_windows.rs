@@ -1523,6 +1523,33 @@ mod tests {
         assert_eq!(root.children(), 0);
     }
     #[test]
+    fn windows_staged_tree_merge_adds_missing_nodes_and_never_replaces() {
+        let root = Sandbox::new();
+        let result = root.0.join("result");
+        std::fs::create_dir_all(result.join("keep")).unwrap();
+        std::fs::write(result.join("keep/old.txt"), b"old").unwrap();
+        let mut tree = Tree::create(&root.destination(), 10, true).unwrap();
+        tree.create_file("keep/new.txt", false).unwrap();
+        tree.file().unwrap().write_all(b"new").unwrap();
+        tree.finish_file().unwrap();
+        tree.create_file("fresh/file", false).unwrap();
+        tree.finish_file().unwrap();
+        tree.commit().unwrap();
+        assert_eq!(std::fs::read(result.join("keep/old.txt")).unwrap(), b"old");
+        assert_eq!(std::fs::read(result.join("keep/new.txt")).unwrap(), b"new");
+        assert!(result.join("fresh/file").is_file());
+        let mut conflict = Tree::create(&root.destination(), 10, true).unwrap();
+        conflict.create_file("added.txt", false).unwrap();
+        conflict.finish_file().unwrap();
+        conflict.create_file("keep/old.txt", false).unwrap();
+        conflict.finish_file().unwrap();
+        assert!(conflict.commit().is_err());
+        conflict.abort().unwrap();
+        assert!(!result.join("added.txt").exists());
+        assert_eq!(std::fs::read(result.join("keep/old.txt")).unwrap(), b"old");
+        assert_eq!(root.children(), 1);
+    }
+    #[test]
     fn windows_staged_tree_hard_links_share_files_and_symlinks_fail() {
         let root = Sandbox::new();
         let mut tree = Tree::create(&root.destination(), 5, false).unwrap();
