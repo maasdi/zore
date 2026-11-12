@@ -14,8 +14,8 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  check:
-    name: Rust checks (${{ matrix.os }})
+  validation:
+    name: Rust validation (${{ matrix.os }})
     strategy:
       fail-fast: false
       matrix:
@@ -66,15 +66,6 @@ jobs:
         run: |
           clang --version
           rustc --version
-      - name: macOS inherited ACL confinement
-        if: runner.os == 'macOS'
-        run: cargo test --locked -p zore-runtime rejects_inherited_acl_grants_before_creating_staging -- --nocapture
-      - name: Windows confined filesystem regressions
-        if: runner.os == 'Windows'
-        run: cargo test --locked -p zore-runtime windows_staged_tree -- --nocapture
-      - name: Windows extraction ownership and cleanup
-        if: runner.os == 'Windows'
-        run: cargo test --locked --test native archive_followup -- --nocapture
       - name: Regex differential oracle
         run: python tests/hardening/regexp_oracle.py
       - name: Gzip interoperability oracle
@@ -96,8 +87,61 @@ jobs:
           exit $status
         env:
           ZORE_SCALING_COMPILER: ${{ github.workspace }}/target/debug/zore${{ runner.os == 'Windows' && '.exe' || '' }}
-      - name: Test
-        run: cargo test --locked --all-targets --no-fail-fast -- --nocapture
+
+  tests:
+    name: Tests (${{ matrix.os }}, shard ${{ matrix.shard }}/2)
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        shard: [1, 2]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.13'
+      - name: Configure Windows native toolchain
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+      - name: Select Windows clang
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: '"ZORE_CC=C:\Program Files\LLVM\bin\clang.exe" >> $env:GITHUB_ENV'
+      - name: Install repository toolchain
+        run: rustup show active-toolchain
+      - name: Test runner regressions
+        run: python -m unittest discover -s .github/scripts -p test_ci_tests.py
+      - name: Test shard
+        run: python .github/scripts/ci_tests.py --shard ${{ matrix.shard }} --shards 2 --output ci-test-results
+      - name: Upload test timings and inventory
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: test-results-${{ matrix.os }}-${{ matrix.shard }}
+          path: ci-test-results
+          if-no-files-found: error
+
+  check:
+    name: Rust checks (${{ matrix.os }})
+    if: always()
+    needs: [validation, tests]
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require validation and every test shard
+        env:
+          VALIDATION_RESULT: ${{ needs.validation.result }}
+          TEST_RESULT: ${{ needs.tests.result }}
+        shell: python
+        run: |
+          import os
+          import sys
+          sys.exit(0 if all(os.environ[name] == 'success' for name in ('VALIDATION_RESULT', 'TEST_RESULT')) else 1)
 
   imports:
     name: Python imports (${{ matrix.os }})
