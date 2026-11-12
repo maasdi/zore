@@ -21,6 +21,7 @@ import "std/errors"
 import "std/io"
 import "std/os"
 import "std/strconv"
+import "std/strings"
 
 type entryWriter interface {
     mut WriteHeader(header archive.Header) error
@@ -30,6 +31,13 @@ type entryWriter interface {
 type entryReader interface {
     mut Next() (archive.Entry, bool, error)
     mut Read(buf mut []byte) (int, error)
+}
+type countingSink struct {
+    count int
+}
+func (s mut countingSink) Write(data []byte) (int, error) {
+    s.count += data.len()
+    return data.len(), nil
 }
 func emit(writer mut entryWriter, data []byte, name string) error {
     writer.WriteHeader(archive.Header{Name: "dir/", Size: 0, Directory: true})?
@@ -88,6 +96,19 @@ func run() error {
         var reader = archive.NewZIPReader(source, archiveLimit, dataLimit, entryLimit)?
         listEntries(reader, sink)?
         return reader.Close()
+    }
+    if args[1] == "wmetadata" {
+        let count = strconv.Atoi(args[7])?
+        let name = strings.Repeat("a", archive.MaxNameBytes)
+        var writer = archive.NewZIPWriter(countingSink{count: 0}, archive.MaxBytes, 0, archive.MaxEntries)?
+        for var i = 0; i < count; i += 1 {
+            writer.WriteHeader(archive.Header{Name: name, Size: 0, Directory: false})?
+        }
+        let sink = writer.Sink()?
+        if sink.count != count * (2 * name.len() + 92) + 98 {
+            return error("metadata boundary archive length")
+        }
+        return nil
     }
     if args[1] == "wmany" {
         let count = strconv.Atoi(args[7])?
@@ -300,18 +321,20 @@ def main():
         input_path, output_path = directory / 'input', directory / 'output'
 
         def run(mode, data, valid=True, archive_limit=None, data_limit=1048576,
-                entry_limit=100, name='dir/é.txt', label=''):
+                entry_limit=100, name='dir/é.txt', label='', error_text=None):
             nonlocal checked
             input_path.write_bytes(data)
             result = subprocess.run(
                 [str(executable), mode, str(input_path), str(output_path),
                  str(archive_limit if archive_limit is not None else 16777216),
                  str(data_limit), str(entry_limit), name],
-                capture_output=True, timeout=30,
+                capture_output=True, timeout=120 if mode == 'wmetadata' else 30,
                 env={**os.environ, 'ZORE_CHECK_LEAKS': '1'})
             checked += 1
             assert (result.returncode == 0) == valid, (mode, label or name, len(data), result.stderr)
             assert b'leak:' not in result.stderr, result.stderr
+            if error_text is not None:
+                assert error_text.encode() in result.stderr, result.stderr
             headers = []
             if valid and mode.startswith('l'):
                 headers = [tuple(line.split('|')) for line in result.stdout.decode('utf-8').splitlines()]
@@ -537,16 +560,65 @@ def main():
                     assert info.create_system == 3 and info.external_attr >> 16 == 0o100755
                     assert archive.read('bin/run') == b'#!run'
 
-        for streamed in [False, True]:
-            output = Unseekable() if streamed else io.BytesIO()
-            with zipfile.ZipFile(output, 'w', compression=zipfile.ZIP_DEFLATED) as archive:
-                for name, data in [('wide.txt', b'zip64 ' * 1000), ('empty', b'')]:
-                    with archive.open(name, 'w', force_zip64=True) as handle:
-                        handle.write(data)
-            encoded = output.getvalue()
-            assert b'\x01\x00\x10\x00' in encoded
-            actual, headers = run('rz', encoded)
-            assert actual == b'zip64 ' * 1000 and headers == [('wide.txt', 6000, False), ('empty', 0, False)], headers
+        for compression in [zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED]:
+            for streamed in [False, True]:
+                output = Unseekable() if streamed else io.BytesIO()
+                with zipfile.ZipFile(output, 'w', compression=compression) as archive:
+                    with archive.open('wide.txt', 'w', force_zip64=True) as handle:
+                        handle.write(b'zip64 ' * 1000)
+                encoded = output.getvalue()
+                assert b'\x01\x00\x10\x00' in encoded
+                actual, headers = run('rz', encoded)
+                assert actual == b'zip64 ' * 1000 and headers == [('wide.txt', 6000, False)], headers
+                if streamed:
+                    unsigned = unsigned_descriptor(encoded)
+                    assert run('rz', unsigned)[0] == actual
+        plain = zip_bytes([('abc', b'payload')])
+        for marked_fields in [(24,), (20,), (42,), (24, 20, 42)]:
+            central = plain.rindex(b'PK\x01\x02')
+            wide = bytearray(plain)
+            payload = b''
+            for field in marked_fields:
+                payload += int.from_bytes(wide[central + field:central + field + 4], 'little').to_bytes(8, 'little')
+                wide[central + field:central + field + 4] = b'\xff' * 4
+            extra = struct.pack('<HH', 1, len(payload)) + payload
+            wide[central + 6:central + 8] = (45).to_bytes(2, 'little')
+            wide[central + 30:central + 32] = len(extra).to_bytes(2, 'little')
+            wide[central + 49:central + 49] = extra
+            end = wide.rindex(b'PK\x05\x06')
+            struct.pack_into('<I', wide, end + 12, len(wide) - 22 - central)
+            assert run('rz', bytes(wide))[0] == b'payload'
+            with zipfile.ZipFile(io.BytesIO(wide)) as archive:
+                assert archive.read('abc') == b'payload'
+            short = bytearray(wide)
+            del short[central + 49 + len(extra) - 1]
+            struct.pack_into('<H', short, central + 30, len(extra) - 1)
+            struct.pack_into('<H', short, central + 51, len(payload) - 1)
+            struct.pack_into('<I', short, end - 1 + 12, len(short) - 22 - central)
+            run('rz', bytes(short), valid=False, error_text='archive: invalid ZIP64 extra field')
+        for disk_payload in [b'', b'\0' * 3, b'\0' * 4, (1).to_bytes(4, 'little')]:
+            central = plain.rindex(b'PK\x01\x02')
+            marked_disk = bytearray(plain)
+            extra = struct.pack('<HH', 1, len(disk_payload)) + disk_payload
+            struct.pack_into('<H', marked_disk, central + 34, 65535)
+            struct.pack_into('<H', marked_disk, central + 30, len(extra))
+            marked_disk[central + 49:central + 49] = extra
+            end = marked_disk.rindex(b'PK\x05\x06')
+            struct.pack_into('<I', marked_disk, end + 12, len(marked_disk) - 22 - central)
+            valid = disk_payload == b'\0' * 4
+            expected_error = None if valid else ('archive: invalid ZIP64 extra field'
+                                                if len(disk_payload) < 4 else 'archive: split ZIP is unsupported')
+            actual, _ = run('rz', bytes(marked_disk), valid=valid, error_text=expected_error)
+            if valid:
+                assert actual == b'payload'
+        for field in [8, 12, 16]:
+            marked = bytearray(plain)
+            end = marked.rindex(b'PK\x05\x06')
+            width = 2 if field == 8 else 4
+            marked[end + field:end + field + width] = b'\xff' * width
+            if field == 8:
+                marked[end + 10:end + 12] = b'\xff' * 2
+            run('rz', bytes(marked), valid=False, error_text='archive: ZIP64 end locator not found')
         many = io.BytesIO()
         with zipfile.ZipFile(many, 'w') as archive:
             for index in range(70000):
@@ -555,6 +627,10 @@ def main():
         assert b'PK\x06\x06' in encoded and b'PK\x06\x07' in encoded
         _, headers = run('rz', encoded, entry_limit=70000)
         assert len(headers) == 70000 and headers[-1] == ('f69999', 0, False)
+        commented = bytearray(encoded)
+        commented[-2:] = (65535).to_bytes(2, 'little')
+        commented += b'c' * 65535
+        assert len(run('rz', bytes(commented), entry_limit=70000)[1]) == 70000
         run('rz', encoded, valid=False, entry_limit=69999)
         written, _ = run('wmany', b'', name='70000', entry_limit=70000)
         assert b'PK\x06\x06' in written and b'PK\x06\x07' in written
@@ -564,6 +640,10 @@ def main():
         assert len(run('rz', written, entry_limit=70000)[1]) == 70000
         small, _ = run('wmany', b'', name='3')
         assert b'PK\x06\x06' not in small and b'PK\x06\x07' not in small
+        metadata_count = 268435456 // (46 + 1024)
+        run('wmetadata', b'', name=str(metadata_count))
+        run('wmetadata', b'', name=str(metadata_count + 1), valid=False,
+            error_text='archive: metadata byte limit exceeded')
         locator = encoded.rindex(b'PK\x06\x07')
         record = encoded.rindex(b'PK\x06\x06')
         for position, value in [(record, 0), (record + 4, 45), (record + 24, 1), (record + 32, 2),
