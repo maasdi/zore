@@ -6,8 +6,9 @@ through I/O interfaces. Explicit extraction functions stage a new destination.
 
 The TAR reader also understands PAX and GNU long names, so archives from GNU tar
 and Python's `tarfile` read normally; see below. Links can be listed and
-executable files are marked (see "Links and executable files"). ZIP64,
-encryption, special nodes, and sparse TAR entries are follow-ups to
+executable files are marked (see "Links and executable files"). Archives up to
+64 GiB use ZIP64 or PAX sizes automatically (see "Large archives"). Encryption,
+special nodes, and sparse TAR entries are follow-ups to
 [#224](https://github.com/maasdi/zore/issues/224). Unsupported forms return errors.
 
 The shared `Header` contains `Name string`, `Size int`, and `Directory bool`.
@@ -68,8 +69,7 @@ ZIP entries must be contiguous from offset 0, in central-directory order. Extra
 unindexed local records, prefixes, gaps, overlaps and split archives fail.
 Stored and DEFLATE entries may use signed or unsigned data descriptors. Names without the
 UTF-8 flag must be ASCII; CP437 is outside this slice. Well-formed opaque extra
-fields and comments are bounded and ignored; ZIP64 fields and ambiguous end
-records fail. USTAR requires canonical markers, octal fields, two zero end
+fields and comments are bounded and ignored; ambiguous end records fail. USTAR requires canonical markers, octal fields, two zero end
 records and only zero padding afterward. Concatenated TAR archives are rejected.
 
 ## Writing and finalization
@@ -144,10 +144,25 @@ other archive metadata are applied to the filesystem.
 
 Every constructor takes `archiveLimit`, `dataLimit`, and `entryLimit`. These are
 inclusive whole-archive byte, summed data-byte and entry ceilings. Byte limits
-must be between 0 and `MaxBytes` (1 GiB), and entry limits between 0 and
-`MaxEntries` (65,534). Names are at most `MaxNameBytes` (1024 bytes); USTAR must
-also fit a 100-byte name and optional 155-byte prefix. ZIP central-directory
-bytes are additionally capped at `MaxMetadataBytes` (16 MiB).
+must be between 0 and `MaxBytes` (64 GiB), and entry limits between 0 and
+`MaxEntries` (1,000,000). Names are at most `MaxNameBytes` (1024 bytes); longer
+TAR names use a PAX record. ZIP central-directory bytes are additionally capped
+at `MaxMetadataBytes` (256 MiB). The limits you pass are what protect you: pick
+the smallest that fits your data.
+
+## Large archives
+
+ZIP's classic fields stop at 4 GB and 65,535 entries. Past that, the format
+uses "ZIP64" records, and `std/archive` handles them both ways without any
+option:
+
+- `ZIPReader` reads ZIP64 archives from Python, Info-ZIP, 7-Zip and others,
+  including streamed entries with large data descriptors.
+- `ZIPWriter` adds ZIP64 records only when they are needed: for an entry close
+  to or over 4 GB, an offset past 4 GB, or more than 65,534 entries. Smaller
+  archives come out exactly as before.
+- `TARWriter` writes a PAX `size` record for files over 8 GiB, which the old
+  header field cannot hold.
 
 ZIP retains bounded directory metadata; TAR retains a bounded working record.
 Neither retains all payload data. Generics keep the sink's ordinary ownership

@@ -11579,7 +11579,8 @@ Conformance includes published vectors and chunked/native equivalence.
 Its explicit extraction functions additionally use `os` and `errors`. Reader
 and writer constructors have no filesystem effects. Regular files and
 directories are supported; method 8 and confined extraction are locked below.
-ZIP64/encryption, special nodes and sparse TAR entries remain excluded; PAX
+Encryption, special nodes and sparse TAR entries remain excluded; ZIP64 is
+read and written as described in §37.35; PAX
 and GNU long names are read as described in §37.33, and links are reported by
 `Next` (§37.34), never written, and extracted only on request. Unsupported input fails explicitly.
 
@@ -11597,8 +11598,8 @@ Duplicate names may be enumerated/written; collision/overwrite policy belongs to
 the explicit extraction API below. Metadata is owned; it contains no borrowed
 view into an archive or its reader.
 
-The package exports `MaxBytes = 1073741824`, `MaxEntries = 65534`,
-`MaxNameBytes = 1024`, and `MaxMetadataBytes = 16777216`. Constructors take
+The package exports `MaxBytes = 68719476736` (64 GiB), `MaxEntries = 1000000`,
+`MaxNameBytes = 1024`, and `MaxMetadataBytes = 268435456` (§37.35). Constructors take
 `archiveLimit`, `dataLimit` and `entryLimit`: inclusive whole-archive byte,
 summed declared/actual data-byte, and entry ceilings. Byte limits must be in
 `[0, MaxBytes]`, and entry limits in `[0, MaxEntries]`. Invalid construction
@@ -11607,8 +11608,8 @@ drop. Directory sizes must be zero. ZIP retained central-directory metadata is
 additionally bounded by `MaxMetadataBytes`. Headers/data/padding/metadata/end
 records all count toward `archiveLimit`; limits are never per-entry resets.
 USTAR names must also fit a 100-byte suffix and optional 155-byte prefix at a
-slash boundary. A directory may use an empty name field with its path in the
-prefix. No implicit truncation occurs.
+slash boundary, or use the PAX records of §37.33 and §37.35. A directory may use
+an empty name field with its path in the prefix. No implicit truncation occurs.
 
 ### Reader/writer API and ownership
 
@@ -11665,7 +11666,8 @@ ZIP initialization validates EOCD and central-directory offsets/counts/lengths
 within the complete source. It accepts stored method 0 and DEFLATE method 8, ASCII names without the
 UTF-8 flag and UTF-8 names with it, plus signed/unsigned data descriptors. Local
 headers, CRC32 and sizes must agree with the central directory. Unsupported
-flags, ZIP64 extras, split disks and special nodes fail; symlinks are reported
+flags, split disks and special nodes fail; ZIP64 records follow §37.35;
+symlinks are reported
 by `Next` (§37.34). Extra-field
 TLVs must be well formed; supported opaque metadata/comments are bounded and
 ignored. Entries must occur contiguously from offset 0, in central-directory
@@ -11714,7 +11716,7 @@ unsupported variants, ownership rejection and async endpoint composition.
 filesystem, framing or checksum policy. It imports only `std/io`. Gzip moves
 its existing codec here; there is one implementation of Huffman and LZ77 rules.
 
-- `MaxBytes = 1073741824`; `NewDecoder(inputLimit int, outputLimit int)
+- `MaxBytes = 68719476736` (64 GiB, §37.35); `NewDecoder(inputLimit int, outputLimit int)
   (Decoder, error)` and `NewEncoder(inputLimit int, compressedLimit int)
   (Encoder, error)` create Move states, with inclusive limits in `[0, MaxBytes]`.
 - `Read<R io.Reader>(decoder mut Decoder, source mut R, buf mut []byte)
@@ -11786,7 +11788,7 @@ have no extended ACL entries; rejection precedes staging creation. This
 conservative restriction also rejects non-inheriting ACLs and
 prevents inherited ACL grants from defeating owner-only mode bits. The parent
 ACL is never modified.
-`nodeLimit` is in `[0, 65534]`, counts files and implicit/explicit directories,
+`nodeLimit` is in `[0, 1000000]`, counts files and implicit/explicit directories,
 and excludes the root. Relative names are local, at most 1024 UTF-8 bytes and
 64 components. Unsupported OS/filesystem confinement or atomic publication
 operations fail closed. Providers support x86_64/aarch64 Linux and macOS and
@@ -12155,6 +12157,73 @@ create provider and one new link provider. Conformance: Python `tarfile` and
 link targets, Unix and non-Unix ZIP modes, malformed link entries, writer modes
 read back by Python, extraction modes, default link refusal, opted-in links
 inside the tree, and every escape, pass-through, ordering and hard-link failure.
+
+## 37.35 ZIP64 and archive size limits — LOCKED
+
+Archives may hold up to 64 GiB and 1,000,000 entries. ZIP uses the ZIP64
+records of the PKWARE application note when classic 32-bit and 16-bit fields
+cannot hold a value; TAR uses PAX `size` records for files over 8 GiB.
+
+| Name | Value |
+| --- | --- |
+| `archive.MaxBytes` | `68719476736`: largest archive, data and entry byte limit |
+| `archive.MaxEntries` | `1000000`: largest entry limit |
+| `archive.MaxMetadataBytes` | `268435456`: largest ZIP central directory, and largest ZIP64 end record extension |
+| `flate.MaxBytes` | `68719476736`, so DEFLATE ZIP entries reach the same size; gzip keeps its own 1 GiB `MaxBytes` |
+| `os.StageTree` node limit | `1000000` |
+
+Caller limits keep their meaning; the larger maximums only allow larger limits.
+
+**Reading ZIP64.** "Version needed to extract" may be up to 45.
+
+- **End records.** When a ZIP64 end locator (`PK\6\7`, 20 bytes) directly
+  precedes the end record, the locator must name disk 0 of 1 total disks and
+  the offset of a ZIP64 end record (`PK\6\6`). That record must declare at
+  least 44 bytes, end exactly at the locator, name disk 0, give equal entry
+  counts, and its central directory must end exactly where it starts. Its
+  count, central directory size and offset replace the classic ones, each of
+  which must either equal it or be the marker (`0xFFFF` or `0xFFFFFFFF`). The
+  locator counts toward deciding whether an end record is ambiguous. A marker
+  value without a locator fails with `archive: ZIP64 end locator not found`;
+  other inconsistencies fail with `archive: invalid ZIP64 end record` or
+  `archive: ZIP64 end record mismatch`.
+- **Central records.** A size, compressed size or local offset equal to
+  `0xFFFFFFFF`, and a start disk of `0xFFFF`, are read in that order from the
+  entry's single ZIP64 extra field (tag `1`); the start disk must then be 0.
+  Each value must be at most `MaxBytes`. A missing, short or repeated ZIP64
+  field fails with `archive: invalid ZIP64 extra field`; extra values at its
+  end are ignored.
+- **Local headers.** When a local header's size or compressed size is
+  `0xFFFFFFFF`, both are read from its ZIP64 field.
+- **Data descriptors.** When a local header has a ZIP64 field, its data
+  descriptor stores 8-byte sizes: 20 bytes, or 24 with the signature.
+- **Unchanged checks.** All other §37.28 and §37.29 checks are unchanged.
+
+**Writing ZIP64.** Archives that need no ZIP64 field are written exactly as
+before.
+
+- **Large entries.** An entry whose declared size is over `4293918719` bytes
+  (1 MiB below 4 GiB, which leaves room for DEFLATE overhead) gets a local
+  header with version 45, `0xFFFFFFFF` sizes and a 16-byte zeroed ZIP64 field,
+  and a 24-byte descriptor with 8-byte sizes.
+- **Central directory.** Any size, compressed size or offset of at least
+  `0xFFFFFFFF` is written as the marker plus a value in the entry's ZIP64
+  field, and such entries need version 45.
+- **End records.** When the archive has 65,535 or more entries, or the central
+  directory's size or offset is at least `0xFFFFFFFF`, a 56-byte ZIP64 end
+  record and a locator precede the classic end record. The classic record then
+  holds each value, or the marker where the value does not fit.
+
+**TAR sizes.** `TARWriter` writes a PAX `size` record, together with any `path`
+record, for files over `8589934591` bytes, and leaves the header size field 0.
+The PAX size limit of §37.33 is `archive.MaxBytes`.
+
+Compiler impact: bundled Zore source and one runtime node-limit constant.
+Conformance: Python `zipfile` ZIP64 archives with forced ZIP64 fields, both
+seekable and streamed; 70,000-entry archives in both directions; malformed
+ZIP64 end records, locators and extra fields; a marker without a locator; and
+unchanged output for small archives. Writing and reading 4.5 GB ZIP and 8.6 GB
+TAR entries against Python was checked by hand; it is too large for CI.
 
 # 38. Self-Hosting Constraint
 

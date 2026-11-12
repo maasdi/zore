@@ -1,8 +1,8 @@
 # Remaining archive work
 
 Issue [#224](https://github.com/maasdi/zore/issues/224) provides gzip, USTAR,
-classic stored/DEFLATE ZIP, and confined new-directory extraction on Linux/macOS/Windows.
-See the [archive guide](../archives.md) and spec §§37.26–37.30.
+stored/DEFLATE ZIP with ZIP64, and confined new-directory extraction on Linux/macOS/Windows.
+See the [archive guide](../archives.md) and spec §§37.26–37.30, §§37.33–37.35.
 
 Windows extraction now uses handle-relative no-reparse operations, protected
 owner/LocalSystem DACLs, filesystem identity checks, handle-based cleanup and
@@ -10,7 +10,8 @@ atomic no-replace publication. Its native and archive tests cover reparse
 points, aliases, ACL inheritance, races and cleanup. Future platform extensions
 must preserve these guarantees and fail closed when a capability is unavailable.
 
-ZIP64, encryption, split archives, CP437 names and more permissive central/local
+ZIP64 is read and written up to 64 GiB and 1,000,000 entries (§37.35).
+Encryption, split archives, CP437 names and more permissive central/local
 ordering remain excluded. Extensions must retain bounded directory memory,
 unambiguous offsets, exact size/CRC validation and explicit entry lifetimes.
 PAX and GNU long names are read and PAX names are written (§37.33). Links are

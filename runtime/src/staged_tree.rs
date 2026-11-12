@@ -100,7 +100,7 @@ pub unsafe extern "C" fn zore_native_os_tree_stage(
     let result = blocking::run(move || {
         let limit = usize::try_from(limit)
             .ok()
-            .filter(|&n| n <= 65534)
+            .filter(|&n| n <= 1_000_000)
             .ok_or_else(|| std::io::Error::other("invalid node limit"))?;
         let tree = Tree::create(&destination, limit)?;
         let id = NEXT.fetch_add(1, Ordering::SeqCst);

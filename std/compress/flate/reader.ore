@@ -2,7 +2,7 @@ package flate
 
 import "std/io"
 
-const MaxBytes = 1073741824
+const MaxBytes = 68719476736
 const windowSize = 32768
 const blockPhase = 1
 const storedPhase = 2

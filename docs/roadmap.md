@@ -9,11 +9,15 @@ are separate contracts. See the [guide](html.md),
 [template decision](design/templates.md) tracked by Q16.
 
 Issue [#224](https://github.com/maasdi/zore/issues/224) provides streaming gzip,
-USTAR and classic stored/DEFLATE ZIP I/O, plus confined extraction into new
-directories on Linux/macOS/Windows (§§37.26–37.30). Raw DEFLATE is shared below gzip and
+USTAR/PAX and stored/DEFLATE ZIP I/O with ZIP64 support, plus confined extraction
+into new directories on Linux/macOS/Windows (§§37.26–37.30, §§37.33–37.35).
+Archives support caller-selected limits up to 64 GiB and 1,000,000 entries.
+Raw DEFLATE is shared below gzip and
 archive policy; CRC32 remains in `std/hash/crc32`. Extraction validates the whole
 archive in private staging before no-replace publication, counts implicit nodes
-and rejects aliases, duplicates and links. Windows extraction uses a handle-relative provider. Extended formats and existing-tree overwrite policies remain
+and rejects aliases and duplicates. Links require explicit opt-in and confinement
+inside the new tree. Windows extraction uses a handle-relative provider.
+Encryption, sparse/special entries and existing-tree overwrite policies remain
 [follow-ups](design/archives.md). See the [archive guide](archives.md).
 
 Issue [#225](https://github.com/maasdi/zore/issues/225) adds

@@ -18,6 +18,7 @@ const Store Compression = 0
 const Deflate Compression = 8
 
 type zipEntry struct {
+    wide bool
     symlink bool
     executable bool
     method int
@@ -26,6 +27,23 @@ type zipEntry struct {
     crc uint32
     flags int
     offset int
+}
+
+func (entry zipEntry) extraSize() int {
+    var size = 0
+    if entry.header.Size >= marker32 {
+        size += 8
+    }
+    if entry.compressed >= marker32 {
+        size += 8
+    }
+    if entry.offset >= marker32 {
+        size += 8
+    }
+    if size > 0 {
+        size += 4
+    }
+    return size
 }
 
 func zipFlags(flags int, method int, version int) error {
@@ -39,30 +57,96 @@ func zipFlags(flags int, method int, version int) error {
     if flags & (65535 ^ allowed) != 0 {
         return error("archive: unsupported ZIP flags")
     }
-    if version > 20 {
+    if version > 45 {
         return error("archive: unsupported ZIP version")
     }
     return nil
 }
 
-func zipExtra(data []byte) error {
+const wideThreshold = 4293918719
+const zip64Locator = 0x07064b50
+const zip64End = 0x06064b50
+const marker16 = 65535
+const marker32 = 4294967295
+
+func put64(data mut []byte, at int, value int) {
+    put32(data, at, value & marker32)
+    put32(data, at + 4, value >> 32)
+}
+
+func smaller(left int, right int) int {
+    if left < right {
+        return left
+    }
+    return right
+}
+
+func u64(data []byte, at int) int {
+    let high = u32(data, at + 4)
+    if high >= 1073741824 {
+        return -1
+    }
+    return (high << 32) | u32(data, at)
+}
+
+type zip64Field struct {
+    start int
+    size int
+    found bool
+}
+
+func zipExtra(data []byte) (zip64Field, error) {
+    var field = zip64Field{start: 0, size: 0, found: false}
     var at = 0
     for at < data.len() {
         if data.len() - at < 4 {
-            return error("archive: invalid ZIP extra field")
+            return field, error("archive: invalid ZIP extra field")
         }
         let kind = u16(data, at)
         let size = u16(data, at + 2)
-        if kind == 1 {
-            return error("archive: ZIP64 is unsupported")
-        }
         at += 4
         if size > data.len() - at {
-            return error("archive: invalid ZIP extra field")
+            return field, error("archive: invalid ZIP extra field")
+        }
+        if kind == 1 {
+            if field.found {
+                return field, error("archive: invalid ZIP64 extra field")
+            }
+            field = zip64Field{start: at, size: size, found: true}
         }
         at += size
     }
-    return nil
+    return field, nil
+}
+
+type zip64Values struct {
+    data Array<byte>
+    at int
+}
+
+func (v mut zip64Values) take(current int, wide bool) (int, error) {
+    if current != marker32 && !wide {
+        return current, nil
+    }
+    if v.data.len() - v.at < 8 {
+        return 0, error("archive: invalid ZIP64 extra field")
+    }
+    let value = u64(v.data[:], v.at)
+    v.at += 8
+    if value < 0 || value > MaxBytes {
+        return 0, error("archive: invalid ZIP64 extra field")
+    }
+    return value, nil
+}
+
+func zip64Payload(data []byte, field zip64Field) zip64Values {
+    var copied = Array<byte>{}
+    if field.found {
+        for var i = field.start; i < field.start + field.size; i += 1 {
+            copied.push(data[i])
+        }
+    }
+    return zip64Values{data: copied, at: 0}
 }
 
 func zipName(data []byte, flags int) (string, error) {
@@ -99,6 +183,7 @@ type ZIPReader struct {
     crc uint32
     nextOffset int
     centralOffset int
+    wide bool
     active bool
     initialized bool
     ended bool
@@ -107,7 +192,7 @@ type ZIPReader struct {
 
 func NewZIPReader(source own io.ReadSeeker, archiveLimit int, dataLimit int, entryLimit int) (ZIPReader, error) {
     let decoder, _ = flate.NewDecoder(0, 0)
-    var reader = ZIPReader{source: zipInput{source: source, remaining: 0, framed: false, chunk: zeros(4096), cursor: 0, used: 0, pending: nil}, decoder: decoder, archiveLimit: archiveLimit, dataLimit: dataLimit, entryLimit: entryLimit, entries: Array<zipEntry>{}, cursor: 0, remaining: 0, crc: 0, nextOffset: 0, centralOffset: 0, active: false, initialized: false, ended: false, err: nil}
+    var reader = ZIPReader{source: zipInput{source: source, remaining: 0, framed: false, chunk: zeros(4096), cursor: 0, used: 0, pending: nil}, decoder: decoder, archiveLimit: archiveLimit, dataLimit: dataLimit, entryLimit: entryLimit, entries: Array<zipEntry>{}, cursor: 0, remaining: 0, crc: 0, nextOffset: 0, centralOffset: 0, wide: false, active: false, initialized: false, ended: false, err: nil}
     if !validLimits(archiveLimit, dataLimit, entryLimit) {
         reader.err = error("archive: invalid limit")
     }
@@ -127,40 +212,90 @@ func (r mut ZIPReader) initialize() error {
         return error("archive: archive byte limit exceeded")
     }
     var tailSize = size
-    if tailSize > 65557 {
-        tailSize = 65557
+    if tailSize > 65577 {
+        tailSize = 65577
     }
-    seekTo(r.source, size - tailSize)?
+    let tailStart = size - tailSize
+    seekTo(r.source, tailStart)?
     var tail = zeros(tailSize)
     readExact(r.source, tail[:])?
     var end = -1
+    var wide = false
+    var missingLocator = false
     for var at = tail.len() - 22; at >= 0; at -= 1 {
-        if u32(tail[:], at) == zipEnd && u16(tail[:], at + 20) == tail.len() - at - 22 {
-            let directoryOffset = u32(tail[:], at + 16)
-            let directorySize = u32(tail[:], at + 12)
-            let candidateOffset = size - tailSize + at
-            if directoryOffset <= candidateOffset && directorySize == candidateOffset - directoryOffset {
-                if end >= 0 {
-                    return error("archive: ambiguous ZIP end records")
-                }
-                end = at
+        if u32(tail[:], at) != zipEnd || u16(tail[:], at + 20) != tail.len() - at - 22 {
+            continue
+        }
+        let located = at >= 20 && u32(tail[:], at - 20) == zip64Locator
+        let directoryOffset = u32(tail[:], at + 16)
+        let directorySize = u32(tail[:], at + 12)
+        if !located && (u16(tail[:], at + 10) == marker16 || directoryOffset == marker32 || directorySize == marker32) {
+            missingLocator = true
+        }
+        let candidateOffset = tailStart + at
+        if located || (directoryOffset <= candidateOffset && directorySize == candidateOffset - directoryOffset) {
+            if end >= 0 {
+                return error("archive: ambiguous ZIP end records")
             }
+            end = at
+            wide = located
         }
     }
     if end < 0 {
+        if missingLocator {
+            return error("archive: ZIP64 end locator not found")
+        }
         return error("archive: ZIP end record not found")
     }
     if u16(tail[:], end + 4) != 0 || u16(tail[:], end + 6) != 0 {
         return error("archive: split ZIP is unsupported")
     }
-    let count = u16(tail[:], end + 10)
-    let centralSize = u32(tail[:], end + 12)
+    var count = u16(tail[:], end + 10)
+    var centralSize = u32(tail[:], end + 12)
     r.centralOffset = u32(tail[:], end + 16)
-    if count == 65535 || centralSize == 4294967295 || r.centralOffset == 4294967295 {
-        return error("archive: ZIP64 is unsupported")
-    }
     if count != u16(tail[:], end + 8) {
         return error("archive: ZIP entry count mismatch")
+    }
+    var endOffset = tailStart + end
+    if wide {
+        let locator = end - 20
+        if u32(tail[:], locator + 4) != 0 || u32(tail[:], locator + 16) != 1 {
+            return error("archive: split ZIP is unsupported")
+        }
+        let recordOffset = u64(tail[:], locator + 8)
+        let locatorOffset = tailStart + locator
+        if recordOffset < 0 || recordOffset > locatorOffset - 56 {
+            return error("archive: invalid ZIP64 end record")
+        }
+        seekTo(r.source, recordOffset)?
+        var record = zeros(56)
+        readExact(r.source, record[:])?
+        let recordSize = u64(record[:], 4)
+        if u32(record[:], 0) != zip64End || recordSize < 44 || recordSize != locatorOffset - recordOffset - 12 {
+            return error("archive: invalid ZIP64 end record")
+        }
+        if recordSize - 44 > MaxMetadataBytes {
+            return error("archive: metadata byte limit exceeded")
+        }
+        zipFlags(0, 0, u16(record[:], 14))?
+        if u32(record[:], 16) != 0 || u32(record[:], 20) != 0 {
+            return error("archive: split ZIP is unsupported")
+        }
+        let wideCount = u64(record[:], 24)
+        let wideSize = u64(record[:], 40)
+        let wideOffset = u64(record[:], 48)
+        if wideCount < 0 || wideCount != u64(record[:], 32) || wideSize < 0 || wideOffset < 0 {
+            return error("archive: invalid ZIP64 end record")
+        }
+        if (count != marker16 && count != wideCount) || (centralSize != marker32 && centralSize != wideSize) || (r.centralOffset != marker32 && r.centralOffset != wideOffset) {
+            return error("archive: ZIP64 end record mismatch")
+        }
+        count = wideCount
+        centralSize = wideSize
+        r.centralOffset = wideOffset
+        endOffset = recordOffset
+    } else if count == marker16 || centralSize == marker32 || r.centralOffset == marker32 {
+        return error("archive: ZIP64 end locator not found")
     }
     if count > r.entryLimit {
         return error("archive: entry limit exceeded")
@@ -168,7 +303,6 @@ func (r mut ZIPReader) initialize() error {
     if centralSize > MaxMetadataBytes {
         return error("archive: metadata byte limit exceeded")
     }
-    let endOffset = size - tailSize + end
     if r.centralOffset > endOffset || centralSize != endOffset - r.centralOffset {
         return error("archive: invalid ZIP directory bounds")
     }
@@ -187,17 +321,9 @@ func (r mut ZIPReader) initialize() error {
         }
         let flags = u16(record[:], 8)
         zipFlags(flags, u16(record[:], 10), u16(record[:], 6))?
-        if u16(record[:], 34) != 0 {
+        let startDisk = u16(record[:], 34)
+        if startDisk != 0 && startDisk != marker16 {
             return error("archive: split ZIP is unsupported")
-        }
-        let compressed = u32(record[:], 20)
-        let size = u32(record[:], 24)
-        let offset = u32(record[:], 42)
-        if compressed == 4294967295 || size == 4294967295 || offset == 4294967295 {
-            return error("archive: ZIP64 is unsupported")
-        }
-        if u16(record[:], 10) == 0 && compressed != size {
-            return error("archive: stored ZIP size mismatch")
         }
         let nameSize = u16(record[:], 28)
         let extraSize = u16(record[:], 30)
@@ -212,7 +338,22 @@ func (r mut ZIPReader) initialize() error {
         var variable = zeros(variableSize)
         readExact(r.source, variable[:])?
         used += variableSize
-        zipExtra(variable[nameSize:nameSize + extraSize])?
+        let field = zipExtra(variable[nameSize:nameSize + extraSize])?
+        var values = zip64Payload(variable[nameSize:nameSize + extraSize], field)
+        let size = values.take(u32(record[:], 24), false)?
+        let compressed = values.take(u32(record[:], 20), false)?
+        let offset = values.take(u32(record[:], 42), false)?
+        if startDisk == marker16 {
+            if values.data.len() - values.at < 4 {
+                return error("archive: invalid ZIP64 extra field")
+            }
+            if u32(values.data[:], values.at) != 0 {
+                return error("archive: split ZIP is unsupported")
+            }
+        }
+        if u16(record[:], 10) == 0 && compressed != size {
+            return error("archive: stored ZIP size mismatch")
+        }
         let name = zipName(variable[:nameSize], flags)?
         let directory = strings.HasSuffix(name, "/")
         let header = Header{Name: name, Size: size, Directory: directory}
@@ -244,7 +385,7 @@ func (r mut ZIPReader) initialize() error {
         if offset >= r.centralOffset {
             return error("archive: invalid ZIP local offset")
         }
-        r.entries.push(zipEntry{symlink: symlink, executable: executable, method: u16(record[:], 10), compressed: compressed, header: header, crc: crc, flags: flags, offset: offset})
+        r.entries.push(zipEntry{wide: false, symlink: symlink, executable: executable, method: u16(record[:], 10), compressed: compressed, header: header, crc: crc, flags: flags, offset: offset})
     }
     if used != centralSize {
         return error("archive: ZIP directory size mismatch")
@@ -284,19 +425,29 @@ func (r mut ZIPReader) finishEntry() error {
             boundary = r.entries[r.cursor].offset
         }
         let length = boundary - r.nextOffset
-        if length != 12 && length != 16 {
+        var width = 4
+        if r.wide {
+            width = 8
+        }
+        if length != 4 + 2 * width && length != 8 + 2 * width {
             return error("archive: invalid ZIP descriptor bounds")
         }
         var descriptor = zeros(length)
         readExact(r.source, descriptor[:])?
         var at = 0
-        if length == 16 {
+        if length == 8 + 2 * width {
             if u32(descriptor[:], 0) != zipDescriptor {
                 return error("archive: invalid ZIP descriptor signature")
             }
             at = 4
         }
-        if uint32(u32(descriptor[:], at)) != entry.crc || u32(descriptor[:], at + 4) != entry.compressed || u32(descriptor[:], at + 8) != entry.header.Size {
+        var compressedValue = u32(descriptor[:], at + 4)
+        var sizeValue = u32(descriptor[:], at + 8)
+        if r.wide {
+            compressedValue = u64(descriptor[:], at + 4)
+            sizeValue = u64(descriptor[:], at + 12)
+        }
+        if uint32(u32(descriptor[:], at)) != entry.crc || compressedValue != entry.compressed || sizeValue != entry.header.Size {
             return error("archive: ZIP descriptor mismatch")
         }
         r.nextOffset = boundary
@@ -335,18 +486,6 @@ func (r mut ZIPReader) nextHeader() (Header, bool, error) {
     if flags != entry.flags || u16(record[:], 8) != entry.method {
         return absent(), false, error("archive: ZIP flag mismatch")
     }
-    let crc = u32(record[:], 14)
-    let compressed = u32(record[:], 18)
-    let size = u32(record[:], 22)
-    if flags & zipStreamed == 0 {
-        if uint32(crc) != entry.crc || compressed != entry.compressed || size != entry.header.Size {
-            return absent(), false, error("archive: ZIP local metadata mismatch")
-        }
-    } else {
-        if (crc != 0 && uint32(crc) != entry.crc) || (compressed != 0 && compressed != entry.compressed) || (size != 0 && size != entry.header.Size) {
-            return absent(), false, error("archive: ZIP local metadata mismatch")
-        }
-    }
     let nameSize = u16(record[:], 26)
     let extraSize = u16(record[:], 28)
     if nameSize > MaxNameBytes {
@@ -358,7 +497,25 @@ func (r mut ZIPReader) nextHeader() (Header, bool, error) {
     }
     var variable = zeros(nameSize + extraSize)
     readExact(r.source, variable[:])?
-    zipExtra(variable[nameSize:])?
+    let field = zipExtra(variable[nameSize:])?
+    r.wide = field.found
+    var values = zip64Payload(variable[nameSize:], field)
+    let crc = u32(record[:], 14)
+    let marked = u32(record[:], 18) == marker32 || u32(record[:], 22) == marker32
+    if marked && !field.found {
+        return absent(), false, error("archive: invalid ZIP64 extra field")
+    }
+    let size = values.take(u32(record[:], 22), marked)?
+    let compressed = values.take(u32(record[:], 18), marked)?
+    if flags & zipStreamed == 0 {
+        if uint32(crc) != entry.crc || compressed != entry.compressed || size != entry.header.Size {
+            return absent(), false, error("archive: ZIP local metadata mismatch")
+        }
+    } else {
+        if (crc != 0 && uint32(crc) != entry.crc) || (compressed != 0 && compressed != entry.compressed) || (size != 0 && size != entry.header.Size) {
+            return absent(), false, error("archive: ZIP local metadata mismatch")
+        }
+    }
     let name = zipName(variable[:nameSize], flags)?
     if name != entry.header.Name {
         return absent(), false, error("archive: ZIP local name mismatch")
@@ -511,13 +668,25 @@ func (w mut ZIPWriter<W>) finishEntry() error {
         flate.Finish(w.encoder, w.output)?
     }
     let compressed = w.output.count - w.payloadStart
+    let previousExtra = w.entries[index].extraSize()
     w.entries[index].compressed = compressed
+    let addedMetadata = w.entries[index].extraSize() - previousExtra
+    if addedMetadata > MaxMetadataBytes - w.metadata {
+        return error("archive: metadata byte limit exceeded")
+    }
+    w.metadata += addedMetadata
+    let size = w.entries[index].header.Size
     var descriptor = zeros(16)
+    if w.entries[index].wide {
+        descriptor = zeros(24)
+        put64(descriptor[:], 8, compressed)
+        put64(descriptor[:], 16, size)
+    } else {
+        put32(descriptor[:], 8, compressed)
+        put32(descriptor[:], 12, size)
+    }
     put32(descriptor[:], 0, zipDescriptor)
     put32(descriptor[:], 4, int(w.crc))
-    let size = w.entries[w.entries.len() - 1].header.Size
-    put32(descriptor[:], 8, compressed)
-    put32(descriptor[:], 12, size)
     let _, err = w.output.Write(descriptor[:])
     if err != nil {
         return err
@@ -540,25 +709,41 @@ func (w mut ZIPWriter<W>) start(entry Entry, compression Compression) error {
     if header.Size > w.dataLimit - w.declared {
         return error("archive: data byte limit exceeded")
     }
-    if 46 + header.Name.len() > MaxMetadataBytes - w.metadata {
-        return error("archive: metadata byte limit exceeded")
-    }
     w.finishEntry()?
     let offset = w.output.count
-    var record = zeros(30 + header.Name.len())
+    let wide = header.Size > wideThreshold
+    let stored = zipEntry{wide: wide, symlink: false, executable: entry.Executable, method: int(compression), compressed: 0, header: header, crc: 0, flags: zipUTF8 | zipStreamed, offset: offset}
+    let metadataSize = 46 + header.Name.len() + stored.extraSize()
+    if metadataSize > MaxMetadataBytes - w.metadata {
+        return error("archive: metadata byte limit exceeded")
+    }
+    var extra = 0
+    if wide {
+        extra = 20
+    }
+    var record = zeros(30 + header.Name.len() + extra)
     put32(record[:], 0, zipLocal)
-    put16(record[:], 4, 20)
     put16(record[:], 6, zipUTF8 | zipStreamed)
     put16(record[:], 8, int(compression))
     put16(record[:], 12, 33)
     put16(record[:], 26, header.Name.len())
     putText(record[:], 30, header.Name)
+    if wide {
+        put16(record[:], 4, 45)
+        put32(record[:], 18, marker32)
+        put32(record[:], 22, marker32)
+        put16(record[:], 28, extra)
+        put16(record[:], 30 + header.Name.len(), 1)
+        put16(record[:], 32 + header.Name.len(), 16)
+    } else {
+        put16(record[:], 4, 20)
+    }
     let _, err = w.output.Write(record[:])
     if err != nil {
         return err
     }
-    w.entries.push(zipEntry{symlink: false, executable: entry.Executable, method: int(compression), compressed: 0, header: header, crc: 0, flags: zipUTF8 | zipStreamed, offset: offset})
-    w.metadata += 46 + header.Name.len()
+    w.entries.push(stored)
+    w.metadata += metadataSize
     w.declared += header.Size
     w.payloadStart = w.output.count
     w.encoder = flate.NewEncoder(header.Size, MaxBytes)?
@@ -615,39 +800,90 @@ func (w mut ZIPWriter<W>) Write(data []byte) (int, error) {
 func (w mut ZIPWriter<W>) directory() error {
     let centralOffset = w.output.count
     for entry in w.entries {
-        var record = zeros(46 + entry.header.Name.len())
-        put32(record[:], 0, zipCentral)
-        if entry.executable {
-            put16(record[:], 4, 0x0314)
-        } else {
-            put16(record[:], 4, 20)
+        var wideValues = Array<int>{}
+        var size = entry.header.Size
+        var compressed = entry.compressed
+        var offset = entry.offset
+        if size >= marker32 {
+            wideValues.push(size)
+            size = marker32
         }
-        put16(record[:], 6, 20)
+        if compressed >= marker32 {
+            wideValues.push(compressed)
+            compressed = marker32
+        }
+        if offset >= marker32 {
+            wideValues.push(offset)
+            offset = marker32
+        }
+        let extra = entry.extraSize()
+        let name = entry.header.Name
+        var record = zeros(46 + name.len() + extra)
+        put32(record[:], 0, zipCentral)
+        var version = 20
+        if entry.wide || extra > 0 {
+            version = 45
+        }
+        var madeBy = version
+        if entry.executable {
+            madeBy = 0x0300 | version
+        }
+        put16(record[:], 4, madeBy)
+        put16(record[:], 6, version)
         put16(record[:], 8, entry.flags)
         put16(record[:], 10, entry.method)
         put16(record[:], 14, 33)
         put32(record[:], 16, int(entry.crc))
-        put32(record[:], 20, entry.compressed)
-        put32(record[:], 24, entry.header.Size)
-        put16(record[:], 28, entry.header.Name.len())
+        put32(record[:], 20, compressed)
+        put32(record[:], 24, size)
+        put16(record[:], 28, name.len())
+        put16(record[:], 30, extra)
         if entry.header.Directory {
             put32(record[:], 38, 16)
         } else if entry.executable {
             put32(record[:], 38, 0o100755 << 16)
         }
-        put32(record[:], 42, entry.offset)
-        putText(record[:], 46, entry.header.Name)
+        put32(record[:], 42, offset)
+        putText(record[:], 46, name)
+        if extra > 0 {
+            put16(record[:], 46 + name.len(), 1)
+            put16(record[:], 48 + name.len(), extra - 4)
+            for var i = 0; i < wideValues.len(); i += 1 {
+                put64(record[:], 50 + name.len() + 8 * i, wideValues[i])
+            }
+        }
         let _, err = w.output.Write(record[:])
         if err != nil {
             return err
         }
     }
+    let count = w.entries.len()
+    let centralSize = w.output.count - centralOffset
+    if count >= marker16 || centralSize >= marker32 || centralOffset >= marker32 {
+        let recordOffset = w.output.count
+        var wideEnd = zeros(76)
+        put32(wideEnd[:], 0, zip64End)
+        put64(wideEnd[:], 4, 44)
+        put16(wideEnd[:], 12, 45)
+        put16(wideEnd[:], 14, 45)
+        put64(wideEnd[:], 24, count)
+        put64(wideEnd[:], 32, count)
+        put64(wideEnd[:], 40, centralSize)
+        put64(wideEnd[:], 48, centralOffset)
+        put32(wideEnd[:], 56, zip64Locator)
+        put64(wideEnd[:], 64, recordOffset)
+        put32(wideEnd[:], 72, 1)
+        let _, wideErr = w.output.Write(wideEnd[:])
+        if wideErr != nil {
+            return wideErr
+        }
+    }
     var end = zeros(22)
     put32(end[:], 0, zipEnd)
-    put16(end[:], 8, w.entries.len())
-    put16(end[:], 10, w.entries.len())
-    put32(end[:], 12, w.output.count - centralOffset)
-    put32(end[:], 16, centralOffset)
+    put16(end[:], 8, smaller(count, marker16))
+    put16(end[:], 10, smaller(count, marker16))
+    put32(end[:], 12, smaller(centralSize, marker32))
+    put32(end[:], 16, smaller(centralOffset, marker32))
     let _, err = w.output.Write(end[:])
     return err
 }

@@ -145,7 +145,7 @@ func (o tarOverride) pending() bool {
 }
 
 func paxDecimal(text string) (int, bool) {
-    if text.len() == 0 || text.len() > 10 {
+    if text.len() == 0 || text.len() > 12 {
         return 0, false
     }
     var value = 0
@@ -327,15 +327,17 @@ func shortName(name string, directory bool) string {
     return name[:end]
 }
 
-func paxPathRecord(name string) Array<byte> {
-    let base = 7 + name.len()
+const ustarMaxSize = 8589934591
+
+func paxRecord(key string, value string) Array<byte> {
+    let base = key.len() + value.len() + 3
     var digits = 1
     var limit = 10
     for base + digits >= limit {
         digits += 1
         limit *= 10
     }
-    var length = base + digits
+    let length = base + digits
     var text = Array<byte>{}
     var divisor = 1
     for var i = 1; i < digits; i += 1 {
@@ -345,17 +347,24 @@ func paxPathRecord(name string) Array<byte> {
         text.push(byte(48 + length / divisor % 10))
         divisor /= 10
     }
-    for value in strings.Bytes(" path=" + name + "\n") {
+    for value in strings.Bytes(" " + key + "=" + value + "\n") {
         text.push(value)
     }
     return text
+}
+
+func decimal(value int) string {
+    if value < 10 {
+        return "0123456789" [value:value + 1]
+    }
+    return decimal(value / 10) + decimal(value % 10)
 }
 
 func encodeTAR(header Header, executable bool) (Array<byte>, error) {
     validate(header)?
     var name = header.Name
     var prefix = ""
-    var extended = Array<byte>{}
+    var records = Array<byte>{}
     if name.len() > 100 {
         var split = -1
         for var i = 0; i < name.len(); i += 1 {
@@ -364,18 +373,30 @@ func encodeTAR(header Header, executable bool) (Array<byte>, error) {
             }
         }
         if split < 0 {
-            let record = paxPathRecord(header.Name)
-            extended = ustarBlock("././@PaxHeader", "", 120, 0o644, record.len())
-            for value in record {
-                extended.push(value)
-            }
-            for extended.len() % tarRecord != 0 {
-                extended.push(0)
+            for value in paxRecord("path", header.Name) {
+                records.push(value)
             }
             name = shortName(header.Name, header.Directory)
         } else {
             prefix = name[:split]
             name = name[split + 1:]
+        }
+    }
+    var size = header.Size
+    if size > ustarMaxSize {
+        for value in paxRecord("size", decimal(size)) {
+            records.push(value)
+        }
+        size = 0
+    }
+    var extended = Array<byte>{}
+    if records.len() > 0 {
+        extended = ustarBlock("././@PaxHeader", "", 120, 0o644, records.len())
+        for value in records {
+            extended.push(value)
+        }
+        for extended.len() % tarRecord != 0 {
+            extended.push(0)
         }
     }
     var kind = byte(48)
@@ -386,7 +407,7 @@ func encodeTAR(header Header, executable bool) (Array<byte>, error) {
     } else if executable {
         mode = 0o755
     }
-    let block = ustarBlock(name, prefix, kind, mode, header.Size)
+    let block = ustarBlock(name, prefix, kind, mode, size)
     for value in block {
         extended.push(value)
     }
