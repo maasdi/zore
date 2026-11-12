@@ -14,7 +14,9 @@ Windows has native security and cleanup regressions. See `conformance/archives.m
 Archive checks in `tests/packages/archive.rs` cover ownership and private state.
 `tests/codegen/archive.rs` exercises short/partial I/O, explicit finalization,
 concrete sink recovery, bounded errors, cleanup and one-worker progress.
-`python tests/hardening/archive_oracle.py` checks external USTAR/stored ZIP and
+`python tests/hardening/archive_oracle.py` checks ZIP64 fields, signed/unsigned
+descriptors, 70,000-entry interoperability and the central-directory metadata
+limit using a counting sink, as well as external USTAR/stored ZIP and
 `.tar.gz` fixtures, malformed input, limits and descriptor/CRC edge cases. The
 compiled guide verifies composition and full stream validation. See
 `conformance/archives.md`.

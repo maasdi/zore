@@ -88,6 +88,9 @@ Python extraction oracle runs on every host.
 | Three entries written by `ZIPWriter` | No ZIP64 records | `archive_oracle.py` |
 | ZIP64 end record with a bad signature, size, counts, entries, central size; locator with a bad disk, offset or disk count; no locator; a marker without a locator | Failure | `archive_oracle.py` |
 | ZIP64 extra field that is short, repeated, or holds a value over `MaxBytes` | Failure; an empty field is accepted | `archive_oracle.py` |
+| ZIP64 central size, compressed size and offset fields, individually and together | Read; Python and Zore recover the same payload | `archive_oracle.py` |
+| Streamed ZIP64 stored/deflated entries with unsigned 20-byte descriptors | Read; payload matches the signed descriptor case | `archive_oracle.py` |
+| Empty ZIP entries with 1024-byte names up to the central-directory metadata limit | Finalize successfully; one more entry fails without reserving unused ZIP64 extras | `archive_oracle.py` counting sink |
 | 4.5 GB stored entry written by Zore and a 4.6 GB entry written by Python; 8.6 GB TAR entry | Read by the other side in full | Checked by hand only (too large for CI) |
 
 ## Extracting into an existing folder (§37.36)

@@ -1,8 +1,8 @@
 # Remaining archive work
 
 Issue [#224](https://github.com/maasdi/zore/issues/224) provides gzip, USTAR,
-classic stored/DEFLATE ZIP, and confined new-directory extraction on Linux/macOS/Windows.
-See the [archive guide](../archives.md) and spec §§37.26–37.30.
+stored/DEFLATE ZIP with ZIP64, and confined new-directory extraction on Linux/macOS/Windows.
+See the [archive guide](../archives.md) and spec §§37.26–37.30, §§37.33–37.35.
 
 Windows extraction now uses handle-relative no-reparse operations, protected
 owner/LocalSystem DACLs, filesystem identity checks, handle-based cleanup and
