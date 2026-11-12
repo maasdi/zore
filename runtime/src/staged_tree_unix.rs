@@ -52,6 +52,14 @@ unsafe extern "C" {
     fn openat(fd: c_int, path: *const c_char, flags: c_int, ...) -> c_int;
     fn mkdirat(fd: c_int, path: *const c_char, mode: u32) -> c_int;
     fn unlinkat(fd: c_int, path: *const c_char, flags: c_int) -> c_int;
+    fn symlinkat(target: *const c_char, fd: c_int, path: *const c_char) -> c_int;
+    fn linkat(
+        old_fd: c_int,
+        old: *const c_char,
+        new_fd: c_int,
+        new: *const c_char,
+        flags: c_int,
+    ) -> c_int;
     fn fstatat(fd: c_int, path: *const c_char, stat: *mut c_void, flags: c_int) -> c_int;
     #[cfg(target_os = "linux")]
     fn renameat2(
@@ -359,7 +367,7 @@ impl Tree {
         let parts = Self::parts(path)?;
         self.walk(&parts, true).map(drop)
     }
-    pub(super) fn create_file(&mut self, path: &str) -> io::Result<()> {
+    pub(super) fn create_file(&mut self, path: &str, executable: bool) -> io::Result<()> {
         if self.active.is_some() {
             return Err(invalid("an entry file is still open"));
         }
@@ -377,8 +385,61 @@ impl Tree {
             path: path.into(),
             directory: false,
         });
-        make_private(&file, 0o600)?;
+        make_private(&file, if executable { 0o700 } else { 0o600 })?;
         self.active = Some(file);
+        Ok(())
+    }
+    pub(super) fn symlink(&mut self, path: &str, target: &str) -> io::Result<()> {
+        if self.active.is_some() {
+            return Err(invalid("an entry file is still open"));
+        }
+        let target = CString::new(target).map_err(|_| invalid("NUL in link target"))?;
+        let parts = Self::parts(path)?;
+        let parent = self.walk(&parts[..parts.len() - 1], true)?;
+        if self.nodes.len() == self.limit {
+            return Err(invalid("node limit exceeded"));
+        }
+        let child = name(parts[parts.len() - 1])?;
+        // SAFETY: the target and child are NUL-terminated and the parent handle is live.
+        if unsafe { symlinkat(target.as_ptr(), parent.as_raw_fd(), child.as_ptr()) } != 0 {
+            return Err(io::Error::last_os_error());
+        }
+        self.nodes.push(Node {
+            path: path.into(),
+            directory: false,
+        });
+        Ok(())
+    }
+    pub(super) fn hard_link(&mut self, path: &str, existing: &str) -> io::Result<()> {
+        if self.active.is_some() {
+            return Err(invalid("an entry file is still open"));
+        }
+        let old_parts = Self::parts(existing)?;
+        let old_parent = self.walk(&old_parts[..old_parts.len() - 1], false)?;
+        let old_child = name(old_parts[old_parts.len() - 1])?;
+        let parts = Self::parts(path)?;
+        let parent = self.walk(&parts[..parts.len() - 1], true)?;
+        if self.nodes.len() == self.limit {
+            return Err(invalid("node limit exceeded"));
+        }
+        let child = name(parts[parts.len() - 1])?;
+        // SAFETY: both names are single NUL-terminated components in live anchored handles.
+        if unsafe {
+            linkat(
+                old_parent.as_raw_fd(),
+                old_child.as_ptr(),
+                parent.as_raw_fd(),
+                child.as_ptr(),
+                0,
+            )
+        } != 0
+        {
+            return Err(io::Error::last_os_error());
+        }
+        self.nodes.push(Node {
+            path: path.into(),
+            directory: false,
+        });
         Ok(())
     }
     pub(super) fn file(&mut self) -> io::Result<&mut File> {
@@ -504,8 +565,8 @@ mod tests {
     #[test]
     fn publication_and_private_permissions() {
         let root = Sandbox::new();
-        let mut tree = Tree::create(&root.destination(), 3).unwrap();
-        tree.create_file("a/b.txt").unwrap();
+        let mut tree = Tree::create(&root.destination(), 4).unwrap();
+        tree.create_file("a/b.txt", false).unwrap();
         tree.file().unwrap().write_all(b"hello").unwrap();
         assert!(!Path::new(&root.destination()).exists());
         assert_eq!(
@@ -514,7 +575,16 @@ mod tests {
         );
         tree.finish_file().unwrap();
         tree.mkdir("a").unwrap();
+        tree.create_file("a/run.sh", true).unwrap();
+        tree.finish_file().unwrap();
         tree.commit().unwrap();
+        assert_eq!(
+            std::fs::metadata(root.0.join("result/a/run.sh"))
+                .unwrap()
+                .mode()
+                & 0o777,
+            0o700
+        );
         assert_eq!(
             std::fs::read(root.0.join("result/a/b.txt")).unwrap(),
             b"hello"
@@ -530,7 +600,7 @@ mod tests {
         let root = Sandbox::new();
         {
             let mut tree = Tree::create(&root.destination(), 3).unwrap();
-            tree.create_file("a/b.txt").unwrap();
+            tree.create_file("a/b.txt", false).unwrap();
             assert!(tree.commit().is_err());
         }
         assert_eq!(root.children(), 0);
@@ -554,14 +624,14 @@ mod tests {
         std::fs::remove_file(root.0.join("result")).unwrap();
         let mut tree = Tree::create(&root.destination(), 3).unwrap();
         for name in ["../escape", "/absolute", "a//b", "a/./b", "a\\b", "a\0b"] {
-            assert!(tree.create_file(name).is_err(), "{name:?}");
+            assert!(tree.create_file(name, false).is_err(), "{name:?}");
         }
         let staging = root
             .0
             .join(tree.envelope_name.to_str().unwrap())
             .join("tree");
         symlink(&outside.0, staging.join("alias")).unwrap();
-        assert!(tree.create_file("alias/escape").is_err());
+        assert!(tree.create_file("alias/escape", false).is_err());
         std::fs::remove_file(staging.join("alias")).unwrap();
         tree.abort().unwrap();
         assert_eq!(outside.children(), 0);
@@ -575,7 +645,7 @@ mod tests {
         let mut tree = Tree::create(destination.to_str().unwrap(), 3).unwrap();
         std::fs::rename(root.0.join("parent"), root.0.join("moved")).unwrap();
         symlink(&outside.0, root.0.join("parent")).unwrap();
-        tree.create_file("file").unwrap();
+        tree.create_file("file", false).unwrap();
         tree.file().unwrap().write_all(b"anchored").unwrap();
         tree.finish_file().unwrap();
         tree.commit().unwrap();
@@ -589,17 +659,47 @@ mod tests {
     fn node_depth_and_collision_failures_clean_up() {
         let root = Sandbox::new();
         let mut tree = Tree::create(&root.destination(), 2).unwrap();
-        assert!(tree.create_file("a/b/c").is_err());
+        assert!(tree.create_file("a/b/c", false).is_err());
         tree.abort().unwrap();
         assert_eq!(root.children(), 0);
         let mut tree = Tree::create(&root.destination(), 10).unwrap();
         assert!(tree.mkdir(&vec!["a"; 65].join("/")).is_err());
-        tree.create_file("a").unwrap();
+        tree.create_file("a", false).unwrap();
         tree.finish_file().unwrap();
         assert!(tree.mkdir("a/b").is_err());
-        assert!(tree.create_file("a").is_err());
+        assert!(tree.create_file("a", false).is_err());
         tree.abort().unwrap();
         assert_eq!(root.children(), 0);
+    }
+    #[test]
+    fn staged_links_publish_and_clean_up() {
+        let root = Sandbox::new();
+        let mut tree = Tree::create(&root.destination(), 5).unwrap();
+        tree.create_file("a/file", false).unwrap();
+        tree.file().unwrap().write_all(b"x").unwrap();
+        tree.finish_file().unwrap();
+        tree.symlink("a/soft", "file").unwrap();
+        tree.hard_link("hard", "a/file").unwrap();
+        assert!(tree.hard_link("missing", "a/none").is_err());
+        assert!(tree.create_file("a/soft/inner", false).is_err());
+        tree.commit().unwrap();
+        let result = root.0.join("result");
+        assert_eq!(
+            std::fs::read_link(result.join("a/soft")).unwrap(),
+            Path::new("file")
+        );
+        assert_eq!(
+            std::fs::metadata(result.join("hard")).unwrap().ino(),
+            std::fs::metadata(result.join("a/file")).unwrap().ino()
+        );
+        let other = Sandbox::new();
+        let mut aborted = Tree::create(&other.destination(), 5).unwrap();
+        aborted.create_file("f", false).unwrap();
+        aborted.finish_file().unwrap();
+        aborted.symlink("s", "f").unwrap();
+        aborted.hard_link("h", "f").unwrap();
+        aborted.abort().unwrap();
+        assert_eq!(other.children(), 0);
     }
     #[cfg(target_os = "macos")]
     #[test]

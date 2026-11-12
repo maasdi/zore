@@ -6,7 +6,7 @@ import "std/os"
 import "std/strings"
 
 type extractionReader interface {
-    mut Next() (Header, bool, error)
+    mut Next() (Entry, bool, error)
     mut Read(buf mut []byte) (int, error)
 }
 
@@ -53,21 +53,59 @@ func (n mut extractionNames) add(header Header) error {
     return nil
 }
 
-func extract(reader mut extractionReader, tree mut os.StagedTree, entryLimit int) error {
+type ExtractOptions struct {
+    ArchiveLimit int
+    DataLimit int
+    EntryLimit int
+    Links bool
+}
+
+func DefaultExtractOptions(archiveLimit int, dataLimit int, entryLimit int) ExtractOptions {
+    return ExtractOptions{ArchiveLimit: archiveLimit, DataLimit: dataLimit, EntryLimit: entryLimit, Links: false}
+}
+
+func extractLink(entry Entry, tree mut os.StagedTree) error {
+    if entry.Kind == SymlinkEntry {
+        return tree.Symlink(entry.Header.Name, entry.Link)
+    }
+    var target = entry.Link
+    for strings.HasPrefix(target, "./") {
+        target = target[2:]
+    }
+    if !ValidName(target, false) {
+        return error("archive: invalid hard link target")
+    }
+    return tree.Link(entry.Header.Name, target)
+}
+
+func extract(reader mut extractionReader, tree mut os.StagedTree, entryLimit int, links bool) error {
     var names = extractionNames{folded: map[string]string{}, explicit: map[string]bool{}, nodes: 0, limit: entryLimit}
     for {
-        let header, present, err = reader.Next()
+        let entry, present, err = reader.Next()
         if err != nil {
             return err
         }
         if !present {
             return nil
         }
+        let linked = entry.Kind == SymlinkEntry || entry.Kind == HardLinkEntry
+        if linked && !links {
+            return error("archive: links are not extracted")
+        }
+        let header = entry.Header
         names.add(header)?
+        if linked {
+            extractLink(entry, tree)?
+            continue
+        }
         if header.Directory {
             tree.Mkdir(header.Name[:header.Name.len() - 1])?
         } else {
-            tree.Create(header.Name)?
+            if entry.Executable {
+                tree.CreateExecutable(header.Name)?
+            } else {
+                tree.Create(header.Name)?
+            }
             let count, copyErr = io.Copy(tree, reader)
             if copyErr != nil {
                 return copyErr
@@ -80,9 +118,9 @@ func extract(reader mut extractionReader, tree mut os.StagedTree, entryLimit int
     }
 }
 
-func extractInto(reader mut extractionReader, destination string, entryLimit int) error {
+func extractInto(reader mut extractionReader, destination string, entryLimit int, links bool) error {
     var tree = os.StageTree(destination, entryLimit)?
-    let err = extract(reader, tree, entryLimit)
+    let err = extract(reader, tree, entryLimit, links)
     if err != nil {
         let cleanup = tree.Abort()
         if cleanup != nil {
@@ -94,11 +132,19 @@ func extractInto(reader mut extractionReader, destination string, entryLimit int
 }
 
 func ExtractTAR(source own io.Reader, destination string, archiveLimit int, dataLimit int, entryLimit int) error {
-    var reader = NewTARReader(source, archiveLimit, dataLimit, entryLimit)?
-    return extractInto(reader, destination, entryLimit)
+    return ExtractTARWith(source, destination, DefaultExtractOptions(archiveLimit, dataLimit, entryLimit))
 }
 
 func ExtractZIP(source own io.ReadSeeker, destination string, archiveLimit int, dataLimit int, entryLimit int) error {
-    var reader = NewZIPReader(source, archiveLimit, dataLimit, entryLimit)?
-    return extractInto(reader, destination, entryLimit)
+    return ExtractZIPWith(source, destination, DefaultExtractOptions(archiveLimit, dataLimit, entryLimit))
+}
+
+func ExtractTARWith(source own io.Reader, destination string, options ExtractOptions) error {
+    var reader = NewTARReader(source, options.ArchiveLimit, options.DataLimit, options.EntryLimit)?
+    return extractInto(reader, destination, options.EntryLimit, options.Links)
+}
+
+func ExtractZIPWith(source own io.ReadSeeker, destination string, options ExtractOptions) error {
+    var reader = NewZIPReader(source, options.ArchiveLimit, options.DataLimit, options.EntryLimit)?
+    return extractInto(reader, destination, options.EntryLimit, options.Links)
 }

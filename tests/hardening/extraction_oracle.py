@@ -27,6 +27,12 @@ func run() error {
     let dataLimit = strconv.Atoi(args[5])?
     let entryLimit = strconv.Atoi(args[6])?
     let source = os.Open(args[2])?
+    if args[1] == "tarlinks" || args[1] == "ziplinks" {
+        var options = archive.DefaultExtractOptions(archiveLimit, dataLimit, entryLimit)
+        options.Links = true
+        if args[1] == "ziplinks" { return archive.ExtractZIPWith(source, args[3], options) }
+        return archive.ExtractTARWith(source, args[3], options)
+    }
     if args[1] == "zip" { return archive.ExtractZIP(source, args[3], archiveLimit, dataLimit, entryLimit) }
     if args[1] == "gzip" {
         let reader = gzip.NewReader(source, archiveLimit, archiveLimit)?
@@ -147,7 +153,36 @@ def main():
             info = tarfile.TarInfo('link')
             info.type, info.linkname = tarfile.SYMTYPE, '../outside'
             archive.addfile(info)
+        refused = run('tar', output.getvalue(), valid=False)
+        assert b'archive: links are not extracted' in refused.stderr, refused.stderr
+        output = io.BytesIO()
+        with tarfile.open(fileobj=output, mode='w', format=tarfile.USTAR_FORMAT) as archive:
+            info = tarfile.TarInfo('hard')
+            info.type, info.linkname = tarfile.LNKTYPE, 'tool'
+            archive.addfile(info)
         run('tar', output.getvalue(), valid=False)
+        output = io.BytesIO()
+        with tarfile.open(fileobj=output, mode='w', format=tarfile.USTAR_FORMAT) as archive:
+            for name, mode, data in [('bin/tool', 0o755, b'#!x'), ('bin/only-group', 0o610, b'g'), ('notes', 0o644, b'n')]:
+                info = tarfile.TarInfo(name)
+                info.mode, info.size = mode, len(data)
+                archive.addfile(info, io.BytesIO(data))
+        run('tar', output.getvalue(), expected={'bin/tool': b'#!x', 'bin/only-group': b'g', 'notes': b'n'})
+        if os.name != 'nt':
+            assert destination.joinpath('bin/tool').stat().st_mode & 0o777 == 0o700
+            assert destination.joinpath('bin/only-group').stat().st_mode & 0o777 == 0o700
+            assert destination.joinpath('notes').stat().st_mode & 0o777 == 0o600
+        output = io.BytesIO()
+        with zipfile.ZipFile(output, 'w') as archive:
+            for name, system, mode in [('unix-tool', 3, 0o100755), ('dos-file', 0, 0o100755), ('unix-file', 3, 0o100644)]:
+                info = zipfile.ZipInfo(name)
+                info.create_system = system
+                info.external_attr = mode << 16
+                archive.writestr(info, name.encode())
+        run('zip', output.getvalue(), expected={'unix-tool': b'unix-tool', 'dos-file': b'dos-file', 'unix-file': b'unix-file'})
+        if os.name != 'nt':
+            modes = {name: destination.joinpath(name).stat().st_mode & 0o777 for name in ['unix-tool', 'dos-file', 'unix-file']}
+            assert modes == {'unix-tool': 0o700, 'dos-file': 0o600, 'unix-file': 0o600}, modes
         output = io.BytesIO()
         with zipfile.ZipFile(output, 'w') as archive:
             info = zipfile.ZipInfo('link')
@@ -155,6 +190,51 @@ def main():
             info.external_attr = 0o120777 << 16
             archive.writestr(info, '../outside')
         run('zip', output.getvalue(), valid=False)
+        def linked(entries):
+            output = io.BytesIO()
+            with tarfile.open(fileobj=output, mode='w', format=tarfile.PAX_FORMAT) as archive:
+                for name, kind, value in entries:
+                    info = tarfile.TarInfo(name)
+                    if kind == 'f':
+                        info.size = len(value)
+                        archive.addfile(info, io.BytesIO(value))
+                        continue
+                    info.type = {'d': tarfile.DIRTYPE, 's': tarfile.SYMTYPE, 'h': tarfile.LNKTYPE}[kind]
+                    info.linkname = value if kind != 'd' else ''
+                    archive.addfile(info)
+            return output.getvalue()
+
+        hard_only = linked([('a/file', 'f', b'hi'), ('a/hard', 'h', 'a/file'), ('dot', 'h', './a/file')])
+        run('tarlinks', hard_only, expected={'a/file': b'hi', 'a/hard': b'hi', 'dot': b'hi'})
+        assert destination.joinpath('a/hard').stat().st_ino == destination.joinpath('a/file').stat().st_ino or os.name == 'nt'
+        refused = run('tar', hard_only, valid=False)
+        assert b'archive: links are not extracted' in refused.stderr
+        symlinks = linked([('a/file', 'f', b'hi'), ('a/rel', 's', 'file'), ('top', 's', 'a/file'),
+                           ('up', 's', 'a/../a/file'), ('dirlink', 's', 'a')])
+        if os.name == 'nt':
+            run('tarlinks', symlinks, valid=False)
+        else:
+            run('tarlinks', symlinks, expected={'a/file': b'hi', 'a/rel': b'hi', 'top': b'hi', 'up': b'hi'})
+            links = {name: os.readlink(destination / name) for name in ['a/rel', 'top', 'up', 'dirlink']}
+            assert links == {'a/rel': 'file', 'top': 'a/file', 'up': 'a/../a/file', 'dirlink': 'a'}, links
+        output = io.BytesIO()
+        with zipfile.ZipFile(output, 'w') as archive:
+            archive.writestr('file', b'z')
+            info = zipfile.ZipInfo('link')
+            info.create_system, info.external_attr = 3, 0o120777 << 16
+            archive.writestr(info, 'file')
+        if os.name == 'nt':
+            run('ziplinks', output.getvalue(), valid=False)
+        else:
+            run('ziplinks', output.getvalue(), expected={'file': b'z', 'link': b'z'})
+            assert os.readlink(destination / 'link') == 'file'
+        for entries in [[('a/x', 's', '../../outside')], [('x', 's', '/etc/passwd')], [('x', 's', 'a\\b')],
+                        [('x', 's', 'C:/x')], [('a', 's', '.'), ('b', 's', 'a/..')],
+                        [('b', 's', 'a/../x'), ('a', 's', '.')], [('h', 'h', 'missing')],
+                        [('d/', 'd', ''), ('h', 'h', 'd')], [('h', 'h', 'f'), ('f', 'f', b'x')],
+                        [('d', 's', '.'), ('d/x', 'f', b'x')], [('h', 'h', '../x')]]:
+            run('tarlinks', linked(entries), valid=False)
+        assert not list(outside.iterdir())
         payload = b'a' * 100000
         compressor = zlib.compressobj(wbits=-15)
         raw = compressor.compress(payload) + compressor.flush()

@@ -51,6 +51,7 @@ fn standard_wait(name: &str) -> Option<NativeWait> {
         | "std/os.treeStage"
         | "std/os.treeMkdir"
         | "std/os.treeCreate"
+        | "std/os.treeLink"
         | "std/os.treeWrite"
         | "std/os.treeFinishFile"
         | "std/os.treeCommit"

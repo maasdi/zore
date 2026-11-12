@@ -28,7 +28,7 @@ type entryWriter interface {
     mut Finish() error
 }
 type entryReader interface {
-    mut Next() (archive.Header, bool, error)
+    mut Next() (archive.Entry, bool, error)
     mut Read(buf mut []byte) (int, error)
 }
 func emit(writer mut entryWriter, data []byte, name string) error {
@@ -43,9 +43,11 @@ func emit(writer mut entryWriter, data []byte, name string) error {
 }
 func drain(reader mut entryReader, sink mut io.Writer) error {
     for {
-        let header, present, err = reader.Next()
+        let entry, present, err = reader.Next()
         if err != nil { return err }
         if !present { return nil }
+        if entry.Kind == archive.SymlinkEntry || entry.Kind == archive.HardLinkEntry { return error("link entry") }
+        let header = entry.Header
         println(header.Name)
         println(header.Size)
         println(header.Directory)
@@ -54,11 +56,56 @@ func drain(reader mut entryReader, sink mut io.Writer) error {
         if count != header.Size { return error("entry size disagreement") }
     }
 }
+func kindName(kind archive.EntryKind) string {
+    if kind == archive.DirectoryEntry { return "dir" }
+    if kind == archive.SymlinkEntry { return "symlink" }
+    if kind == archive.HardLinkEntry { return "hardlink" }
+    return "file"
+}
+func listEntries(reader mut entryReader, sink mut io.Writer) error {
+    for {
+        let entry, present, err = reader.Next()
+        if err != nil { return err }
+        if !present { return nil }
+        println(entry.Header.Name + "|" + kindName(entry.Kind) + "|" + entry.Link + "|" + strconv.Itoa(entry.Header.Size) + "|" + strconv.FormatBool(entry.Executable))
+        let _, copyErr = io.Copy(sink, reader)
+        if copyErr != nil { return copyErr }
+    }
+}
 func run() error {
     let args = os.Args()
     let archiveLimit = strconv.Atoi(args[4])?
     let dataLimit = strconv.Atoi(args[5])?
     let entryLimit = strconv.Atoi(args[6])?
+    if args[1] == "lt" || args[1] == "lz" {
+        let source = os.Open(args[2])?
+        var sink = os.Create(args[3])?
+        if args[1] == "lt" {
+            var reader = archive.NewTARReader(source, archiveLimit, dataLimit, entryLimit)?
+            listEntries(reader, sink)?
+            return reader.Close()
+        }
+        var reader = archive.NewZIPReader(source, archiveLimit, dataLimit, entryLimit)?
+        listEntries(reader, sink)?
+        return reader.Close()
+    }
+    if args[1] == "wxt" || args[1] == "wxz" {
+        let data = os.ReadFile(args[2])?
+        let sink = os.Create(args[3])?
+        let tool = archive.Entry{Header: archive.Header{Name: args[7], Size: data.len(), Directory: false}, Kind: archive.FileEntry, Link: "", Executable: true}
+        if args[1] == "wxt" {
+            var writer = archive.NewTARWriter(sink, archiveLimit, dataLimit, entryLimit)?
+            writer.WriteEntry(tool)?
+            let _, err = writer.Write(data[:])
+            if err != nil { return err }
+            return writer.Close()
+        }
+        var writer = archive.NewZIPWriter(sink, archiveLimit, dataLimit, entryLimit)?
+        writer.WriteEntryWith(tool, archive.Deflate)?
+        let _, err = writer.Write(data[:])
+        if err != nil { return err }
+        return writer.Close()
+    }
     if args[1] == "rt" || args[1] == "rz" || args[1] == "rtgz" {
         let source = os.Open(args[2])?
         var sink = os.Create(args[3])?
@@ -257,6 +304,8 @@ def main():
             assert (result.returncode == 0) == valid, (mode, label or name, len(data), result.stderr)
             assert b'leak:' not in result.stderr, result.stderr
             headers = []
+            if valid and mode.startswith('l'):
+                headers = [tuple(line.split('|')) for line in result.stdout.decode('utf-8').splitlines()]
             if valid and mode.startswith('r'):
                 lines = result.stdout.decode('utf-8').splitlines()
                 assert len(lines) % 3 == 0, lines
@@ -416,6 +465,69 @@ def main():
                         tar_member('sparse', b'S', b'', magic=gnu) + TAR_END,
                         tar_member('PaxHeader', b'x', pax_payload([('path', 'p')]) + b'\x01') + file_entry + TAR_END]:
             run('rt', invalid, valid=False)
+        def tar_info(name, kind=tarfile.REGTYPE, link='', data=b'', mode=0o644):
+            info = tarfile.TarInfo(name)
+            info.type, info.linkname, info.size, info.mode = kind, link, len(data), mode
+            return info, io.BytesIO(data)
+
+        long_target = 'x/' * 200 + 'target'
+        for archive_format in [tarfile.PAX_FORMAT, tarfile.GNU_FORMAT, tarfile.USTAR_FORMAT]:
+            output = io.BytesIO()
+            with tarfile.open(fileobj=output, mode='w', format=archive_format) as archive:
+                archive.addfile(*tar_info('bin/tool', data=b'#!', mode=0o755))
+                archive.addfile(*tar_info('group-x', data=b'g', mode=0o610))
+                archive.addfile(*tar_info('plain', data=b'p'))
+                archive.addfile(*tar_info('soft', tarfile.SYMTYPE, 'plain'))
+                archive.addfile(*tar_info('hard', tarfile.LNKTYPE, 'plain'))
+                if archive_format != tarfile.USTAR_FORMAT:
+                    archive.addfile(*tar_info('far', tarfile.SYMTYPE, long_target))
+            encoded = output.getvalue()
+            expected = [('bin/tool', 'file', '', '2', 'true'), ('group-x', 'file', '', '1', 'true'),
+                        ('plain', 'file', '', '1', 'false'), ('soft', 'symlink', 'plain', '0', 'false'),
+                        ('hard', 'hardlink', 'plain', '0', 'false')]
+            if archive_format != tarfile.USTAR_FORMAT:
+                expected.append(('far', 'symlink', long_target, '0', 'false'))
+            assert run('lt', encoded)[1] == expected, run('lt', encoded)[1]
+        output = io.BytesIO()
+        with zipfile.ZipFile(output, 'w') as archive:
+            for name, system, mode, data, compression in [
+                    ('tool', 3, 0o100755, b'#!', zipfile.ZIP_STORED),
+                    ('dos', 0, 0o100755, b'd', zipfile.ZIP_STORED),
+                    ('soft', 3, 0o120777, b'tool', zipfile.ZIP_STORED),
+                    ('deflated-link', 3, 0o120777, long_target.encode(), zipfile.ZIP_DEFLATED)]:
+                info = zipfile.ZipInfo(name)
+                info.create_system, info.external_attr, info.compress_type = system, mode << 16, compression
+                archive.writestr(info, data)
+        encoded = output.getvalue()
+        assert run('lz', encoded)[1] == [('tool', 'file', '', '2', 'true'), ('dos', 'file', '', '1', 'false'),
+                                         ('soft', 'symlink', 'tool', '0', 'false'),
+                                         ('deflated-link', 'symlink', long_target, '0', 'false')]
+        for data in [b'', b'x' * 1025, b'\xff', b'a\0b']:
+            output = io.BytesIO()
+            with zipfile.ZipFile(output, 'w') as archive:
+                info = zipfile.ZipInfo('bad')
+                info.create_system, info.external_attr = 3, 0o120777 << 16
+                archive.writestr(info, data)
+            run('lz', output.getvalue(), valid=False, label=repr(data[:4]))
+        for invalid in [tar_member('soft', b'2', b'payload') + TAR_END,
+                        tar_member('soft', b'2') + TAR_END,
+                        tar_member('PaxHeader', b'g', pax_payload([('linkpath', 'x')])) + file_entry + TAR_END,
+                        tar_member('PaxHeader', b'x', pax_payload([('linkpath', 'x')])) + file_entry + TAR_END,
+                        tar_member('././@LongLink', b'K', b'x\0', magic=gnu) + file_entry + TAR_END,
+                        tar_member('././@LongLink', b'K', b'x\0', magic=gnu) + TAR_END]:
+            run('lt', invalid, valid=False)
+        for mode, reader in [('wxt', 'lt'), ('wxz', 'lz')]:
+            encoded, _ = run(mode, b'#!run', name='bin/run')
+            assert run(reader, encoded)[1] == [('bin/run', 'file', '', '5', 'true')]
+            if mode == 'wxt':
+                with tarfile.open(fileobj=io.BytesIO(encoded)) as archive:
+                    assert archive.getmember('bin/run').mode == 0o755
+            else:
+                with zipfile.ZipFile(io.BytesIO(encoded)) as archive:
+                    info = archive.getinfo('bin/run')
+                    assert info.create_system == 3 and info.external_attr >> 16 == 0o100755
+                    assert archive.read('bin/run') == b'#!run'
+
         counted = pax_header + file_entry + TAR_END
         assert run('rt', counted, archive_limit=len(counted))[1] == [('p', 1, False)]
         run('rt', counted, valid=False, archive_limit=len(counted) - 1)

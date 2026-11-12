@@ -10,10 +10,10 @@ import "std/os"
 func read(path string) error {
     let file = os.Open(path)?
     var reader = archive.NewZIPReader(file, 10000, 5000, 10)?
-    let header, present, err = reader.Next()
+    let entry, present, err = reader.Next()
     if err != nil { return err }
     if present {
-        println(header.Name)
+        println(entry.Header.Name)
         let data = io.ReadAll(reader)?
         println(crc32.Checksum(data[:]))
     }
@@ -148,5 +148,61 @@ func main() {}
             "package main\nimport \"std/compress/flate\"\nfunc run() error {{ let state = flate.New{state}(10, 10)?; let moved = state; println(state.InputBytes()); return nil }}\nfunc main() {{}}\n"
         );
         super::rejects(&[("main.ore", &source)], "moved");
+    }
+}
+
+#[test]
+fn archive_entries_are_copy_values_and_kinds_are_typed() {
+    super::accepts(&[(
+        "main.ore",
+        r#"package main
+import "std/archive"
+import "std/os"
+func list(path string) (Array<archive.Entry>, error) {
+    let file = os.Open(path)?
+    var reader = archive.NewTARReader(file, 10000, 5000, 10)?
+    var entries = Array<archive.Entry>{}
+    for {
+        let entry, present, err = reader.Next()
+        if err != nil { return entries, err }
+        if !present { break }
+        let copied = entry
+        if copied.Kind == archive.SymlinkEntry || entry.Kind == archive.HardLinkEntry { println(entry.Link) }
+        entries.push(entry)
+    }
+    return entries, reader.Close()
+}
+async func write(path string) error {
+    let file = os.Create(path)?
+    var writer = archive.NewZIPWriter(file, 10000, 5000, 10)?
+    writer.WriteEntryWith(archive.Entry{Header: archive.Header{Name: "run", Size: 0, Directory: false}, Kind: archive.FileEntry, Link: "", Executable: true}, archive.Deflate)?
+    return writer.Close()
+}
+func create(tree mut os.StagedTree) error {
+    tree.CreateExecutable("run")?
+    tree.Symlink("alias", "run")?
+    return tree.Link("again", "run")
+}
+func unpack(path string) error {
+    let file = os.Open(path)?
+    var options = archive.DefaultExtractOptions(10000, 5000, 10)
+    options.Links = true
+    return archive.ExtractTARWith(file, "out", options)
+}
+func main() {}
+"#,
+    )]);
+    for (body, expected) in [
+        (
+            "let entry = archive.Entry{Header: archive.Header{Name: \"a\", Size: 0, Directory: false}, Kind: 2, Link: \"\"}; println(entry.Link)",
+            "missing field",
+        ),
+        (
+            "let entry = archive.Entry{Header: archive.Header{Name: \"a\", Size: 0, Directory: false}, Kind: archive.FileEntry, Link: \"\", Executable: 1}; println(entry.Link)",
+            "mismatched types",
+        ),
+    ] {
+        let source = format!("package main\nimport \"std/archive\"\nfunc main() {{ {body} }}\n");
+        super::rejects(&[("main.ore", &source)], expected);
     }
 }

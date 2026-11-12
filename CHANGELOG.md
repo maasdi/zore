@@ -8,6 +8,27 @@ including those shipped in `0.1.0-alpha.1`, are not split by release.
 
 ## [Unreleased]
 
+### Archive links and executable files
+
+- Breaking: `TARReader.Next` and `ZIPReader.Next` now return
+  `(archive.Entry, bool, error)` instead of `Header` (§37.34). An `Entry` holds
+  the `Header`, its `Kind` (`FileEntry`, `DirectoryEntry`, `SymlinkEntry`,
+  `HardLinkEntry`), any link target, and whether a file is executable. Read
+  `entry.Header` where you used the header, and check `entry.Kind`: `Next` now
+  returns links (TAR symlinks and hard links, PAX `linkpath` and GNU long link
+  targets, ZIP Unix symlinks) instead of failing on them.
+- `TARWriter.WriteEntry`, `ZIPWriter.WriteEntry` and `WriteEntryWith` write
+  executable files (TAR mode 0755, ZIP Unix mode 0755) and refuse links.
+- Extraction restores the executable bit as mode 0700 on Linux and macOS via the
+  new `os.StagedTree.CreateExecutable`. Links still fail by default
+  (`archive: links are not extracted`).
+- New `archive.ExtractOptions`, `DefaultExtractOptions`, `ExtractTARWith` and
+  `ExtractZIPWith`. With `Links` set, extraction creates symlinks and hard links
+  that provably stay inside the new folder, through the new
+  `os.StagedTree.Symlink` and `os.StagedTree.Link`; escapes, absolute targets,
+  targets passing through another link, and hard links to anything but an
+  earlier file fail and roll back. Windows supports hard links only.
+
 ### PAX and GNU TAR names
 
 - `TARReader` reads PAX extended headers and GNU long-name entries, so archives
