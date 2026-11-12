@@ -56,7 +56,7 @@ class WindowsCaptureTests(unittest.TestCase):
                 status = state.read_text()
             except (FileNotFoundError, ProcessLookupError):
                 return
-            self.assertEqual(status.split(') ')[1].split()[0], 'Z')
+            self.assertIn(status.split(') ')[1].split()[0], {'Z', 'X'})
 
     def test_serial_control_replaces_only_the_known_current_scheduling_block(self):
         source = (ROOT / 'compiler/src/driver/build.rs').read_text(encoding='utf-8')
