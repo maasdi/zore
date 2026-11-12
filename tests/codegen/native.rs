@@ -32,6 +32,7 @@ mod local_time;
 mod log;
 mod map_entries;
 mod mixed_bindings;
+mod networking;
 mod performance;
 mod rand;
 mod regexp;

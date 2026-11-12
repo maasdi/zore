@@ -12237,11 +12237,13 @@ Parsing never performs I/O, resolves a name, suspends or starts a helper.
 | `ParseIP(text string) (IP, error)` | Strict IPv4 dotted decimal or IPv6 literal; failure returns the invalid value |
 | `(ip IP) IsValid() bool`, `Is4() bool`, `Is6() bool` | Validity and address family; both family predicates are false for invalid values |
 | `(ip IP) String() string` | Canonical literal, or `""` for invalid values |
+| `(ip IP) Equal(other IP) bool` | Canonical address equality, including invalid values |
 | `(ip IP) Compare(other IP) int` | -1, 0 or 1; invalid first, IPv4 before IPv6, then unsigned address-byte order |
 | `NewAddrPort(ip IP, port int) (AddrPort, error)` | Requires a valid IP and port 0 through 65535 |
 | `ParseAddrPort(text string) (AddrPort, error)` | Literal `IPv4:port` or `[IPv6]:port`; never a hostname |
 | `(ap AddrPort) Addr() IP`, `Port() int`, `IsValid() bool` | Copy components and validity; invalid port is 0 |
 | `(ap AddrPort) String() string` | Canonical literal endpoint, or `""` for invalid values |
+| `(ap AddrPort) Equal(other AddrPort) bool` | Address and port equality |
 | `(ap AddrPort) Compare(other AddrPort) int` | IP order first, then numeric port order |
 
 IPv4 requires four decimal octets 0–255 without leading zeroes (except `0`).
@@ -12257,7 +12259,7 @@ for binding. Native error text is fixed: `net.ParseIP: invalid IP address`,
 `net.NewAddrPort: invalid address or port`. Failed constructors return zero values.
 
 Inputs are borrowed only for the call; results have no retained source borrow.
-Built-in `==`/`!=` compare value components. All APIs use ordinary string/value
+Use `Equal` or `Compare`; no struct equality operators are added. All APIs use ordinary string/value
 allocation and work bounded by literal size. Runtime parsing/formatting is a
 CPU-only primitive; the compiler adds bundled declarations, not source syntax.
 
