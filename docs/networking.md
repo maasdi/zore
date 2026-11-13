@@ -3,7 +3,7 @@
 `std/net` provides immutable IP/literal endpoint values, cancellable system name
 lookup, TCP streams and UDP datagrams. `std/net/url` resolves URI references
 separately from its strict HTTP URL parser. These APIs work on Linux, macOS and
-Windows; their contracts are locked in spec §§37.36–37.39.
+Windows; their contracts are locked in spec §§37.37–37.40.
 
 ```ore
 package main

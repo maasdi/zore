@@ -1,6 +1,6 @@
 # Public networking conformance
 
-Issue #227; locked spec §§37.36–37.39. All four increments retain the existing
+Issue #227; locked spec §§37.37–37.40. All four increments retain the existing
 ownership/error/async model and support Linux, macOS and Windows.
 
 | Increment | Executable assertions | Exclusions |

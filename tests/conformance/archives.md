@@ -92,3 +92,14 @@ Python extraction oracle runs on every host.
 | Streamed ZIP64 stored/deflated entries with unsigned 20-byte descriptors | Read; payload matches the signed descriptor case | `archive_oracle.py` |
 | Empty ZIP entries with 1024-byte names up to the central-directory metadata limit | Finalize successfully; one more entry fails without reserving unused ZIP64 extras | `archive_oracle.py` counting sink |
 | 4.5 GB stored entry written by Zore and a 4.6 GB entry written by Python; 8.6 GB TAR entry | Read by the other side in full | Checked by hand only (too large for CI) |
+
+## Extracting into an existing folder (§37.36)
+
+| Case | Required result | Evidence |
+| --- | --- | --- |
+| TAR and ZIP merged into a folder with other files and an existing subfolder | New files added; existing files unchanged | `extraction_oracle.py`; runtime `merge_adds_missing_nodes_and_never_replaces` |
+| The same archive merged twice | Second merge fails; nothing changes | `extraction_oracle.py` |
+| A staged file over an existing file; a folder over a file; a file over a folder | Failure naming the path; nothing added | `extraction_oracle.py`; runtime |
+| A symlinked subfolder in the destination | Failure; nothing written outside | `extraction_oracle.py`; runtime |
+| The destination is a file or a symlink | Failure before staging | `extraction_oracle.py`; runtime |
+| The destination is missing | Published as a new folder | `extraction_oracle.py`; runtime |

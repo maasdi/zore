@@ -218,6 +218,30 @@ anchored by its open handle, so operations cannot follow a replacement path.
 Duplicate explicit names, case aliases, host-equivalent aliases, file/directory
 conflicts, links (`archive: links are not extracted`) and special nodes fail.
 
+### Extracting into an existing folder
+
+By default the destination must not exist. Set `Merge` to add an archive to a
+folder that is already there:
+
+```text
+var options = archive.DefaultExtractOptions(archiveLimit, dataLimit, entryLimit)
+options.Merge = true
+archive.ExtractZIPWith(source, "site", options)?
+```
+
+The whole archive is still checked privately first. Then every new file and
+folder is compared with what exists:
+
+- missing items are added, and existing folders are merged into;
+- if any file already exists, or a link sits where the archive has something,
+  extraction stops before anything moves, with an error naming that path;
+- existing files and folders are never replaced, changed or removed.
+
+New items are moved in one by one without replacing anything. If something
+shows up at a path while that happens, every item already moved is moved back.
+The merge is not a single atomic step, so another program may briefly see part
+of the new files.
+
 ### Extracting links
 
 Links are refused unless you ask for them:

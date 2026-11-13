@@ -8,6 +8,15 @@ including those shipped in `0.1.0-alpha.1`, are not split by release.
 
 ## [Unreleased]
 
+### Extracting into an existing folder
+
+- `ExtractOptions.Merge` lets `ExtractTARWith` and `ExtractZIPWith` add an
+  archive to a folder that already exists (§37.36), through the new
+  `os.StageTreeInto`. Missing files and folders are added and existing folders
+  merged into; if any file or link is already at a path the archive uses,
+  extraction fails before moving anything. Existing content is never replaced.
+  A conflict that appears during the move puts back everything already moved.
+
 ### Public networking
 
 - Added `std/net.IP` and `AddrPort` values with strict literal parsing, canonical

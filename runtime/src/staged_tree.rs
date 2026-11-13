@@ -17,7 +17,7 @@ struct Tree;
 
 #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
 impl Tree {
-    fn create(_: &str, _: usize) -> std::io::Result<Self> {
+    fn create(_: &str, _: usize, _: bool) -> std::io::Result<Self> {
         Err(unsupported())
     }
     fn mkdir(&mut self, _: &str) -> std::io::Result<()> {
@@ -94,6 +94,7 @@ pub unsafe extern "C" fn zore_native_os_tree_stage(
     destination: *const u8,
     len: i64,
     limit: i64,
+    merge: bool,
 ) {
     // SAFETY: the compiler supplies valid string storage.
     let destination = unsafe { text_of(destination, len) };
@@ -102,7 +103,7 @@ pub unsafe extern "C" fn zore_native_os_tree_stage(
             .ok()
             .filter(|&n| n <= 1_000_000)
             .ok_or_else(|| std::io::Error::other("invalid node limit"))?;
-        let tree = Tree::create(&destination, limit)?;
+        let tree = Tree::create(&destination, limit, merge)?;
         let id = NEXT.fetch_add(1, Ordering::SeqCst);
         TABLE
             .lock()
