@@ -14,6 +14,53 @@ pub(super) fn packet(data: &[u8], peer: SocketAddr, capacity: usize) -> Result<V
     Ok(output)
 }
 
+#[cfg(windows)]
+fn ignore_connection_reset(socket: &std::net::UdpSocket) -> std::io::Result<()> {
+    use std::os::windows::io::AsRawSocket;
+
+    #[link(name = "ws2_32")]
+    unsafe extern "system" {
+        fn WSAIoctl(
+            socket: usize,
+            code: u32,
+            input: *const core::ffi::c_void,
+            input_len: u32,
+            output: *mut core::ffi::c_void,
+            output_len: u32,
+            returned: *mut u32,
+            overlapped: *mut core::ffi::c_void,
+            completion: *const core::ffi::c_void,
+        ) -> i32;
+    }
+    // Windows otherwise fails the next read when an earlier send drew an ICMP port-unreachable reply.
+    const SIO_UDP_CONNRESET: u32 = 0x9800_000C;
+    let report: u32 = 0;
+    let mut returned: u32 = 0;
+    let status = unsafe {
+        WSAIoctl(
+            socket.as_raw_socket() as usize,
+            SIO_UDP_CONNRESET,
+            (&raw const report).cast(),
+            size_of::<u32>() as u32,
+            std::ptr::null_mut(),
+            0,
+            &raw mut returned,
+            std::ptr::null_mut(),
+            std::ptr::null(),
+        )
+    };
+    if status == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
+}
+
+#[cfg(not(windows))]
+fn ignore_connection_reset(_socket: &std::net::UdpSocket) -> std::io::Result<()> {
+    Ok(())
+}
+
 /// # Safety
 /// Output is writable and address addresses len readable UTF-8 bytes.
 #[unsafe(no_mangle)]
@@ -39,6 +86,7 @@ pub unsafe extern "C" fn zore_native_net_udp_listen(
             ));
         }
         let socket = std::net::UdpSocket::bind(endpoint)?;
+        ignore_connection_reset(&socket)?;
         socket.set_nonblocking(true)?;
         Ok(socket)
     });
@@ -99,4 +147,29 @@ pub unsafe extern "C" fn zore_native_net_udp_close(out: *mut ErrorOut, id: i64) 
         ErrorOut::failed("net.UDP.Close: not an open datagram socket")
     };
     unsafe { out.write(result) };
+}
+
+#[cfg(all(test, windows))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reads_survive_a_send_to_a_closed_port() {
+        let socket = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+        ignore_connection_reset(&socket).unwrap();
+        socket
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        let closed = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+        let closed_address = closed.local_addr().unwrap();
+        drop(closed);
+        socket.send_to(b"gone", closed_address).unwrap();
+        std::thread::sleep(Duration::from_millis(100));
+        socket
+            .send_to(b"hello", socket.local_addr().unwrap())
+            .unwrap();
+        let mut buffer = [0u8; 16];
+        let (count, _) = socket.recv_from(&mut buffer).unwrap();
+        assert_eq!(&buffer[..count], b"hello");
+    }
 }
