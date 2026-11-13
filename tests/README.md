@@ -562,3 +562,53 @@ full-buffer blocking, and quiescence before retrieval. Run
 `cargo test --locked --test native acceptance::`. Diagnostic provenance in
 `diagnostics/semantic_provenance.rs` uses disk-loaded multifile Unicode/CRLF
 projects and the real CLI; run `cargo test --locked --test source_diagnostics`.
+
+# CI timing and sharding experiment
+
+When the full route is selected, CI runs the complete Cargo all-target test
+inventory across two shards on each
+supported OS. The runner keeps Cargo's test setup and groups selected cases in
+their original test processes, preserving shared runtime compilation fixtures.
+Ordinary local validation continues to use `cargo test --locked --all-targets`.
+
+Each shard uploads its selected inventory and harness/batch wall-clock timings
+as `test-results-<os>-<shard>` and writes a job summary. These timings include
+test execution and any native compilation performed inside the tests; they do
+not independently attribute frontend, clang, linker or runtime costs. Compare
+the slowest shard, total runner time and coverage against the baseline before
+increasing the shard count. More runners duplicate Cargo builds and cold caches.
+
+The existing `Rust checks (<os>)` gates require validation and every test shard
+to succeed. Dedicated platform checks are covered by the full inventory rather
+than being executed a second time before it. Superseded PR distribution builds
+are cancelled; tag and manually dispatched distribution runs remain queued.
+
+
+## Conditional CI routing
+
+Pull requests select checks from the complete merge-base-to-head Git diff.
+Renames are treated as deletions plus additions. Missing or invalid event data,
+unavailable Git history, empty diffs, and unknown paths select full validation.
+Main pushes, weekly scheduled CI and manual CI runs always select full coverage.
+Workflow and routing changes themselves select the full route.
+
+| Changed files | Selected work |
+| --- | --- |
+| `CHANGELOG.md`, `CONTRIBUTING.md`, `docs/README.md`, `docs/alpha.md`, `docs/release-workflow.md` | Linux build, Rust/Zore formatting and strict Rust documentation checks |
+| Python scripts under `benchmarks/` | Compiler build and benchmark Python harness tests on Linux/macOS/Windows |
+| `distribution/` or the packaging, release smoke, builder smoke and release-test Python scripts | Four release archives, installed-archive smoke tests and builder validation |
+| Everything else, including compiler, runtime, standard packages, tests, examples, specification and normative or executable-guide docs | Full validation, both test shards on each OS, benchmark harnesses and distribution validation |
+
+Mixed changes select the union of their routes. Python import checks and routing
+regressions run on every PR. The existing `Rust checks (<os>)` gates require the
+route selector and imports to succeed, every selected job to succeed, and each
+intentionally unselected job to be skipped. Failure, cancellation and missing
+outputs cannot count as a planned skip. A separate distribution gate applies
+the same selected-success rule to archives and builder jobs.
+
+The docs allowlist deliberately excludes the root README and guides whose
+examples are compiled by tests. Extend it only after checking test consumers.
+Use a manual `CI` workflow run on the desired branch to force full validation.
+Release tags and manual distribution runs retain their complete validation and
+publication safeguards. Conditional routing does not narrow seeded hardening
+or sanitizer policies in their separate workflow.

@@ -11,13 +11,36 @@ permissions:
 
 concurrency:
   group: alpha-distribution-${{ github.ref }}
-  cancel-in-progress: false
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   RELEASE_TAG: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
 
 jobs:
+  routes:
+    name: Select CI routes
+    runs-on: ubuntu-latest
+    outputs:
+      full: ${{ steps.routes.outputs.full }}
+      docs: ${{ steps.routes.outputs.docs }}
+      benchmarks: ${{ steps.routes.outputs.benchmarks }}
+      distribution: ${{ steps.routes.outputs.distribution }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.13'
+      - name: Test routing rules and gates
+        run: python -m unittest discover -s .github/scripts -p test_ci_routing.py
+      - name: Select checks
+        id: routes
+        run: python .github/scripts/ci_routing.py
+
   metadata:
+    needs: routes
+    if: needs.routes.outputs.distribution == 'true'
     runs-on: ubuntu-24.04
     permissions:
       contents: read
@@ -237,3 +260,22 @@ jobs:
         run: |
           printf '%s\n' "Builder image: ghcr.io/maasdi/zore-builder:$VERSION" '' 'If anonymous registry access is unavailable, download and verify the builder image release asset, then load it locally:' '' '```sh' "sha256sum --check zore-builder-$VERSION-linux-amd64.tar.gz.sha256" "docker load --input zore-builder-$VERSION-linux-amd64.tar.gz" '```' > "$RUNNER_TEMP/release-notes.txt"
           gh release create "$RELEASE_TAG" dist/* --verify-tag --draft --prerelease --latest=false --title "Zore $VERSION" --generate-notes --notes-file "$RUNNER_TEMP/release-notes.txt"
+
+  distribution-check:
+    name: Distribution checks
+    if: always()
+    needs: [routes, metadata, archives, builder]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.13'
+      - name: Require selected distribution validation
+        env:
+          ROUTES_RESULT: ${{ needs.routes.result }}
+          DISTRIBUTION: ${{ needs.routes.outputs.distribution }}
+          METADATA_RESULT: ${{ needs.metadata.result }}
+          ARCHIVES_RESULT: ${{ needs.archives.result }}
+          BUILDER_RESULT: ${{ needs.builder.result }}
+        run: python .github/scripts/ci_routing.py --distribution-gate
