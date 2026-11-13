@@ -98,6 +98,11 @@ cover fragmented/framed responses, malformed peers, cancellation, partial I/O,
 and owned cleanup. The HTTPS fixture checks real certificate verification and
 fragmented binary responses; platform-wide results remain subject to native CI.
 Redirects, retries, proxies, pooling, compression and HTTP/2 are excluded.
+Issue #228 now has an [ordered extension plan](design/http-client.md): streamed
+responses (#286), streamed requests (#287), bounded HTTP/1.1 pooling (#288),
+separate opt-in policies (#289) and an independent HTTP/2 decision (#290).
+These are design/implementation follow-ups, not delivered client features;
+each public API must be locked under spec §53 before implementation.
 
 Issue #106 (merged 2026-10-12 in #109) added `std/encoding/json`: Zore token
 encoding/decoding and an owned Value tree, plus compiler-generated concrete codecs with naming policies,
