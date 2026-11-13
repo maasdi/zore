@@ -4605,11 +4605,10 @@ func main() {
 #[test]
 fn a_panic_while_holding_the_lock_poisons_the_mutex() {
     let source = "package main
-import \"std/time\"
-type Marker struct { Name string }
-func (m mut Marker) drop() { println(\"drop \" + m.Name) }
-func breaker(m Mutex<int>) {
-    let marker = Marker{Name: \"inside\"}
+type Marker struct { Name string; Done channel<bool> }
+func (m mut Marker) drop() { println(\"drop \" + m.Name); m.Done.send(true) }
+func breaker(m Mutex<int>, done channel<bool>) {
+    let marker = Marker{Name: \"inside\", Done: done}
     m.withLock(func(value mut int) {
         value += 1
         let boom = 1 / (value - 1)
@@ -4619,8 +4618,9 @@ func breaker(m Mutex<int>) {
 func main() {
     let m = mutex(0)
     println(m.isPoisoned())
-    let t = go breaker(m)
-    time.Sleep(200 * time.Millisecond)
+    let done = channel<bool>()
+    let t = go breaker(m, done)
+    let _, _ = done.receive()
     println(m.isPoisoned())
     m.withLock(func(value mut int) { println(\"unreachable\") })
 }";
