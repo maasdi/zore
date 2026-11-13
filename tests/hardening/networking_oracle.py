@@ -1,5 +1,6 @@
 """Compare IP/URI results with independent references and exchange UDP packets."""
 
+import errno
 import ipaddress
 import os
 from pathlib import Path
@@ -195,7 +196,14 @@ def udp_exchange(executable, family, environment):
             port = int(line.rsplit(':', 1)[1])
             client.settimeout(5)
             for data in [b'', b'a', b'abc', b'abcde', bytes([0, 255, 128]), b'x' * 65507]:
-                client.sendto(data, (host, port))
+                try:
+                    client.sendto(data, (host, port))
+                except OSError as error:
+                    if len(data) != 65507 or error.errno not in (errno.EMSGSIZE, 10040):
+                        raise
+                    print('Host UDP send limit rejects 65507 bytes; using a 4096-byte datagram')
+                    data = b'x' * 4096
+                    client.sendto(data, (host, port))
                 response, peer = client.recvfrom(100)
                 assert peer[1] == port, peer
                 assert response == bytes([len(data) > 3]) + data[:3], (len(data), response)
