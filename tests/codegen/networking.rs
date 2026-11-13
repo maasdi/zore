@@ -306,11 +306,18 @@ fn udp_handles_are_cleaned_on_normal_error_and_panic_exits() {
         ("panic(\"stop\")", false),
     ] {
         let source = format!(
-            "package main\nimport \"std/net\"\nfunc inner() error {{ let endpoint = net.ParseAddrPort(\"127.0.0.1:0\")?; let conn = net.ListenUDP(\"udp4\", endpoint)?; println(conn.LocalAddr().IsValid()); {exit} }}\nfunc main() {{ let _ = inner() }}\n"
+            "package main\nimport \"std/net\"\nfunc inner() error {{ let endpoint = net.ParseAddrPort(\"127.0.0.1:0\")?; let conn = net.ListenUDP(\"udp4\", endpoint)?; println(conn.LocalAddr().IsValid()); {exit} }}\nfunc main() {{ waitIdle(0); let _ = inner(); checkSocketCleanup() }}\n"
         );
-        let output = execute(&source, false);
+        let output = execute(&source, true);
         assert_eq!(output.status.success(), success, "{}", stderr(&output));
         assert!(!stderr(&output).contains("leak:"), "{}", stderr(&output));
+        if !success {
+            assert!(
+                stderr(&output).contains("panic in the main task: stop"),
+                "{}",
+                stderr(&output)
+            );
+        }
     }
 }
 

@@ -21,7 +21,9 @@ cargo test --locked -p zore-runtime udp_
 python tests/hardening/networking_oracle.py
 ```
 
-Native programs use `ZORE_CHECK_LEAKS=1` and bounded process execution. The DNS
+Native programs use `ZORE_CHECK_LEAKS=1` and bounded process execution. UDP exit
+fixtures also assert zero socket-table handles after normal/error/panic cleanup,
+before panic reporting terminates the process. The DNS
 gate is test-only, holds actual helper work before its resolver call, and releases
 it after cancellation has returned to the caller; late tasks then quiesce. Public
 internet access is not a precondition. IPv6 peer tests report an explicit skip if
