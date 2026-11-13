@@ -21,6 +21,26 @@ func lookupFamily(network string) int {
     return -1
 }
 
+func lookupNumericLabel(label string) bool {
+    var hexadecimal = false
+    var start = 0
+    if label.len() > 2 && label[0] == 48 && (label[1] == 120 || label[1] == 88) {
+        hexadecimal = true
+        start = 2
+    }
+    for var index = start; index < label.len(); index += 1 {
+        let c = label[index]
+        if c >= 48 && c <= 57 {
+            continue
+        }
+        if hexadecimal && ((c >= 65 && c <= 70) || (c >= 97 && c <= 102)) {
+            continue
+        }
+        return false
+    }
+    return true
+}
+
 func lookupHostValid(host string) bool {
     var text = host
     if strings.HasSuffix(text, ".") {
@@ -40,9 +60,9 @@ func lookupHostValid(host string) bool {
             if !((c >= 65 && c <= 90) || (c >= 97 && c <= 122) || (c >= 48 && c <= 57) || c == 45 || c == 95) {
                 return false
             }
-            if c < 48 || c > 57 {
-                numeric = false
-            }
+        }
+        if !lookupNumericLabel(label) {
+            numeric = false
         }
     }
     return !numeric

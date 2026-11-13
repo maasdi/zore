@@ -12285,9 +12285,10 @@ mismatch fails. Other inputs are ASCII hostnames: labels of 1–63 letters,
 digits, hyphens or underscores, no leading/trailing hyphens, optionally one
 trailing dot, total at most 253 bytes without that trailing dot. Empty labels,
 non-ASCII, controls, NUL, ports, brackets and zone identifiers fail. An input
-containing only digits/dots that is not a strict IP fails rather than invoking
-platform legacy numeric-address parsing. International names require caller
-supplied ASCII IDNA spellings; no IDNA conversion is performed.
+made only of decimal or `0x`/`0X`-prefixed hexadecimal components separated by
+dots that is not a strict IP fails rather than invoking platform legacy
+numeric-address parsing. International names require caller-supplied ASCII
+IDNA spellings; no IDNA conversion is performed.
 
 Lookup uses the platform's configured host resolver, including local host files,
 search domains, caches, ordering, DNS and other configured sources. It is not a

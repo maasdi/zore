@@ -61,7 +61,8 @@ IP, zone IDs, CIDR prefixes and IPvFuture are outside the IP parser's contract.
 `net.LookupIP(ctx, "ip", "localhost")` uses the host's configured resolver.
 `ip4` and `ip6` filter results. A valid literal bypasses the resolver and still
 honors the requested family and cancellation. Ambiguous numeric forms such as
-`127.1` fail instead of invoking legacy OS numeric-address parsing.
+`127.1`, `0x7f000001` or `0x7f.0.0.1` fail instead of invoking legacy OS
+numeric-address parsing.
 
 The input is an ASCII hostname with normal label/length checks, optionally a
 trailing dot; punycode/IDNA conversion belongs to the caller. The returned

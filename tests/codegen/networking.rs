@@ -250,7 +250,7 @@ func run() error {
     check(literal.len() == 1 && literal[0].Is4())
     let _, mismatch = net.LookupIP(background, "ip6", "127.0.0.1")
     check(mismatch != nil)
-    for host in Array<string>{"127.1", "0177.0.0.1", "bad host", "a..b", "a\u0000b", "é.test", "[::1]", "host:80", "-bad.test", "bad-.test"} {
+    for host in Array<string>{"127.1", "0177.0.0.1", "0x7f000001", "0X7F000001", "0x7f.0.0.1", "bad host", "a..b", "a\u0000b", "é.test", "[::1]", "host:80", "-bad.test", "bad-.test"} {
         let value, err = net.LookupIP(background, "ip", host)
         check(err != nil); check(value.len() == 0)
     }
