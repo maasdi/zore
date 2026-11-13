@@ -27,6 +27,12 @@ func run() error {
     let dataLimit = strconv.Atoi(args[5])?
     let entryLimit = strconv.Atoi(args[6])?
     let source = os.Open(args[2])?
+    if args[1] == "tarmerge" || args[1] == "zipmerge" {
+        var options = archive.DefaultExtractOptions(archiveLimit, dataLimit, entryLimit)
+        options.Merge = true
+        if args[1] == "zipmerge" { return archive.ExtractZIPWith(source, args[3], options) }
+        return archive.ExtractTARWith(source, args[3], options)
+    }
     if args[1] == "tarlinks" || args[1] == "ziplinks" {
         var options = archive.DefaultExtractOptions(archiveLimit, dataLimit, entryLimit)
         options.Links = true
@@ -235,6 +241,46 @@ def main():
                         [('d', 's', '.'), ('d/x', 'f', b'x')], [('h', 'h', '../x')]]:
             run('tarlinks', linked(entries), valid=False)
         assert not list(outside.iterdir())
+        def tree():
+            return {str(p.relative_to(destination)).replace(os.sep, '/'): p.read_bytes()
+                    for p in destination.rglob('*') if p.is_file()}
+
+        if destination.exists() or destination.is_symlink():
+            shutil.rmtree(destination) if destination.is_dir() and not destination.is_symlink() else destination.unlink()
+        destination.mkdir()
+        (destination / 'keep').mkdir()
+        (destination / 'keep' / 'old.txt').write_bytes(b'old')
+        (destination / 'top.txt').write_bytes(b'top')
+        incoming = [('keep/', b''), ('keep/new.txt', b'new'), ('fresh/deep/file', b'deep')]
+        for mode, data in [('tarmerge', tar_bytes(incoming)), ('zipmerge', zip_bytes(incoming))]:
+            run(mode, data, keep=True, expected={'keep/old.txt': b'old', 'top.txt': b'top', 'keep/new.txt': b'new', 'fresh/deep/file': b'deep'})
+            before = tree()
+            run(mode, data, valid=False, keep=True)
+            assert tree() == before
+            shutil.rmtree(destination / 'fresh')
+            (destination / 'keep' / 'new.txt').unlink()
+        conflict = tar_bytes([('added.txt', b'a'), ('keep/old.txt', b'replaced')])
+        result = run('tarmerge', conflict, valid=False, keep=True)
+        assert b'already contains keep/old.txt' in result.stderr, result.stderr
+        assert tree() == {'keep/old.txt': b'old', 'top.txt': b'top'}
+        run('tarmerge', tar_bytes([('top.txt/', b'')]), valid=False, keep=True)
+        run('tarmerge', tar_bytes([('keep', b'file over folder')]), valid=False, keep=True)
+        assert tree() == {'keep/old.txt': b'old', 'top.txt': b'top'}
+        if os.name != 'nt':
+            (destination / 'linked').symlink_to(outside, target_is_directory=True)
+            run('tarmerge', tar_bytes([('linked/escape', b'x')]), valid=False, keep=True)
+            assert not list(outside.iterdir())
+            (destination / 'linked').unlink()
+        shutil.rmtree(destination)
+        destination.write_bytes(b'file')
+        run('tarmerge', tar_bytes([('a', b'x')]), valid=False, keep=True)
+        destination.unlink()
+        if os.name != 'nt':
+            destination.symlink_to(outside, target_is_directory=True)
+            run('tarmerge', tar_bytes([('a', b'x')]), valid=False, keep=True)
+            assert not list(outside.iterdir())
+            destination.unlink()
+        run('tarmerge', tar_bytes([('a', b'x')]), expected={'a': b'x'})
         payload = b'a' * 100000
         compressor = zlib.compressobj(wbits=-15)
         raw = compressor.compress(payload) + compressor.flush()

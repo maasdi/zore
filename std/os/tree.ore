@@ -17,11 +17,19 @@ func newStagedTree(id int, err error) StagedTree {
 }
 
 func StageTree(destination string, nodeLimit int) (StagedTree, error) {
+    return stage(destination, nodeLimit, false)
+}
+
+func StageTreeInto(destination string, nodeLimit int) (StagedTree, error) {
+    return stage(destination, nodeLimit, true)
+}
+
+func stage(destination string, nodeLimit int, merge bool) (StagedTree, error) {
     if nodeLimit < 0 || nodeLimit > 1000000 || !path.IsLocal(baseName(destination)) {
         let err = error("os.StageTree: invalid destination or node limit")
         return newStagedTree(0, err), err
     }
-    let id, err = treeStage(destination, nodeLimit)
+    let id, err = treeStage(destination, nodeLimit, merge)
     return newStagedTree(id, err), err
 }
 
@@ -181,7 +189,7 @@ func (t mut StagedTree) drop() {
     treeDrop(t.id)
 }
 
-func treeStage(destination string, nodeLimit int) (int, error)
+func treeStage(destination string, nodeLimit int, merge bool) (int, error)
 
 func treeMkdir(id int, name string) error
 

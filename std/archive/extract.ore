@@ -58,10 +58,11 @@ type ExtractOptions struct {
     DataLimit int
     EntryLimit int
     Links bool
+    Merge bool
 }
 
 func DefaultExtractOptions(archiveLimit int, dataLimit int, entryLimit int) ExtractOptions {
-    return ExtractOptions{ArchiveLimit: archiveLimit, DataLimit: dataLimit, EntryLimit: entryLimit, Links: false}
+    return ExtractOptions{ArchiveLimit: archiveLimit, DataLimit: dataLimit, EntryLimit: entryLimit, Links: false, Merge: false}
 }
 
 func extractLink(entry Entry, tree mut os.StagedTree) error {
@@ -118,9 +119,16 @@ func extract(reader mut extractionReader, tree mut os.StagedTree, entryLimit int
     }
 }
 
-func extractInto(reader mut extractionReader, destination string, entryLimit int, links bool) error {
-    var tree = os.StageTree(destination, entryLimit)?
-    let err = extract(reader, tree, entryLimit, links)
+func stageFor(destination string, options ExtractOptions) (os.StagedTree, error) {
+    if options.Merge {
+        return os.StageTreeInto(destination, options.EntryLimit)
+    }
+    return os.StageTree(destination, options.EntryLimit)
+}
+
+func extractInto(reader mut extractionReader, destination string, options ExtractOptions) error {
+    var tree = stageFor(destination, options)?
+    let err = extract(reader, tree, options.EntryLimit, options.Links)
     if err != nil {
         let cleanup = tree.Abort()
         if cleanup != nil {
@@ -141,10 +149,10 @@ func ExtractZIP(source own io.ReadSeeker, destination string, archiveLimit int, 
 
 func ExtractTARWith(source own io.Reader, destination string, options ExtractOptions) error {
     var reader = NewTARReader(source, options.ArchiveLimit, options.DataLimit, options.EntryLimit)?
-    return extractInto(reader, destination, options.EntryLimit, options.Links)
+    return extractInto(reader, destination, options)
 }
 
 func ExtractZIPWith(source own io.ReadSeeker, destination string, options ExtractOptions) error {
     var reader = NewZIPReader(source, options.ArchiveLimit, options.DataLimit, options.EntryLimit)?
-    return extractInto(reader, destination, options.EntryLimit, options.Links)
+    return extractInto(reader, destination, options)
 }

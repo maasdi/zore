@@ -168,7 +168,49 @@ fn identity(file: &File) -> io::Result<(u64, u64)> {
     let meta = file.metadata()?;
     Ok((meta.dev(), meta.ino()))
 }
-fn parent_path(destination: &str) -> io::Result<(File, CString)> {
+fn rename_no_replace(
+    old_parent: &File,
+    old: &CString,
+    new_parent: &File,
+    new: &CString,
+) -> io::Result<()> {
+    #[cfg(target_os = "linux")]
+    // SAFETY: both names are single components in live anchored directory handles.
+    let result = unsafe {
+        renameat2(
+            old_parent.as_raw_fd(),
+            old.as_ptr(),
+            new_parent.as_raw_fd(),
+            new.as_ptr(),
+            1,
+        )
+    };
+    #[cfg(target_os = "macos")]
+    // SAFETY: RENAME_EXCL atomically refuses an existing destination.
+    let result = unsafe {
+        renameatx_np(
+            old_parent.as_raw_fd(),
+            old.as_ptr(),
+            new_parent.as_raw_fd(),
+            new.as_ptr(),
+            4,
+        )
+    };
+    if result != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+fn existing_directory(parent: &File, child: &CString) -> io::Result<Option<File>> {
+    match open(parent, child, DIRECTORY) {
+        Ok(file) => Ok(Some(file)),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(_) => Err(invalid(
+            "destination holds a non-directory where a directory is staged",
+        )),
+    }
+}
+fn parent_path(destination: &str, merge: bool) -> io::Result<(File, CString)> {
     let path = Path::new(destination);
     let basename = path
         .file_name()
@@ -189,7 +231,11 @@ fn parent_path(destination: &str) -> io::Result<(File, CString)> {
             _ => return Err(invalid("parent traversal is forbidden")),
         }
     }
-    absent(&parent, &basename)?;
+    if merge {
+        existing_directory(&parent, &basename)?;
+    } else {
+        absent(&parent, &basename)?;
+    }
     Ok((parent, basename))
 }
 
@@ -250,15 +296,16 @@ pub(super) struct Tree {
     active: Option<File>,
     published: bool,
     cleaned: bool,
+    merge: bool,
 }
 impl Tree {
-    pub(super) fn create(destination: &str, limit: usize) -> io::Result<Self> {
+    pub(super) fn create(destination: &str, limit: usize, merge: bool) -> io::Result<Self> {
         if !cfg!(any(target_arch = "x86_64", target_arch = "aarch64")) {
             return Err(invalid(
                 "confined extraction is unsupported on this architecture",
             ));
         }
-        let (parent, destination) = parent_path(destination)?;
+        let (parent, destination) = parent_path(destination, merge)?;
         #[cfg(target_os = "macos")]
         private_parent(&parent)?;
         let mut selected = None;
@@ -309,6 +356,7 @@ impl Tree {
             active: None,
             published: false,
             cleaned: false,
+            merge,
         })
     }
     fn parts(path: &str) -> io::Result<Vec<&str>> {
@@ -460,31 +508,17 @@ impl Tree {
         if self.active.is_some() {
             return Err(invalid("an entry file is still open"));
         }
-        #[cfg(target_os = "linux")]
-        // SAFETY: both names are single components in live anchored directory handles.
-        let result = unsafe {
-            renameat2(
-                self.envelope.as_raw_fd(),
-                c"tree".as_ptr(),
-                self.parent.as_raw_fd(),
-                self.destination.as_ptr(),
-                1,
-            )
-        };
-        #[cfg(target_os = "macos")]
-        // SAFETY: RENAME_EXCL atomically refuses an existing destination.
-        let result = unsafe {
-            renameatx_np(
-                self.envelope.as_raw_fd(),
-                c"tree".as_ptr(),
-                self.parent.as_raw_fd(),
-                self.destination.as_ptr(),
-                4,
-            )
-        };
-        if result != 0 {
-            return Err(io::Error::last_os_error());
+        if self.merge
+            && let Some(destination) = existing_directory(&self.parent, &self.destination)?
+        {
+            return self.commit_merge(&destination);
         }
+        rename_no_replace(
+            &self.envelope,
+            &name("tree")?,
+            &self.parent,
+            &self.destination,
+        )?;
         self.published = true;
         self.nodes.clear();
         self.directories.clear();
@@ -492,6 +526,85 @@ impl Tree {
         self.abort().map_err(|error| {
             invalid(&format!(
                 "tree published; staging envelope cleanup failed: {error}"
+            ))
+        })
+    }
+    fn destination_parent(destination: &File, parts: &[&str]) -> io::Result<File> {
+        let mut current = destination.try_clone()?;
+        for part in parts {
+            current = open(&current, &name(part)?, DIRECTORY)?;
+        }
+        Ok(current)
+    }
+    fn commit_merge(&mut self, destination: &File) -> io::Result<()> {
+        let mut moves: Vec<String> = Vec::new();
+        for node in &self.nodes {
+            if moves
+                .iter()
+                .any(|moved| node.path.starts_with(&format!("{moved}/")))
+            {
+                continue;
+            }
+            let parts = Self::parts(&node.path)?;
+            let parent = Self::destination_parent(destination, &parts[..parts.len() - 1])?;
+            let child = name(parts[parts.len() - 1])?;
+            if node.directory {
+                if existing_directory(&parent, &child)?.is_none() {
+                    moves.push(node.path.clone());
+                }
+            } else if absent(&parent, &child).is_ok() {
+                moves.push(node.path.clone());
+            } else {
+                return Err(invalid(&format!(
+                    "destination already contains {}",
+                    node.path
+                )));
+            }
+        }
+        let mut done: Vec<String> = Vec::new();
+        for path in &moves {
+            let parts = Self::parts(path)?;
+            let child = name(parts[parts.len() - 1])?;
+            let moved = self
+                .walk(&parts[..parts.len() - 1], false)
+                .and_then(|staged| {
+                    let parent = Self::destination_parent(destination, &parts[..parts.len() - 1])?;
+                    rename_no_replace(&staged, &child, &parent, &child)
+                });
+            if let Err(original) = moved {
+                for path in done.iter().rev() {
+                    let parts = Self::parts(path)?;
+                    let child = name(parts[parts.len() - 1])?;
+                    let staged = self.walk(&parts[..parts.len() - 1], false)?;
+                    let parent = Self::destination_parent(destination, &parts[..parts.len() - 1])?;
+                    rename_no_replace(&parent, &child, &staged, &child).map_err(|cleanup| {
+                        invalid(&format!("{original}; restoring {path} failed: {cleanup}"))
+                    })?;
+                }
+                return Err(original);
+            }
+            done.push(path.clone());
+        }
+        let published = |path: &str| {
+            moves
+                .iter()
+                .any(|moved| path == moved || path.starts_with(&format!("{moved}/")))
+        };
+        self.nodes.retain(|node| !published(&node.path));
+        let removed: Vec<String> = self
+            .directories
+            .keys()
+            .filter(|path| published(path))
+            .cloned()
+            .collect();
+        for path in removed {
+            if let Some(id) = self.directories.remove(&path) {
+                self.identities.remove(&id);
+            }
+        }
+        self.abort().map_err(|error| {
+            invalid(&format!(
+                "tree merged; staging envelope cleanup failed: {error}"
             ))
         })
     }
@@ -565,7 +678,7 @@ mod tests {
     #[test]
     fn publication_and_private_permissions() {
         let root = Sandbox::new();
-        let mut tree = Tree::create(&root.destination(), 4).unwrap();
+        let mut tree = Tree::create(&root.destination(), 4, false).unwrap();
         tree.create_file("a/b.txt", false).unwrap();
         tree.file().unwrap().write_all(b"hello").unwrap();
         assert!(!Path::new(&root.destination()).exists());
@@ -599,12 +712,12 @@ mod tests {
     fn failed_commit_and_drop_remove_staging() {
         let root = Sandbox::new();
         {
-            let mut tree = Tree::create(&root.destination(), 3).unwrap();
+            let mut tree = Tree::create(&root.destination(), 3, false).unwrap();
             tree.create_file("a/b.txt", false).unwrap();
             assert!(tree.commit().is_err());
         }
         assert_eq!(root.children(), 0);
-        let mut tree = Tree::create(&root.destination(), 3).unwrap();
+        let mut tree = Tree::create(&root.destination(), 3, false).unwrap();
         tree.mkdir("a/b").unwrap();
         std::fs::write(root.0.join("result"), b"untouched").unwrap();
         assert!(tree.commit().is_err());
@@ -617,12 +730,12 @@ mod tests {
         let root = Sandbox::new();
         let outside = Sandbox::new();
         symlink(&outside.0, root.0.join("link")).unwrap();
-        assert!(Tree::create(root.0.join("link/result").to_str().unwrap(), 3).is_err());
-        assert!(Tree::create(root.0.join("../escape").to_str().unwrap(), 3).is_err());
+        assert!(Tree::create(root.0.join("link/result").to_str().unwrap(), 3, false).is_err());
+        assert!(Tree::create(root.0.join("../escape").to_str().unwrap(), 3, false).is_err());
         symlink(outside.0.join("missing"), root.0.join("result")).unwrap();
-        assert!(Tree::create(&root.destination(), 3).is_err());
+        assert!(Tree::create(&root.destination(), 3, false).is_err());
         std::fs::remove_file(root.0.join("result")).unwrap();
-        let mut tree = Tree::create(&root.destination(), 3).unwrap();
+        let mut tree = Tree::create(&root.destination(), 3, false).unwrap();
         for name in ["../escape", "/absolute", "a//b", "a/./b", "a\\b", "a\0b"] {
             assert!(tree.create_file(name, false).is_err(), "{name:?}");
         }
@@ -642,7 +755,7 @@ mod tests {
         let outside = Sandbox::new();
         std::fs::create_dir(root.0.join("parent")).unwrap();
         let destination = root.0.join("parent/result");
-        let mut tree = Tree::create(destination.to_str().unwrap(), 3).unwrap();
+        let mut tree = Tree::create(destination.to_str().unwrap(), 3, false).unwrap();
         std::fs::rename(root.0.join("parent"), root.0.join("moved")).unwrap();
         symlink(&outside.0, root.0.join("parent")).unwrap();
         tree.create_file("file", false).unwrap();
@@ -658,11 +771,11 @@ mod tests {
     #[test]
     fn node_depth_and_collision_failures_clean_up() {
         let root = Sandbox::new();
-        let mut tree = Tree::create(&root.destination(), 2).unwrap();
+        let mut tree = Tree::create(&root.destination(), 2, false).unwrap();
         assert!(tree.create_file("a/b/c", false).is_err());
         tree.abort().unwrap();
         assert_eq!(root.children(), 0);
-        let mut tree = Tree::create(&root.destination(), 10).unwrap();
+        let mut tree = Tree::create(&root.destination(), 10, false).unwrap();
         assert!(tree.mkdir(&vec!["a"; 65].join("/")).is_err());
         tree.create_file("a", false).unwrap();
         tree.finish_file().unwrap();
@@ -672,9 +785,57 @@ mod tests {
         assert_eq!(root.children(), 0);
     }
     #[test]
+    fn merge_adds_missing_nodes_and_never_replaces() {
+        let root = Sandbox::new();
+        let result = root.0.join("result");
+        std::fs::create_dir_all(result.join("keep/inner")).unwrap();
+        std::fs::write(result.join("keep/old.txt"), b"old").unwrap();
+        let mut tree = Tree::create(&root.destination(), 10, true).unwrap();
+        tree.create_file("keep/new.txt", false).unwrap();
+        tree.file().unwrap().write_all(b"new").unwrap();
+        tree.finish_file().unwrap();
+        tree.mkdir("keep/inner").unwrap();
+        tree.create_file("fresh/deep/file", false).unwrap();
+        tree.finish_file().unwrap();
+        tree.commit().unwrap();
+        assert_eq!(std::fs::read(result.join("keep/old.txt")).unwrap(), b"old");
+        assert_eq!(std::fs::read(result.join("keep/new.txt")).unwrap(), b"new");
+        assert!(result.join("fresh/deep/file").is_file());
+        assert_eq!(root.children(), 1);
+
+        let mut conflict = Tree::create(&root.destination(), 10, true).unwrap();
+        conflict.create_file("added.txt", false).unwrap();
+        conflict.finish_file().unwrap();
+        conflict.create_file("keep/old.txt", false).unwrap();
+        conflict.finish_file().unwrap();
+        assert!(conflict.commit().is_err());
+        conflict.abort().unwrap();
+        assert!(!result.join("added.txt").exists());
+        assert_eq!(std::fs::read(result.join("keep/old.txt")).unwrap(), b"old");
+        assert_eq!(root.children(), 1);
+
+        let outside = Sandbox::new();
+        symlink(&outside.0, result.join("linked")).unwrap();
+        let mut through = Tree::create(&root.destination(), 10, true).unwrap();
+        through.create_file("linked/escape", false).unwrap();
+        through.finish_file().unwrap();
+        assert!(through.commit().is_err());
+        through.abort().unwrap();
+        assert_eq!(outside.children(), 0);
+
+        std::fs::write(root.0.join("plain"), b"x").unwrap();
+        assert!(Tree::create(root.0.join("plain").to_str().unwrap(), 3, true).is_err());
+        let missing = root.0.join("missing");
+        let mut created = Tree::create(missing.to_str().unwrap(), 3, true).unwrap();
+        created.create_file("a", false).unwrap();
+        created.finish_file().unwrap();
+        created.commit().unwrap();
+        assert!(missing.join("a").is_file());
+    }
+    #[test]
     fn staged_links_publish_and_clean_up() {
         let root = Sandbox::new();
-        let mut tree = Tree::create(&root.destination(), 5).unwrap();
+        let mut tree = Tree::create(&root.destination(), 5, false).unwrap();
         tree.create_file("a/file", false).unwrap();
         tree.file().unwrap().write_all(b"x").unwrap();
         tree.finish_file().unwrap();
@@ -693,7 +854,7 @@ mod tests {
             std::fs::metadata(result.join("a/file")).unwrap().ino()
         );
         let other = Sandbox::new();
-        let mut aborted = Tree::create(&other.destination(), 5).unwrap();
+        let mut aborted = Tree::create(&other.destination(), 5, false).unwrap();
         aborted.create_file("f", false).unwrap();
         aborted.finish_file().unwrap();
         aborted.symlink("s", "f").unwrap();
@@ -716,7 +877,7 @@ mod tests {
             "{}",
             String::from_utf8_lossy(&output.stderr)
         );
-        let error = Tree::create(&root.destination(), 0)
+        let error = Tree::create(&root.destination(), 0, false)
             .err()
             .expect("extended ACL must be rejected");
         assert!(error.to_string().contains("extended ACL"), "{error}");
@@ -727,7 +888,7 @@ mod tests {
             .status()
             .unwrap();
         assert!(status.success());
-        Tree::create(&root.destination(), 0)
+        Tree::create(&root.destination(), 0, false)
             .unwrap()
             .abort()
             .unwrap();
