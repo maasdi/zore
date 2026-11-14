@@ -40,11 +40,19 @@ perform an unbounded wait. Specify Close error precedence and repeated/zero-valu
 behavior in the contract. A completed body releases its connection promptly.
 
 The total timeout starts before dialing and runs until body completion or close;
-the earlier caller deadline wins. Read loops retain bounded cancellation polling.
+the earlier caller deadline wins. The existing 30-second default would cut off a
+large download that is still making progress, so streamed bodies also need an
+idle timeout (no bytes for a set time) and their own decided total default.
+Read loops retain bounded cancellation polling, but poll ticks stay inside the
+body: Read never returns zero bytes with a nil error or a recoverable poll
+timeout, so `io.Copy` and its no-progress rule see only data, EOF or a terminal
+error.
 Custom providers retain their existing deadline/count obligations. Plain calls
 use worker compensation and async calls use existing suspension rules.
 
-Retain cumulative metadata and body limits even though memory is bounded.
+Retain the cumulative metadata limit. A streamed body needs its own total-byte
+limit: `MaxBodyBytes` (1 MiB by default) caps buffered results and must not make
+ordinary artifact downloads fail at 1 MiB.
 Fixed-length, chunked and EOF-delimited framing must be incremental. Validate
 chunk CRLF, extensions and trailers before declaring completion. Define when
 trailers become observable and distinguish absent trailers from an incomplete
@@ -64,7 +72,9 @@ Start with an explicitly owned Reader and a known nonnegative content length.
 The separate contract must decide ownership on validation/dial failure, exact
 length accounting, premature EOF, invalid/no-progress counts and source errors.
 Do not probe for excess bytes with an unbounded extra read. Bound declared and
-sent bytes; preserve cancellation through upload and response consumption.
+sent bytes with a streamed-upload limit; `MaxRequestBodyBytes` (1 MiB by default)
+caps buffered bodies and must not reject a known-length file before dialing.
+Preserve cancellation through upload and response consumption.
 
 The first upload slice excludes automatic replay, unknown-length chunked uploads,
 duplex exchange and Expect: 100-continue. Define early server rejection and
@@ -79,12 +89,15 @@ and explicit shutdown. Decide fairness, timer ownership and shutdown with live
 leases before implementation. Drop closes idle resources and cannot silently
 detach an unbounded cleanup task.
 
-Pool keys include normalized scheme, host, effective port and transport/TLS
-trust and identity configuration. A connection is leased, reusable-idle or
+Pool keys include normalized scheme, host, effective port, transport/TLS trust
+and identity configuration and, once proxies exist, the proxy route and proxy
+credentials. A connection is leased, reusable-idle or
 closed, with exactly one owner. Only a fully consumed, valid, unambiguously
 framed response with validated trailers and no unread bytes can return it.
 Early close, framing errors, cancellation, EOF-delimited bodies, upgrades and
-Connection: close retire the connection. Early body drop never drains it for
+Connection: close retire the connection, as does an HTTP/1.0 response without
+an explicit keep-alive. Pooled requests stop sending the unconditional
+`Connection: close` the buffered client writes today. Early body drop never drains it for
 reuse. Reset per-operation deadlines on each lease. A stale idle socket may
 fail; reusing it does not authorize replay.
 
@@ -94,7 +107,7 @@ Redirects need a finite hop budget, loop detection, relative Location resolution
 followed by strict HTTP admission, status-specific method/body rewriting and one
 total deadline. Strip Authorization, Cookie and Proxy-Authorization across
 origins; decide HTTPS downgrade policy explicitly. Authenticate every new TLS
-destination. URI resolution work in PR #284 is a dependency until merged.
+destination. Relative Location resolution uses `url.ResolveReference` (§37.40).
 
 Retries need bounded attempts/backoff, explicit idempotency policy and replayable
 body factories. Partial writes and broken reused connections do not prove that
