@@ -1,5 +1,9 @@
 # Compiler testing
 
+Streamed HTTP responses are checked in `codegen/http_stream.rs` (real loopback
+peers, scripted connections, one-worker progress, bounded memory and the
+download guide), `packages/networking.rs` and the HTTPS example tests.
+
 Public networking is checked in `packages/networking.rs`,
 `codegen/networking.rs` and runtime UDP tests.
 `python tests/hardening/networking_oracle.py` compares IP/endpoint/order/URI

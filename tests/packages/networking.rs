@@ -76,3 +76,55 @@ fn network_value_and_datagram_apis_reject_wrong_types_and_private_storage() {
         super::rejects(&[("main.ore", &source)], expected);
     }
 }
+
+#[test]
+fn streamed_http_responses_check_as_owned_readers() {
+    super::accepts(&[(
+        "main.ore",
+        r#"package main
+import "std/context"
+import "std/io"
+import "std/net/http"
+import "std/os"
+func download(ctx context.Context, client http.Client, target string, path string) error {
+    let empty = Array<byte>{}
+    var config = http.DefaultStreamConfig()
+    config.MaxBodyBytes = 1 << 30
+    var stream = client.Open(ctx, "GET", target, http.NewHeader(), empty[:], config)?
+    if stream.StatusCode() != 200 { return stream.Close() }
+    var file = os.Create(path)?
+    io.Copy(file, stream)?
+    let trailers, complete = stream.Trailers()
+    if complete { for value in trailers.Values("X-Sum") { println(value) } }
+    file.Close()?
+    var body io.ReadCloser = stream
+    return body.Close()
+}
+func main() {
+    let client, err = http.NewClient(http.DefaultClientConfig())
+    if err == nil { let _ = download(context.Background(), client, "http://localhost/", "out.bin") }
+}
+"#,
+    )]);
+}
+
+#[test]
+fn streamed_http_responses_reject_private_storage_reuse_and_wrong_types() {
+    let open = "let client = http.NewClient(http.DefaultClientConfig())?; let empty = Array<byte>{}; var stream = client.Open(context.Background(), \"GET\", \"http://a.test/\", http.NewHeader(), empty[:], http.DefaultStreamConfig())?";
+    for (body, expected) in [
+        (format!("{open}; println(stream.status)"), "not exported"),
+        (format!("{open}; println(stream.streams.len())"), "not exported"),
+        (format!("{open}; stream.Close()?; println(stream.StatusCode())"), "moved"),
+        (format!("{open}; let copy = stream; println(stream.StatusCode())"), "moved"),
+        (format!("{open}; let n = stream.Read(\"text\")?; println(n)"), "mismatched types"),
+        (
+            "let client = http.NewClient(http.DefaultClientConfig())?; let empty = Array<byte>{}; let _ = client.Open(context.Background(), \"GET\", \"http://a.test/\", http.NewHeader(), empty[:], 5)".to_owned(),
+            "mismatched types",
+        ),
+    ] {
+        let source = format!(
+            "package main\nimport \"std/context\"\nimport \"std/net/http\"\nfunc run() error {{ {body}; return nil }}\nfunc main() {{ let _ = run() }}\n"
+        );
+        super::rejects(&[("main.ore", &source)], expected);
+    }
+}

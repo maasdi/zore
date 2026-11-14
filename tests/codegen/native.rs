@@ -23,6 +23,7 @@ mod host_support;
 mod html;
 mod http;
 mod http_client;
+mod http_stream;
 mod interface_acceptance;
 mod io_adapters;
 mod json;

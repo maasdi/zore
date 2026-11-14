@@ -4,7 +4,9 @@ Issue [#228](https://github.com/maasdi/zore/issues/228) tracks additive extensio
 to the bounded HTTP/1.1 client. This document orders the work and records design
 constraints. It is not a locked public API or evidence of implemented features.
 Each implementation must first lock its own signatures, examples, ownership,
-errors, async behavior and conformance cases under spec §53.
+errors, async behavior and conformance cases under spec §53. Streamed downloads
+(#286) are delivered and locked in spec §37.41; the rest of this plan is still
+open.
 
 ## Consumer priorities and delivery order
 

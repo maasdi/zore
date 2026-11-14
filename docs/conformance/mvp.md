@@ -248,6 +248,21 @@ independent Python escaping/parser assertions. Contextual template rendering
 remains a separate application-driven decision under Q16; the primitive does
 not validate URLs or serialize JavaScript/CSS.
 
+## Streamed HTTP responses — issue #286
+
+Locked §37.41 delivers `Client.Open`, `Client.OpenExchange` and the owned
+`ResponseStream` reader. [tests/codegen/http_stream.rs](../../tests/codegen/http_stream.rs)
+covers real loopback framing, exact and one-over limits, truncation, malformed
+chunks and trailers, incremental delivery, idle/total/header deadlines,
+cancellation, early Close and a 64 MiB download with bounded peak memory on
+Linux; scripted connections for hidden poll timeouts and release exactly once on
+completion, failure, Close, drop and panic; and one-worker plain/async progress.
+[tests/packages/networking.rs](../../tests/packages/networking.rs) checks the
+frontend API and privacy, ownership and type rejections, and
+`TestHTTPSOpenStreamsVerifiedFragmentedBinaryBytes` in
+[examples/https-client/https_test.ore](../../examples/https-client/https_test.ore)
+streams verified HTTPS and rejects a wrong host.
+
 ## Public networking — issue #227
 
 Locked §§37.37–37.40 deliver IP/literal endpoint values, cancellable public

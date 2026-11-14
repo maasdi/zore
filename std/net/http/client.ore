@@ -56,12 +56,31 @@ type clientDialResult struct {
     failure error
 }
 
+type closedClientConn struct {}
+
+func (c mut closedClientConn) Read(buf mut []byte) (int, error) {
+    return 0, error("http.Client: closed connection")
+}
+
+func (c mut closedClientConn) Write(data []byte) (int, error) {
+    return 0, error("http.Client: closed connection")
+}
+
+func (c mut closedClientConn) SetReadDeadline(deadline time.Instant) error {
+    return nil
+}
+
+func (c mut closedClientConn) SetWriteDeadline(deadline time.Instant) error {
+    return nil
+}
+
 type clientStream struct {
     conn ClientConn
     ctx context.Context
     config ClientConfig
     deadline time.Instant
     buffer Array<byte>
+    spare Array<Array<byte>>
     position int
     pending error
     metadata int
@@ -230,28 +249,36 @@ func clientContextError(ctx context.Context) error {
 }
 
 func (c Client) dialAndExchange(ctx context.Context, output string, target url.AbsoluteURL, method string, body []byte) (ClientResponse, error) {
+    let conn, err = c.dial(ctx, target)
+    if err != nil {
+        return emptyClientResponse(), err
+    }
+    return c.exchangePrepared(ctx, conn, output, method, body)
+}
+
+func (c Client) dial(ctx context.Context, target url.AbsoluteURL) (ClientConn, error) {
     let contextErr = clientContextError(ctx)
     if contextErr != nil {
-        return emptyClientResponse(), contextErr
+        return closedClientConn{}, contextErr
     }
     if c.transport.len() != 0 {
         let conn, err = c.transport[0].Dial(ctx, target)
         _ = err
         let dialContextErr = clientContextError(ctx)
         if dialContextErr != nil {
-            return emptyClientResponse(), dialContextErr
+            return closedClientConn{}, dialContextErr
         }
         if err != nil {
-            return emptyClientResponse(), err
+            return closedClientConn{}, err
         }
-        return c.exchangePrepared(ctx, conn, output, method, body)
+        return conn, nil
     }
     let result = channel<clientDialResult>(1)
     let deadline, _ = ctx.Deadline()
     var dialTimeout = c.config.DialTimeout
     let remaining = time.Until(deadline)
     if remaining <= 0 {
-        return emptyClientResponse(), error("context deadline exceeded")
+        return closedClientConn{}, error("context deadline exceeded")
     }
     if remaining < dialTimeout {
         dialTimeout = remaining
@@ -261,15 +288,15 @@ func (c Client) dialAndExchange(ctx context.Context, output string, target url.A
         case let connected, _ = result.receive() {
             let dialContextErr = clientContextError(ctx)
             if dialContextErr != nil {
-                return emptyClientResponse(), dialContextErr
+                return closedClientConn{}, dialContextErr
             }
             if connected.failure != nil {
-                return emptyClientResponse(), connected.failure
+                return closedClientConn{}, connected.failure
             }
-            return c.exchangePrepared(ctx, connected.conn, output, method, body)
+            return connected.conn, nil
         }
         case ctx.Done().receive() {
-            return emptyClientResponse(), ctx.Err()
+            return closedClientConn{}, ctx.Err()
         }
     }
 }
@@ -290,17 +317,18 @@ func (c Client) Exchange(ctx context.Context, conn own ClientConn, method string
 
 func (c Client) exchangePrepared(ctx context.Context, conn own ClientConn, output string, method string, body []byte) (ClientResponse, error) {
     let deadline, _ = ctx.Deadline()
-    var stream = clientStream{conn: conn, ctx: ctx, config: c.config, deadline: deadline, buffer: Array<byte>{}, position: 0, pending: nil, metadata: 0}
-    let head = strings.Bytes(output)
-    let headerErr = stream.send(head[:])
-    if headerErr != nil {
-        return emptyClientResponse(), headerErr
-    }
-    let bodyErr = stream.send(body)
-    if bodyErr != nil {
-        return emptyClientResponse(), bodyErr
+    var stream = clientStream{conn: conn, ctx: ctx, config: c.config, deadline: deadline, buffer: Array<byte>{}, spare: Array<Array<byte>>{}, position: 0, pending: nil, metadata: 0}
+    let requestErr = stream.request(output, body)
+    if requestErr != nil {
+        return emptyClientResponse(), requestErr
     }
     return stream.response(method)
+}
+
+func (s mut clientStream) request(output string, body []byte) error {
+    let head = strings.Bytes(output)
+    s.send(head[:])?
+    return s.send(body)
 }
 
 func (s clientStream) ready() error {
@@ -345,10 +373,17 @@ func (s mut clientStream) fill() error {
     if s.pending != nil {
         return s.pending
     }
-    var data = Array<byte>{}
-    for var i = 0; i < 4096; i += 1 {
+    let _, spare = s.spare.pop()
+    var data = spare
+    for data.len() < 4096 {
         data.push(0)
     }
+    let err = s.receive(data)
+    s.spare.push(data)
+    return err
+}
+
+func (s mut clientStream) receive(data mut Array<byte>) error {
     for {
         s.ready()?
         s.conn.SetReadDeadline(pollDeadline(s.deadline, s.config.PollInterval))?
@@ -449,21 +484,31 @@ func (s mut clientStream) chunkedBody(body mut Array<byte>) error {
     for {
         let size = s.chunkLine()?
         if size == 0 {
-            let trailers = s.headers()?
-            for entry in trailers.entries {
-                if clientForbiddenTrailer(entry.Name) {
-                    return error("http.Client: forbidden trailer")
-                }
-            }
+            let _ = s.trailers()?
             return nil
         }
         s.appendBody(body, size)?
-        let cr = s.nextByte()?
-        let lf = s.nextByte()?
-        if cr != 13 || lf != 10 {
-            return error("http.Client: expected chunk CRLF")
+        s.chunkEnd()?
+    }
+}
+
+func (s mut clientStream) chunkEnd() error {
+    let cr = s.nextByte()?
+    let lf = s.nextByte()?
+    if cr != 13 || lf != 10 {
+        return error("http.Client: expected chunk CRLF")
+    }
+    return nil
+}
+
+func (s mut clientStream) trailers() (Header, error) {
+    let trailers = s.headers()?
+    for entry in trailers.entries {
+        if clientForbiddenTrailer(entry.Name) {
+            return NewHeader(), error("http.Client: forbidden trailer")
         }
     }
+    return trailers, nil
 }
 
 func (s mut clientStream) framedBody(body mut Array<byte>, chunked bool, length int) error {
@@ -473,14 +518,26 @@ func (s mut clientStream) framedBody(body mut Array<byte>, chunked bool, length 
     return s.appendBody(body, length)
 }
 
-func (s mut clientStream) response(method string) (ClientResponse, error) {
+type clientHead struct {
+    status int
+    headers Header
+    chunked bool
+    length int
+    content bool
+}
+
+func emptyClientHead() clientHead {
+    return clientHead{status: 0, headers: NewHeader(), chunked: false, length: -1, content: false}
+}
+
+func (s mut clientStream) head(method string) (clientHead, error) {
     for {
         let version, status = clientStatus(s.line()?)?
         let headers = s.headers()?
         let lengths = headers.Values("Content-Length")
         let encodings = headers.Values("Transfer-Encoding")
         if lengths.len() > 1 || encodings.len() > 1 || (lengths.len() > 0 && encodings.len() > 0) {
-            return emptyClientResponse(), error("http.Client: ambiguous framing")
+            return emptyClientHead(), error("http.Client: ambiguous framing")
         }
         var length = -1
         if lengths.len() == 1 {
@@ -488,59 +545,68 @@ func (s mut clientStream) response(method string) (ClientResponse, error) {
         }
         let chunked = encodings.len() == 1
         if chunked && version == "HTTP/1.0" {
-            return emptyClientResponse(), error("http.Client: HTTP/1.0 response forbids Transfer-Encoding")
+            return emptyClientHead(), error("http.Client: HTTP/1.0 response forbids Transfer-Encoding")
         }
         if chunked && !asciiEqual(encodings[0], "chunked") {
-            return emptyClientResponse(), error("http.Client: unsupported transfer encoding")
+            return emptyClientHead(), error("http.Client: unsupported transfer encoding")
         }
         if status < 200 {
             if status == 101 {
-                return emptyClientResponse(), error("http.Client: protocol upgrade unsupported")
+                return emptyClientHead(), error("http.Client: protocol upgrade unsupported")
             }
             if length >= 0 || chunked {
-                return emptyClientResponse(), error("http.Client: informational response forbids framing")
+                return emptyClientHead(), error("http.Client: informational response forbids framing")
             }
             continue
         }
         if status == 204 && (length >= 0 || chunked) {
-            return emptyClientResponse(), error("http.Client: 204 forbids framing")
+            return emptyClientHead(), error("http.Client: 204 forbids framing")
         }
-        var body = Array<byte>{}
-        if method != "HEAD" && status != 204 && status != 304 {
-            if chunked || length >= 0 {
-                let err = s.framedBody(body, chunked, length)
+        let content = method != "HEAD" && status != 204 && status != 304
+        return clientHead{status: status, headers: headers, chunked: chunked, length: length, content: content}, nil
+    }
+}
+
+func (s mut clientStream) response(method string) (ClientResponse, error) {
+    let head, headErr = s.head(method)
+    if headErr != nil {
+        return emptyClientResponse(), headErr
+    }
+    var body = Array<byte>{}
+    if head.content {
+        if head.chunked || head.length >= 0 {
+            let err = s.framedBody(body, head.chunked, head.length)
+            if err == io.EOF {
+                return emptyClientResponse(), error("http.Client: unexpected EOF in body")
+            }
+            if err != nil {
+                return emptyClientResponse(), err
+            }
+        } else {
+            for {
+                let err = s.fill()
                 if err == io.EOF {
-                    return emptyClientResponse(), error("http.Client: unexpected EOF in body")
+                    break
                 }
                 if err != nil {
                     return emptyClientResponse(), err
                 }
-            } else {
-                for {
-                    let err = s.fill()
-                    if err == io.EOF {
-                        break
-                    }
-                    if err != nil {
-                        return emptyClientResponse(), err
-                    }
-                    let available = s.buffer.len() - s.position
-                    let appendErr = s.appendBody(body, available)
-                    if appendErr != nil {
-                        return emptyClientResponse(), appendErr
-                    }
+                let available = s.buffer.len() - s.position
+                let appendErr = s.appendBody(body, available)
+                if appendErr != nil {
+                    return emptyClientResponse(), appendErr
                 }
             }
-            if status == 205 && body.len() != 0 {
-                return emptyClientResponse(), error("http.Client: 205 forbids content")
-            }
         }
-        s.ready()?
-        if s.pending != nil && s.pending != io.EOF {
-            return emptyClientResponse(), s.pending
+        if head.status == 205 && body.len() != 0 {
+            return emptyClientResponse(), error("http.Client: 205 forbids content")
         }
-        return ClientResponse{StatusCode: status, Headers: headers, Body: body}, nil
     }
+    s.ready()?
+    if s.pending != nil && s.pending != io.EOF {
+        return emptyClientResponse(), s.pending
+    }
+    return ClientResponse{StatusCode: head.status, Headers: clone(head.headers), Body: body}, nil
 }
 
 func clientStatus(line string) (string, int, error) {
