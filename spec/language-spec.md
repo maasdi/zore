@@ -9222,6 +9222,11 @@ execute provider-present tests; skipped/unavailable providers are not evidence.
 
 ## 37.11 Bounded HTTP/1.1 clients — LOCKED
 
+Future streaming, pooling and protocol policies are tracked in issue #228 and
+`docs/design/http-client.md`. That plan introduces no public declarations or
+changes to this locked contract. Each additive slice requires its own §53 lock
+before implementation; design follow-ups are not supported client features.
+
 This additive contract preserves the server `Request` and `ResponseWriter`.
 The client API uses ordinary waiting calls and explicit errors:
 
