@@ -41,27 +41,33 @@ func DefaultStreamConfig() StreamConfig {
 }
 
 func streamSettings(config StreamConfig) (StreamConfig, error) {
-    if config.MaxBodyBytes < 0 || config.Timeout < 0 || config.IdleTimeout < 0 {
-        return DefaultStreamConfig(), error("http.Client: negative stream configuration")
-    }
-    let defaults = DefaultStreamConfig()
-    var chosen = config
-    if chosen.MaxBodyBytes == 0 {
-        chosen.MaxBodyBytes = defaults.MaxBodyBytes
-    }
-    if chosen.IdleTimeout == 0 {
-        chosen.IdleTimeout = defaults.IdleTimeout
-    }
-    return chosen, nil
+    let limit, idle, err = transferSettings(config.MaxBodyBytes, config.Timeout, config.IdleTimeout, "stream")
+    return StreamConfig{MaxBodyBytes: limit, Timeout: config.Timeout, IdleTimeout: idle}, err
 }
 
-func streamContext(ctx context.Context, settings StreamConfig) (context.Context, Array<streamStop>) {
+func transferSettings(limit int, timeout time.Duration, idle time.Duration, kind string) (int, time.Duration, error) {
+    let defaults = DefaultStreamConfig()
+    if limit < 0 || timeout < 0 || idle < 0 {
+        return defaults.MaxBodyBytes, defaults.IdleTimeout, error("http.Client: negative " + kind + " configuration")
+    }
+    var chosenLimit = limit
+    if chosenLimit == 0 {
+        chosenLimit = defaults.MaxBodyBytes
+    }
+    var chosenIdle = idle
+    if chosenIdle == 0 {
+        chosenIdle = defaults.IdleTimeout
+    }
+    return chosenLimit, chosenIdle, nil
+}
+
+func streamContext(ctx context.Context, timeout time.Duration) (context.Context, Array<streamStop>) {
     let done = channel<bool>()
     let cancelable, _ = context.WithCancelOn(ctx, done)
     var stops = Array<streamStop>{}
     stops.push(streamStop{done: done})
-    if settings.Timeout > 0 {
-        let limited, _ = context.WithDeadline(cancelable, time.Now().Add(settings.Timeout))
+    if timeout > 0 {
+        let limited, _ = context.WithDeadline(cancelable, time.Now().Add(timeout))
         return limited, stops
     }
     return cancelable, stops
@@ -87,7 +93,7 @@ func (c Client) Open(ctx context.Context, method string, absoluteURL string, hea
     if contextErr != nil {
         return emptyResponseStream(), contextErr
     }
-    let streamCtx, stops = streamContext(ctx, settings)
+    let streamCtx, stops = streamContext(ctx, settings.Timeout)
     let headerDeadline = time.Now().Add(c.config.Timeout)
     let dialCtx, stopDial = context.WithDeadline(streamCtx, headerDeadline)
     let dialGuard = clientCancellation{cancel: stopDial}
@@ -111,7 +117,7 @@ func (c Client) OpenExchange(ctx context.Context, conn own ClientConn, method st
     if contextErr != nil {
         return emptyResponseStream(), contextErr
     }
-    let streamCtx, stops = streamContext(ctx, settings)
+    let streamCtx, stops = streamContext(ctx, settings.Timeout)
     return c.openPrepared(streamCtx, stops, conn, output, method, body, settings, time.Now().Add(c.config.Timeout))
 }
 
@@ -121,7 +127,7 @@ func (c Client) openPrepared(ctx context.Context, stops own Array<streamStop>, c
     if limited && total.Before(deadline) {
         deadline = total
     }
-    var stream = clientStream{conn: conn, ctx: ctx, config: c.config, deadline: deadline, buffer: Array<byte>{}, spare: Array<Array<byte>>{}, position: 0, pending: nil, metadata: 0}
+    var stream = clientStream{conn: conn, ctx: ctx, config: c.config, deadline: deadline, buffer: Array<byte>{}, spare: Array<Array<byte>>{}, position: 0, pending: nil, metadata: 0, idle: 0}
     let requestErr = stream.request(output, body)
     if requestErr != nil {
         return emptyResponseStream(), requestErr
@@ -205,15 +211,9 @@ func (r own ResponseStream) Close() error {
 }
 
 func (r mut ResponseStream) arm() bool {
-    var deadline = time.Now().Add(r.idle)
-    var idleBound = true
-    let total, limited = r.streams[0].ctx.Deadline()
-    if limited && !deadline.Before(total) {
-        deadline = total
-        idleBound = false
-    }
-    r.streams[0].deadline = deadline
-    return idleBound
+    let wait = r.idle
+    r.streams[0].deadlineAfter(wait)
+    return r.streams[0].idleBound()
 }
 
 func (r mut ResponseStream) step(buf mut []byte) (int, bool, error) {

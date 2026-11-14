@@ -1,0 +1,159 @@
+package http
+
+import "std/context"
+import "std/io"
+import "std/strings"
+import "std/time"
+
+const uploadChunkBytes = 32768
+const uploadEmptyReads = 100
+
+type RequestBody struct {
+    source io.Reader
+    length int
+}
+
+type UploadConfig struct {
+    MaxBodyBytes int
+    Timeout time.Duration
+    IdleTimeout time.Duration
+}
+
+func NewRequestBody(source own io.Reader, length int) (RequestBody, error) {
+    if length < 0 {
+        return RequestBody{source: source, length: 0}, error("http.NewRequestBody: negative length")
+    }
+    return RequestBody{source: source, length: length}, nil
+}
+
+func (b RequestBody) Len() int {
+    return b.length
+}
+
+func DefaultUploadConfig() UploadConfig {
+    let defaults = DefaultStreamConfig()
+    return UploadConfig{MaxBodyBytes: defaults.MaxBodyBytes, Timeout: defaults.Timeout, IdleTimeout: defaults.IdleTimeout}
+}
+
+func uploadSettings(config UploadConfig) (UploadConfig, error) {
+    let limit, idle, err = transferSettings(config.MaxBodyBytes, config.Timeout, config.IdleTimeout, "upload")
+    return UploadConfig{MaxBodyBytes: limit, Timeout: config.Timeout, IdleTimeout: idle}, err
+}
+
+func (c Client) Upload(ctx context.Context, method string, absoluteURL string, headers Header, body own RequestBody, config UploadConfig) (ClientResponse, error) {
+    let settings, settingsErr = uploadSettings(config)
+    if settingsErr != nil {
+        return emptyClientResponse(), settingsErr
+    }
+    let output, target, preparationErr = c.prepareLength(method, absoluteURL, headers, body.length, settings.MaxBodyBytes)
+    if preparationErr != nil {
+        return emptyClientResponse(), preparationErr
+    }
+    if c.transport.len() == 0 && target.Scheme != "http" {
+        return emptyClientResponse(), error("http.Client: HTTPS requires verified TLS transport")
+    }
+    let contextErr = clientContextError(ctx)
+    if contextErr != nil {
+        return emptyClientResponse(), contextErr
+    }
+    let uploadCtx, stops = streamContext(ctx, settings.Timeout)
+    let dialDeadline = time.Now().Add(c.config.Timeout)
+    let dialCtx, stopDial = context.WithDeadline(uploadCtx, dialDeadline)
+    let dialGuard = clientCancellation{cancel: stopDial}
+    let conn, dialErr = c.dial(dialCtx, target)
+    if dialErr != nil {
+        return emptyClientResponse(), dialErr
+    }
+    return c.uploadPrepared(uploadCtx, stops, conn, output, method, body, settings)
+}
+
+func (c Client) UploadExchange(ctx context.Context, conn own ClientConn, method string, absoluteURL string, headers Header, body own RequestBody, config UploadConfig) (ClientResponse, error) {
+    let settings, settingsErr = uploadSettings(config)
+    if settingsErr != nil {
+        return emptyClientResponse(), settingsErr
+    }
+    let output, _, preparationErr = c.prepareLength(method, absoluteURL, headers, body.length, settings.MaxBodyBytes)
+    if preparationErr != nil {
+        return emptyClientResponse(), preparationErr
+    }
+    let contextErr = clientContextError(ctx)
+    if contextErr != nil {
+        return emptyClientResponse(), contextErr
+    }
+    let uploadCtx, stops = streamContext(ctx, settings.Timeout)
+    return c.uploadPrepared(uploadCtx, stops, conn, output, method, body, settings)
+}
+
+func (c Client) uploadPrepared(ctx context.Context, stops own Array<streamStop>, conn own ClientConn, output string, method string, body own RequestBody, settings UploadConfig) (ClientResponse, error) {
+    var source = body
+    var stream = clientStream{conn: conn, ctx: ctx, config: c.config, deadline: time.Now(), buffer: Array<byte>{}, spare: Array<Array<byte>>{}, position: 0, pending: nil, metadata: 0, idle: settings.IdleTimeout}
+    stream.rearm()
+    let head = strings.Bytes(output)
+    let headErr = stream.uploadSend(head[:])
+    if headErr != nil {
+        return emptyClientResponse(), headErr
+    }
+    let bodyErr = stream.uploadBody(source)
+    if bodyErr != nil {
+        return emptyClientResponse(), bodyErr
+    }
+    stream.idle = 0
+    stream.deadlineAfter(c.config.Timeout)
+    return stream.response(method)
+}
+
+func (s mut clientStream) uploadBody(body mut RequestBody) error {
+    var size = uploadChunkBytes
+    if body.length < size {
+        size = body.length
+    }
+    var buffer = Array<byte>{}
+    for buffer.len() < size {
+        buffer.push(0)
+    }
+    var remaining = body.length
+    var empty = 0
+    for remaining > 0 {
+        var want = buffer.len()
+        if want > remaining {
+            want = remaining
+        }
+        let n, err = body.source.Read(buffer[:want])
+        if n < 0 || n > want {
+            _ = err
+            return error("http.Client: invalid read count")
+        }
+        if n > 0 {
+            empty = 0
+            remaining -= n
+            let sendErr = s.uploadSend(buffer[:n])
+            if sendErr != nil {
+                _ = err
+                return sendErr
+            }
+        } else if err == nil {
+            empty += 1
+            if empty >= uploadEmptyReads {
+                return error("http.Client: request body made no progress")
+            }
+        }
+        if err == io.EOF {
+            if remaining > 0 {
+                return error("http.Client: request body shorter than declared length")
+            }
+        } else if err != nil {
+            return err
+        }
+    }
+    return nil
+}
+
+func (s mut clientStream) uploadSend(data []byte) error {
+    s.rearm()
+    let err = s.send(data)
+    if err != nil && err == error("context deadline exceeded") && s.ctx.Err() == nil && s.idleBound() {
+        _ = err
+        return error("http.Client: upload idle timeout")
+    }
+    return err
+}

@@ -8,6 +8,18 @@ including those shipped in `0.1.0-alpha.1`, are not split by release.
 
 ## [Unreleased]
 
+### Streamed HTTP uploads
+
+- `Client.Upload` and `Client.UploadExchange` send an owned `http.RequestBody`,
+  made by `NewRequestBody(reader, length)`, while reading it (§37.42), so a large
+  file can be uploaded without holding it in memory. `Do` and `Exchange` are
+  unchanged.
+- Exactly the declared number of bytes is sent: a reader that ends early, fails,
+  stalls or reports an impossible count stops the upload with a clear error,
+  and extra bytes are never read. `UploadConfig` sets the size limit (64 GiB by
+  default), an idle timeout (30 seconds) and an optional total timeout. The body
+  and connection are always released before the call returns.
+
 ### Streamed HTTP downloads
 
 - `Client.Open` and `Client.OpenExchange` return an owned `http.ResponseStream`

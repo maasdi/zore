@@ -1,5 +1,11 @@
 # Implementation roadmap
 
+Issue [#287](https://github.com/maasdi/zore/issues/287) adds streamed HTTP
+client uploads under §37.42: `Client.Upload` sends an owned `RequestBody` (a
+reader plus its exact length) piece by piece with bounded memory, its own size
+limit, idle and total timeouts, exact byte accounting and cleanup on every
+path. See the [upload guide](http-uploads.md).
+
 Issue [#286](https://github.com/maasdi/zore/issues/286) adds streamed HTTP
 client responses under §37.41: `Client.Open` returns an owned `ResponseStream`
 that `io.Copy` can write into a file or hash with bounded memory, with its own
@@ -112,7 +118,8 @@ and owned cleanup. The HTTPS fixture checks real certificate verification and
 fragmented binary responses; platform-wide results remain subject to native CI.
 Redirects, retries, proxies, pooling, compression and HTTP/2 are excluded.
 Issue #228 now has an [ordered extension plan](design/http-client.md): streamed
-responses (#286, delivered under §37.41), streamed requests (#287), bounded
+responses (#286, delivered under §37.41), streamed requests (#287, delivered
+under §37.42), bounded
 HTTP/1.1 pooling (#288), separate opt-in policies (#289) and an independent
 HTTP/2 decision (#290). The remaining items are design/implementation
 follow-ups, not delivered client features; each public API must be locked under
