@@ -16,6 +16,8 @@ type ResponseStream struct {
     trailers Header
     streams Array<clientStream>
     stops Array<streamStop>
+    leases Array<poolLease>
+    reuse bool
     limit int
     idle time.Duration
     chunked bool
@@ -74,7 +76,7 @@ func streamContext(ctx context.Context, timeout time.Duration) (context.Context,
 }
 
 func emptyResponseStream() ResponseStream {
-    return ResponseStream{status: 0, headers: NewHeader(), trailers: NewHeader(), streams: Array<clientStream>{}, stops: Array<streamStop>{}, limit: 0, idle: 0, chunked: false, delimited: false, reset: false, remaining: 0, chunkEnd: false, total: 0, done: false, failure: nil}
+    return ResponseStream{status: 0, headers: NewHeader(), trailers: NewHeader(), streams: Array<clientStream>{}, stops: Array<streamStop>{}, leases: Array<poolLease>{}, reuse: false, limit: 0, idle: 0, chunked: false, delimited: false, reset: false, remaining: 0, chunkEnd: false, total: 0, done: false, failure: nil}
 }
 
 func (c Client) Open(ctx context.Context, method string, absoluteURL string, headers Header, body []byte, config StreamConfig) (ResponseStream, error) {
@@ -101,7 +103,7 @@ func (c Client) Open(ctx context.Context, method string, absoluteURL string, hea
     if dialErr != nil {
         return emptyResponseStream(), dialErr
     }
-    return c.openPrepared(streamCtx, stops, conn, output, method, body, settings, headerDeadline)
+    return c.openPrepared(streamCtx, stops, Array<poolLease>{}, conn, output, method, body, settings, headerDeadline)
 }
 
 func (c Client) OpenExchange(ctx context.Context, conn own ClientConn, method string, absoluteURL string, headers Header, body []byte, config StreamConfig) (ResponseStream, error) {
@@ -118,10 +120,10 @@ func (c Client) OpenExchange(ctx context.Context, conn own ClientConn, method st
         return emptyResponseStream(), contextErr
     }
     let streamCtx, stops = streamContext(ctx, settings.Timeout)
-    return c.openPrepared(streamCtx, stops, conn, output, method, body, settings, time.Now().Add(c.config.Timeout))
+    return c.openPrepared(streamCtx, stops, Array<poolLease>{}, conn, output, method, body, settings, time.Now().Add(c.config.Timeout))
 }
 
-func (c Client) openPrepared(ctx context.Context, stops own Array<streamStop>, conn own ClientConn, output string, method string, body []byte, settings StreamConfig, headerDeadline time.Instant) (ResponseStream, error) {
+func (c Client) openPrepared(ctx context.Context, stops own Array<streamStop>, leases own Array<poolLease>, conn own ClientConn, output string, method string, body []byte, settings StreamConfig, headerDeadline time.Instant) (ResponseStream, error) {
     var deadline = headerDeadline
     let total, limited = ctx.Deadline()
     if limited && total.Before(deadline) {
@@ -134,7 +136,7 @@ func (c Client) openPrepared(ctx context.Context, stops own Array<streamStop>, c
     }
     let head, headErr = stream.head(method)
     if headErr != nil {
-        return emptyResponseStream(), headErr
+        return emptyResponseStream(), stale(headErr, leases.len() != 0 && leases[0].reused, stream)
     }
     let fixed = !head.chunked && head.length >= 0
     if head.content && fixed && head.length > settings.MaxBodyBytes {
@@ -149,7 +151,8 @@ func (c Client) openPrepared(ctx context.Context, stops own Array<streamStop>, c
     if fixed {
         remaining = head.length
     }
-    var result = ResponseStream{status: head.status, headers: head.headers, trailers: NewHeader(), streams: streams, stops: stops, limit: settings.MaxBodyBytes, idle: settings.IdleTimeout, chunked: head.chunked, delimited: !head.chunked && head.length < 0, reset: head.status == 205, remaining: remaining, chunkEnd: false, total: 0, done: false, failure: nil}
+    let reuse = head.reusable()
+    var result = ResponseStream{status: head.status, headers: head.headers, trailers: NewHeader(), streams: streams, stops: stops, leases: leases, reuse: reuse, limit: settings.MaxBodyBytes, idle: settings.IdleTimeout, chunked: head.chunked, delimited: !head.chunked && head.length < 0, reset: head.status == 205, remaining: remaining, chunkEnd: false, total: 0, done: false, failure: nil}
     if !head.content || (fixed && head.length == 0) {
         let completeErr = result.complete()
         if completeErr != nil {
@@ -275,8 +278,19 @@ func (r mut ResponseStream) complete() error {
         return r.fail(pending, false)
     }
     r.done = true
+    r.recycle()
     r.release()
     return nil
+}
+
+func (r mut ResponseStream) recycle() {
+    if !r.reuse || r.leases.len() == 0 || r.streams.len() == 0 || !r.streams[0].settled() {
+        return
+    }
+    let _, stream = r.streams.pop()
+    let _, lease = r.leases.pop()
+    var held = lease
+    held.conns.push(stream.conn)
 }
 
 func (r mut ResponseStream) fail(err error, idleBound bool) error {
@@ -293,5 +307,10 @@ func (r mut ResponseStream) fail(err error, idleBound bool) error {
 
 func (r mut ResponseStream) release() {
     r.streams = Array<clientStream>{}
+    r.leases = Array<poolLease>{}
     r.stops = Array<streamStop>{}
+}
+
+func (r mut ResponseStream) drop() {
+    r.release()
 }

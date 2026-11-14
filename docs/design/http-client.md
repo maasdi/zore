@@ -5,8 +5,9 @@ to the bounded HTTP/1.1 client. This document orders the work and records design
 constraints. It is not a locked public API or evidence of implemented features.
 Each implementation must first lock its own signatures, examples, ownership,
 errors, async behavior and conformance cases under spec §53. Streamed downloads
-(#286) and known-length streamed uploads (#287) are delivered and locked in spec
-§§37.41–37.42; the rest of this plan is still open.
+(#286), known-length streamed uploads (#287) and bounded HTTP/1.1 pooling (#288)
+are delivered and locked in spec §§37.41–37.43; the rest of this plan is still
+open.
 
 ## Consumer priorities and delivery order
 
@@ -84,6 +85,10 @@ partially sent requests explicitly. Errors can leave server-side effects even
 when no response was obtained. A consumed Reader is not a replayable request.
 
 ## Bounded connection reuse
+
+Delivered in §37.43. The pool retires every HTTP/1.0 response rather than
+honouring an explicit keep-alive, and expires idle connections at the next pool
+operation instead of with a timer.
 
 Pooling requires an owned lifecycle with finite global/per-origin active and
 idle limits, bounded waiter bookkeeping, cancellable acquisition, idle expiry

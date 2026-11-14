@@ -248,6 +248,21 @@ independent Python escaping/parser assertions. Contextual template rendering
 remains a separate application-driven decision under Q16; the primitive does
 not validate URLs or serialize JavaScript/CSS.
 
+## Pooled HTTP/1.1 connections — issue #288
+
+Locked §37.43 delivers `http.Pool`, `NewPool`, `PoolConfig` and `PoolStats`.
+[tests/codegen/http_pool.rs](../../tests/codegen/http_pool.rs) covers real
+loopback peers for the reuse and retirement matrix, streams returned only after
+complete bodies, idle caps, per-host and global saturation, waiter cancellation
+and the waiter limit, shutdown with active leases and waiters, idle expiry and
+stale connections without replay; scripted transports for origin keys, pool
+isolation, validation and every connection closed exactly once, including on
+panic; one-worker plain, async and waiting progress; and the pooling guide.
+[tests/packages/networking.rs](../../tests/packages/networking.rs) checks the
+frontend API and rejections, and the `TestHTTPSPool` cases in
+[examples/https-client/https_test.ore](../../examples/https-client/https_test.ore)
+reuse one verified HTTPS connection and reject a wrong host.
+
 ## Streamed HTTP uploads — issue #287
 
 Locked §37.42 delivers `http.NewRequestBody`, `Client.Upload` and
