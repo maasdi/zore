@@ -41,18 +41,24 @@ func DefaultStreamConfig() StreamConfig {
 }
 
 func streamSettings(config StreamConfig) (StreamConfig, error) {
-    if config.MaxBodyBytes < 0 || config.Timeout < 0 || config.IdleTimeout < 0 {
-        return DefaultStreamConfig(), error("http.Client: negative stream configuration")
-    }
+    let limit, idle, err = transferSettings(config.MaxBodyBytes, config.Timeout, config.IdleTimeout, "stream")
+    return StreamConfig{MaxBodyBytes: limit, Timeout: config.Timeout, IdleTimeout: idle}, err
+}
+
+func transferSettings(limit int, timeout time.Duration, idle time.Duration, kind string) (int, time.Duration, error) {
     let defaults = DefaultStreamConfig()
-    var chosen = config
-    if chosen.MaxBodyBytes == 0 {
-        chosen.MaxBodyBytes = defaults.MaxBodyBytes
+    if limit < 0 || timeout < 0 || idle < 0 {
+        return defaults.MaxBodyBytes, defaults.IdleTimeout, error("http.Client: negative " + kind + " configuration")
     }
-    if chosen.IdleTimeout == 0 {
-        chosen.IdleTimeout = defaults.IdleTimeout
+    var chosenLimit = limit
+    if chosenLimit == 0 {
+        chosenLimit = defaults.MaxBodyBytes
     }
-    return chosen, nil
+    var chosenIdle = idle
+    if chosenIdle == 0 {
+        chosenIdle = defaults.IdleTimeout
+    }
+    return chosenLimit, chosenIdle, nil
 }
 
 func streamContext(ctx context.Context, timeout time.Duration) (context.Context, Array<streamStop>) {
@@ -205,15 +211,9 @@ func (r own ResponseStream) Close() error {
 }
 
 func (r mut ResponseStream) arm() bool {
-    var deadline = time.Now().Add(r.idle)
-    var idleBound = true
-    let total, limited = r.streams[0].ctx.Deadline()
-    if limited && !deadline.Before(total) {
-        deadline = total
-        idleBound = false
-    }
-    r.streams[0].deadline = deadline
-    return idleBound
+    let wait = r.idle
+    r.streams[0].deadlineAfter(wait)
+    return r.streams[0].idleBound()
 }
 
 func (r mut ResponseStream) step(buf mut []byte) (int, bool, error) {

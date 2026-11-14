@@ -337,11 +337,21 @@ func (s mut clientStream) request(output string, body []byte) error {
 }
 
 func (s mut clientStream) rearm() {
-    s.deadline = time.Now().Add(s.idle)
+    let wait = s.idle
+    s.deadlineAfter(wait)
+}
+
+func (s mut clientStream) deadlineAfter(wait time.Duration) {
+    s.deadline = time.Now().Add(wait)
     let total, limited = s.ctx.Deadline()
     if limited && !s.deadline.Before(total) {
         s.deadline = total
     }
+}
+
+func (s clientStream) idleBound() bool {
+    let total, limited = s.ctx.Deadline()
+    return !limited || s.deadline.Before(total)
 }
 
 func (s clientStream) ready() error {

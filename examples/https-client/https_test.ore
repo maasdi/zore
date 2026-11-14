@@ -151,6 +151,7 @@ func (s mut uploadSource) Read(buf mut []byte) (int, error) {
 async func serveUpload(listener own net.Listener, config own tls.ServerConfig, ctx context.Context) error {
     let accepted = listener.Accept()?
     var conn = tls.Server(ctx, accepted, config)?
+    conn.SetReadDeadline(time.Now().Add(3 * time.Second))?
     var request = ""
     var one = Array<byte>{0}
     for !strings.HasSuffix(request, "\r\n\r\n") {
@@ -166,9 +167,10 @@ async func serveUpload(listener own net.Listener, config own tls.ServerConfig, c
     var body = Array<byte>{}
     for body.len() < 3 {
         let n = conn.Read(one[:])?
-        if n == 1 {
-            body.push(one[0])
+        if n != 1 {
+            return error("HTTPS upload body stalled")
         }
+        body.push(one[0])
     }
     if body[0] != 0 || body[1] != 255 || body[2] != 128 {
         return error("HTTPS upload bytes changed")
@@ -203,6 +205,7 @@ func TestHTTPSUploadStreamsVerifiedBinaryBody() error {
         return err
     }
     if response.StatusCode != 201 {
+        cancel()
         panic("HTTPS upload status")
     }
     let servingErr = server.wait()

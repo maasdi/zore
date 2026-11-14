@@ -31,22 +31,13 @@ func (b RequestBody) Len() int {
 }
 
 func DefaultUploadConfig() UploadConfig {
-    return UploadConfig{MaxBodyBytes: 68719476736, Timeout: 0, IdleTimeout: 30 * time.Second}
+    let defaults = DefaultStreamConfig()
+    return UploadConfig{MaxBodyBytes: defaults.MaxBodyBytes, Timeout: defaults.Timeout, IdleTimeout: defaults.IdleTimeout}
 }
 
 func uploadSettings(config UploadConfig) (UploadConfig, error) {
-    if config.MaxBodyBytes < 0 || config.Timeout < 0 || config.IdleTimeout < 0 {
-        return DefaultUploadConfig(), error("http.Client: negative upload configuration")
-    }
-    let defaults = DefaultUploadConfig()
-    var chosen = config
-    if chosen.MaxBodyBytes == 0 {
-        chosen.MaxBodyBytes = defaults.MaxBodyBytes
-    }
-    if chosen.IdleTimeout == 0 {
-        chosen.IdleTimeout = defaults.IdleTimeout
-    }
-    return chosen, nil
+    let limit, idle, err = transferSettings(config.MaxBodyBytes, config.Timeout, config.IdleTimeout, "upload")
+    return UploadConfig{MaxBodyBytes: limit, Timeout: config.Timeout, IdleTimeout: idle}, err
 }
 
 func (c Client) Upload(ctx context.Context, method string, absoluteURL string, headers Header, body own RequestBody, config UploadConfig) (ClientResponse, error) {
@@ -106,9 +97,8 @@ func (c Client) uploadPrepared(ctx context.Context, stops own Array<streamStop>,
     if bodyErr != nil {
         return emptyClientResponse(), bodyErr
     }
-    stream.idle = c.config.Timeout
-    stream.rearm()
     stream.idle = 0
+    stream.deadlineAfter(c.config.Timeout)
     return stream.response(method)
 }
 
@@ -166,9 +156,4 @@ func (s mut clientStream) uploadSend(data []byte) error {
         return error("http.Client: upload idle timeout")
     }
     return err
-}
-
-func (s clientStream) idleBound() bool {
-    let total, limited = s.ctx.Deadline()
-    return !limited || s.deadline.Before(total)
 }
