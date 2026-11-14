@@ -60,6 +60,11 @@ readiness and deadline completion wake each registration at most once.
 This implementation does not claim IOCP or Unix reactor performance.
 Windows cancellable deadlines and async sleeps use a separate shared timer
 service. Both Windows services retain one idle thread after first use.
+UDP uses the same readiness services on Linux, macOS and Windows. Receives
+buffer a full ordinary datagram before copying, so truncation reporting works
+on Windows too. Literal IP parsing is CPU-only; public system name lookup uses
+the configured platform resolver. Cancellation stops waiting while in-flight
+resolver calls finish and release their late results. See [networking](networking.md).
 Files, standard input, connects and name resolution still use helpers.
 Queued helper jobs reserve idle capacity before those workers wake, preventing
 several dependent operations from relying on the same idle helper. The helper

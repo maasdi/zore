@@ -1,0 +1,260 @@
+package url
+
+import "std/strings"
+
+type referenceParts struct {
+    scheme string
+    authority string
+    path string
+    query string
+    fragment string
+    hasAuthority bool
+    hasQuery bool
+    hasFragment bool
+}
+
+func emptyReference() referenceParts {
+    return referenceParts{scheme: "", authority: "", path: "", query: "", fragment: "", hasAuthority: false, hasQuery: false, hasFragment: false}
+}
+
+func uriLetter(c byte) bool {
+    return (c >= 65 && c <= 90) || (c >= 97 && c <= 122)
+}
+
+func uriUnreserved(c byte) bool {
+    return uriLetter(c) || (c >= 48 && c <= 57) || c == 45 || c == 46 || c == 95 || c == 126
+}
+
+func uriComponent(text string, extra string, escapes bool) bool {
+    let allowed = "!$&'()*+,;=" + extra
+    for var i = 0; i < text.len(); i += 1 {
+        let c = text[i]
+        if c <= 32 || c >= 127 || c == 92 {
+            return false
+        }
+        if c == 37 && escapes {
+            if i + 2 >= text.len() || hex(text[i + 1]) < 0 || hex(text[i + 2]) < 0 {
+                return false
+            }
+            i += 2
+        } else if !uriUnreserved(c) && !strings.Contains(allowed, text[i:i + 1]) {
+            return false
+        }
+    }
+    return true
+}
+
+func uriScheme(text string) bool {
+    if text == "" || !uriLetter(text[0]) {
+        return false
+    }
+    for var i = 1; i < text.len(); i += 1 {
+        let c = text[i]
+        if !uriLetter(c) && !(c >= 48 && c <= 57) && c != 43 && c != 45 && c != 46 {
+            return false
+        }
+    }
+    return true
+}
+
+func uriIPLiteral(text string) bool {
+    if absoluteIPv6(text) {
+        return true
+    }
+    if text.len() < 4 || (text[0] != 118 && text[0] != 86) {
+        return false
+    }
+    let version, address, found = strings.Cut(text[1:], ".")
+    if !found || version == "" || address == "" {
+        return false
+    }
+    for var i = 0; i < version.len(); i += 1 {
+        if hex(version[i]) < 0 {
+            return false
+        }
+    }
+    return uriComponent(address, ":", false)
+}
+
+func uriAuthority(authority string) bool {
+    var hostPort = authority
+    let user, remaining, found = strings.Cut(authority, "@")
+    if found {
+        if !uriComponent(user, ":", true) {
+            return false
+        }
+        hostPort = remaining
+    }
+    var port = ""
+    if strings.HasPrefix(hostPort, "[") {
+        let end = strings.Index(hostPort, "]")
+        if end < 0 || !uriIPLiteral(hostPort[1:end]) {
+            return false
+        }
+        let suffix = hostPort[end + 1:]
+        if suffix != "" {
+            if suffix[0] != 58 {
+                return false
+            }
+            port = suffix[1:]
+        }
+    } else {
+        let host, number, _ = strings.Cut(hostPort, ":")
+        if !uriComponent(host, "", true) {
+            return false
+        }
+        port = number
+    }
+    for var i = 0; i < port.len(); i += 1 {
+        if port[i] < 48 || port[i] > 57 {
+            return false
+        }
+    }
+    return true
+}
+
+func parseReference(text string) (referenceParts, error) {
+    var result = emptyReference()
+    let withoutFragment, fragment, hasFragment = strings.Cut(text, "#")
+    let withoutQuery, query, hasQuery = strings.Cut(withoutFragment, "?")
+    if !uriComponent(query, ":@/?", true) || !uriComponent(fragment, ":@/?", true) {
+        return result, error("url.ResolveReference: invalid query or fragment")
+    }
+    result.query = query
+    result.fragment = fragment
+    result.hasQuery = hasQuery
+    result.hasFragment = hasFragment
+    var rest = withoutQuery
+    let colon = strings.Index(rest, ":")
+    let slash = strings.Index(rest, "/")
+    if colon >= 0 && (slash < 0 || colon < slash) {
+        let scheme = rest[:colon]
+        if !uriScheme(scheme) {
+            return emptyReference(), error("url.ResolveReference: invalid scheme")
+        }
+        result.scheme = scheme
+        rest = rest[colon + 1:]
+    }
+    if strings.HasPrefix(rest, "//") {
+        result.hasAuthority = true
+        let pathStart = strings.Index(rest[2:], "/")
+        if pathStart < 0 {
+            result.authority = rest[2:]
+            rest = ""
+        } else {
+            result.authority = rest[2:2 + pathStart]
+            rest = rest[2 + pathStart:]
+        }
+        if !uriAuthority(result.authority) {
+            return emptyReference(), error("url.ResolveReference: invalid authority")
+        }
+    }
+    if !uriComponent(rest, ":@/", true) {
+        return emptyReference(), error("url.ResolveReference: invalid path")
+    }
+    result.path = rest
+    return result, nil
+}
+
+func removeReferenceDots(path string) string {
+    var segments = Array<string>{}
+    var offset = 0
+    for offset < path.len() {
+        let rest = path[offset:]
+        if strings.HasPrefix(rest, "../") {
+            offset += 3
+        } else if strings.HasPrefix(rest, "./") {
+            offset += 2
+        } else if strings.HasPrefix(rest, "/./") {
+            offset += 2
+        } else if rest == "/." {
+            segments.push("/")
+            break
+        } else if strings.HasPrefix(rest, "/../") {
+            let _, _ = segments.pop()
+            offset += 3
+        } else if rest == "/.." {
+            let _, _ = segments.pop()
+            segments.push("/")
+            break
+        } else if rest == "." || rest == ".." {
+            break
+        } else {
+            var end = offset
+            if path[end] == 47 {
+                end += 1
+            }
+            for end < path.len() && path[end] != 47 {
+                end += 1
+            }
+            segments.push(path[offset:end])
+            offset = end
+        }
+    }
+    return strings.Join(segments[:], "")
+}
+
+func mergeReferencePath(base referenceParts, path string) string {
+    if base.hasAuthority && base.path == "" {
+        return "/" + path
+    }
+    let slash = strings.LastIndex(base.path, "/")
+    if slash < 0 {
+        return path
+    }
+    return base.path[:slash + 1] + path
+}
+
+func writeReference(parts referenceParts) string {
+    var output = strings.NewBuilder()
+    if parts.scheme != "" {
+        output.WriteString(parts.scheme)
+        output.WriteString(":")
+    }
+    if parts.hasAuthority {
+        output.WriteString("//")
+        output.WriteString(parts.authority)
+    }
+    output.WriteString(parts.path)
+    if parts.hasQuery {
+        output.WriteString("?")
+        output.WriteString(parts.query)
+    }
+    if parts.hasFragment {
+        output.WriteString("#")
+        output.WriteString(parts.fragment)
+    }
+    return output.String()
+}
+
+func ResolveReference(base string, reference string) (string, error) {
+    let origin = parseReference(base)?
+    let input = parseReference(reference)?
+    if origin.scheme == "" {
+        return "", error("url.ResolveReference: base must have a scheme")
+    }
+    var result = input
+    if input.scheme != "" {
+        result.path = removeReferenceDots(input.path)
+    } else {
+        result.scheme = origin.scheme
+        if input.hasAuthority {
+            result.path = removeReferenceDots(input.path)
+        } else {
+            result.hasAuthority = origin.hasAuthority
+            result.authority = origin.authority
+            if input.path == "" {
+                result.path = origin.path
+                if !input.hasQuery {
+                    result.query = origin.query
+                    result.hasQuery = origin.hasQuery
+                }
+            } else if strings.HasPrefix(input.path, "/") {
+                result.path = removeReferenceDots(input.path)
+            } else {
+                result.path = removeReferenceDots(mergeReferencePath(origin, input.path))
+            }
+        }
+    }
+    return writeReference(result), nil
+}

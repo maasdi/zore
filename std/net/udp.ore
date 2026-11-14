@@ -1,0 +1,98 @@
+package net
+
+import "std/strings"
+import "std/time"
+
+type UDPConn struct {
+    id int
+    family int
+}
+
+func (c mut UDPConn) drop() {
+    closeHandle(c.id)
+}
+
+func ListenUDP(network string, local AddrPort) (UDPConn, error) {
+    let empty = UDPConn{id: 0, family: 0}
+    var family = 0
+    if network == "udp4" {
+        family = 4
+    } else if network == "udp6" {
+        family = 6
+    } else if network != "udp" {
+        return empty, error("net.ListenUDP: unknown network " + network)
+    }
+    if !local.IsValid() {
+        return empty, error("net.ListenUDP: invalid local address")
+    }
+    var actual = 6
+    if local.Addr().Is4() {
+        actual = 4
+    }
+    if family != 0 && family != actual {
+        return empty, error("net.ListenUDP: address family mismatch")
+    }
+    let id, err = udpListen(actual, local.String())
+    if err != nil {
+        return empty, err
+    }
+    return UDPConn{id: id, family: actual}, nil
+}
+
+func (c UDPConn) LocalAddr() AddrPort {
+    let endpoint, _ = ParseAddrPort(localAddr(c.id))
+    return endpoint
+}
+
+func (c UDPConn) ReadFrom(buf mut []byte) (int, AddrPort, bool, error) {
+    let packet = udpRead(c.id, buf.len())?
+    let addressLength = int(packet[1])
+    let peerText = strings.FromBytes(packet[2:2 + addressLength])?
+    let peer = ParseAddrPort(peerText)?
+    let count = packet.len() - 2 - addressLength
+    for var index = 0; index < count; index += 1 {
+        buf[index] = packet[index + 2 + addressLength]
+    }
+    return count, peer, packet[0] != 0, nil
+}
+
+func (c UDPConn) WriteTo(data []byte, peer AddrPort) (int, error) {
+    if !peer.IsValid() || peer.Port() == 0 {
+        return 0, error("net.UDP.WriteTo: invalid peer address")
+    }
+    if data.len() > 65507 {
+        return 0, error("net.UDP.WriteTo: datagram exceeds 65507 bytes")
+    }
+    if (c.family == 4 && !peer.Addr().Is4()) || (c.family == 6 && !peer.Addr().Is6()) {
+        return 0, error("net.UDP.WriteTo: address family mismatch")
+    }
+    return udpWrite(c.id, data, peer.String())
+}
+
+func (c UDPConn) SetDeadline(t time.Instant) error {
+    return setDeadline(c.id, 0, remaining(t))
+}
+
+func (c UDPConn) SetReadDeadline(t time.Instant) error {
+    return setDeadline(c.id, 1, remaining(t))
+}
+
+func (c UDPConn) SetWriteDeadline(t time.Instant) error {
+    return setDeadline(c.id, 2, remaining(t))
+}
+
+func (c UDPConn) ClearDeadline() error {
+    return clearDeadline(c.id, 0)
+}
+
+func (c own UDPConn) Close() error {
+    return udpClose(c.id)
+}
+
+func udpListen(family int, address string) (int, error)
+
+func udpRead(id int, capacity int) (Array<byte>, error)
+
+func udpWrite(id int, data []byte, peer string) (int, error)
+
+func udpClose(id int) error

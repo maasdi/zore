@@ -110,11 +110,19 @@ fn build_with_limits(
             || source.contains("waitBlocked(")
             || source.contains("waitIdle(")
     );
+    let lookup_hook = source.contains("lookupGate(");
+    let socket_cleanup = source.contains("checkSocketCleanup(");
     let helper_hook = source.contains("waitHelpers(");
     let timer_hook = source.contains("expireTimers(");
     let mut source = format!(
         "{source}\nfunc waitPending(n int) {{}}\nfunc waitBlocked(n int) {{}}\nfunc waitIdle(n int) {{}}\n"
     );
+    if socket_cleanup {
+        source.push_str("func checkSocketCleanup() {}\n");
+    }
+    if lookup_hook {
+        source.push_str("func lookupGate(phase int) {}\n");
+    }
     if helper_hook {
         source.push_str("func waitHelpers(n int) {}\n");
     }
@@ -137,6 +145,9 @@ fn build_with_limits(
         ("waitBlocked", "zore_test_wait_blocked"),
         ("waitIdle", "zore_test_wait_idle"),
     ];
+    if lookup_hook {
+        hooks.push(("lookupGate", "zore_test_lookup_gate"));
+    }
     if helper_hook {
         hooks.push(("waitHelpers", "zore_test_wait_helpers"));
     }
@@ -191,6 +202,10 @@ fn build_with_limits(
     let entry_source = r#"
 unsafe extern "C" { fn zore_entry(); }
 #[unsafe(no_mangle)]
+extern "C" fn zore_test_lookup_gate(phase: i64) {
+    zore_runtime::scheduler::test_support::lookup_gate(phase);
+}
+#[unsafe(no_mangle)]
 extern "C" fn zore_test_wait_pending(count: i64) {
     zore_runtime::scheduler::test_support::wait_pending(usize::try_from(count).unwrap());
 }
@@ -226,6 +241,14 @@ fn main() {
 "#;
     let mut entry_source =
         entry_source.replace("install_pool(2)", &format!("install_pool({workers})"));
+    if socket_cleanup {
+        entry_source = entry_source.replace(
+            "    zore_runtime::finish();",
+            r#"    let snapshot = zore_runtime::scheduler::test_support::snapshot();
+    assert!(snapshot.contains("\"socket_handles\":0,"), "leak: socket handles still owned after Zore cleanup: {snapshot}");
+    zore_runtime::finish();"#,
+        );
+    }
     if let Some(capacity) = helper_capacity {
         entry_source = entry_source.replace("unsafe { zore_entry() }", &format!("zore_runtime::scheduler::test_support::set_helper_capacity({capacity}); unsafe {{ zore_entry() }}"));
     }

@@ -12281,6 +12281,205 @@ cases for TAR and ZIP merges, repeated merges, file conflicts, a folder over a
 file and a file over a folder, a linked subfolder and a linked or file
 destination, with nothing changed or left behind on failure.
 
+## 37.37 IP addresses and literal endpoints — LOCKED
+
+`std/net` supplies immutable Copy `IP` and `AddrPort` values with private fields.
+They are address values, independent of sockets, hostnames and DNS. Their zero
+values are invalid; invalid values compare equal and sort before valid values.
+Parsing never performs I/O, resolves a name, suspends or starts a helper.
+
+| API | Contract |
+| --- | --- |
+| `ParseIP(text string) (IP, error)` | Strict IPv4 dotted decimal or IPv6 literal; failure returns the invalid value |
+| `(ip IP) IsValid() bool`, `Is4() bool`, `Is6() bool` | Validity and address family; both family predicates are false for invalid values |
+| `(ip IP) String() string` | Canonical literal, or `""` for invalid values |
+| `(ip IP) Equal(other IP) bool` | Canonical address equality, including invalid values |
+| `(ip IP) Compare(other IP) int` | -1, 0 or 1; invalid first, IPv4 before IPv6, then unsigned address-byte order |
+| `NewAddrPort(ip IP, port int) (AddrPort, error)` | Requires a valid IP and port 0 through 65535 |
+| `ParseAddrPort(text string) (AddrPort, error)` | Literal `IPv4:port` or `[IPv6]:port`; never a hostname |
+| `(ap AddrPort) Addr() IP`, `Port() int`, `IsValid() bool` | Copy components and validity; invalid port is 0 |
+| `(ap AddrPort) String() string` | Canonical literal endpoint, or `""` for invalid values |
+| `(ap AddrPort) Equal(other AddrPort) bool` | Address and port equality |
+| `(ap AddrPort) Compare(other AddrPort) int` | IP order first, then numeric port order |
+
+IPv4 requires four decimal octets 0–255 without leading zeroes (except `0`).
+IPv6 accepts one `::` compression and a final strict IPv4 tail. Formatting uses
+lowercase hexadecimal, no leading zeroes, the longest zero run of at least two
+words (first on ties), and dotted decimal for IPv4-mapped IPv6. A mapped IPv6
+value remains IPv6 and is distinct from IPv4. IP inputs have at most 45 bytes;
+whitespace, brackets, ports, zone identifiers, CIDR prefixes, IPvFuture and legacy
+IPv4 shorthand/octal/hexadecimal are excluded. Endpoint ports are 1–5 ASCII
+digits; leading zeroes are accepted and discarded on output. Port 0 is valid
+for binding. Native error text is fixed: `net.ParseIP: invalid IP address`,
+`net.ParseAddrPort: invalid literal endpoint`, or
+`net.NewAddrPort: invalid address or port`. Failed constructors return zero values.
+
+Inputs are borrowed only for the call; results have no retained source borrow.
+Use `Equal` or `Compare`; no struct equality operators are added. All APIs use ordinary string/value
+allocation and work bounded by literal size. Runtime parsing/formatting is a
+CPU-only primitive; the compiler adds bundled declarations, not source syntax.
+
+```ore
+import "std/net"
+
+func endpoint() (net.AddrPort, error) {
+    let ip = net.ParseIP("2001:0db8::1")?
+    return net.NewAddrPort(ip, 8080)
+}
+```
+
+Conformance includes invalid/zero values, normalized equality/order, all IPv4
+byte values, IPv6 compression/mapped tails, rejected ambiguous forms, frontend
+privacy/type checks and independent standard-library address vectors.
+
+## 37.38 Public system name lookup — LOCKED
+
+`net.LookupIP(ctx context.Context, network string, host string) (Array<IP>, error)`
+returns independent owned IP values. `network` is `"ip"`, `"ip4"` or `"ip6"`.
+A matching strict literal is returned directly without a resolver call. A family
+mismatch fails. Other inputs are ASCII hostnames: labels of 1–63 letters,
+digits, hyphens or underscores, no leading/trailing hyphens, optionally one
+trailing dot, total at most 253 bytes without that trailing dot. Empty labels,
+non-ASCII, controls, NUL, ports, brackets and zone identifiers fail. An input
+made only of decimal or `0x`/`0X`-prefixed hexadecimal components separated by
+dots that is not a strict IP fails rather than invoking platform legacy
+numeric-address parsing. International names require caller-supplied ASCII
+IDNA spellings; no IDNA conversion is performed.
+
+Lookup uses the platform's configured host resolver, including local host files,
+search domains, caches, ordering, DNS and other configured sources. It is not a
+raw DNS client. It preserves the first occurrence of each distinct address in
+resolver order and filters the requested family. It adds no cache or DNS TTL
+promise. OS failures and an empty filtered result return an empty array and an
+error beginning `net.LookupIP: `; system details vary by host. Invalid networks
+and names fail with `net.LookupIP: unknown network N` and
+`net.LookupIP: invalid host`; a literal family mismatch or an empty system result
+fails with `net.LookupIP: no suitable address found`.
+
+Cancellation is checked before validation, before publishing a result, and while
+waiting. It returns an empty array and `ctx.Err()` when observed. Plain callers
+block with worker compensation; async callers suspend without occupying a worker.
+The OS resolver runs on the existing bounded helper pool. Cancellation stops
+waiting promptly but cannot abort an in-progress system resolver call; its owned
+inputs and late result remain alive until completion and are then released.
+Queued/running abandoned resolver work may retain helper capacity until the OS
+returns. Results never borrow resolver storage or the caller's host string.
+
+Reverse lookup, record-specific queries, custom servers/transports, DNSSEC,
+application caching, raw DNS wire APIs and guarantees about external DNS uptime
+are excluded. Conformance uses literals and host-local fixtures, injected slow
+resolver completion/cancellation, late cleanup, ownership and one-worker async
+progress on Linux, macOS and Windows; public internet access is not required.
+
+## 37.39 UDP datagrams — LOCKED
+
+`std/net.UDPConn` is a private-field Move resource. Dropping or consuming `Close`
+releases it once. Its zero value is closed. It does not implement stream
+`io.Reader`/`io.Writer`; datagram boundaries and peer addresses are explicit.
+
+| API | Contract |
+| --- | --- |
+| `ListenUDP(network string, local AddrPort) (UDPConn, error)` | Bind a literal endpoint; `udp`, `udp4`, `udp6`; 0 selects a port |
+| `(c UDPConn) LocalAddr() AddrPort` | Bound endpoint, or invalid for a closed handle |
+| `(c UDPConn) ReadFrom(buf mut []byte) (int, AddrPort, bool, error)` | Consume one datagram; copied count, sender, truncation flag, error |
+| `(c UDPConn) WriteTo(data []byte, peer AddrPort) (int, error)` | Send exactly one datagram to a literal peer with nonzero port |
+| `(c UDPConn) SetDeadline(t time.Instant) error` | Set read and write deadlines |
+| `(c UDPConn) SetReadDeadline(t time.Instant) error`, `SetWriteDeadline(t time.Instant) error` | Set one direction's deadline |
+| `(c UDPConn) ClearDeadline() error` | Remove both deadlines |
+| `(c own UDPConn) Close() error` | Consume and close the resource |
+
+A family-specific network requires the matching local IP. `udp` selects the
+literal's family; writes require that family too. IPv4-mapped IPv6 remains IPv6.
+The OS chooses IPv6 dual-stack behavior; the API makes no dual-stack promise.
+No name is resolved implicitly. Multicast/broadcast configuration, connected UDP,
+ancillary data, interface selection, zones and jumbograms are excluded.
+
+Reads receive the whole ordinary UDP datagram internally before copying its
+prefix. Thus truncation is reliable on all supported hosts, including Windows:
+`n = min(payload length, buf.len())`; `truncated` is true exactly when bytes were
+discarded. The tail is discarded once and is not returned by a later read.
+A zero-length buffer still consumes one datagram; an empty datagram is a successful
+`0, peer, false, nil`, never EOF. Original length beyond the copied count is not
+exposed. Read errors return `0, invalid, false, err`; an expired deadline is
+checked before receiving and leaves any queued packet untouched. Scoped peers
+are unsupported and produce an error after consuming that datagram.
+
+Writes allow 0–65507 bytes, including an actual zero-length datagram. Larger
+payloads fail before sending. Each successful call reports the whole payload
+length. An OS short write returns its count and an error; the unsent tail is never
+retried as another packet. Delivery, ordering, uniqueness and path-MTU capacity
+are not guaranteed. Errors can report local or asynchronous network conditions.
+
+Deadlines have the same monotonic meaning as TCP deadlines in §37.3, including
+past deadlines and applicability to newly started waits. Timeouts preserve the
+socket for later operations. Argument errors and closed handles return explicit
+errors. Read/write errors start `net.UDP.ReadFrom: ` / `net.UDP.WriteTo: `,
+with `timed out` for timeouts; bind errors start `net.ListenUDP: ` and close
+errors `net.UDP.Close: `. Deadline errors use the shared `net.SetDeadline: `
+prefix. OS details are host-defined. Invalid bind/write arguments fail before I/O.
+
+Plain waits use worker compensation. Async reads/writes use the existing socket
+reactor on Linux, macOS and Windows, keeping buffers/packet storage and socket
+ownership alive across suspension. No new reactor, source syntax or runtime
+provider is introduced. Unsupported native hosts return an explicit error.
+Conformance covers arbitrary/empty datagrams, exact/truncated/zero-capacity reads,
+packet boundaries, peer/address family/count reporting, pending reads and writes,
+deadlines, wrong types/ownership, cleanup on normal/error/panic exits, and
+one-worker plain/async progress on the supported-host matrix.
+
+## 37.40 URI reference resolution — LOCKED
+
+`url.ResolveReference(base string, reference string) (string, error)` implements
+RFC 3986 §5.2 reference resolution in `std/net/url`. The base must have a scheme;
+its fragment is ignored. References may be absolute, authority-relative,
+root-relative, path-relative, query-only, fragment-only or empty. The result is
+an independent immutable string. An empty query or fragment delimiter is retained,
+so `?`/`#` differ from absence. A reference's fragment replaces rather than
+inherits the base fragment. Scheme/authority spelling, percent escapes and
+component bytes are preserved; there is no percent decoding, host case folding,
+IDNA conversion or network activity.
+
+Parsing follows ASCII URI syntax: schemes start with a letter and continue with
+letters/digits/`+-.`; component bytes are unreserved, sub-delimiters and their
+allowed `:@/` (path) or `:@/?` (query/fragment). Every percent escape requires two
+hexadecimal digits. Authorities support reg-name hosts, bracketed IPv6/IPvFuture,
+optional user information and a decimal (possibly empty) port. Reg-name syntax
+is not DNS/IP validation; URI ports are not limited to transport port range.
+Unbracketed IPv6, malformed brackets, multiple `@`, an invalid scheme before a
+first-segment colon, whitespace/controls, non-ASCII and backslashes fail. Empty
+authorities are allowed for schemes such as `file`. Relative paths without a
+scheme cannot have a colon in their first segment.
+
+Resolution follows RFC 3986 merge and literal dot-segment removal. Encoded dots
+and slashes remain encoded; repeated slashes and the resulting trailing slash
+are preserved. Work and storage are linear in total input/output size using
+ordinary string/array allocation, with no package-specific byte ceiling.
+Failures return `""` and an error beginning `url.ResolveReference: `.
+
+This is generic URI resolution, not HTTP URL admission, redirect authorization
+or a same-origin policy. It does not change `ParseTarget`, `ParseAbsolute` or
+HTTP request validation. Applications must pass resolved HTTP destinations
+through `ParseAbsolute` and their own origin/scheme policy. User information,
+non-HTTP schemes, out-of-range ports or generic hosts accepted by the resolver
+remain rejected by existing HTTP parsing where applicable. IP literal validation
+is shared with `std/net`; protocol-specific host/port policy stays in `std/net/url`.
+
+```ore
+import "std/net/url"
+
+func nextPage() (url.AbsoluteURL, error) {
+    let next = url.ResolveReference("https://example.test/a/b?old", "../c?new#part")?
+    return url.ParseAbsolute(next)
+}
+```
+
+Compiler impact: bundled declarations and runtime address/DNS/UDP primitives,
+existing helper and socket wait classification, and reuse of existing C ABI
+result shapes. Conformance maps focused address, resolver, datagram and URI
+increments to frontend and native tests, independent IP/RFC URI vectors,
+deterministic cleanup/cancellation fixtures and supported-host CI. HTTP/2, QUIC,
+cross-compilation and a replacement Windows reactor are not prerequisites.
+
 # 38. Self-Hosting Constraint
 
 ## 38.1 Long-term goal — LOCKED

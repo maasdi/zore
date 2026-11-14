@@ -113,6 +113,9 @@ jobs:
       - name: HTML escaping oracle
         if: needs.routes.outputs.full == 'true'
         run: python tests/hardening/html_oracle.py
+      - name: Networking interoperability oracle
+        if: needs.routes.outputs.full == 'true'
+        run: python tests/hardening/networking_oracle.py
       - name: Python harness tests
         shell: bash
         run: |
