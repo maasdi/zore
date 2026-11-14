@@ -84,6 +84,7 @@ type clientStream struct {
     position int
     pending error
     metadata int
+    idle time.Duration
 }
 
 func emptyClient() Client {
@@ -168,6 +169,10 @@ func clientForbiddenTrailer(name string) bool {
 }
 
 func (c Client) prepare(method string, absoluteURL string, headers Header, body []byte) (string, url.AbsoluteURL, error) {
+    return c.prepareLength(method, absoluteURL, headers, body.len(), c.config.MaxRequestBodyBytes)
+}
+
+func (c Client) prepareLength(method string, absoluteURL string, headers Header, length int, limit int) (string, url.AbsoluteURL, error) {
     if !c.live {
         return "", emptyClientURL(), error("http.Client: empty client")
     }
@@ -175,10 +180,10 @@ func (c Client) prepare(method string, absoluteURL string, headers Header, body 
         return "", emptyClientURL(), error("http.Client: unsupported or invalid method")
     }
     let target = url.ParseAbsolute(absoluteURL)?
-    if body.len() > c.config.MaxRequestBodyBytes {
+    if length > limit {
         return "", emptyClientURL(), error("http.Client: request body too large")
     }
-    var output = method + " " + target.RequestTarget + " HTTP/1.1\r\nHost: " + target.Authority + "\r\nContent-Length: " + strconv.Itoa(body.len()) + "\r\nConnection: close\r\n"
+    var output = method + " " + target.RequestTarget + " HTTP/1.1\r\nHost: " + target.Authority + "\r\nContent-Length: " + strconv.Itoa(length) + "\r\nConnection: close\r\n"
     if output.len() > c.config.MaxHeaderBytes {
         return "", emptyClientURL(), error("http.Client: metadata too large")
     }
@@ -317,7 +322,7 @@ func (c Client) Exchange(ctx context.Context, conn own ClientConn, method string
 
 func (c Client) exchangePrepared(ctx context.Context, conn own ClientConn, output string, method string, body []byte) (ClientResponse, error) {
     let deadline, _ = ctx.Deadline()
-    var stream = clientStream{conn: conn, ctx: ctx, config: c.config, deadline: deadline, buffer: Array<byte>{}, spare: Array<Array<byte>>{}, position: 0, pending: nil, metadata: 0}
+    var stream = clientStream{conn: conn, ctx: ctx, config: c.config, deadline: deadline, buffer: Array<byte>{}, spare: Array<Array<byte>>{}, position: 0, pending: nil, metadata: 0, idle: 0}
     let requestErr = stream.request(output, body)
     if requestErr != nil {
         return emptyClientResponse(), requestErr
@@ -329,6 +334,14 @@ func (s mut clientStream) request(output string, body []byte) error {
     let head = strings.Bytes(output)
     s.send(head[:])?
     return s.send(body)
+}
+
+func (s mut clientStream) rearm() {
+    s.deadline = time.Now().Add(s.idle)
+    let total, limited = s.ctx.Deadline()
+    if limited && !s.deadline.Before(total) {
+        s.deadline = total
+    }
 }
 
 func (s clientStream) ready() error {
@@ -352,6 +365,9 @@ func (s mut clientStream) send(data []byte) error {
             return error("http.Client: invalid write count")
         }
         position += n
+        if n > 0 && s.idle > 0 {
+            s.rearm()
+        }
         if err == error("net.Write: timed out") || err == ClientPollTimeout {
             continue
         }

@@ -134,6 +134,82 @@ func TestHTTPSOpenStreamsVerifiedFragmentedBinaryBytes() error {
     return httpsRequest("localhost", "testdata/wrong-host.pem", "../../packages/tls/testdata/server-key.pem", "testdata/wrong-host.pem", "does not match", true)
 }
 
+type uploadSource struct {
+    data Array<byte>
+    at int
+}
+
+func (s mut uploadSource) Read(buf mut []byte) (int, error) {
+    if s.at == s.data.len() {
+        return 0, io.EOF
+    }
+    buf[0] = s.data[s.at]
+    s.at += 1
+    return 1, nil
+}
+
+async func serveUpload(listener own net.Listener, config own tls.ServerConfig, ctx context.Context) error {
+    let accepted = listener.Accept()?
+    var conn = tls.Server(ctx, accepted, config)?
+    var request = ""
+    var one = Array<byte>{0}
+    for !strings.HasSuffix(request, "\r\n\r\n") {
+        let n = conn.Read(one[:])?
+        if n != 1 || request.len() > 4096 {
+            return error("invalid HTTPS upload head")
+        }
+        request += string(rune(one[0]))
+    }
+    if !strings.HasPrefix(request, "PUT /upload HTTP/1.1\r\n") || !strings.Contains(request, "\r\nContent-Length: 3\r\n") {
+        return error("wrong HTTPS upload head")
+    }
+    var body = Array<byte>{}
+    for body.len() < 3 {
+        let n = conn.Read(one[:])?
+        if n == 1 {
+            body.push(one[0])
+        }
+    }
+    if body[0] != 0 || body[1] != 255 || body[2] != 128 {
+        return error("HTTPS upload bytes changed")
+    }
+    conn.Write(strings.Bytes("HTTP/1.1 201 Created\r\nContent-Length: 0\r\n\r\n")[:])?
+    let _ = conn.Close()
+    return nil
+}
+
+func TestHTTPSUploadStreamsVerifiedBinaryBody() error {
+    let roots = os.ReadFile("../../packages/tls/testdata/roots.pem")?
+    let cert = os.ReadFile("../../packages/tls/testdata/server.pem")?
+    let key = os.ReadFile("../../packages/tls/testdata/server-key.pem")?
+    let serverConfig = tls.NewServerConfig(cert[:], key[:])?
+    let transport = https.NewTransport(roots[:])?
+    var settings = http.DefaultClientConfig()
+    settings.Timeout = 3 * time.Second
+    settings.PollInterval = time.Millisecond
+    let client = http.NewClientWithTransport(settings, transport)?
+    let listener = net.Listen("tcp4", "127.0.0.1:0")?
+    let _, port, found = strings.Cut(listener.Addr(), ":")
+    if !found {
+        return error("listener port")
+    }
+    listener.SetDeadline(time.Now().Add(3 * time.Second))?
+    let ctx, cancel = context.WithTimeout(context.Background(), 3 * time.Second)
+    let server = go serveUpload(listener, serverConfig, ctx)
+    let body = http.NewRequestBody(uploadSource{data: Array<byte>{0, 255, 128}, at: 0}, 3)?
+    let response, err = client.Upload(ctx, "PUT", "https://localhost:" + port + "/upload", http.NewHeader(), body, http.DefaultUploadConfig())
+    if err != nil {
+        cancel()
+        return err
+    }
+    if response.StatusCode != 201 {
+        panic("HTTPS upload status")
+    }
+    let servingErr = server.wait()
+    cancel()
+    return servingErr
+}
+
 func TestHTTPSDoRejectsUntrustedExpiredAndFutureCertificates() error {
     httpsCase("localhost", "../../packages/tls/testdata/server.pem", "../../packages/tls/testdata/server-key.pem", "../../packages/tls/testdata/future.pem", "not correctly signed")?
     httpsCase("localhost", "../../packages/tls/testdata/expired.pem", "../../packages/tls/testdata/expired-key.pem", "../../packages/tls/testdata/roots.pem", "expired")?

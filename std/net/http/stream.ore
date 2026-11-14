@@ -55,13 +55,13 @@ func streamSettings(config StreamConfig) (StreamConfig, error) {
     return chosen, nil
 }
 
-func streamContext(ctx context.Context, settings StreamConfig) (context.Context, Array<streamStop>) {
+func streamContext(ctx context.Context, timeout time.Duration) (context.Context, Array<streamStop>) {
     let done = channel<bool>()
     let cancelable, _ = context.WithCancelOn(ctx, done)
     var stops = Array<streamStop>{}
     stops.push(streamStop{done: done})
-    if settings.Timeout > 0 {
-        let limited, _ = context.WithDeadline(cancelable, time.Now().Add(settings.Timeout))
+    if timeout > 0 {
+        let limited, _ = context.WithDeadline(cancelable, time.Now().Add(timeout))
         return limited, stops
     }
     return cancelable, stops
@@ -87,7 +87,7 @@ func (c Client) Open(ctx context.Context, method string, absoluteURL string, hea
     if contextErr != nil {
         return emptyResponseStream(), contextErr
     }
-    let streamCtx, stops = streamContext(ctx, settings)
+    let streamCtx, stops = streamContext(ctx, settings.Timeout)
     let headerDeadline = time.Now().Add(c.config.Timeout)
     let dialCtx, stopDial = context.WithDeadline(streamCtx, headerDeadline)
     let dialGuard = clientCancellation{cancel: stopDial}
@@ -111,7 +111,7 @@ func (c Client) OpenExchange(ctx context.Context, conn own ClientConn, method st
     if contextErr != nil {
         return emptyResponseStream(), contextErr
     }
-    let streamCtx, stops = streamContext(ctx, settings)
+    let streamCtx, stops = streamContext(ctx, settings.Timeout)
     return c.openPrepared(streamCtx, stops, conn, output, method, body, settings, time.Now().Add(c.config.Timeout))
 }
 
@@ -121,7 +121,7 @@ func (c Client) openPrepared(ctx context.Context, stops own Array<streamStop>, c
     if limited && total.Before(deadline) {
         deadline = total
     }
-    var stream = clientStream{conn: conn, ctx: ctx, config: c.config, deadline: deadline, buffer: Array<byte>{}, spare: Array<Array<byte>>{}, position: 0, pending: nil, metadata: 0}
+    var stream = clientStream{conn: conn, ctx: ctx, config: c.config, deadline: deadline, buffer: Array<byte>{}, spare: Array<Array<byte>>{}, position: 0, pending: nil, metadata: 0, idle: 0}
     let requestErr = stream.request(output, body)
     if requestErr != nil {
         return emptyResponseStream(), requestErr

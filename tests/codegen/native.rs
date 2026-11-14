@@ -24,6 +24,7 @@ mod html;
 mod http;
 mod http_client;
 mod http_stream;
+mod http_upload;
 mod interface_acceptance;
 mod io_adapters;
 mod json;

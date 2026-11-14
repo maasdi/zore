@@ -110,6 +110,20 @@ text attributes. These parser assertions cover those fixed contexts, not browser
 conformance or arbitrary HTML sanitization. Template rendering remains deferred
 in [the separate decision](../design/templates.md).
 
+## Streamed HTTP uploads — issue #287
+
+Locked §37.42 delivers `http.NewRequestBody`, `Client.Upload` and
+`Client.UploadExchange`. [tests/codegen/http_upload.rs](../../tests/codegen/http_upload.rs)
+covers real loopback peers for incremental, zero-length, exact-limit,
+over-limit, oversized-source and early-rejection uploads; short, failing,
+stalled and overcounting sources; idle and total deadlines; calls that fail
+before connecting; a 64 MiB upload with bounded peak memory on Linux; release
+exactly once including on panic; one-worker plain/async progress; and the upload
+guide. [tests/packages/networking.rs](../../tests/packages/networking.rs) checks
+the frontend API and rejections, and `TestHTTPSUploadStreamsVerifiedBinaryBody`
+in [examples/https-client/https_test.ore](../../examples/https-client/https_test.ore)
+uploads over verified HTTPS.
+
 ## Streamed HTTP responses — issue #286
 
 Locked §37.41 delivers `Client.Open`, `Client.OpenExchange` and the owned
