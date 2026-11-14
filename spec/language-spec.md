@@ -12544,6 +12544,11 @@ content`. A chunk that would pass the limit fails when its size line is read;
 an EOF-delimited body fails on the first byte past the limit. A body of exactly
 `MaxBodyBytes` succeeds. Premature EOF in a Content-Length or chunked body fails
 with `http.Client: unexpected EOF in body`; framing bytes are never returned.
+As in §37.11, chunk extensions and trailers share `ClientConfig.MaxHeaderBytes`
+with the response headers for the whole response, so a hostile peer cannot pad
+an unlimited body with unlimited extension bytes. Passing it fails with
+`http.Client: chunk line too large` in a chunk line or `http.Client: metadata
+too large` in the trailers.
 
 `Read` returns either a positive count and nil, or zero and an error, never
 both. It returns the bytes already available, up to `len(buf)`, without

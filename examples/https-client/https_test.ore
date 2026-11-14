@@ -46,7 +46,7 @@ func httpsCase(host string, certPath string, keyPath string, rootsPath string, e
     return httpsRequest(host, certPath, keyPath, rootsPath, expected, false)
 }
 
-func streamedBody(client http.Client, ctx context.Context, target string) (Array<byte>, error) {
+func streamedBody(client http.Client, ctx context.Context, target string) (int, Array<byte>, error) {
     let empty = Array<byte>{}
     var stream = client.Open(ctx, "GET", target, http.NewHeader(), empty[:], http.DefaultStreamConfig())?
     var body = Array<byte>{}
@@ -60,21 +60,21 @@ func streamedBody(client http.Client, ctx context.Context, target string) (Array
             break
         }
         if err != nil {
-            return Array<byte>{}, err
+            return 0, Array<byte>{}, err
         }
     }
     let _, complete = stream.Trailers()
-    if stream.StatusCode() != 200 || !complete {
-        return Array<byte>{}, error("incomplete HTTPS stream")
+    if !complete {
+        return 0, Array<byte>{}, error("incomplete HTTPS stream")
     }
+    let status = stream.StatusCode()
     stream.Close()?
-    return body, nil
+    return status, body, nil
 }
 
 func fetchBinary(client http.Client, ctx context.Context, target string, streamed bool) (int, Array<byte>, error) {
     if streamed {
-        let body = streamedBody(client, ctx, target)?
-        return 200, body, nil
+        return streamedBody(client, ctx, target)
     }
     let response = client.Get(ctx, target)?
     return response.StatusCode, response.Body, nil

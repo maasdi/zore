@@ -80,6 +80,7 @@ type clientStream struct {
     config ClientConfig
     deadline time.Instant
     buffer Array<byte>
+    spare Array<Array<byte>>
     position int
     pending error
     metadata int
@@ -316,7 +317,7 @@ func (c Client) Exchange(ctx context.Context, conn own ClientConn, method string
 
 func (c Client) exchangePrepared(ctx context.Context, conn own ClientConn, output string, method string, body []byte) (ClientResponse, error) {
     let deadline, _ = ctx.Deadline()
-    var stream = clientStream{conn: conn, ctx: ctx, config: c.config, deadline: deadline, buffer: Array<byte>{}, position: 0, pending: nil, metadata: 0}
+    var stream = clientStream{conn: conn, ctx: ctx, config: c.config, deadline: deadline, buffer: Array<byte>{}, spare: Array<Array<byte>>{}, position: 0, pending: nil, metadata: 0}
     let requestErr = stream.request(output, body)
     if requestErr != nil {
         return emptyClientResponse(), requestErr
@@ -372,10 +373,17 @@ func (s mut clientStream) fill() error {
     if s.pending != nil {
         return s.pending
     }
-    var data = Array<byte>{}
-    for var i = 0; i < 4096; i += 1 {
+    let _, spare = s.spare.pop()
+    var data = spare
+    for data.len() < 4096 {
         data.push(0)
     }
+    let err = s.receive(data)
+    s.spare.push(data)
+    return err
+}
+
+func (s mut clientStream) receive(data mut Array<byte>) error {
     for {
         s.ready()?
         s.conn.SetReadDeadline(pollDeadline(s.deadline, s.config.PollInterval))?
@@ -476,21 +484,31 @@ func (s mut clientStream) chunkedBody(body mut Array<byte>) error {
     for {
         let size = s.chunkLine()?
         if size == 0 {
-            let trailers = s.headers()?
-            for entry in trailers.entries {
-                if clientForbiddenTrailer(entry.Name) {
-                    return error("http.Client: forbidden trailer")
-                }
-            }
+            let _ = s.trailers()?
             return nil
         }
         s.appendBody(body, size)?
-        let cr = s.nextByte()?
-        let lf = s.nextByte()?
-        if cr != 13 || lf != 10 {
-            return error("http.Client: expected chunk CRLF")
+        s.chunkEnd()?
+    }
+}
+
+func (s mut clientStream) chunkEnd() error {
+    let cr = s.nextByte()?
+    let lf = s.nextByte()?
+    if cr != 13 || lf != 10 {
+        return error("http.Client: expected chunk CRLF")
+    }
+    return nil
+}
+
+func (s mut clientStream) trailers() (Header, error) {
+    let trailers = s.headers()?
+    for entry in trailers.entries {
+        if clientForbiddenTrailer(entry.Name) {
+            return NewHeader(), error("http.Client: forbidden trailer")
         }
     }
+    return trailers, nil
 }
 
 func (s mut clientStream) framedBody(body mut Array<byte>, chunked bool, length int) error {

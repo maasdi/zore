@@ -36,8 +36,6 @@ func (s mut streamStop) drop() {
     s.done.close()
 }
 
-func (r mut ResponseStream) drop() {}
-
 func DefaultStreamConfig() StreamConfig {
     return StreamConfig{MaxBodyBytes: 68719476736, Timeout: 0, IdleTimeout: 30 * time.Second}
 }
@@ -123,7 +121,7 @@ func (c Client) openPrepared(ctx context.Context, stops own Array<streamStop>, c
     if limited && total.Before(deadline) {
         deadline = total
     }
-    var stream = clientStream{conn: conn, ctx: ctx, config: c.config, deadline: deadline, buffer: Array<byte>{}, position: 0, pending: nil, metadata: 0}
+    var stream = clientStream{conn: conn, ctx: ctx, config: c.config, deadline: deadline, buffer: Array<byte>{}, spare: Array<Array<byte>>{}, position: 0, pending: nil, metadata: 0}
     let requestErr = stream.request(output, body)
     if requestErr != nil {
         return emptyResponseStream(), requestErr
@@ -145,7 +143,7 @@ func (c Client) openPrepared(ctx context.Context, stops own Array<streamStop>, c
     if fixed {
         remaining = head.length
     }
-    var result = ResponseStream{status: head.status, headers: clone(head.headers), trailers: NewHeader(), streams: streams, stops: stops, limit: settings.MaxBodyBytes, idle: settings.IdleTimeout, chunked: head.chunked, delimited: !head.chunked && head.length < 0, reset: head.status == 205, remaining: remaining, chunkEnd: false, total: 0, done: false, failure: nil}
+    var result = ResponseStream{status: head.status, headers: head.headers, trailers: NewHeader(), streams: streams, stops: stops, limit: settings.MaxBodyBytes, idle: settings.IdleTimeout, chunked: head.chunked, delimited: !head.chunked && head.length < 0, reset: head.status == 205, remaining: remaining, chunkEnd: false, total: 0, done: false, failure: nil}
     if !head.content || (fixed && head.length == 0) {
         let completeErr = result.complete()
         if completeErr != nil {
@@ -221,22 +219,12 @@ func (r mut ResponseStream) arm() bool {
 func (r mut ResponseStream) step(buf mut []byte) (int, bool, error) {
     if r.chunked && r.remaining == 0 {
         if r.chunkEnd {
-            let cr = r.streams[0].nextByte()?
-            let lf = r.streams[0].nextByte()?
-            if cr != 13 || lf != 10 {
-                return 0, false, error("http.Client: expected chunk CRLF")
-            }
+            r.streams[0].chunkEnd()?
             r.chunkEnd = false
         }
         let size = r.streams[0].chunkLine()?
         if size == 0 {
-            let trailers = r.streams[0].headers()?
-            for entry in trailers.entries {
-                if clientForbiddenTrailer(entry.Name) {
-                    return 0, false, error("http.Client: forbidden trailer")
-                }
-            }
-            r.trailers = trailers
+            r.trailers = r.streams[0].trailers()?
             return 0, true, nil
         }
         if size > r.limit - r.total {
@@ -286,13 +274,13 @@ func (r mut ResponseStream) complete() error {
     if pending != nil && pending != io.EOF {
         return r.fail(pending, false)
     }
-    _ = pending
     r.done = true
     r.release()
     return nil
 }
 
 func (r mut ResponseStream) fail(err error, idleBound bool) error {
+    r.trailers = NewHeader()
     if idleBound && err == error("context deadline exceeded") && r.streams[0].ctx.Err() == nil {
         _ = err
         r.failure = error("http.Client: body idle timeout")

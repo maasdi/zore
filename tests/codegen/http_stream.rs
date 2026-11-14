@@ -721,3 +721,58 @@ fn http_download_guide_example_saves_the_file() {
     assert_eq!(std::fs::read(dir.path().join("report.csv")).unwrap(), body);
     assert!(!dir.path().join("report.csv.part").exists());
 }
+
+#[test]
+fn http_stream_failure_after_trailers_reports_no_trailers() {
+    let source = r#"package main
+import "std/context"
+import "std/errors"
+import "std/io"
+import "std/net/http"
+import "std/strings"
+import "std/time"
+type Conn struct { cursor int }
+func (c mut Conn) SetReadDeadline(deadline time.Instant) error { return nil }
+func (c mut Conn) SetWriteDeadline(deadline time.Instant) error { return nil }
+func (c mut Conn) Write(data []byte) (int, error) { return data.len(), nil }
+func (c mut Conn) Read(data mut []byte) (int, error) {
+    let response = strings.Bytes("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n2\r\nab\r\n0\r\nX-Sum: 7\r\n\r\n")
+    if c.cursor == response.len() { return 0, io.EOF }
+    var n = 0
+    for n < data.len() && c.cursor < response.len() {
+        data[n] = response[c.cursor]
+        c.cursor += 1
+        n += 1
+    }
+    if c.cursor == response.len() { return n, error("connection reset") }
+    return n, nil
+}
+type Discard struct {}
+func (d mut Discard) Write(data []byte) (int, error) { return data.len(), nil }
+func run() error {
+    let client = http.NewClient(http.DefaultClientConfig())?
+    let empty = Array<byte>{}
+    var stream = client.OpenExchange(context.Background(), Conn{cursor: 0}, "GET", "https://example.test/", http.NewHeader(), empty[:], http.DefaultStreamConfig())?
+    var sink = Discard{}
+    let copied, err = io.Copy(sink, stream)
+    println(copied)
+    println(errors.Message(err))
+    let trailers, complete = stream.Trailers()
+    println(complete)
+    println(trailers.Values("X-Sum").len())
+    return stream.Close()
+}
+func main() { let err = run(); if err != nil { println(errors.Message(err)) } }
+"#;
+    let dir = TempDir::new().unwrap();
+    let executable = dir.executable("late_failure");
+    build_file(source, &executable).unwrap_or_else(|e| panic!("build failed: {e:?}"));
+    let output = bounded_process::run(
+        Command::new(&executable).env("ZORE_CHECK_LEAKS", "1"),
+        Duration::from_secs(20),
+    )
+    .unwrap();
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert!(output.stderr.is_empty(), "{}", stderr(&output));
+    assert_eq!(stdout(&output), "2\nconnection reset\nfalse\n0\n");
+}
