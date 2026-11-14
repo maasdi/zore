@@ -1,6 +1,7 @@
 package url
 
 import "std/strings"
+import "std/net"
 
 type AbsoluteURL struct {
     Scheme string
@@ -8,10 +9,6 @@ type AbsoluteURL struct {
     Authority string
     Address string
     RequestTarget string
-}
-
-func absoluteHex(c byte) bool {
-    return hex(c) >= 0
 }
 
 func absoluteDecimal(text string) (int, error) {
@@ -30,60 +27,8 @@ func absoluteDecimal(text string) (int, error) {
 }
 
 func absoluteIPv6(text string) bool {
-    if text == "" || text.len() > 45 || strings.Count(text, "::") > 1 {
-        return false
-    }
-    let compressed = strings.Contains(text, "::")
-    if strings.HasPrefix(text, ":") && !strings.HasPrefix(text, "::") {
-        return false
-    }
-    if strings.HasSuffix(text, ":") && !strings.HasSuffix(text, "::") {
-        return false
-    }
-    if strings.Contains(text, ":::") {
-        return false
-    }
-    let parts = strings.Split(text, ":")
-    var groups = 0
-    for var i = 0; i < parts.len(); i += 1 {
-        let part = parts[i]
-        if part == "" {
-            continue
-        }
-        if strings.Contains(part, ".") {
-            if i != parts.len() - 1 {
-                return false
-            }
-            let octets = strings.Split(part, ".")
-            if octets.len() != 4 {
-                return false
-            }
-            for octet in octets {
-                let value, err = absoluteDecimal(octet)
-                if err != nil || value > 255 || octet.len() > 3 {
-                    return false
-                }
-                if octet.len() > 1 && octet[0] == 48 {
-                    return false
-                }
-            }
-            groups += 2
-        } else {
-            if part.len() > 4 {
-                return false
-            }
-            for var j = 0; j < part.len(); j += 1 {
-                if !absoluteHex(part[j]) {
-                    return false
-                }
-            }
-            groups += 1
-        }
-    }
-    if compressed {
-        return groups < 8
-    }
-    return groups == 8
+    let address, err = net.ParseIP(text)
+    return err == nil && address.Is6()
 }
 
 func absoluteHost(host string) bool {
@@ -99,16 +44,8 @@ func absoluteHost(host string) bool {
     }
     let parts = strings.Split(host, ".")
     if numeric {
-        if parts.len() != 4 {
-            return false
-        }
-        for part in parts {
-            let value, err = absoluteDecimal(part)
-            if err != nil || value > 255 || (part.len() > 1 && part[0] == 48) {
-                return false
-            }
-        }
-        return true
+        let address, err = net.ParseIP(host)
+        return err == nil && address.Is4()
     }
     for var i = 0; i < parts.len(); i += 1 {
         let part = parts[i]

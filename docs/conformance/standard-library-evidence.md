@@ -109,3 +109,13 @@ exact output with Python and parses fixed element text and single/double-quoted
 text attributes. These parser assertions cover those fixed contexts, not browser
 conformance or arbitrary HTML sanitization. Template rendering remains deferred
 in [the separate decision](../design/templates.md).
+
+## Public networking — issue #227
+
+Locked §§37.37–37.40 deliver IP/literal endpoint values, cancellable public
+system lookup, UDP resources and RFC 3986 URI reference resolution. The
+[networking conformance map](../../tests/conformance/networking.md) links the
+frontend API checks, native ownership/cleanup and controlled one-worker cases,
+runtime pending/datagram/deadline assertions, and independent Python IP/URI/UDP
+oracle. DNS cancellation cannot forcibly abort OS resolver calls; raw/reverse DNS,
+connected/multicast UDP, zones and additional protocols remain excluded.

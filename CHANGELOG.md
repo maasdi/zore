@@ -17,6 +17,17 @@ including those shipped in `0.1.0-alpha.1`, are not split by release.
   extraction fails before moving anything. Existing content is never replaced.
   A conflict that appears during the move puts back everything already moved.
 
+### Public networking
+
+- Added `std/net.IP` and `AddrPort` values with strict literal parsing, canonical
+  formatting and explicit equality/ordering; URL parsing shares the IP primitive.
+- Added context-aware `net.LookupIP` using the host resolver with owned results,
+  family filtering, duplicate removal and cancellation of the caller's wait.
+- Added owned `net.UDPConn` datagrams with peer/count/truncation reporting,
+  deadlines, cleanup and plain/async progress on Linux, macOS and Windows.
+- Added `url.ResolveReference` for RFC 3986 URI references, preserving explicit
+  empty delimiters and existing strict HTTP URL admission.
+
 ### ZIP64 and larger archives
 
 - `ZIPReader` reads ZIP64 end records, locators, extra fields and 8-byte data

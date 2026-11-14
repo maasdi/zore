@@ -40,6 +40,8 @@ mod math;
 mod mutex;
 #[path = "net.rs"]
 mod net;
+mod net_dns;
+mod net_ip;
 #[path = "os.rs"]
 mod os;
 #[path = "panic.rs"]

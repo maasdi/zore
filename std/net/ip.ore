@@ -1,0 +1,134 @@
+package net
+
+import "std/strconv"
+import "std/strings"
+
+type IP struct {
+    text string
+}
+
+type AddrPort struct {
+    address IP
+    port int
+}
+
+func emptyAddrPort() AddrPort {
+    return AddrPort{address: IP{text: ""}, port: 0}
+}
+
+func ParseIP(text string) (IP, error) {
+    let canonical, err = ipText(text)
+    return IP{text: canonical}, err
+}
+
+func (ip IP) IsValid() bool {
+    return ip.text != ""
+}
+
+func (ip IP) Is4() bool {
+    return ip.IsValid() && !strings.Contains(ip.text, ":")
+}
+
+func (ip IP) Is6() bool {
+    return strings.Contains(ip.text, ":")
+}
+
+func (ip IP) String() string {
+    return ip.text
+}
+
+func (ip IP) Equal(other IP) bool {
+    return ip.text == other.text
+}
+
+func (ip IP) Compare(other IP) int {
+    return ipCompare(ip.text, other.text)
+}
+
+func NewAddrPort(ip IP, port int) (AddrPort, error) {
+    if !ip.IsValid() || port < 0 || port > 65535 {
+        return emptyAddrPort(), error("net.NewAddrPort: invalid address or port")
+    }
+    return AddrPort{address: ip, port: port}, nil
+}
+
+func ParseAddrPort(text string) (AddrPort, error) {
+    var host = ""
+    var number = ""
+    var bracketed = false
+    if strings.HasPrefix(text, "[") {
+        let end = strings.Index(text, "]:")
+        if end < 0 {
+            return emptyAddrPort(), error("net.ParseAddrPort: invalid literal endpoint")
+        }
+        host = text[1:end]
+        number = text[end + 2:]
+        bracketed = true
+    } else {
+        let name, port, found = strings.Cut(text, ":")
+        if !found {
+            return emptyAddrPort(), error("net.ParseAddrPort: invalid literal endpoint")
+        }
+        host = name
+        number = port
+    }
+    let ip, err = ParseIP(host)
+    if err != nil || ip.Is6() != bracketed || number.len() == 0 || number.len() > 5 {
+        return emptyAddrPort(), error("net.ParseAddrPort: invalid literal endpoint")
+    }
+    for var i = 0; i < number.len(); i += 1 {
+        if number[i] < 48 || number[i] > 57 {
+            return emptyAddrPort(), error("net.ParseAddrPort: invalid literal endpoint")
+        }
+    }
+    let port, parseErr = strconv.Atoi(number)
+    if parseErr != nil || port > 65535 {
+        return emptyAddrPort(), error("net.ParseAddrPort: invalid literal endpoint")
+    }
+    return AddrPort{address: ip, port: port}, nil
+}
+
+func (ap AddrPort) Addr() IP {
+    return ap.address
+}
+
+func (ap AddrPort) Port() int {
+    return ap.port
+}
+
+func (ap AddrPort) IsValid() bool {
+    return ap.address.IsValid()
+}
+
+func (ap AddrPort) String() string {
+    if !ap.IsValid() {
+        return ""
+    }
+    var host = ap.address.String()
+    if ap.address.Is6() {
+        host = "[" + host + "]"
+    }
+    return host + ":" + strconv.Itoa(ap.port)
+}
+
+func (ap AddrPort) Equal(other AddrPort) bool {
+    return ap.address.Equal(other.address) && ap.port == other.port
+}
+
+func (ap AddrPort) Compare(other AddrPort) int {
+    let addressOrder = ap.address.Compare(other.address)
+    if addressOrder != 0 {
+        return addressOrder
+    }
+    if ap.port < other.port {
+        return -1
+    }
+    if ap.port > other.port {
+        return 1
+    }
+    return 0
+}
+
+func ipText(text string) (string, error)
+
+func ipCompare(left string, right string) int

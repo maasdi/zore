@@ -247,3 +247,13 @@ exact UTF-8 output, ownership/cleanup across suspension, a compiled guide and
 independent Python escaping/parser assertions. Contextual template rendering
 remains a separate application-driven decision under Q16; the primitive does
 not validate URLs or serialize JavaScript/CSS.
+
+## Public networking — issue #227
+
+Locked §§37.37–37.40 deliver IP/literal endpoint values, cancellable public
+system lookup, UDP resources and RFC 3986 URI reference resolution. The
+[networking conformance map](../../tests/conformance/networking.md) links the
+frontend API checks, native ownership/cleanup and controlled one-worker cases,
+runtime pending/datagram/deadline assertions, and independent Python IP/URI/UDP
+oracle. DNS cancellation cannot forcibly abort OS resolver calls; raw/reverse DNS,
+connected/multicast UDP, zones and additional protocols remain excluded.
