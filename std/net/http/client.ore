@@ -508,6 +508,10 @@ type clientHead struct {
     content bool
 }
 
+func emptyClientHead() clientHead {
+    return clientHead{status: 0, headers: NewHeader(), chunked: false, length: -1, content: false}
+}
+
 func (s mut clientStream) head(method string) (clientHead, error) {
     for {
         let version, status = clientStatus(s.line()?)?
@@ -515,7 +519,7 @@ func (s mut clientStream) head(method string) (clientHead, error) {
         let lengths = headers.Values("Content-Length")
         let encodings = headers.Values("Transfer-Encoding")
         if lengths.len() > 1 || encodings.len() > 1 || (lengths.len() > 0 && encodings.len() > 0) {
-            return clientHead{status: 0, headers: NewHeader(), chunked: false, length: -1, content: false}, error("http.Client: ambiguous framing")
+            return emptyClientHead(), error("http.Client: ambiguous framing")
         }
         var length = -1
         if lengths.len() == 1 {
@@ -523,22 +527,22 @@ func (s mut clientStream) head(method string) (clientHead, error) {
         }
         let chunked = encodings.len() == 1
         if chunked && version == "HTTP/1.0" {
-            return clientHead{status: 0, headers: NewHeader(), chunked: false, length: -1, content: false}, error("http.Client: HTTP/1.0 response forbids Transfer-Encoding")
+            return emptyClientHead(), error("http.Client: HTTP/1.0 response forbids Transfer-Encoding")
         }
         if chunked && !asciiEqual(encodings[0], "chunked") {
-            return clientHead{status: 0, headers: NewHeader(), chunked: false, length: -1, content: false}, error("http.Client: unsupported transfer encoding")
+            return emptyClientHead(), error("http.Client: unsupported transfer encoding")
         }
         if status < 200 {
             if status == 101 {
-                return clientHead{status: 0, headers: NewHeader(), chunked: false, length: -1, content: false}, error("http.Client: protocol upgrade unsupported")
+                return emptyClientHead(), error("http.Client: protocol upgrade unsupported")
             }
             if length >= 0 || chunked {
-                return clientHead{status: 0, headers: NewHeader(), chunked: false, length: -1, content: false}, error("http.Client: informational response forbids framing")
+                return emptyClientHead(), error("http.Client: informational response forbids framing")
             }
             continue
         }
         if status == 204 && (length >= 0 || chunked) {
-            return clientHead{status: 0, headers: NewHeader(), chunked: false, length: -1, content: false}, error("http.Client: 204 forbids framing")
+            return emptyClientHead(), error("http.Client: 204 forbids framing")
         }
         let content = method != "HEAD" && status != 204 && status != 304
         return clientHead{status: status, headers: headers, chunked: chunked, length: length, content: content}, nil
