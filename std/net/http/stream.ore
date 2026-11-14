@@ -1,0 +1,309 @@
+package http
+
+import "std/context"
+import "std/io"
+import "std/time"
+
+type StreamConfig struct {
+    MaxBodyBytes int
+    Timeout time.Duration
+    IdleTimeout time.Duration
+}
+
+type ResponseStream struct {
+    status int
+    headers Header
+    trailers Header
+    streams Array<clientStream>
+    stops Array<streamStop>
+    limit int
+    idle time.Duration
+    chunked bool
+    delimited bool
+    reset bool
+    remaining int
+    chunkEnd bool
+    total int
+    done bool
+    failure error
+}
+
+type streamStop struct {
+    done channel<bool>
+}
+
+func (s mut streamStop) drop() {
+    s.done.close()
+}
+
+func (r mut ResponseStream) drop() {}
+
+func DefaultStreamConfig() StreamConfig {
+    return StreamConfig{MaxBodyBytes: 68719476736, Timeout: 0, IdleTimeout: 30 * time.Second}
+}
+
+func streamSettings(config StreamConfig) (StreamConfig, error) {
+    if config.MaxBodyBytes < 0 || config.Timeout < 0 || config.IdleTimeout < 0 {
+        return DefaultStreamConfig(), error("http.Client: negative stream configuration")
+    }
+    let defaults = DefaultStreamConfig()
+    var chosen = config
+    if chosen.MaxBodyBytes == 0 {
+        chosen.MaxBodyBytes = defaults.MaxBodyBytes
+    }
+    if chosen.IdleTimeout == 0 {
+        chosen.IdleTimeout = defaults.IdleTimeout
+    }
+    return chosen, nil
+}
+
+func streamContext(ctx context.Context, settings StreamConfig) (context.Context, Array<streamStop>) {
+    let done = channel<bool>()
+    let cancelable, _ = context.WithCancelOn(ctx, done)
+    var stops = Array<streamStop>{}
+    stops.push(streamStop{done: done})
+    if settings.Timeout > 0 {
+        let limited, _ = context.WithDeadline(cancelable, time.Now().Add(settings.Timeout))
+        return limited, stops
+    }
+    return cancelable, stops
+}
+
+func emptyResponseStream() ResponseStream {
+    return ResponseStream{status: 0, headers: NewHeader(), trailers: NewHeader(), streams: Array<clientStream>{}, stops: Array<streamStop>{}, limit: 0, idle: 0, chunked: false, delimited: false, reset: false, remaining: 0, chunkEnd: false, total: 0, done: false, failure: nil}
+}
+
+func (c Client) Open(ctx context.Context, method string, absoluteURL string, headers Header, body []byte, config StreamConfig) (ResponseStream, error) {
+    let settings, settingsErr = streamSettings(config)
+    if settingsErr != nil {
+        return emptyResponseStream(), settingsErr
+    }
+    let output, target, preparationErr = c.prepare(method, absoluteURL, headers, body)
+    if preparationErr != nil {
+        return emptyResponseStream(), preparationErr
+    }
+    if c.transport.len() == 0 && target.Scheme != "http" {
+        return emptyResponseStream(), error("http.Client: HTTPS requires verified TLS transport")
+    }
+    let contextErr = clientContextError(ctx)
+    if contextErr != nil {
+        return emptyResponseStream(), contextErr
+    }
+    let streamCtx, stops = streamContext(ctx, settings)
+    let headerDeadline = time.Now().Add(c.config.Timeout)
+    let dialCtx, stopDial = context.WithDeadline(streamCtx, headerDeadline)
+    let dialGuard = clientCancellation{cancel: stopDial}
+    let conn, dialErr = c.dial(dialCtx, target)
+    if dialErr != nil {
+        return emptyResponseStream(), dialErr
+    }
+    return c.openPrepared(streamCtx, stops, conn, output, method, body, settings, headerDeadline)
+}
+
+func (c Client) OpenExchange(ctx context.Context, conn own ClientConn, method string, absoluteURL string, headers Header, body []byte, config StreamConfig) (ResponseStream, error) {
+    let settings, settingsErr = streamSettings(config)
+    if settingsErr != nil {
+        return emptyResponseStream(), settingsErr
+    }
+    let output, _, preparationErr = c.prepare(method, absoluteURL, headers, body)
+    if preparationErr != nil {
+        return emptyResponseStream(), preparationErr
+    }
+    let contextErr = clientContextError(ctx)
+    if contextErr != nil {
+        return emptyResponseStream(), contextErr
+    }
+    let streamCtx, stops = streamContext(ctx, settings)
+    return c.openPrepared(streamCtx, stops, conn, output, method, body, settings, time.Now().Add(c.config.Timeout))
+}
+
+func (c Client) openPrepared(ctx context.Context, stops own Array<streamStop>, conn own ClientConn, output string, method string, body []byte, settings StreamConfig, headerDeadline time.Instant) (ResponseStream, error) {
+    var deadline = headerDeadline
+    let total, limited = ctx.Deadline()
+    if limited && total.Before(deadline) {
+        deadline = total
+    }
+    var stream = clientStream{conn: conn, ctx: ctx, config: c.config, deadline: deadline, buffer: Array<byte>{}, position: 0, pending: nil, metadata: 0}
+    let requestErr = stream.request(output, body)
+    if requestErr != nil {
+        return emptyResponseStream(), requestErr
+    }
+    let head, headErr = stream.head(method)
+    if headErr != nil {
+        return emptyResponseStream(), headErr
+    }
+    let fixed = !head.chunked && head.length >= 0
+    if head.content && fixed && head.length > settings.MaxBodyBytes {
+        return emptyResponseStream(), error("http.Client: body too large")
+    }
+    if head.content && fixed && head.status == 205 && head.length > 0 {
+        return emptyResponseStream(), error("http.Client: 205 forbids content")
+    }
+    var streams = Array<clientStream>{}
+    streams.push(stream)
+    var remaining = 0
+    if fixed {
+        remaining = head.length
+    }
+    var result = ResponseStream{status: head.status, headers: clone(head.headers), trailers: NewHeader(), streams: streams, stops: stops, limit: settings.MaxBodyBytes, idle: settings.IdleTimeout, chunked: head.chunked, delimited: !head.chunked && head.length < 0, reset: head.status == 205, remaining: remaining, chunkEnd: false, total: 0, done: false, failure: nil}
+    if !head.content || (fixed && head.length == 0) {
+        let completeErr = result.complete()
+        if completeErr != nil {
+            return emptyResponseStream(), completeErr
+        }
+    }
+    return result, nil
+}
+
+func (r ResponseStream) StatusCode() int {
+    return r.status
+}
+
+func (r ResponseStream) Headers() Header {
+    return clone(r.headers)
+}
+
+func (r ResponseStream) Trailers() (Header, bool) {
+    return clone(r.trailers), r.done
+}
+
+func (r mut ResponseStream) Read(buf mut []byte) (int, error) {
+    if r.failure != nil {
+        return 0, r.failure
+    }
+    if r.done {
+        return 0, io.EOF
+    }
+    if r.streams.len() == 0 {
+        return 0, error("http.ResponseStream: empty stream")
+    }
+    if buf.len() == 0 {
+        return 0, nil
+    }
+    let idleBound = r.arm()
+    let count, finished, err = r.step(buf)
+    if err != nil {
+        if err == io.EOF {
+            return 0, r.fail(error("http.Client: unexpected EOF in body"), false)
+        }
+        return 0, r.fail(err, idleBound)
+    }
+    if finished {
+        let completeErr = r.complete()
+        if completeErr != nil {
+            return 0, completeErr
+        }
+        return 0, io.EOF
+    }
+    if !r.chunked && !r.delimited && r.remaining == 0 {
+        let completeErr = r.complete()
+        _ = completeErr
+    }
+    return count, nil
+}
+
+func (r own ResponseStream) Close() error {
+    return nil
+}
+
+func (r mut ResponseStream) arm() bool {
+    var deadline = time.Now().Add(r.idle)
+    var idleBound = true
+    let total, limited = r.streams[0].ctx.Deadline()
+    if limited && !deadline.Before(total) {
+        deadline = total
+        idleBound = false
+    }
+    r.streams[0].deadline = deadline
+    return idleBound
+}
+
+func (r mut ResponseStream) step(buf mut []byte) (int, bool, error) {
+    if r.chunked && r.remaining == 0 {
+        if r.chunkEnd {
+            let cr = r.streams[0].nextByte()?
+            let lf = r.streams[0].nextByte()?
+            if cr != 13 || lf != 10 {
+                return 0, false, error("http.Client: expected chunk CRLF")
+            }
+            r.chunkEnd = false
+        }
+        let size = r.streams[0].chunkLine()?
+        if size == 0 {
+            let trailers = r.streams[0].headers()?
+            for entry in trailers.entries {
+                if clientForbiddenTrailer(entry.Name) {
+                    return 0, false, error("http.Client: forbidden trailer")
+                }
+            }
+            r.trailers = trailers
+            return 0, true, nil
+        }
+        if size > r.limit - r.total {
+            return 0, false, error("http.Client: body too large")
+        }
+        r.remaining = size
+        r.chunkEnd = true
+    }
+    let fillErr = r.streams[0].fill()
+    if fillErr != nil {
+        if fillErr == io.EOF && r.delimited {
+            return 0, true, nil
+        }
+        return 0, false, fillErr
+    }
+    if r.reset {
+        return 0, false, error("http.Client: 205 forbids content")
+    }
+    var count = r.streams[0].buffer.len() - r.streams[0].position
+    if count > buf.len() {
+        count = buf.len()
+    }
+    if r.delimited {
+        if r.total == r.limit {
+            return 0, false, error("http.Client: body too large")
+        }
+        if count > r.limit - r.total {
+            count = r.limit - r.total
+        }
+    } else if count > r.remaining {
+        count = r.remaining
+    }
+    let start = r.streams[0].position
+    for var i = 0; i < count; i += 1 {
+        buf[i] = r.streams[0].buffer[start + i]
+    }
+    r.streams[0].position += count
+    r.total += count
+    if !r.delimited {
+        r.remaining -= count
+    }
+    return count, false, nil
+}
+
+func (r mut ResponseStream) complete() error {
+    let pending = r.streams[0].pending
+    if pending != nil && pending != io.EOF {
+        return r.fail(pending, false)
+    }
+    _ = pending
+    r.done = true
+    r.release()
+    return nil
+}
+
+func (r mut ResponseStream) fail(err error, idleBound bool) error {
+    if idleBound && err == error("context deadline exceeded") && r.streams[0].ctx.Err() == nil {
+        _ = err
+        r.failure = error("http.Client: body idle timeout")
+    } else {
+        r.failure = err
+    }
+    r.release()
+    return r.failure
+}
+
+func (r mut ResponseStream) release() {
+    r.streams = Array<clientStream>{}
+    r.stops = Array<streamStop>{}
+}

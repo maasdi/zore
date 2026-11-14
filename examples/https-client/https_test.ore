@@ -2,6 +2,7 @@ package main
 
 import "std/context"
 import "std/errors"
+import "std/io"
 import "std/net"
 import "std/net/http"
 import "std/net/url"
@@ -42,6 +43,44 @@ async func serveHTTPS(listener own net.Listener, config own tls.ServerConfig, ct
 }
 
 func httpsCase(host string, certPath string, keyPath string, rootsPath string, expected string) error {
+    return httpsRequest(host, certPath, keyPath, rootsPath, expected, false)
+}
+
+func streamedBody(client http.Client, ctx context.Context, target string) (Array<byte>, error) {
+    let empty = Array<byte>{}
+    var stream = client.Open(ctx, "GET", target, http.NewHeader(), empty[:], http.DefaultStreamConfig())?
+    var body = Array<byte>{}
+    var buffer = Array<byte>{0, 0}
+    for {
+        let n, err = stream.Read(buffer[:])
+        for var i = 0; i < n; i += 1 {
+            body.push(buffer[i])
+        }
+        if err == io.EOF {
+            break
+        }
+        if err != nil {
+            return Array<byte>{}, err
+        }
+    }
+    let _, complete = stream.Trailers()
+    if stream.StatusCode() != 200 || !complete {
+        return Array<byte>{}, error("incomplete HTTPS stream")
+    }
+    stream.Close()?
+    return body, nil
+}
+
+func fetchBinary(client http.Client, ctx context.Context, target string, streamed bool) (int, Array<byte>, error) {
+    if streamed {
+        let body = streamedBody(client, ctx, target)?
+        return 200, body, nil
+    }
+    let response = client.Get(ctx, target)?
+    return response.StatusCode, response.Body, nil
+}
+
+func httpsRequest(host string, certPath string, keyPath string, rootsPath string, expected string, streamed bool) error {
     let roots = os.ReadFile(rootsPath)?
     let cert = os.ReadFile(certPath)?
     let key = os.ReadFile(keyPath)?
@@ -59,17 +98,18 @@ func httpsCase(host string, certPath string, keyPath string, rootsPath string, e
     listener.SetDeadline(time.Now().Add(3 * time.Second))?
     let ctx, cancel = context.WithTimeout(context.Background(), 3 * time.Second)
     let server = go serveHTTPS(listener, serverConfig, ctx, host)
-    let response, err = client.Get(ctx, "https://" + host + ":" + port + "/binary")
+    let target = "https://" + host + ":" + port + "/binary"
+    let status, body, err = fetchBinary(client, ctx, target, streamed)
     if expected == "" {
         if err != nil {
             cancel();
             return err
         }
-        if response.StatusCode != 200 || response.Body.len() != 3 || response.Body[0] != 0 || response.Body[1] != 255 || response.Body[2] != 128 {
+        if status != 200 || body.len() != 3 || body[0] != 0 || body[1] != 255 || body[2] != 128 {
             panic("HTTPS binary response")
         }
     } else {
-        if err == nil || response.Body.len() != 0 {
+        if err == nil || body.len() != 0 {
             panic("unverified HTTPS accepted")
         }
         if !strings.Contains(errors.Message(err), expected) {
@@ -87,6 +127,11 @@ func httpsCase(host string, certPath string, keyPath string, rootsPath string, e
 
 func TestHTTPSDoVerifiesPeerAndPreservesFragmentedBinaryBytes() error {
     return httpsCase("localhost", "../../packages/tls/testdata/server.pem", "../../packages/tls/testdata/server-key.pem", "../../packages/tls/testdata/roots.pem", "")
+}
+
+func TestHTTPSOpenStreamsVerifiedFragmentedBinaryBytes() error {
+    httpsRequest("localhost", "../../packages/tls/testdata/server.pem", "../../packages/tls/testdata/server-key.pem", "../../packages/tls/testdata/roots.pem", "", true)?
+    return httpsRequest("localhost", "testdata/wrong-host.pem", "../../packages/tls/testdata/server-key.pem", "testdata/wrong-host.pem", "does not match", true)
 }
 
 func TestHTTPSDoRejectsUntrustedExpiredAndFutureCertificates() error {

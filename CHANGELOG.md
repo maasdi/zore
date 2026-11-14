@@ -8,6 +8,18 @@ including those shipped in `0.1.0-alpha.1`, are not split by release.
 
 ## [Unreleased]
 
+### Streamed HTTP downloads
+
+- `Client.Open` and `Client.OpenExchange` return an owned `http.ResponseStream`
+  once the headers arrive (§37.41). Its `Read` hands the body over piece by
+  piece, so `io.Copy` can write a large download into a file or hash without
+  holding it in memory. `Get`, `Do` and `Exchange` are unchanged.
+- `StreamConfig` sets the body limit (64 GiB by default), an idle timeout
+  (30 seconds) and an optional total timeout; the 1 MiB buffered limit does not
+  apply. Errors are sticky, internal poll timeouts never reach the reader,
+  `Trailers` reports validated trailers once the body is complete, and the
+  connection closes as soon as the body ends, fails, is closed or is dropped.
+
 ### Extracting into an existing folder
 
 - `ExtractOptions.Merge` lets `ExtractTARWith` and `ExtractZIPWith` add an

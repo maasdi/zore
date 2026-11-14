@@ -9223,9 +9223,10 @@ execute provider-present tests; skipped/unavailable providers are not evidence.
 ## 37.11 Bounded HTTP/1.1 clients — LOCKED
 
 Future streaming, pooling and protocol policies are tracked in issue #228 and
-`docs/design/http-client.md`. That plan introduces no public declarations or
-changes to this locked contract. Each additive slice requires its own §53 lock
+`docs/design/http-client.md`. Each additive slice requires its own §53 lock
 before implementation; design follow-ups are not supported client features.
+Streamed response bodies are locked in §37.41 and leave this buffered contract
+unchanged.
 
 This additive contract preserves the server `Request` and `ResponseWriter`.
 The client API uses ordinary waiting calls and explicit errors:
@@ -12479,6 +12480,128 @@ result shapes. Conformance maps focused address, resolver, datagram and URI
 increments to frontend and native tests, independent IP/RFC URI vectors,
 deterministic cleanup/cancellation fixtures and supported-host CI. HTTP/2, QUIC,
 cross-compilation and a replacement Windows reactor are not prerequisites.
+
+## 37.41 Streamed HTTP client responses — LOCKED
+
+`std/net/http` adds streamed responses beside the buffered client of §37.11.
+`Get`, `Do`, `Exchange`, `ClientResponse` and `ClientConfig` are unchanged.
+
+```ore
+type StreamConfig struct {
+    MaxBodyBytes int
+    Timeout time.Duration
+    IdleTimeout time.Duration
+}
+type ResponseStream struct { /* private */ }
+func DefaultStreamConfig() StreamConfig
+func (c Client) Open(ctx context.Context, method string, absoluteURL string,
+                     headers Header, body []byte,
+                     config StreamConfig) (ResponseStream, error)
+func (c Client) OpenExchange(ctx context.Context, conn own ClientConn,
+                             method string, absoluteURL string,
+                             headers Header, body []byte,
+                             config StreamConfig) (ResponseStream, error)
+func (r ResponseStream) StatusCode() int
+func (r ResponseStream) Headers() Header
+func (r ResponseStream) Trailers() (Header, bool)
+func (r mut ResponseStream) Read(buf mut []byte) (int, error)
+func (r own ResponseStream) Close() error
+```
+
+`Open` and `OpenExchange` validate, dial and send exactly as `Do` and
+`Exchange` do: the same methods, URLs, controlled headers, request limits,
+`Connection: close`, transports and errors. They return once the final status
+line and headers are parsed with the rules of §37.11; the body has not been
+read. On failure they return an empty stream and no connection remains open.
+
+`ResponseStream` is a private-field Move resource that owns the connection,
+parser state and the cancellation of its context. It implements `io.Reader`
+and `io.ReadCloser`. Headers are owned copies. The stream does not borrow the
+Client, the URL, the request headers or the request body.
+
+Defaults are 68719476736 response body bytes (64 GiB), no total timeout and a
+30-second idle timeout. A zero `MaxBodyBytes` or `IdleTimeout` selects its
+default; a zero `Timeout` means no total limit beyond the caller's context.
+Negative fields fail with `http.Client: negative stream configuration` before
+dialing. `ClientConfig.MaxBodyBytes` does not apply to streams.
+
+Time limits have three parts. `ClientConfig.Timeout` bounds dialing, sending
+and receiving the headers, as for `Do`. `StreamConfig.Timeout`, when positive,
+bounds everything from the call until the body ends, and so does an earlier
+caller deadline. `IdleTimeout` bounds each `Read` that is waiting for data: if
+no byte arrives within it, `Read` fails with `http.Client: body idle timeout`.
+Expiry of the total or caller deadline fails with `context deadline exceeded`
+and cancellation with `context canceled`. The context passed to a transport's
+`Dial` ends when the headers are received or the call fails, so a connection
+must not depend on it afterwards. Cancellation is observed at least every
+`PollInterval` while waiting.
+
+Body framing follows §37.11: Content-Length, chunked with validated extensions
+and trailers, or EOF delimiting; HEAD, 204 and 304 have no body; a 205 body must
+be empty. A Content-Length above `MaxBodyBytes`, or a nonzero one on a 205,
+fails `Open` with `http.Client: body too large` or `http.Client: 205 forbids
+content`. A chunk that would pass the limit fails when its size line is read;
+an EOF-delimited body fails on the first byte past the limit. A body of exactly
+`MaxBodyBytes` succeeds. Premature EOF in a Content-Length or chunked body fails
+with `http.Client: unexpected EOF in body`; framing bytes are never returned.
+
+`Read` returns either a positive count and nil, or zero and an error, never
+both. It returns the bytes already available, up to `len(buf)`, without
+waiting to fill `buf`. A zero-length `buf` returns zero and nil without I/O.
+Recoverable poll timeouts from the connection (§37.11) are retried inside
+`Read` and never returned. The end of a valid body returns `io.EOF`. The first
+error or `io.EOF` is sticky: every later `Read` returns zero and the same
+value. Bytes returned before an error stay valid. If the connection reports a
+terminal error together with the last bytes of a complete body, those bytes are
+returned and the following `Read` returns that error. Reading an empty stream
+fails with `http.ResponseStream: empty stream`.
+
+`Trailers` returns an owned copy of the validated trailer fields and true only
+after a body has ended with `io.EOF`. Before then, after a failure, and for a
+body without trailers, the header is empty; the boolean distinguishes a
+complete body without trailers (true) from an incomplete one (false).
+
+The connection is released, without draining unread data, as soon as the body
+ends, `Read` fails, `Close` is called, or the stream is dropped, including on
+panic. Each connection is closed exactly once. `Close` consumes the stream and
+returns nil; errors are reported by `Read`. A stream whose body has not been
+read to the end never reuses its connection, because streams use one exchange
+per connection. When a download is copied into a file and fails, the bytes
+already written stay there; the application decides whether to delete the file
+or write to a temporary file and rename it after success.
+
+Plain callers block with worker compensation and async callers use the ordinary
+API without `await`, as for §37.11. Memory is bounded by the read buffer and the
+longest metadata line, independent of the body size.
+
+```ore
+import "std/context"
+import "std/io"
+import "std/net/http"
+import "std/os"
+
+func download(client http.Client, target string, path string) error {
+    let empty = Array<byte>{}
+    var stream = client.Open(context.Background(), "GET", target,
+                             http.NewHeader(), empty[:], http.DefaultStreamConfig())?
+    var file = os.Create(path)?
+    io.Copy(file, stream)?
+    file.Close()?
+    return stream.Close()
+}
+```
+
+Compiler impact: one bundled source file; no runtime or syntax changes.
+Conformance: real loopback peers for fixed, chunked and EOF-delimited bodies,
+exact and one-over limits, truncation, malformed chunks, forbidden trailers,
+205/HEAD/204/304, incremental delivery, idle, total and header deadlines,
+cancellation, early Close and a 64 MiB download with bounded peak memory;
+scripted connections for hidden poll timeouts, final bytes with errors, release
+exactly once on completion, failure, Close, drop and panic; one-worker plain and
+async progress; frontend privacy, ownership and type rejections; and verified
+fragmented HTTPS streaming and wrong-host rejection in `examples/https-client/`.
+Request streaming, pooling, redirects, retries, proxies, decoding and HTTP/2
+remain excluded.
 
 # 38. Self-Hosting Constraint
 

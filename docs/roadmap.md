@@ -1,5 +1,11 @@
 # Implementation roadmap
 
+Issue [#286](https://github.com/maasdi/zore/issues/286) adds streamed HTTP
+client responses under §37.41: `Client.Open` returns an owned `ResponseStream`
+that `io.Copy` can write into a file or hash with bounded memory, with its own
+body limit, idle and total timeouts, sticky errors, trailers and prompt
+connection release. See the [download guide](http-downloads.md).
+
 Issue [#227](https://github.com/maasdi/zore/issues/227) adds typed IP/literal
 endpoint values, public cancellable system lookup, UDP datagrams and generic URI
 reference resolution under §§37.37–37.40. The four focused increments include
@@ -106,10 +112,11 @@ and owned cleanup. The HTTPS fixture checks real certificate verification and
 fragmented binary responses; platform-wide results remain subject to native CI.
 Redirects, retries, proxies, pooling, compression and HTTP/2 are excluded.
 Issue #228 now has an [ordered extension plan](design/http-client.md): streamed
-responses (#286), streamed requests (#287), bounded HTTP/1.1 pooling (#288),
-separate opt-in policies (#289) and an independent HTTP/2 decision (#290).
-These are design/implementation follow-ups, not delivered client features;
-each public API must be locked under spec §53 before implementation.
+responses (#286, delivered under §37.41), streamed requests (#287), bounded
+HTTP/1.1 pooling (#288), separate opt-in policies (#289) and an independent
+HTTP/2 decision (#290). The remaining items are design/implementation
+follow-ups, not delivered client features; each public API must be locked under
+spec §53 before implementation.
 
 Issue #106 (merged 2026-10-12 in #109) added `std/encoding/json`: Zore token
 encoding/decoding and an owned Value tree, plus compiler-generated concrete codecs with naming policies,
