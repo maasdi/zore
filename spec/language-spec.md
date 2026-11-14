@@ -9225,8 +9225,8 @@ execute provider-present tests; skipped/unavailable providers are not evidence.
 Future streaming, pooling and protocol policies are tracked in issue #228 and
 `docs/design/http-client.md`. Each additive slice requires its own §53 lock
 before implementation; design follow-ups are not supported client features.
-Streamed response bodies are locked in §37.41 and leave this buffered contract
-unchanged.
+Streamed response bodies are locked in §37.41 and streamed uploads in §37.42;
+both leave this buffered contract unchanged.
 
 This additive contract preserves the server `Request` and `ResponseWriter`.
 The client API uses ordinary waiting calls and explicit errors:
@@ -12607,6 +12607,117 @@ async progress; frontend privacy, ownership and type rejections; and verified
 fragmented HTTPS streaming and wrong-host rejection in `examples/https-client/`.
 Request streaming, pooling, redirects, retries, proxies, decoding and HTTP/2
 remain excluded.
+
+## 37.42 Streamed HTTP client uploads — LOCKED
+
+`std/net/http` adds uploads whose body is read from a source while it is sent,
+beside the buffered requests of §37.11. `Do`, `Exchange` and their byte-slice
+bodies are unchanged.
+
+```ore
+type RequestBody struct { /* private */ }
+type UploadConfig struct {
+    MaxBodyBytes int
+    Timeout time.Duration
+    IdleTimeout time.Duration
+}
+func NewRequestBody(source own io.Reader, length int) (RequestBody, error)
+func (b RequestBody) Len() int
+func DefaultUploadConfig() UploadConfig
+func (c Client) Upload(ctx context.Context, method string, absoluteURL string,
+                       headers Header, body own RequestBody,
+                       config UploadConfig) (ClientResponse, error)
+func (c Client) UploadExchange(ctx context.Context, conn own ClientConn,
+                               method string, absoluteURL string,
+                               headers Header, body own RequestBody,
+                               config UploadConfig) (ClientResponse, error)
+```
+
+`RequestBody` is a private-field Move value that owns its source and a declared
+length. `NewRequestBody` fails with `http.NewRequestBody: negative length` for a
+negative length; the returned value still owns the source, which is dropped with
+it. `Upload` and `UploadExchange` validate, dial and send exactly as `Do` and
+`Exchange` do: the same methods, URLs, controlled headers, transports, HTTPS
+rules and `Connection: close`. The request carries `Content-Length` equal to
+the declared length. The response is an ordinary buffered `ClientResponse`
+under the `ClientConfig` limits and framing rules of §37.11.
+
+Defaults are 68719476736 declared bytes (64 GiB), no total timeout and a
+30-second idle timeout. A zero `MaxBodyBytes` or `IdleTimeout` selects its
+default; a zero `Timeout` means no total limit beyond the caller's context.
+Negative fields fail with `http.Client: negative upload configuration`. A
+declared length above `MaxBodyBytes` fails with `http.Client: request body too
+large`. `ClientConfig.MaxRequestBodyBytes` applies only to byte-slice bodies.
+These checks, like the other validation errors, happen before dialing.
+
+The call always consumes the body and the connection. Both are dropped exactly
+once before the call returns, on success, on every error including validation
+and dial failures, and on panic. The source is read only during the call, on
+the calling task.
+
+The client reads the source into one buffer of at most 32768 bytes, never asks
+for more than the bytes still owed, and sends each piece before the next read.
+It stops reading once the declared length has been read, so a source with more
+bytes is not read further and the extra bytes are not sent; the source is never
+probed for them. A zero length never reads the source. Each read is handled in
+this order:
+
+1. A count below zero or above the requested size fails with
+   `http.Client: invalid read count`.
+2. Returned bytes are counted and sent. A send failure is reported and the
+   read's error is discarded.
+3. `io.EOF` before the declared length fails with `http.Client: request body
+   shorter than declared length`; `io.EOF` with or after the last owed byte is
+   success.
+4. Any other error is returned unchanged.
+5. A read of zero bytes and nil error counts as no progress; 100 in a row fail
+   with `http.Client: request body made no progress`.
+
+`ClientConfig.Timeout` bounds dialing. While the request is being sent, each
+write that makes no progress for `IdleTimeout` fails with `http.Client: upload
+idle timeout`; time spent inside the source's `Read` is not counted. After the
+last byte is sent, `ClientConfig.Timeout` bounds receiving the response.
+`UploadConfig.Timeout`, when positive, and the caller's context bound the whole
+call; their expiry fails with `context deadline exceeded` and cancellation with
+`context canceled`. The context passed to a transport's `Dial` ends when the
+call returns.
+
+A server may answer before it has read the whole body. If it keeps reading, the
+upload finishes and its response, such as 413, is returned as usual. If it
+stops reading, the upload fails with the send error or the idle timeout, and an
+early response is not returned. A failed upload may already have had effects on
+the server; the client never replays a request, and a consumed source cannot be
+reused. Unknown-length chunked uploads, `Expect: 100-continue`, simultaneous
+sending and receiving, retries and streamed responses to uploads are excluded.
+
+Plain callers block with worker compensation and async callers use the ordinary
+API without `await`, as for §37.11. Memory is bounded by the 32768-byte buffer
+and the response limits, independent of the body size.
+
+```ore
+import "std/context"
+import "std/net/http"
+import "std/os"
+
+func upload(client http.Client, path string, target string) (int, error) {
+    let info = os.Stat(path)?
+    let file = os.Open(path)?
+    let body = http.NewRequestBody(file, info.Size())?
+    let response = client.Upload(context.Background(), "PUT", target,
+                                 http.NewHeader(), body, http.DefaultUploadConfig())?
+    return response.StatusCode, nil
+}
+```
+
+Compiler impact: one bundled source file; no runtime or syntax changes.
+Conformance: real loopback peers for incremental, zero-length, exact-limit,
+over-limit, oversized-source and early-rejection uploads; short, failing,
+stalled and overcounting sources; idle and total deadlines; pre-cancelled and
+invalid calls that never connect; a 64 MiB upload with bounded peak memory;
+the source dropped exactly once, including on panic; one-worker plain and async
+progress and connection release on validation failure; frontend privacy,
+ownership and type rejections; and a verified HTTPS upload in
+`examples/https-client/`.
 
 # 38. Self-Hosting Constraint
 

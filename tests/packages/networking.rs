@@ -128,3 +128,67 @@ fn streamed_http_responses_reject_private_storage_reuse_and_wrong_types() {
         super::rejects(&[("main.ore", &source)], expected);
     }
 }
+
+#[test]
+fn streamed_http_uploads_check_as_owned_request_bodies() {
+    super::accepts(&[(
+        "main.ore",
+        r#"package main
+import "std/context"
+import "std/net/http"
+import "std/os"
+func upload(client http.Client, path string, target string) (int, error) {
+    let info = os.Stat(path)?
+    let file = os.Open(path)?
+    let body = http.NewRequestBody(file, info.Size())?
+    println(body.Len())
+    var config = http.DefaultUploadConfig()
+    config.MaxBodyBytes = 1 << 30
+    let response = client.Upload(context.Background(), "PUT", target, http.NewHeader(), body, config)?
+    return response.StatusCode, nil
+}
+func main() {
+    let client, err = http.NewClient(http.DefaultClientConfig())
+    if err == nil { let _, _ = upload(client, "in.bin", "http://localhost/upload") }
+}
+"#,
+    )]);
+}
+
+#[test]
+fn streamed_http_uploads_reject_private_storage_reuse_and_wrong_types() {
+    let open = "let client = http.NewClient(http.DefaultClientConfig())?; let file = os.Open(\"in.bin\")?; let body = http.NewRequestBody(file, 3)?";
+    let send = "client.Upload(context.Background(), \"PUT\", \"http://a.test/\", http.NewHeader(), body, http.DefaultUploadConfig())";
+    for (body, expected) in [
+        (format!("{open}; println(body.length)"), "not exported"),
+        (format!("{open}; let _ = body.source"), "not exported"),
+        (
+            format!("{open}; let _, _ = {send}; println(body.Len())"),
+            "moved",
+        ),
+        (
+            format!("{open}; let _, _ = {send}; let _, _ = {send}"),
+            "moved",
+        ),
+        (
+            "let _, _ = http.NewRequestBody(\"text\", 3)".to_owned(),
+            "does not satisfy `io.Reader`",
+        ),
+        (
+            format!(
+                "{open}; let _, _ = client.Upload(context.Background(), \"PUT\", \"http://a.test/\", http.NewHeader(), body, 5)"
+            ),
+            "mismatched types",
+        ),
+    ] {
+        let imports = ["context", "net/http", "os"]
+            .into_iter()
+            .filter(|path| body.contains(&format!("{}.", path.rsplit('/').next().unwrap())))
+            .map(|path| format!("import \"std/{path}\"\n"))
+            .collect::<String>();
+        let source = format!(
+            "package main\n{imports}func run() error {{ {body}; return nil }}\nfunc main() {{ let _ = run() }}\n"
+        );
+        super::rejects(&[("main.ore", &source)], expected);
+    }
+}

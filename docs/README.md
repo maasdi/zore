@@ -26,6 +26,7 @@ See the [official naming rules](../spec/language-spec.md#21-naming--locked).
 | [Formatter](formatter.md) | `zore fmt`, check mode, style, traversal, and write behavior. |
 | [Public networking](networking.md) | IP and endpoint values, cancellable system lookup, UDP datagrams and RFC URI reference resolution. |
 | [HTTP downloads](http-downloads.md) | Streaming a large HTTP response into a file or hash: limits, timeouts, errors, trailers and cleanup. |
+| [HTTP uploads](http-uploads.md) | Sending a large file as an HTTP request body without loading it: exact sizes, limits, timeouts and early rejections. |
 | [HTML escaping](html.md) | Escaping ordinary text and quoted attributes, context restrictions, and the separate template follow-up decision. |
 | [CSV files](csv.md) | Reading and writing CSV tables one record at a time, quoting rules, limits and error messages. |
 | [Seeded random numbers](random.md) | Repeatable random numbers, shuffles and samples for tests and simulations; not for secrets. |
@@ -54,7 +55,7 @@ These proposals were not accepted and changed nothing. They are kept for their r
 
 These documents record design directions; the specification defines the implemented contracts.
 
-- [HTTP client extension plan](design/http-client.md) (issue #228; streamed downloads delivered in §37.41, uploads, pooling and separate protocol policies)
+- [HTTP client extension plan](design/http-client.md) (issue #228; streamed downloads and uploads delivered in §§37.41–37.42, pooling and separate protocol policies)
 - [Template follow-up decision](design/templates.md) (issue #226; application-driven, deferred)
 - [HTTP server and URL design](proposals/http-server.md) (issue #105; implemented in §37.6)
 - [Opt-in scoped tasks](proposals/scoped-tasks.md) (Q10)
