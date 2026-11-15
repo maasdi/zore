@@ -392,6 +392,59 @@ fn http_retries_reject_wrong_configuration_types() {
 }
 
 #[test]
+fn http_decoding_checks_as_opt_in_calls() {
+    super::accepts(&[(
+        "main.ore",
+        r#"package main
+import "std/context"
+import "std/net/http"
+func fetch(client http.Client, pool http.Pool, target string) (int, error) {
+    var config = http.DefaultDecodeConfig()
+    config.MaxBytes = 1 << 20
+    config.MaxRatio = 50
+    let empty = Array<byte>{}
+    let response = client.DoDecoded(context.Background(), "GET", target, http.NewHeader(), empty[:], config)?
+    let pooled = pool.DoDecoded(context.Background(), "GET", target, http.NewHeader(), empty[:], http.DefaultDecodeConfig())?
+    return response.Body.len() + pooled.Body.len(), nil
+}
+func main() {}
+"#,
+    )]);
+}
+
+#[test]
+fn http_decoding_rejects_wrong_configuration_types() {
+    let open =
+        "let client = http.NewClient(http.DefaultClientConfig())?; let empty = Array<byte>{}";
+    for (body, expected) in [
+        (
+            format!(
+                "{open}; let _, _ = client.DoDecoded(context.Background(), \"GET\", \"http://a.test/\", http.NewHeader(), empty[:], http.DefaultRetryConfig())"
+            ),
+            "mismatched types",
+        ),
+        (
+            "var config = http.DefaultDecodeConfig(); config.MaxRatio = \"high\"".to_owned(),
+            "mismatched types",
+        ),
+        (
+            "let _ = http.DefaultDecodeConfig().Encodings".to_owned(),
+            "Encodings",
+        ),
+    ] {
+        let imports = ["context", "net/http"]
+            .into_iter()
+            .filter(|path| body.contains(&format!("{}.", path.rsplit('/').next().unwrap())))
+            .map(|path| format!("import \"std/{path}\"\n"))
+            .collect::<String>();
+        let source = format!(
+            "package main\n{imports}func run() error {{ {body}; return nil }}\nfunc main() {{ let _ = run() }}\n"
+        );
+        super::rejects(&[("main.ore", &source)], expected);
+    }
+}
+
+#[test]
 fn http_proxies_check_as_explicit_clients() {
     super::accepts(&[(
         "main.ore",

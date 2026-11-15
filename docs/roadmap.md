@@ -6,6 +6,12 @@ and `NewProxyClientWithTunnel` (or `https.NewProxyClient`) reaches `https`
 servers through a verified CONNECT tunnel, with proxy credentials sent only to
 the proxy. See the [proxy guide](http-proxies.md).
 
+Issue [#289](https://github.com/maasdi/zore/issues/289) adds opt-in gzip
+decoding of buffered responses under §37.46: `DoDecoded` on a client or pool
+asks for gzip, unpacks it with the bundled gzip reader, removes the encoding
+headers and bounds the result by size and expansion ratio. See the
+[decoding guide](http-decoding.md).
+
 Issue [#289](https://github.com/maasdi/zore/issues/289) adds opt-in retries of
 buffered requests under §37.45: `DoRetry` on a client or pool repeats safe
 methods after network failures and 429/502/503/504 answers, with doubling
@@ -147,7 +153,7 @@ Issue #228 now has an [ordered extension plan](design/http-client.md): streamed
 responses (#286, delivered under §37.41), streamed requests (#287, delivered
 under §37.42), bounded
 HTTP/1.1 pooling (#288, delivered under §37.43), separate opt-in policies (#289,
-redirects and retries delivered under §§37.44–37.45) and an independent
+redirects, retries, decoding and proxies delivered under §§37.44–37.47) and an independent
 HTTP/2 decision (#290). The remaining items are design/implementation
 follow-ups, not delivered client features; each public API must be locked under
 spec §53 before implementation.
