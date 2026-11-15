@@ -63,7 +63,7 @@ func run() error {
     if mode == "saturate" || mode == "cancel" || mode == "shutdown" { settings.MaxConnectionsPerHost = 1 }
     if mode == "cancel" { settings.MaxWaiters = 1 }
     if mode == "expire" { settings.IdleTimeout = 200 * time.Millisecond }
-    if mode == "global" { settings.MaxConnections = 1 }
+    if mode == "global" || mode == "globalwait" { settings.MaxConnections = 1 }
     if mode == "idlecap" { settings.MaxIdlePerHost = 1 }
     let client = http.NewClient(http.DefaultClientConfig())?
     let pool = http.NewPool(client, settings)?
@@ -84,6 +84,15 @@ func run() error {
         }
         stats(pool)
         call(pool, background, "GET", target)
+    } else if mode == "globalwait" {
+        var first = pool.Open(background, "GET", target, http.NewHeader(), empty[:], http.DefaultStreamConfig())?
+        let done = channel<string>(1)
+        go waiter(pool, strings.Replace(target, "127.0.0.1", "localhost", 1), done)
+        waiting(pool, 1)
+        stats(pool)
+        drain(first)
+        let result, _ = done.receive()
+        println(result)
     } else if mode == "saturate" || mode == "shutdown" {
         var first = pool.Open(background, "GET", target, http.NewHeader(), empty[:], http.DefaultStreamConfig())?
         let done = channel<string>(1)
@@ -121,7 +130,7 @@ func run() error {
         call(pool, background, "GET", target)
     } else if mode == "stale" {
         call(pool, background, "GET", target)
-        time.Sleep(400 * time.Millisecond)
+        time.Sleep(1200 * time.Millisecond)
         call(pool, background, "GET", target)
         call(pool, background, "GET", target)
     } else if mode == "global" {
@@ -448,6 +457,13 @@ fn http_pool_waiters_saturation_cancellation_and_shutdown() {
     let (output, log) = run_case(&executable, "global", vec![reply(OK), reply(OK)]);
     assert_eq!(output, "200 hello\n200 hello\nstats 0 1 0\nstats 0 0 0\n");
     assert_eq!(connections(&log), vec![1, 2]);
+
+    let (output, log) = run_case(&executable, "globalwait", vec![reply(OK), reply(OK)]);
+    assert_eq!(
+        output,
+        "stats 1 0 1\nhello EOF\n200 hello\nstats 0 1 0\nstats 0 0 0\n"
+    );
+    assert_eq!(connections(&log), vec![1, 2]);
 }
 
 #[test]
@@ -476,16 +492,9 @@ fn http_pool_expires_idle_connections_and_never_replays_stale_ones() {
         "stale",
         vec![reply(OK), closing("", 0), reply(OK)],
     );
-    let lines: Vec<_> = output.lines().collect();
-    assert_eq!(lines[0], "200 hello", "{output}");
-    assert!(
-        lines[1] == "http.Pool: reused connection closed" || lines[1].starts_with("net."),
-        "{output}"
-    );
     assert_eq!(
-        &lines[2..],
-        ["200 hello", "stats 0 1 0", "stats 0 0 0"],
-        "{output}"
+        output,
+        "200 hello\nhttp.Pool: reused connection closed\n200 hello\nstats 0 1 0\nstats 0 0 0\n"
     );
     assert_eq!(connections(&log), vec![1, 1, 2]);
 }

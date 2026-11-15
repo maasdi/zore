@@ -93,11 +93,11 @@ clients with different HTTPS settings never mix connections.
 
 ## A server may close an idle connection
 
-A server can close a connection while it sits in the pool. Before using an idle
-connection, the pool takes a very quick look (at most a millisecond); if the
-server has hung up, the pool opens a new connection instead. If the server hangs
-up just after that look, the request fails with `http.Pool: reused connection
-closed` (or a network error).
+A server can close a connection while it sits in the pool. Before using a
+connection that has been idle for a second or more, the pool takes a very quick
+look (at most a millisecond); if the server has hung up, the pool opens a new
+connection instead. If the server hangs up without the pool noticing, the
+request fails with `http.Pool: reused connection closed`.
 The pool never sends the request again by itself, because it cannot know whether
 the server already acted on it. If the request is safe to repeat, such as a
 `GET`, you can simply call again; the pool will open a fresh connection.

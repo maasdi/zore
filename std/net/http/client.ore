@@ -329,12 +329,16 @@ func (c Client) Exchange(ctx context.Context, conn own ClientConn, method string
 
 func (c Client) exchangePrepared(ctx context.Context, conn own ClientConn, output string, method string, body []byte) (ClientResponse, error) {
     let deadline, _ = ctx.Deadline()
-    var stream = clientStream{conn: conn, ctx: ctx, config: c.config, deadline: deadline, buffer: Array<byte>{}, spare: Array<Array<byte>>{}, position: 0, pending: nil, metadata: 0, idle: 0}
+    var stream = newClientStream(conn, ctx, c.config, deadline)
     let requestErr = stream.request(output, body)
     if requestErr != nil {
         return emptyClientResponse(), requestErr
     }
     return stream.response(method)
+}
+
+func newClientStream(conn own ClientConn, ctx context.Context, config ClientConfig, deadline time.Instant) clientStream {
+    return clientStream{conn: conn, ctx: ctx, config: config, deadline: deadline, buffer: Array<byte>{}, spare: Array<Array<byte>>{}, position: 0, pending: nil, metadata: 0, idle: 0}
 }
 
 func (s mut clientStream) request(output string, body []byte) error {

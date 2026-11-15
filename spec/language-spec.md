@@ -12789,8 +12789,8 @@ A call takes the most recently returned idle connection of its origin. If there
 is none, it may dial a new one when its origin has fewer than
 `MaxConnectionsPerHost` leased connections and the pool has fewer than
 `MaxConnections` leased and idle ones; when only idle connections of other
-origins stand in the way, the oldest of them is closed to make room. Otherwise
-the call waits. Waiting calls are served in arrival order among those whose
+origins stand in the way, the oldest of them is closed, and the call waits until that
+connection is closed. Otherwise the call waits. Waiting calls are served in arrival order among those whose
 origin has room, and a returned or freed connection goes to them before any
 later call. A call that would make more than `MaxWaiters` wait fails with
 `http.Pool: too many waiters`. A waiting call stops when its context or the
@@ -12811,7 +12811,10 @@ pooled streams. Every other case closes the connection: errors, cancellation,
 timeouts, EOF-delimited bodies, HTTP/1.0 responses, `Connection: close`, extra
 bytes, and a stream closed or dropped before the end. Unread data is never read
 to save a connection. Each connection is closed exactly once, including on
-panic, and the lease is released after the connection is closed.
+panic, and the lease is released after the connection is closed. Connections
+the pool itself closes, such as expired or evicted ones, are closed after its
+lock is released and count against `MaxConnections` until they are closed;
+waiting calls are served once they are.
 
 A returned connection becomes idle with the current time. If its origin
 already has `MaxIdlePerHost` idle connections, or the pool has
@@ -12821,14 +12824,16 @@ operation (`Do`, `Open`, a returned connection, `Stats`, `CloseIdle` or
 `Close`), or when the last handle is gone. Connections are closed outside the
 pool's lock.
 
-A server may close an idle connection at any time. Before sending on an idle
-connection, the call reads from it with a deadline one millisecond away; if the
-read returns bytes, end of stream or an error other than a poll timeout, the
-connection is closed and the call dials a new one under the same lease. Nothing
-has been sent at that point, so this is not a retry. If the server closes the
-connection after that check and a reused connection ends before any byte of
-the response, the call fails with `http.Pool: reused connection closed`; other
-failures are returned as the connection reports them.
+A server may close an idle connection at any time. Before sending on a
+connection that has been idle for one second or longer, the call reads from it
+with a deadline one millisecond away; if the read returns bytes, end of stream
+or an error other than a poll timeout, the connection is closed and the call
+dials a new one under the same lease. Nothing has been sent at that point, so
+this is not a retry. Connections idle for less than a second are used without
+this check. When sending on a reused connection, or reading its response,
+fails before any byte of the response has arrived, for any reason other than
+the end of the call's context or deadline, the call fails with `http.Pool:
+reused connection closed`; later failures are returned as usual.
 The request is never sent again: it may already have reached the server, so
 only the caller can decide to repeat it. Each exchange sets its own deadlines
 on the connection; deadlines from an earlier lease do not carry over.

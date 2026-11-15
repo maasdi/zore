@@ -129,14 +129,15 @@ func (c Client) openPrepared(ctx context.Context, stops own Array<streamStop>, l
     if limited && total.Before(deadline) {
         deadline = total
     }
-    var stream = clientStream{conn: conn, ctx: ctx, config: c.config, deadline: deadline, buffer: Array<byte>{}, spare: Array<Array<byte>>{}, position: 0, pending: nil, metadata: 0, idle: 0}
+    var stream = newClientStream(conn, ctx, c.config, deadline)
+    let reused = leases.len() != 0 && leases[0].reused
     let requestErr = stream.request(output, body)
     if requestErr != nil {
-        return emptyResponseStream(), requestErr
+        return emptyResponseStream(), stale(requestErr, reused, false)
     }
     let head, headErr = stream.head(method)
     if headErr != nil {
-        return emptyResponseStream(), stale(headErr, leases.len() != 0 && leases[0].reused, stream)
+        return emptyResponseStream(), stale(headErr, reused, stream.metadata != 0)
     }
     let fixed = !head.chunked && head.length >= 0
     if head.content && fixed && head.length > settings.MaxBodyBytes {
