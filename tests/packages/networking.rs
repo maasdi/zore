@@ -192,3 +192,73 @@ fn streamed_http_uploads_reject_private_storage_reuse_and_wrong_types() {
         super::rejects(&[("main.ore", &source)], expected);
     }
 }
+
+#[test]
+fn pooled_http_clients_check_as_shared_handles() {
+    super::accepts(&[(
+        "main.ore",
+        r#"package main
+import "std/context"
+import "std/io"
+import "std/net/http"
+import "std/time"
+async func worker(pool http.Pool, target string, done channel<int>) {
+    let empty = Array<byte>{}
+    let response, err = pool.Do(context.Background(), "GET", target, http.NewHeader(), empty[:])
+    if err != nil { done.send(0); return }
+    done.send(response.StatusCode)
+}
+func download(pool http.Pool, target string, sink mut io.Writer) error {
+    let empty = Array<byte>{}
+    var stream = pool.Open(context.Background(), "GET", target, http.NewHeader(), empty[:], http.DefaultStreamConfig())?
+    io.Copy(sink, stream)?
+    return stream.Close()
+}
+func main() {
+    var config = http.DefaultPoolConfig()
+    config.MaxConnectionsPerHost = 2
+    config.IdleTimeout = 30 * time.Second
+    let client, err = http.NewClient(http.DefaultClientConfig())
+    if err != nil { return }
+    let pool, poolErr = http.NewPool(client, config)
+    if poolErr != nil { return }
+    let done = channel<int>(2)
+    go worker(pool, "http://localhost/a", done)
+    go worker(pool, "http://localhost/b", done)
+    let stats = pool.Stats()
+    println(stats.Active + stats.Idle + stats.Waiting)
+    pool.CloseIdle()
+    pool.Close()
+}
+"#,
+    )]);
+}
+
+#[test]
+fn pooled_http_clients_reject_private_state_moved_clients_and_wrong_types() {
+    let open = "let client = http.NewClient(http.DefaultClientConfig())?; let pool = http.NewPool(client, http.DefaultPoolConfig())?";
+    for (body, expected) in [
+        (format!("{open}; let _ = pool.state"), "not exported"),
+        (format!("{open}; println(pool.live)"), "not exported"),
+        (format!("{open}; let _, _ = client.Get(context.Background(), \"http://a.test/\")"), "moved"),
+        (
+            "let client = http.NewClient(http.DefaultClientConfig())?; let _, _ = http.NewPool(client, http.DefaultStreamConfig())".to_owned(),
+            "mismatched types",
+        ),
+        (
+            format!("{open}; let _, _ = pool.Open(context.Background(), \"GET\", \"http://a.test/\", http.NewHeader(), Array<byte>{{}}[:], http.DefaultPoolConfig())"),
+            "mismatched types",
+        ),
+        (format!("{open}; let _ = pool.Stats().Leased"), "Leased"),
+    ] {
+        let imports = ["context", "net/http"]
+            .into_iter()
+            .filter(|path| body.contains(&format!("{}.", path.rsplit('/').next().unwrap())))
+            .map(|path| format!("import \"std/{path}\"\n"))
+            .collect::<String>();
+        let source = format!(
+            "package main\n{imports}func run() error {{ {body}; return nil }}\nfunc main() {{ let _ = run() }}\n"
+        );
+        super::rejects(&[("main.ore", &source)], expected);
+    }
+}

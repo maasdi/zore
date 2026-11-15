@@ -86,7 +86,8 @@ func (c Client) UploadExchange(ctx context.Context, conn own ClientConn, method 
 
 func (c Client) uploadPrepared(ctx context.Context, stops own Array<streamStop>, conn own ClientConn, output string, method string, body own RequestBody, settings UploadConfig) (ClientResponse, error) {
     var source = body
-    var stream = clientStream{conn: conn, ctx: ctx, config: c.config, deadline: time.Now(), buffer: Array<byte>{}, spare: Array<Array<byte>>{}, position: 0, pending: nil, metadata: 0, idle: settings.IdleTimeout}
+    var stream = newClientStream(conn, ctx, c.config, time.Now())
+    stream.idle = settings.IdleTimeout
     stream.rearm()
     let head = strings.Bytes(output)
     let headErr = stream.uploadSend(head[:])

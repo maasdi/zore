@@ -9225,8 +9225,8 @@ execute provider-present tests; skipped/unavailable providers are not evidence.
 Future streaming, pooling and protocol policies are tracked in issue #228 and
 `docs/design/http-client.md`. Each additive slice requires its own §53 lock
 before implementation; design follow-ups are not supported client features.
-Streamed response bodies are locked in §37.41 and streamed uploads in §37.42;
-both leave this buffered contract unchanged.
+Streamed response bodies are locked in §37.41, streamed uploads in §37.42 and
+pooled connections in §37.43; all leave this buffered contract unchanged.
 
 This additive contract preserves the server `Request` and `ResponseWriter`.
 The client API uses ordinary waiting calls and explicit errors:
@@ -12718,6 +12718,166 @@ the source dropped exactly once, including on panic; one-worker plain and async
 progress and connection release on validation failure; frontend privacy,
 ownership and type rejections; and a verified HTTPS upload in
 `examples/https-client/`.
+
+## 37.43 Pooled HTTP/1.1 client connections — LOCKED
+
+`std/net/http` adds a pool that reuses HTTP/1.1 connections, beside the
+one-exchange client of §§37.11 and 37.41–37.42. `Client`, `Do`, `Exchange`,
+`Open`, `OpenExchange`, `Upload` and `UploadExchange` are unchanged and keep
+closing each connection.
+
+```ore
+type PoolConfig struct {
+    MaxConnections int
+    MaxConnectionsPerHost int
+    MaxIdleConnections int
+    MaxIdlePerHost int
+    IdleTimeout time.Duration
+    MaxWaiters int
+}
+type PoolStats struct {
+    Active int
+    Idle int
+    Waiting int
+}
+type Pool struct { /* private */ }
+func DefaultPoolConfig() PoolConfig
+func NewPool(client own Client, config PoolConfig) (Pool, error)
+func (p Pool) Do(ctx context.Context, method string, absoluteURL string,
+                 headers Header, body []byte) (ClientResponse, error)
+func (p Pool) Open(ctx context.Context, method string, absoluteURL string,
+                   headers Header, body []byte,
+                   config StreamConfig) (ResponseStream, error)
+func (p Pool) Stats() PoolStats
+func (p Pool) CloseIdle()
+func (p Pool) Close()
+```
+
+`NewPool` consumes the client; its configuration and transport serve only that
+pool. It fails with `http.NewPool: empty client` for a client that `NewClient`
+did not return successfully and with `http.NewPool: negative configuration` for
+a negative field. A zero field selects its default: 64 connections, 8 per host,
+32 idle, 4 idle per host, a 90-second idle timeout and 256 waiters. The limits
+are independent and all of them are enforced. A failed `NewPool` returns an
+empty pool: its `Do` and `Open` fail with `http.Pool: empty pool`, `Stats`
+returns zeros, and `CloseIdle` and `Close` do nothing.
+
+`Pool` is a Copy handle, like a `WaitGroup` (§37.4): copies share one pool and
+may be passed to any task. The pool state is guarded by a `Mutex` and holds no
+function values. When the last handle is gone, idle connections are dropped.
+The pool starts no task and no timer.
+
+`Do` and `Open` validate requests exactly as `Client.Do` and `Client.Open` do,
+with two differences: requests do not carry `Connection: close`, and a pool
+whose client has no transport rejects `https` URLs with `http.Client: HTTPS
+requires verified TLS transport`. They fail with `http.Pool: closed` after
+`Close`. All of these checks, and a context that has already ended, fail
+before any connection is taken or dialed. Responses, limits, framing and errors
+are those of §37.11 and §37.41. `ClientConfig.Timeout`, starting at the call,
+bounds waiting for a connection, dialing, sending and receiving the headers.
+
+Connections are kept per origin: the scheme, the lowercased host and the
+decimal port, with the default port filled in, so `https://A.test/` and
+`https://a.test:443/` share connections and `http://a.test:443/` does not. Two
+pools never share connections, so clients with different transports, trust
+roots or credentials never mix them. Every connection is in exactly one
+state: leased to one call or stream, idle in the pool, or closed. `Active`
+counts leased connections, including those being dialed, `Idle` the idle ones,
+and `Waiting` the calls waiting for a lease.
+
+A call takes the most recently returned idle connection of its origin. If there
+is none, it may dial a new one when its origin has fewer than
+`MaxConnectionsPerHost` leased connections and the pool has fewer than
+`MaxConnections` leased and idle ones; when only idle connections of other
+origins stand in the way, the oldest of them is closed, and the call waits until that
+connection is closed. Otherwise the call waits. Waiting calls are served in arrival order among those whose
+origin has room, and a returned or freed connection goes to them before any
+later call. A call that would make more than `MaxWaiters` wait fails with
+`http.Pool: too many waiters`. A waiting call stops when its context or the
+`ClientConfig.Timeout` ends, with `context canceled` or `context deadline
+exceeded`; if a connection was handed to it at that moment, the connection is
+returned to the pool. Dialing goes through the client's transport, and through a
+custom transport one dial at a time; taking an idle connection does not dial.
+
+A connection returns to the pool only when its response is complete and
+cleanly delimited: the status line is HTTP/1.1, no `Connection` field contains
+the `close` option, the body has a Content-Length or chunked framing with
+validated trailers or has no body (HEAD, 204, 304), every byte of it has been
+read, no byte beyond it has been received, and the connection reported no
+error. For `Do` this is checked once the response is complete. A
+`ResponseStream` from `Open` returns its connection as soon as `Read` reaches
+the end of a valid body; this replaces the one-exchange rule of §37.41 for
+pooled streams. Every other case closes the connection: errors, cancellation,
+timeouts, EOF-delimited bodies, HTTP/1.0 responses, `Connection: close`, extra
+bytes, and a stream closed or dropped before the end. Unread data is never read
+to save a connection. Each connection is closed exactly once, including on
+panic, and the lease is released after the connection is closed. Connections
+the pool itself closes, such as expired or evicted ones, are closed after its
+lock is released and count against `MaxConnections` until they are closed;
+waiting calls are served once they are.
+
+A returned connection becomes idle with the current time. If its origin
+already has `MaxIdlePerHost` idle connections, or the pool has
+`MaxIdleConnections`, the oldest such idle connection is closed first. An idle
+connection unused for `IdleTimeout` or longer is closed by the next pool
+operation (`Do`, `Open`, a returned connection, `Stats`, `CloseIdle` or
+`Close`), or when the last handle is gone. Connections are closed outside the
+pool's lock.
+
+A server may close an idle connection at any time. Before sending on a
+connection that has been idle for one second or longer, the call reads from it
+with a deadline one millisecond away; if the read returns bytes, end of stream
+or an error other than a poll timeout, the connection is closed and the call
+dials a new one under the same lease. Nothing has been sent at that point, so
+this is not a retry. Connections idle for less than a second are used without
+this check. When sending on a reused connection, or reading its response,
+fails before any byte of the response has arrived, for any reason other than
+the end of the call's context or deadline, the call fails with `http.Pool:
+reused connection closed`; later failures are returned as usual.
+The request is never sent again: it may already have reached the server, so
+only the caller can decide to repeat it. Each exchange sets its own deadlines
+on the connection; deadlines from an earlier lease do not carry over.
+
+`CloseIdle` closes all idle connections. `Close` marks the pool closed, closes
+its idle connections, and wakes every waiting call with `http.Pool: closed`.
+Calls and streams that hold a lease continue; when they finish, their
+connections are closed instead of returned. `Close` may be called more than
+once.
+
+Plain callers block with worker compensation and async callers use the ordinary
+API without `await`, as for §37.11. Memory is bounded by the limits: at most
+`MaxConnections` connections and `MaxWaiters` waiting entries.
+
+```ore
+import "std/context"
+import "std/net/http"
+
+func statuses(pool http.Pool, targets []string) (Array<int>, error) {
+    var codes = Array<int>{}
+    for target in targets {
+        let empty = Array<byte>{}
+        let response = pool.Do(context.Background(), "GET", target,
+                               http.NewHeader(), empty[:])?
+        codes.push(response.StatusCode)
+    }
+    return codes, nil
+}
+```
+
+Compiler impact: one bundled source file; no runtime or syntax changes.
+Conformance: real loopback peers for reuse after Content-Length, chunked,
+HEAD, 204 and keep-alive responses and retirement after `Connection: close`,
+HTTP/1.0, extra bytes, EOF-delimited bodies and framing errors; streams returned
+only after complete bodies; idle caps; per-host saturation with waiters, the
+global limit closing another origin's idle connection, waiter cancellation and the waiter limit; shutdown with an active lease
+and a waiting call; idle expiry; idle connections closed by the peer replaced before sending; a
+stale reused connection without replay;
+scripted transports for origin keys, pool isolation, validation, `CloseIdle`,
+`Close` and every connection closed once, including on panic; one-worker plain,
+async and waiting progress; frontend privacy, ownership and type rejections;
+and verified HTTPS reuse and wrong-host rejection in `examples/https-client/`.
+Pooled uploads, HTTP/2, redirects, retries, proxies and decoding remain
+excluded.
 
 # 38. Self-Hosting Constraint
 

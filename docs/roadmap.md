@@ -1,5 +1,12 @@
 # Implementation roadmap
 
+Issue [#288](https://github.com/maasdi/zore/issues/288) adds bounded HTTP/1.1
+connection pooling under §37.43: `http.Pool` is a shared handle that reuses
+cleanly finished connections per origin, with total, per-host and idle limits,
+first-come waiting with cancellation and a waiter limit, idle expiry, no
+automatic replay of stale connections and an explicit `Close`. See the
+[pooling guide](http-pooling.md).
+
 Issue [#287](https://github.com/maasdi/zore/issues/287) adds streamed HTTP
 client uploads under §37.42: `Client.Upload` sends an owned `RequestBody` (a
 reader plus its exact length) piece by piece with bounded memory, its own size
@@ -120,7 +127,7 @@ Redirects, retries, proxies, pooling, compression and HTTP/2 are excluded.
 Issue #228 now has an [ordered extension plan](design/http-client.md): streamed
 responses (#286, delivered under §37.41), streamed requests (#287, delivered
 under §37.42), bounded
-HTTP/1.1 pooling (#288), separate opt-in policies (#289) and an independent
+HTTP/1.1 pooling (#288, delivered under §37.43), separate opt-in policies (#289) and an independent
 HTTP/2 decision (#290). The remaining items are design/implementation
 follow-ups, not delivered client features; each public API must be locked under
 spec §53 before implementation.

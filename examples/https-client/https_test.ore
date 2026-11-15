@@ -247,3 +247,123 @@ func TestHTTPSRootedHostnameReachesContextValidation() error {
     }
     return nil
 }
+
+async func serveKeepAlive(listener own net.Listener, config own tls.ServerConfig, ctx context.Context, requests int) error {
+    let accepted = listener.Accept()?
+    var conn = tls.Server(ctx, accepted, config)?
+    conn.SetReadDeadline(time.Now().Add(3 * time.Second))?
+    for var i = 0; i < requests; i += 1 {
+        var request = ""
+        var one = Array<byte>{0}
+        for !strings.HasSuffix(request, "\r\n\r\n") {
+            let n = conn.Read(one[:])?
+            if n != 1 || request.len() > 4096 {
+                return error("invalid pooled HTTPS request")
+            }
+            request += string(rune(one[0]))
+        }
+        if strings.Contains(strings.ToLower(request), "connection:") {
+            return error("pooled HTTPS request closed its connection")
+        }
+        conn.Write(strings.Bytes("HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok")[:])?
+    }
+    let _ = conn.Close()
+    return nil
+}
+
+func pooledHTTPS(rootsPath string) (http.Pool, net.Listener, string, error) {
+    let roots = os.ReadFile(rootsPath)?
+    let transport = https.NewTransport(roots[:])?
+    var settings = http.DefaultClientConfig()
+    settings.Timeout = 3 * time.Second
+    settings.PollInterval = time.Millisecond
+    let client = http.NewClientWithTransport(settings, transport)?
+    let pool = http.NewPool(client, http.DefaultPoolConfig())?
+    let listener = net.Listen("tcp4", "127.0.0.1:0")?
+    let _, port, _ = strings.Cut(listener.Addr(), ":")
+    listener.SetDeadline(time.Now().Add(3 * time.Second))?
+    return pool, listener, "https://localhost:" + port + "/binary", nil
+}
+
+func TestHTTPSPoolReusesOneVerifiedConnection() error {
+    let cert = os.ReadFile("../../packages/tls/testdata/server.pem")?
+    let key = os.ReadFile("../../packages/tls/testdata/server-key.pem")?
+    let serverConfig = tls.NewServerConfig(cert[:], key[:])?
+    let pool, listener, target, setupErr = pooledHTTPS("../../packages/tls/testdata/roots.pem")
+    if setupErr != nil {
+        return setupErr
+    }
+    let ctx, cancel = context.WithTimeout(context.Background(), 3 * time.Second)
+    let server = go serveKeepAlive(listener, serverConfig, ctx, 3)
+    let empty = Array<byte>{}
+    for var i = 0; i < 2; i += 1 {
+        let response, err = pool.Do(ctx, "GET", target, http.NewHeader(), empty[:])
+        if err != nil {
+            cancel()
+            return err
+        }
+        if response.StatusCode != 200 || response.Body.len() != 2 {
+            cancel()
+            panic("pooled HTTPS response")
+        }
+    }
+    let status, body, streamErr = pooledStream(pool, ctx, target)
+    if streamErr != nil {
+        cancel()
+        return streamErr
+    }
+    if status != 200 || body.len() != 2 || pool.Stats().Idle != 1 {
+        cancel()
+        panic("pooled HTTPS stream")
+    }
+    pool.Close()
+    let servingErr = server.wait()
+    cancel()
+    return servingErr
+}
+
+func pooledStream(pool http.Pool, ctx context.Context, target string) (int, Array<byte>, error) {
+    let empty = Array<byte>{}
+    var stream = pool.Open(ctx, "GET", target, http.NewHeader(), empty[:], http.DefaultStreamConfig())?
+    var body = Array<byte>{}
+    var buffer = Array<byte>{0}
+    for {
+        let n, err = stream.Read(buffer[:])
+        for var i = 0; i < n; i += 1 {
+            body.push(buffer[i])
+        }
+        if err == io.EOF {
+            break
+        }
+        if err != nil {
+            return 0, Array<byte>{}, err
+        }
+    }
+    let status = stream.StatusCode()
+    stream.Close()?
+    return status, body, nil
+}
+
+func TestHTTPSPoolRejectsTrustedWrongHostname() error {
+    let cert = os.ReadFile("testdata/wrong-host.pem")?
+    let key = os.ReadFile("../../packages/tls/testdata/server-key.pem")?
+    let serverConfig = tls.NewServerConfig(cert[:], key[:])?
+    let pool, listener, target, setupErr = pooledHTTPS("testdata/wrong-host.pem")
+    if setupErr != nil {
+        return setupErr
+    }
+    let ctx, cancel = context.WithTimeout(context.Background(), 3 * time.Second)
+    let server = go serveHTTPS(listener, serverConfig, ctx, "localhost")
+    let empty = Array<byte>{}
+    let _, err = pool.Do(ctx, "GET", target, http.NewHeader(), empty[:])
+    if err == nil || !strings.Contains(errors.Message(err), "does not match") {
+        panic("unverified pooled HTTPS accepted")
+    }
+    if pool.Stats().Idle != 0 || pool.Stats().Active != 0 {
+        panic("rejected HTTPS connection kept")
+    }
+    let servingErr = server.wait()
+    _ = servingErr
+    cancel()
+    return nil
+}

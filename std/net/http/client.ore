@@ -173,6 +173,10 @@ func (c Client) prepare(method string, absoluteURL string, headers Header, body 
 }
 
 func (c Client) prepareLength(method string, absoluteURL string, headers Header, length int, limit int) (string, url.AbsoluteURL, error) {
+    return c.prepareRequest(method, absoluteURL, headers, length, limit, true)
+}
+
+func (c Client) prepareRequest(method string, absoluteURL string, headers Header, length int, limit int, closing bool) (string, url.AbsoluteURL, error) {
     if !c.live {
         return "", emptyClientURL(), error("http.Client: empty client")
     }
@@ -183,7 +187,10 @@ func (c Client) prepareLength(method string, absoluteURL string, headers Header,
     if length > limit {
         return "", emptyClientURL(), error("http.Client: request body too large")
     }
-    var output = method + " " + target.RequestTarget + " HTTP/1.1\r\nHost: " + target.Authority + "\r\nContent-Length: " + strconv.Itoa(length) + "\r\nConnection: close\r\n"
+    var output = method + " " + target.RequestTarget + " HTTP/1.1\r\nHost: " + target.Authority + "\r\nContent-Length: " + strconv.Itoa(length) + "\r\n"
+    if closing {
+        output += "Connection: close\r\n"
+    }
     if output.len() > c.config.MaxHeaderBytes {
         return "", emptyClientURL(), error("http.Client: metadata too large")
     }
@@ -322,12 +329,16 @@ func (c Client) Exchange(ctx context.Context, conn own ClientConn, method string
 
 func (c Client) exchangePrepared(ctx context.Context, conn own ClientConn, output string, method string, body []byte) (ClientResponse, error) {
     let deadline, _ = ctx.Deadline()
-    var stream = clientStream{conn: conn, ctx: ctx, config: c.config, deadline: deadline, buffer: Array<byte>{}, spare: Array<Array<byte>>{}, position: 0, pending: nil, metadata: 0, idle: 0}
+    var stream = newClientStream(conn, ctx, c.config, deadline)
     let requestErr = stream.request(output, body)
     if requestErr != nil {
         return emptyClientResponse(), requestErr
     }
     return stream.response(method)
+}
+
+func newClientStream(conn own ClientConn, ctx context.Context, config ClientConfig, deadline time.Instant) clientStream {
+    return clientStream{conn: conn, ctx: ctx, config: config, deadline: deadline, buffer: Array<byte>{}, spare: Array<Array<byte>>{}, position: 0, pending: nil, metadata: 0, idle: 0}
 }
 
 func (s mut clientStream) request(output string, body []byte) error {
@@ -550,10 +561,11 @@ type clientHead struct {
     chunked bool
     length int
     content bool
+    keepAlive bool
 }
 
 func emptyClientHead() clientHead {
-    return clientHead{status: 0, headers: NewHeader(), chunked: false, length: -1, content: false}
+    return clientHead{status: 0, headers: NewHeader(), chunked: false, length: -1, content: false, keepAlive: false}
 }
 
 func (s mut clientStream) head(method string) (clientHead, error) {
@@ -589,8 +601,28 @@ func (s mut clientStream) head(method string) (clientHead, error) {
             return emptyClientHead(), error("http.Client: 204 forbids framing")
         }
         let content = method != "HEAD" && status != 204 && status != 304
-        return clientHead{status: status, headers: headers, chunked: chunked, length: length, content: content}, nil
+        let keepAlive = version == "HTTP/1.1" && !clientClosing(headers)
+        return clientHead{status: status, headers: headers, chunked: chunked, length: length, content: content, keepAlive: keepAlive}, nil
     }
+}
+
+func clientClosing(headers Header) bool {
+    for value in headers.Values("Connection") {
+        for option in strings.Split(value, ",") {
+            if asciiEqual(strings.Trim(option, " \t"), "close") {
+                return true
+            }
+        }
+    }
+    return false
+}
+
+func (h clientHead) reusable() bool {
+    return h.keepAlive && (!h.content || h.chunked || h.length >= 0)
+}
+
+func (s clientStream) settled() bool {
+    return s.position == s.buffer.len() && s.pending == nil
 }
 
 func (s mut clientStream) response(method string) (ClientResponse, error) {
@@ -598,6 +630,10 @@ func (s mut clientStream) response(method string) (ClientResponse, error) {
     if headErr != nil {
         return emptyClientResponse(), headErr
     }
+    return s.bufferedBody(head)
+}
+
+func (s mut clientStream) bufferedBody(head clientHead) (ClientResponse, error) {
     var body = Array<byte>{}
     if head.content {
         if head.chunked || head.length >= 0 {

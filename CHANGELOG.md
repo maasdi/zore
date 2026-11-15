@@ -8,6 +8,20 @@ including those shipped in `0.1.0-alpha.1`, are not split by release.
 
 ## [Unreleased]
 
+### HTTP connection pooling
+
+- `http.NewPool(client, config)` returns a `Pool` whose `Do` and `Open` reuse
+  HTTP/1.1 connections to the same origin (§37.43). A `Pool` is a handle that
+  many tasks can share; the plain `Client` calls still close every connection.
+- Only a cleanly finished response returns its connection: anything unclear,
+  such as `Connection: close`, HTTP/1.0, an error or a stream closed early,
+  closes it. `PoolConfig` limits total, per-host and idle connections and
+  waiting calls; idle connections expire after 90 seconds by default.
+- Calls wait first come, first served when the limits are reached, and stop
+  waiting when their context ends. A reused connection that the server closed
+  fails with `http.Pool: reused connection closed` and is never sent again.
+  `Close` shuts the pool down without cutting off calls already running.
+
 ### Streamed HTTP uploads
 
 - `Client.Upload` and `Client.UploadExchange` send an owned `http.RequestBody`,

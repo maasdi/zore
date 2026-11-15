@@ -3,8 +3,10 @@
 Streamed HTTP responses are checked in `codegen/http_stream.rs` (real loopback
 peers, scripted connections, one-worker progress, bounded memory and the
 download guide), streamed uploads in `codegen/http_upload.rs` (failing sources,
-limits, timeouts, bounded memory and the upload guide), `packages/networking.rs`
-and the HTTPS example tests.
+limits, timeouts, bounded memory and the upload guide), connection pooling in
+`codegen/http_pool.rs` (reuse rules, limits, waiters, expiry, stale connections,
+shutdown and the pooling guide), `packages/networking.rs` and the HTTPS example
+tests.
 
 Public networking is checked in `packages/networking.rs`,
 `codegen/networking.rs` and runtime UDP tests.

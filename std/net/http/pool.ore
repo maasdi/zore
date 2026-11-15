@@ -1,0 +1,559 @@
+package http
+
+import "std/context"
+import "std/net/url"
+import "std/strconv"
+import "std/strings"
+import "std/time"
+
+type PoolConfig struct {
+    MaxConnections int
+    MaxConnectionsPerHost int
+    MaxIdleConnections int
+    MaxIdlePerHost int
+    IdleTimeout time.Duration
+    MaxWaiters int
+}
+
+type PoolStats struct {
+    Active int
+    Idle int
+    Waiting int
+}
+
+type Pool struct {
+    state Mutex<poolState>
+    dialer channel<Client>
+    config ClientConfig
+    custom bool
+    settings PoolConfig
+    live bool
+}
+
+type poolState struct {
+    idle Array<poolIdle>
+    active map[string]int
+    leased int
+    closing int
+    waiters Array<poolWaiter>
+    tickets int
+    closed bool
+}
+
+type poolIdle struct {
+    key string
+    conn ClientConn
+    since time.Instant
+}
+
+type poolWaiter struct {
+    ticket int
+    key string
+    wake channel<poolGrant>
+}
+
+type poolGrant struct {
+    conns Array<ClientConn>
+    closed bool
+    probe bool
+}
+
+type poolLease struct {
+    pool Pool
+    key string
+    conns Array<ClientConn>
+    held bool
+    reused bool
+    probe bool
+}
+
+type poolDialer struct {
+    home channel<Client>
+    clients Array<Client>
+}
+
+func (l mut poolLease) drop() {
+    if l.held {
+        l.held = false
+        l.pool.release(l.key, l.conns)
+    }
+}
+
+func (d mut poolDialer) drop() {
+    let found, client = d.clients.pop()
+    if found {
+        d.home.send(client)
+    }
+}
+
+const poolWaiting = 0
+const poolGranted = 1
+const poolClosed = 2
+const poolFull = 3
+
+func DefaultPoolConfig() PoolConfig {
+    return PoolConfig{MaxConnections: 64, MaxConnectionsPerHost: 8, MaxIdleConnections: 32, MaxIdlePerHost: 4, IdleTimeout: 90 * time.Second, MaxWaiters: 256}
+}
+
+func emptyPool() Pool {
+    return Pool{state: mutex(emptyPoolState()), dialer: channel<Client>(1), config: DefaultClientConfig(), custom: false, settings: DefaultPoolConfig(), live: false}
+}
+
+func emptyPoolState() poolState {
+    return poolState{idle: Array<poolIdle>{}, active: map[string]int{}, leased: 0, closing: 0, waiters: Array<poolWaiter>{}, tickets: 0, closed: false}
+}
+
+func emptyLease() poolLease {
+    return poolLease{pool: emptyPool(), key: "", conns: Array<ClientConn>{}, held: false, reused: false, probe: false}
+}
+
+func NewPool(client own Client, config PoolConfig) (Pool, error) {
+    if !client.live {
+        return emptyPool(), error("http.NewPool: empty client")
+    }
+    let defaults = DefaultPoolConfig()
+    if config.MaxConnections < 0 || config.MaxConnectionsPerHost < 0 || config.MaxIdleConnections < 0 || config.MaxIdlePerHost < 0 || config.IdleTimeout < 0 || config.MaxWaiters < 0 {
+        return emptyPool(), error("http.NewPool: negative configuration")
+    }
+    var chosen = config
+    if chosen.MaxConnections == 0 {
+        chosen.MaxConnections = defaults.MaxConnections
+    }
+    if chosen.MaxConnectionsPerHost == 0 {
+        chosen.MaxConnectionsPerHost = defaults.MaxConnectionsPerHost
+    }
+    if chosen.MaxIdleConnections == 0 {
+        chosen.MaxIdleConnections = defaults.MaxIdleConnections
+    }
+    if chosen.MaxIdlePerHost == 0 {
+        chosen.MaxIdlePerHost = defaults.MaxIdlePerHost
+    }
+    if chosen.IdleTimeout == 0 {
+        chosen.IdleTimeout = defaults.IdleTimeout
+    }
+    if chosen.MaxWaiters == 0 {
+        chosen.MaxWaiters = defaults.MaxWaiters
+    }
+    let custom = client.transport.len() != 0
+    let pool = Pool{state: mutex(emptyPoolState()), dialer: channel<Client>(1), config: client.config, custom: custom, settings: chosen, live: true}
+    if custom {
+        pool.dialer.send(client)
+    }
+    return pool, nil
+}
+
+func (p Pool) plain() Client {
+    return Client{config: p.config, live: true, transport: Array<ClientTransport>{}}
+}
+
+func (p Pool) Do(ctx context.Context, method string, absoluteURL string, headers Header, body []byte) (ClientResponse, error) {
+    let bounded, cancel = context.WithDeadline(ctx, time.Now().Add(p.config.Timeout))
+    let guard = clientCancellation{cancel: cancel}
+    let output, target, preparationErr = p.prepare(ctx, method, absoluteURL, headers, body)
+    if preparationErr != nil {
+        return emptyClientResponse(), preparationErr
+    }
+    var lease, leaseErr = p.lease(bounded, target)
+    if leaseErr != nil {
+        return emptyClientResponse(), leaseErr
+    }
+    let deadline, _ = bounded.Deadline()
+    let _, conn = lease.conns.pop()
+    var stream = newClientStream(conn, bounded, p.config, deadline)
+    let requestErr = stream.request(output, body)
+    if requestErr != nil {
+        return emptyClientResponse(), stale(requestErr, lease.reused, false)
+    }
+    let head, headErr = stream.head(method)
+    if headErr != nil {
+        return emptyClientResponse(), stale(headErr, lease.reused, stream.metadata != 0)
+    }
+    let response = stream.bufferedBody(head)?
+    if head.reusable() && stream.settled() {
+        lease.conns.push(stream.conn)
+    }
+    return response, nil
+}
+
+func (p Pool) Open(ctx context.Context, method string, absoluteURL string, headers Header, body []byte, config StreamConfig) (ResponseStream, error) {
+    let settings, settingsErr = streamSettings(config)
+    if settingsErr != nil {
+        return emptyResponseStream(), settingsErr
+    }
+    let output, target, preparationErr = p.prepare(ctx, method, absoluteURL, headers, body)
+    if preparationErr != nil {
+        return emptyResponseStream(), preparationErr
+    }
+    let streamCtx, stops = streamContext(ctx, settings.Timeout)
+    let headerDeadline = time.Now().Add(p.config.Timeout)
+    let leaseCtx, stopLease = context.WithDeadline(streamCtx, headerDeadline)
+    let leaseGuard = clientCancellation{cancel: stopLease}
+    var lease, leaseErr = p.lease(leaseCtx, target)
+    if leaseErr != nil {
+        return emptyResponseStream(), leaseErr
+    }
+    let _, conn = lease.conns.pop()
+    var leases = Array<poolLease>{}
+    leases.push(lease)
+    return p.plain().openPrepared(streamCtx, stops, leases, conn, output, method, body, settings, headerDeadline)
+}
+
+func (p Pool) prepare(ctx context.Context, method string, absoluteURL string, headers Header, body []byte) (string, url.AbsoluteURL, error) {
+    if !p.live {
+        return "", emptyClientURL(), error("http.Pool: empty pool")
+    }
+    let output, target, err = p.plain().prepareRequest(method, absoluteURL, headers, body.len(), p.config.MaxRequestBodyBytes, false)
+    if err != nil {
+        return "", emptyClientURL(), err
+    }
+    if !p.custom && target.Scheme != "http" {
+        return "", emptyClientURL(), error("http.Client: HTTPS requires verified TLS transport")
+    }
+    let contextErr = clientContextError(ctx)
+    if contextErr != nil {
+        return "", emptyClientURL(), contextErr
+    }
+    return output, target, nil
+}
+
+func (p Pool) lease(ctx context.Context, target url.AbsoluteURL) (poolLease, error) {
+    var lease, err = p.acquire(ctx, poolKey(target))
+    if err != nil {
+        return emptyLease(), err
+    }
+    if lease.probe && !quiet(lease.conns[0]) {
+        let _, _ = lease.conns.pop()
+        lease.reused = false
+    }
+    if lease.conns.len() == 0 {
+        let conn, dialErr = p.dial(ctx, target)
+        if dialErr != nil {
+            return emptyLease(), dialErr
+        }
+        lease.conns.push(conn)
+    }
+    return lease, nil
+}
+
+func quiet(conn mut ClientConn) bool {
+    let deadlineErr = conn.SetReadDeadline(time.Now().Add(time.Millisecond))
+    if deadlineErr != nil {
+        return false
+    }
+    var one = [byte; 1]{0}
+    let n, err = conn.Read(one[:])
+    let waiting = err == error("net.Read: timed out") || err == ClientPollTimeout
+    return n == 0 && waiting
+}
+
+func stale(err error, reused bool, received bool) error {
+    if !reused || received || err == error("context canceled") || err == error("context deadline exceeded") {
+        return err
+    }
+    _ = err
+    return error("http.Pool: reused connection closed")
+}
+
+func poolKey(target url.AbsoluteURL) string {
+    let colon = strings.LastIndex(target.Address, ":")
+    let port, _ = strconv.Atoi(target.Address[colon + 1:])
+    return target.Scheme + "://" + strings.ToLower(target.Address[:colon]) + ":" + strconv.Itoa(port)
+}
+
+func (p Pool) dial(ctx context.Context, target url.AbsoluteURL) (ClientConn, error) {
+    if !p.custom {
+        return p.plain().dial(ctx, target)
+    }
+    select {
+        case let client, _ = p.dialer.receive() {
+            var holder = poolDialer{home: p.dialer, clients: Array<Client>{}}
+            holder.clients.push(client)
+            return holder.clients[0].dial(ctx, target)
+        }
+        case ctx.Done().receive() {
+            return closedClientConn{}, ctx.Err()
+        }
+    }
+}
+
+func (p Pool) acquire(ctx context.Context, key string) (poolLease, error) {
+    let now = time.Now()
+    let settings = p.settings
+    let outcome, ticket, wake, grant, closing = p.state.withLock(func(s mut poolState) (int, int, channel<poolGrant>, poolGrant, Array<ClientConn>) {
+        var closing = Array<ClientConn>{}
+        let none = channel<poolGrant>()
+        if s.closed {
+            return poolClosed, 0, none, poolGrant{conns: Array<ClientConn>{}, closed: true, probe: false}, closing
+        }
+        s.expire(now, settings.IdleTimeout, closing)
+        s.serve(now, settings, closing)
+        let ready, grant = s.grant(key, now, settings, closing)
+        if ready || s.waiters.len() >= settings.MaxWaiters {
+            s.closing += closing.len()
+            var outcome = poolFull
+            if ready {
+                outcome = poolGranted
+            }
+            return outcome, 0, none, grant, closing
+        }
+        s.closing += closing.len()
+        let wake = channel<poolGrant>(1)
+        s.tickets += 1
+        s.waiters.push(poolWaiter{ticket: s.tickets, key: key, wake: wake})
+        return poolWaiting, s.tickets, wake, grant, closing
+    })
+    p.discard(closing)
+    if outcome == poolClosed {
+        return emptyLease(), error("http.Pool: closed")
+    }
+    if outcome == poolFull {
+        return emptyLease(), error("http.Pool: too many waiters")
+    }
+    if outcome == poolGranted {
+        return p.granted(key, grant)
+    }
+    select {
+        case let granted, _ = wake.receive() {
+            return p.granted(key, granted)
+        }
+        case ctx.Done().receive() {
+            return p.abandon(ctx, key, ticket, wake)
+        }
+    }
+}
+
+func (p Pool) granted(key string, grant own poolGrant) (poolLease, error) {
+    if grant.closed {
+        return emptyLease(), error("http.Pool: closed")
+    }
+    let reused = grant.conns.len() != 0
+    return poolLease{pool: p, key: key, conns: grant.conns, held: true, reused: reused, probe: grant.probe}, nil
+}
+
+func (p Pool) abandon(ctx context.Context, key string, ticket int, wake channel<poolGrant>) (poolLease, error) {
+    let removed = p.state.withLock(func(s mut poolState) bool {
+        var kept = Array<poolWaiter>{}
+        var removed = false
+        for waiter in s.waiters {
+            if waiter.ticket == ticket {
+                removed = true
+            } else {
+                kept.push(waiter)
+            }
+        }
+        s.waiters = kept
+        return removed
+    })
+    if !removed {
+        let grant, _ = wake.receive()
+        let lease, err = p.granted(key, grant)
+        drop(lease)
+        _ = err
+    }
+    return emptyLease(), ctx.Err()
+}
+
+func (p Pool) release(key string, returned mut Array<ClientConn>) {
+    let now = time.Now()
+    let settings = p.settings
+    let closing = p.state.withLock(func(s mut poolState) Array<ClientConn> {
+        var closing = Array<ClientConn>{}
+        s.leave(key)
+        s.expire(now, settings.IdleTimeout, closing)
+        let found, conn = returned.pop()
+        if found {
+            if s.closed {
+                closing.push(conn)
+            } else {
+                if s.hostIdle(key) >= settings.MaxIdlePerHost {
+                    closing.push(s.takeIdle(key, true).conn)
+                }
+                if s.idle.len() >= settings.MaxIdleConnections {
+                    closing.push(s.removeIdle(0).conn)
+                }
+                s.idle.push(poolIdle{key: key, conn: conn, since: now})
+            }
+        }
+        s.serve(now, settings, closing)
+        s.closing += closing.len()
+        return closing
+    })
+    p.discard(closing)
+}
+
+func (p Pool) discard(conns own Array<ClientConn>) {
+    var pending = conns
+    let settings = p.settings
+    for pending.len() > 0 {
+        let count = pending.len()
+        pending = Array<ClientConn>{}
+        let now = time.Now()
+        pending = p.state.withLock(func(s mut poolState) Array<ClientConn> {
+            var closing = Array<ClientConn>{}
+            s.closing -= count
+            s.serve(now, settings, closing)
+            s.closing += closing.len()
+            return closing
+        })
+    }
+}
+
+func (p Pool) Stats() PoolStats {
+    if !p.live {
+        return PoolStats{Active: 0, Idle: 0, Waiting: 0}
+    }
+    let now = time.Now()
+    let settings = p.settings
+    let stats, closing = p.state.withLock(func(s mut poolState) (PoolStats, Array<ClientConn>) {
+        var closing = Array<ClientConn>{}
+        s.expire(now, settings.IdleTimeout, closing)
+        s.serve(now, settings, closing)
+        s.closing += closing.len()
+        return PoolStats{Active: s.leased, Idle: s.idle.len(), Waiting: s.waiters.len()}, closing
+    })
+    p.discard(closing)
+    return stats
+}
+
+func (p Pool) CloseIdle() {
+    if !p.live {
+        return
+    }
+    let closing = p.state.withLock(func(s mut poolState) Array<ClientConn> {
+        var closing = Array<ClientConn>{}
+        for s.idle.len() > 0 {
+            let _, entry = s.idle.pop()
+            closing.push(entry.conn)
+        }
+        s.closing += closing.len()
+        return closing
+    })
+    p.discard(closing)
+}
+
+func (p Pool) Close() {
+    if !p.live {
+        return
+    }
+    let closing = p.state.withLock(func(s mut poolState) Array<ClientConn> {
+        var closing = Array<ClientConn>{}
+        s.closed = true
+        for s.idle.len() > 0 {
+            let _, entry = s.idle.pop()
+            closing.push(entry.conn)
+        }
+        for waiter in s.waiters {
+            waiter.wake.send(poolGrant{conns: Array<ClientConn>{}, closed: true, probe: false})
+        }
+        s.waiters = Array<poolWaiter>{}
+        s.closing += closing.len()
+        return closing
+    })
+    p.discard(closing)
+}
+
+func (s mut poolState) enter(key string) {
+    let _, count = s.active[key]
+    s.active[key] = count + 1
+    s.leased += 1
+}
+
+func (s mut poolState) leave(key string) {
+    let _, count = s.active[key]
+    if count <= 1 {
+        let _, _ = s.active.remove(key)
+    } else {
+        s.active[key] = count - 1
+    }
+    s.leased -= 1
+}
+
+func (s poolState) hostIdle(key string) int {
+    var count = 0
+    for entry in s.idle {
+        if entry.key == key {
+            count += 1
+        }
+    }
+    return count
+}
+
+func (s mut poolState) takeIdle(key string, oldest bool) poolIdle {
+    var index = -1
+    for var i = 0; i < s.idle.len(); i += 1 {
+        if s.idle[i].key == key && (index < 0 || !oldest) {
+            index = i
+        }
+    }
+    return s.removeIdle(index)
+}
+
+func (s mut poolState) removeIdle(index int) poolIdle {
+    var rest = Array<poolIdle>{}
+    for s.idle.len() > index + 1 {
+        let _, entry = s.idle.pop()
+        rest.push(entry)
+    }
+    let _, found = s.idle.pop()
+    for rest.len() > 0 {
+        let _, entry = rest.pop()
+        s.idle.push(entry)
+    }
+    return found
+}
+
+func (s mut poolState) expire(now time.Instant, timeout time.Duration, closing mut Array<ClientConn>) {
+    var kept = Array<poolIdle>{}
+    for s.idle.len() > 0 {
+        let _, entry = s.idle.pop()
+        if now.Sub(entry.since) >= timeout {
+            closing.push(entry.conn)
+        } else {
+            kept.push(entry)
+        }
+    }
+    for kept.len() > 0 {
+        let _, entry = kept.pop()
+        s.idle.push(entry)
+    }
+}
+
+func (s mut poolState) grant(key string, now time.Instant, settings PoolConfig, closing mut Array<ClientConn>) (bool, poolGrant) {
+    var conns = Array<ClientConn>{}
+    if s.hostIdle(key) > 0 {
+        let entry = s.takeIdle(key, false)
+        let probe = now.Sub(entry.since) >= time.Second
+        conns.push(entry.conn)
+        s.enter(key)
+        return true, poolGrant{conns: conns, closed: false, probe: probe}
+    }
+    let _, active = s.active[key]
+    if active >= settings.MaxConnectionsPerHost {
+        return false, poolGrant{conns: conns, closed: false, probe: false}
+    }
+    if s.leased + s.idle.len() + s.closing + closing.len() >= settings.MaxConnections {
+        if s.idle.len() != 0 && s.closing + closing.len() == 0 {
+            closing.push(s.removeIdle(0).conn)
+        }
+        return false, poolGrant{conns: conns, closed: false, probe: false}
+    }
+    s.enter(key)
+    return true, poolGrant{conns: conns, closed: false, probe: false}
+}
+
+func (s mut poolState) serve(now time.Instant, settings PoolConfig, closing mut Array<ClientConn>) {
+    var queue = Array<poolWaiter>{}
+    for s.waiters.len() > 0 {
+        let _, waiter = s.waiters.pop()
+        queue.push(waiter)
+    }
+    for queue.len() > 0 {
+        let _, waiter = queue.pop()
+        let ready, grant = s.grant(waiter.key, now, settings, closing)
+        if ready {
+            waiter.wake.send(grant)
+        } else {
+            s.waiters.push(waiter)
+        }
+    }
+}
