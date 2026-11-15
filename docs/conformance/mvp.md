@@ -248,6 +248,19 @@ independent Python escaping/parser assertions. Contextual template rendering
 remains a separate application-driven decision under Q16; the primitive does
 not validate URLs or serialize JavaScript/CSS.
 
+## HTTP proxies — issue #289
+
+Locked §37.47 delivers `ProxyConfig`, `ClientTunnel`, `NewProxyClient` and
+`NewProxyClientWithTunnel`, and `https.NewProxyClient` in the bundled TLS
+package. [tests/codegen/http_proxy.rs](../../tests/codegen/http_proxy.rs)
+covers a loopback proxy for absolute-form requests, CONNECT tunnels, credentials
+sent only to the proxy, a refused tunnel, pooled reuse and invalid
+configuration, and the proxy guide.
+[tests/packages/networking.rs](../../tests/packages/networking.rs) checks the
+frontend API, and `TestHTTPSProxyTunnelVerifiesTheTarget` in
+[examples/https-client/https_test.ore](../../examples/https-client/https_test.ore)
+sends verified HTTPS through a relaying proxy and rejects a wrong host.
+
 ## HTTP retries — issue #289
 
 Locked §37.45 delivers `RetryConfig` and `DoRetry` on `Client` and `Pool`.

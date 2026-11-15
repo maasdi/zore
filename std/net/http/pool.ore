@@ -26,6 +26,7 @@ type Pool struct {
     dialer channel<Client>
     config ClientConfig
     custom bool
+    proxy clientProxy
     settings PoolConfig
     live bool
 }
@@ -96,7 +97,7 @@ func DefaultPoolConfig() PoolConfig {
 }
 
 func emptyPool() Pool {
-    return Pool{state: mutex(emptyPoolState()), dialer: channel<Client>(1), config: DefaultClientConfig(), custom: false, settings: DefaultPoolConfig(), live: false}
+    return Pool{state: mutex(emptyPoolState()), dialer: channel<Client>(1), config: DefaultClientConfig(), custom: false, proxy: noProxy(), settings: DefaultPoolConfig(), live: false}
 }
 
 func emptyPoolState() poolState {
@@ -134,8 +135,8 @@ func NewPool(client own Client, config PoolConfig) (Pool, error) {
     if chosen.MaxWaiters == 0 {
         chosen.MaxWaiters = defaults.MaxWaiters
     }
-    let custom = client.transport.len() != 0
-    let pool = Pool{state: mutex(emptyPoolState()), dialer: channel<Client>(1), config: client.config, custom: custom, settings: chosen, live: true}
+    let custom = client.transport.len() != 0 || client.tunnel.len() != 0
+    let pool = Pool{state: mutex(emptyPoolState()), dialer: channel<Client>(1), config: client.config, custom: custom, proxy: client.proxy, settings: chosen, live: true}
     if custom {
         pool.dialer.send(client)
     }
@@ -143,7 +144,7 @@ func NewPool(client own Client, config PoolConfig) (Pool, error) {
 }
 
 func (p Pool) plain() Client {
-    return Client{config: p.config, live: true, transport: Array<ClientTransport>{}}
+    return Client{config: p.config, live: true, transport: Array<ClientTransport>{}, proxy: p.proxy, tunnel: Array<ClientTunnel>{}}
 }
 
 func (p Pool) Do(ctx context.Context, method string, absoluteURL string, headers Header, body []byte) (ClientResponse, error) {

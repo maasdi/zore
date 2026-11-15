@@ -24,6 +24,7 @@ mod html;
 mod http;
 mod http_client;
 mod http_pool;
+mod http_proxy;
 mod http_redirect;
 mod http_retry;
 mod http_stream;

@@ -24,6 +24,8 @@ type Client struct {
     config ClientConfig
     live bool
     transport Array<ClientTransport>
+    proxy clientProxy
+    tunnel Array<ClientTunnel>
 }
 
 type ClientResponse struct {
@@ -88,7 +90,7 @@ type clientStream struct {
 }
 
 func emptyClient() Client {
-    return Client{config: DefaultClientConfig(), live: false, transport: Array<ClientTransport>{}}
+    return Client{config: DefaultClientConfig(), live: false, transport: Array<ClientTransport>{}, proxy: noProxy(), tunnel: Array<ClientTunnel>{}}
 }
 
 func emptyClientURL() url.AbsoluteURL {
@@ -132,7 +134,7 @@ func NewClient(config ClientConfig) (Client, error) {
     if chosen.PollInterval == 0 {
         chosen.PollInterval = defaults.PollInterval
     }
-    return Client{config: chosen, live: true, transport: Array<ClientTransport>{}}, nil
+    return Client{config: chosen, live: true, transport: Array<ClientTransport>{}, proxy: noProxy(), tunnel: Array<ClientTunnel>{}}, nil
 }
 
 func NewClientWithTransport(config ClientConfig, transport own ClientTransport) (Client, error) {
@@ -187,9 +189,16 @@ func (c Client) prepareRequest(method string, absoluteURL string, headers Header
     if length > limit {
         return "", emptyClientURL(), error("http.Client: request body too large")
     }
-    var output = method + " " + target.RequestTarget + " HTTP/1.1\r\nHost: " + target.Authority + "\r\nContent-Length: " + strconv.Itoa(length) + "\r\n"
+    var requestTarget = target.RequestTarget
+    if c.proxy.set && target.Scheme == "http" {
+        requestTarget = "http://" + target.Authority + target.RequestTarget
+    }
+    var output = method + " " + requestTarget + " HTTP/1.1\r\nHost: " + target.Authority + "\r\nContent-Length: " + strconv.Itoa(length) + "\r\n"
     if closing {
         output += "Connection: close\r\n"
+    }
+    if c.proxy.set && target.Scheme == "http" && c.proxy.authorization != "" {
+        output += "Proxy-Authorization: " + c.proxy.authorization + "\r\n"
     }
     if output.len() > c.config.MaxHeaderBytes {
         return "", emptyClientURL(), error("http.Client: metadata too large")
@@ -200,6 +209,9 @@ func (c Client) prepareRequest(method string, absoluteURL string, headers Header
         }
         if clientControlled(entry.Name) {
             return "", emptyClientURL(), error("http.Client: client owns transport header")
+        }
+        if c.proxy.set && asciiEqual(entry.Name, "Proxy-Authorization") {
+            return "", emptyClientURL(), error("http.Client: client owns Proxy-Authorization")
         }
         if entry.Name.len() > c.config.MaxHeaderBytes - output.len() {
             return "", emptyClientURL(), error("http.Client: metadata too large")
@@ -247,7 +259,7 @@ func (c Client) admit(ctx context.Context, method string, absoluteURL string, he
     if preparationErr != nil {
         return "", emptyClientURL(), preparationErr
     }
-    if c.transport.len() == 0 && target.Scheme != "http" {
+    if !c.verifies() && target.Scheme != "http" {
         return "", emptyClientURL(), error("http.Client: HTTPS requires verified TLS transport")
     }
     let contextErr = clientContextError(ctx)
@@ -276,10 +288,17 @@ func (c Client) dialAndExchange(ctx context.Context, output string, target url.A
     return c.exchangePrepared(ctx, conn, output, method, body)
 }
 
+func (c Client) verifies() bool {
+    return c.transport.len() != 0 || c.tunnel.len() != 0
+}
+
 func (c Client) dial(ctx context.Context, target url.AbsoluteURL) (ClientConn, error) {
     let contextErr = clientContextError(ctx)
     if contextErr != nil {
         return closedClientConn{}, contextErr
+    }
+    if c.proxy.set {
+        return c.proxyDial(ctx, target)
     }
     if c.transport.len() != 0 {
         let conn, err = c.transport[0].Dial(ctx, target)
@@ -293,30 +312,41 @@ func (c Client) dial(ctx context.Context, target url.AbsoluteURL) (ClientConn, e
         }
         return conn, nil
     }
+    var conns, err = c.dialAddress(ctx, target.Address)
+    if err != nil {
+        return closedClientConn{}, err
+    }
+    let _, conn = conns.pop()
+    return conn, nil
+}
+
+func (c Client) dialAddress(ctx context.Context, address string) (Array<net.Conn>, error) {
     let result = channel<clientDialResult>(1)
     let deadline, _ = ctx.Deadline()
     var dialTimeout = c.config.DialTimeout
     let remaining = time.Until(deadline)
     if remaining <= 0 {
-        return closedClientConn{}, error("context deadline exceeded")
+        return Array<net.Conn>{}, error("context deadline exceeded")
     }
     if remaining < dialTimeout {
         dialTimeout = remaining
     }
-    go clientDial(target.Address, dialTimeout, result)
+    go clientDial(address, dialTimeout, result)
     select {
         case let connected, _ = result.receive() {
             let dialContextErr = clientContextError(ctx)
             if dialContextErr != nil {
-                return closedClientConn{}, dialContextErr
+                return Array<net.Conn>{}, dialContextErr
             }
             if connected.failure != nil {
-                return closedClientConn{}, connected.failure
+                return Array<net.Conn>{}, connected.failure
             }
-            return connected.conn, nil
+            var conns = Array<net.Conn>{}
+            conns.push(connected.conn)
+            return conns, nil
         }
         case ctx.Done().receive() {
-            return closedClientConn{}, ctx.Err()
+            return Array<net.Conn>{}, ctx.Err()
         }
     }
 }

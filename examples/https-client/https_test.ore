@@ -442,3 +442,102 @@ func TestHTTPSRedirectVerifiesEveryHop() error {
     redirectCase("../../packages/tls/testdata/server.pem", "")?
     return redirectCase("testdata/wrong-host.pem", "does not match")
 }
+
+async func serveProxy(listener own net.Listener, ctx context.Context, upstreamAddress string) error {
+    let client = listener.Accept()?
+    client.SetReadDeadline(time.Now().Add(10 * time.Second))?
+    var head = ""
+    var one = Array<byte>{0}
+    for !strings.HasSuffix(head, "\r\n\r\n") {
+        let n = client.Read(one[:])?
+        if n != 1 || head.len() > 4096 {
+            return error("invalid proxy request")
+        }
+        head += string(rune(one[0]))
+    }
+    if !strings.HasPrefix(head, "CONNECT localhost:") || strings.Contains(head, "Proxy-Authorization") {
+        return error("unexpected proxy request")
+    }
+    let upstream = net.Dial("tcp4", upstreamAddress)?
+    client.Write(strings.Bytes("HTTP/1.1 200 Connection Established\r\n\r\n")[:])?
+    var buf = Array<byte>{}
+    for buf.len() < 4096 {
+        buf.push(0)
+    }
+    for ctx.Err() == nil {
+        if relayOnce(client, upstream, buf)? || relayOnce(upstream, client, buf)? {
+            return nil
+        }
+    }
+    return nil
+}
+
+func relayOnce(from net.Conn, to net.Conn, buf mut Array<byte>) (bool, error) {
+    from.SetReadDeadline(time.Now().Add(5 * time.Millisecond))?
+    let n, err = from.Read(buf[:])
+    if n > 0 {
+        let _, writeErr = to.Write(buf[:n])
+        if writeErr != nil {
+            _ = err
+            return true, nil
+        }
+    }
+    if err == error("net.Read: timed out") {
+        return false, nil
+    }
+    return err != nil, nil
+}
+
+func proxiedCase(certPath string, extraRoot string, expected string) error {
+    var roots = os.ReadFile("../../packages/tls/testdata/roots.pem")?
+    let extra = os.ReadFile(extraRoot)?
+    for b in extra {
+        roots.push(b)
+    }
+    let cert = os.ReadFile(certPath)?
+    let key = os.ReadFile("../../packages/tls/testdata/server-key.pem")?
+    var settings = http.DefaultClientConfig()
+    settings.Timeout = 10 * time.Second
+    settings.PollInterval = time.Millisecond
+    let target = net.Listen("tcp4", "127.0.0.1:0")?
+    let proxy = net.Listen("tcp4", "127.0.0.1:0")?
+    let _, targetPort, _ = strings.Cut(target.Addr(), ":")
+    target.SetDeadline(time.Now().Add(10 * time.Second))?
+    proxy.SetDeadline(time.Now().Add(10 * time.Second))?
+    let client = https.NewProxyClient(roots[:], settings, http.ProxyConfig{URL: "http://" + proxy.Addr() + "/", Authorization: ""})?
+    let ctx, cancel = context.WithTimeout(context.Background(), 10 * time.Second)
+    let upstreamAddress = target.Addr()
+    let serving = go serveHTTPS(target, tls.NewServerConfig(cert[:], key[:])?, ctx, "localhost")
+    let relaying = go serveProxy(proxy, ctx, upstreamAddress)
+    let empty = Array<byte>{}
+    let response, err = client.Do(ctx, "GET", "https://localhost:" + targetPort + "/binary", http.NewHeader(), empty[:])
+    cancel()
+    let servingErr = serving.wait()
+    let relayErr = relaying.wait()
+    var serverErr = relayErr
+    if serverErr == nil {
+        serverErr = servingErr
+    } else {
+        _ = servingErr
+    }
+    if expected != "" {
+        _ = serverErr
+        if err == nil || !strings.Contains(errors.Message(err), expected) {
+            panic("unverified proxied HTTPS accepted")
+        }
+        return nil
+    }
+    if err != nil {
+        _ = serverErr
+        return err
+    }
+    if response.StatusCode != 200 || response.Body.len() != 3 || response.Body[1] != 255 {
+        panic("proxied HTTPS response")
+    }
+    return serverErr
+}
+
+func TestHTTPSProxyTunnelVerifiesTheTarget() error {
+    proxiedCase("../../packages/tls/testdata/server.pem", "../../packages/tls/testdata/server.pem", "")?
+    return proxiedCase("testdata/wrong-host.pem", "testdata/wrong-host.pem", "does not match")
+}

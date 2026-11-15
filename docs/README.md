@@ -28,6 +28,7 @@ See the [official naming rules](../spec/language-spec.md#21-naming--locked).
 | [HTTP downloads](http-downloads.md) | Streaming a large HTTP response into a file or hash: limits, timeouts, errors, trailers and cleanup. |
 | [HTTP uploads](http-uploads.md) | Sending a large file as an HTTP request body without loading it: exact sizes, limits, timeouts and early rejections. |
 | [HTTP redirects](http-redirects.md) | Following "moved" answers safely: which statuses, method changes, credential removal, HTTPS downgrades and limits. |
+| [HTTP proxies](http-proxies.md) | Sending requests through an explicit proxy: plain and HTTPS tunnels, the proxy's password and errors. |
 | [HTTP retries](http-retries.md) | Trying a request again after a busy answer or a broken connection: which requests, which answers, waits and limits. |
 | [HTTP connection pooling](http-pooling.md) | Reusing connections for many requests to the same service: limits, waiting, reuse rules, stale connections and shutdown. |
 | [HTML escaping](html.md) | Escaping ordinary text and quoted attributes, context restrictions, and the separate template follow-up decision. |

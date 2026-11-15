@@ -49,7 +49,7 @@ func (c Client) Upload(ctx context.Context, method string, absoluteURL string, h
     if preparationErr != nil {
         return emptyClientResponse(), preparationErr
     }
-    if c.transport.len() == 0 && target.Scheme != "http" {
+    if !c.verifies() && target.Scheme != "http" {
         return emptyClientResponse(), error("http.Client: HTTPS requires verified TLS transport")
     }
     let contextErr = clientContextError(ctx)

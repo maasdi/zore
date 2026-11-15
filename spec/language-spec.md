@@ -9226,8 +9226,9 @@ Future streaming, pooling and protocol policies are tracked in issue #228 and
 `docs/design/http-client.md`. Each additive slice requires its own §53 lock
 before implementation; design follow-ups are not supported client features.
 Streamed response bodies are locked in §37.41, streamed uploads in §37.42,
-pooled connections in §37.43, opt-in redirects in §37.44 and opt-in retries in
-§37.45; all leave this buffered contract unchanged.
+pooled connections in §37.43, opt-in redirects in §37.44, opt-in retries in
+§37.45 and explicit proxies in §37.47; all leave this buffered contract
+unchanged.
 
 This additive contract preserves the server `Request` and `ResponseWriter`.
 The client API uses ordinary waiting calls and explicit errors:
@@ -13058,6 +13059,96 @@ a total timeout shorter than the wait, cancellation during a wait, negative
 configuration, invalid requests, HTTPS without a transport and a closed pool
 that never send, and pooled retries; frontend type rejections; and the retry
 guide over real TCP. Retries of streamed uploads, proxies and decoding remain
+excluded.
+
+## 37.47 HTTP client proxies — LOCKED
+
+`std/net/http` adds clients that reach servers through one explicitly configured
+HTTP proxy. No proxy is read from the environment, and clients made by
+`NewClient` and `NewClientWithTransport` never use one.
+
+```ore
+type ProxyConfig struct {
+    URL string
+    Authorization string
+}
+type ClientTunnel interface {
+    Tunnel(ctx context.Context, conn own net.Conn,
+           target url.AbsoluteURL) (ClientConn, error)
+}
+func NewProxyClient(config ClientConfig, proxy ProxyConfig) (Client, error)
+func NewProxyClientWithTunnel(config ClientConfig, proxy ProxyConfig,
+                              tunnel own ClientTunnel) (Client, error)
+```
+
+`ProxyConfig.URL` must pass `url.ParseAbsolute` with the `http` scheme and a
+request target of `/`; otherwise construction fails with `http.Client: invalid
+proxy URL`. HTTPS proxies, user information in the URL and proxy paths are not
+supported. A nonempty `Authorization` must be a valid field value, or
+construction fails with `http.Client: invalid proxy authorization`; it is the
+complete `Proxy-Authorization` value, such as `Basic …`. The client
+configuration is validated as for `NewClient`.
+
+Every call of a proxy client goes through the proxy: `Do`, `Open`, `Upload`,
+`Follow`, `DoRetry`, `DoDecoded` and their exchange-free pool variants, with
+their rules unchanged except as follows. A caller header named
+`Proxy-Authorization` fails with `http.Client: client owns Proxy-Authorization`
+before anything is sent. Dialing connects to the proxy's address, bounded as a
+direct dial is.
+
+- An `http` URL is sent to the proxy in absolute form, `GET http://host:port/path
+  HTTP/1.1`, with the target's `Host` field and the configured
+  `Proxy-Authorization` when it is nonempty.
+- An `https` URL first sends `CONNECT host:port HTTP/1.1` with `Host: host:port`
+  and the configured `Proxy-Authorization`. The proxy's response head is read
+  byte by byte up to `ClientConfig.MaxHeaderBytes` (`http.Client: proxy response
+  too large`); a malformed status line fails with `http.Client: invalid proxy
+  response`, a status outside 200–299 with `http.Client: proxy refused tunnel
+  with status N`, and a connection that ends first with `http.Client: proxy
+  closed the tunnel request`. After a 2xx status the connection is passed to the
+  tunnel's `Tunnel`, which must authenticate the target as a direct dial would;
+  the request is then sent in origin form inside the tunnel without
+  `Proxy-Authorization`. A client from `NewProxyClient` has no tunnel and fails
+  `https` URLs with `http.Client: HTTPS requires verified TLS transport` before
+  connecting; there is no unverified fallback.
+
+`ClientConfig.Timeout` and the caller's context bound connecting to the proxy,
+the tunnel request and the tunnel's handshake together, and cancellation is
+observed at least every `PollInterval` while waiting. On any failure the
+connection to the proxy is closed before the call returns. A pool made from a
+proxy client keeps its connections per target origin, so every pooled
+connection belongs to one proxy and one target; pools never share connections.
+
+The bundled `tls/https` package's `Transport` implements `ClientTunnel` by
+running its verified TLS handshake over the tunnel, and
+`https.NewProxyClient(rootsPEM, config, proxy)` returns such a client.
+
+Plain callers block with worker compensation and async callers use the ordinary
+API without `await`, as for §37.11.
+
+```ore
+import "std/context"
+import "std/net/http"
+
+func viaProxy(target string) (int, error) {
+    let proxy = http.ProxyConfig{URL: "http://proxy.example:3128/", Authorization: ""}
+    let client = http.NewProxyClient(http.DefaultClientConfig(), proxy)?
+    let empty = Array<byte>{}
+    let response = client.Do(context.Background(), "GET", target,
+                             http.NewHeader(), empty[:])?
+    return response.StatusCode, nil
+}
+```
+
+Compiler impact: one bundled source file and a new method in the bundled
+`tls/https` package; no runtime or syntax changes. Conformance: a real loopback
+proxy for absolute-form requests with credentials, refused `https` without a
+tunnel, a caller `Proxy-Authorization`, CONNECT tunnels with credentials only on
+the CONNECT request, a refused tunnel, pooled reuse of one proxy connection and
+invalid proxy URLs and credentials that never connect; frontend type rejections;
+the proxy guide over real TCP; and a verified HTTPS request through a relaying
+proxy and a wrong-host rejection through it in `examples/https-client/`.
+HTTPS proxies, environment discovery, proxy bypass lists and SOCKS remain
 excluded.
 
 # 38. Self-Hosting Constraint

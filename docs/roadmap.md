@@ -1,5 +1,11 @@
 # Implementation roadmap
 
+Issue [#289](https://github.com/maasdi/zore/issues/289) adds explicit HTTP
+proxies under §37.47: `NewProxyClient` sends `http` requests in absolute form
+and `NewProxyClientWithTunnel` (or `https.NewProxyClient`) reaches `https`
+servers through a verified CONNECT tunnel, with proxy credentials sent only to
+the proxy. See the [proxy guide](http-proxies.md).
+
 Issue [#289](https://github.com/maasdi/zore/issues/289) adds opt-in retries of
 buffered requests under §37.45: `DoRetry` on a client or pool repeats safe
 methods after network failures and 429/502/503/504 answers, with doubling

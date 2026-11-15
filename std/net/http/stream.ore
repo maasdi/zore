@@ -92,7 +92,7 @@ func (c Client) openWithin(ctx context.Context, method string, absoluteURL strin
     if preparationErr != nil {
         return emptyResponseStream(), preparationErr
     }
-    if c.transport.len() == 0 && target.Scheme != "http" {
+    if !c.verifies() && target.Scheme != "http" {
         return emptyResponseStream(), error("http.Client: HTTPS requires verified TLS transport")
     }
     let contextErr = clientContextError(ctx)

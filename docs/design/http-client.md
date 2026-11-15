@@ -110,9 +110,9 @@ fail; reusing it does not authorize replay.
 
 ## Separate opt-in policies
 
-Redirects are delivered in §37.44 as `Follow` and `OpenFollow`, and retries of
-buffered requests in §37.45 as `DoRetry`. Proxies and content decoding remain
-open.
+Redirects are delivered in §37.44 as `Follow` and `OpenFollow`, retries of
+buffered requests in §37.45 as `DoRetry`, and explicit HTTP proxies with CONNECT
+tunnels in §37.47 as `NewProxyClient` and `NewProxyClientWithTunnel`.
 
 Redirects need a finite hop budget, loop detection, relative Location resolution
 followed by strict HTTP admission, status-specific method/body rewriting and one
