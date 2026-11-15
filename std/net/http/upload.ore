@@ -72,7 +72,7 @@ func (c Client) UploadExchange(ctx context.Context, conn own ClientConn, method 
     if settingsErr != nil {
         return emptyClientResponse(), settingsErr
     }
-    let output, _, preparationErr = c.prepareLength(method, absoluteURL, headers, body.length, settings.MaxBodyBytes)
+    let output, _, preparationErr = c.prepareDirect(method, absoluteURL, headers, body.length, settings.MaxBodyBytes)
     if preparationErr != nil {
         return emptyClientResponse(), preparationErr
     }

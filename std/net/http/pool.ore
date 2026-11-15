@@ -206,7 +206,7 @@ func (p Pool) prepare(ctx context.Context, method string, absoluteURL string, he
     if !p.live {
         return "", emptyClientURL(), error("http.Pool: empty pool")
     }
-    let output, target, err = p.plain().prepareRequest(method, absoluteURL, headers, body.len(), p.config.MaxRequestBodyBytes, false)
+    let output, target, err = p.plain().prepareRequest(method, absoluteURL, headers, body.len(), p.config.MaxRequestBodyBytes, false, p.proxy.set)
     if err != nil {
         return "", emptyClientURL(), err
     }

@@ -13094,7 +13094,9 @@ Every call of a proxy client goes through the proxy: `Do`, `Open`, `Upload`,
 their rules unchanged except as follows. A caller header named
 `Proxy-Authorization` fails with `http.Client: client owns Proxy-Authorization`
 before anything is sent. Dialing connects to the proxy's address, bounded as a
-direct dial is.
+direct dial is. `Exchange`, `OpenExchange` and `UploadExchange` write to the
+caller's connection, which need not lead to the proxy, so they send origin-form
+requests without the proxy's credentials, exactly as a client without a proxy.
 
 - An `http` URL is sent to the proxy in absolute form, `GET http://host:port/path
   HTTP/1.1`, with the target's `Host` field and the configured
@@ -13104,8 +13106,10 @@ direct dial is.
   byte by byte up to `ClientConfig.MaxHeaderBytes` (`http.Client: proxy response
   too large`); a malformed status line fails with `http.Client: invalid proxy
   response`, a status outside 200–299 with `http.Client: proxy refused tunnel
-  with status N`, and a connection that ends first with `http.Client: proxy
-  closed the tunnel request`. After a 2xx status the connection is passed to the
+  with status N`, a connection that ends first with `http.Client: proxy
+  closed the tunnel request`, and 100 reads or writes in a row without progress
+  with `http.Client: read made no progress` or `http.Client: write made no
+  progress`. Only the status line must be valid UTF-8. After a 2xx status the connection is passed to the
   tunnel's `Tunnel`, which must authenticate the target as a direct dial would;
   the request is then sent in origin form inside the tunnel without
   `Proxy-Authorization`. A client from `NewProxyClient` has no tunnel and fails

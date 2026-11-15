@@ -68,6 +68,14 @@ func run() error {
             println(text)
         }
         pool.Close()
+    } else if mode == "exchange" {
+        let client = http.NewProxyClient(config, proxy)?
+        let address, _ = url.ParseAbsolute(args[1])
+        let conn = net.Dial("tcp", address.Address)?
+        let empty = Array<byte>{}
+        let response = client.Exchange(context.Background(), Plain{conn: conn}, "GET", "http://origin.test/direct", http.NewHeader(), empty[:])?
+        let text, _ = strings.FromBytes(response.Body[:])
+        println(text)
     } else if mode == "invalid" {
         for bad in [string; 4]{"https://proxy.test/", "http://proxy.test/path", "ftp://proxy.test/", "not a url"} {
             let _, err = http.NewProxyClient(config, http.ProxyConfig{URL: bad, Authorization: ""})
@@ -218,6 +226,13 @@ fn http_proxies_forward_tunnel_and_keep_credentials_with_the_proxy() {
     let line = "GET http://target.test/again HTTP/1.1 host=target.test auth=true tunneled=false";
     assert_eq!(output, format!("{line}\n{line}\n"));
     assert_eq!((log.len(), connections), (2, 1));
+
+    let (output, log, _) = run_case(&executable, "exchange", false);
+    assert_eq!(
+        output,
+        "GET /direct HTTP/1.1 host=origin.test auth=false tunneled=false\n"
+    );
+    assert!(!log[0].contains("Proxy-Authorization"), "{log:?}");
 
     let (output, log, connections) = run_case(&executable, "invalid", false);
     assert_eq!(

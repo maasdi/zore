@@ -114,7 +114,7 @@ func (c Client) OpenExchange(ctx context.Context, conn own ClientConn, method st
     if settingsErr != nil {
         return emptyResponseStream(), settingsErr
     }
-    let output, _, preparationErr = c.prepare(method, absoluteURL, headers, body)
+    let output, _, preparationErr = c.prepareDirect(method, absoluteURL, headers, body.len(), c.config.MaxRequestBodyBytes)
     if preparationErr != nil {
         return emptyResponseStream(), preparationErr
     }

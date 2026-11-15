@@ -175,10 +175,14 @@ func (c Client) prepare(method string, absoluteURL string, headers Header, body 
 }
 
 func (c Client) prepareLength(method string, absoluteURL string, headers Header, length int, limit int) (string, url.AbsoluteURL, error) {
-    return c.prepareRequest(method, absoluteURL, headers, length, limit, true)
+    return c.prepareRequest(method, absoluteURL, headers, length, limit, true, c.proxy.set)
 }
 
-func (c Client) prepareRequest(method string, absoluteURL string, headers Header, length int, limit int, closing bool) (string, url.AbsoluteURL, error) {
+func (c Client) prepareDirect(method string, absoluteURL string, headers Header, length int, limit int) (string, url.AbsoluteURL, error) {
+    return c.prepareRequest(method, absoluteURL, headers, length, limit, true, false)
+}
+
+func (c Client) prepareRequest(method string, absoluteURL string, headers Header, length int, limit int, closing bool, viaProxy bool) (string, url.AbsoluteURL, error) {
     if !c.live {
         return "", emptyClientURL(), error("http.Client: empty client")
     }
@@ -190,14 +194,14 @@ func (c Client) prepareRequest(method string, absoluteURL string, headers Header
         return "", emptyClientURL(), error("http.Client: request body too large")
     }
     var requestTarget = target.RequestTarget
-    if c.proxy.set && target.Scheme == "http" {
+    if viaProxy && target.Scheme == "http" {
         requestTarget = "http://" + target.Authority + target.RequestTarget
     }
     var output = method + " " + requestTarget + " HTTP/1.1\r\nHost: " + target.Authority + "\r\nContent-Length: " + strconv.Itoa(length) + "\r\n"
     if closing {
         output += "Connection: close\r\n"
     }
-    if c.proxy.set && target.Scheme == "http" && c.proxy.authorization != "" {
+    if viaProxy && target.Scheme == "http" && c.proxy.authorization != "" {
         output += "Proxy-Authorization: " + c.proxy.authorization + "\r\n"
     }
     if output.len() > c.config.MaxHeaderBytes {
@@ -210,7 +214,7 @@ func (c Client) prepareRequest(method string, absoluteURL string, headers Header
         if clientControlled(entry.Name) {
             return "", emptyClientURL(), error("http.Client: client owns transport header")
         }
-        if c.proxy.set && asciiEqual(entry.Name, "Proxy-Authorization") {
+        if viaProxy && asciiEqual(entry.Name, "Proxy-Authorization") {
             return "", emptyClientURL(), error("http.Client: client owns Proxy-Authorization")
         }
         if entry.Name.len() > c.config.MaxHeaderBytes - output.len() {
@@ -354,7 +358,7 @@ func (c Client) dialAddress(ctx context.Context, address string) (Array<net.Conn
 func (c Client) Exchange(ctx context.Context, conn own ClientConn, method string, absoluteURL string, headers Header, body []byte) (ClientResponse, error) {
     let bounded, cancel = context.WithDeadline(ctx, time.Now().Add(c.config.Timeout))
     let guard = clientCancellation{cancel: cancel}
-    let output, _, preparationErr = c.prepare(method, absoluteURL, headers, body)
+    let output, _, preparationErr = c.prepareDirect(method, absoluteURL, headers, body.len(), c.config.MaxRequestBodyBytes)
     if preparationErr != nil {
         return emptyClientResponse(), preparationErr
     }
