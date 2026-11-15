@@ -9225,8 +9225,9 @@ execute provider-present tests; skipped/unavailable providers are not evidence.
 Future streaming, pooling and protocol policies are tracked in issue #228 and
 `docs/design/http-client.md`. Each additive slice requires its own §53 lock
 before implementation; design follow-ups are not supported client features.
-Streamed response bodies are locked in §37.41, streamed uploads in §37.42 and
-pooled connections in §37.43; all leave this buffered contract unchanged.
+Streamed response bodies are locked in §37.41, streamed uploads in §37.42,
+pooled connections in §37.43 and opt-in redirects in §37.44; all leave this
+buffered contract unchanged.
 
 This additive contract preserves the server `Request` and `ResponseWriter`.
 The client API uses ordinary waiting calls and explicit errors:
@@ -12878,6 +12879,102 @@ async and waiting progress; frontend privacy, ownership and type rejections;
 and verified HTTPS reuse and wrong-host rejection in `examples/https-client/`.
 Pooled uploads, HTTP/2, redirects, retries, proxies and decoding remain
 excluded.
+
+## 37.44 HTTP client redirects — LOCKED
+
+`std/net/http` adds opt-in redirect following. `Do`, `Open`, their pool
+variants and every other existing call keep returning redirect responses
+unchanged.
+
+```ore
+type RedirectConfig struct {
+    MaxRedirects int
+    AllowHTTPSDowngrade bool
+}
+func DefaultRedirectConfig() RedirectConfig
+func (c Client) Follow(ctx context.Context, method string, absoluteURL string,
+                       headers Header, body []byte,
+                       config RedirectConfig) (ClientResponse, string, error)
+func (c Client) OpenFollow(ctx context.Context, method string, absoluteURL string,
+                           headers Header, body []byte, config StreamConfig,
+                           redirects RedirectConfig) (ResponseStream, string, error)
+func (p Pool) Follow(ctx context.Context, method string, absoluteURL string,
+                     headers Header, body []byte,
+                     config RedirectConfig) (ClientResponse, string, error)
+func (p Pool) OpenFollow(ctx context.Context, method string, absoluteURL string,
+                         headers Header, body []byte, config StreamConfig,
+                         redirects RedirectConfig) (ResponseStream, string, error)
+```
+
+Each call sends the request with `Do` or `Open` of the same client or pool,
+under their rules, and inspects the response. The defaults are 10 redirects and
+no HTTPS downgrade; a zero `MaxRedirects` selects the default, and a negative
+one fails with `http.Client: negative redirect configuration` before anything
+is sent. On success the call returns the final response and the absolute URL
+it was received from; on failure an empty response and `""`.
+
+A response is followed only when its status is 301, 302, 303, 307 or 308 and it
+has a `Location` field. Every other response, a redirect status without
+`Location` included, is returned as the final response. Two or more `Location`
+fields fail with `http.Client: ambiguous redirect location`. The location is
+resolved against the current URL with `url.ResolveReference` (§37.40), its
+fragment is removed, and the result must pass `url.ParseAbsolute` (§37.11);
+otherwise the call fails with `http.Client: invalid redirect location`. A
+redirect from an `https` URL to an `http` URL fails with `http.Client: redirect
+from HTTPS to HTTP` unless `AllowHTTPSDowngrade` is true.
+
+The next request is built from the current one. 307 and 308 keep the method and
+body. 303 changes every method except HEAD to GET, and 301 and 302 change POST
+to GET; such a change sends no body and removes every caller header whose name
+starts with `Content-`. Other methods keep their body. When the next URL has a
+different origin from the current one (scheme, lowercased host or effective
+port, as in §37.43), `Authorization`, `Cookie` and `Proxy-Authorization` are
+removed; removed fields are not restored for the rest of the chain. All other
+caller headers are kept. Each request goes through the client's transport for
+its own URL, so every HTTPS hop is verified for its own host.
+
+The chain may contain at most `MaxRedirects` redirects; following one more
+fails with `http.Client: too many redirects`. A request whose method and URL
+were already sent in the chain fails with `http.Client: redirect loop`.
+Intermediate responses are discarded: `Follow` reads their bodies under the
+usual limits, and `OpenFollow` closes their streams without reading, which
+retires a pooled connection.
+
+One budget covers the chain. For `Follow`, `ClientConfig.Timeout` from the
+call bounds every request and response. For `OpenFollow`, it bounds everything
+until the final headers, and a positive `StreamConfig.Timeout` counts from the
+call; expiry fails with `context deadline exceeded`. The caller's context bounds
+all of it. Errors from a request are returned unchanged. A failed chain may
+already have had effects on the servers it reached, and the client never
+retries a request.
+
+Plain callers block with worker compensation and async callers use the ordinary
+API without `await`, as for §37.11.
+
+```ore
+import "std/context"
+import "std/net/http"
+
+func latest(client http.Client, target string) (string, error) {
+    let empty = Array<byte>{}
+    let _, final = client.Follow(context.Background(), "GET", target,
+                                 http.NewHeader(), empty[:],
+                                 http.DefaultRedirectConfig())?
+    return final, nil
+}
+```
+
+Compiler impact: one bundled source file; no runtime or syntax changes.
+Conformance: scripted transports for relative and cross-origin chains, method
+and body rewriting per status, credential and content-header removal that
+persists after returning to the first origin, fragment removal, loops, the
+exact and exceeded redirect limits, refused and allowed downgrades, invalid,
+non-HTTP and ambiguous locations, unfollowed statuses, negative configuration,
+one budget for buffered and streamed chains, streamed and pooled chains with
+connections reused or closed; frontend type rejections; the redirect guide over
+real TCP; and a verified HTTPS chain and a redirect to a wrong-host server in
+`examples/https-client/`. Retries, proxies, decoding and redirects of streamed
+uploads remain excluded.
 
 # 38. Self-Hosting Constraint
 

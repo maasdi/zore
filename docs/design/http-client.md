@@ -5,9 +5,9 @@ to the bounded HTTP/1.1 client. This document orders the work and records design
 constraints. It is not a locked public API or evidence of implemented features.
 Each implementation must first lock its own signatures, examples, ownership,
 errors, async behavior and conformance cases under spec §53. Streamed downloads
-(#286), known-length streamed uploads (#287) and bounded HTTP/1.1 pooling (#288)
-are delivered and locked in spec §§37.41–37.43; the rest of this plan is still
-open.
+(#286), known-length streamed uploads (#287), bounded HTTP/1.1 pooling (#288)
+and opt-in redirects (the first #289 slice) are delivered and locked in spec
+§§37.41–37.44; the rest of this plan is still open.
 
 ## Consumer priorities and delivery order
 
@@ -109,6 +109,9 @@ reuse. Reset per-operation deadlines on each lease. A stale idle socket may
 fail; reusing it does not authorize replay.
 
 ## Separate opt-in policies
+
+Redirects are delivered in §37.44 as `Follow` and `OpenFollow`. Retries,
+proxies and content decoding remain open.
 
 Redirects need a finite hop budget, loop detection, relative Location resolution
 followed by strict HTTP admission, status-specific method/body rewriting and one

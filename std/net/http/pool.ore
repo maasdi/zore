@@ -176,6 +176,10 @@ func (p Pool) Do(ctx context.Context, method string, absoluteURL string, headers
 }
 
 func (p Pool) Open(ctx context.Context, method string, absoluteURL string, headers Header, body []byte, config StreamConfig) (ResponseStream, error) {
+    return p.openWithin(ctx, method, absoluteURL, headers, body, config, time.Now().Add(p.config.Timeout))
+}
+
+func (p Pool) openWithin(ctx context.Context, method string, absoluteURL string, headers Header, body []byte, config StreamConfig, headerDeadline time.Instant) (ResponseStream, error) {
     let settings, settingsErr = streamSettings(config)
     if settingsErr != nil {
         return emptyResponseStream(), settingsErr
@@ -185,7 +189,6 @@ func (p Pool) Open(ctx context.Context, method string, absoluteURL string, heade
         return emptyResponseStream(), preparationErr
     }
     let streamCtx, stops = streamContext(ctx, settings.Timeout)
-    let headerDeadline = time.Now().Add(p.config.Timeout)
     let leaseCtx, stopLease = context.WithDeadline(streamCtx, headerDeadline)
     let leaseGuard = clientCancellation{cancel: stopLease}
     var lease, leaseErr = p.lease(leaseCtx, target)

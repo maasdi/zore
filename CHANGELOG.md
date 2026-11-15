@@ -8,6 +8,16 @@ including those shipped in `0.1.0-alpha.1`, are not split by release.
 
 ## [Unreleased]
 
+### HTTP redirects
+
+- `Follow` and `OpenFollow` on a `Client` or `Pool` follow redirects for you and
+  return the final answer and its address (§37.44). Nothing else follows
+  redirects, so existing calls behave as before.
+- 307/308 repeat the request; 303, and 301/302 after a `POST`, switch to `GET`
+  without a body. `Authorization`, `Cookie` and `Proxy-Authorization` are never
+  sent to another origin, HTTPS to HTTP is refused unless allowed, and chains
+  stop after 10 redirects or at a loop. The whole chain shares one time limit.
+
 ### HTTP connection pooling
 
 - `http.NewPool(client, config)` returns a `Pool` whose `Do` and `Open` reuse

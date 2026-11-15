@@ -367,3 +367,78 @@ func TestHTTPSPoolRejectsTrustedWrongHostname() error {
     cancel()
     return nil
 }
+
+async func serveRedirect(listener own net.Listener, config own tls.ServerConfig, ctx context.Context, location string) error {
+    let accepted = listener.Accept()?
+    var conn = tls.Server(ctx, accepted, config)?
+    conn.SetReadDeadline(time.Now().Add(3 * time.Second))?
+    var request = ""
+    var one = Array<byte>{0}
+    for !strings.HasSuffix(request, "\r\n\r\n") {
+        let n = conn.Read(one[:])?
+        if n != 1 || request.len() > 4096 {
+            return error("invalid HTTPS redirect request")
+        }
+        request += string(rune(one[0]))
+    }
+    conn.Write(strings.Bytes("HTTP/1.1 302 Found\r\nLocation: " + location + "\r\nContent-Length: 0\r\n\r\n")[:])?
+    let _ = conn.Close()
+    return nil
+}
+
+func redirectCase(secondCert string, expected string) error {
+    var rootPEM = os.ReadFile("../../packages/tls/testdata/roots.pem")?
+    let extra = os.ReadFile(secondCert)?
+    for b in extra {
+        rootPEM.push(b)
+    }
+    let goodCert = os.ReadFile("../../packages/tls/testdata/server.pem")?
+    let otherCert = os.ReadFile(secondCert)?
+    let key = os.ReadFile("../../packages/tls/testdata/server-key.pem")?
+    let transport = https.NewTransport(rootPEM[:])?
+    var settings = http.DefaultClientConfig()
+    settings.Timeout = 3 * time.Second
+    settings.PollInterval = time.Millisecond
+    let client = http.NewClientWithTransport(settings, transport)?
+    let first = net.Listen("tcp4", "127.0.0.1:0")?
+    let second = net.Listen("tcp4", "127.0.0.1:0")?
+    let _, firstPort, _ = strings.Cut(first.Addr(), ":")
+    let _, secondPort, _ = strings.Cut(second.Addr(), ":")
+    first.SetDeadline(time.Now().Add(3 * time.Second))?
+    second.SetDeadline(time.Now().Add(3 * time.Second))?
+    let ctx, cancel = context.WithTimeout(context.Background(), 3 * time.Second)
+    let target = "https://localhost:" + secondPort + "/binary"
+    let redirecting = go serveRedirect(first, tls.NewServerConfig(goodCert[:], key[:])?, ctx, target)
+    let serving = go serveHTTPS(second, tls.NewServerConfig(otherCert[:], key[:])?, ctx, "localhost")
+    let empty = Array<byte>{}
+    let response, final, err = client.Follow(ctx, "GET", "https://localhost:" + firstPort + "/start", http.NewHeader(), empty[:], http.DefaultRedirectConfig())
+    let redirectErr = redirecting.wait()
+    let servingErr = serving.wait()
+    cancel()
+    var serverErr = redirectErr
+    if serverErr == nil {
+        serverErr = servingErr
+    } else {
+        _ = servingErr
+    }
+    if expected != "" {
+        _ = serverErr
+        if err == nil || !strings.Contains(errors.Message(err), expected) {
+            panic("unverified HTTPS redirect accepted")
+        }
+        return nil
+    }
+    if err != nil {
+        _ = serverErr
+        return err
+    }
+    if response.StatusCode != 200 || response.Body.len() != 3 || final != target {
+        panic("HTTPS redirect response")
+    }
+    return serverErr
+}
+
+func TestHTTPSRedirectVerifiesEveryHop() error {
+    redirectCase("../../packages/tls/testdata/server.pem", "")?
+    return redirectCase("testdata/wrong-host.pem", "does not match")
+}

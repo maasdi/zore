@@ -5,7 +5,9 @@ peers, scripted connections, one-worker progress, bounded memory and the
 download guide), streamed uploads in `codegen/http_upload.rs` (failing sources,
 limits, timeouts, bounded memory and the upload guide), connection pooling in
 `codegen/http_pool.rs` (reuse rules, limits, waiters, expiry, stale connections,
-shutdown and the pooling guide), `packages/networking.rs` and the HTTPS example
+shutdown and the pooling guide), redirects in `codegen/http_redirect.rs`
+(scripted chains, rewriting, credential removal, limits and the redirect guide),
+`packages/networking.rs` and the HTTPS example
 tests.
 
 Public networking is checked in `packages/networking.rs`,

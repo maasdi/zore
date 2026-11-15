@@ -80,6 +80,10 @@ func emptyResponseStream() ResponseStream {
 }
 
 func (c Client) Open(ctx context.Context, method string, absoluteURL string, headers Header, body []byte, config StreamConfig) (ResponseStream, error) {
+    return c.openWithin(ctx, method, absoluteURL, headers, body, config, time.Now().Add(c.config.Timeout))
+}
+
+func (c Client) openWithin(ctx context.Context, method string, absoluteURL string, headers Header, body []byte, config StreamConfig, headerDeadline time.Instant) (ResponseStream, error) {
     let settings, settingsErr = streamSettings(config)
     if settingsErr != nil {
         return emptyResponseStream(), settingsErr
@@ -96,7 +100,6 @@ func (c Client) Open(ctx context.Context, method string, absoluteURL string, hea
         return emptyResponseStream(), contextErr
     }
     let streamCtx, stops = streamContext(ctx, settings.Timeout)
-    let headerDeadline = time.Now().Add(c.config.Timeout)
     let dialCtx, stopDial = context.WithDeadline(streamCtx, headerDeadline)
     let dialGuard = clientCancellation{cancel: stopDial}
     let conn, dialErr = c.dial(dialCtx, target)

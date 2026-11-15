@@ -1,0 +1,171 @@
+package http
+
+import "std/context"
+import "std/net/url"
+import "std/strings"
+import "std/time"
+
+type RedirectConfig struct {
+    MaxRedirects int
+    AllowHTTPSDowngrade bool
+}
+
+type redirectChain struct {
+    method string
+    target string
+    headers Header
+    keepBody bool
+    hops int
+    visited Array<string>
+    config RedirectConfig
+}
+
+func DefaultRedirectConfig() RedirectConfig {
+    return RedirectConfig{MaxRedirects: 10, AllowHTTPSDowngrade: false}
+}
+
+func newRedirectChain(method string, absoluteURL string, headers Header, config RedirectConfig) (redirectChain, error) {
+    var chosen = config
+    if chosen.MaxRedirects == 0 {
+        chosen.MaxRedirects = DefaultRedirectConfig().MaxRedirects
+    }
+    var visited = Array<string>{}
+    visited.push(method + " " + absoluteURL)
+    let chain = redirectChain{method: method, target: absoluteURL, headers: clone(headers), keepBody: true, hops: 0, visited: visited, config: chosen}
+    if config.MaxRedirects < 0 {
+        return chain, error("http.Client: negative redirect configuration")
+    }
+    return chain, nil
+}
+
+func (r redirectChain) body(body []byte) []byte {
+    if r.keepBody {
+        return body
+    }
+    return body[:0]
+}
+
+func redirectStatus(status int) bool {
+    return status == 301 || status == 302 || status == 303 || status == 307 || status == 308
+}
+
+func (r mut redirectChain) next(status int, headers Header) (bool, error) {
+    if !redirectStatus(status) {
+        return false, nil
+    }
+    let locations = headers.Values("Location")
+    if locations.len() == 0 {
+        return false, nil
+    }
+    if locations.len() > 1 {
+        return false, error("http.Client: ambiguous redirect location")
+    }
+    if r.hops >= r.config.MaxRedirects {
+        return false, error("http.Client: too many redirects")
+    }
+    let current, _ = url.ParseAbsolute(r.target)
+    let resolved, resolveErr = url.ResolveReference(r.target, locations[0])
+    if resolveErr != nil {
+        _ = resolveErr
+        return false, error("http.Client: invalid redirect location")
+    }
+    let target, _, _ = strings.Cut(resolved, "#")
+    let parsed, parseErr = url.ParseAbsolute(target)
+    if parseErr != nil {
+        _ = parseErr
+        return false, error("http.Client: invalid redirect location")
+    }
+    if current.Scheme == "https" && parsed.Scheme == "http" && !r.config.AllowHTTPSDowngrade {
+        return false, error("http.Client: redirect from HTTPS to HTTP")
+    }
+    if poolKey(current) != poolKey(parsed) {
+        for name in [string; 3]{"Authorization", "Cookie", "Proxy-Authorization"} {
+            let _ = r.headers.Del(name)
+        }
+    }
+    let rewrite = status == 303 || ((status == 301 || status == 302) && r.method == "POST")
+    if rewrite && r.method != "HEAD" {
+        r.method = "GET"
+        r.keepBody = false
+        var names = Array<string>{}
+        for entry in r.headers.entries {
+            if strings.HasPrefix(strings.ToLower(entry.Name), "content-") {
+                names.push(entry.Name)
+            }
+        }
+        for name in names {
+            let _ = r.headers.Del(name)
+        }
+    }
+    let visit = r.method + " " + target
+    for seen in r.visited {
+        if seen == visit {
+            return false, error("http.Client: redirect loop")
+        }
+    }
+    r.visited.push(visit)
+    r.target = target
+    r.hops += 1
+    return true, nil
+}
+
+func (r redirectChain) stream(settings StreamConfig, started time.Instant) (StreamConfig, error) {
+    var hop = settings
+    if settings.Timeout > 0 {
+        hop.Timeout = settings.Timeout - time.Since(started)
+        if hop.Timeout <= 0 {
+            return hop, error("context deadline exceeded")
+        }
+    }
+    return hop, nil
+}
+
+func (c Client) Follow(ctx context.Context, method string, absoluteURL string, headers Header, body []byte, config RedirectConfig) (ClientResponse, string, error) {
+    var chain = newRedirectChain(method, absoluteURL, headers, config)?
+    let bounded, cancel = context.WithDeadline(ctx, time.Now().Add(c.config.Timeout))
+    let guard = clientCancellation{cancel: cancel}
+    for {
+        let response = c.Do(bounded, chain.method, chain.target, chain.headers, chain.body(body))?
+        if !chain.next(response.StatusCode, response.Headers)? {
+            return response, chain.target, nil
+        }
+    }
+}
+
+func (c Client) OpenFollow(ctx context.Context, method string, absoluteURL string, headers Header, body []byte, config StreamConfig, redirects RedirectConfig) (ResponseStream, string, error) {
+    var chain = newRedirectChain(method, absoluteURL, headers, redirects)?
+    let started = time.Now()
+    let headerDeadline = started.Add(c.config.Timeout)
+    for {
+        let hop = chain.stream(config, started)?
+        var stream = c.openWithin(ctx, chain.method, chain.target, chain.headers, chain.body(body), hop, headerDeadline)?
+        if !chain.next(stream.StatusCode(), stream.headers)? {
+            return stream, chain.target, nil
+        }
+    }
+}
+
+func (p Pool) Follow(ctx context.Context, method string, absoluteURL string, headers Header, body []byte, config RedirectConfig) (ClientResponse, string, error) {
+    var chain = newRedirectChain(method, absoluteURL, headers, config)?
+    let bounded, cancel = context.WithDeadline(ctx, time.Now().Add(p.config.Timeout))
+    let guard = clientCancellation{cancel: cancel}
+    for {
+        let response = p.Do(bounded, chain.method, chain.target, chain.headers, chain.body(body))?
+        if !chain.next(response.StatusCode, response.Headers)? {
+            return response, chain.target, nil
+        }
+    }
+}
+
+func (p Pool) OpenFollow(ctx context.Context, method string, absoluteURL string, headers Header, body []byte, config StreamConfig, redirects RedirectConfig) (ResponseStream, string, error) {
+    var chain = newRedirectChain(method, absoluteURL, headers, redirects)?
+    let started = time.Now()
+    let headerDeadline = started.Add(p.config.Timeout)
+    for {
+        let hop = chain.stream(config, started)?
+        var stream = p.openWithin(ctx, chain.method, chain.target, chain.headers, chain.body(body), hop, headerDeadline)?
+        if !chain.next(stream.StatusCode(), stream.headers)? {
+            return stream, chain.target, nil
+        }
+    }
+}

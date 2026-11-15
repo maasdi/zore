@@ -262,3 +262,74 @@ fn pooled_http_clients_reject_private_state_moved_clients_and_wrong_types() {
         super::rejects(&[("main.ore", &source)], expected);
     }
 }
+
+#[test]
+fn http_redirects_check_as_opt_in_calls() {
+    super::accepts(&[(
+        "main.ore",
+        r#"package main
+import "std/context"
+import "std/io"
+import "std/net/http"
+func fetch(client http.Client, target string, sink mut io.Writer) (string, error) {
+    var redirects = http.DefaultRedirectConfig()
+    redirects.MaxRedirects = 5
+    redirects.AllowHTTPSDowngrade = false
+    let empty = Array<byte>{}
+    let response, final = client.Follow(context.Background(), "GET", target, http.NewHeader(), empty[:], redirects)?
+    println(response.StatusCode)
+    var stream, streamed = client.OpenFollow(context.Background(), "GET", target, http.NewHeader(), empty[:], http.DefaultStreamConfig(), redirects)?
+    io.Copy(sink, stream)?
+    stream.Close()?
+    return final + streamed, nil
+}
+func pooled(pool http.Pool, target string) error {
+    let empty = Array<byte>{}
+    let _, _ = pool.Follow(context.Background(), "GET", target, http.NewHeader(), empty[:], http.DefaultRedirectConfig())?
+    var stream, _ = pool.OpenFollow(context.Background(), "GET", target, http.NewHeader(), empty[:], http.DefaultStreamConfig(), http.DefaultRedirectConfig())?
+    return stream.Close()
+}
+func main() {}
+"#,
+    )]);
+}
+
+#[test]
+fn http_redirects_reject_wrong_results_and_types() {
+    let open =
+        "let client = http.NewClient(http.DefaultClientConfig())?; let empty = Array<byte>{}";
+    for (body, expected) in [
+        (
+            format!(
+                "{open}; let _, final, _ = client.Follow(context.Background(), \"GET\", \"http://a.test/\", http.NewHeader(), empty[:], http.DefaultRedirectConfig()); let _ = final - 1"
+            ),
+            "mismatched types",
+        ),
+        (
+            format!(
+                "{open}; let _, _, _ = client.Follow(context.Background(), \"GET\", \"http://a.test/\", http.NewHeader(), empty[:], http.DefaultStreamConfig())"
+            ),
+            "mismatched types",
+        ),
+        (
+            format!(
+                "{open}; let _, _, _ = client.OpenFollow(context.Background(), \"GET\", \"http://a.test/\", http.NewHeader(), empty[:], http.DefaultRedirectConfig(), http.DefaultStreamConfig())"
+            ),
+            "mismatched types",
+        ),
+        (
+            "let _ = http.DefaultRedirectConfig().Hops".to_owned(),
+            "Hops",
+        ),
+    ] {
+        let imports = ["context", "net/http"]
+            .into_iter()
+            .filter(|path| body.contains(&format!("{}.", path.rsplit('/').next().unwrap())))
+            .map(|path| format!("import \"std/{path}\"\n"))
+            .collect::<String>();
+        let source = format!(
+            "package main\n{imports}func run() error {{ {body}; return nil }}\nfunc main() {{ let _ = run() }}\n"
+        );
+        super::rejects(&[("main.ore", &source)], expected);
+    }
+}
