@@ -1,0 +1,158 @@
+package http
+
+import "std/context"
+import "std/strconv"
+import "std/strings"
+import "std/time"
+
+type RetryConfig struct {
+    MaxAttempts int
+    Backoff time.Duration
+    MaxBackoff time.Duration
+    Timeout time.Duration
+    RetryUnsafe bool
+}
+
+func DefaultRetryConfig() RetryConfig {
+    return RetryConfig{MaxAttempts: 3, Backoff: 200 * time.Millisecond, MaxBackoff: 5 * time.Second, Timeout: 0, RetryUnsafe: false}
+}
+
+func retrySettings(config RetryConfig) (RetryConfig, error) {
+    var chosen = config
+    let defaults = DefaultRetryConfig()
+    if config.MaxAttempts < 0 || config.Backoff < 0 || config.MaxBackoff < 0 || config.Timeout < 0 {
+        return defaults, error("http.Client: negative retry configuration")
+    }
+    if chosen.MaxAttempts == 0 {
+        chosen.MaxAttempts = defaults.MaxAttempts
+    }
+    if chosen.Backoff == 0 {
+        chosen.Backoff = defaults.Backoff
+    }
+    if chosen.MaxBackoff == 0 {
+        chosen.MaxBackoff = defaults.MaxBackoff
+    }
+    return chosen, nil
+}
+
+func retrySafe(method string) bool {
+    return method == "GET" || method == "HEAD" || method == "OPTIONS" || method == "PUT" || method == "DELETE"
+}
+
+func retryStatus(status int) bool {
+    return status == 429 || status == 502 || status == 503 || status == 504
+}
+
+func retryAfter(headers Header) (time.Duration, bool) {
+    let values = headers.Values("Retry-After")
+    if values.len() != 1 {
+        return 0, false
+    }
+    let text = strings.Trim(values[0], " \t")
+    if text == "" || text.len() > 9 {
+        return 0, false
+    }
+    for var i = 0; i < text.len(); i += 1 {
+        if text[i] < 48 || text[i] > 57 {
+            return 0, false
+        }
+    }
+    let seconds, err = strconv.Atoi(text)
+    if err != nil {
+        _ = err
+        return 0, false
+    }
+    return time.Duration(seconds) * time.Second, true
+}
+
+func retryWait(ctx context.Context, wait time.Duration) error {
+    let timer = time.NewTimer(wait)
+    select {
+        case timer.C().receive() {
+            return nil
+        }
+        case ctx.Done().receive() {
+            return ctx.Err()
+        }
+    }
+}
+
+func retrying(ctx context.Context, method string, absoluteURL string, headers Header, body []byte, config RetryConfig, check func() error, send func(context.Context) (ClientResponse, error)) (ClientResponse, error) {
+    let settings = retrySettings(config)?
+    check()?
+    var bounded = ctx
+    var stop = func() {}
+    if settings.Timeout > 0 {
+        let limited, cancel = context.WithTimeout(ctx, settings.Timeout)
+        bounded = limited
+        stop = cancel
+    }
+    let guard = clientCancellation{cancel: stop}
+    var attempts = settings.MaxAttempts
+    if !settings.RetryUnsafe && !retrySafe(method) {
+        attempts = 1
+    }
+    var backoff = settings.Backoff
+    var attempt = 0
+    for {
+        attempt += 1
+        let response, err = send(bounded)
+        let ended = clientContextError(bounded)
+        if ended != nil || attempt >= attempts {
+            _ = ended
+            return response, err
+        }
+        var wait = backoff
+        if err == nil {
+            if !retryStatus(response.StatusCode) {
+                return response, nil
+            }
+            let delay, given = retryAfter(response.Headers)
+            if given {
+                if delay > settings.MaxBackoff {
+                    return response, nil
+                }
+                if delay > wait {
+                    wait = delay
+                }
+            }
+        }
+        let deadline, limited = bounded.Deadline()
+        if limited && !time.Now().Add(wait).Before(deadline) {
+            return response, err
+        }
+        let waitErr = retryWait(bounded, wait)
+        if waitErr != nil {
+            _ = err
+            return emptyClientResponse(), waitErr
+        }
+        backoff = backoff * 2
+        if backoff > settings.MaxBackoff {
+            backoff = settings.MaxBackoff
+        }
+    }
+}
+
+func (c Client) DoRetry(ctx context.Context, method string, absoluteURL string, headers Header, body []byte, config RetryConfig) (ClientResponse, error) {
+    return retrying(ctx, method, absoluteURL, headers, body, config, func() error {
+        let _, target, err = c.prepare(method, absoluteURL, headers, body)
+        if err != nil {
+            return err
+        }
+        if c.transport.len() == 0 && target.Scheme != "http" {
+            return error("http.Client: HTTPS requires verified TLS transport")
+        }
+        return nil
+    }, func(attemptCtx context.Context) (ClientResponse, error) {
+        return c.Do(attemptCtx, method, absoluteURL, headers, body)
+    })
+}
+
+func (p Pool) DoRetry(ctx context.Context, method string, absoluteURL string, headers Header, body []byte, config RetryConfig) (ClientResponse, error) {
+    return retrying(ctx, method, absoluteURL, headers, body, config, func() error {
+        let _, _, err = p.prepare(ctx, method, absoluteURL, headers, body)
+        return err
+    }, func(attemptCtx context.Context) (ClientResponse, error) {
+        return p.Do(attemptCtx, method, absoluteURL, headers, body)
+    })
+}

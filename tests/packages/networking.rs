@@ -333,3 +333,60 @@ fn http_redirects_reject_wrong_results_and_types() {
         super::rejects(&[("main.ore", &source)], expected);
     }
 }
+
+#[test]
+fn http_retries_check_as_opt_in_calls() {
+    super::accepts(&[(
+        "main.ore",
+        r#"package main
+import "std/context"
+import "std/net/http"
+import "std/time"
+func fetch(client http.Client, pool http.Pool, target string) (int, error) {
+    var config = http.DefaultRetryConfig()
+    config.MaxAttempts = 4
+    config.Backoff = 50 * time.Millisecond
+    config.MaxBackoff = time.Second
+    config.Timeout = 10 * time.Second
+    config.RetryUnsafe = false
+    let empty = Array<byte>{}
+    let response = client.DoRetry(context.Background(), "GET", target, http.NewHeader(), empty[:], config)?
+    let pooled = pool.DoRetry(context.Background(), "PUT", target, http.NewHeader(), empty[:], http.DefaultRetryConfig())?
+    return response.StatusCode + pooled.StatusCode, nil
+}
+func main() {}
+"#,
+    )]);
+}
+
+#[test]
+fn http_retries_reject_wrong_configuration_types() {
+    let open =
+        "let client = http.NewClient(http.DefaultClientConfig())?; let empty = Array<byte>{}";
+    for (body, expected) in [
+        (
+            format!(
+                "{open}; let _, _ = client.DoRetry(context.Background(), \"GET\", \"http://a.test/\", http.NewHeader(), empty[:], http.DefaultRedirectConfig())"
+            ),
+            "mismatched types",
+        ),
+        (
+            "var config = http.DefaultRetryConfig(); config.Backoff = \"slow\"".to_owned(),
+            "mismatched types",
+        ),
+        (
+            "let _ = http.DefaultRetryConfig().Jitter".to_owned(),
+            "Jitter",
+        ),
+    ] {
+        let imports = ["context", "net/http"]
+            .into_iter()
+            .filter(|path| body.contains(&format!("{}.", path.rsplit('/').next().unwrap())))
+            .map(|path| format!("import \"std/{path}\"\n"))
+            .collect::<String>();
+        let source = format!(
+            "package main\n{imports}func run() error {{ {body}; return nil }}\nfunc main() {{ let _ = run() }}\n"
+        );
+        super::rejects(&[("main.ore", &source)], expected);
+    }
+}

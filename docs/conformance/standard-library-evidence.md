@@ -110,6 +110,16 @@ text attributes. These parser assertions cover those fixed contexts, not browser
 conformance or arbitrary HTML sanitization. Template rendering remains deferred
 in [the separate decision](../design/templates.md).
 
+## HTTP retries — issue #289
+
+Locked §37.45 delivers `RetryConfig` and `DoRetry` on `Client` and `Pool`.
+[tests/codegen/http_retry.rs](../../tests/codegen/http_retry.rs) covers scripted
+retries of 429/502/503 answers and dropped connections, unretried answers, safe
+and unsafe methods, attempt counts, waits, `Retry-After`, total budgets,
+cancellation, validation that never sends, pooled retries, and the retry guide
+over real TCP. [tests/packages/networking.rs](../../tests/packages/networking.rs)
+checks the frontend API.
+
 ## HTTP redirects — issue #289
 
 Locked §37.44 delivers `RedirectConfig` and `Follow`/`OpenFollow` on `Client`

@@ -9226,8 +9226,8 @@ Future streaming, pooling and protocol policies are tracked in issue #228 and
 `docs/design/http-client.md`. Each additive slice requires its own §53 lock
 before implementation; design follow-ups are not supported client features.
 Streamed response bodies are locked in §37.41, streamed uploads in §37.42,
-pooled connections in §37.43 and opt-in redirects in §37.44; all leave this
-buffered contract unchanged.
+pooled connections in §37.43, opt-in redirects in §37.44 and opt-in retries in
+§37.45; all leave this buffered contract unchanged.
 
 This additive contract preserves the server `Request` and `ResponseWriter`.
 The client API uses ordinary waiting calls and explicit errors:
@@ -12978,6 +12978,87 @@ connections reused or closed; frontend type rejections; the redirect guide over
 real TCP; and a verified HTTPS chain and a redirect to a wrong-host server in
 `examples/https-client/`. Retries, proxies, decoding and redirects of streamed
 uploads remain excluded.
+
+## 37.45 HTTP client retries — LOCKED
+
+`std/net/http` adds opt-in retries of buffered requests. Every existing call
+sends each request once.
+
+```ore
+type RetryConfig struct {
+    MaxAttempts int
+    Backoff time.Duration
+    MaxBackoff time.Duration
+    Timeout time.Duration
+    RetryUnsafe bool
+}
+func DefaultRetryConfig() RetryConfig
+func (c Client) DoRetry(ctx context.Context, method string, absoluteURL string,
+                        headers Header, body []byte,
+                        config RetryConfig) (ClientResponse, error)
+func (p Pool) DoRetry(ctx context.Context, method string, absoluteURL string,
+                      headers Header, body []byte,
+                      config RetryConfig) (ClientResponse, error)
+```
+
+Each attempt is one `Do` of the same client or pool with the same method, URL,
+headers and body, under the rules of §37.11 or §37.43. The body is a byte slice,
+so every attempt sends the same bytes; streamed uploads and streamed responses
+are never retried. The defaults are 3 attempts in total, a first wait of 200
+milliseconds, a longest wait of 5 seconds, no total timeout and no retries of
+unsafe methods. A zero `MaxAttempts`, `Backoff` or `MaxBackoff` selects its
+default and a zero `Timeout` means no limit beyond the caller's context.
+Negative fields fail with `http.Client: negative retry configuration`.
+
+Before the first attempt the request is validated as `Do` validates it; a
+validation failure, an HTTPS URL without a transport, a closed pool or a
+context that has already ended returns that error and nothing is sent. GET,
+HEAD, OPTIONS, PUT and DELETE may be attempted up to `MaxAttempts` times; other
+methods are attempted once unless `RetryUnsafe` is true. An attempt is followed
+by another only when it failed with an error, or returned status 429, 502, 503
+or 504; every other response is returned at once. When the attempts are used up,
+the last response or error is returned unchanged. A failure may still have
+reached the server, which is why unsafe methods are not repeated by default.
+
+Before attempt *n* + 1 the call waits `Backoff` × 2^(*n* − 1), at most
+`MaxBackoff`. When a retried response has exactly one `Retry-After` field of up
+to nine decimal digits, the wait is at least that many seconds; if that is more
+than `MaxBackoff`, the response is returned without waiting. Other
+`Retry-After` forms are ignored. A positive `Timeout` bounds the whole call,
+waits included, and the caller's context bounds it too; each attempt is also
+bounded by `ClientConfig.Timeout`. When a wait would end at or after the total
+deadline, the last response or error is returned without waiting. Once the
+caller's context or the total timeout has ended, no further attempt starts and
+the last outcome is returned; cancellation during a wait returns `context
+canceled` or `context deadline exceeded`. A wait holds no task or timer after
+the call returns. Failed connections are closed by `Do` before the next attempt.
+
+Plain callers block with worker compensation and async callers use the ordinary
+API without `await`, as for §37.11.
+
+```ore
+import "std/context"
+import "std/net/http"
+
+func health(client http.Client, target string) (int, error) {
+    let empty = Array<byte>{}
+    let response = client.DoRetry(context.Background(), "GET", target,
+                                  http.NewHeader(), empty[:],
+                                  http.DefaultRetryConfig())?
+    return response.StatusCode, nil
+}
+```
+
+Compiler impact: one bundled source file; no runtime or syntax changes.
+Conformance: scripted transports for retried 502, 503 and 429 responses and
+dropped connections, unretried 404 and 500 responses, the last response and the
+last error returned, safe and unsafe methods with and without `RetryUnsafe`,
+one and five attempts, doubling waits, `Retry-After` honoured or above the cap,
+a total timeout shorter than the wait, cancellation during a wait, negative
+configuration, invalid requests, HTTPS without a transport and a closed pool
+that never send, and pooled retries; frontend type rejections; and the retry
+guide over real TCP. Retries of streamed uploads, proxies and decoding remain
+excluded.
 
 # 38. Self-Hosting Constraint
 

@@ -6,8 +6,8 @@ constraints. It is not a locked public API or evidence of implemented features.
 Each implementation must first lock its own signatures, examples, ownership,
 errors, async behavior and conformance cases under spec §53. Streamed downloads
 (#286), known-length streamed uploads (#287), bounded HTTP/1.1 pooling (#288)
-and opt-in redirects (the first #289 slice) are delivered and locked in spec
-§§37.41–37.44; the rest of this plan is still open.
+and opt-in redirects and retries (the first #289 slices) are delivered and
+locked in spec §§37.41–37.45; the rest of this plan is still open.
 
 ## Consumer priorities and delivery order
 
@@ -110,8 +110,9 @@ fail; reusing it does not authorize replay.
 
 ## Separate opt-in policies
 
-Redirects are delivered in §37.44 as `Follow` and `OpenFollow`. Retries,
-proxies and content decoding remain open.
+Redirects are delivered in §37.44 as `Follow` and `OpenFollow`, and retries of
+buffered requests in §37.45 as `DoRetry`. Proxies and content decoding remain
+open.
 
 Redirects need a finite hop budget, loop detection, relative Location resolution
 followed by strict HTTP admission, status-specific method/body rewriting and one

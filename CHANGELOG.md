@@ -8,6 +8,16 @@ including those shipped in `0.1.0-alpha.1`, are not split by release.
 
 ## [Unreleased]
 
+### HTTP retries
+
+- `DoRetry` on a `Client` or `Pool` tries a request again when the network fails
+  or the server answers 429, 502, 503 or 504 (§37.45). Other calls still send
+  each request once.
+- Only `GET`, `HEAD`, `OPTIONS`, `PUT` and `DELETE` are repeated unless
+  `RetryUnsafe` is set. `RetryConfig` sets the number of tries (3), a doubling
+  wait (200 ms up to 5 s) that respects `Retry-After`, and an optional limit for
+  the whole call. The last answer or error is returned when the tries run out.
+
 ### HTTP redirects
 
 - `Follow` and `OpenFollow` on a `Client` or `Pool` follow redirects for you and

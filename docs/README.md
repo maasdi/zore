@@ -28,6 +28,7 @@ See the [official naming rules](../spec/language-spec.md#21-naming--locked).
 | [HTTP downloads](http-downloads.md) | Streaming a large HTTP response into a file or hash: limits, timeouts, errors, trailers and cleanup. |
 | [HTTP uploads](http-uploads.md) | Sending a large file as an HTTP request body without loading it: exact sizes, limits, timeouts and early rejections. |
 | [HTTP redirects](http-redirects.md) | Following "moved" answers safely: which statuses, method changes, credential removal, HTTPS downgrades and limits. |
+| [HTTP retries](http-retries.md) | Trying a request again after a busy answer or a broken connection: which requests, which answers, waits and limits. |
 | [HTTP connection pooling](http-pooling.md) | Reusing connections for many requests to the same service: limits, waiting, reuse rules, stale connections and shutdown. |
 | [HTML escaping](html.md) | Escaping ordinary text and quoted attributes, context restrictions, and the separate template follow-up decision. |
 | [CSV files](csv.md) | Reading and writing CSV tables one record at a time, quoting rules, limits and error messages. |
@@ -57,7 +58,7 @@ These proposals were not accepted and changed nothing. They are kept for their r
 
 These documents record design directions; the specification defines the implemented contracts.
 
-- [HTTP client extension plan](design/http-client.md) (issue #228; streamed downloads, uploads, pooling and redirects delivered in §§37.41–37.44, remaining protocol policies)
+- [HTTP client extension plan](design/http-client.md) (issue #228; streamed downloads, uploads, pooling, redirects and retries delivered in §§37.41–37.45, remaining protocol policies)
 - [Template follow-up decision](design/templates.md) (issue #226; application-driven, deferred)
 - [HTTP server and URL design](proposals/http-server.md) (issue #105; implemented in §37.6)
 - [Opt-in scoped tasks](proposals/scoped-tasks.md) (Q10)
