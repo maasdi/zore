@@ -9226,8 +9226,9 @@ Future streaming, pooling and protocol policies are tracked in issue #228 and
 `docs/design/http-client.md`. Each additive slice requires its own §53 lock
 before implementation; design follow-ups are not supported client features.
 Streamed response bodies are locked in §37.41, streamed uploads in §37.42,
-pooled connections in §37.43, opt-in redirects in §37.44 and opt-in retries in
-§37.45; all leave this buffered contract unchanged.
+pooled connections in §37.43, opt-in redirects in §37.44, opt-in retries in
+§37.45 and opt-in content decoding in §37.46; all leave this buffered contract
+unchanged.
 
 This additive contract preserves the server `Request` and `ResponseWriter`.
 The client API uses ordinary waiting calls and explicit errors:
@@ -13059,6 +13060,86 @@ configuration, invalid requests, HTTPS without a transport and a closed pool
 that never send, and pooled retries; frontend type rejections; and the retry
 guide over real TCP. Retries of streamed uploads, proxies and decoding remain
 excluded.
+
+## 37.46 HTTP client content decoding — LOCKED
+
+`std/net/http` adds opt-in decoding of gzip response bodies with the
+`std/compress/gzip` reader (§37.26). Every existing call returns bodies exactly
+as received and sends no `Accept-Encoding`.
+
+```ore
+type DecodeConfig struct {
+    MaxBytes int
+    MaxRatio int
+}
+func DefaultDecodeConfig() DecodeConfig
+func (c Client) DoDecoded(ctx context.Context, method string, absoluteURL string,
+                          headers Header, body []byte,
+                          config DecodeConfig) (ClientResponse, error)
+func (p Pool) DoDecoded(ctx context.Context, method string, absoluteURL string,
+                        headers Header, body []byte,
+                        config DecodeConfig) (ClientResponse, error)
+```
+
+The defaults are 16777216 decoded bytes (16 MiB) and a ratio of 200. A zero
+field selects its default. A negative field fails with `http.Client: negative
+decode configuration`, and a `MaxBytes` above `gzip.MaxBytes` with
+`http.Client: decode limit too large`. A caller header named `Accept-Encoding`
+fails with `http.Client: client owns Accept-Encoding`. These checks happen
+before anything is sent.
+
+The call sends the request with `Do` of the same client or pool and the caller's
+headers plus `Accept-Encoding: gzip`. The encoded body is bounded by
+`ClientConfig.MaxBodyBytes` as for every `Do`, and errors from `Do` are returned
+unchanged. The response is then decoded:
+
+1. A HEAD response, an empty body, a response without `Content-Encoding` and
+   one whose single `Content-Encoding` is `identity` are returned unchanged.
+2. A single `Content-Encoding` of `gzip` or `x-gzip`, ignoring case and
+   surrounding spaces, is decoded. Any other value, a list of codings and more
+   than one field fail with `http.Client: unsupported content encoding`.
+3. The decoded body may hold at most `MaxBytes` bytes and at most `MaxRatio`
+   times the encoded length. Passing the ratio fails with `http.Client: decoded
+   body expands too much`, and passing `MaxBytes` with `http.Client: decoded
+   body too large`; the ratio is reported when it is the smaller limit. A body
+   of exactly the limit succeeds.
+4. Concatenated gzip members are decoded in order, with the member limit of
+   §37.26. Checksums and sizes are verified; truncated, corrupt or trailing data
+   fails with the gzip reader's error, such as `gzip: truncated stream` or
+   `gzip: checksum mismatch`.
+5. A decoded response carries the decoded body and the response headers
+   without `Content-Encoding` and `Content-Length`; status and other headers
+   are unchanged.
+
+On failure the call returns an empty response; no partial decoded body is
+returned. To read the representation as sent, use `Do`. Memory is bounded by
+the encoded body, the decoded limit and the gzip reader's fixed state.
+
+Plain callers block with worker compensation and async callers use the ordinary
+API without `await`, as for §37.11.
+
+```ore
+import "std/context"
+import "std/net/http"
+
+func report(client http.Client, target string) (Array<byte>, error) {
+    let empty = Array<byte>{}
+    let response = client.DoDecoded(context.Background(), "GET", target,
+                                    http.NewHeader(), empty[:],
+                                    http.DefaultDecodeConfig())?
+    return response.Body, nil
+}
+```
+
+Compiler impact: one bundled source file importing `std/compress/gzip`; no
+runtime or syntax changes. Conformance: scripted transports for gzip and x-gzip
+bodies, removed encoding headers, the sent `Accept-Encoding`, unchanged plain,
+identity, empty and HEAD responses, unsupported, listed and repeated encodings,
+concatenated members, checksum, truncation and trailing-data failures, ratio and
+size limits with the exact limit, a caller `Accept-Encoding`, negative and
+oversized configuration, `Do` staying raw, and pooled decoding; frontend type
+rejections; and the decoding guide over real TCP. Streamed decoding, other
+codings and request compression remain excluded.
 
 # 38. Self-Hosting Constraint
 

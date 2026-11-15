@@ -248,6 +248,17 @@ independent Python escaping/parser assertions. Contextual template rendering
 remains a separate application-driven decision under Q16; the primitive does
 not validate URLs or serialize JavaScript/CSS.
 
+## HTTP content decoding — issue #289
+
+Locked §37.46 delivers `DecodeConfig` and `DoDecoded` on `Client` and `Pool`.
+[tests/codegen/http_decode.rs](../../tests/codegen/http_decode.rs) covers
+scripted gzip, x-gzip, identity, plain, empty and HEAD responses, unsupported
+encodings, concatenated members, corrupt, truncated and trailing data, ratio and
+size limits, a caller `Accept-Encoding`, `Do` staying raw, pooled decoding, and
+the decoding guide over real TCP.
+[tests/packages/networking.rs](../../tests/packages/networking.rs) checks the
+frontend API.
+
 ## HTTP retries — issue #289
 
 Locked §37.45 delivers `RetryConfig` and `DoRetry` on `Client` and `Pool`.
