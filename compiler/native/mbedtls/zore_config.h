@@ -11,6 +11,7 @@
 #define MBEDTLS_SSL_TLS1_3_KEY_EXCHANGE_MODE_EPHEMERAL_ENABLED
 #define MBEDTLS_SSL_TLS1_3_COMPATIBILITY_MODE
 #define MBEDTLS_SSL_SERVER_NAME_INDICATION
+#define MBEDTLS_SSL_ALPN
 #define MBEDTLS_SSL_EXTENDED_MASTER_SECRET
 #define MBEDTLS_SSL_ENCRYPT_THEN_MAC
 /* Kept so a corrupted record gets a fatal bad_record_mac alert; it adds no protocol. */

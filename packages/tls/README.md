@@ -67,6 +67,14 @@ detection are disabled. Software AES uses secret-dependent table lookups, so
 this profile does not promise protection from hostile local cache-timing
 observers or whole-provider constant-time execution.
 
+Application protocol negotiation (ALPN) is off by default. Call
+`config.SetProtocols(names)` on a client or server configuration to list up to
+16 names in preference order, then read `conn.Protocol()` after the handshake.
+A server picks the first of its own names that the client offered; if the client
+offered names and none matches, the handshake fails. If either side has no list,
+`Protocol()` is `""`. The package only reports the agreed name; it does not
+implement HTTP/2, and the `https` transport offers no names.
+
 Configs and connections are Move values. Each session owns independent parsed
 certificates and keys, so configs can be shared by borrowing and dropped after
 session creation. Configs check the certificate/key pair once; sessions copy the

@@ -20,7 +20,7 @@ Choose small, independently testable increments rather than one client rewrite.
 | 2 | Upload a file without making a second complete copy | [#287](https://github.com/maasdi/zore/issues/287): streamed requests | Response ownership decision |
 | 3 | Repeated calls to one service with bounded connection cost | [#288](https://github.com/maasdi/zore/issues/288): HTTP/1.1 pooling | Body completion, retirement and close rules |
 | 4 | Follow artifact redirects, tolerate selected failures, use explicit proxies or decode content | [#289](https://github.com/maasdi/zore/issues/289): policy slices | Separate consumer-selected contracts and PRs |
-| Separate project | Multiplex concurrent calls over HTTP/2 | [#290](https://github.com/maasdi/zore/issues/290) | Protocol/resource model and verified TLS ALPN |
+| Separate project | Multiplex concurrent calls over HTTP/2 | [#290](https://github.com/maasdi/zore/issues/290) | [Decision 0004](../decisions/0004-http2-client.md); TLS protocol negotiation delivered |
 
 The existing `Get`, `Client.Get`, `Do` and `Exchange` retain their owned buffered
 results, limits and one-exchange connection behavior. HTTPS is already available
@@ -137,10 +137,13 @@ bounds, checksum/truncation/concatenation policy and partial-output errors.
 Reuse existing compression packages; their availability alone does not define
 HTTP negotiation or decoding policy. Each policy gets its own implementation PR.
 
-HTTP/2 remains independent: decide ALPN/fallback, cleartext policy, framing and
-HPACK limits, stream/connection concurrency and flow control, cancellation,
-GOAWAY/drain, server push, fairness and finite memory/task/socket bounds.
-Specify stream ownership and error scope before sharing a connection.
+HTTP/2 remains independent and is not implemented. Its negotiation, cleartext
+policy, framing and header compression limits, concurrency, flow control,
+cancellation, GOAWAY, server push, fairness, resource bounds, ownership and
+error scope are decided in
+[decision 0004](../decisions/0004-http2-client.md). The first slice,
+application protocol negotiation in the `tls` package, is delivered under spec
+§37.10; each later slice locks its own contract before implementation.
 
 ## Acceptance evidence for each increment
 

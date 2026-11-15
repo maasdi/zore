@@ -1,6 +1,6 @@
 package tls
 func nativeConfig(server bool, certificates []byte, key []byte, versions int) (int, error)
-func nativeSession(config int, name string) (int, error)
+func nativeSession(config int, name string, protocols []byte) (int, error)
 func nativeHandshake(handle int) (int, error)
 func nativeRead(handle int, max int) (Array<byte>, error)
 func nativeWrite(handle int, data []byte) (int, error)
@@ -11,3 +11,4 @@ func nativeStatus(handle int) (int, error)
 func nativeClose(handle int)
 func nativeSystemRoots(path string) (Array<byte>, error)
 func nativeVersion(handle int) (int, error)
+func nativeProtocol(handle int) (Array<byte>, error)

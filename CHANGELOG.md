@@ -8,6 +8,15 @@ including those shipped in `0.1.0-alpha.1`, are not split by release.
 
 ## [Unreleased]
 
+### TLS application protocol negotiation
+
+- `SetProtocols` on a `tls` client or server configuration lists application
+  protocol names (ALPN) such as `h2` and `http/1.1`, and `conn.Protocol()`
+  reports the one both sides agreed on (§37.10). Nothing is offered by default,
+  so existing programs behave as before.
+- This is the first step toward HTTP/2 (#290). HTTP/2 itself is not implemented;
+  its plan is recorded in decision 0004.
+
 ### HTTP proxies
 
 - `http.NewProxyClient(config, proxy)` sends every request through one explicit

@@ -9035,7 +9035,7 @@ ECDHE RSA/ECDSA authentication and AES-128/256-GCM only, with the extended maste
 secret extension. All fatal alerts are sent; in TLS 1.3 they are encrypted
 records. TLS 1.0/1.1, static RSA exchange, PSK and PSK key exchange modes, 0-RTT
 early data, session tickets and resumption, KeyUpdate, DTLS, renegotiation,
-client certificates, ALPN, and certificate automation are excluded. A TLS 1.3
+client certificates, and certificate automation are excluded. A TLS 1.3
 NewSessionTicket from a peer is ignored; a peer KeyUpdate fails the connection. Provider defaults never bypass peer verification.
 Trust roots default to the platform's, like Go: `DefaultClientConfig` trusts
 the system roots, and explicit roots override them. `NewClientConfig` trusts
@@ -9070,7 +9070,33 @@ This does not promise erasure of caller-owned input buffers.
 | `(c mut Conn) Read(buf mut []byte) (int, error)` | Drains pending output, then reads authenticated plaintext; empty buffers read no plaintext; clean close-notify is EOF, transport truncation is an error |
 | `(c mut Conn) Write(data []byte) (int, error)` | Sends all plaintext as records of at most 16 KiB, reporting accepted plaintext count even on later transport failure |
 | `(c mut Conn) SetDeadline(t time.Instant) error`, `SetReadDeadline(t time.Instant) error`, `SetWriteDeadline(t time.Instant) error`, `ClearDeadline() error` | Deadlines are `time.Instant` values (§37.3); `ClearDeadline` removes both |
+| `(c mut ClientConfig) SetProtocols(protocols []string) error`, `(c mut ServerConfig) SetProtocols(protocols []string) error` | Sets the application protocol names (ALPN) used by connections created afterwards, in preference order; an empty list, the default, disables negotiation |
+| `(c Conn) Protocol() string` | The negotiated application protocol name, or `""` when none was negotiated |
 | `(c own Conn) Close() error` | Attempts close-notify within the write deadline, then releases both owners |
+
+Application protocol negotiation is off unless `SetProtocols` is called. A list
+holds at most 16 distinct names of printable ASCII without spaces, each 1 to 255
+bytes and at most 255 bytes in total including one length byte per name;
+otherwise `SetProtocols` returns `tls: too many application protocols`,
+`tls: invalid application protocol` or `tls: duplicate application protocol` and
+leaves the configuration unchanged. A client offers its names. A server with a
+list picks the first of its own names that the client offered; when the client
+offered names and none matches, the server sends the `no_application_protocol`
+alert and the handshake fails. When either side has no list, the handshake
+succeeds and `Protocol` returns `""` on both sides. A client fails the handshake
+if the server answers with a name that was not offered. The package only reports
+the name: it does not implement HTTP/2 or any other protocol, and the `tls/https`
+transport does not offer names.
+
+```ore
+var config = tls.DefaultClientConfig()?
+let names = Array<string>{"h2", "http/1.1"}
+config.SetProtocols(names[:])?
+let conn = tls.DialContext(ctx, "example.test:443", "example.test", config)?
+if conn.Protocol() == "h2" {
+    println("the server agreed to h2")
+}
+```
 
 Configuration and connection values are Move resources with private state;
 zero values are closed, fail operations, and are safe to drop. A connection owns

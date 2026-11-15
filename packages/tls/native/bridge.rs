@@ -21,6 +21,8 @@ unsafe extern "C" {
     fn zore_tls_session(
         config: *mut c_void,
         name: *const c_char,
+        protocols: *const u8,
+        protocols_len: usize,
         error: *mut c_char,
     ) -> *mut c_void;
     fn zore_tls_session_free(session: *mut c_void);
@@ -43,6 +45,7 @@ unsafe extern "C" {
     fn zore_tls_output(session: *mut c_void, data: *mut u8) -> i32;
     fn zore_tls_status(session: *mut c_void) -> i32;
     fn zore_tls_version(session: *mut c_void) -> i32;
+    fn zore_tls_protocol(session: *mut c_void, data: *mut u8) -> i32;
     fn zore_tls_shutdown(session: *mut c_void, error: *mut c_char) -> i32;
     fn zore_tls_system_roots(
         path: *const c_char,
@@ -203,10 +206,13 @@ pub unsafe extern "C" fn zore_native_tls_native_session(
     token: i64,
     name: *const u8,
     name_len: i64,
+    protocols: *const u8,
+    protocols_len: i64,
 ) {
     let _blocking = super::scheduler::BlockingGuard::enter();
     let result = (|| {
         let name = unsafe { input(name, name_len, 253) }?;
+        let protocols = unsafe { input(protocols, protocols_len, 255) }?;
         let name = CString::new(name).map_err(|_| "TLS hostname contains NUL")?;
         let state = state(token)?;
         let config = {
@@ -222,7 +228,13 @@ pub unsafe extern "C" fn zore_native_tls_native_session(
         let pointer = {
             let _provider = provider();
             NonNull::new(unsafe {
-                zore_tls_session(config.as_ptr(), name.as_ptr(), error.as_mut_ptr())
+                zore_tls_session(
+                    config.as_ptr(),
+                    name.as_ptr(),
+                    protocols.as_ptr(),
+                    protocols.len(),
+                    error.as_mut_ptr(),
+                )
             })
         }
         .ok_or_else(|| message(&error))?;
@@ -323,6 +335,19 @@ pub extern "C" fn zore_native_tls_native_close(token: i64) {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn zore_native_tls_native_version(out: *mut ValueError, token: i64) {
     unsafe { out.write(value(operation(token, |p, _| zore_tls_version(p)))) };
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn zore_native_tls_native_protocol(out: *mut ByteArrayError, token: i64) {
+    let mut data = vec![0; 255];
+    let result = operation(token, |p, _| unsafe {
+        zore_tls_protocol(p, data.as_mut_ptr())
+    })
+    .map(|count| {
+        data.truncate(count as usize);
+        data
+    });
+    unsafe { out.write(ByteArrayError::from_bytes(result)) };
 }
 
 #[unsafe(no_mangle)]

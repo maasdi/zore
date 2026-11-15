@@ -9,10 +9,12 @@ import "std/strings"
 
 type ClientConfig struct {
     handle int
+    protocols Array<byte>
 }
 
 type ServerConfig struct {
     handle int
+    protocols Array<byte>
 }
 
 type dialResult struct {
@@ -34,6 +36,7 @@ type Conn struct {
     output Array<byte>
     outputPosition int
     input Array<byte>
+    protocol string
 }
 
 func (c mut ClientConfig) drop() {
@@ -61,7 +64,7 @@ func zeros(size int) Array<byte> {
 }
 
 func wrap(source own net.Conn, handle int, ctx context.Context) Conn {
-    return Conn{source: source, handle: handle, ctx: ctx, established: false, readDeadline: time.Now(), writeDeadline: time.Now(), readLimited: false, writeLimited: false, failed: false, peerClosed: false, output: Array<byte>{}, outputPosition: 0, input: Array<byte>{}}
+    return Conn{source: source, handle: handle, ctx: ctx, established: false, readDeadline: time.Now(), writeDeadline: time.Now(), readLimited: false, writeLimited: false, failed: false, peerClosed: false, output: Array<byte>{}, outputPosition: 0, input: Array<byte>{}, protocol: ""}
 }
 
 func SystemRoots() (Array<byte>, error) {
@@ -75,7 +78,7 @@ func DefaultClientConfig() (ClientConfig, error) {
     let roots, rootsErr = SystemRoots()
     _ = rootsErr
     if rootsErr != nil {
-        return ClientConfig{handle: 0}, errors.Wrap(rootsErr, "tls.DefaultClientConfig")
+        return ClientConfig{handle: 0, protocols: Array<byte>{}}, errors.Wrap(rootsErr, "tls.DefaultClientConfig")
     }
     let config, configErr = NewClientConfig(roots[:])
     _ = configErr
@@ -86,13 +89,55 @@ func NewClientConfig(rootsPEM []byte) (ClientConfig, error) {
     let empty = Array<byte>{}
     let handle, err = nativeConfig(false, rootsPEM, empty[:], 0)
     _ = err
-    return ClientConfig{handle: handle}, errors.Wrap(err, "tls.NewClientConfig")
+    return ClientConfig{handle: handle, protocols: Array<byte>{}}, errors.Wrap(err, "tls.NewClientConfig")
 }
 
 func NewServerConfig(chainPEM []byte, keyPEM []byte) (ServerConfig, error) {
     let handle, err = nativeConfig(true, chainPEM, keyPEM, 0)
     _ = err
-    return ServerConfig{handle: handle}, errors.Wrap(err, "tls.NewServerConfig")
+    return ServerConfig{handle: handle, protocols: Array<byte>{}}, errors.Wrap(err, "tls.NewServerConfig")
+}
+
+func protocolList(protocols []string) (Array<byte>, error) {
+    var list = Array<byte>{}
+    if protocols.len() > 16 {
+        return list, error("tls: too many application protocols")
+    }
+    for i, name in protocols {
+        let bytes = strings.Bytes(name)
+        if bytes.len() == 0 || list.len() + bytes.len() + 1 > 255 {
+            return Array<byte>{}, error("tls: invalid application protocol")
+        }
+        for b in bytes {
+            if b < 33 || b > 126 {
+                return Array<byte>{}, error("tls: invalid application protocol")
+            }
+        }
+        for var j = 0; j < i; j += 1 {
+            if protocols[j] == name {
+                return Array<byte>{}, error("tls: duplicate application protocol")
+            }
+        }
+        list.push(byte(bytes.len()))
+        for b in bytes {
+            list.push(b)
+        }
+    }
+    return list, nil
+}
+
+func (c mut ClientConfig) SetProtocols(protocols []string) error {
+    c.protocols = protocolList(protocols)?
+    return nil
+}
+
+func (c mut ServerConfig) SetProtocols(protocols []string) error {
+    c.protocols = protocolList(protocols)?
+    return nil
+}
+
+func (c Conn) Protocol() string {
+    return c.protocol
 }
 
 func validName(name string) bool {
@@ -282,7 +327,7 @@ func Client(ctx context.Context, source own net.Conn, serverName string, config 
     if !validServerName(name) {
         return emptyConn(), error("tls.Client: DNS name or IP address required")
     }
-    let handle, err = nativeSession(config.handle, name)
+    let handle, err = nativeSession(config.handle, name, config.protocols[:])
     _ = err
     if err != nil {
         return emptyConn(), errors.Wrap(err, "tls.Client")
@@ -291,7 +336,7 @@ func Client(ctx context.Context, source own net.Conn, serverName string, config 
 }
 
 func Server(ctx context.Context, source own net.Conn, config ServerConfig) (Conn, error) {
-    let handle, err = nativeSession(config.handle, "")
+    let handle, err = nativeSession(config.handle, "", config.protocols[:])
     _ = err
     if err != nil {
         return emptyConn(), errors.Wrap(err, "tls.Server")
@@ -318,6 +363,17 @@ func handshake(conn own Conn) (Conn, error) {
             return emptyConn(), flushErr
         }
         if status == 1 {
+            let name, nameErr = nativeProtocol(c.handle)
+            _ = nameErr
+            if nameErr != nil {
+                return emptyConn(), errors.Wrap(nameErr, "tls.Handshake")
+            }
+            let protocol, textErr = strings.FromBytes(name[:])
+            _ = textErr
+            if textErr != nil {
+                return emptyConn(), error("tls.Handshake: invalid application protocol")
+            }
+            c.protocol = protocol
             c.established = true;
             return c, nil
         }
