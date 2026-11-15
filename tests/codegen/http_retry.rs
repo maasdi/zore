@@ -121,6 +121,7 @@ func run() error {
 
     var budget = quick()
     budget.Backoff = 200 * time.Millisecond
+    budget.MaxBackoff = 200 * time.Millisecond
     budget.Timeout = 50 * time.Millisecond
     let budgetStart = time.Now()
     check(call(client, "GET", "/down", budget)? == 503 && count(seen, "GET /down") == 1 && time.Since(budgetStart) < 150 * time.Millisecond, "no wait past the total budget")
@@ -149,8 +150,14 @@ func run() error {
     let pooled = pool.DoRetry(context.Background(), "GET", "https://a.test/flaky", http.NewHeader(), empty[:], quick())?
     check(pooled.StatusCode == 200 && count(seen, "GET /flaky") == 3 && pool.Stats().Active == 0, "pooled retries")
     pool.Close()
+    let closedStart = time.Now()
     let _, closedErr = pool.DoRetry(context.Background(), "GET", "https://a.test/flaky", http.NewHeader(), empty[:], quick())
-    check(failure(closedErr) == "http.Pool: closed" && count(seen, "GET /flaky") == 0, "closed pool never sends")
+    check(failure(closedErr) == "http.Pool: closed" && count(seen, "GET /flaky") == 0 && time.Since(closedStart) < 10 * time.Millisecond, "closed pool fails before any wait")
+    var capped = quick()
+    capped.Backoff = 10 * time.Second
+    capped.MaxBackoff = 30 * time.Millisecond
+    let cappedStart = time.Now()
+    check(call(client, "GET", "/flaky", capped)? == 200 && time.Since(cappedStart) < time.Second && count(seen, "GET /flaky") == 3, "first wait capped")
     return nil
 }
 func main() {

@@ -57,9 +57,9 @@ because you know the server can cope with a repeat.
 `RetryConfig` controls the tries:
 
 - `MaxAttempts` (3) is the total number of tries, the first one included.
-- `Backoff` (200 ms) is the first wait; it doubles after every try, up to
-  `MaxBackoff` (5 seconds).
-- When a 429 or 503 answer says `Retry-After: <seconds>`, the client waits at
+- `Backoff` (200 ms) is the first wait; it doubles after every try. No wait is
+  longer than `MaxBackoff` (5 seconds).
+- When a retried answer says `Retry-After: <seconds>`, the client waits at
   least that long. If the server asks for more than `MaxBackoff`, the answer is
   returned to you instead of waiting.
 - `Timeout`, when set, limits the whole call, waits included. The client never

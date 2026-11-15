@@ -77,7 +77,7 @@ func retryWait(ctx context.Context, wait time.Duration) error {
     }
 }
 
-func retrying(ctx context.Context, method string, absoluteURL string, headers Header, body []byte, config RetryConfig, check func() error, send func(context.Context) (ClientResponse, error)) (ClientResponse, error) {
+func retrying(ctx context.Context, method string, config RetryConfig, check func() error, send func(context.Context) (ClientResponse, error)) (ClientResponse, error) {
     let settings = retrySettings(config)?
     check()?
     var bounded = ctx
@@ -93,6 +93,9 @@ func retrying(ctx context.Context, method string, absoluteURL string, headers He
         attempts = 1
     }
     var backoff = settings.Backoff
+    if backoff > settings.MaxBackoff {
+        backoff = settings.MaxBackoff
+    }
     var attempt = 0
     for {
         attempt += 1
@@ -126,32 +129,36 @@ func retrying(ctx context.Context, method string, absoluteURL string, headers He
             _ = err
             return emptyClientResponse(), waitErr
         }
-        backoff = backoff * 2
-        if backoff > settings.MaxBackoff {
+        if backoff > settings.MaxBackoff / 2 {
             backoff = settings.MaxBackoff
+        } else {
+            backoff = backoff * 2
         }
     }
 }
 
 func (c Client) DoRetry(ctx context.Context, method string, absoluteURL string, headers Header, body []byte, config RetryConfig) (ClientResponse, error) {
-    return retrying(ctx, method, absoluteURL, headers, body, config, func() error {
-        let _, target, err = c.prepare(method, absoluteURL, headers, body)
-        if err != nil {
-            return err
-        }
-        if c.transport.len() == 0 && target.Scheme != "http" {
-            return error("http.Client: HTTPS requires verified TLS transport")
-        }
-        return nil
+    return retrying(ctx, method, config, func() error {
+        let _, _, err = c.admit(ctx, method, absoluteURL, headers, body)
+        return err
     }, func(attemptCtx context.Context) (ClientResponse, error) {
         return c.Do(attemptCtx, method, absoluteURL, headers, body)
     })
 }
 
 func (p Pool) DoRetry(ctx context.Context, method string, absoluteURL string, headers Header, body []byte, config RetryConfig) (ClientResponse, error) {
-    return retrying(ctx, method, absoluteURL, headers, body, config, func() error {
+    return retrying(ctx, method, config, func() error {
         let _, _, err = p.prepare(ctx, method, absoluteURL, headers, body)
-        return err
+        if err != nil {
+            return err
+        }
+        let closed = p.state.withLock(func(s mut poolState) bool {
+            return s.closed
+        })
+        if closed {
+            return error("http.Pool: closed")
+        }
+        return nil
     }, func(attemptCtx context.Context) (ClientResponse, error) {
         return p.Do(attemptCtx, method, absoluteURL, headers, body)
     })
