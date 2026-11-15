@@ -10,8 +10,9 @@ shutdown and the pooling guide), redirects in `codegen/http_redirect.rs`
 retries in `codegen/http_retry.rs` (retried and returned outcomes, methods,
 waits, budgets and the retry guide), gzip decoding in `codegen/http_decode.rs`
 (encodings, broken data, size and ratio limits and the decoding guide),
-`packages/networking.rs` and the HTTPS example
-tests.
+proxies in `codegen/http_proxy.rs` (absolute-form requests, CONNECT tunnels,
+credentials and the proxy guide), `packages/networking.rs` and the HTTPS
+example tests.
 
 Public networking is checked in `packages/networking.rs`,
 `codegen/networking.rs` and runtime UDP tests.

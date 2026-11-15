@@ -116,7 +116,10 @@ These are protocol examples. For HTTPS with the standard HTTP client, import
 `http.Client` that trusts the system roots and verifies each URL's hostname, and
 `https.NewClient(rootsPEM, ...)` does the same with only the given roots.
 `https.NewDefaultTransport()` and `https.NewTransport(rootsPEM)` supply the same
-transports for `http.NewClientWithTransport`. It is ordinary Zore source layered on `tls`, so
+transports for `http.NewClientWithTransport`. `https.NewProxyClient(rootsPEM, config, proxy)`
+reaches HTTPS servers through an explicit HTTP proxy: the transport's `Tunnel` method
+verifies the target server over the proxy's CONNECT tunnel exactly as a direct dial
+would. It is ordinary Zore source layered on `tls`, so
 the `tls` package itself does not import HTTP.
 
 Conformance uses local certificates, public test keys and loopback sockets;

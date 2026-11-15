@@ -443,3 +443,50 @@ fn http_decoding_rejects_wrong_configuration_types() {
         super::rejects(&[("main.ore", &source)], expected);
     }
 }
+
+#[test]
+fn http_proxies_check_as_explicit_clients() {
+    super::accepts(&[(
+        "main.ore",
+        r#"package main
+import "std/context"
+import "std/net"
+import "std/net/http"
+import "std/net/url"
+type Tunnel struct {}
+func (t Tunnel) Tunnel(ctx context.Context, conn own net.Conn, target url.AbsoluteURL) (http.ClientConn, error) {
+    return conn, nil
+}
+func fetch(target string) (int, error) {
+    let proxy = http.ProxyConfig{URL: "http://proxy.test:3128/", Authorization: "Basic eDp5"}
+    let plain = http.NewProxyClient(http.DefaultClientConfig(), proxy)?
+    let tunneled = http.NewProxyClientWithTunnel(http.DefaultClientConfig(), proxy, Tunnel{})?
+    let empty = Array<byte>{}
+    let response = plain.Do(context.Background(), "GET", target, http.NewHeader(), empty[:])?
+    let secure = tunneled.Do(context.Background(), "GET", target, http.NewHeader(), empty[:])?
+    return response.StatusCode + secure.StatusCode, nil
+}
+func main() {}
+"#,
+    )]);
+}
+
+#[test]
+fn http_proxies_reject_wrong_tunnels_and_types() {
+    for (body, expected) in [
+        (
+            "let _, _ = http.NewProxyClient(http.DefaultClientConfig(), \"http://proxy.test/\")".to_owned(),
+            "mismatched types",
+        ),
+        (
+            "let _, _ = http.NewProxyClientWithTunnel(http.DefaultClientConfig(), http.ProxyConfig{URL: \"\", Authorization: \"\"}, 5)".to_owned(),
+            "expected `http.ClientTunnel`",
+        ),
+        ("let _ = http.ProxyConfig{URL: \"\", Authorization: \"\"}.Password".to_owned(), "Password"),
+    ] {
+        let source = format!(
+            "package main\nimport \"std/net/http\"\nfunc run() error {{ {body}; return nil }}\nfunc main() {{ let _ = run() }}\n"
+        );
+        super::rejects(&[("main.ore", &source)], expected);
+    }
+}

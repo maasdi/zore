@@ -1,6 +1,7 @@
 package https
 
 import "std/context"
+import "std/net"
 import "std/net/http"
 import "std/net/url"
 import "std/time"
@@ -34,6 +35,11 @@ func NewClient(rootsPEM []byte, config http.ClientConfig) (http.Client, error) {
     return http.NewClientWithTransport(config, transport)
 }
 
+func NewProxyClient(rootsPEM []byte, config http.ClientConfig, proxy http.ProxyConfig) (http.Client, error) {
+    let transport = NewTransport(rootsPEM)?
+    return http.NewProxyClientWithTunnel(config, proxy, transport)
+}
+
 func requireHTTPS(target url.AbsoluteURL) error {
     if target.Scheme != "https" {
         return error("https.Transport: requires an https URL")
@@ -44,6 +50,12 @@ func requireHTTPS(target url.AbsoluteURL) error {
 func (t Transport) Dial(ctx context.Context, target url.AbsoluteURL) (http.ClientConn, error) {
     requireHTTPS(target)?
     let source = tls.DialContext(ctx, target.Address, target.Hostname, t.config)?
+    return conn{source: source}, nil
+}
+
+func (t Transport) Tunnel(ctx context.Context, raw own net.Conn, target url.AbsoluteURL) (http.ClientConn, error) {
+    requireHTTPS(target)?
+    let source = tls.Client(ctx, raw, target.Hostname, t.config)?
     return conn{source: source}, nil
 }
 

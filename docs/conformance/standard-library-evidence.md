@@ -110,6 +110,19 @@ text attributes. These parser assertions cover those fixed contexts, not browser
 conformance or arbitrary HTML sanitization. Template rendering remains deferred
 in [the separate decision](../design/templates.md).
 
+## HTTP proxies — issue #289
+
+Locked §37.47 delivers `ProxyConfig`, `ClientTunnel`, `NewProxyClient` and
+`NewProxyClientWithTunnel`, and `https.NewProxyClient` in the bundled TLS
+package. [tests/codegen/http_proxy.rs](../../tests/codegen/http_proxy.rs)
+covers a loopback proxy for absolute-form requests, CONNECT tunnels, credentials
+sent only to the proxy, a refused tunnel, pooled reuse and invalid
+configuration, and the proxy guide.
+[tests/packages/networking.rs](../../tests/packages/networking.rs) checks the
+frontend API, and `TestHTTPSProxyTunnelVerifiesTheTarget` in
+[examples/https-client/https_test.ore](../../examples/https-client/https_test.ore)
+sends verified HTTPS through a relaying proxy and rejects a wrong host.
+
 ## HTTP content decoding — issue #289
 
 Locked §37.46 delivers `DecodeConfig` and `DoDecoded` on `Client` and `Pool`.

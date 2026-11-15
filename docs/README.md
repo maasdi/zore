@@ -29,6 +29,7 @@ See the [official naming rules](../spec/language-spec.md#21-naming--locked).
 | [HTTP uploads](http-uploads.md) | Sending a large file as an HTTP request body without loading it: exact sizes, limits, timeouts and early rejections. |
 | [HTTP redirects](http-redirects.md) | Following "moved" answers safely: which statuses, method changes, credential removal, HTTPS downgrades and limits. |
 | [HTTP content decoding](http-decoding.md) | Unpacking gzip answers safely: what is decoded, header changes, broken data and size limits. |
+| [HTTP proxies](http-proxies.md) | Sending requests through an explicit proxy: plain and HTTPS tunnels, the proxy's password and errors. |
 | [HTTP retries](http-retries.md) | Trying a request again after a busy answer or a broken connection: which requests, which answers, waits and limits. |
 | [HTTP connection pooling](http-pooling.md) | Reusing connections for many requests to the same service: limits, waiting, reuse rules, stale connections and shutdown. |
 | [HTML escaping](html.md) | Escaping ordinary text and quoted attributes, context restrictions, and the separate template follow-up decision. |
@@ -59,7 +60,7 @@ These proposals were not accepted and changed nothing. They are kept for their r
 
 These documents record design directions; the specification defines the implemented contracts.
 
-- [HTTP client extension plan](design/http-client.md) (issue #228; streamed downloads, uploads, pooling, redirects, retries and decoding delivered in §§37.41–37.46, proxies and HTTP/2)
+- [HTTP client extension plan](design/http-client.md) (issue #228; streamed downloads, uploads, pooling, redirects, retries, decoding and proxies delivered in §§37.41–37.47, HTTP/2 open)
 - [Template follow-up decision](design/templates.md) (issue #226; application-driven, deferred)
 - [HTTP server and URL design](proposals/http-server.md) (issue #105; implemented in §37.6)
 - [Opt-in scoped tasks](proposals/scoped-tasks.md) (Q10)

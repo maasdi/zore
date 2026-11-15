@@ -49,7 +49,7 @@ func (c Client) Upload(ctx context.Context, method string, absoluteURL string, h
     if preparationErr != nil {
         return emptyClientResponse(), preparationErr
     }
-    if c.transport.len() == 0 && target.Scheme != "http" {
+    if !c.verifies() && target.Scheme != "http" {
         return emptyClientResponse(), error("http.Client: HTTPS requires verified TLS transport")
     }
     let contextErr = clientContextError(ctx)
@@ -72,7 +72,7 @@ func (c Client) UploadExchange(ctx context.Context, conn own ClientConn, method 
     if settingsErr != nil {
         return emptyClientResponse(), settingsErr
     }
-    let output, _, preparationErr = c.prepareLength(method, absoluteURL, headers, body.length, settings.MaxBodyBytes)
+    let output, _, preparationErr = c.prepareDirect(method, absoluteURL, headers, body.length, settings.MaxBodyBytes)
     if preparationErr != nil {
         return emptyClientResponse(), preparationErr
     }

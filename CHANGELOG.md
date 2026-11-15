@@ -8,6 +8,16 @@ including those shipped in `0.1.0-alpha.1`, are not split by release.
 
 ## [Unreleased]
 
+### HTTP proxies
+
+- `http.NewProxyClient(config, proxy)` sends every request through one explicit
+  HTTP proxy (§37.47); nothing is read from environment variables. For `https`
+  addresses, `https.NewProxyClient` opens a CONNECT tunnel and checks the real
+  server's certificate through it, so the proxy cannot read the traffic.
+- The proxy's `Authorization` value is sent only to the proxy, never inside an
+  HTTPS tunnel, and a client without TLS refuses `https` addresses instead of
+  falling back to an unchecked connection.
+
 ### HTTP content decoding
 
 - `DoDecoded` on a `Client` or `Pool` asks for gzip and unpacks the answer
