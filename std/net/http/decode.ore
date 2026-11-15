@@ -1,0 +1,129 @@
+package http
+
+import "std/compress/gzip"
+import "std/context"
+import "std/io"
+import "std/strings"
+
+type DecodeConfig struct {
+    MaxBytes int
+    MaxRatio int
+}
+
+type encodedBody struct {
+    data Array<byte>
+    position int
+}
+
+func (b mut encodedBody) Read(buf mut []byte) (int, error) {
+    if b.position == b.data.len() {
+        return 0, io.EOF
+    }
+    var count = b.data.len() - b.position
+    if count > buf.len() {
+        count = buf.len()
+    }
+    for var i = 0; i < count; i += 1 {
+        buf[i] = b.data[b.position + i]
+    }
+    b.position += count
+    return count, nil
+}
+
+func DefaultDecodeConfig() DecodeConfig {
+    return DecodeConfig{MaxBytes: 16777216, MaxRatio: 200}
+}
+
+func decodeSettings(config DecodeConfig) (DecodeConfig, error) {
+    let defaults = DefaultDecodeConfig()
+    if config.MaxBytes < 0 || config.MaxRatio < 0 {
+        return defaults, error("http.Client: negative decode configuration")
+    }
+    if config.MaxBytes > gzip.MaxBytes {
+        return defaults, error("http.Client: decode limit too large")
+    }
+    var chosen = config
+    if chosen.MaxBytes == 0 {
+        chosen.MaxBytes = defaults.MaxBytes
+    }
+    if chosen.MaxRatio == 0 {
+        chosen.MaxRatio = defaults.MaxRatio
+    }
+    return chosen, nil
+}
+
+func decodeHeaders(headers Header) (Header, error) {
+    if headers.Values("Accept-Encoding").len() != 0 {
+        return NewHeader(), error("http.Client: client owns Accept-Encoding")
+    }
+    var request = clone(headers)
+    request.Add("Accept-Encoding", "gzip")?
+    return request, nil
+}
+
+func Decode(ctx context.Context, response own ClientResponse, config DecodeConfig) (ClientResponse, error) {
+    let settings = decodeSettings(config)?
+    var result = response
+    let encodings = result.Headers.Values("Content-Encoding")
+    if encodings.len() == 0 || result.Body.len() == 0 || result.StatusCode == 206 {
+        return result, nil
+    }
+    let encoding = strings.ToLower(strings.Trim(encodings[0], " \t"))
+    if encodings.len() > 1 || (encoding != "gzip" && encoding != "x-gzip" && encoding != "identity") {
+        return emptyClientResponse(), error("http.Client: unsupported content encoding")
+    }
+    if encoding == "identity" {
+        return result, nil
+    }
+    let encodedLength = result.Body.len()
+    if encodedLength > gzip.MaxBytes {
+        return emptyClientResponse(), error("http.Client: encoded body too large to decode")
+    }
+    var limit = settings.MaxBytes
+    if encodedLength <= limit / settings.MaxRatio {
+        limit = encodedLength * settings.MaxRatio
+    }
+    var reader = gzip.NewReader(encodedBody{data: result.Body, position: 0}, encodedLength, limit)?
+    var decoded = Array<byte>{}
+    var buf = Array<byte>{}
+    for buf.len() < 4096 {
+        buf.push(0)
+    }
+    for {
+        clientContextError(ctx)?
+        let n, err = reader.Read(buf[:])
+        for var i = 0; i < n; i += 1 {
+            decoded.push(buf[i])
+        }
+        if err == io.EOF {
+            break
+        }
+        if err == error("gzip: output byte limit exceeded") {
+            _ = err
+            if limit < settings.MaxBytes {
+                return emptyClientResponse(), error("http.Client: decoded body expands too much")
+            }
+            return emptyClientResponse(), error("http.Client: decoded body too large")
+        }
+        if err != nil {
+            return emptyClientResponse(), err
+        }
+    }
+    let _ = result.Headers.Del("Content-Encoding")
+    let _ = result.Headers.Del("Content-Length")
+    return ClientResponse{StatusCode: result.StatusCode, Headers: result.Headers, Body: decoded}, nil
+}
+
+func (c Client) DoDecoded(ctx context.Context, method string, absoluteURL string, headers Header, body []byte, config DecodeConfig) (ClientResponse, error) {
+    decodeSettings(config)?
+    let request = decodeHeaders(headers)?
+    let response = c.Do(ctx, method, absoluteURL, request, body)?
+    return Decode(ctx, response, config)
+}
+
+func (p Pool) DoDecoded(ctx context.Context, method string, absoluteURL string, headers Header, body []byte, config DecodeConfig) (ClientResponse, error) {
+    decodeSettings(config)?
+    let request = decodeHeaders(headers)?
+    let response = p.Do(ctx, method, absoluteURL, request, body)?
+    return Decode(ctx, response, config)
+}

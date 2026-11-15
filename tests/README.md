@@ -8,7 +8,8 @@ limits, timeouts, bounded memory and the upload guide), connection pooling in
 shutdown and the pooling guide), redirects in `codegen/http_redirect.rs`
 (scripted chains, rewriting, credential removal, limits and the redirect guide),
 retries in `codegen/http_retry.rs` (retried and returned outcomes, methods,
-waits, budgets and the retry guide),
+waits, budgets and the retry guide), gzip decoding in `codegen/http_decode.rs`
+(encodings, broken data, size and ratio limits and the decoding guide),
 `packages/networking.rs` and the HTTPS example
 tests.
 
