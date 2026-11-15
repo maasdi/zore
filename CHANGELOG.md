@@ -11,7 +11,8 @@ including those shipped in `0.1.0-alpha.1`, are not split by release.
 ### HTTP content decoding
 
 - `DoDecoded` on a `Client` or `Pool` asks for gzip and unpacks the answer
-  (§37.46). Other calls return bodies exactly as received.
+  (§37.46), and `http.Decode` unpacks the answer of any other call, such as
+  `Follow`. Other calls return bodies exactly as received.
 - The unpacked size is limited (16 MiB) and so is how much it may grow (200
   times), so a small download cannot expand without bound. Other encodings,
   broken gzip data and extra bytes are clear errors; `Content-Encoding` and

@@ -53,20 +53,19 @@ func decodeSettings(config DecodeConfig) (DecodeConfig, error) {
 }
 
 func decodeHeaders(headers Header) (Header, error) {
-    for entry in headers.entries {
-        if asciiEqual(entry.Name, "Accept-Encoding") {
-            return NewHeader(), error("http.Client: client owns Accept-Encoding")
-        }
+    if headers.Values("Accept-Encoding").len() != 0 {
+        return NewHeader(), error("http.Client: client owns Accept-Encoding")
     }
     var request = clone(headers)
-    request.entries.push(HeaderEntry{Name: "Accept-Encoding", Value: "gzip"})
+    request.Add("Accept-Encoding", "gzip")?
     return request, nil
 }
 
-func decodeResponse(response own ClientResponse, method string, settings DecodeConfig) (ClientResponse, error) {
+func Decode(ctx context.Context, response own ClientResponse, config DecodeConfig) (ClientResponse, error) {
+    let settings = decodeSettings(config)?
     var result = response
     let encodings = result.Headers.Values("Content-Encoding")
-    if encodings.len() == 0 || method == "HEAD" || result.Body.len() == 0 {
+    if encodings.len() == 0 || result.Body.len() == 0 || result.StatusCode == 206 {
         return result, nil
     }
     let encoding = strings.ToLower(strings.Trim(encodings[0], " \t"))
@@ -77,17 +76,21 @@ func decodeResponse(response own ClientResponse, method string, settings DecodeC
         return result, nil
     }
     let encodedLength = result.Body.len()
+    if encodedLength > gzip.MaxBytes {
+        return emptyClientResponse(), error("http.Client: encoded body too large to decode")
+    }
     var limit = settings.MaxBytes
     if encodedLength <= limit / settings.MaxRatio {
         limit = encodedLength * settings.MaxRatio
     }
-    var reader = gzip.NewReader(encodedBody{data: result.Body, position: 0}, gzip.MaxBytes, limit)?
+    var reader = gzip.NewReader(encodedBody{data: result.Body, position: 0}, encodedLength, limit)?
     var decoded = Array<byte>{}
     var buf = Array<byte>{}
     for buf.len() < 4096 {
         buf.push(0)
     }
     for {
+        clientContextError(ctx)?
         let n, err = reader.Read(buf[:])
         for var i = 0; i < n; i += 1 {
             decoded.push(buf[i])
@@ -112,15 +115,15 @@ func decodeResponse(response own ClientResponse, method string, settings DecodeC
 }
 
 func (c Client) DoDecoded(ctx context.Context, method string, absoluteURL string, headers Header, body []byte, config DecodeConfig) (ClientResponse, error) {
-    let settings = decodeSettings(config)?
+    decodeSettings(config)?
     let request = decodeHeaders(headers)?
     let response = c.Do(ctx, method, absoluteURL, request, body)?
-    return decodeResponse(response, method, settings)
+    return Decode(ctx, response, config)
 }
 
 func (p Pool) DoDecoded(ctx context.Context, method string, absoluteURL string, headers Header, body []byte, config DecodeConfig) (ClientResponse, error) {
-    let settings = decodeSettings(config)?
+    decodeSettings(config)?
     let request = decodeHeaders(headers)?
     let response = p.Do(ctx, method, absoluteURL, request, body)?
-    return decodeResponse(response, method, settings)
+    return Decode(ctx, response, config)
 }

@@ -33,7 +33,9 @@ func main() {
 }
 ```
 
-A `Pool` has `DoDecoded` too.
+A `Pool` has `DoDecoded` too. To unpack the answer of another call, such as
+`Follow` or `DoRetry`, send `Accept-Encoding: gzip` yourself and pass the
+answer to `http.Decode`.
 
 ## What happens
 
@@ -43,7 +45,8 @@ A `Pool` has `DoDecoded` too.
   `Content-Encoding` and `Content-Length` headers are removed, because they
   described the packed bytes.
 - An answer without `Content-Encoding`, or with `identity`, is returned
-  unchanged. So are `HEAD` answers and empty bodies.
+  unchanged. So are `HEAD` answers, empty bodies and 206 partial answers
+  (a piece of a gzip file cannot be unpacked on its own).
 - Any other encoding, such as `br`, or more than one, fails with
   `http.Client: unsupported content encoding`.
 - Broken gzip data fails with the gzip error, for example
@@ -62,4 +65,5 @@ To see the packed bytes as they came, use `Do` instead.
   may grow: `http.Client: decoded body expands too much`.
 
 The packed answer is still limited by `ClientConfig.MaxBodyBytes`, like any
-`Do`.
+`Do`, and cannot be unpacked above 1 GiB. Cancelling the context also stops the
+unpacking.

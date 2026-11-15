@@ -80,6 +80,14 @@ func answer(method string, path string) Array<byte> {
     if path == "/br" { return respond("Content-Encoding: br\r\n", strings.Bytes("xx"), head) }
     if path == "/double" { return respond("Content-Encoding: gzip, gzip\r\n", gzText("x"), head) }
     if path == "/twice" { return respond("Content-Encoding: gzip\r\nContent-Encoding: gzip\r\n", gzText("x"), head) }
+    if path == "/partial" {
+        var text = "HTTP/1.1 206 Partial Content\r\nContent-Encoding: gzip\r\nContent-Range: bytes 0-3/40\r\nContent-Length: 4\r\n\r\n"
+        var out = strings.Bytes(text)
+        let whole = gzText("hello world")
+        for var i = 0; i < 4; i += 1 { out.push(whole[i]) }
+        return out
+    }
+    if path == "/moved" { return strings.Bytes("HTTP/1.1 302 Found\r\nLocation: /gzip\r\nContent-Length: 0\r\n\r\n") }
     if path == "/empty" { return respond(gzipped, Array<byte>{}, head) }
     if path == "/bomb" {
         let big = zeros(1048576)
@@ -165,7 +173,9 @@ func run() error {
     let _, truncated = get(client, "GET", "/truncated", defaults)
     check(failure(truncated) == "gzip: truncated stream", "truncated " + failure(truncated))
     let _, trailing = get(client, "GET", "/trailing", defaults)
-    check(trailing != nil, "trailing bytes rejected")
+    check(failure(trailing) == "gzip: truncated stream", "trailing " + failure(trailing))
+    let partial = get(client, "GET", "/partial", defaults)?
+    check(partial.StatusCode == 206 && partial.Body.len() == 4 && partial.Headers.Values("Content-Encoding").len() == 1, "206 unchanged")
     let _, bomb = get(client, "GET", "/bomb", defaults)
     check(failure(bomb) == "http.Client: decoded body expands too much", "ratio " + failure(bomb))
     var small = defaults
@@ -195,6 +205,18 @@ func run() error {
     check(failure(hugeErr) == "http.Client: decode limit too large" && drain(log).len() == 0, "limit above gzip")
     let raw = client.Do(context.Background(), "GET", "https://a.test/gzip", http.NewHeader(), nothing[:])?
     check(raw.Headers.Values("Content-Encoding").len() == 1 && raw.Body.len() > 11 && !strings.Contains(drain(log)[0], "Accept-Encoding"), "Do stays raw")
+
+    var accept = http.NewHeader()
+    accept.Set("Accept-Encoding", "gzip")?
+    let followed, final = client.Follow(context.Background(), "GET", "https://a.test/moved", accept, nothing[:], http.DefaultRedirectConfig())?
+    let unpacked = http.Decode(context.Background(), followed, defaults)?
+    check(body(unpacked) == "hello world" && final == "https://a.test/gzip", "Decode after Follow")
+    let ctx, cancel = context.WithCancel(context.Background())
+    cancel()
+    let packed = client.Do(context.Background(), "GET", "https://a.test/gzip", accept, nothing[:])?
+    let _, cancelled = http.Decode(ctx, packed, defaults)
+    check(failure(cancelled) == "context canceled", "Decode stops on cancel")
+    let _ = drain(log)
 
     let pool = http.NewPool(http.NewClientWithTransport(http.DefaultClientConfig(), Transport{log: log})?, http.DefaultPoolConfig())?
     let pooled = pool.DoDecoded(context.Background(), "GET", "https://a.test/gzip", http.NewHeader(), nothing[:], defaults)?

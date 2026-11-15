@@ -13073,6 +13073,8 @@ type DecodeConfig struct {
     MaxRatio int
 }
 func DefaultDecodeConfig() DecodeConfig
+func Decode(ctx context.Context, response own ClientResponse,
+            config DecodeConfig) (ClientResponse, error)
 func (c Client) DoDecoded(ctx context.Context, method string, absoluteURL string,
                           headers Header, body []byte,
                           config DecodeConfig) (ClientResponse, error)
@@ -13088,13 +13090,16 @@ decode configuration`, and a `MaxBytes` above `gzip.MaxBytes` with
 fails with `http.Client: client owns Accept-Encoding`. These checks happen
 before anything is sent.
 
-The call sends the request with `Do` of the same client or pool and the caller's
-headers plus `Accept-Encoding: gzip`. The encoded body is bounded by
-`ClientConfig.MaxBodyBytes` as for every `Do`, and errors from `Do` are returned
-unchanged. The response is then decoded:
+`DoDecoded` sends the request with `Do` of the same client or pool and the
+caller's headers plus `Accept-Encoding: gzip`, then returns `Decode` of the
+response. The encoded body is bounded by `ClientConfig.MaxBodyBytes` as for
+every `Do`, and errors from `Do` are returned unchanged. `Decode` consumes any
+buffered response, so a caller can add `Accept-Encoding: gzip` to `Follow`,
+`DoRetry` or `Do` and decode the result. It decodes as follows:
 
-1. A HEAD response, an empty body, a response without `Content-Encoding` and
-   one whose single `Content-Encoding` is `identity` are returned unchanged.
+1. An empty body (which every HEAD, 204 and 304 response has), a 206 Partial
+   Content response, a response without `Content-Encoding` and one whose
+   single `Content-Encoding` is `identity` are returned unchanged.
 2. A single `Content-Encoding` of `gzip` or `x-gzip`, ignoring case and
    surrounding spaces, is decoded. Any other value, a list of codings and more
    than one field fail with `http.Client: unsupported content encoding`.
@@ -13103,16 +13108,18 @@ unchanged. The response is then decoded:
    body expands too much`, and passing `MaxBytes` with `http.Client: decoded
    body too large`; the ratio is reported when it is the smaller limit. A body
    of exactly the limit succeeds.
-4. Concatenated gzip members are decoded in order, with the member limit of
-   §37.26. Checksums and sizes are verified; truncated, corrupt or trailing data
+4. An encoded body longer than `gzip.MaxBytes` fails with `http.Client: encoded
+   body too large to decode`. Concatenated gzip members are decoded in order,
+   with the member limit of §37.26. Checksums and sizes are verified; truncated, corrupt or trailing data
    fails with the gzip reader's error, such as `gzip: truncated stream` or
    `gzip: checksum mismatch`.
 5. A decoded response carries the decoded body and the response headers
    without `Content-Encoding` and `Content-Length`; status and other headers
    are unchanged.
 
-On failure the call returns an empty response; no partial decoded body is
-returned. To read the representation as sent, use `Do`. Memory is bounded by
+Decoding checks `ctx` before every 4096 decoded bytes and stops with its error
+once it has ended. On failure the call returns an empty response; no partial
+decoded body is returned. To read the representation as sent, use `Do`. Memory is bounded by
 the encoded body, the decoded limit and the gzip reader's fixed state.
 
 Plain callers block with worker compensation and async callers use the ordinary
@@ -13134,7 +13141,8 @@ func report(client http.Client, target string) (Array<byte>, error) {
 Compiler impact: one bundled source file importing `std/compress/gzip`; no
 runtime or syntax changes. Conformance: scripted transports for gzip and x-gzip
 bodies, removed encoding headers, the sent `Accept-Encoding`, unchanged plain,
-identity, empty and HEAD responses, unsupported, listed and repeated encodings,
+identity, empty, HEAD and 206 responses, unsupported, listed and repeated
+encodings, `Decode` after `Follow`, cancellation during decoding,
 concatenated members, checksum, truncation and trailing-data failures, ratio and
 size limits with the exact limit, a caller `Accept-Encoding`, negative and
 oversized configuration, `Do` staying raw, and pooled decoding; frontend type
