@@ -235,18 +235,26 @@ async func clientDial(address string, timeout time.Duration, result channel<clie
 func (c Client) Do(ctx context.Context, method string, absoluteURL string, headers Header, body []byte) (ClientResponse, error) {
     let bounded, cancel = context.WithDeadline(ctx, time.Now().Add(c.config.Timeout))
     let guard = clientCancellation{cancel: cancel}
-    let output, target, preparationErr = c.prepare(method, absoluteURL, headers, body)
+    let output, target, preparationErr = c.admit(ctx, method, absoluteURL, headers, body)
     if preparationErr != nil {
         return emptyClientResponse(), preparationErr
     }
+    return c.dialAndExchange(bounded, output, target, method, body)
+}
+
+func (c Client) admit(ctx context.Context, method string, absoluteURL string, headers Header, body []byte) (string, url.AbsoluteURL, error) {
+    let output, target, preparationErr = c.prepare(method, absoluteURL, headers, body)
+    if preparationErr != nil {
+        return "", emptyClientURL(), preparationErr
+    }
     if c.transport.len() == 0 && target.Scheme != "http" {
-        return emptyClientResponse(), error("http.Client: HTTPS requires verified TLS transport")
+        return "", emptyClientURL(), error("http.Client: HTTPS requires verified TLS transport")
     }
     let contextErr = clientContextError(ctx)
     if contextErr != nil {
-        return emptyClientResponse(), contextErr
+        return "", emptyClientURL(), contextErr
     }
-    return c.dialAndExchange(bounded, output, target, method, body)
+    return output, target, nil
 }
 
 func clientContextError(ctx context.Context) error {
