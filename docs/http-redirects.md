@@ -40,8 +40,8 @@ and `OpenFollow` too.
 
 Only the answers 301, 302, 303, 307 and 308 with one `Location` are followed.
 Any other answer, including a redirect with a missing or empty `Location`, is
-returned to you unchanged. The new address may be relative, such as `/files/v2`; it is worked
-out from the address you were at.
+returned to you unchanged. The new address may be relative, such as
+`/files/v2`; it is worked out from the address you were at.
 
 - 307 and 308 repeat the same request, body included.
 - 303 turns the request into a `GET` without a body (a `HEAD` stays a `HEAD`).
