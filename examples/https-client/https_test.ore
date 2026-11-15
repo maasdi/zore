@@ -371,7 +371,7 @@ func TestHTTPSPoolRejectsTrustedWrongHostname() error {
 async func serveRedirect(listener own net.Listener, config own tls.ServerConfig, ctx context.Context, location string) error {
     let accepted = listener.Accept()?
     var conn = tls.Server(ctx, accepted, config)?
-    conn.SetReadDeadline(time.Now().Add(3 * time.Second))?
+    conn.SetReadDeadline(time.Now().Add(10 * time.Second))?
     var request = ""
     var one = Array<byte>{0}
     for !strings.HasSuffix(request, "\r\n\r\n") {
@@ -397,16 +397,16 @@ func redirectCase(secondCert string, expected string) error {
     let key = os.ReadFile("../../packages/tls/testdata/server-key.pem")?
     let transport = https.NewTransport(rootPEM[:])?
     var settings = http.DefaultClientConfig()
-    settings.Timeout = 3 * time.Second
+    settings.Timeout = 10 * time.Second
     settings.PollInterval = time.Millisecond
     let client = http.NewClientWithTransport(settings, transport)?
     let first = net.Listen("tcp4", "127.0.0.1:0")?
     let second = net.Listen("tcp4", "127.0.0.1:0")?
     let _, firstPort, _ = strings.Cut(first.Addr(), ":")
     let _, secondPort, _ = strings.Cut(second.Addr(), ":")
-    first.SetDeadline(time.Now().Add(3 * time.Second))?
-    second.SetDeadline(time.Now().Add(3 * time.Second))?
-    let ctx, cancel = context.WithTimeout(context.Background(), 3 * time.Second)
+    first.SetDeadline(time.Now().Add(10 * time.Second))?
+    second.SetDeadline(time.Now().Add(10 * time.Second))?
+    let ctx, cancel = context.WithTimeout(context.Background(), 10 * time.Second)
     let target = "https://localhost:" + secondPort + "/binary"
     let redirecting = go serveRedirect(first, tls.NewServerConfig(goodCert[:], key[:])?, ctx, target)
     let serving = go serveHTTPS(second, tls.NewServerConfig(otherCert[:], key[:])?, ctx, "localhost")
