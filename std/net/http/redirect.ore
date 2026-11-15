@@ -1,0 +1,175 @@
+package http
+
+import "std/context"
+import "std/net/url"
+import "std/strings"
+import "std/time"
+
+type RedirectConfig struct {
+    MaxRedirects int
+    AllowHTTPSDowngrade bool
+}
+
+type redirectChain struct {
+    method string
+    target string
+    current url.AbsoluteURL
+    headers Header
+    keepBody bool
+    hops int
+    visited Array<string>
+    config RedirectConfig
+}
+
+func DefaultRedirectConfig() RedirectConfig {
+    return RedirectConfig{MaxRedirects: 10, AllowHTTPSDowngrade: false}
+}
+
+func newRedirectChain(method string, absoluteURL string, headers Header, config RedirectConfig) (redirectChain, error) {
+    var chosen = config
+    if chosen.MaxRedirects == 0 {
+        chosen.MaxRedirects = DefaultRedirectConfig().MaxRedirects
+    }
+    let current, parseErr = url.ParseAbsolute(absoluteURL)
+    _ = parseErr
+    var visited = Array<string>{}
+    visited.push(redirectVisit(method, current))
+    let chain = redirectChain{method: method, target: absoluteURL, current: current, headers: clone(headers), keepBody: true, hops: 0, visited: visited, config: chosen}
+    if config.MaxRedirects < 0 {
+        return chain, error("http.Client: negative redirect configuration")
+    }
+    return chain, nil
+}
+
+func redirectVisit(method string, target url.AbsoluteURL) string {
+    return method + " " + poolKey(target) + target.RequestTarget
+}
+
+func redirectStatus(status int) bool {
+    return status == 301 || status == 302 || status == 303 || status == 307 || status == 308
+}
+
+func redirectLocated(status int, headers Header) bool {
+    let locations = headers.Values("Location")
+    return redirectStatus(status) && (locations.len() > 1 || (locations.len() == 1 && strings.Trim(locations[0], " \t") != ""))
+}
+
+func (r redirectChain) body(body []byte) []byte {
+    if r.keepBody {
+        return body
+    }
+    return body[:0]
+}
+
+func (r mut redirectChain) next(status int, headers Header) (bool, error) {
+    if !redirectLocated(status, headers) {
+        return false, nil
+    }
+    let locations = headers.Values("Location")
+    if locations.len() > 1 {
+        return false, error("http.Client: ambiguous redirect location")
+    }
+    if r.hops >= r.config.MaxRedirects {
+        return false, error("http.Client: too many redirects")
+    }
+    let resolved, resolveErr = url.ResolveReference(r.target, strings.Trim(locations[0], " \t"))
+    if resolveErr != nil {
+        _ = resolveErr
+        return false, error("http.Client: invalid redirect location")
+    }
+    let target, _, _ = strings.Cut(resolved, "#")
+    let parsed, parseErr = url.ParseAbsolute(target)
+    if parseErr != nil {
+        _ = parseErr
+        return false, error("http.Client: invalid redirect location")
+    }
+    if r.current.Scheme == "https" && parsed.Scheme == "http" && !r.config.AllowHTTPSDowngrade {
+        return false, error("http.Client: redirect from HTTPS to HTTP")
+    }
+    let crossOrigin = poolKey(r.current) != poolKey(parsed)
+    let rewrite = r.method != "HEAD" && (status == 303 || ((status == 301 || status == 302) && r.method == "POST"))
+    if rewrite {
+        r.method = "GET"
+        r.keepBody = false
+    }
+    var kept = Array<HeaderEntry>{}
+    for entry in r.headers.entries {
+        let credential = asciiEqual(entry.Name, "Authorization") || asciiEqual(entry.Name, "Cookie") || asciiEqual(entry.Name, "Proxy-Authorization")
+        let content = strings.HasPrefix(strings.ToLower(entry.Name), "content-")
+        if !(crossOrigin && credential) && !(rewrite && content) {
+            kept.push(entry)
+        }
+    }
+    r.headers.entries = kept
+    let visit = redirectVisit(r.method, parsed)
+    for seen in r.visited {
+        if seen == visit {
+            return false, error("http.Client: redirect loop")
+        }
+    }
+    r.visited.push(visit)
+    r.target = target
+    r.current = parsed
+    r.hops += 1
+    return true, nil
+}
+
+func (r redirectChain) stream(settings StreamConfig, started time.Instant) (StreamConfig, error) {
+    var hop = settings
+    if settings.Timeout > 0 {
+        hop.Timeout = settings.Timeout - time.Since(started)
+        if hop.Timeout <= 0 {
+            return hop, error("context deadline exceeded")
+        }
+    }
+    return hop, nil
+}
+
+func followBuffered(ctx context.Context, method string, absoluteURL string, headers Header, body []byte, config RedirectConfig, timeout time.Duration, send func(context.Context, string, string, Header, []byte) (ClientResponse, error)) (ClientResponse, string, error) {
+    var chain = newRedirectChain(method, absoluteURL, headers, config)?
+    let bounded, cancel = context.WithDeadline(ctx, time.Now().Add(timeout))
+    let guard = clientCancellation{cancel: cancel}
+    for {
+        let response = send(bounded, chain.method, chain.target, chain.headers, chain.body(body))?
+        if !chain.next(response.StatusCode, response.Headers)? {
+            return response, chain.target, nil
+        }
+    }
+}
+
+func followStream(ctx context.Context, method string, absoluteURL string, headers Header, body []byte, config StreamConfig, redirects RedirectConfig, timeout time.Duration, open func(context.Context, string, string, Header, []byte, StreamConfig, time.Instant) (ResponseStream, error)) (ResponseStream, string, error) {
+    var chain = newRedirectChain(method, absoluteURL, headers, redirects)?
+    let started = time.Now()
+    let headerDeadline = started.Add(timeout)
+    for {
+        let hop = chain.stream(config, started)?
+        var stream = open(ctx, chain.method, chain.target, chain.headers, chain.body(body), hop, headerDeadline)?
+        if !chain.next(stream.StatusCode(), stream.headers)? {
+            return stream, chain.target, nil
+        }
+    }
+}
+
+func (c Client) Follow(ctx context.Context, method string, absoluteURL string, headers Header, body []byte, config RedirectConfig) (ClientResponse, string, error) {
+    return followBuffered(ctx, method, absoluteURL, headers, body, config, c.config.Timeout, func(hopCtx context.Context, hopMethod string, target string, hopHeaders Header, hopBody []byte) (ClientResponse, error) {
+        return c.Do(hopCtx, hopMethod, target, hopHeaders, hopBody)
+    })
+}
+
+func (c Client) OpenFollow(ctx context.Context, method string, absoluteURL string, headers Header, body []byte, config StreamConfig, redirects RedirectConfig) (ResponseStream, string, error) {
+    return followStream(ctx, method, absoluteURL, headers, body, config, redirects, c.config.Timeout, func(hopCtx context.Context, hopMethod string, target string, hopHeaders Header, hopBody []byte, hop StreamConfig, deadline time.Instant) (ResponseStream, error) {
+        return c.openWithin(hopCtx, hopMethod, target, hopHeaders, hopBody, hop, deadline, true)
+    })
+}
+
+func (p Pool) Follow(ctx context.Context, method string, absoluteURL string, headers Header, body []byte, config RedirectConfig) (ClientResponse, string, error) {
+    return followBuffered(ctx, method, absoluteURL, headers, body, config, p.config.Timeout, func(hopCtx context.Context, hopMethod string, target string, hopHeaders Header, hopBody []byte) (ClientResponse, error) {
+        return p.Do(hopCtx, hopMethod, target, hopHeaders, hopBody)
+    })
+}
+
+func (p Pool) OpenFollow(ctx context.Context, method string, absoluteURL string, headers Header, body []byte, config StreamConfig, redirects RedirectConfig) (ResponseStream, string, error) {
+    return followStream(ctx, method, absoluteURL, headers, body, config, redirects, p.config.Timeout, func(hopCtx context.Context, hopMethod string, target string, hopHeaders Header, hopBody []byte, hop StreamConfig, deadline time.Instant) (ResponseStream, error) {
+        return p.openWithin(hopCtx, hopMethod, target, hopHeaders, hopBody, hop, deadline, true)
+    })
+}

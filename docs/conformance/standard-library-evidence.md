@@ -110,6 +110,18 @@ text attributes. These parser assertions cover those fixed contexts, not browser
 conformance or arbitrary HTML sanitization. Template rendering remains deferred
 in [the separate decision](../design/templates.md).
 
+## HTTP redirects — issue #289
+
+Locked §37.44 delivers `RedirectConfig` and `Follow`/`OpenFollow` on `Client`
+and `Pool`. [tests/codegen/http_redirect.rs](../../tests/codegen/http_redirect.rs)
+covers scripted chains for rewriting, credential removal, loops, limits,
+downgrades, invalid and ambiguous locations, one time budget, streamed and
+pooled chains, and the redirect guide over real TCP.
+[tests/packages/networking.rs](../../tests/packages/networking.rs) checks the
+frontend API, and `TestHTTPSRedirectVerifiesEveryHop` in
+[examples/https-client/https_test.ore](../../examples/https-client/https_test.ore)
+follows a verified HTTPS chain and rejects a wrong-host hop.
+
 ## Pooled HTTP/1.1 connections — issue #288
 
 Locked §37.43 delivers `http.Pool`, `NewPool`, `PoolConfig` and `PoolStats`.

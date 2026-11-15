@@ -1,5 +1,12 @@
 # Implementation roadmap
 
+Issue [#289](https://github.com/maasdi/zore/issues/289) delivers its first
+slice, opt-in HTTP redirects, under §37.44: `Follow` and `OpenFollow` on a
+client or pool follow 301/302/303/307/308 with relative locations, per-status
+method rewriting, credential removal across origins, refused HTTPS downgrades,
+loop and hop limits and one time budget. See the
+[redirect guide](http-redirects.md). Retries, proxies and decoding remain open.
+
 Issue [#288](https://github.com/maasdi/zore/issues/288) adds bounded HTTP/1.1
 connection pooling under §37.43: `http.Pool` is a shared handle that reuses
 cleanly finished connections per origin, with total, per-host and idle limits,
@@ -127,7 +134,8 @@ Redirects, retries, proxies, pooling, compression and HTTP/2 are excluded.
 Issue #228 now has an [ordered extension plan](design/http-client.md): streamed
 responses (#286, delivered under §37.41), streamed requests (#287, delivered
 under §37.42), bounded
-HTTP/1.1 pooling (#288, delivered under §37.43), separate opt-in policies (#289) and an independent
+HTTP/1.1 pooling (#288, delivered under §37.43), separate opt-in policies (#289,
+redirects delivered under §37.44) and an independent
 HTTP/2 decision (#290). The remaining items are design/implementation
 follow-ups, not delivered client features; each public API must be locked under
 spec §53 before implementation.
