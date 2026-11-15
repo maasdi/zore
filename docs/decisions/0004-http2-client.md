@@ -48,7 +48,7 @@ Every limit is finite and has a default; a peer cannot raise one.
 | Item | Decision |
 | --- | --- |
 | Frame size | Advertise and accept 16,384 bytes; larger frames are a connection error. Our own frames never exceed 16,384 bytes even if the peer allows more. |
-| Header block | At most `ClientConfig.MaxHeaderBytes` (64 KiB) of decoded names and values per message, and the same bound on the compressed bytes across `HEADERS` and `CONTINUATION` frames. |
+| Header block | At most `ClientConfig.MaxHeaderBytes` (32 KiB by default) of decoded names and values per message, and the same bound on the compressed bytes across `HEADERS` and `CONTINUATION` frames. |
 | Header compression | Decoder table at most 4,096 bytes, advertised to the peer. A table size update above that, an index outside the tables, an integer longer than five bytes or bad Huffman padding is a connection error. The encoder sends literal fields without adding table entries, so the peer's table setting costs no memory here. |
 | Streams | At most 32 open streams per connection by default, and never more than the peer allows. Extra calls wait in a bounded FIFO queue (256), like pool waiters. |
 | Receive memory | 256 KiB window per stream, so one connection buffers at most 32 × 256 KiB of unread body. |

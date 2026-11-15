@@ -9075,11 +9075,13 @@ This does not promise erasure of caller-owned input buffers.
 | `(c own Conn) Close() error` | Attempts close-notify within the write deadline, then releases both owners |
 
 Application protocol negotiation is off unless `SetProtocols` is called. A list
-holds at most 16 distinct names of printable ASCII without spaces, each 1 to 255
+holds at most 16 distinct names of printable ASCII without spaces, each 1 to 254
 bytes and at most 255 bytes in total including one length byte per name;
 otherwise `SetProtocols` returns `tls: too many application protocols`,
-`tls: invalid application protocol` or `tls: duplicate application protocol` and
-leaves the configuration unchanged. A client offers its names. A server with a
+`tls: invalid application protocol`, `tls: duplicate application protocol` or
+`tls: application protocols too long` and leaves the configuration unchanged. On
+a closed or zero-value configuration it returns
+`tls.SetProtocols: closed configuration`. A client offers its names. A server with a
 list picks the first of its own names that the client offered; when the client
 offered names and none matches, the server sends the `no_application_protocol`
 alert and the handshake fails. When either side has no list, the handshake

@@ -951,7 +951,7 @@ func TestApplicationProtocolNegotiation() error {
         check(quietClient == "" && quietServer == "")
         let _, _, err = negotiated(versions, other[:], both[:])
         _ = err
-        check(err != nil && !strings.Contains(errors.Message(err), "certificate verification"))
+        check(err != nil && strings.Contains(errors.Message(err), "No ALPN protocols supported"))
     }
     return nil
 }
@@ -973,7 +973,13 @@ func TestApplicationProtocolValidation() error {
     check(config.SetProtocols(spaced[:]) == error("tls: invalid application protocol"))
     check(serverConfig.SetProtocols(repeated[:]) == error("tls: duplicate application protocol"))
     check(serverConfig.SetProtocols(many[:]) == error("tls: too many application protocols"))
-    check(config.SetProtocols(long[:]) == error("tls: invalid application protocol"))
+    check(config.SetProtocols(long[:]) == error("tls: application protocols too long"))
+    let widest = Array<string>{filler(254)}
+    let wider = Array<string>{filler(255)}
+    check(config.SetProtocols(wider[:]) == error("tls: invalid application protocol"))
+    check(config.SetProtocols(widest[:]) == nil)
+    var closed = ClientConfig{handle: 0, protocols: Array<byte>{}}
+    check(closed.SetProtocols(widest[:]) == error("tls.SetProtocols: closed configuration"))
     let malformed = Array<byte>{5, 104, 50}
     let _, err = nativeSession(config.handle, "localhost", malformed[:])
     _ = err

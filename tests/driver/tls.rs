@@ -177,7 +177,7 @@ func TestSystemRootsHonorsCertificateFileVariable() error {
     let key = os.ReadFile("testdata/server-key.pem")?
     let serverConfig = NewServerConfig(cert[:], key[:])?
     let client = ClientConfig{handle: nativeSession(config.handle, "localhost", config.protocols[:])?, protocols: Array<byte>{}}
-    let server = ClientConfig{handle: nativeSession(serverConfig.handle, "", config.protocols[:])?, protocols: Array<byte>{}}
+    let server = ClientConfig{handle: nativeSession(serverConfig.handle, "", serverConfig.protocols[:])?, protocols: Array<byte>{}}
     return memoryHandshake(client.handle, server.handle)
 }
 "#,

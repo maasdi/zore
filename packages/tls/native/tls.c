@@ -346,10 +346,11 @@ int zore_tls_status(void *pointer) { return ((Session *)pointer)->status; }
 
 int zore_tls_version(void *pointer) { return (int) mbedtls_ssl_get_version_number(&((Session *)pointer)->ssl); }
 
-int zore_tls_protocol(void *pointer, unsigned char *data) {
+int zore_tls_protocol(void *pointer, unsigned char *data, size_t capacity) {
     const char *name = mbedtls_ssl_get_alpn_protocol(&((Session *)pointer)->ssl);
     if (name == NULL) return 0;
     size_t length = strlen(name);
+    if (length > capacity) return 0;
     memcpy(data, name, length);
     return (int) length;
 }

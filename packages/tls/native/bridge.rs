@@ -45,7 +45,7 @@ unsafe extern "C" {
     fn zore_tls_output(session: *mut c_void, data: *mut u8) -> i32;
     fn zore_tls_status(session: *mut c_void) -> i32;
     fn zore_tls_version(session: *mut c_void) -> i32;
-    fn zore_tls_protocol(session: *mut c_void, data: *mut u8) -> i32;
+    fn zore_tls_protocol(session: *mut c_void, data: *mut u8, capacity: usize) -> i32;
     fn zore_tls_shutdown(session: *mut c_void, error: *mut c_char) -> i32;
     fn zore_tls_system_roots(
         path: *const c_char,
@@ -341,7 +341,7 @@ pub unsafe extern "C" fn zore_native_tls_native_version(out: *mut ValueError, to
 pub unsafe extern "C" fn zore_native_tls_native_protocol(out: *mut ByteArrayError, token: i64) {
     let mut data = vec![0; 255];
     let result = operation(token, |p, _| unsafe {
-        zore_tls_protocol(p, data.as_mut_ptr())
+        zore_tls_protocol(p, data.as_mut_ptr(), data.len())
     })
     .map(|count| {
         data.truncate(count as usize);

@@ -37,6 +37,7 @@ type Conn struct {
     outputPosition int
     input Array<byte>
     protocol string
+    negotiates bool
 }
 
 func (c mut ClientConfig) drop() {
@@ -64,7 +65,7 @@ func zeros(size int) Array<byte> {
 }
 
 func wrap(source own net.Conn, handle int, ctx context.Context) Conn {
-    return Conn{source: source, handle: handle, ctx: ctx, established: false, readDeadline: time.Now(), writeDeadline: time.Now(), readLimited: false, writeLimited: false, failed: false, peerClosed: false, output: Array<byte>{}, outputPosition: 0, input: Array<byte>{}, protocol: ""}
+    return Conn{source: source, handle: handle, ctx: ctx, established: false, readDeadline: time.Now(), writeDeadline: time.Now(), readLimited: false, writeLimited: false, failed: false, peerClosed: false, output: Array<byte>{}, outputPosition: 0, input: Array<byte>{}, protocol: "", negotiates: false}
 }
 
 func SystemRoots() (Array<byte>, error) {
@@ -105,8 +106,11 @@ func protocolList(protocols []string) (Array<byte>, error) {
     }
     for i, name in protocols {
         let bytes = strings.Bytes(name)
-        if bytes.len() == 0 || list.len() + bytes.len() + 1 > 255 {
+        if bytes.len() == 0 || bytes.len() > 254 {
             return Array<byte>{}, error("tls: invalid application protocol")
+        }
+        if list.len() + bytes.len() + 1 > 255 {
+            return Array<byte>{}, error("tls: application protocols too long")
         }
         for b in bytes {
             if b < 33 || b > 126 {
@@ -127,11 +131,17 @@ func protocolList(protocols []string) (Array<byte>, error) {
 }
 
 func (c mut ClientConfig) SetProtocols(protocols []string) error {
+    if c.handle == 0 {
+        return error("tls.SetProtocols: closed configuration")
+    }
     c.protocols = protocolList(protocols)?
     return nil
 }
 
 func (c mut ServerConfig) SetProtocols(protocols []string) error {
+    if c.handle == 0 {
+        return error("tls.SetProtocols: closed configuration")
+    }
     c.protocols = protocolList(protocols)?
     return nil
 }
@@ -332,7 +342,9 @@ func Client(ctx context.Context, source own net.Conn, serverName string, config 
     if err != nil {
         return emptyConn(), errors.Wrap(err, "tls.Client")
     }
-    return handshake(wrap(source, handle, ctx))
+    var conn = wrap(source, handle, ctx)
+    conn.negotiates = config.protocols.len() != 0
+    return handshake(conn)
 }
 
 func Server(ctx context.Context, source own net.Conn, config ServerConfig) (Conn, error) {
@@ -341,7 +353,9 @@ func Server(ctx context.Context, source own net.Conn, config ServerConfig) (Conn
     if err != nil {
         return emptyConn(), errors.Wrap(err, "tls.Server")
     }
-    return handshake(wrap(source, handle, ctx))
+    var conn = wrap(source, handle, ctx)
+    conn.negotiates = config.protocols.len() != 0
+    return handshake(conn)
 }
 
 func handshake(conn own Conn) (Conn, error) {
@@ -363,17 +377,19 @@ func handshake(conn own Conn) (Conn, error) {
             return emptyConn(), flushErr
         }
         if status == 1 {
-            let name, nameErr = nativeProtocol(c.handle)
-            _ = nameErr
-            if nameErr != nil {
-                return emptyConn(), errors.Wrap(nameErr, "tls.Handshake")
+            if c.negotiates {
+                let name, nameErr = nativeProtocol(c.handle)
+                _ = nameErr
+                if nameErr != nil {
+                    return emptyConn(), errors.Wrap(nameErr, "tls.Handshake")
+                }
+                let protocol, textErr = strings.FromBytes(name[:])
+                _ = textErr
+                if textErr != nil {
+                    return emptyConn(), error("tls.Handshake: invalid application protocol")
+                }
+                c.protocol = protocol
             }
-            let protocol, textErr = strings.FromBytes(name[:])
-            _ = textErr
-            if textErr != nil {
-                return emptyConn(), error("tls.Handshake: invalid application protocol")
-            }
-            c.protocol = protocol
             c.established = true;
             return c, nil
         }
