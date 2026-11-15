@@ -176,10 +176,10 @@ func (p Pool) Do(ctx context.Context, method string, absoluteURL string, headers
 }
 
 func (p Pool) Open(ctx context.Context, method string, absoluteURL string, headers Header, body []byte, config StreamConfig) (ResponseStream, error) {
-    return p.openWithin(ctx, method, absoluteURL, headers, body, config, time.Now().Add(p.config.Timeout))
+    return p.openWithin(ctx, method, absoluteURL, headers, body, config, time.Now().Add(p.config.Timeout), false)
 }
 
-func (p Pool) openWithin(ctx context.Context, method string, absoluteURL string, headers Header, body []byte, config StreamConfig, headerDeadline time.Instant) (ResponseStream, error) {
+func (p Pool) openWithin(ctx context.Context, method string, absoluteURL string, headers Header, body []byte, config StreamConfig, headerDeadline time.Instant, following bool) (ResponseStream, error) {
     let settings, settingsErr = streamSettings(config)
     if settingsErr != nil {
         return emptyResponseStream(), settingsErr
@@ -198,7 +198,7 @@ func (p Pool) openWithin(ctx context.Context, method string, absoluteURL string,
     let _, conn = lease.conns.pop()
     var leases = Array<poolLease>{}
     leases.push(lease)
-    return p.plain().openPrepared(streamCtx, stops, leases, conn, output, method, body, settings, headerDeadline)
+    return p.plain().openPrepared(streamCtx, stops, leases, conn, output, method, body, settings, headerDeadline, following)
 }
 
 func (p Pool) prepare(ctx context.Context, method string, absoluteURL string, headers Header, body []byte) (string, url.AbsoluteURL, error) {

@@ -68,6 +68,9 @@ func answer(origin string, line string) string {
     if path == "/ftp" { return moved("302 Found", "ftp://a.test/file") }
     if path == "/broken" { return moved("302 Found", "http://[bad/") }
     if path == "/twice" { return "HTTP/1.1 302 Found\r\nLocation: /echo\r\nLocation: /echo\r\nContent-Length: 0\r\n\r\n" }
+    if path == "/empty" { return "HTTP/1.1 302 Found\r\nLocation: \r\nContent-Length: 0\r\n\r\n" }
+    if path == "/bigmove" { return "HTTP/1.1 302 Found\r\nLocation: /echo\r\nContent-Length: 4096\r\n\r\n" + strings.Repeat("x", 4096) }
+    if path == "/bodymove" { return "HTTP/1.1 302 Found\r\nLocation: /echo\r\nContent-Length: 5\r\n\r\nmoved" }
     if path == "/bare" { return "HTTP/1.1 302 Found\r\nContent-Length: 0\r\n\r\n" }
     if path == "/choices" { return moved("300 Multiple Choices", "/echo") }
     if path == "/slow" { return moved("302 Found", "/slow2") }
@@ -174,7 +177,10 @@ func run() error {
         if path == "/twice" { expected = "http.Client: ambiguous redirect location" }
         check(failure(bad) == expected, path + " " + failure(bad))
     }
-    for path in [string; 2]{"/bare", "/choices"} {
+    let _ = drain(log)
+    let _, _, normalized = follow(client, "GET", "https://A.TEST:443/loop1", "", defaults)
+    check(failure(normalized) == "http.Client: redirect loop" && drain(log).len() == 2, "loop from a differently written start")
+    for path in [string; 3]{"/bare", "/choices", "/empty"} {
         let kept, keptURL = follow(client, "GET", "https://a.test" + path, "", defaults)?
         check(kept.StatusCode >= 300 && keptURL == "https://a.test" + path, "not followed " + path)
     }
@@ -209,14 +215,37 @@ func run() error {
     let _ = drain(log)
     let _ = drain(drops)
 
+    var small = http.DefaultStreamConfig()
+    small.MaxBodyBytes = 64
+    var big, _ = client.OpenFollow(context.Background(), "GET", "https://a.test/bigmove", http.NewHeader(), empty[:], small, defaults)?
+    check(big.StatusCode() == 200, "large redirect body ignored")
+    big.Close()?
+    let _, _, tooBig = client.OpenFollow(context.Background(), "GET", "https://a.test/bigmove", http.NewHeader(), empty[:], small, two)
+    _ = tooBig
+    let _ = drain(log)
+    let _ = drain(drops)
+
+    var single = http.DefaultPoolConfig()
+    single.MaxConnectionsPerHost = 1
+    let singleDrops = channel<string>(64)
+    let narrow = http.NewPool(newClient(log, singleDrops, 3 * time.Second)?, single)?
+    var moved, movedURL = narrow.OpenFollow(context.Background(), "GET", "https://a.test/bodymove", http.NewHeader(), empty[:], http.DefaultStreamConfig(), defaults)?
+    check(moved.StatusCode() == 200 && movedURL == "https://a.test/echo", "redirect body on a single connection")
+    check(narrow.Stats().Active == 1 && drain(singleDrops).len() == 1, "unread redirect retired its connection")
+    moved.Close()?
+    check(narrow.Stats().Active == 0 && drain(singleDrops).len() == 1, "final stream closed early")
+    narrow.Close()
+    let _ = drain(log)
+
     let poolDrops = channel<string>(64)
     let pool = http.NewPool(newClient(log, poolDrops, 3 * time.Second)?, http.DefaultPoolConfig())?
     let pooled, pooledURL = pool.Follow(context.Background(), "GET", "https://a.test/start", http.NewHeader(), empty[:], defaults)?
     check(text(pooled) == "GET https://b.test/final?x" && pooledURL == "https://b.test/final?x", "pooled chain")
     check(pool.Stats().Idle == 2 && drain(poolDrops).len() == 0, "pooled hops reuse connections")
     var pooledStream, _ = pool.OpenFollow(context.Background(), "GET", "https://a.test/start", http.NewHeader(), empty[:], http.DefaultStreamConfig(), defaults)?
-    check(pooledStream.StatusCode() == 200, "pooled stream")
+    check(pooledStream.StatusCode() == 200 && pool.Stats().Active == 1, "pooled stream")
     pooledStream.Close()?
+    check(pool.Stats().Active == 0 && pool.Stats().Idle == 1, "pooled stream chain released")
     pool.Close()
     let _ = drain(log)
     return nil

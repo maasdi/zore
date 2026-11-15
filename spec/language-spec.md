@@ -12914,8 +12914,8 @@ is sent. On success the call returns the final response and the absolute URL
 it was received from; on failure an empty response and `""`.
 
 A response is followed only when its status is 301, 302, 303, 307 or 308 and it
-has a `Location` field. Every other response, a redirect status without
-`Location` included, is returned as the final response. Two or more `Location`
+has a nonempty `Location` field. Every other response, a redirect status with a
+missing or empty `Location` included, is returned as the final response. Two or more `Location`
 fields fail with `http.Client: ambiguous redirect location`. The location is
 resolved against the current URL with `url.ResolveReference` (§37.40), its
 fragment is removed, and the result must pass `url.ParseAbsolute` (§37.11);
@@ -12935,10 +12935,13 @@ its own URL, so every HTTPS hop is verified for its own host.
 
 The chain may contain at most `MaxRedirects` redirects; following one more
 fails with `http.Client: too many redirects`. A request whose method and URL
-were already sent in the chain fails with `http.Client: redirect loop`.
+were already sent in the chain, compared by origin as above and request target,
+fails with `http.Client: redirect loop`.
 Intermediate responses are discarded: `Follow` reads their bodies under the
 usual limits, and `OpenFollow` closes their streams without reading, which
-retires a pooled connection.
+retires a pooled connection, before sending the next request. The
+`StreamConfig.MaxBodyBytes` check on a declared length is not applied to a
+response that will be followed.
 
 One budget covers the chain. For `Follow`, `ClientConfig.Timeout` from the
 call bounds every request and response. For `OpenFollow`, it bounds everything
