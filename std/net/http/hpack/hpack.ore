@@ -1,0 +1,349 @@
+package hpack
+
+import "std/strings"
+
+const DefaultTableBytes = 4096
+const MaxTableBytes = 65536
+const MaxListBytes = 16777216
+const entryOverhead = 32
+const staticCount = 61
+const endOfString = 256
+
+type Field struct {
+    Name string
+    Value string
+    Sensitive bool
+}
+
+type Decoder struct {
+    huffman code
+    fixed Array<Field>
+    entries Array<Field>
+    start int
+    size int
+    capacity int
+    limit int
+    listBytes int
+    failed bool
+}
+
+type Encoder struct {
+    huffman code
+    fixed Array<Field>
+    tableBytes int
+    pending bool
+}
+
+func NewDecoder(tableBytes int, listBytes int) (Decoder, error) {
+    var capacity = tableBytes
+    if capacity > DefaultTableBytes {
+        capacity = DefaultTableBytes
+    }
+    var decoder = Decoder{huffman: newCode(), fixed: staticTable(), entries: Array<Field>{}, start: 0, size: 0, capacity: capacity, limit: tableBytes, listBytes: listBytes, failed: false}
+    if tableBytes < 0 || tableBytes > MaxTableBytes || listBytes < 1 || listBytes > MaxListBytes {
+        decoder.failed = true
+        return decoder, error("hpack: invalid limit")
+    }
+    return decoder, nil
+}
+
+func (d Decoder) TableBytes() int {
+    return d.size
+}
+
+func (d mut Decoder) Decode(block []byte) (Array<Field>, error) {
+    if d.failed {
+        return Array<Field>{}, error("hpack: decoder failed")
+    }
+    let fields, err = d.decode(block)
+    if err != nil {
+        d.failed = true
+        return Array<Field>{}, err
+    }
+    return fields, nil
+}
+
+func (d mut Decoder) decode(block []byte) (Array<Field>, error) {
+    var fields = Array<Field>{}
+    var position = 0
+    var used = 0
+    var updates = 0
+    for position < block.len() {
+        let lead = int(block[position])
+        var field = Field{Name: "", Value: "", Sensitive: false}
+        if lead >= 128 {
+            let index, next = integer(block, position, 7)?
+            position = next
+            field = d.entry(index)?
+            field.Sensitive = false
+        } else if lead >= 32 && lead < 64 {
+            let size, next = integer(block, position, 5)?
+            position = next
+            updates += 1
+            if fields.len() != 0 || updates > 2 {
+                return fields, error("hpack: misplaced table size update")
+            }
+            if size > d.limit {
+                return fields, error("hpack: table size update too large")
+            }
+            d.capacity = size
+            d.evict(0)
+            continue
+        } else {
+            var prefix = 4
+            if lead >= 64 {
+                prefix = 6
+            }
+            let index, next = integer(block, position, prefix)?
+            position = next
+            if index != 0 {
+                let named = d.entry(index)?
+                field.Name = named.Name
+            } else {
+                let name, after = d.text(block, position, d.listBytes - used)?
+                position = after
+                field.Name = name
+            }
+            let value, after = d.text(block, position, d.listBytes - used - field.Name.len())?
+            position = after
+            field.Value = value
+            field.Sensitive = lead >= 16 && lead < 32
+            if lead >= 64 {
+                d.add(field)
+            }
+        }
+        used += field.Name.len() + field.Value.len() + entryOverhead
+        if used > d.listBytes {
+            return fields, error("hpack: header list too large")
+        }
+        fields.push(field)
+    }
+    return fields, nil
+}
+
+func (d Decoder) entry(index int) (Field, error) {
+    if index >= 1 && index <= staticCount {
+        return d.fixed[index - 1], nil
+    }
+    let position = d.entries.len() - 1 - (index - staticCount - 1)
+    if index <= staticCount || position < d.start {
+        return Field{Name: "", Value: "", Sensitive: false}, error("hpack: invalid table index")
+    }
+    return d.entries[position], nil
+}
+
+func (d mut Decoder) evict(incoming int) {
+    for d.start < d.entries.len() && d.size + incoming > d.capacity {
+        let oldest = d.entries[d.start]
+        d.size -= oldest.Name.len() + oldest.Value.len() + entryOverhead
+        d.entries[d.start] = Field{Name: "", Value: "", Sensitive: false}
+        d.start += 1
+    }
+    if d.start >= 32 && d.start * 2 >= d.entries.len() {
+        var kept = Array<Field>{}
+        for var i = d.start; i < d.entries.len(); i += 1 {
+            kept.push(d.entries[i])
+        }
+        d.entries = kept
+        d.start = 0
+    }
+}
+
+func (d mut Decoder) add(field Field) {
+    let size = field.Name.len() + field.Value.len() + entryOverhead
+    d.evict(size)
+    if size <= d.capacity {
+        d.entries.push(field)
+        d.size += size
+    }
+}
+
+func (d Decoder) text(block []byte, position int, room int) (string, int, error) {
+    if position >= block.len() {
+        return "", position, error("hpack: truncated header block")
+    }
+    let packed = block[position] >= 128
+    let length, start = integer(block, position, 7)?
+    if length > block.len() - start {
+        return "", position, error("hpack: truncated header block")
+    }
+    if room < 0 || (!packed && length > room) {
+        return "", position, error("hpack: header list too large")
+    }
+    let end = start + length
+    if !packed {
+        let text, err = strings.FromBytes(block[start:end])
+        if err != nil {
+            _ = err
+            return "", position, error("hpack: invalid field text")
+        }
+        return text, end, nil
+    }
+    let bytes = unpack(d.huffman, block[start:end], room)?
+    let text, err = strings.FromBytes(bytes[:])
+    if err != nil {
+        _ = err
+        return "", position, error("hpack: invalid field text")
+    }
+    return text, end, nil
+}
+
+func integer(block []byte, position int, prefix int) (int, int, error) {
+    if position >= block.len() {
+        return 0, position, error("hpack: truncated header block")
+    }
+    let mask = (1 << prefix) - 1
+    var value = int(block[position]) & mask
+    var next = position + 1
+    if value < mask {
+        return value, next, nil
+    }
+    for var shift = 0; shift < 28; shift += 7 {
+        if next >= block.len() {
+            return 0, position, error("hpack: truncated header block")
+        }
+        let part = int(block[next])
+        next += 1
+        value += (part & 127) << shift
+        if part < 128 {
+            return value, next, nil
+        }
+    }
+    return 0, position, error("hpack: integer too large")
+}
+
+func unpack(huffman code, data []byte, room int) (Array<byte>, error) {
+    var out = Array<byte>{}
+    var bits = 0
+    var length = 0
+    for value in data {
+        for var shift = 7; shift >= 0; shift -= 1 {
+            bits = (bits << 1) | ((int(value) >> shift) & 1)
+            length += 1
+            if length > 30 {
+                return out, error("hpack: invalid Huffman data")
+            }
+            let index = bits - huffman.first[length]
+            if index >= 0 && index < huffman.count[length] {
+                let symbol = huffman.symbols[huffman.offset[length] + index]
+                if symbol == endOfString {
+                    return out, error("hpack: invalid Huffman data")
+                }
+                if out.len() >= room {
+                    return out, error("hpack: header list too large")
+                }
+                out.push(byte(symbol))
+                bits = 0
+                length = 0
+            }
+        }
+    }
+    if length > 7 || bits != (1 << length) - 1 {
+        return out, error("hpack: invalid Huffman data")
+    }
+    return out, nil
+}
+
+func NewEncoder() Encoder {
+    return Encoder{huffman: newCode(), fixed: staticTable(), tableBytes: DefaultTableBytes, pending: false}
+}
+
+func (e mut Encoder) SetTableLimit(limit int) error {
+    if limit < 0 {
+        return error("hpack: invalid limit")
+    }
+    if limit < e.tableBytes {
+        e.tableBytes = limit
+        e.pending = true
+    }
+    return nil
+}
+
+func (e mut Encoder) Encode(fields []Field) Array<byte> {
+    var out = Array<byte>{}
+    if e.pending {
+        number(out, 32, 5, e.tableBytes)
+        e.pending = false
+    }
+    for field in fields {
+        var nameIndex = 0
+        var fullIndex = 0
+        for i, known in e.fixed {
+            if known.Name == field.Name {
+                if nameIndex == 0 {
+                    nameIndex = i + 1
+                }
+                if known.Value == field.Value {
+                    fullIndex = i + 1
+                    break
+                }
+            }
+        }
+        let secret = field.Sensitive || sensitive(field.Name)
+        if fullIndex != 0 && !secret {
+            number(out, 128, 7, fullIndex)
+            continue
+        }
+        var kind = 0
+        if secret {
+            kind = 16
+        }
+        number(out, kind, 4, nameIndex)
+        if nameIndex == 0 {
+            e.pack(out, field.Name)
+        }
+        e.pack(out, field.Value)
+    }
+    return out
+}
+
+func sensitive(name string) bool {
+    return name == "authorization" || name == "proxy-authorization" || name == "cookie" || name == "set-cookie"
+}
+
+func number(out mut Array<byte>, kind int, prefix int, value int) {
+    let mask = (1 << prefix) - 1
+    if value < mask {
+        out.push(byte(kind | value))
+        return
+    }
+    out.push(byte(kind | mask))
+    var rest = value - mask
+    for rest >= 128 {
+        out.push(byte(128 | (rest & 127)))
+        rest >>= 7
+    }
+    out.push(byte(rest))
+}
+
+func (e Encoder) pack(out mut Array<byte>, text string) {
+    let bytes = strings.Bytes(text)
+    var total = 0
+    for value in bytes {
+        total += e.huffman.lengths[int(value)]
+    }
+    let packed = (total + 7) / 8
+    if packed >= bytes.len() {
+        number(out, 0, 7, bytes.len())
+        for value in bytes {
+            out.push(value)
+        }
+        return
+    }
+    number(out, 128, 7, packed)
+    var bits = 0
+    var held = 0
+    for value in bytes {
+        let length = e.huffman.lengths[int(value)]
+        bits = (bits << length) | e.huffman.codes[int(value)]
+        held += length
+        for held >= 8 {
+            held -= 8
+            out.push(byte((bits >> held) & 255))
+        }
+        bits &= (1 << held) - 1
+    }
+    if held > 0 {
+        out.push(byte(((bits << (8 - held)) | ((1 << (8 - held)) - 1)) & 255))
+    }
+}

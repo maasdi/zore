@@ -248,6 +248,14 @@ independent Python escaping/parser assertions. Contextual template rendering
 remains a separate application-driven decision under Q16; the primitive does
 not validate URLs or serialize JavaScript/CSS.
 
+## HTTP header compression — issue #290
+
+Locked §37.48 delivers `std/net/http/hpack`: `Field`, `NewDecoder`, `Decode`,
+`TableBytes`, `NewEncoder`, `SetTableLimit` and `Encode`.
+[tests/codegen/hpack.rs](../../tests/codegen/hpack.rs) covers the RFC 7541 examples, malformed blocks,
+table and list limits, encoder output read back by a decoder and the guide. No
+HTTP/2 support is delivered.
+
 ## HTTP proxies — issue #289
 
 Locked §37.47 delivers `ProxyConfig`, `ClientTunnel`, `NewProxyClient` and

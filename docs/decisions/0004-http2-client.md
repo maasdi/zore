@@ -3,8 +3,9 @@
 Status: accepted as the plan for issue #290. **HTTP/2 is not implemented.** This
 record fixes the choices that later slices must follow. Each slice still locks
 its own public signatures, examples and conformance cases in the specification
-before code is written; nothing here is a supported API. Only the first slice,
-application protocol negotiation in the `tls` package, is delivered.
+before code is written; nothing here is a supported API. Two slices are
+delivered: application protocol negotiation in the `tls` package and the header
+compression package.
 
 ## Consumer
 
@@ -37,7 +38,9 @@ The server side, a general framing library and gRPC are out of scope.
 
 The protocol engine is a bundled package that works on any `http.ClientConn`
 and has no TLS dependency, so scripted connections can drive every frame in
-tests. The header compression code is private to it. The `tls/https` package
+tests. Header compression is its own bundled package, `std/net/http/hpack`
+(specification §37.48), because bundled packages are tested only through their
+public names and its limits need direct tests. The `tls/https` package
 only does the negotiation and hands over the connection, as it does today for
 HTTP/1.1.
 
@@ -48,7 +51,7 @@ Every limit is finite and has a default; a peer cannot raise one.
 | Item | Decision |
 | --- | --- |
 | Frame size | Advertise and accept 16,384 bytes; larger frames are a connection error. Our own frames never exceed 16,384 bytes even if the peer allows more. |
-| Header block | At most `ClientConfig.MaxHeaderBytes` (32 KiB by default) of decoded names and values per message, and the same bound on the compressed bytes across `HEADERS` and `CONTINUATION` frames. |
+| Header block | At most `ClientConfig.MaxHeaderBytes` (32 KiB by default) per decoded message, counted as HTTP/2 counts a header list: name plus value plus 32 bytes per field. The same bound applies to the compressed bytes across `HEADERS` and `CONTINUATION` frames. A larger list is a connection error, because the decoder stops and its table can no longer follow the peer's. |
 | Header compression | Decoder table at most 4,096 bytes, advertised to the peer. A table size update above that, an index outside the tables, an integer longer than five bytes or bad Huffman padding is a connection error. The encoder sends literal fields without adding table entries, so the peer's table setting costs no memory here. |
 | Streams | At most 32 open streams per connection by default, and never more than the peer allows. Extra calls wait in a bounded FIFO queue (256), like pool waiters. |
 | Receive memory | 256 KiB window per stream, so one connection buffers at most 32 × 256 KiB of unread body. |
@@ -111,7 +114,8 @@ Every limit is finite and has a default; a peer cannot raise one.
 ## Delivery order
 
 1. Application protocol negotiation in `tls` (delivered; specification §37.10).
-2. Header compression decoder and encoder with its limits.
+2. Header compression decoder and encoder with its limits (delivered;
+   specification §37.48).
 3. Frames, settings, flow control and the connection tasks over a scripted
    connection.
 4. The public client calls, negotiation and HTTP/1.1 fallback in `tls/https`.

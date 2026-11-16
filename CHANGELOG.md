@@ -8,6 +8,15 @@ including those shipped in `0.1.0-alpha.1`, are not split by release.
 
 ## [Unreleased]
 
+### HTTP header compression
+
+- New package `std/net/http/hpack` packs and unpacks HPACK header blocks
+  (§37.48), the compact header format of HTTP/2. The decoder limits its table
+  and the size of an unpacked list, so a small block cannot expand without
+  bound, and any malformed block is a clear error.
+- This is the second step toward HTTP/2 (#290). HTTP/2 itself is still not
+  implemented.
+
 ### TLS application protocol negotiation
 
 - `SetProtocols` on a `tls` client or server configuration lists application
