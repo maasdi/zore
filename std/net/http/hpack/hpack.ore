@@ -12,6 +12,7 @@ const endOfString = 256
 type Field struct {
     Name string
     Value string
+    Sensitive bool
 }
 
 type Decoder struct {
@@ -38,8 +39,9 @@ func NewDecoder(tableBytes int, listBytes int) (Decoder, error) {
     if capacity > DefaultTableBytes {
         capacity = DefaultTableBytes
     }
-    let decoder = Decoder{huffman: newCode(), fixed: staticTable(), entries: Array<Field>{}, start: 0, size: 0, capacity: capacity, limit: tableBytes, listBytes: listBytes, failed: false}
+    var decoder = Decoder{huffman: newCode(), fixed: staticTable(), entries: Array<Field>{}, start: 0, size: 0, capacity: capacity, limit: tableBytes, listBytes: listBytes, failed: false}
     if tableBytes < 0 || tableBytes > MaxTableBytes || listBytes < 1 || listBytes > MaxListBytes {
+        decoder.failed = true
         return decoder, error("hpack: invalid limit")
     }
     return decoder, nil
@@ -50,7 +52,7 @@ func (d Decoder) TableBytes() int {
 }
 
 func (d mut Decoder) Decode(block []byte) (Array<Field>, error) {
-    if d.failed || d.limit < 0 || d.limit > MaxTableBytes || d.listBytes < 1 || d.listBytes > MaxListBytes {
+    if d.failed {
         return Array<Field>{}, error("hpack: decoder failed")
     }
     let fields, err = d.decode(block)
@@ -68,11 +70,12 @@ func (d mut Decoder) decode(block []byte) (Array<Field>, error) {
     var updates = 0
     for position < block.len() {
         let lead = int(block[position])
-        var field = Field{Name: "", Value: ""}
+        var field = Field{Name: "", Value: "", Sensitive: false}
         if lead >= 128 {
             let index, next = integer(block, position, 7)?
             position = next
             field = d.entry(index)?
+            field.Sensitive = false
         } else if lead >= 32 && lead < 64 {
             let size, next = integer(block, position, 5)?
             position = next
@@ -104,6 +107,7 @@ func (d mut Decoder) decode(block []byte) (Array<Field>, error) {
             let value, after = d.text(block, position, d.listBytes - used - field.Name.len())?
             position = after
             field.Value = value
+            field.Sensitive = lead >= 16 && lead < 32
             if lead >= 64 {
                 d.add(field)
             }
@@ -123,7 +127,7 @@ func (d Decoder) entry(index int) (Field, error) {
     }
     let position = d.entries.len() - 1 - (index - staticCount - 1)
     if index <= staticCount || position < d.start {
-        return Field{Name: "", Value: ""}, error("hpack: invalid table index")
+        return Field{Name: "", Value: "", Sensitive: false}, error("hpack: invalid table index")
     }
     return d.entries[position], nil
 }
@@ -132,6 +136,7 @@ func (d mut Decoder) evict(incoming int) {
     for d.start < d.entries.len() && d.size + incoming > d.capacity {
         let oldest = d.entries[d.start]
         d.size -= oldest.Name.len() + oldest.Value.len() + entryOverhead
+        d.entries[d.start] = Field{Name: "", Value: "", Sensitive: false}
         d.start += 1
     }
     if d.start >= 32 && d.start * 2 >= d.entries.len() {
@@ -274,7 +279,7 @@ func (e mut Encoder) Encode(fields []Field) Array<byte> {
                 }
             }
         }
-        let secret = sensitive(field.Name)
+        let secret = field.Sensitive || sensitive(field.Name)
         if fullIndex != 0 && !secret {
             number(out, 128, 7, fullIndex)
             continue

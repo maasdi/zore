@@ -13285,6 +13285,7 @@ const MaxListBytes = 16777216
 type Field struct {
     Name string
     Value string
+    Sensitive bool
 }
 
 func NewDecoder(tableBytes int, listBytes int) (Decoder, error)
@@ -13311,7 +13312,8 @@ accepted only before the first field of a block, at most twice, and not above
 not contain the end-of-string symbol and must end with at most seven padding
 bits that are all ones. Names and values must be valid UTF-8. The list limit is
 checked before a text is copied or unpacked, so the memory used by one call is
-bounded by `listBytes` and the table by `tableBytes`. Failures are
+bounded by `listBytes` and the table by `tableBytes`; evicted entries are
+released at once. Failures are
 `hpack: truncated header block`, `hpack: integer too large`,
 `hpack: invalid table index`, `hpack: table size update too large`,
 `hpack: misplaced table size update`, `hpack: invalid Huffman data`,
@@ -13322,8 +13324,10 @@ failure the table may no longer match the peer's, so every later call returns
 `Encode` writes one block and cannot fail. A field equal to a static table entry
 is written as its index. Any other field is written as a literal that is not
 added to the table, with a static name index when one exists; text is Huffman
-coded when that is shorter. `authorization`, `proxy-authorization`, `cookie` and
-`set-cookie` are always written as never-indexed literals. The encoder keeps no
+coded when that is shorter. A field with `Sensitive` set, and any field named
+exactly `authorization`, `proxy-authorization`, `cookie` or `set-cookie`, is
+written as a never-indexed literal, also when it equals a static entry. `Decode`
+sets `Sensitive` on fields that arrived as never-indexed literals. The encoder keeps no
 dynamic table. `SetTableLimit` records the peer's table setting: a negative
 value returns `hpack: invalid limit`, and a value below the size last announced
 (initially 4,096) makes the next block begin with a size update to that value.
@@ -13336,7 +13340,7 @@ import "std/net/http/hpack"
 func roundTrip() (Array<hpack.Field>, error) {
     var encoder = hpack.NewEncoder()
     var decoder = hpack.NewDecoder(hpack.DefaultTableBytes, 16384)?
-    let fields = Array<hpack.Field>{hpack.Field{Name: ":method", Value: "GET"}}
+    let fields = Array<hpack.Field>{hpack.Field{Name: ":method", Value: "GET", Sensitive: false}}
     let block = encoder.Encode(fields[:])
     return decoder.Decode(block[:])
 }
@@ -13344,8 +13348,9 @@ func roundTrip() (Array<hpack.Field>, error) {
 
 Compiler impact: one bundled package of two source files importing
 `std/strings`; no runtime or syntax changes. Conformance: the RFC 7541 request
-and response examples with and without Huffman coding, including eviction in a
-256-byte table; malformed indexes, integers, truncated texts, size updates,
+examples with and without Huffman coding and the Huffman response examples with
+eviction in a 256-byte table; forty insertions into a 100-byte table;
+never-indexed fields in both directions; malformed indexes, integers, truncated texts, size updates,
 Huffman padding and end-of-string, and non-UTF-8 text, each followed by a failed
 decoder; list limits at the exact boundary for indexed, literal and Huffman
 fields; invalid limits; encoder output for static, literal, sensitive and long

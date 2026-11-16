@@ -21,9 +21,9 @@ func show() error {
     var encoder = hpack.NewEncoder()
     var decoder = hpack.NewDecoder(hpack.DefaultTableBytes, 16384)?
     let fields = Array<hpack.Field>{
-        hpack.Field{Name: ":method", Value: "GET"},
-        hpack.Field{Name: ":path", Value: "/status"},
-        hpack.Field{Name: "accept", Value: "text/plain"},
+        hpack.Field{Name: ":method", Value: "GET", Sensitive: false},
+        hpack.Field{Name: ":path", Value: "/status", Sensitive: false},
+        hpack.Field{Name: "accept", Value: "text/plain", Sensitive: false},
     }
     let block = encoder.Encode(fields[:])
     let back = decoder.Decode(block[:])?
@@ -70,8 +70,11 @@ func main() {
 - The encoder uses the fixed table of common headers and squeezes text when
   that is shorter. It does not make the receiver remember anything, so it needs
   no memory per connection.
-- `authorization`, `proxy-authorization`, `cookie` and `set-cookie` are marked
-  "never remember", which tells proxies along the way not to store them.
+- A field with `Sensitive: true` is marked "never remember", which tells
+  proxies along the way not to store it. `authorization`,
+  `proxy-authorization`, `cookie` and `set-cookie` (lowercase, as HTTP/2
+  requires) are always marked this way. The decoder reports the mark back in
+  `Sensitive`.
 - When the other side lowers its table limit below 4,096 bytes, call
   `SetTableLimit`; the next block then starts with the notice the protocol
   requires.

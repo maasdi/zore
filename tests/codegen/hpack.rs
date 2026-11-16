@@ -21,7 +21,11 @@ func decode(d mut hpack.Decoder, text string) {
         return
     }
     for field in fields {
-        println(field.Name + ": " + field.Value)
+        var mark = ""
+        if field.Sensitive {
+            mark = " (sensitive)"
+        }
+        println(field.Name + ": " + field.Value + mark)
     }
     println("table " + strconv.Itoa(d.TableBytes()))
 }
@@ -30,7 +34,8 @@ func encode(e mut hpack.Encoder, d mut hpack.Decoder, text string) {
     var fields = Array<hpack.Field>{}
     for pair in strings.Split(text, ";") {
         let name, value, _ = strings.Cut(pair, "=")
-        fields.push(hpack.Field{Name: name, Value: value})
+        let secret = strings.HasPrefix(name, "!")
+        fields.push(hpack.Field{Name: strings.TrimPrefix(name, "!"), Value: value, Sensitive: secret})
     }
     let block = e.Encode(fields[:])
     println(hex.EncodeToString(block[:]))
@@ -41,7 +46,7 @@ func encode(e mut hpack.Encoder, d mut hpack.Decoder, text string) {
     }
     var same = back.len() == fields.len()
     for i, field in back {
-        same = same && field.Name == fields[i].Name && field.Value == fields[i].Value
+        same = same && field.Name == fields[i].Name && field.Value == fields[i].Value && (field.Sensitive || !fields[i].Sensitive)
     }
     println("round trip " + strconv.Itoa(back.len()) + " " + strconv.Itoa(d.TableBytes()))
     if !same {
@@ -196,6 +201,36 @@ fn hpack_decodes_reference_vectors_and_bounds_hostile_blocks() {
         run(&executable, &["4096", "40", "000161086161616161616161"]),
         "error hpack: header list too large\n"
     );
+    assert_eq!(
+        run(&executable, &["4096", "41", "000161086161616161616161"]),
+        "a: aaaaaaaa\ntable 0\n"
+    );
+    assert_eq!(
+        run(&executable, &["4096", "42", "00016186000000000007"]),
+        "a: 000000000\ntable 0\n"
+    );
+    assert_eq!(
+        run(
+            &executable,
+            &["4096", "200", "100161016200016101621f080163"]
+        ),
+        "a: b (sensitive)\na: b\nauthorization: c (sensitive)\ntable 0\n"
+    );
+
+    let mut args = vec!["4096".to_string(), "65536".to_string(), "3f45".to_string()];
+    for i in 0..40u8 {
+        args.push(format!("4001610{}{:02x}", 1, b'A' + i));
+    }
+    args.push("bebf".to_string());
+    args.push("c0".to_string());
+    let args: Vec<_> = args.iter().map(String::as_str).collect();
+    let output = run(&executable, &args);
+    assert!(
+        output
+            .ends_with("a: h\ntable 68\na: h\na: g\ntable 68\nerror hpack: invalid table index\n"),
+        "{output}"
+    );
+
     for limits in [
         ["-1", "100"],
         ["65537", "100"],
@@ -229,6 +264,7 @@ fn hpack_encodes_fields_a_decoder_reads_back() {
                 "enc::method=POST",
                 "limit:5000",
                 "limit:-1",
+                "enc:!x-api-key=k;!:method=GET",
             ]
         ),
         "828684018cf1e3c2e5f23a6ba0ab90f4ff\nround trip 4 0\n\
@@ -236,7 +272,8 @@ fn hpack_encodes_fields_a_decoder_reads_back() {
          1f0887ba51d85b141c641f110088\nround trip 3 0\n\
          3f4583\nround trip 1 0\n\
          83\nround trip 1 0\n\
-         error hpack: invalid limit\n"
+         error hpack: invalid limit\n\
+         1087f2b0eb32dd4beb016b1203474554\nround trip 2 0\n"
     );
 
     let big = run(&executable, &["4096", "65536", "big:300", "big:5000"]);
