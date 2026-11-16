@@ -81,6 +81,12 @@
   name.
 - Start new branches from the latest `main`; keep one change per branch.
 
+## Contributor rules
+
+- Apply `.agents/skills/contributors/SKILL.md` before creating a branch,
+  committing, or opening or reviewing a pull request. It holds the branch
+  naming check, commit and credit rules and the pull request checklist.
+
 ## Package boundaries
 
 - Apply `.agents/skills/package-boundaries/SKILL.md` before adding, moving, or
