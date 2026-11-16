@@ -146,7 +146,7 @@ func main() {}
     let mut tests = fixture.command("test");
     tests.arg("--locked").env_remove("SSL_CERT_FILE");
     let output = success(run(tests));
-    assert!(String::from_utf8_lossy(&output.stdout).contains("Tests: 30 passed, 0 failed"));
+    assert!(String::from_utf8_lossy(&output.stdout).contains("Tests: 33 passed, 0 failed"));
     let cached = fs::read_dir(fixture._directory.path().join("cache/zore"))
         .unwrap()
         .map(|entry| entry.unwrap().path())
@@ -176,8 +176,8 @@ func TestSystemRootsHonorsCertificateFileVariable() error {
     let cert = os.ReadFile("testdata/server.pem")?
     let key = os.ReadFile("testdata/server-key.pem")?
     let serverConfig = NewServerConfig(cert[:], key[:])?
-    let client = ClientConfig{handle: nativeSession(config.handle, "localhost")?}
-    let server = ClientConfig{handle: nativeSession(serverConfig.handle, "")?}
+    let client = ClientConfig{handle: nativeSession(config.handle, "localhost", config.protocols[:])?, protocols: Array<byte>{}}
+    let server = ClientConfig{handle: nativeSession(serverConfig.handle, "", serverConfig.protocols[:])?, protocols: Array<byte>{}}
     return memoryHandshake(client.handle, server.handle)
 }
 "#,
@@ -218,7 +218,7 @@ func TestDefaultClientConfigDoesNotFallBack() error {
         r#"package tls
 func TestPanicCleanup() error {
     let config, serverConfig = configs()?
-    let session = ClientConfig{handle: nativeSession(config.handle, "localhost")?}
+    let session = ClientConfig{handle: nativeSession(config.handle, "localhost", config.protocols[:])?, protocols: Array<byte>{}}
     panic("TLS cleanup panic")
 }
 "#,

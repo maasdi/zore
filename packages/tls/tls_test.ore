@@ -13,6 +13,11 @@ func check(ok bool) {
     }
 }
 
+func plainSession(config int, name string) (int, error) {
+    let none = Array<byte>{}
+    return nativeSession(config, name, none[:])
+}
+
 func configs() (ClientConfig, ServerConfig, error) {
     let roots = os.ReadFile("testdata/roots.pem")?
     let cert = os.ReadFile("testdata/server.pem")?
@@ -25,13 +30,13 @@ func configs() (ClientConfig, ServerConfig, error) {
 func clientConfigFor(rootsPath string, versions int) (ClientConfig, error) {
     let roots = os.ReadFile(rootsPath)?
     let empty = Array<byte>{}
-    return ClientConfig{handle: nativeConfig(false, roots[:], empty[:], versions)?}, nil
+    return ClientConfig{handle: nativeConfig(false, roots[:], empty[:], versions)?, protocols: Array<byte>{}}, nil
 }
 
 func serverConfigFor(certPath string, keyPath string, versions int) (ServerConfig, error) {
     let cert = os.ReadFile(certPath)?
     let key = os.ReadFile(keyPath)?
-    return ServerConfig{handle: nativeConfig(true, cert[:], key[:], versions)?}, nil
+    return ServerConfig{handle: nativeConfig(true, cert[:], key[:], versions)?, protocols: Array<byte>{}}, nil
 }
 
 func transfer(source int, target int) error {
@@ -67,8 +72,8 @@ func memoryHandshake(client int, server int) error {
 
 func TestVerifiedFragmentedHandshakeAndBinaryIO() error {
     let config, serverConfig = configs()?
-    let client = ClientConfig{handle: nativeSession(config.handle, "localhost")?}
-    let server = ClientConfig{handle: nativeSession(serverConfig.handle, "")?}
+    let client = ClientConfig{handle: plainSession(config.handle, "localhost")?, protocols: Array<byte>{}}
+    let server = ClientConfig{handle: plainSession(serverConfig.handle, "")?, protocols: Array<byte>{}}
     drop(config)
     drop(serverConfig)
     memoryHandshake(client.handle, server.handle)?
@@ -112,8 +117,8 @@ func TestVerifiedFragmentedHandshakeAndBinaryIO() error {
 
 func TestIncompleteRecordsResumeAfterWantRead() error {
     let config, serverConfig = configs()?
-    let client = ClientConfig{handle: nativeSession(config.handle, "localhost")?}
-    let server = ClientConfig{handle: nativeSession(serverConfig.handle, "")?}
+    let client = ClientConfig{handle: plainSession(config.handle, "localhost")?, protocols: Array<byte>{}}
+    let server = ClientConfig{handle: plainSession(serverConfig.handle, "")?, protocols: Array<byte>{}}
     memoryHandshake(client.handle, server.handle)?
     let message = Array<byte>{0, 255, 128, 42, 13, 10}
     check(nativeWrite(client.handle, message[:])? == message.len())
@@ -144,8 +149,8 @@ func badHandshake(name string, certPath string, keyPath string, expected string)
     for versions in Array<int>{12, 13} {
         let config = clientConfigFor("testdata/roots.pem", versions)?
         let serverConfig = serverConfigFor(certPath, keyPath, versions)?
-        let client = ClientConfig{handle: nativeSession(config.handle, name)?}
-        let server = ClientConfig{handle: nativeSession(serverConfig.handle, "")?}
+        let client = ClientConfig{handle: plainSession(config.handle, name)?, protocols: Array<byte>{}}
+        let server = ClientConfig{handle: plainSession(serverConfig.handle, "")?, protocols: Array<byte>{}}
         let err = memoryHandshake(client.handle, server.handle)
         _ = err
         check(err != nil)
@@ -188,7 +193,7 @@ func TestInvalidConfigurationsAndHandles() error {
     let clientConfig, serverConfig = configs()?
     let malformedAddresses = Array<string>{"1.2.3", "256.1.1.1", "1::2::3", "12345::1"}
     for name in malformedAddresses {
-        let session, sessionErr = nativeSession(clientConfig.handle, name)
+        let session, sessionErr = plainSession(clientConfig.handle, name)
         _ = sessionErr
         check(session == 0 && sessionErr != nil && strings.Contains(errors.Message(sessionErr), "invalid IP address"))
     }
@@ -256,8 +261,8 @@ func TestUntrustedPeerCertificate() error {
     for versions in Array<int>{12, 13} {
         let config = clientConfigFor("testdata/future.pem", versions)?
         let serverConfig = serverConfigFor("testdata/server.pem", "testdata/server-key.pem", versions)?
-        let client = ClientConfig{handle: nativeSession(config.handle, "localhost")?}
-        let server = ClientConfig{handle: nativeSession(serverConfig.handle, "")?}
+        let client = ClientConfig{handle: plainSession(config.handle, "localhost")?, protocols: Array<byte>{}}
+        let server = ClientConfig{handle: plainSession(serverConfig.handle, "")?, protocols: Array<byte>{}}
         let err = memoryHandshake(client.handle, server.handle)
         _ = err
         check(err != nil && strings.Contains(errors.Message(err), "not correctly signed"))
@@ -269,7 +274,7 @@ async func firstProviderUse(cert own Array<byte>, key own Array<byte>, ready cha
     ready.send(true)
     start.receive()
     let config = NewServerConfig(cert[:], key[:])?
-    let session = ServerConfig{handle: nativeSession(config.handle, "")?}
+    let session = ServerConfig{handle: plainSession(config.handle, "")?, protocols: Array<byte>{}}
     return nil
 }
 
@@ -294,8 +299,8 @@ func TestConcurrentFirstProviderUse() error {
 }
 
 async func concurrentSession(clientToken int, serverToken int) error {
-    let client = ClientConfig{handle: nativeSession(clientToken, "localhost")?}
-    let server = ClientConfig{handle: nativeSession(serverToken, "")?}
+    let client = ClientConfig{handle: plainSession(clientToken, "localhost")?, protocols: Array<byte>{}}
+    let server = ClientConfig{handle: plainSession(serverToken, "")?, protocols: Array<byte>{}}
     return memoryHandshake(client.handle, server.handle)
 }
 
@@ -413,8 +418,8 @@ func TestAbruptClosureIsTruncation() error {
 
 func TestPendingCiphertextSurvivesRepeatedTimeouts() error {
     let config, serverConfig = configs()?
-    let client = nativeSession(config.handle, "localhost")?
-    let server = ClientConfig{handle: nativeSession(serverConfig.handle, "")?}
+    let client = plainSession(config.handle, "localhost")?
+    let server = ClientConfig{handle: plainSession(serverConfig.handle, "")?, protocols: Array<byte>{}}
     memoryHandshake(client, server.handle)?
     let message = Array<byte>{0, 255, 1, 128, 42, 13, 10}
     check(nativeWrite(client, message[:])? == message.len())
@@ -464,7 +469,7 @@ func TestPendingCiphertextSurvivesRepeatedTimeouts() error {
 
 func TestMalformedCiphertextFailsAndClosedHandlesReject() error {
     let config, serverConfig = configs()?
-    let server = ClientConfig{handle: nativeSession(serverConfig.handle, "")?}
+    let server = ClientConfig{handle: plainSession(serverConfig.handle, "")?, protocols: Array<byte>{}}
     let bad = Array<byte>{255, 3, 3, 0, 3, 1, 2, 3}
     nativeFeed(server.handle, bad[:])?
     let status, err = nativeHandshake(server.handle)
@@ -481,7 +486,7 @@ func TestMalformedCiphertextFailsAndClosedHandlesReject() error {
     check(written == 0 && writeErr == error("TLS failed connection"))
     check(nativeFeed(server.handle, bad[:]) == error("TLS failed connection"))
     check(nativeShutdown(server.handle) == error("TLS failed connection"))
-    let token = nativeSession(config.handle, "localhost")?
+    let token = plainSession(config.handle, "localhost")?
     nativeClose(token)
     nativeClose(token)
     let closed, closedErr = nativeRead(token, 1)
@@ -500,8 +505,8 @@ func TestProviderWantWriteRetainsSamePlaintext() error {
 func wantWriteCase(versions int) error {
     let config = clientConfigFor("testdata/roots.pem", versions)?
     let serverConfig = serverConfigFor("testdata/server.pem", "testdata/server-key.pem", versions)?
-    let client = ClientConfig{handle: nativeSession(config.handle, "localhost")?}
-    let server = ClientConfig{handle: nativeSession(serverConfig.handle, "")?}
+    let client = ClientConfig{handle: plainSession(config.handle, "localhost")?, protocols: Array<byte>{}}
+    let server = ClientConfig{handle: plainSession(serverConfig.handle, "")?, protocols: Array<byte>{}}
     memoryHandshake(client.handle, server.handle)?
     var chunk = 16384
     if versions == 13 {
@@ -584,8 +589,8 @@ func TestFailedReadSendsFatalAlert() error {
 func fatalAlertCase(versions int, recordType byte) error {
     let config = clientConfigFor("testdata/roots.pem", versions)?
     let serverConfig = serverConfigFor("testdata/server.pem", "testdata/server-key.pem", versions)?
-    let client = ClientConfig{handle: nativeSession(config.handle, "localhost")?}
-    let server = nativeSession(serverConfig.handle, "")?
+    let client = ClientConfig{handle: plainSession(config.handle, "localhost")?, protocols: Array<byte>{}}
+    let server = plainSession(serverConfig.handle, "")?
     memoryHandshake(client.handle, server)?
     let message = Array<byte>{1, 2, 3}
     check(nativeWrite(client.handle, message[:])? == message.len())
@@ -657,8 +662,8 @@ func ipHandshake(name string, certPath string, expected string) error {
     for versions in Array<int>{12, 13} {
         let config = clientConfigFor(certPath, versions)?
         let serverConfig = serverConfigFor(certPath, "testdata/server-key.pem", versions)?
-        let client = ClientConfig{handle: nativeSession(config.handle, name)?}
-        let server = ClientConfig{handle: nativeSession(serverConfig.handle, "")?}
+        let client = ClientConfig{handle: plainSession(config.handle, name)?, protocols: Array<byte>{}}
+        let server = ClientConfig{handle: plainSession(serverConfig.handle, "")?, protocols: Array<byte>{}}
         let err = memoryHandshake(client.handle, server.handle)
         _ = err
         if expected == "" {
@@ -703,7 +708,7 @@ func containsText(data []byte, text string) bool {
 
 func clientHello(name string) (Array<byte>, error) {
     let config, serverConfig = configsFor("testdata/ip.pem")?
-    let client = ClientConfig{handle: nativeSession(config.handle, name)?}
+    let client = ClientConfig{handle: plainSession(config.handle, name)?, protocols: Array<byte>{}}
     check(nativeHandshake(client.handle)? == 0)
     return nativeOutput(client.handle)
 }
@@ -817,8 +822,8 @@ func TestSystemRootsFileSkipsUnusableCertificates() error {
     let cert = os.ReadFile("testdata/server.pem")?
     let key = os.ReadFile("testdata/server-key.pem")?
     let serverConfig = NewServerConfig(cert[:], key[:])?
-    let client = ClientConfig{handle: nativeSession(clientConfig.handle, "localhost")?}
-    let server = ClientConfig{handle: nativeSession(serverConfig.handle, "")?}
+    let client = ClientConfig{handle: plainSession(clientConfig.handle, "localhost")?, protocols: Array<byte>{}}
+    let server = ClientConfig{handle: plainSession(serverConfig.handle, "")?, protocols: Array<byte>{}}
     return memoryHandshake(client.handle, server.handle)
 }
 
@@ -839,8 +844,8 @@ func TestSystemRootsFileRejections() error {
 func handshakeVersions(clientVersions int, serverVersions int) (int, int, error) {
     let config = clientConfigFor("testdata/roots.pem", clientVersions)?
     let serverConfig = serverConfigFor("testdata/server.pem", "testdata/server-key.pem", serverVersions)?
-    let client = ClientConfig{handle: nativeSession(config.handle, "localhost")?}
-    let server = ClientConfig{handle: nativeSession(serverConfig.handle, "")?}
+    let client = ClientConfig{handle: plainSession(config.handle, "localhost")?, protocols: Array<byte>{}}
+    let server = ClientConfig{handle: plainSession(serverConfig.handle, "")?, protocols: Array<byte>{}}
     memoryHandshake(client.handle, server.handle)?
     let clientVersion = nativeVersion(client.handle)?
     let serverVersion = nativeVersion(server.handle)?
@@ -894,11 +899,121 @@ func TestRSAIdentityAcrossVersions() error {
     for versions in Array<int>{12, 13} {
         let config = clientConfigFor("testdata/rsa.pem", versions)?
         let serverConfig = serverConfigFor("testdata/rsa.pem", "testdata/rsa-key.pem", versions)?
-        let client = ClientConfig{handle: nativeSession(config.handle, "localhost")?}
-        let server = ClientConfig{handle: nativeSession(serverConfig.handle, "")?}
+        let client = ClientConfig{handle: plainSession(config.handle, "localhost")?, protocols: Array<byte>{}}
+        let server = ClientConfig{handle: plainSession(serverConfig.handle, "")?, protocols: Array<byte>{}}
         memoryHandshake(client.handle, server.handle)?
         check(nativeVersion(client.handle)? == 759 + versions)
         check(nativeVersion(server.handle)? == 759 + versions)
     }
+    return nil
+}
+
+func protocolSession(config int, name string, protocols []string) (int, error) {
+    let list = protocolList(protocols)?
+    return nativeSession(config, name, list[:])
+}
+
+func filler(size int) string {
+    var text = ""
+    for var i = 0; i < size; i += 1 {
+        text += "x"
+    }
+    return text
+}
+
+func negotiated(versions int, offered []string, accepted []string) (string, string, error) {
+    let config = clientConfigFor("testdata/roots.pem", versions)?
+    let serverConfig = serverConfigFor("testdata/server.pem", "testdata/server-key.pem", versions)?
+    let client = ClientConfig{handle: protocolSession(config.handle, "localhost", offered)?, protocols: Array<byte>{}}
+    let server = ClientConfig{handle: protocolSession(serverConfig.handle, "", accepted)?, protocols: Array<byte>{}}
+    memoryHandshake(client.handle, server.handle)?
+    let clientName = nativeProtocol(client.handle)?
+    let serverName = nativeProtocol(server.handle)?
+    return strings.FromBytes(clientName[:])?, strings.FromBytes(serverName[:])?, nil
+}
+
+func TestApplicationProtocolNegotiation() error {
+    let none = Array<string>{}
+    let both = Array<string>{"h2", "http/1.1"}
+    let reversed = Array<string>{"http/1.1", "h2"}
+    let old = Array<string>{"http/1.1"}
+    let other = Array<string>{"spdy/3"}
+    for versions in Array<int>{12, 13} {
+        let client, server = negotiated(versions, both[:], both[:])?
+        check(client == "h2" && server == "h2")
+        let preferredClient, preferredServer = negotiated(versions, both[:], reversed[:])?
+        check(preferredClient == "http/1.1" && preferredServer == "http/1.1")
+        let fallbackClient, fallbackServer = negotiated(versions, both[:], old[:])?
+        check(fallbackClient == "http/1.1" && fallbackServer == "http/1.1")
+        let plainClient, plainServer = negotiated(versions, both[:], none[:])?
+        check(plainClient == "" && plainServer == "")
+        let quietClient, quietServer = negotiated(versions, none[:], both[:])?
+        check(quietClient == "" && quietServer == "")
+        let _, _, err = negotiated(versions, other[:], both[:])
+        _ = err
+        check(err != nil && strings.Contains(errors.Message(err), "No ALPN protocols supported"))
+    }
+    return nil
+}
+
+func TestApplicationProtocolValidation() error {
+    var config, serverConfig = configs()?
+    let empty = Array<string>{""}
+    let spaced = Array<string>{"h 2"}
+    let repeated = Array<string>{"h2", "h2"}
+    var many = Array<string>{}
+    for var i = 0; i < 17; i += 1 {
+        many.push("p" + filler(i))
+    }
+    var long = Array<string>{}
+    for var i = 0; i < 3; i += 1 {
+        long.push(filler(90 + i))
+    }
+    check(config.SetProtocols(empty[:]) == error("tls: invalid application protocol"))
+    check(config.SetProtocols(spaced[:]) == error("tls: invalid application protocol"))
+    check(serverConfig.SetProtocols(repeated[:]) == error("tls: duplicate application protocol"))
+    check(serverConfig.SetProtocols(many[:]) == error("tls: too many application protocols"))
+    check(config.SetProtocols(long[:]) == error("tls: application protocols too long"))
+    let widest = Array<string>{filler(254)}
+    let wider = Array<string>{filler(255)}
+    check(config.SetProtocols(wider[:]) == error("tls: invalid application protocol"))
+    check(config.SetProtocols(widest[:]) == nil)
+    var closed = ClientConfig{handle: 0, protocols: Array<byte>{}}
+    check(closed.SetProtocols(widest[:]) == error("tls.SetProtocols: closed configuration"))
+    let malformed = Array<byte>{5, 104, 50}
+    let _, err = nativeSession(config.handle, "localhost", malformed[:])
+    _ = err
+    check(err != nil && strings.Contains(errors.Message(err), "invalid application protocol list"))
+    return nil
+}
+
+async func protocolServer(listener own net.Listener, config own ServerConfig, ctx context.Context) (string, error) {
+    let source = listener.Accept()?
+    let conn = Server(ctx, source, config)?
+    let name = conn.Protocol()
+    conn.Close()?
+    return name, nil
+}
+
+func TestTCPApplicationProtocol() error {
+    var clientConfig, serverConfig = configs()?
+    let offered = Array<string>{"h2", "http/1.1"}
+    let accepted = Array<string>{"http/1.1"}
+    clientConfig.SetProtocols(offered[:])?
+    serverConfig.SetProtocols(accepted[:])?
+    let listener = net.Listen("tcp4", "127.0.0.1:0")?
+    let address = listener.Addr()
+    let ctx, cancel = context.WithTimeout(context.Background(), 5 * time.Second)
+    listener.SetDeadline(time.Now().Add(5 * time.Second))?
+    let server = go protocolServer(listener, serverConfig, ctx)
+    var conn = DialContext(ctx, address, "localhost", clientConfig)?
+    check(conn.Protocol() == "http/1.1")
+    var got = zeros(16)
+    let n, err = conn.Read(got[:])
+    _ = err
+    check(n == 0 && err == error("EOF"))
+    conn.Close()?
+    check(server.wait()? == "http/1.1")
+    cancel()
     return nil
 }

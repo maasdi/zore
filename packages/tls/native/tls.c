@@ -23,6 +23,8 @@
 #define ERROR_CAPACITY 512
 #define PEM_LIMIT (4 * 1024 * 1024)
 #define PEM_LINE_BYTES 48
+#define PROTOCOL_LIMIT 16
+#define PROTOCOL_BYTES 255
 
 typedef struct {
     int server;
@@ -53,6 +55,8 @@ typedef struct {
     int failed;
     unsigned char ip[16];
     size_t ip_length;
+    char protocol_names[PROTOCOL_BYTES + 1];
+    const char *protocols[PROTOCOL_LIMIT + 1];
 } Session;
 
 static int verify_ip(void *pointer, mbedtls_x509_crt *certificate, int depth, uint32_t *flags) {
@@ -177,7 +181,24 @@ void zore_tls_session_free(void *pointer) {
     free(session);
 }
 
-void *zore_tls_session(void *pointer, const char *name, char *error) {
+static int set_protocols(Session *session, const unsigned char *list, size_t length) {
+    if (length > PROTOCOL_BYTES) return 1;
+    size_t count = 0;
+    for (size_t offset = 0; offset < length;) {
+        size_t size = list[offset];
+        if (size == 0 || size > length - offset - 1 || count == PROTOCOL_LIMIT) return 1;
+        if (memchr(list + offset + 1, 0, size) != NULL) return 1;
+        memcpy(session->protocol_names + offset, list + offset + 1, size);
+        session->protocol_names[offset + size] = 0;
+        session->protocols[count++] = session->protocol_names + offset;
+        offset += size + 1;
+    }
+    session->protocols[count] = NULL;
+    return 0;
+}
+
+void *zore_tls_session(void *pointer, const char *name, const unsigned char *protocols,
+                       size_t protocols_len, char *error) {
     const Identity *source = pointer;
     Session *session = calloc(1, sizeof(*session));
     if (session == NULL) { snprintf(error, ERROR_CAPACITY, "allocation failed"); return NULL; }
@@ -216,6 +237,15 @@ void *zore_tls_session(void *pointer, const char *name, char *error) {
     } else {
         mbedtls_ssl_conf_ca_chain(&session->config, &session->certificates, NULL);
         mbedtls_ssl_conf_authmode(&session->config, MBEDTLS_SSL_VERIFY_REQUIRED);
+    }
+    if (set_protocols(session, protocols, protocols_len) != 0) {
+        snprintf(error, ERROR_CAPACITY, "TLS invalid application protocol list");
+        zore_tls_session_free(session);
+        return NULL;
+    }
+    if (session->protocols[0] != NULL) {
+        status = mbedtls_ssl_conf_alpn_protocols(&session->config, session->protocols);
+        if (status != 0) goto fail;
     }
     status = mbedtls_ssl_setup(&session->ssl, &session->config);
     if (status != 0) goto fail;
@@ -315,6 +345,15 @@ int zore_tls_shutdown(void *pointer, char *error) {
 int zore_tls_status(void *pointer) { return ((Session *)pointer)->status; }
 
 int zore_tls_version(void *pointer) { return (int) mbedtls_ssl_get_version_number(&((Session *)pointer)->ssl); }
+
+int zore_tls_protocol(void *pointer, unsigned char *data, size_t capacity) {
+    const char *name = mbedtls_ssl_get_alpn_protocol(&((Session *)pointer)->ssl);
+    if (name == NULL) return 0;
+    size_t length = strlen(name);
+    if (length > capacity) return 0;
+    memcpy(data, name, length);
+    return (int) length;
+}
 
 void zore_tls_free(void *pointer) { free(pointer); }
 
