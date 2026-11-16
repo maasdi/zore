@@ -71,7 +71,9 @@ request, and the frontend must stay usable without LLVM.
    [the architecture](docs/architecture.md).
 
 [AGENTS.md](AGENTS.md) condenses these rules. It is written for coding agents
-but applies to every contributor.
+but applies to every contributor. Branch names and the rule on
+credits are defined in
+[the contributors skill](.agents/skills/contributors/SKILL.md).
 
 ## Tests
 

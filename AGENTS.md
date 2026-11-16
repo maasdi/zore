@@ -64,22 +64,13 @@
 - Report what changed, what was verified, and any unresolved blockers. Never
   describe unrun tests or pending conformance examples as passing.
 
-## Branches
+## Branches, commits and pull requests
 
-- Follow Conventional Branch: `<type>/<description>`, for example
-  `feature/tls-alpha-tags`, `bugfix/http-lingering-close` or
-  `release/v0.1.0-alpha.2`.
-- Types: `feature/` for new behavior, `bugfix/` for fixes, `hotfix/` for urgent
-  fixes to a release, `release/` for release preparation and `chore/` for
-  docs, CI, dependencies and other non-code work.
-- The description is short lowercase kebab-case naming the change: ASCII
-  letters, digits and hyphens, with dots only in `release/` versions. No
-  leading, trailing or repeated hyphens or dots. An issue number may lead the
-  description, as in `feature/issue-218-package-distribution`, but never stands
-  alone.
-- Never put a tool, agent, model or person name such as `claude` in a branch
-  name.
-- Start new branches from the latest `main`; keep one change per branch.
+- Apply `.agents/skills/contributors/SKILL.md` before creating a branch,
+  committing, or opening or reviewing a pull request. This is required, also
+  for work delegated to other agents. It defines the branch naming rule
+  (`<type>/<description>`, for example `feature/tls-alpha-tags`) and the credit
+  rule, and points to the checks above and to `CONTRIBUTING.md`.
 
 ## Package boundaries
 
