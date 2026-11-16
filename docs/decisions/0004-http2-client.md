@@ -3,8 +3,9 @@
 Status: accepted as the plan for issue #290. **HTTP/2 is not implemented.** This
 record fixes the choices that later slices must follow. Each slice still locks
 its own public signatures, examples and conformance cases in the specification
-before code is written; nothing here is a supported API. Only the first slice,
-application protocol negotiation in the `tls` package, is delivered.
+before code is written; nothing here is a supported API. Two slices are
+delivered: application protocol negotiation in the `tls` package and the header
+compression package.
 
 ## Consumer
 
@@ -37,7 +38,9 @@ The server side, a general framing library and gRPC are out of scope.
 
 The protocol engine is a bundled package that works on any `http.ClientConn`
 and has no TLS dependency, so scripted connections can drive every frame in
-tests. The header compression code is private to it. The `tls/https` package
+tests. Header compression is its own bundled package, `std/net/http/hpack`
+(specification §37.48), because bundled packages are tested only through their
+public names and its limits need direct tests. The `tls/https` package
 only does the negotiation and hands over the connection, as it does today for
 HTTP/1.1.
 
@@ -111,7 +114,8 @@ Every limit is finite and has a default; a peer cannot raise one.
 ## Delivery order
 
 1. Application protocol negotiation in `tls` (delivered; specification §37.10).
-2. Header compression decoder and encoder with its limits.
+2. Header compression decoder and encoder with its limits (delivered;
+   specification §37.48).
 3. Frames, settings, flow control and the connection tasks over a scripted
    connection.
 4. The public client calls, negotiation and HTTP/1.1 fallback in `tls/https`.

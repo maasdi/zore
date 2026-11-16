@@ -13271,6 +13271,87 @@ proxy and a wrong-host rejection through it in `examples/https-client/`.
 HTTPS proxies, environment discovery, proxy bypass lists and SOCKS remain
 excluded.
 
+## 37.48 HTTP header compression — LOCKED
+
+`std/net/http/hpack` encodes and decodes HPACK header blocks (RFC 7541) for a
+later HTTP/2 client. It is a building block only: no HTTP/2 support exists, and
+no other bundled package uses it yet.
+
+```ore
+const DefaultTableBytes = 4096
+const MaxTableBytes = 65536
+const MaxListBytes = 16777216
+
+type Field struct {
+    Name string
+    Value string
+}
+
+func NewDecoder(tableBytes int, listBytes int) (Decoder, error)
+func (d mut Decoder) Decode(block []byte) (Array<Field>, error)
+func (d Decoder) TableBytes() int
+
+func NewEncoder() Encoder
+func (e mut Encoder) SetTableLimit(limit int) error
+func (e mut Encoder) Encode(fields []Field) Array<byte>
+```
+
+`Decoder` and `Encoder` are Move values with private state. A decoder serves one
+connection and must be given every complete header block of that connection in
+order. `tableBytes` is the largest dynamic table the peer may use, from 0 to
+`MaxTableBytes`; the table starts at the smaller of `tableBytes` and 4,096
+bytes. `listBytes`, from 1 to `MaxListBytes`, bounds one decoded list, counting
+each field as its name length plus its value length plus 32. Other limits return
+`hpack: invalid limit` with a decoder that only fails.
+
+`Decode` returns the fields in order and applies table insertions, evictions and
+size updates. An entry larger than the table empties it. A size update is
+accepted only before the first field of a block, at most twice, and not above
+`tableBytes`. Integers use at most four continuation bytes. Huffman text must
+not contain the end-of-string symbol and must end with at most seven padding
+bits that are all ones. Names and values must be valid UTF-8. The list limit is
+checked before a text is copied or unpacked, so the memory used by one call is
+bounded by `listBytes` and the table by `tableBytes`. Failures are
+`hpack: truncated header block`, `hpack: integer too large`,
+`hpack: invalid table index`, `hpack: table size update too large`,
+`hpack: misplaced table size update`, `hpack: invalid Huffman data`,
+`hpack: invalid field text` and `hpack: header list too large`. After any
+failure the table may no longer match the peer's, so every later call returns
+`hpack: decoder failed`. `TableBytes` reports the current table size.
+
+`Encode` writes one block and cannot fail. A field equal to a static table entry
+is written as its index. Any other field is written as a literal that is not
+added to the table, with a static name index when one exists; text is Huffman
+coded when that is shorter. `authorization`, `proxy-authorization`, `cookie` and
+`set-cookie` are always written as never-indexed literals. The encoder keeps no
+dynamic table. `SetTableLimit` records the peer's table setting: a negative
+value returns `hpack: invalid limit`, and a value below the size last announced
+(initially 4,096) makes the next block begin with a size update to that value.
+The package validates neither names nor values; HTTP field rules belong to the
+protocol code that uses it.
+
+```ore
+import "std/net/http/hpack"
+
+func roundTrip() (Array<hpack.Field>, error) {
+    var encoder = hpack.NewEncoder()
+    var decoder = hpack.NewDecoder(hpack.DefaultTableBytes, 16384)?
+    let fields = Array<hpack.Field>{hpack.Field{Name: ":method", Value: "GET"}}
+    let block = encoder.Encode(fields[:])
+    return decoder.Decode(block[:])
+}
+```
+
+Compiler impact: one bundled package of two source files importing
+`std/strings`; no runtime or syntax changes. Conformance: the RFC 7541 request
+and response examples with and without Huffman coding, including eviction in a
+256-byte table; malformed indexes, integers, truncated texts, size updates,
+Huffman padding and end-of-string, and non-UTF-8 text, each followed by a failed
+decoder; list limits at the exact boundary for indexed, literal and Huffman
+fields; invalid limits; encoder output for static, literal, sensitive and long
+fields read back by a decoder; the size update after a lowered limit; and the
+guide example.
+
 # 38. Self-Hosting Constraint
 
 ## 38.1 Long-term goal — LOCKED

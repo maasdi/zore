@@ -141,9 +141,10 @@ HTTP/2 remains independent and is not implemented. Its negotiation, cleartext
 policy, framing and header compression limits, concurrency, flow control,
 cancellation, GOAWAY, server push, fairness, resource bounds, ownership and
 error scope are decided in
-[decision 0004](../decisions/0004-http2-client.md). The first slice,
-application protocol negotiation in the `tls` package, is delivered under spec
-§37.10; each later slice locks its own contract before implementation.
+[decision 0004](../decisions/0004-http2-client.md). Application protocol
+negotiation in the `tls` package (spec §37.10) and header compression (spec
+§37.48) are delivered; each later slice locks its own contract before
+implementation.
 
 ## Acceptance evidence for each increment
 

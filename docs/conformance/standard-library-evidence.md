@@ -15,7 +15,7 @@ inspect handle removal, untaken pipe closure and reaped child state. These cases
 use a Rust child fixture on each host rather than a Unix shell. They establish
 direct-child behavior, with no descendant process-tree guarantee.
 
-[compiler/src/driver/stdlib.rs](../../compiler/src/driver/stdlib.rs) registers exactly 47 bundled package paths: `std/archive`, `std/bufio`, `std/bytes`, `std/compress/flate`, `std/compress/gzip`, `std/context`, `std/crypto/hmac`, `std/crypto/rand`, `std/crypto/sha1`, `std/crypto/sha256`, `std/crypto/sha512`, `std/crypto/subtle`, `std/encoding/base64`, `std/encoding/binary`, `std/encoding/csv`, `std/encoding/hex`, `std/encoding/html`, `std/encoding/json`, `std/errors`, `std/flag`, `std/fmt`, `std/hash/crc32`, `std/io`, `std/log`, `std/log/rolling`, `std/maps`, `std/math`, `std/math/rand`, `std/mime`, `std/net`, `std/net/http`, `std/net/url`, `std/os`, `std/os/exec`, `std/os/signal`, `std/path`, `std/path/filepath`, `std/regexp`, `std/slices`, `std/sort`, `std/strconv`, `std/strings`, `std/sync`, `std/testing`, `std/time`, `std/unicode`, and `std/unicode/utf8`. These paths bundle `.ore` sources, with selected runtime declarations. `path/filepath` substitutes a Windows source file on Windows. Cargo sets `autotests = false`; target registrations are explicit in [compiler/Cargo.toml](../../compiler/Cargo.toml). Native tests named below are compiled under its `native` target through modules declared in `tests/codegen/native.rs`; HTTP, JSON, signal, URL/client, log/rolling and other nested suites are not standalone Cargo targets. The external crypto, TLS and SQLite packages are maintained native-adapter examples, not part of the 47 bundled packages.
+[compiler/src/driver/stdlib.rs](../../compiler/src/driver/stdlib.rs) registers exactly 48 bundled package paths: `std/archive`, `std/bufio`, `std/bytes`, `std/compress/flate`, `std/compress/gzip`, `std/context`, `std/crypto/hmac`, `std/crypto/rand`, `std/crypto/sha1`, `std/crypto/sha256`, `std/crypto/sha512`, `std/crypto/subtle`, `std/encoding/base64`, `std/encoding/binary`, `std/encoding/csv`, `std/encoding/hex`, `std/encoding/html`, `std/encoding/json`, `std/errors`, `std/flag`, `std/fmt`, `std/hash/crc32`, `std/io`, `std/log`, `std/log/rolling`, `std/maps`, `std/math`, `std/math/rand`, `std/mime`, `std/net`, `std/net/http`, `std/net/http/hpack`, `std/net/url`, `std/os`, `std/os/exec`, `std/os/signal`, `std/path`, `std/path/filepath`, `std/regexp`, `std/slices`, `std/sort`, `std/strconv`, `std/strings`, `std/sync`, `std/testing`, `std/time`, `std/unicode`, and `std/unicode/utf8`. These paths bundle `.ore` sources, with selected runtime declarations. `path/filepath` substitutes a Windows source file on Windows. Cargo sets `autotests = false`; target registrations are explicit in [compiler/Cargo.toml](../../compiler/Cargo.toml). Native tests named below are compiled under its `native` target through modules declared in `tests/codegen/native.rs`; HTTP, JSON, signal, URL/client, log/rolling and other nested suites are not standalone Cargo targets. The external crypto, TLS and SQLite packages are maintained native-adapter examples, not part of the 47 bundled packages.
 
 | §37 contract family and supplied source/API | Registered executable assertion and observed behavior | Boundary or exclusion |
 |---|---|---|
@@ -109,6 +109,14 @@ exact output with Python and parses fixed element text and single/double-quoted
 text attributes. These parser assertions cover those fixed contexts, not browser
 conformance or arbitrary HTML sanitization. Template rendering remains deferred
 in [the separate decision](../design/templates.md).
+
+## HTTP header compression — issue #290
+
+Locked §37.48 delivers `std/net/http/hpack`: `Field`, `NewDecoder`, `Decode`,
+`TableBytes`, `NewEncoder`, `SetTableLimit` and `Encode`.
+[tests/codegen/hpack.rs](../../tests/codegen/hpack.rs) covers the RFC 7541 examples, malformed blocks,
+table and list limits, encoder output read back by a decoder and the guide. No
+HTTP/2 support is delivered.
 
 ## HTTP proxies — issue #289
 

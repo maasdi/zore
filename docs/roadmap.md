@@ -155,8 +155,9 @@ under §37.42), bounded
 HTTP/1.1 pooling (#288, delivered under §37.43), separate opt-in policies (#289,
 redirects, retries, decoding and proxies delivered under §§37.44–37.47) and an independent
 HTTP/2 project (#290): its model is decided in
-[decision 0004](decisions/0004-http2-client.md) and only TLS protocol
-negotiation (§37.10) is delivered; HTTP/2 itself is not implemented. The remaining items are design/implementation
+[decision 0004](decisions/0004-http2-client.md); TLS protocol negotiation
+(§37.10) and header compression (§37.48) are delivered, and HTTP/2 itself is
+not implemented. The remaining items are design/implementation
 follow-ups, not delivered client features; each public API must be locked under
 spec §53 before implementation.
 
