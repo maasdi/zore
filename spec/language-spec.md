@@ -9255,8 +9255,9 @@ Future streaming, pooling and protocol policies are tracked in issue #228 and
 before implementation; design follow-ups are not supported client features.
 Streamed response bodies are locked in §37.41, streamed uploads in §37.42,
 pooled connections in §37.43, opt-in redirects in §37.44, opt-in retries in
-§37.45, opt-in content decoding in §37.46 and explicit proxies in §37.47; all
-leave this buffered contract unchanged.
+§37.45, opt-in content decoding in §37.46, explicit proxies in §37.47 and
+caller-supplied HTTP/2 connections in §37.49; all leave this buffered contract
+unchanged.
 
 This additive contract preserves the server `Request` and `ResponseWriter`.
 The client API uses ordinary waiting calls and explicit errors:
@@ -13356,6 +13357,148 @@ decoder; list limits at the exact boundary for indexed, literal and Huffman
 fields; invalid limits; encoder output for static, literal, sensitive and long
 fields read back by a decoder; the size update after a lowered limit; and the
 guide example.
+
+## 37.49 HTTP/2 client connections — LOCKED
+
+`std/net/http` can run one HTTP/2 connection (RFC 9113) over a caller-supplied
+`ClientConn` on which HTTP/2 has already been agreed, for example a TLS
+connection whose negotiated application protocol is `h2` (§37.10). It is a
+building block: `Do`, `Pool`, `Follow`, `DoRetry`, `DoDecoded`, proxies and the
+`tls/https` transport keep speaking HTTP/1.1 and never use it. Negotiation,
+HTTP/1.1 fallback and streamed HTTP/2 bodies are not delivered.
+
+```ore
+type HTTP2Config struct {
+    MaxStreams int
+    StreamWindow int
+    MaxWaiters int
+}
+
+type HTTP2Stats struct {
+    Active int
+    Waiting int
+    Closed bool
+}
+
+func DefaultHTTP2Config() HTTP2Config
+func (c Client) NewHTTP2Conn(conn own ClientConn, config HTTP2Config) (HTTP2Conn, error)
+func (h HTTP2Conn) Do(ctx context.Context, method string, absoluteURL string, headers Header, body []byte) (ClientResponse, error)
+func (h HTTP2Conn) Stats() HTTP2Stats
+func (h HTTP2Conn) Close()
+```
+
+Defaults are 32 streams, a 262,144-byte stream window and 256 waiters; a zero
+field means its default. Negative values fail with
+`http2: negative configuration`; more than 1,024 streams or 65,536 waiters, or a
+window outside 16,384 to 16,777,216 bytes, fails with
+`http2: configuration out of range`. `NewHTTP2Conn` consumes the connection,
+also on failure, and returns at once; the client preface and settings are sent
+by one background task that owns the connection until it ends. `HTTP2Conn` is a
+Copy handle that tasks may share; its zero value is closed.
+
+The task disables server push, advertises `StreamWindow` per stream, a
+connection window of `MaxStreams` times `StreamWindow` (at most 2^31 - 1) and
+the client's `MaxHeaderBytes` as the header list limit, and keeps the 16,384-byte
+frame size. It alternates bounded reads and writes on the single connection, so
+neither direction can block the other; a request submitted while it waits for
+the peer is sent within 16 milliseconds. With no stream open it checks the
+connection about four times a second. It uses one task, one socket, one header
+compression decoder bounded by `MaxHeaderBytes`, and buffers at most two
+frames of unparsed input. A client whose `MaxHeaderBytes` exceeds the header
+compression list limit (§37.48) is refused with `http2: header limit too large`.
+
+`Do` validates like §37.11 `Do` (method, absolute URL, header syntax,
+`MaxRequestBodyBytes`, `MaxHeaderBytes` counted as name plus value plus 32 per
+field) and additionally refuses `TE` and `Keep-Alive` as transport headers. It
+sends `:method`, `:scheme`, `:authority` and `:path`, `content-length` for a
+nonempty body, and the caller's headers with lowercase names. No request is
+sent before the peer's first `SETTINGS` frame has been received. At most
+`MaxStreams` requests, and never more than the peer's concurrent stream setting,
+are open at once; further requests wait in order. When `MaxStreams` plus
+`MaxWaiters` calls are already in progress, `Do` fails with
+`http2: too many waiting requests` without waiting. The request body is copied
+and sent as the peer's stream and connection windows allow, one frame per stream
+in turn. The whole response is buffered under `MaxBodyBytes`; the stream and
+connection windows are replenished as data arrives. `Do` is bounded by the
+client's `Timeout` and the caller's context. Interim 1xx responses other than
+101 are skipped and valid trailers are discarded. Response header names are
+lowercase.
+
+Stream failures end one request and leave the others running:
+
+| Condition | Error | Sent to the peer |
+| --- | --- | --- |
+| `RST_STREAM` with `REFUSED_STREAM`, or a stream above the last identifier of a received `GOAWAY` | `http2: request not processed` | nothing |
+| Any other `RST_STREAM` | `http2: stream reset by server (code N)` | nothing |
+| Missing or invalid `:status`, another pseudo-header, an uppercase or connection-specific field name, an invalid value in headers or trailers, `DATA` before the response headers, `DATA` in a `HEAD` response, a second header block without end of stream, a 101 or finished 1xx response, a zero stream window update, or a body whose size differs from `content-length` (except for `HEAD` and 304; the value must be digits only) | `http2: malformed response` | `RST_STREAM` `PROTOCOL_ERROR` |
+| Body beyond `MaxBodyBytes` | `http.Client: body too large` | `RST_STREAM` `CANCEL` |
+| Data or a window update beyond a stream window | `http2: flow control error` | `RST_STREAM` `FLOW_CONTROL_ERROR` |
+| Context cancelled or deadline passed | the context error | `RST_STREAM` `CANCEL` |
+
+Connection failures end every open and waiting request with the same error,
+send `GOAWAY` with the matching code when the connection still accepts writes,
+and close it: `http2: protocol error: ...` (a first frame that is not
+`SETTINGS`, `PUSH_PROMISE`, an interrupted header block, frames on an idle or
+invalid stream, invalid padding, a nonzero push setting, an invalid frame size
+setting, a zero connection window update), `http2: frame too large`,
+`http2: frame size error`, `http2: flow control error`, `http2: hpack: ...` for
+a header block the decoder rejects, `http2: header block too large` when the
+compressed block exceeds `MaxHeaderBytes`, `http2: too many control frames`
+when more than 64 replies to `PING` or `SETTINGS` are queued unsent or more than
+64 empty `DATA` frames arrive in a row on any streams, `http2: connection closed` at end of
+input, and transport errors unchanged. Frames of unknown types and frames for
+streams that already ended are ignored; their data still counts against the
+connection window.
+
+A received `GOAWAY` stops new streams: waiting and later requests fail with
+`http2: request not processed`, also after a later `Close`, `Stats` reports the
+connection closed, streams at or below its last identifier may finish, and then
+the connection closes. `Close` stops new requests with
+`http2: closed connection`, sends `GOAWAY` with `NO_ERROR`, lets open streams
+finish and then closes the connection; it does not wait. Before closing the
+connection for any reason the task reads and discards up to 64 KiB of input for
+at most 100 milliseconds, so a final `GOAWAY` is not lost to a reset when the
+peer is still sending. After a connection
+failure every later `Do` returns that failure. `Stats` reports open and waiting
+requests and whether new requests are refused. A connection that is never closed
+keeps its task until the peer closes it.
+
+Plain callers block with worker compensation and async callers use the ordinary
+API without `await`, as for §37.11.
+
+```ore
+import "std/context"
+import "std/net/http"
+
+func status(client http.Client, agreed own http.ClientConn, target string) (int, error) {
+    let conn = client.NewHTTP2Conn(agreed, http.DefaultHTTP2Config())?
+    let empty = Array<byte>{}
+    let response, err = conn.Do(context.Background(), "GET", target, http.NewHeader(), empty[:])
+    conn.Close()
+    if err != nil {
+        return 0, err
+    }
+    return response.StatusCode, nil
+}
+```
+
+Compiler impact: two bundled source files in `std/net/http` importing
+`std/net/http/hpack`; no runtime or syntax changes. Conformance: a scripted
+HTTP/2 peer over loopback TCP for buffered `GET`, `POST` and `HEAD` exchanges
+and the sent pseudo-headers; three interleaved responses; a peer stream limit of
+one; the waiter limit; an upload that stalls at the peer's window and resumes
+after window updates; a 300,000-byte download with replenished windows;
+`REFUSED_STREAM` beside a served sibling; `GOAWAY` with a last identifier;
+`PUSH_PROMISE`; an oversized frame; seven malformed responses followed by a
+served request on the same connection; a rejected header block; interim
+response, padded and prioritised `HEADERS` split over `CONTINUATION` frames,
+padded `DATA`, trailers and a `PING`; a cancelled request beside a served
+sibling; the body limit; end of input; an empty `DATA` flood; a zero window
+update; a first frame that is not `SETTINGS`; a signed `content-length`,
+`DATA` in a `HEAD` response and an invalid trailer value followed by a served
+request; empty `DATA` frames on a finished stream; `Close` after a received
+`GOAWAY`; request validation, configuration and header limit errors; `Do` after `Close`; leak checks on every run; frontend
+acceptance of the guide example and type rejections.
 
 # 38. Self-Hosting Constraint
 

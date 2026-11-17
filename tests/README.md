@@ -12,7 +12,9 @@ waits, budgets and the retry guide), gzip decoding in `codegen/http_decode.rs`
 (encodings, broken data, size and ratio limits and the decoding guide),
 proxies in `codegen/http_proxy.rs` (absolute-form requests, CONNECT tunnels,
 credentials and the proxy guide), header compression in `codegen/hpack.rs`
-(RFC 7541 examples, malformed blocks, limits and the guide), `packages/networking.rs` and the HTTPS
+(RFC 7541 examples, malformed blocks, limits and the guide), HTTP/2 connections in
+`codegen/http2.rs` (a scripted peer for multiplexing, limits, flow control and
+errors), `packages/networking.rs` and the HTTPS
 example tests.
 
 Public networking is checked in `packages/networking.rs`,

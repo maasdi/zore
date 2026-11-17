@@ -41,7 +41,7 @@ bundled! {
     "net" => ["net.ore", "ip.ore", "dns.ore", "udp.ore"],
     "net/url" => ["url.ore", "absolute.ore", "reference.ore"],
     "net/http/hpack" => ["hpack.ore", "tables.ore"],
-    "net/http" => ["header.ore", "cookie.ore", "form.ore", "file.ore", "multipart.ore", "router.ore", "exchange.ore", "server.ore", "convenience.ore", "client.ore", "stream.ore", "upload.ore", "pool.ore", "redirect.ore", "retry.ore", "decode.ore", "proxy.ore"],
+    "net/http" => ["header.ore", "cookie.ore", "form.ore", "file.ore", "multipart.ore", "router.ore", "exchange.ore", "server.ore", "convenience.ore", "client.ore", "stream.ore", "upload.ore", "pool.ore", "redirect.ore", "retry.ore", "decode.ore", "proxy.ore", "http2.ore", "http2_engine.ore"],
     "os" => ["os.ore", "file.ore", "temp.ore", "tree.ore"],
     "os/exec" => ["exec.ore"],
     "os/signal" => ["signal.ore"],

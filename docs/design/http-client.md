@@ -137,14 +137,15 @@ bounds, checksum/truncation/concatenation policy and partial-output errors.
 Reuse existing compression packages; their availability alone does not define
 HTTP negotiation or decoding policy. Each policy gets its own implementation PR.
 
-HTTP/2 remains independent and is not implemented. Its negotiation, cleartext
+HTTP/2 remains independent of the ordinary client calls. Its negotiation, cleartext
 policy, framing and header compression limits, concurrency, flow control,
 cancellation, GOAWAY, server push, fairness, resource bounds, ownership and
 error scope are decided in
 [decision 0004](../decisions/0004-http2-client.md). Application protocol
-negotiation in the `tls` package (spec §37.10) and header compression (spec
-§37.48) are delivered; each later slice locks its own contract before
-implementation.
+negotiation in the `tls` package (spec §37.10), header compression (spec
+§37.48) and multiplexed connections over a caller-supplied connection (spec
+§37.49) are delivered; automatic selection, fallback and streamed bodies lock
+their own contract before implementation.
 
 ## Acceptance evidence for each increment
 

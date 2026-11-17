@@ -1,0 +1,1034 @@
+package http
+
+import "std/errors"
+import "std/io"
+import "std/net/http/hpack"
+import "std/strconv"
+import "std/time"
+
+const h2FrameLimit = 16384
+const h2InitialWindow = 65535
+const h2MaxWindow = 2147483647
+const h2ReplyLimit = 64
+const h2Data = 0
+const h2Headers = 1
+const h2Priority = 2
+const h2Reset = 3
+const h2SettingsFrame = 4
+const h2PushPromise = 5
+const h2Ping = 6
+const h2GoAway = 7
+const h2WindowUpdate = 8
+const h2Continuation = 9
+const h2ProtocolError = 1
+const h2FlowControlError = 3
+const h2FrameSizeError = 6
+const h2RefusedStream = 7
+const h2Cancel = 8
+const h2CompressionError = 9
+const h2Calm = 11
+
+type h2Stream struct {
+    id int
+    ticket int
+    done channel<h2Result>
+    body Array<byte>
+    sent int
+    ended bool
+    head bool
+    sendWindow int
+    recvWindow int
+    recvUnacked int
+    answered bool
+    status int
+    headers Header
+    expected int
+    data Array<byte>
+}
+
+type h2Engine struct {
+    conn ClientConn
+    work channel<h2Request>
+    shared Mutex<h2Shared>
+    config ClientConfig
+    limits HTTP2Config
+    decoder hpack.Decoder
+    encoder hpack.Encoder
+    streams Array<h2Stream>
+    queue Array<h2Request>
+    cancelled Array<int>
+    seen int
+    nextID int
+    peerStreams int
+    peerWindow int
+    sendWindow int
+    recvWindow int
+    recvUnacked int
+    out Array<byte>
+    outPos int
+    replies int
+    input Array<byte>
+    inputPos int
+    scratch Array<byte>
+    headerStream int
+    headerEnd bool
+    headerBlock Array<byte>
+    greeted bool
+    draining bool
+    local bool
+    reason error
+    failure error
+    emptyFrames int
+    turn int
+    wait time.Duration
+    shownActive int
+    shownWaiting int
+}
+
+func h2Serve(conn own ClientConn, work channel<h2Request>, shared Mutex<h2Shared>, config ClientConfig, limits HTTP2Config) {
+    let decoder, _ = hpack.NewDecoder(hpack.DefaultTableBytes, config.MaxHeaderBytes)
+    var scratch = Array<byte>{}
+    for scratch.len() < h2FrameLimit {
+        scratch.push(0)
+    }
+    var e = h2Engine{conn: conn, work: work, shared: shared, config: config, limits: limits, decoder: decoder, encoder: hpack.NewEncoder(), streams: Array<h2Stream>{}, queue: Array<h2Request>{}, cancelled: Array<int>{}, seen: 0, nextID: 1, peerStreams: h2MaxWindow, peerWindow: h2InitialWindow, sendWindow: h2InitialWindow, recvWindow: h2InitialWindow, recvUnacked: 0, out: Array<byte>{}, outPos: 0, replies: 0, input: Array<byte>{}, inputPos: 0, scratch: scratch, headerStream: 0, headerEnd: false, headerBlock: Array<byte>{}, greeted: false, draining: false, local: false, reason: error("http2: closed connection"), failure: nil, emptyFrames: 0, turn: 0, wait: time.Millisecond, shownActive: 0, shownWaiting: 0}
+    e.greet()
+    for e.step() {
+    }
+    e.finish()
+}
+
+func h2Put(out mut Array<byte>, kind int, flags int, id int, payload []byte) {
+    let length = payload.len()
+    out.push(byte((length >> 16) & 255))
+    out.push(byte((length >> 8) & 255))
+    out.push(byte(length & 255))
+    out.push(byte(kind))
+    out.push(byte(flags))
+    h2PutInt(out, id)
+    for value in payload {
+        out.push(value)
+    }
+}
+
+func h2PutInt(out mut Array<byte>, value int) {
+    out.push(byte((value >> 24) & 255))
+    out.push(byte((value >> 16) & 255))
+    out.push(byte((value >> 8) & 255))
+    out.push(byte(value & 255))
+}
+
+func h2Int(data []byte, at int) int {
+    return (int(data[at]) << 24) | (int(data[at + 1]) << 16) | (int(data[at + 2]) << 8) | int(data[at + 3])
+}
+
+func (e mut h2Engine) greet() {
+    let preface = "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n"
+    for var i = 0; i < preface.len(); i += 1 {
+        e.out.push(preface[i])
+    }
+    var settings = Array<byte>{}
+    settings.push(0)
+    settings.push(2)
+    h2PutInt(settings, 0)
+    settings.push(0)
+    settings.push(4)
+    h2PutInt(settings, e.limits.StreamWindow)
+    settings.push(0)
+    settings.push(6)
+    h2PutInt(settings, e.config.MaxHeaderBytes)
+    h2Put(e.out, h2SettingsFrame, 0, 0, settings[:])
+    var total = e.limits.StreamWindow * e.limits.MaxStreams
+    if total > h2MaxWindow {
+        total = h2MaxWindow
+    }
+    if total > h2InitialWindow {
+        var update = Array<byte>{}
+        h2PutInt(update, total - h2InitialWindow)
+        h2Put(e.out, h2WindowUpdate, 0, 0, update[:])
+        e.recvWindow = total
+    }
+}
+
+func (e mut h2Engine) control(kind int, flags int, id int, value int) {
+    var payload = Array<byte>{}
+    if kind == h2GoAway {
+        h2PutInt(payload, 0)
+    }
+    if kind != h2SettingsFrame {
+        h2PutInt(payload, value)
+    }
+    h2Put(e.out, kind, flags, id, payload[:])
+}
+
+func (e mut h2Engine) abort(code int, text string) {
+    if e.failure == nil {
+        e.failure = error("http2: " + text)
+        e.control(h2GoAway, 0, 0, code)
+    }
+}
+
+func (e mut h2Engine) reply() {
+    e.replies += 1
+    if e.replies > h2ReplyLimit {
+        e.abort(h2Calm, "too many control frames")
+    }
+}
+
+func (e h2Engine) find(id int) int {
+    for i, stream in e.streams {
+        if stream.id == id {
+            return i
+        }
+    }
+    return 0 - 1
+}
+
+func (e mut h2Engine) take(index int) h2Stream {
+    var tail = Array<h2Stream>{}
+    for e.streams.len() > index + 1 {
+        let _, later = e.streams.pop()
+        tail.push(later)
+    }
+    let _, stream = e.streams.pop()
+    for tail.len() > 0 {
+        let _, later = tail.pop()
+        e.streams.push(later)
+    }
+    return stream
+}
+
+func (e mut h2Engine) dequeue(index int) h2Request {
+    var tail = Array<h2Request>{}
+    for e.queue.len() > index + 1 {
+        let _, later = e.queue.pop()
+        tail.push(later)
+    }
+    let _, request = e.queue.pop()
+    for tail.len() > 0 {
+        let _, later = tail.pop()
+        e.queue.push(later)
+    }
+    return request
+}
+
+func h2Fail(done channel<h2Result>, failure error) {
+    done.send(h2Result{response: emptyClientResponse(), failure: failure})
+}
+
+func (e mut h2Engine) discard(index int, code int, failure error) {
+    let stream = e.take(index)
+    if code >= 0 {
+        e.control(h2Reset, 0, stream.id, code)
+    }
+    h2Fail(stream.done, failure)
+}
+
+func (e mut h2Engine) malformed(index int) {
+    e.discard(index, h2ProtocolError, error("http2: malformed response"))
+}
+
+func (e mut h2Engine) shutdown(reason error) {
+    _ = reason
+    if !e.draining {
+        e.draining = true
+        e.reason = reason
+    }
+    for e.queue.len() > 0 {
+        let request = e.dequeue(0)
+        h2Fail(request.done, e.reason)
+    }
+}
+
+func (e mut h2Engine) accept(request own h2Request) {
+    if request.wake {
+        return
+    }
+    e.seen = request.ticket
+    for i, ticket in e.cancelled {
+        if ticket == request.ticket {
+            e.cancelled[i] = 0
+            return
+        }
+    }
+    if e.draining || e.failure != nil {
+        h2Fail(request.done, e.reason)
+        return
+    }
+    e.queue.push(request)
+}
+
+func (e mut h2Engine) intake(idle bool) {
+    if idle {
+        select {
+            case let request, ok = e.work.receive() {
+                if ok {
+                    e.received()
+                    e.accept(request)
+                }
+            }
+            case time.After(250 * time.Millisecond).receive() {
+            }
+        }
+    }
+    var more = true
+    for more {
+        select {
+            case let request, ok = e.work.receive() {
+                if ok {
+                    e.received()
+                    e.accept(request)
+                }
+            }
+            default {
+                more = false
+            }
+        }
+    }
+}
+
+func (e mut h2Engine) received() {
+    e.shared.withLock(func(s mut h2Shared) {
+        s.queued -= 1
+    })
+}
+
+func (e mut h2Engine) sync() {
+    let cancels, closing = e.shared.withLock(func(s mut h2Shared) (Array<int>, bool) {
+        var taken = Array<int>{}
+        for s.cancels.len() > 0 {
+            let _, ticket = s.cancels.pop()
+            taken.push(ticket)
+        }
+        return taken, s.closing
+    })
+    for ticket in cancels {
+        e.cancel(ticket)
+    }
+    if closing && !e.draining {
+        e.local = true
+        e.shutdown(error("http2: closed connection"))
+        e.control(h2GoAway, 0, 0, 0)
+    }
+    var kept = Array<int>{}
+    for ticket in e.cancelled {
+        if ticket > e.seen {
+            kept.push(ticket)
+        }
+    }
+    e.cancelled = kept
+}
+
+func (e mut h2Engine) cancel(ticket int) {
+    for i, stream in e.streams {
+        if stream.ticket == ticket {
+            let gone = e.take(i)
+            e.control(h2Reset, 0, gone.id, h2Cancel)
+            return
+        }
+    }
+    for i, request in e.queue {
+        if request.ticket == ticket {
+            let _ = e.dequeue(i)
+            return
+        }
+    }
+    if ticket > e.seen {
+        e.cancelled.push(ticket)
+    }
+}
+
+func (e mut h2Engine) admit() {
+    var limit = e.limits.MaxStreams
+    if e.peerStreams < limit {
+        limit = e.peerStreams
+    }
+    for e.greeted && !e.draining && e.failure == nil && e.queue.len() > 0 && e.streams.len() < limit {
+        if e.nextID > h2MaxWindow - 2 {
+            e.shutdown(error("http2: request not processed"))
+            return
+        }
+        let request = e.dequeue(0)
+        let id = e.nextID
+        e.nextID += 2
+        let block = e.encoder.Encode(request.fields[:])
+        var position = 0
+        var kind = h2Headers
+        for {
+            var end = position + h2FrameLimit
+            var flags = 0
+            if end >= block.len() {
+                end = block.len()
+                flags = 4
+            }
+            if kind == h2Headers && request.body.len() == 0 {
+                flags |= 1
+            }
+            h2Put(e.out, kind, flags, id, block[position:end])
+            position = end
+            kind = h2Continuation
+            if position == block.len() {
+                break
+            }
+        }
+        let ended = request.body.len() == 0
+        e.streams.push(h2Stream{id: id, ticket: request.ticket, done: request.done, body: request.body, sent: 0, ended: ended, head: request.head, sendWindow: e.peerWindow, recvWindow: e.limits.StreamWindow, recvUnacked: 0, answered: false, status: 0, headers: NewHeader(), expected: 0 - 1, data: Array<byte>{}})
+    }
+}
+
+func (e mut h2Engine) produce() {
+    var idleTurns = 0
+    for e.failure == nil && e.streams.len() > 0 && e.out.len() - e.outPos < h2FrameLimit && idleTurns < e.streams.len() {
+        if e.turn >= e.streams.len() {
+            e.turn = 0
+        }
+        let i = e.turn
+        e.turn += 1
+        var count = e.streams[i].body.len() - e.streams[i].sent
+        if e.streams[i].ended || count == 0 {
+            idleTurns += 1
+            continue
+        }
+        if count > h2FrameLimit {
+            count = h2FrameLimit
+        }
+        if count > e.streams[i].sendWindow {
+            count = e.streams[i].sendWindow
+        }
+        if count > e.sendWindow {
+            count = e.sendWindow
+        }
+        if count <= 0 {
+            idleTurns += 1
+            continue
+        }
+        idleTurns = 0
+        let start = e.streams[i].sent
+        var flags = 0
+        if start + count == e.streams[i].body.len() {
+            flags = 1
+            e.streams[i].ended = true
+        }
+        var chunk = Array<byte>{}
+        for var k = start; k < start + count; k += 1 {
+            chunk.push(e.streams[i].body[k])
+        }
+        let id = e.streams[i].id
+        h2Put(e.out, h2Data, flags, id, chunk[:])
+        e.streams[i].sent += count
+        e.streams[i].sendWindow -= count
+        e.sendWindow -= count
+    }
+}
+
+func (e mut h2Engine) write() bool {
+    if e.outPos == e.out.len() {
+        return false
+    }
+    var end = e.outPos + h2FrameLimit
+    if end > e.out.len() {
+        end = e.out.len()
+    }
+    let armErr = e.conn.SetWriteDeadline(time.Now().Add(e.wait))
+    if armErr != nil {
+        e.failure = armErr
+        return false
+    }
+    let n, err = e.conn.Write(e.out[e.outPos:end])
+    _ = err
+    if n < 0 || n > end - e.outPos {
+        e.failure = error("http.Client: invalid write count")
+        return false
+    }
+    e.outPos += n
+    if e.outPos == e.out.len() {
+        e.out = Array<byte>{}
+        e.outPos = 0
+        e.replies = 0
+    } else if e.outPos > 65536 {
+        var rest = Array<byte>{}
+        for var i = e.outPos; i < e.out.len(); i += 1 {
+            rest.push(e.out[i])
+        }
+        e.out = rest
+        e.outPos = 0
+    }
+    if err != nil && err != error("net.Write: timed out") && err != ClientPollTimeout {
+        e.failure = err
+    }
+    return n > 0
+}
+
+func (e mut h2Engine) read() bool {
+    let armErr = e.conn.SetReadDeadline(time.Now().Add(e.wait))
+    if armErr != nil {
+        e.failure = armErr
+        return false
+    }
+    let n, err = e.conn.Read(e.scratch[:])
+    _ = err
+    if n < 0 || n > e.scratch.len() {
+        e.failure = error("http.Client: invalid read count")
+        return false
+    }
+    for var i = 0; i < n; i += 1 {
+        e.input.push(e.scratch[i])
+    }
+    if n > 0 {
+        e.parse()
+    }
+    if err != nil && err != error("net.Read: timed out") && err != ClientPollTimeout && e.failure == nil {
+        if err == io.EOF {
+            e.failure = error("http2: connection closed")
+        } else {
+            e.failure = err
+        }
+    }
+    return n > 0
+}
+
+func (e mut h2Engine) parse() {
+    for e.failure == nil && e.input.len() - e.inputPos >= 9 {
+        let at = e.inputPos
+        let length = (int(e.input[at]) << 16) | (int(e.input[at + 1]) << 8) | int(e.input[at + 2])
+        let kind = int(e.input[at + 3])
+        let flags = int(e.input[at + 4])
+        let id = ((int(e.input[at + 5]) & 127) << 24) | (int(e.input[at + 6]) << 16) | (int(e.input[at + 7]) << 8) | int(e.input[at + 8])
+        if length > h2FrameLimit {
+            e.abort(h2FrameSizeError, "frame too large")
+            return
+        }
+        if e.input.len() - at < 9 + length {
+            break
+        }
+        var payload = Array<byte>{}
+        for var i = at + 9; i < at + 9 + length; i += 1 {
+            payload.push(e.input[i])
+        }
+        e.inputPos = at + 9 + length
+        e.frame(kind, flags, id, payload[:])
+    }
+    if e.inputPos > 0 {
+        var rest = Array<byte>{}
+        for var i = e.inputPos; i < e.input.len(); i += 1 {
+            rest.push(e.input[i])
+        }
+        e.input = rest
+        e.inputPos = 0
+    }
+}
+
+func (e mut h2Engine) idleStream(id int) bool {
+    return id == 0 || id % 2 == 0 || id >= e.nextID
+}
+
+func (e mut h2Engine) frame(kind int, flags int, id int, payload []byte) {
+    if !e.greeted && (kind != h2SettingsFrame || flags & 1 != 0) {
+        e.abort(h2ProtocolError, "protocol error: expected SETTINGS")
+        return
+    }
+    if e.headerStream != 0 && (kind != h2Continuation || id != e.headerStream) {
+        e.abort(h2ProtocolError, "protocol error: interrupted header block")
+        return
+    }
+    if kind == h2Data {
+        e.data(flags, id, payload)
+    } else if kind == h2Headers {
+        e.headersFrame(flags, id, payload)
+    } else if kind == h2Continuation {
+        if e.headerStream == 0 {
+            e.abort(h2ProtocolError, "protocol error: unexpected CONTINUATION")
+            return
+        }
+        e.fragment(payload, flags & 4 != 0)
+    } else if kind == h2Priority {
+        if id == 0 {
+            e.abort(h2ProtocolError, "protocol error: PRIORITY on stream 0")
+        } else if payload.len() != 5 {
+            e.abort(h2FrameSizeError, "frame size error")
+        }
+    } else if kind == h2Reset {
+        e.resetFrame(id, payload)
+    } else if kind == h2SettingsFrame {
+        e.settings(flags, id, payload)
+    } else if kind == h2PushPromise {
+        e.abort(h2ProtocolError, "protocol error: server push is disabled")
+    } else if kind == h2Ping {
+        if id != 0 {
+            e.abort(h2ProtocolError, "protocol error: PING on a stream")
+        } else if payload.len() != 8 {
+            e.abort(h2FrameSizeError, "frame size error")
+        } else if flags & 1 == 0 {
+            h2Put(e.out, h2Ping, 1, 0, payload)
+            e.reply()
+        }
+    } else if kind == h2GoAway {
+        e.goAway(id, payload)
+    } else if kind == h2WindowUpdate {
+        e.windowUpdate(id, payload)
+    }
+}
+
+func (e mut h2Engine) data(flags int, id int, payload []byte) {
+    if e.idleStream(id) {
+        e.abort(h2ProtocolError, "protocol error: DATA on an idle stream")
+        return
+    }
+    let length = payload.len()
+    e.recvWindow -= length
+    if e.recvWindow < 0 {
+        e.abort(h2FlowControlError, "flow control error")
+        return
+    }
+    e.recvUnacked += length
+    if e.recvUnacked >= e.limits.StreamWindow / 2 {
+        let amount = e.recvUnacked
+        e.control(h2WindowUpdate, 0, 0, amount)
+        e.recvWindow += amount
+        e.recvUnacked = 0
+    }
+    var start = 0
+    var end = length
+    if flags & 8 != 0 {
+        if length == 0 || int(payload[0]) >= length {
+            e.abort(h2ProtocolError, "protocol error: invalid padding")
+            return
+        }
+        start = 1
+        end = length - int(payload[0])
+    }
+    let finished = flags & 1 != 0
+    if end == start && !finished {
+        e.emptyFrames += 1
+        if e.emptyFrames > h2ReplyLimit {
+            e.abort(h2Calm, "too many control frames")
+            return
+        }
+    } else {
+        e.emptyFrames = 0
+    }
+    let index = e.find(id)
+    if index < 0 {
+        return
+    }
+    e.streams[index].recvWindow -= length
+    if e.streams[index].recvWindow < 0 {
+        e.discard(index, h2FlowControlError, error("http2: flow control error"))
+        return
+    }
+    if !e.streams[index].answered {
+        e.malformed(index)
+        return
+    }
+    if e.streams[index].head && end > start {
+        e.malformed(index)
+        return
+    }
+    if e.streams[index].data.len() + end - start > e.config.MaxBodyBytes {
+        e.discard(index, h2Cancel, error("http.Client: body too large"))
+        return
+    }
+    for var i = start; i < end; i += 1 {
+        e.streams[index].data.push(payload[i])
+    }
+    if finished {
+        e.complete(index)
+        return
+    }
+    e.streams[index].recvUnacked += length
+    if e.streams[index].recvUnacked >= e.limits.StreamWindow / 2 {
+        let amount = e.streams[index].recvUnacked
+        e.control(h2WindowUpdate, 0, id, amount)
+        e.streams[index].recvWindow += amount
+        e.streams[index].recvUnacked = 0
+    }
+}
+
+func (e mut h2Engine) headersFrame(flags int, id int, payload []byte) {
+    if e.idleStream(id) {
+        e.abort(h2ProtocolError, "protocol error: HEADERS on an idle stream")
+        return
+    }
+    var start = 0
+    var end = payload.len()
+    if flags & 8 != 0 {
+        if end == 0 {
+            e.abort(h2ProtocolError, "protocol error: invalid padding")
+            return
+        }
+        start = 1
+        end -= int(payload[0])
+    }
+    if flags & 32 != 0 {
+        start += 5
+    }
+    if start > end {
+        e.abort(h2ProtocolError, "protocol error: invalid padding")
+        return
+    }
+    e.headerStream = id
+    e.headerEnd = flags & 1 != 0
+    e.headerBlock = Array<byte>{}
+    e.fragment(payload[start:end], flags & 4 != 0)
+}
+
+func (e mut h2Engine) fragment(part []byte, last bool) {
+    if e.headerBlock.len() + part.len() > e.config.MaxHeaderBytes {
+        e.abort(h2Calm, "header block too large")
+        return
+    }
+    for value in part {
+        e.headerBlock.push(value)
+    }
+    if !last {
+        return
+    }
+    let id = e.headerStream
+    e.headerStream = 0
+    let fields, err = e.decoder.Decode(e.headerBlock[:])
+    e.headerBlock = Array<byte>{}
+    if err != nil {
+        e.abort(h2CompressionError, errors.Message(err))
+        return
+    }
+    let index = e.find(id)
+    if index >= 0 {
+        let finished = e.headerEnd
+        e.respond(index, fields[:], finished)
+    }
+}
+
+func h2FieldName(name string) bool {
+    if name == "connection" || name == "keep-alive" || name == "proxy-connection" || name == "transfer-encoding" || name == "upgrade" || name == "te" {
+        return false
+    }
+    for var i = 0; i < name.len(); i += 1 {
+        if name[i] >= 65 && name[i] <= 90 {
+            return false
+        }
+    }
+    return token(name)
+}
+
+func (e mut h2Engine) respond(index int, fields []hpack.Field, finished bool) {
+    if e.streams[index].answered {
+        for field in fields {
+            if !h2FieldName(field.Name) || !fieldValue(field.Value) {
+                e.malformed(index)
+                return
+            }
+        }
+        if !finished {
+            e.malformed(index)
+            return
+        }
+        e.complete(index)
+        return
+    }
+    if fields.len() == 0 || fields[0].Name != ":status" || fields[0].Value.len() != 3 {
+        e.malformed(index)
+        return
+    }
+    let status, statusErr = strconv.Atoi(fields[0].Value)
+    if statusErr != nil || status < 100 || status > 999 {
+        _ = statusErr
+        e.malformed(index)
+        return
+    }
+    var headers = NewHeader()
+    var expected = 0 - 1
+    for i, field in fields {
+        if i == 0 {
+            continue
+        }
+        if !h2FieldName(field.Name) || !fieldValue(field.Value) {
+            e.malformed(index)
+            return
+        }
+        if field.Name == "content-length" {
+            let length, lengthErr = decimal(field.Value)
+            if lengthErr != nil || length < 0 || (expected >= 0 && expected != length) {
+                _ = lengthErr
+                e.malformed(index)
+                return
+            }
+            expected = length
+        }
+        headers.entries.push(HeaderEntry{Name: field.Name, Value: field.Value})
+    }
+    if status < 200 {
+        if finished || status == 101 {
+            e.malformed(index)
+        }
+        return
+    }
+    e.streams[index].answered = true
+    e.streams[index].status = status
+    e.streams[index].headers = headers
+    e.streams[index].expected = expected
+    if finished {
+        e.complete(index)
+    }
+}
+
+func (e mut h2Engine) complete(index int) {
+    let stream = e.take(index)
+    let done = stream.done
+    let checked = stream.expected >= 0 && !stream.head && stream.status != 304
+    if checked && stream.expected != stream.data.len() {
+        e.control(h2Reset, 0, stream.id, h2ProtocolError)
+        h2Fail(done, error("http2: malformed response"))
+        return
+    }
+    if !stream.ended {
+        e.control(h2Reset, 0, stream.id, h2Cancel)
+    }
+    done.send(h2Result{response: ClientResponse{StatusCode: stream.status, Headers: stream.headers, Body: stream.data}, failure: nil})
+}
+
+func (e mut h2Engine) resetFrame(id int, payload []byte) {
+    if payload.len() != 4 {
+        e.abort(h2FrameSizeError, "frame size error")
+        return
+    }
+    if e.idleStream(id) {
+        e.abort(h2ProtocolError, "protocol error: RST_STREAM on an idle stream")
+        return
+    }
+    let index = e.find(id)
+    if index < 0 {
+        return
+    }
+    let code = h2Int(payload, 0)
+    if code == h2RefusedStream {
+        e.discard(index, 0 - 1, error("http2: request not processed"))
+        return
+    }
+    e.discard(index, 0 - 1, error("http2: stream reset by server (code " + strconv.Itoa(code) + ")"))
+}
+
+func (e mut h2Engine) settings(flags int, id int, payload []byte) {
+    if id != 0 {
+        e.abort(h2ProtocolError, "protocol error: SETTINGS on a stream")
+        return
+    }
+    if flags & 1 != 0 {
+        if payload.len() != 0 {
+            e.abort(h2FrameSizeError, "frame size error")
+        }
+        return
+    }
+    if payload.len() % 6 != 0 {
+        e.abort(h2FrameSizeError, "frame size error")
+        return
+    }
+    for var at = 0; at < payload.len(); at += 6 {
+        let name = (int(payload[at]) << 8) | int(payload[at + 1])
+        let value = h2Int(payload, at + 2)
+        if name == 1 {
+            let _ = e.encoder.SetTableLimit(value)
+        } else if name == 2 && value != 0 {
+            e.abort(h2ProtocolError, "protocol error: server push is disabled")
+            return
+        } else if name == 3 {
+            e.peerStreams = value
+        } else if name == 4 {
+            if value > h2MaxWindow {
+                e.abort(h2FlowControlError, "flow control error")
+                return
+            }
+            let delta = value - e.peerWindow
+            e.peerWindow = value
+            for var i = 0; i < e.streams.len(); i += 1 {
+                e.streams[i].sendWindow += delta
+                if e.streams[i].sendWindow > h2MaxWindow {
+                    e.abort(h2FlowControlError, "flow control error")
+                    return
+                }
+            }
+        } else if name == 5 && (value < h2FrameLimit || value > 16777215) {
+            e.abort(h2ProtocolError, "protocol error: invalid frame size setting")
+            return
+        }
+    }
+    e.greeted = true
+    e.control(h2SettingsFrame, 1, 0, 0)
+    e.reply()
+}
+
+func (e mut h2Engine) goAway(id int, payload []byte) {
+    if id != 0 {
+        e.abort(h2ProtocolError, "protocol error: GOAWAY on a stream")
+        return
+    }
+    if payload.len() < 8 {
+        e.abort(h2FrameSizeError, "frame size error")
+        return
+    }
+    let last = h2Int(payload, 0) & h2MaxWindow
+    e.shutdown(error("http2: request not processed"))
+    e.shared.withLock(func(s mut h2Shared) {
+        s.closing = true
+        if s.failure == nil {
+            s.failure = error("http2: request not processed")
+        }
+    })
+    var index = e.streams.len() - 1
+    for index >= 0 {
+        if e.streams[index].id > last {
+            e.discard(index, 0 - 1, error("http2: request not processed"))
+        }
+        index -= 1
+    }
+}
+
+func (e mut h2Engine) windowUpdate(id int, payload []byte) {
+    if payload.len() != 4 {
+        e.abort(h2FrameSizeError, "frame size error")
+        return
+    }
+    let amount = h2Int(payload, 0) & h2MaxWindow
+    if id == 0 {
+        if amount == 0 {
+            e.abort(h2ProtocolError, "protocol error: empty window update")
+            return
+        }
+        e.sendWindow += amount
+        if e.sendWindow > h2MaxWindow {
+            e.abort(h2FlowControlError, "flow control error")
+        }
+        return
+    }
+    if e.idleStream(id) {
+        e.abort(h2ProtocolError, "protocol error: WINDOW_UPDATE on an idle stream")
+        return
+    }
+    let index = e.find(id)
+    if index < 0 {
+        return
+    }
+    if amount == 0 {
+        e.malformed(index)
+        return
+    }
+    e.streams[index].sendWindow += amount
+    if e.streams[index].sendWindow > h2MaxWindow {
+        e.discard(index, h2FlowControlError, error("http2: flow control error"))
+    }
+}
+
+func (e mut h2Engine) publish() {
+    let active = e.streams.len()
+    let waiting = e.queue.len()
+    if active == e.shownActive && waiting == e.shownWaiting {
+        return
+    }
+    e.shownActive = active
+    e.shownWaiting = waiting
+    e.shared.withLock(func(s mut h2Shared) {
+        s.active = active
+        s.waiting = waiting
+    })
+}
+
+func h2Published(reason error, quiet bool) error {
+    _ = reason
+    if quiet {
+        return nil
+    }
+    return reason
+}
+
+func h2Reason(failure error, fallback error) error {
+    _ = fallback
+    if failure != nil {
+        return failure
+    }
+    return fallback
+}
+
+func (e mut h2Engine) step() bool {
+    if e.failure != nil {
+        return false
+    }
+    let idle = e.streams.len() == 0 && e.queue.len() == 0 && e.outPos == e.out.len()
+    if idle && e.draining {
+        return false
+    }
+    if idle {
+        e.wait = time.Millisecond
+    }
+    e.intake(idle)
+    e.sync()
+    e.admit()
+    e.produce()
+    var progress = e.write()
+    if e.read() {
+        progress = true
+    }
+    if progress {
+        e.wait = time.Millisecond
+    } else if e.wait < 16 * time.Millisecond {
+        e.wait = e.wait * 2
+    }
+    e.publish()
+    return true
+}
+
+func (e mut h2Engine) finish() {
+    let reason = h2Reason(e.failure, e.reason)
+    _ = reason
+    let failure = h2Published(reason, e.failure == nil && e.local)
+    e.shared.withLock(func(s mut h2Shared) {
+        s.closed = true
+        s.closing = true
+        s.failure = failure
+        s.active = 0
+        s.waiting = 0
+    })
+    for e.streams.len() > 0 {
+        let last = e.streams.len() - 1
+        e.discard(last, 0 - 1, reason)
+    }
+    e.shutdown(reason)
+    var more = true
+    for more {
+        select {
+            case let request, ok = e.work.receive() {
+                if ok && !request.wake {
+                    h2Fail(request.done, reason)
+                }
+            }
+            default {
+                more = false
+            }
+        }
+    }
+    e.failure = nil
+    e.wait = 5 * time.Millisecond
+    for var attempt = 0; attempt < 20 && e.outPos < e.out.len() && e.failure == nil; attempt += 1 {
+        let _ = e.write()
+    }
+    e.linger()
+}
+
+func (e mut h2Engine) linger() {
+    let until = time.Now().Add(100 * time.Millisecond)
+    var discarded = 0
+    for time.Now().Before(until) && discarded < 65536 {
+        let armErr = e.conn.SetReadDeadline(until)
+        if armErr != nil {
+            return
+        }
+        let n, err = e.conn.Read(e.scratch[:])
+        if n > 0 {
+            discarded += n
+        }
+        if err != nil && err != error("net.Read: timed out") && err != ClientPollTimeout {
+            return
+        }
+        if n <= 0 && err == nil {
+            return
+        }
+    }
+}

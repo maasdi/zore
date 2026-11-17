@@ -3,9 +3,12 @@
 Status: accepted as the plan for issue #290. **HTTP/2 is not implemented.** This
 record fixes the choices that later slices must follow. Each slice still locks
 its own public signatures, examples and conformance cases in the specification
-before code is written; nothing here is a supported API. Two slices are
-delivered: application protocol negotiation in the `tls` package and the header
-compression package.
+before code is written. Three slices are delivered: application protocol
+negotiation in the `tls` package, the header compression package, and a
+connection that multiplexes buffered requests over a caller-supplied
+connection. Choosing HTTP/2 automatically, falling back to HTTP/1.1 and
+streamed bodies are not delivered, so the ordinary client still speaks
+HTTP/1.1 only.
 
 ## Consumer
 
@@ -36,13 +39,14 @@ The server side, a general framing library and gRPC are out of scope.
 
 ## Where the code lives
 
-The protocol engine is a bundled package that works on any `http.ClientConn`
-and has no TLS dependency, so scripted connections can drive every frame in
-tests. Header compression is its own bundled package, `std/net/http/hpack`
-(specification §37.48), because bundled packages are tested only through their
-public names and its limits need direct tests. The `tls/https` package
-only does the negotiation and hands over the connection, as it does today for
-HTTP/1.1.
+The protocol engine lives in `std/net/http` beside the HTTP/1.1 client, so it
+shares that client's request validation, limits, timeouts and response type. It
+works on any `http.ClientConn` and has no TLS dependency, so scripted
+connections can drive every frame in tests. Header compression is its own
+bundled package, `std/net/http/hpack` (specification §37.48), because bundled
+packages are tested only through their public names and its limits need direct
+tests. The `tls/https` package only does the negotiation and hands over the
+connection, as it does today for HTTP/1.1.
 
 ## Limits
 
@@ -56,7 +60,7 @@ Every limit is finite and has a default; a peer cannot raise one.
 | Streams | At most 32 open streams per connection by default, and never more than the peer allows. Extra calls wait in a bounded FIFO queue (256), like pool waiters. |
 | Receive memory | 256 KiB window per stream, so one connection buffers at most 32 × 256 KiB of unread body. |
 | Control frames | At most 64 unanswered `PING`, `SETTINGS` and reset frames are queued; more is a connection error (`ENHANCE_YOUR_CALM`). Empty `DATA` frames that do not end a stream are counted the same way. |
-| Tasks and sockets | One socket and at most two tasks (one reader, one writer) per connection, whatever the number of streams. |
+| Tasks and sockets | One socket and one task per connection, whatever the number of streams. A connection value has a single owner and a TLS connection cannot be read and written from two tasks, so the task alternates short bounded reads and writes instead of using a reader and a writer. |
 | Connections | One live connection per origin, plus connections that are draining after `GOAWAY`. The total number of sockets is bounded by a configuration value. |
 
 ## Flow control
@@ -69,10 +73,12 @@ Every limit is finite and has a default; a peer cannot raise one.
 - Uploads wait for both windows. The wait is bounded by the context and by the
   write deadline; a peer that never sends a window update ends that stream with
   a timeout and a `RST_STREAM`, not the connection.
-- The reader task never writes to the socket. Replies it must send (settings
-  acknowledgements, ping answers, window updates, resets) go to the writer
-  through the bounded control queue, ahead of body data. This removes the
-  deadlock in which both sides wait for the other to read.
+- The connection task never blocks in one direction. Each turn it writes at
+  most one frame's worth of queued bytes and reads with a deadline of 1 to 16
+  milliseconds, so a peer that stops reading cannot stop the client from
+  reading, and the reverse. Replies it owes (settings acknowledgements, ping
+  answers, window updates, resets) are queued ahead of new body data, and body
+  data is produced only when little output is queued.
 - Body data from different streams is written round-robin, one frame at a time.
   Stream priorities are neither sent nor honoured.
 
@@ -88,8 +94,9 @@ Every limit is finite and has a default; a peer cannot raise one.
   the slot. Sibling streams keep running.
 - `Close` on the manager stops new calls with a closed error and sends `GOAWAY`.
   Bodies that are still open may be read to the end; the socket closes when the
-  last one is finished or dropped. Dropping every handle and body closes the
-  socket at once.
+  last one is finished or dropped. Handles are Copy values, so dropping them
+  is not observed: a connection that is never closed stays until the peer
+  closes it, or until the per-origin manager of the last slice retires it.
 
 ## Errors
 
@@ -116,9 +123,10 @@ Every limit is finite and has a default; a peer cannot raise one.
 1. Application protocol negotiation in `tls` (delivered; specification §37.10).
 2. Header compression decoder and encoder with its limits (delivered;
    specification §37.48).
-3. Frames, settings, flow control and the connection tasks over a scripted
-   connection.
-4. The public client calls, negotiation and HTTP/1.1 fallback in `tls/https`.
+3. Frames, settings, flow control and the connection task over a scripted
+   connection, with buffered requests (delivered; specification §37.49).
+4. Negotiation and HTTP/1.1 fallback in `tls/https`, one connection per
+   origin, streamed bodies and interoperability evidence.
 
 ## Evidence required before HTTP/2 is called supported
 

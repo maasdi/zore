@@ -23,6 +23,7 @@ mod host_support;
 mod hpack;
 mod html;
 mod http;
+mod http2;
 mod http_client;
 mod http_decode;
 mod http_pool;
