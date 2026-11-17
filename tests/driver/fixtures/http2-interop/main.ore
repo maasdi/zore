@@ -55,13 +55,17 @@ func run() error {
         var seen = ""
         for var i = 0; i < 5; i += 1 {
             for reply in replies {
-                if reply == "2.0 " + string(rune(48 + i)) { seen += string(rune(48 + i)) }
+                if reply == "2.0 " + string(rune(48 + i)) {
+                    seen += string(rune(48 + i))
+                }
             }
         }
         println("concurrent " + seen)
         println("together " + boolText(time.Since(started) < 1200 * time.Millisecond))
         var upload = Array<byte>{}
-        for upload.len() < 150000 { upload.push(byte(upload.len() % 13)) }
+        for upload.len() < 150000 {
+            upload.push(byte(upload.len() % 13))
+        }
         println("echo " + text(client, "POST", base + "/echo", http.NewHeader(), upload[:]))
         println("big " + text(client, "GET", base + "/big", http.NewHeader(), empty[:]))
         var traced = http.NewHeader()
@@ -79,7 +83,9 @@ func run() error {
 }
 
 func boolText(value bool) string {
-    if value { return "yes" }
+    if value {
+        return "yes"
+    }
     return "no"
 }
 
