@@ -13455,7 +13455,10 @@ A received `GOAWAY` stops new streams: waiting and later requests fail with
 connection closed, streams at or below its last identifier may finish, and then
 the connection closes. `Close` stops new requests with
 `http2: closed connection`, sends `GOAWAY` with `NO_ERROR`, lets open streams
-finish and then closes the connection; it does not wait. After a connection
+finish and then closes the connection; it does not wait. Before closing the
+connection for any reason the task reads and discards up to 64 KiB of input for
+at most 100 milliseconds, so a final `GOAWAY` is not lost to a reset when the
+peer is still sending. After a connection
 failure every later `Do` returns that failure. `Stats` reports open and waiting
 requests and whether new requests are refused. A connection that is never closed
 keeps its task until the peer closes it.

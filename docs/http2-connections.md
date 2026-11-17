@@ -97,6 +97,10 @@ after `Close`.
   writing, because a connection value has a single owner. A request that starts
   while the task is waiting for the server may wait up to 16 milliseconds
   before it is sent.
+- When the connection ends, the client keeps reading and throwing away
+  incoming data for up to a tenth of a second first. Without that, some systems
+  (Windows in particular) reset the connection and the server never sees the
+  client's last message.
 - Request headers named `Host`, `Connection`, `Transfer-Encoding`, `TE` and the
   like are refused; HTTP/2 has its own way to carry that information.
 - Header names in an answer are lowercase, as HTTP/2 requires. `Headers.Get`

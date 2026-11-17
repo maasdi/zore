@@ -1009,4 +1009,26 @@ func (e mut h2Engine) finish() {
     for var attempt = 0; attempt < 20 && e.outPos < e.out.len() && e.failure == nil; attempt += 1 {
         let _ = e.write()
     }
+    e.linger()
+}
+
+func (e mut h2Engine) linger() {
+    let until = time.Now().Add(100 * time.Millisecond)
+    var discarded = 0
+    for time.Now().Before(until) && discarded < 65536 {
+        let armErr = e.conn.SetReadDeadline(until)
+        if armErr != nil {
+            return
+        }
+        let n, err = e.conn.Read(e.scratch[:])
+        if n > 0 {
+            discarded += n
+        }
+        if err != nil && err != error("net.Read: timed out") && err != ClientPollTimeout {
+            return
+        }
+        if n <= 0 && err == nil {
+            return
+        }
+    }
 }
