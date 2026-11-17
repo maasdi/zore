@@ -85,7 +85,101 @@ fn offline_https_do_verifies_peer_and_preserves_fragmented_binary_bytes() {
     tests.arg("--locked").env_remove("SSL_CERT_FILE");
     let output = success(tests);
     assert!(
-        String::from_utf8_lossy(&output.stdout).contains("Tests: 12 passed, 0 failed"),
+        String::from_utf8_lossy(&output.stdout).contains("Tests: 13 passed, 0 failed"),
         "{output:?}"
     );
+}
+
+struct NodeServer {
+    child: std::process::Child,
+    port: String,
+}
+
+impl Drop for NodeServer {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+fn node_server(script: &Path, tls: &Path, mode: &str) -> NodeServer {
+    let mut child = Command::new("node")
+        .arg(script)
+        .arg(tls.join("testdata/server.pem"))
+        .arg(tls.join("testdata/server-key.pem"))
+        .arg(mode)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
+        .spawn()
+        .unwrap_or_else(|e| {
+            panic!("the HTTP/2 interoperability test needs Node.js (`node`) on PATH: {e}")
+        });
+    let mut stdout = child.stdout.take().unwrap();
+    let mut port = String::new();
+    let mut byte = [0];
+    while std::io::Read::read(&mut stdout, &mut byte).unwrap() == 1 && byte[0] != b'\n' {
+        port.push(byte[0] as char);
+    }
+    assert!(
+        !port.trim().is_empty(),
+        "Node.js server did not report a port"
+    );
+    NodeServer {
+        child,
+        port: port.trim().to_owned(),
+    }
+}
+
+#[test]
+fn http2_auto_client_interoperates_with_node_and_falls_back_to_http1() {
+    let directory = TempDir::new().unwrap();
+    let repository = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+    let app = directory.path().join("examples/http2-interop");
+    copy_tree(
+        &repository.join("tests/driver/fixtures/http2-interop"),
+        &app,
+    );
+    let tls = directory.path().join("packages/tls");
+    copy_tree(&repository.join("packages/tls"), &tls);
+    let compiler = directory
+        .path()
+        .join(format!("distributed-zore{}", std::env::consts::EXE_SUFFIX));
+    fs::copy(env!("CARGO_BIN_EXE_zore"), &compiler).unwrap();
+    let zore = |action: &str| {
+        let mut command = Command::new(&compiler);
+        command
+            .arg(action)
+            .arg("--offline")
+            .current_dir(&app)
+            .env("ZORE_CACHE_DIR", directory.path().join("cache"));
+        command
+    };
+    let mut install = zore("install");
+    install.arg(".");
+    success(install);
+    let mut build = zore("build");
+    build.arg("main.ore");
+    success(build);
+    let program = app.join(format!("main{}", std::env::consts::EXE_SUFFIX));
+    let script = app.join("server.js");
+    let roots = tls.join("testdata/roots.pem");
+    for (mode, expected) in [
+        (
+            "h2",
+            "concurrent 01234\ntogether yes\necho 200 2.0 POST 150000\nbig 200 300000 bytes\n\
+             header 200 abc\nmissing 404 missing\nsessions 200 1\nconnections 1\n",
+        ),
+        ("http1", "echo 200 1.1 POST 0\nconnections 0\n"),
+    ] {
+        let server = node_server(&script, &tls, mode);
+        let mut run = Command::new(&program);
+        run.arg(&server.port)
+            .arg(&roots)
+            .arg(if mode == "h2" { "h2" } else { "http1" })
+            .env("ZORE_CHECK_LEAKS", "1");
+        let output = success(run);
+        assert_eq!(String::from_utf8_lossy(&output.stdout), expected, "{mode}");
+        drop(server);
+    }
 }

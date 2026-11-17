@@ -1,0 +1,254 @@
+package https
+
+import "std/context"
+import "std/net/http"
+import "std/net/url"
+import "std/time"
+import "tls"
+
+const MaxAutoOrigins = 64
+
+type AutoClient struct {
+    dialer channel<tls.ClientConfig>
+    state Mutex<autoState>
+    config http.ClientConfig
+    limits http.HTTP2Config
+    live bool
+}
+
+type AutoStats struct {
+    HTTP2Connections int
+}
+
+type autoEntry struct {
+    origin string
+    conn http.HTTP2Conn
+}
+
+type autoPending struct {
+    origin string
+    ready channel<bool>
+}
+
+type autoState struct {
+    entries Array<autoEntry>
+    pending Array<autoPending>
+    closed bool
+}
+
+type autoRelease struct {
+    state Mutex<autoState>
+    origin string
+    armed bool
+}
+
+func (r mut autoRelease) drop() {
+    r.release()
+}
+
+func (r mut autoRelease) release() {
+    if !r.armed {
+        return
+    }
+    r.armed = false
+    let origin = r.origin
+    r.state.withLock(func(s mut autoState) {
+        var kept = Array<autoPending>{}
+        for entry in s.pending {
+            if entry.origin == origin {
+                entry.ready.close()
+            } else {
+                kept.push(entry)
+            }
+        }
+        s.pending = kept
+    })
+}
+
+type autoDialer struct {
+    home channel<tls.ClientConfig>
+    configs Array<tls.ClientConfig>
+}
+
+func (d mut autoDialer) drop() {
+    let found, config = d.configs.pop()
+    if found {
+        d.home.send(config)
+    }
+}
+
+func autoProtocols() Array<string> {
+    return Array<string>{"h2", "http/1.1"}
+}
+
+func newAutoClient(config own tls.ClientConfig, settings http.ClientConfig, limits http.HTTP2Config) (AutoClient, error) {
+    var offered = config
+    let names = autoProtocols()
+    offered.SetProtocols(names[:])?
+    http.NewClient(settings)?
+    let probe = AutoClient{dialer: channel<tls.ClientConfig>(1), state: mutex(autoState{entries: Array<autoEntry>{}, pending: Array<autoPending>{}, closed: false}), config: settings, limits: limits, live: true}
+    let dialer = probe.dialer
+    dialer.send(offered)
+    return probe, nil
+}
+
+func NewAutoClient(rootsPEM []byte, settings http.ClientConfig, limits http.HTTP2Config) (AutoClient, error) {
+    let config = tls.NewClientConfig(rootsPEM)?
+    return newAutoClient(config, settings, limits)
+}
+
+func NewDefaultAutoClient(settings http.ClientConfig, limits http.HTTP2Config) (AutoClient, error) {
+    let config = tls.DefaultClientConfig()?
+    return newAutoClient(config, settings, limits)
+}
+
+func (a AutoClient) Stats() AutoStats {
+    if !a.live {
+        return AutoStats{HTTP2Connections: 0}
+    }
+    return a.state.withLock(func(s mut autoState) AutoStats {
+        var open = 0
+        for entry in s.entries {
+            if !entry.conn.Stats().Closed {
+                open += 1
+            }
+        }
+        return AutoStats{HTTP2Connections: open}
+    })
+}
+
+func (a AutoClient) Close() {
+    if !a.live {
+        return
+    }
+    let entries = a.state.withLock(func(s mut autoState) Array<autoEntry> {
+        s.closed = true
+        var taken = Array<autoEntry>{}
+        for s.entries.len() > 0 {
+            let _, entry = s.entries.pop()
+            taken.push(entry)
+        }
+        return taken
+    })
+    for entry in entries {
+        entry.conn.Close()
+    }
+}
+
+func (a AutoClient) Do(ctx context.Context, method string, absoluteURL string, headers http.Header, body []byte) (http.ClientResponse, error) {
+    let empty = http.ClientResponse{StatusCode: 0, Headers: http.NewHeader(), Body: Array<byte>{}}
+    if !a.live {
+        return empty, error("https.AutoClient: empty client")
+    }
+    let target = url.ParseAbsolute(absoluteURL)?
+    let origin = target.Address
+    for {
+        let closed, known, wait, dialing = a.state.withLock(func(s mut autoState) (bool, Array<http.HTTP2Conn>, Array<channel<bool>>, bool) {
+            var found = Array<http.HTTP2Conn>{}
+            var waits = Array<channel<bool>>{}
+            var kept = Array<autoEntry>{}
+            for entry in s.entries {
+                if entry.conn.Stats().Closed {
+                    continue
+                }
+                if entry.origin == origin {
+                    found.push(entry.conn)
+                }
+                kept.push(entry)
+            }
+            s.entries = kept
+            if s.closed || found.len() > 0 {
+                return s.closed, found, waits, false
+            }
+            for entry in s.pending {
+                if entry.origin == origin {
+                    waits.push(entry.ready)
+                    return false, found, waits, false
+                }
+            }
+            s.pending.push(autoPending{origin: origin, ready: channel<bool>()})
+            return false, found, waits, true
+        })
+        if closed {
+            return empty, error("https.AutoClient: closed client")
+        }
+        if target.Scheme != "https" {
+            let plain = http.NewClient(a.config)?
+            return plain.Do(ctx, method, absoluteURL, headers, body)
+        }
+        if known.len() > 0 {
+            let response, err = known[0].Do(ctx, method, absoluteURL, headers, body)
+            if err == nil || !retryable(err) {
+                return response, err
+            }
+            _ = err
+            return a.dialAndDo(ctx, origin, target, method, absoluteURL, headers, body, autoRelease{state: a.state, origin: origin, armed: false})
+        }
+        if dialing {
+            return a.dialAndDo(ctx, origin, target, method, absoluteURL, headers, body, autoRelease{state: a.state, origin: origin, armed: true})
+        }
+        select {
+            case wait[0].receive() {
+                let _ = 0
+            }
+            case ctx.Done().receive() {
+                return empty, ctx.Err()
+            }
+        }
+        let firstDone = a.state.withLock(func(s mut autoState) bool {
+            for entry in s.entries {
+                if entry.origin == origin && !entry.conn.Stats().Closed {
+                    return false
+                }
+            }
+            return true
+        })
+        if firstDone {
+            return a.dialAndDo(ctx, origin, target, method, absoluteURL, headers, body, autoRelease{state: a.state, origin: origin, armed: false})
+        }
+    }
+}
+
+func retryable(err error) bool {
+    return err == error("http2: request not processed") || err == error("http2: closed connection")
+}
+
+func (a AutoClient) dial(ctx context.Context, target url.AbsoluteURL) (tls.Conn, error) {
+    let bounded, cancel = context.WithDeadline(ctx, time.Now().Add(a.config.DialTimeout))
+    let config, _ = a.dialer.receive()
+    var holder = autoDialer{home: a.dialer, configs: Array<tls.ClientConfig>{}}
+    holder.configs.push(config)
+    let conn, err = tls.DialContext(bounded, target.Address, target.Hostname, holder.configs[0])
+    cancel()
+    return conn, err
+}
+
+func (a AutoClient) dialAndDo(ctx context.Context, origin string, target url.AbsoluteURL, method string, absoluteURL string, headers http.Header, body []byte, gate own autoRelease) (http.ClientResponse, error) {
+    var waiting = gate
+    let source = a.dial(ctx, target)?
+    let protocol = source.Protocol()
+    let client = http.NewClient(a.config)?
+    if protocol != "h2" {
+        waiting.release()
+        return client.Exchange(ctx, conn{source: source}, method, absoluteURL, headers, body)
+    }
+    let shared = client.NewHTTP2Conn(conn{source: source}, a.limits)?
+    let stored = a.state.withLock(func(s mut autoState) bool {
+        if s.closed || s.entries.len() >= MaxAutoOrigins {
+            return false
+        }
+        for entry in s.entries {
+            if entry.origin == origin {
+                return false
+            }
+        }
+        s.entries.push(autoEntry{origin: origin, conn: shared})
+        return true
+    })
+    waiting.release()
+    let response, err = shared.Do(ctx, method, absoluteURL, headers, body)
+    if !stored {
+        shared.Close()
+    }
+    return response, err
+}
