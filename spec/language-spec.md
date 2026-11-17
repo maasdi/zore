@@ -13574,7 +13574,8 @@ func fetch(target string) (int, error) {
 
 Compiler impact: one source file in the bundled `tls/https` package; no
 runtime, syntax or native adapter changes. Conformance: against the Node.js
-`http2` server, five concurrent requests answered over one connection, a
+`http2` server, five concurrent requests all in flight at once over one
+connection, a
 150,000-byte upload, a 300,000-byte download, a forwarded header, a 404 and the
 server's session count of one; against the Node.js `https` server, HTTP/1.1
 fallback with no kept connection; against a Zore TLS server without protocol

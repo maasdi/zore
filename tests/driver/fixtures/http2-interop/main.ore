@@ -42,7 +42,6 @@ func run() error {
     let client = https.NewAutoClient(roots[:], settings, http.DefaultHTTP2Config())?
     let empty = Array<byte>{}
     if args[3] == "h2" {
-        let started = time.Now()
         let done = channel<string>(5)
         for var i = 0; i < 5; i += 1 {
             go fetch(client, base + "/slow?n=" + string(rune(48 + i)), done)
@@ -61,7 +60,7 @@ func run() error {
             }
         }
         println("concurrent " + seen)
-        println("together " + boolText(time.Since(started) < 1450 * time.Millisecond))
+        println("peak " + text(client, "GET", base + "/peak", http.NewHeader(), empty[:]))
         var upload = Array<byte>{}
         for upload.len() < 150000 {
             upload.push(byte(upload.len() % 13))
@@ -80,13 +79,6 @@ func run() error {
     }
     client.Close()
     return nil
-}
-
-func boolText(value bool) string {
-    if value {
-        return "yes"
-    }
-    return "no"
 }
 
 func main() {

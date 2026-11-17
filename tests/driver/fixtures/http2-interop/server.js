@@ -5,6 +5,9 @@ const https = require('https');
 
 const [cert, key, mode] = process.argv.slice(2);
 let sessions = 0;
+let inflight = 0;
+let peak = 0;
+const parked = [];
 
 function handle(req, res) {
   const chunks = [];
@@ -17,7 +20,20 @@ function handle(req, res) {
       res.end(text);
     };
     if (url.pathname === '/slow') {
-      setTimeout(() => reply(`${req.httpVersion} ${url.searchParams.get('n')}`), 300);
+      inflight += 1;
+      peak = Math.max(peak, inflight);
+      parked.push(() => {
+        inflight -= 1;
+        reply(`${req.httpVersion} ${url.searchParams.get('n')}`);
+      });
+      const release = () => parked.splice(0).forEach((answer) => answer());
+      if (inflight === 5) {
+        release();
+      } else {
+        setTimeout(release, 5000);
+      }
+    } else if (url.pathname === '/peak') {
+      reply(String(peak));
     } else if (url.pathname === '/sessions') {
       reply(String(sessions));
     } else if (url.pathname === '/big') {
