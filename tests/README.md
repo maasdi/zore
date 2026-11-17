@@ -14,7 +14,8 @@ proxies in `codegen/http_proxy.rs` (absolute-form requests, CONNECT tunnels,
 credentials and the proxy guide), header compression in `codegen/hpack.rs`
 (RFC 7541 examples, malformed blocks, limits and the guide), HTTP/2 connections in
 `codegen/http2.rs` (a scripted peer for multiplexing, limits, flow control and
-errors), `packages/networking.rs` and the HTTPS
+errors), automatic HTTP/2 in `driver/http_client.rs` (against
+the Node.js HTTP/2 server; needs `node`), `packages/networking.rs` and the HTTPS
 example tests.
 
 Public networking is checked in `packages/networking.rs`,

@@ -8,6 +8,15 @@ including those shipped in `0.1.0-alpha.1`, are not split by release.
 
 ## [Unreleased]
 
+### Automatic HTTP/2 for HTTPS
+
+- `https.NewAutoClient` and `https.NewDefaultAutoClient` in the `tls` package
+  ask each HTTPS server for HTTP/2 (§37.50). A server that agrees gets one
+  shared connection for all requests to it; others are answered over HTTP/1.1.
+  Tested against the HTTP/2 server built into Node.js.
+- This completes the HTTP/2 plan for buffered requests (#290). Existing clients
+  are unchanged and still speak HTTP/1.1.
+
 ### HTTP/2 connections
 
 - `client.NewHTTP2Conn(conn, config)` runs one HTTP/2 connection over a

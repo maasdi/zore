@@ -14,6 +14,9 @@ Report security issues privately as described in [SECURITY.md](SECURITY.md).
   automatically. If Cargo is not on your `PATH`, run `source "$HOME/.cargo/env"`.
   Native builds invoke rustc 1.98 or newer too; `ZORE_RUSTC` selects its executable. The compiled runtime is cached under
   `~/.cache/zore` (`ZORE_CACHE_DIR` overrides it); delete that folder to force a rebuild.
+- Install Node.js 18 or newer. `tests/driver/http_client.rs` runs its built-in
+  HTTP/2 server to check that Zore's HTTP/2 client works with an independent
+  implementation, and fails with a clear message when `node` is missing.
 - Install clang with LLVM 15 or newer. It is needed by `zore build`/`zore run`
   and by `tests/codegen/native.rs`, which fails with a clear message when clang is
   missing. Set `ZORE_CC` to choose a specific compiler.

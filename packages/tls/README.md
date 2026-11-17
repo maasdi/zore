@@ -72,8 +72,14 @@ Application protocol negotiation (ALPN) is off by default. Call
 16 names in preference order, then read `conn.Protocol()` after the handshake.
 A server picks the first of its own names that the client offered; if the client
 offered names and none matches, the handshake fails. If either side has no list,
-`Protocol()` is `""`. The package only reports the agreed name; it does not
-implement HTTP/2, and the `https` transport offers no names.
+`Protocol()` is `""`. The package itself only reports the agreed name; the
+`https` transport offers no names, and the `https` auto client below uses them.
+
+`https.NewAutoClient(rootsPEM, config, limits)` and
+`https.NewDefaultAutoClient(config, limits)` offer `h2` and `http/1.1`: a server
+that picks `h2` gets one shared HTTP/2 connection for all later requests to it,
+and any other server is answered over HTTP/1.1. See the
+[HTTP/2 guide](../../docs/http2-connections.md).
 
 Configs and connections are Move values. Each session owns independent parsed
 certificates and keys, so configs can be shared by borrowing and dropped after

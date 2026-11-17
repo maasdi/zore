@@ -6,14 +6,39 @@ numbered pieces, mixed together, so a slow answer does not hold up the others.
 `HTTP2Conn` runs such a connection for you. The full contract is in the
 [specification](../spec/language-spec.md#3749-http2-client-connections--locked).
 
-**This is a building block.** It needs a connection on which both sides have
-already agreed to speak HTTP/2 (with TLS, the `h2` protocol name; see the `tls`
-package's `SetProtocols`). The ordinary client calls (`Do`, `Pool`, `Follow`
-and the others) still speak HTTP/1.1 and do not use it. Choosing HTTP/2
-automatically is the next step of
-[decision 0004](decisions/0004-http2-client.md).
+Most programs should not build `HTTP2Conn` themselves: use the automatic
+client below, which asks each server whether it speaks HTTP/2. `HTTP2Conn` is
+for a connection on which both sides have already agreed to speak HTTP/2 (with
+TLS, the `h2` protocol name; see the `tls` package's `SetProtocols`). The
+ordinary client calls (`Do`, `Pool`, `Follow` and the others) still speak
+HTTP/1.1.
 
-## Sending requests
+## The automatic client
+
+`https.NewAutoClient(roots, config, limits)` from the `tls` package (or
+`https.NewDefaultAutoClient(config, limits)` with the system's trust roots)
+does the asking for you:
+
+- For each `https` server it connects to, it asks for HTTP/2. If the server
+  agrees, it keeps that one connection and sends every later request to that
+  server over it, many at the same time.
+- If the server prefers HTTP/1.1, that request goes over HTTP/1.1 and the
+  connection closes afterwards, as with the ordinary client.
+- Plain `http` addresses always use HTTP/1.1.
+- When several requests start at once for a new server, only the first one
+  connects; the others wait for its connection.
+- It keeps connections to at most 64 servers. `Stats().HTTP2Connections` says
+  how many it holds; `Close` closes them all.
+
+```ore
+let client = https.NewDefaultAutoClient(http.DefaultClientConfig(), http.DefaultHTTP2Config())?
+let empty = Array<byte>{}
+let response = client.Do(context.Background(), "GET", "https://example.test/", http.NewHeader(), empty[:])?
+client.Close()
+```
+
+## Using a connection directly
+
 
 ```ore
 package main
