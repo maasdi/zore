@@ -332,6 +332,35 @@ func script(p mut Peer, mode string) error {
         p.head(id, 4, ok[:])?
         let empty = Array<byte>{}
         for var i = 0; i < 70; i += 1 { p.send(0, 0, id, empty[:])? }
+    } else if mode == "strict" {
+        let signed, _ = p.request()?
+        let plus = Array<hpack.Field>{pair(":status", "200"), pair("content-length", "+5")}
+        p.head(signed, 4, plus[:])?
+        let five = strings.Bytes("hello")
+        p.send(0, 1, signed, five[:])?
+        let head, _ = p.request()?
+        let ok = Array<hpack.Field>{pair(":status", "200")}
+        p.head(head, 4, ok[:])?
+        p.send(0, 1, head, five[:])?
+        let trailed, _ = p.request()?
+        p.head(trailed, 4, ok[:])?
+        p.send(0, 0, trailed, five[:])?
+        let bad = Array<hpack.Field>{pair("x-t", "bad\u007fvalue")}
+        p.head(trailed, 5, bad[:])?
+        let good, _ = p.request()?
+        p.answer(good, "200", "fine")?
+    } else if mode == "lateflood" {
+        let id, _ = p.request()?
+        p.answer(id, "200", "done")?
+        let empty = Array<byte>{}
+        for var i = 0; i < 70; i += 1 { p.send(0, 0, id, empty[:])? }
+    } else if mode == "goawayclose" {
+        let a, _ = p.request()?
+        var payload = number(a)
+        for value in number(0) { payload.push(value) }
+        p.send(7, 0, 0, payload[:])?
+        time.Sleep(100 * time.Millisecond)
+        p.answer(a, "200", "draining")?
     } else if mode == "zerowindow" {
         let _, _ = p.request()?
         let zero = number(0)
@@ -461,6 +490,24 @@ func run() error {
     } else if mode == "bodylimit" {
         println(show(conn, ctx, "GET", "/huge", empty[:]))
         println(show(conn, ctx, "GET", "/small", empty[:]))
+    } else if mode == "strict" {
+        println(show(conn, ctx, "GET", "/signed", empty[:]))
+        println(show(conn, ctx, "HEAD", "/head", empty[:]))
+        println(show(conn, ctx, "GET", "/trailer", empty[:]))
+        println(show(conn, ctx, "GET", "/good", empty[:]))
+    } else if mode == "lateflood" {
+        println(show(conn, ctx, "GET", "/done", empty[:]))
+        time.Sleep(20 * time.Millisecond)
+        println(show(conn, ctx, "GET", "/later", empty[:]))
+    } else if mode == "goawayclose" {
+        let done = channel<string>(1)
+        go fetch(conn, "/draining", long, done)
+        time.Sleep(60 * time.Millisecond)
+        println("closed " + strconv.FormatBool(conn.Stats().Closed))
+        conn.Close()
+        println(show(conn, ctx, "GET", "/refused", empty[:]))
+        let line, _ = done.receive()
+        println(line)
     } else if mode == "validation" {
         println(show(conn, ctx, "CONNECT", "/x", empty[:]))
         var data = Array<byte>{}
@@ -480,6 +527,11 @@ func run() error {
         println(message(configErr))
         let _, rangeErr = client.NewHTTP2Conn(Plain{conn: net.Dial("tcp", address)?}, http.HTTP2Config{MaxStreams: 0, StreamWindow: 100, MaxWaiters: 0})
         println(message(rangeErr))
+        var huge = http.DefaultClientConfig()
+        huge.MaxHeaderBytes = 16777217
+        let wide = http.NewClient(huge)?
+        let _, wideErr = wide.NewHTTP2Conn(Plain{conn: net.Dial("tcp", address)?}, http.DefaultHTTP2Config())
+        println(message(wideErr))
     } else if mode == "continuation" {
         println(show(conn, ctx, "GET", "/only", empty[:]))
     } else {
@@ -522,5 +574,5 @@ fn http2_connection_multiplexes_requests_over_a_scripted_peer() {
         assert_eq!(run(&executable, mode), output, "{mode}");
         cases += 1;
     }
-    assert_eq!(cases, 20);
+    assert_eq!(cases, 23);
 }

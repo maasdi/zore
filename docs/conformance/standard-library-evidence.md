@@ -114,7 +114,7 @@ in [the separate decision](../design/templates.md).
 
 Locked §37.49 delivers `HTTP2Config`, `HTTP2Stats`, `DefaultHTTP2Config`,
 `Client.NewHTTP2Conn` and `HTTP2Conn` with `Do`, `Stats` and `Close`.
-[tests/codegen/http2.rs](../../tests/codegen/http2.rs) drives twenty scripted
+[tests/codegen/http2.rs](../../tests/codegen/http2.rs) drives twenty-three scripted
 exchanges with an HTTP/2 peer over loopback TCP and compares them with
 [fixtures/http2_scripted.txt](../../tests/codegen/fixtures/http2_scripted.txt):
 multiplexing, stream and waiter limits, flow control in both directions,

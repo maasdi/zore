@@ -81,6 +81,8 @@ type h2Engine struct {
     emptyFrames int
     turn int
     wait time.Duration
+    shownActive int
+    shownWaiting int
 }
 
 func h2Serve(conn own ClientConn, work channel<h2Request>, shared Mutex<h2Shared>, config ClientConfig, limits HTTP2Config) {
@@ -89,7 +91,7 @@ func h2Serve(conn own ClientConn, work channel<h2Request>, shared Mutex<h2Shared
     for scratch.len() < h2FrameLimit {
         scratch.push(0)
     }
-    var e = h2Engine{conn: conn, work: work, shared: shared, config: config, limits: limits, decoder: decoder, encoder: hpack.NewEncoder(), streams: Array<h2Stream>{}, queue: Array<h2Request>{}, cancelled: Array<int>{}, seen: 0, nextID: 1, peerStreams: h2MaxWindow, peerWindow: h2InitialWindow, sendWindow: h2InitialWindow, recvWindow: h2InitialWindow, recvUnacked: 0, out: Array<byte>{}, outPos: 0, replies: 0, input: Array<byte>{}, inputPos: 0, scratch: scratch, headerStream: 0, headerEnd: false, headerBlock: Array<byte>{}, greeted: false, draining: false, local: false, reason: error("http2: closed connection"), failure: nil, emptyFrames: 0, turn: 0, wait: time.Millisecond}
+    var e = h2Engine{conn: conn, work: work, shared: shared, config: config, limits: limits, decoder: decoder, encoder: hpack.NewEncoder(), streams: Array<h2Stream>{}, queue: Array<h2Request>{}, cancelled: Array<int>{}, seen: 0, nextID: 1, peerStreams: h2MaxWindow, peerWindow: h2InitialWindow, sendWindow: h2InitialWindow, recvWindow: h2InitialWindow, recvUnacked: 0, out: Array<byte>{}, outPos: 0, replies: 0, input: Array<byte>{}, inputPos: 0, scratch: scratch, headerStream: 0, headerEnd: false, headerBlock: Array<byte>{}, greeted: false, draining: false, local: false, reason: error("http2: closed connection"), failure: nil, emptyFrames: 0, turn: 0, wait: time.Millisecond, shownActive: 0, shownWaiting: 0}
     e.greet()
     for e.step() {
     }
@@ -595,6 +597,16 @@ func (e mut h2Engine) data(flags int, id int, payload []byte) {
         start = 1
         end = length - int(payload[0])
     }
+    let finished = flags & 1 != 0
+    if end == start && !finished {
+        e.emptyFrames += 1
+        if e.emptyFrames > h2ReplyLimit {
+            e.abort(h2Calm, "too many control frames")
+            return
+        }
+    } else {
+        e.emptyFrames = 0
+    }
     let index = e.find(id)
     if index < 0 {
         return
@@ -608,15 +620,9 @@ func (e mut h2Engine) data(flags int, id int, payload []byte) {
         e.malformed(index)
         return
     }
-    let finished = flags & 1 != 0
-    if end == start && !finished {
-        e.emptyFrames += 1
-        if e.emptyFrames > h2ReplyLimit {
-            e.abort(h2Calm, "too many control frames")
-            return
-        }
-    } else {
-        e.emptyFrames = 0
+    if e.streams[index].head && end > start {
+        e.malformed(index)
+        return
     }
     if e.streams[index].data.len() + end - start > e.config.MaxBodyBytes {
         e.discard(index, h2Cancel, error("http.Client: body too large"))
@@ -707,7 +713,7 @@ func h2FieldName(name string) bool {
 func (e mut h2Engine) respond(index int, fields []hpack.Field, finished bool) {
     if e.streams[index].answered {
         for field in fields {
-            if !h2FieldName(field.Name) {
+            if !h2FieldName(field.Name) || !fieldValue(field.Value) {
                 e.malformed(index)
                 return
             }
@@ -740,7 +746,7 @@ func (e mut h2Engine) respond(index int, fields []hpack.Field, finished bool) {
             return
         }
         if field.Name == "content-length" {
-            let length, lengthErr = strconv.Atoi(field.Value)
+            let length, lengthErr = decimal(field.Value)
             if lengthErr != nil || length < 0 || (expected >= 0 && expected != length) {
                 _ = lengthErr
                 e.malformed(index)
@@ -861,6 +867,12 @@ func (e mut h2Engine) goAway(id int, payload []byte) {
     }
     let last = h2Int(payload, 0) & h2MaxWindow
     e.shutdown(error("http2: request not processed"))
+    e.shared.withLock(func(s mut h2Shared) {
+        s.closing = true
+        if s.failure == nil {
+            s.failure = error("http2: request not processed")
+        }
+    })
     var index = e.streams.len() - 1
     for index >= 0 {
         if e.streams[index].id > last {
@@ -908,6 +920,11 @@ func (e mut h2Engine) windowUpdate(id int, payload []byte) {
 func (e mut h2Engine) publish() {
     let active = e.streams.len()
     let waiting = e.queue.len()
+    if active == e.shownActive && waiting == e.shownWaiting {
+        return
+    }
+    e.shownActive = active
+    e.shownWaiting = waiting
     e.shared.withLock(func(s mut h2Shared) {
         s.active = active
         s.waiting = waiting

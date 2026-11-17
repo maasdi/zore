@@ -13403,8 +13403,9 @@ frame size. It alternates bounded reads and writes on the single connection, so
 neither direction can block the other; a request submitted while it waits for
 the peer is sent within 16 milliseconds. With no stream open it checks the
 connection about four times a second. It uses one task, one socket, one header
-compression decoder bounded by `MaxHeaderBytes`, and buffers at most one frame
-of unparsed input.
+compression decoder bounded by `MaxHeaderBytes`, and buffers at most two
+frames of unparsed input. A client whose `MaxHeaderBytes` exceeds the header
+compression list limit (§37.48) is refused with `http2: header limit too large`.
 
 `Do` validates like §37.11 `Do` (method, absolute URL, header syntax,
 `MaxRequestBodyBytes`, `MaxHeaderBytes` counted as name plus value plus 32 per
@@ -13428,7 +13429,7 @@ Stream failures end one request and leave the others running:
 | --- | --- | --- |
 | `RST_STREAM` with `REFUSED_STREAM`, or a stream above the last identifier of a received `GOAWAY` | `http2: request not processed` | nothing |
 | Any other `RST_STREAM` | `http2: stream reset by server (code N)` | nothing |
-| Missing or invalid `:status`, another pseudo-header, an uppercase or connection-specific field name, an invalid value, `DATA` before the response headers, a second header block without end of stream, a 101 or finished 1xx response, a zero stream window update, or a body whose size differs from `content-length` (except for `HEAD` and 304) | `http2: malformed response` | `RST_STREAM` `PROTOCOL_ERROR` |
+| Missing or invalid `:status`, another pseudo-header, an uppercase or connection-specific field name, an invalid value in headers or trailers, `DATA` before the response headers, `DATA` in a `HEAD` response, a second header block without end of stream, a 101 or finished 1xx response, a zero stream window update, or a body whose size differs from `content-length` (except for `HEAD` and 304; the value must be digits only) | `http2: malformed response` | `RST_STREAM` `PROTOCOL_ERROR` |
 | Body beyond `MaxBodyBytes` | `http.Client: body too large` | `RST_STREAM` `CANCEL` |
 | Data or a window update beyond a stream window | `http2: flow control error` | `RST_STREAM` `FLOW_CONTROL_ERROR` |
 | Context cancelled or deadline passed | the context error | `RST_STREAM` `CANCEL` |
@@ -13443,14 +13444,15 @@ setting, a zero connection window update), `http2: frame too large`,
 a header block the decoder rejects, `http2: header block too large` when the
 compressed block exceeds `MaxHeaderBytes`, `http2: too many control frames`
 when more than 64 replies to `PING` or `SETTINGS` are queued unsent or more than
-64 empty `DATA` frames arrive in a row, `http2: connection closed` at end of
+64 empty `DATA` frames arrive in a row on any streams, `http2: connection closed` at end of
 input, and transport errors unchanged. Frames of unknown types and frames for
 streams that already ended are ignored; their data still counts against the
 connection window.
 
 A received `GOAWAY` stops new streams: waiting and later requests fail with
-`http2: request not processed`, streams at or below its last identifier may
-finish, and then the connection closes. `Close` stops new requests with
+`http2: request not processed`, also after a later `Close`, `Stats` reports the
+connection closed, streams at or below its last identifier may finish, and then
+the connection closes. `Close` stops new requests with
 `http2: closed connection`, sends `GOAWAY` with `NO_ERROR`, lets open streams
 finish and then closes the connection; it does not wait. After a connection
 failure every later `Do` returns that failure. `Stats` reports open and waiting
@@ -13488,8 +13490,10 @@ served request on the same connection; a rejected header block; interim
 response, padded and prioritised `HEADERS` split over `CONTINUATION` frames,
 padded `DATA`, trailers and a `PING`; a cancelled request beside a served
 sibling; the body limit; end of input; an empty `DATA` flood; a zero window
-update; a first frame that is not `SETTINGS`; request validation and
-configuration errors; `Do` after `Close`; leak checks on every run; frontend
+update; a first frame that is not `SETTINGS`; a signed `content-length`,
+`DATA` in a `HEAD` response and an invalid trailer value followed by a served
+request; empty `DATA` frames on a finished stream; `Close` after a received
+`GOAWAY`; request validation, configuration and header limit errors; `Do` after `Close`; leak checks on every run; frontend
 acceptance of the guide example and type rejections.
 
 # 38. Self-Hosting Constraint

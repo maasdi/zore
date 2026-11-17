@@ -94,6 +94,9 @@ func (c Client) NewHTTP2Conn(conn own ClientConn, config HTTP2Config) (HTTP2Conn
     if err != nil {
         return emptyHTTP2Conn(), err
     }
+    if c.config.MaxHeaderBytes > hpack.MaxListBytes {
+        return emptyHTTP2Conn(), error("http2: header limit too large")
+    }
     var state = emptyH2Shared()
     state.closed = false
     state.closing = false

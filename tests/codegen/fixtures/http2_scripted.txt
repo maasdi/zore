@@ -234,9 +234,49 @@ http.Client: metadata too large
 url: expected absolute http or https URL
 http2: negative configuration
 http2: configuration out of range
+http2: header limit too large
 /closed error http2: closed connection
 --- server
 client settings 2=0 4=262144 6=32768 
 goaway code 0
+closed EOF
+window updates 1
+=== strict
+/signed error http2: malformed response
+/head error http2: malformed response
+/trailer error http2: malformed response
+/good 200 4 fine content-type=text/plain
+/closed error http2: closed connection
+--- server
+client settings 2=0 4=262144 6=32768 
+stream 1: :method=GET :scheme=https :authority=example.test :path=/signed x-trace=1
+reset stream 1 code 1
+stream 3: :method=HEAD :scheme=https :authority=example.test :path=/head x-trace=1
+reset stream 3 code 1
+stream 5: :method=GET :scheme=https :authority=example.test :path=/trailer x-trace=1
+reset stream 5 code 1
+stream 7: :method=GET :scheme=https :authority=example.test :path=/good x-trace=1
+goaway code 0
+closed EOF
+window updates 1
+=== lateflood
+/done 200 4 done content-type=text/plain
+/later error http2: too many control frames
+/closed error http2: too many control frames
+--- server
+client settings 2=0 4=262144 6=32768 
+stream 1: :method=GET :scheme=https :authority=example.test :path=/done x-trace=1
+frame 1
+goaway code 11
+closed EOF
+window updates 1
+=== goawayclose
+closed true
+/refused error http2: request not processed
+/draining 200 8 draining content-type=text/plain
+/closed error http2: request not processed
+--- server
+client settings 2=0 4=262144 6=32768 
+stream 1: :method=GET :scheme=https :authority=example.test :path=/draining x-trace=1
 closed EOF
 window updates 1
