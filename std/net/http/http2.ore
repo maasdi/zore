@@ -221,7 +221,22 @@ func (h HTTP2Conn) Open(ctx context.Context, method string, absoluteURL string, 
     result.idle = settings.IdleTimeout
     result.stops = stops
     result.h2.push(h2Reader{conn: h, ticket: ticket, pipe: pipe, wake: wake, ctx: streamCtx, settled: false})
+    let ended, trailers = pipe.withLock(func(p mut h2Pipe) (bool, Header) {
+        return p.finished && p.data.len() == 0 && p.failure == nil, clone(p.trailers)
+    })
+    if ended {
+        result.done = true
+        result.trailers = trailers
+        result.h2[0].settled = true
+        result.release()
+    }
     return result, nil
+}
+
+func (h HTTP2Conn) release() {
+    h.shared.withLock(func(s mut h2Shared) {
+        s.inFlight -= 1
+    })
 }
 
 func (h HTTP2Conn) abandon(ticket int) {
@@ -283,9 +298,9 @@ func (h HTTP2Conn) submit(ctx context.Context, method string, absoluteURL string
     }
     select {
         case let result, _ = done.receive() {
-            h.shared.withLock(func(s mut h2Shared) {
-                s.inFlight -= 1
-            })
+            if !streamed || result.failure != nil {
+                h.release()
+            }
             return result.response, ticket, result.failure
         }
         case ctx.Done().receive() {
@@ -312,6 +327,7 @@ func (r mut h2Reader) drop() {
         r.settled = true
         r.conn.abandon(r.ticket)
     }
+    r.conn.release()
 }
 
 func (r mut ResponseStream) readHTTP2(buf mut []byte) (int, error) {
@@ -330,8 +346,19 @@ func (r mut ResponseStream) readHTTP2(buf mut []byte) (int, error) {
             if p.position == p.data.len() {
                 p.data = Array<byte>{}
                 p.position = 0
+            } else if p.position >= 16384 {
+                var rest = Array<byte>{}
+                for var i = p.position; i < p.data.len(); i += 1 {
+                    rest.push(p.data[i])
+                }
+                p.data = rest
+                p.position = 0
             }
-            return taken, p.finished && p.position == p.data.len(), clone(p.trailers), p.failure
+            let ended = p.finished && p.position == p.data.len()
+            if ended {
+                return taken, ended, clone(p.trailers), p.failure
+            }
+            return taken, ended, NewHeader(), p.failure
         })
         if chunk.len() > 0 {
             _ = failure

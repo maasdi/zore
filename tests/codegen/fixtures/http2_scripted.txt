@@ -284,6 +284,8 @@ trailed 3 x-sum=6 complete=true
 early read 10
 reset read partial then http2: stream reset by server (code 2)
 quiet http.Client: body idle timeout
+long read 0 then http2: malformed response
+head 200 complete=true
 /last 200 10 still fine content-type=text/plain
 /closed error http2: closed connection
 --- server
@@ -298,7 +300,10 @@ reset stream 5 code 8
 stream 7: :method=GET :scheme=https :authority=example.test :path=/reset
 stream 9: :method=GET :scheme=https :authority=example.test :path=/quiet
 reset stream 9 code 8
-stream 11: :method=GET :scheme=https :authority=example.test :path=/last x-trace=1
+stream 11: :method=GET :scheme=https :authority=example.test :path=/long
+reset stream 11 code 1
+stream 13: :method=HEAD :scheme=https :authority=example.test :path=/head
+stream 15: :method=GET :scheme=https :authority=example.test :path=/last x-trace=1
 goaway code 0
 closed
 window updates 1

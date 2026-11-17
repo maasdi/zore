@@ -161,7 +161,7 @@ func emptyAutoResponse() http.ClientResponse {
     return http.ClientResponse{StatusCode: 0, Headers: http.NewHeader(), Body: Array<byte>{}}
 }
 
-func (a AutoClient) admit(method string, absoluteURL string, body []byte) (url.AbsoluteURL, error) {
+func (a AutoClient) admit(absoluteURL string, body []byte) (url.AbsoluteURL, error) {
     if !a.live {
         return url.AbsoluteURL{Scheme: "", Hostname: "", Authority: "", Address: "", RequestTarget: ""}, error("https.AutoClient: empty client")
     }
@@ -176,7 +176,7 @@ func (a AutoClient) admit(method string, absoluteURL string, body []byte) (url.A
 }
 
 func (a AutoClient) Do(ctx context.Context, method string, absoluteURL string, headers http.Header, body []byte) (http.ClientResponse, error) {
-    let target, admitErr = a.admit(method, absoluteURL, body)
+    let target, admitErr = a.admit(absoluteURL, body)
     if admitErr != nil {
         return emptyAutoResponse(), admitErr
     }
@@ -185,38 +185,37 @@ func (a AutoClient) Do(ctx context.Context, method string, absoluteURL string, h
         return client.Do(ctx, method, absoluteURL, headers, body)
     }
     let bounded, cancel = context.WithDeadline(ctx, time.Now().Add(a.config.Timeout))
-    for var attempt = 0; attempt < 2; attempt += 1 {
+    let guard = autoCancel{cancel: cancel}
+    var retried = false
+    for {
         var route = a.route(bounded, target)?
         if route.direct.len() > 0 {
             let _, source = route.direct.pop()
-            let response, err = client.Exchange(bounded, conn{source: source}, method, absoluteURL, headers, body)
-            cancel()
-            return response, err
+            return client.Exchange(bounded, conn{source: source}, method, absoluteURL, headers, body)
         }
         let shared = route.shared[0]
         let response, err = shared.Do(bounded, method, absoluteURL, headers, body)
         if route.oneOff {
             shared.Close()
         }
-        if err == nil || attempt == 1 || !retryable(err) {
-            cancel()
+        if err == nil || retried || !retryable(err) {
             return response, err
         }
         _ = err
+        retried = true
     }
-    cancel()
-    return emptyAutoResponse(), error("https.AutoClient: closed client")
 }
 
 func (a AutoClient) Open(ctx context.Context, method string, absoluteURL string, headers http.Header, body []byte, config http.StreamConfig) (http.ResponseStream, error) {
-    let target = a.admit(method, absoluteURL, body)?
+    let target = a.admit(absoluteURL, body)?
     let client = http.NewClient(a.config)?
     if target.Scheme != "https" {
         return client.Open(ctx, method, absoluteURL, headers, body, config)
     }
     let bounded, cancel = context.WithDeadline(ctx, time.Now().Add(a.config.DialTimeout + a.config.Timeout))
     let guard = autoCancel{cancel: cancel}
-    for var attempt = 0; attempt < 2; attempt += 1 {
+    var retried = false
+    for {
         var route = a.route(bounded, target)?
         if route.direct.len() > 0 {
             let _, source = route.direct.pop()
@@ -227,12 +226,12 @@ func (a AutoClient) Open(ctx context.Context, method string, absoluteURL string,
         if route.oneOff {
             shared.Close()
         }
-        if err == nil || attempt == 1 || !retryable(err) {
+        if err == nil || retried || !retryable(err) {
             return stream, err
         }
         _ = err
+        retried = true
     }
-    return client.Open(ctx, "", absoluteURL, headers, body, config)
 }
 
 type autoCancel struct {

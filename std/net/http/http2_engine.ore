@@ -652,6 +652,15 @@ func (e mut h2Engine) data(flags int, id int, payload []byte) {
         e.malformed(index)
         return
     }
+    let declared = e.streams[index].expected
+    var size = e.streams[index].data.len()
+    if e.streams[index].streamed {
+        size = e.streams[index].received
+    }
+    if declared >= 0 && e.streams[index].status != 304 && size + end - start > declared {
+        e.malformed(index)
+        return
+    }
     if e.streams[index].streamed {
         e.streams[index].received += end - start
         if end > start {
@@ -818,7 +827,11 @@ func (e mut h2Engine) respond(index int, fields []hpack.Field, finished bool) {
         e.streams[index].delivered = true
         let done = e.streams[index].done
         let delivered = clone(e.streams[index].headers)
+        if finished {
+            e.complete(index)
+        }
         done.send(h2Result{response: ClientResponse{StatusCode: status, Headers: delivered, Body: Array<byte>{}}, failure: nil})
+        return
     }
     if finished {
         e.complete(index)

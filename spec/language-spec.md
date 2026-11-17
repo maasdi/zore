@@ -13610,9 +13610,13 @@ with `http.Client: body too large` beyond `MaxBodyBytes`, with
 `http.Client: body idle timeout` when no data arrives for `IdleTimeout`, with
 the context error when `ctx` ends or `Timeout` passes, and with the stream and
 connection errors of §37.49, including `http2: malformed response` when the body
-size differs from `content-length`. Data already received before a failure is
+size differs from `content-length`; data beyond the declared length is refused
+before it reaches the caller. Data already received before a failure is
 returned first. Closing or dropping a stream before its end sends `RST_STREAM`
-with `CANCEL`, and other requests on the connection continue.
+with `CANCEL`, and other requests on the connection continue. An open stream
+counts as a call in progress for the `MaxStreams` plus `MaxWaiters` limit until
+it ends or is closed. A response without a body is complete when `Open`
+returns.
 
 `AutoClient.Open` chooses the connection like `AutoClient.Do` (§37.50), bounds
 choosing the connection by `DialTimeout` plus `Timeout`, and opens the response
@@ -13652,7 +13656,8 @@ runtime or syntax changes. Conformance: a scripted HTTP/2 peer that must stop at
 exactly the 262,144-byte stream window while the caller does not read and
 receives no window update until it does, then delivers 300,000 bytes; trailers;
 early `Close` sending `CANCEL`; a server reset after partial data returning the
-data then the reset error; the idle timeout; a buffered request on the same
+data then the reset error; the idle timeout; a body longer than its
+`content-length` refused before delivery; a `HEAD` response complete at once; a buffered request on the same
 connection afterwards; and, against Node.js, a streamed 300,000-byte download
 over HTTP/2 and over the HTTP/1.1 fallback.
 

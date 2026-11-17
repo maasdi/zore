@@ -456,6 +456,13 @@ func script(p mut Peer, mode string) error {
         p.send(3, 0, reset, code[:])?
         let quiet, _ = p.request()?
         p.head(quiet, 4, ok[:])?
+        let long, _ = p.request()?
+        let five = Array<hpack.Field>{pair(":status", "200"), pair("content-length", "5")}
+        p.head(long, 4, five[:])?
+        let ten = strings.Bytes("0123456789")
+        p.send(0, 1, long, ten[:])?
+        let head, _ = p.request()?
+        p.head(head, 5, five[:])?
         let last, _ = p.request()?
         p.answer(last, "200", "still fine")?
     } else if mode == "zerowindow" {
@@ -670,6 +677,12 @@ func run() error {
         var fifth = conn.Open(ctx, "GET", "https://example.test/quiet", http.NewHeader(), empty[:], idle)?
         let _, quietErr = fifth.Read(buf[:])
         println("quiet " + message(quietErr))
+        var sixth = conn.Open(ctx, "GET", "https://example.test/long", http.NewHeader(), empty[:], config)?
+        let longN, longErr = sixth.Read(buf[:])
+        println("long read " + strconv.Itoa(longN) + " then " + message(longErr))
+        let headStream = conn.Open(ctx, "HEAD", "https://example.test/head", http.NewHeader(), empty[:], config)?
+        let _, headComplete = headStream.Trailers()
+        println("head " + strconv.Itoa(headStream.StatusCode()) + " complete=" + strconv.FormatBool(headComplete))
         println(show(conn, ctx, "GET", "/last", empty[:]))
     } else if mode == "validation" {
         println(show(conn, ctx, "CONNECT", "/x", empty[:]))
