@@ -1,0 +1,89 @@
+package main
+
+import "std/context"
+import "std/errors"
+import "std/net/http"
+import "std/os"
+import "std/strconv"
+import "std/strings"
+import "std/time"
+import "tls/https"
+
+async func fetch(client https.AutoClient, target string, done channel<string>) {
+    let empty = Array<byte>{}
+    let response, err = client.Do(context.Background(), "GET", target, http.NewHeader(), empty[:])
+    if err != nil {
+        done.send("error " + errors.Message(err))
+        return
+    }
+    let text, _ = strings.FromBytes(response.Body[:])
+    done.send(text)
+}
+
+func text(client https.AutoClient, method string, target string, headers http.Header, body []byte) string {
+    let response, err = client.Do(context.Background(), method, target, headers, body)
+    if err != nil {
+        return "error " + errors.Message(err)
+    }
+    let value, _ = strings.FromBytes(response.Body[:])
+    if value.len() > 40 {
+        return strconv.Itoa(response.StatusCode) + " " + strconv.Itoa(value.len()) + " bytes"
+    }
+    return strconv.Itoa(response.StatusCode) + " " + value
+}
+
+func run() error {
+    let args = os.Args()
+    let base = "https://localhost:" + args[1]
+    let roots = os.ReadFile(args[2])?
+    var settings = http.DefaultClientConfig()
+    settings.Timeout = 10 * time.Second
+    settings.MaxRequestBodyBytes = 200000
+    let client = https.NewAutoClient(roots[:], settings, http.DefaultHTTP2Config())?
+    let empty = Array<byte>{}
+    if args[3] == "h2" {
+        let done = channel<string>(5)
+        for var i = 0; i < 5; i += 1 {
+            go fetch(client, base + "/slow?n=" + string(rune(48 + i)), done)
+        }
+        var replies = Array<string>{}
+        for var i = 0; i < 5; i += 1 {
+            let reply, _ = done.receive()
+            replies.push(reply)
+        }
+        var seen = ""
+        for var i = 0; i < 5; i += 1 {
+            for reply in replies {
+                if reply == "2.0 " + string(rune(48 + i)) {
+                    seen += string(rune(48 + i))
+                }
+            }
+        }
+        println("concurrent " + seen)
+        println("peak " + text(client, "GET", base + "/peak", http.NewHeader(), empty[:]))
+        var upload = Array<byte>{}
+        for upload.len() < 150000 {
+            upload.push(byte(upload.len() % 13))
+        }
+        println("echo " + text(client, "POST", base + "/echo", http.NewHeader(), upload[:]))
+        println("big " + text(client, "GET", base + "/big", http.NewHeader(), empty[:]))
+        var traced = http.NewHeader()
+        traced.Add("X-Trace", "abc")?
+        println("header " + text(client, "GET", base + "/header", traced, empty[:]))
+        println("missing " + text(client, "GET", base + "/nothing", http.NewHeader(), empty[:]))
+        println("sessions " + text(client, "GET", base + "/sessions", http.NewHeader(), empty[:]))
+        println("connections " + strconv.Itoa(client.Stats().HTTP2Connections))
+    } else {
+        println("echo " + text(client, "POST", base + "/echo", http.NewHeader(), empty[:]))
+        println("connections " + strconv.Itoa(client.Stats().HTTP2Connections))
+    }
+    client.Close()
+    return nil
+}
+
+func main() {
+    let err = run()
+    if err != nil {
+        println("failed " + errors.Message(err))
+    }
+}

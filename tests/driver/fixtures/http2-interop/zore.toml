@@ -1,0 +1,5 @@
+name = "http2-interop"
+version = "0.1.0"
+
+[dependencies]
+tls = { path = "../../packages/tls" }

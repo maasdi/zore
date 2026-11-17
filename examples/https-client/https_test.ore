@@ -541,3 +541,53 @@ func TestHTTPSProxyTunnelVerifiesTheTarget() error {
     proxiedCase("../../packages/tls/testdata/server.pem", "../../packages/tls/testdata/server.pem", "")?
     return proxiedCase("testdata/wrong-host.pem", "testdata/wrong-host.pem", "does not match")
 }
+
+func TestHTTPSAutoClientFallsBackToHTTP1() error {
+    let roots = os.ReadFile("../../packages/tls/testdata/roots.pem")?
+    let cert = os.ReadFile("../../packages/tls/testdata/server.pem")?
+    let key = os.ReadFile("../../packages/tls/testdata/server-key.pem")?
+    let serverConfig = tls.NewServerConfig(cert[:], key[:])?
+    var settings = http.DefaultClientConfig()
+    settings.Timeout = 10 * time.Second
+    settings.PollInterval = time.Millisecond
+    settings.DialTimeout = 0
+    let client = https.NewAutoClient(roots[:], settings, http.DefaultHTTP2Config())?
+    let listener = net.Listen("tcp4", "127.0.0.1:0")?
+    let _, port, found = strings.Cut(listener.Addr(), ":")
+    if !found {
+        return error("listener port")
+    }
+    listener.SetDeadline(time.Now().Add(3 * time.Second))?
+    let ctx, cancel = context.WithTimeout(context.Background(), 3 * time.Second)
+    let server = go serveHTTPS(listener, serverConfig, ctx, "localhost")
+    let empty = Array<byte>{}
+    let response = client.Do(ctx, "GET", "https://localhost:" + port + "/binary", http.NewHeader(), empty[:])?
+    server.wait()?
+    cancel()
+    if response.StatusCode != 200 || response.Body.len() != 3 || response.Body[1] != 255 {
+        return error("fallback response")
+    }
+    if client.Stats().HTTP2Connections != 0 {
+        return error("fallback kept an HTTP/2 connection")
+    }
+    let quick, stop = context.WithTimeout(context.Background(), 8 * time.Second)
+    let _, plainFirst = client.Do(quick, "GET", "http://127.0.0.1:1/", http.NewHeader(), empty[:])
+    stop()
+    let later, stopLater = context.WithTimeout(context.Background(), 8 * time.Second)
+    let _, secureAfter = client.Do(later, "GET", "https://127.0.0.1:1/", http.NewHeader(), empty[:])
+    stopLater()
+    _ = secureAfter
+    if plainFirst == nil || secureAfter == nil || strings.Contains(errors.Message(secureAfter), "deadline") {
+        return error("https request after a plain one to the same address did not fail at once")
+    }
+    client.Close()
+    let _, closedErr = client.Do(context.Background(), "GET", "https://localhost:" + port + "/binary", http.NewHeader(), empty[:])
+    if closedErr != error("https.AutoClient: closed client") {
+        return error("closed client accepted a request")
+    }
+    let _, plainErr = client.Do(context.Background(), "GET", "http://127.0.0.1:1/", http.NewHeader(), empty[:])
+    if plainErr != error("https.AutoClient: closed client") {
+        return error("closed client accepted a plain request")
+    }
+    return nil
+}

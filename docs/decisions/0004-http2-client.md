@@ -3,11 +3,11 @@
 Status: accepted as the plan for issue #290. **HTTP/2 is not implemented.** This
 record fixes the choices that later slices must follow. Each slice still locks
 its own public signatures, examples and conformance cases in the specification
-before code is written. Three slices are delivered: application protocol
-negotiation in the `tls` package, the header compression package, and a
-connection that multiplexes buffered requests over a caller-supplied
-connection. Choosing HTTP/2 automatically, falling back to HTTP/1.1 and
-streamed bodies are not delivered, so the ordinary client still speaks
+before code is written. All four slices are delivered: application protocol
+negotiation in the `tls` package, the header compression package, a
+connection that multiplexes buffered requests, and an HTTPS client that
+chooses HTTP/2 or HTTP/1.1 per server (specification §37.50). Streamed HTTP/2
+bodies are not delivered; the ordinary `http.Client` calls still speak
 HTTP/1.1 only.
 
 ## Consumer
@@ -61,7 +61,7 @@ Every limit is finite and has a default; a peer cannot raise one.
 | Receive memory | 256 KiB window per stream, so one connection buffers at most 32 × 256 KiB of unread body. |
 | Control frames | At most 64 unanswered `PING`, `SETTINGS` and reset frames are queued; more is a connection error (`ENHANCE_YOUR_CALM`). Empty `DATA` frames that do not end a stream are counted the same way. |
 | Tasks and sockets | One socket and one task per connection, whatever the number of streams. A connection value has a single owner and a TLS connection cannot be read and written from two tasks, so the task alternates short bounded reads and writes instead of using a reader and a writer. |
-| Connections | One live connection per origin, plus connections that are draining after `GOAWAY`. The total number of sockets is bounded by a configuration value. |
+| Connections | One live connection per origin, plus connections that are draining after `GOAWAY`. At most 64 origins keep a connection; a request beyond that uses a connection that closes after it. |
 
 ## Flow control
 
@@ -125,8 +125,9 @@ Every limit is finite and has a default; a peer cannot raise one.
    specification §37.48).
 3. Frames, settings, flow control and the connection task over a scripted
    connection, with buffered requests (delivered; specification §37.49).
-4. Negotiation and HTTP/1.1 fallback in `tls/https`, one connection per
-   origin, streamed bodies and interoperability evidence.
+4. Negotiation and HTTP/1.1 fallback in `tls/https` with one connection per
+   origin and interoperability evidence (delivered; specification §37.50).
+   Streamed bodies remain a follow-up.
 
 ## Evidence required before HTTP/2 is called supported
 

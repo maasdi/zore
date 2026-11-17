@@ -248,6 +248,19 @@ independent Python escaping/parser assertions. Contextual template rendering
 remains a separate application-driven decision under Q16; the primitive does
 not validate URLs or serialize JavaScript/CSS.
 
+## Automatic HTTP/2 — issue #290
+
+Locked §37.50 delivers `https.AutoClient`, `AutoStats`, `MaxAutoOrigins`,
+`NewAutoClient` and `NewDefaultAutoClient` in the bundled TLS package.
+[tests/driver/http_client.rs](../../tests/driver/http_client.rs)::http2_auto_client_interoperates_with_node_and_falls_back_to_http1
+runs a Zore program against the Node.js `http2` server (an independent HTTP/2
+implementation) for concurrent requests over one connection, uploads,
+downloads, headers and a 404, and against the Node.js `https` server for
+HTTP/1.1 fallback. It requires Node.js and fails, never skips, without it.
+`TestHTTPSAutoClientFallsBackToHTTP1` in
+[examples/https-client/https_test.ore](../../examples/https-client/https_test.ore)
+covers fallback and `Close` against a Zore TLS server.
+
 ## HTTP/2 connections — issue #290
 
 Locked §37.49 delivers `HTTP2Config`, `HTTP2Stats`, `DefaultHTTP2Config`,
@@ -258,8 +271,7 @@ exchanges with an HTTP/2 peer over loopback TCP and compares them with
 multiplexing, stream and waiter limits, flow control in both directions,
 refusal, GOAWAY, cancellation, malformed responses and connection errors.
 [tests/packages/networking.rs](../../tests/packages/networking.rs) checks the
-guide example and type rejections. Negotiation, HTTP/1.1 fallback, streamed
-bodies and interoperability with an independent server are not delivered.
+guide example and type rejections. Streamed bodies are not delivered.
 
 ## HTTP header compression — issue #290
 

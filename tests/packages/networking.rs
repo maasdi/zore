@@ -499,8 +499,8 @@ fn http2_connections_check_with_the_guide_example() {
         .skip(1)
         .map(|block| block.split("```").next().unwrap())
         .collect();
-    assert_eq!(blocks.len(), 1);
-    super::accepts(&[("main.ore", blocks[0])]);
+    assert_eq!(blocks.len(), 2);
+    super::accepts(&[("main.ore", blocks[1])]);
 }
 
 #[test]
