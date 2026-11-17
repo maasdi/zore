@@ -2,6 +2,7 @@ package main
 
 import "std/context"
 import "std/errors"
+import "std/io"
 import "std/net/http"
 import "std/os"
 import "std/strconv"
@@ -30,6 +31,38 @@ func text(client https.AutoClient, method string, target string, headers http.He
         return strconv.Itoa(response.StatusCode) + " " + strconv.Itoa(value.len()) + " bytes"
     }
     return strconv.Itoa(response.StatusCode) + " " + value
+}
+
+func streamed(client https.AutoClient, target string) string {
+    let empty = Array<byte>{}
+    var stream, err = client.Open(context.Background(), "GET", target, http.NewHeader(), empty[:], http.DefaultStreamConfig())
+    if err != nil {
+        return "error " + errors.Message(err)
+    }
+    var buf = Array<byte>{}
+    for buf.len() < 7000 {
+        buf.push(0)
+    }
+    var total = 0
+    var chunks = 0
+    for {
+        let n, readErr = stream.Read(buf[:])
+        total += n
+        if n > 0 {
+            chunks += 1
+        }
+        if readErr == io.EOF {
+            break
+        }
+        if readErr != nil {
+            return "error " + errors.Message(readErr)
+        }
+    }
+    var pieces = "one piece"
+    if chunks > 1 {
+        pieces = "several pieces"
+    }
+    return strconv.Itoa(stream.StatusCode()) + " " + strconv.Itoa(total) + " bytes in " + pieces
 }
 
 func run() error {
@@ -71,10 +104,12 @@ func run() error {
         traced.Add("X-Trace", "abc")?
         println("header " + text(client, "GET", base + "/header", traced, empty[:]))
         println("missing " + text(client, "GET", base + "/nothing", http.NewHeader(), empty[:]))
+        println("open " + streamed(client, base + "/big"))
         println("sessions " + text(client, "GET", base + "/sessions", http.NewHeader(), empty[:]))
         println("connections " + strconv.Itoa(client.Stats().HTTP2Connections))
     } else {
         println("echo " + text(client, "POST", base + "/echo", http.NewHeader(), empty[:]))
+        println("open " + streamed(client, base + "/big"))
         println("connections " + strconv.Itoa(client.Stats().HTTP2Connections))
     }
     client.Close()

@@ -1,6 +1,7 @@
 package http
 
 import "std/context"
+import "std/io"
 import "std/net/http/hpack"
 import "std/net/url"
 import "std/strconv"
@@ -34,6 +35,22 @@ type h2Request struct {
     body Array<byte>
     head bool
     done channel<h2Result>
+    streamed bool
+    pipe Mutex<h2Pipe>
+    wake2 channel<bool>
+}
+
+type h2Pipe struct {
+    data Array<byte>
+    position int
+    consumed int
+    finished bool
+    failure error
+    trailers Header
+}
+
+func emptyH2Pipe() h2Pipe {
+    return h2Pipe{data: Array<byte>{}, position: 0, consumed: 0, finished: false, failure: nil, trailers: NewHeader()}
 }
 
 type h2Result struct {
@@ -134,7 +151,7 @@ func (h HTTP2Conn) Close() {
 }
 
 func h2Wake() h2Request {
-    return h2Request{ticket: 0, wake: true, fields: Array<hpack.Field>{}, body: Array<byte>{}, head: false, done: channel<h2Result>(1)}
+    return h2Request{ticket: 0, wake: true, fields: Array<hpack.Field>{}, body: Array<byte>{}, head: false, done: channel<h2Result>(1), streamed: false, pipe: mutex(emptyH2Pipe()), wake2: channel<bool>(1)}
 }
 
 func (h HTTP2Conn) requestFields(method string, absoluteURL string, headers Header, length int) (Array<hpack.Field>, error) {
@@ -180,26 +197,66 @@ func (h HTTP2Conn) requestFields(method string, absoluteURL string, headers Head
 }
 
 func (h HTTP2Conn) Do(ctx context.Context, method string, absoluteURL string, headers Header, body []byte) (ClientResponse, error) {
+    let bounded, cancel = context.WithDeadline(ctx, time.Now().Add(h.config.Timeout))
+    let guard = clientCancellation{cancel: cancel}
+    let response, _, err = h.submit(bounded, method, absoluteURL, headers, body, false, mutex(emptyH2Pipe()), channel<bool>(1))
+    return response, err
+}
+
+func (h HTTP2Conn) Open(ctx context.Context, method string, absoluteURL string, headers Header, body []byte, config StreamConfig) (ResponseStream, error) {
+    let settings = streamSettings(config)?
+    let streamCtx, stops = streamContext(ctx, settings.Timeout)
+    let headerCtx, cancel = context.WithDeadline(streamCtx, time.Now().Add(h.config.Timeout))
+    let guard = clientCancellation{cancel: cancel}
+    let pipe = mutex(emptyH2Pipe())
+    let wake = channel<bool>(1)
+    let response, ticket, err = h.submit(headerCtx, method, absoluteURL, headers, body, true, pipe, wake)
+    if err != nil {
+        return emptyResponseStream(), err
+    }
+    var result = emptyResponseStream()
+    result.status = response.StatusCode
+    result.headers = response.Headers
+    result.limit = settings.MaxBodyBytes
+    result.idle = settings.IdleTimeout
+    result.stops = stops
+    result.h2.push(h2Reader{conn: h, ticket: ticket, pipe: pipe, wake: wake, ctx: streamCtx, settled: false})
+    return result, nil
+}
+
+func (h HTTP2Conn) abandon(ticket int) {
+    let work = h.work
+    let limit = h.limits.MaxStreams + h.limits.MaxWaiters
+    h.shared.withLock(func(s mut h2Shared) {
+        if !s.closed {
+            s.cancels.push(ticket)
+            if s.queued < limit + 2 {
+                s.queued += 1
+                work.send(h2Wake())
+            }
+        }
+    })
+}
+
+func (h HTTP2Conn) submit(ctx context.Context, method string, absoluteURL string, headers Header, body []byte, streamed bool, pipe Mutex<h2Pipe>, wake channel<bool>) (ClientResponse, int, error) {
     if !h.live {
-        return emptyClientResponse(), error("http2: closed connection")
+        return emptyClientResponse(), 0, error("http2: closed connection")
     }
     let fields, fieldsErr = h.requestFields(method, absoluteURL, headers, body.len())
     if fieldsErr != nil {
-        return emptyClientResponse(), fieldsErr
+        return emptyClientResponse(), 0, fieldsErr
     }
     let contextErr = clientContextError(ctx)
     if contextErr != nil {
-        return emptyClientResponse(), contextErr
+        return emptyClientResponse(), 0, contextErr
     }
-    let bounded, cancel = context.WithDeadline(ctx, time.Now().Add(h.config.Timeout))
-    let guard = clientCancellation{cancel: cancel}
     var payload = Array<byte>{}
     for value in body {
         payload.push(value)
     }
     let done = channel<h2Result>(1)
     var slot = Array<h2Request>{}
-    slot.push(h2Request{ticket: 0, wake: false, fields: fields, body: payload, head: method == "HEAD", done: done})
+    slot.push(h2Request{ticket: 0, wake: false, fields: fields, body: payload, head: method == "HEAD", done: done, streamed: streamed, pipe: pipe, wake2: wake})
     let work = h.work
     let limit = h.limits.MaxStreams + h.limits.MaxWaiters
     let ticket, admitErr = h.shared.withLock(func(s mut h2Shared) (int, error) {
@@ -222,27 +279,101 @@ func (h HTTP2Conn) Do(ctx context.Context, method string, absoluteURL string, he
         return s.next, nil
     })
     if admitErr != nil {
-        return emptyClientResponse(), admitErr
+        return emptyClientResponse(), 0, admitErr
     }
     select {
         case let result, _ = done.receive() {
             h.shared.withLock(func(s mut h2Shared) {
                 s.inFlight -= 1
             })
-            return result.response, result.failure
+            return result.response, ticket, result.failure
         }
-        case bounded.Done().receive() {
+        case ctx.Done().receive() {
             h.shared.withLock(func(s mut h2Shared) {
                 s.inFlight -= 1
-                if !s.closed {
-                    s.cancels.push(ticket)
-                    if s.queued < limit + 2 {
-                        s.queued += 1
-                        work.send(h2Wake())
-                    }
-                }
             })
-            return emptyClientResponse(), h2Reason(bounded.Err(), error("context deadline exceeded"))
+            h.abandon(ticket)
+            return emptyClientResponse(), 0, h2Reason(ctx.Err(), error("context deadline exceeded"))
         }
     }
+}
+
+type h2Reader struct {
+    conn HTTP2Conn
+    ticket int
+    pipe Mutex<h2Pipe>
+    wake channel<bool>
+    ctx context.Context
+    settled bool
+}
+
+func (r mut h2Reader) drop() {
+    if !r.settled {
+        r.settled = true
+        r.conn.abandon(r.ticket)
+    }
+}
+
+func (r mut ResponseStream) readHTTP2(buf mut []byte) (int, error) {
+    if buf.len() == 0 {
+        return 0, nil
+    }
+    for {
+        let room = buf.len()
+        let chunk, finished, trailers, failure = r.h2[0].pipe.withLock(func(p mut h2Pipe) (Array<byte>, bool, Header, error) {
+            var taken = Array<byte>{}
+            for taken.len() < room && p.position < p.data.len() {
+                taken.push(p.data[p.position])
+                p.position += 1
+            }
+            p.consumed += taken.len()
+            if p.position == p.data.len() {
+                p.data = Array<byte>{}
+                p.position = 0
+            }
+            return taken, p.finished && p.position == p.data.len(), clone(p.trailers), p.failure
+        })
+        if chunk.len() > 0 {
+            _ = failure
+            if chunk.len() > r.limit - r.total {
+                return 0, r.failHTTP2(error("http.Client: body too large"))
+            }
+            for i, value in chunk {
+                buf[i] = value
+            }
+            r.total += chunk.len()
+            return chunk.len(), nil
+        }
+        if failure != nil {
+            return 0, r.failHTTP2(failure)
+        }
+        if finished {
+            r.done = true
+            r.trailers = trailers
+            r.h2[0].settled = true
+            r.release()
+            return 0, io.EOF
+        }
+        let ctx = r.h2[0].ctx
+        let wake = r.h2[0].wake
+        let idle = r.idle
+        select {
+            case wake.receive() {
+                let _ = 0
+            }
+            case ctx.Done().receive() {
+                return 0, r.failHTTP2(h2Reason(ctx.Err(), error("context deadline exceeded")))
+            }
+            case time.After(idle).receive() {
+                return 0, r.failHTTP2(error("http.Client: body idle timeout"))
+            }
+        }
+    }
+}
+
+func (r mut ResponseStream) failHTTP2(err error) error {
+    r.trailers = NewHeader()
+    r.failure = err
+    r.release()
+    return err
 }

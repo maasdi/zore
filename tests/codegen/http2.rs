@@ -4,6 +4,7 @@ use std::time::Duration;
 const PROGRAM: &str = r#"package main
 import "std/context"
 import "std/errors"
+import "std/io"
 import "std/net"
 import "std/net/http"
 import "std/net/http/hpack"
@@ -99,6 +100,25 @@ func (p mut Peer) quiet(wait time.Duration) error {
         if kind == 1 { return error("second stream opened early") }
     }
     return nil
+}
+
+func (p mut Peer) updatesWithin(wait time.Duration, id int) (int, error) {
+    var buf = Array<byte>{}
+    for buf.len() < 16384 { buf.push(0) }
+    let until = time.Now().Add(wait)
+    for time.Now().Before(until) {
+        p.conn.SetReadDeadline(until)?
+        let n, _ = p.conn.Read(buf[:])
+        for var i = 0; i < n; i += 1 { p.input.push(buf[i]) }
+    }
+    var granted = 0
+    for p.input.len() >= 9 {
+        let length = (int(p.input[0]) << 16) | (int(p.input[1]) << 8) | int(p.input[2])
+        if p.input.len() < 9 + length { break }
+        let kind, _, stream, payload = p.frame()?
+        if kind == 8 && stream == id { granted += (int(payload[0]) << 24) | (int(payload[1]) << 16) | (int(payload[2]) << 8) | int(payload[3]) }
+    }
+    return granted, nil
 }
 
 func (p mut Peer) send(kind int, flags int, id int, payload []byte) error {
@@ -380,6 +400,64 @@ func script(p mut Peer, mode string) error {
         p.send(7, 0, 0, payload[:])?
         time.Sleep(100 * time.Millisecond)
         p.answer(a, "200", "draining")?
+    } else if mode == "stream" {
+        let id, _ = p.request()?
+        let sized = Array<hpack.Field>{pair(":status", "200"), pair("content-length", "300000")}
+        p.head(id, 4, sized[:])?
+        var chunk = Array<byte>{}
+        for chunk.len() < 16384 { chunk.push(byte(chunk.len() % 251)) }
+        var window = 262144
+        var sent = 0
+        var paused = false
+        for sent < 300000 {
+            if window == 0 {
+                if !paused {
+                    paused = true
+                    p.log.push("paused at " + strconv.Itoa(sent))
+                    let early = p.updatesWithin(150 * time.Millisecond, id)?
+                    p.log.push("updates before reading " + strconv.Itoa(early))
+                    window += early
+                    continue
+                }
+                let kind, _, stream, payload = p.frame()?
+                if kind == 8 && stream == id {
+                    window += (int(payload[0]) << 24) | (int(payload[1]) << 16) | (int(payload[2]) << 8) | int(payload[3])
+                }
+                continue
+            }
+            var n = chunk.len()
+            if n > window { n = window }
+            if n > 300000 - sent { n = 300000 - sent }
+            var flags = 0
+            if sent + n == 300000 { flags = 1 }
+            p.send(0, flags, id, chunk[:n])?
+            window -= n
+            sent += n
+        }
+        p.log.push("sent " + strconv.Itoa(sent))
+        let trailed, _ = p.request()?
+        let ok = Array<hpack.Field>{pair(":status", "200")}
+        p.head(trailed, 4, ok[:])?
+        let abc = strings.Bytes("abc")
+        p.send(0, 0, trailed, abc[:])?
+        let sum = Array<hpack.Field>{pair("x-sum", "6")}
+        p.head(trailed, 5, sum[:])?
+        let early, _ = p.request()?
+        p.head(early, 4, ok[:])?
+        var thousand = Array<byte>{}
+        for thousand.len() < 1000 { thousand.push(66) }
+        p.send(0, 0, early, thousand[:])?
+        let reset, _ = p.request()?
+        p.head(reset, 4, ok[:])?
+        let partial = strings.Bytes("partial")
+        p.send(0, 0, reset, partial[:])?
+        time.Sleep(50 * time.Millisecond)
+        let code = number(2)
+        p.send(3, 0, reset, code[:])?
+        let quiet, _ = p.request()?
+        p.head(quiet, 4, ok[:])?
+        let last, _ = p.request()?
+        p.answer(last, "200", "still fine")?
     } else if mode == "zerowindow" {
         let _, _ = p.request()?
         let zero = number(0)
@@ -442,6 +520,20 @@ func settle(conn http.HTTP2Conn, count int) {
         let stats = conn.Stats()
         if stats.Active + stats.Waiting >= count || stats.Closed { return }
         time.Sleep(time.Millisecond)
+    }
+}
+
+func drain(stream mut http.ResponseStream) int {
+    var buf = Array<byte>{}
+    for buf.len() < 7000 { buf.push(0) }
+    var total = 0
+    for {
+        let n, err = stream.Read(buf[:])
+        total += n
+        if err != nil {
+            if err != io.EOF { println("drain " + message(err)) }
+            return total
+        }
     }
 }
 
@@ -548,6 +640,37 @@ func run() error {
         println(show(conn, ctx, "GET", "/refused", empty[:]))
         let line, _ = done.receive()
         println(line)
+    } else if mode == "stream" {
+        var config = http.DefaultStreamConfig()
+        var first = conn.Open(ctx, "GET", "https://example.test/big", http.NewHeader(), empty[:], config)?
+        time.Sleep(1000 * time.Millisecond)
+        println("streamed " + strconv.Itoa(first.StatusCode()) + " " + strconv.Itoa(drain(first)))
+        var second = conn.Open(ctx, "GET", "https://example.test/trailed", http.NewHeader(), empty[:], config)?
+        let size = drain(second)
+        let trailers, complete = second.Trailers()
+        let sum, _ = trailers.Get("x-sum")
+        println("trailed " + strconv.Itoa(size) + " x-sum=" + sum + " complete=" + strconv.FormatBool(complete))
+        var third = conn.Open(ctx, "GET", "https://example.test/early", http.NewHeader(), empty[:], config)?
+        var some = Array<byte>{0, 0, 0, 0, 0, 0, 0, 0, 0, 0}
+        let got, _ = third.Read(some[:])
+        println("early read " + strconv.Itoa(got))
+        third.Close()?
+        var fourth = conn.Open(ctx, "GET", "https://example.test/reset", http.NewHeader(), empty[:], config)?
+        var buf = Array<byte>{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}
+        var text = ""
+        var failure = ""
+        for failure == "" {
+            let n, err = fourth.Read(buf[:])
+            for var i = 0; i < n; i += 1 { text += string(rune(buf[i])) }
+            if err != nil { failure = message(err) }
+        }
+        println("reset read " + text + " then " + failure)
+        var idle = http.DefaultStreamConfig()
+        idle.IdleTimeout = 200 * time.Millisecond
+        var fifth = conn.Open(ctx, "GET", "https://example.test/quiet", http.NewHeader(), empty[:], idle)?
+        let _, quietErr = fifth.Read(buf[:])
+        println("quiet " + message(quietErr))
+        println(show(conn, ctx, "GET", "/last", empty[:]))
     } else if mode == "validation" {
         println(show(conn, ctx, "CONNECT", "/x", empty[:]))
         var data = Array<byte>{}
@@ -614,5 +737,5 @@ fn http2_connection_multiplexes_requests_over_a_scripted_peer() {
         assert_eq!(run(&executable, mode), output, "{mode}");
         cases += 1;
     }
-    assert_eq!(cases, 23);
+    assert_eq!(cases, 24);
 }
