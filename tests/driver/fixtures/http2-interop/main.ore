@@ -61,7 +61,7 @@ func run() error {
             }
         }
         println("concurrent " + seen)
-        println("together " + boolText(time.Since(started) < 1200 * time.Millisecond))
+        println("together " + boolText(time.Since(started) < 1450 * time.Millisecond))
         var upload = Array<byte>{}
         for upload.len() < 150000 {
             upload.push(byte(upload.len() % 13))

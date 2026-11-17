@@ -13519,6 +13519,10 @@ func (a AutoClient) Stats() AutoStats
 func (a AutoClient) Close()
 ```
 
+`std/net/http` gains `func (c Client) Config() ClientConfig`, which returns
+the client's configuration with every zero field replaced by its default, so
+packages built on `http.Client` apply the same defaults.
+
 The constructors build a verified TLS configuration like `NewTransport` and
 `NewDefaultTransport`, offer `h2` then `http/1.1`, and validate `settings`
 like `http.NewClient`. `AutoClient` is a Copy handle that tasks may share; its
@@ -13526,22 +13530,27 @@ zero value fails with `https.AutoClient: empty client`. `http.NewClient`,
 `Pool`, `https.NewClient`, `https.NewTransport` and the other existing calls are
 unchanged and never offer `h2`.
 
-For an `https` URL, `Do` reuses the live HTTP/2 connection of the URL's address
-when there is one. Otherwise it connects with certificate and name verification
+An `https` request is bounded as a whole by the client's `Timeout` and the
+caller's context, including any wait described below, and a body larger than
+`MaxRequestBodyBytes` fails before connecting. Other request validation happens
+on the chosen protocol, after connecting. `Do` reuses the live HTTP/2
+connection of the URL's address when there is one. Otherwise it connects with certificate and name verification
 and the negotiated protocol decides: `h2` starts an `http.HTTP2Conn` with
 `limits`, kept for later requests to that address; anything else sends this one
 request over HTTP/1.1 on that connection and closes it, as `Exchange` does.
 While the first connection to an address is being set up, other requests to it
-wait for it instead of connecting, bounded by their context. Dials are made one
-at a time. At most `MaxAutoOrigins` addresses keep a connection; beyond that a
+wait for it instead of connecting. Dials are made one at a time; waiting for
+another dial does not use up a request's `DialTimeout`, which starts when its
+own dial does. At most `MaxAutoOrigins` addresses keep a connection; beyond that a
 request uses a connection of its own that closes after it. A request on a kept
 connection that fails with `http2: request not processed` or
-`http2: closed connection` is sent once more on a new connection, because the
-server did not process it. Plain `http` URLs use HTTP/1.1 as `http.Client.Do`
+`http2: closed connection` is sent once more, on a new connection if needed,
+because the server did not process it; after `Close` it fails instead. Plain `http` URLs use HTTP/1.1 as `http.Client.Do`
 does; cleartext HTTP/2 is not supported.
 
 `Stats` counts the kept HTTP/2 connections that accept requests. `Close` makes
-later `Do` calls fail with `https.AutoClient: closed client` and closes every
+later `Do` calls, and requests whose dial finishes after it, fail with
+`https.AutoClient: closed client` and closes every
 kept connection as `HTTP2Conn.Close` does, letting running requests finish.
 Errors are those of the TLS dial, `http.Client.Do`, `Exchange` and
 `HTTP2Conn.Do`.
@@ -13569,7 +13578,9 @@ runtime, syntax or native adapter changes. Conformance: against the Node.js
 150,000-byte upload, a 300,000-byte download, a forwarded header, a 404 and the
 server's session count of one; against the Node.js `https` server, HTTP/1.1
 fallback with no kept connection; against a Zore TLS server without protocol
-negotiation, fallback, `Close` and refusal after it.
+negotiation, fallback with a zero `DialTimeout`, an `https` request after a
+plain `http` one to the same address failing at once, `Close` and refusal
+after it.
 
 # 38. Self-Hosting Constraint
 

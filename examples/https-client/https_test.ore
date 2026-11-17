@@ -550,6 +550,7 @@ func TestHTTPSAutoClientFallsBackToHTTP1() error {
     var settings = http.DefaultClientConfig()
     settings.Timeout = 3 * time.Second
     settings.PollInterval = time.Millisecond
+    settings.DialTimeout = 0
     let client = https.NewAutoClient(roots[:], settings, http.DefaultHTTP2Config())?
     let listener = net.Listen("tcp4", "127.0.0.1:0")?
     let _, port, found = strings.Cut(listener.Addr(), ":")
@@ -568,6 +569,14 @@ func TestHTTPSAutoClientFallsBackToHTTP1() error {
     }
     if client.Stats().HTTP2Connections != 0 {
         return error("fallback kept an HTTP/2 connection")
+    }
+    let quick, stop = context.WithTimeout(context.Background(), 2 * time.Second)
+    let _, plainFirst = client.Do(quick, "GET", "http://127.0.0.1:1/", http.NewHeader(), empty[:])
+    let _, secureAfter = client.Do(quick, "GET", "https://127.0.0.1:1/", http.NewHeader(), empty[:])
+    stop()
+    _ = secureAfter
+    if plainFirst == nil || secureAfter == nil || strings.Contains(errors.Message(secureAfter), "deadline") {
+        return error("https request after a plain one to the same address did not fail at once")
     }
     client.Close()
     let _, closedErr = client.Do(context.Background(), "GET", "https://localhost:" + port + "/binary", http.NewHeader(), empty[:])

@@ -176,7 +176,7 @@ fn http2_auto_client_interoperates_with_node_and_falls_back_to_http1() {
         let mut run = Command::new(&program);
         run.arg(&server.port)
             .arg(&roots)
-            .arg(if mode == "h2" { "h2" } else { "http1" })
+            .arg(mode)
             .env("ZORE_CHECK_LEAKS", "1");
         let output = success(run);
         assert_eq!(String::from_utf8_lossy(&output.stdout), expected, "{mode}");

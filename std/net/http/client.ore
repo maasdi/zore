@@ -137,6 +137,10 @@ func NewClient(config ClientConfig) (Client, error) {
     return Client{config: chosen, live: true, transport: Array<ClientTransport>{}, proxy: noProxy(), tunnel: Array<ClientTunnel>{}}, nil
 }
 
+func (c Client) Config() ClientConfig {
+    return c.config
+}
+
 func NewClientWithTransport(config ClientConfig, transport own ClientTransport) (Client, error) {
     var client = NewClient(config)?
     client.transport.push(transport)
