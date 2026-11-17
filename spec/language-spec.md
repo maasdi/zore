@@ -13411,7 +13411,8 @@ compression list limit (§37.48) is refused with `http2: header limit too large`
 `MaxRequestBodyBytes`, `MaxHeaderBytes` counted as name plus value plus 32 per
 field) and additionally refuses `TE` and `Keep-Alive` as transport headers. It
 sends `:method`, `:scheme`, `:authority` and `:path`, `content-length` for a
-nonempty body, and the caller's headers with lowercase names. At most
+nonempty body, and the caller's headers with lowercase names. No request is
+sent before the peer's first `SETTINGS` frame has been received. At most
 `MaxStreams` requests, and never more than the peer's concurrent stream setting,
 are open at once; further requests wait in order. When `MaxStreams` plus
 `MaxWaiters` calls are already in progress, `Do` fails with

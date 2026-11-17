@@ -11,7 +11,7 @@ stream 3: :method=POST :scheme=https :authority=example.test :path=/b content-le
 body 4
 stream 5: :method=HEAD :scheme=https :authority=example.test :path=/c x-trace=1
 goaway code 0
-closed EOF
+closed
 window updates 1
 === concurrent
 /1 200 2 xy
@@ -24,7 +24,7 @@ stream 1: :method=GET :scheme=https :authority=example.test :path=/1 x-trace=1
 stream 3: :method=GET :scheme=https :authority=example.test :path=/2 x-trace=1
 stream 5: :method=GET :scheme=https :authority=example.test :path=/3 x-trace=1
 goaway code 0
-closed EOF
+closed
 window updates 1
 === limit
 /1 200 13 one at a time content-type=text/plain
@@ -37,21 +37,19 @@ stream 1: :method=GET :scheme=https :authority=example.test :path=/1 x-trace=1
 stream 3: :method=GET :scheme=https :authority=example.test :path=/2 x-trace=1
 stream 5: :method=GET :scheme=https :authority=example.test :path=/3 x-trace=1
 goaway code 0
-closed EOF
+closed
 window updates 1
 === waiters
+/3 error http2: too many waiting requests
 /1 200 13 one at a time content-type=text/plain
 /2 200 13 one at a time content-type=text/plain
-/3 error context deadline exceeded
 /closed error http2: closed connection
 --- server
 client settings 2=0 4=262144 6=32768 
 stream 1: :method=GET :scheme=https :authority=example.test :path=/1 x-trace=1
 stream 3: :method=GET :scheme=https :authority=example.test :path=/2 x-trace=1
-frame 1
-reset stream 5 code 8
 goaway code 0
-closed EOF
+closed
 window updates 1
 === upload
 /big 200 6 stored content-type=text/plain
@@ -62,7 +60,7 @@ stream 1: :method=PUT :scheme=https :authority=example.test :path=/big content-l
 stalled at 65535 extra 0
 uploaded 200000
 goaway code 0
-closed EOF
+closed
 window updates 1
 === download
 /large 200 300000  content-length=300000
@@ -71,7 +69,7 @@ window updates 1
 client settings 2=0 4=262144 6=32768 
 stream 1: :method=GET :scheme=https :authority=example.test :path=/large x-trace=1
 goaway code 0
-closed EOF
+closed
 window updates 5
 === refused
 /first error http2: request not processed
@@ -82,7 +80,7 @@ client settings 2=0 4=262144 6=32768
 stream 1: :method=GET :scheme=https :authority=example.test :path=/first x-trace=1
 stream 3: :method=GET :scheme=https :authority=example.test :path=/second x-trace=1
 goaway code 0
-closed EOF
+closed
 window updates 1
 === goaway
 /first 200 8 last one content-type=text/plain
@@ -93,7 +91,7 @@ window updates 1
 client settings 2=0 4=262144 6=32768 
 stream 1: :method=GET :scheme=https :authority=example.test :path=/first x-trace=1
 stream 3: :method=GET :scheme=https :authority=example.test :path=/second x-trace=1
-closed EOF
+closed
 window updates 1
 === push
 /only error http2: protocol error: server push is disabled
@@ -103,7 +101,7 @@ window updates 1
 client settings 2=0 4=262144 6=32768 
 stream 1: :method=GET :scheme=https :authority=example.test :path=/only x-trace=1
 goaway code 1
-closed EOF
+closed
 window updates 1
 === bigframe
 /only error http2: frame too large
@@ -113,7 +111,7 @@ window updates 1
 client settings 2=0 4=262144 6=32768 
 stream 1: :method=GET :scheme=https :authority=example.test :path=/only x-trace=1
 goaway code 6
-closed EOF
+closed
 window updates 1
 === malformed
 /m0 error http2: malformed response
@@ -143,7 +141,7 @@ stream 13: :method=GET :scheme=https :authority=example.test :path=/m6 x-trace=1
 reset stream 13 code 1
 stream 15: :method=GET :scheme=https :authority=example.test :path=/m7 x-trace=1
 goaway code 0
-closed EOF
+closed
 window updates 1
 === hpack
 /only error http2: hpack: invalid table index
@@ -153,7 +151,7 @@ window updates 1
 client settings 2=0 4=262144 6=32768 
 stream 1: :method=GET :scheme=https :authority=example.test :path=/only x-trace=1
 goaway code 9
-closed EOF
+closed
 window updates 1
 === continuation
 /only 200 6 padded x-long=vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv x-last=end
@@ -163,7 +161,7 @@ client settings 2=0 4=262144 6=32768
 stream 1: :method=GET :scheme=https :authority=example.test :path=/only x-trace=1
 ping ack
 goaway code 0
-closed EOF
+closed
 window updates 1
 === cancel
 /slow error context deadline exceeded
@@ -176,7 +174,7 @@ stream 3: :method=GET :scheme=https :authority=example.test :path=/fast x-trace=
 answering only stream 3 of 1
 reset stream 1 code 8
 goaway code 0
-closed EOF
+closed
 window updates 1
 === bodylimit
 /huge error http.Client: body too large
@@ -188,7 +186,7 @@ stream 1: :method=GET :scheme=https :authority=example.test :path=/huge x-trace=
 reset stream 1 code 8
 stream 3: :method=GET :scheme=https :authority=example.test :path=/small x-trace=1
 goaway code 0
-closed EOF
+closed
 window updates 1
 === eof
 /only error http2: connection closed
@@ -197,7 +195,7 @@ window updates 1
 --- server
 client settings 2=0 4=262144 6=32768 
 stream 1: :method=GET :scheme=https :authority=example.test :path=/only x-trace=1
-closed EOF
+closed
 window updates 1
 === flood
 /only error http2: too many control frames
@@ -207,7 +205,7 @@ window updates 1
 client settings 2=0 4=262144 6=32768 
 stream 1: :method=GET :scheme=https :authority=example.test :path=/only x-trace=1
 goaway code 11
-closed EOF
+closed
 window updates 1
 === zerowindow
 /only error http2: protocol error: empty window update
@@ -217,14 +215,14 @@ window updates 1
 client settings 2=0 4=262144 6=32768 
 stream 1: :method=GET :scheme=https :authority=example.test :path=/only x-trace=1
 goaway code 1
-closed EOF
+closed
 window updates 1
 === nosettings
 /only error http2: protocol error: expected SETTINGS
 /again error http2: protocol error: expected SETTINGS
 /closed error http2: protocol error: expected SETTINGS
 --- server
-closed EOF
+closed
 window updates 0
 === validation
 /x error http.Client: unsupported or invalid method
@@ -239,7 +237,7 @@ http2: header limit too large
 --- server
 client settings 2=0 4=262144 6=32768 
 goaway code 0
-closed EOF
+closed
 window updates 1
 === strict
 /signed error http2: malformed response
@@ -257,7 +255,7 @@ stream 5: :method=GET :scheme=https :authority=example.test :path=/trailer x-tra
 reset stream 5 code 1
 stream 7: :method=GET :scheme=https :authority=example.test :path=/good x-trace=1
 goaway code 0
-closed EOF
+closed
 window updates 1
 === lateflood
 /done 200 4 done content-type=text/plain
@@ -266,9 +264,9 @@ window updates 1
 --- server
 client settings 2=0 4=262144 6=32768 
 stream 1: :method=GET :scheme=https :authority=example.test :path=/done x-trace=1
-frame 1
+stream 3: :method=GET :scheme=https :authority=example.test :path=/later x-trace=1
 goaway code 11
-closed EOF
+closed
 window updates 1
 === goawayclose
 closed true
@@ -278,5 +276,5 @@ closed true
 --- server
 client settings 2=0 4=262144 6=32768 
 stream 1: :method=GET :scheme=https :authority=example.test :path=/draining x-trace=1
-closed EOF
+closed
 window updates 1

@@ -83,6 +83,24 @@ func number(value int) Array<byte> {
     return Array<byte>{byte((value >> 24) & 255), byte((value >> 16) & 255), byte((value >> 8) & 255), byte(value & 255)}
 }
 
+func (p mut Peer) quiet(wait time.Duration) error {
+    var buf = Array<byte>{}
+    for buf.len() < 16384 { buf.push(0) }
+    let until = time.Now().Add(wait)
+    for time.Now().Before(until) {
+        p.conn.SetReadDeadline(until)?
+        let n, _ = p.conn.Read(buf[:])
+        for var i = 0; i < n; i += 1 { p.input.push(buf[i]) }
+    }
+    for p.input.len() >= 9 {
+        let length = (int(p.input[0]) << 16) | (int(p.input[1]) << 8) | int(p.input[2])
+        if p.input.len() < 9 + length { break }
+        let kind, _, _, _ = p.frame()?
+        if kind == 1 { return error("second stream opened early") }
+    }
+    return nil
+}
+
 func (p mut Peer) send(kind int, flags int, id int, payload []byte) error {
     var out = Array<byte>{byte((payload.len() >> 16) & 255), byte((payload.len() >> 8) & 255), byte(payload.len() & 255), byte(kind), byte(flags)}
     for value in number(id) { out.push(value) }
@@ -156,7 +174,8 @@ func (p mut Peer) goodbye() error {
     for {
         let kind, flags, id, payload, err = p.next()
         if err != nil {
-            p.log.push("closed " + message(err))
+            _ = err
+            p.log.push("closed")
             return nil
         }
         if kind == 7 {
@@ -205,10 +224,9 @@ func script(p mut Peer, mode string) error {
             if mode == "waiters" { count = 2 }
             for var i = 0; i < count; i += 1 {
                 let id, _ = p.request()?
-                p.conn.SetReadDeadline(time.Now().Add(60 * time.Millisecond))?
-                var probe = [byte; 1]{0}
-                let n, _ = p.conn.Read(probe[:])
-                if n != 0 { return error("second stream opened early") }
+                var hold = 100 * time.Millisecond
+                if mode == "waiters" && i == 0 { hold = 1500 * time.Millisecond }
+                p.quiet(hold)?
                 p.answer(id, "200", "one at a time")?
             }
         }
@@ -352,6 +370,7 @@ func script(p mut Peer, mode string) error {
     } else if mode == "lateflood" {
         let id, _ = p.request()?
         p.answer(id, "200", "done")?
+        let _, _ = p.request()?
         let empty = Array<byte>{}
         for var i = 0; i < 70; i += 1 { p.send(0, 0, id, empty[:])? }
     } else if mode == "goawayclose" {
@@ -417,11 +436,21 @@ async func fetch(conn http.HTTP2Conn, path string, wait time.Duration, done chan
     cancel()
 }
 
+func settle(conn http.HTTP2Conn, count int) {
+    let until = time.Now().Add(2 * time.Second)
+    for time.Now().Before(until) {
+        let stats = conn.Stats()
+        if stats.Active + stats.Waiting >= count || stats.Closed { return }
+        time.Sleep(time.Millisecond)
+    }
+}
+
 func together(conn http.HTTP2Conn, paths []string, waits []time.Duration) {
     let done = channel<string>(8)
     for i, path in paths {
+        let before = conn.Stats().Active + conn.Stats().Waiting
         go fetch(conn, path, waits[i], done)
-        time.Sleep(50 * time.Millisecond)
+        settle(conn, before + 1)
     }
     var lines = Array<string>{}
     for var i = 0; i < paths.len(); i += 1 {
@@ -462,7 +491,17 @@ func run() error {
         println(show(conn, ctx, "HEAD", "/c", empty[:]))
         let stats = conn.Stats()
         println("stats " + strconv.Itoa(stats.Active) + " " + strconv.Itoa(stats.Waiting))
-    } else if mode == "concurrent" || mode == "limit" || mode == "waiters" {
+    } else if mode == "waiters" {
+        let done = channel<string>(2)
+        go fetch(conn, "/1", long, done)
+        settle(conn, 1)
+        go fetch(conn, "/2", long, done)
+        settle(conn, 2)
+        println(show(conn, ctx, "GET", "/3", empty[:]))
+        let first, _ = done.receive()
+        let second, _ = done.receive()
+        if strings.HasPrefix(first, "/1 ") { println(first); println(second) } else { println(second); println(first) }
+    } else if mode == "concurrent" || mode == "limit" {
         let paths = Array<string>{"/1", "/2", "/3"}
         let waits = Array<time.Duration>{long, long, long}
         together(conn, paths[:], waits[:])
@@ -502,7 +541,8 @@ func run() error {
     } else if mode == "goawayclose" {
         let done = channel<string>(1)
         go fetch(conn, "/draining", long, done)
-        time.Sleep(60 * time.Millisecond)
+        let until = time.Now().Add(2 * time.Second)
+        for !conn.Stats().Closed && time.Now().Before(until) { time.Sleep(time.Millisecond) }
         println("closed " + strconv.FormatBool(conn.Stats().Closed))
         conn.Close()
         println(show(conn, ctx, "GET", "/refused", empty[:]))

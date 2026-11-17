@@ -343,7 +343,7 @@ func (e mut h2Engine) admit() {
     if e.peerStreams < limit {
         limit = e.peerStreams
     }
-    for !e.draining && e.failure == nil && e.queue.len() > 0 && e.streams.len() < limit {
+    for e.greeted && !e.draining && e.failure == nil && e.queue.len() > 0 && e.streams.len() < limit {
         if e.nextID > h2MaxWindow - 2 {
             e.shutdown(error("http2: request not processed"))
             return
