@@ -14,8 +14,12 @@ including those shipped in `0.1.0-alpha.1`, are not split by release.
   ask each HTTPS server for HTTP/2 (§37.50). A server that agrees gets one
   shared connection for all requests to it; others are answered over HTTP/1.1.
   Tested against the HTTP/2 server built into Node.js.
-- This completes the HTTP/2 plan for buffered requests (#290). Existing clients
-  are unchanged and still speak HTTP/1.1.
+- `Open` on the automatic client and on an HTTP/2 connection streams the
+  answer as it arrives (§37.51), returning the same `ResponseStream` as
+  HTTP/1.1 streaming. The server can only send as much as the program has read
+  plus a window.
+- This completes the HTTP/2 plan (#290). Existing clients are unchanged and
+  still speak HTTP/1.1.
 
 ### HTTP/2 connections
 

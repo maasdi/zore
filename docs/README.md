@@ -63,7 +63,7 @@ These proposals were not accepted and changed nothing. They are kept for their r
 
 These documents record design directions; the specification defines the implemented contracts.
 
-- [HTTP client extension plan](design/http-client.md) (issue #228; streamed downloads, uploads, pooling, redirects, retries, decoding and proxies delivered in §§37.41–37.47, HTTP/2 open)
+- [HTTP client extension plan](design/http-client.md) (issue #228; streamed downloads, uploads, pooling, redirects, retries, decoding and proxies delivered in §§37.41–37.47, HTTP/2 in §§37.48–37.51)
 - [Template follow-up decision](design/templates.md) (issue #226; application-driven, deferred)
 - [HTTP server and URL design](proposals/http-server.md) (issue #105; implemented in §37.6)
 - [Opt-in scoped tasks](proposals/scoped-tasks.md) (Q10)

@@ -3,12 +3,12 @@
 Status: accepted as the plan for issue #290. **HTTP/2 is not implemented.** This
 record fixes the choices that later slices must follow. Each slice still locks
 its own public signatures, examples and conformance cases in the specification
-before code is written. All four slices are delivered: application protocol
+before code is written. All slices are delivered: application protocol
 negotiation in the `tls` package, the header compression package, a
 connection that multiplexes buffered requests, and an HTTPS client that
-chooses HTTP/2 or HTTP/1.1 per server (specification §37.50). Streamed HTTP/2
-bodies are not delivered; the ordinary `http.Client` calls still speak
-HTTP/1.1 only.
+chooses HTTP/2 or HTTP/1.1 per server (specification §37.50), with streamed
+responses (§37.51). The ordinary `http.Client` calls still speak HTTP/1.1
+only.
 
 ## Consumer
 
@@ -127,7 +127,8 @@ Every limit is finite and has a default; a peer cannot raise one.
    connection, with buffered requests (delivered; specification §37.49).
 4. Negotiation and HTTP/1.1 fallback in `tls/https` with one connection per
    origin and interoperability evidence (delivered; specification §37.50).
-   Streamed bodies remain a follow-up.
+5. Streamed responses whose stream window follows the reader (delivered;
+   specification §37.51).
 
 ## Evidence required before HTTP/2 is called supported
 

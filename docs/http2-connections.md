@@ -130,5 +130,10 @@ after `Close`.
   like are refused; HTTP/2 has its own way to carry that information.
 - Header names in an answer are lowercase, as HTTP/2 requires. `Headers.Get`
   finds them whatever case you ask with.
-- Answers are always read whole. Streaming a large answer piece by piece over
-  HTTP/2 is not available yet.
+- To read a large answer piece by piece instead of all at once, use `Open`
+  instead of `Do`, on the automatic client or on a connection. It returns the
+  same `ResponseStream` as HTTP/1.1 streaming (see
+  [HTTP downloads](http-downloads.md)). The server may only send as much as
+  you have read plus a window (`StreamWindow`), so an answer you read slowly
+  waits at the server instead of filling memory, and other requests on the
+  connection keep going. Closing a stream early tells the server to stop.

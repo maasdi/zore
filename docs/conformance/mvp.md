@@ -255,7 +255,7 @@ Locked §37.50 delivers `https.AutoClient`, `AutoStats`, `MaxAutoOrigins`,
 [tests/driver/http_client.rs](../../tests/driver/http_client.rs)::http2_auto_client_interoperates_with_node_and_falls_back_to_http1
 runs a Zore program against the Node.js `http2` server (an independent HTTP/2
 implementation) for concurrent requests over one connection, uploads,
-downloads, headers and a 404, and against the Node.js `https` server for
+buffered and streamed downloads, headers and a 404, and against the Node.js `https` server for
 HTTP/1.1 fallback. It requires Node.js and fails, never skips, without it.
 `TestHTTPSAutoClientFallsBackToHTTP1` in
 [examples/https-client/https_test.ore](../../examples/https-client/https_test.ore)
@@ -265,13 +265,16 @@ covers fallback and `Close` against a Zore TLS server.
 
 Locked §37.49 delivers `HTTP2Config`, `HTTP2Stats`, `DefaultHTTP2Config`,
 `Client.NewHTTP2Conn` and `HTTP2Conn` with `Do`, `Stats` and `Close`.
-[tests/codegen/http2.rs](../../tests/codegen/http2.rs) drives twenty-three scripted
+[tests/codegen/http2.rs](../../tests/codegen/http2.rs) drives twenty-four scripted
 exchanges with an HTTP/2 peer over loopback TCP and compares them with
 [fixtures/http2_scripted.txt](../../tests/codegen/fixtures/http2_scripted.txt):
 multiplexing, stream and waiter limits, flow control in both directions,
 refusal, GOAWAY, cancellation, malformed responses and connection errors.
 [tests/packages/networking.rs](../../tests/packages/networking.rs) checks the
-guide example and type rejections. Streamed bodies are not delivered.
+guide example and type rejections. Streamed responses (§37.51) are covered
+by the `stream` scenario of the same test: the server stops at the stream
+window until the caller reads, trailers, early close, a reset after partial
+data and the idle timeout.
 
 ## HTTP header compression — issue #290
 
