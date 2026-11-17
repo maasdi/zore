@@ -29,6 +29,7 @@ See the [official naming rules](../spec/language-spec.md#21-naming--locked).
 | [HTTP uploads](http-uploads.md) | Sending a large file as an HTTP request body without loading it: exact sizes, limits, timeouts and early rejections. |
 | [HTTP redirects](http-redirects.md) | Following "moved" answers safely: which statuses, method changes, credential removal, HTTPS downgrades and limits. |
 | [HTTP content decoding](http-decoding.md) | Unpacking gzip answers safely: what is decoded, header changes, broken data and size limits. |
+| [HTTP/2 connections](http2-connections.md) | Sharing one connection between many requests: limits, which errors end one request and which end the connection. |
 | [HTTP header compression](http-header-compression.md) | Packing and unpacking HPACK header blocks, a building block for HTTP/2: limits and errors. |
 | [HTTP proxies](http-proxies.md) | Sending requests through an explicit proxy: plain and HTTPS tunnels, the proxy's password and errors. |
 | [HTTP retries](http-retries.md) | Trying a request again after a busy answer or a broken connection: which requests, which answers, waits and limits. |

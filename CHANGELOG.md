@@ -8,6 +8,18 @@ including those shipped in `0.1.0-alpha.1`, are not split by release.
 
 ## [Unreleased]
 
+### HTTP/2 connections
+
+- `client.NewHTTP2Conn(conn, config)` runs one HTTP/2 connection over a
+  connection on which HTTP/2 was already agreed (§37.49). Its `Do` may be
+  called from many tasks at once; the requests share the connection and each
+  gets a buffered `ClientResponse`.
+- Limits are fixed up front: requests at once, requests waiting and bytes the
+  server may send ahead. A failed or cancelled request does not disturb the
+  others; a protocol violation ends the whole connection with a clear error.
+- This is the third step toward HTTP/2 (#290). The ordinary client calls still
+  speak HTTP/1.1; choosing HTTP/2 automatically comes next.
+
 ### HTTP header compression
 
 - New package `std/net/http/hpack` packs and unpacks HPACK header blocks

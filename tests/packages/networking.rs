@@ -490,3 +490,35 @@ fn http_proxies_reject_wrong_tunnels_and_types() {
         super::rejects(&[("main.ore", &source)], expected);
     }
 }
+
+#[test]
+fn http2_connections_check_with_the_guide_example() {
+    let guide = include_str!("../../docs/http2-connections.md");
+    let blocks: Vec<_> = guide
+        .split("```ore\n")
+        .skip(1)
+        .map(|block| block.split("```").next().unwrap())
+        .collect();
+    assert_eq!(blocks.len(), 1);
+    super::accepts(&[("main.ore", blocks[0])]);
+}
+
+#[test]
+fn http2_connections_reject_wrong_types() {
+    for (body, expected) in [
+        (
+            "let client = http.NewClient(http.DefaultClientConfig())?; let _, _ = client.NewHTTP2Conn(5, http.DefaultHTTP2Config())",
+            "expected `http.ClientConn`",
+        ),
+        (
+            "var config = http.DefaultHTTP2Config(); config.MaxStreams = \"many\"",
+            "mismatched types",
+        ),
+        ("let _ = http.DefaultHTTP2Config().Priority", "Priority"),
+    ] {
+        let source = format!(
+            "package main\nimport \"std/net/http\"\nfunc run() error {{ {body}; return nil }}\nfunc main() {{ let _ = run() }}\n"
+        );
+        super::rejects(&[("main.ore", &source)], expected);
+    }
+}
